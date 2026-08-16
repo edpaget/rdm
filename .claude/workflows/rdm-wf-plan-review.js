@@ -2297,6 +2297,25 @@ const RAW_STDOUT_SCHEMA = {
   },
 }
 
+// ROADMAP_BODY_CHECK_SCHEMA — the schema for the SECOND, independent
+// verification call made only for the roadmap-body unit (task
+// plan-review-roadmap-body-fetch-status-line): five recorded production runs
+// reviewed the roadmap-body unit against a one-line fetch-status sentence
+// (e.g. "Successfully fetched roadmap X with all phase details from the rdm
+// project.") rather than the real body. Unlike RAW_STDOUT_SCHEMA above, this
+// agent is asked for two small, checkable facts about the body it reads —
+// never the body text itself — so there is nothing here for it to summarize
+// or transcribe wrong in a way that would agree with a summarized `body`.
+const ROADMAP_BODY_CHECK_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['length', 'firstLine'],
+  properties: {
+    length: { type: 'number' },
+    firstLine: { type: 'string' },
+  },
+}
+
 // stringArrayOk / stemDup / etc. are shared by hoistedFetchedOk above and the
 // extract*FromJson validators below.
 
@@ -2483,6 +2502,56 @@ function buildRoadmapFetchPrompt(slug) {
     'If the roadmap command fails or prints nothing, still print its marker line followed by an empty',
     'body, and run no phase commands.',
   ].join('\n')
+}
+
+// buildRoadmapBodyCheckPrompt(slug) — a SECOND, INDEPENDENT mechanical fetch,
+// run only for the roadmap-body unit alongside buildRoadmapFetchPrompt above.
+// It re-runs `roadmap show` itself (never reuses the first call's transcript)
+// and is asked to report only a checkable PROPERTY of the body — its length
+// and first line — never the body text. This is deliberately a much
+// narrower ask than "transcribe the body", so an agent that fabricates a
+// fetch-status sentence for buildRoadmapFetchPrompt is very unlikely to also
+// fabricate a matching length/first-line pair for THIS prompt (see
+// roadmapBodyVerified's caller for how the two are compared).
+function buildRoadmapBodyCheckPrompt(slug) {
+  return [
+    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
+    'Run exactly this command in the repo root:',
+    '  ./target/debug/rdm roadmap show ' + slug + ' --project rdm --format json',
+    'Parse that command\'s stdout as JSON and read its `body` field (a string).',
+    'Return a ROADMAP_BODY_CHECK object with two fields: `length` — the exact character count of the',
+    '`body` string; `firstLine` — the `body` string\'s text up to (not including) its first newline',
+    'character, or the entire string when it contains no newline.',
+    'If the command fails, prints nothing, or the output does not parse as JSON with a string `body`',
+    'field, return exactly { length: 0, firstLine: "" }.',
+  ].join('\n')
+}
+
+// roadmapBodyVerified(body, check) — pure tri-state comparison between the
+// `fetch:roadmap` agent's transcribed `body` and the independently-fetched
+// `check` ({ length, firstLine }) from buildRoadmapBodyCheckPrompt above.
+// Returns:
+//   - `null`  — "unknown, cannot verify": `check` is missing/malformed (a
+//     thrown/erroring check call, already normalized to `null` by its call
+//     site below), OR `check` equals the documented check-failure sentinel
+//     `{ length: 0, firstLine: '' }`. A flaky or unavailable verification
+//     step must never be treated as confirmed corruption.
+//   - `false` — a real disagreement: `body`'s own length or first line does
+//     not match what the independent check reported.
+//   - `true`  — the two readings agree.
+// Deliberately body-content-blind beyond this length/first-line comparison —
+// it never pattern-matches `body`'s text against known corruption phrasing,
+// so a legitimate, freshly-created roadmap with a genuinely short one-line
+// body is never flagged: both readings agree because both are reading the
+// same real body.
+function roadmapBodyVerified(body, check) {
+  if (!check || typeof check !== 'object') return null
+  if (typeof check.length !== 'number' || typeof check.firstLine !== 'string') return null
+  if (check.length === 0 && check.firstLine === '') return null // documented check-failure sentinel
+  const bodyStr = String(body || '')
+  const newlineIdx = bodyStr.indexOf('\n')
+  const bodyFirstLine = newlineIdx === -1 ? bodyStr : bodyStr.slice(0, newlineIdx)
+  return bodyStr.length === check.length && bodyFirstLine === check.firstLine
 }
 
 // buildTagWritePrompt — the read-filter-write half of the gate, as a mechanical
@@ -3122,6 +3191,43 @@ async function runPlanReviewDriver(args, deps) {
       }
     }
     fetched = candidate
+
+    // SECOND, INDEPENDENT verification of the roadmap-BODY unit only (task
+    // plan-review-roadmap-body-fetch-status-line): a fresh mechanical call
+    // re-reads the roadmap and reports a checkable property of its body
+    // (length + first line), compared against what fetch:roadmap above
+    // transcribed. This is scoped strictly to the agent-fetch (non-hoisted)
+    // roadmap path — never the hoisted `fetched` payload above (no LLM
+    // transcription step to distrust there) and never phase/task kinds
+    // (below) — and only runs when the fetch above actually succeeded; a
+    // null `fetched` already fails closed via the existing
+    // `built.fetchFailed` path with no help from this check.
+    if (fetched) {
+      let bodyCheck = null
+      try {
+        bodyCheck = await _agent(buildRoadmapBodyCheckPrompt(parsed.roadmap), {
+          label: 'fetch:roadmap-body-check',
+          phase: 'Read',
+          agentType: 'rdm-mechanical',
+          schema: ROADMAP_BODY_CHECK_SCHEMA,
+          model: _mechanicalModel,
+        })
+      } catch (e) {
+        bodyCheck = null
+      }
+      const bodyVerified = roadmapBodyVerified(fetched.body, bodyCheck)
+      if (bodyVerified === false) {
+        // Confirmed disagreement — discard the WHOLE fetch and route through
+        // the existing empty-body fail-closed path below (built.fetchFailed),
+        // rather than inventing a parallel escalation mechanism.
+        _log('plan-review: fetch:roadmap-body-check disagrees with fetch:roadmap — failing closed')
+        fetched = null
+      } else if (bodyVerified === null) {
+        // Unavailable/flaky check — proceed unverified, never fail closed on
+        // an "unknown" result.
+        _log('plan-review: fetch:roadmap-body-check unavailable — proceeding unverified')
+      }
+    }
   } else {
     const fetchPrompt =
       kind === 'task' ? buildTaskFetchPrompt(parsed.task) : buildPhaseFetchPrompt(parsed.roadmap, parsed.phase)

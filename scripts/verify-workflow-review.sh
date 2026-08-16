@@ -1119,10 +1119,12 @@ rdm-wf-estimate.js|estimate:write:' +
 rdm-wf-estimate.js|estimate:tier:' +
 rdm-wf-plan-review.js|model:mechanical'
 rdm-wf-plan-review.js|fetch:roadmap'
+rdm-wf-plan-review.js|fetch:roadmap-body-check'
 rdm-wf-plan-review.js|fetch:' + kind
 rdm-wf-plan-review.js|fetch:wontfix'
 rdm-wf-plan-review.js|gate:clear-tag:' +
 lib/plan-review.mjs|fetch:roadmap'
+lib/plan-review.mjs|fetch:roadmap-body-check'
 lib/plan-review.mjs|fetch:' + kind
 lib/plan-review.mjs|fetch:wontfix'
 lib/plan-review.mjs|gate:clear-tag:' +
@@ -3916,8 +3918,8 @@ import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 
 const mod = await import(pathToFileURL(process.argv[2]).href);
-const { parsePlanArgs, buildReviewUnits, runPlanReviewDriver, formatUnitBudget, snapshotOriginalTags } = mod;
-for (const name of ['parsePlanArgs', 'buildReviewUnits', 'runPlanReviewDriver', 'formatUnitBudget', 'snapshotOriginalTags']) {
+const { parsePlanArgs, buildReviewUnits, runPlanReviewDriver, formatUnitBudget, snapshotOriginalTags, roadmapBodyVerified } = mod;
+for (const name of ['parsePlanArgs', 'buildReviewUnits', 'runPlanReviewDriver', 'formatUnitBudget', 'snapshotOriginalTags', 'roadmapBodyVerified']) {
   assert.equal(typeof mod[name], 'function', name + ' must be exported from lib/plan-review.mjs');
 }
 
@@ -4040,6 +4042,39 @@ assert.deepEqual(
   snapshotOriginalTags('phase', { roadmap: 'r', phase: 'phase-1-a' }, { body: 'PB', tags: ['alpha'] }),
   { 'phase-1-a': ['alpha'] },
   'snapshotOriginalTags: a standalone phase fetch caches the phase\'s own tags keyed by the phase ident'
+);
+
+// ---- roadmapBodyVerified: pure tri-state check (plan-review-roadmap-body-fetch-status-line AC1/AC3) ----
+assert.equal(
+  roadmapBodyVerified('line one\nline two', { length: 'line one\nline two'.length, firstLine: 'line one' }),
+  true,
+  'roadmapBodyVerified: matching length + firstLine => true'
+);
+assert.equal(
+  roadmapBodyVerified('the real body', { length: 999, firstLine: 'the real body' }),
+  false,
+  'roadmapBodyVerified: mismatched length => false'
+);
+assert.equal(
+  roadmapBodyVerified('the real body', { length: 'the real body'.length, firstLine: 'a fetch-status sentence' }),
+  false,
+  'roadmapBodyVerified: mismatched firstLine => false'
+);
+assert.equal(roadmapBodyVerified('B', null), null, 'roadmapBodyVerified: null check => null (unknown)');
+assert.equal(roadmapBodyVerified('B', undefined), null, 'roadmapBodyVerified: undefined check => null (unknown)');
+assert.equal(roadmapBodyVerified('B', 'not an object'), null, 'roadmapBodyVerified: malformed (non-object) check => null');
+assert.equal(
+  roadmapBodyVerified('B', { length: 0, firstLine: '' }),
+  null,
+  'roadmapBodyVerified: the documented check-failure sentinel {length:0, firstLine:""} => null, not false'
+);
+// A genuinely tiny/single-line LEGITIMATE body (e.g. a freshly-created
+// roadmap with a one-sentence summary) must NOT be flagged corrupt — both
+// readings of the same short real body agree.
+assert.equal(
+  roadmapBodyVerified('Short summary.', { length: 'Short summary.'.length, firstLine: 'Short summary.' }),
+  true,
+  'roadmapBodyVerified: a short but legitimate one-line body still verifies true'
 );
 
 // ---- runPlanReviewDriver: a recording fake agent + a reference parallel ------
@@ -4232,6 +4267,97 @@ const blockingCoherence = [{ id: 'c', concern: 'coherence', severity: 'blocking'
   assert.equal(res.outcome, 'rework', 'impl-plan still classifies the outcome');
   assert.ok(!('units' in res), 'impl-plan is report-only (no gated units)');
   assert.equal(calls.length, 0, 'impl-plan makes NO agent calls (no fetch, no act, no gate)');
+}
+
+// ---- (4b)-(4e) fetch:roadmap-body-check — the SECOND, independent verification
+//      of the roadmap-body unit (task plan-review-roadmap-body-fetch-status-line).
+//      Five recorded production runs reviewed the roadmap-body unit against a
+//      one-line fetch-status sentence instead of the real body; these driven-
+//      pipeline cases exercise the full mismatch->fail-closed / match->healthy /
+//      unavailable->unverified / scope behavior through the real driver.
+
+// (4b) AC2 — a DISAGREEING independent check discards the whole fetch and
+//      fails closed exactly like the existing empty-body precedent: escalated,
+//      fetchError:true, and ZERO act:/gate:clear-tag: calls.
+{
+  const trueBody = 'Phase 3 fixes the roadmap-body fetch defect.\nSecond line of real detail.';
+  const { deps, calls } = makeHarness(
+    {},
+    {
+      'fetch:roadmap': {
+        body: 'Successfully fetched roadmap big-thing with all phase details from the rdm project.',
+        tags: ['needs-plan-review'],
+        phases: [],
+      },
+      'fetch:roadmap-body-check': { length: trueBody.length, firstLine: 'Phase 3 fixes the roadmap-body fetch defect.' },
+    }
+  );
+  const res = await runPlanReviewDriver({ roadmap: 'big-thing' }, deps);
+  assert.equal(res.outcome, 'escalated', 'a disagreeing body-check fails the roadmap review closed');
+  assert.equal(res.fetchError, true, 'a disagreeing body-check reports a fetch error');
+  assert.equal(calls.filter((c) => (c.label || '').indexOf('act:') === 0).length, 0,
+    'a disagreeing body-check issues NO act:* agent calls');
+  assert.equal(calls.filter((c) => (c.label || '').indexOf('gate:clear-tag:') === 0).length, 0,
+    'a disagreeing body-check issues NO gate:clear-tag:* agent calls');
+  assert.ok(calls.some((c) => c.label === 'fetch:roadmap-body-check'), 'the independent check call was actually made');
+}
+
+// (4c) AC2 companion — an AGREEING independent check does not change the
+//      healthy-path outcome (regression guard against a false positive).
+{
+  const trueBody = 'Real roadmap body text.';
+  const { deps } = makeHarness(
+    {},
+    {
+      'fetch:roadmap': { body: trueBody, tags: ['needs-plan-review'], phases: [] },
+      'fetch:roadmap-body-check': { length: trueBody.length, firstLine: trueBody },
+    }
+  );
+  const res = await runPlanReviewDriver({ roadmap: 'big-thing' }, deps);
+  assert.equal(res.kind, 'roadmap', 'roadmap result kind (agreeing check)');
+  const byIdent = Object.fromEntries(res.units.map((u) => [u.ident, u]));
+  assert.equal(byIdent['big-thing'].outcome, 'reviewed', 'an agreeing body-check does not block the healthy path');
+  assert.equal(byIdent['big-thing'].tagCleared, true, 'an agreeing body-check still clears the tag on review');
+}
+
+// (4d) AC3 — an UNAVAILABLE check (absent from fetchResults, so the fake
+//      agent resolves it to null) proceeds UNVERIFIED rather than failing
+//      closed: a flaky/missing verification step must never strand a
+//      legitimate roadmap.
+{
+  const trueBody = 'Real roadmap body text, unchecked.';
+  const { deps, calls } = makeHarness(
+    {},
+    { 'fetch:roadmap': { body: trueBody, tags: ['needs-plan-review'], phases: [] } }
+    // deliberately no 'fetch:roadmap-body-check' entry.
+  );
+  const res = await runPlanReviewDriver({ roadmap: 'big-thing' }, deps);
+  const byIdent = Object.fromEntries(res.units.map((u) => [u.ident, u]));
+  assert.equal(byIdent['big-thing'].outcome, 'reviewed', 'an unavailable body-check does not fail closed');
+  assert.ok(calls.some((c) => c.label === 'fetch:roadmap-body-check'), 'the check call was attempted even though it resolved to nothing useful');
+}
+
+// (4e) AC4 — scope negatives: never runs for a task/phase kind, and never
+//      runs for the caller-hoisted `fetched` roadmap payload.
+{
+  // (a) a --task run never calls fetch:roadmap-body-check.
+  const { deps, calls } = makeHarness({}, { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } });
+  await runPlanReviewDriver({ task: 'fix-bug' }, deps);
+  assert.ok(!calls.some((c) => c.label === 'fetch:roadmap-body-check'), 'a task target never triggers fetch:roadmap-body-check');
+}
+{
+  // (b) a hoisted `fetched` roadmap payload never calls fetch:roadmap-body-check.
+  const { deps, calls } = makeHarness({}, {});
+  const res = await runPlanReviewDriver(
+    {
+      roadmap: 'big-thing',
+      fetched: { body: 'RB', tags: ['needs-plan-review'], phases: [{ stem: 'phase-1-a', body: 'PA', tags: [] }] },
+    },
+    deps
+  );
+  assert.equal(res.kind, 'roadmap', 'hoisted roadmap result kind');
+  assert.ok(!calls.some((c) => c.label === 'fetch:roadmap-body-check'),
+    'a hoisted fetched payload never triggers fetch:roadmap-body-check');
 }
 
 // ---- (5) REFUTATION BUDGET threading through the plan-review driver ----------
@@ -4616,7 +4742,20 @@ pmut_snapshot_tags() {
 }
 plan_mutate_and_expect_fail ix 'gutting snapshotOriginalTags to always cache nothing' pmut_snapshot_tags
 
-pass "5b-mut: all eight driver mutations flip a 5b-exec assertion, and the control passes"
+# (x) Neuter the roadmap-body-check fail-closed branch (task
+#     plan-review-roadmap-body-fetch-status-line AC6): rewrite the
+#     `bodyVerified === false` condition so it can never trigger, proving the
+#     branch is load-bearing rather than dead code — the (4b) driven-pipeline
+#     mismatch assertion (escalated/fetchError:true/zero act+gate calls) must
+#     flip, since a disagreeing check would then be silently ignored.
+pmut_body_check_failclosed() {
+    perl -pi -e "s/if \(bodyVerified === false\) \{/if (false) { \/\/ MUTANT: neuters the roadmap-body-check fail-closed branch/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT: neuters the roadmap-body-check fail-closed branch' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail x 'neutering the roadmapBodyVerified===false fail-closed branch' pmut_body_check_failclosed
+
+pass "5b-mut: all ten driver mutations flip a 5b-exec assertion, and the control passes"
 
 # --- 5b-hoist-exec. RUNTIME-ENTRY model hoist fires on a stringified args ----
 # `5b-exec` above drives `runPlanReviewDriver` directly (imported from
