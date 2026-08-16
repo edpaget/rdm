@@ -28,11 +28,15 @@
 // structured object ({ roadmap, phase }, { task }, { implementationPlan,
 // planText }). See parsePlanArgs.
 //
-// Unit-of-work scoping: this workflow deliberately passes NO `signals` into the
-// pipeline (honoring the dispatch-phase deferral of signal-threading to the
-// sibling unify-plan-review roadmap), so selectDimensions fail-opens and the
-// unit-of-work finder runs on every unit. Phase-only scoping is instead applied
-// in the CONSUMER via stripNonPhaseUnitOfWork(survivors, targetType).
+// Unit-of-work scoping: this workflow threads a minimal `signals: { targetType }`
+// object into every buildReviewPipeline('plan') call — one per review unit — so
+// selectDimensions' plan-mode `when` predicate (unit-of-work: `targetType ===
+// 'phase'`) is evaluated at SELECTION time instead of fail-opening. The earlier
+// no-signals design was justified as honoring a deferral of signal-threading to
+// the sibling unify-plan-review roadmap; that roadmap has since completed and
+// archived at 4/4 without discharging it, so the deferral is settled here
+// instead. stripNonPhaseUnitOfWork(survivors, targetType) remains applied in the
+// CONSUMER as a defense-in-depth backstop, not the primary scoping mechanism.
 //
 // The DRIVER below (parsePlanArgs + the fetch/act/gate orchestration in
 // runPlanReviewDriver) is the single source of truth in
@@ -1210,6 +1214,22 @@ const SIGNAL_KEYS = [
 //     nothing triggered".
 //   * an unknown mode → throw.
 //
+// PLAN-MODE MINIMAL SIGNALS: `unit-of-work` is the ONLY `DIMENSIONS.plan` entry
+// carrying a `when` predicate, and it inspects `targetType` alone (`targetType
+// === 'phase'`) — nothing else in plan mode is conditional. That makes
+// `{ targetType }` a fully-populated signals object FOR PLAN MODE ONLY:
+// `rdm-wf-plan-review.js` threads exactly that per review unit (see
+// lib/plan-review.mjs's `reviewUnit` and its `--implementation-plan` branch),
+// which selects the three always-on plan dimensions plus `unit-of-work` on
+// phase units only, without touching this function. This narrower contract does
+// NOT extend to CODE mode: `DIMENSIONS.code`'s triggered dimensions inspect the
+// diff-shape `SIGNAL_KEYS` above, so a bare `{ targetType }` there would read
+// falsy for every one of them and silently drop coverage — CODE callers must
+// keep passing `deriveSignals`'s fully-populated object. AUDIT OBLIGATION: if a
+// future `DIMENSIONS.plan` entry gains a `when` that reads anything beyond
+// `targetType`, this narrower plan-mode contract silently breaks for it and
+// must be re-audited before relying on `{ targetType }` alone.
+//
 // Do NOT collapse this into `d.when(signals || {})`. Substituting `{}` for
 // omitted signals would make EVERY conditional predicate read falsy and silently
 // drop the triggered dimensions — returning a strict subset precisely when the
@@ -1527,13 +1547,24 @@ function summarizeFindings(findings) {
 // `concern` is 'unit-of-work' UNLESS the review unit is a phase. Order-preserving
 // and idempotent.
 //
-// This is the CONSUMER-SIDE phase-scoping that selectDimensions' omitted-signals
-// path cannot do. rdm-wf-plan-review.js deliberately runs `buildReviewPipeline('plan')`
-// with NO signals (honoring the dispatch-phase deferral of signal-threading to
-// the sibling unify-plan-review roadmap), so selectDimensions fail-opens and the
-// unit-of-work finder runs on EVERY unit — task, roadmap body, and
-// implementation-plan included. This post-hoc filter makes "unit-of-work only on
-// phase units" actually true without threading a signals object.
+// SCOPING NOW HAPPENS AT SELECTION TIME, NOT HERE: `rdm-wf-plan-review.js`
+// threads a minimal `signals: { targetType }` object into every
+// `buildReviewPipeline('plan')` call (see lib/plan-review.mjs's `reviewUnit`
+// and its `--implementation-plan` branch), so `selectDimensions`' existing
+// `unit-of-work` `when: targetType === 'phase'` predicate is evaluated instead
+// of fail-opening — the finder simply never runs for a task, roadmap-body, or
+// implementation-plan unit, and this function is a no-op pass-through for that
+// normal path. It remains a defense-in-depth BACKSTOP: any other or future
+// caller of `buildReviewPipeline('plan')` that legitimately omits signals still
+// gets the fail-open ALL-dimensions behavior (a supported, gated contract — see
+// `selectDimensions`), and this filter is what still makes "unit-of-work only
+// on phase units" true for it. It also guards against a regression in the
+// signals-threading above. (An earlier version of this comment credited the
+// no-signals design to "honoring the dispatch-phase deferral of
+// signal-threading to the sibling unify-plan-review roadmap" — that roadmap has
+// since completed and archived at 4/4 without threading signals into
+// rdm-wf-plan-review.js, so the deferral was discharged in name only; this is
+// where it actually lands.)
 function stripNonPhaseUnitOfWork(survivors, targetType) {
   const list = Array.isArray(survivors) ? survivors : [];
   if (targetType === 'phase') return list.slice();
@@ -3482,9 +3513,12 @@ async function runPlanReviewDriver(args, deps) {
   // value has already thrown inside parsePlanArgs, before any agent ran.
   let _gateMode = d.gateMode === 'return' ? 'return' : 'apply'
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
-  // the review core, with NO independent review logic in this driver. Passing NO
-  // signals is deliberate (see the header note); phase-only unit-of-work scoping
-  // is applied per unit via stripNonPhaseUnitOfWork below.
+  // the review core, with NO independent review logic in this driver. Each call
+  // site below threads a minimal `{ targetType }` signals object (see the header
+  // note), which is enough for selectDimensions' plan-mode `when` predicate
+  // (unit-of-work: `targetType === 'phase'`) to scope selection at the source;
+  // stripNonPhaseUnitOfWork remains applied per unit as a defense-in-depth
+  // backstop, not the primary scoping mechanism.
   const runPlanReview = d.runPlanReview || buildReviewPipeline('plan')
 
   const parsed = parsePlanArgs(args)
@@ -3513,7 +3547,7 @@ async function runPlanReviewDriver(args, deps) {
     // IMPORTANT: `budget` describes the PIPELINE, not this unit's final reported
     // findings — stripNonPhaseUnitOfWork and suppressWontFixed run AFTER it and
     // may drop a survivor that consumed budget.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: unit.targetType } })
     const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
     const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
     const prior = parseRoundNotes(unit.body)
@@ -3540,13 +3574,14 @@ async function runPlanReviewDriver(args, deps) {
 
   // ------------------------------------------------------------------ implementation-plan
   // Report-only: no persisted rdm item, so no act and no gate.
-  // stripNonPhaseUnitOfWork drops unit-of-work here too (targetType
-  // 'implementation-plan' !== 'phase').
+  // `signals: { targetType: 'implementation-plan' }` scopes unit-of-work out at
+  // selection time (targetType !== 'phase'); stripNonPhaseUnitOfWork below is
+  // the defense-in-depth backstop, not the primary mechanism.
   if (kind === 'implementation-plan') {
     const planText = parsed.planText || '(the implementation plan provided in context)'
     // See reviewUnit's identical notes: acTable is always null in plan mode, and
     // `budget` describes the pipeline, not the post-strip survivor set.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: 'implementation-plan' } })
     const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
     const outcome = classifyPlanOutcome(survivors)
     // Same summary treatment as reviewUnit: reduced coverage is named in the

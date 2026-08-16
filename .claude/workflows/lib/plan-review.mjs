@@ -1492,9 +1492,12 @@ async function runPlanReviewDriver(args, deps) {
   // value has already thrown inside parsePlanArgs, before any agent ran.
   let _gateMode = d.gateMode === 'return' ? 'return' : 'apply'
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
-  // the review core, with NO independent review logic in this driver. Passing NO
-  // signals is deliberate (see the header note); phase-only unit-of-work scoping
-  // is applied per unit via stripNonPhaseUnitOfWork below.
+  // the review core, with NO independent review logic in this driver. Each call
+  // site below threads a minimal `{ targetType }` signals object (see the header
+  // note), which is enough for selectDimensions' plan-mode `when` predicate
+  // (unit-of-work: `targetType === 'phase'`) to scope selection at the source;
+  // stripNonPhaseUnitOfWork remains applied per unit as a defense-in-depth
+  // backstop, not the primary scoping mechanism.
   const runPlanReview = d.runPlanReview || buildReviewPipeline('plan')
 
   const parsed = parsePlanArgs(args)
@@ -1523,7 +1526,7 @@ async function runPlanReviewDriver(args, deps) {
     // IMPORTANT: `budget` describes the PIPELINE, not this unit's final reported
     // findings — stripNonPhaseUnitOfWork and suppressWontFixed run AFTER it and
     // may drop a survivor that consumed budget.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: unit.targetType } })
     const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
     const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
     const prior = parseRoundNotes(unit.body)
@@ -1550,13 +1553,14 @@ async function runPlanReviewDriver(args, deps) {
 
   // ------------------------------------------------------------------ implementation-plan
   // Report-only: no persisted rdm item, so no act and no gate.
-  // stripNonPhaseUnitOfWork drops unit-of-work here too (targetType
-  // 'implementation-plan' !== 'phase').
+  // `signals: { targetType: 'implementation-plan' }` scopes unit-of-work out at
+  // selection time (targetType !== 'phase'); stripNonPhaseUnitOfWork below is
+  // the defense-in-depth backstop, not the primary mechanism.
   if (kind === 'implementation-plan') {
     const planText = parsed.planText || '(the implementation plan provided in context)'
     // See reviewUnit's identical notes: acTable is always null in plan mode, and
     // `budget` describes the pipeline, not the post-strip survivor set.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: 'implementation-plan' } })
     const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
     const outcome = classifyPlanOutcome(survivors)
     // Same summary treatment as reviewUnit: reduced coverage is named in the

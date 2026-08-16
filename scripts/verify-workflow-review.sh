@@ -3791,13 +3791,26 @@ IMPL_GUARDS=$(grep -c "kind !== 'implementation-plan'" "$PLAN_REVIEW")
     fail "rdm-wf-plan-review.js must guard BOTH act and gate with 'if (kind !== \"implementation-plan\")' (found $IMPL_GUARDS)"
 
 # The driver must not RE-DECLARE the pipeline internals (it consumes the stamped
-# block), and must not thread a signals object into the pipeline (the deferral).
+# block). It DOES thread a minimal `signals: { targetType }` object into every
+# runPlanReview call (task plan-review-selects-unit-of-work-then-strips-it) so
+# selectDimensions' unit-of-work `when` predicate is evaluated at selection
+# time instead of fail-opening — the assertions below require exactly that
+# minimal shape and forbid a diff-shaped signals object (deriveSignals'
+# SIGNAL_KEYS), which would mean code-mode-style signal computation had leaked
+# into the plan driver. stripNonPhaseUnitOfWork remains applied too (checked
+# above) as the defense-in-depth backstop, not the primary mechanism.
 DRIVER=$(awk '/>>> review-refute-fix:end/{p=1;next} p' "$PLAN_REVIEW")
 if printf '%s\n' "$DRIVER" | grep -nE 'function findPrompt|function refutePrompt|const DIMENSIONS ='; then
     fail "rdm-wf-plan-review.js driver re-declares pipeline internals — it must consume the stamped block"
 fi
-if printf '%s\n' "$DRIVER" | grep -nE 'signals:'; then
-    fail "rdm-wf-plan-review.js must NOT thread a signals object into the pipeline (unit-of-work scoping is consumer-side)"
+SIGNALS_LINES=$(printf '%s\n' "$DRIVER" | grep -nE 'signals:' || true)
+[ -n "$SIGNALS_LINES" ] ||
+    fail "rdm-wf-plan-review.js must thread signals: { targetType } into runPlanReview (selection-time unit-of-work scoping)"
+if printf '%s\n' "$SIGNALS_LINES" | grep -vqE "signals: \{ targetType: (unit\.targetType|'implementation-plan') \}"; then
+    fail "rdm-wf-plan-review.js's signals object must be exactly { targetType: ... }, never a diff-shaped signals object"
+fi
+if printf '%s\n' "$DRIVER" | grep -qE 'changesLogic|missingTests|multiModule|publicApiChanged|userFacing|securitySurface'; then
+    fail "rdm-wf-plan-review.js must not compute diff-shaped signals (deriveSignals' SIGNAL_KEYS) — plan mode's only signal is targetType"
 fi
 # The hygiene grep (section 2) already covers rdm-wf-plan-review.js via workflows/*.js;
 # re-assert here that it carries no forbidden nondeterministic global.
@@ -4057,6 +4070,7 @@ pass "plan-review-driver block is byte-in-sync and the runtime entry is workflow
 say "5b-exec. plan-review driver executes: arg parsing + fetch/act/gate orchestration"
 cat >"$TMP/plan-driver-test.mjs" <<'NODE_DRIVER_TEST'
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const mod = await import(pathToFileURL(process.argv[2]).href);
@@ -4751,6 +4765,159 @@ const FULL_COVERAGE = {
     1,
     '7: a multi-phase --roadmap run issues EXACTLY ONE fetch:roadmap agent call, never one per phase'
   );
+}
+
+// ---- (8) SELECTION-TIME UNIT-OF-WORK SCOPING (real pipeline) ----------------
+// Task plan-review-selects-unit-of-work-then-strips-it: prove the `signals:
+// { targetType }` threaded into every runPlanReview call in reviewUnit and the
+// --implementation-plan branch actually reaches selectDimensions and scopes
+// `unit-of-work` OUT for task/roadmap-body/implementation-plan units and IN for
+// phase units — driven through the REAL buildReviewPipeline('plan'), not the
+// faked runPlanReview the makeHarness-based sections above inject. This is the
+// one place in this file that imports review.mjs directly: lib/plan-review.mjs
+// does not re-export buildReviewPipeline itself.
+{
+  async function refParallel8(thunks) {
+    return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
+  }
+  async function refPipeline8(items, ...stages) {
+    return Promise.all(
+      items.map(async (item) => {
+        let acc = item;
+        for (const stage of stages) {
+          try {
+            acc = await stage(acc);
+          } catch {
+            return null;
+          }
+        }
+        return acc;
+      })
+    );
+  }
+
+  const reviewModPath = path.join(path.dirname(process.argv[2]), 'review.mjs');
+  const reviewMod = await import(pathToFileURL(reviewModPath).href);
+
+  const UOW = 'find:plan:unit-of-work';
+  const COHERENCE = 'find:plan:coherence';
+  const ARCH_FIT = 'find:plan:architectural-fit';
+  const RESTRAINT = 'find:plan:restraint';
+
+  // Every find:* label resolves to an empty findings array (so no refuter is
+  // ever dispatched — irrelevant to what this section proves and keeps the
+  // harness deterministic); fetch:* resolves via the SAME
+  // wrapFetchResultAsTranscript helper the sections above use, keyed off a
+  // per-call fixture; act:*/gate:* just acknowledge.
+  function buildScopingAgent(fetchResults, dispatched) {
+    return async (prompt, opts) => {
+      const label = (opts && opts.label) || '';
+      dispatched.push(label);
+      if (label.indexOf('find:') === 0) return { findings: [] };
+      if (label.indexOf('refute:') === 0) return { refuted: false, confidence: 90 };
+      if (label.indexOf('fetch:') === 0) {
+        const raw = fetchResults[label] !== undefined ? fetchResults[label] : null;
+        return wrapFetchResultAsTranscript(label, raw, prompt);
+      }
+      return { ok: true };
+    };
+  }
+
+  async function driveScoping(args, fetchResults) {
+    const dispatched = [];
+    const agent = buildScopingAgent(fetchResults, dispatched);
+    const runPlanReview = reviewMod.buildReviewPipeline('plan', {
+      agent,
+      pipeline: refPipeline8,
+      parallel: refParallel8,
+      log: () => {},
+    });
+    const res = await runPlanReviewDriver(args, { agent, parallel: refParallel8, runPlanReview, log: () => {} });
+    return { res, dispatched };
+  }
+
+  // (8a) task target — never dispatches unit-of-work; still dispatches the
+  //      three always-on dimensions (rules out a broken wiring that would
+  //      vacuously pass by dispatching nothing at all).
+  {
+    const { res, dispatched } = await driveScoping(
+      { task: 'fix-bug' },
+      { 'fetch:task': { body: 'Task body under review.', tags: ['needs-plan-review'] } }
+    );
+    assert.ok(!dispatched.includes(UOW), '8a: a task target never dispatches find:plan:unit-of-work');
+    assert.ok(dispatched.includes(COHERENCE), '8a: a task target still dispatches find:plan:coherence');
+    assert.ok(dispatched.includes(ARCH_FIT), '8a: a task target still dispatches find:plan:architectural-fit');
+    assert.ok(dispatched.includes(RESTRAINT), '8a: a task target still dispatches find:plan:restraint');
+    assert.ok(!res.coverage.selected.includes('unit-of-work'), "8a: a task unit's coverage.selected omits unit-of-work");
+    assert.ok(!res.coverage.ran.includes('unit-of-work'), "8a: a task unit's coverage.ran omits unit-of-work");
+  }
+
+  // (8b) --implementation-plan — same non-dispatch, driven through the
+  //      report-only branch (no fetch at all).
+  {
+    const { res, dispatched } = await driveScoping({ implementationPlan: true, planText: 'PLAN TEXT here' }, {});
+    assert.ok(!dispatched.includes(UOW), '8b: an implementation-plan target never dispatches find:plan:unit-of-work');
+    assert.ok(dispatched.includes(COHERENCE), '8b: an implementation-plan target still dispatches find:plan:coherence');
+    assert.ok(dispatched.includes(ARCH_FIT), '8b: an implementation-plan target still dispatches find:plan:architectural-fit');
+    assert.ok(dispatched.includes(RESTRAINT), '8b: an implementation-plan target still dispatches find:plan:restraint');
+    assert.ok(!res.coverage.selected.includes('unit-of-work'), "8b: an implementation-plan's coverage.selected omits unit-of-work");
+    assert.ok(!res.coverage.ran.includes('unit-of-work'), "8b: an implementation-plan's coverage.ran omits unit-of-work");
+  }
+
+  // (8c)/(8d) --roadmap sweep: the roadmap-body unit does NOT scope unit-of-work
+  //      in, but the SAME sweep's one phase unit DOES — proving both directions
+  //      inside a single multi-unit run.
+  {
+    const { res, dispatched } = await driveScoping(
+      { roadmap: 'r' },
+      {
+        'fetch:roadmap': {
+          body: 'Roadmap body under review.',
+          tags: ['needs-plan-review'],
+          phases: [{ stem: 'phase-1-a', body: 'Phase body under review.', tags: ['needs-plan-review'] }],
+        },
+      }
+    );
+    const byIdent = Object.fromEntries(res.units.map((u) => [u.ident, u]));
+    assert.ok(
+      !byIdent['r'].coverage.selected.includes('unit-of-work'),
+      "8c: the roadmap-body unit's coverage.selected omits unit-of-work"
+    );
+    assert.ok(
+      !byIdent['r'].coverage.ran.includes('unit-of-work'),
+      "8c: the roadmap-body unit's coverage.ran omits unit-of-work"
+    );
+    assert.ok(
+      byIdent['phase-1-a'].coverage.selected.includes('unit-of-work'),
+      "8d: the roadmap sweep's phase unit's coverage.selected includes unit-of-work"
+    );
+    assert.ok(
+      byIdent['phase-1-a'].coverage.ran.includes('unit-of-work'),
+      "8d: the roadmap sweep's phase unit's coverage.ran includes unit-of-work"
+    );
+    assert.equal(
+      dispatched.filter((l) => l === UOW).length,
+      1,
+      '8d: a --roadmap sweep with one phase dispatches find:plan:unit-of-work exactly once (only for the phase unit)'
+    );
+  }
+
+  // (8e) a standalone single-phase target (`{ roadmap, phase }`) — the OTHER
+  //      shape a phase unit can arrive through — also scopes unit-of-work in,
+  //      exactly once.
+  {
+    const { res, dispatched } = await driveScoping(
+      { roadmap: 'r', phase: 'phase-1-a' },
+      { 'fetch:phase': { body: 'Phase body under review.', tags: ['needs-plan-review'] } }
+    );
+    assert.ok(res.coverage.selected.includes('unit-of-work'), "8e: a single-phase target's coverage.selected includes unit-of-work");
+    assert.ok(res.coverage.ran.includes('unit-of-work'), "8e: a single-phase target's coverage.ran includes unit-of-work");
+    assert.equal(
+      dispatched.filter((l) => l === UOW).length,
+      1,
+      '8e: a single-phase target dispatches find:plan:unit-of-work exactly once'
+    );
+  }
 }
 
 console.log('plan-review driver execution assertions passed');
@@ -5657,7 +5824,29 @@ pmut_body_check_failclosed() {
 }
 plan_mutate_and_expect_fail x 'neutering the roadmapBodyVerified===false fail-closed branch' pmut_body_check_failclosed
 
-pass "5b-mut: all ten driver mutations flip a 5b-exec assertion, and the control passes"
+# (xi) Drop the `signals: { targetType: unit.targetType }` thread from
+#      reviewUnit's runPlanReview call (task
+#      plan-review-selects-unit-of-work-then-strips-it AC1/AC4): without it,
+#      selectDimensions fail-opens again and a task/roadmap-body unit dispatches
+#      find:plan:unit-of-work, flipping section (8)'s 8a/8c assertions.
+pmut_drop_unit_signals() {
+    perl -pi -e "s/, signals: \{ targetType: unit\.targetType \}//" "$PMUT/plan-review.mjs"
+    ! grep -q ', signals: { targetType: unit.targetType }' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail xi 'dropping the signals: { targetType } thread from reviewUnit' pmut_drop_unit_signals
+
+# (xii) Same, on the --implementation-plan branch's runPlanReview call: flips
+#       section (8)'s 8b assertion. The check requires the leading ", " so it
+#       matches only the CODE occurrence, not the adjacent doc comment that
+#       also names the literal `signals: { targetType: 'implementation-plan' }`
+#       shape without that prefix.
+pmut_drop_impl_signals() {
+    perl -pi -e "s/, signals: \{ targetType: 'implementation-plan' \}//" "$PMUT/plan-review.mjs"
+    ! grep -q ", signals: { targetType: 'implementation-plan' }" "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail xii 'dropping the signals: { targetType } thread from the implementation-plan branch' pmut_drop_impl_signals
+
+pass "5b-mut: all twelve driver mutations flip a 5b-exec assertion, and the control passes"
 
 # --- 5b-gate-mut. PLANTED MUTATIONS FOR THE GATE SECTIONS ---------------------
 # The four 5b-gate-* sections above are only worth having if they fire. Twelve
@@ -8564,8 +8753,12 @@ const keysFor = (signals) => selectDimensions('plan', signals).map((d) => d.key)
 assert.ok(!keysFor({}).includes('unit-of-work'), 'explicit empty signals must NOT select unit-of-work');
 assert.ok(keysFor({ targetType: 'phase' }).includes('unit-of-work'), 'a phase target must select unit-of-work');
 assert.deepEqual(keysFor(null), DIMENSIONS.plan.map((d) => d.key), 'omitted signals must fail OPEN to every dimension');
-// rdm-wf-plan-review.js threads NO signals, so the fail-open path is the one it takes.
-assert.ok(keysFor(null).includes('unit-of-work'), 'the fail-open path rdm-wf-plan-review.js takes must include unit-of-work');
+// A caller with no target-type information at all still gets every dimension —
+// unlike rdm-wf-plan-review.js, which now threads `{ targetType }` per unit
+// (see scripts/verify-workflow-review.sh §5b-exec (8) and §5b-mut (xi)/(xii)),
+// the null fail-open itself remains a supported, gated contract for any other
+// or future caller that genuinely has nothing to pass.
+assert.ok(keysFor(null).includes('unit-of-work'), 'the null-signals fail-open path must include unit-of-work');
 
 // stripNonPhaseUnitOfWork is the CONSUMER-SIDE scoping that fail-open cannot do.
 const survivors = [

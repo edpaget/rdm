@@ -1208,6 +1208,22 @@ const SIGNAL_KEYS = [
 //     nothing triggered".
 //   * an unknown mode → throw.
 //
+// PLAN-MODE MINIMAL SIGNALS: `unit-of-work` is the ONLY `DIMENSIONS.plan` entry
+// carrying a `when` predicate, and it inspects `targetType` alone (`targetType
+// === 'phase'`) — nothing else in plan mode is conditional. That makes
+// `{ targetType }` a fully-populated signals object FOR PLAN MODE ONLY:
+// `rdm-wf-plan-review.js` threads exactly that per review unit (see
+// lib/plan-review.mjs's `reviewUnit` and its `--implementation-plan` branch),
+// which selects the three always-on plan dimensions plus `unit-of-work` on
+// phase units only, without touching this function. This narrower contract does
+// NOT extend to CODE mode: `DIMENSIONS.code`'s triggered dimensions inspect the
+// diff-shape `SIGNAL_KEYS` above, so a bare `{ targetType }` there would read
+// falsy for every one of them and silently drop coverage — CODE callers must
+// keep passing `deriveSignals`'s fully-populated object. AUDIT OBLIGATION: if a
+// future `DIMENSIONS.plan` entry gains a `when` that reads anything beyond
+// `targetType`, this narrower plan-mode contract silently breaks for it and
+// must be re-audited before relying on `{ targetType }` alone.
+//
 // Do NOT collapse this into `d.when(signals || {})`. Substituting `{}` for
 // omitted signals would make EVERY conditional predicate read falsy and silently
 // drop the triggered dimensions — returning a strict subset precisely when the
@@ -1525,13 +1541,24 @@ function summarizeFindings(findings) {
 // `concern` is 'unit-of-work' UNLESS the review unit is a phase. Order-preserving
 // and idempotent.
 //
-// This is the CONSUMER-SIDE phase-scoping that selectDimensions' omitted-signals
-// path cannot do. rdm-wf-plan-review.js deliberately runs `buildReviewPipeline('plan')`
-// with NO signals (honoring the dispatch-phase deferral of signal-threading to
-// the sibling unify-plan-review roadmap), so selectDimensions fail-opens and the
-// unit-of-work finder runs on EVERY unit — task, roadmap body, and
-// implementation-plan included. This post-hoc filter makes "unit-of-work only on
-// phase units" actually true without threading a signals object.
+// SCOPING NOW HAPPENS AT SELECTION TIME, NOT HERE: `rdm-wf-plan-review.js`
+// threads a minimal `signals: { targetType }` object into every
+// `buildReviewPipeline('plan')` call (see lib/plan-review.mjs's `reviewUnit`
+// and its `--implementation-plan` branch), so `selectDimensions`' existing
+// `unit-of-work` `when: targetType === 'phase'` predicate is evaluated instead
+// of fail-opening — the finder simply never runs for a task, roadmap-body, or
+// implementation-plan unit, and this function is a no-op pass-through for that
+// normal path. It remains a defense-in-depth BACKSTOP: any other or future
+// caller of `buildReviewPipeline('plan')` that legitimately omits signals still
+// gets the fail-open ALL-dimensions behavior (a supported, gated contract — see
+// `selectDimensions`), and this filter is what still makes "unit-of-work only
+// on phase units" true for it. It also guards against a regression in the
+// signals-threading above. (An earlier version of this comment credited the
+// no-signals design to "honoring the dispatch-phase deferral of
+// signal-threading to the sibling unify-plan-review roadmap" — that roadmap has
+// since completed and archived at 4/4 without threading signals into
+// rdm-wf-plan-review.js, so the deferral was discharged in name only; this is
+// where it actually lands.)
 function stripNonPhaseUnitOfWork(survivors, targetType) {
   const list = Array.isArray(survivors) ? survivors : [];
   if (targetType === 'phase') return list.slice();
