@@ -5296,6 +5296,71 @@ console.log('7c2 OK: the fetch path replays real raw stdout and reaches the same
 console.log('7c3 OK: standalone fetch:task/fetch:phase identity mismatches (slug, stem, cross-roadmap) are rejected fail-closed (fetchError, escalated, no writes)');
 
 // ============================================================================
+// 7c4. POSITIVE/NEGATIVE — the documented `<roadmap-slug> [phase-number]`
+// positional form (.claude/skills/rdm-plan-review/SKILL.md) resolves `phase`
+// to a bare NUMBER, not a stem. `rdm phase show <number> ...` legitimately
+// resolves and returns the real phase JSON (json.stem is the CLI-resolved
+// full stem, json.phase is the numeric phase field) — extractPhaseFromJson
+// must accept that as a match against the numeric target, not reject it as an
+// identity mismatch (the exact real-shaped-response regression this
+// subsection exists to catch). A numeric target that does NOT match the
+// response's own `phase` field must still fail closed.
+// ============================================================================
+{
+  // Positive: numeric target '1' against phase-1-alpha's REAL response shape
+  // (stem 'phase-1-alpha', phase: 1) must be accepted, not rejected.
+  const h = makeDeps({
+    fetchResponses: {
+      'fetch:phase': {
+        transcript: JSON.stringify({
+          stem: phase1Json.stem,
+          phase: phase1Json.phase,
+          roadmap: 'hoist-rm',
+          body: phase1Json.body,
+          tags: phase1Json.tags,
+        }),
+      },
+    },
+  });
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', phase: String(phase1Json.phase), wontFixedTexts: [] }, h.deps);
+  assert.equal(out.fetchError, undefined, '7c4: a numeric phase target matching the response\'s own numeric `phase` field is NOT rejected as an identity mismatch');
+  assert.equal(out.outcome, 'reviewed', '7c4: ...and the real fetched data reaches a normal reviewed outcome');
+  // The unit's `ident` (and therefore the gate's label and its `rdm phase
+  // update <ident> ...` argument) is the RAW numeric target the caller passed,
+  // not the resolved stem — `rdm phase update` accepts stem-or-number, so this
+  // is a correct, working command, just keyed by the number.
+  const p1 = promptFor(h, 'gate:clear-tag:phase:' + String(phase1Json.phase));
+  assert.ok(p1 && p1.includes('--tags "alpha-tag"'), '7c4: the gate writes the real sibling tag off the numerically-targeted fetch');
+  assert.ok(p1.includes('rdm phase update ' + String(phase1Json.phase) + ' --roadmap hoist-rm'), '7c4: the gate command targets the phase by the numeric ident rdm accepts');
+}
+{
+  // Negative: numeric target '1' against a response actually describing phase
+  // 2 (different stem AND different numeric `phase` field) must still fail
+  // closed — the numeric-match relaxation must not become a blanket bypass.
+  const h = makeDeps({
+    fetchResponses: {
+      'fetch:phase': {
+        transcript: JSON.stringify({
+          stem: phase2Json.stem,
+          phase: phase2Json.phase,
+          roadmap: 'hoist-rm',
+          body: phase2Json.body,
+          tags: phase2Json.tags,
+        }),
+      },
+    },
+  });
+  const out = await runPlanReviewDriver({ roadmap: 'hoist-rm', phase: '1', wontFixedTexts: [] }, h.deps);
+  assert.equal(out.fetchError, true, '7c4: a numeric phase target whose response names a DIFFERENT phase number is still rejected');
+  assert.equal(out.outcome, 'escalated', '7c4: ...and fails closed to escalated');
+  assert.ok(
+    !labels(h).some((l) => l.indexOf('gate:clear-tag') === 0),
+    '7c4: zero gate:clear-tag calls on a numeric phase mismatch'
+  );
+}
+console.log('7c4 OK: a numeric `<roadmap> [phase-number]` target matches a real phase response by its numeric `phase` field, and still fails closed on a genuine mismatch');
+
+// ============================================================================
 // 7d. FALLBACK — every hoist is optional. Absent / malformed reaches the agent.
 // ============================================================================
 {

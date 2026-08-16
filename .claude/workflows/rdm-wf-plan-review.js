@@ -2030,6 +2030,7 @@ function buildReviewPipeline(mode, deps) {
 // verbatim copy. scripts/verify-workflow-review.sh gates the two for byte-drift.
 // Edit the lib, then re-copy; do NOT edit the block here.
 // >>> plan-review-driver:begin <<<
+// >>> plan-review-driver:begin <<<
 // Pure + dependency-injected driver logic for the standalone plan-review
 // workflow.
 //
@@ -2317,9 +2318,16 @@ function extractRoadmapFromJson(json, expectedSlug) {
 }
 
 // extractPhaseFromJson(json, expectedRoadmap, expectedStem) — pure
-// identity validator for one phase block (either inside a roadmap transcript
-// or the sole block of a fetch:phase transcript). Rejects on a stem mismatch
-// or a `roadmap` field that disagrees with the roadmap actually being
+// identity validator for one phase block (either inside a roadmap transcript,
+// where expectedStem is always the roadmap block's own reported full stem, or
+// the sole block of a standalone fetch:phase transcript, where expectedStem is
+// the RAW caller-supplied phase target — which `rdm phase show` resolves from
+// either a full stem OR a bare phase NUMBER (the documented `<roadmap-slug>
+// [phase-number]` positional form; see .claude/skills/rdm-plan-review/SKILL.md).
+// A numeric expectedStem can never equal `json.stem` (the CLI's own resolved
+// full stem), so the identity check accepts EITHER an exact stem match OR —
+// when expectedStem is all-digits — a match against the response's own numeric
+// `phase` field. `roadmap` must always agree with the roadmap actually being
 // reviewed (cross-roadmap contamination of one block inside a shared
 // transcript). `body` follows the SAME precedent buildReviewUnits already
 // applied to a phase entry: an empty phase body is accepted here (only the
@@ -2327,8 +2335,11 @@ function extractRoadmapFromJson(json, expectedSlug) {
 // to '' when absent or non-string, never rejected for being blank.
 function extractPhaseFromJson(json, expectedRoadmap, expectedStem) {
   if (!json || typeof json !== 'object') return { ok: false }
-  if (json.stem !== expectedStem) return { ok: false }
   if (json.roadmap !== expectedRoadmap) return { ok: false }
+  const stemMatches = json.stem === expectedStem
+  const numericMatches =
+    /^\d+$/.test(String(expectedStem)) && typeof json.phase === 'number' && String(json.phase) === String(expectedStem)
+  if (!stemMatches && !numericMatches) return { ok: false }
   if (!stringArrayOk(json.tags)) return { ok: false }
   const body = typeof json.body === 'string' ? json.body : ''
   return { ok: true, body: body, tags: json.tags }
@@ -3156,6 +3167,7 @@ async function runPlanReviewDriver(args, deps) {
   _log('plan-review (' + kind + '): ' + reported.length + ' unit(s) gated')
   return result
 }
+// >>> plan-review-driver:end <<<
 // >>> plan-review-driver:end <<<
 
 // --- Runtime entry ------------------------------------------------------------
