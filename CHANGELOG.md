@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
+
+## [0.20.0] - 2026-08-22
 ### Changed
 
 - `rdm-wf-plan-review`'s `--roadmap <slug>` sweep (and the equivalent bare positional `<slug>`) now excludes any phase whose status is exactly `done` or `wont-fix` from the review/act/gate pipeline entirely, instead of dispatching the full find-refute-gate fleet against a phase with no implementation left to vet and then attempting to clear `needs-plan-review` on it. The exclusion is fail-open — a phase with a missing, blank, or unrecognized status stays in the fan-out — and reported, never silent: the run's result carries a new `skippedPhases: [{ stem, status }, …]` field, and the roadmap's aggregate summary and final log line both name the skip count and every excluded phase's stem and status. Explicitly targeting a single terminal phase (`--roadmap <slug> <phase>` or the positional `<slug> <phase>` form) is unaffected — it is always reviewed regardless of status; only the roadmap-wide sweep filters. This changes the workflow bytes `rdm agent-config claude --skills` and `--plugin` emit (and the checked-in `plugins/rdm/` tree) since it is local-only (`rdm-wf-plan-review.js` is not a distributed engine), and the `rdm-plan-review` skill's fully-interactive prose (local shim and both shipped CLI/MCP templates) documents the same behavior for a human driving the review without the `Workflow` tool.
