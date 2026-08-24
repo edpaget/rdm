@@ -4107,6 +4107,23 @@ mod tests {
         assert!(content.contains("--auto"));
         // ...with unattended-permission guidance for Claude Code.
         assert!(content.contains("--permission-mode auto"));
+        // `ExitWorktree` is pre-approved in the frontmatter allowed-tools list...
+        assert!(content.contains("  - ExitWorktree"));
+        // ...and the Mismatch branch prefers the in-session
+        // ExitWorktree -> worktree add -> EnterWorktree path over relaunching.
+        assert!(content.contains("call `ExitWorktree({action: \"keep\"})`"));
+        // The safety rule is explicit: always "keep", never "remove" — a
+        // regression that flipped this would delete an unlanded worktree
+        // and its branch out from under in-flight work.
+        assert!(content.contains("**Always pass `action: \"keep\"`, never `\"remove\"`.**"));
+        assert!(!content.contains("action: \"remove\""));
+        // The no-op caveat: ExitWorktree only unwinds a session that entered
+        // via EnterWorktree — entry by plain cd/launch is a documented no-op.
+        assert!(content.contains("is a documented no-op"));
+        // Finalize never auto-exits the worktree — the session stays in
+        // place for the next phase / for `rdm-land` to clean up from inside.
+        assert!(content.contains("**Finalize does not exit the worktree.**"));
+        assert!(content.contains("no automatic `ExitWorktree` call at finalize time"));
     }
 
     #[test]
