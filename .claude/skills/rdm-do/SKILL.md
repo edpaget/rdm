@@ -10,6 +10,7 @@ allowed-tools:
   - Edit
   - EnterPlanMode
   - ExitPlanMode
+  - EnterWorktree
   - Agent
   - Workflow
 ---
