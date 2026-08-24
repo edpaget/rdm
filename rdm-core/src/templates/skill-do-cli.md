@@ -11,6 +11,7 @@ allowed-tools:
   - EnterPlanMode
   - ExitPlanMode
   - EnterWorktree
+  - ExitWorktree
   - Agent
   - Workflow
 ---
@@ -53,7 +54,10 @@ For unattended Claude Code runs (where no human is present to approve permission
 4. **Get into the roadmap's worktree (one worktree per roadmap, work in place).** Each roadmap gets a *single* worktree on branch `roadmap/<slug>`, and **every phase of that roadmap is implemented in place in it**. Entry therefore happens at most **once** — on the first phase, from the main checkout — so the session never re-enters or nests. Run `rdm worktree current --format json` and compare the current worktree's roadmap to the target `<slug>`. (`worktree current` reports `item` = the roadmap slug for a roadmap worktree, or `<roadmap>/<stem>` for a legacy per-phase worktree — compare the roadmap portion against `<slug>`.)
    - **Match** (current worktree's roadmap == `<slug>`): you are already in the target roadmap's worktree → **work in place**. Skip `worktree add` and entry. This is the common case for every phase after the first.
    - **None** (output is `null` — main checkout or not in a worktree): ensure the roadmap worktree exists with `rdm worktree add <slug> {proj_flag}` (idempotent — reuses it if present), take the `path` it prints, then enter it **once**. Claude Code may use `EnterWorktree({path})` as a one-time convenience; any other host (Pi, web, etc.) `cd`s into / launches in the printed `path`. Because the model never re-enters, plain `cd`/launch is **fully correct** — `EnterWorktree` is a convenience, **not** a correctness dependency.
-   - **Mismatch** (current worktree's roadmap is a *different* roadmap): interactive → **ask** the user whether to switch to the target roadmap's worktree; `--auto` → switch to it — ensure it exists with `rdm worktree add <slug> {proj_flag}`, then **relaunch / `cd` in the printed `path`** to enter it. Note `EnterWorktree` is *not* usable here: from inside another worktree its `path` form is rejected unless the target lives under `.claude/worktrees/`, which rdm worktrees do not — so relaunch is the entry path, and it is fully correct. (`EnterWorktree` only applies to the one-time entry from the **main checkout** in the *None* case above.)
+   - **Mismatch** (current worktree's roadmap is a *different* roadmap): interactive → **ask** the user whether to switch to the target roadmap's worktree; on confirmation (and unconditionally under `--auto`) → switch to it, preferring the in-session path: call `ExitWorktree({action: "keep"})` to return to the session's original launch directory, then `rdm worktree add <slug> {proj_flag}` (idempotent — reuses it if present) to ensure the target roadmap's worktree exists, then `EnterWorktree({path})` into it. This works because `ExitWorktree` restores the "first entry from the launch directory" precondition that `EnterWorktree`'s `path` form requires — from inside another worktree, that form is otherwise rejected unless the target lives under `.claude/worktrees/`, which rdm worktrees do not.
+     - **Always pass `action: "keep"`, never `"remove"`.** rdm worktrees are managed by `rdm worktree` and hold unlanded branch work; `remove` deletes both the worktree directory and its branch. Cleanup belongs to `rdm-land`, which already removes the worktree after a successful land.
+     - `ExitWorktree` only operates on a worktree this session entered via `EnterWorktree`. If the session is in its current worktree by launch (the common *None*-branch convenience above) or by plain `cd`, `ExitWorktree` is a documented no-op — treat "still in the worktree afterward" as the expected outcome in that case, not an error, and fall back to the relaunch path below.
+     - **Fallback (relaunch / `cd`):** use this when `ExitWorktree`/`EnterWorktree` aren't available on the host (Pi, web, etc.), or when `ExitWorktree` no-opped per the rule above — ensure the target worktree exists with `rdm worktree add <slug> {proj_flag}`, then relaunch / `cd` into the printed `path`. This path is always fully correct, just not in-session.
 
    **Tasks keep their own per-task worktree.** For the task flow, run `rdm worktree add task/<slug> {proj_flag}` and enter the printed `path` the same way (one-time `EnterWorktree` convenience, or `cd`/launch).
 
@@ -82,6 +86,8 @@ For unattended Claude Code runs (where no human is present to approve permission
     **Never hand-type the completion trailer.** Finalize does not write it at all: on the interactive path the review gate writes it, and on the autonomous path `rdm-land` writes it at land time. Both source the exact line from `rdm hook done-line --roadmap <slug> --phase <stem>` (or `--task <slug>`), so the format string has exactly one home. Use the exact roadmap slug / phase stem / task slug from the rdm commands you ran earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch, which is left for merge to main (the merge hook flips `reviewed` → `done`).
 
     **Single pass.** If the review returns `rework`, the item is left `in-progress` and you must surface that to the user with its findings — do not silently loop. Re-run this skill to take another pass.
+
+    **Finalize does not exit the worktree.** The session stays in place after review: the common case is the next phase of the same roadmap continuing in the same worktree, and `rdm-land` (which removes the worktree on a successful land) runs from inside it. There is no automatic `ExitWorktree` call at finalize time.
 
 ## Auto phase dispatch (--auto, phase flow only)
 

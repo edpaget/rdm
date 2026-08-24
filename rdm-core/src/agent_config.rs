@@ -5669,9 +5669,15 @@ mod tests {
                 );
                 renamed_total += raw_old;
             }
+            // The CLI variant's rdm-do body names `rdm-land` twice more than the
+            // MCP variant's does (the ExitWorktree Mismatch-branch rewrite and its
+            // finalize note are CLI/prose-only additions; skill-do-mcp.md is
+            // untouched, out of scope since the MCP flow never calls
+            // EnterWorktree/ExitWorktree), so the two surfaces' totals diverge.
+            let expected = if mcp { 46 } else { 48 };
             assert_eq!(
-                renamed_total, 46,
-                "mcp={mcp}: expected 46 skill-name occurrences per surface"
+                renamed_total, expected,
+                "mcp={mcp}: expected {expected} skill-name occurrences per surface"
             );
 
             // The directory name and the frontmatter `name:` line are covered
