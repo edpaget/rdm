@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-08-26
+
 ### Changed
 
 - The `rdm-do` skill now pre-approves the `EnterWorktree` tool in its `allowed-tools` frontmatter, so a Claude Code user invoking `/rdm-do` no longer has to manually approve the one-time worktree entry the skill's "Get into the roadmap's worktree" step performs. The skill body already told Claude to use `EnterWorktree({path})` on first entry from the main checkout, but the tool was absent from the grant list, so every first-phase run stopped on a permission prompt. Applies to `.claude/skills/rdm-do/SKILL.md`, the shipped CLI template (`rdm agent-config claude --skills` output), and the checked-in plugin tree at `plugins/rdm/skills/do/SKILL.md`. The MCP variant is unchanged — it enters the worktree by `cd`ing into the path `rdm worktree add` returns and never calls `EnterWorktree`.
