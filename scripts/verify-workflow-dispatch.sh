@@ -1976,6 +1976,110 @@ if assert_tier_scoping "$TMP/tier-task-mutant"; then
 fi
 pass "AC-TIER: detector fires when --tier is added to the task prompt"
 
+# AC-PLAN-INTENT-PROMPT: the Stage-0 phase prompt is the ONLY in-workflow code
+# path that reads the parent roadmap's body, and `roadmapBody` is the ONLY name
+# `extractIntent(phaseMeta.roadmapBody)` reads it back under. AC-PLAN-INTENT
+# above is purely driver-side (the schema property and the `intent:` thread), so
+# a mistyped command or a renamed field IN THE PROMPT would leave every check
+# green while silently disabling `intent-alignment` for every dispatched phase.
+# Scope this PER PROMPT FUNCTION (the AC-TIER convention): a whole-file grep
+# cannot tell the phase prompt from the task prompt, and the task prompt must
+# NOT gain a roadmap read — a task has no parent roadmap.
+assert_fetch_intent_prompt() {
+    extract_fn_body "$1" buildFetchPrompt >"$TMP/fn-intent-phase"
+    extract_fn_body "$1" buildTaskFetchPrompt >"$TMP/fn-intent-task"
+    [ -s "$TMP/fn-intent-phase" ] && [ -s "$TMP/fn-intent-task" ] || return 1
+    # The phase prompt reads the roadmap and names the field the driver reads back.
+    grep -qF "' roadmap show ' + roadmap + proj + ' --format json'" "$TMP/fn-intent-phase" || return 1
+    # shellcheck disable=SC2016  # literal prompt prose, deliberately unexpanded
+    grep -qF 'as `roadmapBody`' "$TMP/fn-intent-phase" || return 1
+    # VERBATIM, not summarized — the finder is shown the recorded intent as written.
+    grep -qF 'VERBATIM' "$TMP/fn-intent-phase" || return 1
+    # Optional, never invented: a failed roadmap read omits the field.
+    # shellcheck disable=SC2016  # literal prompt prose, deliberately unexpanded
+    grep -qF 'omit `roadmapBody`' "$TMP/fn-intent-phase" || return 1
+    # The task prompt has no parent roadmap and must not read one.
+    grep -q 'roadmap show' "$TMP/fn-intent-task" && return 1
+    grep -q 'roadmapBody' "$TMP/fn-intent-task" && return 1
+    return 0
+}
+assert_fetch_intent_prompt "$WF" ||
+    fail "AC-PLAN-INTENT-PROMPT: buildFetchPrompt must read 'roadmap show ... --format json' and return its body VERBATIM as an omittable 'roadmapBody'; buildTaskFetchPrompt must do neither"
+pass "AC-PLAN-INTENT-PROMPT: the Stage-0 phase prompt reads the roadmap body verbatim as an optional roadmapBody; the task prompt does not"
+
+# Self-tests: the three ways this prompt could silently rot.
+sed "s|' roadmap show ' + roadmap + proj + ' --format json'|' roadmap shwo ' + roadmap + proj + ' --format json'|" "$WF" >"$TMP/intent-prompt-cmd-mutant"
+if assert_fetch_intent_prompt "$TMP/intent-prompt-cmd-mutant"; then
+    fail "AC-PLAN-INTENT-PROMPT detector missed a mistyped roadmap show command"
+fi
+pass "AC-PLAN-INTENT-PROMPT detector fires on a mistyped roadmap show command"
+
+# shellcheck disable=SC2016  # literal prompt prose, deliberately unexpanded
+sed 's|as `roadmapBody`|as `roadmapText`|' "$WF" >"$TMP/intent-prompt-field-mutant"
+if assert_fetch_intent_prompt "$TMP/intent-prompt-field-mutant"; then
+    fail "AC-PLAN-INTENT-PROMPT detector missed a renamed roadmapBody field"
+fi
+pass "AC-PLAN-INTENT-PROMPT detector fires on a renamed roadmapBody field"
+
+awk '
+  index($0, "function buildTaskFetchPrompt(") { p = 1 }
+  p && index($0, "TASK_META object") { print "    \x27  rdm roadmap show x --format json -> roadmapBody\x27,"; }
+  p && /^\}/ { p = 0 }
+  { print }
+' "$WF" >"$TMP/intent-prompt-task-mutant"
+if assert_fetch_intent_prompt "$TMP/intent-prompt-task-mutant"; then
+    fail "AC-PLAN-INTENT-PROMPT detector missed a roadmap read smuggled into the task prompt"
+fi
+pass "AC-PLAN-INTENT-PROMPT detector fires on a roadmap read smuggled into the task prompt"
+
+# AC-PLAN-INTENT-HOIST: `roadmapBody` is OPTIONAL in PHASE_META_SCHEMA and absent
+# from hoistedMetaComplete's key list, so a hoisted phaseMeta is accepted without
+# it — and a hoisted dispatch skips Stage 0, the only in-workflow reader of the
+# roadmap body. The three CLI shims that hoist must therefore fetch and forward
+# it themselves; otherwise `intent-alignment` is inert on the primary autonomous
+# path while the gate still reports green. This gates the PROSE of all three
+# shims and their shipped templates; scripts/verify-workflow-dispatch.sh's
+# section 6 gates the resulting BEHAVIOR, and scripts/verify-skill-autopilot.sh
+# gates the autopilot loop's own copy.
+for shim in \
+    "$REPO_ROOT/.claude/skills/rdm-autopilot/SKILL.md" \
+    "$REPO_ROOT/.claude/skills/rdm-do/SKILL.md" \
+    "$REPO_ROOT/.claude/skills/rdm-dispatch-phase/SKILL.md" \
+    "$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md" \
+    "$REPO_ROOT/rdm-core/src/templates/skill-do-cli.md" \
+    "$REPO_ROOT/rdm-core/src/templates/skill-dispatch-phase-cli.md"; do
+    [ -f "$shim" ] || fail "AC-PLAN-INTENT-HOIST: hoisting shim not found: $shim"
+    grep -q 'roadmap show' "$shim" ||
+        fail "AC-PLAN-INTENT-HOIST: $shim hoists phaseMeta but never reads the roadmap body — intent-alignment would be inert on this path"
+    grep -qF 'roadmapBody' "$shim" ||
+        fail "AC-PLAN-INTENT-HOIST: $shim never names roadmapBody — the roadmap body it reads would never reach the plan gate"
+    # The field must be IN the assembled phaseMeta object, not merely mentioned.
+    grep -qF 'body, roadmapBody, models:' "$shim" ||
+        fail "AC-PLAN-INTENT-HOIST: $shim must carry roadmapBody inside the assembled phaseMeta object literal"
+done
+pass "AC-PLAN-INTENT-HOIST: all three hoisting shims and their shipped CLI templates fetch the roadmap body and forward it as roadmapBody"
+
+# The MCP flavors deliberately do NOT hoist (no model-resolve tool), so they must
+# not grow a roadmapBody instruction either — the in-workflow Stage-0 fetch is
+# their path and it already reads the roadmap body.
+for mcp in \
+    "$REPO_ROOT/rdm-core/src/templates/skill-autopilot-mcp.md" \
+    "$REPO_ROOT/rdm-core/src/templates/skill-do-mcp.md" \
+    "$REPO_ROOT/rdm-core/src/templates/skill-dispatch-phase-mcp.md"; do
+    [ -f "$mcp" ] || fail "AC-PLAN-INTENT-HOIST: MCP template not found: $mcp"
+    if grep -qF 'roadmapBody' "$mcp"; then
+        fail "AC-PLAN-INTENT-HOIST: $mcp must not hoist roadmapBody — MCP has no model-resolve tool, so the in-workflow Stage-0 fetch is its path"
+    fi
+done
+pass "AC-PLAN-INTENT-HOIST: the three MCP flavors carry no roadmapBody hoist"
+
+# Self-test: strip the field from one shim's phaseMeta literal and confirm detection.
+sed 's/body, roadmapBody, models:/body, models:/' "$REPO_ROOT/.claude/skills/rdm-do/SKILL.md" >"$TMP/hoist-shim-mutant.md"
+if grep -qF 'body, roadmapBody, models:' "$TMP/hoist-shim-mutant.md"; then
+    fail "AC-PLAN-INTENT-HOIST detector broken — roadmapBody stripped from the phaseMeta literal was not detected"
+fi
+pass "AC-PLAN-INTENT-HOIST detector fires when roadmapBody is stripped from a shim's phaseMeta literal"
+
 # AC-STAMP: dispatch-phase stamps the phase/task in-progress, best-effort, right
 # after Stage 0 (metadata + model resolution) and before the plan gate.
 #
@@ -2659,6 +2763,113 @@ for (const [name, seed, cfg] of SEEDS) {
 }
 console.log('6e OK: outcome equivalence across six seeds, and in-progress precedes the plan gate even on an escalation');
 
+
+// ============================================================================
+// (6g) roadmapBody -> extractIntent -> the intent-alignment finder prompt.
+//
+// The intent-alignment dimension is only as live as the ONE field that feeds
+// it. Everything upstream of `phaseMeta.roadmapBody` is prose (the Stage-0
+// prompt, and the three CLI shims' hoist procedures) and everything downstream
+// is covered by verify-workflow-review.sh; this section drives the REAL driver
+// end to end and proves the recorded intent actually reaches a finder — for
+// BOTH paths that can produce the field:
+//
+//   (i)  the caller HOIST, assembled exactly as the rdm-autopilot / rdm-do
+//        --auto / rdm-dispatch-phase SKILL.md procedures document it. This is
+//        the primary autonomous path and the one that skips Stage 0 entirely,
+//        so a shim that forgets `roadmapBody` leaves the dimension inert while
+//        the gate still reports green.
+//   (ii) the in-workflow Stage-0 fetch agent's return value, which must survive
+//        PHASE_META_SCHEMA and reach the same place.
+//
+// and the documented degradation:
+//
+//   (iii) a hoist WITHOUT `roadmapBody` (an older caller) — no intent reaches
+//         the finder, and the run still completes normally rather than blocking.
+// ============================================================================
+{
+  const GOAL_SENTENCE = 'downstream consumers can install and run the lane without hand-wiring anything';
+  const ROADMAP_BODY = [
+    'Some roadmap preamble that is not the intent.',
+    '',
+    '## Intent',
+    '',
+    '**Goal.** ' + GOAL_SENTENCE,
+    '**Non-goals.** Rewriting the emitters.',
+    '**Done looks like.** An operator installs the plugin and dispatches a phase with no manual edits.',
+    '',
+    '## Phases',
+    '',
+    'not intent',
+  ].join('\n');
+
+  // Exactly the object the three CLI shims' prose assembles, field for field.
+  const SKILL_SHAPED_META = {
+    roadmap: 'rm',
+    phase: '1',
+    stem: 'phase-1-x',
+    model: 'medium',
+    body: 'PHASE BODY TEXT',
+    roadmapBody: ROADMAP_BODY,
+    models: MODELS,
+  };
+
+  const intentPrompt = (a) => {
+    const c = a.calls.find((x) => x.label === 'find:plan:intent-alignment');
+    return c ? c.prompt : null;
+  };
+
+  // (i) The caller hoist.
+  {
+    const a = makeAgent({});
+    await run({ roadmap: 'rm', phase: '1', phaseMeta: SKILL_SHAPED_META }, a.agent, refPipeline, refParallel, nolog);
+    assert.equal(
+      count(a, 'fetch:phase-meta'),
+      0,
+      '(6g-i) the skill-shaped phaseMeta (now carrying roadmapBody) is still accepted by hoistedMetaComplete'
+    );
+    const p = intentPrompt(a);
+    assert.ok(p, '(6g-i) the intent-alignment finder is dispatched on the plan gate');
+    assert.ok(
+      p.includes(GOAL_SENTENCE),
+      '(6g-i) the hoisted roadmapBody recorded Goal reaches the intent-alignment finder verbatim'
+    );
+    assert.ok(
+      p.includes('**Done looks like.**'),
+      '(6g-i) the whole recorded ## Intent section is threaded, not just the Goal line'
+    );
+  }
+
+  // (ii) The in-workflow Stage-0 fetch.
+  {
+    const a = makeAgent({ fetchResult: { ...PHASE_META, roadmapBody: ROADMAP_BODY } });
+    await run({ roadmap: 'rm', phase: '1' }, a.agent, refPipeline, refParallel, nolog);
+    assert.equal(count(a, 'fetch:phase-meta'), 1, '(6g-ii) with no hoist, Stage 0 runs');
+    const p = intentPrompt(a);
+    assert.ok(p, '(6g-ii) the intent-alignment finder is dispatched');
+    assert.ok(
+      p.includes(GOAL_SENTENCE),
+      '(6g-ii) a roadmapBody returned by the Stage-0 fetch agent survives PHASE_META_SCHEMA and reaches the finder'
+    );
+  }
+
+  // (iii) The documented degradation: an older caller hoist with no roadmapBody.
+  // No intent reaches the finder, and — critically — the run still completes.
+  {
+    const a = makeAgent({});
+    const out = await run({ roadmap: 'rm', phase: '1', phaseMeta: PHASE_META }, a.agent, refPipeline, refParallel, nolog);
+    assert.equal(count(a, 'fetch:phase-meta'), 0, '(6g-iii) a roadmapBody-less hoist is still accepted');
+    const p = intentPrompt(a);
+    assert.ok(p, '(6g-iii) selection still fail-opens and the finder still runs');
+    assert.equal(
+      p.includes(GOAL_SENTENCE),
+      false,
+      '(6g-iii) with no roadmapBody, no recorded intent is threaded'
+    );
+    assert.equal(out.outcome, 'reviewed', '(6g-iii) a missing intent never blocks the dispatch');
+  }
+}
+console.log('6g OK: roadmapBody reaches the intent-alignment finder via BOTH the caller hoist and the Stage-0 fetch, and degrades quietly when absent');
 console.log('ALL HOIST/ABSORB CHECKS PASSED');
 NODE_HOIST
 
@@ -2730,6 +2941,19 @@ awk '
     { print }
 ' "$WF" >"$TMP/mutant-no-diff-fallback.js"
 assert_mutant_fails "$TMP/mutant-no-diff-fallback.js" "drops the diff:signals fallback branch"
+
+# (6) Sever the roadmapBody -> intent thread, so a hoisted (or fetched)
+#     roadmap body never reaches the plan gate. This is the exact silent
+#     failure mode that made the dimension inert on the primary autonomous
+#     path: nothing errors, the gate still reports green, and only 6g's
+#     prompt-content assertion notices.
+sed 's/const planIntent = extractIntent(phaseMeta.roadmapBody)/const planIntent = extractIntent(undefined)/' "$WF" >"$TMP/mutant-no-intent-thread.js"
+assert_mutant_fails "$TMP/mutant-no-intent-thread.js" "severs the roadmapBody -> extractIntent -> plan-gate thread (intent-alignment goes silently inert)"
+
+#     (The sibling mutation — deleting roadmapBody from PHASE_META_SCHEMA — is
+#     deliberately NOT self-tested here: this section drives a FAKE agent, which
+#     does no schema validation, so the property is unobservable dynamically.
+#     AC-PLAN-INTENT above owns that direction statically.
 
 # --- 7. INVENTORY DOC ---------------------------------------------------------
 # docs/mechanical-agent-inventory.md is phase 3's primary deliverable and phase

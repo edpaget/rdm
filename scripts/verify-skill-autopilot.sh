@@ -601,6 +601,13 @@ assert_local_phasemeta_fetch() {
     grep -F 'fetch phase-meta **yourself**' "$file" >"$TMP/local-fetch-line" 2>/dev/null || return 1
     [ -s "$TMP/local-fetch-line" ] || return 1
     grep -qF 'phase show --roadmap' "$TMP/local-fetch-line" || return 1
+    # The parent roadmap's body rides on the SAME sub-step. A hoisted phaseMeta
+    # skips dispatch-phase's Stage-0 agent entirely, and that agent is the only
+    # in-workflow reader of the roadmap body — so a hoist that omits
+    # `roadmapBody` turns the plan gate's `intent-alignment` dimension off for
+    # every phase this loop dispatches, while the gate still reports green.
+    grep -qF 'roadmap show' "$TMP/local-fetch-line" || return 1
+    grep -qF 'roadmapBody' "$TMP/local-fetch-line" || return 1
 
     grep -F 'resolve the five per-step model ids per' "$file" >"$TMP/local-modelresolve-line" 2>/dev/null || return 1
     [ -s "$TMP/local-modelresolve-line" ] || return 1
@@ -612,6 +619,10 @@ assert_local_phasemeta_fetch() {
     grep -F 'dispatch-phase` Workflow**' "$file" >"$TMP/local-dispatch-line" 2>/dev/null || return 1
     [ -s "$TMP/local-dispatch-line" ] || return 1
     grep -qF 'phaseMeta' "$TMP/local-dispatch-line" || return 1
+
+    # ...and `roadmapBody` must be INSIDE the assembled phaseMeta literal, not
+    # merely mentioned somewhere in the file.
+    grep -qF 'body, roadmapBody, models:' "$file" || return 1
     return 0
 }
 assert_local_phasemeta_fetch "$SKILL" ||
@@ -706,7 +717,11 @@ normalize_phasemeta_block() {
         -e 's/S<proj-flag>/S PROJFLAG/g' \
         -e 's/rdm phase show/RDMBIN phase show/g' \
         -e 's/rdm model resolve/RDMBIN model resolve/g' \
-        -e 's/S {proj_flag}/S PROJFLAG/g'
+        -e 's/S {proj_flag}/S PROJFLAG/g' \
+        -e 's/<rdmBin> roadmap show/RDMBIN roadmap show/g' \
+        -e 's/rdm roadmap show/RDMBIN roadmap show/g' \
+        -e 's/<slug><proj-flag>/<slug> PROJFLAG/g' \
+        -e 's/<slug> {proj_flag}/<slug> PROJFLAG/g'
 }
 
 normalize_phasemeta_block "$SKILL" >"$TMP/local-phasemeta-block.norm"
@@ -746,15 +761,28 @@ import assert from 'node:assert/strict'
 const libPath = process.argv[2]
 const mod = await import(pathToFileURL(libPath).href)
 const { hoistedMetaComplete } = mod
+const reviewMod = await import(new URL('./review.mjs', pathToFileURL(libPath)).href)
+const { extractIntent } = reviewMod
+
+const GOAL = 'operators can drive a whole roadmap without hand-holding'
+const ROADMAP_BODY = [
+  '## Intent',
+  '',
+  '**Goal.** ' + GOAL,
+  '**Non-goals.** Rewriting the estimator.',
+  '**Done looks like.** A roadmap runs end to end with no manual dispatch.',
+].join('\n')
 
 // Exactly the object shape the CLI SKILL.md fetch sub-step assembles: all six
-// top-level PHASE_META_SCHEMA keys, all five model ids present and non-empty.
+// required top-level PHASE_META_SCHEMA keys, all five model ids present and
+// non-empty, plus the OPTIONAL `roadmapBody`.
 const payload = {
   roadmap: 'rm',
   phase: 'phase-1-x',
   stem: 'phase-1-x',
   model: 'medium',
   body: 'PHASE BODY TEXT',
+  roadmapBody: ROADMAP_BODY,
   models: {
     plan: 'm-plan',
     implement: 'm-impl',
@@ -765,6 +793,24 @@ const payload = {
 }
 
 assert.equal(hoistedMetaComplete(payload, false), true, 'a complete CLI-shaped phaseMeta payload must be accepted')
+
+// The hoist is the ONLY intent source on this path: a hoisted dispatch skips
+// dispatch-phase's Stage-0 agent, which is the only in-workflow reader of the
+// roadmap body. So the `roadmapBody` this loop's prose tells the driver to
+// gather must be one `extractIntent` actually resolves — otherwise the plan
+// gate's `intent-alignment` dimension is inert for every phase this loop
+// dispatches, silently, with the gate still reporting green.
+const gathered = extractIntent(payload.roadmapBody)
+assert.equal(gathered.hasIntent, true, "the loop's gathered roadmapBody must resolve to recorded intent")
+assert.ok(gathered.intent.includes(GOAL), 'the recorded Goal must survive into the extracted intent verbatim')
+
+// ...and it stays OPTIONAL: a failed roadmap read drops that one key and the
+// hoist still stands, degrading to no intent rather than falling back to the
+// whole Stage-0 agent.
+const noRoadmapBody = { ...payload }
+delete noRoadmapBody.roadmapBody
+assert.equal(hoistedMetaComplete(noRoadmapBody, false), true, 'roadmapBody is optional — its absence must not reject the hoist')
+assert.equal(extractIntent(noRoadmapBody.roadmapBody).hasIntent, false, 'an absent roadmapBody degrades to no intent')
 
 // Planted-mutation self-test 1: drop the difficulty tier.
 const noTier = { ...payload, model: '' }
@@ -840,7 +886,14 @@ rdm_plan() (
 
 say "2a. Seeding a hermetic plan repo (project 'verify') with roadmap 'rm' and 2 phases"
 rdm_plan init --default-project verify >/dev/null
-rdm_plan roadmap create rm --title "RM" --body "Autopilot advance/park contract regression roadmap." \
+RM_INTENT_GOAL='a whole roadmap advances without a human dispatching each phase'
+rdm_plan roadmap create rm --title "RM" --body "Autopilot advance/park contract regression roadmap.
+
+## Intent
+
+**Goal.** $RM_INTENT_GOAL
+**Non-goals.** Replacing the estimator.
+**Done looks like.** An operator starts one run and reads one summary." \
     --no-edit --project verify >/dev/null
 rdm_plan phase create a --title "Phase A" --number 1 --body "Phase A." \
     --no-edit --roadmap rm --project verify >/dev/null
@@ -886,9 +939,11 @@ import { execFileSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import assert from 'node:assert/strict'
 
-const [, , libPath, rdmBin, planRoot, roadmap, phaseArg, project] = process.argv
+const [, , libPath, rdmBin, planRoot, roadmap, phaseArg, project, goalSentence] = process.argv
 const mod = await import(pathToFileURL(libPath).href)
 const { hoistedMetaComplete } = mod
+const reviewMod = await import(new URL('./review.mjs', pathToFileURL(libPath)).href)
+const { extractIntent } = reviewMod
 
 function run(args) {
   return execFileSync(rdmBin, args, { env: { ...process.env, RDM_ROOT: planRoot }, encoding: 'utf8' }).trim()
@@ -924,24 +979,50 @@ for (const [k, v] of Object.entries(models)) {
   assert.ok(v, `model resolve ${k} must print a non-empty id`)
 }
 
+// Step 2b: `rdm roadmap show <roadmap> --project <project> --format json`,
+// the roadmap-body read the same sub-step performs. This is the ONLY intent
+// source on the hoisted path — a hoisted dispatch skips dispatch-phase's
+// Stage-0 agent, the only in-workflow reader of the roadmap body — so the
+// field this procedure gathers must be one extractIntent actually resolves.
+const rmShow = run(['roadmap', 'show', roadmap, '--project', project, '--format', 'json'])
+const roadmapBody = JSON.parse(rmShow).body || ''
+assert.ok(roadmapBody, 'real roadmap show must return a non-empty body')
+
 // Step 3: assemble exactly the phaseMeta shape the CLI SKILL.md procedure
 // documents, and feed it through the same hoistedMetaComplete guard the
 // Stage-0 fetch agent it replaces is judged by — end to end against real
 // binary output, not a hand-built fake.
-const phaseMeta = { roadmap, phase: phaseArg, stem, model: T, body, models }
+const phaseMeta = { roadmap, phase: phaseArg, stem, model: T, body, roadmapBody, models }
 assert.equal(
   hoistedMetaComplete(phaseMeta, false),
   true,
   'the real CLI fetch procedure output must be accepted by hoistedMetaComplete'
 )
 
-console.log('real CLI fetch procedure OK: phase show + five model resolve calls assembled a phaseMeta accepted by hoistedMetaComplete')
+// Step 4: the gathered roadmapBody really does carry recorded intent through to
+// the plan gate. Without this the hoist is accepted, the dispatch is green, and
+// intent-alignment is silently inert for every phase this loop drives.
+const gathered = extractIntent(phaseMeta.roadmapBody)
+assert.equal(gathered.hasIntent, true, 'the real roadmap body must resolve to recorded intent')
+assert.ok(
+  gathered.intent.includes(goalSentence),
+  'the recorded Goal must reach the plan gate verbatim, straight off the real binary output'
+)
+
+// ...and it stays optional: dropping it degrades to no intent without rejecting
+// the hoist, which is what keeps a failed roadmap read non-fatal.
+const without = { ...phaseMeta }
+delete without.roadmapBody
+assert.equal(hoistedMetaComplete(without, false), true, 'roadmapBody is optional to the hoist guard')
+assert.equal(extractIntent(without.roadmapBody).hasIntent, false, 'an absent roadmapBody degrades to no intent')
+
+console.log('real CLI fetch procedure OK: phase show + roadmap show + five model resolve calls assembled a phaseMeta that hoistedMetaComplete accepts and extractIntent reads intent from')
 NODE_FETCH
 
-if run_node "$TMP/real-fetch-procedure.mjs" "$DP_LIB" "$RDM_BIN" "$PLAN" rm phase-3-c verify; then
-    pass "the real CLI phase-meta fetch procedure is accepted end-to-end by hoistedMetaComplete"
+if run_node "$TMP/real-fetch-procedure.mjs" "$DP_LIB" "$RDM_BIN" "$PLAN" rm phase-3-c verify "$RM_INTENT_GOAL"; then
+    pass "the real CLI phase-meta fetch procedure is accepted end-to-end by hoistedMetaComplete, and its roadmapBody carries the recorded intent through to the plan gate"
 else
-    fail "the real CLI phase-meta fetch procedure did not produce output hoistedMetaComplete accepts"
+    fail "the real CLI phase-meta fetch procedure did not produce output hoistedMetaComplete accepts, or its roadmapBody did not resolve to recorded intent"
 fi
 
 # --- 3. SIBLING GATE -----------------------------------------------------------

@@ -2991,6 +2991,19 @@ const PHASE_META_SCHEMA = {
     // plan gate below. Deliberately absent from `required` and from
     // hoistedMetaComplete's key list: a caller-supplied metadata hoist that
     // predates this field must keep working, degrading to no intent.
+    //
+    // THE HOIST OBLIGATION that optionality creates: a caller that hoists
+    // phaseMeta skips the Stage-0 agent entirely, and that agent is the ONLY
+    // in-workflow code path that reads the roadmap body. So a hoisting caller
+    // that omits `roadmapBody` does not merely lose an optimization — it turns
+    // `intent-alignment` off for that dispatch while the gate still reports
+    // green. Every hoisting shim (`rdm-autopilot`, `rdm-do --auto`,
+    // `rdm-dispatch-phase`) therefore reads `roadmap show ... --format json`
+    // itself and forwards this field; their SKILL.md procedures say so, and
+    // scripts/verify-skill-autopilot.sh + scripts/verify-workflow-dispatch.sh
+    // gate both the prose and the resulting behavior. It stays OPTIONAL rather
+    // than required because a failed roadmap read must degrade to no intent
+    // (a non-blocking suggestion), never reject an otherwise-complete hoist.
     roadmapBody: { type: 'string' },
     models: {
       type: 'object',
@@ -3527,7 +3540,8 @@ const runPlanReview = buildReviewPipeline('plan')
 // The parent roadmap's recorded intent, or null. A task, a missing
 // `roadmapBody` (an older caller hoist, or a failed roadmap read), an
 // uncaptured section, and a `(not captured)` sentinel all yield null here and
-// are indistinguishable to the gate.
+// are indistinguishable to the gate. On a HOISTED dispatch this field comes
+// from the caller, not from Stage 0 — see PHASE_META_SCHEMA's hoist obligation.
 const planIntent = extractIntent(phaseMeta.roadmapBody)
 const planGate = await runPlanGate(
   { maxRevise: maxPlanRevise, tier: tier },
