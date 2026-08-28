@@ -178,12 +178,16 @@ const DIMENSIONS = {
     //|code| - **ac** — *always.* For each acceptance criterion, rate PASS / FAIL /
     //|code|   PARTIAL with evidence (file:line, test name). Flag any criterion that is
     //|code|   unmet, ambiguous, or untestable. The per-criterion table is the contract
-    //|code|   and is reported intact.
+    //|code|   and is reported intact. **Severity contract:** a criterion the target
+    //|code|   itself defers, caveats, or ships with acknowledged or known gaps has NOT
+    //|code|   been met, regardless of partial implementation — it MUST be reported as a
+    //|code|   `blocking` finding in the optional `findings` array, never as PASS in the
+    //|code|   `ac` table.
     {
       key: 'ac',
       title: 'AC compliance',
       focus:
-        'For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable.',
+        'For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable. Severity contract: a criterion the target itself defers, caveats, or ships with acknowledged or known gaps has NOT been met, regardless of partial implementation — it MUST be reported as a `blocking` finding in the optional `findings` array, never as PASS in the `ac` table.',
     },
     //|code| - **correctness** — *always.* Logic bugs, edge cases, race conditions, and
     //|code|   error paths, judged against the error-handling conventions the project
@@ -452,6 +456,17 @@ const INJECTION_HYGIENE =
 //| as a finding and continue exactly as before. This applies to every dimension
 //| in every mode, so it is carried in every finder prompt.
 
+// Refuter-laundering guard. Threaded into every refuter prompt, both modes —
+// unconditional, like INJECTION_HYGIENE above, because the failure mode is
+// fleet-wide: a refuter that starts from "not real unless proven otherwise"
+// will treat a documented, known, or already-accepted-scope defect as proof it
+// isn't real, when a recorded deferral is evidence of the opposite. This does
+// not touch the default-to-refuted stance for genuine technical uncertainty —
+// that stance stays load-bearing against false positives and is restated in
+// the same sentence so the two cannot drift apart.
+const REFUTER_LAUNDERING_GUARD =
+  'A finding may not be refuted on the grounds that it is documented, known, or already accepted as scope, when it contradicts the target\'s stated goal or recorded intent — a recorded deferral is evidence the defect is REAL, not evidence it is not. Refute only for genuine technical uncertainty: you cannot verify, from the actual code or plan, that the finding holds up. The default-to-refuted stance for uncertain findings is unchanged.';
+
 // Recorded-intent channel. The operator-stated goal for the work, captured as a
 // `## Intent` section on the roadmap body by the roadmap-authoring interview.
 // It is read as PROSE — there is no parser, no command, and no typed tri-state
@@ -593,6 +608,7 @@ function findPrompt(mode, dim, context) {
         '`findings` array (same shape as the FINDINGS schema) for narrative notes that do not reduce to a ' +
         "single criterion's status.",
       'Only leave `ac` empty if the target states no acceptance criteria at all — report that itself as a `findings` entry.',
+      'A criterion the target itself defers, caveats, or ships with known gaps is NOT met: report it as a `blocking` findings-array entry (concern: "ac"), never as PASS in the ac table, even if partially implemented.',
     ].join('\n');
   }
   const lines = [
@@ -633,6 +649,14 @@ function findPrompt(mode, dim, context) {
 //| unless the code proves otherwise"*, reads the actual cited location and its
 //| surrounding context, and returns `refuted` (boolean), a corrected `confidence`
 //| (0-100), and a rationale.
+//|
+//| **Laundering guard.** A finding may not be refuted on the grounds that it is
+//| documented, known, or already accepted as scope, when it contradicts the
+//| target's stated goal or recorded intent — a recorded deferral is evidence the
+//| defect is REAL, not evidence it is not. Refute only for genuine technical
+//| uncertainty: you cannot verify, from the actual code or plan, that the
+//| finding holds up. The default-to-refuted stance for uncertain findings is
+//| unchanged.
 //|
 //| **Non-gating pass-through.** A `suggestion` gates nothing at any tier — the
 //| verdict consults only `blocking` (and `concern`, at the `large` tier), and the
@@ -734,6 +758,7 @@ function refutePrompt(mode, dim, finding, context) {
     'Start from the stance: this is NOT a real issue unless the ' +
       (mode === 'code' ? 'code' : 'plan') +
       ' proves otherwise. Read the actual cited location and its surrounding context before deciding.',
+    REFUTER_LAUNDERING_GUARD,
     'Return JSON matching the VERDICT schema: refuted (boolean — true if the finding does not hold up), confidence (0-100 in your verdict), and rationale.',
   ].join('\n');
 }
@@ -768,6 +793,13 @@ function refutePrompt(mode, dim, finding, context) {
 //| by the `rdm-wf-review-refute-fix` Workflow tool invoked in step 2 above. Each finding
 //| it returns carries `id`, `concern`, `location`, `severity`, `confidence`,
 //| `what_fails`, `why`, and `recommendation`.
+//|
+//| **Laundering guard.** The workflow's refuter may not dismiss a finding on the
+//| grounds that it is documented, known, or already accepted as scope, when it
+//| contradicts the target's stated goal or recorded intent — a recorded
+//| deferral is evidence the defect is REAL, not evidence it is not. Refutation
+//| is reserved for genuine technical uncertainty; the default-to-refuted stance
+//| for uncertain findings is unchanged.
 //|
 //| A refuter runs only where its verdict could change something. A `suggestion`
 //| gates nothing at any tier, so the workflow dispatches no refuter for one: it
@@ -2454,6 +2486,7 @@ export {
   SECURITY_CONTENT_PATTERNS,
   PLAN_SEVERITY_CALIBRATION,
   INJECTION_HYGIENE,
+  REFUTER_LAUNDERING_GUARD,
   extractIntent,
   intentPresent,
   INTENT_PREAMBLE,

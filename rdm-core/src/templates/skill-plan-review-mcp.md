@@ -268,6 +268,14 @@ unless the code proves otherwise"*, reads the actual cited location and its
 surrounding context, and returns `refuted` (boolean), a corrected `confidence`
 (0-100), and a rationale.
 
+**Laundering guard.** A finding may not be refuted on the grounds that it is
+documented, known, or already accepted as scope, when it contradicts the
+target's stated goal or recorded intent — a recorded deferral is evidence the
+defect is REAL, not evidence it is not. Refute only for genuine technical
+uncertainty: you cannot verify, from the actual code or plan, that the
+finding holds up. The default-to-refuted stance for uncertain findings is
+unchanged.
+
 **Non-gating pass-through.** A `suggestion` gates nothing at any tier — the
 verdict consults only `blocking` (and `concern`, at the `large` tier), and the
 acceptance-criteria channel never reads a finding's severity at all — so a

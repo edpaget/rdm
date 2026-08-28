@@ -136,7 +136,11 @@ Rank survivors most-severe first, then by confidence descending, then by id.
 - **ac** — *always.* For each acceptance criterion, rate PASS / FAIL /
   PARTIAL with evidence (file:line, test name). Flag any criterion that is
   unmet, ambiguous, or untestable. The per-criterion table is the contract
-  and is reported intact.
+  and is reported intact. **Severity contract:** a criterion the target
+  itself defers, caveats, or ships with acknowledged or known gaps has NOT
+  been met, regardless of partial implementation — it MUST be reported as a
+  `blocking` finding in the optional `findings` array, never as PASS in the
+  `ac` table.
 - **correctness** — *always.* Logic bugs, edge cases, race conditions, and
   error paths, judged against the error-handling conventions the project
   states in its principles document (`docs/principles.md` if present,
@@ -241,6 +245,13 @@ issue unless the code proves otherwise"*) — are now performed deterministicall
 by the `rdm-wf-review-refute-fix` Workflow tool invoked in step 2 above. Each finding
 it returns carries `id`, `concern`, `location`, `severity`, `confidence`,
 `what_fails`, `why`, and `recommendation`.
+
+**Laundering guard.** The workflow's refuter may not dismiss a finding on the
+grounds that it is documented, known, or already accepted as scope, when it
+contradicts the target's stated goal or recorded intent — a recorded
+deferral is evidence the defect is REAL, not evidence it is not. Refutation
+is reserved for genuine technical uncertainty; the default-to-refuted stance
+for uncertain findings is unchanged.
 
 A refuter runs only where its verdict could change something. A `suggestion`
 gates nothing at any tier, so the workflow dispatches no refuter for one: it
