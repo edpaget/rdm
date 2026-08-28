@@ -5,9 +5,11 @@ allowed-tools:
   - Read
   - Glob
   - Grep
+  - AskUserQuestion
   - {t_roadmap_create}
   - {t_phase_create}
   - {t_roadmap_show}
+  - {t_roadmap_update}
   - {t_commit}
 ---
 
@@ -16,9 +18,19 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
 ## Steps
 
 1. **Explore the codebase** to understand the current state relevant to `$ARGUMENTS`. Read key files, search for related code, and build context.
-2. **Design phases** that break the work into independently deliverable increments. Each phase should produce a working, testable result.
-3. **Create the roadmap**: use `rdm_roadmap_create` with `project: {proj_param}, slug: "<slug>", title: "Title", body: "Summary.", tags: ["<tag1>", "<tag2>"]`
-4. **Create each phase** with context, steps, and acceptance criteria in the body:
+2. **Interview the operator — human-in-the-loop only.** Before designing phases, run a short, bounded interview so the plan is shaped by the operator's actual intent instead of being reconciled against it afterward:
+   - Ask at most 3-5 questions, one at a time, selected by impact x uncertainty — only where the answer would change how the work is broken into phases.
+   - Each question is closed-form: 2-4 mutually exclusive options with a recommended default, or a short answer with a suggested value, so the operator can reply in one token. Use the question-asking tool available in your environment (e.g. `AskUserQuestion`, granted in this skill's `allowed-tools`).
+   - Cover, in priority order: the goal as an observable end state; what is explicitly NOT wanted; and one operator-testable "done looks like" signal. Stop as soon as all three are unambiguous — don't ask a fourth question just to reach the cap.
+   - Terminate early the moment the operator signals they're finished ("done", "that's it", "no more").
+   - Record every answer **verbatim** under `Interview.` in a `## Intent` section — never a paraphrase.
+   - An unresolved high-impact question goes under `Open`, never guessed at.
+   - If the operator does not engage, or this skill is running with no human in the loop, write `(not captured)` as the whole `## Intent` section rather than inventing intent.
+3. **Design phases** that break the work into independently deliverable increments. Each phase should produce a working, testable result.
+4. **Create the roadmap**, including the `## Intent` section (or the literal `(not captured)`) captured above in the body: use `rdm_roadmap_create` with `project: {proj_param}, slug: "<slug>", title: "Title", body: "Summary.\n\n## Intent\n<captured section>", tags: ["<tag1>", "<tag2>"]`
+
+   If the roadmap already exists (e.g. you're re-running this skill against one created earlier), read its current body, splice in the `## Intent` section, and write the whole body back instead — bodies are whole-document-authoritative, there is no patch/diff mechanism: use `{t_roadmap_update}` with `project: {proj_param}, roadmap: "<slug>", body: "<full updated body>"`.
+5. **Create each phase** with context, steps, and acceptance criteria in the body:
    Use `rdm_phase_create` with `project: {proj_param}, roadmap: "<roadmap-slug>", slug: "<slug>", title: "Phase title", number: <n>, body: "<markdown body>", tags: ["<tag>"]`
 
    The body should include:
@@ -36,8 +48,8 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
    ```
 
    Pass a bare slug like `hook-commit-bug` for `slug:` — rdm builds the final stem as `phase-<number>-<slug>`. Do **not** include `phase-N-` in `slug:` or you'll get a doubled prefix like `phase-1-phase-1-hook-commit-bug`.
-5. **Land the batch**: call `{t_commit}` with `message: "feat(plan): add <roadmap> roadmap"` — one commit for the roadmap and all its phases.
-6. **Verify** the roadmap looks correct: use `rdm_roadmap_show` with `project: {proj_param}, roadmap: "<slug>"`
+6. **Land the batch**: call `{t_commit}` with `message: "feat(plan): add <roadmap> roadmap"` — one commit for the roadmap and all its phases.
+7. **Verify** the roadmap looks correct: use `rdm_roadmap_show` with `project: {proj_param}, roadmap: "<slug>"`
 
 ## Guidelines
 

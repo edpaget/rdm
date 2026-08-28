@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The `rdm-roadmap` skill now runs a short, bounded interview with the operator before designing phases — at most 3-5 closed-form questions, one at a time, covering the goal as an observable end state, what is explicitly NOT wanted, and one operator-testable "done looks like" signal. Every answer is recorded verbatim into the roadmap body's new `## Intent` section (with unresolved high-impact questions listed under `Open`); the interview terminates early on an operator signal ("done", "that's it", "no more"), and a headless run with no human present writes `(not captured)` instead of guessing. `rdm-plan-review` now offers the same capture, interactively, for a roadmap or task whose intent was never recorded — skipping silently when it already reads `(not captured)`, a deliberate prior opt-out. Ships in both the CLI and MCP variants of the `rdm-roadmap` and `rdm-plan-review` skill templates (`rdm agent-config claude --skills` output).
+
 ### Changed
 
 - The `rdm-do` skill now pre-approves the `EnterWorktree` tool in its `allowed-tools` frontmatter, so a Claude Code user invoking `/rdm-do` no longer has to manually approve the one-time worktree entry the skill's "Get into the roadmap's worktree" step performs. The skill body already told Claude to use `EnterWorktree({path})` on first entry from the main checkout, but the tool was absent from the grant list, so every first-phase run stopped on a permission prompt. Applies to `.claude/skills/rdm-do/SKILL.md`, the shipped CLI template (`rdm agent-config claude --skills` output), and the checked-in plugin tree at `plugins/rdm/skills/do/SKILL.md`. The MCP variant is unchanged — it enters the worktree by `cd`ing into the path `rdm worktree add` returns and never calls `EnterWorktree`.

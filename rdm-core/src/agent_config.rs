@@ -1405,6 +1405,10 @@ fn skill_roadmap_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
                 ("t_roadmap_create", "rdm_roadmap_create"),
                 ("t_phase_create", "rdm_phase_create"),
                 ("t_roadmap_show", "rdm_roadmap_show"),
+                // The interview step's "roadmap already exists" fallback
+                // writes the captured `## Intent` section back via a whole-body
+                // update, same mechanism as every other body section.
+                ("t_roadmap_update", "rdm_roadmap_update"),
                 ("t_commit", "rdm_commit"),
             ],
         ),
@@ -3170,6 +3174,34 @@ mod tests {
         }
     }
 
+    /// A roadmap or task that predates the `## Intent` artifact should gain
+    /// intent capture through interactive `rdm-plan-review`, hand-authored
+    /// strictly OUTSIDE the generated `rdm:review-spec` marker region (that
+    /// region is stamped by `gen-skill-review.sh` and hand-editing it fails
+    /// that generator's `--check` mode).
+    #[test]
+    fn skill_plan_review_captures_intent_outside_review_spec() {
+        const BEGIN: &str = "<!-- rdm:review-spec:begin";
+        for mcp in [false, true] {
+            let skills = generate_skills(&SkillOptions {
+                project: None,
+                principles_file: None,
+                mcp,
+            });
+            let content = &skills[9].content;
+            let capture_pos = content
+                .find("Capture intent, if the target predates it")
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing intent-capture step marker"));
+            let begin_pos = content
+                .find(BEGIN)
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing review-spec begin marker"));
+            assert!(
+                capture_pos < begin_pos,
+                "mcp={mcp}: intent-capture step must land outside (before) the generated review-spec block"
+            );
+        }
+    }
+
     #[test]
     fn skill_land_documents_landing_and_safety() {
         let skills = generate_skills(&SkillOptions {
@@ -3495,6 +3527,54 @@ mod tests {
         assert!(content.contains("rdm roadmap create"));
         assert!(content.contains("rdm phase create"));
         assert!(content.contains("rdm roadmap show"));
+    }
+
+    /// The roadmap-authoring interview must be present, and run BEFORE phase
+    /// design, in both the CLI and MCP variants — the interview's answers
+    /// should shape the phase decomposition, not be reconciled against it
+    /// afterwards.
+    #[test]
+    fn skill_roadmap_interviews_before_phase_design() {
+        for mcp in [false, true] {
+            let skills = generate_skills(&SkillOptions {
+                project: None,
+                principles_file: None,
+                mcp,
+            });
+            let content = &skills[0].content;
+            let interview_pos = content
+                .find("Interview the operator")
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing interview step marker"));
+            let design_pos = content
+                .find("Design phases")
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing 'Design phases' step"));
+            assert!(
+                interview_pos < design_pos,
+                "mcp={mcp}: interview step must precede phase design"
+            );
+        }
+    }
+
+    /// `AskUserQuestion` is the vehicle for the roadmap-authoring interview in
+    /// Claude Code — it must be granted in both variants' `allowed-tools`.
+    #[test]
+    fn skill_roadmap_grants_ask_user_question() {
+        for mcp in [false, true] {
+            let skills = generate_skills(&SkillOptions {
+                project: None,
+                principles_file: None,
+                mcp,
+            });
+            let frontmatter = skills[0]
+                .content
+                .split("---")
+                .nth(1)
+                .expect("missing frontmatter");
+            assert!(
+                frontmatter.contains("AskUserQuestion"),
+                "mcp={mcp}: rdm-roadmap allowed-tools missing AskUserQuestion"
+            );
+        }
     }
 
     #[test]

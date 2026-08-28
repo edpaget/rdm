@@ -6,6 +6,7 @@ allowed-tools:
   - Glob
   - Grep
   - Agent
+  - AskUserQuestion
   - {t_phase_show}
   - {t_phase_update}
   - {t_task_show}
@@ -90,6 +91,24 @@ Do **not** call the update tool with `tags`. The `needs-plan-review` tag is left
 **Per-phase gating** (`--roadmap <slug>` reviews):
 
 Under `--roadmap <slug>`, gate each phase **individually** — a phase whose own outcome is `rework` or `escalated` keeps its `needs-plan-review` tag even when every other phase in the roadmap reaches `reviewed`. The roadmap body itself is gated separately. A phase set aside as terminal in step 1 is **never gated** — it was never reviewed this run, so there is no tag disposition to make on it.
+
+### 6. Capture intent, if the target predates it
+
+Human-in-the-loop only. Skip this step entirely in `--implementation-plan` mode (there is no persisted item to write to) and for any headless run with no operator present.
+
+1. **Read the target's current intent.** A phase's intent lives on its roadmap, never on the phase itself, so under `<roadmap-slug> [phase-number]` or a single-phase target, read the roadmap's own body. Look for a `## Intent` section.
+2. **Skip silently** if the section already reads `(not captured)` — that is a deliberate prior opt-out, not an omission, and must never be re-prompted.
+3. **If the section is absent entirely**, the target predates the artifact. Run the same bounded interview used at roadmap-authoring time:
+   - Ask at most 3-5 questions, one at a time, selected by impact x uncertainty.
+   - Each question is closed-form: 2-4 mutually exclusive options with a recommended default, or a short answer with a suggested value. Use the question-asking tool available in your environment (e.g. `AskUserQuestion`, granted in this skill's `allowed-tools`).
+   - Cover, in priority order: the goal as an observable end state; what is explicitly NOT wanted; and one operator-testable "done looks like" signal. Stop as soon as all three are unambiguous.
+   - Terminate early the moment the operator signals they're finished ("done", "that's it", "no more").
+   - Record every answer **verbatim** under `Interview.`; put an unresolved high-impact question under `Open`, never guessed at.
+   - If the operator does not engage, write `(not captured)` as the whole `## Intent` section rather than inventing intent.
+4. **Write the result back** by reading the current full body, splicing in the `## Intent` section, and writing the complete body back — bodies are whole-document-authoritative, there is no patch/diff mechanism:
+   - roadmap: use `{t_roadmap_update}` with `project: {proj_param}, roadmap: "<slug>", body: "<full updated body>"`
+   - task: use `{t_task_update}` with `project: {proj_param}, task: "<slug>", body: "<full updated body>"`
+   - land it: call `{t_commit}` with `message: "chore(plan): capture intent on <target>"`
 
 ## Guidelines
 
