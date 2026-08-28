@@ -21,7 +21,7 @@ accepts), [`docs/autonomous-loop.md`](autonomous-loop.md).
 grep -n "label: *['\"]" .claude/workflows/*.js | grep -v spike-agent-type
 ```
 
-**41 labelled `agent()` call sites** across the six workflow scripts:
+**42 labelled `agent()` call sites** across the six workflow scripts:
 
 | file | call sites |
 |---|---|
@@ -29,9 +29,9 @@ grep -n "label: *['\"]" .claude/workflows/*.js | grep -v spike-agent-type
 | `rdm-wf-dispatch-phase.js` | 12 |
 | `rdm-wf-document.js` | 5 |
 | `rdm-wf-estimate.js` | 5 |
-| `rdm-wf-plan-review.js` | 11 |
+| `rdm-wf-plan-review.js` | 12 |
 | `rdm-wf-review-refute-fix.js` | 5 |
-| **total** | **41** |
+| **total** | **42** |
 
 (`autopilot.js` carried 7 of the original 44 call sites; it was retired in favor of the prose
 `rdm-autopilot` skill by the `workflow-orchestration` roadmap's phase 3 — see
@@ -40,12 +40,12 @@ that still cite `autopilot.js`/`advance:*`/`park:*`/`fetch:next` describe the me
 while it was still a workflow script and are left as a dated record rather than rewritten; they
 are not live-checked the way the totals above are.)
 
-Adding `.claude/workflows/lib/*.mjs` to the glob raises the count to **52**. That is *not* eleven
+Adding `.claude/workflows/lib/*.mjs` to the glob raises the count to **54**. That is *not* twelve
 extra call sites: the libs hold the single-source originals of blocks that are stamped or
 byte-copied into the `.js` consumers, so the same site is counted twice. **The six `.js`
 files are the authoritative surface** — they are what the Workflow runtime executes.
 
-Of the 41, **23 are mechanical** and **18 are judgment** agents. (Three of the eighteen are the
+Of the 42, **24 are mechanical** and **18 are judgment** agents. (Three of the eighteen are the
 canonical finder's `find:<mode>:<dim>:retry` site — the ONE bounded retry a finder that resolved
 null gets before its dimension is recorded as non-participating — counted once per stamped
 consumer.) The judgment set is out of
@@ -151,6 +151,7 @@ can supply the hoist today.
 | `model:mechanical` | `rdm-wf-plan-review.js` | unprojected runtime entry | no | local shim only (`rdm-plan-review`) | **hoistable** | Same bootstrap read — extended by `thread-plan-review-judgment-models` to also resolve `review-find`/`review-verify` in this one call, threaded through as `findModel`/`verifyModel`. | partly (distributed-caller path) |
 | `fetch:roadmap` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` (gate: `verify-workflow-review.sh` §5b-drift) | no | local shim only | **hoistable — PRIORITY** | See § The hoist with a recorded correctness failure. Not ranked on cost. | partly (distributed-caller path) |
 | `fetch:roadmap-body-check` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` (gate: `verify-workflow-review.sh` §5b-drift) | no | local shim only | **not a hoist candidate** | A SECOND, independent verification call for the roadmap-body unit only (task `plan-review-roadmap-body-fetch-status-line`): five recorded runs reviewed that unit against a one-line fetch-status sentence instead of the real body. Re-reads `roadmap show` itself and reports a checkable length/first-line property, compared against `fetch:roadmap`'s transcribed body; a confirmed mismatch discards the fetch and fails closed through the existing empty-body path. Skipped entirely on the hoisted-payload path (no LLM transcription step to distrust there) and for phase/task kinds. Costs one extra mechanical call per agent-fetch roadmap run — a deliberate, documented tension with this phase's own elimination goal, accepted for the correctness gap it closes. **Overlap decision (roadmap's "Known overlap to resolve at phase 3" directive):** does NOT collapse into phase 2's `fetchTranscriptionOk` — that check is deliberately body-content-blind (stem convention + reserved tag tokens only, never body text; see its doc comment in `lib/plan-review.mjs`), so it cannot catch a fetch whose body is a fabricated status sentence with otherwise-clean stems/tags, which is exactly this unit's evidence. | partly (distributed-caller path) |
+| `fetch:roadmap-intent` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` (gate: `verify-workflow-review.sh` §5b-drift) | no | local shim only | **irreducible on its own path, but already HOISTED away everywhere else** | Added by the `review-gate-intent` roadmap's plan-review intent gate. Reads the PARENT ROADMAP's body so a standalone `--phase` target can inherit its recorded `## Intent` — the one target shape that has no roadmap body in hand. Deliberately NOT added to the `--roadmap` fan-out (that path reuses the body `fetch:roadmap` already transcribed, preserving the exactly-ONE-mechanical-agent-per-roadmap-target rule above `buildRoadmapFetchPrompt`), never fired for a `--task` or `--implementation-plan` target, and skipped entirely when the caller hoists `fetched`. Any failure — thrown agent, empty transcript, unparseable JSON — degrades to no intent rather than an error, because the dimension it feeds is non-blocking by construction. | partly (distributed-caller path) |
 | `fetch:<kind>` (`fetch:task` / `fetch:phase`) | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | local shim only | **hoistable — PRIORITY** | Same — see below. | partly (distributed-caller path) |
 | `fetch:wontfix` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | local shim only | **hoistable** | One `rdm search` covering the whole run, read-only, before any unit is reviewed. | partly (distributed-caller path) |
 | `act:round-note:*` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | — | **irreducible** | A write whose round number and finding list are computed mid-run. | **yes** |
@@ -619,10 +620,10 @@ the set so a future refactor cannot move a mechanical site into a fan-out unnoti
 | `rdm-wf-document.js` | `model:mechanical`, `fetch:roadmap-meta`, `gather:<stem>`, `write:draft` | unprojected driver (all below `document-core:end`) — edit in place |
 | `rdm-wf-backlog.js` | `model:mechanical`, `fetch:report` | unprojected driver — edit in place |
 | `rdm-wf-estimate.js` | `model:mechanical`, `estimate:list`, `estimate:write:<stem>`, `estimate:tier:<stem>` | unprojected driver (below `estimate-core:end`) — edit in place. **Verified NOT stamped**: the generator projects only the `estimate-core` block, so these do not propagate into any distributed workflow (`autopilot.js` formerly carried its own duplicate driver copies of the same labels, before its retirement to prose) |
-| `rdm-wf-plan-review.js` | `fetch:roadmap`, `fetch:roadmap-body-check`, `fetch:<kind>`, `fetch:wontfix`, `gate:clear-tag:<kind>:<ident>` | **byte-copied** — inside the `plan-review-driver` block; edit `lib/plan-review.mjs` first, then copy verbatim. `verify-workflow-review.sh` §5b-drift gates the pair |
+| `rdm-wf-plan-review.js` | `fetch:roadmap`, `fetch:roadmap-body-check`, `fetch:roadmap-intent`, `fetch:<kind>`, `fetch:wontfix`, `gate:clear-tag:<kind>:<ident>` | **byte-copied** — inside the `plan-review-driver` block; edit `lib/plan-review.mjs` first, then copy verbatim. `verify-workflow-review.sh` §5b-drift gates the pair |
 | `rdm-wf-plan-review.js` | `model:mechanical` | unprojected driver (below `plan-review-driver:end`) — edit in place |
 
-16 sites, three maintenance routes, all threaded. **Off-limits regardless:**
+17 sites, three maintenance routes, all threaded. **Off-limits regardless:**
 `rdm-wf-dispatch-phase.js`, `rdm-wf-review-refute-fix.js` (byte-identical to the distributed templates, gated
 by `verify-agent-config-distribution.sh`), anything stamped from `lib/review.mjs` or
 `lib/estimate.mjs`, and every judgment site — `find:*`, `refute:*`, `plan:*`, `implement:*`,
@@ -635,9 +636,17 @@ only `mkdir -p` and a `cat` heredoc via Bash and returns a `WRITE_ACK` schema ob
 needs nothing beyond `rdm-mechanical`'s `tools: Bash, StructuredOutput`. It does not use the
 `Write` tool despite its name.
 
-**Nothing in this document's counts changed.** No `agent()` call site was added, removed,
-relabelled, or re-tiered, so the § Raw inventory total, the § Classification table, and the
-§ Measured delta figures are all untouched and still gate as before.
+**One call site was added since this document's counts were first taken.** The
+`review-gate-intent` roadmap's plan-review intent gate added `fetch:roadmap-intent` to
+`rdm-wf-plan-review.js` (and its `lib/plan-review.mjs` original) — the standalone-`--phase` read of
+the parent roadmap body, so a phase can inherit its roadmap's recorded `## Intent`. The counts that
+moved: § Raw inventory's total 41 → **42**, its `rdm-wf-plan-review.js` row 11 → **12**, the
+lib-inclusive figure 52 → **54**, the mechanical/judgment split 23/18 → **24**/18, and § Maintenance
+routes' threaded-site count 16 → **17**. What did NOT move: the § Measured delta figures, because
+the new site is on `rdm-wf-plan-review.js`, not on the dispatch-phase path those figures measure —
+the same intent gate's dispatch-phase half deliberately folds its roadmap read into the EXISTING
+Stage-0 fetch agent rather than adding a second call site, precisely so
+`scripts/measure-hoist-delta.mjs --check` stays byte-identical.
 
 The comparison point for the eventual change is pinned in `docs/token-baseline.json` under
 `mechanicalContextTrim`, quoting phase 4's per-class pre-change medians verbatim so a later run

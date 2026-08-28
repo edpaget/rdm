@@ -140,6 +140,23 @@ plus every phase gated individually), a `phase`, a `task`, or an
 ahead of implementation. `implementation-plan` has **no persisted rdm
 item** behind it, so it is report-only: no body edit, no filed task, and
 no gate (see § Gate).
+- **intent-alignment** — *trigger: the target has recorded intent.*
+  Checks the plan against the operator-recorded intent — a `## Intent`
+  section on the parent roadmap, stating a Goal, optional Non-goals, and
+  Done-looks-like signals. It asks exactly two questions. **Divergence:**
+  could every acceptance criterion pass while the recorded "Done looks
+  like" remains false? Flag any criterion that can. **Scope creep:** does
+  any step pursue something recorded as a non-goal? An acceptance
+  criterion may be internally coherent and still leave the stated goal
+  unmet — that is precisely what this dimension exists to catch, and the
+  reason the other dimensions cannot: they judge the plan against itself
+  and against the project's conventions, never against what the operator
+  actually asked for. If no recorded intent is present in the material the
+  finder was given, it returns an empty findings array and reports
+  nothing — the dimension has no input and must never manufacture one.
+  Missing intent is never blocking: the dimension is not selected at all,
+  and its absence is reported instead as a non-blocking `suggestion`
+  naming the missing input.
 - **restraint** — *always.* The counterweight to unit-of-work: flags a
   plan that has over-specified rather than under-specified. Two shapes
   are both findings — (1) the plan spells out a decision that could

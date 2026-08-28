@@ -713,7 +713,7 @@ xor_check() {
         node --input-type=module -e '
 import assert from "node:assert/strict";
 const { DIMENSIONS } = await import(process.argv[1]);
-assert.deepEqual(DIMENSIONS.plan.map((d) => d.key), ["coherence", "architectural-fit", "unit-of-work", "restraint"]);
+assert.deepEqual(DIMENSIONS.plan.map((d) => d.key), ["coherence", "architectural-fit", "unit-of-work", "intent-alignment", "restraint"]);
 assert.ok(!DIMENSIONS.plan.some((d) => Array.isArray(d.lenses)), "no merged dimension may exist");
 ' "file://$(cd "$(dirname "$lib")" && pwd)/$(basename "$lib")" >/dev/null 2>&1 || bad=1
     fi

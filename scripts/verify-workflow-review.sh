@@ -1260,11 +1260,13 @@ rdm-wf-estimate.js|estimate:tier:' +
 rdm-wf-plan-review.js|model:mechanical'
 rdm-wf-plan-review.js|fetch:roadmap'
 rdm-wf-plan-review.js|fetch:roadmap-body-check'
+rdm-wf-plan-review.js|fetch:roadmap-intent'
 rdm-wf-plan-review.js|fetch:' + kind
 rdm-wf-plan-review.js|fetch:wontfix'
 rdm-wf-plan-review.js|gate:clear-tag:' +
 lib/plan-review.mjs|fetch:roadmap'
 lib/plan-review.mjs|fetch:roadmap-body-check'
+lib/plan-review.mjs|fetch:roadmap-intent'
 lib/plan-review.mjs|fetch:' + kind
 lib/plan-review.mjs|fetch:wontfix'
 lib/plan-review.mjs|gate:clear-tag:' +
@@ -1758,7 +1760,7 @@ assert.equal(JSON.stringify(outA), JSON.stringify(outB), 'code review output is 
 // ============================================================================
 assert.deepEqual(
   DIMENSIONS.plan.map((d) => d.key),
-  ['coherence', 'architectural-fit', 'unit-of-work', 'restraint'],
+  ['coherence', 'architectural-fit', 'unit-of-work', 'intent-alignment', 'restraint'],
   'plan dimension set'
 );
 
@@ -1770,6 +1772,7 @@ const planFindings = {
   ],
   'architectural-fit': [],
   'unit-of-work': [],
+  'intent-alignment': [],
   restraint: [],
 };
 const planVerdicts = {
@@ -1782,12 +1785,18 @@ const pspy = makeSpyAgent(planFindings, planVerdicts);
 const { survivors: pout, acTable: poutAcTable } = await buildReviewPipeline('plan', deps(pspy))(CTX);
 
 // refutable dropped, below-floor dropped, real survives — full parity with code mode.
-assert.deepEqual(pout.map((f) => f.id), ['vague-step'], 'plan: refutable dropped, below-floor dropped, real survives');
+// CTX threads no `intent`, so buildReviewPipeline also appends the non-gating
+// missing-intent notice (see section 12); it ranks below the blocking survivor.
+assert.deepEqual(
+  pout.map((f) => f.id),
+  ['vague-step', 'intent-alignment-no-intent'],
+  'plan: refutable dropped, below-floor dropped, real survives (plus the no-intent notice)'
+);
 // Plan mode never sets an AC table — the `ac` dimension does not exist there.
 assert.equal(poutAcTable, null, 'plan mode always resolves acTable to null');
 const pFind = pspy.calls.filter((c) => c.label.startsWith('find:'));
 const pRefute = pspy.calls.filter((c) => c.label.startsWith('refute:'));
-assert.equal(pFind.length, 4, 'one finder per plan dimension');
+assert.equal(pFind.length, 5, 'one finder per plan dimension');
 assert.equal(
   pRefute.length,
   2,
@@ -2181,6 +2190,7 @@ console.log('AC5: coherence and restraint dimension prose is repo-agnostic (no c
 // ============================================================================
 const calibrationFindings = {
   coherence: [],
+  'intent-alignment': [],
   'architectural-fit': [
     {
       id: 'tier-downgrade',
@@ -2208,7 +2218,9 @@ const cspy = makeSpyAgent(calibrationFindings, calibrationVerdicts);
 const { survivors: cout } = await buildReviewPipeline('plan', deps(cspy))(CTX);
 assert.deepEqual(
   cout.map((f) => f.id),
-  ['tier-downgrade', 'impl-nit'],
+  // CTX threads no intent, so the non-gating missing-intent notice rides along
+  // at the tail (suggestion severity ranks last).
+  ['tier-downgrade', 'impl-nit', 'intent-alignment-no-intent'],
   'both the architectural-violation finding and the implementation-detail nit survive refutation/floor'
 );
 assert.equal(
@@ -2848,7 +2860,7 @@ assert.equal(
   assert.equal(planAcResult.acTable, null, 'plan mode never populates an ac table');
   assert.deepEqual(
     planAcResult.survivors.map((f) => f.id),
-    ['vague-step'],
+    ['vague-step', 'intent-alignment-no-intent'],
     'plan mode survivors are unchanged by the ac-table-channel addition'
   );
 }
@@ -3794,10 +3806,12 @@ IMPL_GUARDS=$(grep -c "kind !== 'implementation-plan'" "$PLAN_REVIEW")
 # block). It DOES thread a minimal `signals: { targetType }` object into every
 # runPlanReview call (task plan-review-selects-unit-of-work-then-strips-it) so
 # selectDimensions' unit-of-work `when` predicate is evaluated at selection
-# time instead of fail-opening — the assertions below require exactly that
-# minimal shape and forbid a diff-shaped signals object (deriveSignals'
-# SIGNAL_KEYS), which would mean code-mode-style signal computation had leaked
-# into the plan driver. stripNonPhaseUnitOfWork remains applied too (checked
+# time instead of fail-opening — and, since the intent-alignment dimension
+# landed, a `hasIntent` member alongside it (its `when` reads exactly that).
+# Plan mode's signals object is therefore `{ targetType, hasIntent }`; the
+# assertions below require exactly that minimal shape and forbid a diff-shaped
+# signals object (deriveSignals' SIGNAL_KEYS), which would mean code-mode-style
+# signal computation had leaked into the plan driver. stripNonPhaseUnitOfWork remains applied too (checked
 # above) as the defense-in-depth backstop, not the primary mechanism.
 DRIVER=$(awk '/>>> review-refute-fix:end/{p=1;next} p' "$PLAN_REVIEW")
 if printf '%s\n' "$DRIVER" | grep -nE 'function findPrompt|function refutePrompt|const DIMENSIONS ='; then
@@ -3806,8 +3820,8 @@ fi
 SIGNALS_LINES=$(printf '%s\n' "$DRIVER" | grep -nE 'signals:' || true)
 [ -n "$SIGNALS_LINES" ] ||
     fail "rdm-wf-plan-review.js must thread signals: { targetType } into runPlanReview (selection-time unit-of-work scoping)"
-if printf '%s\n' "$SIGNALS_LINES" | grep -vqE "signals: \{ targetType: (unit\.targetType|'implementation-plan') \}"; then
-    fail "rdm-wf-plan-review.js's signals object must be exactly { targetType: ... }, never a diff-shaped signals object"
+if printf '%s\n' "$SIGNALS_LINES" | grep -vqE "signals: \{ targetType: unit\.targetType, hasIntent: unit\.hasIntent === true \}|signals: \{ targetType: 'implementation-plan', hasIntent: false \}"; then
+    fail "rdm-wf-plan-review.js's signals object must be exactly { targetType: ..., hasIntent: ... }, never a diff-shaped signals object"
 fi
 if printf '%s\n' "$DRIVER" | grep -qE 'changesLogic|missingTests|multiModule|publicApiChanged|userFacing|securitySurface'; then
     fail "rdm-wf-plan-review.js must not compute diff-shaped signals (deriveSignals' SIGNAL_KEYS) — plan mode's only signal is targetType"
@@ -5127,6 +5141,190 @@ const FULL_COVERAGE = {
 }
 console.log('9a/9b/9c OK: the terminal-phase sweep filter excludes done/wont-fix phases, reports every skip, and never filters an explicit single-unit target');
 
+// ============================================================================
+// AC4 — a PHASE inherits its PARENT ROADMAP's recorded `## Intent`.
+//
+// Three layers, because "the phase gets the intent" can break at three
+// independent seams: the driver's per-unit context, the real finder prompt, and
+// the standalone-phase path's extra fetch.
+// ============================================================================
+const GOAL_SENTENCE =
+  'A downstream consumer can dispatch a phase with the emitted lane and have it succeed.';
+const INTENT_RM_BODY = [
+  'Roadmap summary.',
+  '',
+  '## Intent',
+  '',
+  '**Goal.** ' + GOAL_SENTENCE,
+  '',
+  '**Done looks like.**',
+  '- WHEN a consumer installs the lane THEN a dispatch returns an OUTCOME.',
+  '',
+  '## Notes',
+  '',
+  'Anything after the section must not be captured.',
+].join('\n');
+
+{
+  // (a) DRIVER LEVEL — every unit built from a --roadmap target, the roadmap
+  //     body unit AND each inherited phase unit, carries the intent and the
+  //     hasIntent signal. Inheritance is implemented ONCE, in buildReviewUnits.
+  const h = makeHarness(
+    {},
+    {
+      'fetch:roadmap': {
+        body: INTENT_RM_BODY,
+        tags: ['needs-plan-review'],
+        phases: [
+          { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] },
+          { stem: 'phase-2-b', body: 'PB', tags: ['needs-plan-review'] },
+        ],
+      },
+    }
+  );
+  await runPlanReviewDriver({ roadmap: 'intent-rm' }, h.deps);
+  assert.equal(h.reviewCtxs.length, 3, 'AC4(a): one review context per unit (roadmap body + two phases)');
+  for (const ctx of h.reviewCtxs) {
+    assert.equal(ctx.signals.hasIntent, true, 'AC4(a): every unit signals hasIntent: true');
+    assert.ok(
+      typeof ctx.intent === 'string' && ctx.intent.includes(GOAL_SENTENCE),
+      'AC4(a): every unit carries the roadmap Goal sentence in its threaded intent'
+    );
+    assert.ok(!ctx.intent.includes('must not be captured'), 'AC4(a): extraction stops at the next `## ` heading');
+  }
+  // The phase units specifically — the inheritance claim, not just the roadmap.
+  const phaseCtxs = h.reviewCtxs.filter((c) => c.signals.targetType === 'phase');
+  assert.equal(phaseCtxs.length, 2, 'AC4(a): both phases produced a phase-typed review context');
+  // And the roadmap fan-out adds NO extra fetch agent for intent (the body is
+  // already in hand) — the inventory doc's one-fetch-per-roadmap-target rule.
+  assert.equal(
+    h.calls.filter((c) => c.label === 'fetch:roadmap-intent').length,
+    0,
+    'AC4(a): the --roadmap path reuses the already-fetched body and dispatches NO fetch:roadmap-intent agent'
+  );
+}
+
+{
+  // (b) END TO END — the same driver run, but `runPlanReview` is the REAL
+  //     buildReviewPipeline('plan') over a spy agent. The PHASE unit's
+  //     intent-alignment finder prompt must contain the Goal sentence verbatim.
+  const reviewMod = await import(new URL('./review.mjs', pathToFileURL(process.argv[2])).href);
+  const agentCalls = [];
+  const spyAgent = async (prompt, opts) => {
+    const label = (opts && opts.label) || '';
+    agentCalls.push({ label, prompt });
+    if (label.indexOf('find:') === 0) return { findings: [] };
+    if (label.indexOf('refute:') === 0) return { refuted: false, confidence: 90 };
+    if (label.indexOf('fetch:') === 0) {
+      // Reuse the same fetch fixture wrapper the rest of this section uses.
+      const raw =
+        label === 'fetch:roadmap'
+          ? {
+              body: INTENT_RM_BODY,
+              tags: ['needs-plan-review'],
+              phases: [{ stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] }],
+            }
+          : null;
+      return wrapFetchResultAsTranscript(label, raw, prompt);
+    }
+    return { ok: true };
+  };
+  const refParallel = (thunks) =>
+    Promise.all(
+      thunks.map(async (t) => {
+        try {
+          return await t();
+        } catch {
+          return null;
+        }
+      })
+    );
+  const refPipeline = async (items, ...stages) =>
+    Promise.all(
+      items.map(async (item, i) => {
+        let acc = item;
+        for (const stage of stages) {
+          try {
+            acc = await stage(acc, item, i);
+          } catch {
+            return null;
+          }
+        }
+        return acc;
+      })
+    );
+  const realReview = reviewMod.buildReviewPipeline('plan', {
+    agent: spyAgent,
+    pipeline: refPipeline,
+    parallel: refParallel,
+    log: () => {},
+  });
+  await runPlanReviewDriver(
+    { roadmap: 'intent-rm' },
+    { agent: spyAgent, parallel: refParallel, runPlanReview: realReview, log: () => {} }
+  );
+  const intentFinds = agentCalls.filter((c) => c.label === 'find:plan:intent-alignment');
+  assert.ok(intentFinds.length >= 2, 'AC4(b): the intent-alignment finder ran for the roadmap unit AND the phase unit');
+  assert.ok(
+    intentFinds.every((c) => c.prompt.includes(GOAL_SENTENCE)),
+    'AC4(b): the recorded Goal sentence reaches every intent-alignment finder prompt, phase units included'
+  );
+  const phasePrompt = intentFinds.find((c) => c.prompt.includes('phase intent-rm/phase-1-a'));
+  assert.ok(phasePrompt, 'AC4(b): one intent-alignment finder was dispatched for the PHASE-typed unit');
+  assert.ok(
+    phasePrompt.prompt.includes(GOAL_SENTENCE),
+    'AC4(b): the PHASE unit inherits the parent roadmap Goal verbatim in its finder prompt'
+  );
+}
+
+{
+  // (c) STANDALONE PHASE — the one path with no roadmap body in hand. Exactly
+  //     ONE extra mechanical fetch, only for a { roadmap, phase } target.
+  const h = makeHarness(
+    {},
+    {
+      'fetch:phase': { body: 'PB', tags: ['needs-plan-review'] },
+      'fetch:roadmap-intent': { transcript: JSON.stringify({ slug: 'r', body: INTENT_RM_BODY }) },
+    }
+  );
+  await runPlanReviewDriver({ roadmap: 'r', phase: 'phase-1-a' }, h.deps);
+  assert.equal(
+    h.calls.filter((c) => c.label === 'fetch:roadmap-intent').length,
+    1,
+    'AC4(c): a standalone phase target makes exactly ONE fetch:roadmap-intent call'
+  );
+  assert.equal(h.reviewCtxs.length, 1, 'AC4(c): one review context for a standalone phase');
+  assert.equal(h.reviewCtxs[0].signals.hasIntent, true, 'AC4(c): the fetched roadmap intent reaches the phase unit');
+  assert.ok(
+    h.reviewCtxs[0].intent.includes(GOAL_SENTENCE),
+    'AC4(c): the standalone phase inherits the parent roadmap Goal verbatim'
+  );
+}
+{
+  // A TASK target has no parent roadmap — no fetch, no intent.
+  const h = makeHarness({}, { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } });
+  await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
+  assert.equal(
+    h.calls.filter((c) => c.label === 'fetch:roadmap-intent').length,
+    0,
+    'AC4(c): a task target makes NO fetch:roadmap-intent call'
+  );
+  assert.equal(h.reviewCtxs[0].signals.hasIntent, false, 'AC4(c): a task never carries intent');
+  assert.equal(h.reviewCtxs[0].intent, null, 'AC4(c): a task threads a null intent');
+}
+{
+  // DEGRADATION: an unmapped fetch:roadmap-intent (makeHarness returns null for
+  // any unmapped fetch label) must degrade to no intent — never throw, never
+  // fail closed, never a blocking finding. This is the phase's own rule: a gate
+  // must not block on an input the thing it blocks cannot produce.
+  const h = makeHarness({}, { 'fetch:phase': { body: 'PB', tags: ['needs-plan-review'] } });
+  const res = await runPlanReviewDriver({ roadmap: 'r', phase: 'phase-1-a' }, h.deps);
+  assert.equal(h.reviewCtxs[0].signals.hasIntent, false, 'AC4(c): an unread roadmap-intent fetch degrades to hasIntent:false');
+  assert.equal(h.reviewCtxs[0].intent, null, 'AC4(c): ... and threads a null intent');
+  assert.equal(res.outcome, 'reviewed', 'AC4(c): a failed roadmap-intent fetch never fails the unit closed');
+}
+console.log('AC4 OK: a phase inherits its parent roadmap intent (driver ctx, real finder prompt, and the standalone fetch)');
+
 console.log('plan-review driver execution assertions passed');
 NODE_DRIVER_TEST
 if run_node "$TMP/plan-driver-test.mjs" "$PLAN_LIB"; then
@@ -5946,7 +6144,7 @@ plan_mutate_and_expect_fail() {
 # §5b-models above), so the mutation and its check operate within one line
 # rather than across a `\n`.
 pmut_thread_unit() {
-    perl -pi -e "s/(target: unit\.target,) maxRefutations: maxRefutations,/\$1/" "$PMUT/plan-review.mjs"
+    perl -pi -e "s/(target: unit\.target, intent: unit\.intent,) maxRefutations: maxRefutations,/\$1/" "$PMUT/plan-review.mjs"
     ! grep 'target: unit.target,' "$PMUT/plan-review.mjs" | grep -q 'maxRefutations'
 }
 plan_mutate_and_expect_fail i 'dropping the maxRefutations thread into reviewUnit' pmut_thread_unit
@@ -6046,8 +6244,8 @@ plan_mutate_and_expect_fail x 'neutering the roadmapBodyVerified===false fail-cl
 #      selectDimensions fail-opens again and a task/roadmap-body unit dispatches
 #      find:plan:unit-of-work, flipping section (8)'s 8a/8c assertions.
 pmut_drop_unit_signals() {
-    perl -pi -e "s/, signals: \{ targetType: unit\.targetType \}//" "$PMUT/plan-review.mjs"
-    ! grep -q ', signals: { targetType: unit.targetType }' "$PMUT/plan-review.mjs"
+    perl -pi -e "s/, signals: \{ targetType: unit\.targetType, hasIntent: unit\.hasIntent === true \}//" "$PMUT/plan-review.mjs"
+    ! grep -q ', signals: { targetType: unit.targetType, hasIntent: unit.hasIntent === true }' "$PMUT/plan-review.mjs"
 }
 plan_mutate_and_expect_fail xi 'dropping the signals: { targetType } thread from reviewUnit' pmut_drop_unit_signals
 
@@ -6057,8 +6255,8 @@ plan_mutate_and_expect_fail xi 'dropping the signals: { targetType } thread from
 #       also names the literal `signals: { targetType: 'implementation-plan' }`
 #       shape without that prefix.
 pmut_drop_impl_signals() {
-    perl -pi -e "s/, signals: \{ targetType: 'implementation-plan' \}//" "$PMUT/plan-review.mjs"
-    ! grep -q ", signals: { targetType: 'implementation-plan' }" "$PMUT/plan-review.mjs"
+    perl -pi -e "s/, signals: \{ targetType: 'implementation-plan', hasIntent: false \}//" "$PMUT/plan-review.mjs"
+    ! grep -q ", signals: { targetType: 'implementation-plan', hasIntent: false }" "$PMUT/plan-review.mjs"
 }
 plan_mutate_and_expect_fail xii 'dropping the signals: { targetType } thread from the implementation-plan branch' pmut_drop_impl_signals
 
@@ -6073,6 +6271,27 @@ pmut_neuter_terminal_filter() {
     grep -q 'MUTANT: never treats any status as terminal' "$PMUT/plan-review.mjs"
 }
 plan_mutate_and_expect_fail xiii 'neutering isTerminalPhaseStatus so it never excludes a phase' pmut_neuter_terminal_filter
+
+# (xiv) Stop a PHASE unit from inheriting its parent roadmap's recorded intent
+#       (drop the two fields from the phase push in buildReviewUnits' roadmap
+#       branch, leaving the roadmap unit's own copy intact). Flips AC4(a)/(b):
+#       the inheritance claim is the whole point of the roadmap-level decision,
+#       and a roadmap-only thread would still leave every phase unchecked.
+pmut_drop_phase_inheritance() {
+    perl -0pi -e "s/        intent: inherited\.intent,\n        hasIntent: inherited\.hasIntent,\n/        \/\/ MUTANT: phase inheritance removed\n/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT: phase inheritance removed' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail xiv 'dropping the phase units inheritance of the roadmap intent' pmut_drop_phase_inheritance
+
+# (xv) Drop the standalone-phase fetch:roadmap-intent call site entirely — a
+#      { roadmap, phase } target then silently loses intent. Flips AC4(c).
+pmut_drop_intent_fetch() {
+    perl -pi -e "s/^  if \(kind === 'phase'\) \{\$/  if (false) { \/\/ MUTANT: standalone-phase intent fetch removed/" \
+        "$PMUT/plan-review.mjs"
+    grep -q 'MUTANT: standalone-phase intent fetch removed' "$PMUT/plan-review.mjs"
+}
+plan_mutate_and_expect_fail xv 'removing the standalone-phase fetch:roadmap-intent call site' pmut_drop_intent_fetch
 
 pass "5b-mut: all thirteen driver mutations flip a 5b-exec assertion, and the control passes"
 
@@ -8630,7 +8849,12 @@ for (const [mode, dimKey] of [['code', 'correctness'], ['plan', 'coherence']]) {
 
   // s2 is dropped by the confidence floor even though no refuter graded it —
   // the floor is not bypassed by the pass-through path.
-  assert.deepEqual(survivors.map((f) => f.id), ['b1', 'c1', 's1'], mode + ': below-floor suggestion still dropped');
+  // In plan mode the CTX threads no `intent`, so the pipeline also appends the
+  // non-gating missing-intent notice — it is injected AFTER the floor filter and
+  // rides at the tail with the other suggestions.
+  // (confidence 100 ranks it ahead of s1's 90 within the suggestion tier)
+  const expectedIds = mode === 'plan' ? ['b1', 'c1', 'intent-alignment-no-intent', 's1'] : ['b1', 'c1', 's1'];
+  assert.deepEqual(survivors.map((f) => f.id), expectedIds, mode + ': below-floor suggestion still dropped');
 
   const byId = Object.fromEntries(survivors.map((f) => [f.id, f]));
   assert.equal(byId.s1.unrefuted, true, mode + ': the passed-through finding is marked `unrefuted: true`');
@@ -10075,5 +10299,462 @@ for doc in "$PROSE/rdm-core/src/templates/skill-review-cli.md" \
         fail "11b: the default-span renders lost the rule too — the deletion was not override-scoped"
 done
 pass "11b: a one-span deletion leaves --check green but is caught by the six-surface grep"
+
+# --- 12. INTENT-ALIGNMENT DIMENSION -------------------------------------------
+# The plan-mode dimension that checks a plan against the operator-recorded
+# `## Intent` section — the ONE check that can catch "every acceptance criterion
+# passes while the stated goal stays unmet", which the other plan dimensions
+# structurally cannot (they judge the plan against itself and against the
+# project's conventions, never against what the operator asked for).
+#
+# Three properties are gated here, each with a planted-mutation self-test:
+#   (a) PRESENCE — the dimension reaches every consumer, twin, and plan render,
+#       and NO code render (mode isolation).
+#   (b) BEHAVIOR — with intent, the verbatim section and the coherent-yet-unmet
+#       instruction both reach the finder prompt, and a blocking finding drives
+#       classifyPlanOutcome to `rework`. Without intent, NO agent is dispatched,
+#       no blocking finding is produced, and the absence is REPORTED as a
+#       non-gating suggestion.
+#   (c) AGNOSTIC PROSE — the dimension ships to other repos, so its title/focus
+#       and its rendered bullet name no repo path, crate, or CLI literal.
+say "12. intent-alignment: presence, no-intent policy, phase inheritance, and agnostic prose"
+
+# (a) PRESENCE across every projection route.
+for f in "$WF_DIR/rdm-wf-plan-review.js" "$WF_DIR/rdm-wf-review-refute-fix.js" "$WF_DIR/rdm-wf-dispatch-phase.js"; do
+    grep -qF 'intent-alignment' "$f" ||
+        fail "12: $(basename "$f") does not carry the intent-alignment dimension — re-run scripts/gen-workflow-review.sh"
+done
+for f in "$REPO_ROOT"/rdm-core/src/templates/workflows/rdm-wf-dispatch-phase.js \
+    "$REPO_ROOT"/rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js; do
+    grep -qF 'intent-alignment' "$f" ||
+        fail "12: the crate-embedded twin $(basename "$f") is stale — re-copy it from .claude/workflows/"
+done
+for doc in $PLAN_RENDERS; do
+    grep -qF 'intent-alignment' "$doc" ||
+        fail "12: plan render $doc is missing the intent-alignment bullet — re-run gen-skill-review.sh --mode plan"
+done
+for doc in $CODE_RENDERS; do
+    if grep -nF 'intent-alignment' "$doc" >&2; then
+        fail "12: code render $doc carries the plan-only intent-alignment bullet — mode isolation is broken"
+    fi
+done
+pass "12(a): intent-alignment reaches all three consumers, both crate twins, and all three plan renders; absent from every code render"
+
+# Non-vacuity for the presence grep: strip the key from a scratch copy.
+mkdir -p "$TMP/intent-presence"
+sed 's/intent-alignment/zz-removed-dimension/g' "$WF_DIR/rdm-wf-plan-review.js" >"$TMP/intent-presence/stripped.js"
+if grep -qF 'intent-alignment' "$TMP/intent-presence/stripped.js"; then
+    fail "12: the presence detector is vacuous — a stripped consumer still matched"
+fi
+pass "12(a): presence detector fires on a stripped consumer"
+
+# (b) BEHAVIOR — driven in Node against the REAL pipeline with a spy agent.
+cat >"$TMP/intent-test.mjs" <<'INTENTEOF'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const libPath = process.argv[2];
+const {
+  DIMENSIONS,
+  selectDimensions,
+  findPrompt,
+  extractIntent,
+  intentPresent,
+  INTENT_PREAMBLE,
+  INTENT_MISSING_NOTICE,
+  buildReviewPipeline,
+  hasBlocking,
+  classifyPlanOutcome,
+  stripNonPhaseUnitOfWork,
+} = await import(pathToFileURL(libPath).href);
+
+// Reference primitives (identical to the ones the other sections inject).
+function refParallel(thunks) {
+  return Promise.all(
+    thunks.map(async (t) => {
+      try {
+        return await t();
+      } catch {
+        return null;
+      }
+    })
+  );
+}
+async function refPipeline(items, ...stages) {
+  return Promise.all(
+    items.map(async (item, i) => {
+      let acc = item;
+      for (const stage of stages) {
+        try {
+          acc = await stage(acc, item, i);
+        } catch {
+          return null;
+        }
+      }
+      return acc;
+    })
+  );
+}
+function makeSpyAgent(plantFindings, plantVerdicts) {
+  const calls = [];
+  async function agent(prompt, opts) {
+    const label = (opts && opts.label) || '';
+    calls.push({ label, prompt });
+    const parts = label.split(':');
+    if (parts[0] === 'find') return { findings: plantFindings[parts[2]] || [] };
+    if (parts[0] === 'refute') {
+      const id = parts.slice(2).join(':');
+      return plantVerdicts[id] || { refuted: false, confidence: 90 };
+    }
+    throw new Error('unexpected agent label: ' + label);
+  }
+  return { agent, calls };
+}
+const deps = (spy) => ({ agent: spy.agent, pipeline: refPipeline, parallel: refParallel, log: () => {} });
+
+const intentDim = DIMENSIONS.plan.find((d) => d.key === 'intent-alignment');
+assert.ok(intentDim, 'DIMENSIONS.plan must carry an intent-alignment entry');
+
+// ============================================================================
+// AC3 — the recorded `distribute-workflow-lane` scenario, replayed hermetically.
+//
+// The failure this dimension exists to catch, reproduced from the record rather
+// than invented: the roadmap's recorded goal was DOWNSTREAM CONSUMPTION (a
+// consumer repo installing the lane and it working there), while every
+// acceptance criterion in the plan was EMISSION-shaped (bytes written into a
+// directory). Every criterion could pass with the goal untouched.
+//
+// The fixture is hard-coded, never read from the live plan repo — this harness
+// is hermetic and must stay runnable with no plan repo present.
+// ============================================================================
+const LANE_BODY = [
+  '# distribute-workflow-lane',
+  '',
+  'Ship the autonomous workflow lane to downstream repos.',
+  '',
+  '## Intent',
+  '',
+  '**Goal.** A downstream repo that installs the lane can dispatch a phase with it and have the dispatch succeed, without hand-editing anything it received.',
+  '',
+  '**Non-goals.**',
+  '- Rewriting the interactive skills as workflows.',
+  '',
+  '**Done looks like.**',
+  '- WHEN a fresh consumer repo installs the lane THEN a phase dispatch runs there end to end and returns an OUTCOME.',
+  '',
+  '## Steps',
+  '',
+  '1. Emit the workflow scripts into the target directory.',
+  '',
+  '## Acceptance Criteria',
+  '',
+  '- [ ] The emitted tree contains both engine files',
+  '- [ ] The emitted bytes are byte-identical to the source copies',
+  '- [ ] Every emitted skill has valid frontmatter',
+].join('\n');
+
+const lane = extractIntent(LANE_BODY);
+assert.equal(lane.hasIntent, true, 'AC3: the fixture records a captured intent');
+assert.ok(lane.intent.includes('## Intent'), 'AC3: the extracted intent is the verbatim section, heading included');
+assert.ok(lane.intent.includes('downstream repo'), 'AC3: the extracted intent carries the recorded Goal');
+assert.ok(!lane.intent.includes('## Steps'), 'AC3: extraction stops at the next line-start `## ` heading');
+
+{
+  // (a) PROMPT CONTENT — the verbatim intent AND the coherent-yet-unmet
+  //     instruction both reach the intent-alignment finder.
+  const blocking = [
+    {
+      id: 'emission-only-acs',
+      concern: 'intent-alignment',
+      severity: 'blocking',
+      confidence: 90,
+      what_fails: 'Every acceptance criterion tests emission; none tests the recorded downstream-dispatch signal.',
+    },
+  ];
+  const spy = makeSpyAgent({ 'intent-alignment': blocking }, { 'emission-only-acs': { refuted: false, confidence: 90 } });
+  const result = await buildReviewPipeline('plan', deps(spy))({
+    target: 'roadmap distribute-workflow-lane (body)\n\n' + LANE_BODY,
+    intent: lane.intent,
+    signals: { targetType: 'roadmap', hasIntent: true },
+  });
+
+  const findCall = spy.calls.find((c) => c.label === 'find:plan:intent-alignment');
+  assert.ok(findCall, 'AC3(a): an intent-alignment finder was dispatched for a target WITH recorded intent');
+  assert.ok(findCall.prompt.includes(INTENT_PREAMBLE), 'AC3(a): the prompt carries the intent preamble');
+  assert.ok(findCall.prompt.includes(lane.intent), 'AC3(a): the recorded intent reaches the prompt VERBATIM');
+  // Read the instruction off the dimension itself, never a copied literal, so
+  // this can only pass while the prose actually says it.
+  const COHERENT_YET_UNMET =
+    'An acceptance criterion may be internally coherent and still leave the stated goal unmet';
+  assert.ok(
+    intentDim.focus.includes(COHERENT_YET_UNMET),
+    'AC3(a): the dimension focus must state that a coherent criterion can still leave the goal unmet'
+  );
+  assert.ok(
+    findCall.prompt.includes(COHERENT_YET_UNMET),
+    'AC3(a): the coherent-yet-unmet instruction reaches the finder prompt'
+  );
+
+  // (b) OUTCOME — the blocking finding is refuted by a FRESH refuter, survives,
+  //     and drives the plan outcome to `rework`.
+  const refuteCall = spy.calls.find((c) => c.label === 'refute:plan:emission-only-acs');
+  assert.ok(refuteCall, 'AC3(b): a fresh refuter graded the blocking intent-alignment finding');
+  const ids = result.survivors.map((f) => f.id);
+  assert.ok(ids.includes('emission-only-acs'), 'AC3(b): the blocking intent-alignment finding survives refutation');
+  assert.ok(!ids.includes('intent-alignment-no-intent'), 'AC3(b): no missing-intent notice when intent IS present');
+  assert.equal(hasBlocking(result.survivors), true, 'AC3(b): the survivor set is blocking');
+  assert.equal(
+    classifyPlanOutcome(stripNonPhaseUnitOfWork(result.survivors, 'roadmap')),
+    'rework',
+    'AC3(b): a surviving blocking intent-alignment finding drives classifyPlanOutcome to rework'
+  );
+}
+
+// ============================================================================
+// AC5 — a roadmap-scoped target with NO recorded intent produces no blocking
+// finding and dispatches NO intent-alignment agent. Not-dispatching is the cost
+// claim, so it is asserted on the agent's own call count.
+// ============================================================================
+{
+  const spy = makeSpyAgent({}, {});
+  const result = await buildReviewPipeline('plan', deps(spy))({
+    target: 'roadmap no-intent (body)\n\nA plan with no recorded intent.',
+    signals: { targetType: 'roadmap', hasIntent: false },
+  });
+  const intentCalls = spy.calls.filter((c) => c.label.indexOf('intent-alignment') !== -1);
+  assert.equal(intentCalls.length, 0, 'AC5: ZERO agents dispatched for intent-alignment (finder or refuter)');
+  assert.equal(
+    spy.calls.filter((c) => c.label === 'find:plan:intent-alignment').length,
+    0,
+    'AC5: no intent-alignment finder'
+  );
+  assert.equal(hasBlocking(result.survivors), false, 'AC5: no blocking finding from a missing intent');
+}
+assert.ok(
+  !selectDimensions('plan', { targetType: 'roadmap', hasIntent: false }).map((d) => d.key).includes('intent-alignment'),
+  'AC5: hasIntent:false deselects intent-alignment'
+);
+assert.ok(
+  selectDimensions('plan', { targetType: 'roadmap', hasIntent: true }).map((d) => d.key).includes('intent-alignment'),
+  'AC5: hasIntent:true selects intent-alignment'
+);
+
+// ============================================================================
+// AC6 — absent intent, `(not captured)`, and a PARTIAL section (missing
+// `Done looks like`) are INDISTINGUISHABLE at the gate. One rule, one
+// mechanism, no tri-state a consumer could branch on.
+// ============================================================================
+{
+  const bodies = {
+    absent: 'Just a summary.\n\n## Steps\n\n1. do the thing',
+    notCaptured: 'Summary.\n\n## Intent\n\n(not captured)\n\n## Steps\n\n1. do',
+    partial: 'Summary.\n\n## Intent\n\n**Goal.** ship the thing\n\n## Steps\n\n1. do',
+  };
+  const results = {};
+  for (const [name, body] of Object.entries(bodies)) {
+    const got = extractIntent(body);
+    assert.deepEqual(got, { hasIntent: false, intent: null }, 'AC6: ' + name + ' yields the SAME no-intent value');
+    const spy = makeSpyAgent({}, {});
+    results[name] = await buildReviewPipeline('plan', deps(spy))({
+      target: 'roadmap x (body)\n\n' + body,
+      intent: got.intent,
+      signals: { targetType: 'roadmap', hasIntent: got.hasIntent },
+    });
+    assert.equal(
+      spy.calls.filter((c) => c.label === 'find:plan:intent-alignment').length,
+      0,
+      'AC6: ' + name + ' dispatches no intent-alignment finder'
+    );
+    assert.equal(hasBlocking(results[name].survivors), false, 'AC6: ' + name + ' produces no blocking finding');
+  }
+  assert.deepEqual(results.absent.survivors, results.notCaptured.survivors, 'AC6: absent === (not captured) at the gate');
+  assert.deepEqual(results.absent.survivors, results.partial.survivors, 'AC6: absent === a partial section at the gate');
+}
+
+// ============================================================================
+// AC7 — the fail-open backstop. selectDimensions with NULL signals must still
+// include intent-alignment (object-level fail-open is preserved), and a prompt
+// built with no intent must carry the backstop instruction and NOT the preamble.
+// ============================================================================
+{
+  assert.ok(
+    selectDimensions('plan', null).map((d) => d.key).includes('intent-alignment'),
+    'AC7: null signals fail OPEN — intent-alignment is still selected'
+  );
+  const BACKSTOP =
+    'If no recorded intent is present in the material you were given, return an empty findings array and report nothing';
+  assert.ok(intentDim.focus.includes(BACKSTOP), 'AC7: the dimension focus must carry the fail-open backstop sentence');
+  const p = findPrompt('plan', intentDim, { target: 'roadmap x (body)' });
+  assert.ok(!p.includes(INTENT_PREAMBLE), 'AC7: no intent threaded ⇒ the prompt carries no intent preamble');
+  assert.ok(p.includes(BACKSTOP), 'AC7: the backstop instruction reaches the finder even with no intent');
+  // AC1's negative half: the preamble appears only when intent IS threaded.
+  const withIntent = findPrompt('plan', intentDim, { target: 't', intent: '## Intent\n\n**Goal.** g' });
+  assert.ok(withIntent.includes(INTENT_PREAMBLE), 'AC1: the preamble appears when intent IS threaded');
+  assert.ok(withIntent.includes('**Goal.** g'), 'AC1: the intent text is threaded verbatim');
+  // intentPresent is the ONE predicate both the prompt and the notice read.
+  assert.equal(intentPresent({ intent: '  ' }), false, 'AC1: a whitespace-only intent is not present');
+  assert.equal(intentPresent({}), false, 'AC1: an omitted intent is not present');
+  assert.equal(intentPresent({ intent: 'x' }), true, 'AC1: a non-empty intent is present');
+}
+
+// ============================================================================
+// AC9 — the dimension's ABSENCE is reported, never silently skipped: exactly one
+// `suggestion`-severity notice naming the missing input reaches the caller in
+// the ranked survivors array, `hasBlocking` stays false, and the outcome is
+// still `reviewed`. `budget`/`coverage` describe AGENT work and must be
+// untouched by an injection no agent produced.
+// ============================================================================
+{
+  const spy = makeSpyAgent({}, {});
+  const res = await buildReviewPipeline('plan', deps(spy))({
+    target: 'roadmap x (body)',
+    signals: { targetType: 'roadmap', hasIntent: false },
+  });
+  const notices = res.survivors.filter((f) => f.concern === 'intent-alignment');
+  assert.equal(notices.length, 1, 'AC9: exactly ONE missing-intent notice');
+  assert.equal(notices[0].severity, 'suggestion', 'AC9: the notice is suggestion severity');
+  assert.ok(/[Nn]o recorded intent/.test(notices[0].what_fails), 'AC9: the notice names the missing input');
+  assert.equal(hasBlocking(res.survivors), false, 'AC9: hasBlocking stays false');
+  assert.equal(classifyPlanOutcome(res.survivors), 'reviewed', 'AC9: the notice does not change the outcome');
+  // The notice consumed no budget and no coverage slot.
+  assert.equal(res.budget.produced, 0, 'AC9: the notice is not counted as a produced finding');
+  assert.equal(res.budget.graded, 0, 'AC9: the notice is never graded');
+  assert.equal(res.coverage.ran.indexOf('intent-alignment'), -1, 'AC9: intent-alignment is not recorded as having run');
+  // Fresh object per call — no shared mutable finding leaks across units.
+  const a = INTENT_MISSING_NOTICE();
+  const b = INTENT_MISSING_NOTICE();
+  assert.notStrictEqual(a, b, 'AC9: INTENT_MISSING_NOTICE is a factory, not a shared singleton');
+  assert.deepEqual(a, b, 'AC9: every no-intent case yields a byte-identical notice');
+  // Never in code mode.
+  const codeSpy = makeSpyAgent({}, {});
+  const codeRes = await buildReviewPipeline('code', deps(codeSpy))({ target: 'phase r/p', signals: null });
+  assert.equal(
+    codeRes.survivors.filter((f) => f.concern === 'intent-alignment').length,
+    0,
+    'AC9: the notice never appears in a code-mode run'
+  );
+}
+
+// ============================================================================
+// AC11 — the dimension prose is project-agnostic: it ships to other repos, so
+// its title/focus may name the artifact by SECTION NAME and SHAPE only.
+// ============================================================================
+{
+  const forbidden = [
+    'rdm-core',
+    'rdm-cli',
+    'rdm-server',
+    'rdm-mcp',
+    'anyhow',
+    'rustdoc',
+    'cargo',
+    'Cargo',
+    'crate',
+    'missing_docs',
+    'rdm ',
+    '--project',
+    'target/debug',
+    '.claude/',
+  ];
+  const scoped = [intentDim.title, intentDim.focus].join('\n');
+  for (const tok of forbidden) {
+    assert.equal(
+      scoped.indexOf(tok),
+      -1,
+      'AC11: the intent-alignment prose must be project-agnostic — found forbidden token: ' + tok
+    );
+  }
+  assert.ok(scoped.includes('## Intent'), 'AC11: the prose names the artifact by its section name');
+}
+
+console.log('12: intent-alignment behavior assertions passed');
+INTENTEOF
+
+if run_node "$TMP/intent-test.mjs" "$LIB"; then
+    pass "12(b): AC1/AC3/AC5/AC6/AC7/AC9/AC11 — prompt threading, no-intent policy, reported absence, agnostic prose"
+else
+    fail "12(b): intent-alignment behavior assertions failed"
+fi
+
+# (c) PLANTED-MUTATION SELF-TESTS — three independent mutations, each of which
+#     must flip a distinct half of 12(b).
+IMUT="$TMP/intent-mut/.claude/workflows/lib"
+mkdir -p "$IMUT"
+reset_imut() { cp "$LIB" "$IMUT/review.mjs"; }
+
+imut_expect_fail() {
+    label="$1"
+    desc="$2"
+    reset_imut
+    shift 2
+    "$@" || fail "12-mut($label): mutation setup failed"
+    if run_node "$TMP/intent-test.mjs" "$IMUT/review.mjs" >/dev/null 2>&1; then
+        fail "12-mut($label): $desc did NOT flip a 12(b) assertion — the check is vacuous"
+    fi
+    pass "12-mut($label): $desc flips a 12(b) assertion"
+}
+
+reset_imut
+run_node "$TMP/intent-test.mjs" "$IMUT/review.mjs" >/dev/null 2>&1 ||
+    fail "12-mut(control): 12(b) FAILED against an unmutated copy — the mutations below would be meaningless"
+pass "12-mut(control): 12(b) passes against an unmutated copy"
+
+# (i) Strip the coherent-yet-unmet sentence from `focus` — AC3(a) must fail.
+imut_strip_sentence() {
+    perl -pi -e "s/An acceptance criterion may be internally coherent and still leave the stated goal unmet/MUTANT: sentence removed/" \
+        "$IMUT/review.mjs"
+    grep -q 'MUTANT: sentence removed' "$IMUT/review.mjs"
+}
+imut_expect_fail i 'stripping the coherent-yet-unmet sentence from the dimension focus' imut_strip_sentence
+
+# (ii) Delete the `when` predicate so the dimension is always selected — AC5's
+#      zero-dispatch claim must fail.
+imut_drop_when() {
+    perl -pi -e "s/^      when: \(s\) => s\.hasIntent === true,\$/      \/\/ MUTANT: when predicate removed/" \
+        "$IMUT/review.mjs"
+    grep -q 'MUTANT: when predicate removed' "$IMUT/review.mjs"
+}
+imut_expect_fail ii 'deleting the hasIntent when predicate' imut_drop_when
+
+# (iii) Delete the missing-intent notice injection — AC9 must fail.
+imut_drop_notice() {
+    perl -pi -e "s/^      mode === 'plan' && !intentPresent\(ctx\) \? survivors\.concat\(\[INTENT_MISSING_NOTICE\(\)\]\) : survivors;\$/      survivors; \/\/ MUTANT: notice injection removed/" \
+        "$IMUT/review.mjs"
+    grep -q 'MUTANT: notice injection removed' "$IMUT/review.mjs"
+}
+imut_expect_fail iii 'deleting the missing-intent notice injection' imut_drop_notice
+
+# (iv) Strip the fail-open backstop sentence — AC7 must fail.
+imut_drop_backstop() {
+    perl -pi -e "s/If no recorded intent is present in the material you were given, return an empty findings array and report nothing/MUTANT: backstop removed/" \
+        "$IMUT/review.mjs"
+    grep -q 'MUTANT: backstop removed' "$IMUT/review.mjs"
+}
+imut_expect_fail iv 'stripping the fail-open backstop sentence' imut_drop_backstop
+
+# (d) AGNOSTIC PROSE on the RENDERED surfaces (the documentation projection —
+#     independent of 12(b)'s runtime-`focus` half).
+INTENT_BULLET_TOKENS='rdm-core|rdm-cli|rdm-server|anyhow|rustdoc|missing_docs|target/debug'
+for doc in $PLAN_RENDERS; do
+    if awk '/- \*\*intent-alignment\*\*/{f=1} f && /^- \*\*/ && !/intent-alignment/{f=0} f' "$doc" |
+        grep -nE "$INTENT_BULLET_TOKENS" >&2; then
+        fail "12(d): $doc's intent-alignment bullet carries project-specific prose (see the hits above)"
+    fi
+done
+pass "12(d): the rendered intent-alignment bullet is project-agnostic on all three plan surfaces"
+
+# Non-vacuity for (d): plant a crate name inside the bullet region.
+mkdir -p "$TMP/intent-bullet"
+sed 's/- \*\*intent-alignment\*\* —/- **intent-alignment** — rdm-core/' \
+    "$TEMPLATES/skill-plan-review-cli.md" >"$TMP/intent-bullet/planted.md"
+if diff -q "$TEMPLATES/skill-plan-review-cli.md" "$TMP/intent-bullet/planted.md" >/dev/null 2>&1; then
+    fail "12(d): the planted bullet mutation did not apply — the anchor text moved"
+fi
+if awk '/- \*\*intent-alignment\*\*/{f=1} f && /^- \*\*/ && !/intent-alignment/{f=0} f' "$TMP/intent-bullet/planted.md" |
+    grep -qE "$INTENT_BULLET_TOKENS"; then
+    pass "12(d): the region-scoped detector fires on a planted crate name"
+else
+    fail "12(d): the region-scoped detector did NOT fire on a planted crate name — it is vacuous"
+fi
 
 say "verify-workflow-review.sh: ALL GREEN"

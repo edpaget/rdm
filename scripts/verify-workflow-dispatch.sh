@@ -1334,6 +1334,106 @@ assert.throws(
 assert.throws(() => parseDispatchArgs({ rdmBin: 'rdm', maxRefutations: '5abc' }), /maxRefutations/, "'5abc' is rejected, not coerced to 5");
 assert.throws(() => parseDispatchArgs({ rdmBin: 'rdm', maxRefutations: -1 }), /maxRefutations/, 'a negative budget is rejected');
 
+// ============================================================================
+// AC8 — a caller with NO ROADMAP IN HAND never produces a blocking
+// intent-alignment finding, and therefore never exhausts maxPlanRevise.
+//
+// This is the failure mode the whole non-blocking missing-intent policy exists
+// to prevent: a blocking finding on a document nobody can revise would burn
+// every plan-revise round and escalate the phase — "noise parks phases blocked
+// and halts autopilot". The gate is driven over the REAL plan pipeline (not a
+// scripted reviewer), with NO `intent` and NO `signals`, so selection fail-opens
+// and the intent-alignment finder is actually dispatched and must honor its own
+// backstop.
+// ============================================================================
+{
+  const reviewMod = await import(new URL('./review.mjs', pathToFileURL(libPath)).href);
+  const refParallel = (thunks) =>
+    Promise.all(
+      thunks.map(async (t) => {
+        try {
+          return await t();
+        } catch {
+          return null;
+        }
+      })
+    );
+  const refPipeline = async (items, ...stages) =>
+    Promise.all(
+      items.map(async (item, i) => {
+        let acc = item;
+        for (const stage of stages) {
+          try {
+            acc = await stage(acc, item, i);
+          } catch {
+            return null;
+          }
+        }
+        return acc;
+      })
+    );
+  const finderCalls = [];
+  const fakeAgent = async (prompt, opts) => {
+    const label = (opts && opts.label) || '';
+    if (label.indexOf('find:') === 0) {
+      finderCalls.push({ label, prompt });
+      // Every finder is clean. The intent-alignment finder in particular honors
+      // the backstop prose: with no recorded intent in the material it was
+      // given, it returns an empty findings array rather than manufacturing one.
+      return { findings: [] };
+    }
+    if (label.indexOf('refute:') === 0) return { refuted: false, confidence: 90 };
+    throw new Error('unexpected agent label: ' + label);
+  };
+  const realPlanReview = reviewMod.buildReviewPipeline('plan', {
+    agent: fakeAgent,
+    pipeline: refPipeline,
+    parallel: refParallel,
+    log: () => {},
+  });
+
+  let planCount = 0;
+  let reviseCount = 0;
+  let reviewCount = 0;
+  const res = await runPlanGate(
+    { maxRevise: 2, tier: 'medium' },
+    {
+      plan: async () => {
+        planCount++;
+        return { doc: 'a plan document with no recorded intent behind it' };
+      },
+      revise: async () => {
+        reviseCount++;
+        return { doc: 'revised' };
+      },
+      // Exactly the shape the workflow's own plan-gate callback has: a target,
+      // an `intent` value that is null here, and NO `signals` key.
+      review: async (doc) => {
+        reviewCount++;
+        return await realPlanReview({ target: String(doc.doc), intent: null, maxRefutations: 5 });
+      },
+    }
+  );
+
+  // The intent-alignment finder DID run (selection fail-opens with no signals),
+  // proving the backstop prose is what kept the gate quiet — not a lucky skip.
+  assert.ok(
+    finderCalls.some((c) => c.label === 'find:plan:intent-alignment'),
+    'AC8: with no signals, selection fail-opens and the intent-alignment finder IS dispatched'
+  );
+  assert.equal(planCount, 1, 'AC8: the plan is authored exactly once');
+  assert.equal(reviewCount, 1, 'AC8: exactly ONE review round — no blocking finding forced another');
+  assert.equal(reviseCount, 0, 'AC8: maxPlanRevise is never consumed by a missing intent');
+  assert.equal(reviseCount < 2, true, 'AC8: the plan-revise budget is not exhausted');
+  assert.equal(reviewMod.hasBlocking(res.findings), false, 'AC8: no blocking finding reaches the gate');
+  // The absence IS reported — as a non-gating suggestion, on the same array.
+  assert.ok(
+    res.findings.some((f) => f.concern === 'intent-alignment' && f.severity === 'suggestion'),
+    'AC8: the missing input is reported as a non-blocking suggestion, not silently skipped'
+  );
+}
+console.log('AC8: a caller with no roadmap in hand never blocks and never exhausts maxPlanRevise');
+
 console.log('all dispatch-phase gate assertions passed');
 NODE_TEST
 
@@ -1597,6 +1697,44 @@ if ! grep -E 'runPlanReview\(' "$TMP/planted-plansig.js" | grep -q 'signals'; th
     fail "AC-CANONICAL-PLAN-REVIEW detector broken — a planted signals-bearing runPlanReview call was not detected"
 fi
 pass "AC-CANONICAL-PLAN-REVIEW: one canonical plan pipeline, bound as runPlanGate's sole review callback, fail-open comment present and signals omitted; detectors fire on planted mutations"
+
+# AC-PLAN-INTENT: the plan gate threads the parent roadmap's recorded `## Intent`
+# as a VALUE (`intent:`) and still passes NO `signals` key. Both halves matter:
+#   * dropping `intent:` silently disables the intent-alignment dimension for
+#     every dispatched phase — the gate would still be green, just blind;
+#   * adding `signals` would violate the SIGNALS SITE deferral above AND drop
+#     `unit-of-work` for phases (currently selected via the null fail-open), a
+#     silent coverage regression on top of a red harness.
+# The no-signals half is already asserted above; this adds the positive half and
+# the extraction it depends on.
+grep -qF 'review: async (doc) => runPlanReview({ target: renderPlanDoc(doc), intent: planIntent.intent,' "$WF" ||
+    fail "AC-PLAN-INTENT: the plan gate's review callback must thread intent: planIntent.intent (the recorded ## Intent, as a VALUE)"
+grep -qF 'const planIntent = extractIntent(phaseMeta.roadmapBody)' "$WF" ||
+    fail "AC-PLAN-INTENT: the plan gate must derive its intent from the Stage-0 fetch's roadmapBody via extractIntent"
+# roadmapBody rides on the EXISTING Stage-0 agent — it must be OPTIONAL in the
+# schema (never in `required`), so a caller-supplied metadata hoist that predates
+# this field keeps working and simply degrades to no intent.
+grep -qE "^ *roadmapBody: \{ type: 'string' \}," "$WF" ||
+    fail "AC-PLAN-INTENT: PHASE_META_SCHEMA must declare an optional roadmapBody property"
+if grep -qE "required: \[[^]]*roadmapBody" "$WF"; then
+    fail "AC-PLAN-INTENT: roadmapBody must NOT be in PHASE_META_SCHEMA's required list — an older caller hoist must still work"
+fi
+pass "AC-PLAN-INTENT: the plan gate threads intent as a value, derived from an OPTIONAL Stage-0 roadmapBody, and passes no signals"
+
+# Planted-mutation self-tests: prove both new detectors fire.
+sed 's/intent: planIntent\.intent, //' "$WF" >"$TMP/planted-nointent.js"
+if grep -qF 'review: async (doc) => runPlanReview({ target: renderPlanDoc(doc), intent: planIntent.intent,' "$TMP/planted-nointent.js"; then
+    fail "AC-PLAN-INTENT detector broken — stripping the intent thread was not detected"
+fi
+sed "s/^\( *\)roadmapBody: { type: 'string' },/\1roadmapBodyX: { type: 'string' },/" "$WF" >"$TMP/planted-noschema.js"
+if grep -qE "^ *roadmapBody: \{ type: 'string' \}," "$TMP/planted-noschema.js"; then
+    fail "AC-PLAN-INTENT detector broken — renaming the roadmapBody schema property was not detected"
+fi
+sed "s/required: \['roadmap', 'phase', 'stem', 'model', 'body', 'models'\]/required: ['roadmap', 'phase', 'stem', 'model', 'body', 'models', 'roadmapBody']/" "$WF" >"$TMP/planted-reqbody.js"
+if ! grep -qE "required: \[[^]]*roadmapBody" "$TMP/planted-reqbody.js"; then
+    fail "AC-PLAN-INTENT detector broken — a planted required roadmapBody was not detected"
+fi
+pass "AC-PLAN-INTENT: detectors fire on a stripped intent thread, a renamed schema property, and a required roadmapBody"
 
 # Driver arg hardening: dispatch-phase is invoked DIRECTLY via the Workflow tool
 # (rdm-do --auto, hand-run single phases), so an LLM-authored stringified `args`

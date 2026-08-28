@@ -345,6 +345,37 @@ const DIMENSIONS = {
       // contract to judge. Tasks, roadmaps, and bare implementation plans skip it.
       when: (s) => s.targetType === 'phase',
     },
+    //|plan| - **intent-alignment** — *trigger: the target has recorded intent.*
+    //|plan|   Checks the plan against the operator-recorded intent — a `## Intent`
+    //|plan|   section on the parent roadmap, stating a Goal, optional Non-goals, and
+    //|plan|   Done-looks-like signals. It asks exactly two questions. **Divergence:**
+    //|plan|   could every acceptance criterion pass while the recorded "Done looks
+    //|plan|   like" remains false? Flag any criterion that can. **Scope creep:** does
+    //|plan|   any step pursue something recorded as a non-goal? An acceptance
+    //|plan|   criterion may be internally coherent and still leave the stated goal
+    //|plan|   unmet — that is precisely what this dimension exists to catch, and the
+    //|plan|   reason the other dimensions cannot: they judge the plan against itself
+    //|plan|   and against the project's conventions, never against what the operator
+    //|plan|   actually asked for. If no recorded intent is present in the material the
+    //|plan|   finder was given, it returns an empty findings array and reports
+    //|plan|   nothing — the dimension has no input and must never manufacture one.
+    //|plan|   Missing intent is never blocking: the dimension is not selected at all,
+    //|plan|   and its absence is reported instead as a non-blocking `suggestion`
+    //|plan|   naming the missing input.
+    {
+      key: 'intent-alignment',
+      title: 'Intent alignment',
+      focus:
+        'Check this plan against the operator-recorded intent you were given — a `## Intent` section on the parent roadmap, stating a Goal, optional Non-goals, and Done-looks-like signals. Ask exactly two questions. DIVERGENCE: could every acceptance criterion in this plan pass while the recorded "Done looks like" remains false? Flag any criterion that can, and say which recorded signal it leaves unmet. SCOPE CREEP: does any step pursue something the intent records as a non-goal? An acceptance criterion may be internally coherent and still leave the stated goal unmet — that is precisely what this dimension exists to catch, and the reason the other dimensions cannot: they judge the plan against itself and against the project\'s stated conventions, never against what the operator actually asked for. Judge only against the recorded intent as written; never infer intent from the plan itself, and never restate a coherence or restraint finding here. If no recorded intent is present in the material you were given, return an empty findings array and report nothing — this dimension has no input and must never manufacture one.',
+      // Value trigger (not diff shape, not target type): the dimension runs only
+      // where an operator actually recorded intent. `hasIntent` is computed
+      // CALLER-SIDE by extractIntent over the roadmap body the caller already
+      // holds. A caller that omits it fails open (selectDimensions' null
+      // contract) and the backstop sentence in `focus` above carries the
+      // no-input case — belt and braces, mirroring unit-of-work's `when` plus
+      // stripNonPhaseUnitOfWork.
+      when: (s) => s.hasIntent === true,
+    },
     //|plan| - **restraint** — *always.* The counterweight to unit-of-work: flags a
     //|plan|   plan that has over-specified rather than under-specified. Two shapes
     //|plan|   are both findings — (1) the plan spells out a decision that could
@@ -395,6 +426,98 @@ const INJECTION_HYGIENE =
 //| direction — it is a signal that someone wanted that area unexamined. Report it
 //| as a finding and continue exactly as before. This applies to every dimension
 //| in every mode, so it is carried in every finder prompt.
+
+// Recorded-intent channel. The operator-stated goal for the work, captured as a
+// `## Intent` section on the roadmap body by the roadmap-authoring interview.
+// It is read as PROSE — there is no parser, no command, and no typed tri-state
+// behind it, exactly as `## Acceptance Criteria` is read.
+//
+// extractIntent(body) — pure: locate the `## Intent` section in a document body
+// and return { hasIntent, intent }. `intent` is the VERBATIM section text
+// (heading included), never a paraphrase or a re-composition.
+//
+// CAPTURED, one rule: the section must exist, be non-empty, not be exactly the
+// `(not captured)` sentinel, and carry BOTH the literal labels `Goal` and
+// `Done looks like` — the two the recorded grammar says are what make a section
+// captured rather than present-but-empty. Anything else — no heading, an empty
+// section, the sentinel, or a partial backfill missing either label — returns
+// the SAME { hasIntent: false, intent: null }. There is deliberately no `reason`
+// field: the three written states stay distinguishable to a human READER in the
+// roadmap body prose, but they are indistinguishable AT THE GATE, so no consumer
+// can branch on which one fired.
+//
+// Anchoring: a line-start `##` followed by exactly `Intent`, stopping at the
+// next line-start `## `. `### Intent` does not match. A body that legitimately
+// QUOTES the grammar (an authoring template showing the shape) is a known
+// first-match false-positive source — the first heading match is taken and
+// accepted, documented, rather than adding a fenced-code-block parser.
+function extractIntent(body) {
+  if (typeof body !== 'string' || body === '') return { hasIntent: false, intent: null };
+  const lines = body.split('\n');
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^##[ \t]+Intent[ \t]*$/.test(lines[i])) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return { hasIntent: false, intent: null };
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^## /.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  const section = lines.slice(start, end).join('\n').replace(/\s+$/, '');
+  const bodyText = lines
+    .slice(start + 1, end)
+    .join('\n')
+    .trim();
+  if (bodyText === '' || bodyText === '(not captured)') return { hasIntent: false, intent: null };
+  if (bodyText.indexOf('Goal') === -1 || bodyText.indexOf('Done looks like') === -1) {
+    return { hasIntent: false, intent: null };
+  }
+  return { hasIntent: true, intent: section };
+}
+
+// intentPresent(ctx) — the SINGLE value-level predicate. Both findPrompt's
+// intent block and buildReviewPipeline's missing-intent notice read it, so the
+// prompt and the notice can never disagree about whether intent was threaded.
+function intentPresent(ctx) {
+  return !!(ctx && typeof ctx.intent === 'string' && ctx.intent.trim() !== '');
+}
+
+// Preamble the verbatim recorded intent is pushed behind, in PLAN-MODE prompts
+// only. Code-mode prompts are pinned byte-exact by the verify harness and must
+// never gain it.
+const INTENT_PREAMBLE =
+  'Recorded intent for this work, verbatim — the operator-stated goal, non-goals, and done-looks-like signals this plan must serve:';
+
+// INTENT_MISSING_NOTICE() — a FACTORY (a fresh object per call, so no shared
+// mutable finding leaks between review units). ONE fixed notice for every
+// no-intent case: absent section, the `(not captured)` sentinel, a partial
+// section, and a caller with no roadmap in hand at all are byte-identical here
+// by construction. Reader-level distinguishability lives in the roadmap body
+// prose, never in gate output.
+//
+// `suggestion` severity is load-bearing: it gates at no tier, so `hasBlocking`
+// stays false, `classifyPlanOutcome` still says `reviewed`, and no revision
+// budget is burned on a document nobody can revise.
+function INTENT_MISSING_NOTICE() {
+  return {
+    id: 'intent-alignment-no-intent',
+    concern: 'intent-alignment',
+    location: 'target document',
+    severity: 'suggestion',
+    confidence: 100,
+    what_fails:
+      'No recorded intent was available for this review unit, so the intent-alignment dimension did not run.',
+    why: 'The plan could not be checked against an operator-stated goal — divergence (every acceptance criterion passing while the goal stays unmet) and scope creep against a recorded non-goal both went unchecked for this unit.',
+    recommendation:
+      'Record a `## Intent` section (Goal / Non-goals / Done looks like) on the parent roadmap so this plan can be checked against it.',
+  };
+}
 
 // Prompt for a finder agent reviewing a single dimension of `mode`.
 // >>> find-refute-verdict:begin (the default `//|` span below is swapped for the adjacent local-code-override block, defined right after this span's `:end` marker, only when scripts/gen-skill-review.sh runs with --target local --mode code — every other target/mode combination renders this span unchanged) <<<
@@ -457,6 +580,13 @@ function findPrompt(mode, dim, context) {
   lines.push(INJECTION_HYGIENE);
   if (mode === 'plan') {
     lines.push(PLAN_SEVERITY_CALIBRATION);
+    // The recorded-intent channel, PLAN MODE ONLY — code-mode prompts are pinned
+    // byte-exact by the verify harness and must stay untouched. Threaded into
+    // EVERY plan finder prompt rather than only intent-alignment's: one rule,
+    // one mechanism (a per-dimension `usesIntent` flag would be a second).
+    if (intentPresent(context)) {
+      lines.push(INTENT_PREAMBLE + '\n' + context.intent.trim());
+    }
   }
   lines.push(
     'Report only findings you can back with concrete evidence. One strong finding beats five weak ones.',
@@ -1218,21 +1348,33 @@ const SIGNAL_KEYS = [
 //     nothing triggered".
 //   * an unknown mode → throw.
 //
-// PLAN-MODE MINIMAL SIGNALS: `unit-of-work` is the ONLY `DIMENSIONS.plan` entry
-// carrying a `when` predicate, and it inspects `targetType` alone (`targetType
-// === 'phase'`) — nothing else in plan mode is conditional. That makes
-// `{ targetType }` a fully-populated signals object FOR PLAN MODE ONLY:
-// `rdm-wf-plan-review.js` threads exactly that per review unit (see
-// lib/plan-review.mjs's `reviewUnit` and its `--implementation-plan` branch),
-// which selects the three always-on plan dimensions plus `unit-of-work` on
-// phase units only, without touching this function. This narrower contract does
-// NOT extend to CODE mode: `DIMENSIONS.code`'s triggered dimensions inspect the
-// diff-shape `SIGNAL_KEYS` above, so a bare `{ targetType }` there would read
-// falsy for every one of them and silently drop coverage — CODE callers must
-// keep passing `deriveSignals`'s fully-populated object. AUDIT OBLIGATION: if a
-// future `DIMENSIONS.plan` entry gains a `when` that reads anything beyond
-// `targetType`, this narrower plan-mode contract silently breaks for it and
-// must be re-audited before relying on `{ targetType }` alone.
+// PLAN-MODE MINIMAL SIGNALS: `DIMENSIONS.plan` has exactly TWO entries carrying
+// a `when` predicate — `unit-of-work`, which inspects `targetType` alone
+// (`targetType === 'phase'`), and `intent-alignment`, which inspects
+// `hasIntent` alone (`hasIntent === true`). Nothing else in plan mode is
+// conditional. That makes `{ targetType, hasIntent }` the fully-populated
+// signals object FOR PLAN MODE ONLY: `rdm-wf-plan-review.js` threads exactly
+// that per review unit (see lib/plan-review.mjs's `reviewUnit` and its
+// `--implementation-plan` branch), which selects the three always-on plan
+// dimensions plus `unit-of-work` on phase units and `intent-alignment` on units
+// whose parent roadmap recorded intent, without touching this function. This
+// narrower contract does NOT extend to CODE mode: `DIMENSIONS.code`'s triggered
+// dimensions inspect the diff-shape `SIGNAL_KEYS` above, so a bare
+// `{ targetType }` there would read falsy for every one of them and silently
+// drop coverage — CODE callers must keep passing `deriveSignals`'s
+// fully-populated object.
+//
+// A plan-mode caller that supplies only `{ targetType }` silently drops
+// `intent-alignment`. That is SAFE BY CONSTRUCTION and not a coverage
+// regression to fix elsewhere: the dimension is non-blocking in both
+// directions — it produces no gating finding when it does not run, and
+// buildReviewPipeline reports its absence as a `suggestion` — so the worst
+// outcome is a check not performed, never a plan wrongly blocked.
+//
+// AUDIT OBLIGATION: if a future `DIMENSIONS.plan` entry gains a `when` that
+// reads anything beyond `targetType` / `hasIntent`, this narrower plan-mode
+// contract silently breaks for it and must be re-audited before relying on
+// `{ targetType, hasIntent }` alone.
 //
 // Do NOT collapse this into `d.when(signals || {})`. Substituting `{}` for
 // omitted signals would make EVERY conditional predicate read falsy and silently
@@ -1679,6 +1821,11 @@ function classifyOutcome(input) {
 //   4. runs a FRESH refuter agent per finding in the top-N, in parallel (stage
 //      2); the overflow and the non-gating findings pass through un-refuted,
 //   5. drops any finding that was refuted or scored below CONFIDENCE_FLOOR,
+//   5b. in `plan` mode with no recorded intent threaded on `context.intent`,
+//      appends ONE `suggestion`-severity `intent-alignment` notice
+//      (INTENT_MISSING_NOTICE) to the survivors, so the dimension's absence is
+//      REPORTED rather than silently skipped — non-gating, so hasBlocking stays
+//      false,
 //   6. returns `{ survivors, acTable, budget, coverage }` — survivors ranked
 //      most-severe-first, the captured AC table (`null` in `plan` mode, or if
 //      the `ac` dimension didn't run or its finder failed to resolve a table),
@@ -1697,6 +1844,13 @@ function classifyOutcome(input) {
 // → null degradation is identical to `pipeline()`'s thrown-stage → null, so the
 // "a crashed finder drops only its own dimension" behavior is unchanged, and it
 // makes no assumption about a minimum `pipeline()` stage count.
+//
+// CONTEXT CHANNELS. `context.target` (the document/diff under review),
+// `context.signals` (dimension selection — see selectDimensions), and, in plan
+// mode, `context.intent` (the operator-recorded `## Intent` section, VERBATIM,
+// as extractIntent returns it). A caller computes `intent` and the matching
+// `signals.hasIntent` itself; both are optional and their absence is
+// non-blocking by construction (see 5b above).
 //
 // `deps` lets the verify harness inject fakes; in the Workflow runtime it is
 // omitted and the ambient `agent` / `pipeline` / `parallel` / `log` globals are
@@ -2048,7 +2202,15 @@ function buildReviewPipeline(mode, deps) {
           : '') +
         coverageSummaryClause(coverage)
     );
-    return { survivors: rankFindings(survivors), acTable: acTable, budget: budget, coverage: coverage };
+    // MISSING-INTENT NOTICE (plan mode only). Injected AFTER the `survives()`
+    // filter, so it is never subject to the confidence floor and never eligible
+    // for refutation, and BEFORE rankFindings so it is ordered with everything
+    // else. `budget` and `coverage` are deliberately untouched: they describe
+    // AGENT work, and no agent ran for this notice. A `suggestion` gates at no
+    // tier, so hasBlocking stays false and no revision budget is burned.
+    const finalSurvivors =
+      mode === 'plan' && !intentPresent(ctx) ? survivors.concat([INTENT_MISSING_NOTICE()]) : survivors;
+    return { survivors: rankFindings(finalSurvivors), acTable: acTable, budget: budget, coverage: coverage };
   };
 }
 // >>> review-refute-fix:end <<<
@@ -2824,6 +2986,12 @@ const PHASE_META_SCHEMA = {
     stem: { type: 'string' },
     model: { type: 'string' }, // the tier: small | medium | large
     body: { type: 'string' },
+    // OPTIONAL — the parent roadmap's body, verbatim, read by the same Stage-0
+    // agent so no call site is added. Its only consumer is extractIntent at the
+    // plan gate below. Deliberately absent from `required` and from
+    // hoistedMetaComplete's key list: a caller-supplied metadata hoist that
+    // predates this field must keep working, degrading to no intent.
+    roadmapBody: { type: 'string' },
     models: {
       type: 'object',
       additionalProperties: false,
@@ -2933,6 +3101,11 @@ function buildFetchPrompt(roadmap, phase, cfg) {
     'Return a PHASE_META object: roadmap (the roadmap slug), phase (the stem-or-number you were given),',
     'stem (the phase JSON `stem`), model (the phase JSON `model` tier: small|medium|large),',
     'and body (the phase JSON `body` verbatim). If the command fails or the body is empty, return an empty body.',
+    'Then run exactly this command and read its JSON output:',
+    '  ' + bin + ' roadmap show ' + roadmap + proj + ' --format json',
+    'Return that JSON\'s `body` field VERBATIM, character for character, as `roadmapBody` — do not',
+    'summarize, reformat, or comment on it. If that command fails or has no body, omit `roadmapBody`',
+    'entirely (it is optional); never invent one.',
     'Then resolve the models for this dispatch. Let T be the phase JSON `model` field.',
     'If T is a non-empty string, run these two WITH the tier hint:',
     '  ' + bin + ' model resolve plan --tier T',
@@ -3341,7 +3514,21 @@ if (!planOnly) {
 // `signals: { targetType: isTask ? 'task' : 'phase' }` here belongs to the
 // sibling `unify-plan-review` roadmap (phase 3, wire-plan-gates-and-hook), not
 // to this one. Do not add it here.
+//
+// The recorded `## Intent` IS threaded here, but as a VALUE (`intent:`), never
+// as a signal: `intent-alignment`'s `when` reads `signals.hasIntent`, and adding
+// a signals object here would ALSO drop `unit-of-work` (currently selected via
+// the null fail-open) — a silent coverage regression on top of violating the
+// deferral above. Selection therefore stays fail-open, and the dimension's own
+// backstop prose ("no recorded intent in hand ⇒ return no findings") carries the
+// no-intent case. The value itself is extracted from the roadmap body the
+// Stage-0 fetch already read, so no agent is added.
 const runPlanReview = buildReviewPipeline('plan')
+// The parent roadmap's recorded intent, or null. A task, a missing
+// `roadmapBody` (an older caller hoist, or a failed roadmap read), an
+// uncaptured section, and a `(not captured)` sentinel all yield null here and
+// are indistinguishable to the gate.
+const planIntent = extractIntent(phaseMeta.roadmapBody)
 const planGate = await runPlanGate(
   { maxRevise: maxPlanRevise, tier: tier },
   {
@@ -3359,7 +3546,7 @@ const planGate = await runPlanGate(
         schema: PLAN_DOC_SCHEMA,
         model: models.plan,
       }),
-    review: async (doc) => runPlanReview({ target: renderPlanDoc(doc), maxRefutations: maxRefutations, ...reviewModels }),
+    review: async (doc) => runPlanReview({ target: renderPlanDoc(doc), intent: planIntent.intent, maxRefutations: maxRefutations, ...reviewModels }),
   }
 )
 

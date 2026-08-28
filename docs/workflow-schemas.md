@@ -1424,7 +1424,7 @@ the target's type).
 | mode | always-on | triggered |
 | --- | --- | --- |
 | `code` | `ac`, `correctness` | `tests`, `architecture`, `api-docs`, `changelog`, `security` |
-| `plan` | `coherence`, `architectural-fit`, `restraint` | `unit-of-work` (phases only) |
+| `plan` | `coherence`, `architectural-fit`, `restraint` | `unit-of-work` (phases only), `intent-alignment` (recorded intent only) |
 
 `unit-of-work` triggers on `signals.targetType === 'phase'`, which is why target
 type is a first-class signal rather than diff shape alone.

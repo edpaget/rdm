@@ -29,6 +29,7 @@
 import {
   UNREFUTED_DISPOSITION,
   buildReviewPipeline,
+  extractIntent,
   stripNonPhaseUnitOfWork,
   filterPlanReviewTag,
   classifyPlanOutcome,
@@ -665,6 +666,34 @@ function buildRoadmapFetchPrompt(slug) {
 // fetch-status sentence for buildRoadmapFetchPrompt is very unlikely to also
 // fabricate a matching length/first-line pair for THIS prompt (see
 // roadmapBodyVerified's caller for how the two are compared).
+// buildRoadmapIntentFetchPrompt(slug) — the STANDALONE-PHASE path's only extra
+// mechanical read. A phase inherits its parent roadmap's recorded `## Intent`
+// (the roadmap-level decision), and on a `--roadmap` target the roadmap body is
+// already fetched, so inheritance there is free. A `--phase` target has no
+// roadmap body in hand, so this one call reads it.
+//
+// Deliberately NOT added to the roadmap fan-out path: `buildRoadmapFetchPrompt`
+// above is held to exactly ONE mechanical agent invocation per roadmap target,
+// and re-reading the same body would contradict that rule and re-inflate the
+// recorded fetch-agent baseline.
+//
+// Shaped exactly like buildPhaseFetchPrompt/buildTaskFetchPrompt: transcribe raw
+// stdout verbatim, never compose. Any failure — a thrown agent, an empty
+// transcript, unparseable JSON — degrades to no intent at the call site, never
+// to an error and never to a blocking finding: a gate must never block on an
+// input the thing it blocks cannot produce.
+function buildRoadmapIntentFetchPrompt(slug) {
+  return [
+    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
+    'Run exactly this command in the repo root:',
+    '  ./target/debug/rdm roadmap show ' + slug + ' --project rdm --format json',
+    'Return a RAW_STDOUT object: `transcript` — the ENTIRE raw stdout of that command, character for',
+    'character, exactly as printed. Do not summarize, reformat, extract fields, rename anything, or',
+    'comment on it — copy it verbatim.',
+    'If the command fails or prints nothing, return an empty string for `transcript`.',
+  ].join('\n')
+}
+
 function buildRoadmapBodyCheckPrompt(slug) {
   return [
     'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
@@ -1444,8 +1473,8 @@ function formatSkippedPhasesClause(skippedPhases) {
   )
 }
 
-// buildReviewUnits(parsed, fetched) — pure: turn a parsed target plus the fetched
-// artifact JSON into the list of independent review units. A `phase`/`task`
+// buildReviewUnits(parsed, fetched, roadmapIntent) — pure: turn a parsed target
+// plus the fetched artifact JSON into the list of independent review units. A `phase`/`task`
 // target is a single unit; a `roadmap` target is the roadmap body plus one unit
 // per NON-TERMINAL phase (see isTerminalPhaseStatus above — a phase whose
 // status is exactly `done` or `wont-fix` is excluded and reported instead, via
@@ -1455,6 +1484,17 @@ function formatSkippedPhasesClause(skippedPhases) {
 // present on every return path (an empty array where nothing was — or could
 // have been — skipped) for shape consistency.
 //
+// RECORDED INTENT (the inheritance decision, implemented in ONE place). Every
+// unit carries `intent` (the verbatim `## Intent` section, or null) and
+// `hasIntent`. On a `roadmap` target the roadmap body is already fetched, so
+// extractIntent runs ONCE over it and the result is set on the roadmap unit AND
+// on every phase unit built from `rm.phases` — phases INHERIT their parent
+// roadmap's intent, at no extra agent cost. A `task` unit never has one. A
+// standalone `phase` unit takes it from the optional third argument, which the
+// driver fills from its `fetch:roadmap-intent` read; it defaults to
+// `{ hasIntent: false, intent: null }` so every pre-existing caller keeps
+// working unchanged and simply gets no intent.
+//
 // Defense-in-depth: a `fetched.phases` stem-collision/duplication guard runs
 // here too, using ONLY the `stem` field the documented hoist contract already
 // requires (see hoistedFetchedOk) — so it catches a corrupt payload arriving
@@ -1463,8 +1503,11 @@ function formatSkippedPhasesClause(skippedPhases) {
 // hoist (whose content validation is out of this phase's scope — see
 // docs/mechanical-agent-inventory.md). A trip returns the SAME fail-closed
 // shape as an empty body, so the rest of the driver needs no new branch.
-function buildReviewUnits(parsed, fetched) {
+function buildReviewUnits(parsed, fetched, roadmapIntent) {
   const kind = parsed.kind
+  const inheritedIntent = roadmapIntent && roadmapIntent.hasIntent === true
+    ? { hasIntent: true, intent: roadmapIntent.intent }
+    : { hasIntent: false, intent: null }
   if (kind === 'roadmap') {
     const rm = fetched
     if (!rm || !rm.body || String(rm.body).trim() === '') return { units: [], fetchFailed: true, skippedPhases: [] }
@@ -1474,6 +1517,9 @@ function buildReviewUnits(parsed, fetched) {
     if (phaseStems.indexOf(parsed.roadmap) !== -1 || new Set(phaseStems).size !== phaseStems.length) {
       return { units: [], fetchFailed: true, skippedPhases: [] }
     }
+    // ONE extractIntent call for the whole fan-out; every phase unit below
+    // inherits this same value.
+    const inherited = extractIntent(String(rm.body))
     const units = []
     units.push({
       kind: 'roadmap',
@@ -1483,6 +1529,8 @@ function buildReviewUnits(parsed, fetched) {
       tags: Array.isArray(rm.tags) ? rm.tags : [],
       body: String(rm.body),
       target: 'roadmap ' + parsed.roadmap + ' (body)\n\n' + String(rm.body),
+      intent: inherited.intent,
+      hasIntent: inherited.hasIntent,
     })
     const phases = Array.isArray(rm.phases) ? rm.phases : []
     const skippedPhases = []
@@ -1500,6 +1548,8 @@ function buildReviewUnits(parsed, fetched) {
         tags: Array.isArray(p.tags) ? p.tags : [],
         body: String(p.body || ''),
         target: 'phase ' + parsed.roadmap + '/' + p.stem + '\n\n' + String(p.body || ''),
+        intent: inherited.intent,
+        hasIntent: inherited.hasIntent,
       })
     }
     return { units: units, fetchFailed: false, skippedPhases: skippedPhases }
@@ -1522,6 +1572,10 @@ function buildReviewUnits(parsed, fetched) {
         tags: Array.isArray(meta.tags) ? meta.tags : [],
         body: String(meta.body),
         target: kind + ' ' + label + '\n\n' + String(meta.body),
+        // A task has no parent roadmap, so it never inherits intent; a
+        // standalone phase takes it from the driver's fetch:roadmap-intent read.
+        intent: kind === 'task' ? null : inheritedIntent.intent,
+        hasIntent: kind === 'task' ? false : inheritedIntent.hasIntent,
       },
     ],
     fetchFailed: false,
@@ -1675,7 +1729,7 @@ async function runPlanReviewDriver(args, deps) {
     // IMPORTANT: `budget` describes the PIPELINE, not this unit's final reported
     // findings — stripNonPhaseUnitOfWork and suppressWontFixed run AFTER it and
     // may drop a survivor that consumed budget.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: unit.targetType } })
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, intent: unit.intent, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: unit.targetType, hasIntent: unit.hasIntent === true } })
     const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
     const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
     const prior = parseRoundNotes(unit.body)
@@ -1702,14 +1756,18 @@ async function runPlanReviewDriver(args, deps) {
 
   // ------------------------------------------------------------------ implementation-plan
   // Report-only: no persisted rdm item, so no act and no gate.
-  // `signals: { targetType: 'implementation-plan' }` scopes unit-of-work out at
-  // selection time (targetType !== 'phase'); stripNonPhaseUnitOfWork below is
-  // the defense-in-depth backstop, not the primary mechanism.
+  // `signals: { targetType: 'implementation-plan', hasIntent: false }` scopes
+  // unit-of-work out at selection time (targetType !== 'phase') and
+  // intent-alignment out too; stripNonPhaseUnitOfWork below is the
+  // defense-in-depth backstop, not the primary mechanism. This is the ONE
+  // caller with genuinely nothing to thread — an implementation plan has no
+  // persisted rdm item and no roadmap in hand — so no `intent` key is passed,
+  // and buildReviewPipeline reports the absence as a non-blocking suggestion.
   if (kind === 'implementation-plan') {
     const planText = parsed.planText || '(the implementation plan provided in context)'
     // See reviewUnit's identical notes: acTable is always null in plan mode, and
     // `budget` describes the pipeline, not the post-strip survivor set.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: 'implementation-plan' } })
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: 'implementation-plan', hasIntent: false } })
     const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
     const outcome = classifyPlanOutcome(survivors)
     // Same summary treatment as reviewUnit: reduced coverage is named in the
@@ -1852,12 +1910,47 @@ async function runPlanReviewDriver(args, deps) {
     fetched = candidate
   }
 
+  // RECORDED INTENT for a STANDALONE PHASE target. A phase inherits its parent
+  // roadmap's `## Intent`, but this path has no roadmap body in hand (the
+  // roadmap fan-out above already has one, and reuses it inside
+  // buildReviewUnits — see buildRoadmapIntentFetchPrompt on why this must NOT
+  // be added there). Exactly ONE extra mechanical read, and only here.
+  //
+  // FAIL-SOFT, never fail-closed: a thrown agent, a null/empty transcript, or
+  // unparseable JSON all degrade to `{ hasIntent: false, intent: null }`. The
+  // dimension then simply does not run and its absence is reported as a
+  // non-blocking suggestion. Failing closed here would block a plan on an input
+  // the plan cannot produce.
+  let roadmapIntent = { hasIntent: false, intent: null }
+  if (kind === 'phase') {
+    try {
+      const rawIntent = await _agent(buildRoadmapIntentFetchPrompt(parsed.roadmap), {
+        label: 'fetch:roadmap-intent',
+        phase: 'Read',
+        agentType: 'rdm-mechanical',
+        schema: RAW_STDOUT_SCHEMA,
+        model: _mechanicalModel,
+      })
+      const parsedIntentStdout = parseJsonStdout(rawIntent && rawIntent.transcript)
+      const intentBody =
+        parsedIntentStdout.ok && parsedIntentStdout.value && typeof parsedIntentStdout.value.body === 'string'
+          ? parsedIntentStdout.value.body
+          : ''
+      roadmapIntent = extractIntent(intentBody)
+    } catch (e) {
+      roadmapIntent = { hasIntent: false, intent: null }
+    }
+    if (!roadmapIntent.hasIntent) {
+      _log('plan-review: no recorded ## Intent for roadmap ' + parsed.roadmap + ' — intent-alignment will not run')
+    }
+  }
+
   // Cache the real tags NOW — before buildReviewUnits, reviewUnit, or the
   // review pipeline touch `fetched` at all. See snapshotOriginalTags' own doc
   // comment for what this does and does not guarantee.
   const originalTags = snapshotOriginalTags(kind, parsed, fetched)
 
-  const built = buildReviewUnits(parsed, fetched)
+  const built = buildReviewUnits(parsed, fetched, roadmapIntent)
   const units = built.units
   // The phases the roadmap-wide sweep excluded as terminal (done/wont-fix) —
   // always an array, empty on the phase/task branch and on either fail-closed
@@ -2160,6 +2253,7 @@ export {
   buildTaskFetchPrompt,
   buildRoadmapFetchPrompt,
   buildRoadmapBodyCheckPrompt,
+  buildRoadmapIntentFetchPrompt,
   roadmapBodyVerified,
   buildTagWritePrompt,
   planGateCommands,
