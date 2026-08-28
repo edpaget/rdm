@@ -21,11 +21,16 @@
 #   1. STATIC INVARIANTS on the four `rdm-core/src/templates/` sources —
 #      marker presence, the predates-marker landing before the review-spec
 #      begin marker, all five interview "bounds" present within each step's
-#      own text block, and no forbidden rdm path literal / crate name
-#      leaking into that prose (it ships to other repos).
-#   2. PLANTED-REMOVAL SELF-TESTS proving the two marker detectors are not
-#      vacuous — deleting each step's heading from a scratch copy makes its
-#      own grep fail.
+#      own text block, no forbidden rdm path literal / crate name leaking
+#      into that prose (it ships to other repos), the persisted write-back
+#      commands, the canonical `## Intent` grammar (the literal
+#      `**Goal.**`/`**Non-goals.**`/`**Done looks like.**` labels plus the
+#      captured-vs-optional sentence), and a negative check that no
+#      `rdm intent`/`rdm_intent_*` command surface has been introduced —
+#      the grammar is prose only.
+#   2. PLANTED-REMOVAL SELF-TESTS proving the marker and grammar-label
+#      detectors are not vacuous — deleting each step's heading, or the
+#      `**Goal.**` label, from a scratch copy makes its own grep fail.
 #   3. DYNAMIC RE-CHECK against the real `target/debug/rdm agent-config
 #      claude --skills` emission (both cli and --mcp), re-running the same
 #      marker/position/bound checks on the emitted tree.
@@ -183,6 +188,75 @@ for f in "$TPL_ROADMAP_CLI" "$TPL_ROADMAP_MCP"; do
 done
 pass "AskUserQuestion present in rdm-roadmap allowed-tools (cli + mcp)"
 
+say "1e. Persistence: '## Intent' header and write-back commands present, scoped to their own step blocks"
+
+# Roadmap: the roadmap-already-exists fallback lives in step 4 ("Create the
+# roadmap"), bounded before step 5 ("Create each phase"). Scoping to this
+# block (rather than a whole-file grep) ensures deleting just the fallback
+# sentence fails this check even though the interview step and phase-create
+# step survive untouched.
+ROADMAP_FALLBACK_MARKER='roadmap already exists'
+for f in "$TPL_ROADMAP_CLI" "$TPL_ROADMAP_MCP"; do
+    fallback_line=$(grep -n -F "$ROADMAP_FALLBACK_MARKER" "$f" | head -1 | cut -d: -f1)
+    [ -n "$fallback_line" ] || fail "$f: missing roadmap-already-exists fallback marker"
+    next_line=$(awk -v start="$fallback_line" 'NR>start && /^5\. \*\*/{print NR; exit}' "$f")
+    [ -n "$next_line" ] || next_line=$(wc -l <"$f")
+    block=$(sed -n "${fallback_line},${next_line}p" "$f")
+    echo "$block" | grep -qF '## Intent' || fail "$f: roadmap-exists fallback block missing '## Intent' reference"
+    if [ "$f" = "$TPL_ROADMAP_MCP" ]; then
+        echo "$block" | grep -qF '{t_roadmap_update}' || fail "$f: roadmap-exists fallback missing {t_roadmap_update} write-back call"
+    else
+        echo "$block" | grep -qF 'rdm roadmap update' || fail "$f: roadmap-exists fallback missing 'rdm roadmap update' write-back call"
+    fi
+done
+pass "roadmap-exists fallback block (step 4) carries '## Intent' and its write-back call in both variants"
+
+# Plan-review: the write-back sub-item lives inside step 6, already bounded
+# by extract_step_block's "heading" mode (stops at the next ##/### line,
+# i.e. "## Guidelines").
+extract_step_block "$TPL_PLAN_REVIEW_CLI" "$PREDATES_MARKER" heading >"$TMP/plan-review-cli.writeback.block"
+extract_step_block "$TPL_PLAN_REVIEW_MCP" "$PREDATES_MARKER" heading >"$TMP/plan-review-mcp.writeback.block"
+grep -qF '## Intent' "$TMP/plan-review-cli.writeback.block" || fail "$TPL_PLAN_REVIEW_CLI: intent-capture step missing '## Intent' reference"
+grep -qF 'rdm roadmap update' "$TMP/plan-review-cli.writeback.block" || fail "$TPL_PLAN_REVIEW_CLI: intent-capture step missing write-back roadmap update call"
+grep -qF 'rdm task update' "$TMP/plan-review-cli.writeback.block" || fail "$TPL_PLAN_REVIEW_CLI: intent-capture step missing write-back task update call"
+grep -qF 'rdm commit' "$TMP/plan-review-cli.writeback.block" || fail "$TPL_PLAN_REVIEW_CLI: intent-capture step missing write-back commit call"
+grep -qF '## Intent' "$TMP/plan-review-mcp.writeback.block" || fail "$TPL_PLAN_REVIEW_MCP: intent-capture step missing '## Intent' reference"
+grep -qF '{t_roadmap_update}' "$TMP/plan-review-mcp.writeback.block" || fail "$TPL_PLAN_REVIEW_MCP: intent-capture step missing write-back roadmap update call"
+grep -qF '{t_task_update}' "$TMP/plan-review-mcp.writeback.block" || fail "$TPL_PLAN_REVIEW_MCP: intent-capture step missing write-back task update call"
+grep -qF '{t_commit}' "$TMP/plan-review-mcp.writeback.block" || fail "$TPL_PLAN_REVIEW_MCP: intent-capture step missing write-back commit call"
+pass "intent-capture step (step 6) carries '## Intent' and its write-back calls in both skill-plan-review-{cli,mcp}.md"
+
+say "1f. Canonical grammar: literal **Goal.**/**Non-goals.**/**Done looks like.** labels, and the captured-vs-optional sentence, scoped to each capture step's own block"
+
+# shellcheck disable=SC2016  # literal backticks in the matched prose, not shell expansion
+CAPTURED_VS_OPTIONAL='Goal` and `Done looks like` are what make a section count as captured rather than present-but-empty'
+# Only Goal/Non-goals/Done-looks-like are asserted here — Interview is
+# already covered by the existing `Interview.` bound check (§1c), and this
+# section exists specifically to gate the three NEW literal labels the
+# amendment adds.
+assert_grammar_labels() {
+    label="$1"
+    block="$2"
+    [ -s "$block" ] || fail "$label: could not extract step block"
+    for grammar_label in '**Goal.**' '**Non-goals.**' '**Done looks like.**'; do
+        grep -qF "$grammar_label" "$block" || fail "$label: missing canonical grammar label: $grammar_label"
+    done
+    grep -qF "$CAPTURED_VS_OPTIONAL" "$block" || fail "$label: missing the captured-vs-optional sentence"
+}
+assert_grammar_labels "skill-roadmap-cli.md" "$TMP/roadmap-cli.block"
+assert_grammar_labels "skill-roadmap-mcp.md" "$TMP/roadmap-mcp.block"
+assert_grammar_labels "skill-plan-review-cli.md" "$TMP/plan-review-cli.block"
+assert_grammar_labels "skill-plan-review-mcp.md" "$TMP/plan-review-mcp.block"
+pass "canonical grammar labels and captured-vs-optional sentence present in all four extracted step blocks"
+
+say "1g. No rdm-intent command surface — the grammar is prose only, never a new command"
+for f in "$TPL_ROADMAP_CLI" "$TPL_ROADMAP_MCP" "$TPL_PLAN_REVIEW_CLI" "$TPL_PLAN_REVIEW_MCP"; do
+    if grep -Eq 'rdm intent|rdm_intent_set|rdm_intent_get|intent set|intent get' "$f"; then
+        fail "$f: found an rdm-intent command-surface literal — this phase ships prose only, never a parser/splice op/command"
+    fi
+done
+pass "no rdm-intent command-surface literal in any of the four templates"
+
 # --- 2. PLANTED-REMOVAL SELF-TESTS --------------------------------------------
 say "2. Planted-removal self-tests (proving the marker detectors are not vacuous)"
 
@@ -197,6 +271,16 @@ if grep -qF "$PREDATES_MARKER" "$TMP/plan-review-cli.mutant"; then
     fail "predates-marker detector broken — planted removal did not strip the marker from the scratch copy"
 fi
 pass "predates-marker detector fires on a scratch copy with the step heading removed"
+
+# Planted removal of the '**Goal.**' grammar label alone (leaving the step
+# heading, the other two labels, and the captured-vs-optional sentence
+# intact) must make the §1f detector fire on a scratch copy.
+sed '/\*\*Goal\.\*\*/d' "$TPL_ROADMAP_CLI" >"$TMP/roadmap-cli.grammar-mutant"
+extract_step_block "$TMP/roadmap-cli.grammar-mutant" "$AUTHORING_MARKER" numbered >"$TMP/roadmap-cli.grammar-mutant.block"
+if grep -qF '**Goal.**' "$TMP/roadmap-cli.grammar-mutant.block"; then
+    fail "grammar-label detector broken — planted removal did not strip '**Goal.**' from the scratch copy"
+fi
+pass "grammar-label detector fires on a scratch copy with '**Goal.**' removed"
 
 # --- 3. DYNAMIC RE-CHECK AGAINST THE REAL EMITTED TREE ------------------------
 say "3. Dynamic re-check against 'rdm agent-config claude --skills' (cli and --mcp)"
@@ -241,6 +325,12 @@ assert_bounds_and_forbidden "emitted skill-roadmap-mcp SKILL.md" "$TMP/emit-road
 assert_bounds_and_forbidden "emitted skill-plan-review-cli SKILL.md" "$TMP/emit-plan-review-cli.block"
 assert_bounds_and_forbidden "emitted skill-plan-review-mcp SKILL.md" "$TMP/emit-plan-review-mcp.block"
 pass "emitted tree carries all five bounds, no forbidden literals, in all four SKILL.md files"
+
+assert_grammar_labels "emitted skill-roadmap-cli SKILL.md" "$TMP/emit-roadmap-cli.block"
+assert_grammar_labels "emitted skill-roadmap-mcp SKILL.md" "$TMP/emit-roadmap-mcp.block"
+assert_grammar_labels "emitted skill-plan-review-cli SKILL.md" "$TMP/emit-plan-review-cli.block"
+assert_grammar_labels "emitted skill-plan-review-mcp SKILL.md" "$TMP/emit-plan-review-mcp.block"
+pass "emitted tree carries the canonical grammar labels and captured-vs-optional sentence in all four SKILL.md files"
 
 # --- 4. SIBLING GATE -----------------------------------------------------------
 say "4. Sibling gate: verify-workflow-review.sh (both --mode code and --mode plan)"

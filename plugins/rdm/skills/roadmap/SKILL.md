@@ -20,6 +20,22 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
    - Cover, in priority order: the goal as an observable end state; what is explicitly NOT wanted; and one operator-testable "done looks like" signal. Stop as soon as all three are unambiguous — don't ask a fourth question just to reach the cap.
    - Terminate early the moment the operator signals they're finished ("done", "that's it", "no more").
    - Record every answer **verbatim** under `Interview.` in a `## Intent` section — never a paraphrase.
+   - Structure the `## Intent` section using this canonical grammar — the labels are literal, filled in verbatim:
+     ```markdown
+     ## Intent
+
+     **Goal.** <the outcome wanted, as an observable end state — not the mechanism>
+
+     **Non-goals.**
+     - <explicitly out of scope>
+
+     **Done looks like.**
+     - <WHEN <situation> THEN <observable outcome>>
+
+     **Interview.** (captured YYYY-MM-DD)
+     - Q: <question asked> → A: <operator's answer, verbatim>
+     ```
+     `Non-goals`, `Interview`, and an optional `Open` list may be absent. `Goal` and `Done looks like` are what make a section count as captured rather than present-but-empty.
    - An unresolved high-impact question goes under `Open`, never guessed at.
    - If the operator does not engage, or this skill is running with no human in the loop, write `(not captured)` as the whole `## Intent` section rather than inventing intent.
 3. **Design phases** that break the work into independently deliverable increments. Each phase should produce a working, testable result.

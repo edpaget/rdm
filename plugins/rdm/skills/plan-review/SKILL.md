@@ -110,6 +110,22 @@ Human-in-the-loop only. Skip this step entirely in `--implementation-plan` mode 
    - Cover, in priority order: the goal as an observable end state; what is explicitly NOT wanted; and one operator-testable "done looks like" signal. Stop as soon as all three are unambiguous.
    - Terminate early the moment the operator signals they're finished ("done", "that's it", "no more").
    - Record every answer **verbatim** under `Interview.`; put an unresolved high-impact question under `Open`, never guessed at.
+   - Structure the `## Intent` section using this canonical grammar — the labels are literal, filled in verbatim:
+     ```markdown
+     ## Intent
+
+     **Goal.** <the outcome wanted, as an observable end state — not the mechanism>
+
+     **Non-goals.**
+     - <explicitly out of scope>
+
+     **Done looks like.**
+     - <WHEN <situation> THEN <observable outcome>>
+
+     **Interview.** (captured YYYY-MM-DD)
+     - Q: <question asked> → A: <operator's answer, verbatim>
+     ```
+     `Non-goals`, `Interview`, and an optional `Open` list may be absent. `Goal` and `Done looks like` are what make a section count as captured rather than present-but-empty.
    - If the operator does not engage, write `(not captured)` as the whole `## Intent` section rather than inventing intent.
 4. **Write the result back** by reading the current full body, splicing in the `## Intent` section, and writing the complete body back — bodies are whole-document-authoritative, there is no patch/diff mechanism:
    ```bash

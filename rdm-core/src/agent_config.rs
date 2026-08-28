@@ -3202,6 +3202,120 @@ mod tests {
         }
     }
 
+    /// The intent-capture step's "Write the result back" sub-item must
+    /// actually persist the captured `## Intent` section — scope the check
+    /// to the step's own block (bounded before the next top-level `##`
+    /// heading) so that deleting just the write-back sub-item, while the
+    /// step heading and every other `rdm roadmap update`/`rdm task
+    /// update`/`rdm commit` mention elsewhere in the file (the act/gate
+    /// steps) survives untouched, fails this test.
+    #[test]
+    fn skill_plan_review_persists_intent_write_back() {
+        for mcp in [false, true] {
+            let skills = generate_skills(&SkillOptions {
+                project: None,
+                principles_file: None,
+                mcp,
+            });
+            let content = &skills[9].content;
+            let capture_pos = content
+                .find("Capture intent, if the target predates it")
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing intent-capture step marker"));
+            let step_end = content[capture_pos..]
+                .find("\n## ")
+                .map(|p| capture_pos + p)
+                .unwrap_or(content.len());
+            let step_block = &content[capture_pos..step_end];
+            assert!(
+                step_block.contains("## Intent"),
+                "mcp={mcp}: intent-capture step must reference the '## Intent' section"
+            );
+            let (roadmap_update, task_update, commit) = if mcp {
+                ("rdm_roadmap_update", "rdm_task_update", "rdm_commit")
+            } else {
+                ("rdm roadmap update", "rdm task update", "rdm commit")
+            };
+            assert!(
+                step_block.contains(roadmap_update),
+                "mcp={mcp}: intent-capture step missing write-back roadmap update call"
+            );
+            assert!(
+                step_block.contains(task_update),
+                "mcp={mcp}: intent-capture step missing write-back task update call"
+            );
+            assert!(
+                step_block.contains(commit),
+                "mcp={mcp}: intent-capture step missing write-back commit call"
+            );
+        }
+    }
+
+    /// The `## Intent` section is not just prose guidance — both the
+    /// authoring interview (`rdm-roadmap`) and the predates-the-artifact
+    /// capture (`rdm-plan-review`) must ship the canonical grammar as a
+    /// literal, copyable template: the `**Goal.**`, `**Non-goals.**`, and
+    /// `**Done looks like.**` labels, plus the sentence stating which of
+    /// them make a section count as captured. Scope each check to the
+    /// capture step's own block (reusing the same capture_pos/step_end
+    /// bounding technique as the persistence tests above) so that deleting
+    /// just the grammar block — while every other mention of `## Intent`
+    /// elsewhere in the file survives — fails this test.
+    #[test]
+    fn skill_intent_sections_carry_canonical_grammar() {
+        const CAPTURED_VS_OPTIONAL: &str = "Goal` and `Done looks like` are what make a section count as captured rather than present-but-empty";
+        for mcp in [false, true] {
+            let skills = generate_skills(&SkillOptions {
+                project: None,
+                principles_file: None,
+                mcp,
+            });
+
+            // rdm-roadmap: step 2 ("Interview the operator"), bounded before
+            // step 3 ("Design phases").
+            let roadmap_content = &skills[0].content;
+            let interview_pos = roadmap_content
+                .find("Interview the operator")
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing interview step marker"));
+            let design_pos = roadmap_content[interview_pos..]
+                .find("\n3. **")
+                .map(|p| interview_pos + p)
+                .unwrap_or(roadmap_content.len());
+            let interview_block = &roadmap_content[interview_pos..design_pos];
+            for label in ["**Goal.**", "**Non-goals.**", "**Done looks like.**"] {
+                assert!(
+                    interview_block.contains(label),
+                    "mcp={mcp}: rdm-roadmap interview step missing canonical grammar label {label:?}"
+                );
+            }
+            assert!(
+                interview_block.contains(CAPTURED_VS_OPTIONAL),
+                "mcp={mcp}: rdm-roadmap interview step missing the captured-vs-optional sentence"
+            );
+
+            // rdm-plan-review: step 6 ("Capture intent, if the target
+            // predates it"), bounded before the next top-level `##` heading.
+            let plan_review_content = &skills[9].content;
+            let capture_pos = plan_review_content
+                .find("Capture intent, if the target predates it")
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing intent-capture step marker"));
+            let step_end = plan_review_content[capture_pos..]
+                .find("\n## ")
+                .map(|p| capture_pos + p)
+                .unwrap_or(plan_review_content.len());
+            let capture_block = &plan_review_content[capture_pos..step_end];
+            for label in ["**Goal.**", "**Non-goals.**", "**Done looks like.**"] {
+                assert!(
+                    capture_block.contains(label),
+                    "mcp={mcp}: rdm-plan-review capture step missing canonical grammar label {label:?}"
+                );
+            }
+            assert!(
+                capture_block.contains(CAPTURED_VS_OPTIONAL),
+                "mcp={mcp}: rdm-plan-review capture step missing the captured-vs-optional sentence"
+            );
+        }
+    }
+
     #[test]
     fn skill_land_documents_landing_and_safety() {
         let skills = generate_skills(&SkillOptions {
@@ -3551,6 +3665,47 @@ mod tests {
             assert!(
                 interview_pos < design_pos,
                 "mcp={mcp}: interview step must precede phase design"
+            );
+        }
+    }
+
+    /// The captured `## Intent` section is not just asked for — it must
+    /// actually be written to disk. Scope the check to the "roadmap already
+    /// exists" fallback in step 4 (bounded before step 5, "Create each
+    /// phase") so that deleting the write-back sentence alone — while
+    /// leaving the interview step and every other `rdm roadmap update`
+    /// mention elsewhere in the file intact — fails this test, mirroring the
+    /// per-command assertion convention used elsewhere in this file (e.g.
+    /// `skill_roadmap_contains_rdm_commands`).
+    #[test]
+    fn skill_roadmap_persists_intent_via_update_fallback() {
+        for mcp in [false, true] {
+            let skills = generate_skills(&SkillOptions {
+                project: None,
+                principles_file: None,
+                mcp,
+            });
+            let content = &skills[0].content;
+            let fallback_pos = content
+                .find("roadmap already exists")
+                .unwrap_or_else(|| panic!("mcp={mcp}: missing roadmap-already-exists fallback"));
+            let next_step_pos = content[fallback_pos..]
+                .find("\n5. **")
+                .map(|p| fallback_pos + p)
+                .unwrap_or(content.len());
+            let fallback_block = &content[fallback_pos..next_step_pos];
+            assert!(
+                fallback_block.contains("## Intent"),
+                "mcp={mcp}: fallback block must reference the '## Intent' section"
+            );
+            let update_call = if mcp {
+                "rdm_roadmap_update"
+            } else {
+                "rdm roadmap update"
+            };
+            assert!(
+                fallback_block.contains(update_call),
+                "mcp={mcp}: roadmap-already-exists fallback missing write-back call ({update_call})"
             );
         }
     }
