@@ -274,6 +274,45 @@ Re-tiering changes PRICE-PER-TOKEN, not token VOLUME. These are volume figures o
 
 ## Limitations
 
+### The adjudication predates the refuter laundering guard (2026-08-28)
+
+`review-gate-intent` phase 5 changed `refutePrompt` in
+`.claude/workflows/lib/review.mjs`, adding the laundering guard that forbids
+refuting a finding on the grounds that it is documented, known, or already
+accepted as scope. Every corpus item's `promptSha256` was re-baselined against
+the post-guard prompt in the same change, so the fidelity tripwire still has
+teeth; `promptDrift` stays `false` on all 56 items.
+
+**What was re-baselined is the prompt hash, not the ground truth.** Each item's
+adjudicated verdict — a human judgment about whether the finding is real — is
+independent of the refuter prompt's wording and was not revisited. The figures
+in Results below were measured under the PRE-guard prompt and are not
+re-measured here.
+
+What that does and does not invalidate:
+
+- The decision this document reaches is about the refuter's MODEL tier, while
+  the guard narrows the GROUNDS on which any refuter may refute. Those are
+  plausibly orthogonal, but that is an argument, not a measurement.
+- Nothing here re-establishes the tiering result under the new prompt. When
+  citing a tier comparison from this corpus, say that it was measured before the
+  laundering guard.
+- A re-run of `run-refuter-agreement.mjs` under the current prompt would settle
+  it; that has not been done.
+
+**Maintenance gap this exposed.** There is no supported command to re-baseline
+the corpus after a deliberate `refutePrompt` change. `mine-refuter-corpus.mjs`
+only mines NEW candidates from session sidecars, and
+`scripts/verify-refuter-agreement.sh` § 3 asserts each recorded
+`promptSha256` still regenerates — so any edit to `refutePrompt` turns that gate
+red with no documented way to clear it. Flipping `promptDrift` to `true`
+wholesale is NOT that way: § 9d plants a corrupted `promptSha256` and asserts
+§ 3 catches it, and an all-drifted corpus makes that check vacuous (verified —
+the self-test fails). The re-baseline above was therefore done directly through
+the module's own `checkPromptFidelity`. A first-class re-baseline path is worth
+adding.
+
+
 - **The corpus is deliberately weighted.** `mechanically-true-not-a-defect` is
   42.9 % of items, far above its production incidence. Every aggregate here is a
   measurement of *this* corpus, not an estimate of production error rates. Quote
