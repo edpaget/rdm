@@ -7424,12 +7424,16 @@ pass "5e(c): skill-do-cli.md includes --no-plan-review in the --auto side-work s
 DO_TEMPLATE_MUT="$TMP/antiamp-do-mut.md"
 sed 's/--no-plan-review//g' "$DO_TEMPLATE" >"$DO_TEMPLATE_MUT" ||
     fail "5e(d): mutation setup failed"
-# Verify the assertion that grep was looking for fails: the flag should be completely gone.
+# Re-run the EXACT grep patterns from 5e(c) against the mutated file and verify they FAIL.
+if grep -q 'file it via the Side-work.*--no-plan-review' "$DO_TEMPLATE_MUT" 2>/dev/null; then
+    fail "5e(d): the 5e(c) assertion should have failed against the mutated file"
+fi
+# Also verify the simpler pattern fails.
 if grep -q 'no-plan-review' "$DO_TEMPLATE_MUT" 2>/dev/null; then
-    fail "5e(d): mutation setup did not properly remove the --no-plan-review flag"
+    fail "5e(d): mutation did not fully remove the --no-plan-review flag"
 fi
 
-pass "5e(d): planted-mutation self-test: removing --no-plan-review from skill-do-cli.md would flip the 5e(c) assertion"
+pass "5e(d): planted-mutation self-test: removing --no-plan-review from skill-do-cli.md flips the 5e(c) assertion"
 
 # (e) Grep assertion: skill-plan-review-cli.md carries the flag in both the description and example sections.
 PLAN_REVIEW_TEMPLATE="$TEMPLATES/skill-plan-review-cli.md"
@@ -7449,12 +7453,17 @@ pass "5e(e): skill-plan-review-cli.md includes --no-plan-review in both the desc
 PLAN_REVIEW_TEMPLATE_MUT="$TMP/antiamp-planreview-mut.md"
 sed 's/--no-plan-review//g' "$PLAN_REVIEW_TEMPLATE" >"$PLAN_REVIEW_TEMPLATE_MUT" ||
     fail "5e(f): mutation setup failed"
-# Verify the assertions that grep was looking for fail: the flag should be completely gone.
+# Re-run the EXACT grep patterns from 5e(e) against the mutated file and verify they FAIL.
+# Most specific: the rdm task create example must have the flag removed.
+if grep -q 'rdm task create.*--no-plan-review' "$PLAN_REVIEW_TEMPLATE_MUT" 2>/dev/null; then
+    fail "5e(f): the 5e(e) example pattern should have failed against the mutated file"
+fi
+# Also verify the simpler pattern fails.
 if grep -q 'no-plan-review' "$PLAN_REVIEW_TEMPLATE_MUT" 2>/dev/null; then
-    fail "5e(f): mutation setup did not properly remove the --no-plan-review flag"
+    fail "5e(f): mutation did not fully remove the --no-plan-review flag"
 fi
 
-pass "5e(f): planted-mutation self-test: removing --no-plan-review from skill-plan-review-cli.md would flip the 5e(e) assertion"
+pass "5e(f): planted-mutation self-test: removing --no-plan-review from skill-plan-review-cli.md flips the 5e(e) assertion"
 
 # (g) Summary: all three surfaces carry the anti-amplification wiring, verified with planted mutations.
 pass "5e: anti-amplification wiring is present and untested mutations would break the assertions"
