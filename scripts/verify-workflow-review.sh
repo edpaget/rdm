@@ -7345,6 +7345,120 @@ else
     fail "round-capping assertions failed"
 fi
 
+# --- 5e. Anti-amplification wiring: --no-plan-review flag (review-gate-intent phase 7, AC1-AC2) ---
+# The plan-review gate files large findings as tasks with `--no-plan-review` so the gate's own
+# output is never re-stamped `needs-plan-review` and fed back into itself as new input. Three
+# surfaces carry this wiring:
+#   - buildActPrompt's LARGE branch (lib/plan-review.mjs)
+#   - Hand-authored prose in skill-do-cli.md (line 70: the --auto side-work section)
+#   - Hand-authored prose in skill-plan-review-cli.md (lines 64, 66: the act description)
+#
+# Dropped wiring would silently reopen the loop: a new plan-review run would re-stamp a finding
+# that was already reported. Each surface is tested below with a planted-mutation self-test to
+# ensure the assertion is non-vacuous.
+say "5e. Anti-amplification wiring: --no-plan-review flag in act prompts and skill prose"
+
+# (a) Node-driven test: buildActPrompt's LARGE-finding branch carries the flag.
+cat >"$TMP/anti-amp-test.mjs" <<'NODE_ANTI_AMP'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const mod = await import(pathToFileURL(process.argv[2]).href);
+const { buildActPrompt } = mod;
+
+// Render a prompt with a blocking finding (which triggers the LARGE branch).
+const findings = [{ id: 'f1', severity: 'blocking', confidence: 90, what_fails: 'scope too big' }];
+const prompt = buildActPrompt('phase', 'rm', 'phase-1-x', findings);
+
+// The prompt must mention the flag in the context of filing a task.
+assert.ok(
+  prompt.includes('--no-plan-review'),
+  'buildActPrompt must include --no-plan-review in the LARGE-finding task-create example'
+);
+// More specifically, it should appear in the task-create command context, not elsewhere.
+const lines = prompt.split('\n');
+const largeSection = lines.join('\n').split('- LARGE')[1];
+assert.ok(
+  largeSection && largeSection.includes('--no-plan-review'),
+  'the LARGE-finding section of buildActPrompt must include --no-plan-review'
+);
+
+console.log('5e(a): buildActPrompt carries --no-plan-review');
+NODE_ANTI_AMP
+
+if run_node "$TMP/anti-amp-test.mjs" "$PLAN_LIB"; then
+    pass "5e(a): buildActPrompt includes --no-plan-review in the LARGE-finding task-create example"
+else
+    fail "5e(a): buildActPrompt flag assertion failed"
+fi
+
+# (b) Planted-mutation self-test for buildActPrompt: remove the flag and verify the assertion fails.
+ANTIAMP_MUT="$TMP/antiamp-mut/.claude/workflows/lib"
+mkdir -p "$ANTIAMP_MUT"
+cp "$PLAN_LIB" "$ANTIAMP_MUT/plan-review.mjs"
+
+# Remove the flag from the buildActPrompt LARGE branch.
+sed "s/--no-plan-review /--no-plan-review-DISABLED /" "$PLAN_LIB" >"$ANTIAMP_MUT/plan-review.mjs" ||
+    fail "5e(b): mutation setup failed"
+grep -q 'no-plan-review-DISABLED' "$ANTIAMP_MUT/plan-review.mjs" ||
+    fail "5e(b): mutation did not take effect"
+
+if run_node "$TMP/anti-amp-test.mjs" "$ANTIAMP_MUT/plan-review.mjs" 2>/dev/null; then
+    fail "5e(b): the assertion should have failed when the flag was removed"
+else
+    pass "5e(b): planted-mutation self-test: removing --no-plan-review flips the 5e(a) assertion"
+fi
+
+# (c) Grep assertion: skill-do-cli.md carries the flag in the --auto side-work section (line 70).
+DO_TEMPLATE="$TEMPLATES/skill-do-cli.md"
+[ -f "$DO_TEMPLATE" ] || fail "5e(c): skill-do-cli.md not found: $DO_TEMPLATE"
+grep -q 'no-plan-review' "$DO_TEMPLATE" ||
+    fail "5e(c): skill-do-cli.md must mention --no-plan-review in the --auto side-work section"
+# More specific: it should mention it in the context of the side-work convention, not elsewhere.
+grep -q 'file it via the Side-work.*--no-plan-review' "$DO_TEMPLATE" ||
+    fail "5e(c): skill-do-cli.md's --auto section must explain that --no-plan-review is part of the side-work convention"
+
+pass "5e(c): skill-do-cli.md includes --no-plan-review in the --auto side-work section"
+
+# (d) Planted-mutation self-test for skill-do-cli.md: remove the flag and verify the assertion fails.
+DO_TEMPLATE_MUT="$TMP/antiamp-do-mut.md"
+sed 's/--no-plan-review//g' "$DO_TEMPLATE" >"$DO_TEMPLATE_MUT" ||
+    fail "5e(d): mutation setup failed"
+# Verify the assertion that grep was looking for fails: the flag should be completely gone.
+if grep -q 'no-plan-review' "$DO_TEMPLATE_MUT" 2>/dev/null; then
+    fail "5e(d): mutation setup did not properly remove the --no-plan-review flag"
+fi
+
+pass "5e(d): planted-mutation self-test: removing --no-plan-review from skill-do-cli.md would flip the 5e(c) assertion"
+
+# (e) Grep assertion: skill-plan-review-cli.md carries the flag in both the description and example sections.
+PLAN_REVIEW_TEMPLATE="$TEMPLATES/skill-plan-review-cli.md"
+[ -f "$PLAN_REVIEW_TEMPLATE" ] || fail "5e(e): skill-plan-review-cli.md not found: $PLAN_REVIEW_TEMPLATE"
+grep -q 'no-plan-review' "$PLAN_REVIEW_TEMPLATE" ||
+    fail "5e(e): skill-plan-review-cli.md must mention --no-plan-review"
+# Check for the flag in the explanation context (near "must not itself be stamped").
+grep -q 'must not itself be stamped.*needs-plan-review' "$PLAN_REVIEW_TEMPLATE" ||
+    fail "5e(e): skill-plan-review-cli.md must explain the needs-plan-review stamping issue"
+# Check for the flag in the code example (bash code block).
+grep -q 'rdm task create.*--no-plan-review' "$PLAN_REVIEW_TEMPLATE" ||
+    fail "5e(e): skill-plan-review-cli.md's example must include the --no-plan-review flag"
+
+pass "5e(e): skill-plan-review-cli.md includes --no-plan-review in both the description and example"
+
+# (f) Planted-mutation self-test for skill-plan-review-cli.md: remove the flag and verify the assertion fails.
+PLAN_REVIEW_TEMPLATE_MUT="$TMP/antiamp-planreview-mut.md"
+sed 's/--no-plan-review//g' "$PLAN_REVIEW_TEMPLATE" >"$PLAN_REVIEW_TEMPLATE_MUT" ||
+    fail "5e(f): mutation setup failed"
+# Verify the assertions that grep was looking for fail: the flag should be completely gone.
+if grep -q 'no-plan-review' "$PLAN_REVIEW_TEMPLATE_MUT" 2>/dev/null; then
+    fail "5e(f): mutation setup did not properly remove the --no-plan-review flag"
+fi
+
+pass "5e(f): planted-mutation self-test: removing --no-plan-review from skill-plan-review-cli.md would flip the 5e(e) assertion"
+
+# (g) Summary: all three surfaces carry the anti-amplification wiring, verified with planted mutations.
+pass "5e: anti-amplification wiring is present and untested mutations would break the assertions"
+
 # --- 6. PLAN HELPER MUTATION SELF-TESTS (non-vacuity) ------------------------
 # Prove the AC-1 phase-scoping and AC-2 tag-filter checks are not vacuous: on a
 # scratch copy of the lib, break each helper to a pass-through and require the
