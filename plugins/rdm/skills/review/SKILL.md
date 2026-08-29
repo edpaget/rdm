@@ -129,7 +129,11 @@ Rank survivors most-severe first, then by confidence descending, then by id.
 - **ac** — *always.* For each acceptance criterion, rate PASS / FAIL /
   PARTIAL with evidence (file:line, test name). Flag any criterion that is
   unmet, ambiguous, or untestable. The per-criterion table is the contract
-  and is reported intact.
+  and is reported intact. **Severity contract:** a criterion the target
+  itself defers, caveats, or ships with acknowledged or known gaps has NOT
+  been met, regardless of partial implementation — it MUST be reported as a
+  `blocking` finding in the optional `findings` array, never as PASS in the
+  `ac` table.
 - **correctness** — *always.* Logic bugs, edge cases, race conditions, and
   error paths, judged against the error-handling conventions the project
   states in its principles document (`docs/principles.md` if present,
@@ -254,6 +258,14 @@ confirms it. The refuter starts from the stance *"this is NOT a real issue
 unless the code proves otherwise"*, reads the actual cited location and its
 surrounding context, and returns `refuted` (boolean), a corrected `confidence`
 (0-100), and a rationale.
+
+**Laundering guard.** A finding may not be refuted on the grounds that it is
+documented, known, or already accepted as scope, when it contradicts the
+target's stated goal or recorded intent — a recorded deferral is evidence the
+defect is REAL, not evidence it is not. Refute only for genuine technical
+uncertainty: you cannot verify, from the actual code or plan, that the
+finding holds up. The default-to-refuted stance for uncertain findings is
+unchanged.
 
 **Non-gating pass-through.** A `suggestion` gates nothing at any tier — the
 verdict consults only `blocking` (and `concern`, at the `large` tier), and the
