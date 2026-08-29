@@ -11221,4 +11221,79 @@ else
     fail "14-mut: the findPrompt static check did NOT fail after the wording was stripped — vacuous"
 fi
 
+# --- 5f. SEVERITY ROUNDTRIP TEST (formatRoundNote/parseRoundNotes) ----------
+# Pin that every severity formatRoundNote can emit is readable by parseRoundNotes,
+# with a planted-mutation self-test that narrows the regex to prove it's non-vacuous.
+say "5f. Severity roundtrip: formatRoundNote emits blocking|concern|suggestion, parseRoundNotes reads all three"
+
+cat >"$TMP/severity-roundtrip-test.mjs" <<'NODE_ROUNDTRIP'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const libPath = process.argv[2];
+const { formatRoundNote, parseRoundNotes } = await import(pathToFileURL(libPath).href);
+
+// Test that all three severities round-trip through formatRoundNote -> parseRoundNotes.
+// A finding with each severity is written to a round note, then parsed back,
+// and we verify the severity survives in the parsed output.
+
+const findings = [
+  { severity: 'blocking', concern: 'blocker_concern', what_fails: 'blocker_failure' },
+  { severity: 'concern', concern: 'concern_concern', what_fails: 'concern_failure' },
+  { severity: 'suggestion', concern: 'suggestion_concern', what_fails: 'suggestion_failure' }
+];
+
+// Format the findings into a round note block.
+const formatted = formatRoundNote(1, 'rework', findings);
+console.log('Formatted round note:\n' + formatted);
+
+// Parse it back.
+const parsed = parseRoundNotes(formatted);
+console.log('Parsed findings:', JSON.stringify(parsed.findings, null, 2));
+
+// Verify all three severities survive.
+assert.equal(parsed.round, 1, 'round number preserved');
+assert.equal(parsed.outcome, 'rework', 'outcome preserved');
+assert.equal(parsed.findings.length, 3, 'all three findings parsed');
+
+// Check each severity individually.
+const byIndex = new Map(parsed.findings.map((f, i) => [i, f]));
+assert.equal(byIndex.get(0).severity, 'blocking', 'blocking severity round-trips');
+assert.equal(byIndex.get(1).severity, 'concern', 'concern severity round-trips');
+assert.equal(byIndex.get(2).severity, 'suggestion', 'suggestion severity round-trips');
+
+// Verify other fields also survive.
+assert.equal(byIndex.get(0).concern, 'blocker_concern', 'blocking concern text preserved');
+assert.equal(byIndex.get(1).concern, 'concern_concern', 'concern concern text preserved');
+assert.equal(byIndex.get(2).concern, 'suggestion_concern', 'suggestion concern text preserved');
+
+console.log('5f OK: all three severities round-trip through formatRoundNote/parseRoundNotes');
+NODE_ROUNDTRIP
+
+if run_node "$TMP/severity-roundtrip-test.mjs" "$PLAN_LIB"; then
+    pass "5f(a): severity roundtrip test passes for blocking|concern|suggestion"
+else
+    fail "5f(a): severity roundtrip test failed"
+fi
+
+# (b) Planted-mutation self-test: narrow the parseRoundNotes regex to accept
+# only blocking|concern (not suggestion), and verify the test fails.
+ROUNDTRIP_MUT="$TMP/plan-review-roundtrip-mut.mjs"
+sed 's/(blocking|concern|suggestion)/(blocking|concern)/g' \
+    "$PLAN_LIB" >"$ROUNDTRIP_MUT" ||
+    fail "5f(b): mutation setup failed"
+
+# Verify the mutation took effect.
+if grep -q 'blocking|concern|suggestion' "$ROUNDTRIP_MUT"; then
+    fail "5f(b): mutation did not properly remove 'suggestion' from the regex"
+fi
+
+if run_node "$TMP/severity-roundtrip-test.mjs" "$ROUNDTRIP_MUT" 2>/dev/null; then
+    fail "5f(b): the test should have failed when suggestion was removed from the parseRoundNotes regex"
+else
+    pass "5f(b): planted-mutation self-test: narrowing parseRoundNotes regex to (blocking|concern) breaks the roundtrip"
+fi
+
+pass "5f: severity roundtrip is verified with a planted-mutation self-test"
+
 say "verify-workflow-review.sh: ALL GREEN"
