@@ -293,6 +293,13 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
         "plan_review" => config.plan_review.map(|b| b.to_string()),
         "dispatch.verify" => config.dispatch.as_ref().and_then(|d| d.verify.clone()),
+        // A declared-but-empty list is a MEANINGFUL value ("no directive sources"),
+        // so it reads back as an empty string rather than as "unset".
+        "dispatch.directives" => config
+            .dispatch
+            .as_ref()
+            .and_then(|d| d.directives.as_ref())
+            .map(|list| list.join(",")),
         // NOTE: a malformed RDM_SERVER_QUICK_FILTERS env value is echoed
         // back raw with "(source: environment variable)" by the generic
         // resolution chain in commands/config.rs — a pre-existing quirk of
@@ -373,6 +380,23 @@ pub fn set_config_field(
             }
             config.dispatch.get_or_insert_with(Default::default).verify = Some(cmd.to_string());
         }
+        "dispatch.directives" => {
+            // Unlike 'dispatch.verify', an EMPTY value is legal here and means
+            // "this project declares no directive sources" — a real answer that
+            // replaces discovery, not a silently-disabled gate. A whitespace-only
+            // or all-empty comma list normalizes to that same explicit empty list
+            // rather than storing junk entries.
+            let sources: Vec<String> = value
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+            config
+                .dispatch
+                .get_or_insert_with(Default::default)
+                .directives = Some(sources);
+        }
         "root" | "auto_init" => bail!("'{key}' can only be set in global config — use --global"),
         _ => bail!(
             "unknown config key: {key} — valid keys: {}",
@@ -408,8 +432,8 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
         "plan_review" => {
             config.plan_review = Some(parse_bool(value)?);
         }
-        "server.quick_filters" | "dispatch.verify" => {
-            bail!("'{key}' can only be set in repo config — omit --global")
+        "server.quick_filters" | "dispatch.verify" | "dispatch.directives" => {
+            bail!("{}", repo_only_message(key))
         }
         _ => bail!(
             "unknown config key: {key} — valid keys: {}",
@@ -417,6 +441,24 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
         ),
     }
     Ok(())
+}
+
+/// The actionable rejection for a repo-only key that was passed `--global`.
+///
+/// Single-sourced so the `config set --global` command guard and
+/// [`set_global_config_field`] can never print different text for the same key.
+/// `dispatch.directives` carries its OWN reason rather than the shared line: a
+/// directive source list names files inside one project's tree, which is a
+/// materially different "why" from the other repo-only keys.
+#[must_use]
+pub fn repo_only_message(key: &str) -> String {
+    match key {
+        "dispatch.directives" => "'dispatch.directives' can only be set in repo config — omit \
+             --global. A directive source list names files inside one project's tree, so it is a \
+             property of that project and cannot be shared across every repo you work in."
+            .to_string(),
+        _ => format!("'{key}' can only be set in repo config — omit --global"),
+    }
 }
 
 /// Validates that a key is in `KNOWN_KEYS`.
@@ -739,6 +781,71 @@ mod tests {
                 "the rejection must say how to remove the setting: {msg}"
             );
         }
+    }
+
+    #[test]
+    fn dispatch_directives_set_then_get_roundtrip() {
+        let mut config = rdm_core::config::Config::default();
+        set_config_field(
+            &mut config,
+            "dispatch.directives",
+            " docs/rules/a.md , docs/rules/b.md ",
+        )
+        .unwrap();
+        assert_eq!(
+            get_config_field(&config, "dispatch.directives"),
+            Some("docs/rules/a.md,docs/rules/b.md".to_string()),
+            "each entry is trimmed on write and the list reads back comma-joined"
+        );
+    }
+
+    #[test]
+    fn dispatch_directives_accepts_an_explicit_empty_list() {
+        // Unlike dispatch.verify, an empty value is a real answer here: declare no
+        // directive sources at all. It must STORE (replacing discovery), not be
+        // rejected and not collapse back to "unset".
+        for empty in ["", "   ", " , , "] {
+            let mut config = rdm_core::config::Config::default();
+            set_config_field(&mut config, "dispatch.directives", empty)
+                .expect("an empty directive list is a legal, meaningful value");
+            assert_eq!(
+                config.dispatch.as_ref().and_then(|d| d.directives.clone()),
+                Some(Vec::new()),
+                "'{empty}' normalizes to an explicit empty list, never junk entries"
+            );
+            assert_eq!(
+                get_config_field(&config, "dispatch.directives"),
+                Some(String::new()),
+                "a declared empty list reads back as an empty string, not as unset"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_directives_is_repo_only_with_its_own_message() {
+        assert!(is_repo_only("dispatch.directives"));
+        assert!(!is_global_only("dispatch.directives"));
+        let mut global = GlobalConfig::default();
+        let err = set_global_config_field(&mut global, "dispatch.directives", "docs/rules/a.md")
+            .expect_err("the global config must refuse dispatch.directives");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("dispatch.directives"),
+            "the rejection names the key itself: {msg}"
+        );
+        assert!(
+            msg.contains("omit --global"),
+            "the rejection says what to do: {msg}"
+        );
+        assert!(
+            msg.contains("one project's tree"),
+            "the rejection is its own message, not the shared repo-only one: {msg}"
+        );
+        assert_eq!(
+            get_global_config_field(&global, "dispatch.directives"),
+            None,
+            "the global config has no dispatch.directives to read"
+        );
     }
 
     #[test]

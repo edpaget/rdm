@@ -625,11 +625,20 @@ assert_local_phasemeta_fetch() {
     # the phase-time verification command (docs/verify-gate.md): a hoist that
     # omits it is rejected by `hoistedMetaComplete`, silently costing the very
     # Stage-0 agent this hoist exists to eliminate.
-    grep -qF 'body, roadmapBody, verify, models:' "$file" || return 1
+    grep -qF 'body, roadmapBody, verify, directives, directivesSkipped, models:' "$file" || return 1
     # `--raw` is load-bearing: a bare `config get` prints
     # `<value>  (source: repo config)`, and this step keeps the printed value
     # VERBATIM, so the annotation would ride into the hoisted `verify` field.
     grep -qF 'config get dispatch.verify --raw' "$file" || return 1
+    # PROJECT DIRECTIVES: the same structural trap as `roadmapBody` — the field is
+    # optional and outside hoistedMetaComplete's key list, so a loop that hoists
+    # phaseMeta without it silently turns directive injection off for every phase
+    # it dispatches. Unlike `verify`, an empty read must NOT abandon the hoist
+    # (absent directives are normal), which is the instruction most likely to be
+    # lost by copying the verify bullet, so that sentence is pinned too.
+    grep -qF 'dispatch directives --format json' "$file" || return 1
+    grep -qF 'directivesSkipped' "$file" || return 1
+    grep -qF 'must NOT abandon the hoist' "$file" || return 1
     return 0
 }
 assert_local_phasemeta_fetch "$SKILL" ||
@@ -658,6 +667,25 @@ if assert_local_phasemeta_fetch "$TMP/local-phasemeta-raw-mutant.md"; then
     fail "local phase-meta fetch detector missed a --raw-less declared-key read — the annotated value would be hoisted as the command"
 fi
 pass "local phase-meta fetch detector fires when --raw is dropped from the declared-key read"
+
+# Self-test: drop the directive resolution command and confirm detection. Without
+# it a hoisted dispatch never resolves project directives at all, and nothing
+# downstream reports the absence (absent directives are indistinguishable from
+# none by design).
+sed 's/dispatch directives --format json/dispatch dirs --format json/' "$SKILL" >"$TMP/local-phasemeta-dir-mutant.md"
+if assert_local_phasemeta_fetch "$TMP/local-phasemeta-dir-mutant.md"; then
+    fail "local phase-meta fetch detector missed a dropped directive resolution — injection would be silently off on this path"
+fi
+pass "local phase-meta fetch detector fires when the directive resolution command is dropped"
+
+# Self-test: drop the does-not-abandon-the-hoist sentence and confirm detection.
+# Copying `verify`'s abandon-on-empty rule here would make a project with NO
+# directives fall back to a full Stage-0 fetch on every single phase.
+sed 's/must NOT abandon the hoist/must abandon the hoist/' "$SKILL" >"$TMP/local-phasemeta-abandon-mutant.md"
+if assert_local_phasemeta_fetch "$TMP/local-phasemeta-abandon-mutant.md"; then
+    fail "local phase-meta fetch detector missed the inverted abandon-on-empty rule — absent directives are normal and must never abandon the hoist"
+fi
+pass "local phase-meta fetch detector fires when the abandon-on-empty rule is inverted"
 
 # Shipped CLI template: same shape as the local skill.
 CLI_TEMPLATE="$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md"
@@ -738,6 +766,8 @@ normalize_phasemeta_block() {
         -e 's/rdm roadmap show/RDMBIN roadmap show/g' \
         -e 's/<rdmBin> config get/RDMBIN config get/g' \
         -e 's/rdm config get/RDMBIN config get/g' \
+        -e 's/<rdmBin> dispatch directives/RDMBIN dispatch directives/g' \
+        -e 's/rdm dispatch directives/RDMBIN dispatch directives/g' \
         -e 's/<slug><proj-flag>/<slug> PROJFLAG/g' \
         -e 's/<slug> {proj_flag}/<slug> PROJFLAG/g'
 }

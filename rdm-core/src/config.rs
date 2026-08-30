@@ -22,13 +22,18 @@ pub const KNOWN_KEYS: &[&str] = &[
     "server.quick_filters",
     "plan_review",
     "dispatch.verify",
+    "dispatch.directives",
 ];
 
 /// Keys that may only be set in the global config (not in a repo `rdm.toml`).
 pub const GLOBAL_ONLY_KEYS: &[&str] = &["root", "auto_init"];
 
 /// Keys that may only be set in the repo config (not in the global config).
-pub const REPO_ONLY_KEYS: &[&str] = &["server.quick_filters", "dispatch.verify"];
+pub const REPO_ONLY_KEYS: &[&str] = &[
+    "server.quick_filters",
+    "dispatch.verify",
+    "dispatch.directives",
+];
 
 /// Where a configuration value was resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,6 +114,14 @@ pub struct DispatchConfig {
     /// runner the command invokes. See `docs/verify-gate.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify: Option<String>,
+    /// The directive sources this project declares, replacing rdm's discovery of
+    /// the known agent-instruction locations entirely.
+    ///
+    /// `None` means "not declared" and leaves discovery in force. `Some(vec![])`
+    /// is an explicit "this project declares no directive sources" and is a
+    /// legal, meaningful value. See `docs/project-directives.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directives: Option<Vec<String>>,
 }
 
 /// Per-step model tier overrides within `[models.steps]`.
@@ -1110,6 +1123,7 @@ mechanical = "small"
         let repo_config = Config {
             dispatch: Some(DispatchConfig {
                 verify: Some("bash scripts/ci.sh".to_string()),
+                directives: None,
             }),
             ..Default::default()
         };
@@ -1122,5 +1136,42 @@ mechanical = "small"
         // A global config cannot supply one: an unset repo value stays unset.
         let empty = Config::default().with_global_defaults(&global);
         assert_eq!(empty.dispatch, None);
+    }
+
+    #[test]
+    fn dispatch_directives_toml_roundtrip() {
+        let toml_str = "[dispatch]\ndirectives = [\"docs/rules/a.md\", \"docs/rules/b.md\"]\n";
+        let config = Config::from_toml(toml_str).unwrap();
+        let dispatch = config.dispatch.clone().expect("dispatch section parsed");
+        assert_eq!(
+            dispatch.directives,
+            Some(vec![
+                "docs/rules/a.md".to_string(),
+                "docs/rules/b.md".to_string()
+            ])
+        );
+        let round = Config::from_toml(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(round, config);
+    }
+
+    #[test]
+    fn dispatch_directives_empty_list_roundtrips_as_declared_none() {
+        // An EXPLICIT empty list is a meaningful value ("this project declares no
+        // directive sources") and must survive a roundtrip as Some(vec![]), never
+        // collapse to None.
+        let config = Config::from_toml("[dispatch]\ndirectives = []\n").unwrap();
+        assert_eq!(
+            config.dispatch.clone().and_then(|d| d.directives),
+            Some(Vec::new())
+        );
+        let round = Config::from_toml(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(round, config);
+    }
+
+    #[test]
+    fn dispatch_directives_is_a_known_repo_only_key() {
+        assert!(KNOWN_KEYS.contains(&"dispatch.directives"));
+        assert!(REPO_ONLY_KEYS.contains(&"dispatch.directives"));
+        assert!(!GLOBAL_ONLY_KEYS.contains(&"dispatch.directives"));
     }
 }

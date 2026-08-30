@@ -1457,7 +1457,10 @@ function buildAllPrompts(dispatch, review, cfg) {
 // re-hardcoded path is caught by COMPARISON rather than silently skipped.
 const INVOCATION = /(^|[\s`])((?:[^\s`]*\/)?[A-Za-z0-9_.-]*rdm[A-Za-z0-9_.-]*)\s+([a-z][a-z-]*)(?:\s+([a-z][a-z-]*))?/g;
 // `config get` is project-agnostic too: `rdm config get` takes no --project.
-const PROJECT_AGNOSTIC = ['model resolve', 'config get', 'commit', 'status', 'discard'];
+// `dispatch directives` is project-agnostic for the same reason `config get` is:
+// it scans a SOURCE tree named by --dir and reads the plan repo's repo-level
+// `dispatch.directives` key, so the subcommand rejects --project outright.
+const PROJECT_AGNOSTIC = ['model resolve', 'config get', 'dispatch directives', 'commit', 'status', 'discard'];
 
 function scan(prompts) {
   const out = [];

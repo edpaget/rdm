@@ -14,6 +14,8 @@ pub mod config;
 pub mod conflict;
 /// Model introspection: discover what rdm tracks and the shape of each entity.
 pub mod describe;
+/// Project-authored dispatch directives: discovery, verbatim reading, and bounding.
+pub mod directives;
 /// Display formatting functions for roadmaps, phases, and projects.
 pub mod display;
 /// Generic document wrapper combining frontmatter with a markdown body.

@@ -21,6 +21,7 @@ pub mod agent_config;
 pub mod backlog;
 pub mod config;
 pub mod describe;
+pub mod dispatch;
 pub mod index;
 pub mod init;
 pub mod list;

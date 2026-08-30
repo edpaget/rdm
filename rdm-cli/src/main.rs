@@ -35,6 +35,30 @@ fn run() -> Result<()> {
         return commands::config::run(command, &cli.root, &global_config);
     }
 
+    // `rdm dispatch` is handled early and FAIL-OPEN for the same reason: it scans a
+    // SOURCE repo, and a downstream consumer may have no plan repo reachable at all.
+    // The plan repo is consulted only for the declared `dispatch.directives` list;
+    // when it cannot be resolved, rdm discovers the known locations instead of
+    // erroring out, so the feature never vanishes for want of an rdm.toml.
+    if let Command::Dispatch { command } = cli.command {
+        // One optional load: an unreachable plan repo degrades to the defaults for
+        // BOTH the declared list and the format resolution, rather than erroring.
+        let repo_config = paths::resolve_root(cli.root, &global_config)
+            .and_then(paths::expand_root)
+            .ok()
+            .map_or_else(Default::default, |root| paths::load_repo_config(&root))
+            .with_global_defaults(&global_config);
+        let declared = repo_config
+            .dispatch
+            .as_ref()
+            .and_then(|d| d.directives.clone());
+        let format: OutputFormat =
+            paths::resolve_format(cli.format.map(|f| f.to_string()), &repo_config)
+                .parse::<OutputFormat>()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+        return commands::dispatch::run(command, declared, format);
+    }
+
     let root = paths::resolve_root(cli.root, &global_config)?;
     let root = paths::expand_root(root)?;
     let repo_config = paths::load_repo_config(&root).with_global_defaults(&global_config);
@@ -74,7 +98,7 @@ fn run() -> Result<()> {
     }
 
     match cli.command {
-        Command::Config { .. } => unreachable!("handled above"),
+        Command::Config { .. } | Command::Dispatch { .. } => unreachable!("handled above"),
         Command::Init {
             default_project,
             default_format,
