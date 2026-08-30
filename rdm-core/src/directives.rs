@@ -32,6 +32,15 @@
 //! merges with it. An explicitly empty list means "this project declares no directive
 //! sources" and is a legal, meaningful value.
 //!
+//! # Staying inside the scanned tree
+//!
+//! Every walk refuses a scan ROOT that is itself a symlink, not merely a symlinked
+//! entry found inside one. `std::fs::read_dir` and
+//! `Path::is_dir` both follow links, so a `.claude/rules` (or a declared directory
+//! entry) pointing out of the tree would otherwise splice arbitrary readable files
+//! on the dispatching machine into an agent's prompt — a real exfiltration sink,
+//! since the scanned tree may itself be less-trusted code under review.
+//!
 //! # Bounds
 //!
 //! Injected text is paid for once per dispatched agent, so the set is bounded by
@@ -171,7 +180,8 @@ pub struct DirectiveSet {
 }
 
 /// Returns the known directive-source locations under `dir`, in the fixed
-/// documented order, skipping symlinks and capping recursion depth.
+/// documented order, capping recursion depth and never traversing a symlink —
+/// neither a linked entry inside a location nor a location whose own root is a link.
 ///
 /// Absent locations contribute nothing — a project with none of them yields an
 /// empty vector, which is normal and not an error.
@@ -186,7 +196,8 @@ pub fn discover_sources(dir: &Path) -> Vec<PathBuf> {
     collect_flat(&dir.join(".cursor/rules"), "mdc", &mut out);
     // 4. .clinerules — a plain FILE in some projects, a directory of *.md in others.
     let cline = dir.join(".clinerules");
-    if cline.is_dir() {
+    // is_plain_dir, not Path::is_dir: the latter follows a symlink.
+    if is_plain_dir(&cline) {
         collect_flat(&cline, "md", &mut out);
     } else {
         push_if_file(&cline, &mut out);
@@ -213,18 +224,49 @@ fn is_plain_file(p: &Path) -> bool {
     }
 }
 
-/// Collects `*.<ext>` files directly inside `dir`, sorted lexicographically.
-fn collect_flat(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut found: Vec<PathBuf> = entries
+/// True only for a real directory — never a symlink that happens to point at one.
+///
+/// Applied to the SCAN ROOT of every walk, not only to entries discovered inside an
+/// already-opened directory. `std::fs::read_dir` and `Path::is_dir` both FOLLOW a
+/// symlink, so without this a `.claude/rules` (or `.windsurf/rules`, or a declared
+/// directory entry) that is itself a link out of the tree would let a crafted link
+/// committed into the scanned repo splice arbitrary readable files on the
+/// dispatching machine into an agent's prompt.
+fn is_plain_dir(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).is_ok_and(|md| md.file_type().is_dir())
+}
+
+/// Lists `dir`'s entries, sorted lexicographically, refusing a scan root that is
+/// itself a symlink.
+///
+/// Sorting here rather than at each call site is what makes the emitted order
+/// independent of filesystem iteration order; returning `None` for a symlinked or
+/// unreadable root is what keeps the walk inside the scanned tree.
+fn read_plain_dir(dir: &Path) -> Option<Vec<PathBuf>> {
+    if !is_plain_dir(dir) {
+        return None;
+    }
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
         .flatten()
         .map(|e| e.path())
-        .filter(|p| is_plain_file(p) && has_ext(p, ext))
         .collect();
-    found.sort();
-    out.extend(found);
+    paths.sort();
+    Some(paths)
+}
+
+/// Collects `*.<ext>` files directly inside `dir`, sorted lexicographically.
+///
+/// A `dir` that is itself a symlink yields nothing — see `read_plain_dir`.
+fn collect_flat(dir: &Path, ext: &str, out: &mut Vec<PathBuf>) {
+    let Some(paths) = read_plain_dir(dir) else {
+        return;
+    };
+    out.extend(
+        paths
+            .into_iter()
+            .filter(|p| is_plain_file(p) && has_ext(p, ext)),
+    );
 }
 
 /// Collects `*.<ext>` files under `dir` recursively, depth-capped and sorted so the
@@ -237,11 +279,11 @@ fn collect_recursive_at(dir: &Path, ext: &str, depth: usize, out: &mut Vec<PathB
     if depth > MAX_WALK_DEPTH {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    // read_plain_dir, never a bare read_dir: it refuses a symlinked ROOT, which is
+    // the case a per-entry check alone cannot see.
+    let Some(paths) = read_plain_dir(dir) else {
         return;
     };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
     // Files first at each level, then descend — a stable, documented order.
     for p in &paths {
         if is_plain_file(p) && has_ext(p, ext) {
@@ -249,12 +291,9 @@ fn collect_recursive_at(dir: &Path, ext: &str, depth: usize, out: &mut Vec<PathB
         }
     }
     for p in &paths {
-        // symlink_metadata, never metadata: a symlinked directory is skipped, so a
-        // loop cannot hang the walk and a link out of the repo cannot exfiltrate.
-        let Ok(md) = std::fs::symlink_metadata(p) else {
-            continue;
-        };
-        if md.file_type().is_dir() {
+        // A symlinked directory is skipped, so a loop cannot hang the walk and a
+        // link out of the repo cannot exfiltrate.
+        if is_plain_dir(p) {
             collect_recursive_at(p, ext, depth + 1, out);
         }
     }
@@ -346,7 +385,10 @@ fn expand_declared(dir: &Path, entry: &str) -> Vec<PathBuf> {
         }
         return out;
     }
-    if joined.is_dir() {
+    // is_plain_dir, not Path::is_dir: a declared entry that is a symlinked directory
+    // falls through to the literal-path branch below, where the reader's own
+    // is_plain_file gate reports it in `skipped` instead of walking out of the tree.
+    if is_plain_dir(&joined) {
         let mut out = Vec::new();
         collect_recursive(&joined, "md", &mut out);
         collect_recursive(&joined, "mdc", &mut out);
@@ -357,31 +399,23 @@ fn expand_declared(dir: &Path, entry: &str) -> Vec<PathBuf> {
 }
 
 fn collect_any_flat(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Some(paths) = read_plain_dir(dir) else {
         return;
     };
-    let mut found: Vec<PathBuf> = entries
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| is_plain_file(p))
-        .collect();
-    found.sort();
-    out.extend(found);
+    out.extend(paths.into_iter().filter(|p| is_plain_file(p)));
 }
 
 fn collect_any_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+    let Some(paths) = read_plain_dir(dir) else {
         return;
     };
-    let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
-    paths.sort();
     for p in &paths {
         if is_plain_file(p) {
             out.push(p.clone());
         }
     }
     for p in &paths {
-        if std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_dir()) {
+        if is_plain_dir(p) {
             collect_any_recursive(p, out);
         }
     }
@@ -820,5 +854,109 @@ mod tests {
             "a symlink must never be followed out of the scanned tree"
         );
         let _ = set;
+    }
+
+    /// The scan ROOT case the per-entry check above cannot see.
+    ///
+    /// `read_dir` follows a symlink, so a `.claude/rules` that is ITSELF a link out
+    /// of the tree used to admit whatever it pointed at. A dispatched agent's prompt
+    /// is an exfiltration sink, and the scanned tree may be less-trusted code under
+    /// review, so this is the load-bearing direction.
+    #[test]
+    #[cfg(unix)]
+    fn a_symlinked_scan_root_is_never_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        let outside = tmp.path().join("outside-tree");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("leak.md"), "SECRET CONTENTS\n").unwrap();
+
+        let project = d.join("project");
+        fs::create_dir_all(project.join(".claude")).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join(".claude/rules")).unwrap();
+        // ...and the recursive sibling location, which shares the same walker.
+        fs::create_dir_all(project.join(".windsurf")).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join(".windsurf/rules")).unwrap();
+        // ...and the two flat ones.
+        fs::create_dir_all(project.join(".cursor")).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join(".cursor/rules")).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join(".clinerules")).unwrap();
+
+        let set = resolve(&project, None).unwrap();
+        assert!(
+            set.directives.is_empty(),
+            "a symlinked scan root must yield nothing, got {:?}",
+            set.directives.iter().map(|x| &x.path).collect::<Vec<_>>()
+        );
+        let blob = serde_json::to_string(&set).unwrap();
+        assert!(
+            !blob.contains("SECRET CONTENTS"),
+            "the out-of-tree file's contents must not appear anywhere in the resolved set"
+        );
+    }
+
+    /// The same escape through the operator-declared list rather than discovery.
+    #[test]
+    #[cfg(unix)]
+    fn a_declared_symlinked_directory_is_never_followed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside-tree");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("leak.md"), "SECRET CONTENTS\n").unwrap();
+
+        let project = tmp.path().join("project");
+        fs::create_dir_all(project.join("docs")).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("docs/rules")).unwrap();
+
+        let declared = vec!["docs/rules".to_string()];
+        let set = resolve(&project, Some(&declared)).unwrap();
+        assert_eq!(set.origin, DirectiveOrigin::Config);
+        assert!(
+            set.directives.is_empty(),
+            "a declared directory entry that is a symlink must not be walked"
+        );
+        // Never silently dropped: the operator named it, so its non-admission is signal.
+        assert_eq!(set.skipped.len(), 1);
+        assert_eq!(set.skipped[0].reason, "declared source not found");
+        let blob = serde_json::to_string(&set).unwrap();
+        assert!(!blob.contains("SECRET CONTENTS"));
+    }
+
+    /// A symlinked FILE named directly by the declared list is refused the same way.
+    #[test]
+    #[cfg(unix)]
+    fn a_declared_symlinked_file_is_never_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside-tree");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("leak.md"), "SECRET CONTENTS\n").unwrap();
+
+        let project = tmp.path().join("project");
+        fs::create_dir_all(project.join("docs")).unwrap();
+        std::os::unix::fs::symlink(outside.join("leak.md"), project.join("docs/only.md")).unwrap();
+
+        let declared = vec!["docs/only.md".to_string()];
+        let set = resolve(&project, Some(&declared)).unwrap();
+        assert!(set.directives.is_empty());
+        assert_eq!(set.skipped.len(), 1);
+        let blob = serde_json::to_string(&set).unwrap();
+        assert!(!blob.contains("SECRET CONTENTS"));
+    }
+
+    /// A real directory nested under a real scan root still resolves — the root
+    /// guard must not have turned the recursive walk into a no-op.
+    #[test]
+    fn a_real_nested_directory_still_resolves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        write(d, ".claude/rules/nested/deep.md", "deep body\n");
+        let set = resolve(d, None).unwrap();
+        assert_eq!(
+            set.directives
+                .iter()
+                .map(|x| x.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![".claude/rules/nested/deep.md"]
+        );
     }
 }

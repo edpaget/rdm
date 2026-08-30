@@ -53,8 +53,13 @@ names the single canonical file rdm *writes* per platform, has no entry for
 fixed file rather than a glob.
 
 Symlinks are never followed (a symlink loop cannot hang the walk, and a link out of
-the repo cannot exfiltrate). A source that is unreadable, not valid UTF-8, or a
-device/FIFO is reported as skipped rather than failing the dispatch.
+the repo cannot exfiltrate). That check covers the **scan root** of every location,
+not only the entries found while walking one: `read_dir` and `Path::is_dir` both
+follow a symlink, so `.claude/rules` (or `.windsurf/rules`, or a declared directory
+entry) being *itself* a link out of the tree is exactly the case a per-entry check
+cannot see — and the one that matters, since a dispatched agent's prompt is an
+exfiltration sink. A source that is unreadable, not valid UTF-8, or a device/FIFO is
+reported as skipped rather than failing the dispatch.
 
 ## The `dispatch.directives` override: replace, never merge
 

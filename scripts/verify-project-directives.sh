@@ -36,6 +36,12 @@
 #   7  AC7 — the size bound is enforced (in Rust, once) and its exceeded path is
 #            observable in all THREE channels: the JSON's `skipped[]`, the notice
 #            rendered INSIDE the injected block, and the OUTCOME summary clause.
+#  10  CONTAINMENT — a symlinked SCAN ROOT (`.claude/rules` itself being a link out
+#            of the tree, discovered or declared) never splices an out-of-tree file
+#            into an agent's prompt, behind a positive control proving the same
+#            location DOES resolve when it is a real directory.
+#  11  --role filtering (a `both` directive survives either role) and the default
+#            human-readable renderer across its populated / empty / skipped branches.
 #
 # Everything is hermetic: fixture repos live in a temp dir (never inside a
 # worktree), the plan repo used by § 4 is a throwaway `rdm init` tree, and no
@@ -317,7 +323,7 @@ assert.ok(!m('*.rs', 'a/b.rs'), 'AC2: a single * does NOT cross a separator');
 assert.ok(m('*.rs', 'b.rs'), 'AC2: a single * matches within one segment');
 assert.ok(m('src/?.rs', 'src/a.rs'), 'AC2: ? matches exactly one character');
 assert.ok(!m('src/?.rs', 'src/ab.rs'), 'AC2: ? matches exactly ONE character');
-assert.ok(!m('src/?.rs', 'src//.rs') || true, 'AC2: ? never matches a separator');
+assert.ok(!m('src/?.rs', 'src//.rs'), 'AC2: ? never matches a separator');
 assert.ok(m('rdm-core/**/*.rs', 'rdm-core/src/ops/task.rs'), 'AC2: the documented example matches');
 assert.ok(!m('rdm-core/**/*.rs', 'rdm-cli/src/main.rs'), 'AC2: ...and a sibling crate does not');
 // A metacharacter-bearing path must be matched LITERALLY, never as a regex.
@@ -344,6 +350,20 @@ else
     fail "2 self-test: could not plant the matchesPaths mutation"
 fi
 pass "2 self-test: short-circuiting matchesPaths to true turns AC2 red"
+
+# Self-test: widen `?` from `[^/]` to `.` and prove the separator assertion fires.
+# It exists because that assertion was once written `assert.ok(!m(...) || true, ...)`,
+# which can never fail — a real assertion has to be shown to be capable of failing.
+mkdir -p "$TMP/mutant2b"
+sed "s|      out += '\[^/\]';|      out += '.';|" "$LIB" >"$TMP/mutant2b/dispatch-phase.mjs"
+cp "$REVIEW_LIB" "$TMP/mutant2b/review.mjs"
+if cmp -s "$LIB" "$TMP/mutant2b/dispatch-phase.mjs"; then
+    fail "2 self-test: could not plant the ?-widening mutation in globToRegExp"
+fi
+if (cd "$TMP" && DIR_LIB="$TMP/mutant2b/dispatch-phase.mjs" DIR_REVIEW_LIB="$TMP/mutant2b/review.mjs" run_node ac2.mjs) >/dev/null 2>&1; then
+    fail "2 self-test: AC2 passed with ? widened to match a path separator — the glob assertions are vacuous"
+fi
+pass "2 self-test: widening ? to match a separator turns AC2 red"
 
 # ===========================================================================
 # 3. AC3 — at least two source locations beyond `.claude/rules/` resolve.
@@ -948,5 +968,141 @@ if (cd "$TMP" && DIR_WF="$TMP/mutant9/rdm-wf-dispatch-phase.js" run_node e2e.mjs
     fail "9 self-test: § 9 passed with itemOutcome dropping the directive fields — the OUTCOME wiring assertion is vacuous"
 fi
 pass "9 self-test: dropping the directive fields from itemOutcome turns § 9 red"
+
+# ===========================================================================
+# 10. Containment — a symlinked SCAN ROOT never leaks files from outside the
+#     scanned tree into a dispatched agent's prompt.
+# ===========================================================================
+say "10. Containment: a symlinked scan root (discovered or declared) is never followed out of the tree"
+
+OUTSIDE="$TMP/outside-tree"
+mkdir -p "$OUTSIDE"
+printf 'SECRET CONTENTS\n' >"$OUTSIDE/leak.md"
+
+# POSITIVE CONTROL first: the very same directory reached as a REAL directory DOES
+# resolve. Without this, the negatives below would pass for a resolver that simply
+# never finds anything.
+CONTROL="$TMP/containment-control"
+mkdir -p "$CONTROL/.claude"
+cp -R "$OUTSIDE" "$CONTROL/.claude/rules"
+"$RDM_BIN" dispatch directives --dir "$CONTROL" --format json >"$TMP/c10-control.json" ||
+    fail "10: the control run failed"
+grep -qF 'SECRET CONTENTS' "$TMP/c10-control.json" ||
+    fail "10 control: a REAL .claude/rules/leak.md must resolve — the negatives below would be vacuous otherwise"
+pass "10 control: a real directory at the same location does resolve"
+
+# NEGATIVE 1 — discovery. `.claude/rules` (and its recursive/flat siblings) is
+# ITSELF a link out of the tree. read_dir and Path::is_dir both FOLLOW a symlink,
+# so a per-entry check alone cannot see this case.
+LINKED="$TMP/containment-linked"
+mkdir -p "$LINKED/.claude" "$LINKED/.windsurf" "$LINKED/.cursor"
+ln -s "$OUTSIDE" "$LINKED/.claude/rules"
+ln -s "$OUTSIDE" "$LINKED/.windsurf/rules"
+ln -s "$OUTSIDE" "$LINKED/.cursor/rules"
+ln -s "$OUTSIDE" "$LINKED/.clinerules"
+"$RDM_BIN" dispatch directives --dir "$LINKED" --format json >"$TMP/c10-linked.json" 2>"$TMP/c10-linked.err" ||
+    fail "10: a symlinked scan root must resolve to nothing, not fail the command"
+if grep -qF 'SECRET CONTENTS' "$TMP/c10-linked.json"; then
+    fail "10: a symlinked SCAN ROOT leaked an out-of-tree file into the emitted directive set"
+fi
+run_node -e '
+const p = JSON.parse(require("fs").readFileSync(process.env.DIR_TMP + "/c10-linked.json", "utf8"));
+if (p.directives.length !== 0) {
+  console.error("expected zero directives, got " + JSON.stringify(p.directives.map((d) => d.path)));
+  process.exit(1);
+}
+' || fail "10: a symlinked scan root must admit zero directives"
+pass "10a: a symlinked .claude/rules / .windsurf/rules / .cursor/rules / .clinerules yields nothing"
+
+# NEGATIVE 2 — the declared list. The same escape, through `dispatch.directives`
+# naming a directory entry that is a symlink out of the tree.
+DECL_REPO="$TMP/plan-repo-containment"
+mkdir -p "$DECL_REPO"
+"$RDM_BIN" --root "$DECL_REPO" init --default-project demo >/dev/null 2>&1 ||
+    fail "10: could not init a throwaway plan repo"
+DECLARED="$TMP/containment-declared"
+mkdir -p "$DECLARED/docs"
+ln -s "$OUTSIDE" "$DECLARED/docs/rules"
+"$RDM_BIN" --root "$DECL_REPO" config set dispatch.directives "docs/rules" >/dev/null
+"$RDM_BIN" --root "$DECL_REPO" dispatch directives --dir "$DECLARED" --format json >"$TMP/c10-declared.json" ||
+    fail "10: the declared-symlink run must not fail the command"
+if grep -qF 'SECRET CONTENTS' "$TMP/c10-declared.json"; then
+    fail "10: a DECLARED symlinked directory leaked an out-of-tree file into the emitted directive set"
+fi
+run_node -e '
+const p = JSON.parse(require("fs").readFileSync(process.env.DIR_TMP + "/c10-declared.json", "utf8"));
+if (p.directives.length !== 0) { console.error("expected zero directives"); process.exit(1); }
+// Never silently dropped: the operator named it, so its non-admission is signal.
+if (p.skipped.length !== 1) { console.error("expected the declared entry to be reported in skipped"); process.exit(1); }
+' || fail "10: a declared symlinked directory must yield zero directives and one reported skip"
+pass "10b: a declared symlinked directory yields nothing and is reported in skipped"
+
+# ===========================================================================
+# 11. The --role filter and the human-readable (default) rendering.
+# ===========================================================================
+say "11. The --role filter keeps 'both', drops the other role, and the text renderer names what it resolved"
+
+"$RDM_BIN" dispatch directives --dir "$FIXTURE" --role implementer --format json >"$TMP/role-impl.json" ||
+    fail "11: --role implementer failed"
+"$RDM_BIN" dispatch directives --dir "$FIXTURE" --role reviewer --format json >"$TMP/role-rev.json" ||
+    fail "11: --role reviewer failed"
+
+run_node -e '
+const fs = require("fs");
+const T = process.env.DIR_TMP;
+const read = (f) => JSON.parse(fs.readFileSync(T + "/" + f, "utf8")).directives.map((d) => d.path);
+const all = read("ac1.json");
+// CONTROL: unfiltered, both role-addressed sources are present — so each exclusion
+// below is a real exclusion, not an artifact of the fixture.
+for (const p of [".claude/rules/testing.md", ".cursor/rules/style.mdc"]) {
+  if (all.indexOf(p) === -1) { console.error("control: " + p + " missing unfiltered"); process.exit(1); }
+}
+const impl = read("role-impl.json");
+const rev = read("role-rev.json");
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// role: implementer keeps its own plus every both-role one; drops the reviewer-only one.
+if (!eq(impl, [".claude/rules/testing.md", "AGENTS.md", ".windsurf/rules/perf.md"])) {
+  console.error("--role implementer got " + JSON.stringify(impl)); process.exit(1);
+}
+// role: reviewer, symmetrically.
+if (!eq(rev, ["AGENTS.md", ".cursor/rules/style.mdc", ".windsurf/rules/perf.md"])) {
+  console.error("--role reviewer got " + JSON.stringify(rev)); process.exit(1);
+}
+// The unscoped both-role sources appear under BOTH roles — the load-bearing overlap.
+for (const p of ["AGENTS.md", ".windsurf/rules/perf.md"]) {
+  if (impl.indexOf(p) === -1 || rev.indexOf(p) === -1) {
+    console.error("a both-role directive must survive either role filter: " + p); process.exit(1);
+  }
+}
+' || fail "11: --role filtering assertions failed"
+pass "11a: --role keeps 'both' under either role and drops the other role's own"
+
+# The DEFAULT format is text, and it is the surface an operator actually reads.
+"$RDM_BIN" dispatch directives --dir "$FIXTURE" >"$TMP/role-text.out" 2>"$TMP/role-text.err" ||
+    fail "11: the default (text) format failed"
+[ ! -s "$TMP/role-text.err" ] || fail "11: the text renderer must print nothing on stderr"
+grep -qF 'origin: discovery' "$TMP/role-text.out" || fail "11: the text output must name the origin"
+grep -qF 'budget: 8000 bytes per source, 16000 bytes total' "$TMP/role-text.out" ||
+    fail "11: the text output must echo the bound"
+grep -qF '.claude/rules/testing.md [role: implementer] [paths: unscoped]' "$TMP/role-text.out" ||
+    fail "11: the text output must name each source with its role and scope"
+grep -qF '.cursor/rules/style.mdc [role: reviewer] [paths: rdm-core/**/*.rs]' "$TMP/role-text.out" ||
+    fail "11: the text output must render a scoped rule's globs"
+if grep -qF 'skipped:' "$TMP/role-text.out"; then
+    fail "11: with nothing skipped the text output must omit the section entirely"
+fi
+
+# The empty-set branch: no sources is a normal outcome, rendered as such.
+"$RDM_BIN" dispatch directives --dir "$EMPTY_DIR" >"$TMP/role-text-empty.out" 2>&1 ||
+    fail "11: the text renderer must exit 0 on an empty tree"
+grep -qF 'directives: (none)' "$TMP/role-text-empty.out" ||
+    fail "11: an empty set must render as '(none)', not as a crash or a blank"
+
+# And the skipped branch, against § 7's oversize fixture.
+"$RDM_BIN" dispatch directives --dir "$BIG_FIXTURE" >"$TMP/role-text-big.out" 2>&1 ||
+    fail "11: the text renderer must exit 0 with an over-bound source"
+grep -qF 'skipped:' "$TMP/role-text-big.out" ||
+    fail "11: an over-bound source must be visible in the text output too, never silent"
+pass "11b: the default text renderer covers the populated, empty, and skipped branches"
 
 say "verify-project-directives.sh: ALL GREEN"

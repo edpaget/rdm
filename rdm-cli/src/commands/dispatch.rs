@@ -110,22 +110,35 @@ fn print_json(set: &DirectiveSet) -> Result<()> {
 }
 
 fn print_text(set: &DirectiveSet) {
-    println!("origin: {}", set.origin.as_str());
-    println!(
+    print!("{}", render_text(set));
+}
+
+/// Renders the human-readable summary.
+///
+/// Split out from [`print_text`] so it is assertable without capturing stdout — an
+/// empty `directives` or `skipped` list is a normal outcome (a project with no
+/// directive sources), so the empty-list branches have to be exercised.
+fn render_text(set: &DirectiveSet) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(out, "origin: {}", set.origin.as_str());
+    let _ = writeln!(
+        out,
         "budget: {} bytes per source, {} bytes total",
         set.max_bytes_per_source, set.max_bytes_total
     );
     if set.directives.is_empty() {
-        println!("directives: (none)");
+        let _ = writeln!(out, "directives: (none)");
     } else {
-        println!("directives:");
+        let _ = writeln!(out, "directives:");
         for d in &set.directives {
             let scope = if d.paths.is_empty() {
                 "unscoped".to_string()
             } else {
                 d.paths.join(", ")
             };
-            println!(
+            let _ = writeln!(
+                out,
                 "  {} [role: {}] [paths: {}] ({} bytes)",
                 d.path,
                 d.role.as_str(),
@@ -135,9 +148,133 @@ fn print_text(set: &DirectiveSet) {
         }
     }
     if !set.skipped.is_empty() {
-        println!("skipped:");
+        let _ = writeln!(out, "skipped:");
         for s in &set.skipped {
-            println!("  {} — {}", s.path, s.reason);
+            let _ = writeln!(out, "  {} — {}", s.path, s.reason);
         }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rdm_core::directives::{
+        Directive, DirectiveOrigin, MAX_BYTES_PER_SOURCE, MAX_BYTES_TOTAL, SkippedDirective,
+    };
+
+    fn directive(path: &str, role: DirectiveRole, paths: &[&str]) -> Directive {
+        let text = format!("body of {path}\n");
+        Directive {
+            path: path.to_string(),
+            role,
+            paths: paths.iter().map(|s| (*s).to_string()).collect(),
+            bytes: text.len(),
+            chars: text.chars().count(),
+            text,
+        }
+    }
+
+    fn set_of(directives: Vec<Directive>, skipped: Vec<SkippedDirective>) -> DirectiveSet {
+        DirectiveSet {
+            origin: DirectiveOrigin::Discovery,
+            max_bytes_per_source: MAX_BYTES_PER_SOURCE,
+            max_bytes_total: MAX_BYTES_TOTAL,
+            directives,
+            skipped,
+        }
+    }
+
+    fn paths_of(set: &DirectiveSet) -> Vec<&str> {
+        set.directives.iter().map(|d| d.path.as_str()).collect()
+    }
+
+    fn seeded() -> DirectiveSet {
+        set_of(
+            vec![
+                directive("impl.md", DirectiveRole::Implementer, &[]),
+                directive("rev.md", DirectiveRole::Reviewer, &[]),
+                directive("both.md", DirectiveRole::Both, &["rdm-core/**/*.rs"]),
+            ],
+            vec![],
+        )
+    }
+
+    #[test]
+    fn no_role_filter_keeps_every_directive() {
+        let out = filter_role(seeded(), None);
+        assert_eq!(paths_of(&out), vec!["impl.md", "rev.md", "both.md"]);
+    }
+
+    #[test]
+    fn implementer_filter_drops_reviewer_only_and_keeps_both() {
+        let out = filter_role(seeded(), Some(DirectiveRoleArg::Implementer));
+        assert_eq!(
+            paths_of(&out),
+            vec!["impl.md", "both.md"],
+            "a `both`-role directive is addressed to the implementer too"
+        );
+    }
+
+    #[test]
+    fn reviewer_filter_drops_implementer_only_and_keeps_both() {
+        let out = filter_role(seeded(), Some(DirectiveRoleArg::Reviewer));
+        assert_eq!(
+            paths_of(&out),
+            vec!["rev.md", "both.md"],
+            "a `both`-role directive is addressed to the reviewer too"
+        );
+    }
+
+    #[test]
+    fn the_role_filter_leaves_skipped_and_the_budget_alone() {
+        let set = set_of(
+            vec![directive("impl.md", DirectiveRole::Implementer, &[])],
+            vec![SkippedDirective {
+                path: "huge.md".to_string(),
+                bytes: 9_000,
+                reason: "exceeds the per-source byte bound (8000)".to_string(),
+            }],
+        );
+        let out = filter_role(set, Some(DirectiveRoleArg::Reviewer));
+        assert!(out.directives.is_empty());
+        assert_eq!(
+            out.skipped.len(),
+            1,
+            "a withheld source stays reported whatever role is asked for"
+        );
+        assert_eq!(out.max_bytes_total, MAX_BYTES_TOTAL);
+    }
+
+    #[test]
+    fn text_output_names_every_directive_with_its_role_and_scope() {
+        let rendered = render_text(&seeded());
+        assert!(rendered.contains("origin: discovery"));
+        assert!(rendered.contains("budget: 8000 bytes per source, 16000 bytes total"));
+        assert!(rendered.contains("impl.md [role: implementer] [paths: unscoped]"));
+        assert!(rendered.contains("both.md [role: both] [paths: rdm-core/**/*.rs]"));
+        assert!(
+            !rendered.contains("skipped:"),
+            "with nothing skipped the section is omitted entirely"
+        );
+    }
+
+    #[test]
+    fn text_output_handles_an_empty_set_and_reports_skips() {
+        let empty = render_text(&set_of(vec![], vec![]));
+        assert!(
+            empty.contains("directives: (none)"),
+            "no sources is a normal outcome, not an error: {empty}"
+        );
+        let with_skip = render_text(&set_of(
+            vec![],
+            vec![SkippedDirective {
+                path: "huge.md".to_string(),
+                bytes: 9_000,
+                reason: "exceeds the per-source byte bound (8000)".to_string(),
+            }],
+        ));
+        assert!(with_skip.contains("skipped:"));
+        assert!(with_skip.contains("huge.md — exceeds the per-source byte bound (8000)"));
     }
 }
