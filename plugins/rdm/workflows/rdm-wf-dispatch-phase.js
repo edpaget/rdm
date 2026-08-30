@@ -4716,7 +4716,19 @@ const planGate = await runPlanGate(
         schema: PLAN_DOC_SCHEMA,
         model: models.plan,
       }),
-    review: async (doc) => runPlanReview({ target: renderPlanDoc(doc), intent: planIntent.intent, maxRefutations: maxRefutations, ...reviewModels }),
+    // The plan reviewer gets the project's reviewer-role directives too. This
+    // stage IS a reviewer — a blocking plan finding escalates the dispatch
+    // before any implementer runs — so omitting it would make the mechanism
+    // code-mode-only in the one lane that resolves directives at all, while
+    // review.mjs (and its docs) promise every finder prompt of BOTH modes.
+    // The path scope is the plan's OWN file_map: on a plan-review pass no diff
+    // exists, so the plan's declared files are the only change set in hand, the
+    // same set the first-pass implementer prompt is scoped by. A plan with no
+    // usable file map yields [], which matchesPaths reads as "no file matches"
+    // and drops every SCOPED directive while unscoped ones still land — the
+    // deliberate asymmetry with the pre-diff code reviewer below, which passes
+    // null because there the change set is genuinely UNKNOWN rather than empty.
+    review: async (doc) => runPlanReview({ target: renderPlanDoc(doc), intent: planIntent.intent, maxRefutations: maxRefutations, directives: renderDirectives(selectDirectives(allDirectives, 'reviewer', planFilePaths(doc)), directivesNotice), ...reviewModels }),
   }
 )
 

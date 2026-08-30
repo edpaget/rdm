@@ -152,14 +152,17 @@ Which path set each consumer matches against:
 | first-pass implementer | the approved plan's `file_map[].path` |
 | rework implementer | that, unioned with the prior round's real changed files |
 | act step | the last round's changed files, else the plan's file map |
-| reviewer | `signals.changedFiles` from the diff — **`null`** when that agent failed |
+| plan reviewer | the plan under review's own `file_map[].path` — no diff exists yet |
+| code reviewer | `signals.changedFiles` from the diff — **`null`** when that agent failed |
 
 **Fail-open rule.** An *unknown* path set (`null`/`undefined`/not an array) keeps
 every role-matching directive, mirroring `deriveSignals`' existing convention:
 missing information widens injection, never narrows it. An **empty array** is a real
 answer ("nothing changed") and does narrow. The distinction matters most for the
-reviewer: passing `[]` when the diff agent failed would make every scoped rule vanish
-exactly when the review is already degraded.
+code reviewer: passing `[]` when the diff agent failed would make every scoped rule
+vanish exactly when the review is already degraded. The plan reviewer is the opposite
+case and deliberately passes the plan's file map even when it is empty — an empty
+`file_map` is the plan's own claim about what it touches, not a failed read.
 
 ## The size bound
 
@@ -242,7 +245,25 @@ conflated.
 ## Reviewer authority
 
 Directives reach every finder prompt, in both modes, in every dimension — one rule,
-one mechanism. Because the channel carries project-authored text straight into a
+one mechanism. Read that literally: it describes `.claude/workflows/lib/review.mjs`,
+which pushes `context.directives` into every dimension of `code` **and** `plan` mode
+behind one presence guard. What a given reviewer actually sees is decided one level
+up, by whichever caller supplies that context, and only the **dispatch lane** resolves
+directives today:
+
+| Caller | Resolves directives? | Which stages get them |
+| --- | --- | --- |
+| `rdm-wf-dispatch-phase.js` | yes, at Stage 0 | the plan review **and** the code review, both `role: reviewer` |
+| `rdm-wf-review-refute-fix.js` (standalone) | no | only what a caller passes as `directives` |
+| `rdm-wf-plan-review.js` (standalone) | no | only what a caller passes as `directives` |
+
+The two standalone consumers carry the stamped `review.mjs` block, so they *support*
+the channel and need no change to gain it — they simply do not resolve a project's
+sources on their own. That boundary is deliberate, not an oversight: the acceptance
+criteria behind this mechanism are scoped to the agents rdm **dispatches**, and
+widening the standalone entry points is tracked as separate follow-up work.
+
+Because the channel carries project-authored text straight into a
 reviewer, its preamble scopes what that text may do: directives state the standards
 to hold the work to, and they **cannot narrow the review**. No directive can tell a
 reviewer to skip a file, ignore a finding, lower a severity, stop reviewing, or treat

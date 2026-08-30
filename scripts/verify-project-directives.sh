@@ -1031,6 +1031,23 @@ function makeAgent(meta) {
     assert.ok(p.includes('CANNOT narrow your review'), 'E2E: ...behind the authority preamble');
   }
 
+  // The PLAN reviewer is a reviewer too — a blocking plan finding escalates the
+  // dispatch before any implementer runs — and the driver is the only lane that
+  // resolves directives at all, so a plan finder that never sees them makes the
+  // mechanism code-mode-only. review.mjs supports plan mode generically; this
+  // asserts the DRIVER actually supplies the context (the wiring, not the
+  // mechanism), which is exactly the half no other section observes.
+  const planFinders = of('find:plan:');
+  assert.ok(planFinders.length > 0, 'E2E: plan-review finders ran');
+  for (const p of planFinders) {
+    assert.ok(p.includes(RULE_TEXT.trim()), 'E2E: every PLAN finder prompt carries the reviewer directive');
+    assert.ok(p.includes('CANNOT narrow your review'), 'E2E: ...behind the same authority preamble');
+    assert.ok(p.includes(SKIPPED_PATH), 'E2E: ...and the withheld-source notice');
+    // Role addressing is honored on the plan side too: an implementer-only rule
+    // must not reach a reviewer prompt, or `role:` would be decorative here.
+    assert.ok(!p.includes(SCOPED_TEXT.trim()), 'E2E: an implementer-addressed rule stays out of the plan finder prompt');
+  }
+
   // The act step edits code, so it is implementer-shaped and gets the block too.
   const act = of('act:code');
   if (act.length > 0) assert.ok(act[0].includes(RULE_TEXT.trim()), 'E2E: the act step carries the implementer block');
@@ -1058,7 +1075,7 @@ function makeAgent(meta) {
   assert.equal(out.outcome, 'reviewed', 'E2E: ...and the run is otherwise unaffected');
 }
 
-console.log('E2E OK: directives reach the implementer, the act step and every finder; the skip reaches the OUTCOME; absent changes nothing');
+console.log('E2E OK: directives reach the implementer, the act step and every finder in BOTH review modes; the skip reaches the OUTCOME; absent changes nothing');
 NODE_E2E
 (cd "$TMP" && run_node e2e.mjs) || fail "9: end-to-end driver assertions failed"
 pass "9: the shipped driver threads directives into every prompt and the withheld list into the OUTCOME"
@@ -1074,6 +1091,21 @@ if (cd "$TMP" && DIR_WF="$TMP/mutant9/rdm-wf-dispatch-phase.js" run_node e2e.mjs
     fail "9 self-test: § 9 passed with itemOutcome dropping the directive fields — the OUTCOME wiring assertion is vacuous"
 fi
 pass "9 self-test: dropping the directive fields from itemOutcome turns § 9 red"
+
+# Self-test: strip the `directives:` key from the PLAN-review call — the exact
+# omission the code review caught, and the one review.mjs cannot catch on its own
+# because the mechanism there is generic over mode. Proves the plan-finder
+# assertions above are load-bearing wiring checks, not restatements of § 1.
+mkdir -p "$TMP/mutant9plan"
+sed "s/directives: renderDirectives(selectDirectives(allDirectives, 'reviewer', planFilePaths(doc)), directivesNotice), //" \
+    "$WF" >"$TMP/mutant9plan/rdm-wf-dispatch-phase.js"
+if cmp -s "$WF" "$TMP/mutant9plan/rdm-wf-dispatch-phase.js"; then
+    fail "9 self-test: could not plant the un-threaded-plan-directives mutation"
+fi
+if (cd "$TMP" && DIR_WF="$TMP/mutant9plan/rdm-wf-dispatch-phase.js" run_node e2e.mjs) >/dev/null 2>&1; then
+    fail "9 self-test: § 9 passed with the plan reviewer receiving no directives — the plan-mode wiring assertion is vacuous"
+fi
+pass "9 self-test: un-threading directives from the plan review turns § 9 red"
 
 # ===========================================================================
 # 10. Containment — a symlinked SCAN ROOT never leaks files from outside the
