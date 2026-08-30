@@ -2696,6 +2696,164 @@ function buildVerifyPrompt(command, worktreeRef, cfg) {
 }
 // >>> verify-gate:end <<<
 
+// >>> clean-worktree:begin <<<
+// --- `reviewed` requires a clean worktree -------------------------------------
+//
+// MECHANISM DECISION (canonical write-up: docs/verify-gate.md § 8). The PICK is
+// that THE STEP THAT APPLIES AN INLINE FIX COMMITS ITS OWN CHANGE; the terminal
+// cleanliness assertion below is ENFORCEMENT of that invariant, not the
+// remediation. A reader can then recover both halves of the record: the finding
+// that was raised, and the commit that closed it (buildCodeActPrompt asks for a
+// `Review-Finding: <id>` line in the commit message body and reports the short
+// sha back on the `handled` entry, which annotateHandled stamps as
+// `handledCommit`).
+//
+// Rejected alternatives, with reasons:
+//   - AMENDING the implementation commit. It destroys attribution: that commit
+//     predates the finding, so the record would claim the fix shipped as part
+//     of the original implementation.
+//   - A bulk "commit whatever is dirty" step after the act step. Unattributable
+//     (one nameless commit for every finding at once) and it would sweep
+//     unrelated dirt — an operator's own edits in a shared per-roadmap worktree
+//     — into that commit.
+//
+// `--plan-only` is unaffected by construction: the driver returns at its
+// `if (planOnly)` branch before runCodeGate is ever called, so neither the act
+// step, the post-act re-verify, nor the cleanliness probe can fire. No extra
+// planOnly guard exists here, deliberately.
+//
+// The probe is scoped to the ITEM WORKTREE only. A LARGE finding filed with
+// `task create` mutates the PLAN repo, which is a different git repository;
+// landing that batch stays the caller's `rdm commit` and is none of this
+// probe's business.
+
+// WORKTREE_PATH_CAP — how many uncommitted paths reach the finding text. A
+// wholesale-dirty tree must not blow the OUTCOME summary (and therefore the
+// `rdm review blocked` queue line); the overflow is reported as a count.
+const WORKTREE_PATH_CAP = 20;
+
+// parseWorktreeStatus(raw) — coerce the WORKTREE_CLEAN payload into
+// { ran, clean, paths, truncated }.
+//
+// FAIL-CLOSED, mirroring normalizeVerifyResult: a non-object, a missing or
+// non-string `porcelain`, or a payload that carries text but yields no parsable
+// path all resolve to { ran: false, clean: false } — an unobservable worktree
+// must never read as a clean one.
+//
+// `porcelain === ''` (and a payload that is nothing but line terminators) is
+// genuinely clean: a trailing newline must not manufacture a phantom path.
+function parseWorktreeStatus(raw) {
+  const unknown = { ran: false, clean: false, paths: [], truncated: 0 };
+  if (!raw || typeof raw !== 'object') return unknown;
+  if (typeof raw.porcelain !== 'string') return unknown;
+  const lines = raw.porcelain.split(/\r?\n/).filter((l) => l !== '');
+  if (lines.length === 0) return { ran: true, clean: true, paths: [], truncated: 0 };
+  const paths = [];
+  for (let i = 0; i < lines.length; i++) {
+    // Porcelain v1 is `XY <path>`: two status characters and one space. Never
+    // split on whitespace — a path may contain spaces (and may be quoted).
+    let rest = lines[i].length > 3 ? lines[i].slice(3) : '';
+    // A rename/copy entry reads `old -> new`; the destination is the path that
+    // exists now, so that is the one worth naming.
+    const arrow = rest.indexOf(' -> ');
+    if (arrow > -1) rest = rest.slice(arrow + 4);
+    rest = rest.trim();
+    if (rest !== '') paths.push(rest);
+  }
+  // Text in, nothing parsable out: unknown, not clean.
+  if (paths.length === 0) return unknown;
+  return {
+    ran: true,
+    clean: false,
+    paths: paths.slice(0, WORKTREE_PATH_CAP),
+    truncated: paths.length > WORKTREE_PATH_CAP ? paths.length - WORKTREE_PATH_CAP : 0,
+  };
+}
+
+// dirtyWorktreeFinding(result) — synthesize a FINDING-shaped object from a
+// non-clean worktree probe. Mirrors verifyFailureFinding exactly: the UNTOUCHED
+// classifier sees a blocking finding in the final round and resolves the unit to
+// `rework`, so this adds no OUTCOME value and no classifier branch. The paths
+// live in `what_fails`, which is the field summarizeFindings renders, so the
+// OUTCOME `summary` (and therefore outcomePolicy's `reason`) names them for
+// free — an operator reading the parked queue can tell instantly whether the
+// dirt was the dispatch's or their own.
+function dirtyWorktreeFinding(result) {
+  const r = result || {};
+  const list = Array.isArray(r.paths) ? r.paths : [];
+  const more = typeof r.truncated === 'number' && r.truncated > 0 ? ' …and ' + r.truncated + ' more' : '';
+  const detail =
+    r.ran === true
+      ? 'uncommitted paths: ' + list.join(', ') + more
+      : 'the cleanliness probe returned no usable `git status --porcelain` output, so the worktree could not be observed';
+  return {
+    id: 'worktree-not-clean',
+    concern: 'cleanliness',
+    severity: 'blocking',
+    confidence: 100,
+    what_fails: 'the item worktree is not clean — ' + detail,
+    failure_scenario:
+      'The dispatch would report this item reviewed while work it produced is still uncommitted. ' +
+      'Landing rebases before merging, so that work would never ship and the review finding it ' +
+      'satisfied would be satisfied by nothing. ' + detail + '.',
+    suggested_fix:
+      'Commit everything the run produced — an inline review fix belongs in its own commit naming the ' +
+      'finding it closes — and leave `git status --porcelain` empty. If the listed paths are not this ' +
+      "run's work, clear them out of the worktree before re-dispatching.",
+    unrefuted: true,
+    unrefutedReason: 'mechanical',
+  };
+}
+
+// actChangedCode(actResult, actInvoked) — did the Act step touch the worktree,
+// so that the checks must run again?
+//
+// FAIL-CLOSED on an unusable result: act invoked but null (agent() resolves null
+// on an unknown model id), thrown (runCodeGate swallows it into null), or
+// carrying no `handled` array ⇒ true. An UNKNOWN act outcome must re-verify;
+// assuming nothing changed is exactly the silent-success this gate removes.
+function actChangedCode(actResult, actInvoked) {
+  if (actInvoked !== true) return false;
+  if (!actResult || typeof actResult !== 'object' || !Array.isArray(actResult.handled)) return true;
+  return actResult.handled.some((h) => h && h.action === 'fixed-inline');
+}
+
+// WORKTREE_CLEAN — what the mechanical cleanliness agent reports back: the
+// verbatim porcelain status of the item's worktree, empty when it is clean.
+const WORKTREE_CLEAN_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['porcelain'],
+  properties: {
+    porcelain: { type: 'string' },
+  },
+};
+
+// buildCleanCheckPrompt(worktreeRef, cfg) — observe the item worktree's
+// cleanliness ONCE and report it verbatim. Like buildVerifyPrompt, this agent
+// observes and does not repair: it is explicitly forbidden from editing,
+// staging, committing, stashing, resetting, or cleaning anything. A probe that
+// rewarded a destructive shortcut would be worse than no probe at all.
+function buildCleanCheckPrompt(worktreeRef, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
+  const proj = projectFlag(cfg);
+  return [
+    'You are a mechanical worktree-cleanliness agent. Do not plan, implement, review, or fix anything.',
+    'Find the worktree for this item and work THERE:',
+    '  ' + bin + ' worktree add ' + worktreeRef + proj,
+    '(it prints the existing path if the worktree already exists) then `cd` into that path.',
+    'Run EXACTLY this one command, verbatim, exactly once:',
+    '  git status --porcelain',
+    'Return a WORKTREE_CLEAN object whose `porcelain` field is that command\'s output VERBATIM — an empty',
+    'string when the worktree is clean, and every line unchanged when it is not.',
+    'Edit no files. Do not `git add`, `git commit`, `git stash`, `git reset`, `git checkout --`, or',
+    '`git clean` anything: you are reporting what is there, and making the tree LOOK clean would destroy',
+    'exactly the work this check exists to protect. If you cannot run the command at all, say so in',
+    '`porcelain` rather than returning an empty string.',
+  ].join('\n');
+}
+// >>> clean-worktree:end <<<
+
 // runPlanGate(config, deps) — the bounded plan stage. Author a plan, review it,
 // and revise up to `config.maxRevise` times, breaking early the moment a review
 // comes back with no blockers. Returns
@@ -2798,25 +2956,34 @@ async function runPlanGate(config, deps) {
 //
 // Act step: once the loop settles on a CLEAN final round (no blocking finding,
 // no AC-table gap) with non-empty survivors, the optional `d.act` dep is
-// invoked exactly once to incorporate them by size (small → fixed inline,
-// large → filed as a task — see buildCodeActPrompt). This never runs on a
-// still-blocking/AC-gapped round, whatever caused it (still-blocking findings
-// and unresolved AC gaps are handled by the rework/status machinery, not this
-// step — "never fix large changes inline" stays intact). A missing `act` dep or
-// a thrown Act call is swallowed: concern/suggestion findings are non-gating by
-// the module's own severity contract, so a failed fix-attempt must never
-// change the outcome.
+// invoked exactly once to incorporate them by size (small → fixed inline AND
+// committed, large → filed as a task — see buildCodeActPrompt). This never runs
+// on a still-blocking/AC-gapped round, whatever caused it (still-blocking
+// findings and unresolved AC gaps are handled by the rework/status machinery,
+// not this step — "never fix large changes inline" stays intact). A missing
+// `act` dep or a thrown Act call is swallowed: concern/suggestion findings are
+// non-gating by the module's own severity contract, so a failed fix-attempt
+// must never change the outcome — but a thrown/unusable act result DOES force
+// the post-act re-verify below (actChangedCode is fail-closed).
 //
 // Verify gate: `config.verifyCommand` is the project's single resolved
 // verification command. It is run through the optional `d.verify` dep at exactly
-// ONE call site (implementAndVerify below), immediately after every
-// `d.implement(...)` and before the corresponding `d.review()`, so it fires
-// exactly once per implementation attempt on the first pass and on every rework
-// round alike. A failure is FAIL-CLOSED (a throw, a null resolution, or a
-// missing exit code all count) and is folded into the round as a synthesized
-// blocking finding, so the UNTOUCHED classifier resolves it to `rework` — no new
-// OUTCOME value, and no second budget: the existing `maxRework` bound is what
-// terminates a repeatedly failing verification.
+// ONE call site (runVerifyOnce below), reached from implementAndVerify
+// immediately after every `d.implement(...)` and before the corresponding
+// `d.review()`, so it fires once per implementation attempt on the first pass
+// and on every rework round alike — PLUS once more when the Act step changed
+// code (see the terminal tail). A failure is FAIL-CLOSED (a throw, a null
+// resolution, or a missing exit code all count) and is folded into the round as
+// a synthesized blocking finding, so the UNTOUCHED classifier resolves it to
+// `rework` — no new OUTCOME value, and no second budget: the existing
+// `maxRework` bound is what terminates a repeatedly failing verification.
+//
+// Terminal tail: after the loop settles, the act step commits its own inline
+// fix, a post-act re-verify re-runs the checks whenever that step changed code,
+// and a cleanliness probe (`d.clean`) asserts the item worktree is empty of
+// uncommitted work. Either failure folds into the FINAL round as a mechanical
+// blocking finding, so `reviewed` is structurally incompatible with unverified
+// or uncommitted work. Canonical write-up: docs/verify-gate.md § 8.
 //
 // Rework notes: `d.implement` is called with `null` for the first pass and
 // `{ findings, acTable, verify }` on every rework pass — NEVER a bare findings
@@ -2831,16 +2998,19 @@ async function runCodeGate(config, deps) {
   const maxRework = c.maxRework != null ? c.maxRework : DEFAULT_MAX_CODE_REWORK;
   const tier = c.tier;
   const verifyCommand = typeof c.verifyCommand === 'string' ? c.verifyCommand.trim() : '';
-  // Per-round verify results, parallel to `rounds`, plus the number of times the
-  // single call site actually fired. Returned so the harness can assert the
-  // one-run-per-attempt contract from the OUTSIDE, without instrumenting a fake.
+  // One entry per verify INVOCATION: the per-round results in order, plus the
+  // terminal post-act re-verify when the Act step changed code. `verifyCalls`
+  // counts the times the single call site actually fired. Both are returned so
+  // the harness can assert the run-count contract from the OUTSIDE, without
+  // instrumenting a fake.
   const verifyRounds = [];
   let verifyCalls = 0;
-  // THE SINGLE VERIFY CALL SITE. Implement and verify are deliberately fused
-  // into one helper so the first pass and every rework round route through the
-  // same line: no branch can skip it, and no retry loop can multiply it.
-  const implementAndVerify = async (notes) => {
-    await d.implement(notes);
+  // THE SINGLE VERIFY CALL SITE. Everything that runs the command — the first
+  // pass, every rework round, and the terminal post-act re-verify — routes
+  // through this one helper: no branch can skip it, and no retry loop can
+  // multiply it. implementAndVerify keeps implement and verify fused so a
+  // round can never review an unverified implementation.
+  const runVerifyOnce = async () => {
     if (typeof d.verify !== 'function' || verifyCommand === '') {
       verifyRounds.push(null);
       return null;
@@ -2856,6 +3026,10 @@ async function runCodeGate(config, deps) {
     const normalized = normalizeVerifyResult(verifyCommand, raw, agentFailed);
     verifyRounds.push(normalized);
     return normalized;
+  };
+  const implementAndVerify = async (notes) => {
+    await d.implement(notes);
+    return runVerifyOnce();
   };
   // foldVerify(survivors, verifyResult) — prepend the synthesized blocking
   // finding when the round's verification failed. A NEW array every time, so the
@@ -2897,9 +3071,62 @@ async function runCodeGate(config, deps) {
     coverageRounds.push(reviewResult.coverage || null);
   }
   let actResult = null;
+  let actInvoked = false;
   const isClean = !hasBlocking(findings, tier) && !acTableHasGap(acTable);
-  if (isClean && findings.length > 0) {
-    actResult = d.act ? await d.act(findings).catch(() => null) : null;
+  if (isClean && findings.length > 0 && d.act) {
+    actInvoked = true;
+    actResult = await Promise.resolve()
+      .then(() => d.act(findings))
+      .catch(() => null);
+  }
+  // THE TERMINAL TAIL. Ordering is load-bearing and is exactly:
+  //
+  //   rework loop (implement -> verify -> review, bounded by maxRework)
+  //     -> act (fix the finding AND commit it)
+  //     -> post-act re-verify, whenever the act step changed code
+  //     -> cleanliness probe
+  //     -> fold any failure into the FINAL round
+  //
+  // A fix that lands AFTER the check run therefore cannot escape being
+  // verified, and no path can return a clean round over a dirty worktree.
+  //
+  // Both failures fold as mechanical blocking findings, so the UNTOUCHED
+  // classifier resolves the unit to `rework`: no new OUTCOME value, no
+  // classifier branch. A failing post-act re-verify deliberately does NOT
+  // re-enter the rework loop — maxRework already bounded the
+  // implement/verify/review rounds, and a second entry point would silently
+  // multiply that budget.
+  //
+  // The fold REPLACES the last entry of `rounds` rather than pushing a new one:
+  // acRounds/budgetRounds/coverageRounds are index-parallel to it and
+  // reviewCount is derived from its length, so a push would manufacture a
+  // phantom review round.
+  //
+  // An ABSENT `d.clean` dep is a SKIP, not a failure — the same precedent the
+  // absent `d.verify` dep sets. Non-vacuity is bought by the static gate that
+  // the shipped driver actually wires the probe, not by fail-closing here.
+  let postActVerify = null;
+  let cleanResult = null;
+  if (isClean) {
+    const terminal = [];
+    if (actChangedCode(actResult, actInvoked)) {
+      postActVerify = await runVerifyOnce();
+      if (postActVerify && postActVerify.failed === true) terminal.push(verifyFailureFinding(postActVerify));
+    }
+    if (typeof d.clean === 'function') {
+      let rawClean = null;
+      try {
+        rawClean = await d.clean();
+      } catch (e) {
+        rawClean = null;
+      }
+      cleanResult = parseWorktreeStatus(rawClean);
+      if (cleanResult.clean !== true) terminal.push(dirtyWorktreeFinding(cleanResult));
+    }
+    if (terminal.length > 0) {
+      findings = terminal.concat(findings);
+      rounds[rounds.length - 1] = findings;
+    }
   }
   return {
     findings: findings,
@@ -2914,7 +3141,10 @@ async function runCodeGate(config, deps) {
     verifyRounds: verifyRounds,
     verifyCalls: verifyCalls,
     verifyResult: verifyResult,
+    postActVerify: postActVerify,
     actResult: actResult,
+    actInvoked: actInvoked,
+    cleanResult: cleanResult,
   };
 }
 
@@ -2940,6 +3170,10 @@ const CODE_ACT_SCHEMA = {
           // would have to misreport a skip as one of the other two actions.
           action: { type: 'string', enum: ['fixed-inline', 'filed-as-task', 'skipped'] },
           taskSlug: { type: 'string' },
+          // The short sha of the commit that closed this finding. Optional: only
+          // a `fixed-inline` disposition produces one, and a fixer that could
+          // not report it must still be able to report the disposition.
+          commit: { type: 'string' },
           reason: { type: 'string' },
         },
       },
@@ -2947,17 +3181,26 @@ const CODE_ACT_SCHEMA = {
   },
 };
 
-// buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, cfg) —
-// the code-lane Act step: an already-verified surviving finding is incorporated
-// by SIZE, not severity (severity already decided the outcome — this decides
-// whether/how the finding is acted on). Modeled directly on
+// buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, cfg,
+// verifyCommand) — the code-lane Act step: an already-verified surviving finding
+// is incorporated by SIZE, not severity (severity already decided the outcome —
+// this decides whether/how the finding is acted on). Modeled directly on
 // lib/plan-review.mjs's buildActPrompt, but code-review findings are fixed
 // inline in the worktree (no whole-document authoritative-body rewrite) and
 // large ones are filed with `rdm task create`, not a plan-doc note.
 //
+// A SMALL fix is COMMITTED here, by the step that applied it — see the
+// clean-worktree fence above for the mechanism decision and the rejected
+// alternatives. The commit message body carries one `Review-Finding: <id>` line
+// per finding it closes and the short sha comes back on the `handled` entry, so
+// the finding and the commit that closed it are both recoverable from the
+// record. `verifyCommand` is the project's single resolved verification command,
+// rendered so the fixer re-runs the same one command the pipeline re-runs after
+// it returns; an absent/empty command renders no tooling line.
+//
 // `cfg` is the environment payload `{ rdmBin, project }`. `task create` is a
 // PROJECT-SCOPED subcommand, so it carries the project flag.
-function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, cfg) {
+function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, cfg, verifyCommand) {
   const bin = resolveRdmBin(cfg && cfg.rdmBin);
   const proj = projectFlag(cfg);
   const target = kind === 'task' ? 'task/' + ident : roadmapOrTask + '/' + ident;
@@ -2984,11 +3227,28 @@ function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, 
     'For EACH finding, decide SMALL vs LARGE:',
     '- SMALL — localized, low-risk, no new acceptance criterion (a typo, a missing doc comment, a tightened ' +
       'error message, an extra test). Fix it directly in the worktree at ' + worktreeRef +
-      ' and re-run the relevant tests. Do not create a separate landing commit — the fix folds into the ' +
-      'eventual land-time commit.',
+      ', re-run the verification command, then COMMIT it: `git add` only the files you changed, and ' +
+      '`git commit` with a conventional-commit subject plus a message BODY carrying one ' +
+      '`Review-Finding: <id>` line per finding that commit closes. Report the resulting short sha as ' +
+      '`commit` on that finding\'s `handled` entry, so the finding and the commit that closed it are both ' +
+      'recoverable. One commit per fix is preferred; one commit closing several findings is fine as long ' +
+      'as it names every id.',
     '- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance ' +
       'criterion. Do NOT edit code for these: file it with `' + bin + ' task create <slug> --title ' +
       '"Code review finding: <desc>" --body "<details>" --tags code-review --no-edit' + proj + '`.'
+  );
+  const tooling = verifyToolingLine(verifyCommand);
+  if (tooling !== '') {
+    lines.push(tooling);
+  }
+  lines.push(
+    'When you are done, `git status --porcelain` in ' + worktreeRef + ' MUST be empty: everything you ' +
+      'changed is committed, and nothing you did not change was swept into your commit. The pipeline ' +
+      're-checks this and sends the item back as rework if it is dirty. Never `git stash`, ' +
+      '`git reset --hard`, `git checkout --`, or `git clean` the tree to make it look clean — that ' +
+      'destroys exactly the work this check exists to protect. Never amend an existing commit, and never ' +
+      'write a land-time completion directive into any commit message: landing is a separate step that ' +
+      'synthesizes that trailer itself.'
   );
   if (hasUnrefuted) {
     lines.push(UNREFUTED_DISPOSITION);
@@ -2996,10 +3256,12 @@ function buildCodeActPrompt(kind, roadmapOrTask, ident, worktreeRef, survivors, 
   lines.push(
     hasUnrefuted
       ? 'Return JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — ' +
-          'id, action (fixed-inline|filed-as-task|skipped), taskSlug when you filed a task, and a one-line ' +
+          'id, action (fixed-inline|filed-as-task|skipped), `commit` (the short sha) when you fixed one ' +
+          'inline, taskSlug when you filed a task, and a one-line ' +
           '`reason` when you skipped one under the rule above.'
       : 'Return JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — ' +
-          'id, action (fixed-inline|filed-as-task), and taskSlug when you filed a task.'
+          'id, action (fixed-inline|filed-as-task), `commit` (the short sha) when you fixed one inline, and ' +
+          'taskSlug when you filed a task.'
   );
   return lines.join('\n');
 }
@@ -3041,15 +3303,26 @@ function outcomePolicy(outcome, kind, summary) {
 // mechanical code lane: stamp a `handled` field onto each finding from the
 // matching `actResult.handled` entry (by `id`), defaulting to `'unhandled'`
 // when the Act step wasn't run, failed, or didn't report that specific
-// finding. Pure and order-preserving; a no-op (returns `findings` unchanged)
-// when `actResult` carries no usable `handled` array.
+// finding. `handledCommit` carries the short sha the fixer reported for that
+// finding ('' when it reported none), so the finding and the commit that closed
+// it are BOTH recoverable from the OUTCOME. Pure and order-preserving; a no-op
+// (returns `findings` unchanged) when `actResult` carries no usable `handled`
+// array.
 function annotateHandled(findings, actResult) {
   if (!actResult || !Array.isArray(actResult.handled)) return findings;
   const actionById = {};
+  const commitById = {};
   actResult.handled.forEach((h) => {
-    if (h && h.id) actionById[h.id] = h.action;
+    if (h && h.id) {
+      actionById[h.id] = h.action;
+      if (typeof h.commit === 'string') commitById[h.id] = h.commit;
+    }
   });
-  return findings.map((f) => ({ ...f, handled: (f && f.id && actionById[f.id]) || 'unhandled' }));
+  return findings.map((f) => ({
+    ...f,
+    handled: (f && f.id && actionById[f.id]) || 'unhandled',
+    handledCommit: (f && f.id && commitById[f.id]) || '',
+  }));
 }
 
 // buildOutcome — the OUTCOME contract { roadmap, phase, outcome, status,
@@ -3119,7 +3392,12 @@ function buildOutcome(input) {
     findings = planFindings;
     summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
   } else if (outcome === 'rework') {
-    findings = lastRound;
+    // Annotated on the rework branch too: a post-act rework is reachable (the
+    // post-act re-verify failed, or the worktree came back dirty), and dropping
+    // the commit provenance for findings the Act step DID close would lose it
+    // exactly when it matters most. annotateHandled is a no-op without an
+    // actResult, so a pre-act rework's findings stay byte-identical.
+    findings = annotateHandled(lastRound, i.actResult);
     // An AC-only gap can force `rework` with an EMPTY lastRound findings
     // array (no blocking finding at all) — summarizeFindings([]) would then
     // misleadingly read "no surviving findings". Name the real cause instead.
@@ -3231,7 +3509,12 @@ function buildTaskOutcome(input) {
     findings = planFindings;
     summary = 'plan gate escalated: ' + summarizeFindings(planFindings);
   } else if (outcome === 'rework') {
-    findings = lastRound;
+    // Annotated on the rework branch too: a post-act rework is reachable (the
+    // post-act re-verify failed, or the worktree came back dirty), and dropping
+    // the commit provenance for findings the Act step DID close would lose it
+    // exactly when it matters most. annotateHandled is a no-op without an
+    // actResult, so a pre-act rework's findings stay byte-identical.
+    findings = annotateHandled(lastRound, i.actResult);
     // See buildOutcome's identical AC-only-gap note: an empty lastRound with a
     // gapped AC table must not read as "no surviving findings".
     summary =
@@ -4110,12 +4393,27 @@ const codeGate = await runCodeGate(
     // buildCodeActPrompt. A missing/failing agent call never affects the
     // outcome (runCodeGate already swallows a throw from this dep).
     act: async (findings) =>
-      agent(buildCodeActPrompt(isTask ? 'task' : 'phase', roadmap, isTask ? taskSlug : stem, worktreeRef, findings, cfg), {
+      agent(buildCodeActPrompt(isTask ? 'task' : 'phase', roadmap, isTask ? taskSlug : stem, worktreeRef, findings, cfg, verifyCommand), {
         model: models.implement,
         label: 'act:code',
         phase: 'Act',
         schema: CODE_ACT_SCHEMA,
       }),
+    // >>> clean-worktree:begin <<<
+    // The terminal cleanliness assertion's side effect: ONE mechanical agent
+    // reports `git status --porcelain` from the item's worktree. runCodeGate
+    // owns the ordering (last, after the act step and its post-act re-verify),
+    // the fail-closed parse, and the fold into the final round — this binding
+    // only supplies the observation. It reuses the `Act` phase title, so
+    // meta.phases is unchanged.
+    clean: async () =>
+      agent(buildCleanCheckPrompt(worktreeRef, cfg), {
+        model: models.mechanical,
+        label: 'clean:check',
+        phase: 'Act',
+        schema: WORKTREE_CLEAN_SCHEMA,
+      }),
+    // >>> clean-worktree:end <<<
   }
 )
 

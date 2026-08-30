@@ -9119,7 +9119,7 @@ assert.ok(
 
 // ... and with NO un-refuted survivor both prompts are byte-identical to the
 // pre-change ones, so this change cannot silently perturb the existing lane.
-const CODE_ACT_BASELINE = 'You are acting on ALREADY-VERIFIED code-review findings for rm/phase-1-x (worktree: wt/rm).\nThese findings survived refutation and are non-gating (the reviewed outcome is already decided).\n[\n  {\n    "id": "f1",\n    "severity": "concern",\n    "confidence": 90,\n    "what_fails": "x"\n  }\n]\nFor EACH finding, decide SMALL vs LARGE:\n- SMALL — localized, low-risk, no new acceptance criterion (a typo, a missing doc comment, a tightened error message, an extra test). Fix it directly in the worktree at wt/rm and re-run the relevant tests. Do not create a separate landing commit — the fix folds into the eventual land-time commit.\n- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance criterion. Do NOT edit code for these: file it with `./target/debug/rdm task create <slug> --title "Code review finding: <desc>" --body "<details>" --tags code-review --no-edit --project rdm`.\nReturn JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — id, action (fixed-inline|filed-as-task), and taskSlug when you filed a task.';
+const CODE_ACT_BASELINE = 'You are acting on ALREADY-VERIFIED code-review findings for rm/phase-1-x (worktree: wt/rm).\nThese findings survived refutation and are non-gating (the reviewed outcome is already decided).\n[\n  {\n    "id": "f1",\n    "severity": "concern",\n    "confidence": 90,\n    "what_fails": "x"\n  }\n]\nFor EACH finding, decide SMALL vs LARGE:\n- SMALL — localized, low-risk, no new acceptance criterion (a typo, a missing doc comment, a tightened error message, an extra test). Fix it directly in the worktree at wt/rm, re-run the verification command, then COMMIT it: `git add` only the files you changed, and `git commit` with a conventional-commit subject plus a message BODY carrying one `Review-Finding: <id>` line per finding that commit closes. Report the resulting short sha as `commit` on that finding\'s `handled` entry, so the finding and the commit that closed it are both recoverable. One commit per fix is preferred; one commit closing several findings is fine as long as it names every id.\n- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance criterion. Do NOT edit code for these: file it with `./target/debug/rdm task create <slug> --title "Code review finding: <desc>" --body "<details>" --tags code-review --no-edit --project rdm`.\nWhen you are done, `git status --porcelain` in wt/rm MUST be empty: everything you changed is committed, and nothing you did not change was swept into your commit. The pipeline re-checks this and sends the item back as rework if it is dirty. Never `git stash`, `git reset --hard`, `git checkout --`, or `git clean` the tree to make it look clean — that destroys exactly the work this check exists to protect. Never amend an existing commit, and never write a land-time completion directive into any commit message: landing is a separate step that synthesizes that trailer itself.\nReturn JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — id, action (fixed-inline|filed-as-task), `commit` (the short sha) when you fixed one inline, and taskSlug when you filed a task.';
 const PLAN_ACT_BASELINE = 'You are the plan-review orchestrator applying already-verified findings. The findings below already\nsurvived independent refutation — do not re-review; act on them.\nFindings (ranked, most-severe first):\n[\n  {\n    "id": "f1",\n    "severity": "concern",\n    "confidence": 90,\n    "what_fails": "x"\n  }\n]\nFor each finding, decide small vs large:\n- SMALL (a localized wording/typo/missing-detail fix to the plan document itself): apply it by reading the\n  current body and writing the ENTIRE modified body back — `--body` is whole-document-authoritative, there\n  is no patch mechanism. Use the matching command:\n    ./target/debug/rdm phase update phase-1-x --roadmap rm --body "<full updated body>" --no-edit --project rdm\n- LARGE (a structural concern: a missing prerequisite, scope too big for one phase, a conflicting design\n  decision): do NOT edit the plan document — file it as a task, with `--no-plan-review` so this finding\n  does not itself get re-stamped `needs-plan-review`:\n    ./target/debug/rdm task create <slug> --title "Plan review finding: <desc>" --body "<details>" --tags plan-review --no-plan-review --no-edit --project rdm\nAfter applying any changes, run: ./target/debug/rdm commit -m "chore(plan): address plan review findings on rm/phase-1-x"\nIf there is nothing small to fix and nothing large to file, make no changes.\nReturn a STAMP_ACK object: { ok: true } if you completed without error (including the no-op case), else { ok: false }.';
 assert.equal(
   buildCodeActPrompt('phase', 'rm', 'phase-1-x', 'wt/rm', VERIFIED_ONLY, DOGFOOD_CFG),
@@ -9146,6 +9146,53 @@ assert.ok(
   !CODE_ACT_SCHEMA.properties.handled.items.required.includes('reason'),
   '`reason` is optional — a fixed-inline entry must not be forced to carry one'
 );
+
+// --- The Act step COMMITS its own inline fix (dispatch-dev-discipline phase 2)
+// The act prompt is the surface that decides whether a review's remediation
+// actually ships: the pipeline's terminal cleanliness assertion turns a dirty
+// worktree into `rework`, but only this prompt tells the fixer to commit. Pin
+// the instruction, the attribution trailer, and the cleanliness requirement
+// here, alongside the byte-pin above, so a rewrite that drops them is caught.
+{
+  const commitProp = CODE_ACT_SCHEMA.properties.handled.items.properties.commit;
+  assert.equal(commitProp.type, 'string', 'CODE_ACT carries a `commit` string for the sha that closed a finding');
+  assert.ok(
+    !CODE_ACT_SCHEMA.properties.handled.items.required.includes('commit'),
+    '`commit` is optional — a filed-as-task or skipped entry must not be forced to carry one'
+  );
+  // The enum is NOT widened: `verify-workflow-review.sh` § 8b pins this exact
+  // vocabulary against prose rendered into six skill files, so adding a value
+  // here would require a skill-template sweep.
+  assert.deepEqual(
+    action.enum,
+    ['fixed-inline', 'filed-as-task', 'skipped'],
+    'the CODE_ACT action enum is UNCHANGED — widening it would invalidate the rendered skill prose'
+  );
+
+  const VERIFY_SENTINEL = 'ACT-VERIFY-CMD-SENTINEL';
+  const committing = buildCodeActPrompt('phase', 'rm', 'phase-1-x', 'wt/rm', VERIFIED_ONLY, DOGFOOD_CFG, VERIFY_SENTINEL);
+  assert.ok(committing.includes('git commit'), 'the act prompt instructs the fixer to COMMIT its inline fix');
+  assert.ok(committing.includes('Review-Finding: <id>'), 'the act prompt asks for the finding-id attribution trailer');
+  assert.ok(
+    committing.includes('git status --porcelain') && committing.includes('MUST be empty'),
+    'the act prompt requires an empty porcelain status on exit'
+  );
+  assert.ok(committing.includes(VERIFY_SENTINEL), 'the act prompt names the resolved verification command so the fixer re-runs it');
+  assert.ok(
+    !committing.includes('Do not create a separate landing commit'),
+    'the false premise that the fix folds into a later land-time commit is GONE'
+  );
+  // No land-time completion directive may be produced by the fixer, and the
+  // prompt must say so WITHOUT the literal token (it is stamped into workflow
+  // scripts, where verify-workflow-dispatch.sh § 3 forbids that literal).
+  assert.ok(
+    committing.includes('land-time completion directive'),
+    'the act prompt forbids writing a land-time completion directive into a commit message'
+  );
+  // An absent verifyCommand renders no tooling line, so the byte-pinned
+  // baseline above stays a legal call.
+  assert.ok(!CODE_ACT_BASELINE.includes(VERIFY_SENTINEL), 'an absent verification command renders no tooling line');
+}
 // The rendered skills state the act step's reporting vocabulary in prose. Pin
 // that prose to the SCHEMA's enum rather than to a literal, so widening the enum
 // without sweeping the prose (exactly what happened when `skipped` was added)

@@ -125,6 +125,7 @@ function makeAgent(o) {
     if (label === 'fetch:task-meta') return TASK_META;
     if (label === 'stamp:in-progress') return { ok: true };
     if (label === 'verify:run') return { exitCode: 0, output: '' };
+    if (label === 'clean:check') return { porcelain: '' };
     if (label === 'plan:author' || label === 'plan:revise') return PLAN_DOC;
     if (label === 'act:code') return { handled: [] };
     if (label === 'diff:signals') return { changedFiles: ['rdm-core/src/lib.rs'], diffText: '' };

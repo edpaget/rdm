@@ -1506,9 +1506,31 @@ function makeFakes(o) {
     },
   };
   if (opts.noVerifyDep) delete deps.verify;
+  // The terminal tail's two deps. Both are OPTIONAL and are wired only when the
+  // scenario asks for them, so every pre-existing scenario above keeps its exact
+  // call counts and its `reviewed` outcome.
+  if (opts.act !== undefined) {
+    deps.act = async (findings) => {
+      log.push('act');
+      if (opts.act === 'throw') throw new Error('act blew up');
+      return typeof opts.act === 'function' ? opts.act(findings) : opts.act;
+    };
+  }
+  if (opts.clean !== undefined) {
+    deps.clean = async () => {
+      log.push('clean');
+      if (opts.clean === 'throw') throw new Error('clean probe blew up');
+      return opts.clean;
+    };
+  }
   return { log, deps };
 }
 const count = (log, kind) => log.filter((c) => c === kind).length;
+const lastIndexOfCall = (log, kind) => log.lastIndexOf(kind);
+// A single non-gating survivor: at tier `medium` only `blocking` gates, so the
+// round is CLEAN and the act step runs. This is how every act-path scenario
+// below reaches the terminal tail without first burning the rework budget.
+const NON_GATING = [{ id: 'f1', severity: 'suggestion', confidence: 90, what_fails: 'x', unrefuted: true }];
 
 // ===========================================================================
 // (a) Pure helpers.
@@ -1772,6 +1794,110 @@ console.log('1d(f) OK: the resolved command reaches both the first-pass and rewo
   console.log('1d(g) OK: both Stage-0 fetch prompts carry the declared-key-then-discovery resolution paragraph, in precedence order');
 }
 
+// ===========================================================================
+// (h) A FIX APPLIED AFTER THE CHECK RUN RE-TRIGGERS THE CHECKS.
+//     (dispatch-dev-discipline phase 2 AC3.) The act step now commits its own
+//     inline fix, which means code can change AFTER the round's verify ran.
+//     The terminal tail therefore re-runs the SAME single call site, and the
+//     ordering is asserted by log INDEX, not by a bare count.
+// ===========================================================================
+{
+  // (h-a) Act fixes inline, the re-verify passes: exactly one extra run, it is
+  //       the LAST call in the log, and it happens AFTER the act step.
+  const f = makeFakes({
+    verifyScript: ['ok'],
+    survivors: NON_GATING,
+    act: { handled: [{ id: 'f1', action: 'fixed-inline', commit: 'abc1234' }] },
+  });
+  const gate = await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: CMD }, f.deps);
+  const implementCalls = count(f.log, 'implement') + count(f.log, 'rework');
+  assert.equal(implementCalls, 1, '(h-a) one implementation attempt');
+  assert.equal(gate.verifyCalls, implementCalls + 1, '(h-a) the checks run once more after the act step changed code');
+  assert.equal(count(f.log, 'verify'), 2, "(h-a) the fake's own verify count agrees");
+  assert.equal(f.log[f.log.length - 1], 'verify', '(h-a) the extra check run is the LAST thing that happens');
+  assert.ok(
+    lastIndexOfCall(f.log, 'verify') > lastIndexOfCall(f.log, 'act'),
+    '(h-a) ... and it happens AFTER the act step, not before it — ordering, not merely count'
+  );
+  assert.ok(gate.postActVerify && gate.postActVerify.failed === false, '(h-a) the post-act verify result is reported out');
+  const out = buildOutcome({
+    roadmap: 'rm',
+    phase: '1',
+    codeReviews: gate.rounds,
+    acRounds: gate.acRounds,
+    maxRework: 2,
+    tier: 'medium',
+    actResult: gate.actResult,
+  });
+  seededOutcomes.add(out.outcome);
+  assert.equal(out.outcome, 'reviewed', '(h-a) a passing re-verify still reviews clean');
+}
+{
+  // (h-b) Act fixes inline and the re-verify FAILS. The failure folds into the
+  //       FINAL round: rework, naming the command, with NO phantom review round
+  //       and NO second rework budget.
+  const f = makeFakes({
+    verifyScript: ['ok', 'fail'],
+    survivors: NON_GATING,
+    act: { handled: [{ id: 'f1', action: 'fixed-inline', commit: 'abc1234' }] },
+  });
+  const gate = await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: CMD }, f.deps);
+  assert.equal(gate.verifyCalls, 2, '(h-b) the checks ran again after the fix');
+  assert.equal(gate.rounds.length, 1, '(h-b) the failure folds into the FINAL round — no phantom review round');
+  assert.equal(gate.reviewCount, 1, '(h-b) ... so reviewCount stays honest');
+  assert.equal(gate.reworkCount, 0, '(h-b) ... and the rework budget is NOT re-entered');
+  assert.equal(gate.acRounds.length, gate.rounds.length, '(h-b) acRounds stays index-parallel to rounds');
+  assert.equal(gate.budgetRounds.length, gate.rounds.length, '(h-b) budgetRounds stays index-parallel to rounds');
+  assert.equal(gate.coverageRounds.length, gate.rounds.length, '(h-b) coverageRounds stays index-parallel to rounds');
+  const out = buildOutcome({
+    roadmap: 'rm',
+    phase: '1',
+    codeReviews: gate.rounds,
+    acRounds: gate.acRounds,
+    maxRework: 2,
+    tier: 'medium',
+    actResult: gate.actResult,
+  });
+  seededOutcomes.add(out.outcome);
+  assert.equal(out.outcome, 'rework', '(h-b) a fix that breaks the checks cannot ship as reviewed');
+  assert.ok(out.summary.includes(CMD), '(h-b) the summary names the failing command');
+  // The commit provenance for the finding the act step DID close survives onto
+  // the rework branch — it matters most exactly here.
+  assert.equal(out.findings.find((x) => x.id === 'f1').handledCommit, 'abc1234', '(h-b) handledCommit survives a post-act rework');
+}
+{
+  // (h-c) FAIL-CLOSED: act ran but its result is unusable. An unknown act
+  //       outcome must re-verify — never assume nothing changed.
+  for (const [name, actValue] of [
+    ['null resolution', null],
+    ['thrown agent', 'throw'],
+    ['no handled array', { ok: true }],
+  ]) {
+    const f = makeFakes({ verifyScript: ['ok'], survivors: NON_GATING, act: actValue });
+    const gate = await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: CMD }, f.deps);
+    const implementCalls = count(f.log, 'implement') + count(f.log, 'rework');
+    assert.equal(gate.verifyCalls, implementCalls + 1, '(h-c) ' + name + ': the checks re-run anyway (fail-closed)');
+  }
+}
+{
+  // (h-d) NEGATIVE CONTROL. An act step that changed NO code re-runs nothing,
+  //       and neither does a clean round with no survivors at all — which is
+  //       why (d)'s exact 1/2/3/1 counts above stay green.
+  for (const [name, handled] of [
+    ['all filed-as-task', [{ id: 'f1', action: 'filed-as-task', taskSlug: 't' }]],
+    ['all skipped', [{ id: 'f1', action: 'skipped', reason: 'r' }]],
+  ]) {
+    const f = makeFakes({ verifyScript: ['ok'], survivors: NON_GATING, act: { handled: handled } });
+    const gate = await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: CMD }, f.deps);
+    assert.equal(gate.verifyCalls, 1, '(h-d) ' + name + ': no code changed, so no extra check run');
+  }
+  const f = makeFakes({ verifyScript: ['ok'], act: { handled: [] } });
+  const gate = await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: CMD }, f.deps);
+  assert.equal(count(f.log, 'act'), 0, '(h-d) a clean round with no survivors never invokes the act step');
+  assert.equal(gate.verifyCalls, 1, '(h-d) ... and runs no extra check');
+}
+console.log('1d(h) OK: a fix applied after the check run re-triggers the checks, ordered after the act step, fail-closed on an unusable act result');
+
 console.log('all verify-gate assertions passed');
 NODE_VERIFY
 
@@ -1822,6 +1948,336 @@ if run_node "$TMP/verify-gate.mjs" "$LIB" "$TMP/wf-no-raw.js" >/dev/null 2>&1; t
     fail "1d self-test: the assertions PASSED against a bare (annotated) 'config get' read — 1d(g) does not pin --raw"
 fi
 pass "1d self-test: dropping --raw from the declared-key read turns 1d red"
+
+# --- 1e. CLEAN-WORKTREE GATE ---------------------------------------------------
+# `reviewed` must mean landable. A dispatch that reports an item reviewed while
+# work it produced is still uncommitted is a false green: `rdm-land` rebases
+# before merging, so that work never ships and the review finding it satisfied
+# is satisfied by nothing. Two complementary mechanisms are gated here (see
+# docs/verify-gate.md § 8):
+#
+#   (i)  the Act step COMMITS its own inline fix, with a `Review-Finding: <id>`
+#        message trailer and the short sha reported back on the `handled` entry;
+#   (ii) a TERMINAL cleanliness assertion runs `git status --porcelain` in the
+#        item's worktree and folds a non-empty result into the FINAL round as a
+#        mechanical blocking finding, so the untouched classifier says `rework`.
+#
+# Driven in Node against the real lib (zero LLM calls), and — for the parser —
+# against a REAL seeded dirty git tree, so the porcelain shapes are git's own
+# rather than a fixture author's guess.
+say "1e. Clean-worktree gate: reviewed implies an empty git status, the act step commits its fix"
+
+# A REAL dirty worktree: a tracked-and-modified file, an untracked file, and a
+# renamed file (so the `old -> new` porcelain shape is git's, not a guess).
+DIRTY_REPO="$TMP/dirty-worktree"
+mkdir -p "$DIRTY_REPO"
+(
+    cd "$DIRTY_REPO" || exit 1
+    git init -q -b main .
+    git config user.email harness@example.invalid
+    git config user.name Harness
+    printf 'one\n' >tracked.rs
+    printf 'two\n' >"old name.rs"
+    git add -A
+    git commit -qm seed
+    printf 'one\nchanged\n' >>tracked.rs
+    printf 'three\n' >untracked.rs
+    git mv "old name.rs" "new name.rs"
+) >/dev/null 2>&1 || fail "1e: could not seed the real dirty git worktree"
+(cd "$DIRTY_REPO" && git status --porcelain) >"$TMP/real-porcelain.txt" ||
+    fail "1e: could not capture git status --porcelain from the seeded tree"
+[ -s "$TMP/real-porcelain.txt" ] || fail "1e: the seeded worktree came back CLEAN — the fixture proves nothing"
+
+cat >"$TMP/clean-gate.mjs" <<'NODE_CLEAN'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { pathToFileURL } from 'node:url';
+
+const libPath = process.argv[2];
+const realPorcelainPath = process.argv[3];
+const mod = await import(pathToFileURL(libPath).href);
+const {
+  runCodeGate,
+  buildOutcome,
+  buildTaskOutcome,
+  statusFor,
+  parseWorktreeStatus,
+  dirtyWorktreeFinding,
+  actChangedCode,
+  buildCleanCheckPrompt,
+  WORKTREE_CLEAN_SCHEMA,
+  WORKTREE_PATH_CAP,
+} = mod;
+
+const CMD = 'sh scripts/verify-all.sh';
+// Non-gating at tier `medium` (only `blocking` gates there), so the round is
+// CLEAN and the terminal tail is reached.
+const NON_GATING = [{ id: 'f1', severity: 'suggestion', confidence: 90, what_fails: 'x', unrefuted: true }];
+
+function makeDeps(o) {
+  const opts = o || {};
+  const deps = {
+    implement: async () => {},
+    review: async () => ({ survivors: opts.survivors || NON_GATING, acTable: null }),
+    verify: async () => ({ exitCode: 0, output: '' }),
+  };
+  if (opts.act !== undefined) deps.act = async () => opts.act;
+  if (opts.clean !== undefined) {
+    deps.clean = async () => {
+      if (opts.clean === 'throw') throw new Error('probe blew up');
+      return opts.clean;
+    };
+  }
+  return deps;
+}
+
+// ===========================================================================
+// (a) parseWorktreeStatus — fail-closed, and correct on git's own shapes.
+// ===========================================================================
+assert.deepEqual(parseWorktreeStatus({ porcelain: '' }), { ran: true, clean: true, paths: [], truncated: 0 }, 'an empty porcelain is clean');
+assert.deepEqual(parseWorktreeStatus({ porcelain: '\n' }), { ran: true, clean: true, paths: [], truncated: 0 }, 'a trailing newline alone is clean — no phantom path');
+for (const [name, raw] of [
+  ['null', null],
+  ['undefined', undefined],
+  ['a non-object', 'clean'],
+  ['a missing porcelain field', {}],
+  ['a non-string porcelain field', { porcelain: 42 }],
+  ['text that parses to no path', { porcelain: '   ' }],
+]) {
+  const r = parseWorktreeStatus(raw);
+  assert.equal(r.ran, false, name + ' did not observe the worktree');
+  assert.equal(r.clean, false, name + ' must be FAIL-CLOSED — an unobservable worktree is never clean');
+}
+{
+  const r = parseWorktreeStatus({ porcelain: ' M a.rs\n?? b.rs\n' });
+  assert.equal(r.clean, false, 'a modified + untracked pair is dirty');
+  assert.deepEqual(r.paths, ['a.rs', 'b.rs'], 'the XY status prefix is stripped and both paths survive');
+}
+assert.deepEqual(
+  parseWorktreeStatus({ porcelain: 'R  old.rs -> new.rs\n' }).paths,
+  ['new.rs'],
+  'a rename entry keeps the DESTINATION path'
+);
+assert.deepEqual(
+  parseWorktreeStatus({ porcelain: '?? a file with spaces.rs\n' }).paths,
+  ['a file with spaces.rs'],
+  'a path containing spaces is never split on whitespace'
+);
+{
+  const many = [];
+  for (let i = 0; i < WORKTREE_PATH_CAP + 7; i++) many.push('?? f' + i + '.rs');
+  const r = parseWorktreeStatus({ porcelain: many.join('\n') });
+  assert.equal(r.paths.length, WORKTREE_PATH_CAP, 'a wholesale-dirty tree is capped at WORKTREE_PATH_CAP paths');
+  assert.equal(r.truncated, 7, '... and the overflow is reported as a count');
+  assert.ok(dirtyWorktreeFinding(r).what_fails.includes('and 7 more'), '... which the finding text names');
+}
+
+// ===========================================================================
+// (b) actChangedCode — must the checks run again?
+// ===========================================================================
+assert.equal(actChangedCode(null, false), false, 'act never invoked: nothing changed');
+assert.equal(actChangedCode({ handled: [{ id: 'a', action: 'fixed-inline' }] }, false), false, 'not invoked wins over the payload');
+assert.equal(actChangedCode({ handled: [{ id: 'a', action: 'filed-as-task' }] }, true), false, 'filing a task changes no code');
+assert.equal(actChangedCode({ handled: [{ id: 'a', action: 'skipped' }] }, true), false, 'a skip changes no code');
+assert.equal(actChangedCode({ handled: [{ id: 'a', action: 'skipped' }, { id: 'b', action: 'fixed-inline' }] }, true), true, 'ONE inline fix is enough');
+for (const [name, r] of [
+  ['a null result', null],
+  ['a non-object result', 'ok'],
+  ['no handled array', { ok: true }],
+  ['a non-array handled', { handled: 'x' }],
+]) {
+  assert.equal(actChangedCode(r, true), true, name + ' is FAIL-CLOSED — an unknown act outcome must re-verify');
+}
+
+// ===========================================================================
+// (c) AC1 — a dirty worktree can never reach `reviewed`, and a clean one still
+//     can (the probe is not a blanket rejecter). Both item shapes.
+// ===========================================================================
+const seen = new Set();
+for (const [kind, build, ident] of [
+  ['phase', buildOutcome, { roadmap: 'rm', phase: '1' }],
+  ['task', buildTaskOutcome, { task: 'my-task' }],
+]) {
+  const dirty = await runCodeGate(
+    { maxRework: 2, tier: 'medium', verifyCommand: CMD },
+    makeDeps({ clean: { porcelain: ' M a.rs\n?? b.rs\n' } })
+  );
+  const out = build({ ...ident, codeReviews: dirty.rounds, acRounds: dirty.acRounds, maxRework: 2, tier: 'medium', actResult: dirty.actResult });
+  seen.add(out.outcome);
+  assert.equal(out.outcome, 'rework', kind + ': a dirty worktree yields rework, never reviewed');
+  assert.equal(out.status, statusFor('rework', kind), kind + ': the status comes from the untouched statusFor table');
+  assert.equal(out.writesCompletion, false, kind + ': ... and it writes no completion trailer');
+  assert.ok(out.summary.includes('a.rs') && out.summary.includes('b.rs'), kind + ': the summary names the uncommitted paths');
+  assert.ok(out.reason.includes('a.rs') && out.reason.includes('b.rs'), kind + ': the reason names them too, so the parked queue shows them');
+  assert.equal(dirty.rounds.length, 1, kind + ': the dirty finding folds into the FINAL round — no phantom review round');
+
+  const clean = await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: CMD }, makeDeps({ clean: { porcelain: '' } }));
+  const okOut = build({ ...ident, codeReviews: clean.rounds, acRounds: clean.acRounds, maxRework: 2, tier: 'medium', actResult: clean.actResult });
+  seen.add(okOut.outcome);
+  assert.equal(okOut.outcome, 'reviewed', kind + ': an empty porcelain still reviews clean — the probe discriminates');
+  assert.equal(clean.cleanResult.clean, true, kind + ': ... and the probe result is reported out');
+}
+// Fail-closed rows through the FULL gate, not just the parser.
+for (const [name, cleanValue] of [
+  ['a thrown probe', 'throw'],
+  ['a null resolution', null],
+  ['a schema-violating payload', { porcelain: 42 }],
+]) {
+  const gate = await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: CMD }, makeDeps({ clean: cleanValue }));
+  const out = buildOutcome({ roadmap: 'rm', phase: '1', codeReviews: gate.rounds, acRounds: gate.acRounds, maxRework: 2, tier: 'medium' });
+  seen.add(out.outcome);
+  assert.equal(out.outcome, 'rework', name + ' is FAIL-CLOSED — an unobservable worktree never reports reviewed');
+}
+// An ABSENT dep is a SKIP, not a failure: every pre-existing fake-driven
+// scenario omits it, and fail-closing on absence would flip them all to rework.
+// Non-vacuity is bought by § 3-clean's static gate on the shipped driver.
+{
+  const gate = await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: CMD }, makeDeps({}));
+  assert.equal(gate.cleanResult, null, 'an absent clean dep records no probe result');
+  const out = buildOutcome({ roadmap: 'rm', phase: '1', codeReviews: gate.rounds, acRounds: gate.acRounds, maxRework: 2, tier: 'medium' });
+  assert.equal(out.outcome, 'reviewed', 'an absent clean dep is a SKIP, not a failure');
+}
+assert.deepEqual([...seen].sort(), ['reviewed', 'rework'], 'the cleanliness gate adds no new OUTCOME value');
+
+// ===========================================================================
+// (d) AC2 — the finding and the commit that closed it are BOTH recoverable.
+// ===========================================================================
+{
+  const gate = await runCodeGate(
+    { maxRework: 2, tier: 'medium', verifyCommand: CMD },
+    makeDeps({ act: { handled: [{ id: 'f1', action: 'fixed-inline', commit: 'abc1234' }] }, clean: { porcelain: '' } })
+  );
+  const out = buildOutcome({
+    roadmap: 'rm',
+    phase: '1',
+    codeReviews: gate.rounds,
+    acRounds: gate.acRounds,
+    maxRework: 2,
+    tier: 'medium',
+    actResult: gate.actResult,
+  });
+  assert.equal(out.outcome, 'reviewed', '(d) a committed inline fix leaves the tree clean and reviews clean');
+  const f1 = out.findings.find((x) => x.id === 'f1');
+  assert.equal(f1.handled, 'fixed-inline', '(d) the finding records HOW it was handled');
+  assert.equal(f1.handledCommit, 'abc1234', '(d) ... and WHICH commit closed it');
+}
+{
+  // The same annotation must survive onto the rework branch — a post-act dirty
+  // tree is exactly when the provenance matters most.
+  const gate = await runCodeGate(
+    { maxRework: 2, tier: 'medium', verifyCommand: CMD },
+    makeDeps({ act: { handled: [{ id: 'f1', action: 'fixed-inline', commit: 'abc1234' }] }, clean: { porcelain: '?? leftover.rs\n' } })
+  );
+  const out = buildOutcome({
+    roadmap: 'rm',
+    phase: '1',
+    codeReviews: gate.rounds,
+    acRounds: gate.acRounds,
+    maxRework: 2,
+    tier: 'medium',
+    actResult: gate.actResult,
+  });
+  assert.equal(out.outcome, 'rework', '(d) a post-act dirty tree is rework');
+  assert.equal(out.findings.find((x) => x.id === 'f1').handledCommit, 'abc1234', '(d) the commit provenance survives the rework branch');
+  assert.ok(out.summary.includes('leftover.rs'), '(d) ... and the summary names what was left uncommitted');
+}
+// A fixer that reports no sha still records its disposition.
+{
+  const annotated = mod.annotateHandled([{ id: 'f1' }], { handled: [{ id: 'f1', action: 'fixed-inline' }] });
+  assert.equal(annotated[0].handled, 'fixed-inline', 'a missing sha does not lose the disposition');
+  assert.equal(annotated[0].handledCommit, '', '... and the absent sha reads as an empty string');
+}
+
+// ===========================================================================
+// (e) The REAL seeded dirty tree: git's own porcelain output, verbatim.
+// ===========================================================================
+{
+  const real = fs.readFileSync(realPorcelainPath, 'utf8');
+  const parsed = parseWorktreeStatus({ porcelain: real });
+  assert.equal(parsed.ran, true, '(e) git’s own porcelain output parses');
+  assert.equal(parsed.clean, false, '(e) ... and a genuinely dirty tree reads dirty');
+  // git quotes a path containing a space (`R  "old name.rs" -> "new name.rs"`),
+  // so the destination arrives quoted. That is git's own representation and it
+  // is kept VERBATIM — a substring match is the honest assertion here.
+  for (const needle of ['tracked.rs', 'untracked.rs', 'new name.rs']) {
+    assert.ok(
+      parsed.paths.some((x) => x.includes(needle)),
+      '(e) the real path ' + needle + ' survives parsing (paths: ' + JSON.stringify(parsed.paths) + ')'
+    );
+  }
+  assert.ok(!parsed.paths.some((x) => x.includes('old name.rs')), '(e) a rename reports the DESTINATION, not the source');
+  assert.ok(!parsed.paths.some((x) => x === ''), '(e) no phantom empty path from the trailing newline');
+  const gate = await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: CMD }, makeDeps({ clean: { porcelain: real } }));
+  const out = buildOutcome({ roadmap: 'rm', phase: '1', codeReviews: gate.rounds, acRounds: gate.acRounds, maxRework: 2, tier: 'medium' });
+  assert.equal(out.outcome, 'rework', '(e) a REAL dirty worktree drives the whole gate to rework');
+  assert.ok(out.summary.includes('untracked.rs'), '(e) ... naming a real uncommitted path');
+}
+
+// ===========================================================================
+// (f) The probe prompt observes and does not repair.
+// ===========================================================================
+{
+  const prompt = buildCleanCheckPrompt('roadmap/rm', { rdmBin: '/fake/bin/rdm', project: 'demo' });
+  assert.ok(prompt.includes('git status --porcelain'), 'the probe runs the porcelain status command');
+  assert.ok(prompt.includes('/fake/bin/rdm worktree add roadmap/rm --project demo'), 'the probe enters the item worktree via the parameterized binary');
+  for (const forbidden of ['git add', 'git commit', 'git stash', 'git reset', 'git clean']) {
+    assert.ok(prompt.includes(forbidden), 'the probe explicitly forbids `' + forbidden + '` — a destructive shortcut would be worse than no probe');
+  }
+  assert.ok(prompt.includes('Edit no files'), 'the probe edits nothing');
+  assert.deepEqual(WORKTREE_CLEAN_SCHEMA.required, ['porcelain'], 'the WORKTREE_CLEAN schema requires the porcelain field');
+  assert.equal(WORKTREE_CLEAN_SCHEMA.properties.porcelain.type, 'string', '... as a string');
+  assert.equal(WORKTREE_CLEAN_SCHEMA.additionalProperties, false, '... and admits nothing else');
+}
+
+console.log('all clean-worktree assertions passed');
+NODE_CLEAN
+
+if run_node "$TMP/clean-gate.mjs" "$LIB" "$TMP/real-porcelain.txt"; then
+    pass "1e: clean-worktree gate — reviewed implies an empty status, fail-closed probe, real-git porcelain, commit provenance"
+else
+    fail "1e: clean-worktree assertions failed"
+fi
+
+# Planted-mutation self-test (i): neutralize the terminal fold. The probe still
+# runs and still reports dirty, but nothing folds into the final round — the
+# exact regression that would silently restore the false green.
+sed 's/^      findings = terminal.concat(findings);$/      findings = findings; \/\/ MUTANT: fold neutralized/' "$LIB" >"$TMP/lib-no-fold.mjs"
+if cmp -s "$LIB" "$TMP/lib-no-fold.mjs"; then
+    fail "1e self-test: the planted mutation was a no-op — the terminal fold was not found"
+fi
+if run_node "$TMP/clean-gate.mjs" "$TMP/lib-no-fold.mjs" "$TMP/real-porcelain.txt" >/dev/null 2>&1; then
+    fail "1e self-test: the assertions PASSED against a lib whose terminal fold does nothing — 1e is vacuous"
+fi
+pass "1e self-test: neutralizing the terminal fold turns 1e red"
+
+# Planted-mutation self-test (ii): make parseWorktreeStatus fail OPEN. An
+# unobservable worktree would then read as clean, which is the whole failure
+# mode this gate exists to remove.
+sed "s/^  const unknown = { ran: false, clean: false, paths: \[\], truncated: 0 };\$/  const unknown = { ran: false, clean: true, paths: [], truncated: 0 }; \/\/ MUTANT: fail-open/" "$LIB" >"$TMP/lib-fail-open.mjs"
+if cmp -s "$LIB" "$TMP/lib-fail-open.mjs"; then
+    fail "1e self-test: the planted mutation was a no-op — the fail-closed sentinel was not found"
+fi
+if run_node "$TMP/clean-gate.mjs" "$TMP/lib-fail-open.mjs" "$TMP/real-porcelain.txt" >/dev/null 2>&1; then
+    fail "1e self-test: the assertions PASSED against a fail-OPEN probe parser — the fail-closed rows are vacuous"
+fi
+pass "1e self-test: making the probe parser fail OPEN turns 1e red"
+
+# Planted-mutation self-test (iii): drop the commit-sha stamp from
+# annotateHandled, so a finding's closing commit is no longer recoverable.
+sed "s/^      if (typeof h.commit === 'string') commitById\[h.id\] = h.commit;\$/      \/\/ MUTANT: commit provenance dropped/" "$LIB" >"$TMP/lib-no-commit.mjs"
+if cmp -s "$LIB" "$TMP/lib-no-commit.mjs"; then
+    fail "1e self-test: the planted mutation was a no-op — the commit stamp was not found"
+fi
+if run_node "$TMP/clean-gate.mjs" "$TMP/lib-no-commit.mjs" "$TMP/real-porcelain.txt" >/dev/null 2>&1; then
+    fail "1e self-test: the assertions PASSED against a lib that drops the commit provenance — AC2 is vacuous"
+fi
+pass "1e self-test: dropping the closing-commit stamp turns 1e red"
+
+# Positive control: the real lib still passes after the three mutations, so the
+# self-tests discriminate rather than reject everything.
+run_node "$TMP/clean-gate.mjs" "$LIB" "$TMP/real-porcelain.txt" >/dev/null 2>&1 ||
+    fail "1e self-test: the real lib fails after the self-tests — the detector rejects everything"
+pass "1e self-test: the unmutated lib still passes (the self-tests discriminate)"
 
 # --- 2. BLOCK DRIFT GATE -----------------------------------------------------
 say "2. Block drift: the dispatch-outcome region is byte-identical (lib vs workflow)"
@@ -2837,6 +3293,132 @@ if grep -niE 'verify' "$TMP/review-closure.txt" >/dev/null 2>&1; then
 fi
 pass "3-verify: the code-gate review closure contains no verify reference"
 
+# --- 3-clean. THE SHIPPED DRIVER ACTUALLY WIRES THE CLEANLINESS PROBE ---------
+# § 1e proves the LOGIC: a `d.clean` dep that reports a dirty tree drives the
+# unit to rework. It deliberately treats an ABSENT dep as a SKIP, because every
+# pre-existing fake-driven scenario omits it. That makes non-vacuity a STATIC
+# question — is the probe wired in the shipped driver at all? — and this section
+# is the answer. Without it, deleting the `clean:` binding would leave every
+# harness section green while shipping the original defect.
+say "3-clean. Every copy wires the clean:check probe, and the fenced regions carry the real helpers"
+
+extract_clean_fence() {
+    awk '
+        index($0, ">>> clean-worktree:begin") { infence = 1; next }
+        index($0, ">>> clean-worktree:end") { infence = 0; next }
+        infence { print }
+    ' "$1"
+}
+
+# The identifiers a real clean-worktree region must contain. Floor of 4 DISTINCT
+# matches, so a region gutted to a stub cannot pass.
+CLEAN_REQUIRED_IDENTS='parseWorktreeStatus|dirtyWorktreeFinding|actChangedCode|WORKTREE_CLEAN_SCHEMA|buildCleanCheckPrompt|clean:check'
+
+assert_clean_fence() {
+    f=$1
+    minfloor=$2
+    extract_clean_fence "$f" >"$TMP/clean-fence.txt"
+    [ -s "$TMP/clean-fence.txt" ] || {
+        CLEAN_FENCE_ERR="the clean-worktree fenced region in $f is EMPTY or missing"
+        return 1
+    }
+    hits=$(grep -cE "$CLEAN_REQUIRED_IDENTS" "$TMP/clean-fence.txt" | tr -d ' ')
+    [ "$hits" -ge "$minfloor" ] || {
+        CLEAN_FENCE_ERR="the clean-worktree region in $f matched only $hits of the required identifiers (floor $minfloor)"
+        return 1
+    }
+    return 0
+}
+
+CLEAN_FENCE_ERR=''
+for f in \
+    "$LIB" \
+    "$WF" \
+    "$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-dispatch-phase.js" \
+    "$REPO_ROOT/plugins/rdm/workflows/rdm-wf-dispatch-phase.js"; do
+    [ -f "$f" ] || fail "3-clean: expected copy not found: $f"
+    assert_clean_fence "$f" 4 || fail "3-clean: $CLEAN_FENCE_ERR"
+done
+pass "3-clean: all four copies carry a non-empty clean-worktree region above the occurrence floor"
+
+# The DRIVER wiring, per shipped copy: the dep must be bound with the right
+# label, model class, and schema, and runCodeGate must consult it.
+assert_clean_wired() {
+    f=$1
+    grep -qF "clean: async () =>" "$f" || {
+        CLEAN_WIRE_ERR="$f: runCodeGate's deps object has no \`clean\` binding"
+        return 1
+    }
+    grep -qF "label: 'clean:check'" "$f" || {
+        CLEAN_WIRE_ERR="$f: the cleanliness probe has no clean:check label"
+        return 1
+    }
+    grep -qF 'schema: WORKTREE_CLEAN_SCHEMA' "$f" || {
+        CLEAN_WIRE_ERR="$f: the cleanliness probe declares no WORKTREE_CLEAN_SCHEMA"
+        return 1
+    }
+    grep -qF 'buildCleanCheckPrompt(worktreeRef, cfg)' "$f" || {
+        CLEAN_WIRE_ERR="$f: the cleanliness probe is not built from the stamped prompt builder"
+        return 1
+    }
+    grep -qF "typeof d.clean === 'function'" "$f" || {
+        CLEAN_WIRE_ERR="$f: runCodeGate never consults the clean dep"
+        return 1
+    }
+    return 0
+}
+
+CLEAN_WIRE_ERR=''
+for f in \
+    "$WF" \
+    "$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-dispatch-phase.js" \
+    "$REPO_ROOT/plugins/rdm/workflows/rdm-wf-dispatch-phase.js"; do
+    assert_clean_wired "$f" || fail "3-clean: $CLEAN_WIRE_ERR"
+done
+pass "3-clean: every shipped workflow copy binds clean:check with the WORKTREE_CLEAN schema and runCodeGate consults it"
+
+# Self-test (a): delete the `clean` dep binding from a scratch workflow.
+grep -v "clean: async () =>" "$WF" >"$TMP/wf-no-clean-dep.js"
+if cmp -s "$WF" "$TMP/wf-no-clean-dep.js"; then
+    fail "3-clean self-test: the planted mutation was a no-op — no clean dep binding was found"
+fi
+if assert_clean_wired "$TMP/wf-no-clean-dep.js"; then
+    fail "3-clean self-test: a workflow with NO clean dep passed — the wiring gate is vacuous"
+fi
+pass "3-clean self-test: deleting the clean dep binding is detected"
+
+# Self-test (b): keep the binding but drop the label, so the inventory doc and
+# any label-scoped tooling would silently lose the probe.
+sed "s/label: 'clean:check'/label: 'zz-renamed'/" "$WF" >"$TMP/wf-relabelled-clean.js"
+if cmp -s "$WF" "$TMP/wf-relabelled-clean.js"; then
+    fail "3-clean self-test: the planted relabel was a no-op"
+fi
+if assert_clean_wired "$TMP/wf-relabelled-clean.js"; then
+    fail "3-clean self-test: a relabelled probe passed — the label assertion is vacuous"
+fi
+pass "3-clean self-test: relabelling the probe is detected"
+
+# Self-test (c): a removed fence must fire the occurrence floor.
+grep -v 'clean-worktree:begin' "$WF" | grep -v 'clean-worktree:end' >"$TMP/wf-no-clean-fence.js"
+if assert_clean_fence "$TMP/wf-no-clean-fence.js" 4; then
+    fail "3-clean self-test: a REMOVED clean-worktree region was not detected — the floor is vacuous"
+fi
+pass "3-clean self-test: a removed clean-worktree region fires the occurrence floor"
+
+# Positive control: the real workflow still passes both detectors.
+CLEAN_WIRE_ERR=''
+assert_clean_wired "$WF" || fail "3-clean self-test: the real workflow fails after the self-tests — the detector rejects everything"
+assert_clean_fence "$WF" 4 || fail "3-clean self-test: the real workflow's fence fails after the self-tests"
+pass "3-clean self-test: the unmutated workflow still passes (the detectors discriminate)"
+
+# The probe must never become a mutation surface. Both the probe prompt and the
+# act prompt name the destructive shortcuts explicitly so an agent cannot reach
+# for one to make the tree LOOK clean.
+grep -qF 'git clean' "$LIB" || fail "3-clean: the act prompt must explicitly forbid \`git clean\` as a shortcut"
+grep -qF 'Never amend an existing commit' "$LIB" ||
+    fail "3-clean: the act prompt must forbid amending — the implementation commit predates the finding"
+pass "3-clean: the act prompt forbids the destructive shortcuts and amending"
+
 # --- 4. MODULE PARSE ---------------------------------------------------------
 say "4. Module parse: rdm-wf-dispatch-phase.js loads under module semantics (no SyntaxError)"
 
@@ -3037,6 +3619,7 @@ function makeAgent(o) {
     if (label === 'fetch:task-meta') return o.fetchResult === undefined ? TASK_META : o.fetchResult;
     if (label === 'stamp:in-progress') return { ok: true };
     if (label === 'verify:run') return { exitCode: 0, output: '' };
+    if (label === 'clean:check') return { porcelain: '' };
     if (label === 'plan:author' || label === 'plan:revise') return PLAN_DOC;
     if (label === 'act:code') return { handled: [] };
     if (label === 'diff:signals') return o.diffResult === undefined ? { changedFiles: ['fallback.rs'], diffText: '' } : o.diffResult;
@@ -3954,6 +4537,7 @@ function makeCapture() {
     if (label === 'fetch:task-meta') return TASK_META;
     if (label === 'stamp:in-progress') return { ok: true };
     if (label === 'verify:run') return { exitCode: 0, output: '' };
+    if (label === 'clean:check') return { porcelain: '' };
     if (label === 'plan:author' || label === 'plan:revise') return PLAN_DOC;
     if (label === 'act:code') return { handled: [] };
     if (label === 'diff:signals') return { changedFiles: ['rdm-core/src/lib.rs'], diffText: '' };
@@ -4172,6 +4756,7 @@ const spy = async (prompt, opts) => {
   if (label === 'fetch:phase-meta') return PHASE_META;
   if (label === 'stamp:in-progress') return { ok: true };
   if (label === 'verify:run') return { exitCode: 0, output: '' };
+  if (label === 'clean:check') return { porcelain: '' };
   if (label === 'plan:author' || label === 'plan:revise') return PLAN_DOC;
   if (label === 'act:code') return { handled: [] };
   if (label === 'diff:signals') return { changedFiles: ['rdm-core/src/lib.rs'], diffText: '' };
