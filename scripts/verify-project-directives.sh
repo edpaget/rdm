@@ -42,10 +42,24 @@
 #            location DOES resolve when it is a real directory.
 #  11  --role filtering (a `both` directive survives either role) and the default
 #            human-readable renderer across its populated / empty / skipped branches.
+#  12  ENVIRONMENT INDEPENDENCE — the plan-repo read is FAIL-OPEN (an unresolvable
+#            root still discovers rather than erroring), the scan root is FAIL-LOUD
+#            (a `--dir` that does not exist or is not a directory is an actionable
+#            error, not an empty result indistinguishable from a healthy project),
+#            and the ambient `RDM_ROOT` that clap would otherwise read is proven to
+#            matter — which is what makes the unset below load-bearing.
 #
 # Everything is hermetic: fixture repos live in a temp dir (never inside a
 # worktree), the plan repo used by § 4 is a throwaway `rdm init` tree, and no
 # LLM is ever called — the JS is driven with injected fakes.
+#
+# `RDM_ROOT` / `RDM_PROJECT` are unset up front (as verify-workflow-dispatch.sh
+# does) because `rdm dispatch directives` reads the plan repo's declared
+# `dispatch.directives` list, and the CLI's `--root` is declared
+# `env = "RDM_ROOT"` — so without the unset every un-rooted invocation below would
+# quietly consult whatever plan repo the developer's or CI's environment happens
+# to point at, and every `origin: discovery` assertion would flip to `config` the
+# day that repo declares a directive list. § 12 proves that dependence is real.
 #
 # Node is used only as a host for the pure helpers; it is stdlib-only
 # (node:assert), with no package.json / node_modules / third-party packages.
@@ -59,6 +73,13 @@
 # target/debug/rdm.
 
 set -eu
+
+# Ambient plan-repo state must not reach a single command in this file. `--root` is
+# declared `#[arg(long, env = "RDM_ROOT")]`, so an un-rooted `dispatch directives`
+# silently inherits it; § 4 and § 12 pass `--root` explicitly where a plan repo is
+# actually part of the assertion. Same reason, same list, as
+# scripts/verify-workflow-dispatch.sh.
+unset RDM_ROOT RDM_PROJECT
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
@@ -1104,5 +1125,129 @@ grep -qF 'directives: (none)' "$TMP/role-text-empty.out" ||
 grep -qF 'skipped:' "$TMP/role-text-big.out" ||
     fail "11: an over-bound source must be visible in the text output too, never silent"
 pass "11b: the default text renderer covers the populated, empty, and skipped branches"
+
+# ===========================================================================
+# 12. Environment independence: the PLAN-REPO read fails OPEN, the SCAN ROOT
+#     fails LOUD, and the ambient RDM_ROOT is proven to matter.
+#
+#     `dispatch directives` scans a SOURCE repo but consults a PLAN repo for the
+#     declared `dispatch.directives` list. Those two reads have deliberately
+#     opposite failure modes, and each is only correct because the other one is:
+#
+#       - no plan repo reachable  ⇒  discover anyway (a downstream consumer may
+#                                    have no rdm.toml at all; the feature must
+#                                    not vanish for want of one)
+#       - no scan root            ⇒  error (a typo'd --dir would otherwise render
+#                                    byte-for-byte identically to a healthy
+#                                    project with no directives, on the one
+#                                    command an operator runs to SEE what would
+#                                    be injected)
+#
+#     12c is the non-vacuity control for the file-wide `unset RDM_ROOT`: it shows
+#     an ambient RDM_ROOT really does change this command's output, so every
+#     un-rooted `origin: discovery` assertion above would otherwise be hostage to
+#     the developer's or CI's own plan repo.
+# ===========================================================================
+say "12. The plan-repo read fails open, the scan root fails loud, and RDM_ROOT is proven to matter"
+
+# --- 12a. Root genuinely UNRESOLVABLE ------------------------------------
+# No --root, no RDM_ROOT, no global config, no XDG/HOME to derive a data dir from
+# — `paths::resolve_root` returns Err and the command takes the fail-open branch.
+env -u HOME -u XDG_CONFIG_HOME -u XDG_DATA_HOME \
+    "$RDM_BIN" dispatch directives --dir "$FIXTURE" --format json \
+    >"$TMP/noroot.json" 2>"$TMP/noroot.err" ||
+    fail "12a: an unresolvable plan repo must NOT fail the command — a downstream consumer has no rdm.toml"
+[ ! -s "$TMP/noroot.err" ] ||
+    fail "12a: the fail-open branch must be silent, not a warning: $(cat "$TMP/noroot.err")"
+
+run_node -e '
+const p = JSON.parse(require("fs").readFileSync(process.env.DIR_TMP + "/noroot.json", "utf8"));
+if (p.origin !== "discovery") { console.error("origin was " + p.origin); process.exit(1); }
+const paths = p.directives.map((d) => d.path);
+// The fallback is real DISCOVERY, not an empty degraded result: the fixture tree
+// still resolves in full with no plan repo anywhere.
+for (const want of [".claude/rules/testing.md", "AGENTS.md", ".cursor/rules/style.mdc", ".windsurf/rules/perf.md"]) {
+  if (paths.indexOf(want) === -1) { console.error("missing " + want + " with no plan repo"); process.exit(1); }
+}
+' || fail "12a: with no plan repo reachable the command must still DISCOVER, not degrade to nothing"
+pass "12a: an unresolvable plan repo falls open to discovery — exit 0, empty stderr, full source set"
+
+# --- 12b. Root resolvable but pointing at nothing ------------------------
+RDM_ROOT="$TMP/no-such-plan-repo" "$RDM_BIN" dispatch directives \
+    --dir "$FIXTURE" --format json >"$TMP/deadroot.json" 2>"$TMP/deadroot.err" ||
+    fail "12b: an RDM_ROOT pointing at a nonexistent directory must not fail the command"
+[ ! -s "$TMP/deadroot.err" ] || fail "12b: that path must be silent too"
+run_node -e '
+const p = JSON.parse(require("fs").readFileSync(process.env.DIR_TMP + "/deadroot.json", "utf8"));
+if (p.origin !== "discovery") { console.error("origin was " + p.origin); process.exit(1); }
+if (p.directives.length === 0) { console.error("expected discovery to still run"); process.exit(1); }
+' || fail "12b: a dead RDM_ROOT must degrade to discovery"
+pass "12b: an RDM_ROOT naming a directory that does not exist degrades to discovery"
+
+# --- 12c. NON-VACUITY CONTROL: the ambient RDM_ROOT really is read -------
+# Same command, same --dir, no --root — only the environment differs. If this did
+# not flip to origin=config, the file-wide `unset RDM_ROOT` would be decoration
+# and §§ 1/3/5/7/8/10/11's `origin: discovery` assertions would be hostage to
+# whatever plan repo the developer's or CI's environment points at.
+"$RDM_BIN" --root "$PLAN_REPO" config set dispatch.directives "docs/rules/only.md" >/dev/null ||
+    fail "12c: could not re-declare dispatch.directives on the throwaway plan repo"
+RDM_ROOT="$PLAN_REPO" "$RDM_BIN" dispatch directives \
+    --dir "$FIXTURE" --format json >"$TMP/envroot.json" ||
+    fail "12c: the command failed with RDM_ROOT set"
+run_node -e '
+const fs = require("fs");
+const T = process.env.DIR_TMP;
+const withEnv = JSON.parse(fs.readFileSync(T + "/envroot.json", "utf8"));
+const without = JSON.parse(fs.readFileSync(T + "/noroot.json", "utf8"));
+if (withEnv.origin !== "config") {
+  console.error("an ambient RDM_ROOT declaring dispatch.directives must be READ (origin was " + withEnv.origin + ")");
+  process.exit(1);
+}
+if (without.origin !== "discovery") { console.error("control run was not discovery"); process.exit(1); }
+const a = JSON.stringify(withEnv.directives.map((d) => d.path));
+const b = JSON.stringify(without.directives.map((d) => d.path));
+if (a === b) {
+  console.error("the ambient environment made no difference — the unset at the top of this file would be vacuous");
+  process.exit(1);
+}
+' || fail "12c: the ambient-RDM_ROOT control failed"
+pass "12c: an ambient RDM_ROOT changes this command's output — the file-wide unset is load-bearing"
+
+# --- 12d. The SCAN ROOT fails LOUD ---------------------------------------
+# The opposite convention from 12a/12b, and deliberately so. An absent source
+# LOCATION inside a valid root is normal; an absent scan ROOT is a typo.
+if "$RDM_BIN" dispatch directives --dir "$TMP/no-such-source-repo" --format json \
+    >"$TMP/baddir.out" 2>"$TMP/baddir.err"; then
+    fail "12d: a --dir that does not exist must be an ERROR, not an empty result"
+fi
+[ ! -s "$TMP/baddir.out" ] ||
+    fail "12d: a rejected scan root must print no payload at all: $(cat "$TMP/baddir.out")"
+grep -qF 'does not exist' "$TMP/baddir.err" || fail "12d: the error must say what is wrong"
+grep -qF "$TMP/no-such-source-repo" "$TMP/baddir.err" ||
+    fail "12d: the error must name the offending path"
+grep -qF -- '--dir' "$TMP/baddir.err" ||
+    fail "12d: the error must be ACTIONABLE — it must name the flag the reader can fix"
+
+# A path that exists but is the wrong KIND gets its own reason.
+if "$RDM_BIN" dispatch directives --dir "$FIXTURE/AGENTS.md" --format json \
+    >"$TMP/filedir.out" 2>"$TMP/filedir.err"; then
+    fail "12d: a --dir naming a FILE must be rejected"
+fi
+grep -qF 'is not a directory' "$TMP/filedir.err" ||
+    fail "12d: a file scan root must be distinguished from a missing one"
+pass "12d: a missing or non-directory --dir is an actionable error, never a silent empty result"
+
+# --- 12e. ...and the discrimination is real -------------------------------
+# The positive control that keeps 12d honest: a scan root that EXISTS and simply
+# holds no directive sources is still a completely normal, exit-0 answer. 12d
+# must reject the typo, not the empty project.
+"$RDM_BIN" dispatch directives --dir "$EMPTY_DIR" --format json >"$TMP/emptydir.json" 2>"$TMP/emptydir.err" ||
+    fail "12e: a real directory with no directive sources must still exit 0"
+[ ! -s "$TMP/emptydir.err" ] || fail "12e: ...and say nothing on stderr"
+run_node -e '
+const p = JSON.parse(require("fs").readFileSync(process.env.DIR_TMP + "/emptydir.json", "utf8"));
+if (p.directives.length !== 0 || p.skipped.length !== 0) { console.error("expected empty arrays"); process.exit(1); }
+' || fail "12e: an empty-but-real scan root must yield empty arrays"
+pass "12e: an existing scan root with no sources stays a normal exit-0 answer"
 
 say "verify-project-directives.sh: ALL GREEN"

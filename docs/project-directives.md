@@ -184,10 +184,24 @@ rdm dispatch directives --format json [--dir <path>] [--role implementer|reviewe
 ```
 
 Read-only: it writes nothing, anywhere. `--dir` names the **source** repo to scan and
-defaults to the current directory; the declared key is read from the **plan** repo,
-and when no plan repo is reachable rdm falls back to discovery rather than erroring,
-so a downstream consumer with no plan repo still gets the feature. Finding nothing
-exits 0 with empty arrays and empty stderr.
+defaults to the current directory; the declared key is read from the **plan** repo.
+
+The two reads fail in deliberately **opposite** directions, and each is only correct
+because the other is:
+
+- **The plan repo fails OPEN.** When no plan repo is reachable — no `--root`, no
+  `RDM_ROOT`, no global `root`, or a root naming a directory that does not exist —
+  rdm discovers the known locations instead of erroring, silently and with exit 0, so
+  a downstream consumer with no `rdm.toml` still gets the feature.
+- **The scan root fails LOUD.** A `--dir` that does not exist, or that names a file
+  rather than a directory, is an error naming the path and the flag. An absent source
+  *location* inside a valid root is normal (a project simply has no `.claude/rules/`);
+  an absent scan *root* is a typo, and without this check the two would render
+  byte-for-byte identically on the one command an operator runs to see what would be
+  injected.
+
+A scan root that exists and holds no directive sources is the normal case, not an
+error: exit 0, empty arrays, empty stderr.
 
 ```json
 {

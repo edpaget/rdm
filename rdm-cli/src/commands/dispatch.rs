@@ -2,6 +2,8 @@
 //!
 //! Read-only: nothing here writes to the plan repo, the source repo, or git.
 
+use std::path::Path;
+
 use anyhow::{Context, Result};
 use rdm_core::directives::{DirectiveRole, DirectiveSet};
 
@@ -17,9 +19,10 @@ use crate::cli::{DirectiveRoleArg, DispatchCommand};
 ///
 /// # Errors
 ///
-/// Returns an error only if the scanned directory cannot be resolved or the
-/// output cannot be serialized. An absent, unreadable, or over-bound source is
-/// reported in the payload's `skipped` array, never as a failure.
+/// Returns an error if the scanned directory cannot be resolved, does not exist,
+/// or is not a directory, or if the output cannot be serialized. An absent,
+/// unreadable, or over-bound source *inside* a valid scan root is reported in the
+/// payload's `skipped` array, never as a failure.
 pub fn run(
     command: DispatchCommand,
     declared: Option<Vec<String>>,
@@ -37,6 +40,7 @@ pub fn run(
                     std::env::current_dir().context("failed to resolve the current directory")?
                 }
             };
+            validate_scan_root(&dir)?;
             let set = rdm_core::directives::resolve(&dir, declared.as_deref())
                 .map_err(|e| anyhow::anyhow!("{e}"))?;
             let set = filter_role(set, role);
@@ -54,6 +58,36 @@ pub fn run(
             Ok(())
         }
     }
+}
+
+/// Rejects a scan root that does not exist or is not a directory.
+///
+/// An absent *source location* inside a valid root is normal and is silently
+/// nothing (a project simply has no `.claude/rules/`). An absent scan ROOT is
+/// not: it is a typo'd `--dir`, or a caller that handed over a file. Without
+/// this check both render byte-for-byte identically to a healthy project with no
+/// directives, so the one command an operator runs to see what would be injected
+/// would answer "nothing" to a question it never actually asked.
+///
+/// # Errors
+///
+/// Returns an error naming the path and what to do about it when `dir` does not
+/// exist or is not a directory.
+fn validate_scan_root(dir: &Path) -> Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    let what = if dir.exists() {
+        "is not a directory"
+    } else {
+        "does not exist"
+    };
+    anyhow::bail!(
+        "cannot scan {} for project directives — that path {what}. \
+         Pass --dir <path> naming the root of the source repo to scan, \
+         or omit it to scan the current directory.",
+        dir.display()
+    )
 }
 
 /// Drops directives not addressed to `role`. `both` always survives, and no filter
@@ -198,6 +232,46 @@ mod tests {
             ],
             vec![],
         )
+    }
+
+    #[test]
+    fn a_missing_scan_root_is_an_actionable_error_not_an_empty_result() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let missing = tmp.path().join("no-such-dir");
+        let err = validate_scan_root(&missing).expect_err(
+            "a --dir that does not exist must fail loudly — an empty result is \
+             indistinguishable from a healthy project with no directives",
+        );
+        let msg = format!("{err:#}");
+        assert!(msg.contains("does not exist"), "{msg}");
+        assert!(
+            msg.contains(&missing.display().to_string()),
+            "the error must name the offending path: {msg}"
+        );
+        assert!(
+            msg.contains("--dir"),
+            "the error must say what the reader can do about it: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_scan_root_that_is_a_file_is_rejected_with_its_own_reason() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let file = tmp.path().join("AGENTS.md");
+        std::fs::write(&file, "not a directory\n").expect("write");
+        let err = validate_scan_root(&file).expect_err("a file is not a scan root");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("is not a directory"),
+            "a path that exists but is the wrong kind gets its own reason: {msg}"
+        );
+    }
+
+    #[test]
+    fn a_real_directory_is_accepted_even_with_no_sources_in_it() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        validate_scan_root(tmp.path())
+            .expect("an existing directory with no directive sources is a normal, valid scan root");
     }
 
     #[test]
