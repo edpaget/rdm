@@ -621,8 +621,12 @@ assert_local_phasemeta_fetch() {
     grep -qF 'phaseMeta' "$TMP/local-dispatch-line" || return 1
 
     # ...and `roadmapBody` must be INSIDE the assembled phaseMeta literal, not
-    # merely mentioned somewhere in the file.
-    grep -qF 'body, roadmapBody, models:' "$file" || return 1
+    # merely mentioned somewhere in the file. The literal also pins `verify`,
+    # the phase-time verification command (docs/verify-gate.md): a hoist that
+    # omits it is rejected by `hoistedMetaComplete`, silently costing the very
+    # Stage-0 agent this hoist exists to eliminate.
+    grep -qF 'body, roadmapBody, verify, models:' "$file" || return 1
+    grep -qF 'config get dispatch.verify' "$file" || return 1
     return 0
 }
 assert_local_phasemeta_fetch "$SKILL" ||
@@ -720,6 +724,8 @@ normalize_phasemeta_block() {
         -e 's/S {proj_flag}/S PROJFLAG/g' \
         -e 's/<rdmBin> roadmap show/RDMBIN roadmap show/g' \
         -e 's/rdm roadmap show/RDMBIN roadmap show/g' \
+        -e 's/<rdmBin> config get/RDMBIN config get/g' \
+        -e 's/rdm config get/RDMBIN config get/g' \
         -e 's/<slug><proj-flag>/<slug> PROJFLAG/g' \
         -e 's/<slug> {proj_flag}/<slug> PROJFLAG/g'
 }
@@ -775,7 +781,8 @@ const ROADMAP_BODY = [
 
 // Exactly the object shape the CLI SKILL.md fetch sub-step assembles: all six
 // required top-level PHASE_META_SCHEMA keys, all five model ids present and
-// non-empty, plus the OPTIONAL `roadmapBody`.
+// non-empty, the OPTIONAL `roadmapBody`, and the resolved `verify` command
+// (docs/verify-gate.md) that hoistedMetaComplete requires.
 const payload = {
   roadmap: 'rm',
   phase: 'phase-1-x',
@@ -783,6 +790,7 @@ const payload = {
   model: 'medium',
   body: 'PHASE BODY TEXT',
   roadmapBody: ROADMAP_BODY,
+  verify: 'sh scripts/verify-all.sh',
   models: {
     plan: 'm-plan',
     implement: 'm-impl',
@@ -811,6 +819,15 @@ const noRoadmapBody = { ...payload }
 delete noRoadmapBody.roadmapBody
 assert.equal(hoistedMetaComplete(noRoadmapBody, false), true, 'roadmapBody is optional — its absence must not reject the hoist')
 assert.equal(extractIntent(noRoadmapBody.roadmapBody).hasIntent, false, 'an absent roadmapBody degrades to no intent')
+
+// Planted-mutation self-test 0: drop the resolved verification command. Unlike
+// `roadmapBody`, this one is REQUIRED — a hoist without it would leave the
+// dispatch unable to determine how to verify itself, so it falls back to the
+// Stage-0 agent (which can also DISCOVER one) rather than escalating.
+const noVerify = { ...payload }
+delete noVerify.verify
+assert.equal(hoistedMetaComplete(noVerify, false), false, 'a payload with no resolved verify command must be rejected')
+assert.equal(hoistedMetaComplete({ ...payload, verify: '   ' }, false), false, 'a whitespace-only verify command must be rejected')
 
 // Planted-mutation self-test 1: drop the difficulty tier.
 const noTier = { ...payload, model: '' }
@@ -988,11 +1005,24 @@ const rmShow = run(['roadmap', 'show', roadmap, '--project', project, '--format'
 const roadmapBody = JSON.parse(rmShow).body || ''
 assert.ok(roadmapBody, 'real roadmap show must return a non-empty body')
 
+// Step 2c: `rdm config set/get dispatch.verify`, the verification-command read
+// the same sub-step performs (docs/verify-gate.md). Driven against the REAL
+// binary: unset it reads `(not set)` (which the prose says must abandon the
+// hoist), and once set it reads back the declared command with its source.
+const notSet = run(['config', 'get', 'dispatch.verify'])
+assert.ok(notSet.includes('(not set)'), 'an undeclared dispatch.verify must read back as (not set), got: ' + notSet)
+const VERIFY_CMD = 'sh scripts/verify-all.sh'
+run(['config', 'set', 'dispatch.verify', VERIFY_CMD])
+const verifyOut = run(['config', 'get', 'dispatch.verify'])
+assert.ok(verifyOut.startsWith(VERIFY_CMD), 'the declared verify command must read back verbatim, got: ' + verifyOut)
+assert.ok(verifyOut.includes('repo config'), 'dispatch.verify must resolve from the REPO config, got: ' + verifyOut)
+const verify = verifyOut.split('  (source:')[0].trim()
+
 // Step 3: assemble exactly the phaseMeta shape the CLI SKILL.md procedure
 // documents, and feed it through the same hoistedMetaComplete guard the
 // Stage-0 fetch agent it replaces is judged by — end to end against real
 // binary output, not a hand-built fake.
-const phaseMeta = { roadmap, phase: phaseArg, stem, model: T, body, roadmapBody, models }
+const phaseMeta = { roadmap, phase: phaseArg, stem, model: T, body, roadmapBody, verify, models }
 assert.equal(
   hoistedMetaComplete(phaseMeta, false),
   true,

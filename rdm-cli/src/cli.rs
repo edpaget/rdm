@@ -1218,7 +1218,7 @@ pub(crate) enum ConfigCommand {
     /// Get the resolved value of a config key.
     Get {
         /// Config key (e.g. default_project, default_format, remote.default,
-        /// root, server.quick_filters).
+        /// root, server.quick_filters, dispatch.verify).
         key: String,
     },
     /// Set a config key.
@@ -1227,7 +1227,8 @@ pub(crate) enum ConfigCommand {
         key: String,
         /// Value to set. For `server.quick_filters`, use the
         /// `Label:tag,Label2:tag2` form (e.g. `Bug:bug,Refactor:refactor`);
-        /// an empty string clears all chips.
+        /// an empty string clears all chips. `dispatch.verify` is repo-only
+        /// (rejected with `--global`) and takes one non-empty command string.
         value: String,
         /// Write to global config instead of repo config.
         #[arg(long)]

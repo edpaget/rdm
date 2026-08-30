@@ -2195,6 +2195,42 @@ drive loop non-fatally on an estimate error, and unrated phases simply dispatch
 at whatever tier `rdm next` reports. Its `rdm-wf-dispatch-phase` payload was threaded
 above and is unaffected.
 
+## Verify gate
+
+`rdm-wf-dispatch-phase` runs the project's single declared verification command once per
+implementation attempt. Canonical write-up — what the command is, how it is resolved, the
+not-a-task-runner non-goal, and the commit-time vs phase-time split — lives in
+[`verify-gate.md`](verify-gate.md); this section records only the schema and the contract
+the workflow layer owns.
+
+**`VERIFY_RESULT`** — what the mechanical verification agent returns:
+
+```
+{ exitCode: <integer>, output: <string> }   // both required; output is the LAST 4000 chars
+```
+
+**Label:** `verify:run`, phase `Implement` (it reuses the existing phase title, so
+`meta.phases` is unchanged), model `models.mechanical`.
+
+**Contract:**
+
+- **Exactly once per implementation attempt.** `runCodeGate` owns a single call site, fused
+  with `d.implement(...)`, so the first pass and every rework round route through the same
+  line. The gate returns `verifyCalls` and `verifyRounds` so the count is observable from
+  outside without instrumenting a fake.
+- **Fail-closed.** A thrown dep, a `null` resolution, or a payload with no integer exit code
+  are all treated as a non-zero exit.
+- **No new vocabulary.** A failure is folded in as a synthesized blocking finding, so the
+  untouched `classifyOutcome`/`statusFor`/`writesCompletion`/`GATE_POLICY` resolve it to
+  `rework`. The bound is the existing `maxCodeRework`; there is no second counter.
+- **Escalate on unresolvable.** The command is resolved at Stage 0 as an optional `verify`
+  string on `PHASE_META`/`TASK_META` (declared key first, then discovery). When it resolves
+  empty and the run is not `--plan-only`, the driver short-circuits to the existing
+  `escalated` outcome before planning — a dispatch that cannot determine how to verify
+  itself must not report success.
+- **Hoistable string, irreducible run.** `hoistedMetaComplete` requires the `verify` field,
+  so a caller hoist forwards it; the RUN itself is state-dependent and cannot be hoisted.
+
 ## autopilot contract
 
 Autopilot is now the prose `rdm-autopilot` skill

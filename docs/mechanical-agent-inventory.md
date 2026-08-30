@@ -21,17 +21,17 @@ accepts), [`docs/autonomous-loop.md`](autonomous-loop.md).
 grep -n "label: *['\"]" .claude/workflows/*.js | grep -v spike-agent-type
 ```
 
-**42 labelled `agent()` call sites** across the six workflow scripts:
+**43 labelled `agent()` call sites** across the six workflow scripts:
 
 | file | call sites |
 |---|---|
 | `rdm-wf-backlog.js` | 3 |
-| `rdm-wf-dispatch-phase.js` | 12 |
+| `rdm-wf-dispatch-phase.js` | 13 |
 | `rdm-wf-document.js` | 5 |
 | `rdm-wf-estimate.js` | 5 |
 | `rdm-wf-plan-review.js` | 12 |
 | `rdm-wf-review-refute-fix.js` | 5 |
-| **total** | **42** |
+| **total** | **43** |
 
 (`autopilot.js` carried 7 of the original 44 call sites; it was retired in favor of the prose
 `rdm-autopilot` skill by the `workflow-orchestration` roadmap's phase 3 — see
@@ -135,6 +135,7 @@ can supply the hoist today.
 | `fetch:phase-meta` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | distributed shim (`rdm-dispatch-phase`, `rdm-do --auto`, `rdm-autopilot` CLI) — CLI only | **hoistable** | Read-only Stage-0 read, fires before any judgment agent, and the caller already ran `rdm phase show`. Accepted only when the payload carries a non-empty body, all five resolved model ids, **and** the `model` difficulty tier (`hoistedMetaComplete`) — the tier is the driver's sole source for gate strictness and its `'medium'` default would silently loosen a `large` phase's gate. This read also carries the parent roadmap's body (verbatim, as an optional `roadmapBody`) for the plan gate's `intent-alignment` dimension — folded into this same agent rather than a second one, which is why the totals above are unchanged. `roadmapBody` is deliberately NOT part of `hoistedMetaComplete`'s completeness set (a failed roadmap read must degrade to no intent, never reject an otherwise-complete hoist), so a hoisting shim that omits it turns that dimension off for the dispatch while the gate still reports green: all three CLI shims therefore gather it themselves, gated by `scripts/verify-workflow-dispatch.sh` § AC-PLAN-INTENT-HOIST/§ 6g and `scripts/verify-skill-autopilot.sh` §§ 1e/1f/2d. | no (direct/shim path) |
 | `fetch:task-meta` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | distributed shim — CLI only | **hoistable** | Task-mode twin of the above, same body+models guard. No tier requirement: `TASK_META` carries none and the driver hard-codes a task to `medium`, so there is nothing to lose. | no (direct/shim path) |
 | `stamp:in-progress` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | distributed shim — CLI **and** MCP | **redundant** | Interactive `rdm-do`, `rdm-do --auto` and the `rdm-dispatch-phase` shim all write `--status in-progress` before invoking the workflow. Suppressed by an explicit `alreadyInProgress` flag set **only** when that write exited 0, and **never** for a `--plan-only` run. | **yes** (autopilot-nested + direct-`Workflow` paths) |
+| `verify:run` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | n/a — the command is resolved at Stage 0, but the RUN itself cannot be hoisted | **irreducible** | The phase-time verification gate (see [`verify-gate.md`](verify-gate.md)): it executes the project's single declared command in the item's worktree *after* each implementation attempt, so its input is state the run itself just produced. Nothing a caller could pre-compute substitutes for it. The command STRING is hoistable and rides along on the Stage-0 fetch (`verify` on `PHASE_META`/`TASK_META`), which is why this row adds one call site and no new fetch. | no |
 | `diff:signals` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | n/a — absorbed, no caller needed | **absorbable** | `runCodeGate` calls `d.implement(...)` immediately before every `d.review()` with nothing in between, so the implementer — already in the worktree it just wrote to — reports the same two `git diff` commands. One-shot handoff (`pendingDiff` read-and-cleared) preserves per-round freshness. Works on **every** path, including autopilot-nested. | no |
 | `diff:signals` | `rdm-wf-review-refute-fix.js` | unprojected driver | yes | local shim only (`rdm-review`) | **hoistable** | No adjacent implementer in this workflow (it reviews an already-implemented item), but `worktreeRef` is fully determined by `args`, so the caller can run the diff itself. | partly (distributed-caller path) |
 | `gate:persist` | `rdm-wf-review-refute-fix.js` | unprojected driver | yes | — | **irreducible** | A write whose status/reason are computed mid-run from the classified outcome. | **yes** |

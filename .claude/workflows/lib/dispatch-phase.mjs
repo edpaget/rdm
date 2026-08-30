@@ -35,6 +35,7 @@ import {
   summarizeFindings,
   statusFor,
   writesCompletion,
+  GATE_POLICY,
   deriveSignals,
   DEFAULT_MAX_CODE_REWORK,
   DEFAULT_MAX_REFUTATIONS,
@@ -84,7 +85,8 @@ const DEFAULT_MAX_PLAN_REVISE = 2;
 // PROJECT-AGNOSTIC ALLOW-LIST — the subcommands that must carry NO project
 // flag, because rdm rejects `--project` on them outright:
 //
-//     rdm model resolve, rdm commit   (and rdm status / rdm discard, if added)
+//     rdm model resolve, rdm config get, rdm commit
+//     (and rdm status / rdm discard, if added)
 //
 // EVERY other subcommand this lane emits is PROJECT-SCOPED and takes the flag:
 // phase list/show/update, task list/show/create/update, worktree add, next,
@@ -269,6 +271,11 @@ function parseDispatchArgs(args) {
 function hoistedMetaComplete(meta, isTask) {
   if (!meta || typeof meta !== 'object') return false;
   if (typeof meta.body !== 'string' || String(meta.body).trim() === '') return false;
+  // The resolved verification command is part of the all-or-nothing contract for
+  // the same reason the model ids are: without it the driver would escalate the
+  // dispatch as unverifiable even though the in-workflow fetch agent could have
+  // resolved one. A hoist that omits it simply falls back to that agent.
+  if (extractVerifyCommand(meta) === '') return false;
   // Phase mode only: the difficulty tier has no recoverable fallback.
   if (!isTask && (typeof meta.model !== 'string' || meta.model.trim() === '')) return false;
   const m = meta.models;
@@ -276,6 +283,203 @@ function hoistedMetaComplete(meta, isTask) {
   const keys = ['plan', 'implement', 'review_find', 'review_verify', 'mechanical'];
   return keys.filter((k) => typeof m[k] !== 'string' || m[k] === '').length === 0;
 }
+
+// >>> verify-gate:begin <<<
+// --- Phase-time verification gate --------------------------------------------
+//
+// The project declares ONE command; this block runs it once per implementation
+// attempt and interprets the exit code. rdm is NOT a task runner: timeouts,
+// ordering, parallelism, per-tool configuration and output formatting all stay
+// in whatever the command invokes. The check set is project-supplied DATA, so
+// nothing below names a language, package manager, or test tool — that property
+// is satisfied by construction and grep-asserted with an occurrence floor by
+// scripts/verify-workflow-dispatch.sh § 3-verify. Canonical write-up:
+// docs/verify-gate.md.
+
+// VERIFY_OUTPUT_CAP — how much of a failing command's output survives into the
+// rework prompt. The TAIL is kept, not the head: failures print last, and an
+// unbounded log would blow the rework implementer's context budget.
+const VERIFY_OUTPUT_CAP = 4000;
+
+// truncateVerifyOutput(output) — keep the LAST VERIFY_OUTPUT_CAP characters,
+// prefixed with an explicit elision marker so a reader never mistakes a
+// truncated tail for the whole log. Non-string input yields ''.
+function truncateVerifyOutput(output) {
+  if (typeof output !== 'string' || output === '') return '';
+  if (output.length <= VERIFY_OUTPUT_CAP) return output;
+  return '[...output truncated, showing the last ' + VERIFY_OUTPUT_CAP + ' characters...]\n' +
+    output.slice(output.length - VERIFY_OUTPUT_CAP);
+}
+
+// normalizeVerifyResult(command, raw, agentFailed) — coerce whatever the verify
+// dep resolved into the stable shape the rest of the block consumes:
+//   { command, ran, failed, exitCode, output }
+//
+// FAIL-CLOSED: a thrown dep, a null/undefined resolution (agent() resolves null
+// on an unknown model id rather than throwing), and a payload with no integer
+// exit code are ALL treated as a failure. An unrunnable declared verification
+// must never read as a pass — that is the exact silent-success this gate exists
+// to remove.
+function normalizeVerifyResult(command, raw, agentFailed) {
+  const cmd = typeof command === 'string' ? command : '';
+  const r = raw && typeof raw === 'object' ? raw : null;
+  const code = r && typeof r.exitCode === 'number' && Number.isInteger(r.exitCode) ? r.exitCode : null;
+  const out = r && typeof r.output === 'string' ? r.output : '';
+  if (code === null) {
+    return {
+      command: cmd,
+      ran: false,
+      failed: true,
+      exitCode: -1,
+      output: truncateVerifyOutput(
+        out ||
+          (agentFailed
+            ? 'the verification agent threw before reporting an exit status'
+            : 'the verification agent reported no usable exit status')
+      ),
+    };
+  }
+  return { command: cmd, ran: true, failed: code !== 0, exitCode: code, output: truncateVerifyOutput(out) };
+}
+
+// verifyFailureFinding(result) — synthesize a FINDING-shaped object from a
+// failed verify result, so the UNTOUCHED classifier resolves the round to
+// `rework` with no new OUTCOME value and no classifier branch.
+//
+// It is added AFTER runReview returns, so it never passes through the refuter
+// or the confidence floor — it is a mechanical fact, not a graded judgment.
+// The command string lives in `what_fails`, which is exactly the field
+// summarizeFindings renders, so the OUTCOME `summary` (and therefore
+// outcomePolicy's `reason`) names the command with no change to any shared
+// helper.
+function verifyFailureFinding(result) {
+  const r = result || {};
+  const tail = r.output ? '\n--- verification output (tail) ---\n' + r.output : '';
+  return {
+    id: 'verify-command-failed',
+    concern: 'verify',
+    severity: 'blocking',
+    confidence: 100,
+    what_fails: 'the project verification command `' + r.command + '` exited ' + r.exitCode,
+    failure_scenario:
+      'Running `' + r.command + '` in the item worktree exits ' + r.exitCode + ' instead of 0.' + tail,
+    suggested_fix:
+      'Make `' + r.command + '` exit 0 from a clean worktree, then re-run it before finishing.',
+    unrefuted: true,
+    unrefutedReason: 'mechanical',
+  };
+}
+
+// extractVerifyCommand(meta) — pull the resolved command out of a fetched (or
+// caller-hoisted) metadata object. A trimmed non-empty single-line string, or
+// '' for anything else (absent, whitespace-only, non-string).
+//
+// A value containing a newline is REFUSED rather than run: the value is
+// interpolated into a Bash-agent prompt, and a multi-line command belongs in a
+// script that the one declared command invokes. Refusing yields '', which
+// escalates — never a silent partial run.
+function extractVerifyCommand(meta) {
+  if (!meta || typeof meta !== 'object') return '';
+  const v = meta.verify;
+  if (typeof v !== 'string') return '';
+  const trimmed = v.trim();
+  if (trimmed === '' || /[\r\n]/.test(trimmed)) return '';
+  return trimmed;
+}
+
+// verifyToolingLine(command) — the AVAILABLE TOOLING line handed to BOTH the
+// first-pass implementer and the rework implementer, so the command is run
+// proactively rather than discovered as a failure. '' for an empty command.
+function verifyToolingLine(command) {
+  const cmd = typeof command === 'string' ? command.trim() : '';
+  if (cmd === '') return '';
+  return (
+    'AVAILABLE TOOLING — this project declares exactly one verification command: `' + cmd + '`. ' +
+    'Run it yourself, in full, before you finish. The pipeline runs the same command once after you ' +
+    'return, and a non-zero exit sends this item straight back to you as rework.'
+  );
+}
+
+// verifyFailureClause(result) — the rework-only clause naming the command, its
+// exit code, and the truncated output tail, so the rework implementer sees the
+// failing output and not merely the command. '' when the verify passed, was
+// never run, or is absent.
+function verifyFailureClause(result) {
+  const r = result || {};
+  if (!r || r.failed !== true) return '';
+  const tail = r.output ? '\n' + r.output : '\n(no output was captured)';
+  return (
+    'The verification command `' + r.command + '` exited ' + r.exitCode +
+    ' on the prior pass — fix that first; the item cannot be reported reviewed until it exits 0. ' +
+    'Its output (tail):' + tail
+  );
+}
+
+// VERIFY_UNRESOLVED_SUMMARY — the escalation note for a dispatch that could
+// determine NO way to verify itself. Names the declared key and all three
+// discovery sources so the operator knows exactly what to add.
+const VERIFY_UNRESOLVED_SUMMARY =
+  'no verification command could be resolved: `dispatch.verify` is unset and nothing was discoverable ' +
+  'from .github/workflows/, docs/principles.md, or CLAUDE.md/AGENTS.md — a dispatch that cannot ' +
+  'determine how to verify itself must not report success';
+
+// VERIFY_RESOLUTION_LINES — the resolution paragraph BOTH Stage-0 fetch prompts
+// append. Declared expression order IS the precedence: the declared key wins;
+// otherwise discover, in order, CI config, the principles doc, then the agent
+// instruction files; otherwise return an empty string and let the driver
+// escalate. Names only file paths and the config key.
+function verifyResolutionLines(bin) {
+  return [
+    'Then resolve this project\'s single VERIFICATION COMMAND — the one command whose exit code says',
+    'whether the repository is healthy. Run exactly this command first and read its output:',
+    '  ' + bin + ' config get dispatch.verify',
+    'If it prints a real value (anything other than "(not set)"), return that value VERBATIM as `verify`.',
+    'Otherwise DISCOVER one, checking these sources in order and stopping at the first that yields',
+    'anything: (a) the CI configuration under `.github/workflows/` (also `.circleci/config.yml` and',
+    '`.gitlab-ci.yml`); (b) `docs/principles.md`; (c) `CLAUDE.md` or `AGENTS.md`. Synthesize ONE',
+    'single-line shell command that runs the checks that source names, joined so that any failure',
+    'makes the whole command exit non-zero, and return it as `verify`.',
+    'If none of the three sources names any checks, return `verify` as an EMPTY STRING. Never invent a',
+    'command, never return a multi-line value, and never guess.',
+  ];
+}
+
+// VERIFY_RESULT — what the mechanical verification agent reports back: the exit
+// status of the ONE command it was told to run, plus that command's output tail.
+const VERIFY_RESULT_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['exitCode', 'output'],
+  properties: {
+    exitCode: { type: 'integer' },
+    output: { type: 'string' },
+  },
+};
+
+// buildVerifyPrompt(command, worktreeRef, cfg) — run the resolved command ONCE
+// in the item's worktree and report its exit status. Deliberately forbids
+// decomposition, reordering, partial runs, retries, and any fix attempt: this
+// agent observes, it does not repair. `cfg` is the environment payload
+// { rdmBin, project }; `worktree add` is project-scoped and carries the flag.
+function buildVerifyPrompt(command, worktreeRef, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
+  const proj = projectFlag(cfg);
+  return [
+    'You are a mechanical verification agent. Do not plan, implement, review, or fix anything, and edit no files.',
+    'Find the worktree for this item and work THERE:',
+    '  ' + bin + ' worktree add ' + worktreeRef + proj,
+    '(it prints the existing path if the worktree already exists) then `cd` into that path.',
+    'Run EXACTLY this one command, verbatim, exactly once:',
+    '  ' + command,
+    'Do not decompose it into parts, do not reorder it, do not run only some of it, do not substitute',
+    'a faster equivalent, and do not re-run it on failure.',
+    'Return a VERIFY_RESULT object: `exitCode` — the integer exit status you actually observed; and',
+    '`output` — the combined stdout and stderr TRUNCATED to the LAST 4000 characters (keep the END,',
+    'where failures print). If the command could not be run at all, report a non-zero `exitCode` and',
+    'say why in `output`. Never report 0 for a command that failed or that you did not run.',
+  ].join('\n');
+}
+// >>> verify-gate:end <<<
 
 // runPlanGate(config, deps) — the bounded plan stage. Author a plan, review it,
 // and revise up to `config.maxRevise` times, breaking early the moment a review
@@ -388,8 +592,20 @@ async function runPlanGate(config, deps) {
 // the module's own severity contract, so a failed fix-attempt must never
 // change the outcome.
 //
+// Verify gate: `config.verifyCommand` is the project's single resolved
+// verification command. It is run through the optional `d.verify` dep at exactly
+// ONE call site (implementAndVerify below), immediately after every
+// `d.implement(...)` and before the corresponding `d.review()`, so it fires
+// exactly once per implementation attempt on the first pass and on every rework
+// round alike. A failure is FAIL-CLOSED (a throw, a null resolution, or a
+// missing exit code all count) and is folded into the round as a synthesized
+// blocking finding, so the UNTOUCHED classifier resolves it to `rework` — no new
+// OUTCOME value, and no second budget: the existing `maxRework` bound is what
+// terminates a repeatedly failing verification.
+//
 // Rework notes: `d.implement` is called with `null` for the first pass and
-// `{ findings, acTable }` on every rework pass — NEVER a bare findings array.
+// `{ findings, acTable, verify }` on every rework pass — NEVER a bare findings
+// array.
 // The AC table is a structured side-channel decoupled from `findings` (a FAIL
 // criterion need not also appear as a finding), so without also passing
 // `acTable` an AC-only-gap rework (empty `findings`) would hand the
@@ -399,9 +615,44 @@ async function runCodeGate(config, deps) {
   const d = deps || {};
   const maxRework = c.maxRework != null ? c.maxRework : DEFAULT_MAX_CODE_REWORK;
   const tier = c.tier;
-  await d.implement(null);
+  const verifyCommand = typeof c.verifyCommand === 'string' ? c.verifyCommand.trim() : '';
+  // Per-round verify results, parallel to `rounds`, plus the number of times the
+  // single call site actually fired. Returned so the harness can assert the
+  // one-run-per-attempt contract from the OUTSIDE, without instrumenting a fake.
+  const verifyRounds = [];
+  let verifyCalls = 0;
+  // THE SINGLE VERIFY CALL SITE. Implement and verify are deliberately fused
+  // into one helper so the first pass and every rework round route through the
+  // same line: no branch can skip it, and no retry loop can multiply it.
+  const implementAndVerify = async (notes) => {
+    await d.implement(notes);
+    if (typeof d.verify !== 'function' || verifyCommand === '') {
+      verifyRounds.push(null);
+      return null;
+    }
+    verifyCalls++;
+    let raw = null;
+    let agentFailed = false;
+    try {
+      raw = await d.verify(verifyCommand);
+    } catch (e) {
+      agentFailed = true;
+    }
+    const normalized = normalizeVerifyResult(verifyCommand, raw, agentFailed);
+    verifyRounds.push(normalized);
+    return normalized;
+  };
+  // foldVerify(survivors, verifyResult) — prepend the synthesized blocking
+  // finding when the round's verification failed. A NEW array every time, so the
+  // per-round records in `rounds` never alias each other.
+  const foldVerify = (survivors, verifyResult) => {
+    const list = Array.isArray(survivors) ? survivors : [];
+    if (!verifyResult || verifyResult.failed !== true) return list;
+    return [verifyFailureFinding(verifyResult)].concat(list);
+  };
+  let verifyResult = await implementAndVerify(null);
   let reviewResult = (await d.review()) || {};
-  let findings = reviewResult.survivors || [];
+  let findings = foldVerify(reviewResult.survivors || [], verifyResult);
   let acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
   const rounds = [findings];
   const acRounds = [acTable];
@@ -417,10 +668,13 @@ async function runCodeGate(config, deps) {
   let reworkCount = 0;
   for (let i = 0; i < maxRework; i++) {
     if (!hasBlocking(findings, tier) && !acTableHasGap(acTable)) break;
-    await d.implement({ findings: findings, acTable: acTable });
+    // The PRIOR round's verify result rides along in the rework notes (the
+    // argument is evaluated before the reassignment below), so the rework
+    // implementer sees the failing output, not just the command.
+    verifyResult = await implementAndVerify({ findings: findings, acTable: acTable, verify: verifyResult });
     reworkCount++;
     reviewResult = (await d.review()) || {};
-    findings = reviewResult.survivors || [];
+    findings = foldVerify(reviewResult.survivors || [], verifyResult);
     acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
     rounds.push(findings);
     acRounds.push(acTable);
@@ -441,6 +695,10 @@ async function runCodeGate(config, deps) {
     coverage: coverageRounds[coverageRounds.length - 1],
     reworkCount: reworkCount,
     reviewCount: rounds.length,
+    verifyCommand: verifyCommand,
+    verifyRounds: verifyRounds,
+    verifyCalls: verifyCalls,
+    verifyResult: verifyResult,
     actResult: actResult,
   };
 }
@@ -604,6 +862,25 @@ function buildOutcome(input) {
       findings: [],
     };
   }
+  // A dispatch that could determine NO verification command escalates rather
+  // than skipping verification. Structured exactly like the fetchError branch
+  // above and reusing the SAME `escalated` value via outcomePolicy — it adds no
+  // OUTCOME value, no classifier branch, and no GATE_POLICY row.
+  if (i.verifyUnresolved === true) {
+    const verifyPolicy = outcomePolicy('escalated', 'phase', VERIFY_UNRESOLVED_SUMMARY);
+    return {
+      roadmap: roadmap,
+      phase: phase,
+      outcome: 'escalated',
+      status: verifyPolicy.status,
+      writesCompletion: verifyPolicy.writesCompletion,
+      summary: VERIFY_UNRESOLVED_SUMMARY,
+      reason: verifyPolicy.reason,
+      reviewBudget: buildReviewBudget(i.budgetRounds, i.planBudget),
+      reviewCoverage: buildReviewCoverage(i.coverageRounds, i.planCoverage),
+      findings: [],
+    };
+  }
   const planFindings = i.planFindings || [];
   const acRounds = i.acRounds || [];
   const lastAcTable = acRounds.length ? acRounds[acRounds.length - 1] : null;
@@ -700,6 +977,24 @@ function buildTaskOutcome(input) {
       findings: [],
     };
   }
+  // A dispatch that could determine NO verification command escalates rather
+  // than skipping verification. Structured exactly like the fetchError branch
+  // above and reusing the SAME `escalated` value via outcomePolicy — it adds no
+  // OUTCOME value, no classifier branch, and no GATE_POLICY row.
+  if (i.verifyUnresolved === true) {
+    const verifyPolicy = outcomePolicy('escalated', 'task', VERIFY_UNRESOLVED_SUMMARY);
+    return {
+      task: task,
+      outcome: 'escalated',
+      status: verifyPolicy.status,
+      writesCompletion: verifyPolicy.writesCompletion,
+      summary: VERIFY_UNRESOLVED_SUMMARY,
+      reason: verifyPolicy.reason,
+      reviewBudget: buildReviewBudget(i.budgetRounds, i.planBudget),
+      reviewCoverage: buildReviewCoverage(i.coverageRounds, i.planCoverage),
+      findings: [],
+    };
+  }
   const planFindings = i.planFindings || [];
   const acRounds = i.acRounds || [];
   const lastAcTable = acRounds.length ? acRounds[acRounds.length - 1] : null;
@@ -787,6 +1082,7 @@ export {
   classifyOutcome,
   statusFor,
   writesCompletion,
+  GATE_POLICY,
   deriveSignals,
   outcomePolicy,
   OUTCOME_REASON_PREFIX,
@@ -795,4 +1091,15 @@ export {
   annotateHandled,
   buildOutcome,
   buildTaskOutcome,
+  VERIFY_OUTPUT_CAP,
+  VERIFY_RESULT_SCHEMA,
+  VERIFY_UNRESOLVED_SUMMARY,
+  truncateVerifyOutput,
+  normalizeVerifyResult,
+  verifyFailureFinding,
+  extractVerifyCommand,
+  verifyToolingLine,
+  verifyFailureClause,
+  verifyResolutionLines,
+  buildVerifyPrompt,
 };

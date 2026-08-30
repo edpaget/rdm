@@ -73,9 +73,10 @@ const PHASE_META = {
   stem: 'phase-1-x',
   model: 'medium',
   body: 'PHASE BODY TEXT',
+  verify: 'sh scripts/verify-all.sh',
   models: MODELS,
 };
-const TASK_META = { task: 'my-task', body: 'TASK BODY TEXT', models: MODELS };
+const TASK_META = { task: 'my-task', body: 'TASK BODY TEXT', verify: 'sh scripts/verify-all.sh', models: MODELS };
 const PLAN_DOC = {
   steps_per_ac: [{ ac: 'AC1', steps: ['do it'] }],
   file_map: [{ path: 'a.rs', change: 'edit' }],
@@ -123,6 +124,7 @@ function makeAgent(o) {
     if (label === 'fetch:phase-meta') return PHASE_META;
     if (label === 'fetch:task-meta') return TASK_META;
     if (label === 'stamp:in-progress') return { ok: true };
+    if (label === 'verify:run') return { exitCode: 0, output: '' };
     if (label === 'plan:author' || label === 'plan:revise') return PLAN_DOC;
     if (label === 'act:code') return { handled: [] };
     if (label === 'diff:signals') return { changedFiles: ['rdm-core/src/lib.rs'], diffText: '' };

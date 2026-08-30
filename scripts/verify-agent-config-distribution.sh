@@ -1456,7 +1456,8 @@ function buildAllPrompts(dispatch, review, cfg) {
 // whatever rdm-naming, non-space run precedes a known subcommand, so a
 // re-hardcoded path is caught by COMPARISON rather than silently skipped.
 const INVOCATION = /(^|[\s`])((?:[^\s`]*\/)?[A-Za-z0-9_.-]*rdm[A-Za-z0-9_.-]*)\s+([a-z][a-z-]*)(?:\s+([a-z][a-z-]*))?/g;
-const PROJECT_AGNOSTIC = ['model resolve', 'commit', 'status', 'discard'];
+// `config get` is project-agnostic too: `rdm config get` takes no --project.
+const PROJECT_AGNOSTIC = ['model resolve', 'config get', 'commit', 'status', 'discard'];
 
 function scan(prompts) {
   const out = [];

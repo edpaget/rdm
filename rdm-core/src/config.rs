@@ -21,13 +21,14 @@ pub const KNOWN_KEYS: &[&str] = &[
     "hook_timeout_secs",
     "server.quick_filters",
     "plan_review",
+    "dispatch.verify",
 ];
 
 /// Keys that may only be set in the global config (not in a repo `rdm.toml`).
 pub const GLOBAL_ONLY_KEYS: &[&str] = &["root", "auto_init"];
 
 /// Keys that may only be set in the repo config (not in the global config).
-pub const REPO_ONLY_KEYS: &[&str] = &["server.quick_filters"];
+pub const REPO_ONLY_KEYS: &[&str] = &["server.quick_filters", "dispatch.verify"];
 
 /// Where a configuration value was resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +93,22 @@ pub struct ServerConfig {
     /// Quick-filter chips rendered on the roadmap, phase, and task list views.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub quick_filters: Vec<QuickFilter>,
+}
+
+/// Configuration for the autonomous dispatch lane (`[dispatch]` table).
+///
+/// Repo-only: a verify command is a property of a project, never of a user, so
+/// this table has no counterpart on [`GlobalConfig`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DispatchConfig {
+    /// The single command the dispatch pipeline runs once per implementation
+    /// attempt, whose exit code gates the phase.
+    ///
+    /// rdm never decomposes, reorders, or partially runs it — timeouts,
+    /// ordering, parallelism and output formatting belong to whatever task
+    /// runner the command invokes. See `docs/verify-gate.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<String>,
 }
 
 /// Per-step model tier overrides within `[models.steps]`.
@@ -272,6 +289,14 @@ pub struct Config {
     /// this flag gates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_review: Option<bool>,
+
+    /// Autonomous dispatch-lane configuration (`[dispatch]` table).
+    ///
+    /// Repo-only — deliberately absent from [`GlobalConfig`], and carried
+    /// through [`Config::with_global_defaults`] unchanged with no global
+    /// fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<DispatchConfig>,
 }
 
 impl Config {
@@ -330,6 +355,8 @@ impl Config {
             hook_timeout_secs: self.hook_timeout_secs.or(global.hook_timeout_secs),
             models: self.models.clone().or_else(|| global.models.clone()),
             plan_review: self.plan_review.or(global.plan_review),
+            // Repo-only: no global fallback exists to fall back TO.
+            dispatch: self.dispatch.clone(),
         }
     }
 }
@@ -1050,5 +1077,50 @@ mechanical = "small"
         assert_eq!(models.large, None);
         assert_eq!(models.review_floor, None);
         assert_eq!(models.steps, None);
+    }
+    #[test]
+    fn dispatch_verify_toml_roundtrip() {
+        let toml_str = "[dispatch]\nverify = \"bash scripts/ci.sh\"\n";
+        let config = Config::from_toml(toml_str).unwrap();
+        let dispatch = config.dispatch.clone().expect("dispatch section parsed");
+        assert_eq!(dispatch.verify, Some("bash scripts/ci.sh".to_string()));
+        let round = Config::from_toml(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(round, config);
+    }
+
+    #[test]
+    fn dispatch_table_omitted_when_unset() {
+        let config = Config::default();
+        let toml_str = config.to_toml().unwrap();
+        assert!(
+            !toml_str.contains("[dispatch]"),
+            "an untouched repo config must gain no [dispatch] table: {toml_str}"
+        );
+    }
+
+    #[test]
+    fn dispatch_verify_is_a_known_repo_only_key() {
+        assert!(KNOWN_KEYS.contains(&"dispatch.verify"));
+        assert!(REPO_ONLY_KEYS.contains(&"dispatch.verify"));
+        assert!(!GLOBAL_ONLY_KEYS.contains(&"dispatch.verify"));
+    }
+
+    #[test]
+    fn with_global_defaults_carries_dispatch_through() {
+        let repo_config = Config {
+            dispatch: Some(DispatchConfig {
+                verify: Some("bash scripts/ci.sh".to_string()),
+            }),
+            ..Default::default()
+        };
+        let global = GlobalConfig::default();
+        let merged = repo_config.with_global_defaults(&global);
+        assert_eq!(
+            merged.dispatch.and_then(|d| d.verify),
+            Some("bash scripts/ci.sh".to_string())
+        );
+        // A global config cannot supply one: an unset repo value stays unset.
+        let empty = Config::default().with_global_defaults(&global);
+        assert_eq!(empty.dispatch, None);
     }
 }

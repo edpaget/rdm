@@ -5235,10 +5235,19 @@ mod tests {
     /// Deliberately `#[ignore]`d: running it rewrites the very artifact
     /// [`raw_skills_emission_matches_committed_baseline`] checks against, so
     /// an accidental run would launder a real regression into a "new
-    /// baseline". If the raw templates ever legitimately change, regenerating
-    /// this fixture must be a deliberate, separately-reviewed commit that
-    /// stands on its own — never bundled with the change that moved the
-    /// bytes.
+    /// baseline". Regeneration must therefore always be DELIBERATE — never a
+    /// reflex to clear a red test.
+    ///
+    /// It belongs in the SAME commit as the change that moved the bytes.
+    /// `CLAUDE.md`'s derived-copy rule is explicit about this: a `lib/*.mjs` or
+    /// template edit that reaches an emitted artifact must land with every
+    /// derived copy regenerated alongside it, or the mismatch surfaces at land
+    /// time. (An earlier version of this comment asked for a separate,
+    /// standalone commit; that contradicted the propagation rule and is
+    /// corrected here.) What must never happen is regenerating WITHOUT a
+    /// corresponding template change — that is the laundering this
+    /// `#[ignore]` guards against, and it is visible in review as a baseline
+    /// diff with no source diff beside it.
     ///
     /// Run with:
     /// `cargo test -p rdm-core regenerate_raw_skills_baseline -- --ignored`

@@ -292,6 +292,7 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
         "default_branch" => config.default_branch.clone(),
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
         "plan_review" => config.plan_review.map(|b| b.to_string()),
+        "dispatch.verify" => config.dispatch.as_ref().and_then(|d| d.verify.clone()),
         // NOTE: a malformed RDM_SERVER_QUICK_FILTERS env value is echoed
         // back raw with "(source: environment variable)" by the generic
         // resolution chain in commands/config.rs — a pre-existing quirk of
@@ -359,6 +360,19 @@ pub fn set_config_field(
                 .get_or_insert_with(Default::default)
                 .quick_filters = filters;
         }
+        "dispatch.verify" => {
+            let cmd = value.trim();
+            if cmd.is_empty() {
+                bail!(
+                    "'dispatch.verify' requires a non-empty command — it is run once per \
+                     implementation attempt and its exit code gates the phase, so an empty \
+                     value would silently disable verification. Pass the single command to \
+                     run (e.g. 'bash scripts/ci.sh'), or delete the 'dispatch.verify' line \
+                     from rdm.toml to remove the setting."
+                );
+            }
+            config.dispatch.get_or_insert_with(Default::default).verify = Some(cmd.to_string());
+        }
         "root" | "auto_init" => bail!("'{key}' can only be set in global config — use --global"),
         _ => bail!(
             "unknown config key: {key} — valid keys: {}",
@@ -394,7 +408,7 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
         "plan_review" => {
             config.plan_review = Some(parse_bool(value)?);
         }
-        "server.quick_filters" => {
+        "server.quick_filters" | "dispatch.verify" => {
             bail!("'{key}' can only be set in repo config — omit --global")
         }
         _ => bail!(
@@ -697,5 +711,61 @@ mod tests {
 
         let config = load_repo_config(temp.path());
         assert_eq!(config.default_project, Some("my-proj".to_string()));
+    }
+    #[test]
+    fn dispatch_verify_set_then_get_roundtrip() {
+        let mut config = rdm_core::config::Config::default();
+        set_config_field(&mut config, "dispatch.verify", "  bash scripts/ci.sh  ").unwrap();
+        assert_eq!(
+            get_config_field(&config, "dispatch.verify"),
+            Some("bash scripts/ci.sh".to_string()),
+            "the value is trimmed on write and readable back"
+        );
+    }
+
+    #[test]
+    fn dispatch_verify_rejects_an_empty_command() {
+        for empty in ["", "   ", "\t\n"] {
+            let mut config = rdm_core::config::Config::default();
+            let err = set_config_field(&mut config, "dispatch.verify", empty)
+                .expect_err("an empty verify command must be rejected");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("dispatch.verify"),
+                "the rejection must name the key: {msg}"
+            );
+            assert!(
+                msg.contains("rdm.toml"),
+                "the rejection must say how to remove the setting: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_verify_is_repo_only() {
+        assert!(is_repo_only("dispatch.verify"));
+        assert!(!is_global_only("dispatch.verify"));
+        let mut global = GlobalConfig::default();
+        let err = set_global_config_field(&mut global, "dispatch.verify", "bash scripts/ci.sh")
+            .expect_err("the global config must refuse dispatch.verify");
+        assert!(
+            err.to_string().contains("omit --global"),
+            "the global rejection reuses the repo-only message: {err}"
+        );
+        assert_eq!(
+            get_global_config_field(&global, "dispatch.verify"),
+            None,
+            "the global config has no dispatch.verify to read"
+        );
+    }
+
+    #[test]
+    fn resolve_config_value_dispatch_verify_reports_repo_source() {
+        let mut repo = rdm_core::config::Config::default();
+        set_config_field(&mut repo, "dispatch.verify", "bash scripts/ci.sh").unwrap();
+        let global = GlobalConfig::default();
+        let resolved = resolve_config_value("dispatch.verify", &repo, &global).unwrap();
+        assert_eq!(resolved.value, "bash scripts/ci.sh");
+        assert_eq!(resolved.source, rdm_core::config::ConfigSource::Repo);
     }
 }

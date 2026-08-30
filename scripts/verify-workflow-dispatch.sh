@@ -1443,6 +1443,300 @@ else
     fail "dispatch-phase gate assertions failed"
 fi
 
+# --- 1d. VERIFY GATE ----------------------------------------------------------
+# The phase-time verification gate (docs/verify-gate.md): one project-supplied
+# command, run once per implementation attempt, whose exit code decides whether
+# the item can be reported reviewed. Driven in Node against injected fakes, so
+# every assertion below is about the SHIPPED logic and costs zero LLM calls.
+say "1d. Verify gate: one command per implementation attempt, rework on failure, escalate when unresolvable"
+
+cat >"$TMP/verify-gate.mjs" <<'NODE_VERIFY'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const libPath = process.argv[2];
+const wfPath = process.argv[3];
+const mod = await import(pathToFileURL(libPath).href);
+const {
+  runCodeGate,
+  buildOutcome,
+  buildTaskOutcome,
+  statusFor,
+  classifyOutcome,
+  GATE_POLICY,
+  truncateVerifyOutput,
+  VERIFY_OUTPUT_CAP,
+  extractVerifyCommand,
+  verifyToolingLine,
+  verifyFailureClause,
+  verifyFailureFinding,
+  normalizeVerifyResult,
+  VERIFY_UNRESOLVED_SUMMARY,
+} = mod;
+
+const CMD = 'sh scripts/verify-all.sh';
+
+// A counting fake code gate. `verifyScript` is consumed per verify call,
+// repeating its last entry; `mode` selects ok / non-zero / throw / null.
+function makeFakes(o) {
+  const opts = o || {};
+  const log = [];
+  let vIdx = 0;
+  const script = opts.verifyScript || ['ok'];
+  const deps = {
+    implement: async (notes) => {
+      log.push(notes == null ? 'implement' : 'rework');
+    },
+    review: async () => {
+      log.push('review');
+      return { survivors: opts.survivors || [], acTable: null };
+    },
+    verify: async (command) => {
+      log.push('verify');
+      assert.equal(command, CMD, 'the verify dep receives the resolved command verbatim');
+      const kind = script[Math.min(vIdx, script.length - 1)];
+      vIdx++;
+      if (kind === 'throw') throw new Error('agent blew up');
+      if (kind === 'null') return null;
+      if (kind === 'ok') return { exitCode: 0, output: 'all good' };
+      return { exitCode: 1, output: 'harness red' };
+    },
+  };
+  if (opts.noVerifyDep) delete deps.verify;
+  return { log, deps };
+}
+const count = (log, kind) => log.filter((c) => c === kind).length;
+
+// ===========================================================================
+// (a) Pure helpers.
+// ===========================================================================
+assert.equal(extractVerifyCommand({}), '', 'an absent verify field yields the empty string');
+assert.equal(extractVerifyCommand({ verify: '   ' }), '', 'a whitespace-only value yields the empty string');
+assert.equal(extractVerifyCommand({ verify: '  ' + CMD + ' ' }), CMD, 'a real command is trimmed and returned');
+assert.equal(extractVerifyCommand({ verify: 42 }), '', 'a non-string value yields the empty string rather than throwing');
+assert.equal(extractVerifyCommand({ verify: 'a\nb' }), '', 'a multi-line command is refused, not run');
+assert.equal(extractVerifyCommand(null), '', 'a null meta yields the empty string');
+
+const longOut = 'x'.repeat(VERIFY_OUTPUT_CAP + 500) + 'TAIL-MARKER';
+const truncated = truncateVerifyOutput(longOut);
+assert.ok(truncated.length < longOut.length, 'an oversized output is truncated');
+assert.ok(truncated.endsWith('TAIL-MARKER'), 'truncation keeps the TAIL — failures print last');
+assert.equal(truncateVerifyOutput('short'), 'short', 'a short output is returned unchanged');
+assert.equal(truncateVerifyOutput(null), '', 'a non-string output yields the empty string');
+
+assert.ok(verifyToolingLine(CMD).includes(CMD), 'the tooling line names the command');
+assert.equal(verifyToolingLine(''), '', 'an empty command renders no tooling line');
+assert.equal(verifyFailureClause({ failed: false }), '', 'a passing verify renders no failure clause');
+assert.equal(verifyFailureClause(null), '', 'an absent verify result renders no failure clause');
+const clause = verifyFailureClause({ command: CMD, failed: true, exitCode: 7, output: 'OUT-SENTINEL' });
+assert.ok(clause.includes(CMD) && clause.includes('7') && clause.includes('OUT-SENTINEL'), 'the failure clause carries command, exit code, and output tail');
+
+// Fail-closed normalization: a throw, a null, and a missing exit code are all failures.
+for (const [name, raw, threw] of [
+  ['throw', null, true],
+  ['null resolution', null, false],
+  ['no exit code', { output: 'x' }, false],
+]) {
+  const n = normalizeVerifyResult(CMD, raw, threw);
+  assert.equal(n.failed, true, name + ' must be treated as a FAILURE (fail-closed)');
+  assert.equal(n.ran, false, name + ' did not observe a real exit status');
+}
+assert.equal(normalizeVerifyResult(CMD, { exitCode: 0, output: '' }, false).failed, false, 'exit 0 passes');
+assert.equal(normalizeVerifyResult(CMD, { exitCode: 3, output: '' }, false).failed, true, 'a non-zero exit fails');
+
+const finding = verifyFailureFinding({ command: CMD, exitCode: 1, output: 'harness red' });
+assert.equal(finding.severity, 'blocking', 'the synthesized finding is blocking');
+assert.ok(finding.what_fails.includes(CMD), 'the command lives in what_fails — the field summarizeFindings renders');
+
+// ===========================================================================
+// (b) AC2 — a non-zero exit yields rework whose reason names the command, and
+//     the phase never reaches reviewed. A clean review is the ONLY other input,
+//     so the verify failure is provably the sole cause.
+// ===========================================================================
+const seededOutcomes = new Set();
+{
+  const f = makeFakes({ verifyScript: ['fail'] });
+  const gate = await runCodeGate({ maxRework: 0, tier: 'medium', verifyCommand: CMD }, f.deps);
+  const out = buildOutcome({
+    roadmap: 'rm',
+    phase: '1',
+    codeReviews: gate.rounds,
+    acRounds: gate.acRounds,
+    maxRework: 0,
+    tier: 'medium',
+  });
+  seededOutcomes.add(out.outcome);
+  assert.equal(out.outcome, 'rework', 'a failing verify with an otherwise-clean review yields rework');
+  assert.notEqual(out.outcome, 'reviewed', 'a failing verify can never report reviewed');
+  assert.equal(out.status, statusFor('rework', 'phase'), 'the status comes from the untouched statusFor table');
+  assert.ok(out.summary.includes(CMD), 'the OUTCOME summary names the failing command');
+  assert.ok(out.reason.includes(CMD), 'the OUTCOME reason names the failing command');
+}
+{
+  const f = makeFakes({ verifyScript: ['ok'] });
+  const gate = await runCodeGate({ maxRework: 0, tier: 'medium', verifyCommand: CMD }, f.deps);
+  const out = buildOutcome({ roadmap: 'rm', phase: '1', codeReviews: gate.rounds, acRounds: gate.acRounds, maxRework: 0, tier: 'medium' });
+  seededOutcomes.add(out.outcome);
+  assert.equal(out.outcome, 'reviewed', 'exit 0 with a clean review still reports reviewed — the gate is not a blanket rejecter');
+}
+for (const kind of ['throw', 'null']) {
+  const f = makeFakes({ verifyScript: [kind] });
+  const gate = await runCodeGate({ maxRework: 0, tier: 'medium', verifyCommand: CMD }, f.deps);
+  const out = buildOutcome({ roadmap: 'rm', phase: '1', codeReviews: gate.rounds, acRounds: gate.acRounds, maxRework: 0, tier: 'medium' });
+  seededOutcomes.add(out.outcome);
+  assert.equal(out.outcome, 'rework', 'a verify dep that ' + kind + 's is FAIL-CLOSED, never a pass');
+}
+console.log('1d(b) OK: a non-zero exit (and a thrown/null verify) yields rework naming the command; exit 0 still reviews clean');
+
+// ===========================================================================
+// (c) AC3 — the unresolved-verify escalation, for both item shapes.
+// ===========================================================================
+for (const [kind, build, ident] of [
+  ['phase', buildOutcome, { roadmap: 'rm', phase: '1' }],
+  ['task', buildTaskOutcome, { task: 'my-task' }],
+]) {
+  const out = build({ ...ident, verifyUnresolved: true });
+  seededOutcomes.add(out.outcome);
+  assert.equal(out.outcome, 'escalated', kind + ': an unresolvable verify command escalates');
+  assert.notEqual(out.outcome, 'reviewed', kind + ': an unresolvable verify command never reports reviewed');
+  assert.equal(out.status, statusFor('escalated', kind), kind + ': the status is the untouched escalated mapping (blocked)');
+  assert.equal(out.writesCompletion, false, kind + ': an escalated unit never writes a completion trailer');
+  for (const src of ['dispatch.verify', '.github/workflows/', 'principles.md', 'CLAUDE.md', 'AGENTS.md']) {
+    assert.ok(out.summary.includes(src), kind + ': the escalation summary must name ' + src);
+  }
+  assert.ok(out.reason.includes(VERIFY_UNRESOLVED_SUMMARY), kind + ': the reason carries the summary');
+}
+console.log('1d(c) OK: an unresolvable verify command escalates for both phases and tasks, naming every discovery source');
+
+// ===========================================================================
+// (d) AC4/AC6 — one call per implementation attempt, bounded by maxCodeRework
+//     alone. Four scenarios, exact integers, verify count == implement count.
+// ===========================================================================
+for (const [name, script, budget, expected, expectedOutcome] of [
+  ['clean first pass', ['ok'], 2, 1, 'reviewed'],
+  ['fail then pass', ['fail', 'ok'], 2, 2, 'reviewed'],
+  ['always fail, budget 2', ['fail'], 2, 3, 'rework'],
+  ['always fail, budget 0', ['fail'], 0, 1, 'rework'],
+]) {
+  const f = makeFakes({ verifyScript: script });
+  const gate = await runCodeGate({ maxRework: budget, tier: 'medium', verifyCommand: CMD }, f.deps);
+  const implementCalls = count(f.log, 'implement') + count(f.log, 'rework');
+  assert.equal(gate.verifyCalls, expected, name + ': exactly ' + expected + ' verify call(s)');
+  assert.equal(implementCalls, expected, name + ': verify count equals implement count');
+  assert.equal(count(f.log, 'verify'), expected, name + ": the fake's own call count agrees");
+  assert.equal(gate.rounds.length, expected, name + ': one review round per implementation attempt');
+  const out = buildOutcome({ roadmap: 'rm', phase: '1', codeReviews: gate.rounds, acRounds: gate.acRounds, maxRework: budget, tier: 'medium' });
+  seededOutcomes.add(out.outcome);
+  assert.equal(out.outcome, expectedOutcome, name + ': outcome is ' + expectedOutcome);
+  assert.equal(out.status, statusFor(expectedOutcome, 'phase'), name + ': status read from the untouched table');
+}
+console.log('1d(d) OK: the command runs exactly once per implementation attempt (1/2/3/1) and is bounded by maxCodeRework alone');
+
+// A gate with NO verify dep, or an empty command, calls nothing and stays clean.
+{
+  const f = makeFakes({ noVerifyDep: true });
+  const gate = await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: CMD }, f.deps);
+  assert.equal(gate.verifyCalls, 0, 'a gate with no verify dep runs no verification');
+  assert.equal(count(f.log, 'verify'), 0, 'and calls nothing');
+  const f2 = makeFakes({ verifyScript: ['fail'] });
+  const gate2 = await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: '' }, f2.deps);
+  assert.equal(gate2.verifyCalls, 0, 'an empty resolved command runs no verification');
+}
+
+// The rework implementer is handed the PRIOR round's failing verify result.
+{
+  const notes = [];
+  const f = makeFakes({ verifyScript: ['fail', 'ok'] });
+  const inner = f.deps.implement;
+  f.deps.implement = async (n) => {
+    notes.push(n);
+    return inner(n);
+  };
+  await runCodeGate({ maxRework: 2, tier: 'medium', verifyCommand: CMD }, f.deps);
+  assert.equal(notes.length, 2, 'one first pass plus one rework');
+  assert.equal(notes[0], null, 'the first pass gets null rework notes');
+  assert.ok(notes[1] && notes[1].verify, 'the rework notes carry the verify result');
+  assert.equal(notes[1].verify.failed, true, "and it is the PRIOR round's FAILING result");
+  assert.ok(verifyFailureClause(notes[1].verify).includes('harness red'), 'whose output reaches the rework clause');
+}
+console.log('1d(d2) OK: an absent dep/command runs nothing, and the rework notes carry the prior failing result');
+
+// ===========================================================================
+// (e) AC5 — the OUTCOME vocabulary is exactly reviewed|rework|escalated.
+// ===========================================================================
+assert.deepEqual([...seededOutcomes].sort(), ['escalated', 'reviewed', 'rework'], 'every seeded verify scenario lands in the canonical vocabulary');
+assert.deepEqual(Object.keys(GATE_POLICY.code).sort(), ['escalated', 'reviewed', 'rework'], 'GATE_POLICY.code was not widened');
+assert.deepEqual(Object.keys(GATE_POLICY.plan).sort(), ['escalated', 'reviewed', 'rework'], 'GATE_POLICY.plan was not widened');
+console.log('1d(e) OK: the OUTCOME value set is exactly reviewed|rework|escalated and GATE_POLICY is untouched');
+
+// Determinism: identical inputs produce identical outcomes.
+{
+  const run = async () => {
+    const f = makeFakes({ verifyScript: ['fail'] });
+    const g = await runCodeGate({ maxRework: 1, tier: 'medium', verifyCommand: CMD }, f.deps);
+    return buildOutcome({ roadmap: 'rm', phase: '1', codeReviews: g.rounds, acRounds: g.acRounds, maxRework: 1, tier: 'medium' });
+  };
+  assert.deepEqual(await run(), await run(), 'the verify gate is deterministic across identical runs');
+}
+
+// ===========================================================================
+// (f) AC7 — the resolved command reaches BOTH implementer prompts. The real
+//     builder is extracted from the shipped workflow file.
+// ===========================================================================
+const wfSrc = fs.readFileSync(wfPath, 'utf8').replace(/^export /m, '');
+const shimPath = path.join(os.tmpdir(), 'verify-gate-implement-prompt-' + process.pid + '.mjs');
+fs.writeFileSync(
+  shimPath,
+  'export default async function(args, agent, pipeline, parallel, log) {\n' +
+    wfSrc.replace(
+      /^\/\/ --- Driver ---/m,
+      'return { buildImplementPrompt: buildImplementPrompt }\n// --- Driver ---'
+    ) +
+    '\n}\n'
+);
+const shim = (await import('file://' + shimPath + '?t=' + process.pid)).default;
+const exported = await shim({}, async () => null, null, null, () => {});
+const buildImplementPrompt = exported.buildImplementPrompt;
+assert.equal(typeof buildImplementPrompt, 'function', 'buildImplementPrompt was extracted from the shipped workflow');
+
+const SENTINEL = 'CMD-SENTINEL-123';
+const cfg = { rdmBin: '/fake/bin/rdm', project: 'demo' };
+const firstPass = buildImplementPrompt('rm', 'BODY', 'PLAN', null, cfg, SENTINEL);
+assert.ok(firstPass.includes(SENTINEL), 'the FIRST-PASS implementer prompt names the resolved command');
+const reworkPrompt = buildImplementPrompt('rm', 'BODY', 'PLAN', {
+  findings: [{ id: 'f1', severity: 'blocking', concern: 'x', confidence: 90, what_fails: 'y' }],
+  acTable: null,
+  verify: { command: SENTINEL, failed: true, exitCode: 9, output: 'OUT-SENTINEL' },
+}, cfg, SENTINEL);
+assert.ok(reworkPrompt.includes(SENTINEL), 'the REWORK implementer prompt names the resolved command');
+assert.ok(reworkPrompt.includes('OUT-SENTINEL'), 'the rework prompt carries the failing output tail');
+assert.ok(reworkPrompt.includes('9'), 'the rework prompt carries the failing exit code');
+console.log('1d(f) OK: the resolved command reaches both the first-pass and rework implementer prompts');
+
+console.log('all verify-gate assertions passed');
+NODE_VERIFY
+
+if run_node "$TMP/verify-gate.mjs" "$LIB" "$WF"; then
+    pass "1d: verify gate — one run per attempt, rework naming the command, fail-closed, escalate-on-unresolvable, both prompts"
+else
+    fail "1d: verify-gate assertions failed"
+fi
+
+# Planted-mutation self-test: strip the unconditional tooling push from a scratch
+# copy of the workflow and require 1d(f) to turn red. Without this the
+# both-prompts assertion could pass vacuously on a builder that never renders it.
+sed 's/^  lines.push(verifyToolingLine(verifyCommand))$/  \/\/ tooling push removed by the self-test/' "$WF" >"$TMP/wf-no-tooling.js"
+if cmp -s "$WF" "$TMP/wf-no-tooling.js"; then
+    fail "1d self-test: the planted mutation was a no-op — the tooling push was not found"
+fi
+if run_node "$TMP/verify-gate.mjs" "$LIB" "$TMP/wf-no-tooling.js" >/dev/null 2>&1; then
+    fail "1d self-test: the assertions PASSED against a workflow with no tooling push — 1d(f) is vacuous"
+fi
+pass "1d self-test: removing the implementer tooling push turns 1d red"
+
 # --- 2. BLOCK DRIFT GATE -----------------------------------------------------
 say "2. Block drift: the dispatch-outcome region is byte-identical (lib vs workflow)"
 
@@ -2054,10 +2348,15 @@ for shim in \
     grep -qF 'roadmapBody' "$shim" ||
         fail "AC-PLAN-INTENT-HOIST: $shim never names roadmapBody — the roadmap body it reads would never reach the plan gate"
     # The field must be IN the assembled phaseMeta object, not merely mentioned.
-    grep -qF 'body, roadmapBody, models:' "$shim" ||
-        fail "AC-PLAN-INTENT-HOIST: $shim must carry roadmapBody inside the assembled phaseMeta object literal"
+    # The literal also pins `verify` (the phase-time verification command the
+    # hoist must forward, see docs/verify-gate.md): a hoist that omits it is
+    # rejected by hoistedMetaComplete and silently costs a Stage-0 agent.
+    grep -qF 'body, roadmapBody, verify, models:' "$shim" ||
+        fail "AC-PLAN-INTENT-HOIST: $shim must carry roadmapBody and verify inside the assembled phaseMeta object literal"
+    grep -qF 'config get dispatch.verify' "$shim" ||
+        fail "AC-PLAN-INTENT-HOIST: $shim hoists a meta payload but never reads dispatch.verify — hoistedMetaComplete would reject it"
 done
-pass "AC-PLAN-INTENT-HOIST: all three hoisting shims and their shipped CLI templates fetch the roadmap body and forward it as roadmapBody"
+pass "AC-PLAN-INTENT-HOIST: all three hoisting shims and their shipped CLI templates fetch the roadmap body and the verify command, and forward both"
 
 # The MCP flavors deliberately do NOT hoist (no model-resolve tool), so they must
 # not grow a roadmapBody instruction either — the in-workflow Stage-0 fetch is
@@ -2074,8 +2373,8 @@ done
 pass "AC-PLAN-INTENT-HOIST: the three MCP flavors carry no roadmapBody hoist"
 
 # Self-test: strip the field from one shim's phaseMeta literal and confirm detection.
-sed 's/body, roadmapBody, models:/body, models:/' "$REPO_ROOT/.claude/skills/rdm-do/SKILL.md" >"$TMP/hoist-shim-mutant.md"
-if grep -qF 'body, roadmapBody, models:' "$TMP/hoist-shim-mutant.md"; then
+sed 's/body, roadmapBody, verify, models:/body, models:/' "$REPO_ROOT/.claude/skills/rdm-do/SKILL.md" >"$TMP/hoist-shim-mutant.md"
+if grep -qF 'body, roadmapBody, verify, models:' "$TMP/hoist-shim-mutant.md"; then
     fail "AC-PLAN-INTENT-HOIST detector broken — roadmapBody stripped from the phaseMeta literal was not detected"
 fi
 pass "AC-PLAN-INTENT-HOIST detector fires when roadmapBody is stripped from a shim's phaseMeta literal"
@@ -2318,6 +2617,129 @@ if [ "$(declared_phases "$TMP/wf.phase.scratch")" = "$(emitted_phases "$TMP/wf.p
 fi
 pass "meta.phases consistency detector catches a planted undeclared phase"
 
+# --- 3-verify. NO TOOLCHAIN LITERAL IN THE VERIFY PATH ------------------------
+# The verify gate's check set is project-supplied DATA. rdm's own resolution and
+# execution path must therefore name no language, package manager, or test tool
+# — the not-hardcoded-to-Rust constraint is satisfied by CONSTRUCTION, not by a
+# fixture. The new code is fenced with `verify-gate:begin/end` markers in every
+# copy so this grep has a precisely scoped region rather than a whole-file
+# approximation, and an OCCURRENCE FLOOR guarantees a vanished or renamed region
+# fails loudly instead of passing vacuously.
+say "3-verify. The fenced verify-gate regions name no toolchain literal (with an occurrence floor)"
+
+extract_verify_fence() {
+    awk '
+        index($0, ">>> verify-gate:begin") { infence = 1; next }
+        index($0, ">>> verify-gate:end") { infence = 0; next }
+        infence { print }
+    ' "$1"
+}
+
+# The CURATED literal list. Deliberately EXCLUDES `make` and `just`: both occur
+# frequently as ordinary English in these files' existing prose ("make sure",
+# "just the"), so including them would make the gate un-passable for reasons
+# that have nothing to do with toolchains. That rationale is recorded
+# QUALITATIVELY on purpose — an occurrence count baked in here would rot the
+# moment any prose in these files moves. Every candidate below was re-derived
+# with `grep -ciw` against all four copies at implementation time and is
+# genuinely zero-occurrence.
+VERIFY_TOOLCHAIN_LITERALS='cargo|npm|pnpm|yarn|pytest|gradle|mvn|nextest|clippy|rustfmt|dotnet|rake|tox|go test|hk run'
+
+# The identifiers a real verify-gate region must contain. The floor is 3
+# DISTINCT matches, so a region that was gutted down to a stub cannot pass.
+VERIFY_REQUIRED_IDENTS='dispatch\.verify|verifyCommand|verify:run|extractVerifyCommand|buildVerifyPrompt'
+
+assert_verify_fence_clean() {
+    f=$1
+    minfloor=$2
+    extract_verify_fence "$f" >"$TMP/verify-fence.txt"
+    [ -s "$TMP/verify-fence.txt" ] || {
+        VERIFY_FENCE_ERR="the verify-gate fenced region in $f is EMPTY or missing"
+        return 1
+    }
+    hits=$(grep -cE "$VERIFY_REQUIRED_IDENTS" "$TMP/verify-fence.txt" | tr -d ' ')
+    [ "$hits" -ge "$minfloor" ] || {
+        VERIFY_FENCE_ERR="the verify-gate region in $f matched only $hits of the required identifiers (floor $minfloor)"
+        return 1
+    }
+    if grep -nEiw "$VERIFY_TOOLCHAIN_LITERALS" "$TMP/verify-fence.txt" >"$TMP/verify-fence-hits.txt"; then
+        VERIFY_FENCE_ERR="toolchain literal(s) in $f's verify-gate region: $(cat "$TMP/verify-fence-hits.txt")"
+        return 1
+    fi
+    return 0
+}
+
+# Every copy, per-file (mirroring § 9a's per-copy zeroing) so a half-applied
+# propagation cannot pass. The lib carries only the pure-helper fence; the three
+# workflow copies additionally carry the two driver fences.
+VERIFY_FENCE_ERR=''
+for f in \
+    "$LIB" \
+    "$WF" \
+    "$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-dispatch-phase.js" \
+    "$REPO_ROOT/plugins/rdm/workflows/rdm-wf-dispatch-phase.js"; do
+    [ -f "$f" ] || fail "3-verify: expected copy not found: $f"
+    assert_verify_fence_clean "$f" 3 || fail "3-verify: $VERIFY_FENCE_ERR"
+done
+pass "3-verify: all four copies carry a non-empty verify-gate region with no toolchain literal"
+
+# Self-test (a): a planted toolchain literal must FIRE the grep.
+awk '
+    index($0, ">>> verify-gate:begin") { print; print "// cargo nextest run"; next }
+    { print }
+' "$WF" >"$TMP/wf-planted-toolchain.js"
+if cmp -s "$WF" "$TMP/wf-planted-toolchain.js"; then
+    fail "3-verify self-test: the planted toolchain literal was a no-op"
+fi
+if assert_verify_fence_clean "$TMP/wf-planted-toolchain.js" 3; then
+    fail "3-verify self-test: a planted 'cargo nextest run' inside the fence was NOT detected"
+fi
+pass "3-verify self-test: a planted toolchain literal inside the fence is detected"
+
+# Self-test (b): a deleted region must FIRE the occurrence floor.
+grep -v 'verify-gate:begin' "$WF" | grep -v 'verify-gate:end' >"$TMP/wf-no-fence.js"
+if assert_verify_fence_clean "$TMP/wf-no-fence.js" 3; then
+    fail "3-verify self-test: a REMOVED verify-gate region was not detected — the floor is vacuous"
+fi
+pass "3-verify self-test: a removed verify-gate region fires the occurrence floor"
+
+# Self-test (c): the unmutated files still pass, so (a) and (b) are
+# discriminating rather than blanket rejecters.
+assert_verify_fence_clean "$WF" 3 || fail "3-verify self-test: the real workflow fails after the self-tests — the detector rejects everything"
+pass "3-verify self-test: the unmutated workflow still passes (the detector discriminates)"
+
+# AC4's NO-SECOND-COUNTER proof: the verify gate reuses maxCodeRework, so no
+# verify-flavored budget name may exist anywhere under .claude/workflows/.
+if grep -rnE 'maxVerify|verifyBudget|DEFAULT_MAX_VERIFY|VERIFY_BUDGET' "$REPO_ROOT/.claude/workflows/" >"$TMP/second-counter.txt" 2>/dev/null; then
+    fail "3-verify: a second verify budget was introduced — the gate must reuse maxCodeRework: $(cat "$TMP/second-counter.txt")"
+fi
+printf 'const maxVerify = 3\n' >"$TMP/planted-budget.js"
+grep -qE 'maxVerify|verifyBudget|DEFAULT_MAX_VERIFY|VERIFY_BUDGET' "$TMP/planted-budget.js" ||
+    fail "3-verify: the second-counter detector is broken — a planted maxVerify was not matched"
+pass "3-verify: no second verify budget exists under .claude/workflows/ (detector verified on a planted name)"
+
+# AC5's static half: no verify-flavored OUTCOME literal was introduced anywhere.
+for f in \
+    "$LIB" \
+    "$WF" \
+    "$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-dispatch-phase.js" \
+    "$REPO_ROOT/plugins/rdm/workflows/rdm-wf-dispatch-phase.js"; do
+    if grep -nE "outcome: *'[^']*verif" "$f" >/dev/null 2>&1; then
+        fail "3-verify: $f introduces a verify-flavored outcome literal — the OUTCOME vocabulary must stay reviewed|rework|escalated"
+    fi
+done
+pass "3-verify: no verify-flavored outcome literal in any copy"
+
+# AC6's static half: the code-gate `review:` closure must contain no verify
+# reference, so a retry inside review cannot multiply the run. The window runs
+# from the `review: async () => {` inside the runCodeGate deps to the `act:` key.
+awk '/^    review: async \(\) => \{/{p=1} p{print} p&&/^    act: async/{exit}' "$WF" >"$TMP/review-closure.txt"
+[ -s "$TMP/review-closure.txt" ] || fail "3-verify: could not extract the code-gate review closure"
+if grep -niE 'verify' "$TMP/review-closure.txt" >/dev/null 2>&1; then
+    fail "3-verify: the code-gate review closure references verify — the single call site must live in runCodeGate only"
+fi
+pass "3-verify: the code-gate review closure contains no verify reference"
+
 # --- 4. MODULE PARSE ---------------------------------------------------------
 say "4. Module parse: rdm-wf-dispatch-phase.js loads under module semantics (no SyntaxError)"
 
@@ -2490,8 +2912,8 @@ const MODELS = {
   review_verify: 'm-verify',
   mechanical: 'm-mech',
 };
-const PHASE_META = { roadmap: 'rm', phase: '1', stem: 'phase-1-x', model: 'medium', body: 'PHASE BODY TEXT', models: MODELS };
-const TASK_META = { task: 'my-task', body: 'TASK BODY TEXT', models: MODELS };
+const PHASE_META = { roadmap: 'rm', phase: '1', stem: 'phase-1-x', model: 'medium', body: 'PHASE BODY TEXT', verify: 'sh scripts/verify-all.sh', models: MODELS };
+const TASK_META = { task: 'my-task', body: 'TASK BODY TEXT', verify: 'sh scripts/verify-all.sh', models: MODELS };
 const PLAN_DOC = {
   steps_per_ac: [{ ac: 'AC1', steps: ['do it'] }],
   file_map: [{ path: 'a.rs', change: 'edit' }],
@@ -2517,6 +2939,7 @@ function makeAgent(o) {
     if (label === 'fetch:phase-meta') return o.fetchResult === undefined ? PHASE_META : o.fetchResult;
     if (label === 'fetch:task-meta') return o.fetchResult === undefined ? TASK_META : o.fetchResult;
     if (label === 'stamp:in-progress') return { ok: true };
+    if (label === 'verify:run') return { exitCode: 0, output: '' };
     if (label === 'plan:author' || label === 'plan:revise') return PLAN_DOC;
     if (label === 'act:code') return { handled: [] };
     if (label === 'diff:signals') return o.diffResult === undefined ? { changedFiles: ['fallback.rs'], diffText: '' } : o.diffResult;
@@ -2811,6 +3234,7 @@ console.log('6e OK: outcome equivalence across six seeds, and in-progress preced
     model: 'medium',
     body: 'PHASE BODY TEXT',
     roadmapBody: ROADMAP_BODY,
+    verify: 'sh scripts/verify-all.sh',
     models: MODELS,
   };
 
@@ -3236,11 +3660,12 @@ const FAKE_BIN = '/fake/bin/rdm';
 // lib/dispatch-phase.mjs). These subcommands reject `--project` outright, so
 // they must carry NO project flag; everything else is project-scoped and MUST
 // carry it whenever a project was configured.
-const PROJECT_AGNOSTIC = ['model resolve', 'commit', 'status', 'discard'];
+// `config get` is project-agnostic too: `rdm config get` takes no --project.
+const PROJECT_AGNOSTIC = ['model resolve', 'config get', 'commit', 'status', 'discard'];
 
 const MODELS = { plan: 'm-plan', implement: 'm-impl', review_find: 'm-find', review_verify: 'm-verify', mechanical: 'm-mech' };
-const PHASE_META = { roadmap: 'rm', phase: 'phase-1-x', stem: 'phase-1-x', model: 'medium', body: 'PHASE BODY TEXT', models: MODELS };
-const TASK_META = { task: 'my-task', body: 'TASK BODY TEXT', models: MODELS };
+const PHASE_META = { roadmap: 'rm', phase: 'phase-1-x', stem: 'phase-1-x', model: 'medium', body: 'PHASE BODY TEXT', verify: 'sh scripts/verify-all.sh', models: MODELS };
+const TASK_META = { task: 'my-task', body: 'TASK BODY TEXT', verify: 'sh scripts/verify-all.sh', models: MODELS };
 const PLAN_DOC = {
   steps_per_ac: [{ ac: 'AC1', steps: ['do it'] }],
   file_map: [{ path: 'a.rs', change: 'edit' }],
@@ -3261,6 +3686,7 @@ function makeCapture() {
     if (label === 'fetch:phase-meta') return PHASE_META;
     if (label === 'fetch:task-meta') return TASK_META;
     if (label === 'stamp:in-progress') return { ok: true };
+    if (label === 'verify:run') return { exitCode: 0, output: '' };
     if (label === 'plan:author' || label === 'plan:revise') return PLAN_DOC;
     if (label === 'act:code') return { handled: [] };
     if (label === 'diff:signals') return { changedFiles: ['rdm-core/src/lib.rs'], diffText: '' };
@@ -3461,7 +3887,7 @@ const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
 // The same capturing-spy idiom § 9b uses, kept minimal: record every prompt and
 // answer every label the driver can emit.
 const MODELS = { plan: 'm-plan', implement: 'm-impl', review_find: 'm-find', review_verify: 'm-verify', mechanical: 'm-mech' };
-const PHASE_META = { roadmap: 'rm', phase: 'phase-1-x', stem: 'phase-1-x', model: 'medium', body: 'BODY', models: MODELS };
+const PHASE_META = { roadmap: 'rm', phase: 'phase-1-x', stem: 'phase-1-x', model: 'medium', body: 'BODY', verify: 'sh scripts/verify-all.sh', models: MODELS };
 const PLAN_DOC = {
   steps_per_ac: [{ ac: 'AC1', steps: ['do it'] }],
   file_map: [{ path: 'a.rs', change: 'edit' }],
@@ -3478,6 +3904,7 @@ const spy = async (prompt, opts) => {
   const label = (opts && opts.label) || '';
   if (label === 'fetch:phase-meta') return PHASE_META;
   if (label === 'stamp:in-progress') return { ok: true };
+  if (label === 'verify:run') return { exitCode: 0, output: '' };
   if (label === 'plan:author' || label === 'plan:revise') return PLAN_DOC;
   if (label === 'act:code') return { handled: [] };
   if (label === 'diff:signals') return { changedFiles: ['rdm-core/src/lib.rs'], diffText: '' };
@@ -3889,5 +4316,80 @@ if printf '%s\n' "$PLANTED" | grep -q 'prose comment'; then
     fail "9e: the filtered grep is over-broad — it flagged a comment line"
 fi
 pass "9e: detector fires on a planted nested workflow() call and stays silent on a comment"
+
+# --- 10. VERIFY-GATE DOCS ------------------------------------------------------
+# The two-layer split is the whole point of the gate, and it is the half a reader
+# is most likely to get wrong (by pushing the slow suite into pre-commit). Gate
+# the doc's content, not merely its existence.
+#
+# NOTE the interaction with § 3-verify: docs/verify-gate.md deliberately names
+# `hk`, `make` and `just` as examples of where task-running belongs, so the
+# toolchain-literal grep stays scoped to the fenced workflow regions and must
+# NEVER be widened to docs.
+say "10. docs/verify-gate.md recommends a pre-commit hook and justifies the phase-time split"
+
+VERIFY_DOC="$REPO_ROOT/docs/verify-gate.md"
+[ -f "$VERIFY_DOC" ] || fail "10: docs/verify-gate.md is missing — it is this phase's docs deliverable"
+
+assert_verify_doc() {
+    doc=$1
+    for needle in 'hk' 'hk.pkl' 'pre-commit' 'dispatch.verify' 'scripts/verify-'; do
+        grep -qF "$needle" "$doc" || {
+            VERIFY_DOC_ERR="docs/verify-gate.md never names '$needle'"
+            return 1
+        }
+    done
+    # The why-not-there rationale: one paragraph must carry BOTH `slow` and
+    # `pre-commit`, so the split is justified rather than merely asserted.
+    awk 'BEGIN { RS = "" } /slow/ && /pre-commit/ { found = 1 } END { exit (found ? 0 : 1) }' "$doc" || {
+        VERIFY_DOC_ERR="no single paragraph in docs/verify-gate.md explains why SLOW suites do not belong in PRE-COMMIT"
+        return 1
+    }
+    # The explicit anti-recommendation.
+    grep -qiE 'do \*?\*?not\*?\*? *(close this|push)' "$doc" || {
+        VERIFY_DOC_ERR="docs/verify-gate.md carries no explicit anti-recommendation against pushing slow suites into pre-commit"
+        return 1
+    }
+    # The resolution ladder and the not-a-task-runner non-goal.
+    for needle in '.github/workflows' 'principles.md' 'AGENTS.md' 'not a task runner'; do
+        grep -qF "$needle" "$doc" || {
+            VERIFY_DOC_ERR="docs/verify-gate.md never names '$needle'"
+            return 1
+        }
+    done
+    return 0
+}
+
+VERIFY_DOC_ERR=''
+assert_verify_doc "$VERIFY_DOC" || fail "10: $VERIFY_DOC_ERR"
+pass "10: docs/verify-gate.md names hk/hk.pkl/pre-commit, the resolution ladder, the non-goal, and justifies the split"
+
+# Self-test: strip `hk` from a scratch copy and require the check to fire.
+sed 's/hk/zz-removed-runner/g' "$VERIFY_DOC" >"$TMP/verify-doc-no-hk.md"
+if assert_verify_doc "$TMP/verify-doc-no-hk.md"; then
+    fail "10: the doc check PASSED against a copy with no 'hk' — it is vacuous"
+fi
+pass "10: the doc check fires when the recommended pre-commit runner is stripped"
+
+# Self-test: strip the anti-recommendation and require the check to fire.
+sed 's/do \*\*not\*\*/consider whether to/g' "$VERIFY_DOC" >"$TMP/verify-doc-no-anti.md"
+if assert_verify_doc "$TMP/verify-doc-no-anti.md" && [ -z "$VERIFY_DOC_ERR" ]; then
+    fail "10: the doc check PASSED against a copy with no anti-recommendation"
+fi
+pass "10: the doc check fires when the anti-recommendation is removed"
+
+# ...and the real doc still passes, so both self-tests are discriminating.
+VERIFY_DOC_ERR=''
+assert_verify_doc "$VERIFY_DOC" || fail "10: the real doc fails after the self-tests — the detector rejects everything"
+pass "10: the real doc still passes (the self-tests discriminate)"
+
+# The schema reference must LINK to the canonical write-up rather than restate it.
+grep -qF 'verify-gate.md' "$REPO_ROOT/docs/workflow-schemas.md" ||
+    fail "10: docs/workflow-schemas.md must link to docs/verify-gate.md from its Verify gate section"
+grep -qF 'verify:run' "$REPO_ROOT/docs/workflow-schemas.md" ||
+    fail "10: docs/workflow-schemas.md must name the verify:run label"
+grep -qF 'verify-gate.md' "$REPO_ROOT/CLAUDE.md" ||
+    fail "10: CLAUDE.md must point at docs/verify-gate.md"
+pass "10: docs/workflow-schemas.md and CLAUDE.md both point at the canonical write-up"
 
 say "verify-workflow-dispatch.sh: ALL GREEN"
