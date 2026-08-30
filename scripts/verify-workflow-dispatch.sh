@@ -3294,6 +3294,93 @@ console.log('6e OK: outcome equivalence across six seeds, and in-progress preced
   }
 }
 console.log('6g OK: roadmapBody reaches the intent-alignment finder via BOTH the caller hoist and the Stage-0 fetch, and degrades quietly when absent');
+
+// ============================================================================
+// (6h) The DRIVER's own unresolved-verify short-circuit, driven end to end.
+//
+// Section 1d unit-tests buildOutcome/buildTaskOutcome({ verifyUnresolved: true })
+// directly, which proves the OUTCOME shape but bypasses the driver entirely —
+// nothing there exercises the driver's own
+// `const verifyCommand = extractVerifyCommand(phaseMeta)` /
+// `if (!planOnly && verifyCommand === '')` wiring, its placement BEFORE the
+// in-progress stamp, or its --plan-only carve-out. Every other driven run in
+// this file feeds a fixture whose `verify` field is populated, so an inverted
+// condition, a relocated check, or a lookup typo would go unnoticed. This
+// section closes that gap; 6f (7)–(10) plant the mutations that prove it.
+//
+// NOTE the fixture route: `hoistedMetaComplete` REQUIRES a non-empty verify
+// (an incomplete hoist falls back to the fetch agent by design), so the only
+// way an empty command can reach the driver is through the Stage-0 fetch —
+// which is exactly how it reaches it in production too.
+// ============================================================================
+{
+  const DISCOVERY_SOURCES = ['dispatch.verify', '.github/workflows/', 'docs/principles.md', 'CLAUDE.md'];
+  const noVerifyPhase = (() => { const m = { ...PHASE_META }; delete m.verify; return m; })();
+  const noVerifyTask = (() => { const m = { ...TASK_META }; delete m.verify; return m; })();
+
+  // (i) Phase mode, three ways of saying "nothing resolved": the key absent,
+  //     an empty string, and a whitespace-only string. All three escalate.
+  for (const [name, meta] of [
+    ['absent', noVerifyPhase],
+    ['empty string', { ...PHASE_META, verify: '' }],
+    ['whitespace only', { ...PHASE_META, verify: '   \t ' }],
+    ['non-string', { ...PHASE_META, verify: 42 }],
+  ]) {
+    const a = makeAgent({ fetchResult: meta });
+    const out = await run({ roadmap: 'rm', phase: '1' }, a.agent, refPipeline, refParallel, nolog);
+    assert.equal(out.outcome, 'escalated', '(6h-i) an unresolvable verify command escalates (' + name + ')');
+    assert.equal(out.status, 'blocked', '(6h-i) ... and parks the phase blocked (' + name + ')');
+    assert.equal(out.writesCompletion, false, '(6h-i) ... and never authorizes a completion trailer (' + name + ')');
+    // The escalation must beat the stamp, the planner and every implementer —
+    // the driver comment claims "before the in-progress stamp, before planning,
+    // before any implementer", and this is what holds it to that.
+    assert.equal(count(a, 'stamp:in-progress'), 0, '(6h-i) ... short-circuits BEFORE the in-progress stamp (' + name + ')');
+    assert.equal(count(a, 'plan:author'), 0, '(6h-i) ... before the planner (' + name + ')');
+    assert.equal(count(a, 'implement:worktree') + count(a, 'implement:rework'), 0, '(6h-i) ... and before any implementer (' + name + ')');
+    assert.equal(count(a, 'verify:run'), 0, '(6h-i) ... and never runs a verify agent with no command (' + name + ')');
+    assert.equal(count(a, 'fetch:phase-meta'), 1, '(6h-i) ... after Stage 0 actually ran (' + name + ')');
+    for (const src of DISCOVERY_SOURCES) {
+      assert.ok(out.summary.includes(src), '(6h-i) the summary names ' + src + ' (' + name + ')');
+      assert.ok(out.reason.includes(src), '(6h-i) the reason names ' + src + ' (' + name + ')');
+    }
+  }
+
+  // (ii) The CONTROL: the identical run with a real command resolves normally.
+  //      Without this, (i) could be passing for any unrelated reason.
+  {
+    const a = makeAgent({ fetchResult: PHASE_META });
+    const out = await run({ roadmap: 'rm', phase: '1' }, a.agent, refPipeline, refParallel, nolog);
+    assert.equal(out.outcome, 'reviewed', '(6h-ii) a resolvable verify command does NOT escalate');
+    assert.equal(count(a, 'stamp:in-progress'), 1, '(6h-ii) ... and the stamp the escalation skipped does run here');
+    assert.equal(count(a, 'verify:run'), 1, '(6h-ii) ... and the verify agent runs exactly once');
+  }
+
+  // (iii) Task mode reaches the same short-circuit through buildTaskOutcome.
+  {
+    const a = makeAgent({ fetchResult: noVerifyTask });
+    const out = await run({ task: 'my-task' }, a.agent, refPipeline, refParallel, nolog);
+    assert.equal(out.outcome, 'escalated', '(6h-iii) task mode escalates on an unresolvable verify command');
+    assert.equal(out.status, 'blocked', '(6h-iii) ... parking the task blocked');
+    assert.equal(out.task, 'my-task', '(6h-iii) ... with the task identifier, not a phase one');
+    assert.equal(count(a, 'stamp:in-progress') + count(a, 'plan:author'), 0, '(6h-iii) ... before the stamp and the planner');
+  }
+
+  // (iv) The --plan-only carve-out: a plan-only pass does no implementation, so
+  //      the SAME unresolvable command must NOT escalate. This is the single
+  //      `!planOnly` point of control, asserted directly rather than by grep.
+  for (const [name, meta, args] of [
+    ['phase', noVerifyPhase, { roadmap: 'rm', phase: '1', planOnly: true }],
+    ['task', noVerifyTask, { task: 'my-task', planOnly: true }],
+  ]) {
+    const a = makeAgent({ fetchResult: meta });
+    const out = await run(args, a.agent, refPipeline, refParallel, nolog);
+    assert.equal(out.outcome, 'reviewed', '(6h-iv) --plan-only with no resolvable verify command does NOT escalate (' + name + ')');
+    assert.ok(out.summary.startsWith('plan-only:'), '(6h-iv) ... it returns the ordinary plan-only OUTCOME (' + name + ')');
+    assert.ok(count(a, 'plan:author') >= 1, '(6h-iv) ... and the plan gate really ran (' + name + ')');
+    assert.equal(count(a, 'implement:worktree') + count(a, 'verify:run'), 0, '(6h-iv) ... while still implementing and verifying nothing (' + name + ')');
+  }
+}
+console.log('6h OK: the driver escalates on an unresolvable verify command before the stamp/planner/implementer, task mode included, and --plan-only is carved out');
 console.log('ALL HOIST/ABSORB CHECKS PASSED');
 NODE_HOIST
 
@@ -3373,6 +3460,48 @@ assert_mutant_fails "$TMP/mutant-no-diff-fallback.js" "drops the diff:signals fa
 #     prompt-content assertion notices.
 sed 's/const planIntent = extractIntent(phaseMeta.roadmapBody)/const planIntent = extractIntent(undefined)/' "$WF" >"$TMP/mutant-no-intent-thread.js"
 assert_mutant_fails "$TMP/mutant-no-intent-thread.js" "severs the roadmapBody -> extractIntent -> plan-gate thread (intent-alignment goes silently inert)"
+
+# (7)-(10) The DRIVER's unresolved-verify short-circuit (6h). Four independent
+# ways to break it, each of which must red-light a different 6h assertion.
+
+# (7) Delete the guard outright, so an unresolvable verify command is silently
+#     skipped and the dispatch proceeds to report a pass it never verified.
+sed "s/^if (!planOnly && verifyCommand === '') {\$/if (false) {/" "$WF" >"$TMP/mutant-no-verify-escalation.js"
+assert_mutant_fails "$TMP/mutant-no-verify-escalation.js" "deletes the unresolved-verify escalation guard (an unverifiable dispatch reports success)"
+
+# (8) Invert the --plan-only carve-out, so a plan-only pass escalates and a real
+#     implementation run does not — the exact single-point-of-control inversion
+#     6h-i and 6h-iv jointly pin.
+sed "s/^if (!planOnly && verifyCommand === '') {\$/if (planOnly \&\& verifyCommand === '') {/" "$WF" >"$TMP/mutant-inverted-plan-only.js"
+assert_mutant_fails "$TMP/mutant-inverted-plan-only.js" "inverts the --plan-only condition on the unresolved-verify guard"
+
+# (9) Turn the metadata lookup into a no-op that always yields a command, the
+#     shape a `phaseMeta.verify` typo would take: nothing throws, nothing logs,
+#     and the gate silently stops being able to fire.
+sed 's/^const verifyCommand = extractVerifyCommand(phaseMeta)$/const verifyCommand = "sh nope.sh"/' "$WF" >"$TMP/mutant-verify-lookup-noop.js"
+assert_mutant_fails "$TMP/mutant-verify-lookup-noop.js" "makes the verify-command lookup a constant (the unresolved case can never be detected)"
+
+# (10) MOVE the check below the in-progress stamp rather than deleting it. The
+#      outcome is still `escalated`, so only 6h-i's ORDERING assertions
+#      (stamp:in-progress === 0) can catch this — which is precisely why they
+#      are asserted on call counts rather than left as a source comment.
+#      Scoped past `dispatch-outcome:end` and to the FIRST fence after it: the
+#      file carries three `verify-gate` fences (one in the copied block, the
+#      Stage-0 short-circuit, and the verify dep binding), and relocating the
+#      wrong one would delete helpers and fail for an unrelated reason.
+awk '
+    index($0, ">>> dispatch-outcome:end <<<") { past = 1; print; next }
+    past && !moved && index($0, ">>> verify-gate:begin <<<") { buf = $0 "\n"; grab = 1; next }
+    grab { buf = buf $0 "\n"; if (index($0, ">>> verify-gate:end <<<")) { grab = 0; moved = 1 } next }
+    moved && buf != "" && index($0, "// Stages A + B: author the plan from ONLY the phase body") { printf "%s", buf; buf = ""; print; next }
+    { print }
+' "$WF" >"$TMP/mutant-verify-after-stamp.js"
+# The relocation must preserve every line — a mutant that DELETES the region
+# would fail 6h for the wrong reason (missing behavior, not wrong ordering).
+if [ "$(grep -c '' "$WF")" != "$(grep -c '' "$TMP/mutant-verify-after-stamp.js")" ]; then
+    fail "6f(10): the relocation mutant changed the line count — it deleted code instead of moving it"
+fi
+assert_mutant_fails "$TMP/mutant-verify-after-stamp.js" "moves the unresolved-verify check BELOW the in-progress stamp (the item is stamped in-progress for a run that never starts)"
 
 #     (The sibling mutation — deleting roadmapBody from PHASE_META_SCHEMA — is
 #     deliberately NOT self-tested here: this section drives a FAKE agent, which
