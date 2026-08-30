@@ -1220,6 +1220,11 @@ pub(crate) enum ConfigCommand {
         /// Config key (e.g. default_project, default_format, remote.default,
         /// root, server.quick_filters, dispatch.verify).
         key: String,
+        /// Print only the value, with no `(source: ...)` annotation, and print
+        /// nothing at all when the key is unset. Intended for scripts and
+        /// agents that consume the value verbatim.
+        #[arg(long)]
+        raw: bool,
     },
     /// Set a config key.
     Set {

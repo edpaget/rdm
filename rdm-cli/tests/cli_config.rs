@@ -842,3 +842,85 @@ fn config_set_quick_filters_empty_side_fails() {
         .failure()
         .stderr(predicate::str::contains("Label:tag"));
 }
+
+#[test]
+fn config_get_raw_prints_the_bare_value() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "dispatch.verify", "bash scripts/ci.sh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo config"));
+
+    // The default form is annotated for humans...
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "dispatch.verify"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(source: repo config)"));
+
+    // ...while `--raw` prints a value a caller can run verbatim. Asserted as an
+    // exact line, because the whole point of the flag is that nothing else is
+    // on it for a consumer to have to strip.
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "dispatch.verify", "--raw"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("bash scripts/ci.sh\n"));
+}
+
+#[test]
+fn config_get_raw_prints_nothing_when_unset() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "dispatch.verify"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(not set)"));
+
+    // `--raw` emits NO output for an unset key — an empty read is what tells a
+    // caller to fall back, and "(not set)" would otherwise be run as a command.
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "dispatch.verify", "--raw"])
+        .assert()
+        .success()
+        .stdout(predicate::eq(""));
+}
+
+#[test]
+fn config_get_raw_honors_the_env_override() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env("RDM_DISPATCH_VERIFY", "bash scripts/from-env.sh")
+        .args(["config", "get", "dispatch.verify", "--raw"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("bash scripts/from-env.sh\n"));
+}

@@ -370,6 +370,14 @@ function verifyFailureFinding(result) {
   };
 }
 
+// CONFIG_SOURCE_SUFFIX — the annotation `rdm config get` appends to a value
+// when it is NOT asked for the raw form: `<value>  (source: repo config)`. The
+// resolution prompt asks for `--raw` precisely so this never appears, but the
+// value passes through an LLM, so stripping it here is the belt to that
+// braces: a pasted annotated line becomes the command it names rather than a
+// bash syntax error every dispatch would then blame on the project.
+const CONFIG_SOURCE_SUFFIX = /\s*\(source:[^)]*\)$/;
+
 // extractVerifyCommand(meta) — pull the resolved command out of a fetched (or
 // caller-hoisted) metadata object. A trimmed non-empty single-line string, or
 // '' for anything else (absent, whitespace-only, non-string).
@@ -382,7 +390,7 @@ function extractVerifyCommand(meta) {
   if (!meta || typeof meta !== 'object') return '';
   const v = meta.verify;
   if (typeof v !== 'string') return '';
-  const trimmed = v.trim();
+  const trimmed = v.trim().replace(CONFIG_SOURCE_SUFFIX, '').trim();
   if (trimmed === '' || /[\r\n]/.test(trimmed)) return '';
   return trimmed;
 }
@@ -432,8 +440,10 @@ function verifyResolutionLines(bin) {
   return [
     'Then resolve this project\'s single VERIFICATION COMMAND — the one command whose exit code says',
     'whether the repository is healthy. Run exactly this command first and read its output:',
-    '  ' + bin + ' config get dispatch.verify',
-    'If it prints a real value (anything other than "(not set)"), return that value VERBATIM as `verify`.',
+    '  ' + bin + ' config get dispatch.verify --raw',
+    '`--raw` prints the bare value and nothing else — no `(source: ...)` annotation, and NO output at',
+    'all when the key is unset. If that command prints a non-empty line, return it VERBATIM as',
+    '`verify`, with no annotation, quoting, or commentary of your own appended.',
     'Otherwise DISCOVER one, checking these sources in order and stopping at the first that yields',
     'anything: (a) the CI configuration under `.github/workflows/` (also `.circleci/config.yml` and',
     '`.gitlab-ci.yml`); (b) `docs/principles.md`; (c) `CLAUDE.md` or `AGENTS.md`. Synthesize ONE',

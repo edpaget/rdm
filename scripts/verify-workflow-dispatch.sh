@@ -1519,6 +1519,19 @@ assert.equal(extractVerifyCommand({ verify: '  ' + CMD + ' ' }), CMD, 'a real co
 assert.equal(extractVerifyCommand({ verify: 42 }), '', 'a non-string value yields the empty string rather than throwing');
 assert.equal(extractVerifyCommand({ verify: 'a\nb' }), '', 'a multi-line command is refused, not run');
 assert.equal(extractVerifyCommand(null), '', 'a null meta yields the empty string');
+// `rdm config get` WITHOUT --raw prints `<value>  (source: <where>)`. The
+// resolution prompt asks for --raw so that never reaches us, but the value
+// crosses an LLM: an annotated line must resolve to the command it names, not
+// to a bash syntax error blamed on the project.
+for (const src of ['repo config', 'global config', 'environment variable']) {
+  assert.equal(
+    extractVerifyCommand({ verify: CMD + '  (source: ' + src + ')' }),
+    CMD,
+    'a `config get` source annotation (' + src + ') is stripped, not run'
+  );
+}
+assert.equal(extractVerifyCommand({ verify: '  (source: repo config)' }), '', 'an annotation with no value ahead of it yields the empty string');
+assert.equal(extractVerifyCommand({ verify: 'sh x.sh (source of truth)' }), 'sh x.sh (source of truth)', 'only the trailing `(source: ...)` annotation is stripped — ordinary parentheses survive');
 
 const longOut = 'x'.repeat(VERIFY_OUTPUT_CAP + 500) + 'TAIL-MARKER';
 const truncated = truncateVerifyOutput(longOut);
@@ -1693,7 +1706,7 @@ fs.writeFileSync(
   'export default async function(args, agent, pipeline, parallel, log) {\n' +
     wfSrc.replace(
       /^\/\/ --- Driver ---/m,
-      'return { buildImplementPrompt: buildImplementPrompt }\n// --- Driver ---'
+      'return { buildImplementPrompt: buildImplementPrompt, buildFetchPrompt: buildFetchPrompt, buildTaskFetchPrompt: buildTaskFetchPrompt }\n// --- Driver ---'
     ) +
     '\n}\n'
 );
@@ -1716,6 +1729,49 @@ assert.ok(reworkPrompt.includes('OUT-SENTINEL'), 'the rework prompt carries the 
 assert.ok(reworkPrompt.includes('9'), 'the rework prompt carries the failing exit code');
 console.log('1d(f) OK: the resolved command reaches both the first-pass and rework implementer prompts');
 
+// ===========================================================================
+// (g) AC3's OTHER half — the Stage-0 RESOLUTION prompt itself. 1d(c) and 6h
+//     prove what the driver does with a resolved (or unresolvable) command,
+//     but every driven fake answers `fetch:*` with a canned `verify` field
+//     regardless of the prompt it was handed. Nothing there observes whether
+//     the real agent is ever TOLD how to resolve one. This asserts the shipped
+//     prompt text: the declared key first, then the three discovery sources in
+//     order. The self-test below strips the concat and requires this to fail.
+// ===========================================================================
+{
+  const buildFetchPrompt = exported.buildFetchPrompt;
+  const buildTaskFetchPrompt = exported.buildTaskFetchPrompt;
+  assert.equal(typeof buildFetchPrompt, 'function', 'buildFetchPrompt was extracted from the shipped workflow');
+  assert.equal(typeof buildTaskFetchPrompt, 'function', 'buildTaskFetchPrompt was extracted from the shipped workflow');
+
+  // The declared-key read, exactly as the CLI must be invoked for it: `--raw`
+  // is load-bearing, because a bare `config get` prints
+  // `<value>  (source: repo config)` and the agent is told to return the line
+  // VERBATIM.
+  const DECLARED = '/fake/bin/rdm config get dispatch.verify --raw';
+  // Precedence, in order. The prompt is a single string, so ORDER is asserted
+  // by index rather than by mere presence.
+  const ORDERED = ['dispatch.verify', '.github/workflows/', 'docs/principles.md', 'CLAUDE.md'];
+
+  for (const [name, prompt] of [
+    ['phase', buildFetchPrompt('rm', '1', cfg)],
+    ['task', buildTaskFetchPrompt('my-task', cfg)],
+  ]) {
+    assert.ok(prompt.includes(DECLARED), name + ': the Stage-0 prompt tells the agent to read the declared key with --raw');
+    assert.ok(/--raw/.test(prompt) && /source:/.test(prompt), name + ': ... and explains what --raw suppresses, so an annotated line is never returned verbatim');
+    assert.ok(prompt.includes('AGENTS.md'), name + ': the prompt names AGENTS.md alongside CLAUDE.md');
+    let cursor = -1;
+    for (const src of ORDERED) {
+      const at = prompt.indexOf(src);
+      assert.ok(at > -1, name + ': the resolution paragraph must name ' + src);
+      assert.ok(at > cursor, name + ': ' + src + ' must appear in precedence order');
+      cursor = at;
+    }
+    assert.ok(/EMPTY STRING/.test(prompt), name + ': ... and the prompt says to return an empty string when nothing resolves, so the driver can escalate');
+  }
+  console.log('1d(g) OK: both Stage-0 fetch prompts carry the declared-key-then-discovery resolution paragraph, in precedence order');
+}
+
 console.log('all verify-gate assertions passed');
 NODE_VERIFY
 
@@ -1736,6 +1792,36 @@ if run_node "$TMP/verify-gate.mjs" "$LIB" "$TMP/wf-no-tooling.js" >/dev/null 2>&
     fail "1d self-test: the assertions PASSED against a workflow with no tooling push — 1d(f) is vacuous"
 fi
 pass "1d self-test: removing the implementer tooling push turns 1d red"
+
+# Planted-mutation self-test for 1d(g): drop the resolution paragraph from BOTH
+# Stage-0 fetch prompts. Without 1d(g) this mutation was invisible — every
+# driven fake answers `fetch:*` with a canned verify field whatever the prompt
+# says — so a refactor could ship an agent with no resolution instructions at
+# all and stay green.
+sed 's/^    \.concat(verifyResolutionLines(bin))$/    \.concat([])/' "$WF" >"$TMP/wf-no-resolution.js"
+if cmp -s "$WF" "$TMP/wf-no-resolution.js"; then
+    fail "1d self-test: the planted mutation was a no-op — no .concat(verifyResolutionLines(bin)) call site was found"
+fi
+if [ "$(grep -c '\.concat(\[\])' "$TMP/wf-no-resolution.js")" -ne 2 ]; then
+    fail "1d self-test: expected BOTH fetch-prompt call sites to be mutated (phase + task)"
+fi
+if run_node "$TMP/verify-gate.mjs" "$LIB" "$TMP/wf-no-resolution.js" >/dev/null 2>&1; then
+    fail "1d self-test: the assertions PASSED against fetch prompts with no resolution paragraph — 1d(g) is vacuous"
+fi
+pass "1d self-test: stripping the resolution paragraph from the Stage-0 fetch prompts turns 1d red"
+
+# ... and a narrower one: keep the paragraph but drop `--raw` from the declared-key
+# read. A bare `rdm config get` prints `<value>  (source: repo config)`, which the
+# prompt then tells the agent to return VERBATIM — the exact mismatch that would
+# hand the verify agent an unrunnable line on every declared-key dispatch.
+sed "s/ config get dispatch.verify --raw'/ config get dispatch.verify'/" "$WF" >"$TMP/wf-no-raw.js"
+if cmp -s "$WF" "$TMP/wf-no-raw.js"; then
+    fail "1d self-test: the planted mutation was a no-op — the --raw declared-key read was not found"
+fi
+if run_node "$TMP/verify-gate.mjs" "$LIB" "$TMP/wf-no-raw.js" >/dev/null 2>&1; then
+    fail "1d self-test: the assertions PASSED against a bare (annotated) 'config get' read — 1d(g) does not pin --raw"
+fi
+pass "1d self-test: dropping --raw from the declared-key read turns 1d red"
 
 # --- 2. BLOCK DRIFT GATE -----------------------------------------------------
 say "2. Block drift: the dispatch-outcome region is byte-identical (lib vs workflow)"
@@ -2353,8 +2439,12 @@ for shim in \
     # rejected by hoistedMetaComplete and silently costs a Stage-0 agent.
     grep -qF 'body, roadmapBody, verify, models:' "$shim" ||
         fail "AC-PLAN-INTENT-HOIST: $shim must carry roadmapBody and verify inside the assembled phaseMeta object literal"
-    grep -qF 'config get dispatch.verify' "$shim" ||
-        fail "AC-PLAN-INTENT-HOIST: $shim hoists a meta payload but never reads dispatch.verify — hoistedMetaComplete would reject it"
+    # `--raw` is load-bearing, not cosmetic: a bare `config get` prints
+    # `<value>  (source: repo config)`, and every one of these shims tells the
+    # agent to keep the printed value VERBATIM. Without --raw the annotation
+    # rides along into the hoisted `verify` field.
+    grep -qF 'config get dispatch.verify --raw' "$shim" ||
+        fail "AC-PLAN-INTENT-HOIST: $shim hoists a meta payload but never reads dispatch.verify --raw — hoistedMetaComplete would reject it, or the hoisted value would carry a (source: ...) annotation"
 done
 pass "AC-PLAN-INTENT-HOIST: all three hoisting shims and their shipped CLI templates fetch the roadmap body and the verify command, and forward both"
 
@@ -2378,6 +2468,13 @@ if grep -qF 'body, roadmapBody, verify, models:' "$TMP/hoist-shim-mutant.md"; th
     fail "AC-PLAN-INTENT-HOIST detector broken — roadmapBody stripped from the phaseMeta literal was not detected"
 fi
 pass "AC-PLAN-INTENT-HOIST detector fires when roadmapBody is stripped from a shim's phaseMeta literal"
+
+# Self-test: drop --raw from one shim's declared-key read and confirm detection.
+sed 's/config get dispatch.verify --raw/config get dispatch.verify/' "$REPO_ROOT/.claude/skills/rdm-do/SKILL.md" >"$TMP/hoist-shim-raw-mutant.md"
+if grep -qF 'config get dispatch.verify --raw' "$TMP/hoist-shim-raw-mutant.md"; then
+    fail "AC-PLAN-INTENT-HOIST detector broken — a --raw-less declared-key read was not produced"
+fi
+pass "AC-PLAN-INTENT-HOIST detector fires when a shim drops --raw from its declared-key read"
 
 # AC-STAMP: dispatch-phase stamps the phase/task in-progress, best-effort, right
 # after Stage 0 (metadata + model resolution) and before the plan gate.
@@ -3381,6 +3478,39 @@ console.log('6g OK: roadmapBody reaches the intent-alignment finder via BOTH the
   }
 }
 console.log('6h OK: the driver escalates on an unresolvable verify command before the stamp/planner/implementer, task mode included, and --plan-only is carved out');
+
+// ============================================================================
+// (6i) A `config get`-ANNOTATED value survives the whole driver as the bare
+//      command. The Stage-0 prompt asks for `--raw`, but the value crosses an
+//      LLM: if a fetch agent ever returns the annotated line
+//      `<cmd>  (source: repo config)`, the verify agent must be handed `<cmd>`
+//      — running the whole line is a bash syntax error, and every declared-key
+//      dispatch would then fail and blame the project's own command.
+//
+//      Asserted END TO END rather than on the helper alone, because the helper
+//      unit test (1d(a)) cannot show that the driver routes the fetched value
+//      through it before building the verify prompt.
+// ============================================================================
+{
+  const CLEAN = 'sh scripts/verify-all.sh';
+  for (const [name, meta, args, label] of [
+    ['phase', PHASE_META, { roadmap: 'rm', phase: '1' }, 'fetch:phase-meta'],
+    ['task', TASK_META, { task: 'my-task' }, 'fetch:task-meta'],
+  ]) {
+    const annotated = { ...meta, verify: CLEAN + '  (source: repo config)' };
+    const a = makeAgent({ fetchResult: annotated });
+    const out = await run(args, a.agent, refPipeline, refParallel, nolog);
+    assert.equal(count(a, label), 1, '(6i) Stage 0 fetched the metadata (' + name + ')');
+    const verifyCalls = a.calls.filter((c) => c.label === 'verify:run');
+    assert.equal(verifyCalls.length, 1, '(6i) the verify agent ran exactly once (' + name + ')');
+    assert.ok(verifyCalls[0].prompt.includes(CLEAN), '(6i) the verify prompt carries the bare command (' + name + ')');
+    assert.ok(!verifyCalls[0].prompt.includes('(source:'), '(6i) ... and NOT the `(source: ...)` annotation (' + name + ')');
+    const impl = a.calls.filter((c) => c.label === 'implement:worktree');
+    assert.ok(impl.length >= 1 && !impl[0].prompt.includes('(source:'), '(6i) the implementer tooling line is unannotated too (' + name + ')');
+    assert.equal(out.outcome, 'reviewed', '(6i) and the annotated value still resolves to a runnable command (' + name + ')');
+  }
+}
+console.log('6i OK: a `config get`-annotated verify value reaches the verify agent as the bare command');
 console.log('ALL HOIST/ABSORB CHECKS PASSED');
 NODE_HOIST
 
@@ -3502,6 +3632,14 @@ if [ "$(grep -c '' "$WF")" != "$(grep -c '' "$TMP/mutant-verify-after-stamp.js")
     fail "6f(10): the relocation mutant changed the line count — it deleted code instead of moving it"
 fi
 assert_mutant_fails "$TMP/mutant-verify-after-stamp.js" "moves the unresolved-verify check BELOW the in-progress stamp (the item is stamped in-progress for a run that never starts)"
+
+# (11) Stop stripping the `(source: ...)` annotation `rdm config get` appends
+#      when it is not asked for `--raw`. The value still resolves (it is a
+#      non-empty single-line string), the dispatch still runs, and the ONLY
+#      observable consequence is that the verify agent is handed an unrunnable
+#      line — which is exactly what 6i pins.
+sed "s/^  const trimmed = v.trim().replace(CONFIG_SOURCE_SUFFIX, '').trim();\$/  const trimmed = v.trim();/" "$WF" >"$TMP/mutant-keep-source-suffix.js"
+assert_mutant_fails "$TMP/mutant-keep-source-suffix.js" "stops stripping the 'config get' source annotation (the verify agent is handed an unrunnable line)"
 
 #     (The sibling mutation — deleting roadmapBody from PHASE_META_SCHEMA — is
 #     deliberately NOT self-tested here: this section drives a FAKE agent, which

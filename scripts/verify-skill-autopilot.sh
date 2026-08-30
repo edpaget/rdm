@@ -626,7 +626,10 @@ assert_local_phasemeta_fetch() {
     # omits it is rejected by `hoistedMetaComplete`, silently costing the very
     # Stage-0 agent this hoist exists to eliminate.
     grep -qF 'body, roadmapBody, verify, models:' "$file" || return 1
-    grep -qF 'config get dispatch.verify' "$file" || return 1
+    # `--raw` is load-bearing: a bare `config get` prints
+    # `<value>  (source: repo config)`, and this step keeps the printed value
+    # VERBATIM, so the annotation would ride into the hoisted `verify` field.
+    grep -qF 'config get dispatch.verify --raw' "$file" || return 1
     return 0
 }
 assert_local_phasemeta_fetch "$SKILL" ||
@@ -646,6 +649,15 @@ if assert_local_phasemeta_fetch "$TMP/local-phasemeta-key-mutant.md"; then
     fail "local phase-meta fetch detector missed phaseMeta dropped from the dispatch line — the check is vacuous"
 fi
 pass "local phase-meta fetch detector fires when phaseMeta is dropped from the dispatch line"
+
+# Self-test: drop --raw from the declared-key read and confirm detection. A bare
+# `config get` prints `<value>  (source: repo config)`, which this step would
+# then hoist verbatim as the verification command.
+sed 's/config get dispatch.verify --raw/config get dispatch.verify/' "$SKILL" >"$TMP/local-phasemeta-raw-mutant.md"
+if assert_local_phasemeta_fetch "$TMP/local-phasemeta-raw-mutant.md"; then
+    fail "local phase-meta fetch detector missed a --raw-less declared-key read — the annotated value would be hoisted as the command"
+fi
+pass "local phase-meta fetch detector fires when --raw is dropped from the declared-key read"
 
 # Shipped CLI template: same shape as the local skill.
 CLI_TEMPLATE="$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md"

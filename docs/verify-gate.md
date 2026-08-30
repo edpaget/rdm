@@ -24,8 +24,13 @@ Set it, read it, and remove it with the ordinary config surface:
 
 ```bash
 rdm config set dispatch.verify "bash scripts/ci.sh"
-rdm config get dispatch.verify
+rdm config get dispatch.verify         # bash scripts/ci.sh  (source: repo config)
+rdm config get dispatch.verify --raw   # bash scripts/ci.sh
 ```
+
+`--raw` prints the value alone — no `(source: …)` annotation, and no output at all when
+the key is unset — so a caller can run what it reads without parsing it. That is the form
+the dispatch resolution prompt uses; the annotated form is for humans.
 
 It is **repo-only** — a verify command is a property of a project, never of a user — so
 `rdm config set --global dispatch.verify …` is rejected with an actionable error, and it
@@ -38,7 +43,8 @@ verify = "bash scripts/ci.sh"
 
 ## 2. Resolution precedence
 
-1. The declared `dispatch.verify` key, when set — used verbatim.
+1. The declared `dispatch.verify` key, when set — read with
+   `rdm config get dispatch.verify --raw` and used verbatim.
 2. Otherwise **discovery**, in order, stopping at the first source that yields anything:
    1. CI configuration under `.github/workflows/` (also `.circleci/config.yml`,
       `.gitlab-ci.yml`)

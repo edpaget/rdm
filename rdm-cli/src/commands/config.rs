@@ -11,13 +11,17 @@ pub fn run(
     global_config: &rdm_core::config::GlobalConfig,
 ) -> Result<()> {
     match command {
-        ConfigCommand::Get { key } => {
+        ConfigCommand::Get { key, raw } => {
             paths::validate_key(&key)?;
 
             // Check env var first
             let env_key = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
             if let Ok(v) = std::env::var(&env_key) {
-                println!("{v}  (source: environment variable)");
+                if raw {
+                    println!("{v}");
+                } else {
+                    println!("{v}  (source: environment variable)");
+                }
                 return Ok(());
             }
 
@@ -29,10 +33,16 @@ pub fn run(
                 rdm_core::config::Config::default()
             };
 
-            if let Some(resolved) = paths::resolve_config_value(&key, &repo_config, global_config) {
-                println!("{}  (source: {})", resolved.value, resolved.source);
-            } else {
-                println!("(not set)");
+            match paths::resolve_config_value(&key, &repo_config, global_config) {
+                // `--raw` prints the value ALONE: no source annotation, and
+                // nothing at all when the key is unset. A consumer that pipes
+                // the output into another command (the dispatch verify gate
+                // resolves `dispatch.verify` this way) gets a value it can run
+                // verbatim instead of one it has to parse.
+                Some(resolved) if raw => println!("{}", resolved.value),
+                Some(resolved) => println!("{}  (source: {})", resolved.value, resolved.source),
+                None if raw => {}
+                None => println!("(not set)"),
             }
         }
         ConfigCommand::Set { key, value, global } => {
