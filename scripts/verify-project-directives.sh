@@ -26,7 +26,11 @@
 #            the emitted `path` set asserted exactly, in discovery order.
 #   4  AC4 — an `rdm.toml` `dispatch.directives` override REPLACES the discovered
 #            list rather than adding to it (asserted with the load-bearing
-#            NEGATIVE), and the key is repo-only.
+#            NEGATIVE), and the key is repo-only. 4b drives the WILDCARD shape of
+#            a declared entry; 4c proves a declared entry cannot reach OUT of the
+#            scanned tree (absolute path, `..` traversal — neither of which needs
+#            a symlink, so § 10's symlink coverage does not reach them), with an
+#            in-tree control proving the refusal is about containment.
 #   5  AC5 — no sources ⇒ exit 0, empty arrays, empty stderr, an empty rendered
 #            string, a BYTE-IDENTICAL implementer prompt, an untouched finder
 #            prompt, and no `[directives:` clause anywhere in the OUTCOME.
@@ -524,6 +528,87 @@ if (cd "$TMP" && run_node ac4.mjs) >/dev/null 2>&1; then
     fail "4 self-test: AC4 passed against a MERGED payload — the replace-not-merge negative is vacuous"
 fi
 pass "4 self-test: a merged (declared + discovered) payload turns AC4 red"
+
+# --- 4b. A WILDCARD declared entry resolves, and only to what it names -------
+# The declared list is not literal-paths-only: an operator may name a glob. This
+# drives the branch of expand_declared that the literal-path cases never reach.
+mkdir -p "$FIXTURE/docs/globbed/nested"
+printf 'Globbed rule A.\n' >"$FIXTURE/docs/globbed/a.md"
+printf 'Globbed rule B.\n' >"$FIXTURE/docs/globbed/b.md"
+printf 'Not markdown.\n' >"$FIXTURE/docs/globbed/notes.txt"
+printf 'Nested globbed rule.\n' >"$FIXTURE/docs/globbed/nested/deep.md"
+
+"$RDM_BIN" --root "$PLAN_REPO" config set dispatch.directives "docs/globbed/*.md" >/dev/null
+"$RDM_BIN" --root "$PLAN_REPO" dispatch directives --dir "$FIXTURE" --format json >"$TMP/ac4-glob-flat.json"
+"$RDM_BIN" --root "$PLAN_REPO" config set dispatch.directives "docs/globbed/**/*.md" >/dev/null
+"$RDM_BIN" --root "$PLAN_REPO" dispatch directives --dir "$FIXTURE" --format json >"$TMP/ac4-glob-deep.json"
+
+run_node -e '
+const fs = require("fs");
+const read = (f) => JSON.parse(fs.readFileSync(process.env.DIR_TMP + "/" + f, "utf8"));
+const eq = (got, want, msg) => {
+  if (JSON.stringify(got) !== JSON.stringify(want)) {
+    console.error(msg + "\n  got:  " + JSON.stringify(got) + "\n  want: " + JSON.stringify(want));
+    process.exit(1);
+  }
+};
+const flat = read("ac4-glob-flat.json");
+eq(flat.directives.map((d) => d.path), ["docs/globbed/a.md", "docs/globbed/b.md"],
+   "a flat glob must take one level of that extension only, sorted");
+const deep = read("ac4-glob-deep.json");
+eq(deep.directives.map((d) => d.path),
+   ["docs/globbed/a.md", "docs/globbed/b.md", "docs/globbed/nested/deep.md"],
+   "a recursive glob must descend, still filtering by extension");
+for (const p of [flat, deep]) {
+  if (p.origin !== "config") { console.error("a glob entry must still report origin=config"); process.exit(1); }
+  if (JSON.stringify(p).indexOf("Not markdown.") !== -1) {
+    console.error("a *.md glob must not admit a .txt sibling"); process.exit(1);
+  }
+}
+' || fail "4b: a wildcard dispatch.directives entry did not resolve as documented"
+pass "4b: a wildcard declared entry resolves — flat one level, ** recursively, extension-filtered"
+
+# --- 4c. CONTAINMENT: a declared entry may not reach out of the scanned tree --
+# Path::join is component concatenation: an absolute entry replaces the scan root
+# outright and a `..` component is never collapsed. Neither needs a symlink, so
+# § 10's symlink coverage does not reach this. The text would be injected VERBATIM
+# into a dispatched agent's prompt, so this is an exfiltration sink, not a typo.
+ESCAPE_DIR="$TMP/outside-the-scan"
+mkdir -p "$ESCAPE_DIR"
+printf 'SECRET_TOKEN=hunter2\n' >"$ESCAPE_DIR/secret.env"
+# The SAME bytes, in-tree, so the control below is a true discrimination test.
+mkdir -p "$FIXTURE/docs/intree"
+printf 'SECRET_TOKEN=hunter2\n' >"$FIXTURE/docs/intree/secret.env"
+
+for ENTRY in "$ESCAPE_DIR/secret.env" "../outside-the-scan/secret.env" "docs/../../outside-the-scan/secret.env"; do
+    "$RDM_BIN" --root "$PLAN_REPO" config set dispatch.directives "$ENTRY" >/dev/null
+    "$RDM_BIN" --root "$PLAN_REPO" dispatch directives --dir "$FIXTURE" --format json >"$TMP/ac4-escape.json" ||
+        fail "4c: a containment refusal must be a reported skip, not a command failure ($ENTRY)"
+    if grep -qF 'SECRET_TOKEN=hunter2' "$TMP/ac4-escape.json"; then
+        fail "4c: an out-of-tree declared entry ('$ENTRY') leaked its contents into the resolved set"
+    fi
+    grep -qF 'declared source escapes the scanned tree' "$TMP/ac4-escape.json" ||
+        fail "4c: the refusal of '$ENTRY' must be REPORTED with its own reason, never silent"
+    run_node -e '
+const p = JSON.parse(require("fs").readFileSync(process.env.DIR_TMP + "/ac4-escape.json", "utf8"));
+if (p.directives.length !== 0) { console.error("an escaping entry admitted a directive"); process.exit(1); }
+' || fail "4c: an escaping entry must admit nothing ($ENTRY)"
+done
+
+# NON-VACUITY CONTROL. The three refusals above must be about CONTAINMENT, not
+# about the file's name or contents: the identical bytes, declared from INSIDE the
+# tree, resolve and are injected.
+"$RDM_BIN" --root "$PLAN_REPO" config set dispatch.directives "docs/intree/secret.env" >/dev/null
+"$RDM_BIN" --root "$PLAN_REPO" dispatch directives --dir "$FIXTURE" --format json >"$TMP/ac4-intree.json"
+grep -qF 'SECRET_TOKEN=hunter2' "$TMP/ac4-intree.json" ||
+    fail "4c control: the same bytes declared IN-tree must resolve — otherwise § 4c passes vacuously"
+if grep -qF 'declared source escapes the scanned tree' "$TMP/ac4-intree.json"; then
+    fail "4c control: an in-tree entry must not be reported as escaping"
+fi
+pass "4c: absolute and ..-traversing declared entries are refused and reported, in-tree ones still resolve"
+
+# Leave nothing out-of-tree declared behind: § 12c re-declares this key itself.
+"$RDM_BIN" --root "$PLAN_REPO" config set dispatch.directives "" >/dev/null
 
 # ===========================================================================
 # 5. AC5 — no sources present produces no injection and no finding.

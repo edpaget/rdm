@@ -41,6 +41,13 @@
 //! on the dispatching machine into an agent's prompt — a real exfiltration sink,
 //! since the scanned tree may itself be less-trusted code under review.
 //!
+//! A symlink is not the only way out. A declared entry is JOINED onto the scan root,
+//! and `Path::join` is pure component concatenation: an absolute entry
+//! (`/etc/passwd`) replaces the root outright, and a `..` component
+//! (`../../.ssh/id_rsa`) is never collapsed. Both are refused lexically by
+//! `escapes_tree` BEFORE any join, and reported in [`DirectiveSet::skipped`] with the
+//! `declared source escapes the scanned tree` reason.
+//!
 //! # Bounds
 //!
 //! Injected text is paid for once per dispatched agent, so the set is bounded by
@@ -50,7 +57,7 @@
 //! as a paraphrase. Every skip is reported in [`DirectiveSet::skipped`] — never
 //! silently dropped.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -352,12 +359,36 @@ fn parse_meta(yaml: &str) -> (DirectiveRole, Vec<String>) {
     (role, paths)
 }
 
+/// True when a declared entry would reach outside the scanned tree.
+///
+/// A declared entry is joined onto the scan root, and `Path::join` is pure component
+/// concatenation, not a containment-preserving operation: an ABSOLUTE entry
+/// (`/etc/passwd`, or a Windows drive prefix) replaces the root outright, and a `..`
+/// component is never collapsed. Either would read a file outside the scanned tree
+/// and inject it VERBATIM into a dispatched agent's prompt — the same exfiltration
+/// sink the symlink guards close, reached without any symlink at all.
+///
+/// The check is lexical and runs BEFORE any join, so no out-of-tree path is ever even
+/// constructed. A rejected entry is reported in [`DirectiveSet::skipped`], never
+/// silently dropped: the operator named it, so its non-admission is signal.
+fn escapes_tree(entry: &str) -> bool {
+    Path::new(entry).components().any(|c| {
+        matches!(
+            c,
+            Component::RootDir | Component::Prefix(_) | Component::ParentDir
+        )
+    })
+}
+
 /// Expands one declared source entry into concrete paths.
 ///
 /// A literal path is used as-is; a directory expands to the `*.md`/`*.mdc` files
 /// under it; a trailing `/**` or `/*.ext` suffix expands the same way. A declared
 /// entry that matches nothing is returned as-is so the caller can report it in
 /// `skipped` — the operator named it explicitly, so its absence is signal.
+///
+/// The caller rejects an escaping entry with [`escapes_tree`] BEFORE calling this, so
+/// every path produced here is `dir`-relative by construction.
 fn expand_declared(dir: &Path, entry: &str) -> Vec<PathBuf> {
     let trimmed = entry.trim();
     if trimmed.is_empty() {
@@ -372,17 +403,15 @@ fn expand_declared(dir: &Path, entry: &str) -> Vec<PathBuf> {
         let tail = &trimmed[idx..];
         let ext = tail.rsplit_once('.').map(|(_, e)| e.to_string());
         let mut out = Vec::new();
-        if tail.contains("**") {
-            collect_recursive(&base, ext.as_deref().unwrap_or(""), &mut out);
-            if ext.is_none() {
-                out.clear();
-                collect_any_recursive(&base, &mut out);
-            }
-        } else if let Some(e) = ext {
-            collect_flat(&base, &e, &mut out);
-        } else {
-            collect_any_flat(&base, &mut out);
+        match (tail.contains("**"), ext) {
+            (true, Some(e)) => collect_recursive(&base, &e, &mut out),
+            (true, None) => collect_any_recursive(&base, &mut out),
+            (false, Some(e)) => collect_flat(&base, &e, &mut out),
+            (false, None) => collect_any_flat(&base, &mut out),
         }
+        // Sorted for the same reason `read_plain_dir` sorts: which sources a bounded
+        // set admits must never depend on filesystem iteration order.
+        out.sort();
         return out;
     }
     // is_plain_dir, not Path::is_dir: a declared entry that is a symlinked directory
@@ -398,6 +427,9 @@ fn expand_declared(dir: &Path, entry: &str) -> Vec<PathBuf> {
     vec![joined]
 }
 
+/// Collects every regular file directly inside `dir`, whatever its extension.
+///
+/// Serves a declared entry ending in a bare `*` (no extension filter).
 fn collect_any_flat(dir: &Path, out: &mut Vec<PathBuf>) {
     let Some(paths) = read_plain_dir(dir) else {
         return;
@@ -405,7 +437,18 @@ fn collect_any_flat(dir: &Path, out: &mut Vec<PathBuf>) {
     out.extend(paths.into_iter().filter(|p| is_plain_file(p)));
 }
 
+/// Collects every regular file under `dir` recursively, whatever its extension.
+///
+/// Serves a declared entry ending in a bare `**`. Depth-capped at [`MAX_WALK_DEPTH`]
+/// and symlink-refusing, exactly like `collect_recursive`.
 fn collect_any_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
+    collect_any_recursive_at(dir, 0, out);
+}
+
+fn collect_any_recursive_at(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > MAX_WALK_DEPTH {
+        return;
+    }
     let Some(paths) = read_plain_dir(dir) else {
         return;
     };
@@ -416,7 +459,7 @@ fn collect_any_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
     }
     for p in &paths {
         if is_plain_dir(p) {
-            collect_any_recursive(p, out);
+            collect_any_recursive_at(p, depth + 1, out);
         }
     }
 }
@@ -433,6 +476,9 @@ fn collect_any_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
 /// whole, and admission then stops once [`MAX_BYTES_TOTAL`] would be exceeded; every
 /// skip lands in [`DirectiveSet::skipped`] with a reason.
 ///
+/// A declared entry that is absolute or contains a `..` component is REFUSED before
+/// it is joined onto `dir` and reported in `skipped` — see [`escapes_tree`].
+///
 /// Finding nothing is normal: a directory with none of the known locations yields an
 /// empty set, not an error.
 ///
@@ -443,27 +489,37 @@ fn collect_any_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
 /// the signature so a future hard failure (an unreadable scan root, say) can be
 /// surfaced without a breaking change.
 pub fn resolve(dir: &Path, declared: Option<&[String]>) -> Result<DirectiveSet> {
-    let (origin, sources, declared_entries): (DirectiveOrigin, Vec<PathBuf>, Vec<String>) =
-        match declared {
-            Some(list) => {
-                let mut paths = Vec::new();
-                let mut entries = Vec::new();
-                for entry in list {
-                    let expanded = expand_declared(dir, entry);
-                    if expanded.is_empty() {
-                        entries.push(entry.trim().to_string());
-                    } else {
-                        paths.extend(expanded);
-                    }
+    type Declared = (DirectiveOrigin, Vec<PathBuf>, Vec<String>, Vec<String>);
+    let (origin, sources, missing_entries, escaping_entries): Declared = match declared {
+        Some(list) => {
+            let mut paths = Vec::new();
+            let mut missing = Vec::new();
+            let mut escaping = Vec::new();
+            for entry in list {
+                let trimmed = entry.trim();
+                // Refused BEFORE the join: an absolute or `..`-bearing entry would
+                // otherwise read a file outside the scanned tree and inject it
+                // verbatim into an agent's prompt.
+                if escapes_tree(trimmed) {
+                    escaping.push(trimmed.to_string());
+                    continue;
                 }
-                (DirectiveOrigin::Config, paths, entries)
+                let expanded = expand_declared(dir, entry);
+                if expanded.is_empty() {
+                    missing.push(trimmed.to_string());
+                } else {
+                    paths.extend(expanded);
+                }
             }
-            None => (
-                DirectiveOrigin::Discovery,
-                discover_sources(dir),
-                Vec::new(),
-            ),
-        };
+            (DirectiveOrigin::Config, paths, missing, escaping)
+        }
+        None => (
+            DirectiveOrigin::Discovery,
+            discover_sources(dir),
+            Vec::new(),
+            Vec::new(),
+        ),
+    };
 
     let mut directives: Vec<Directive> = Vec::new();
     let mut skipped: Vec<SkippedDirective> = Vec::new();
@@ -538,11 +594,21 @@ pub fn resolve(dir: &Path, declared: Option<&[String]>) -> Result<DirectiveSet> 
     }
 
     // A declared entry that expanded to nothing is reported, never silently dropped.
-    for entry in declared_entries {
+    for entry in missing_entries {
         skipped.push(SkippedDirective {
             path: entry,
             bytes: 0,
             reason: "declared source not found".to_string(),
+        });
+    }
+
+    // ...and one that pointed OUT of the tree is reported with its own reason, so an
+    // operator can tell a typo'd path from a containment refusal.
+    for entry in escaping_entries {
+        skipped.push(SkippedDirective {
+            path: entry,
+            bytes: 0,
+            reason: "declared source escapes the scanned tree".to_string(),
         });
     }
 
@@ -939,6 +1005,215 @@ mod tests {
         let set = resolve(&project, Some(&declared)).unwrap();
         assert!(set.directives.is_empty());
         assert_eq!(set.skipped.len(), 1);
+        let blob = serde_json::to_string(&set).unwrap();
+        assert!(!blob.contains("SECRET CONTENTS"));
+    }
+
+    /// A symlink is not the only way out of the tree. An ABSOLUTE declared entry
+    /// replaces the scan root outright under `Path::join`, so it must be refused
+    /// lexically — no link, and no filesystem trick, involved.
+    #[test]
+    fn a_declared_absolute_path_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let secret = tmp.path().join("secret.env");
+        fs::write(&secret, "SECRET CONTENTS\n").unwrap();
+
+        let project = tmp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+
+        let declared = vec![secret.to_string_lossy().into_owned()];
+        let set = resolve(&project, Some(&declared)).unwrap();
+        assert!(
+            set.directives.is_empty(),
+            "an absolute declared entry must never be read"
+        );
+        assert_eq!(set.skipped.len(), 1);
+        assert_eq!(
+            set.skipped[0].reason, "declared source escapes the scanned tree",
+            "the refusal must be distinguishable from a mere typo'd path"
+        );
+        let blob = serde_json::to_string(&set).unwrap();
+        assert!(
+            !blob.contains("SECRET CONTENTS"),
+            "an out-of-tree file's contents must not reach the resolved set"
+        );
+    }
+
+    /// ...and neither is a `..` entry: `Path::join` never collapses parent components.
+    #[test]
+    fn a_declared_parent_traversal_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("secret.env"), "SECRET CONTENTS\n").unwrap();
+
+        let project = tmp.path().join("project");
+        fs::create_dir_all(&project).unwrap();
+
+        let declared = vec!["../secret.env".to_string()];
+        let set = resolve(&project, Some(&declared)).unwrap();
+        assert!(set.directives.is_empty());
+        assert_eq!(set.skipped.len(), 1);
+        assert_eq!(
+            set.skipped[0].reason,
+            "declared source escapes the scanned tree"
+        );
+        let blob = serde_json::to_string(&set).unwrap();
+        assert!(!blob.contains("SECRET CONTENTS"));
+    }
+
+    /// A traversal buried mid-entry is refused too — the check is over every
+    /// component, not a prefix test.
+    #[test]
+    fn a_declared_traversal_hidden_mid_entry_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("secret.env"), "SECRET CONTENTS\n").unwrap();
+
+        let project = tmp.path().join("project");
+        fs::create_dir_all(project.join("docs")).unwrap();
+
+        let declared = vec!["docs/../../secret.env".to_string()];
+        let set = resolve(&project, Some(&declared)).unwrap();
+        assert!(set.directives.is_empty());
+        assert_eq!(
+            set.skipped[0].reason,
+            "declared source escapes the scanned tree"
+        );
+        let blob = serde_json::to_string(&set).unwrap();
+        assert!(!blob.contains("SECRET CONTENTS"));
+    }
+
+    /// Refusing one entry must not poison the rest of the declared list.
+    #[test]
+    fn an_escaping_entry_does_not_suppress_its_in_tree_siblings() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::write(tmp.path().join("secret.env"), "SECRET CONTENTS\n").unwrap();
+
+        let project = tmp.path().join("project");
+        write(&project, "docs/rules/house.md", "in-tree body\n");
+
+        let declared = vec![
+            "../secret.env".to_string(),
+            "docs/rules/house.md".to_string(),
+        ];
+        let set = resolve(&project, Some(&declared)).unwrap();
+        assert_eq!(
+            set.directives
+                .iter()
+                .map(|d| d.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["docs/rules/house.md"]
+        );
+        assert_eq!(set.directives[0].text, "in-tree body\n");
+        assert_eq!(set.skipped.len(), 1);
+        assert_eq!(
+            set.skipped[0].reason,
+            "declared source escapes the scanned tree"
+        );
+    }
+
+    /// Seeds one tree the four wildcard shapes below all read from.
+    fn wildcard_fixture() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        write(d, "docs/rules/b.md", "flat b\n");
+        write(d, "docs/rules/a.md", "flat a\n");
+        write(d, "docs/rules/notes.txt", "not markdown\n");
+        write(d, "docs/rules/nested/deep.md", "nested deep\n");
+        write(d, "docs/rules/nested/deep.txt", "nested text\n");
+        tmp
+    }
+
+    fn declared_paths(dir: &Path, entry: &str) -> Vec<String> {
+        let declared = vec![entry.to_string()];
+        resolve(dir, Some(&declared))
+            .unwrap()
+            .directives
+            .into_iter()
+            .map(|d| d.path)
+            .collect()
+    }
+
+    /// `dir/*.md` — one level, that extension only.
+    #[test]
+    fn a_declared_flat_glob_takes_one_level_of_that_extension() {
+        let tmp = wildcard_fixture();
+        assert_eq!(
+            declared_paths(tmp.path(), "docs/rules/*.md"),
+            vec!["docs/rules/a.md", "docs/rules/b.md"],
+            "a flat glob must not descend, must filter by extension, and must sort"
+        );
+    }
+
+    /// `dir/**/*.md` — recursive, that extension only.
+    #[test]
+    fn a_declared_recursive_glob_descends_and_filters_by_extension() {
+        let tmp = wildcard_fixture();
+        assert_eq!(
+            declared_paths(tmp.path(), "docs/rules/**/*.md"),
+            vec![
+                "docs/rules/a.md",
+                "docs/rules/b.md",
+                "docs/rules/nested/deep.md"
+            ]
+        );
+    }
+
+    /// A bare `dir/*` — one level, every extension.
+    #[test]
+    fn a_declared_bare_star_takes_one_level_of_every_extension() {
+        let tmp = wildcard_fixture();
+        assert_eq!(
+            declared_paths(tmp.path(), "docs/rules/*"),
+            vec!["docs/rules/a.md", "docs/rules/b.md", "docs/rules/notes.txt"],
+            "a bare star takes every extension but still does not descend"
+        );
+    }
+
+    /// A bare `dir/**` — recursive, every extension.
+    #[test]
+    fn a_declared_bare_double_star_takes_every_extension_recursively() {
+        let tmp = wildcard_fixture();
+        assert_eq!(
+            declared_paths(tmp.path(), "docs/rules/**"),
+            vec![
+                "docs/rules/a.md",
+                "docs/rules/b.md",
+                "docs/rules/nested/deep.md",
+                "docs/rules/nested/deep.txt",
+                "docs/rules/notes.txt"
+            ]
+        );
+    }
+
+    /// A wildcard entry that matches nothing is SIGNAL, exactly like a literal one:
+    /// the operator named it, so its emptiness is reported rather than dropped.
+    #[test]
+    fn a_declared_glob_matching_nothing_is_reported() {
+        let tmp = wildcard_fixture();
+        let declared = vec!["docs/rules/*.rs".to_string()];
+        let set = resolve(tmp.path(), Some(&declared)).unwrap();
+        assert!(set.directives.is_empty());
+        assert_eq!(set.skipped.len(), 1);
+        assert_eq!(set.skipped[0].path, "docs/rules/*.rs");
+        assert_eq!(set.skipped[0].reason, "declared source not found");
+    }
+
+    /// A wildcard whose base is a symlink out of the tree is not walked either — the
+    /// glob branch reaches the filesystem through the same refusing helpers.
+    #[test]
+    #[cfg(unix)]
+    fn a_declared_glob_over_a_symlinked_base_is_never_walked() {
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside-tree");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("leak.md"), "SECRET CONTENTS\n").unwrap();
+
+        let project = tmp.path().join("project");
+        fs::create_dir_all(project.join("docs")).unwrap();
+        std::os::unix::fs::symlink(&outside, project.join("docs/rules")).unwrap();
+
+        let declared = vec!["docs/rules/*.md".to_string()];
+        let set = resolve(&project, Some(&declared)).unwrap();
+        assert!(set.directives.is_empty());
         let blob = serde_json::to_string(&set).unwrap();
         assert!(!blob.contains("SECRET CONTENTS"));
     }

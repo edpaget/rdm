@@ -61,6 +61,18 @@ cannot see — and the one that matters, since a dispatched agent's prompt is an
 exfiltration sink. A source that is unreadable, not valid UTF-8, or a device/FIFO is
 reported as skipped rather than failing the dispatch.
 
+A symlink is not the only way out of the tree, and the other two need no filesystem
+trick at all. A declared entry is *joined* onto the scan root, and `Path::join` is
+pure component concatenation: an **absolute** entry (`/etc/passwd`) replaces the root
+outright, and a **`..`** component (`../../.ssh/id_rsa`, or one buried mid-entry as
+`docs/../../secret`) is never collapsed. Either would read a file outside the scanned
+tree and inject it verbatim into a dispatched agent's prompt — which then flows on
+into commit messages, task bodies, and logs. Both are therefore refused *lexically*,
+before any join, so no out-of-tree path is ever even constructed; the entry is
+reported in `skipped` with reason `declared source escapes the scanned tree`, kept
+distinct from `declared source not found` so an operator can tell a containment
+refusal from a typo. Rejecting one entry does not suppress its in-tree siblings.
+
 ## The `dispatch.directives` override: replace, never merge
 
 ```sh
@@ -79,7 +91,15 @@ operator never named, which is precisely what an explicit declaration is for.
   `dispatch.verify`, which rejects an empty value — an empty verify command would
   silently disable a gate, whereas an empty directive list disables nothing.
 - A declared path that does not exist lands in `skipped` with reason
-  `declared source not found`. The operator named it, so its absence is signal.
+  `declared source not found`. The operator named it, so its absence is signal. A
+  declared **wildcard** that matches nothing is reported the same way.
+- A declared entry may be a literal file, a directory (expanded to the `*.md`/`*.mdc`
+  files beneath it), or a wildcard: `docs/rules/*.md` takes one level of that
+  extension, `docs/rules/**/*.md` recurses, and a bare `*` / `**` takes every
+  extension one level deep / recursively. Every expansion is sorted, so which sources
+  a bounded set admits never depends on filesystem iteration order.
+- A declared entry that reaches outside the scanned tree is refused — see
+  "Symlinks are never followed" above.
 - The key is **repo-only** (like `dispatch.verify` and `server.quick_filters`): a
   directive source list names files inside one project's tree. `--global` is rejected
   with its own message saying so.
