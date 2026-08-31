@@ -1575,8 +1575,6 @@ const {
   findPrompt,
   INJECTION_HYGIENE,
   PLAN_SEVERITY_CALIBRATION,
-  directivesPresent,
-  DIRECTIVES_PREAMBLE,
   survives,
   rankFindings,
   CONFIDENCE_FLOOR,
@@ -1874,69 +1872,6 @@ for (const dim of DIMENSIONS.code) {
 console.log(
   'AC2: code-mode findPrompt output is byte-exact — shared hygiene line + own dimension focus, no plan-severity calibration'
 );
-
-// ============================================================================
-// AC2-directives — the PROJECT-DIRECTIVE channel (dispatch-dev-discipline
-// phase 3). Project-authored prose is threaded into EVERY finder prompt of BOTH
-// modes and EVERY dimension, VERBATIM, behind a PRESENCE GUARD.
-//
-// The guard is what keeps the byte-exact pin above green with no re-fixture:
-// CTX carries no `directives` key, so nothing is added. If a future change makes
-// injection unconditional, that baseline has to be re-pinned deliberately —
-// which is exactly what the pin is for.
-// ============================================================================
-{
-  const RULE = 'PROJECT-RULE-SENTINEL: run the mutation suite before finishing.';
-  for (const mode of ['code', 'plan']) {
-    for (const dim of DIMENSIONS[mode]) {
-      const withDirectives = findPrompt(mode, dim, { ...CTX, directives: RULE });
-      assert.ok(
-        withDirectives.includes(RULE),
-        mode + '/' + dim.key + ': the directive text is threaded VERBATIM into the finder prompt'
-      );
-      assert.ok(
-        withDirectives.includes(DIRECTIVES_PREAMBLE),
-        mode + '/' + dim.key + ': ...behind the authority preamble'
-      );
-      // ABSENT / empty / whitespace-only all leave the prompt byte-identical —
-      // the absent case must add nothing at all, not even a blank line.
-      assert.equal(
-        findPrompt(mode, dim, { ...CTX, directives: '' }),
-        findPrompt(mode, dim, CTX),
-        mode + '/' + dim.key + ': an EMPTY directives key leaves the prompt byte-identical'
-      );
-      assert.equal(
-        findPrompt(mode, dim, { ...CTX, directives: '  \n\t ' }),
-        findPrompt(mode, dim, CTX),
-        mode + '/' + dim.key + ': a WHITESPACE-ONLY directives key leaves the prompt byte-identical'
-      );
-      assert.ok(
-        !findPrompt(mode, dim, CTX).includes(DIRECTIVES_PREAMBLE),
-        mode + '/' + dim.key + ': no directives threaded ⇒ no preamble'
-      );
-    }
-  }
-  // directivesPresent is the ONE predicate the prompt reads, mirroring
-  // intentPresent — so a notice and the prompt can never disagree.
-  assert.equal(directivesPresent({}), false, 'AC2-directives: an omitted key is not present');
-  assert.equal(directivesPresent({ directives: '   ' }), false, 'AC2-directives: whitespace-only is not present');
-  assert.equal(directivesPresent({ directives: 'x' }), true, 'AC2-directives: a non-empty value is present');
-  assert.equal(directivesPresent(null), false, 'AC2-directives: a null context is not present');
-
-  // The AUTHORITY SCOPE is load-bearing and pinned: this channel carries
-  // project-authored text straight into a reviewer prompt, so it must deny
-  // directives the power to narrow the review, and say that a directive
-  // attempting it is itself reported.
-  for (const clause of ['CANNOT narrow your review', 'skip a file', 'lower a severity', 'pre-approved', 'is itself a finding']) {
-    assert.ok(DIRECTIVES_PREAMBLE.includes(clause), 'AC2-directives: the preamble pins the clause: ' + clause);
-  }
-  // INJECTION_HYGIENE is unchanged and still pushed unconditionally alongside it.
-  assert.ok(
-    findPrompt('code', DIMENSIONS.code[1], { ...CTX, directives: RULE }).includes(INJECTION_HYGIENE),
-    'AC2-directives: the untrusted-data rule still governs everything the reviewer READS'
-  );
-  console.log('AC2-directives: project directives reach every finder prompt in both modes, verbatim, presence-guarded');
-}
 
 // ============================================================================
 // AC2c — prompt-injection hygiene is threaded into EVERY finder prompt, in BOTH
@@ -2988,42 +2923,6 @@ if run_node "$TMP/test.mjs" "$LIB"; then
 else
     fail "review-refute-fix behavior assertions failed"
 fi
-
-# --- 3b-directives. PLANTED-MUTATION SELF-TESTS FOR THE DIRECTIVE CHANNEL -----
-# The AC2-directives assertions above are only worth having if they are not
-# vacuous. Two independent mutations, each flipping a DIFFERENT half:
-#   (a) removing the presence guard makes the ABSENT case add a preamble, which
-#       would also silently invalidate the byte-exact code-mode pin.
-#   (b) making findPrompt paraphrase (slice) the threaded text breaks verbatim
-#       injection, the one property this whole channel exists to preserve.
-say "3b-directives. Planted-mutation self-tests for the project-directive channel"
-
-DIRMUT="$TMP/dir-mut/.claude/workflows/lib"
-mkdir -p "$DIRMUT"
-
-cp "$LIB" "$DIRMUT/review.mjs"
-run_node "$TMP/test.mjs" "$DIRMUT/review.mjs" >/dev/null 2>&1 ||
-    fail "3b-directives: the unmutated copy must pass before any mutation is planted"
-
-# (a) presence guard removed — the absent case now gains a preamble.
-cp "$LIB" "$DIRMUT/review.mjs"
-perl -pi -e "s/^function directivesPresent\(ctx\) \{\$/function directivesPresent(ctx) { return true;/" "$DIRMUT/review.mjs"
-grep -q 'function directivesPresent(ctx) { return true;' "$DIRMUT/review.mjs" ||
-    fail "3b-directives(a): could not plant the presence-guard mutation"
-if run_node "$TMP/test.mjs" "$DIRMUT/review.mjs" >/dev/null 2>&1; then
-    fail "3b-directives(a): removing the presence guard did NOT turn the assertions red — the byte-identical-when-absent check is vacuous"
-fi
-pass "3b-directives(a): a presence guard that always fires turns the assertions red"
-
-# (b) verbatim injection replaced with a truncating paraphrase.
-cp "$LIB" "$DIRMUT/review.mjs"
-perl -pi -e "s/context\.directives\.trim\(\)/context.directives.trim().slice(0, 12)/g" "$DIRMUT/review.mjs"
-grep -q 'context.directives.trim().slice(0, 12)' "$DIRMUT/review.mjs" ||
-    fail "3b-directives(b): could not plant the truncating mutation"
-if run_node "$TMP/test.mjs" "$DIRMUT/review.mjs" >/dev/null 2>&1; then
-    fail "3b-directives(b): truncating the threaded directive text did NOT turn the assertions red — the verbatim check is vacuous"
-fi
-pass "3b-directives(b): a truncating (paraphrasing) findPrompt turns the assertions red"
 
 # --- 3c. FINDER RETRY, PARTICIPATION, AND THE ABSENT AC TABLE ----------------
 # The correctness gap this section gates: a dimension finder that dies used to
@@ -10708,8 +10607,6 @@ const {
   intentPresent,
   INTENT_PREAMBLE,
   INTENT_MISSING_NOTICE,
-  directivesPresent,
-  DIRECTIVES_PREAMBLE,
   buildReviewPipeline,
   hasBlocking,
   classifyPlanOutcome,

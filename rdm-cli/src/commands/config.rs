@@ -50,9 +50,7 @@ pub fn run(
 
             if global {
                 if paths::is_repo_only(&key) {
-                    // Per-key text, single-sourced in paths::repo_only_message so
-                    // this guard and set_global_config_field can never diverge.
-                    bail!("{}", paths::repo_only_message(&key));
+                    bail!("'{key}' can only be set in repo config — omit --global");
                 }
                 let mut config = global_config.clone();
                 paths::set_global_config_field(&mut config, &key, &value)?;

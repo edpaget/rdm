@@ -315,11 +315,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ModelCommand,
     },
-    /// Inspect what the autonomous dispatch lane resolves for this project.
-    Dispatch {
-        #[command(subcommand)]
-        command: DispatchCommand,
-    },
     /// Backlog grooming signals (stale tasks, duplicates, tag clusters, archivable roadmaps).
     Backlog {
         #[command(subcommand)]
@@ -1218,43 +1213,12 @@ pub(crate) enum WorktreeCommand {
     },
 }
 
-/// Roles a directive can be addressed to, as a `--role` filter value.
-#[derive(Debug, Clone, Copy, ValueEnum)]
-pub(crate) enum DirectiveRoleArg {
-    /// Only directives the implementer should see.
-    Implementer,
-    /// Only directives the reviewers should see.
-    Reviewer,
-}
-
-#[derive(Subcommand)]
-pub(crate) enum DispatchCommand {
-    /// Resolve this project's dispatch directives (read-only; writes nothing).
-    ///
-    /// Prints the directive sources rdm would inject into a dispatched
-    /// implementer's or reviewer's prompt, their text VERBATIM, and every
-    /// source that was found but not injected. Finding nothing is normal and
-    /// exits 0. See `docs/project-directives.md`.
-    Directives {
-        /// The source repository to scan. Defaults to the current directory.
-        #[arg(long)]
-        dir: Option<PathBuf>,
-        /// Only emit directives addressed to this role (`both` always matches).
-        #[arg(long, value_enum)]
-        role: Option<DirectiveRoleArg>,
-        /// Output format.
-        #[arg(long, value_enum, default_value = "text")]
-        format: OutputFormat,
-    },
-}
-
 #[derive(Subcommand)]
 pub(crate) enum ConfigCommand {
     /// Get the resolved value of a config key.
     Get {
         /// Config key (e.g. default_project, default_format, remote.default,
-        /// root, server.quick_filters, dispatch.verify,
-        /// dispatch.directives).
+        /// root, server.quick_filters, dispatch.verify).
         key: String,
         /// Print only the value, with no `(source: ...)` annotation, and print
         /// nothing at all when the key is unset. Intended for scripts and
@@ -1270,9 +1234,6 @@ pub(crate) enum ConfigCommand {
         /// `Label:tag,Label2:tag2` form (e.g. `Bug:bug,Refactor:refactor`);
         /// an empty string clears all chips. `dispatch.verify` is repo-only
         /// (rejected with `--global`) and takes one non-empty command string.
-        /// `dispatch.directives` is repo-only too and takes a comma-separated
-        /// list of directive source paths, replacing rdm's own discovery; an
-        /// empty string declares that the project has no directive sources.
         value: String,
         /// Write to global config instead of repo config.
         #[arg(long)]

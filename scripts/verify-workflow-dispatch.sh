@@ -1752,43 +1752,6 @@ assert.ok(reworkPrompt.includes('9'), 'the rework prompt carries the failing exi
 console.log('1d(f) OK: the resolved command reaches both the first-pass and rework implementer prompts');
 
 // ===========================================================================
-// (f2) PROJECT DIRECTIVES reach BOTH implementer prompts, and an ABSENT set
-//      changes nothing. (dispatch-dev-discipline phase 3, AC1 + AC5.)
-//      scripts/verify-project-directives.sh owns the full selection/rendering
-//      contract; this section owns the WIRING — that the shipped builder
-//      actually threads the block onto the shared path, where a refactor that
-//      moved it into one branch would go unnoticed.
-// ===========================================================================
-{
-  const DIR_SENTINEL = 'DIRECTIVE-SENTINEL-XYZ';
-  const block = '--- PROJECT DIRECTIVE: .claude/rules/x.md ---\n' + DIR_SENTINEL + '\n--- END PROJECT DIRECTIVE ---';
-  const first = buildImplementPrompt('rm', 'BODY', 'PLAN', null, cfg, SENTINEL, block);
-  assert.ok(first.includes(DIR_SENTINEL), '(f2) the FIRST-PASS implementer prompt carries the directive block');
-  const re = buildImplementPrompt('rm', 'BODY', 'PLAN', {
-    findings: [{ id: 'f1', severity: 'blocking', concern: 'x', confidence: 90, what_fails: 'y' }],
-    acTable: null,
-  }, cfg, SENTINEL, block);
-  assert.ok(re.includes(DIR_SENTINEL), '(f2) the REWORK implementer prompt carries it too — the push is on the SHARED path');
-  // The verify tooling line must still come first: phase 1's positional greps
-  // and its escalation prose depend on that ordering staying stable.
-  assert.ok(first.indexOf(SENTINEL) < first.indexOf(DIR_SENTINEL), '(f2) the verify tooling line still precedes the directive block');
-
-  // ABSENT ⇒ byte-identical to a directives-free prompt. `join('\n')` turns a
-  // pushed '' into a real blank line, so this only holds because the push is
-  // emptiness-guarded — assert it rather than assume it.
-  assert.equal(
-    buildImplementPrompt('rm', 'BODY', 'PLAN', null, cfg, SENTINEL, ''),
-    buildImplementPrompt('rm', 'BODY', 'PLAN', null, cfg, SENTINEL),
-    '(f2) an EMPTY directive block leaves the implementer prompt byte-identical'
-  );
-  assert.ok(
-    !buildImplementPrompt('rm', 'BODY', 'PLAN', null, cfg, SENTINEL, '').includes('PROJECT DIRECTIVE'),
-    '(f2) ...and carries no directive fence at all'
-  );
-  console.log('1d(f2) OK: the directive block reaches both implementer branches, after the tooling line, and is inert when absent');
-}
-
-// ===========================================================================
 // (g) AC3's OTHER half — the Stage-0 RESOLUTION prompt itself. 1d(c) and 6h
 //     prove what the driver does with a resolved (or unresolvable) command,
 //     but every driven fake answers `fetch:*` with a canned `verify` field
@@ -1827,20 +1790,6 @@ console.log('1d(f) OK: the resolved command reaches both the first-pass and rewo
       cursor = at;
     }
     assert.ok(/EMPTY STRING/.test(prompt), name + ': ... and the prompt says to return an empty string when nothing resolves, so the driver can escalate');
-
-    // PROJECT DIRECTIVES ride on the SAME Stage-0 agent, concatenated AFTER the
-    // verify paragraph so the positional greps above stay stable.
-    const DIRECTIVES_CMD = '/fake/bin/rdm dispatch directives --format json';
-    assert.ok(prompt.includes(DIRECTIVES_CMD), name + ': the Stage-0 prompt tells the agent to resolve project directives');
-    assert.ok(
-      prompt.indexOf(DECLARED) < prompt.indexOf(DIRECTIVES_CMD),
-      name + ': ... and does so AFTER the verify resolution paragraph, so phase 1\'s ordering greps stay stable'
-    );
-    assert.ok(/CHARACTER FOR CHARACTER/.test(prompt), name + ': ... instructing a verbatim copy, since a paraphrase is exactly what must not reach the implementer');
-    assert.ok(/directivesSkipped/.test(prompt), name + ': ... and asking for the skipped list, so a withheld rule stays observable');
-    // The failure direction is OPPOSITE to the verify command's: an absent set is
-    // normal and must produce NOTHING, never an invented directive.
-    assert.ok(/Absent directives are NORMAL/.test(prompt), name + ': ... and says absent directives are normal rather than an error');
   }
   console.log('1d(g) OK: both Stage-0 fetch prompts carry the declared-key-then-discovery resolution paragraph, in precedence order');
 }
@@ -2944,30 +2893,16 @@ for shim in \
     # The literal also pins `verify` (the phase-time verification command the
     # hoist must forward, see docs/verify-gate.md): a hoist that omits it is
     # rejected by hoistedMetaComplete and silently costs a Stage-0 agent.
-    grep -qF 'body, roadmapBody, verify, directives, directivesSkipped, models:' "$shim" ||
-        fail "AC-PLAN-INTENT-HOIST: $shim must carry roadmapBody, verify AND the two directive keys inside the assembled phaseMeta object literal"
+    grep -qF 'body, roadmapBody, verify, models:' "$shim" ||
+        fail "AC-PLAN-INTENT-HOIST: $shim must carry roadmapBody and verify inside the assembled phaseMeta object literal"
     # `--raw` is load-bearing, not cosmetic: a bare `config get` prints
     # `<value>  (source: repo config)`, and every one of these shims tells the
     # agent to keep the printed value VERBATIM. Without --raw the annotation
     # rides along into the hoisted `verify` field.
     grep -qF 'config get dispatch.verify --raw' "$shim" ||
         fail "AC-PLAN-INTENT-HOIST: $shim hoists a meta payload but never reads dispatch.verify --raw — hoistedMetaComplete would reject it, or the hoisted value would carry a (source: ...) annotation"
-    # PROJECT DIRECTIVES (dispatch-dev-discipline phase 3). Same structural trap
-    # as roadmapBody: `directives` is OPTIONAL and out of hoistedMetaComplete's
-    # key list, so a hoisting caller that omits it turns directive injection off
-    # for that dispatch with nothing reporting it. Unlike `verify`, an empty or
-    # failed read must NOT abandon the hoist — absent directives are normal — and
-    # that instruction is exactly what a shim can get wrong by copying the verify
-    # bullet, so the prose is pinned too.
-    grep -qF 'dispatch directives --format json' "$shim" ||
-        fail "AC-DIRECTIVES-HOIST: $shim hoists a meta payload but never runs \`rdm dispatch directives --format json\` — a hoisting caller skips Stage 0, so project directives would silently never be injected on this path"
-    grep -qF 'directivesSkipped' "$shim" ||
-        fail "AC-DIRECTIVES-HOIST: $shim never names directivesSkipped — a withheld project rule would be unobservable on this path"
-    grep -qF 'must NOT abandon the hoist' "$shim" ||
-        fail "AC-DIRECTIVES-HOIST: $shim must say explicitly that an empty or failed directive read does NOT abandon the hoist (absent directives are normal, unlike an unresolvable verify command)"
 done
 pass "AC-PLAN-INTENT-HOIST: all three hoisting shims and their shipped CLI templates fetch the roadmap body and the verify command, and forward both"
-pass "AC-DIRECTIVES-HOIST: all six hoisting shims resolve project directives, forward both keys, and state that an empty read never abandons the hoist"
 
 # The MCP flavors deliberately do NOT hoist (no model-resolve tool), so they must
 # not grow a roadmapBody instruction either — the in-workflow Stage-0 fetch is
@@ -4576,11 +4511,7 @@ const FAKE_BIN = '/fake/bin/rdm';
 // they must carry NO project flag; everything else is project-scoped and MUST
 // carry it whenever a project was configured.
 // `config get` is project-agnostic too: `rdm config get` takes no --project.
-// `dispatch directives` likewise: it scans a SOURCE tree named by --dir and reads
-// the plan repo's repo-level `dispatch.directives` key, neither of which is
-// project-scoped, so the subcommand rejects --project exactly as `config get`
-// does.
-const PROJECT_AGNOSTIC = ['model resolve', 'config get', 'dispatch directives', 'commit', 'status', 'discard'];
+const PROJECT_AGNOSTIC = ['model resolve', 'config get', 'commit', 'status', 'discard'];
 
 const MODELS = { plan: 'm-plan', implement: 'm-impl', review_find: 'm-find', review_verify: 'm-verify', mechanical: 'm-mech' };
 const PHASE_META = { roadmap: 'rm', phase: 'phase-1-x', stem: 'phase-1-x', model: 'medium', body: 'PHASE BODY TEXT', verify: 'sh scripts/verify-all.sh', models: MODELS };
