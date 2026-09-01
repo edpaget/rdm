@@ -93,7 +93,7 @@ The inherited-lease mechanism (rung 2) requires traversing multiple generations 
 
 - **Measured limitation**: An analysis on 2026-08-04 confirmed that `parent_id()` alone is insufficient and that ancestry traversal beyond the standard library is required.
 
-### Stopping Rule (Phase 4 to Decide)
+### Stopping Rule (resolved by phase 4)
 
 At some point in the ancestry chain, traversal must stop — we cannot walk all the way to PID 1. The choice of where to stop involves asymmetric failure modes:
 
@@ -102,11 +102,11 @@ At some point in the ancestry chain, traversal must stop — we cannot walk all 
 
 **Preferred asymmetry**: Prefer stopping low. Fragmenting one session's batch is less harmful than merging two sessions' work.
 
-**Who decides**: Phase 4 determines the exact stopping rule (e.g., "stop at the first process with a session variable set", "stop at the session leader", "traverse up to a known harness boundary"), but the asymmetric-failure principle above is binding.
+**Who decides**: Phase 4 determined the exact stopping rule — see `docs/session-identity.md` § "The shipped stopping rule". The asymmetric-failure principle above is binding on it.
 
 ### Git Hooks and Session Identity
 
-When a git hook (such as `post-merge` or `post-commit`) is spawned as a subprocess of an rdm operation (e.g., `rdm commit` runs `git merge --ff-only`, which triggers the `post-merge` hook), the hook inherits the session identity from its parent rdm process and joins the same session's changeset. This is correct behavior — the hook's work is part of the same logical transaction.
+When a git hook (such as `post-merge` or `post-commit`) is spawned as a subprocess of an rdm operation (e.g., an agent's own `git merge --ff-only` — the `rdm-land` fast-forward — fires `post-merge`, which runs `rdm hook post-merge` under that agent's lease; `rdm commit` itself never fires a hook), the hook inherits the session identity from its parent rdm process and joins the same session's changeset. This is correct behavior — the hook's work is part of the same logical transaction.
 
 When a git hook is spawned outside of any rdm-initiated git operation (e.g., a user runs `git merge` manually), the hook has no inherited session identity and resolves to rung 4 (per-process changeset). In this case, the hook's mutations are isolated to that process and are not combined with other sessions' work.
 
@@ -164,13 +164,13 @@ Phase 4 has implemented the session-scoped journal mechanism with the following 
 - **Serialization format**: JSONL (JSON Lines) is the format. Each line is a complete JSON record representing one journaled mutation, enabling streaming and append-only writes.
 - **Implementation**: Core session and journal logic resides in `rdm-core/src/session/` (see `journal.rs`, `lease.rs`, `process.rs`, `mod.rs`), and CLI surface is in `rdm-cli/src/commands/session.rs`.
 - **Granularity**: The atomic unit is per-mutation — each create, update, or delete operation writes a journal entry recording the file paths it touched.
-- **Cleanup and lifecycle**: Journals are retained until explicitly discarded. The `rdm session gc` command (CLI surface) provides cleanup and orphaned changeset recovery. Cleanup behavior can be refined in later phases based on operational experience.
+- **Cleanup and lifecycle**: Journals are retained until explicitly discarded. `rdm session gc` removes leases whose owning process is gone or whose pid was recycled and never touches a journal; an orphaned changeset is recovered with `rdm session adopt <id>`. Cleanup behavior can be refined in later phases based on operational experience.
 - **CLI surface for session management**: 
   - `rdm session id` — display the current session identity
   - `rdm session journal` — inspect journaled paths for the current session
   - `rdm session list` — list all known sessions and their metadata
   - `rdm session adopt <session-id>` — adopt an existing session identity
-  - `rdm session discard` — mark the current session for cleanup
+  - `rdm session discard <id> --force` — delete a changeset's journal
   - `rdm session gc` — garbage-collect orphaned sessions
 
 ## Open Questions (Deferred to Phase 5 or Later)
@@ -200,7 +200,7 @@ The mechanism is deliberately a *projection*, not a journal-scoped `Store` view:
 
 #### What the drop costs, and why it was chosen
 
-The divergence step 2b introduces is `tree ⊇ index`, never the reverse. A dangling row is a corrupt artifact; an omitted row is a stale-but-valid one, and the omission is repaired with no user action: `journal::truncate` trims only the paths a commit actually landed, so the deferred `projects/<p>/INDEX.md` stays in the deferring session's changeset, and the moment the owning session commits its `project.md`, that session's own `reconcile_derived` seeds from a HEAD which now holds the deferred document and regenerates every row. (`rdm index` also rebuilds unconditionally.) This rests on truncation staying landed-paths-only — if it ever widened to cover journaled-but-unlanded paths, the heal would break and this trade would become indefensible.
+The divergence step 3 introduces is `tree ⊇ index`, never the reverse. A dangling row is a corrupt artifact; an omitted row is a stale-but-valid one, and the omission is repaired with no user action: `journal::truncate` trims only the paths a commit actually landed, so the deferred `projects/<p>/INDEX.md` stays in the deferring session's changeset, and the moment the owning session commits its `project.md`, that session's own `reconcile_derived` seeds from a HEAD which now holds the deferred document and regenerates every row. (`rdm index` also rebuilds unconditionally.) This rests on truncation staying landed-paths-only — if it ever widened to cover journaled-but-unlanded paths, the heal would break and this trade would become indefensible.
 
 **The accepted consequence, stated explicitly:** the committing session's own new document is absent from the index *it* commits. That is accepted, because the alternative — emitting `projects/<p>/INDEX.md` for a project whose manifest the commit does not contain — is exactly the orphan the guarantee above forbids. Nothing is lost from the tree: the document itself still lands.
 
@@ -213,7 +213,7 @@ Two shapes are out of scope by construction rather than by defense: a `projects/
 
 ### Merge Driver: Out of Scope (Correctly)
 
-The rdm-index merge driver (`rdm-store-git/src/repo.rs`) automatically regenerates `INDEX.md` when git detects conflicts during a merge. However, changesets never perform a merge — a changeset-scoped commit constructs its tree from HEAD plus the caller's journaled paths (a direct write operation, no three-way merge). Therefore, the rdm-index merge driver is not involved in changeset-scoped commits and is orthogonal to this decision. It remains orthogonal as long as phase 4's partial-tree mechanism avoids merging.
+The rdm-index merge driver (`rdm-store-git/src/repo.rs`) automatically regenerates `INDEX.md` when git detects conflicts during a merge. However, changesets never perform a merge — a changeset-scoped commit constructs its tree from HEAD plus the caller's journaled paths (a direct write operation, no three-way merge). Therefore, the rdm-index merge driver is not involved in changeset-scoped commits and is orthogonal to this decision. It remains orthogonal as long as phase 5's partial-tree mechanism avoids merging.
 
 ### `rdm status` and `rdm discard` — **resolved by phase 5**
 
