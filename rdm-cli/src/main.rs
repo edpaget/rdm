@@ -1,7 +1,7 @@
 use std::process;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 #[cfg(not(feature = "git"))]
 use rdm_store_fs::FsStore;
 
@@ -27,7 +27,13 @@ fn main() {
 }
 
 fn run() -> Result<()> {
-    let cli = Cli::parse();
+    // Two-step parse (instead of `Cli::parse()`) so `matches.value_source("root")`
+    // is available: clap merges the `--root` flag and `RDM_ROOT` env var into a
+    // single `cli.root` value, so the two are otherwise indistinguishable once
+    // parsed — `info` needs to know which one actually supplied the value.
+    let matches = Cli::command().get_matches();
+    let root_source = matches.value_source("root");
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
     let global_config = paths::load_global_config();
 
     // Handle config commands early — some don't need a repo.
@@ -44,16 +50,20 @@ fn run() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Guard: non-init commands require rdm.toml to exist at the resolved root.
-    // Exempt commands (Init, Bootstrap, Describe, AgentConfig, Hook, Model, Mcp)
-    // are allowed to proceed without rdm.toml.
+    // Exempt commands (Init, Bootstrap, Describe, AgentConfig, Hook, Model, Mcp,
+    // Info) are allowed to proceed without rdm.toml.
     let rdm_toml_exists = root.join("rdm.toml").exists();
     if !rdm_toml_exists {
         match &cli.command {
             Command::Init { .. }
             | Command::Describe { .. }
             | Command::AgentConfig { .. }
-            | Command::Model { .. } => {
-                // These commands are exempt; proceed.
+            | Command::Model { .. }
+            | Command::Info { .. } => {
+                // These commands are exempt; proceed. Info is diagnostic,
+                // like Describe/Model — it must work pre-`rdm init` so a
+                // plugin resolving its environment can detect "no plan repo
+                // here" rather than being blocked by this guard first.
             }
             #[cfg(feature = "git")]
             Command::Bootstrap { .. } | Command::Hook { .. } => {
@@ -246,6 +256,16 @@ fn run() -> Result<()> {
             let mut store = commands::make_store(&root)?;
             commands::next::run(&mut store, &repo_config, format, roadmap, project)?;
         }
+
+        Command::Info { project } => commands::info::run(
+            &root,
+            root_source,
+            &global_config,
+            &repo_config,
+            format,
+            cli.format,
+            project,
+        )?,
 
         Command::Model { command } => {
             commands::model::run(command, &repo_config, format)?;

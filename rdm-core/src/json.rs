@@ -207,6 +207,30 @@ pub struct ProjectJson {
 }
 
 // ---------------------------------------------------------------------------
+// Info types
+// ---------------------------------------------------------------------------
+
+/// What `rdm` actually resolved for the current environment: the plan repo
+/// root, the selected project (if any), and the defaults that would govern
+/// an unqualified command. Powers `rdm info --format json`, the single-call
+/// discovery contract an editor or plugin integration resolves
+/// `{root, project, default_branch, default_format}` against.
+#[derive(Debug, Clone, Serialize)]
+pub struct InfoJson {
+    /// The resolved plan repo root path.
+    pub root: String,
+    /// The resolved project, if one could be determined. Omitted (not
+    /// `null`) when no project resolves, so a plugin can detect "no project
+    /// selected here" by the key's absence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// The default branch that would govern hook/land-time behavior.
+    pub default_branch: String,
+    /// The default output format that would govern an unqualified command.
+    pub default_format: String,
+}
+
+// ---------------------------------------------------------------------------
 // Search types
 // ---------------------------------------------------------------------------
 
@@ -965,5 +989,35 @@ mod tests {
         assert!(v.get("submitted").is_none());
         assert!(v.get("created_commit").is_none());
         assert_eq!(v["state"], "draft");
+    }
+
+    #[test]
+    fn info_json_omits_project_when_none() {
+        let info = InfoJson {
+            root: "/tmp/plan-repo".to_string(),
+            project: None,
+            default_branch: "main".to_string(),
+            default_format: "human".to_string(),
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert!(
+            v.get("project").is_none(),
+            "the 'project' key must be absent entirely when unresolved, not present as null: {v}"
+        );
+        assert_eq!(v["root"], "/tmp/plan-repo");
+        assert_eq!(v["default_branch"], "main");
+        assert_eq!(v["default_format"], "human");
+    }
+
+    #[test]
+    fn info_json_includes_project_when_some() {
+        let info = InfoJson {
+            root: "/tmp/plan-repo".to_string(),
+            project: Some("rdm".to_string()),
+            default_branch: "main".to_string(),
+            default_format: "json".to_string(),
+        };
+        let v = serde_json::to_value(&info).unwrap();
+        assert_eq!(v["project"], "rdm");
     }
 }

@@ -22,6 +22,7 @@ pub mod backlog;
 pub mod config;
 pub mod describe;
 pub mod index;
+pub mod info;
 pub mod init;
 pub mod list;
 pub mod model;

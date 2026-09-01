@@ -310,6 +310,15 @@ pub(crate) enum Command {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Show what rdm resolved for the current environment: plan repo root,
+    /// project, default branch, and default output format — the single call
+    /// an editor or plugin integration needs to map its working directory to
+    /// `{root, project, default_branch, default_format}`.
+    Info {
+        /// Project to resolve (same precedence as every other command).
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Resolve or inspect the model-tier sizing policy for dispatch steps.
     Model {
         #[command(subcommand)]

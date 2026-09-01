@@ -328,6 +328,8 @@ gains a trailing `Tags` column (or a ` [tags: a, b]` line suffix in the default
 
 Add `--no-body` to any `show` command to suppress body content when you only need metadata.
 
+`./target/debug/rdm info --format json` reports what rdm actually resolved for the current environment in one call — `{root, project, default_branch, default_format}`, each following the CLI's real precedence chain — useful when a tool other than this project's own CLAUDE.md needs to discover its plan repo location without scraping `rdm config list` or reading `rdm.toml` directly.
+
 ### Searching
 
 When looking for specific items by keyword, **prefer `rdm search` over listing and manually scanning results**. Search is fuzzy (typo-tolerant) and matches against both titles and body content.
