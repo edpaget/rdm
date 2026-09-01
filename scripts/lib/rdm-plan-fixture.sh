@@ -7,6 +7,7 @@
 #
 #   RDM_BIN="$REPO_ROOT/target/debug/rdm"
 #   . "$REPO_ROOT/scripts/lib/rdm-plan-fixture.sh"
+#   trap 'fixture_teardown' EXIT INT HUP TERM
 #   fixture_setup
 #   ... drive "$RDM_BIN" --root "$FIXTURE_PLAN" ... ...
 #   fixture_teardown
@@ -26,7 +27,8 @@
 #         FIXTURE_PROJECT  - the project slug (default "fixture-proj")
 #       Also reroots HOME/XDG_CONFIG_HOME/XDG_DATA_HOME/XDG_STATE_HOME under
 #       FIXTURE_ROOT (saving any prior values for fixture_teardown to
-#       restore), unsets every inherited RDM_* env var, and exports a fixed
+#       restore), unsets every inherited RDM_*-prefixed env var (except
+#       RDM_BIN), and exports a fixed
 #       git author/committer identity so git commits never fall back to a
 #       missing or real global git config.
 #   fixture_code_repo [dir-name]
@@ -62,9 +64,22 @@
 # invariant is what scripts/verify-rdm-plan-fixture.sh asserts.
 #
 # This library never reads or writes the real plan repo: it unsets every
-# inherited RDM_* variable (including RDM_ROOT) before the first rdm
-# invocation below, and every rdm invocation passes an explicit
+# inherited RDM_*-prefixed variable (including RDM_ROOT, RDM_PROJECT,
+# RDM_PLAN_REVIEW, and RDM_REVIEW_AUTHOR — anything rdm-cli/rdm-core reads
+# via std::env::var("RDM_..."), except RDM_BIN itself, which fixture_setup
+# requires the caller to have already set) before the first rdm invocation
+# below. This is a wildcard sweep over the actual environment, not a fixed
+# list, so a newly added RDM_* env var in rdm-cli can never silently reopen
+# this gap. Every rdm invocation also passes an explicit
 # --root "$FIXTURE_PLAN" rather than relying on env propagation.
+#
+# Failure-path cleanup: fixture_setup does not itself register a trap, so a
+# script that aborts (e.g. under `set -e`) between fixture_setup and
+# fixture_teardown will leak the mktemp'd FIXTURE_ROOT. Every consumer
+# SHOULD register its own cleanup trap immediately after sourcing this file,
+# e.g.:
+#
+#   trap 'fixture_teardown' EXIT INT HUP TERM
 
 # _fixture_rdm <args...> — invoke the caller-provided rdm binary rooted at
 # the fixture plan repo. Internal; not part of the public API.
@@ -173,9 +188,21 @@ fixture_setup() {
     export HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME
     mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
 
-    # Never let an inherited RDM_* env var steer a fixture command at the
-    # real plan repo — every invocation below passes --root explicitly.
-    unset RDM_ROOT RDM_PROJECT RDM_STAGE RDM_FORMAT RDM_PLAN_REPO RDM_PLAN_REPO_TOKEN RDM_PLAN_REPO_PATH
+    # Never let an inherited RDM_*-prefixed env var steer a fixture command
+    # at the real plan repo — every invocation below also passes --root
+    # explicitly regardless. Sweep the actual environment for every RDM_*
+    # name (RDM_ROOT, RDM_PROJECT, RDM_PLAN_REVIEW, RDM_REVIEW_AUTHOR,
+    # RDM_FORMAT, RDM_PLAN_REPO*, RDM_SERVER_QUICK_FILTERS,
+    # RDM_TEST_STALL_HOOK_MS, and any future addition) rather than hardcoding
+    # a list that a new rdm-cli env var could silently fall outside of.
+    # RDM_BIN is preserved — fixture_setup itself requires it.
+    for _fixture_env_name in $(env | LC_ALL=C sed -n 's/^\(RDM_[A-Za-z0-9_]*\)=.*/\1/p'); do
+        case "$_fixture_env_name" in
+            RDM_BIN) ;;
+            *) unset "$_fixture_env_name" ;;
+        esac
+    done
+    unset _fixture_env_name
 
     # Fixed git identity so a git commit made in the plan repo or a code
     # repo never falls back to a missing/real global git config.

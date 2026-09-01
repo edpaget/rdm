@@ -51,10 +51,16 @@ fail() {
 ok() { printf '\033[1;32m[ OK ]\033[0m %s\n' "$*"; }
 
 TMP=$(mktemp -d)
-trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/lib/rdm-plan-fixture.sh"
+
+# Per the library's documented convention: register cleanup for both this
+# script's own scratch dir AND any live FIXTURE_ROOT immediately after
+# sourcing, so an abort mid-script (this file runs under `set -eu`) never
+# leaks a fixture instead of merely relying on every call site remembering
+# to pair fixture_setup with fixture_teardown.
+trap 'rm -rf "$TMP"; fixture_teardown' EXIT INT HUP TERM
 
 # file_mtime <path> — portable mtime-in-seconds (BSD stat on macOS, GNU
 # stat elsewhere).
@@ -190,6 +196,87 @@ grep -q 'already set and still exists' "$TMP/reentrant.err" ||
 [ -d "$first_root" ] || fail "the first fixture_setup's FIXTURE_ROOT must still exist after a rejected re-entrant call"
 fixture_teardown
 ok "fixture_setup fails without clobbering state when called twice without an intervening teardown"
+
+# ---------------------------------------------------------------------------
+say "AC1c: fixture_teardown restores HOME/XDG_* to their exact captured original values"
+# ---------------------------------------------------------------------------
+
+# A hardcoded or swapped restore (e.g. restoring HOME from the saved
+# XDG_CONFIG_HOME, or any other value-mixup bug) must be caught: set
+# HOME/XDG_* to known, distinct sentinel values BEFORE fixture_setup runs,
+# run a full setup -> teardown cycle, and assert the ORIGINAL sentinel
+# values come back exactly — not merely that they are non-empty.
+_orig_home="${HOME:-<unset>}"
+_orig_xdg_config="${XDG_CONFIG_HOME:-<unset>}"
+_orig_xdg_data="${XDG_DATA_HOME:-<unset>}"
+_orig_xdg_state="${XDG_STATE_HOME:-<unset>}"
+
+HOME="$TMP/sentinel-home"
+XDG_CONFIG_HOME="$TMP/sentinel-xdg-config"
+XDG_DATA_HOME="$TMP/sentinel-xdg-data"
+XDG_STATE_HOME="$TMP/sentinel-xdg-state"
+export HOME XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
+
+fixture_setup
+[ "$HOME" = "$FIXTURE_ROOT/home" ] || fail "fixture_setup did not reroot HOME under FIXTURE_ROOT"
+fixture_teardown
+
+[ "$HOME" = "$TMP/sentinel-home" ] ||
+    fail "fixture_teardown restored HOME to the wrong value (expected $TMP/sentinel-home, got ${HOME:-<unset>})"
+[ "$XDG_CONFIG_HOME" = "$TMP/sentinel-xdg-config" ] ||
+    fail "fixture_teardown restored XDG_CONFIG_HOME to the wrong value (expected $TMP/sentinel-xdg-config, got ${XDG_CONFIG_HOME:-<unset>})"
+[ "$XDG_DATA_HOME" = "$TMP/sentinel-xdg-data" ] ||
+    fail "fixture_teardown restored XDG_DATA_HOME to the wrong value (expected $TMP/sentinel-xdg-data, got ${XDG_DATA_HOME:-<unset>})"
+[ "$XDG_STATE_HOME" = "$TMP/sentinel-xdg-state" ] ||
+    fail "fixture_teardown restored XDG_STATE_HOME to the wrong value (expected $TMP/sentinel-xdg-state, got ${XDG_STATE_HOME:-<unset>})"
+ok "fixture_teardown restores HOME/XDG_* to their exact pre-fixture sentinel values"
+
+# Put the real values back before continuing.
+if [ "$_orig_home" = "<unset>" ]; then unset HOME; else
+    HOME="$_orig_home"
+    export HOME
+fi
+if [ "$_orig_xdg_config" = "<unset>" ]; then unset XDG_CONFIG_HOME; else
+    XDG_CONFIG_HOME="$_orig_xdg_config"
+    export XDG_CONFIG_HOME
+fi
+if [ "$_orig_xdg_data" = "<unset>" ]; then unset XDG_DATA_HOME; else
+    XDG_DATA_HOME="$_orig_xdg_data"
+    export XDG_DATA_HOME
+fi
+if [ "$_orig_xdg_state" = "<unset>" ]; then unset XDG_STATE_HOME; else
+    XDG_STATE_HOME="$_orig_xdg_state"
+    export XDG_STATE_HOME
+fi
+
+# ---------------------------------------------------------------------------
+say "AC1d: an ambient RDM_*-prefixed env var never leaks into the fixture"
+# ---------------------------------------------------------------------------
+
+# rdm-cli reads several RDM_*-prefixed vars beyond RDM_ROOT/RDM_PROJECT —
+# notably RDM_PLAN_REVIEW (auto-stamps needs-plan-review on every created
+# item) and RDM_REVIEW_AUTHOR. Export a representative pair before
+# fixture_setup, exactly as a developer shell running this repo's own
+# plan_review-enabled dogfood config might, and prove fixture_setup's
+# wildcard RDM_* sweep clears them before the first rdm invocation.
+RDM_PLAN_REVIEW=true
+RDM_REVIEW_AUTHOR=ambient-author
+export RDM_PLAN_REVIEW RDM_REVIEW_AUTHOR
+
+fixture_setup
+
+[ -z "${RDM_PLAN_REVIEW:-}" ] || fail "fixture_setup left RDM_PLAN_REVIEW set to ${RDM_PLAN_REVIEW}"
+[ -z "${RDM_REVIEW_AUTHOR:-}" ] || fail "fixture_setup left RDM_REVIEW_AUTHOR set to ${RDM_REVIEW_AUTHOR}"
+
+leak_json="$TMP/ac1d-seed.json"
+"$RDM_BIN" --root "$FIXTURE_PLAN" tree --format json --project "$FIXTURE_PROJECT" >"$leak_json"
+if grep -q 'needs-plan-review' "$leak_json"; then
+    fail "an ambient RDM_PLAN_REVIEW leaked into the seed: seeded items are stamped needs-plan-review"
+fi
+
+fixture_teardown
+ok "fixture_setup's RDM_* sweep clears RDM_PLAN_REVIEW/RDM_REVIEW_AUTHOR before the seed runs"
 
 # ---------------------------------------------------------------------------
 say "AC2: two same-day runs stay byte-identical after redacting documented fields"
