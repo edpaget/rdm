@@ -43,7 +43,8 @@ fn run() -> Result<()> {
 
     let root = paths::resolve_root(cli.root, &global_config)?;
     let root = paths::expand_root(root)?;
-    let repo_config = paths::load_repo_config(&root).with_global_defaults(&global_config);
+    let raw_repo_config = paths::load_repo_config(&root);
+    let repo_config = raw_repo_config.clone().with_global_defaults(&global_config);
     let format_str = paths::resolve_format(cli.format.map(|f| f.to_string()), &repo_config);
     let format: OutputFormat = format_str
         .parse::<OutputFormat>()
@@ -261,7 +262,7 @@ fn run() -> Result<()> {
             &root,
             root_source,
             &global_config,
-            &repo_config,
+            &raw_repo_config,
             format,
             cli.format,
             project,

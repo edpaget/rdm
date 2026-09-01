@@ -30,12 +30,15 @@ struct InfoField {
 /// `root` and `root_source` are already resolved by the caller (`main.rs`)
 /// — `root_source` distinguishes the `--root` flag from the `RDM_ROOT` env
 /// var, which clap merges into a single value before this function ever
-/// sees it, via `ArgMatches::value_source("root")`. `global_config` and
-/// `repo_config` are also already loaded and merged (`repo_config` has
-/// global defaults folded in via `with_global_defaults`) — this function
-/// re-reads the *raw*, unmerged repo config internally to tell a
-/// repo-config-sourced value apart from a global-config-sourced one, which
-/// the merge collapses.
+/// sees it, via `ArgMatches::value_source("root")`. `global_config` is
+/// already loaded. `raw_repo_config` is the repo config as loaded from
+/// `rdm.toml` by the caller — *not* yet merged with `global_config` — so
+/// this function derives its own merged view via `with_global_defaults`
+/// for resolution, while using the unmerged one to tell a repo-sourced
+/// value apart from a global-sourced one (which the merge collapses) via
+/// [`paths::resolve_config_value`], the same repo/global precedence helper
+/// `rdm config get`/`config list` use. This way `rdm.toml` is parsed only
+/// once per invocation (by the caller), not a second time here.
 ///
 /// `format` is the fully-resolved output format governing *this command's*
 /// own rendering (flag → `RDM_FORMAT` env → config → human default).
@@ -61,15 +64,13 @@ pub fn run(
     root: &Path,
     root_source: Option<ValueSource>,
     global_config: &GlobalConfig,
-    repo_config: &Config,
+    raw_repo_config: &Config,
     format: OutputFormat,
     cli_format_flag: Option<OutputFormat>,
     project_flag: Option<String>,
 ) -> Result<()> {
-    // Re-load the raw (unmerged) repo config, purely to disambiguate a
-    // repo-sourced value from a global-sourced one for display — resolution
-    // itself always uses the already-merged `repo_config`.
-    let raw_repo_config = paths::load_repo_config(root);
+    let repo_config = raw_repo_config.clone().with_global_defaults(global_config);
+    let repo_config = &repo_config;
 
     let root_str = root.display().to_string();
     let root_source_label = match root_source {
@@ -84,22 +85,15 @@ pub fn run(
         Some(ConfigSource::Flag)
     } else if std::env::var("RDM_PROJECT").is_ok() {
         Some(ConfigSource::Env)
-    } else if raw_repo_config.default_project.is_some() {
-        Some(ConfigSource::Repo)
-    } else if global_config.default_project.is_some() {
-        Some(ConfigSource::Global)
     } else {
-        None
+        paths::resolve_config_value("default_project", raw_repo_config, global_config)
+            .map(|resolved| resolved.source)
     };
 
     let default_branch = repo_config.default_branch.as_deref().unwrap_or("main");
-    let default_branch_source = if raw_repo_config.default_branch.is_some() {
-        ConfigSource::Repo
-    } else if global_config.default_branch.is_some() {
-        ConfigSource::Global
-    } else {
-        ConfigSource::Default
-    };
+    let default_branch_source =
+        paths::resolve_config_value("default_branch", raw_repo_config, global_config)
+            .map_or(ConfigSource::Default, |resolved| resolved.source);
 
     // The global `--format` flag does double duty here: it selects info's
     // own rendering AND supplies the "flag" source/value for the reported
@@ -112,12 +106,9 @@ pub fn run(
         ConfigSource::Flag
     } else if std::env::var("RDM_FORMAT").is_ok() {
         ConfigSource::Env
-    } else if raw_repo_config.default_format.is_some() {
-        ConfigSource::Repo
-    } else if global_config.default_format.is_some() {
-        ConfigSource::Global
     } else {
-        ConfigSource::Default
+        paths::resolve_config_value("default_format", raw_repo_config, global_config)
+            .map_or(ConfigSource::Default, |resolved| resolved.source)
     };
 
     let fields = vec![

@@ -37,6 +37,35 @@ fn write_global_config(toml: &str) -> TempDir {
 }
 
 // ---------------------------------------------------------------------------
+// Malformed rdm.toml — `info` must read the repo config only once, so a
+// parse failure warns exactly once, not once per internal re-read.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn malformed_repo_config_warns_only_once() {
+    let root = bare_dir();
+    write_repo_config(&root, "this is not valid toml [[[");
+
+    let output = rdm()
+        .arg("--root")
+        .arg(root.path())
+        .args(["info", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    let warning_count = stderr
+        .matches("warning: ignoring malformed config at")
+        .count();
+    assert_eq!(
+        warning_count, 1,
+        "expected exactly one malformed-config warning, got {warning_count}: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // AC1: JSON shape, project omission
 // ---------------------------------------------------------------------------
 
@@ -513,6 +542,25 @@ fn root_source_is_global_config_when_neither_flag_nor_env_set() {
         .success()
         .stdout(predicate::str::contains("(source: global config)"))
         .stdout(predicate::str::contains(root.path().display().to_string()));
+}
+
+#[test]
+fn root_source_is_default_when_nothing_resolves() {
+    // No --root, no RDM_ROOT (removed by `rdm()`), and no `root` in global
+    // config (XDG_CONFIG_HOME already points to a nonexistent dir) — root
+    // must fall through to rdm-core's XDG-data-dir default, and report it
+    // as such rather than mislabeling it Global or leaving it untested.
+    let data_dir = TempDir::new().unwrap();
+
+    rdm()
+        .env("XDG_DATA_HOME", data_dir.path())
+        .arg("info")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(source: default)"))
+        .stdout(predicate::str::contains(
+            data_dir.path().join("rdm").display().to_string(),
+        ));
 }
 
 // ---------------------------------------------------------------------------
