@@ -36,9 +36,12 @@
 #       ref to branch from. Exports FIXTURE_CODE_REPO.
 #   fixture_teardown
 #       Removes FIXTURE_ROOT, restores any HOME/XDG_* values fixture_setup
-#       overrode (or unsets them if they were unset before), and unsets
-#       every FIXTURE_*/_FIXTURE_* variable this library sets. Safe to call
-#       more than once, or with no prior fixture_setup.
+#       overrode (or unsets them if they were unset before). If this library
+#       never actually ran a completed fixture_setup (teardown called with no
+#       prior setup, or called a second time back-to-back), HOME/XDG_* are
+#       left completely untouched — never forced unset. Also unsets every
+#       FIXTURE_*/_FIXTURE_* variable this library sets. Safe to call more
+#       than once, or with no prior fixture_setup.
 #
 # Determinism: two fixture_setup calls made on the SAME calendar day produce
 # byte-identical `--format json` output for the same rdm commands, once the
@@ -208,29 +211,36 @@ fixture_teardown() {
         rm -rf "${FIXTURE_ROOT:?}"
     fi
 
-    if [ "${_FIXTURE_SAVED_HOME_SET:-0}" = "1" ]; then
-        HOME="$_FIXTURE_SAVED_HOME"
-        export HOME
-    else
-        unset HOME
-    fi
-    if [ "${_FIXTURE_SAVED_XDG_CONFIG_HOME_SET:-0}" = "1" ]; then
-        XDG_CONFIG_HOME="$_FIXTURE_SAVED_XDG_CONFIG_HOME"
-        export XDG_CONFIG_HOME
-    else
-        unset XDG_CONFIG_HOME
-    fi
-    if [ "${_FIXTURE_SAVED_XDG_DATA_HOME_SET:-0}" = "1" ]; then
-        XDG_DATA_HOME="$_FIXTURE_SAVED_XDG_DATA_HOME"
-        export XDG_DATA_HOME
-    else
-        unset XDG_DATA_HOME
-    fi
-    if [ "${_FIXTURE_SAVED_XDG_STATE_HOME_SET:-0}" = "1" ]; then
-        XDG_STATE_HOME="$_FIXTURE_SAVED_XDG_STATE_HOME"
-        export XDG_STATE_HOME
-    else
-        unset XDG_STATE_HOME
+    # Only restore/unset HOME/XDG_* if THIS library actually saved them in a
+    # completed fixture_setup call. If _FIXTURE_ENV_SAVED was never set
+    # (fixture_teardown called with no prior fixture_setup, or called a
+    # second time back-to-back after the first teardown already cleared it),
+    # leave the caller's HOME/XDG_* completely untouched — do not unset them.
+    if [ "${_FIXTURE_ENV_SAVED:-0}" = "1" ]; then
+        if [ "${_FIXTURE_SAVED_HOME_SET:-0}" = "1" ]; then
+            HOME="$_FIXTURE_SAVED_HOME"
+            export HOME
+        else
+            unset HOME
+        fi
+        if [ "${_FIXTURE_SAVED_XDG_CONFIG_HOME_SET:-0}" = "1" ]; then
+            XDG_CONFIG_HOME="$_FIXTURE_SAVED_XDG_CONFIG_HOME"
+            export XDG_CONFIG_HOME
+        else
+            unset XDG_CONFIG_HOME
+        fi
+        if [ "${_FIXTURE_SAVED_XDG_DATA_HOME_SET:-0}" = "1" ]; then
+            XDG_DATA_HOME="$_FIXTURE_SAVED_XDG_DATA_HOME"
+            export XDG_DATA_HOME
+        else
+            unset XDG_DATA_HOME
+        fi
+        if [ "${_FIXTURE_SAVED_XDG_STATE_HOME_SET:-0}" = "1" ]; then
+            XDG_STATE_HOME="$_FIXTURE_SAVED_XDG_STATE_HOME"
+            export XDG_STATE_HOME
+        else
+            unset XDG_STATE_HOME
+        fi
     fi
 
     unset FIXTURE_ROOT FIXTURE_PLAN FIXTURE_PROJECT FIXTURE_CODE_REPO

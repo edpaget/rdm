@@ -7,7 +7,11 @@
 #
 #   AC1 setup/teardown : fixture_setup/fixture_teardown/fixture_code_repo
 #                        stand up and tear down an isolated plan (+ code)
-#                        repo with the documented seed set.
+#                        repo with the documented seed set, and the three
+#                        guard clauses (RDM_BIN missing/non-executable, a
+#                        re-entrant fixture_setup, fixture_code_repo called
+#                        out of order) fail loudly without clobbering state
+#                        or leaking a teardown-forced HOME/XDG_* unset.
 #   AC2 determinism     : two same-day fixture_setup runs yield
 #                        byte-identical `--format json` output once exactly
 #                        the header-documented volatile fields are redacted
@@ -110,6 +114,82 @@ ok "fixture_teardown removes FIXTURE_ROOT and unsets every exported var"
 # fixture_teardown must be a safe no-op with no prior fixture_setup.
 fixture_teardown
 ok "fixture_teardown is a safe no-op when called again with no prior setup"
+
+# ---------------------------------------------------------------------------
+say "AC1b: guard clauses (RDM_BIN check, re-entrant setup, code-repo ordering, HOME/XDG preservation)"
+# ---------------------------------------------------------------------------
+
+# A fixture_teardown call that never ran a completed fixture_setup in this
+# shell (the exact call sequence just exercised above) must leave
+# HOME/XDG_* completely untouched, not force them unset.
+pre_home="${HOME:-<unset>}"
+pre_xdg_config="${XDG_CONFIG_HOME:-<unset>}"
+pre_xdg_data="${XDG_DATA_HOME:-<unset>}"
+pre_xdg_state="${XDG_STATE_HOME:-<unset>}"
+fixture_teardown
+[ "${HOME:-<unset>}" = "$pre_home" ] || fail "fixture_teardown with no prior setup changed HOME"
+[ "${XDG_CONFIG_HOME:-<unset>}" = "$pre_xdg_config" ] || fail "fixture_teardown with no prior setup changed XDG_CONFIG_HOME"
+[ "${XDG_DATA_HOME:-<unset>}" = "$pre_xdg_data" ] || fail "fixture_teardown with no prior setup changed XDG_DATA_HOME"
+[ "${XDG_STATE_HOME:-<unset>}" = "$pre_xdg_state" ] || fail "fixture_teardown with no prior setup changed XDG_STATE_HOME"
+ok "fixture_teardown with no prior setup leaves HOME/XDG_* completely untouched"
+
+# RDM_BIN unset must fail fixture_setup loudly (return 1, actionable
+# message) rather than proceeding.
+SAVED_RDM_BIN="$RDM_BIN"
+unset RDM_BIN
+if fixture_setup 2>"$TMP/rdm-bin-unset.err"; then
+    RDM_BIN="$SAVED_RDM_BIN"
+    export RDM_BIN
+    fixture_teardown
+    fail "fixture_setup should fail when RDM_BIN is unset"
+fi
+grep -q 'RDM_BIN is not set' "$TMP/rdm-bin-unset.err" ||
+    fail "fixture_setup's RDM_BIN-unset error message is not actionable: $(cat "$TMP/rdm-bin-unset.err")"
+ok "fixture_setup fails loudly when RDM_BIN is unset"
+
+# RDM_BIN pointed at a non-executable file must fail the same way.
+RDM_BIN="$TMP/not-executable"
+: >"$RDM_BIN"
+export RDM_BIN
+if fixture_setup 2>"$TMP/rdm-bin-noexec.err"; then
+    RDM_BIN="$SAVED_RDM_BIN"
+    export RDM_BIN
+    fixture_teardown
+    fail "fixture_setup should fail when RDM_BIN is not executable"
+fi
+grep -q 'RDM_BIN is not set' "$TMP/rdm-bin-noexec.err" ||
+    fail "fixture_setup's RDM_BIN-non-executable error message is not actionable: $(cat "$TMP/rdm-bin-noexec.err")"
+ok "fixture_setup fails loudly when RDM_BIN is not executable"
+
+RDM_BIN="$SAVED_RDM_BIN"
+export RDM_BIN
+
+# fixture_code_repo called before any fixture_setup must fail cleanly
+# rather than mangling a path under an empty FIXTURE_ROOT.
+if fixture_code_repo 2>"$TMP/code-repo-order.err"; then
+    fail "fixture_code_repo should fail when called before fixture_setup"
+fi
+grep -q 'call fixture_setup before fixture_code_repo' "$TMP/code-repo-order.err" ||
+    fail "fixture_code_repo's ordering error message is not actionable: $(cat "$TMP/code-repo-order.err")"
+[ -z "${FIXTURE_CODE_REPO:-}" ] || fail "fixture_code_repo should not export FIXTURE_CODE_REPO when it fails"
+ok "fixture_code_repo fails cleanly when called before fixture_setup"
+
+# fixture_setup called twice without an intervening fixture_teardown must
+# fail without clobbering the first call's FIXTURE_ROOT/HOME state.
+fixture_setup
+first_root="$FIXTURE_ROOT"
+first_home="$HOME"
+if fixture_setup 2>"$TMP/reentrant.err"; then
+    fixture_teardown
+    fail "fixture_setup should fail when called again without an intervening fixture_teardown"
+fi
+grep -q 'already set and still exists' "$TMP/reentrant.err" ||
+    fail "fixture_setup's re-entrant-setup error message is not actionable: $(cat "$TMP/reentrant.err")"
+[ "$FIXTURE_ROOT" = "$first_root" ] || fail "a rejected re-entrant fixture_setup call must not clobber FIXTURE_ROOT"
+[ "$HOME" = "$first_home" ] || fail "a rejected re-entrant fixture_setup call must not clobber HOME"
+[ -d "$first_root" ] || fail "the first fixture_setup's FIXTURE_ROOT must still exist after a rejected re-entrant call"
+fixture_teardown
+ok "fixture_setup fails without clobbering state when called twice without an intervening teardown"
 
 # ---------------------------------------------------------------------------
 say "AC2: two same-day runs stay byte-identical after redacting documented fields"
