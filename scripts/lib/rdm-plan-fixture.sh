@@ -60,8 +60,11 @@
 #   (c) any commit-SHA-shaped field — `commit`, `applied_commit`,
 #       `review_sha`, or a raw git SHA surfaced by e.g. `rdm status` or
 #       `rdm review show`.
-# No field outside that list may vary between two same-day runs; that
-# invariant is what scripts/verify-rdm-plan-fixture.sh asserts.
+# No field outside that list may vary between two same-day runs. This
+# library has no standalone committed test file (mirroring
+# scripts/lib/mechanical-tier-check.sh); it is exercised by the downstream
+# harnesses that source it, plus scratch verification run during
+# implementation.
 #
 # This library never reads or writes the real plan repo: it unsets every
 # inherited RDM_*-prefixed variable (including RDM_ROOT, RDM_PROJECT,
