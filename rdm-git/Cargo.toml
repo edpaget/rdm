@@ -8,7 +8,7 @@ description = "Repo-agnostic git primitives for rdm: run-at-a-path helpers, HEAD
 
 [dependencies]
 rdm-core = { path = "../rdm-core" }
-gix = { version = "0.86", default-features = false, features = ["basic", "index", "revision", "parallel", "sha1"] }
+gix = { version = "0.87", default-features = false, features = ["basic", "index", "revision", "parallel", "sha1"] }
 
 [dev-dependencies]
 rdm-store-fs = { path = "../rdm-store-fs" }
