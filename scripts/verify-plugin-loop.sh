@@ -9,16 +9,19 @@
 #      stdin-supplied body (a free corroboration of the create-from-stdin
 #      write path riding on this same flow) -> search finds it by a fuzzy
 #      typo of its title -> info --format json resolves the seeded project.
-#   2. Body-resolution contract: NOT reimplemented here. --body-authoritative,
-#      update-never-reads-stdin, and --body "" rejection are already asserted
-#      deterministically by rdm-cli/tests/cli_task.rs under `cargo nextest
-#      run` (body_flag_beats_stdin, task_update_body_flag_beats_stdin,
+#   2. Body-resolution contract, asserted directly against the same rdm
+#      subprocess boundary a plugin calls through: create with both --body
+#      and stdin stores the --body value and drops the piped one; update
+#      with stdin and no --body (a tags-only update) never reads stdin into
+#      the body; update --body "" against a non-empty body is rejected and
+#      points at --clear-body, leaving the body unchanged; --clear-body
+#      empties a previously non-empty body. The identical behaviors are
+#      also asserted deterministically (and more exhaustively) by
+#      rdm-cli/tests/cli_task.rs under `cargo nextest run`
+#      (body_flag_beats_stdin, task_update_body_flag_beats_stdin,
 #      task_update_tags_ignores_stdin, task_update_status_ignores_stdin,
 #      task_update_empty_body_refuses_clobber, task_update_clear_body_succeeds)
-#      -- see CLAUDE.md's Dogfooding section for the citation. Duplicating
-#      that matrix in shell here would just be the same rdm-subprocess
-#      exit-code/stdout/stderr assertion assert_cmd already makes, in the
-#      wrong layer.
+#      -- see CLAUDE.md's Dogfooding section for the citation.
 #   3. stdin-EOF contract: a portable (no GNU `timeout`) FIFO watchdog proves
 #      `create` (default, no --body) blocks reading stdin to EOF and
 #      unblocks promptly once EOF arrives, and that a caller who closes
@@ -149,10 +152,92 @@ esac
 ok "info --format json resolves the seeded project"
 
 # ---------------------------------------------------------------------------
-say "2. Body-resolution contract: owned by rdm-cli/tests/cli_task.rs, not here"
+say "2. Body-resolution contract: --body-authoritative, update-ignores-stdin, --body \"\" rejection, --clear-body"
 # ---------------------------------------------------------------------------
 
-ok "--body-authoritative / update-never-reads-stdin / --body \"\" rejection / --clear-body are asserted by cargo nextest run (body_flag_beats_stdin, task_update_body_flag_beats_stdin, task_update_tags_ignores_stdin, task_update_status_ignores_stdin, task_update_empty_body_refuses_clobber, task_update_clear_body_succeeds); this harness only corroborates the stdin-body write path above (step 1)"
+"$RDM_BIN" --root "$FIXTURE_PLAN" task create body-flag-wins \
+    --title "Body Flag Wins" --body "Inline body wins." --no-edit \
+    --project "$PROJECT" >/dev/null <<'EOF' || fail "task create (--body + stdin) failed"
+Piped body loses.
+EOF
+BODY_FLAG_SHOW=$("$RDM_BIN" --root "$FIXTURE_PLAN" task show body-flag-wins --project "$PROJECT") ||
+    fail "task show (body-flag-wins) failed"
+case "$BODY_FLAG_SHOW" in
+    *'Inline body wins.'*) ;;
+    *) fail "task create with both --body and stdin did not store the --body value:
+$BODY_FLAG_SHOW" ;;
+esac
+case "$BODY_FLAG_SHOW" in
+    *'Piped body loses.'*) fail "task create with both --body and stdin leaked the piped stdin value:
+$BODY_FLAG_SHOW" ;;
+    *) ;;
+esac
+ok "task create: --body is authoritative over a simultaneously piped stdin body"
+
+"$RDM_BIN" --root "$FIXTURE_PLAN" task create update-ignores-stdin \
+    --title "Update Ignores Stdin" --body "Original body for stdin-ignore test." \
+    --no-edit --project "$PROJECT" >/dev/null ||
+    fail "task create (update-ignores-stdin) failed"
+"$RDM_BIN" --root "$FIXTURE_PLAN" task update update-ignores-stdin \
+    --tags plugin-loop-corroboration --no-edit --project "$PROJECT" \
+    >/dev/null <<'EOF' || fail "task update (tags-only, with stdin held) failed"
+SNEAKY STDIN BODY
+EOF
+UPDATE_IGNORES_SHOW=$("$RDM_BIN" --root "$FIXTURE_PLAN" task show update-ignores-stdin --project "$PROJECT") ||
+    fail "task show (update-ignores-stdin) failed"
+case "$UPDATE_IGNORES_SHOW" in
+    *'Original body for stdin-ignore test.'*) ;;
+    *) fail "a tags-only update did not preserve the existing body:
+$UPDATE_IGNORES_SHOW" ;;
+esac
+case "$UPDATE_IGNORES_SHOW" in
+    *'SNEAKY STDIN BODY'*) fail "a tags-only update read stdin into the body:
+$UPDATE_IGNORES_SHOW" ;;
+    *) ;;
+esac
+ok "task update: a tags-only update never reads stdin into the body"
+
+"$RDM_BIN" --root "$FIXTURE_PLAN" task create empty-body-rejected \
+    --title "Empty Body Rejected" --body "Existing content for empty-body test." \
+    --no-edit --project "$PROJECT" >/dev/null ||
+    fail "task create (empty-body-rejected) failed"
+set +e
+"$RDM_BIN" --root "$FIXTURE_PLAN" task update empty-body-rejected \
+    --body "" --no-edit --project "$PROJECT" \
+    >"$TMP/empty-body.out" 2>"$TMP/empty-body.err"
+empty_body_rc=$?
+set -e
+[ "$empty_body_rc" -ne 0 ] ||
+    fail "task update --body \"\" against a non-empty body exited 0 — expected a refusal"
+grep -q -- '--clear-body' "$TMP/empty-body.err" ||
+    fail "task update --body \"\" rejection did not point at --clear-body:
+$(cat "$TMP/empty-body.err")"
+EMPTY_BODY_SHOW=$("$RDM_BIN" --root "$FIXTURE_PLAN" task show empty-body-rejected --project "$PROJECT") ||
+    fail "task show (empty-body-rejected) failed"
+case "$EMPTY_BODY_SHOW" in
+    *'Existing content for empty-body test.'*) ;;
+    *) fail "task update --body \"\" clobbered the body despite being rejected:
+$EMPTY_BODY_SHOW" ;;
+esac
+ok "task update --body \"\" against a non-empty body is rejected, points at --clear-body, and leaves the body unchanged"
+
+"$RDM_BIN" --root "$FIXTURE_PLAN" task create clear-body-empties \
+    --title "Clear Body Empties" --body "Content that will be cleared." \
+    --no-edit --project "$PROJECT" >/dev/null ||
+    fail "task create (clear-body-empties) failed"
+"$RDM_BIN" --root "$FIXTURE_PLAN" task update clear-body-empties \
+    --clear-body --no-edit --project "$PROJECT" >/dev/null ||
+    fail "task update --clear-body failed"
+CLEAR_BODY_SHOW=$("$RDM_BIN" --root "$FIXTURE_PLAN" task show clear-body-empties --project "$PROJECT") ||
+    fail "task show (clear-body-empties) failed"
+case "$CLEAR_BODY_SHOW" in
+    *'Content that will be cleared.'*) fail "--clear-body did not empty the body:
+$CLEAR_BODY_SHOW" ;;
+    *) ;;
+esac
+ok "task update --clear-body empties a previously non-empty body"
+
+ok "the identical behaviors are also asserted deterministically by cargo nextest run (body_flag_beats_stdin, task_update_body_flag_beats_stdin, task_update_tags_ignores_stdin, task_update_status_ignores_stdin, task_update_empty_body_refuses_clobber, task_update_clear_body_succeeds)"
 
 # ---------------------------------------------------------------------------
 say "3. stdin-EOF contract: a portable FIFO watchdog, no GNU timeout"
