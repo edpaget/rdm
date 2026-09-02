@@ -14,7 +14,10 @@ CLI's `--format json` output (an editor plugin, an MCP server, a script).
 Each command below is captured with `--format json` (or the bare form,
 noted) against a hermetic fixture plan repo built by
 `scripts/lib/rdm-plan-fixture.sh`, with one submitted `request-changes`
-review and one worktree seeded on top of the standard fixture seed. See
+review (authored by the fixed `fixture-bot` identity, matching the
+fixture's own `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` convention, so the
+`author` field is reproducible across machines without needing redaction)
+and one worktree seeded on top of the standard fixture seed. See
 `scripts/lib/golden-capture.sh` for the exact invocation of each.
 
 | Golden file | Command |

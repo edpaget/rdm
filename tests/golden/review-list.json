@@ -1,7 +1,7 @@
 [
   {
     "id": "<REVIEW-ID>",
-    "author": "edward",
+    "author": "fixture-bot",
     "target": {
       "kind": "task",
       "slug": "fixture-task-open"

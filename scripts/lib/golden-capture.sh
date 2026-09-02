@@ -18,7 +18,10 @@
 #   golden_capture_all <out_dir>
 #       Calls fixture_setup/fixture_code_repo (from rdm-plan-fixture.sh,
 #       which MUST already be sourced), seeds one submitted request-changes
-#       review on task/fixture-task-open and one worktree on the same task,
+#       review (author fixed to "fixture-bot", matching the fixture's own
+#       GIT_AUTHOR_NAME/EMAIL convention, so the review's `author` field is
+#       deterministic across machines without needing its own redaction
+#       rule) on task/fixture-task-open and one worktree on the same task,
 #       then runs the 20-command JSON-contract inventory (see GOLDEN_NAMES
 #       below) and writes each command's raw stdout verbatim to
 #       <out_dir>/<name>.json. On success, FIXTURE_ROOT/FIXTURE_PLAN/
@@ -121,7 +124,7 @@ golden_capture_all() {
     proj="$FIXTURE_PROJECT"
 
     # --- Seed one submitted request-changes review on task/fixture-task-open.
-    review_json=$(_golden_rdm review start --on task/fixture-task-open --no-edit --project "$proj" --format json 2>/dev/null) || {
+    review_json=$(_golden_rdm review start --on task/fixture-task-open --author fixture-bot --no-edit --project "$proj" --format json 2>/dev/null) || {
         echo "golden_capture_all: 'rdm review start' failed" >&2
         fixture_teardown
         return 1
