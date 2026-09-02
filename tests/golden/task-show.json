@@ -1,0 +1,12 @@
+{
+  "slug": "fixture-task-open",
+  "project": "fixture-proj",
+  "title": "Fixture Task Open",
+  "status": "open",
+  "priority": "medium",
+  "created": "<DATE>",
+  "tags": [
+    "bug"
+  ],
+  "body": "An open task tagged bug.\n"
+}

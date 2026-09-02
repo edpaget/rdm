@@ -1,0 +1,26 @@
+[
+  {
+    "kind": "phase",
+    "identifier": "sample-roadmap/phase-1-seed-one",
+    "project": "fixture-proj",
+    "title": "Seed One",
+    "snippet": "Seed One",
+    "score": 114
+  },
+  {
+    "kind": "phase",
+    "identifier": "sample-roadmap/phase-2-seed-two",
+    "project": "fixture-proj",
+    "title": "Seed Two",
+    "snippet": "Seed Two",
+    "score": 114
+  },
+  {
+    "kind": "phase",
+    "identifier": "sample-roadmap/phase-3-seed-three",
+    "project": "fixture-proj",
+    "title": "Seed Three",
+    "snippet": "Seed Three",
+    "score": 114
+  }
+]

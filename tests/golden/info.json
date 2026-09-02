@@ -1,0 +1,6 @@
+{
+  "root": "<TMPDIR>/plan",
+  "project": "fixture-proj",
+  "default_branch": "main",
+  "default_format": "json"
+}

@@ -1,0 +1,22 @@
+[
+  {
+    "slug": "fixture-task-active",
+    "title": "Fixture Task Active",
+    "status": "in-progress",
+    "priority": "medium",
+    "created": "<DATE>",
+    "tags": [
+      "ui"
+    ]
+  },
+  {
+    "slug": "fixture-task-open",
+    "title": "Fixture Task Open",
+    "status": "open",
+    "priority": "medium",
+    "created": "<DATE>",
+    "tags": [
+      "bug"
+    ]
+  }
+]

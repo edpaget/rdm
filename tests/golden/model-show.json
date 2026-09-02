@@ -1,0 +1,28 @@
+{
+  "small": "haiku",
+  "medium": "sonnet",
+  "large": "opus",
+  "review_floor": "medium",
+  "steps": [
+    {
+      "step": "plan",
+      "model": "sonnet"
+    },
+    {
+      "step": "implement",
+      "model": "sonnet"
+    },
+    {
+      "step": "review-find",
+      "model": "sonnet"
+    },
+    {
+      "step": "review-verify",
+      "model": "opus"
+    },
+    {
+      "step": "mechanical",
+      "model": "haiku"
+    }
+  ]
+}

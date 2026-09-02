@@ -1,0 +1,48 @@
+{
+  "name": "fixture-proj",
+  "kind": "project",
+  "children": [
+    {
+      "name": "sample-roadmap",
+      "kind": "roadmap",
+      "children": [
+        {
+          "name": "phase-1-seed-one",
+          "kind": "phase",
+          "status": "done",
+          "children": []
+        },
+        {
+          "name": "phase-2-seed-two",
+          "kind": "phase",
+          "status": "in-progress",
+          "children": []
+        },
+        {
+          "name": "phase-3-seed-three",
+          "kind": "phase",
+          "status": "not-started",
+          "children": []
+        }
+      ]
+    },
+    {
+      "name": "fixture-task-active",
+      "kind": "task",
+      "status": "in-progress",
+      "children": []
+    },
+    {
+      "name": "fixture-task-done",
+      "kind": "task",
+      "status": "done",
+      "children": []
+    },
+    {
+      "name": "fixture-task-open",
+      "kind": "task",
+      "status": "open",
+      "children": []
+    }
+  ]
+}

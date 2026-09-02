@@ -1,0 +1,327 @@
+[
+  {
+    "name": "project",
+    "description": "A project directory grouping roadmaps and tasks.",
+    "fields": [
+      {
+        "name": "name",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Project slug identifier (used in directory names and references)."
+      },
+      {
+        "name": "title",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Human-readable title."
+      }
+    ]
+  },
+  {
+    "name": "roadmap",
+    "description": "An ordered sequence of phases tracking a multi-step initiative.",
+    "fields": [
+      {
+        "name": "project",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Project this roadmap belongs to."
+      },
+      {
+        "name": "roadmap",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Roadmap slug identifier."
+      },
+      {
+        "name": "title",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Human-readable title."
+      },
+      {
+        "name": "phases",
+        "type_name": "list of strings",
+        "required": true,
+        "enum_values": [],
+        "description": "Ordered list of phase file stems."
+      },
+      {
+        "name": "dependencies",
+        "type_name": "list of strings",
+        "required": false,
+        "enum_values": [],
+        "description": "Roadmap slugs that must complete before this one."
+      },
+      {
+        "name": "priority",
+        "type_name": "string",
+        "required": false,
+        "enum_values": [
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ],
+        "description": "Optional priority level for the roadmap."
+      },
+      {
+        "name": "tags",
+        "type_name": "list of strings",
+        "required": false,
+        "enum_values": [],
+        "description": "Optional tags for categorization."
+      }
+    ]
+  },
+  {
+    "name": "phase",
+    "description": "A single step within a roadmap, tracked by status.",
+    "fields": [
+      {
+        "name": "phase",
+        "type_name": "integer",
+        "required": true,
+        "enum_values": [],
+        "description": "Phase number (1-based ordering)."
+      },
+      {
+        "name": "title",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Human-readable title."
+      },
+      {
+        "name": "status",
+        "type_name": "enum",
+        "required": true,
+        "enum_values": [
+          "not-started",
+          "in-progress",
+          "needs-review",
+          "reviewed",
+          "done",
+          "blocked",
+          "wont-fix"
+        ],
+        "description": "Current status."
+      },
+      {
+        "name": "tags",
+        "type_name": "list of strings",
+        "required": false,
+        "enum_values": [],
+        "description": "Optional tags for categorization."
+      },
+      {
+        "name": "completed",
+        "type_name": "date (YYYY-MM-DD)",
+        "required": false,
+        "enum_values": [],
+        "description": "Date the phase was completed, if applicable."
+      },
+      {
+        "name": "commit",
+        "type_name": "string",
+        "required": false,
+        "enum_values": [],
+        "description": "Git commit SHA associated with phase completion, if any."
+      },
+      {
+        "name": "difficulty",
+        "type_name": "enum",
+        "required": false,
+        "enum_values": [
+          "trivial",
+          "easy",
+          "moderate",
+          "hard"
+        ],
+        "description": "Estimated difficulty of the phase, if assessed."
+      },
+      {
+        "name": "model",
+        "type_name": "enum",
+        "required": false,
+        "enum_values": [
+          "small",
+          "medium",
+          "large"
+        ],
+        "description": "Model tier that should run the phase, if assigned."
+      },
+      {
+        "name": "blocked_reason",
+        "type_name": "string",
+        "required": false,
+        "enum_values": [],
+        "description": "Reason the phase was parked as blocked (an escalation note), if any."
+      }
+    ]
+  },
+  {
+    "name": "task",
+    "description": "A standalone work item tracked by status and priority.",
+    "fields": [
+      {
+        "name": "project",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Project this task belongs to."
+      },
+      {
+        "name": "title",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Human-readable title."
+      },
+      {
+        "name": "status",
+        "type_name": "enum",
+        "required": true,
+        "enum_values": [
+          "open",
+          "in-progress",
+          "needs-review",
+          "reviewed",
+          "done",
+          "wont-fix"
+        ],
+        "description": "Current status."
+      },
+      {
+        "name": "priority",
+        "type_name": "enum",
+        "required": true,
+        "enum_values": [
+          "low",
+          "medium",
+          "high",
+          "critical"
+        ],
+        "description": "Priority level."
+      },
+      {
+        "name": "created",
+        "type_name": "date (YYYY-MM-DD)",
+        "required": true,
+        "enum_values": [],
+        "description": "Date the task was created."
+      },
+      {
+        "name": "tags",
+        "type_name": "list of strings",
+        "required": false,
+        "enum_values": [],
+        "description": "Optional tags for categorization."
+      },
+      {
+        "name": "completed",
+        "type_name": "date (YYYY-MM-DD)",
+        "required": false,
+        "enum_values": [],
+        "description": "Date the task was completed."
+      },
+      {
+        "name": "commit",
+        "type_name": "string",
+        "required": false,
+        "enum_values": [],
+        "description": "Git commit SHA that completed this task."
+      },
+      {
+        "name": "close_reason",
+        "type_name": "string",
+        "required": false,
+        "enum_values": [],
+        "description": "Reason the task was closed (a retire/supersede note), if any."
+      }
+    ]
+  },
+  {
+    "name": "review",
+    "description": "A structured review of a roadmap, phase, or task, with anchored inline comments.",
+    "fields": [
+      {
+        "name": "id",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Timestamp-based identifier, unique within the project (also the file stem under reviews/)."
+      },
+      {
+        "name": "author",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Who authored the review (free-form: email, agent name, etc.)."
+      },
+      {
+        "name": "target",
+        "type_name": "tagged mapping (kind: roadmap | phase | task)",
+        "required": true,
+        "enum_values": [],
+        "description": "The plan item under review. The CLI reference syntax is roadmap/<slug>, phase/<roadmap-slug>/<stem>, or task/<slug>."
+      },
+      {
+        "name": "state",
+        "type_name": "enum",
+        "required": true,
+        "enum_values": [
+          "draft",
+          "submitted",
+          "addressed",
+          "dismissed"
+        ],
+        "description": "Lifecycle state. Drafts accept comments; submission locks comment structure; addressed and dismissed are terminal."
+      },
+      {
+        "name": "verdict",
+        "type_name": "enum",
+        "required": false,
+        "enum_values": [
+          "approve",
+          "request-changes",
+          "comment"
+        ],
+        "description": "Overall verdict stamped on submit; absent while the review is a draft."
+      },
+      {
+        "name": "created",
+        "type_name": "datetime (RFC 3339)",
+        "required": true,
+        "enum_values": [],
+        "description": "When the review was started."
+      },
+      {
+        "name": "submitted",
+        "type_name": "datetime (RFC 3339)",
+        "required": false,
+        "enum_values": [],
+        "description": "When the review was submitted; absent on drafts."
+      },
+      {
+        "name": "created_commit",
+        "type_name": "string",
+        "required": false,
+        "enum_values": [],
+        "description": "Plan-repo HEAD when the review started — the version of the target the reviewer saw. Quote anchors are derived against this version."
+      },
+      {
+        "name": "comments",
+        "type_name": "list of comment objects",
+        "required": true,
+        "enum_values": [],
+        "description": "Inline comments: id, optional doc scope (roadmap reviews only), status (open | addressed | wont-fix), optional applied_commit, optional text-quote anchor (quote/prefix/suffix), body, and optional reply."
+      }
+    ]
+  }
+]

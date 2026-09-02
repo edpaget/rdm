@@ -1,0 +1,10 @@
+{
+  "stem": "phase-1-seed-one",
+  "phase": 1,
+  "title": "Seed One",
+  "status": "done",
+  "completed": "<DATE>",
+  "roadmap": "sample-roadmap",
+  "next_phase": "phase-2-seed-two",
+  "body": "First phase: already done.\n"
+}

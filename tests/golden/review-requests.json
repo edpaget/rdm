@@ -1,0 +1,26 @@
+[
+  {
+    "id": "<REVIEW-ID>",
+    "author": "edward",
+    "target": {
+      "kind": "task",
+      "slug": "fixture-task-open"
+    },
+    "state": "submitted",
+    "verdict": "request-changes",
+    "created": "<DATETIME>",
+    "submitted": "<DATETIME>",
+    "created_commit": "<SHA>",
+    "body": "",
+    "comments": [
+      {
+        "id": 1,
+        "status": "open",
+        "body": "General feedback.",
+        "resolution": {
+          "state": "unresolved"
+        }
+      }
+    ]
+  }
+]

@@ -1,0 +1,20 @@
+[
+  {
+    "number": 1,
+    "stem": "phase-1-seed-one",
+    "title": "Seed One",
+    "status": "done"
+  },
+  {
+    "number": 2,
+    "stem": "phase-2-seed-two",
+    "title": "Seed Two",
+    "status": "in-progress"
+  },
+  {
+    "number": 3,
+    "stem": "phase-3-seed-three",
+    "title": "Seed Three",
+    "status": "not-started"
+  }
+]
