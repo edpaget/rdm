@@ -87,6 +87,17 @@ _fixture_rdm() {
     "$RDM_BIN" --root "$FIXTURE_PLAN" "$@"
 }
 
+# _fixture_step <args...> — run _fixture_rdm and fail loud on a non-zero
+# exit, naming the failing command, instead of letting the caller silently
+# carry on with a partially-seeded (or entirely unseeded) FIXTURE_PLAN.
+# Internal; not part of the public API.
+_fixture_step() {
+    if ! _fixture_rdm "$@" >/dev/null; then
+        echo "_fixture_seed: 'rdm $*' failed" >&2
+        return 1
+    fi
+}
+
 # _fixture_seed — populate the deterministic roadmap/phase/task set.
 # Fully fixed literal slugs/titles/numbers/tags, fixed sequential order, no
 # nondeterministic input ($RANDOM, PIDs, `date`-derived literals) — the only
@@ -94,40 +105,40 @@ _fixture_rdm() {
 # rdm-core stamps itself (documented above, not something this function can
 # suppress).
 _fixture_seed() {
-    _fixture_rdm roadmap create sample-roadmap \
+    _fixture_step roadmap create sample-roadmap \
         --title "Sample Roadmap" \
         --body "A sample roadmap for exercising list/show/search/next/tree." \
-        --no-edit --project "$FIXTURE_PROJECT" >/dev/null
+        --no-edit --project "$FIXTURE_PROJECT" || return 1
 
-    _fixture_rdm phase create seed-one --title "Seed One" --number 1 \
+    _fixture_step phase create seed-one --title "Seed One" --number 1 \
         --body "First phase: already done." \
-        --no-edit --roadmap sample-roadmap --project "$FIXTURE_PROJECT" >/dev/null
-    _fixture_rdm phase create seed-two --title "Seed Two" --number 2 \
+        --no-edit --roadmap sample-roadmap --project "$FIXTURE_PROJECT" || return 1
+    _fixture_step phase create seed-two --title "Seed Two" --number 2 \
         --body "Second phase: in progress." \
-        --no-edit --roadmap sample-roadmap --project "$FIXTURE_PROJECT" >/dev/null
-    _fixture_rdm phase create seed-three --title "Seed Three" --number 3 \
+        --no-edit --roadmap sample-roadmap --project "$FIXTURE_PROJECT" || return 1
+    _fixture_step phase create seed-three --title "Seed Three" --number 3 \
         --body "Third phase: not started." \
-        --no-edit --roadmap sample-roadmap --project "$FIXTURE_PROJECT" >/dev/null
+        --no-edit --roadmap sample-roadmap --project "$FIXTURE_PROJECT" || return 1
 
-    _fixture_rdm phase update 1 --status "done" --no-edit \
-        --roadmap sample-roadmap --project "$FIXTURE_PROJECT" >/dev/null
-    _fixture_rdm phase update 2 --status in-progress --no-edit \
-        --roadmap sample-roadmap --project "$FIXTURE_PROJECT" >/dev/null
+    _fixture_step phase update 1 --status "done" --no-edit \
+        --roadmap sample-roadmap --project "$FIXTURE_PROJECT" || return 1
+    _fixture_step phase update 2 --status in-progress --no-edit \
+        --roadmap sample-roadmap --project "$FIXTURE_PROJECT" || return 1
 
-    _fixture_rdm task create fixture-task-open --title "Fixture Task Open" \
+    _fixture_step task create fixture-task-open --title "Fixture Task Open" \
         --tags bug --body "An open task tagged bug." \
-        --no-edit --project "$FIXTURE_PROJECT" >/dev/null
-    _fixture_rdm task create fixture-task-active --title "Fixture Task Active" \
+        --no-edit --project "$FIXTURE_PROJECT" || return 1
+    _fixture_step task create fixture-task-active --title "Fixture Task Active" \
         --tags ui --body "An in-progress task tagged ui." \
-        --no-edit --project "$FIXTURE_PROJECT" >/dev/null
-    _fixture_rdm task create fixture-task-done --title "Fixture Task Done" \
+        --no-edit --project "$FIXTURE_PROJECT" || return 1
+    _fixture_step task create fixture-task-done --title "Fixture Task Done" \
         --tags bug --body "A done task tagged bug." \
-        --no-edit --project "$FIXTURE_PROJECT" >/dev/null
+        --no-edit --project "$FIXTURE_PROJECT" || return 1
 
-    _fixture_rdm task update fixture-task-active --status in-progress \
-        --no-edit --project "$FIXTURE_PROJECT" >/dev/null
-    _fixture_rdm task update fixture-task-done --status "done" \
-        --no-edit --project "$FIXTURE_PROJECT" >/dev/null
+    _fixture_step task update fixture-task-active --status in-progress \
+        --no-edit --project "$FIXTURE_PROJECT" || return 1
+    _fixture_step task update fixture-task-done --status "done" \
+        --no-edit --project "$FIXTURE_PROJECT" || return 1
 }
 
 # fixture_setup [project-slug]
@@ -212,9 +223,15 @@ fixture_setup() {
     GIT_COMMITTER_EMAIL="fixture@example.invalid"
     export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
 
-    _fixture_rdm init --default-project "$FIXTURE_PROJECT" >/dev/null
-    _fixture_seed
-    _fixture_rdm commit -m "seed: fixture data" >/dev/null
+    if ! _fixture_rdm init --default-project "$FIXTURE_PROJECT" >/dev/null; then
+        echo "fixture_setup: 'rdm init --default-project $FIXTURE_PROJECT' failed" >&2
+        return 1
+    fi
+    _fixture_seed || return 1
+    if ! _fixture_rdm commit -m "seed: fixture data" >/dev/null; then
+        echo "fixture_setup: 'rdm commit -m \"seed: fixture data\"' failed" >&2
+        return 1
+    fi
 }
 
 # fixture_code_repo [dir-name]

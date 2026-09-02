@@ -279,6 +279,52 @@ fixture_teardown
 ok "fixture_setup's RDM_* sweep clears RDM_PLAN_REVIEW/RDM_REVIEW_AUTHOR before the seed runs"
 
 # ---------------------------------------------------------------------------
+say "AC1e: fixture_setup fails loudly (non-zero, actionable message) when a seed command fails"
+# ---------------------------------------------------------------------------
+
+# A wrapper around the real rdm binary that fails one specific seeding
+# invocation (the very first one _fixture_seed makes) and otherwise
+# delegates untouched, proving fixture_setup no longer swallows a mid-seed
+# failure and reports success anyway (it previously returned whatever the
+# LAST command — `rdm commit` — happened to exit with).
+FAKE_RDM="$TMP/fake-rdm-seed-failure.sh"
+cat >"$FAKE_RDM" <<EOF
+#!/bin/sh
+case " \$* " in
+    *" roadmap create sample-roadmap "*)
+        echo "fake-rdm: forced failure" >&2
+        exit 2
+        ;;
+esac
+exec "$RDM_BIN" "\$@"
+EOF
+chmod +x "$FAKE_RDM"
+
+REAL_RDM_BIN="$RDM_BIN"
+RDM_BIN="$FAKE_RDM"
+export RDM_BIN
+
+if fixture_setup 2>"$TMP/seed-fail.err"; then
+    RDM_BIN="$REAL_RDM_BIN"
+    export RDM_BIN
+    fixture_teardown
+    fail "fixture_setup should fail (non-zero) when a seed command fails, not report success"
+fi
+grep -q "^_fixture_seed: 'rdm roadmap create sample-roadmap " "$TMP/seed-fail.err" ||
+    fail "fixture_setup's seed-failure error message is not actionable: $(cat "$TMP/seed-fail.err")"
+# The failed run must still leave FIXTURE_ROOT in place for the caller's
+# own fixture_teardown to clean up (per the library's documented
+# failure-path-cleanup contract), not unset it out from under a caller
+# that relies on it for teardown.
+[ -n "${FIXTURE_ROOT:-}" ] || fail "a failed fixture_setup unset FIXTURE_ROOT, breaking the caller's teardown"
+[ -d "$FIXTURE_ROOT" ] || fail "a failed fixture_setup's FIXTURE_ROOT ($FIXTURE_ROOT) does not exist"
+
+fixture_teardown
+RDM_BIN="$REAL_RDM_BIN"
+export RDM_BIN
+ok "fixture_setup fails loudly and names the failing command when a seed command fails"
+
+# ---------------------------------------------------------------------------
 say "AC2: two same-day runs stay byte-identical after redacting documented fields"
 # ---------------------------------------------------------------------------
 
