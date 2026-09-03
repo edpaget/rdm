@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-03
+
 ### Added
 
 - rdm's machine-facing `--format json` contract is now frozen as committed golden files under `tests/golden/` — one snapshot per JSON-emitting read command (`info`, `roadmap`/`phase`/`task` list/show, `list`, `search`, `next`, `tree`, `describe`, `tag list`, `backlog report`, `model show`, `review list`/`show`/`requests`, `worktree list`/`current`), captured against a deterministic fixture and redacted so it stays reproducible across machines and days. A new `scripts/verify-golden-json.sh` re-captures and diffs on every CI run, so breaking the JSON contract an editor or plugin integration depends on now fails CI with an actionable re-bless hint (`scripts/capture-golden.sh`) instead of shipping silently. See `tests/golden/README.md`.
