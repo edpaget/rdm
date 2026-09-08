@@ -7,10 +7,15 @@
 # rejection on a recycled pid, journal exactness and disjointness, the
 # invisibility of session state to `rdm status` and to a whole-tree commit
 # (with a planted-decoy self-test), the measured resolution cost including a
-# real `rdm hook post-commit` run, and a structural grep proving
+# real `rdm hook post-commit` run, a structural grep proving
 # rdm-store-git/src/commit.rs carries the changeset commit scope while
 # resolving no session identity of its own (§ I; inverted in phase 5, which
-# introduced exactly the coupling it used to forbid).
+# introduced exactly the coupling it used to forbid), and (§ J, phase 10) that
+# a harness-published session id ALWAYS wins over an already-inherited
+# ancestor lease: two real child processes of one already-leased ancestor,
+# each carrying its own distinct CLAUDE_CODE_SESSION_ID, resolve distinct
+# rung-3 ids that diverge from the planted ancestor lease, each stable across
+# repeat invocations within the same process.
 #
 # Run after touching rdm-core/src/session/**, GitStore's journal wiring,
 # FsStore::staged_paths, or the `rdm session` CLI surface.
@@ -511,5 +516,101 @@ printf '\n// planted: let s = rdm_core::session::resolve_session(paths);\n' >>"$
 grep -q 'resolve_session' "$TMP/commit-ambient.rs" ||
     fail "self-test failed: a planted ambient-session resolution is not detected, so that assertion proves nothing"
 ok "self-test: a planted ambient session resolution IS caught"
+
+# ---------------------------------------------------------------------------
+# Section J — a harness variable beats an already-inherited ancestor lease
+# ---------------------------------------------------------------------------
+# Reproduces and gates the phase-10 fix: a parent shell that ran one bare
+# (harness-less) `rdm` invocation mints an ancestor lease; two of its children,
+# each carrying its own distinct CLAUDE_CODE_SESSION_ID, must resolve their
+# own harness-derived (rung 3) ids rather than being forced onto that lease.
+say "Section J: a harness-published id beats an already-inherited ancestor lease"
+
+REPO_J="$TMP/repo-j"
+seed_repo "$REPO_J"
+
+# The edge case this section depends on: the four session vars must still be
+# unset here, exactly as asserted at the top of Section B, or the "plant"
+# step below would resolve via rung 1/3 instead of minting a bare rung-2
+# lease — breaking the premise the rest of the section relies on.
+for _v in RDM_SESSION CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID RDM_HARNESS_SESSION_ID; do
+    eval "_set=\${$_v+set}"
+    [ "${_set:-}" != "set" ] || fail "$_v leaked into Section J's plant step"
+done
+
+# (a) Plant: one bare invocation, directly from this script's own process, so
+# the lease is created keyed at THIS shell's pid — the ancestor the two
+# children below share.
+"$RDM_BIN" --root "$REPO_J" session id --format json >"$TMP/j_plant.out" ||
+    fail "the plant invocation failed: $(cat "$TMP/j_plant.out")"
+[ "$(json_lines "$TMP/j_plant.out" | field_num rung)" = "2" ] ||
+    fail "expected the plant invocation to land on rung 2, got: $(cat "$TMP/j_plant.out")"
+LEASES_J="$REPO_J/.git/rdm/leases"
+LEASE_COUNT_J=$(find "$LEASES_J" -name '*.lease' | wc -l | tr -d ' ')
+[ "$LEASE_COUNT_J" = "1" ] ||
+    fail "expected exactly 1 planted lease file, got $LEASE_COUNT_J"
+LEASED_ID=$(json_lines "$TMP/j_plant.out" | field_str id)
+[ -n "$LEASED_ID" ] || fail "the plant invocation produced no id"
+ok "planted one ancestor lease ($LEASED_ID) with nothing but a bare invocation"
+
+# (b) Two children of that same ancestor, each with its own harness session
+# id, each invoking `rdm session id` TWICE before exiting (repeat-invocation
+# determinism within one process run).
+child_run() {
+    _value=$1
+    _out=$2
+    (
+        CLAUDE_CODE_SESSION_ID="$_value"
+        export CLAUDE_CODE_SESSION_ID
+        "$RDM_BIN" --root "$REPO_J" session id --format json
+        "$RDM_BIN" --root "$REPO_J" session id --format json
+    ) >"$_out" 2>&1
+}
+
+child_run child-one "$TMP/j_child1.out" &
+PID_J1=$!
+child_run child-two "$TMP/j_child2.out" &
+PID_J2=$!
+wait "$PID_J1" || fail "child-one exited non-zero: $(cat "$TMP/j_child1.out")"
+wait "$PID_J2" || fail "child-two exited non-zero: $(cat "$TMP/j_child2.out")"
+
+json_lines "$TMP/j_child1.out" | field_str id >"$TMP/j_ids1"
+json_lines "$TMP/j_child2.out" | field_str id >"$TMP/j_ids2"
+json_lines "$TMP/j_child1.out" | field_num rung >"$TMP/j_rungs1"
+json_lines "$TMP/j_child2.out" | field_num rung >"$TMP/j_rungs2"
+
+[ "$(wc -l <"$TMP/j_ids1" | tr -d ' ')" = "2" ] ||
+    fail "expected 2 ids from child-one, got: $(cat "$TMP/j_ids1")"
+[ "$(wc -l <"$TMP/j_ids2" | tr -d ' ')" = "2" ] ||
+    fail "expected 2 ids from child-two, got: $(cat "$TMP/j_ids2")"
+
+# (c) Distinctness, repeat-invocation stability, and rung.
+all_same "$TMP/j_ids1" || fail "child-one's repeat invocations disagree: $(cat "$TMP/j_ids1")"
+all_same "$TMP/j_ids2" || fail "child-two's repeat invocations disagree: $(cat "$TMP/j_ids2")"
+ok "the same child invoked twice resolves the same id"
+
+CHILD1_ID=$(head -n 1 "$TMP/j_ids1")
+CHILD2_ID=$(head -n 1 "$TMP/j_ids2")
+[ "$CHILD1_ID" != "$CHILD2_ID" ] ||
+    fail "two children with distinct CLAUDE_CODE_SESSION_ID values merged onto one id ($CHILD1_ID)"
+ok "two children of one leased ancestor with distinct harness ids resolve distinct ids"
+
+cat "$TMP/j_rungs1" "$TMP/j_rungs2" >"$TMP/j_rungs_all"
+[ "$(sort -u "$TMP/j_rungs_all")" = "3" ] ||
+    fail "expected every child invocation on rung 3, got: $(sort -u "$TMP/j_rungs_all" | tr '\n' ' ')"
+ok "every child invocation resolved on rung 3 (the harness variable)"
+
+# (d) Non-vacuousness / planted-mutation proof: neither child adopted the
+# ancestor's lease, and no new lease was created along the way.
+[ "$CHILD1_ID" != "$LEASED_ID" ] ||
+    fail "child-one adopted the planted ancestor lease ($LEASED_ID) instead of its own harness id — the phase-10 merging bug is back"
+[ "$CHILD2_ID" != "$LEASED_ID" ] ||
+    fail "child-two adopted the planted ancestor lease ($LEASED_ID) instead of its own harness id — the phase-10 merging bug is back"
+ok "neither child adopted the planted ancestor lease"
+
+LEASE_COUNT_J_AFTER=$(find "$LEASES_J" -name '*.lease' | wc -l | tr -d ' ')
+[ "$LEASE_COUNT_J_AFTER" = "1" ] ||
+    fail "expected still exactly 1 lease file after both children ran (rung 3 needs no on-disk state), got $LEASE_COUNT_J_AFTER"
+ok "rung 3 needs no on-disk state — no lease was created for either child"
 
 printf '\n\033[1;32mAll session-identity checks passed.\033[0m\n'

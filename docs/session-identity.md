@@ -50,22 +50,42 @@ is the safe direction, and rung 3 is what covers this case in practice.
 The ascent terminates on all three degenerate shapes: it is bounded at 8, it
 stops at pid ≤ 1, and it carries a seen-set so a cycle cannot loop.
 
-### Why rung 2 both precedes rung 3 and defers to it
+### Why rung 3 now precedes rung 2, and lease creation still defers to it
 
-The decision record's precedence is explicit: inherited lease outranks harness
-variable. Rung 2 is therefore *checked* first. But lease **creation** happens
-after rung 3 has been consulted, because a harness that already publishes a
-stable id has nothing for a lease to bootstrap — and creating one anyway would
-make rung 3 unreachable in practice. So the order is:
+**Phase 10 amendment.** Phase 3's decision record originally specified
+checking the inherited lease (rung 2) before the harness variable (rung 3).
+That order let two Claude Code sessions launched under one already-leased
+ancestor shell **merge onto one changeset**: a parent shell that ran a single
+bare, harness-less `rdm` invocation minted a lease at that parent, and every
+child launched under it — even one carrying its own distinct
+`CLAUDE_CODE_SESSION_ID` — silently adopted that inherited lease instead of
+its own harness-derived id. This is exactly the "stopping too HIGH" merging
+failure the decision record's stopping-rule asymmetry names as unacceptable,
+just reached through rung ordering rather than ancestor depth. Reproduced
+2026-09-01 and fixed by phase 10 of the `plan-repo-concurrency` roadmap; see
+`scripts/verify-session-identity.sh` § J for the real-process regression.
+
+The fix: a harness-published session id is an **explicit statement of session
+membership** and must outrank an inherited on-disk artifact that predates it.
+Rung 3 is therefore now *checked* before rung 2. Lease **creation** still
+defers until after rung 3 has been consulted — a harness that already
+publishes a stable id has nothing for a lease to bootstrap, and creating one
+anyway would make rung 3 unreachable in practice for that process's own later
+invocations. So the order is:
 
 1. `RDM_SESSION` → rung 1.
-2. Adopt an existing ancestor lease → rung 2.
-3. First non-empty `HARNESS_SESSION_VARS` entry → rung 3.
+2. First non-empty `HARNESS_SESSION_VARS` entry → rung 3.
+3. Adopt an existing ancestor lease → rung 2.
 4. Create a lease at the immediate parent → still rung 2.
 5. Per-process id → rung 4.
 
-This is an amendment to nothing: the decision record fixed the precedence of
-*resolved identities*, and the resolved precedence above is exactly that order.
+The "defers to it" half of this section's title is now trivially true: since
+lease bootstrap (step 4) is reached only once both explicit and harness have
+already been ruled out, there is no order in which a lease could be created
+ahead of a harness check that would still apply. The rung *numbers* are
+unaffected — `Rung::Lease` is still rung 2 and `Rung::Harness` is still rung
+3, matching `docs/scoping-model-decision.md`'s binding vocabulary; only the
+order `resolve_id` evaluates them in has changed.
 
 ## On-disk layout
 

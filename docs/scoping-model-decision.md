@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-This document records the decision to implement **Option A: Changeset Attribution** for handling concurrent sessions sharing a single `$RDM_ROOT` plan repository. Sessions are identified by a four-rung resolution chain (highest precedence first: explicit `RDM_SESSION`, inherited lease, harness variables, per-process fallback), and mutations are journaled by session so that `rdm commit` builds git trees from HEAD plus only the caller's journaled paths. Another session's uncommitted changes do not affect what lands. This approach is chosen over Option B (commit per mutation) because it preserves readability of the git history while still eliminating session cross-contamination.
+This document records the decision to implement **Option A: Changeset Attribution** for handling concurrent sessions sharing a single `$RDM_ROOT` plan repository. Sessions are identified by a four-rung resolution chain (highest precedence first: explicit `RDM_SESSION`, harness variables, inherited lease, per-process fallback — reordered by phase 10; see the note below), and mutations are journaled by session so that `rdm commit` builds git trees from HEAD plus only the caller's journaled paths. Another session's uncommitted changes do not affect what lands. This approach is chosen over Option B (commit per mutation) because it preserves readability of the git history while still eliminating session cross-contamination.
 
 ## Problem Statement
 
@@ -46,6 +46,8 @@ This simplification by deletion is genuine. However, Option B loses on history q
 
 Session identity is resolved in this order (highest precedence first). The spellings below are **binding**, not examples; implementations must use these exact terms.
 
+> **Rung labels vs. evaluation order.** The "Rung 1"–"Rung 4" labels below (and `Rung::number()` / the CLI's `rung` JSON field) are fixed, binding identifiers for each mechanism — they do **not** describe the order in which `resolve_id` checks them. Phase 3 originally specified checking rung 2 (inherited lease) before rung 3 (harness variable), matching the section order below. Phase 10 amended this: the actual checked order is **1 (explicit) → 3 (harness) → 2 (lease) → 4 (per-process)**. A harness-published session id is an explicit statement of session membership and must outrank an inherited on-disk lease — see the Rung 3 "Precedence" bullet below and `docs/session-identity.md` § "Why rung 3 now precedes rung 2, and lease creation still defers to it" for the mechanism and the merging bug this fixed.
+
 ### Rung 1: Explicit `RDM_SESSION` (Always Wins)
 
 An environment variable `RDM_SESSION=<value>` set by the invoker always takes precedence. This is the escape hatch for scripts and CI systems that need deterministic, reproducible identities.
@@ -65,7 +67,7 @@ When `RDM_SESSION` is not set, rdm resolves a long-lived ancestor process and us
 
 An extensible list of harness-specific environment variables (e.g., `CLAUDE_CODE_SESSION_ID` from Claude Code) can provide session identity if set. This is an adoption path: tools that already track their own session IDs can be wired in here.
 
-- **Precedence**: Lower than explicit `RDM_SESSION` and inherited lease, higher than the fallback
+- **Precedence**: Lower than explicit `RDM_SESSION`; higher than the inherited lease (as of phase 10) and the fallback. Without this, a parent shell that ran one bare, harness-less `rdm` invocation would mint a lease at that parent, and every child launched under it — regardless of its own distinct harness session id — would silently inherit that lease and merge onto one changeset. See `docs/session-identity.md` for the reproduction and the fix.
 - **Properties**: Stable (harness maintains it), Distinct (harness-specific, not reused across tools), Automatic (if the harness sets it)
 
 ### Rung 4: Per-Process Changeset (Always Resolves)

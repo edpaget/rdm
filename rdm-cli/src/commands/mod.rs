@@ -481,17 +481,21 @@ fn build_batch_commit_message(
 /// same plan repo does not get it swept into a `Done:` commit it never asked
 /// for.
 ///
-/// Whose changeset that is follows the ordinary identity chain, and both
-/// cases are correct:
+/// Whose changeset that is follows the ordinary identity chain (as of phase
+/// 10, checked harness variable before inherited lease — see
+/// `docs/session-identity.md`), and every case is correct:
 ///
-/// - **Rung 2 (inherited lease)** — the hook was spawned by a shell that
-///   already holds a lease, so `mutate_batch`'s `Store::commit` appends to
-///   that session's changeset and the commit lands that session's work
-///   together with the status flips. This is the usual `rdm-land` shape.
-/// - **Rung 4 (per-process)** — no lease is reachable (a bare `git merge` in
-///   a fresh process tree), so the hook resolves a fresh id and its changeset
-///   contains *only* what the hook itself just wrote: the status flips and
-///   their regenerated indexes. Nothing else can ride along.
+/// - **Rung 3 (harness variable) or Rung 2 (inherited lease)** — the hook was
+///   spawned by a shell already carrying a harness session id, or (absent
+///   one) already holding a lease, so `mutate_batch`'s `Store::commit`
+///   appends to that session's changeset and the commit lands that session's
+///   work together with the status flips. This is the usual `rdm-land`
+///   shape, whichever rung supplied the identity.
+/// - **Rung 4 (per-process)** — neither a harness variable nor a reachable
+///   lease (a bare `git merge` in a fresh process tree), so the hook resolves
+///   a fresh id and its changeset contains *only* what the hook itself just
+///   wrote: the status flips and their regenerated indexes. Nothing else can
+///   ride along.
 ///
 /// Bounded exactly as before: the `RDM_GIT_SUBPROCESS` short-circuit still
 /// returns before any of this, and the added work (one journal read plus a

@@ -8,25 +8,37 @@
 //!
 //! # The four-rung chain
 //!
-//! [`resolve_session`] walks phase 3's binding chain, highest precedence
-//! first, and is **infallible by construction** — it returns a
-//! [`ResolvedSession`], never a `Result`, so no degradation path can turn into
-//! an error on the bounded git-hook deadline:
+//! [`resolve_session`] walks a binding chain, highest precedence first, and
+//! is **infallible by construction** — it returns a [`ResolvedSession`],
+//! never a `Result`, so no degradation path can turn into an error on the
+//! bounded git-hook deadline. The rung *labels* below (`Rung::Lease == 2`,
+//! `Rung::Harness == 3`, matching [`Rung::number`] and every doc/CLI
+//! reference to "rung 2"/"rung 3") are fixed, binding identifiers — only the
+//! *order* [`resolve_id`] checks them has changed, as of phase 10:
 //!
 //! 1. **Explicit** — [`RDM_SESSION_ENV`]. Wins outright: no lease is read, no
 //!    ancestry is walked, no harness variable is consulted.
-//! 2. **Inherited lease** — the nearest ancestor process holding a valid lease
-//!    (see [`lease`] for the shipped stopping rule). When no ancestor holds
-//!    one and no harness variable applies, a lease is *created* at the
-//!    immediate parent, which is still this rung.
-//! 3. **Harness variable** — the first non-empty entry of
+//! 2. **Harness variable** (rung 3) — the first non-empty entry of
 //!    [`HARNESS_SESSION_VARS`], hashed. Purely derived, so two unrelated
-//!    processes agree with zero on-disk state.
+//!    processes agree with zero on-disk state. Checked before any lease is
+//!    read or created.
+//! 3. **Inherited lease** (rung 2) — the nearest ancestor process holding a
+//!    valid lease (see [`lease`] for the shipped stopping rule). When no
+//!    ancestor holds one and no harness variable applies, a lease is
+//!    *created* at the immediate parent — still rung 2, and reached only
+//!    once both explicit and harness have been ruled out.
 //! 4. **Per-process** — a fresh id derived from this process. Always resolves.
 //!
-//! Rung 2 is tried before rung 3 (phase 3's ordering), but lease *creation* is
-//! deferred until after rung 3 has been checked: when a harness already
-//! publishes a stable id there is nothing for a lease to bootstrap.
+//! Phase 3 originally checked the inherited lease (rung 2) before the
+//! harness variable (rung 3). Phase 10 reordered this: an explicit harness
+//! statement of session membership must outrank an inherited on-disk lease.
+//! Under the old order, a parent shell that ran one bare (harness-less) `rdm`
+//! invocation minted a lease at that parent, and every child launched under
+//! it — regardless of its own distinct harness session id — silently
+//! inherited that lease and merged onto one changeset. Checking the harness
+//! variable first removes that merging bug while leaving the no-harness case
+//! (phases 3-4's bare-shell lease sharing) unchanged, since lease bootstrap
+//! is still reached only once neither explicit nor harness applies.
 //!
 //! # Where the state lives
 //!
@@ -327,13 +339,13 @@ fn resolve_id(
         return (id, Rung::Explicit);
     }
 
-    // Rung 2 — an already-inherited ancestor lease.
-    if let Some(id) = lease::adopt_inherited(paths, procs) {
-        return (id, Rung::Lease);
-    }
-
-    // Rung 3 — a harness-published id. Checked before creating a lease: a
-    // harness that already publishes a stable id needs no on-disk state.
+    // Rung 3 — a harness-published id, checked before any lease is
+    // consulted. An explicit harness statement of session membership must
+    // outrank an inherited on-disk lease: without this, two sessions
+    // launched under one already-leased ancestor shell (e.g. a parent
+    // terminal that ran a bare, harness-less `rdm` once) would both adopt
+    // that ancestor's lease and silently share a changeset. See phase 10 of
+    // the plan-repo-concurrency roadmap.
     for var in HARNESS_SESSION_VARS {
         if let Some(raw) = env.get(var)
             && !raw.trim().is_empty()
@@ -345,8 +357,15 @@ fn resolve_id(
         }
     }
 
+    // Rung 2 — an already-inherited ancestor lease. Reached only once no
+    // harness variable applies.
+    if let Some(id) = lease::adopt_inherited(paths, procs) {
+        return (id, Rung::Lease);
+    }
+
     // Rung 2 (bootstrap) — create the lease this session's later invocations
-    // will inherit. Creation happens only at the immediate parent.
+    // will inherit. Creation happens only at the immediate parent, and only
+    // once both explicit and harness rungs have been ruled out.
     if let Some(id) = lease::create_at_parent(paths, procs) {
         return (id, Rung::Lease);
     }
@@ -417,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn inherited_lease_beats_harness_var() {
+    fn harness_var_beats_inherited_lease() {
         let dir = TempDir::new().unwrap();
         let p = paths(&dir);
         let table = MapProcessTable::chain(10, &[(20, "s20")]);
@@ -425,8 +444,47 @@ mod tests {
         let env = MapEnv::new().with("CLAUDE_CODE_SESSION_ID", "abc123");
 
         let resolved = resolve_session(&p, &table, &env);
-        assert_eq!(resolved.id, leased);
-        assert_eq!(resolved.rung, Rung::Lease);
+        assert_ne!(resolved.id, leased);
+        assert_eq!(resolved.rung, Rung::Harness);
+    }
+
+    #[test]
+    fn harness_var_beats_an_already_inherited_lease() {
+        // Reproduces the phase-10 merging bug: a parent shell runs a bare
+        // (harness-less) rdm invocation first, minting an ancestor lease.
+        // Two children of that same ancestor, each carrying its own harness
+        // session id, must NOT be forced onto the inherited lease — an
+        // explicit harness statement of session membership outranks an
+        // on-disk artifact created before that harness var was ever set.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let ancestor = MapProcessTable::chain(10, &[(20, "s20")]);
+        let leased = lease::create_at_parent(&p, &ancestor).unwrap();
+
+        // Two "children" of the same ancestor (pid 20), distinct harness ids.
+        let child_one_table = MapProcessTable::chain(30, &[(20, "s20")]);
+        let child_two_table = MapProcessTable::chain(31, &[(20, "s20")]);
+        let env_one = MapEnv::new().with("CLAUDE_CODE_SESSION_ID", "child-one");
+        let env_two = MapEnv::new().with("CLAUDE_CODE_SESSION_ID", "child-two");
+
+        let child_one = resolve_session(&p, &child_one_table, &env_one);
+        let child_two = resolve_session(&p, &child_two_table, &env_two);
+
+        assert_eq!(child_one.rung, Rung::Harness);
+        assert_eq!(child_two.rung, Rung::Harness);
+        assert_ne!(child_one.id, child_two.id, "distinct harness ids diverge");
+        assert_ne!(
+            child_one.id, leased,
+            "must not adopt the ancestor's inherited lease"
+        );
+        assert_ne!(
+            child_two.id, leased,
+            "must not adopt the ancestor's inherited lease"
+        );
+
+        // The same child invoked twice resolves the same id.
+        let child_one_again = resolve_session(&p, &child_one_table, &env_one);
+        assert_eq!(child_one.id, child_one_again.id);
     }
 
     #[test]
