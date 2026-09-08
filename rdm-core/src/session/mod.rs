@@ -346,14 +346,10 @@ fn resolve_id(
     // terminal that ran a bare, harness-less `rdm` once) would both adopt
     // that ancestor's lease and silently share a changeset. See phase 10 of
     // the plan-repo-concurrency roadmap.
-    for var in HARNESS_SESSION_VARS {
-        if let Some(raw) = env.get(var)
-            && !raw.trim().is_empty()
-        {
-            let digest = hex16(&[var, raw.trim()]);
-            if let Some(id) = SessionId::new(&format!("h-{digest}")) {
-                return (id, Rung::Harness);
-            }
+    if let Some((var, raw)) = active_harness_var(env) {
+        let digest = hex16(&[var, &raw]);
+        if let Some(id) = SessionId::new(&format!("h-{digest}")) {
+            return (id, Rung::Harness);
         }
     }
 
@@ -372,6 +368,27 @@ fn resolve_id(
 
     // Rung 4 — always resolves.
     (per_process_id(paths, procs), Rung::Process)
+}
+
+/// Returns the first entry of [`HARNESS_SESSION_VARS`] set to a non-empty
+/// value, paired with its trimmed value — the same test [`resolve_id`] uses
+/// to decide whether rung 3 applies.
+///
+/// Exposed beyond `resolve_id` so [`journal::adopt_changeset`] can detect,
+/// before repointing an ancestor lease (rung 2 state), that a harness
+/// variable is present and would make the repoint unreachable: since phase
+/// 10, rung 3 is checked before rung 2, so a caller with a harness variable
+/// set never falls through to an inherited or repointed lease.
+pub(crate) fn active_harness_var(env: &dyn EnvSource) -> Option<(&'static str, String)> {
+    for var in HARNESS_SESSION_VARS {
+        if let Some(raw) = env.get(var) {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() {
+                return Some((var, trimmed.to_string()));
+            }
+        }
+    }
+    None
 }
 
 /// Derives the always-available per-process id.

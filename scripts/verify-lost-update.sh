@@ -372,7 +372,8 @@ mkdir -p "$MUT"
 # working-tree copies of the files that carry it.
 for f in rdm-store-fs/src/lib.rs rdm-core/src/store/mod.rs rdm-core/src/error.rs \
     rdm-core/src/paths.rs rdm-core/src/lock.rs rdm-core/src/lib.rs \
-    rdm-core/src/session/journal.rs rdm-store-git/src/lib.rs \
+    rdm-core/src/session/journal.rs rdm-core/src/session/mod.rs \
+    rdm-cli/src/commands/session.rs rdm-store-git/src/lib.rs \
     rdm-store-git/src/commit.rs rdm-server/src/problem.rs; do
     [ -f "$REPO_ROOT/$f" ] || fail "expected source file missing: $f"
     mkdir -p "$MUT/$(dirname "$f")"
@@ -721,7 +722,8 @@ mkdir -p "$MUT2"
     fail "could not export a scratch source tree (is this a git checkout?)"
 for f in rdm-store-fs/src/lib.rs rdm-core/src/store/mod.rs rdm-core/src/error.rs \
     rdm-core/src/paths.rs rdm-core/src/lock.rs rdm-core/src/lib.rs \
-    rdm-core/src/session/journal.rs rdm-store-git/src/lib.rs \
+    rdm-core/src/session/journal.rs rdm-core/src/session/mod.rs \
+    rdm-cli/src/commands/session.rs rdm-store-git/src/lib.rs \
     rdm-store-git/src/commit.rs rdm-server/src/problem.rs; do
     [ -f "$REPO_ROOT/$f" ] || fail "expected source file missing: $f"
     mkdir -p "$MUT2/$(dirname "$f")"

@@ -303,6 +303,59 @@ fn list_flags_orphans_and_adopt_repoints_the_caller() {
 }
 
 #[test]
+fn adopt_with_a_harness_var_set_refuses_instead_of_reporting_false_success() {
+    // Since phase 10 of plan-repo-concurrency, a harness variable (rung 3) is
+    // checked before an inherited lease (rung 2), so `session adopt` — which
+    // works by repointing the caller's parent lease — would silently have no
+    // effect for a caller carrying a harness variable: the next `session id`
+    // call would keep resolving the harness id, never the adopted changeset.
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    rdm(&dir)
+        .env("RDM_SESSION", "orphaned-two")
+        .args([
+            "task",
+            "create",
+            "alpha-two",
+            "--title",
+            "Alpha",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    let output = rdm(&dir)
+        .env("CLAUDE_CODE_SESSION_ID", "child-one")
+        .args(["session", "adopt", "orphaned-two"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("CLAUDE_CODE_SESSION_ID"),
+        "expected the offending harness var named in the error, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("RDM_SESSION"),
+        "expected the actionable RDM_SESSION alternative, got: {stderr}"
+    );
+
+    // Non-vacuousness: the caller's own next resolution still reports its
+    // harness id, never the orphaned changeset — the refusal really did
+    // nothing, rather than reporting failure while repointing anyway.
+    let id = stdout(
+        rdm(&dir)
+            .env("CLAUDE_CODE_SESSION_ID", "child-one")
+            .args(["session", "id"]),
+    );
+    assert!(
+        !id.lines().any(|l| l == "orphaned-two"),
+        "adoption should not have taken effect, got: {id}"
+    );
+}
+
+#[test]
 fn an_unusable_changeset_id_reports_the_rule() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);

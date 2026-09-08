@@ -223,6 +223,16 @@ re-points the caller's immediate-parent lease at it, so the caller's shell
 resolves that changeset from then on; `rdm session discard <id> --force` drops
 it.
 
+Adoption works by writing rung-2 state (the parent lease), so it only takes
+effect for a caller who would otherwise resolve at rung 2 or below. Since
+phase 10, rung 3 (harness) is checked before rung 2, so a caller with a
+harness variable set (e.g. `CLAUDE_CODE_SESSION_ID`) would never reach the
+repointed lease — `rdm session adopt` detects that up front and refuses with
+an actionable error naming the offending variable, rather than reporting
+success and silently doing nothing. Adopt from a shell with no harness
+variable set instead, or set `RDM_SESSION=<id>` to pin the id explicitly
+(rung 1, which always wins).
+
 ## Environment variables
 
 | Variable | Rung | Notes |

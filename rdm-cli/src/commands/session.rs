@@ -10,7 +10,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use rdm_core::session::journal;
-use rdm_core::session::{ResolvedSession, SessionId, SessionPaths};
+use rdm_core::session::{RealEnv, ResolvedSession, SessionId, SessionPaths};
 
 use crate::{OutputFormat, SessionCommand};
 
@@ -91,7 +91,7 @@ pub fn run(root: &Path, format: OutputFormat, command: SessionCommand) -> Result
         SessionCommand::Adopt { id } => {
             let id = parse_id(&id)?;
             let procs = rdm_core::session::system_process_table();
-            journal::adopt_changeset(&paths, procs, &id)
+            journal::adopt_changeset(&paths, procs, &RealEnv, &id)
                 .with_context(|| format!("failed to adopt changeset {id}"))?;
             println!("Adopted changeset {id}; this session's later mutations join it.");
         }

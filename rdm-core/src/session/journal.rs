@@ -264,18 +264,34 @@ pub fn list_changesets(
 /// Re-points the caller's session at an existing changeset.
 ///
 /// This is orphan recovery: after adopting, the caller's shell resolves `id`
-/// and its subsequent mutations append to that changeset's journal.
+/// and its subsequent mutations append to that changeset's journal. Adoption
+/// works by repointing the caller's *parent-lease* state (rung 2) — since
+/// phase 10 reordered [`super::resolve_id`] to check a harness variable
+/// (rung 3) before that lease, adoption is refused up front when a harness
+/// variable is present, rather than silently repointing a lease the caller's
+/// own next resolution will never reach.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if the lease cannot be written, or a
-/// [`Error::InvalidPath`] describing the problem if the caller has no parent
-/// process to hold the lease.
+/// Returns a [`Error::InvalidPath`] describing the problem if: a harness
+/// variable (e.g. `CLAUDE_CODE_SESSION_ID`) is set in `env`, so the caller
+/// would keep resolving its harness id and never see the repointed lease; or
+/// the caller has no parent process to hold the lease. Returns
+/// [`Error::Io`] if the lease cannot be written.
 pub fn adopt_changeset(
     paths: &SessionPaths,
     procs: &dyn ProcessTable,
+    env: &dyn super::EnvSource,
     id: &SessionId,
 ) -> Result<()> {
+    if let Some((var, _)) = super::active_harness_var(env) {
+        return Err(Error::InvalidPath(format!(
+            "cannot adopt a changeset: {var} is set, and a harness variable now \
+             always wins over an inherited lease (rung 3 outranks rung 2) — the \
+             repointed lease would never be consulted. Unset {var} for this shell, \
+             or set RDM_SESSION={id} instead"
+        )));
+    }
     if !lease::repoint_parent_lease(paths, procs, id)? {
         return Err(Error::InvalidPath(
             "cannot adopt a changeset: no parent process is available to hold the lease — \
@@ -303,6 +319,7 @@ pub fn discard_changeset(paths: &SessionPaths, id: &SessionId) -> Result<bool> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::MapEnv;
     use super::super::process::MapProcessTable;
     use super::*;
     use tempfile::TempDir;
@@ -637,7 +654,7 @@ mod tests {
         let orphan = SessionId::new("s-orphan").unwrap();
         record(&p, &orphan, &[entry("a.md", JournalKind::Write)]).unwrap();
 
-        adopt_changeset(&p, &table, &orphan).unwrap();
+        adopt_changeset(&p, &table, &MapEnv::new(), &orphan).unwrap();
         assert_eq!(
             lease::adopt_inherited(&p, &table).unwrap().as_str(),
             "s-orphan"
@@ -652,8 +669,37 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let p = paths(&dir);
         let id = SessionId::new("s-orphan").unwrap();
-        let err = adopt_changeset(&p, &MapProcessTable::empty(10), &id).unwrap_err();
+        let err =
+            adopt_changeset(&p, &MapProcessTable::empty(10), &MapEnv::new(), &id).unwrap_err();
         assert!(err.to_string().contains("RDM_SESSION"));
+    }
+
+    #[test]
+    fn adopt_with_a_harness_var_set_refuses_up_front() {
+        // Since phase 10, rung 3 (harness) is checked before rung 2 (lease),
+        // so repointing the parent lease would have no effect for a caller
+        // whose environment carries a harness variable — the caller's next
+        // `resolve_id` call would keep resolving its harness id and never
+        // reach the repointed lease. Adoption must refuse loudly instead of
+        // reporting a false success.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let table = MapProcessTable::chain(10, &[(20, "s20")]);
+        let orphan = SessionId::new("s-orphan").unwrap();
+        record(&p, &orphan, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        let env = MapEnv::new().with("CLAUDE_CODE_SESSION_ID", "child-one");
+        let err = adopt_changeset(&p, &table, &env, &orphan).unwrap_err();
+        assert!(err.to_string().contains("CLAUDE_CODE_SESSION_ID"));
+        assert!(err.to_string().contains("RDM_SESSION"));
+
+        // Non-vacuousness: nothing was written — the parent lease still
+        // reads back whatever it held before (nothing, here), never the
+        // orphan's id, proving the refusal happens before the repoint.
+        assert_ne!(
+            lease::adopt_inherited(&p, &table).map(|id| id.as_str().to_string()),
+            Some("s-orphan".to_string())
+        );
     }
 
     #[test]

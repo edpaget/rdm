@@ -15,7 +15,11 @@
 # ancestor lease: two real child processes of one already-leased ancestor,
 # each carrying its own distinct CLAUDE_CODE_SESSION_ID, resolve distinct
 # rung-3 ids that diverge from the planted ancestor lease, each stable across
-# repeat invocations within the same process.
+# repeat invocations within the same process — plus a Section J self-test
+# that neuters the harness check, rebuilds a mutant binary in a scratch
+# CARGO_TARGET_DIR, and confirms the SAME scenario reproduces the phase-10
+# merging bug on it (the rebuild-a-mutant pattern also used by
+# verify-lost-update.sh's Section 2c).
 #
 # Run after touching rdm-core/src/session/**, GitStore's journal wiring,
 # FsStore::staged_paths, or the `rdm session` CLI surface.
@@ -600,8 +604,11 @@ cat "$TMP/j_rungs1" "$TMP/j_rungs2" >"$TMP/j_rungs_all"
     fail "expected every child invocation on rung 3, got: $(sort -u "$TMP/j_rungs_all" | tr '\n' ' ')"
 ok "every child invocation resolved on rung 3 (the harness variable)"
 
-# (d) Non-vacuousness / planted-mutation proof: neither child adopted the
-# ancestor's lease, and no new lease was created along the way.
+# (d) Cross-check: neither child adopted the ancestor's lease, and no new
+# lease was created along the way. This is a live-behavior assertion, not
+# the section's planted-mutation self-test (that is (e) below) — it would
+# pass just as well on a build that happened to route both children through
+# rung 4 instead of rung 3, for instance.
 [ "$CHILD1_ID" != "$LEASED_ID" ] ||
     fail "child-one adopted the planted ancestor lease ($LEASED_ID) instead of its own harness id — the phase-10 merging bug is back"
 [ "$CHILD2_ID" != "$LEASED_ID" ] ||
@@ -612,5 +619,75 @@ LEASE_COUNT_J_AFTER=$(find "$LEASES_J" -name '*.lease' | wc -l | tr -d ' ')
 [ "$LEASE_COUNT_J_AFTER" = "1" ] ||
     fail "expected still exactly 1 lease file after both children ran (rung 3 needs no on-disk state), got $LEASE_COUNT_J_AFTER"
 ok "rung 3 needs no on-disk state — no lease was created for either child"
+
+# (e) Planted-mutation self-test: neuter the harness check the way it read
+# before phase 10 fixed the ordering, rebuild in a scratch CARGO_TARGET_DIR,
+# and re-run the exact plant-then-two-children scenario against the mutant —
+# it must reproduce the phase-10 merging bug (both children silently adopt
+# the ancestor's lease). This is the automated proof that (a)-(d) above
+# actually depend on the fix rather than merely describing it; mirrors the
+# rebuild-a-mutant pattern used by Section 2c of verify-lost-update.sh.
+say "Section J (self-test): planting the phase-10 regression and re-running the scenario"
+
+MUT_J="$TMP/mutant-j"
+mkdir -p "$MUT_J/rdm-core/src/session"
+(cd "$REPO_ROOT" && git archive HEAD) | tar -x -C "$MUT_J" 2>/dev/null ||
+    fail "could not export a scratch source tree (is this a git checkout?)"
+
+# The phase's own uncommitted work may not be on HEAD yet — overlay the
+# working-tree copy of the file that carries the fix under test.
+cp "$REPO_ROOT/rdm-core/src/session/mod.rs" "$MUT_J/rdm-core/src/session/mod.rs"
+
+MUT_J_MOD="$MUT_J/rdm-core/src/session/mod.rs"
+grep -q 'if let Some((var, raw)) = active_harness_var(env) {' "$MUT_J_MOD" ||
+    fail "the harness-check call site moved — update this self-test to match"
+sed 's|if let Some((var, raw)) = active_harness_var(env) {|if let Some((var, raw)) = active_harness_var(env) \&\& false { // MUTATION: reintroduces the phase-10 merging bug|' \
+    "$MUT_J_MOD" >"$MUT_J_MOD.new"
+mv "$MUT_J_MOD.new" "$MUT_J_MOD"
+grep -q '// MUTATION' "$MUT_J_MOD" || fail "failed to plant the Section J mutation"
+
+say "  building the mutant (scratch CARGO_TARGET_DIR; ~15s)"
+(cd "$MUT_J" && CARGO_TARGET_DIR="$MUT_J/target" cargo build -q -p rdm-cli --offline) ||
+    fail "the mutant build failed — the self-test cannot run"
+MUT_J_BIN="$MUT_J/target/debug/rdm"
+[ -x "$MUT_J_BIN" ] || fail "the mutant binary was not produced at $MUT_J_BIN"
+
+REPO_J_MUT="$TMP/repo-j-mut"
+mkdir -p "$REPO_J_MUT"
+RDM_SESSION=harness-seed "$MUT_J_BIN" --root "$REPO_J_MUT" init --default-project demo >/dev/null
+RDM_SESSION=harness-seed "$MUT_J_BIN" --root "$REPO_J_MUT" commit \
+    -m "seed: init plan repo and project" >/dev/null
+
+"$MUT_J_BIN" --root "$REPO_J_MUT" session id --format json >"$TMP/j_plant_mut.out" 2>&1 ||
+    fail "the mutant's plant invocation failed: $(cat "$TMP/j_plant_mut.out")"
+LEASED_ID_MUT=$(json_lines "$TMP/j_plant_mut.out" | field_str id)
+[ -n "$LEASED_ID_MUT" ] || fail "the mutant's plant invocation produced no id"
+
+child_run_mut() {
+    _value=$1
+    _out=$2
+    (
+        CLAUDE_CODE_SESSION_ID="$_value"
+        export CLAUDE_CODE_SESSION_ID
+        "$MUT_J_BIN" --root "$REPO_J_MUT" session id --format json
+    ) >"$_out" 2>&1
+}
+child_run_mut child-one "$TMP/j_child1_mut.out" &
+PID_JM1=$!
+child_run_mut child-two "$TMP/j_child2_mut.out" &
+PID_JM2=$!
+wait "$PID_JM1" || fail "the mutant's child-one exited non-zero: $(cat "$TMP/j_child1_mut.out")"
+wait "$PID_JM2" || fail "the mutant's child-two exited non-zero: $(cat "$TMP/j_child2_mut.out")"
+
+CHILD1_ID_MUT=$(json_lines "$TMP/j_child1_mut.out" | field_str id)
+CHILD2_ID_MUT=$(json_lines "$TMP/j_child2_mut.out" | field_str id)
+
+if [ "$CHILD1_ID_MUT" = "$LEASED_ID_MUT" ] && [ "$CHILD2_ID_MUT" = "$LEASED_ID_MUT" ]; then
+    ok "self-test: neutering the harness check DOES reproduce the phase-10 merging bug (both children merged onto $LEASED_ID_MUT)"
+else
+    fail "self-test failed: the mutant did not reproduce the phase-10 merging bug \
+(child-one=$CHILD1_ID_MUT child-two=$CHILD2_ID_MUT leased=$LEASED_ID_MUT) — \
+Section J would not catch a real regression of the fix"
+fi
 
 printf '\n\033[1;32mAll session-identity checks passed.\033[0m\n'
