@@ -4679,6 +4679,160 @@ mod tests {
     }
 
     #[test]
+    fn a_legacy_digest_less_write_entry_fails_open_and_the_discard_overwrites() {
+        // The discard-side counterpart of
+        // `a_legacy_journal_line_without_a_digest_still_commits`: an in-flight
+        // changeset journaled before digests existed must not be protected by
+        // a comparison it cannot make — it fails open and restores
+        // unconditionally, same as the commit-side guard.
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut mine = scoped_repo(&dir, "unit-disc-legacy-a");
+        make_task(&mut mine, "legacy-contested");
+        mine.commit_changeset(Some("seed legacy-contested"), &[])
+            .unwrap();
+        // A's own edit, journaled but never committed.
+        rdm_core::ops::mutate(&mut mine, "demo", |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                "demo",
+                "legacy-contested",
+                None,
+                None,
+                rdm_core::ops::update::TagsUpdate::Keep,
+                rdm_core::ops::update::BodyUpdate::Set("A's edit".to_string()),
+                None,
+                None,
+                None,
+                rdm_core::ops::update::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+
+        // Rewrite the journal in the pre-digest (legacy) format for this
+        // path only, discarding the real digest just recorded above.
+        let paths = mine.session_paths().unwrap().clone();
+        let id = mine.session().unwrap().id.clone();
+        let task_path = rdm_core::paths::task_path("demo", "legacy-contested");
+        let line = format!(
+            "{{\"paths\":[{{\"path\":\"{}\",\"kind\":\"write\"}}]}}\n",
+            task_path.as_str()
+        );
+        std::fs::write(
+            rdm_core::session::journal::changeset_path(&paths, &id),
+            line,
+        )
+        .unwrap();
+        drop(mine);
+
+        // B overwrites the same never-committed path with different content.
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-disc-legacy-b") };
+        let mut theirs = GitStore::new(dir.path()).unwrap();
+        rdm_core::ops::mutate(&mut theirs, "demo", |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                "demo",
+                "legacy-contested",
+                None,
+                None,
+                rdm_core::ops::update::TagsUpdate::Keep,
+                rdm_core::ops::update::BodyUpdate::Set("B's edit".to_string()),
+                None,
+                None,
+                None,
+                rdm_core::ops::update::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+        drop(theirs);
+
+        // A discards — with no digest to compare, the guard fails open and
+        // restores to HEAD unconditionally, clobbering B's edit. Contrast
+        // with `discard_leaves_a_path_another_changeset_overwrote_since`,
+        // where the identical scenario WITH a digest protects B's content
+        // instead.
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-disc-legacy-a") };
+        let mut mine = GitStore::new(dir.path()).unwrap();
+        let outcome = mine.discard_changeset().unwrap();
+
+        let contested =
+            std::fs::read_to_string(dir.path().join("projects/demo/tasks/legacy-contested.md"))
+                .unwrap();
+        assert!(
+            !contested.contains("B's edit"),
+            "a digest-less journal entry must fail open and restore, not skip: {contested}"
+        );
+        assert!(
+            outcome
+                .restored
+                .iter()
+                .any(|p| p == "projects/demo/tasks/legacy-contested.md"),
+            "the digest-less path was not reported as restored: {outcome:?}"
+        );
+        assert!(
+            outcome.skipped_overwritten.is_empty(),
+            "a digest-less entry must never be skipped as overwritten: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn discard_restores_a_journaled_write_whose_on_disk_content_vanished() {
+        // The discard-side counterpart of
+        // `a_journaled_path_that_vanished_is_skipped_not_fatal`: a journaled
+        // write whose content is gone from disk (deleted out from under the
+        // changeset by something other than this store's own write/delete
+        // path) can't be digest-compared either, so it also fails open.
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store = scoped_repo(&dir, "unit-disc-vanish");
+        make_task(&mut store, "vanishing-write");
+        store
+            .commit_changeset(Some("seed vanishing-write"), &[])
+            .unwrap();
+        rdm_core::ops::mutate(&mut store, "demo", |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                "demo",
+                "vanishing-write",
+                None,
+                None,
+                rdm_core::ops::update::TagsUpdate::Keep,
+                rdm_core::ops::update::BodyUpdate::Set("uncommitted update".to_string()),
+                None,
+                None,
+                None,
+                rdm_core::ops::update::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+
+        std::fs::remove_file(dir.path().join("projects/demo/tasks/vanishing-write.md")).unwrap();
+
+        let outcome = store.discard_changeset().unwrap();
+
+        assert!(
+            dir.path()
+                .join("projects/demo/tasks/vanishing-write.md")
+                .exists(),
+            "a vanished journaled write must fail open and be restored from HEAD, not left missing"
+        );
+        assert!(
+            outcome
+                .restored
+                .iter()
+                .any(|p| p == "projects/demo/tasks/vanishing-write.md"),
+            "the vanished path was not reported as restored: {outcome:?}"
+        );
+        assert!(
+            outcome.skipped_overwritten.is_empty(),
+            "a vanished-content path must never be skipped as overwritten: {outcome:?}"
+        );
+    }
+
+    #[test]
     fn status_partitions_into_three_buckets_in_one_pass() {
         let _guard = serial_scoped();
         let dir = TempDir::new().unwrap();
