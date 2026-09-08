@@ -116,6 +116,12 @@ pub enum CommitScope<'a> {
     Changeset(&'a ChangesetScope),
 }
 
+/// [`GitRepo::build_changeset_tree`]'s return: the new tree oid, the paths
+/// that landed (`committed`), the journaled paths skipped as vanished
+/// (`skipped`), and the wider `settled` set a caller truncates a session's
+/// journal against. See that method's doc comment for what each Vec holds.
+type ChangesetTreeResult = (gix::ObjectId, Vec<String>, Vec<String>, Vec<String>);
+
 /// What a commit actually did, reported from one place so every porcelain
 /// (CLI, MCP, server) states the same facts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -129,6 +135,17 @@ pub struct CommitReport {
     /// A concurrent discard, or a manual `rm`. Skipping is deliberate: a
     /// vanished path must never fail an otherwise-good commit.
     pub skipped_missing: Vec<String>,
+    /// Paths this changeset can now prove are correctly reflected at the
+    /// resulting tree, whether or not this specific commit changed their
+    /// blob.
+    ///
+    /// Wider than `committed`: it also covers a no-op write-back (content
+    /// already equal to HEAD) and every non-deferred reconciled derived path.
+    /// It excludes `skipped_missing` paths and any derived path deferred for
+    /// an unlanded project. This is the set a caller truncates a session's
+    /// journal against, so an idempotent write still clears the journal even
+    /// when the commit itself is a no-op (`sha: None`).
+    pub(crate) settled: Vec<String>,
 }
 
 /// How long a scoped commit will wait for the advisory lock before giving up
@@ -584,6 +601,7 @@ impl GitRepo {
             sha: Some(id.detach().to_string()),
             committed: self.git_status_all()?.into_iter().map(|s| s.path).collect(),
             skipped_missing: Vec::new(),
+            settled: Vec::new(),
         })
     }
 
@@ -611,15 +629,19 @@ impl GitRepo {
                     .map(|t| t.detach())
             });
 
-            let (tree_id, committed, skipped_missing) =
+            let (tree_id, committed, skipped_missing, settled) =
                 self.build_changeset_tree(&repo, changeset, head)?;
 
             if Some(tree_id) == head_tree {
-                // Nothing this changeset owns differs from HEAD.
+                // Nothing this changeset owns differs from HEAD. `settled`
+                // still carries every path this changeset can now prove is
+                // correctly reflected at HEAD, so the caller can truncate the
+                // journal even though nothing landed.
                 return Ok(CommitReport {
                     sha: None,
                     committed: Vec::new(),
                     skipped_missing,
+                    settled,
                 });
             }
 
@@ -647,6 +669,7 @@ impl GitRepo {
                     sha: Some(commit_id.to_string()),
                     committed,
                     skipped_missing,
+                    settled,
                 });
             }
 
@@ -734,14 +757,25 @@ impl GitRepo {
 
     /// Builds the scoped tree: HEAD's entries plus exactly this changeset.
     ///
-    /// Returns the tree oid, the paths that landed, and the journaled paths
-    /// skipped because their working-tree file has since vanished.
+    /// Returns the tree oid, the paths that landed (their blob actually
+    /// changed), the journaled paths skipped because their working-tree file
+    /// has since vanished, and the wider set of paths this changeset can now
+    /// prove are correctly reflected at the resulting tree — `settled` —
+    /// which is `committed` plus every non-derived write whose content
+    /// already matched HEAD (so it never entered `committed`) plus every
+    /// non-derived delete that reached past the recreated-check, including a
+    /// no-op delete of a path already absent (e.g. another session deleted
+    /// and landed the same path first), plus every non-deferred reconciled
+    /// derived path. `settled` excludes `skipped` paths and any derived path
+    /// `reconcile_derived` deferred for an unlanded project, so a caller can
+    /// safely truncate a session's journal against it even on a fully no-op
+    /// commit — write or delete.
     fn build_changeset_tree(
         &self,
         repo: &gix::Repository,
         changeset: &ChangesetScope,
         head: Option<gix::ObjectId>,
-    ) -> Result<(gix::ObjectId, Vec<String>, Vec<String>)> {
+    ) -> Result<ChangesetTreeResult> {
         let mut entries = self.collect_tree_at(repo, head)?;
         let mut committed: Vec<String> = Vec::new();
         let mut skipped: Vec<String> = Vec::new();
@@ -823,6 +857,18 @@ impl GitRepo {
         // A delete-then-*recreate* within one changeset never reaches here:
         // `read_journal` collapses a path to its last recorded kind, so the
         // recreate journals as a `Write` and the write guard above owns it.
+        //
+        // Every non-derived delete that reaches past the recreated-check is
+        // settled, whether or not it actually removed an entry from the tree:
+        // `entries.remove(path).is_some()` is false exactly when the path was
+        // already absent (e.g. another session deleted and landed it first),
+        // which is the state this delete asked for just as much as one that
+        // removed a live entry. A derived delete is excluded here (not
+        // untracked — every derived delete that actually removes an entry
+        // already lands in `committed` below, same as before) because its
+        // commit-time correctness is `reconcile_derived`'s, not this loop's,
+        // matching the write guard's own derived exemption above.
+        let mut settled_deletes: Vec<String> = Vec::new();
         for path in &changeset.deletes {
             if !rdm_core::paths::is_derived_path(path) && self.root.join(path).exists() {
                 return Err(Error::ChangesetDeletePathRecreated {
@@ -832,6 +878,9 @@ impl GitRepo {
             }
             if entries.remove(path).is_some() {
                 committed.push(path.clone());
+            }
+            if !rdm_core::paths::is_derived_path(path) {
+                settled_deletes.push(path.clone());
             }
         }
 
@@ -849,8 +898,30 @@ impl GitRepo {
         committed.sort();
         committed.dedup();
         skipped.sort();
+
+        // `settled`: every path this changeset can now prove is correctly
+        // reflected at the tree just built, whether or not this specific
+        // commit changed its blob. Starts from `committed` (paths that DID
+        // change), then widens to every non-derived write that already
+        // matched HEAD (skipping only what vanished — those stay journaled),
+        // every non-derived delete that reached past the recreated-check
+        // (including a no-op delete of a path already absent — settled_deletes,
+        // above), then every non-deferred reconciled derived path (`derived`'s
+        // keys already exclude anything `reconcile_derived` deferred for an
+        // unlanded project).
+        let mut settled = committed.clone();
+        for path in changeset.all_writes() {
+            if !rdm_core::paths::is_derived_path(path) && !skipped.contains(path) {
+                settled.push(path.clone());
+            }
+        }
+        settled.extend(settled_deletes);
+        settled.extend(derived.keys().cloned());
+        settled.sort();
+        settled.dedup();
+
         let tree_id = write_tree_from_map(repo, &entries)?;
-        Ok((tree_id, committed, skipped))
+        Ok((tree_id, committed, skipped, settled))
     }
 
     /// Regenerates the derived indexes this changeset journaled, from HEAD

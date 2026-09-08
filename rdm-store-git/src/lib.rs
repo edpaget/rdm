@@ -621,10 +621,28 @@ impl GitStore {
     ///
     /// No-op if the working tree already matches HEAD.
     ///
+    /// Clears **every** changeset's journal on disk afterward — live or
+    /// orphaned, this session's or another's — regardless of whether this
+    /// particular call landed a new commit. A whole-tree commit makes the
+    /// entire working directory equal to the new HEAD unconditionally, so no
+    /// journal anywhere can describe anything still unlanded once it
+    /// returns; leaving any of them journaled would only reproduce this same
+    /// phase's bug one level up. Best-effort, like every other journal
+    /// write: a failure here must never fail an otherwise-successful commit.
+    ///
     /// # Errors
     /// Returns [`Error::Git`] if the commit cannot be created.
     pub fn commit_whole_tree(&self, message: &str) -> Result<CommitReport> {
-        self.git.git_commit(message)
+        let report = self.git.git_commit(message)?;
+        if let Some(paths) = self.session_paths.as_ref() {
+            for id in session::journal::list_changeset_ids(paths).unwrap_or_default() {
+                if let Ok(entries) = session::journal::read_journal(paths, &id) {
+                    let all_paths: Vec<String> = entries.into_iter().map(|e| e.path).collect();
+                    let _ = session::journal::truncate(paths, &id, &all_paths);
+                }
+            }
+        }
+        Ok(report)
     }
 
     /// Creates a git commit containing HEAD plus exactly this session's
@@ -641,9 +659,13 @@ impl GitStore {
     /// supplied by the caller that actually wrote those paths — it is not a
     /// standing exemption list.
     ///
-    /// On success the landed paths are removed from the journal. That is
-    /// correctness, not hygiene: see
-    /// [`journal::truncate`](rdm_core::session::journal::truncate).
+    /// Every path now correctly reflected at HEAD is removed from the
+    /// journal — including a no-op write-back whose content already equalled
+    /// HEAD — and this happens even when the commit itself is a no-op
+    /// (`sha: None`). That is correctness, not hygiene: see
+    /// [`journal::truncate`](rdm_core::session::journal::truncate). A
+    /// vanished (skipped) path and a derived path deferred for an unlanded
+    /// project both stay journaled regardless.
     ///
     /// The returned [`ScopedCommit`] carries everything a porcelain needs to
     /// report — the sha, what landed, what was skipped as missing, and
@@ -747,10 +769,14 @@ impl GitStore {
             .unwrap_or_else(|| GitRepo::default_commit_message(&report.changeset()));
         let outcome = self.git.git_commit_changeset(&message, &scope)?;
 
-        if outcome.sha.is_some()
-            && let (Some(paths), Some(id)) = (self.session_paths.as_ref(), id)
-        {
-            let _ = session::journal::truncate(paths, id, &outcome.committed);
+        // Truncate against `settled`, not `committed`, and unconditionally —
+        // not gated on `outcome.sha.is_some()`. `settled` covers every path
+        // this changeset can now prove is correctly reflected at HEAD,
+        // including a no-op write-back whose blob already equalled HEAD, so a
+        // fully no-op changeset still gets its journal cleared instead of
+        // carrying a stale digest forward forever.
+        if let (Some(paths), Some(id)) = (self.session_paths.as_ref(), id) {
+            let _ = session::journal::truncate(paths, id, &outcome.settled);
         }
 
         Ok(ScopedCommit {
@@ -970,9 +996,11 @@ impl ScopedCommit {
     ///
     /// Every porcelain must print this on **every** branch, the `sha: None`
     /// ones included. Skipping a vanished path is deliberately not fatal, but
-    /// it must never be silent: the journal is truncated only on a *successful*
-    /// commit, so those paths are still claimed by this changeset while the
-    /// files backing them are gone. A caller told nothing but
+    /// it must never be silent: truncation is no longer gated on whether the
+    /// commit landed a new sha — a skipped path stays journaled regardless
+    /// of whether the surrounding commit was itself a no-op — because a
+    /// vanished path is explicitly excluded from the wider `settled` set a
+    /// commit truncates against. A caller told nothing but
     /// `Nothing to commit.` would have no way to learn that its own tracked
     /// work had disappeared underneath it.
     pub fn skipped_summary(&self) -> Option<String> {
@@ -4108,6 +4136,245 @@ mod tests {
     }
 
     #[test]
+    fn a_noop_update_then_anothers_edit_does_not_block_an_unrelated_commit() {
+        // The phase's reproduction, verbatim: an idempotent write-back leaves
+        // a stale digest in the journal forever (pre-fix), which then makes
+        // an entirely unrelated later commit fail with
+        // `Error::ChangesetPathOverwritten` once another session has since
+        // edited that same path.
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store_a = scoped_repo(&dir, "unit-noop-a");
+        make_task(&mut store_a, "t1");
+        store_a.commit_changeset(Some("land t1"), &[]).unwrap();
+
+        // Idempotent update: `rdm task update t1 --title t1` re-sets the
+        // title to its own existing value, so the serialized content is
+        // byte-identical to what's already at HEAD.
+        let path = rdm_core::paths::task_path("demo", "t1");
+        rdm_core::ops::mutate(&mut store_a, "demo", |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                "demo",
+                "t1",
+                None,
+                None,
+                rdm_core::ops::update::TagsUpdate::Keep,
+                rdm_core::ops::update::BodyUpdate::Keep,
+                None,
+                None,
+                None,
+                rdm_core::ops::update::TitleUpdate::Set("t1".to_string()),
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+
+        let outcome = store_a.commit_changeset(Some("noop update"), &[]).unwrap();
+        assert!(
+            outcome.sha.is_none(),
+            "a write-back matching HEAD must produce a true no-op commit"
+        );
+
+        let paths = store_a.session_paths().unwrap().clone();
+        let id_a = store_a.session().unwrap().id.clone();
+        let left = rdm_core::session::journal::read_journal(&paths, &id_a).unwrap();
+        assert!(
+            !left.iter().any(|e| e.path == path.as_str()),
+            "the no-op path must be truncated out of the journal even though \
+             the commit itself was a no-op (sha: None): {left:?}"
+        );
+        drop(store_a);
+
+        // Another session overwrites the same path and lands its edit.
+        let mut store_b = switch_session(&dir, "unit-noop-b");
+        rdm_core::ops::mutate(&mut store_b, "demo", |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                "demo",
+                "t1",
+                None,
+                None,
+                rdm_core::ops::update::TagsUpdate::Keep,
+                rdm_core::ops::update::BodyUpdate::Set("b's edit".to_string()),
+                None,
+                None,
+                None,
+                rdm_core::ops::update::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+        let b_outcome = store_b.commit_changeset(Some("b's edit"), &[]).unwrap();
+        assert!(b_outcome.sha.is_some(), "B's commit should have landed");
+        drop(store_b);
+
+        // Back on the first session: an unrelated commit must succeed.
+        // Pre-fix, this errors with `Error::ChangesetPathOverwritten` because
+        // t1's stale digest was still journaled against A.
+        let mut store_a = switch_session(&dir, "unit-noop-a");
+        make_task(&mut store_a, "t2");
+        let final_outcome = store_a.commit_changeset(Some("land t2"), &[]).unwrap();
+        assert!(
+            final_outcome.sha.is_some(),
+            "the unrelated commit for t2 must succeed"
+        );
+    }
+
+    #[test]
+    fn all_after_a_noop_update_then_anothers_edit_does_not_block_an_unrelated_commit() {
+        // AC2: the same repro as the scoped-commit test above, but the
+        // idempotent no-op update lands through `commit_whole_tree` (`--all`)
+        // instead of `commit_changeset`.
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store_a = scoped_repo(&dir, "unit-all-noop-a");
+        make_task(&mut store_a, "t1");
+        store_a.commit_changeset(Some("land t1"), &[]).unwrap();
+
+        rdm_core::ops::mutate(&mut store_a, "demo", |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                "demo",
+                "t1",
+                None,
+                None,
+                rdm_core::ops::update::TagsUpdate::Keep,
+                rdm_core::ops::update::BodyUpdate::Keep,
+                None,
+                None,
+                None,
+                rdm_core::ops::update::TitleUpdate::Set("t1".to_string()),
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+
+        // The working tree already matches HEAD, so this is a no-op commit —
+        // `commit_whole_tree` must still clear the acting session's journal.
+        store_a.commit_whole_tree("noop --all").unwrap();
+
+        let paths = store_a.session_paths().unwrap().clone();
+        let id_a = store_a.session().unwrap().id.clone();
+        let left = rdm_core::session::journal::read_journal(&paths, &id_a).unwrap();
+        assert!(
+            left.is_empty(),
+            "commit_whole_tree must clear the acting session's journal: {left:?}"
+        );
+        drop(store_a);
+
+        let mut store_b = switch_session(&dir, "unit-all-noop-b");
+        rdm_core::ops::mutate(&mut store_b, "demo", |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                "demo",
+                "t1",
+                None,
+                None,
+                rdm_core::ops::update::TagsUpdate::Keep,
+                rdm_core::ops::update::BodyUpdate::Set("b's edit".to_string()),
+                None,
+                None,
+                None,
+                rdm_core::ops::update::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+        let b_outcome = store_b.commit_changeset(Some("b's edit"), &[]).unwrap();
+        assert!(b_outcome.sha.is_some(), "B's commit should have landed");
+        drop(store_b);
+
+        let mut store_a = switch_session(&dir, "unit-all-noop-a");
+        make_task(&mut store_a, "t2");
+        let final_outcome = store_a.commit_changeset(Some("land t2"), &[]).unwrap();
+        assert!(
+            final_outcome.sha.is_some(),
+            "the unrelated commit for t2 must succeed"
+        );
+    }
+
+    #[test]
+    fn a_noop_delete_then_the_path_returns_does_not_block_an_unrelated_commit() {
+        // The delete-side mirror of `a_noop_update_then_anothers_edit_does_not_
+        // block_an_unrelated_commit`: a journaled delete that turns out to be
+        // a no-op at commit time (another session already deleted and landed
+        // the same path first) must be truncated out of the acting session's
+        // journal, or a *third* session recreating that path later wrongly
+        // trips `Error::ChangesetDeletePathRecreated` against a completely
+        // unrelated, later commit from the first session.
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store_a = scoped_repo(&dir, "unit-noop-del-a");
+        make_task(&mut store_a, "shared");
+        store_a.commit_changeset(Some("land shared"), &[]).unwrap();
+
+        let path = rdm_core::paths::task_path("demo", "shared");
+        store_a.delete(&path).unwrap();
+        store_a.commit().unwrap();
+
+        // Another session's changeset lands the very same deletion first —
+        // A's own delete is a no-op by the time A commits.
+        let paths = store_a.session_paths().unwrap().clone();
+        let other = rdm_core::session::SessionId::new("unit-noop-del-other").unwrap();
+        rdm_core::session::journal::record(
+            &paths,
+            &other,
+            &[rdm_core::session::journal::JournalEntry {
+                path: path.as_str().to_string(),
+                kind: JournalKind::Delete,
+                digest: None,
+            }],
+        )
+        .unwrap();
+        let theirs = store_a
+            .commit_changeset_id(Some(&other), Some("theirs"), &[])
+            .expect("the other session's delete lands cleanly");
+        assert!(theirs.sha.is_some(), "the other session's delete must land");
+
+        // A's own commit of its now-no-op delete must succeed and truncate
+        // the stale journal entry, even though nothing new lands.
+        let id_a = store_a.session().unwrap().id.clone();
+        let mine = store_a
+            .commit_changeset(Some("mine"), &[])
+            .expect("a delete another session already landed must not refuse");
+        assert!(
+            !mine.committed.iter().any(|p| p == path.as_str()),
+            "the path was already gone from HEAD, so this changeset did not \
+             commit it; committed: {:?}",
+            mine.committed
+        );
+        let left = rdm_core::session::journal::read_journal(&paths, &id_a).unwrap();
+        assert!(
+            !left.iter().any(|e| e.path == path.as_str()),
+            "the no-op delete must be truncated out of the journal even \
+             though this changeset's own commit landed nothing new: {left:?}"
+        );
+        drop(store_a);
+
+        // A third session recreates the path and lands it.
+        let mut store_c = switch_session(&dir, "unit-noop-del-c");
+        make_task(&mut store_c, "shared");
+        let recreated = store_c
+            .commit_changeset(Some("recreate shared"), &[])
+            .expect("recreating the path from a fresh session must land");
+        assert!(recreated.sha.is_some());
+        drop(store_c);
+
+        // Back on the first session: an unrelated commit must succeed.
+        // Pre-fix, this errors with `Error::ChangesetDeletePathRecreated`
+        // because the stale delete entry for `shared` was still journaled
+        // against A, and `shared` now exists again on disk.
+        let mut store_a = switch_session(&dir, "unit-noop-del-a");
+        make_task(&mut store_a, "t2");
+        let final_outcome = store_a.commit_changeset(Some("land t2"), &[]).unwrap();
+        assert!(
+            final_outcome.sha.is_some(),
+            "the unrelated commit for t2 must succeed"
+        );
+    }
+
+    #[test]
     fn the_same_changeset_twice_against_one_head_yields_one_tree_oid() {
         let _guard = serial_scoped();
         let mut oids = Vec::new();
@@ -4247,6 +4514,46 @@ mod tests {
         );
         assert_no_dangling_links(&index, &tree);
         assert_no_orphan_project_index(&tree);
+    }
+
+    #[test]
+    fn a_deferred_derived_path_stays_journaled_until_its_project_lands() {
+        // AC3: the widened `settled` set from this phase must not sweep up a
+        // derived path `reconcile_derived` deferred for a project another
+        // session hasn't landed yet — the phase 8 heal depends on it staying
+        // journaled until that session lands its project.
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let store_b = arrange_orphaned_parent(&dir, "unit-deferred-a", "unit-deferred-b");
+        let b_paths = store_b.session_paths().unwrap().clone();
+        let b_id = store_b.session().unwrap().id.clone();
+
+        store_b.commit_changeset(Some("land b"), &[]).unwrap();
+
+        let after_b = rdm_core::session::journal::read_journal(&b_paths, &b_id).unwrap();
+        assert!(
+            after_b.iter().any(|e| e.path == "projects/alt/INDEX.md"),
+            "the deferred derived path must still be journaled after B's own \
+             commit, proving the widened `settled` set did not truncate a \
+             path `reconcile_derived` deferred: {after_b:?}"
+        );
+        drop(store_b);
+
+        // Once A lands its project, the previously-deferred index row
+        // reappears — the existing heal this AC guards against regressing.
+        let store_a = switch_session(&dir, "unit-deferred-a");
+        store_a.commit_changeset(Some("land alt"), &[]).unwrap();
+
+        let tree = head_tree_paths(&dir);
+        assert!(
+            tree.iter().any(|p| p == "projects/alt/INDEX.md"),
+            "projects/alt/INDEX.md missing after the owning session landed: {tree:?}"
+        );
+        let index = git_in(&dir, &["show", "HEAD:INDEX.md"]);
+        assert!(
+            index.contains("projects/alt/INDEX.md"),
+            "the deferred root-index row did not return: {index}"
+        );
     }
 
     #[test]

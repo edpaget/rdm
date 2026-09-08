@@ -516,8 +516,22 @@ RDM_SESSION=harness-seed "$RDM_BIN" --root "$REPO_H" task show hooked --project 
     --no-body >"$TMP/h2.show" 2>&1
 grep -qi '^Status: *done' "$TMP/h2.show" ||
     fail "the Done: directive did not land, so the hook path was not really exercised"
-find "$REPO_H/.git/rdm/changesets" -name '*.jsonl' | grep -q . ||
-    fail "the hook produced no journal, so identity did not resolve on the hook path"
+# Evidence that identity resolved and journaling happened on the hook path is
+# the `batch-commit` event the hook logs after its own `commit_changeset`
+# lands — NOT a leftover changeset file: `plan-repo-concurrency`'s
+# no-op-truncation fix widens truncation to every path this changeset can now
+# prove is correctly reflected at HEAD (not just the ones whose blob changed),
+# so a hook batch that lands cleanly with nothing left unlanded now correctly
+# empties (and removes) its own journal file — the very bug that fix closes.
+HOOK_LOG="$REPO_H/.git/rdm-hook.log"
+[ -f "$HOOK_LOG" ] || fail "the hook wrote no log at $HOOK_LOG"
+BATCH_LINE=$(grep 'post-commit batch-commit' "$HOOK_LOG" || true)
+[ -n "$BATCH_LINE" ] ||
+    fail "the hook logged no batch-commit event, so identity did not resolve on the hook path: $(cat "$HOOK_LOG")"
+echo "$BATCH_LINE" | grep -q 'changeset=..*' ||
+    fail "the batch-commit event names no changeset id: $BATCH_LINE"
+echo "$BATCH_LINE" | grep -q 'paths=[1-9]' ||
+    fail "the batch-commit event landed zero paths: $BATCH_LINE"
 ok "the hook path completes, applies its directive, and journals its own writes"
 
 # ---------------------------------------------------------------------------

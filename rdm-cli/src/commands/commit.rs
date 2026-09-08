@@ -26,21 +26,28 @@ pub fn run(
 
     if all {
         // The explicitly-named machine-global escape hatch.
+        //
+        // `commit_whole_tree` is called unconditionally — even when
+        // `report.is_clean()` — because it also clears every changeset's
+        // journal on disk, and a stale journal entry from an earlier no-op
+        // write can outlive an already-clean tree. Short-circuiting here
+        // before ever calling it would leave that journal behind forever,
+        // reproducing this phase's bug one layer up.
         let report = store
             .git()
             .git_status_report()
             .context("failed to get git status")?;
-        if report.is_clean() {
-            println!("Nothing to commit.");
-            return Ok(());
-        }
         let all_paths = report.all();
         let msg =
             message.unwrap_or_else(|| rdm_store_git::GitRepo::default_commit_message(&all_paths));
-        store
+        let commit_report = store
             .commit_whole_tree(&msg)
             .context("failed to create git commit")?;
-        println!("{}", report.commit_summary());
+        if commit_report.sha.is_none() {
+            println!("Nothing to commit.");
+        } else {
+            println!("{}", report.commit_summary());
+        }
         return Ok(());
     }
 

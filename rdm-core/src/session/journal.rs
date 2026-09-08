@@ -261,6 +261,40 @@ pub fn list_changesets(
     Ok(out)
 }
 
+/// Lists every changeset id on disk, live or orphaned alike.
+///
+/// The bare-ids counterpart to [`list_changesets`], with no
+/// [`ProcessTable`] dependency: a caller that only needs to enumerate ids —
+/// for example, a whole-tree committer that must clear every journal once
+/// everything lands, regardless of who (if anyone) still holds a lease on
+/// it — has no reason to pay for liveness resolution it will not use.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if the changesets directory exists but cannot be
+/// listed. A missing directory reads as empty.
+pub fn list_changeset_ids(paths: &SessionPaths) -> Result<Vec<SessionId>> {
+    let dir = paths.changesets_dir();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(Error::Io(e)),
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Some(stem) = name.strip_suffix(".jsonl") else {
+            continue;
+        };
+        let Some(id) = SessionId::new(stem) else {
+            continue;
+        };
+        out.push(id);
+    }
+    out.sort();
+    Ok(out)
+}
+
 /// Re-points the caller's session at an existing changeset.
 ///
 /// This is orphan recovery: after adopting, the caller's shell resolves `id`
@@ -644,6 +678,25 @@ mod tests {
         let listed = list_changesets(&p, &MapProcessTable::empty(1), Some(&id)).unwrap();
         assert_eq!(listed.len(), 1);
         assert!(!listed[0].orphaned);
+    }
+
+    #[test]
+    fn list_changeset_ids_returns_every_id_regardless_of_liveness() {
+        // No lease, no `ProcessTable`, no `current` — `list_changeset_ids`
+        // has no liveness concept at all, unlike `list_changesets`.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let a = SessionId::new("s-a").unwrap();
+        let b = SessionId::new("s-b").unwrap();
+        record(&p, &a, &[entry("a.md", JournalKind::Write)]).unwrap();
+        record(&p, &b, &[entry("b.md", JournalKind::Write)]).unwrap();
+
+        let ids = list_changeset_ids(&p).unwrap();
+        assert_eq!(
+            ids.iter().map(SessionId::as_str).collect::<Vec<_>>(),
+            vec!["s-a", "s-b"],
+            "both ids come back, sorted, with no lease ever set up"
+        );
     }
 
     #[test]

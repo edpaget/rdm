@@ -565,6 +565,97 @@ fn commit_all_is_the_whole_tree_opt_in() {
     );
 }
 
+/// AC2 + AC4: `rdm commit --all` must clear every changeset's journal, not
+/// just the acting session's own — `rdm session list` reports nothing
+/// outstanding once everything has landed.
+#[test]
+fn commit_all_clears_every_changesets_journal() {
+    let dir = TempDir::new().unwrap();
+    seed_two_changesets(&dir);
+
+    rdm_as("cs-a", &dir)
+        .args(["commit", "--all", "-m", "land everything"])
+        .assert()
+        .success();
+
+    let out = rdm_as("cs-a", &dir)
+        .args(["session", "list", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        String::from_utf8(out).unwrap().trim(),
+        "[]",
+        "rdm session list must report nothing outstanding after `commit --all`"
+    );
+}
+
+/// The degenerate "already clean" half of AC4: a tree that already matches
+/// HEAD (nothing for git to commit) but still carries a stale journal entry
+/// left over from an earlier no-op write — the literal "no unlanded work"
+/// case from the phase's Problem section.
+#[test]
+fn commit_all_clears_a_stale_journal_even_when_the_tree_is_already_clean() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    rdm_as("cs-a", &dir)
+        .args([
+            "task",
+            "create",
+            "t1",
+            "--title",
+            "T1",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+    rdm_as("cs-a", &dir)
+        .args(["commit", "-m", "land t1"])
+        .assert()
+        .success();
+
+    // An idempotent update: re-setting the title to its own existing value
+    // re-serializes to byte-identical content, journaling a write whose blob
+    // already equals HEAD — but the working tree is already clean.
+    rdm_as("cs-a", &dir)
+        .args([
+            "task",
+            "update",
+            "t1",
+            "--title",
+            "T1",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+
+    rdm_as("cs-a", &dir)
+        .args(["commit", "--all", "-m", "noop --all"])
+        .assert()
+        .success();
+
+    let out = rdm_as("cs-a", &dir)
+        .args(["session", "list", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        String::from_utf8(out).unwrap().trim(),
+        "[]",
+        "a stale journal entry from a no-op write must not survive `commit --all` \
+         on an already-clean tree"
+    );
+}
+
 #[test]
 fn commit_by_changeset_id_is_the_orphan_recovery_path() {
     let dir = TempDir::new().unwrap();
