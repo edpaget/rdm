@@ -64,11 +64,14 @@ pub fn run(root: &Path, force: bool, all: bool) -> Result<()> {
         }
         return Ok(());
     }
-    store
+    let outcome = store
         .discard_changeset()
         .context("failed to discard changes")?;
-    println!("{}", report.discard_summary());
-    print_per_file(&store, &report);
+    println!("{}", outcome.discard_summary());
+    print_per_file_scoped(&store, &outcome);
+    if let Some(note) = outcome.skipped_summary() {
+        println!("  {note}");
+    }
     if let Some(note) = report.others_summary() {
         println!("  {note}");
     }
@@ -82,6 +85,10 @@ pub fn run(root: &Path, force: bool, all: bool) -> Result<()> {
 /// after restoring the tree, so a `.gitattributes` just deleted is back on
 /// disk. Re-reading tells us which paths that actually applies to, so the
 /// lines below never claim a file was removed while it is sitting right there.
+///
+/// Used only by the `--all` whole-tree path, which has no per-path
+/// skip/overwrite guard — see [`print_per_file_scoped`] for the
+/// changeset-scoped counterpart.
 fn print_per_file(store: &rdm_store_git::GitStore, report: &rdm_store_git::StatusReport) {
     let still_changed: Vec<String> = store
         .git()
@@ -89,6 +96,38 @@ fn print_per_file(store: &rdm_store_git::GitStore, report: &rdm_store_git::Statu
         .map(|after| after.all().iter().map(|fs| fs.path.clone()).collect())
         .unwrap_or_default();
     for fs in &report.user {
+        if still_changed.contains(&fs.path) {
+            println!("  reinstalled: {} (rdm-managed)", fs.path);
+            continue;
+        }
+        let prefix = match fs.change {
+            rdm_store_git::FileChange::Added => "  removed:  ",
+            rdm_store_git::FileChange::Modified => "  restored: ",
+            rdm_store_git::FileChange::Deleted => "  restored: ",
+        };
+        println!("{prefix}{}", fs.path);
+    }
+}
+
+/// The changeset-scoped counterpart of [`print_per_file`], reading the
+/// [`rdm_store_git::ScopedDiscard`] `discard_changeset` returns so a path it
+/// deliberately left in place (`skipped_overwritten`) gets an honest
+/// `skipped:` line instead of a `removed:`/`restored:` one that would
+/// falsely claim this discard reverted it.
+fn print_per_file_scoped(store: &rdm_store_git::GitStore, outcome: &rdm_store_git::ScopedDiscard) {
+    let still_changed: Vec<String> = store
+        .git()
+        .git_status_report()
+        .map(|after| after.all().iter().map(|fs| fs.path.clone()).collect())
+        .unwrap_or_default();
+    for fs in &outcome.report.user {
+        if outcome.skipped_overwritten.contains(&fs.path) {
+            println!(
+                "  skipped:  {} (changed by another session — left in place)",
+                fs.path
+            );
+            continue;
+        }
         if still_changed.contains(&fs.path) {
             println!("  reinstalled: {} (rdm-managed)", fs.path);
             continue;

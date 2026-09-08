@@ -142,7 +142,8 @@ rdm-core/src/session/journal.rs
 rdm-core/src/session/process.rs
 rdm-cli/src/commands/commit.rs
 rdm-cli/src/commands/session.rs
-rdm-store-git/src/lib.rs"
+rdm-store-git/src/lib.rs
+rdm-store-git/src/commit.rs"
 
 # One scratch target dir shared by every mutant build. Each mutant is a
 # distinct source tree, so its own crates rebuild, but the third-party

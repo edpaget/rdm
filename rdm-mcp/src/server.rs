@@ -1788,11 +1788,18 @@ impl RdmMcpServer {
         if report.is_changeset_clean() {
             return ok_text("Nothing to discard.".to_string());
         }
-        if let Err(e) = store.discard_changeset() {
-            return core_err(e);
-        }
+        let outcome = match store.discard_changeset() {
+            Ok(o) => o,
+            Err(e) => return core_err(e),
+        };
         // Shared with the CLI's `rdm discard` so the two can never disagree.
-        let mut text = report.discard_summary();
+        // Reports what was actually restored, not the pre-discard report —
+        // the two diverge exactly when a path was skipped as overwritten by
+        // another session since this changeset last wrote it.
+        let mut text = outcome.discard_summary();
+        if let Some(note) = outcome.skipped_summary() {
+            text.push_str(&format!("\n{note}"));
+        }
         if let Some(note) = report.others_summary() {
             text.push_str(&format!("\n{note}"));
         }

@@ -786,7 +786,15 @@ impl GitStore {
     /// The shipped `rdm discard` design. Concretely:
     ///
     /// 1. this changeset's non-derived paths are restored to HEAD (added ones
-    ///    removed, modified/deleted ones written back);
+    ///    removed, modified/deleted ones written back) — **except** a path
+    ///    whose on-disk content no longer matches what this changeset
+    ///    journaled writing there, or whose journaled delete has been
+    ///    recreated on disk since: either signals another session's
+    ///    uncommitted work has landed on a path this changeset also claims,
+    ///    so that one path is left untouched and reported skipped rather
+    ///    than restored, exactly mirroring the digest/presence guard
+    ///    [`commit_changeset_id`](Self::commit_changeset_id) already applies
+    ///    (see [`GitRepo::restore_paths_to_head_scoped`]);
     /// 2. the changeset's journal is cleared;
     /// 3. the derived indexes are regenerated **from the resulting disk
     ///    state**, so another session's still-uncommitted rows survive — and
@@ -795,25 +803,50 @@ impl GitStore {
     /// 4. the `.gitattributes` merge-driver mapping is re-ensured, exactly as
     ///    the whole-tree discard does.
     ///
-    /// Returns the report describing what was discarded.
+    /// Returns a [`ScopedDiscard`] carrying the pre-discard report plus what
+    /// was actually restored and what was skipped as overwritten, so no
+    /// caller has to re-derive either list.
     ///
     /// # Errors
     ///
     /// Returns [`Error::Git`] if the HEAD tree cannot be read or files cannot
     /// be written, or a core error if the indexes cannot be regenerated.
-    pub fn discard_changeset(&mut self) -> Result<StatusReport> {
+    pub fn discard_changeset(&mut self) -> Result<ScopedDiscard> {
         let report = self.status_report_scoped()?;
         if report.is_changeset_clean() {
             let _ = self.git.ensure_gitattributes();
-            return Ok(report);
+            return Ok(ScopedDiscard {
+                report,
+                ..Default::default()
+            });
         }
-        self.git.restore_paths_to_head(&report.user)?;
 
-        if let (Some(paths), Some(id)) = (
-            self.session_paths.as_ref(),
-            self.session().map(|s| s.id.clone()),
-        ) {
-            let _ = session::journal::discard_changeset(paths, &id);
+        let id = self.session().map(|s| s.id.clone());
+        let journal = self.read_changeset(id.as_ref())?;
+        let mut digests = std::collections::BTreeMap::new();
+        let mut deletes = std::collections::BTreeSet::new();
+        for entry in &journal {
+            if rdm_core::paths::is_derived_path(&entry.path) {
+                continue;
+            }
+            match entry.kind {
+                JournalKind::Write => {
+                    if let Some(digest) = &entry.digest {
+                        digests.insert(entry.path.clone(), digest.clone());
+                    }
+                }
+                JournalKind::Delete => {
+                    deletes.insert(entry.path.clone());
+                }
+            }
+        }
+
+        let (restored, skipped_overwritten) =
+            self.git
+                .restore_paths_to_head_scoped(&report.user, &digests, &deletes)?;
+
+        if let (Some(paths), Some(id)) = (self.session_paths.as_ref(), id.as_ref()) {
+            let _ = session::journal::discard_changeset(paths, id);
         }
 
         // Regenerate from what is actually on disk now: the point is that
@@ -826,7 +859,11 @@ impl GitStore {
         if self.git.ensure_gitattributes().unwrap_or(false) {
             self.journal_side_write(crate::repo::GITATTRIBUTES_PATH);
         }
-        Ok(report)
+        Ok(ScopedDiscard {
+            report,
+            restored,
+            skipped_overwritten,
+        })
     }
 
     /// Restores the **whole** working tree to HEAD, destroying every
@@ -946,6 +983,68 @@ impl ScopedCommit {
             "skipped {} journaled path(s) no longer on disk (still in this changeset's journal): {}",
             self.skipped_missing.len(),
             self.skipped_missing.join(", ")
+        ))
+    }
+}
+
+/// What a scoped discard did, from one source so every porcelain reports the
+/// same facts.
+///
+/// The discard-side counterpart of [`ScopedCommit`]: [`discard_changeset`]
+/// applies the same digest/presence guard `commit_changeset_id` does, but as
+/// a per-path skip rather than a hard refusal, so a caller needs both what
+/// was actually restored and what was deliberately left alone.
+///
+/// [`discard_changeset`]: GitStore::discard_changeset
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScopedDiscard {
+    /// The three-way status as it was before the discard.
+    pub report: StatusReport,
+    /// The non-derived paths actually restored to HEAD (or removed, for a
+    /// path this changeset added).
+    pub restored: Vec<String>,
+    /// Journaled paths left untouched because another session's content —
+    /// an overwrite of a journaled write, or a recreation of a journaled
+    /// delete — was detected there since this changeset last wrote them.
+    pub skipped_overwritten: Vec<String>,
+}
+
+impl ScopedDiscard {
+    /// Returns the one-line summary a caller prints after discarding this
+    /// outcome's changes.
+    ///
+    /// Mirrors [`StatusReport::discard_summary`], but counts what was
+    /// actually [`restored`](Self::restored) rather than everything this
+    /// changeset owned — the two differ exactly when a path was
+    /// [`skipped_overwritten`](Self::skipped_overwritten).
+    pub fn discard_summary(&self) -> String {
+        let derived = self.report.derived.len();
+        if derived > 0 {
+            format!(
+                "Discarded {} file(s) (plus {derived} regenerated index file(s)).",
+                self.restored.len()
+            )
+        } else {
+            format!("Discarded {} file(s).", self.restored.len())
+        }
+    }
+
+    /// The one-line note naming paths left in place because another
+    /// session's content or recreation was detected there since this
+    /// changeset last wrote them, or `None` when none were.
+    ///
+    /// Shared by `rdm discard` and the MCP `rdm_discard` tool, mirroring
+    /// [`ScopedCommit::skipped_summary`], so the two can never describe the
+    /// same situation differently.
+    pub fn skipped_summary(&self) -> Option<String> {
+        if self.skipped_overwritten.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "skipped {} path(s) changed by another session since you last wrote them (left in \
+             place): {}",
+            self.skipped_overwritten.len(),
+            self.skipped_overwritten.join(", ")
         ))
     }
 }
@@ -4393,6 +4492,189 @@ mod tests {
         assert!(
             !index.contains("discarded"),
             "the regenerated index kept the discarded row: {index}"
+        );
+    }
+
+    #[test]
+    fn a_sessions_own_write_then_discard_and_create_then_discard_are_unaffected() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store = scoped_repo(&dir, "unit-disc-own");
+        make_task(&mut store, "existing");
+        store.commit_changeset(Some("seed existing"), &[]).unwrap();
+
+        // Write-then-discard: a follow-up edit to an already-committed path,
+        // touched only by this session, inside one uncommitted batch.
+        rdm_core::ops::mutate(&mut store, "demo", |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                "demo",
+                "existing",
+                None,
+                None,
+                rdm_core::ops::update::TagsUpdate::Keep,
+                rdm_core::ops::update::BodyUpdate::Set("updated body".to_string()),
+                None,
+                None,
+                None,
+                rdm_core::ops::update::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+
+        // Create-then-discard: a brand-new file never committed at all.
+        make_task(&mut store, "brand-new");
+
+        let outcome = store.discard_changeset().unwrap();
+
+        assert!(
+            dir.path().join("projects/demo/tasks/existing.md").exists(),
+            "the previously-committed task must survive discarding the uncommitted update"
+        );
+        let existing =
+            std::fs::read_to_string(dir.path().join("projects/demo/tasks/existing.md")).unwrap();
+        assert!(
+            !existing.contains("updated body"),
+            "the uncommitted body update was not reverted: {existing}"
+        );
+        assert!(
+            !dir.path().join("projects/demo/tasks/brand-new.md").exists(),
+            "the never-committed create-then-discard file survived"
+        );
+        assert!(
+            outcome.skipped_overwritten.is_empty(),
+            "a session's own edits, touched by nobody else, must never be skipped: {outcome:?}"
+        );
+        assert!(
+            !outcome.restored.is_empty(),
+            "restored must be non-empty when the changeset had its own work to discard"
+        );
+    }
+
+    #[test]
+    fn discard_leaves_a_path_another_changeset_overwrote_since() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut mine = scoped_repo(&dir, "unit-disc-overwrite-a");
+        make_task(&mut mine, "contested");
+        mine.commit_changeset(Some("seed contested"), &[]).unwrap();
+        // A's own edit, journaled but never committed.
+        rdm_core::ops::mutate(&mut mine, "demo", |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                "demo",
+                "contested",
+                None,
+                None,
+                rdm_core::ops::update::TagsUpdate::Keep,
+                rdm_core::ops::update::BodyUpdate::Set("A's edit".to_string()),
+                None,
+                None,
+                None,
+                rdm_core::ops::update::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+        drop(mine);
+
+        // B overwrites the same never-committed path with different content.
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-disc-overwrite-b") };
+        let mut theirs = GitStore::new(dir.path()).unwrap();
+        rdm_core::ops::mutate(&mut theirs, "demo", |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                "demo",
+                "contested",
+                None,
+                None,
+                rdm_core::ops::update::TagsUpdate::Keep,
+                rdm_core::ops::update::BodyUpdate::Set("B's edit".to_string()),
+                None,
+                None,
+                None,
+                rdm_core::ops::update::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+        drop(theirs);
+
+        // A discards — must leave B's content on disk and report it skipped.
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-disc-overwrite-a") };
+        let mut mine = GitStore::new(dir.path()).unwrap();
+        let outcome = mine.discard_changeset().unwrap();
+
+        let contested =
+            std::fs::read_to_string(dir.path().join("projects/demo/tasks/contested.md")).unwrap();
+        assert!(
+            contested.contains("B's edit"),
+            "A's discard overwrote B's content: {contested}"
+        );
+        assert!(
+            outcome
+                .skipped_overwritten
+                .iter()
+                .any(|p| p == "projects/demo/tasks/contested.md"),
+            "the overwritten path was not reported as skipped: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn discard_leaves_a_path_another_changeset_recreated_after_a_delete() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut mine = scoped_repo(&dir, "unit-disc-recreate-a");
+        make_task(&mut mine, "deleted-then-recreated");
+        mine.commit_changeset(Some("seed"), &[]).unwrap();
+        let task_path = rdm_core::paths::task_path("demo", "deleted-then-recreated");
+        rdm_core::ops::mutate(&mut mine, "demo", |s| s.delete(&task_path)).unwrap();
+        drop(mine);
+
+        // B recreates a task at the same slug/path, with content that
+        // differs from what HEAD originally held there — an exact
+        // coincidental match would leave nothing for git status to report,
+        // which is a real (and harmless) edge case but not this one.
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-disc-recreate-b") };
+        let mut theirs = GitStore::new(dir.path()).unwrap();
+        make_task(&mut theirs, "deleted-then-recreated");
+        rdm_core::ops::mutate(&mut theirs, "demo", |s| {
+            rdm_core::ops::task::update_task(
+                s,
+                "demo",
+                "deleted-then-recreated",
+                None,
+                None,
+                rdm_core::ops::update::TagsUpdate::Keep,
+                rdm_core::ops::update::BodyUpdate::Set("B's recreated content".to_string()),
+                None,
+                None,
+                None,
+                rdm_core::ops::update::TitleUpdate::Keep,
+            )
+            .map(|_| ())
+        })
+        .unwrap();
+        drop(theirs);
+
+        // A discards — must leave B's recreated file on disk, reported skipped.
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-disc-recreate-a") };
+        let mut mine = GitStore::new(dir.path()).unwrap();
+        let outcome = mine.discard_changeset().unwrap();
+
+        assert!(
+            dir.path()
+                .join("projects/demo/tasks/deleted-then-recreated.md")
+                .exists(),
+            "A's discard destroyed B's recreated file"
+        );
+        assert!(
+            outcome
+                .skipped_overwritten
+                .iter()
+                .any(|p| p == "projects/demo/tasks/deleted-then-recreated.md"),
+            "the recreated path was not reported as skipped: {outcome:?}"
         );
     }
 

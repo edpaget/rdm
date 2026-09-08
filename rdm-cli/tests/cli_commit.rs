@@ -743,6 +743,187 @@ fn discard_defaults_to_the_callers_changeset() {
     );
 }
 
+/// A discards only its own edits — never one it merely shares a path with.
+/// A creates and commits a task, then edits it twice (uncommitted); B edits
+/// the same never-committed path once more, after A's last write. A's
+/// `discard --force` must exit 0, report the path as skipped, leave B's
+/// content byte-identical on disk, and B's later `commit` must still land
+/// with B's content.
+#[test]
+fn discard_leaves_a_path_another_changeset_overwrote_since() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    rdm_as("cs-a", &dir)
+        .args([
+            "task",
+            "create",
+            "shared",
+            "--title",
+            "Shared",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+    rdm_as("cs-a", &dir)
+        .args(["commit", "-m", "seed shared task"])
+        .assert()
+        .success();
+
+    rdm_as("cs-a", &dir)
+        .args([
+            "task",
+            "update",
+            "shared",
+            "--body",
+            "A's first edit",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+    rdm_as("cs-a", &dir)
+        .args([
+            "task",
+            "update",
+            "shared",
+            "--body",
+            "A's second edit",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+
+    rdm_as("cs-b", &dir)
+        .args([
+            "task",
+            "update",
+            "shared",
+            "--body",
+            "B's edit",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+
+    let path = dir.path().join("projects/test/tasks/shared.md");
+    let before_discard = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        before_discard.contains("B's edit"),
+        "fixture: B's overwrite did not land on disk: {before_discard}"
+    );
+
+    rdm_as("cs-a", &dir)
+        .args(["discard", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("skipped"))
+        .stdout(predicate::str::contains("shared.md"));
+
+    let after_discard = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        after_discard, before_discard,
+        "A's discard did not leave B's content byte-identical on disk"
+    );
+
+    rdm_as("cs-b", &dir)
+        .args(["commit", "-m", "land B's edit"])
+        .assert()
+        .success();
+    let after_commit = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        after_commit.contains("B's edit"),
+        "B's commit did not land B's content: {after_commit}"
+    );
+}
+
+/// A creates+commits a roadmap, then deletes it (uncommitted); B recreates a
+/// roadmap at the same slug/path. A's `discard --force` must leave B's
+/// roadmap.md content on disk — not reverted to A's original HEAD content —
+/// and report it skipped.
+#[test]
+fn discard_leaves_a_path_another_changeset_recreated_after_a_delete() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    rdm_as("cs-a", &dir)
+        .args([
+            "roadmap",
+            "create",
+            "shared-map",
+            "--title",
+            "A's roadmap",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+    rdm_as("cs-a", &dir)
+        .args(["commit", "-m", "seed shared-map roadmap"])
+        .assert()
+        .success();
+
+    rdm_as("cs-a", &dir)
+        .args([
+            "roadmap",
+            "delete",
+            "shared-map",
+            "--force",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+
+    rdm_as("cs-b", &dir)
+        .args([
+            "roadmap",
+            "create",
+            "shared-map",
+            "--title",
+            "B's roadmap",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+
+    let path = dir
+        .path()
+        .join("projects/test/roadmaps/shared-map/roadmap.md");
+    let before_discard = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        before_discard.contains("B's roadmap"),
+        "fixture: B's recreate did not land on disk: {before_discard}"
+    );
+
+    rdm_as("cs-a", &dir)
+        .args(["discard", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("skipped"))
+        .stdout(predicate::str::contains("shared-map"));
+
+    assert!(
+        path.exists(),
+        "A's discard destroyed B's recreated roadmap.md"
+    );
+    let after_discard = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        after_discard, before_discard,
+        "A's discard did not leave B's recreated content byte-identical on disk"
+    );
+}
+
 #[test]
 fn discard_all_is_the_whole_tree_opt_in_and_still_needs_force() {
     let dir = TempDir::new().unwrap();

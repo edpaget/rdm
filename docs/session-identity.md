@@ -609,6 +609,24 @@ disk state** so another session's still-uncommitted rows survive.
 `--force --all` retains the whole-tree destruction, and prints the other live
 changesets it is about to destroy before doing it.
 
+Scoping alone only guarantees a *disjoint* path is safe — it says nothing
+about a path two sessions both journaled. For that case the scoped restore
+applies a content-digest/presence guard, mirroring the one `rdm commit`
+already applies before landing a path: before restoring a journaled **write**,
+it compares the file's on-disk content against the digest this session
+recorded when it wrote there, and before restoring a journaled **delete**, it
+checks the path is still absent. A mismatched digest, or a delete path that
+is present again, means another live session's uncommitted work has landed on
+a path you also claim since you last touched it — that one path is left
+exactly as it is (never reverted to HEAD, never removed) and named on a
+`skipped:` line, while every other path you legitimately own in the same
+batch still discards normally and the command still exits 0. This is a
+per-path skip, not an all-or-nothing refusal: unlike a commit, a discard has
+no single-tree-object atomicity constraint forcing it to abandon the whole
+batch over one contested path. A vanished or non-UTF8 file, or a legacy
+journal line with no recorded digest, fails open exactly as the commit-side
+guard does — the guard can only refuse a comparison it can actually make.
+
 ### `rdm-server`
 
 A long-lived server is **one session**: it resolves a single changeset at

@@ -13,13 +13,16 @@
 #   E  `rdm init --remote` lands its config commit, a backfilled
 #      `.gitattributes` reaches a commit, and a server mutation is attributable
 #   F  committed indexes reflect HEAD plus the committing changeset only
-#   G  `rdm discard` cannot destroy another session's work
+#   G  `rdm discard` cannot destroy another session's work, on a disjoint
+#      path (G) or a path both sessions journaled — an overwritten write
+#      (G3) or a recreated delete (G4) is left in place and reported skipped
+#      rather than clobbered
 #   H  reads stay shared — no read isolation was introduced
 #   I  a commit under a project another session has not landed still lands,
 #      with a coherent index
 #
-# Sections C, D, F and I carry planted-mutation self-tests proving they can
-# fail.
+# Sections C, D, F, G3/G4 and I carry planted-mutation self-tests proving
+# they can fail.
 #
 # Run after touching rdm-store-git's commit/status/discard paths, the
 # `GitStore` scoped entry points, `rdm_core::session::journal`, or the
@@ -646,6 +649,112 @@ RDM_SESSION=sess-g2-a "$RDM_BIN" --root "$REPO_G2" discard --force --all \
 grep -q "sess-g2-b" "$TMP/g2.err" ||
     fail "--all did not name the changeset it was about to destroy: $(cat "$TMP/g2.err")"
 ok "--all destroys other sessions' work and names them first"
+
+# --- G3: overlapping-path arm — A writes twice, B overwrites once after ----
+# A's own path-set scoping (G above) only protects a DISJOINT path. Here A
+# and B both journal writes to the SAME never-committed path: A's discard
+# must skip it, not clobber it.
+say "Section G3: discard leaves a path another session overwrote since"
+
+REPO_G3="$TMP/repo-g3"
+seed_repo "$REPO_G3"
+RDM_SESSION=sess-g3-a "$RDM_BIN" --root "$REPO_G3" task create shared \
+    --title "Shared" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g3-a "$RDM_BIN" --root "$REPO_G3" commit -m "seed shared task" >/dev/null
+RDM_SESSION=sess-g3-a "$RDM_BIN" --root "$REPO_G3" task update shared \
+    --body "A's first edit" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g3-a "$RDM_BIN" --root "$REPO_G3" task update shared \
+    --body "A's second edit" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g3-b "$RDM_BIN" --root "$REPO_G3" task update shared \
+    --body "B's edit" --no-edit --project demo >/dev/null
+
+G3_FILE="$REPO_G3/projects/demo/tasks/shared.md"
+grep -q "B's edit" "$G3_FILE" || fail "fixture: B's overwrite did not land, section G3 is vacuous"
+G3_BEFORE=$(cksum <"$G3_FILE")
+
+RDM_SESSION=sess-g3-a "$RDM_BIN" --root "$REPO_G3" discard --force \
+    >"$TMP/g3.out" 2>&1 || fail "A's discard failed: $(cat "$TMP/g3.out")"
+[ "$(cksum <"$G3_FILE")" = "$G3_BEFORE" ] ||
+    fail "A's discard overwrote B's content on the shared path"
+ok "B's overwrite survives A's discard, byte-identical"
+grep -q "skipped" "$TMP/g3.out" || fail "A's discard did not report a skipped path: $(cat "$TMP/g3.out")"
+grep -q "shared.md" "$TMP/g3.out" || fail "A's discard did not name the skipped path: $(cat "$TMP/g3.out")"
+ok "A's discard reports the skipped path by name"
+
+RDM_SESSION=sess-g3-b "$RDM_BIN" --root "$REPO_G3" commit -m "land B's edit" \
+    >"$TMP/g3.commit" 2>&1 || fail "B could not commit after A's discard: $(cat "$TMP/g3.commit")"
+git -C "$REPO_G3" show "HEAD:projects/demo/tasks/shared.md" | grep -q "B's edit" ||
+    fail "B's commit did not land B's content"
+ok "B's commit still lands with B's content"
+
+# --- G4: delete-then-recreate arm -------------------------------------------
+# A creates+commits a roadmap, then deletes it (uncommitted). B recreates a
+# roadmap at the same slug/path with different content. A's discard must
+# leave B's recreated file in place, not revert it to A's original HEAD
+# content.
+say "Section G4: discard leaves a path another session recreated after a delete"
+
+REPO_G4="$TMP/repo-g4"
+seed_repo "$REPO_G4"
+RDM_SESSION=sess-g4-a "$RDM_BIN" --root "$REPO_G4" roadmap create shared-map \
+    --title "A's roadmap" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g4-a "$RDM_BIN" --root "$REPO_G4" commit -m "seed shared-map" >/dev/null
+RDM_SESSION=sess-g4-a "$RDM_BIN" --root "$REPO_G4" roadmap delete shared-map \
+    --force --project demo >/dev/null
+RDM_SESSION=sess-g4-b "$RDM_BIN" --root "$REPO_G4" roadmap create shared-map \
+    --title "B's roadmap" --no-edit --project demo >/dev/null
+
+G4_FILE="$REPO_G4/projects/demo/roadmaps/shared-map/roadmap.md"
+grep -q "B's roadmap" "$G4_FILE" || fail "fixture: B's recreate did not land, section G4 is vacuous"
+G4_BEFORE=$(cksum <"$G4_FILE")
+
+RDM_SESSION=sess-g4-a "$RDM_BIN" --root "$REPO_G4" discard --force \
+    >"$TMP/g4.out" 2>&1 || fail "A's discard failed: $(cat "$TMP/g4.out")"
+[ -f "$G4_FILE" ] || fail "A's discard destroyed B's recreated roadmap.md"
+[ "$(cksum <"$G4_FILE")" = "$G4_BEFORE" ] ||
+    fail "A's discard reverted B's recreated content instead of leaving it in place"
+ok "B's recreated file survives A's discard, byte-identical"
+grep -q "skipped" "$TMP/g4.out" || fail "A's discard did not report a skipped path: $(cat "$TMP/g4.out")"
+grep -q "shared-map" "$TMP/g4.out" || fail "A's discard did not name the skipped path: $(cat "$TMP/g4.out")"
+ok "A's discard reports the recreated path by name"
+
+# Self-test: without the guard, a discard-shaped restore-to-HEAD clobbers a
+# path another session also claims. `--all` is exactly that shape (an
+# unconditional restore-to-HEAD, with no per-path content check) and stands
+# in for the pre-fix scoped behavior on this ONE shared path, the same way
+# section F's self-test uses `commit --all` as a stand-in for a disk-sourced
+# derived blob.
+REPO_G3S="$TMP/repo-g3-selftest"
+seed_repo "$REPO_G3S"
+RDM_SESSION=sess-g3s-a "$RDM_BIN" --root "$REPO_G3S" task create shared \
+    --title "Shared" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g3s-a "$RDM_BIN" --root "$REPO_G3S" commit -m "seed shared task" >/dev/null
+RDM_SESSION=sess-g3s-a "$RDM_BIN" --root "$REPO_G3S" task update shared \
+    --body "A's edit" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g3s-b "$RDM_BIN" --root "$REPO_G3S" task update shared \
+    --body "B's edit" --no-edit --project demo >/dev/null
+G3S_FILE="$REPO_G3S/projects/demo/tasks/shared.md"
+RDM_SESSION=sess-g3s-a "$RDM_BIN" --root "$REPO_G3S" discard --force --all \
+    >/dev/null 2>&1 || fail "self-test: whole-tree discard failed unexpectedly"
+grep -q "B's edit" "$G3S_FILE" &&
+    fail "self-test failed: the unconditional-restore stand-in did NOT clobber B's edit, so section G3's assertion proves nothing"
+ok "self-test: an unconditional restore-to-HEAD IS caught by section G3's assertion"
+
+REPO_G4S="$TMP/repo-g4-selftest"
+seed_repo "$REPO_G4S"
+RDM_SESSION=sess-g4s-a "$RDM_BIN" --root "$REPO_G4S" roadmap create shared-map \
+    --title "A's roadmap" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g4s-a "$RDM_BIN" --root "$REPO_G4S" commit -m "seed shared-map" >/dev/null
+RDM_SESSION=sess-g4s-a "$RDM_BIN" --root "$REPO_G4S" roadmap delete shared-map \
+    --force --project demo >/dev/null
+RDM_SESSION=sess-g4s-b "$RDM_BIN" --root "$REPO_G4S" roadmap create shared-map \
+    --title "B's roadmap" --no-edit --project demo >/dev/null
+G4S_FILE="$REPO_G4S/projects/demo/roadmaps/shared-map/roadmap.md"
+RDM_SESSION=sess-g4s-a "$RDM_BIN" --root "$REPO_G4S" discard --force --all \
+    >/dev/null 2>&1 || fail "self-test: whole-tree discard failed unexpectedly"
+grep -q "B's roadmap" "$G4S_FILE" &&
+    fail "self-test failed: the unconditional-restore stand-in did NOT clobber B's recreated content, so section G4's assertion proves nothing"
+ok "self-test: an unconditional restore-to-HEAD IS caught by section G4's assertion"
 
 # ---------------------------------------------------------------------------
 # Section H — reads stay shared

@@ -1251,34 +1251,113 @@ impl GitRepo {
         let root = self.root.as_path();
 
         for fs in status {
-            let file_path = root.join(&fs.path);
-            match fs.change {
-                FileChange::Added => {
-                    std::fs::remove_file(&file_path)
-                        .map_err(|e| Error::Git(format!("failed to remove {}: {e}", fs.path)))?;
-                    // Clean up empty parent directories
-                    if let Some(parent) = file_path.parent() {
-                        let _ = Self::remove_empty_parents(parent, root);
-                    }
-                }
-                FileChange::Modified | FileChange::Deleted => {
-                    if let Some(content) = head_files.get(&fs.path) {
-                        if let Some(parent) = file_path.parent() {
-                            std::fs::create_dir_all(parent).map_err(|e| {
-                                Error::Git(format!(
-                                    "failed to create directory {}: {e}",
-                                    parent.display()
-                                ))
-                            })?;
-                        }
-                        std::fs::write(&file_path, content)
-                            .map_err(|e| Error::Git(format!("failed to write {}: {e}", fs.path)))?;
-                    }
-                }
-            }
+            Self::restore_one_to_head(root, &head_files, fs)?;
         }
 
         Ok(())
+    }
+
+    /// Restores a single path's working-tree content to its state in
+    /// `head_files` — the per-file body shared by
+    /// [`restore_paths_to_head`](Self::restore_paths_to_head) and
+    /// [`restore_paths_to_head_scoped`](Self::restore_paths_to_head_scoped).
+    fn restore_one_to_head(
+        root: &Path,
+        head_files: &BTreeMap<String, Vec<u8>>,
+        fs: &FileStatus,
+    ) -> Result<()> {
+        let file_path = root.join(&fs.path);
+        match fs.change {
+            FileChange::Added => {
+                std::fs::remove_file(&file_path)
+                    .map_err(|e| Error::Git(format!("failed to remove {}: {e}", fs.path)))?;
+                // Clean up empty parent directories
+                if let Some(parent) = file_path.parent() {
+                    let _ = Self::remove_empty_parents(parent, root);
+                }
+            }
+            FileChange::Modified | FileChange::Deleted => {
+                if let Some(content) = head_files.get(&fs.path) {
+                    if let Some(parent) = file_path.parent() {
+                        std::fs::create_dir_all(parent).map_err(|e| {
+                            Error::Git(format!(
+                                "failed to create directory {}: {e}",
+                                parent.display()
+                            ))
+                        })?;
+                    }
+                    std::fs::write(&file_path, content)
+                        .map_err(|e| Error::Git(format!("failed to write {}: {e}", fs.path)))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Restores exactly the listed paths to HEAD, skipping any whose on-disk
+    /// content no longer matches what this changeset journaled.
+    ///
+    /// The discard-side counterpart of the write/delete content guards in
+    /// [`build_changeset_tree`](Self::build_changeset_tree): a discard is
+    /// destructive exactly where a scoped commit would otherwise refuse, so
+    /// it applies the same fail-open digest/presence check per path — but as
+    /// a per-path **skip**, not an all-or-nothing refusal, since (unlike a
+    /// commit's single tree object) a discard has no atomicity constraint
+    /// forcing it to abandon the whole batch over one contested path.
+    ///
+    /// `digests` maps a journaled **write**'s path to the digest of the
+    /// content this session flushed there; `deletes` is the set of paths
+    /// this session journaled as **deleted**. A path present in neither map
+    /// (a legacy digest-less journal line) restores unconditionally —
+    /// fail-open, exactly mirroring `build_changeset_tree`'s policy. So does
+    /// a path whose on-disk content has vanished or is not valid UTF-8: the
+    /// guard can only refuse a *comparison it can make*, never a missing one.
+    ///
+    /// Returns `(restored, skipped)` — the paths actually restored (or
+    /// removed, for a path this changeset added) and the paths left
+    /// untouched because another session's content or recreation was
+    /// detected there since this changeset last wrote them.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Git` if the HEAD tree cannot be read or a file cannot
+    /// be written or removed.
+    pub(crate) fn restore_paths_to_head_scoped(
+        &self,
+        status: &[FileStatus],
+        digests: &BTreeMap<String, String>,
+        deletes: &BTreeSet<String>,
+    ) -> Result<(Vec<String>, Vec<String>)> {
+        let repo = self.repo.to_thread_local();
+        let head_files = self.collect_head_blobs(&repo)?;
+        let root = self.root.as_path();
+
+        let mut restored = Vec::new();
+        let mut skipped = Vec::new();
+
+        for fs in status {
+            if deletes.contains(&fs.path) {
+                if root.join(&fs.path).exists() {
+                    // Someone recreated a path this session deleted since —
+                    // applying the delete would destroy their content.
+                    skipped.push(fs.path.clone());
+                    continue;
+                }
+            } else if let Some(journaled) = digests.get(&fs.path)
+                && let Ok(content) = std::fs::read(root.join(&fs.path))
+                && let Ok(text) = std::str::from_utf8(&content)
+                && &rdm_core::store::content_digest(text) != journaled
+            {
+                // Overwritten by someone else since this session wrote it.
+                skipped.push(fs.path.clone());
+                continue;
+            }
+
+            Self::restore_one_to_head(root, &head_files, fs)?;
+            restored.push(fs.path.clone());
+        }
+
+        Ok((restored, skipped))
     }
 
     /// Returns whether `fs` is the `.gitattributes` merge-driver mapping rdm
