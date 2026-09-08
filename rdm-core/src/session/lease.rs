@@ -22,6 +22,33 @@
 //! leased and each invocation fragments into its own changeset — the safe
 //! direction.
 //!
+//! # Why creation still stops at depth 1 (phase 11)
+//!
+//! Phase 11 evaluated raising creation to the nearest *non-shell* ancestor, so
+//! that an agent harness spawning a fresh wrapper shell per tool call would
+//! mint one lease at the agent process instead of one per invocation. It was
+//! **rejected on measurement**, and creation is unchanged. Two findings, both
+//! recorded with their evidence in `docs/session-identity.md`:
+//!
+//! - The guard that would have made such an ascent safe — stopping at a
+//!   session boundary — needs a per-process session id. macOS exposes none to
+//!   an unprivileged reader (`ps -o sess=` reports `0` for every process, and
+//!   there is no `sid` keyword), so the mechanism could only ever have been
+//!   Linux-only.
+//! - A captured real ancestry shows the ascent merging what it must keep
+//!   apart: two `rdm`-using scripts backgrounded from one shell under an agent
+//!   harness share an unbroken *shell* path up to a single non-shell agent
+//!   process, which a shell-crossing ascent would select as one common anchor
+//!   for both. That is the "stopping too high" direction phase 3 declared
+//!   unacceptable, and no finite deny-list of anchor command names can
+//!   enumerate every agent, editor, or runner that may sit there.
+//!
+//! What ships instead is honesty plus hygiene: [`create_at_parent`] sweeps
+//! stale leases before minting so the fragmenting topology cannot also leak,
+//! and [`continuity_advisory`](super::continuity_advisory) makes `rdm commit`
+//! name the cause and the remedy — export `RDM_HARNESS_SESSION_ID` once per
+//! session — rather than fragmenting silently.
+//!
 //! A lease records the ancestor's start time alongside its id, so a recycled
 //! pid (same number, different process) is detected and the stale lease is
 //! removed rather than adopted.
@@ -161,8 +188,28 @@ fn create_exclusive(paths: &SessionPaths, pid: u32, lease: &Lease) -> Option<Lea
 /// This is the "stop low" half of the stopping rule: creation never ascends.
 /// Returns `None` when there is no known parent (an empty or unreadable
 /// process table) or when the state directory cannot be written.
+///
+/// # Lease hygiene
+///
+/// A bounded [`gc`] pass runs immediately before minting. This is what keeps
+/// the *fragmenting* topology from also being a *leaking* one: under an agent
+/// harness that spawns a fresh wrapper shell per tool call (phase 11), every
+/// invocation reaches this function and mints a lease at a parent that is dead
+/// moments later. Sweeping first means the lease directory stays bounded at
+/// roughly one entry instead of growing without limit, so the fragmentation
+/// rdm reports is never compounded by unbounded state.
+///
+/// The sweep is safe to run here because [`gc`] already skips entirely when
+/// the process table cannot see the calling process — a table that reads as
+/// empty means "unknown", never "nothing is alive" — and because it only ever
+/// removes a lease whose pid is gone or whose recorded start time no longer
+/// matches. It never touches a journal, so a killed session's work stays
+/// recoverable via [`adopt_changeset`](super::journal::adopt_changeset).
 pub fn create_at_parent(paths: &SessionPaths, procs: &dyn ProcessTable) -> Option<SessionId> {
     let parent = ancestors(procs).into_iter().next()?;
+    // Sweep before minting, never after: the entry written just below names a
+    // live pid by construction, and GC-ing after would pointlessly re-read it.
+    gc(paths, procs);
     let lease = Lease {
         id: derive_lease_id(paths, &parent).to_string(),
         start_time: parent.start_time.clone(),
@@ -343,12 +390,29 @@ mod tests {
         assert!(fresh.as_str().starts_with("s-"));
     }
 
+    /// Two concurrent sessions as the OS actually presents them: one process
+    /// table containing both ancestries (10 under 20, and 11 under 21), viewed
+    /// from `self_pid`.
+    ///
+    /// Modelling them instead as two disjoint partial tables would be a fake
+    /// no real backend produces — `/proc` and `ps -A` both enumerate every
+    /// process — and it would make each session's create-path GC sweep the
+    /// other's lease purely because its private world could not see that
+    /// parent. That is an artifact of the double, not of the shipped rule.
+    fn two_session_table(self_pid: u32) -> MapProcessTableAlias {
+        MapProcessTableAlias::empty(self_pid)
+            .with(10, 20, "self-start")
+            .with(20, 1, "s20")
+            .with(11, 21, "self-start")
+            .with(21, 1, "s21")
+    }
+
     #[test]
     fn two_distinct_ancestors_get_distinct_ids_same_ancestor_reuses_one() {
         let dir = TempDir::new().unwrap();
         let p = paths(&dir);
-        let a = MapProcessTableAlias::chain(10, &[(20, "s20")]);
-        let b = MapProcessTableAlias::chain(11, &[(21, "s21")]);
+        let a = two_session_table(10);
+        let b = two_session_table(11);
 
         let id_a = create_at_parent(&p, &a).unwrap();
         let id_b = create_at_parent(&p, &b).unwrap();
@@ -359,9 +423,78 @@ mod tests {
         );
 
         // A second process under the same ancestor adopts, never re-creates.
-        let a2 = MapProcessTableAlias::chain(12, &[(20, "s20")]);
+        let a2 = two_session_table(12).with(12, 20, "self-start");
         assert_eq!(adopt_inherited(&p, &a2).unwrap().as_str(), id_a.as_str());
         assert_eq!(adopt_inherited(&p, &b).unwrap().as_str(), id_b.as_str());
+    }
+
+    #[test]
+    fn creating_a_lease_never_sweeps_a_live_concurrent_sessions_lease() {
+        // The create-path GC is the phase-11 leak fix, and this is the bound
+        // on it: minting for session B must not disturb session A's lease
+        // while A's parent is still alive. If it did, every second concurrent
+        // session would silently orphan the first one's changeset.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id_a = create_at_parent(&p, &two_session_table(10)).unwrap();
+        create_at_parent(&p, &two_session_table(11)).unwrap();
+
+        assert!(
+            lease_path(&p, 20).exists(),
+            "a live session's lease was swept"
+        );
+        assert_eq!(
+            adopt_inherited(&p, &two_session_table(10))
+                .unwrap()
+                .as_str(),
+            id_a.as_str()
+        );
+    }
+
+    #[test]
+    fn creating_a_lease_sweeps_the_dead_predecessor_it_replaces() {
+        // The per-tool-call wrapper-shell topology: each invocation's parent
+        // is gone by the time the next one runs. Without the create-path
+        // sweep this directory grows by one dead entry per invocation.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        write_lease(&p, 900, "s-dead-wrapper", "s900");
+        write_lease(&p, 901, "s-dead-wrapper-2", "s901");
+
+        // The live table knows pid 20 (this call's parent) but neither 900 nor
+        // 901 — both wrappers have exited.
+        create_at_parent(&p, &MapProcessTableAlias::chain(10, &[(20, "s20")])).unwrap();
+
+        assert!(
+            !lease_path(&p, 900).exists(),
+            "dead predecessor was not swept"
+        );
+        assert!(
+            !lease_path(&p, 901).exists(),
+            "dead predecessor was not swept"
+        );
+        let live = std::fs::read_dir(p.leases_dir())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".lease"))
+            .count();
+        assert_eq!(live, 1, "exactly the freshly-minted lease should remain");
+    }
+
+    #[test]
+    fn create_path_gc_is_skipped_when_the_table_cannot_see_the_caller() {
+        // `gc`'s own guard, re-asserted at the new call site: a table that
+        // reads as empty means "unknown", never "nothing is alive". Here the
+        // caller (pid 10) is absent from the table, so nothing may be swept —
+        // and with no ancestry there is nothing to mint either.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        write_lease(&p, 20, "s-someone-elses", "s20");
+        assert!(create_at_parent(&p, &MapProcessTableAlias::empty(10)).is_none());
+        assert!(
+            lease_path(&p, 20).exists(),
+            "an unreadable table must never sweep a lease"
+        );
     }
 
     #[test]

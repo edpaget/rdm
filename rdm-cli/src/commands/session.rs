@@ -38,6 +38,7 @@ pub fn run(root: &Path, format: OutputFormat, command: SessionCommand) -> Result
                         "id": resolved.id.as_str(),
                         "rung": resolved.rung.number(),
                         "resolve_micros": resolved.resolve_micros,
+                        "lease_bootstrapped": resolved.lease_bootstrapped,
                     })
                 ),
                 // Bare id on stdout, so shell callers can capture it with

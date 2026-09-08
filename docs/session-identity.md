@@ -38,14 +38,16 @@ The rule that ships is two halves, deliberately asymmetric:
 | Half | Rule |
 | --- | --- |
 | **Adoption** | Ascend up to `MAX_ANCESTOR_DEPTH` (8) ancestors looking for an *existing* valid lease. Take the first (lowest) match. |
-| **Creation** | Create a lease **only at depth 1**, the immediate parent. Never higher. |
+| **Creation** | Create a lease **only at depth 1**, the immediate parent. Never higher. Phase 11 measured raising this and rejected it — see [Continuity across ephemeral wrapper shells](#continuity-across-ephemeral-wrapper-shells-phase-11). |
 
 Because creation never ascends, two concurrent sessions can share an identity
 only if some ancestor they have in common was itself the immediate parent of an
 earlier `rdm` invocation. When the parent is the ephemeral per-invocation shell
 an agent spawns — the case the decision record measured — no ancestor is ever
 leased, each invocation gets its own changeset, and the session fragments. That
-is the safe direction, and rung 3 is what covers this case in practice.
+is the safe direction, and rung 3 is what covers this case in practice — phase
+11 confirmed both halves of that sentence by measurement, and made `rdm commit`
+say so out loud when rung 3 is not in play.
 
 The ascent terminates on all three degenerate shapes: it is bounded at 8, it
 stops at pid ≤ 1, and it carries a seen-set so a cycle cannot loop.
@@ -86,6 +88,167 @@ ahead of a harness check that would still apply. The rung *numbers* are
 unaffected — `Rung::Lease` is still rung 2 and `Rung::Harness` is still rung
 3, matching `docs/scoping-model-decision.md`'s binding vocabulary; only the
 order `resolve_id` evaluates them in has changed.
+
+## Continuity across ephemeral wrapper shells (phase 11)
+
+**Phase 11 evaluated raising lease creation above depth 1, and rejected it on
+measurement.** Creation is unchanged. What ships instead is a bounded lease
+directory and an honest diagnostic. This section records the reproduction, the
+evidence for each candidate, and the safety argument, so a later phase does not
+re-derive it.
+
+### The reproduction
+
+Under an agent harness that exports none of `HARNESS_SESSION_VARS` and runs
+each tool call in a fresh wrapper shell, every `rdm` invocation is its own
+changeset. Reproduced 2026-09-08 on darwin with a long-lived non-shell driver
+spawning one `bash -c 'eval "$CMD"; :'` wrapper per call (§ K of the harness
+builds the same shape with `sh -c`; the `eval` and the trailing `:` are what
+stop the shell exec'ing rdm in place and collapsing the wrapper away):
+
+```
+call 1  rdm session id   ->  s-5beab50f628730c2   rung 2
+call 2  rdm session id   ->  s-6b36079d1bd94b93   rung 2      (already diverged)
+call 3  rdm task create k-item
+call 4  rdm commit       ->  "Nothing in this session's changeset to commit.
+                              3 uncommitted path(s) are attributed to another changeset"
+```
+
+Nothing lands; only `rdm commit --all` works. Before this phase the run also
+left **four** lease files, one per invocation, every one naming a pid that died
+with its wrapper, plus an orphan journal.
+
+The cause is structural, not a bug: creation stops at depth 1 (see [The shipped
+stopping rule](#the-shipped-stopping-rule)) and under this topology depth 1
+*is* the wrapper, which outlives nothing.
+
+### The three candidates, and why only two shipped
+
+The decision rule was fixed before measuring: ancestor-minting would ship only
+if (i) a per-process command name **and** a session-boundary signal were both
+obtainable on Linux and darwin, (ii) the added cost stayed inside § H's
+250 000 µs bound, and (iii) an enumerated topology table showed no shape in
+which two concurrent sessions select the same anchor.
+
+**(a) Mint the lease at the nearest non-shell ancestor — REJECTED.** It fails
+conditions (i) and (iii), each independently fatal.
+
+*Condition (i) — the guard signal does not exist on darwin.* An ascent that
+crosses shells is only safe if it stops at a session boundary, which needs a
+per-process session id. Linux has one (`/proc/<pid>/stat` field 6). macOS does
+not expose one to an unprivileged reader: `ps -Ao sess=` reports `0` for
+**every** process on the system (`ps -Ao sess= | sort -u` yields exactly one
+distinct value), `tsess` likewise, and there is no `sid` keyword. The rule's
+own fail-safe — no session signal, no ascent — would therefore have made the
+mechanism permanently inert on darwin while changing behavior on Linux: a
+platform-split continuity model, on a project whose own dogfooding host is
+darwin.
+
+*Condition (iii) — a real captured topology merges.* Two `rdm`-using scripts
+backgrounded from one shell inside an agent harness were expected to be safe,
+on the reasoning that the ascent would terminate at the shared interactive
+shell and fall back to depth 1. The captured ancestry shows otherwise:
+
+```
+script A: sh(48792) -> bash(48791) -> bash(48750) -> claude(70969) -> ...
+script B: sh(48793) -> bash(48791) -> bash(48750) -> claude(70969) -> ...
+                       ^-------- shared, and all shells --------^   ^ shared non-shell
+```
+
+A shell-crossing ascent walks both scripts past three shells to the **same**
+`claude` process and mints one anchor for both — merging two independent
+sessions. That is precisely the "stopping too high" direction
+`docs/scoping-model-decision.md` declares unacceptable. A deny-list of
+never-anchor command names does not rescue it: it would have to enumerate every
+agent, editor, IDE, runner and supervisor that can sit above a user's shells,
+and the one guard that handles them generically is the session boundary that
+condition (i) already ruled out.
+
+For completeness, the shapes that *are* handled by a deny-list were captured
+too — two tmux panes share a single `tmux` server at depth 2, and a terminal
+tab's shell sits under `login` — but a rule that is safe only for the shapes
+someone remembered to list is not the safe direction.
+
+**(b) Extend `HARNESS_SESSION_VARS` and document the adoption path — SHIPPED.**
+No new variable was invented. `RDM_HARNESS_SESSION_ID` already exists as the
+universal adoption path, and no Pi-published session variable was observable to
+add (the rule was to add nothing rather than guess a name). What this phase adds
+is the documented, verified path below, gated by
+`scripts/verify-session-identity.sh` § K5: the same wrapper topology with
+`RDM_HARNESS_SESSION_ID` exported resolves **one** id at rung 3 across all
+calls, `rdm commit` lands the previous call's mutation, and **zero** leases are
+written.
+
+**(c) Say plainly that the harness is unsupported, and how to fix it —
+SHIPPED.** `rdm commit` now prints a cause-and-remedy advisory
+(`session::continuity_advisory`) on exactly the branches that are symptoms: an
+empty changeset over a tree that is not empty. It fires only when no harness
+variable is set **and** this invocation inherited nothing — it either minted its
+own rung-2 lease (`lease_bootstrapped`) or fell through to rung 4. A caller that
+*adopted* a lease has continuity and stays silent, which is what keeps an
+ordinary interactive shell quiet from its second command on.
+
+That last qualifier is why the wording is what it is. The condition cannot
+distinguish "every call mints its own changeset" from "this is the first call
+from a long-lived shell that will inherit fine afterwards" — both are a rung-2
+bootstrap, and nothing rdm can read says whether the parent will outlive the
+command. So the advisory asserts only what is certainly true of the invocation
+in hand ("this invocation started a new changeset rather than joining one"),
+states the diagnosis conditionally ("if that happens on every `rdm` call…"),
+and names the benign reading explicitly. Claiming the harness is broken
+unconditionally would be wrong for the interactive user, and a diagnostic that
+is sometimes false is worse than none.
+
+**Lease hygiene — SHIPPED.** `lease::create_at_parent` now runs the existing
+bounded `gc` immediately before minting. The fragmenting topology therefore no
+longer also leaks: the reproduction above drops from four lease files to one,
+and stays there however many tool calls run. `gc` is reused unchanged, so it
+still skips entirely when the process table cannot see the caller (an empty
+table means "unknown", never "nothing is alive") and still never touches a
+journal.
+
+This changes *how many lease files exist*, and nothing about what any of them
+means. `live_lease_ids` already ignored a lease whose pid is gone or whose
+recorded start time no longer matches, so the set of ids it reports live — and
+therefore which changesets `rdm session list` flags `orphaned` — is exactly what
+it was before. Anything downstream reading the lease directory should treat this
+as a change in population, not in semantics.
+
+### Why this is the safe direction
+
+Fragmentation is what phase 3's binding asymmetry asks for when the two
+failures cannot both be avoided: stopping too high merges concurrent sessions
+and loses work irrecoverably; stopping too low splits one session's batch,
+which is visible, non-destructive, and recoverable via `rdm commit --changeset
+<id>` — a route the same advisory prints. Phase 10's no-merge invariant is
+untouched because no ascent was added, and § K4 re-asserts it under the wrapper
+topology specifically.
+
+### Which harnesses get continuity, and how
+
+| Harness | Rung that carries continuity | What the operator must do |
+| --- | --- | --- |
+| Claude Code, `CLAUDE_CODE_SESSION_ID` exported (the default) | 3 | Nothing. |
+| Claude Code with the variable stripped | 2 per invocation — **fragments** | Export `RDM_HARNESS_SESSION_ID` (below), or use `rdm commit --changeset <id>`. |
+| Pi | 3, once a variable is exported | Pi publishes no session variable that rdm could observe, so export one yourself: from a Pi extension or startup hook, run `export RDM_HARNESS_SESSION_ID="$(uuidgen)"` once per session, before any rdm command. |
+| Any other agent harness | 3, once a variable is exported | Same `RDM_HARNESS_SESSION_ID` path. Adding a harness's own variable to `HARNESS_SESSION_VARS` is the alternative, and needs only a one-line change. |
+| A plain interactive shell | 2, at the shell itself | Nothing — the shell is long-lived, so the lease it mints is inherited by every later invocation. Unchanged by this phase. |
+| CI / a one-shot script | 1 | `export RDM_SESSION=<id>` for the job. |
+| A git hook rdm itself spawned | inherits the caller's | Nothing. |
+| A platform with no readable process table | 4 — **fragments** | Same `RDM_HARNESS_SESSION_ID` path; the `rdm commit` advisory fires and names it. |
+
+The adoption path in full, for any harness that publishes nothing:
+
+```sh
+# once per session, before the harness runs any rdm command
+export RDM_HARNESS_SESSION_ID="$(uuidgen)"
+```
+
+It must be a value that is **stable for the session and distinct between
+concurrent sessions** — the same two properties rdm derives for itself on every
+other rung. Reusing one fixed string across concurrent sessions would merge
+them, which is the failure this whole roadmap exists to remove.
+
 
 ## On-disk layout
 
@@ -205,13 +368,25 @@ at commit time belongs to the scoped-commit phase.
 
 | Object | Created | Removed |
 | --- | --- | --- |
-| Lease | On the first bare invocation under a parent | By GC when its pid is dead or recycled; opportunistically during the ancestry walk |
+| Lease | Once per parent, on the first bare invocation under it | By GC when its pid is dead or recycled; opportunistically during the ancestry walk **and on every creation** |
 | Journal | On the first flushed batch of a changeset | **Never automatically** — only by `rdm session discard --force` |
 
-GC (`rdm session gc`, and opportunistically during adoption) removes leases
-whose owning process is gone or whose recorded start time no longer matches,
-bounded at 64 files per pass. It never touches a journal, so no work is
-silently destroyed.
+GC (`rdm session gc`, opportunistically during adoption, and — since phase 11
+— once on every lease *creation*) removes leases whose owning process is gone
+or whose recorded start time no longer matches, bounded at 64 files per pass.
+It never touches a journal, so no work is silently destroyed.
+
+The create-path sweep is what keeps a *fragmenting* topology from also being a
+*leaking* one. Under a per-tool-call wrapper harness every invocation reaches
+lease creation and mints at a parent that dies moments later; sweeping first
+holds the directory at roughly one entry instead of one per invocation.
+Sweeping happens *before* minting, never after — the entry just written names a
+live pid by construction. It cannot disturb a concurrent session, because a
+live session's parent is present in the same system-wide table and therefore
+never looks stale; `scripts/verify-session-identity.sh` § K3/§ K3b gate the
+bound, and `lease.rs`'s
+`creating_a_lease_never_sweeps_a_live_concurrent_sessions_lease` gates the
+limit on it.
 
 GC is **skipped entirely** when the process table cannot see the calling
 process. A table that reads as empty means "unknown", never "nothing is alive";
@@ -222,6 +397,12 @@ lease. `rdm session list` flags it `orphaned: true`; `rdm session adopt <id>`
 re-points the caller's immediate-parent lease at it, so the caller's shell
 resolves that changeset from then on; `rdm session discard <id> --force` drops
 it.
+
+Because adoption repoints the *immediate parent's* lease, it does nothing
+useful from inside an ephemeral per-tool-call wrapper shell: the repointed
+lease belongs to a wrapper that exits before the next call can inherit it. Use
+`rdm commit --changeset <id>` to land such a changeset directly, or
+`RDM_SESSION=<id>` to pin it — both routes the `rdm commit` advisory prints.
 
 Adoption works by writing rung-2 state (the parent lease), so it only takes
 effect for a caller who would otherwise resolve at rung 2 or below. Since
@@ -240,7 +421,7 @@ variable set instead, or set `RDM_SESSION=<id>` to pin the id explicitly
 | `RDM_SESSION` | 1 | The explicit escape hatch. Wins outright — no lease read, no ancestry walk, no harness read. |
 | `CLAUDE_CODE_SESSION_ID` | 3 | The reference harness entry named by the decision record. |
 | `CLAUDE_SESSION_ID` | 3 | |
-| `RDM_HARNESS_SESSION_ID` | 3 | The generic hook for a harness with no native variable. |
+| `RDM_HARNESS_SESSION_ID` | 3 | The generic hook for a harness with no native variable, and the documented adoption path for any harness that fragments — see [Which harnesses get continuity, and how](#which-harnesses-get-continuity-and-how). Exposed in code as `session::HARNESS_ADOPTION_VAR`, which `continuity_advisory` names as the remedy. |
 
 `HARNESS_SESSION_VARS` is the **extension point**: it is an ordered, documented
 list, and wiring in a new harness means adding an entry, nothing more. Rung 3
@@ -286,6 +467,8 @@ sub-step falls through:
 | Blank `RDM_SESSION` | Falls through to the next rung |
 | Neither `HOME` nor `XDG_STATE_HOME` (non-git build) | No state dir; rung 3 or 4 |
 | Missing `/proc`, absent or sandboxed `ps`, unparsable output | Empty table → rung 4 |
+| Parent is an ephemeral per-tool-call wrapper shell | Rung 2, a fresh changeset per invocation; `rdm commit` prints the cause and the remedy |
+| Lease creation racing another process at the same parent | Both converge on the winner's id (temp file + hard link + read-back) |
 
 Journal recording is best-effort at the call site (`let _ = …`, mirroring
 `HookLogger`'s swallow-failures contract): an unwritable state directory must
@@ -298,6 +481,13 @@ never fail a mutation.
 | Linux | `/proc/<pid>/stat` for every numeric entry in `/proc`. Fields are parsed **after the last `)`**, so a process name containing spaces or parentheses cannot shift `ppid` (field 4) or `starttime` (field 22). |
 | Other unix | One `ps -Ao pid=,ppid=,lstart=` spawn. `lstart` is an absolute start time and therefore stable, unlike the relative `etime`; its embedded spaces are handled by splitting only the first two fields. |
 | Anything else | An empty table. |
+
+Phase 11 considered adding `comm` and a per-process session id to this table to
+support minting above depth 1, and did not: macOS exposes no session id to an
+unprivileged reader, so the guard that would have made such an ascent safe
+cannot be built portably. No second `ps` spawn was added and the cost below is
+unchanged. See [the phase-11
+section](#continuity-across-ephemeral-wrapper-shells-phase-11).
 
 No `unsafe` anywhere, and no new crate dependency — `sha2`, `serde_json`, and
 `chrono` were already `rdm-core` dependencies.
@@ -315,6 +505,14 @@ The single `ps` spawn is the dominant term by an order of magnitude and is
 memoized once per process, so an `rdm` invocation pays it at most once no
 matter how many stores or commits it opens.
 
+Re-measured for phase 11 on the same host: **17 546 µs** max over 20 fresh
+invocations, unchanged within noise. That is expected — phase 11's decision
+rule made a second `ps` spawn conditional on shipping ancestor-minting, which
+it did not, so no new per-invocation cost was introduced. The bounded `gc` pass
+phase 11 *did* add to the lease-creation path is a single `read_dir` plus at
+most `MAX_GC_ENTRIES` small file reads, and it runs only on a rung-2 bootstrap,
+not on adoption.
+
 `scripts/verify-session-identity.sh` § H prints the observed maximum and
 asserts it under 250 000 µs — a bound, not an exact figure. That is three
 orders of magnitude under the 30 s default `hook_timeout_secs`, so identity
@@ -326,7 +524,7 @@ applies its directive, and journals its own writes.
 
 | Command | Purpose |
 | --- | --- |
-| `rdm session id` | Print this session's changeset id. `--format json` adds `rung` and `resolve_micros`. Text mode prints the bare id for `$(...)` capture. |
+| `rdm session id` | Print this session's changeset id. `--format json` adds `rung`, `resolve_micros`, and `lease_bootstrapped`. Text mode prints the bare id for `$(...)` capture. |
 | `rdm session journal [--id <id>]` | Print a changeset's exact journaled path set. |
 | `rdm session list` | List every changeset, flagging orphans. |
 | `rdm session adopt <id>` | Re-point this session at an existing (usually orphaned) changeset. |
@@ -335,6 +533,17 @@ applies its directive, and journals its own writes.
 
 The JSON field names (`id`, `rung`, `resolve_micros`, `orphaned`, `paths`) are
 a stable target for the agent-surface phase; do not rename them casually.
+`lease_bootstrapped` (phase 11) is **additive** to that set: it is `true` only
+when this invocation reached rung 2 by *creating* a lease rather than
+inheriting one, which is how a caller can tell "my shell owns a changeset" from
+"every call is minting its own". Text mode is unchanged — still the bare id.
+
+`rdm commit` prints a cause-and-remedy advisory when a caller has no continuity
+to inherit and no harness variable set. It appears only on the two branches
+that are symptoms — an empty changeset over a non-empty tree — so a successful
+commit and a no-op commit against a clean tree both stay quiet, and its text is
+phrased to stay true of the one benign case that meets the same condition (the
+first command from a long-lived shell).
 
 ## What a changeset does at commit / status / discard time
 
@@ -431,9 +640,21 @@ applies to what a *write* action lands or destroys, never to what you can see.
   `rdm-cli/tests/cli_session.rs` / `cli_commit.rs` end to end against the real
   binary.
 - `bash scripts/verify-session-identity.sh` — the identity harness: sections
-  A–I as described above. § I is inverted as of phase 5: it now asserts that
+  A–K as described above. § I is inverted as of phase 5: it now asserts that
   `rdm-store-git/src/commit.rs` *carries* the changeset commit scope while
-  resolving no session identity of its own.
+  resolving no session identity of its own. § J (phase 10) gates the
+  harness-id-beats-inherited-lease rule. § K (phase 11) drives real per-call
+  `sh -c 'eval …; :'` wrapper shells under a long-lived non-shell driver and
+  gates this section's outcome: the wrappers are genuinely distinct live
+  processes (K0), each call fragments (K1), `rdm commit` exits 0 and names both
+  the cause and the remedy while the work stays recoverable (K2), the lease set
+  stays bounded with the dead wrapper's entry swept (K3/K3b), two concurrent
+  drivers never merge (K4), the documented `RDM_HARNESS_SESSION_ID` remedy
+  really does yield one changeset, a landing commit and zero leases (K5), and
+  this document still carries the per-harness table (K6). Two planted-mutation
+  self-tests rebuild a mutant in a scratch `CARGO_TARGET_DIR` and prove neither
+  half is vacuous: silencing `continuity_advisory` must break K2, and removing
+  the create-path sweep must break K3.
 - `bash scripts/verify-scoped-commit.sh` — the multi-process scoping harness:
   disjoint concurrent commits (A), the same with no session id set plus
   rung-2 continuity and rung-4 degradation (B/B2/B3), the `Done:` hook path

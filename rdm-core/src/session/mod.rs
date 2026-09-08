@@ -63,15 +63,27 @@ use process::{ProcessTable, SystemProcessTable};
 /// id (CI, scripts, harnesses); it outranks every other rung.
 pub const RDM_SESSION_ENV: &str = "RDM_SESSION";
 
+/// The variable any harness can export to opt into session continuity.
+///
+/// Every entry of [`HARNESS_SESSION_VARS`] works, but the others name one
+/// specific tool. This one is rdm's own, tool-agnostic adoption path: a
+/// harness that publishes no session id of its own exports this once per
+/// session and lands on rung 3. It is the variable [`continuity_advisory`]
+/// names as the remedy, so it must stay a member of [`HARNESS_SESSION_VARS`]
+/// or that advice would be wrong — asserted by a unit test.
+pub const HARNESS_ADOPTION_VAR: &str = "RDM_HARNESS_SESSION_ID";
+
 /// Harness-published session variables, in precedence order.
 ///
 /// This list is the extension point for tools that already track a session of
 /// their own: adding an entry wires that harness in without any on-disk state.
-/// `CLAUDE_CODE_SESSION_ID` is the reference entry named by phase 3.
+/// `CLAUDE_CODE_SESSION_ID` is the reference entry named by phase 3;
+/// [`HARNESS_ADOPTION_VAR`] is the tool-agnostic entry any other harness can
+/// use without a code change here.
 pub const HARNESS_SESSION_VARS: &[&str] = &[
     "CLAUDE_CODE_SESSION_ID",
     "CLAUDE_SESSION_ID",
-    "RDM_HARNESS_SESSION_ID",
+    HARNESS_ADOPTION_VAR,
 ];
 
 /// Maximum length, in bytes, of a session id.
@@ -162,6 +174,14 @@ pub struct ResolvedSession {
     /// Surfaced so the cost on the bounded `hook_timeout_secs` path is
     /// measurable rather than asserted.
     pub resolve_micros: u128,
+    /// Whether this invocation reached rung 2 by *creating* a lease rather
+    /// than inheriting one.
+    ///
+    /// True only on a rung-2 bootstrap; false on every other rung and on an
+    /// adopted lease. It is the signal that distinguishes "this shell owns a
+    /// changeset its later invocations will join" from "every invocation is
+    /// minting its own", which is what [`continuity_advisory`] keys on.
+    pub lease_bootstrapped: bool,
 }
 
 /// A source of environment variables.
@@ -318,25 +338,28 @@ pub fn resolve_session(
     env: &dyn EnvSource,
 ) -> ResolvedSession {
     let started = Instant::now();
-    let (id, rung) = resolve_id(paths, procs, env);
+    let (id, rung, lease_bootstrapped) = resolve_id(paths, procs, env);
     ResolvedSession {
         id,
         rung,
         resolve_micros: started.elapsed().as_micros(),
+        lease_bootstrapped,
     }
 }
 
+/// Resolves the id, the rung that produced it, and whether a rung-2 lease was
+/// *created* (rather than inherited) along the way.
 fn resolve_id(
     paths: &SessionPaths,
     procs: &dyn ProcessTable,
     env: &dyn EnvSource,
-) -> (SessionId, Rung) {
+) -> (SessionId, Rung, bool) {
     // Rung 1 — explicit. Returns immediately: no lease read, no ancestry walk,
     // no harness-variable read.
     if let Some(raw) = env.get(RDM_SESSION_ENV)
         && let Some(id) = SessionId::new(&raw)
     {
-        return (id, Rung::Explicit);
+        return (id, Rung::Explicit, false);
     }
 
     // Rung 3 — a harness-published id, checked before any lease is
@@ -349,25 +372,25 @@ fn resolve_id(
     if let Some((var, raw)) = active_harness_var(env) {
         let digest = hex16(&[var, &raw]);
         if let Some(id) = SessionId::new(&format!("h-{digest}")) {
-            return (id, Rung::Harness);
+            return (id, Rung::Harness, false);
         }
     }
 
     // Rung 2 — an already-inherited ancestor lease. Reached only once no
     // harness variable applies.
     if let Some(id) = lease::adopt_inherited(paths, procs) {
-        return (id, Rung::Lease);
+        return (id, Rung::Lease, false);
     }
 
     // Rung 2 (bootstrap) — create the lease this session's later invocations
     // will inherit. Creation happens only at the immediate parent, and only
     // once both explicit and harness rungs have been ruled out.
     if let Some(id) = lease::create_at_parent(paths, procs) {
-        return (id, Rung::Lease);
+        return (id, Rung::Lease, true);
     }
 
     // Rung 4 — always resolves.
-    (per_process_id(paths, procs), Rung::Process)
+    (per_process_id(paths, procs), Rung::Process, false)
 }
 
 /// Returns the first entry of [`HARNESS_SESSION_VARS`] set to a non-empty
@@ -389,6 +412,85 @@ pub(crate) fn active_harness_var(env: &dyn EnvSource) -> Option<(&'static str, S
         }
     }
     None
+}
+
+/// Explains, in plain language, why the caller's harness gives `rdm` no
+/// continuity across invocations — and how to fix it.
+///
+/// # What it detects
+///
+/// A harness that spawns a *fresh wrapper shell per tool call* and publishes
+/// none of [`HARNESS_SESSION_VARS`] leaves rdm nothing stable to key a session
+/// on: the only ancestor it may mint a lease at (see [`lease`] for why
+/// creation never ascends) is that wrapper, which dies moments later. Every
+/// invocation then resolves its own changeset, so a mutation made in one tool
+/// call is "another changeset" to the `rdm commit` in the next and nothing
+/// lands.
+///
+/// The condition is exactly that shape:
+///
+/// - no harness variable is set — a caller on rung 3 has continuity by
+///   construction and must never be nagged; and
+/// - this invocation either *created* its rung-2 lease
+///   ([`ResolvedSession::lease_bootstrapped`]) or fell all the way through to
+///   rung 4, i.e. it inherited nothing from any earlier invocation.
+///
+/// A caller that *adopted* an existing lease has continuity and gets `None`,
+/// which is what keeps a plain interactive shell quiet.
+///
+/// # Why it is advisory and not an error
+///
+/// Fragmentation is the safe direction (phase 3's binding asymmetry: stopping
+/// too high merges concurrent sessions, stopping too low merely splits one).
+/// The remedy is one exported variable, so the right response is to say so —
+/// not to refuse the command.
+///
+/// Returns `None` whenever there is nothing useful to say. Callers decide
+/// *where* to print it; see `rdm-cli`'s `commit`, which prints it only on the
+/// branches that are actually symptoms.
+pub fn continuity_advisory(resolved: &ResolvedSession, env: &dyn EnvSource) -> Option<String> {
+    if active_harness_var(env).is_some() {
+        return None;
+    }
+    let inherited_nothing = resolved.rung == Rung::Process
+        || (resolved.rung == Rung::Lease && resolved.lease_bootstrapped);
+    if !inherited_nothing {
+        return None;
+    }
+    let vars = HARNESS_SESSION_VARS.join(", ");
+    // Built line by line rather than as one continued literal: a trailing `\`
+    // in a Rust string strips the next line's leading whitespace, which would
+    // silently flatten the indentation this block relies on to read as a
+    // labelled advisory rather than a wall of prose.
+    //
+    // The opening line states only what is certainly true of THIS invocation.
+    // The diagnosis is deliberately conditioned on "if that repeats": the same
+    // rung-2 bootstrap happens on the first `rdm` command from an ordinary
+    // long-lived shell, which does have continuity from its second command on,
+    // and telling that user their harness is broken would be simply wrong.
+    let lines = [
+        format!(
+            "Note: this invocation started a new changeset ({}, rung {}) rather than \
+             joining one an earlier invocation began.",
+            resolved.id,
+            resolved.rung.number()
+        ),
+        format!(
+            "  Cause:  if that happens on every `rdm` call, the harness running them starts \
+             a fresh shell per command and publishes none of {vars} — so rdm has nothing \
+             outliving a single command to key a session on, each call becomes its own \
+             changeset, and a commit finds the previous call's work attributed elsewhere. \
+             (From a normal long-lived shell this line is expected once, on the first \
+             command, and continuity works from the next one on.)"
+        ),
+        "  Remedy: if it is the former, export a stable per-session id once in the harness, \
+         before it runs any rdm command:"
+            .to_string(),
+        format!("            export {HARNESS_ADOPTION_VAR}=<stable per-session id>"),
+        "          or pin one explicitly for a single script or CI job:".to_string(),
+        format!("            export {RDM_SESSION_ENV}=<id>"),
+    ];
+    Some(lines.join("\n"))
 }
 
 /// Derives the always-available per-process id.
@@ -542,6 +644,88 @@ mod tests {
         );
         assert_eq!(first.id, only_first.id);
         assert_eq!(HARNESS_SESSION_VARS[0], "CLAUDE_CODE_SESSION_ID");
+        // The advisory tells operators to export HARNESS_ADOPTION_VAR. That
+        // advice is only true while the variable is actually consulted.
+        assert!(
+            HARNESS_SESSION_VARS.contains(&HARNESS_ADOPTION_VAR),
+            "continuity_advisory names {HARNESS_ADOPTION_VAR} as the remedy, but resolve_id \
+             does not read it"
+        );
+    }
+
+    #[test]
+    fn advisory_fires_only_when_this_invocation_inherited_nothing() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let bare = MapEnv::new();
+
+        // Rung 4: no ancestry at all, so nothing can ever be inherited.
+        let orphan = resolve_session(&p, &MapProcessTable::empty(10), &bare);
+        assert_eq!(orphan.rung, Rung::Process);
+        let text = continuity_advisory(&orphan, &bare).expect("rung 4 must advise");
+        assert!(
+            text.contains("RDM_HARNESS_SESSION_ID"),
+            "the remedy is missing: {text}"
+        );
+        assert!(
+            text.contains("CLAUDE_CODE_SESSION_ID"),
+            "the cause is missing: {text}"
+        );
+        assert!(text.contains("Cause:") && text.contains("Remedy:"));
+
+        // Rung 2 bootstrap: this invocation minted the lease itself, so no
+        // earlier invocation shares its changeset.
+        let table = MapProcessTable::chain(10, &[(20, "s20")]);
+        let bootstrap = resolve_session(&p, &table, &bare);
+        assert_eq!(bootstrap.rung, Rung::Lease);
+        assert!(bootstrap.lease_bootstrapped);
+        assert!(continuity_advisory(&bootstrap, &bare).is_some());
+
+        // Rung 2 adoption: continuity is working, so there is nothing to say.
+        // This is the case that keeps a plain interactive shell quiet.
+        let later = resolve_session(&p, &MapProcessTable::chain(11, &[(20, "s20")]), &bare);
+        assert_eq!(later.rung, Rung::Lease);
+        assert!(!later.lease_bootstrapped);
+        assert!(
+            continuity_advisory(&later, &bare).is_none(),
+            "a shell whose second invocation adopted its own lease has continuity"
+        );
+    }
+
+    #[test]
+    fn advisory_is_silent_for_every_caller_that_already_has_continuity() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+
+        // Rung 3 — the remedy is already applied. Advising here would nag the
+        // callers who did the right thing, and would contradict phase 10's
+        // rule that a harness variable outranks any lease.
+        for var in HARNESS_SESSION_VARS {
+            let env = MapEnv::new().with(var, "session-value");
+            let resolved = resolve_session(&p, &MapProcessTable::empty(10), &env);
+            assert_eq!(resolved.rung, Rung::Harness);
+            assert!(
+                continuity_advisory(&resolved, &env).is_none(),
+                "{var} is set, so rung 3 already supplies continuity"
+            );
+        }
+
+        // Rung 1 — an explicitly pinned id is continuity by definition.
+        let env = MapEnv::new().with(RDM_SESSION_ENV, "ci-run-7");
+        let resolved = resolve_session(&p, &MapProcessTable::empty(10), &env);
+        assert_eq!(resolved.rung, Rung::Explicit);
+        assert!(continuity_advisory(&resolved, &env).is_none());
+
+        // A harness variable also silences a rung-4 resolution that somehow
+        // reached it: `active_harness_var` is checked first, unconditionally.
+        let harnessed = ResolvedSession {
+            id: SessionId::new("p-whatever").unwrap(),
+            rung: Rung::Process,
+            resolve_micros: 0,
+            lease_bootstrapped: false,
+        };
+        let env = MapEnv::new().with("CLAUDE_CODE_SESSION_ID", "abc");
+        assert!(continuity_advisory(&harnessed, &env).is_none());
     }
 
     #[test]

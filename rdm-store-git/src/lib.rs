@@ -542,6 +542,10 @@ impl GitStore {
             id,
             rung: session::Rung::Explicit,
             resolve_micros: 0,
+            // A pinned id is supplied, never derived from a lease this
+            // process minted, so there is nothing for the continuity
+            // advisory to warn about.
+            lease_bootstrapped: false,
         });
         self
     }

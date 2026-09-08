@@ -70,7 +70,7 @@ rdm discard --force                          # discard this session's changes (i
 
 Batching still applies, and is now safer than before: prefer batching related mutations (e.g. a roadmap plus all its phases, or a status update plus its follow-on task) into a single `rdm commit` rather than committing after every individual command. `rdm status`, `rdm commit`, and `rdm discard` take no `--project` flag — a changeset can span projects.
 
-Your session identity is resolved automatically and survives across separate `rdm` invocations, so an ordinary batch of commands shares one changeset with no setup. Set `RDM_SESSION=<id>` to pin it explicitly. Inspect and recover with:
+Your session identity is resolved automatically and survives across separate `rdm` invocations, so an ordinary batch of commands shares one changeset with no setup. Set `RDM_SESSION=<id>` to pin it explicitly. If you are running under an agent harness that starts a fresh shell for every tool call and publishes no session id of its own, that automatic resolution has nothing to key on and each command becomes its own changeset — `rdm commit` says so and names the fix: export `RDM_HARNESS_SESSION_ID=<stable per-session id>` once, before any rdm command. Inspect and recover with:
 
 ```bash
 rdm session id                               # this session's changeset id

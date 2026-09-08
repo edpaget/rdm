@@ -93,6 +93,7 @@ pub fn run(
             if let Some(note) = outcome.skipped_summary() {
                 println!("\n{note}");
             }
+            print_continuity_advisory(&store);
         }
         // A changeset can reduce to nothing *because* its files vanished — the
         // regenerated indexes then reconcile straight back to HEAD and the tree
@@ -103,7 +104,44 @@ pub fn run(
             if let Some(note) = outcome.skipped_summary() {
                 println!("{note}");
             }
+            // Only when the tree actually held something: a genuinely clean
+            // repo is not a symptom of anything, and advising there would fire
+            // on every no-op `rdm commit` from a plain shell.
+            if !outcome.report.is_clean() {
+                print_continuity_advisory(&store);
+            }
         }
     }
     Ok(())
+}
+
+/// Prints the harness-continuity advisory, when there is one to print.
+///
+/// Called only from the two branches that are *symptoms* of a fragmented
+/// harness — an empty changeset over a tree that is not empty — so an ordinary
+/// successful commit, and an ordinary no-op commit against a clean tree, both
+/// stay silent.
+///
+/// The session is read back from the store rather than resolved afresh here.
+/// The store memoizes exactly one resolution and the mutation path journals
+/// under it, so re-resolving could describe a different identity than the one
+/// the outcome above was computed against — and `lease_bootstrapped`, which
+/// this advisory keys on, is true only for the invocation that actually minted
+/// the lease. A store that exposes no session simply prints nothing.
+fn print_continuity_advisory(store: &crate::AppStore) {
+    #[cfg(feature = "git")]
+    {
+        let Some(resolved) = store.session() else {
+            return;
+        };
+        if let Some(note) =
+            rdm_core::session::continuity_advisory(resolved, &rdm_core::session::RealEnv)
+        {
+            println!("\n{note}");
+        }
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = store;
+    }
 }

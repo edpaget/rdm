@@ -106,6 +106,8 @@ At some point in the ancestry chain, traversal must stop — we cannot walk all 
 
 **Who decides**: Phase 4 determined the exact stopping rule — see `docs/session-identity.md` § "The shipped stopping rule". The asymmetric-failure principle above is binding on it.
 
+**Phase 11 amendment (creation anchor only).** Phase 11 re-opened the CREATION half of that rule — whether a lease could be minted at the nearest non-shell ancestor instead of the immediate parent, so that an agent harness spawning one wrapper shell per tool call would not fragment — and, on measurement, **left it unchanged**. The asymmetry above is what decided it: the captured ancestries showed the proposed ascent selecting one common anchor for two independent sessions, i.e. the ⚠️ unacceptable direction. Nothing here is revised: the binding asymmetry, the rung numbering, and the adoption half of the rule all stand exactly as written. The evidence, the rejected alternatives, and the per-harness continuity table live in `docs/session-identity.md` § "Continuity across ephemeral wrapper shells (phase 11)".
+
 ### Git Hooks and Session Identity
 
 When a git hook (such as `post-merge` or `post-commit`) is spawned as a subprocess of an rdm operation (e.g., an agent's own `git merge --ff-only` — the `rdm-land` fast-forward — fires `post-merge`, which runs `rdm hook post-merge` under that agent's lease; `rdm commit` itself never fires a hook), the hook inherits the session identity from its parent rdm process and joins the same session's changeset. This is correct behavior — the hook's work is part of the same logical transaction.

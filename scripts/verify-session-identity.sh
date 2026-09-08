@@ -46,6 +46,9 @@ trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 # silently move sections A/B from rung 2 to rung 3.
 unset RDM_ROOT RDM_PROJECT RDM_STAGE RDM_FORMAT RDM_SESSION
 unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID RDM_HARNESS_SESSION_ID
+# § K's wrapper payload variable. Cleared here so an inherited value can never
+# be what a wrapper evals.
+unset RDM_K_CMD
 # An inherited git environment (set whenever this runs under a git hook) would
 # point every `git -C <temp-repo>` query below at the invoking repo instead.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
@@ -122,6 +125,43 @@ write_sequence() {
         done
         echo ':'
     } >"$_out"
+}
+
+# mutant_tree <dir>: export HEAD into <dir>, then overlay the WORKING-TREE copy
+# of every source file this harness's self-tests depend on.
+#
+# The overlay is what lets a self-test run against work that is not committed
+# yet. It must stay a whole-set copy rather than a per-mutation list: a mutant
+# built from HEAD plus one overlaid file fails to COMPILE the moment any other
+# uncommitted file in the set changed with it (e.g. a new struct field and its
+# initializer), and a self-test that cannot build reports a harness failure
+# instead of the regression it exists to detect.
+MUTANT_OVERLAY="rdm-core/src/session/mod.rs
+rdm-core/src/session/lease.rs
+rdm-core/src/session/journal.rs
+rdm-core/src/session/process.rs
+rdm-cli/src/commands/commit.rs
+rdm-cli/src/commands/session.rs
+rdm-store-git/src/lib.rs"
+
+# One scratch target dir shared by every mutant build. Each mutant is a
+# distinct source tree, so its own crates rebuild, but the third-party
+# dependency graph is identical across them and cargo builds it once — which is
+# most of a cold build. Kept out of the repo's own target/ so a mutant can never
+# leave a doctored artifact behind for a later `cargo` run to pick up.
+MUTANT_TARGET_DIR="$TMP/mutant-target"
+
+mutant_tree() {
+    _dst=$1
+    mkdir -p "$_dst"
+    (cd "$REPO_ROOT" && git archive HEAD) | tar -x -C "$_dst" 2>/dev/null ||
+        fail "could not export a scratch source tree (is this a git checkout?)"
+    echo "$MUTANT_OVERLAY" | while IFS= read -r _f; do
+        [ -n "$_f" ] || continue
+        [ -f "$REPO_ROOT/$_f" ] || fail "mutant overlay names a missing file: $_f"
+        mkdir -p "$_dst/$(dirname "$_f")"
+        cp "$REPO_ROOT/$_f" "$_dst/$_f"
+    done
 }
 
 # ---------------------------------------------------------------------------
@@ -630,14 +670,7 @@ ok "rung 3 needs no on-disk state — no lease was created for either child"
 say "Section J (self-test): planting the phase-10 regression and re-running the scenario"
 
 MUT_J="$TMP/mutant-j"
-mkdir -p "$MUT_J/rdm-core/src/session"
-(cd "$REPO_ROOT" && git archive HEAD) | tar -x -C "$MUT_J" 2>/dev/null ||
-    fail "could not export a scratch source tree (is this a git checkout?)"
-
-# The phase's own uncommitted work may not be on HEAD yet — overlay the
-# working-tree copy of the file that carries the fix under test.
-cp "$REPO_ROOT/rdm-core/src/session/mod.rs" "$MUT_J/rdm-core/src/session/mod.rs"
-
+mutant_tree "$MUT_J"
 MUT_J_MOD="$MUT_J/rdm-core/src/session/mod.rs"
 grep -q 'if let Some((var, raw)) = active_harness_var(env) {' "$MUT_J_MOD" ||
     fail "the harness-check call site moved — update this self-test to match"
@@ -647,9 +680,13 @@ mv "$MUT_J_MOD.new" "$MUT_J_MOD"
 grep -q '// MUTATION' "$MUT_J_MOD" || fail "failed to plant the Section J mutation"
 
 say "  building the mutant (scratch CARGO_TARGET_DIR; ~15s)"
-(cd "$MUT_J" && CARGO_TARGET_DIR="$MUT_J/target" cargo build -q -p rdm-cli --offline) ||
+(cd "$MUT_J" && CARGO_TARGET_DIR="$MUTANT_TARGET_DIR" cargo build -q -p rdm-cli --offline) ||
     fail "the mutant build failed — the self-test cannot run"
-MUT_J_BIN="$MUT_J/target/debug/rdm"
+# Copy the binary out of the shared target dir immediately: the next
+# mutant's build overwrites that path.
+cp "$MUTANT_TARGET_DIR/debug/rdm" "$TMP/rdm-mutant-j" ||
+    fail "the mutant binary was not produced at $MUTANT_TARGET_DIR/debug/rdm"
+MUT_J_BIN="$TMP/rdm-mutant-j"
 [ -x "$MUT_J_BIN" ] || fail "the mutant binary was not produced at $MUT_J_BIN"
 
 REPO_J_MUT="$TMP/repo-j-mut"
@@ -689,5 +726,384 @@ else
 (child-one=$CHILD1_ID_MUT child-two=$CHILD2_ID_MUT leased=$LEASED_ID_MUT) — \
 Section J would not catch a real regression of the fix"
 fi
+
+# ---------------------------------------------------------------------------
+# Section K — continuity across ephemeral per-call wrapper shells
+# ---------------------------------------------------------------------------
+# Phase 11. An agent harness that exports no session variable and runs each
+# tool call in a FRESH wrapper shell gives rdm nothing to key a session on that
+# outlives one command: creation stops at depth 1 (see rdm-core/src/session/
+# lease.rs for why phase 11 measured raising it and rejected the change), and
+# depth 1 is that wrapper. So every invocation resolves its own changeset.
+#
+# Phase 11 kept that fragmentation — it is the safe direction of phase 3's
+# binding asymmetry — and this section gates the two things that had to become
+# true instead, which is exactly the second branch the phase's acceptance
+# criterion allows:
+#
+#   * `rdm commit` NAMES the cause and the remedy rather than fragmenting
+#     silently (K2), and the remedy it names actually works (K5); and
+#   * the fragmenting topology no longer LEAKS a dead-pid lease per invocation
+#     (K3/K3b), because creation now sweeps before it mints.
+#
+# K4 re-asserts the no-merge invariant phase 10 fences, under this topology.
+say "Section K: per-call wrapper shells — fragmentation is named, bounded, and remediable"
+
+REPO_K="$TMP/repo-k"
+seed_repo "$REPO_K"
+LEASES_K="$REPO_K/.git/rdm/leases"
+
+# A long-lived NON-shell process standing in for the agent harness itself, so
+# the ancestry under test is wrapper -> agentd -> …, matching a real harness
+# rather than a chain of shells.
+#
+# A symlink, not a copy: on macOS, copying a code-signed system binary such as
+# /bin/sh produces an image the kernel SIGKILLs on exec, while a symlink execs
+# the real binary and still reports the symlink's own name as its `comm`.
+AGENTD="$TMP/agentd"
+ln -s /bin/sh "$AGENTD"
+
+# sq <string>: print <string> single-quoted so a shell re-parsing it sees the
+# bytes verbatim. Embedded single quotes become '\'' in the usual way.
+#
+# This is not fastidiousness. The generated drivers below assign a command line
+# to a variable and `eval` it one level down; an argument carrying a space or a
+# quote (`--title "K item"`) would otherwise split the assignment into
+# `VAR=value command args`, leaving the variable UNCHANGED in the driver — and
+# the wrapper would then eval whatever the variable held before. Quote this
+# wrong and the section does not merely fail, it forks endlessly.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# write_wrapper_driver <out> <repo> <cmds-file>
+#
+# Emits a driver script that runs each line of <cmds-file> (arguments to `rdm`)
+# inside its OWN wrapper shell, reproducing one-tool-call-per-shell.
+#
+# The `eval` plus the trailing `:` is load-bearing, not style: `sh -c '<one
+# command>'` execs that command in place, the wrapper process vanishes, and rdm
+# ends up parented directly by the long-lived driver — under which continuity
+# works trivially and this whole section would pass for the wrong reason. K0
+# below asserts the wrappers really are distinct, live processes.
+#
+# The payload variable is RDM_K_CMD, a name `k_drive` deliberately does not use:
+# the driver's own invocation must never be reachable from inside a wrapper, or
+# a mis-quoted payload turns a failed assertion into a self-re-invoking driver.
+write_wrapper_driver() {
+    _out=$1
+    _repo=$2
+    _cmds=$3
+    {
+        echo '#!/bin/sh'
+        # Exported EMPTY first: if a payload assignment below were ever
+        # mis-quoted, the wrapper evals nothing and exits, rather than
+        # inheriting and re-running something.
+        echo 'RDM_K_CMD='
+        echo 'export RDM_K_CMD'
+        while IFS= read -r _line; do
+            [ -n "$_line" ] || continue
+            _full="\"$RDM_BIN\" --root \"$_repo\" $_line"
+            printf 'RDM_K_CMD=%s\n' "$(sq "$_full")"
+            # SC2016: this printf writes the wrapper's source text; `$RDM_K_CMD`
+            # must reach the generated script unexpanded.
+            # shellcheck disable=SC2016
+            printf 'sh -c '\''eval "$RDM_K_CMD"; :'\''\n'
+        done <"$_cmds"
+        echo ':'
+    } >"$_out"
+}
+
+# k_drive <driver>: run <driver> under the agentd, so every wrapper shell it
+# spawns has a real non-shell process as its grandparent.
+#
+# The driver path travels as a positional argument, never through the
+# environment: nothing a wrapper can read ever names the driver itself.
+# SC2016: `$1` is the agentd shell's own positional argument, supplied after
+# the -c string; expanding it here would defeat the point.
+# shellcheck disable=SC2016
+k_drive() { "$AGENTD" -c 'sh "$1"; :' sh "$1"; }
+
+# --- K0: the topology is really what the section claims ---------------------
+# Without this, every assertion below could be describing a shape the harness
+# never actually built.
+{
+    echo '#!/bin/sh'
+    echo 'RDM_K_CMD='
+    echo 'export RDM_K_CMD'
+    _i=0
+    while [ "$_i" -lt 2 ]; do
+        # Each wrapper reports its OWN pid and its parent's, so the section can
+        # prove the wrappers are distinct live processes sharing one driver.
+        # shellcheck disable=SC2016
+        printf 'RDM_K_CMD=%s\n' "$(sq 'printf "wrapper=%s driver=%s\n" "$$" "$PPID"')"
+        # shellcheck disable=SC2016
+        printf 'sh -c '\''eval "$RDM_K_CMD"; :'\''\n'
+        _i=$((_i + 1))
+    done
+    echo ':'
+} >"$TMP/k0.sh"
+k_drive "$TMP/k0.sh" >"$TMP/k0.out" 2>&1 || fail "K0 driver failed: $(cat "$TMP/k0.out")"
+K0_WRAPPERS=$(sed -n 's/^wrapper=\([0-9]*\).*/\1/p' "$TMP/k0.out" | sort -u | wc -l | tr -d ' ')
+K0_DRIVERS=$(sed -n 's/.*driver=\([0-9]*\)$/\1/p' "$TMP/k0.out" | sort -u | wc -l | tr -d ' ')
+[ "$K0_WRAPPERS" = "2" ] ||
+    fail "expected 2 distinct wrapper pids (the shells did not survive their command), got $K0_WRAPPERS"
+[ "$K0_DRIVERS" = "1" ] ||
+    fail "expected both wrappers under ONE driver, got $K0_DRIVERS distinct parents"
+ok "each tool call really runs in its own live wrapper shell under one driver"
+
+# --- K1: every wrapper invocation resolves its own changeset ----------------
+# The shipped behavior, asserted as the fact it is rather than left implied.
+_i=0
+: >"$TMP/k1.cmds"
+while [ "$_i" -lt 5 ]; do
+    echo 'session id --format json' >>"$TMP/k1.cmds"
+    _i=$((_i + 1))
+done
+write_wrapper_driver "$TMP/k1.sh" "$REPO_K" "$TMP/k1.cmds"
+k_drive "$TMP/k1.sh" >"$TMP/k1.out" 2>&1 || fail "K1 driver failed: $(cat "$TMP/k1.out")"
+
+json_lines "$TMP/k1.out" | field_str id >"$TMP/k1.ids"
+[ "$(wc -l <"$TMP/k1.ids" | tr -d ' ')" = "5" ] ||
+    fail "expected 5 ids from 5 wrapper calls, got: $(cat "$TMP/k1.out")"
+K1_DISTINCT=$(sort -u "$TMP/k1.ids" | wc -l | tr -d ' ')
+[ "$K1_DISTINCT" = "5" ] ||
+    fail "expected 5 distinct fragmented ids under a wrapper harness, got $K1_DISTINCT — \
+if continuity now works here, phase 11's recorded decision changed and § K must be re-written"
+[ "$(json_lines "$TMP/k1.out" | field_num rung | sort -u)" = "2" ] ||
+    fail "expected every wrapper call on rung 2"
+[ "$(json_lines "$TMP/k1.out" | grep -c '"lease_bootstrapped":true')" = "5" ] ||
+    fail "expected every wrapper call to report lease_bootstrapped=true"
+ok "each wrapper call bootstraps its own rung-2 changeset (the recorded, kept behavior)"
+
+# --- K2 (the acceptance criterion): the commit names cause AND remedy -------
+{
+    echo 'task create k-item --title "K item" --no-edit --project demo'
+    echo 'commit -m "k: land the wrapper batch"'
+} >"$TMP/k2.cmds"
+write_wrapper_driver "$TMP/k2.sh" "$REPO_K" "$TMP/k2.cmds"
+k_drive "$TMP/k2.sh" >"$TMP/k2.out" 2>&1 ||
+    fail "K2 driver exited non-zero — a fragmented harness must still exit 0: $(cat "$TMP/k2.out")"
+
+grep -q 'CLAUDE_CODE_SESSION_ID' "$TMP/k2.out" ||
+    fail "the commit output does not name the CAUSE (the harness publishes no session variable): $(cat "$TMP/k2.out")"
+grep -q 'RDM_HARNESS_SESSION_ID' "$TMP/k2.out" ||
+    fail "the commit output does not name the REMEDY (export RDM_HARNESS_SESSION_ID): $(cat "$TMP/k2.out")"
+grep -q 'Cause:' "$TMP/k2.out" || fail "the advisory has no 'Cause:' label"
+grep -q 'Remedy:' "$TMP/k2.out" || fail "the advisory has no 'Remedy:' label"
+ok "a fragmented rdm commit exits 0 and names both the cause and the remedy"
+
+# The other half of "never silently": the work is still there and still
+# recoverable by the routes the same output prints.
+git -C "$REPO_K" show --name-only HEAD >"$TMP/k2.head" 2>&1
+if grep -q 'projects/demo/tasks/k-item.md' "$TMP/k2.head"; then
+    fail "the wrapper commit unexpectedly landed the task — continuity now works, so § K must be re-written against AC1's first branch"
+fi
+K2_ORPHAN=$("$RDM_BIN" --root "$REPO_K" session list --format json |
+    tr ',' '\n' | sed -n 's/.*"id":"\([^"]*\)".*/\1/p' | head -n 1)
+[ -n "$K2_ORPHAN" ] || fail "no changeset was recorded, so the mutation journaled nothing"
+"$RDM_BIN" --root "$REPO_K" commit --changeset "$K2_ORPHAN" \
+    -m "k: recover the orphaned changeset" >"$TMP/k2.recover" 2>&1 ||
+    fail "the recovery route the advisory prints does not work: $(cat "$TMP/k2.recover")"
+git -C "$REPO_K" show --name-only HEAD | grep -q 'projects/demo/tasks/k-item.md' ||
+    fail "rdm commit --changeset did not land the fragmented work"
+ok "the fragmented work is not lost — the printed recovery route lands it"
+
+# --- K3: no dead-pid lease accumulates per invocation -----------------------
+# The pre-phase-11 behavior left one lease per invocation, every one naming a
+# pid that died with its wrapper. Creation now sweeps before it mints, so the
+# directory stays bounded no matter how many tool calls run.
+K3_COUNT=$(find "$LEASES_K" -name '*.lease' | wc -l | tr -d ' ')
+[ "$K3_COUNT" -ge 1 ] ||
+    fail "no lease at all after 7 wrapper invocations — the count assertion below would be vacuous"
+[ "$K3_COUNT" -le 2 ] ||
+    fail "leases accumulated per invocation: $K3_COUNT files after 7 wrapper calls (expected <= 2)"
+ok "7 wrapper invocations left $K3_COUNT lease file(s), not 7"
+
+# --- K3b: a dead anchor's lease is swept by the next invocation -------------
+# Named explicitly so the bound above cannot be satisfied by a directory that
+# merely happens to be small: the specific dead file must be gone.
+K3B_STALE=$(find "$LEASES_K" -name '*.lease' | head -n 1)
+[ -n "$K3B_STALE" ] || fail "expected a lease file to observe"
+K3B_PID=$(basename "$K3B_STALE" .lease)
+if kill -0 "$K3B_PID" 2>/dev/null; then
+    fail "the observed lease names a LIVE pid ($K3B_PID); K3b needs the dead-wrapper case"
+fi
+echo 'session id --format json' >"$TMP/k3b.cmds"
+write_wrapper_driver "$TMP/k3b.sh" "$REPO_K" "$TMP/k3b.cmds"
+k_drive "$TMP/k3b.sh" >"$TMP/k3b.out" 2>&1 || fail "K3b driver failed: $(cat "$TMP/k3b.out")"
+[ ! -e "$K3B_STALE" ] ||
+    fail "the dead wrapper's lease ($K3B_PID) survived the next invocation — the create-path sweep did not run"
+K3B_COUNT=$(find "$LEASES_K" -name '*.lease' | wc -l | tr -d ' ')
+[ "$K3B_COUNT" -le 2 ] || fail "lease count grew to $K3B_COUNT after another invocation"
+ok "the dead wrapper's lease is swept by the next invocation; the set stays bounded"
+
+# --- K4: two concurrent drivers never merge (the phase-10 invariant) --------
+REPO_K4="$TMP/repo-k4"
+seed_repo "$REPO_K4"
+echo 'session id --format json' >"$TMP/k4.cmds"
+echo 'session id --format json' >>"$TMP/k4.cmds"
+write_wrapper_driver "$TMP/k4a.sh" "$REPO_K4" "$TMP/k4.cmds"
+write_wrapper_driver "$TMP/k4b.sh" "$REPO_K4" "$TMP/k4.cmds"
+k_drive "$TMP/k4a.sh" >"$TMP/k4a.out" 2>&1 &
+PID_K4A=$!
+k_drive "$TMP/k4b.sh" >"$TMP/k4b.out" 2>&1 &
+PID_K4B=$!
+wait "$PID_K4A" || fail "K4 driver A failed: $(cat "$TMP/k4a.out")"
+wait "$PID_K4B" || fail "K4 driver B failed: $(cat "$TMP/k4b.out")"
+json_lines "$TMP/k4a.out" | field_str id >"$TMP/k4a.ids"
+json_lines "$TMP/k4b.out" | field_str id >"$TMP/k4b.ids"
+[ -s "$TMP/k4a.ids" ] && [ -s "$TMP/k4b.ids" ] || fail "K4 produced no ids"
+if grep -qxF -f "$TMP/k4a.ids" "$TMP/k4b.ids"; then
+    fail "two concurrent wrapper drivers shared a changeset id — the phase-10 merging direction is back"
+fi
+ok "two concurrent drivers never share an id"
+
+# --- K5: the remedy the advisory prints actually delivers continuity --------
+# AC1's second branch is only worth anything if the remedy is true. This is the
+# same topology as K1/K2 with RDM_HARNESS_SESSION_ID exported, and it must
+# produce ONE changeset, a commit that lands, and NO advisory.
+REPO_K5="$TMP/repo-k5"
+seed_repo "$REPO_K5"
+{
+    echo 'session id --format json'
+    echo 'task create k5-item --title "K5 item" --no-edit --project demo'
+    echo 'commit -m "k5: land under one changeset"'
+    echo 'session id --format json'
+} >"$TMP/k5.cmds"
+write_wrapper_driver "$TMP/k5.sh" "$REPO_K5" "$TMP/k5.cmds"
+{
+    echo '#!/bin/sh'
+    echo 'RDM_HARNESS_SESSION_ID=k5-agent-run'
+    echo 'export RDM_HARNESS_SESSION_ID'
+    echo "exec sh \"$TMP/k5.sh\""
+} >"$TMP/k5-outer.sh"
+k_drive "$TMP/k5-outer.sh" >"$TMP/k5.out" 2>&1 || fail "K5 driver failed: $(cat "$TMP/k5.out")"
+
+json_lines "$TMP/k5.out" | field_str id >"$TMP/k5.ids"
+all_same "$TMP/k5.ids" ||
+    fail "the documented remedy did not give one id across wrapper calls: $(cat "$TMP/k5.ids")"
+[ "$(json_lines "$TMP/k5.out" | field_num rung | sort -u)" = "3" ] ||
+    fail "expected rung 3 under RDM_HARNESS_SESSION_ID"
+git -C "$REPO_K5" show --name-only HEAD | grep -q 'projects/demo/tasks/k5-item.md' ||
+    fail "the remedy did not make mutate-then-commit land across wrapper calls: $(cat "$TMP/k5.out")"
+if grep -q 'RDM_HARNESS_SESSION_ID=<' "$TMP/k5.out"; then
+    fail "the advisory fired at a caller that already has continuity"
+fi
+[ ! -d "$REPO_K5/.git/rdm/leases" ] ||
+    [ "$(find "$REPO_K5/.git/rdm/leases" -name '*.lease' | wc -l | tr -d ' ')" = "0" ] ||
+    fail "the remedy path created a lease; rung 3 needs no on-disk state"
+ok "exporting RDM_HARNESS_SESSION_ID gives one changeset, a landing commit, no lease, and no advisory"
+
+# --- K6: the document records which harnesses get continuity (AC3) ----------
+# A grep-level guard that the harness-continuity table is not silently dropped
+# by a later edit. It gates presence, not prose.
+DOC_K="$REPO_ROOT/docs/session-identity.md"
+[ -f "$DOC_K" ] || fail "docs/session-identity.md is missing"
+grep -q 'Continuity across ephemeral wrapper shells' "$DOC_K" ||
+    fail "docs/session-identity.md has no phase-11 continuity section"
+for _needle in 'RDM_HARNESS_SESSION_ID' 'Claude Code' 'Pi' 'plain interactive shell' 'no readable process table'; do
+    grep -qi -- "$_needle" "$DOC_K" ||
+        fail "docs/session-identity.md's harness-continuity table no longer covers '$_needle'"
+done
+ok "docs/session-identity.md records the phase-11 outcome and the per-harness table"
+
+# ---------------------------------------------------------------------------
+# Section K (self-tests) — two planted mutations, each rebuilt and re-run
+# ---------------------------------------------------------------------------
+# Same export-HEAD + working-tree-overlay + scratch CARGO_TARGET_DIR pattern as
+# Section J. Each proves one half of § K is not vacuous.
+
+# --- self-test 1: neuter the advisory --------------------------------------
+say "Section K (self-test 1): silencing the advisory must break K2"
+
+MUT_K1="$TMP/mutant-k1"
+mutant_tree "$MUT_K1"
+MUT_K1_MOD="$MUT_K1/rdm-core/src/session/mod.rs"
+grep -q 'pub fn continuity_advisory' "$MUT_K1_MOD" ||
+    fail "continuity_advisory moved — update this self-test to match"
+# Neuter the RESULT, not a guard: returning None unconditionally is what
+# "there is no advisory" means. Suppressing a guard instead would make the
+# advisory fire MORE often, which is not the regression under test. Replacing
+# the final expression also leaves no unreachable code for -D warnings to
+# reject, so the mutant still builds.
+grep -q '^    Some(lines.join(' "$MUT_K1_MOD" ||
+    fail "continuity_advisory's return expression moved — update this self-test to match"
+sed 's|^    Some(lines.join(.*$|    let _ = lines; // MUTATION: silences the phase-11 advisory\n    None|' \
+    "$MUT_K1_MOD" >"$MUT_K1_MOD.new"
+mv "$MUT_K1_MOD.new" "$MUT_K1_MOD"
+grep -q '// MUTATION' "$MUT_K1_MOD" || fail "failed to plant the § K self-test 1 mutation"
+
+say "  building mutant 1 (scratch CARGO_TARGET_DIR; ~15s)"
+(cd "$MUT_K1" && CARGO_TARGET_DIR="$MUTANT_TARGET_DIR" cargo build -q -p rdm-cli --offline) ||
+    fail "mutant 1 failed to build — the self-test cannot run"
+# Copy the binary out of the shared target dir immediately: the next
+# mutant's build overwrites that path.
+cp "$MUTANT_TARGET_DIR/debug/rdm" "$TMP/rdm-mutant-k1" ||
+    fail "the mutant binary was not produced at $MUTANT_TARGET_DIR/debug/rdm"
+MUT_K1_BIN="$TMP/rdm-mutant-k1"
+[ -x "$MUT_K1_BIN" ] || fail "mutant 1 binary was not produced"
+
+REPO_MK1="$TMP/repo-mk1"
+mkdir -p "$REPO_MK1"
+RDM_SESSION=harness-seed "$MUT_K1_BIN" --root "$REPO_MK1" init --default-project demo >/dev/null
+RDM_SESSION=harness-seed "$MUT_K1_BIN" --root "$REPO_MK1" commit -m "seed" >/dev/null
+{
+    echo 'task create m-item --title "M item" --no-edit --project demo'
+    echo 'commit -m "mut: land"'
+} >"$TMP/mk1.cmds"
+RDM_BIN_SAVED="$RDM_BIN"
+RDM_BIN="$MUT_K1_BIN"
+write_wrapper_driver "$TMP/mk1.sh" "$REPO_MK1" "$TMP/mk1.cmds"
+RDM_BIN="$RDM_BIN_SAVED"
+k_drive "$TMP/mk1.sh" >"$TMP/mk1.out" 2>&1 || true
+if grep -q 'RDM_HARNESS_SESSION_ID' "$TMP/mk1.out"; then
+    fail "self-test 1 failed: the mutant still printed the remedy, so K2's assertion \
+would pass on a build with no advisory at all"
+fi
+ok "self-test 1: silencing continuity_advisory DOES break K2's cause/remedy assertion"
+
+# --- self-test 2: neuter the create-path sweep ------------------------------
+say "Section K (self-test 2): removing the create-path sweep must break K3"
+
+MUT_K2="$TMP/mutant-k2"
+mutant_tree "$MUT_K2"
+MUT_K2_LEASE="$MUT_K2/rdm-core/src/session/lease.rs"
+grep -q '^    gc(paths, procs);' "$MUT_K2_LEASE" ||
+    fail "the create-path gc call site moved — update this self-test to match"
+sed 's|^    gc(paths, procs);|    // MUTATION: removes the phase-11 create-path sweep|' \
+    "$MUT_K2_LEASE" >"$MUT_K2_LEASE.new"
+mv "$MUT_K2_LEASE.new" "$MUT_K2_LEASE"
+grep -q '// MUTATION' "$MUT_K2_LEASE" || fail "failed to plant the § K self-test 2 mutation"
+
+say "  building mutant 2 (scratch CARGO_TARGET_DIR; ~15s)"
+(cd "$MUT_K2" && CARGO_TARGET_DIR="$MUTANT_TARGET_DIR" cargo build -q -p rdm-cli --offline) ||
+    fail "mutant 2 failed to build — the self-test cannot run"
+# Copy the binary out of the shared target dir immediately: the next
+# mutant's build overwrites that path.
+cp "$MUTANT_TARGET_DIR/debug/rdm" "$TMP/rdm-mutant-k2" ||
+    fail "the mutant binary was not produced at $MUTANT_TARGET_DIR/debug/rdm"
+MUT_K2_BIN="$TMP/rdm-mutant-k2"
+[ -x "$MUT_K2_BIN" ] || fail "mutant 2 binary was not produced"
+
+REPO_MK2="$TMP/repo-mk2"
+mkdir -p "$REPO_MK2"
+RDM_SESSION=harness-seed "$MUT_K2_BIN" --root "$REPO_MK2" init --default-project demo >/dev/null
+RDM_SESSION=harness-seed "$MUT_K2_BIN" --root "$REPO_MK2" commit -m "seed" >/dev/null
+: >"$TMP/mk2.cmds"
+_i=0
+while [ "$_i" -lt 5 ]; do
+    echo 'session id --format json' >>"$TMP/mk2.cmds"
+    _i=$((_i + 1))
+done
+RDM_BIN_SAVED="$RDM_BIN"
+RDM_BIN="$MUT_K2_BIN"
+write_wrapper_driver "$TMP/mk2.sh" "$REPO_MK2" "$TMP/mk2.cmds"
+RDM_BIN="$RDM_BIN_SAVED"
+k_drive "$TMP/mk2.sh" >"$TMP/mk2.out" 2>&1 || fail "mutant 2 driver failed: $(cat "$TMP/mk2.out")"
+MK2_COUNT=$(find "$REPO_MK2/.git/rdm/leases" -name '*.lease' | wc -l | tr -d ' ')
+if [ "$MK2_COUNT" -le 2 ]; then
+    fail "self-test 2 failed: without the create-path sweep the mutant still left only \
+$MK2_COUNT lease(s) after 5 invocations — K3's bound would pass on a build that leaks"
+fi
+ok "self-test 2: removing the sweep DOES reproduce the per-invocation lease leak ($MK2_COUNT files)"
 
 printf '\n\033[1;32mAll session-identity checks passed.\033[0m\n'

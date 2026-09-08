@@ -105,6 +105,83 @@ fn explicit_session_env_wins_and_is_reported_as_rung_one() {
 }
 
 #[test]
+fn session_id_json_reports_whether_this_call_bootstrapped_its_lease() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Rung 1: an explicitly pinned id reads no lease and creates none, so the
+    // flag is false. This is the field's stable meaning — "this invocation
+    // minted the changeset it is reporting" — not "a lease exists somewhere".
+    let raw = stdout(
+        rdm(&dir)
+            .env("RDM_SESSION", "explicit-1")
+            .args(["session", "id", "--format", "json"]),
+    );
+    let value: serde_json::Value = serde_json::from_str(raw.lines().next_back().unwrap()).unwrap();
+    assert_eq!(value["lease_bootstrapped"], false);
+
+    // Rung 3: a harness variable is derived, never lease-backed.
+    let raw = stdout(
+        rdm(&dir)
+            .env("CLAUDE_CODE_SESSION_ID", "abc123")
+            .args(["session", "id", "--format", "json"]),
+    );
+    let value: serde_json::Value = serde_json::from_str(raw.lines().next_back().unwrap()).unwrap();
+    assert_eq!(value["rung"], 3);
+    assert_eq!(value["lease_bootstrapped"], false);
+
+    // The field must be present on every rung, so a consumer can read it
+    // unconditionally rather than probing for it.
+    assert!(value["lease_bootstrapped"].is_boolean());
+}
+
+#[test]
+fn commit_stays_quiet_for_a_caller_that_has_continuity() {
+    // The phase-11 advisory must not fire at a caller who already has a stable
+    // session id — the nag would land on exactly the people who did the right
+    // thing. Asserted on both the successful-commit and the nothing-to-commit
+    // paths, since the advisory is wired into the latter's neighbourhood.
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    rdm(&dir)
+        .env("RDM_SESSION", "quiet-1")
+        .args([
+            "task",
+            "create",
+            "quiet-item",
+            "--title",
+            "Quiet",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    let landed =
+        stdout(
+            rdm(&dir)
+                .env("RDM_SESSION", "quiet-1")
+                .args(["commit", "-m", "add quiet-item"]),
+        );
+    assert!(
+        !landed.contains("RDM_HARNESS_SESSION_ID"),
+        "a successful commit must not print the continuity advisory: {landed}"
+    );
+
+    let empty =
+        stdout(
+            rdm(&dir)
+                .env("RDM_SESSION", "quiet-1")
+                .args(["commit", "-m", "nothing left"]),
+        );
+    assert!(
+        !empty.contains("RDM_HARNESS_SESSION_ID"),
+        "a clean-tree no-op commit must not print the continuity advisory: {empty}"
+    );
+}
+
+#[test]
 fn a_blank_explicit_session_falls_through_instead_of_erroring() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
