@@ -35,8 +35,10 @@
 //!   destroy the other. Compaction ([`compact`]) is the sole exception: it is
 //!   the one operation that replaces or unlinks the file, and appends do not
 //!   trust it to be quiescent — they detect having written into a journal
-//!   compaction swapped out and redo the write against the live one (see
-//!   [`append_line`]).
+//!   compaction swapped out and redo the write against the live one, and an
+//!   append that keeps losing takes compaction's own lock so no compaction can
+//!   run at all (see [`append_line`]). Losing an entry to compaction is
+//!   therefore excluded, not merely made unlikely.
 //! - **Content-keyed truncation.** Because a tombstone identifies *what*
 //!   landed rather than *where* it sat in the file, the fold is independent of
 //!   byte offsets, so compaction can rewrite a journal without changing what a
@@ -62,7 +64,7 @@
 //! skips changesets a live lease names. That skip is a courtesy, not a proof:
 //! rungs 1 and 3 resolve an id without ever creating a lease, so a changeset
 //! being appended to right now can read as unleased. What actually makes the
-//! sweep safe is [`append_line`]'s redo, not the lease check.
+//! sweep safe is [`append_line`]'s redo-then-escalate, not the lease check.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -182,15 +184,31 @@ const COMPACT_LOCK_WAIT: Duration = Duration::from_millis(200);
 /// How stale a compaction lock must be before another process takes it over.
 const COMPACT_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 
-/// How many times an append redoes itself after discovering it wrote into a
-/// journal that is no longer the live one.
+/// How many *lock-free* attempts an append makes before it stops racing
+/// [`compact`] and excludes it instead.
 ///
-/// One redo covers a single racing [`compact`]; the bound is four so a burst
-/// of them still converges. It is a *bound* rather than a condition, so the
-/// loop terminates unconditionally — the final attempt is accepted without a
-/// recheck, degrading to the same best-effort over-claim as every other
-/// journaling failure.
+/// Each attempt is one `O_APPEND` write plus the identity recheck that says
+/// whether it landed in the journal `path` still names. One redo covers a
+/// single racing compaction and four covers a burst, but the bound is not
+/// what makes the append safe: exhausting it escalates to the lock-guarded
+/// attempt in [`append_line`] rather than accepting a write that may already
+/// be doomed. Raising or lowering it trades attempts against escalations and
+/// changes no guarantee.
 const APPEND_ATTEMPTS: usize = 4;
+
+/// How long the final, lock-guarded append waits for the compaction lock.
+///
+/// Deliberately longer than [`COMPACT_LOCK_STALE_AFTER`], which is what makes
+/// a single bounded [`AdvisoryLock::acquire`] call a *guarantee* rather than
+/// an attempt: it returns held either because the current holder released, or
+/// because the lock file aged past staleness and was taken over. So the
+/// escalation cannot come back empty-handed while the lock directory is
+/// usable, and it still cannot block a real run indefinitely.
+///
+/// It is only ever reached after [`APPEND_ATTEMPTS`] lock-free writes have all
+/// lost to a concurrent compaction, so paying for it is already evidence of
+/// sustained contention rather than of the ordinary case.
+const APPEND_LOCK_WAIT: Duration = Duration::from_secs(35);
 
 /// The environment variable naming a harness barrier file for the append
 /// itself.
@@ -225,7 +243,8 @@ fn harness_barrier(var: &str) {
 }
 
 /// Appends one complete line to the journal at `path`, redoing the write if it
-/// landed in a file that is no longer the live journal.
+/// landed in a file that is no longer the live journal, and taking
+/// [`compact`]'s own lock rather than giving up if redoing keeps losing.
 ///
 /// The append itself is one `write_all` of one complete line to a descriptor
 /// opened with `O_APPEND`, which POSIX does not interleave. That is what makes
@@ -243,31 +262,85 @@ fn harness_barrier(var: &str) {
 /// appending to it. Any sweep that treats it as evidence is asserting an
 /// invariant the identity chain does not provide.
 ///
-/// So the append detects the loss instead of assuming it away: after writing,
-/// it compares the identity of the file it wrote to against the identity of
-/// `path` now, and redoes the append against the live journal when they differ
-/// — including when compaction removed the file outright, in which case the
-/// redo recreates it. Redoing is safe to repeat, because the fold is keyed by
-/// path and applied in file order: a duplicated line contributes exactly what
-/// the original contributed.
+/// So the append detects the loss instead of assuming it away, in two stages:
+///
+/// 1. **Detect and redo, lock-free.** After writing, it compares the identity
+///    of the file it wrote to against the identity of `path` now, and redoes
+///    the append against the live journal when they differ — including when
+///    compaction removed the file outright, in which case the redo recreates
+///    it. Redoing is safe to repeat, because the fold is keyed by path and
+///    applied in file order: a duplicated line contributes exactly what the
+///    original contributed. This covers the ordinary case at no cost.
+/// 2. **Escalate and exclude.** After [`APPEND_ATTEMPTS`] of those have all
+///    lost, it stops racing and takes [`compact`]'s own advisory lock before
+///    appending once more. Compaction *skips entirely* unless it holds that
+///    lock, so a write made while holding it cannot be replaced or unlinked
+///    underneath. This is the step that makes "an appended entry is not lost
+///    to compaction" an invariant rather than a bound: a fixed cap that simply
+///    accepted its last write would accept one already landing in a doomed
+///    inode, which is a silent loss and not the over-claim the rest of this
+///    module degrades to.
+///
+/// The escalation terminates: [`AdvisoryLock::acquire`] is deadline-bounded,
+/// and [`APPEND_LOCK_WAIT`] exceeds [`COMPACT_LOCK_STALE_AFTER`], so it comes
+/// back held unless the lock directory itself is unusable.
+///
+/// Two residuals are stated rather than claimed closed. A compaction that ran
+/// for longer than [`COMPACT_LOCK_STALE_AFTER`] can have its lock taken over
+/// while still running. And a writer that ignores this protocol altogether —
+/// [`discard_changeset`], which destroys a changeset deliberately, or
+/// out-of-band tampering — is outside what a lock the other party never takes
+/// can defend against.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Io`] if the journal cannot be opened or written.
 fn append_line(path: &std::path::Path, line: &str) -> Result<()> {
-    for attempt in 1..=APPEND_ATTEMPTS {
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
-        harness_barrier(HARNESS_APPEND_BARRIER);
-        run_after_open_hook(path);
-        file.write_all(line.as_bytes())?;
-        if attempt == APPEND_ATTEMPTS || wrote_to_the_live_journal(&file, path) {
+    for _ in 1..APPEND_ATTEMPTS {
+        if append_once(path, line)? {
             return Ok(());
         }
     }
+    // Stop racing compaction and exclude it. Holding this lock is what makes
+    // the final write unraceable, so it is taken for the write itself and
+    // released immediately after.
+    let _lock = AdvisoryLock::acquire(
+        compaction_lock_path(path),
+        APPEND_LOCK_WAIT,
+        COMPACT_LOCK_STALE_AFTER,
+    );
+    append_once(path, line)?;
     Ok(())
+}
+
+/// Appends `line` once, reporting whether it landed in the live journal.
+///
+/// `false` means the descriptor written to is no longer what `path` names — a
+/// [`compact`] replaced or unlinked it in between — so the caller must write
+/// again.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if the journal cannot be opened or written.
+fn append_once(path: &std::path::Path, line: &str) -> Result<bool> {
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    harness_barrier(HARNESS_APPEND_BARRIER);
+    run_after_open_hook(path);
+    file.write_all(line.as_bytes())?;
+    Ok(wrote_to_the_live_journal(&file, path))
+}
+
+/// Returns the advisory lock guarding compaction of the journal at `path`.
+///
+/// Single-sourced so [`compact`], which is the only operation that may replace
+/// or unlink a journal, and [`append_line`]'s escalation, which exists to
+/// exclude it, cannot drift onto two different lock files and quietly stop
+/// excluding each other.
+fn compaction_lock_path(journal: &std::path::Path) -> PathBuf {
+    journal.with_extension("lock")
 }
 
 /// Whether `file` is still the journal `path` names.
@@ -500,36 +573,41 @@ pub fn truncate(paths: &SessionPaths, id: &SessionId, landed: &[JournalEntry]) -
 ///
 /// Three guards make it safe anyway, and only the third is unconditional:
 ///
-/// - The advisory lock at `<changesets>/<id>.lock`. Unlike every other
+/// - The advisory lock at [`compaction_lock_path`]. Unlike every other
 ///   [`AdvisoryLock`] user in rdm, an *unheld* guard means **skip**, not
 ///   proceed unlocked: those callers are safe because a real correctness
 ///   mechanism sits underneath (HEAD compare-and-swap; the content-digest
-///   precondition), and a journal rewrite has no such underlayer.
+///   precondition), and a journal rewrite has no such underlayer. That skip is
+///   also what lets [`append_line`] use the *same* lock in the other
+///   direction: an append that keeps losing takes it, and this call then
+///   declines to run at all.
 /// - A compare-and-swap on the file's byte length. A journal only ever grows,
 ///   so its length is a valid version token: if anything was appended between
 ///   the fold and the rewrite, the length differs and compaction skips.
-/// - [`append_line`]'s redo, which is what closes the window the first two
-///   only narrow. An appender that already held its `O_APPEND` descriptor when
-///   the length check passed writes into the inode this call is about to
-///   unlink or replace — the lock cannot see it and the length cannot reflect
-///   it. The appender notices afterwards that the file it wrote to is no
-///   longer the journal, and writes again against the one that is. So the
-///   record is not lost, and this call's contract holds unconditionally in the
-///   safe direction: compaction may fail to clean, never lose.
+/// - [`append_line`]'s redo-then-escalate, which is what closes the window the
+///   first two only narrow. An appender that already held its `O_APPEND`
+///   descriptor when the length check passed writes into the inode this call
+///   is about to unlink or replace — the lock cannot see it and the length
+///   cannot reflect it. The appender notices afterwards that the file it wrote
+///   to is no longer the journal and writes again against the one that is,
+///   and if that keeps losing it takes this lock so no compaction can run at
+///   all. So the record is not lost, and this call's contract holds
+///   unconditionally in the safe direction: compaction may fail to clean,
+///   never lose.
 ///
 /// Losing the compare-and-swap repeatedly under sustained load leaves the
 /// journal growing: one small line per flushed batch plus one per commit.
 /// That is a size concern, not a correctness one.
 pub fn compact(paths: &SessionPaths, id: &SessionId) -> bool {
+    let path = changeset_path(paths, id);
     let lock = AdvisoryLock::acquire(
-        paths.changesets_dir().join(format!("{id}.lock")),
+        compaction_lock_path(&path),
         COMPACT_LOCK_WAIT,
         COMPACT_LOCK_STALE_AFTER,
     );
     if !lock.held() {
         return false;
     }
-    let path = changeset_path(paths, id);
     let Ok(raw) = std::fs::read_to_string(&path) else {
         return false;
     };
@@ -579,9 +657,11 @@ pub fn compact(paths: &SessionPaths, id: &SessionId) -> bool {
 ///
 /// Safety comes from [`append_line`] instead: an appender whose write landed
 /// in a journal [`compact`] replaced or removed detects it and redoes the
-/// write against the live file. That holds for every rung, leased or not, and
-/// for a `rdm session gc` run from a process that shares nothing with the
-/// sessions it is sweeping.
+/// write against the live file, and an appender that keeps losing that race
+/// takes compaction's own lock, which makes this sweep skip rather than run.
+/// That holds for every rung, leased or not, and for a `rdm session gc` run
+/// from a process that shares nothing with the sessions it is sweeping — so a
+/// sweep can slow a concurrent appender down, never cost it its record.
 pub fn gc_changesets(
     paths: &SessionPaths,
     procs: &dyn ProcessTable,
@@ -1451,9 +1531,93 @@ test is not exercising the race"
         );
     }
 
-    /// The redo is bounded, not conditional: a journal that is replaced on
+    /// The blocking finding the *escalation* answers.
+    ///
+    /// A bound alone is not the guarantee AC2 states: an append whose every
+    /// lock-free attempt loses to a compaction would, with a fixed cap that
+    /// simply accepted its last write, put that write into an inode nothing
+    /// will read again — a silent loss, not the over-claim the rest of this
+    /// module degrades to. Here a real `gc_changesets` sweep runs on *every*
+    /// attempt, so no lock-free attempt can ever win. The record must still be
+    /// readable, because the escalation takes the lock that sweep needs and
+    /// the sweep therefore skips.
+    #[test]
+    fn a_record_survives_a_compaction_that_wins_every_lock_free_attempt() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-storm").unwrap();
+
+        // Two claims, so the fold is non-empty and compaction takes its
+        // `rename` exit — the sharper case, since the replaced journal still
+        // looks healthy while the appender's bytes sit in an unlinked inode.
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        record(&p, &id, &[entry("b.md", JournalKind::Write)]).unwrap();
+
+        let sweeps = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        {
+            let seen = std::rc::Rc::clone(&sweeps);
+            let p2 = SessionPaths::new(p.base().to_path_buf());
+            let _guard = with_after_open_hook(move |_| {
+                seen.set(seen.get() + 1);
+                // A DIFFERENT process's `rdm session gc`, on every attempt.
+                // It respects the compaction lock, which is the whole point:
+                // once the appender escalates, this stops being able to run.
+                gc_changesets(&p2, &MapProcessTable::empty(2), None);
+            });
+            record(&p, &id, &[entry("c.md", JournalKind::Write)]).unwrap();
+        }
+
+        assert!(
+            sweeps.get() > 1,
+            "the sweep must have won at least one lock-free attempt, or this \
+test is not exercising the escalation (attempts: {})",
+            sweeps.get()
+        );
+        let read = read_journal(&p, &id).unwrap();
+        assert!(
+            read.contains(&entry("c.md", JournalKind::Write)),
+            "the record must survive a compaction that wins every lock-free \
+attempt, not merely one that loses eventually: {read:?}"
+        );
+    }
+
+    /// The escalation is what carries the guarantee, so removing it must break
+    /// the test above — otherwise that test would pass on a fixed cap that
+    /// accepts its last write, which is the exact defect being fixed.
+    ///
+    /// Driven here rather than by mutating the source: a hostile writer that
+    /// ignores the compaction lock entirely reproduces precisely what an
+    /// unescalated append would suffer, since the lock it takes buys nothing
+    /// against a party that never asks for it.
+    #[test]
+    fn a_writer_that_ignores_the_compaction_lock_defeats_the_escalation() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-lawless").unwrap();
+        std::fs::create_dir_all(p.changesets_dir()).unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        {
+            let _guard = with_after_open_hook(move |path| {
+                // No lock taken, so the escalation cannot exclude it.
+                let _ = std::fs::remove_file(path);
+            });
+            record(&p, &id, &[entry("b.md", JournalKind::Write)]).unwrap();
+        }
+
+        assert!(
+            !read_journal(&p, &id)
+                .unwrap()
+                .contains(&entry("b.md", JournalKind::Write)),
+            "if this now survives, the test above no longer proves the \
+escalation is doing the work"
+        );
+    }
+
+    /// The lock-free half is bounded, not conditional: a journal replaced on
     /// *every* attempt still terminates, writing at most `APPEND_ATTEMPTS`
-    /// lines and never spinning.
+    /// lines (the lock-free tries plus the one escalated write) and never
+    /// spinning.
     #[test]
     fn a_journal_replaced_on_every_attempt_still_terminates() {
         let dir = TempDir::new().unwrap();
@@ -1476,7 +1640,8 @@ test is not exercising the race"
         assert_eq!(
             attempts.get(),
             APPEND_ATTEMPTS,
-            "the redo is bounded by APPEND_ATTEMPTS and stops there"
+            "the lock-free redo is bounded, and the escalated write that \
+follows it is the last one"
         );
     }
 

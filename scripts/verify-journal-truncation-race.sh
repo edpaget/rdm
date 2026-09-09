@@ -32,8 +32,9 @@
 #       nor a lease with the appender. No lease can ever name a rung-1 or
 #       rung-3 changeset, so gc genuinely cannot tell that anyone is appending;
 #       the append must survive its compaction anyway
-#   5b  the same interleave against a mutant whose append never redoes itself,
-#       which must lose the record — otherwise section 5 proves nothing
+#   5b  the same interleave against a mutant whose append never redoes itself
+#       and never escalates to compaction's lock, which must lose the record —
+#       otherwise section 5 proves nothing
 #
 # The window between a commit reading its journal and truncating it is opened
 # and closed inside one `rdm` invocation, so two real processes cannot be made
@@ -547,13 +548,16 @@ awk -v bodyfile="$MUT/mutant-body.txt" '
 mv "$MUT_JOURNAL.new" "$MUT_JOURNAL"
 grep -q '// MUTATION' "$MUT_JOURNAL" || fail "failed to plant the mutation"
 
-# The second mutation, for section 5b: an append that never redoes itself.
-# `APPEND_ATTEMPTS = 1` makes `append_line` take its bounded exit on the first
-# pass, so it never rechecks whether it wrote into a journal compaction had
-# already replaced — exactly the pre-fix behaviour.
-grep -q '^const APPEND_ATTEMPTS: usize = 4;$' "$MUT_JOURNAL" ||
-    fail "APPEND_ATTEMPTS is not the literal this self-test mutates — update it"
-sed 's|^const APPEND_ATTEMPTS: usize = 4;$|const APPEND_ATTEMPTS: usize = 1; // MUTATION-APPEND|' \
+# The second mutation, for section 5b: an append that never redoes itself and
+# never escalates. Reporting every write as having landed in the live journal
+# makes `append_line` return on its first pass, so it neither rechecks the
+# inode it wrote to nor falls through to the lock-guarded write that excludes
+# compaction — exactly the pre-fix behaviour. Mutating the call site rather
+# than `wrote_to_the_live_journal` itself keeps every binding used, so the
+# mutant still compiles clean.
+grep -q '^    Ok(wrote_to_the_live_journal(&file, path))$' "$MUT_JOURNAL" ||
+    fail "the append's liveness check is not the line this self-test mutates — update it"
+sed 's|^    Ok(wrote_to_the_live_journal(&file, path))$|    let _ = wrote_to_the_live_journal(\&file, path);\n    Ok(true) // MUTATION-APPEND|' \
     "$MUT_JOURNAL" >"$MUT_JOURNAL.new"
 mv "$MUT_JOURNAL.new" "$MUT_JOURNAL"
 grep -q '// MUTATION-APPEND' "$MUT_JOURNAL" ||

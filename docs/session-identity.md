@@ -418,23 +418,46 @@ gc process's own resolved id rather than any sibling sharing it, and
 several processes are actively writing to.
 
 The third guard is what actually closes that, and it lives in the append rather
-than in the sweep. After writing its line, an append compares the identity of
-the file it wrote to against the identity of the journal path now — on Unix,
-the `(dev, ino)` pair — and **redoes the write against the live journal when
-they differ**, including when compaction removed the file outright, in which
-case the redo recreates it. Both of compaction's destructive exits (`rename`
-over the journal, `remove_file` of it) leave an already-open `O_APPEND`
-descriptor pointing at an inode the path no longer names, so both are
-detectable after the fact even though neither is preventable before it. The
-redo is bounded (`APPEND_ATTEMPTS`) rather than conditional, so it terminates
-unconditionally, and repeating an append is harmless: the fold is keyed by path
-and applied in file order, so a duplicated line contributes exactly what the
-original did.
+than in the sweep. It has two stages, and the second is the one that makes the
+guarantee an invariant rather than a bound.
+
+**Detect and redo, lock-free.** After writing its line, an append compares the
+identity of the file it wrote to against the identity of the journal path now
+— on Unix, the `(dev, ino)` pair — and **redoes the write against the live
+journal when they differ**, including when compaction removed the file
+outright, in which case the redo recreates it. Both of compaction's
+destructive exits (`rename` over the journal, `remove_file` of it) leave an
+already-open `O_APPEND` descriptor pointing at an inode the path no longer
+names, so both are detectable after the fact even though neither is
+preventable before it. Repeating an append is harmless: the fold is keyed by
+path and applied in file order, so a duplicated line contributes exactly what
+the original did.
+
+**Escalate and exclude.** A bound on that redo is *not* by itself the
+guarantee, and an earlier draft of this fix treated it as one. After
+`APPEND_ATTEMPTS` lock-free writes have all lost, simply accepting the last one
+would accept a write already landing in a doomed inode — a silent loss, not the
+over-claim everything else here degrades to. So instead of accepting it, the
+append stops racing and takes **compaction's own advisory lock** before writing
+once more. Compaction *skips entirely* unless it holds that lock, so a write
+made while holding it cannot be replaced or unlinked underneath. The escalation
+terminates because `AdvisoryLock::acquire` is deadline-bounded and
+`APPEND_LOCK_WAIT` (35s) exceeds the lock's staleness horizon (30s): it comes
+back held either because the holder released or because the lock file aged past
+staleness and was taken over. Reaching it at all already means sustained
+contention, so the ordinary path still pays nothing.
 
 With that in place the contract is unconditional in the safe direction —
 compaction may fail to clean, never lose — and it holds for every rung, leased
 or not. On Windows there is nothing to detect: the platform refuses to rename
 over or unlink a file another process holds open.
+
+Two residuals are stated rather than claimed closed. A compaction that ran
+longer than the 30s staleness horizon can have its lock taken over while still
+running. And a writer that ignores the lock protocol altogether — an explicit
+`rdm session discard --force`, which destroys a changeset deliberately, or
+out-of-band tampering — is outside what a lock the other party never takes can
+defend against.
 
 The consequence is that a fully-committed journal keeps its lines until gc
 sweeps it. `list_changesets` therefore **omits** a changeset whose fold is
@@ -456,7 +479,8 @@ Two properties fall out of the layout rather than out of discipline:
   `O_APPEND`, which POSIX does not interleave. No lock, no read-modify-write
   race, and neither kind of write can destroy the other. Compaction is the sole
   exception, and appends do not trust it to be quiescent — they detect its
-  rewrite after the fact and redo themselves.
+  rewrite after the fact and redo themselves, and an append that keeps losing
+  takes compaction's own lock so no compaction can run at all.
 - **Content-keyed truncation** — a tombstone identifies *what* landed rather
   than *where* it sat, so the fold is independent of byte offsets and
   compaction can rewrite a journal without changing what a later tombstone
@@ -614,8 +638,10 @@ so `scripts/verify-journal-truncation-race.sh` § 5 parks a real `rdm task
 create` there, runs `rdm session gc` from a second real process under a
 *different* session id (which shares no lease with the appender, and cannot,
 since rung 1 creates none), and only then releases the first. Its § 5b mutant
-rebuilds the binary with `APPEND_ATTEMPTS = 1` — an append that never redoes
-itself — and asserts the record is lost, so § 5 cannot pass vacuously.
+rebuilds the binary with the append's liveness check stubbed out to report
+every write as live — an append that neither redoes itself nor escalates to
+compaction's lock — and asserts the record is lost, so § 5 cannot pass
+vacuously.
 
 ## Degradation
 
