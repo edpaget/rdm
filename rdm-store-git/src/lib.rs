@@ -5304,4 +5304,84 @@ mod tests {
             "total must cover every bucket"
         );
     }
+
+    /// A path a real other live changeset claims must land in `others`; a
+    /// raw write no changeset claims at all must land in `unattributed`; and
+    /// this session's own path must never leak into either bucket — the
+    /// `owned ⊆ all_owned` invariant `all_owned_paths` exists to preserve.
+    #[test]
+    fn status_distinguishes_others_from_unattributed_and_never_leaks_owned_paths() {
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut mine = scoped_repo(&dir, "unit-status-mix-a");
+        make_task(&mut mine, "mine-mix");
+        drop(mine);
+
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-status-mix-b") };
+        let mut theirs = GitStore::new(dir.path()).unwrap();
+        make_task(&mut theirs, "theirs-mix");
+        drop(theirs);
+
+        // A raw write outside rdm: it belongs to no changeset at all.
+        std::fs::write(
+            dir.path().join("projects/demo/tasks/stray-mix.md"),
+            "stray\n",
+        )
+        .unwrap();
+
+        unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-status-mix-a") };
+        let mine = GitStore::new(dir.path()).unwrap();
+        let report = mine.status_report_scoped().unwrap();
+
+        assert!(
+            report.user.iter().any(|f| f.path.ends_with("mine-mix.md")),
+            "own path missing from `user`: {report:?}"
+        );
+        assert!(
+            report
+                .others
+                .iter()
+                .any(|f| f.path.ends_with("theirs-mix.md")),
+            "the real other changeset's path is not in `others`: {report:?}"
+        );
+        assert!(
+            report
+                .unattributed
+                .iter()
+                .any(|f| f.path.ends_with("stray-mix.md")),
+            "the raw-write path is not in `unattributed`: {report:?}"
+        );
+
+        // Cross-contamination: neither foreign bucket may claim the other's
+        // path, and this session's own path must appear in NEITHER.
+        for f in report.others.iter().chain(report.unattributed.iter()) {
+            assert!(
+                !f.path.ends_with("mine-mix.md"),
+                "this session's own path leaked into others/unattributed: {report:?}"
+            );
+        }
+        assert!(
+            !report
+                .others
+                .iter()
+                .any(|f| f.path.ends_with("stray-mix.md")),
+            "the unattributed path was misfiled under `others`: {report:?}"
+        );
+        assert!(
+            !report
+                .unattributed
+                .iter()
+                .any(|f| f.path.ends_with("theirs-mix.md")),
+            "the real other changeset's path was misfiled under `unattributed`: {report:?}"
+        );
+
+        assert_eq!(
+            report.total(),
+            report.user.len()
+                + report.derived.len()
+                + report.others.len()
+                + report.unattributed.len(),
+            "total must cover all four buckets"
+        );
+    }
 }
