@@ -3877,3 +3877,144 @@ fn mcp_status_names_a_raw_write_path_under_unattributed() {
         "an unattributed path was misfiled under `others`: {report}"
     );
 }
+
+/// `rdm_commit`'s no-sha branch must name both buckets distinctly when a
+/// real other changeset's dirt AND a raw-write's unattributed dirt are both
+/// present — the CLI-side counterpart to
+/// `commit_distinguishes_a_mixed_others_and_unattributed_scenario`.
+#[test]
+fn mcp_commit_names_both_others_and_unattributed_when_mixed() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+
+    // A real other live changeset's uncommitted work.
+    rdm_as_other_session(
+        tmp.path(),
+        &[
+            "task",
+            "create",
+            "foreign-task",
+            "--title",
+            "Foreign",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+    // A raw write outside rdm: unattributed to any changeset at all.
+    std::fs::write(tmp.path().join("projects/test-proj/stray.md"), "stray\n").unwrap();
+
+    // The MCP server's own session never mutates, so its changeset stays
+    // empty and rdm_commit hits the no-sha branch.
+    let mut h =
+        McpTestHarness::spawn_with_env(tmp.path(), &[("RDM_SESSION", "mcp-server-session")]);
+    let response = h.call_tool("rdm_commit", serde_json::json!({}));
+    let text = result_text(&response);
+
+    assert!(
+        text.contains("belong to another changeset") && text.contains("foreign-task"),
+        "expected an others clause naming foreign-task: {text}"
+    );
+    assert!(
+        text.contains("are not attributed to any changeset") && text.contains("stray.md"),
+        "expected an unattributed clause naming stray.md: {text}"
+    );
+
+    let files = git_show_name_only(tmp.path());
+    assert!(
+        !files.contains("foreign-task") && !files.contains("stray.md"),
+        "neither the other changeset's nor the unattributed path may ever be swept: {files}"
+    );
+}
+
+/// `rdm_commit`'s no-sha branch, unattributed-only wording: no "another
+/// changeset" text and no changeset-targeted recovery hints, since there is
+/// no owning changeset id to name.
+#[test]
+fn mcp_commit_unattributed_only_wording_omits_changeset_hints() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+
+    std::fs::write(tmp.path().join("projects/test-proj/stray.md"), "stray\n").unwrap();
+
+    let mut h =
+        McpTestHarness::spawn_with_env(tmp.path(), &[("RDM_SESSION", "mcp-server-session")]);
+    let response = h.call_tool("rdm_commit", serde_json::json!({}));
+    let text = result_text(&response);
+
+    assert!(
+        text.contains("are not attributed to any changeset") && text.contains("stray.md"),
+        "expected an unattributed clause naming stray.md: {text}"
+    );
+    assert!(
+        !text.contains("belong to another changeset"),
+        "no real other changeset exists, so no others clause should appear: {text}"
+    );
+    assert!(
+        !text.contains("rdm session list") && !text.contains("rdm commit --changeset"),
+        "unattributed dirt has no owning changeset id, so changeset-targeted recovery hints must not appear: {text}"
+    );
+}
+
+/// `rdm_discard`'s output must include the new `unattributed_summary()` note
+/// alongside the existing `others_summary()` note when a raw-write path is
+/// on disk. The server's own changeset must be non-empty so the discard
+/// actually runs the scoped-restore branch (an empty own changeset hits the
+/// separate early-return branch, which is out of scope for this note).
+#[test]
+fn mcp_discard_reports_unattributed_summary_note() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+
+    // A real other live changeset's uncommitted work, plus a raw write.
+    rdm_as_other_session(
+        tmp.path(),
+        &[
+            "task",
+            "create",
+            "foreign-task",
+            "--title",
+            "Foreign",
+            "--no-edit",
+            "--project",
+            "test-proj",
+        ],
+    );
+    std::fs::write(tmp.path().join("projects/test-proj/stray.md"), "stray\n").unwrap();
+
+    let mut h =
+        McpTestHarness::spawn_with_env(tmp.path(), &[("RDM_SESSION", "mcp-server-session")]);
+    // Give the server's own changeset something to restore, so discard runs
+    // the scoped-restore branch rather than the empty-changeset early return.
+    h.call_tool(
+        "rdm_task_update",
+        serde_json::json!({
+            "project": "test-proj",
+            "task": "fix-login-bug",
+            "status": "in-progress",
+        }),
+    );
+
+    let response = h.call_tool("rdm_discard", serde_json::json!({ "confirm": true }));
+    let text = result_text(&response);
+
+    // discard's notes reuse `others_summary()`/`unattributed_summary()`
+    // verbatim (unlike commit's custom no-sha message), so they carry a
+    // count and a fixed wording rather than per-file paths.
+    assert!(
+        text.contains("are not attributed to any changeset"),
+        "expected the unattributed_summary() note: {text}"
+    );
+    assert!(
+        text.contains("belong to other changesets"),
+        "expected the others_summary() note: {text}"
+    );
+
+    // Neither the other changeset's nor the unattributed path was touched.
+    assert!(tmp.path().join("projects/test-proj/stray.md").exists());
+    assert!(
+        tmp.path()
+            .join("projects/test-proj/tasks/foreign-task.md")
+            .exists()
+    );
+}

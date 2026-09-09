@@ -246,3 +246,18 @@ fn scan_file_ignores_a_write_inside_a_bare_cfg_test_fn() {
         "expected only the production write outside the bare cfg(test) fn, got {hits:?}"
     );
 }
+
+#[test]
+fn scan_file_does_not_skip_a_cfg_not_test_write() {
+    // `#[cfg(not(test))]` means the opposite of `#[cfg(test)]` — the item
+    // compiles ONLY outside test builds — so a raw fs::write behind it is
+    // exactly the production-only write this audit exists to catch. It must
+    // never be treated as a test-only skip span.
+    let src = "#[cfg(not(test))]\nfn production_only() {\n    std::fs::write(&path, b\"x\").unwrap();\n}\n";
+    let hits = scan_file("synthetic.rs", src);
+    assert_eq!(
+        hits,
+        vec![(3, "    std::fs::write(&path, b\"x\").unwrap();".to_string())],
+        "expected the #[cfg(not(test))]-guarded write to be reported, not skipped, got {hits:?}"
+    );
+}
