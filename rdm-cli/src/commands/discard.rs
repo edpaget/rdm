@@ -62,6 +62,9 @@ pub fn run(root: &Path, force: bool, all: bool) -> Result<()> {
         if let Some(note) = report.others_summary() {
             println!("  {note}");
         }
+        if let Some(note) = report.unattributed_summary() {
+            println!("  {note}");
+        }
         return Ok(());
     }
     let outcome = store
@@ -73,6 +76,9 @@ pub fn run(root: &Path, force: bool, all: bool) -> Result<()> {
         println!("  {note}");
     }
     if let Some(note) = report.others_summary() {
+        println!("  {note}");
+    }
+    if let Some(note) = report.unattributed_summary() {
         println!("  {note}");
     }
     Ok(())

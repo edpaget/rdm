@@ -924,3 +924,113 @@ fn config_get_raw_honors_the_env_override() {
         .success()
         .stdout(predicate::eq("bash scripts/from-env.sh\n"));
 }
+
+/// Names of files touched by the most recent commit — clears the outer
+/// repo's git env vars so this doesn't inherit them when run from inside a
+/// git hook (e.g. the pre-commit hook that runs this very test suite).
+fn last_commit_files(dir: &std::path::Path) -> Vec<String> {
+    let output = std::process::Command::new("git")
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .args(["show", "--stat", "-1", "--pretty=format:"])
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            // `git show --stat` lines look like "path/to/file | 3 +++---";
+            // the trailing summary line ("N files changed, ...") has no '|'.
+            l.split_once('|').map(|(path, _)| path.trim().to_string())
+        })
+        .collect()
+}
+
+#[test]
+fn config_set_repo_lands_under_the_callers_changeset() {
+    let (config_dir, root_dir) = setup_repo();
+
+    // `config set` stages the write through the Store, under this session's
+    // own changeset — not a raw filesystem write that belongs to nobody.
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "default_project", "my-proj"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo config"));
+
+    // `rdm status` must show rdm.toml as a plain uncommitted change owned by
+    // this session — never under an others/unattributed note, which is
+    // exactly the bug this phase fixes.
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("rdm.toml"))
+        .stdout(predicate::str::contains("belong to other changesets").not())
+        .stdout(predicate::str::contains("are not attributed to any changeset").not());
+
+    // A SCOPED `rdm commit` (no --all) must land it.
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["commit", "-m", "chore: set default_project"])
+        .assert()
+        .success();
+
+    let committed = last_commit_files(root_dir.path());
+    assert!(
+        committed.iter().any(|p| p == "rdm.toml"),
+        "expected rdm.toml among the committed paths, got {committed:?}"
+    );
+
+    // And the working tree is now clean.
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["status"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No uncommitted changes."));
+}
+
+#[test]
+fn config_set_against_an_uninitialized_root_fails_actionably() {
+    let config_dir = TempDir::new().unwrap();
+    let root_dir = TempDir::new().unwrap();
+
+    // Point at root_dir but never run `rdm init` against it.
+    let rdm_config = config_dir.path().join("rdm");
+    std::fs::create_dir_all(&rdm_config).unwrap();
+    std::fs::write(
+        rdm_config.join("config.toml"),
+        format!("root = \"{}\"", root_dir.path().display()),
+    )
+    .unwrap();
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "default_project", "my-proj"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("failed to open git repository"));
+
+    // And no git-less rdm.toml was silently written.
+    assert!(!root_dir.path().join("rdm.toml").exists());
+}

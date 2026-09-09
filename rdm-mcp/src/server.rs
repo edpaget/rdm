@@ -1675,7 +1675,7 @@ impl RdmMcpServer {
 impl RdmMcpServer {
     /// Report this session's staged-but-uncommitted changes in the plan repo.
     #[rmcp::tool(
-        description = "List THIS server session's staged-but-uncommitted changes in the plan repo. Returns an object {changes, generated, others}: `changes` holds your own edits, each as {path, change} where change is \"added\", \"modified\", or \"deleted\"; `generated` holds the paths of rdm-generated INDEX.md files regenerated as a side effect of YOUR edits; `others` holds paths another concurrent session left uncommitted, which rdm_commit will NOT touch. Generated indexes are excluded from `changes` so you can see your own edits, but they ARE written into the commit rdm_commit creates — an empty `changes` with a non-empty `generated` is not a no-op. A non-empty `others` is not yours to land: it belongs to another changeset. MCP mutation tools only stage to disk — call this to see what a batch of edits touched before landing it with rdm_commit.",
+        description = "List THIS server session's staged-but-uncommitted changes in the plan repo. Returns an object {changes, generated, others, unattributed}: `changes` holds your own edits, each as {path, change} where change is \"added\", \"modified\", or \"deleted\"; `generated` holds the paths of rdm-generated INDEX.md files regenerated as a side effect of YOUR edits; `others` holds paths a real other concurrent changeset left uncommitted, which rdm_commit will NOT touch; `unattributed` holds paths dirty but claimed by NO changeset at all (a write outside rdm, or dirt from before session-scoped commits) — also left untouched by rdm_commit, but with no owning session to name, so `rdm_commit`'s `--all`-equivalent whole-tree path is the only way to land it. Generated indexes are excluded from `changes` so you can see your own edits, but they ARE written into the commit rdm_commit creates — an empty `changes` with a non-empty `generated` is not a no-op. A non-empty `others` or `unattributed` is not yours to land. MCP mutation tools only stage to disk — call this to see what a batch of edits touched before landing it with rdm_commit.",
         annotations(read_only_hint = true)
     )]
     async fn rdm_status(&self) -> Result<CallToolResult, ErrorData> {
@@ -1701,10 +1701,16 @@ impl RdmMcpServer {
             .collect();
         let generated: Vec<&str> = report.derived.iter().map(|s| s.path.as_str()).collect();
         let others: Vec<&str> = report.others.iter().map(|s| s.path.as_str()).collect();
+        let unattributed: Vec<&str> = report
+            .unattributed
+            .iter()
+            .map(|s| s.path.as_str())
+            .collect();
         let value = serde_json::json!({
             "changes": changes,
             "generated": generated,
             "others": others,
+            "unattributed": unattributed,
         });
         ok_text(serde_json::to_string_pretty(&value).unwrap_or_else(|_| value.to_string()))
     }
@@ -1732,19 +1738,37 @@ impl RdmMcpServer {
         let skipped = outcome.skipped_summary();
         let Some(sha) = outcome.sha else {
             // Deliberately not silence when the tree is dirty: those paths
-            // belong to another changeset and are not this session's to land.
+            // belong to another changeset, or to no changeset at all, and are
+            // not this session's to land.
             let mut text = if outcome.unattributed_dirt() {
-                let paths: Vec<&str> = outcome
-                    .report
-                    .others
-                    .iter()
-                    .map(|s| s.path.as_str())
-                    .collect();
-                format!(
-                    "Nothing in this session's changeset to commit. {} uncommitted path(s) belong to another changeset and were left untouched: {}",
-                    paths.len(),
-                    paths.join(", ")
-                )
+                let mut parts = vec!["Nothing in this session's changeset to commit.".to_string()];
+                if !outcome.report.others.is_empty() {
+                    let paths: Vec<&str> = outcome
+                        .report
+                        .others
+                        .iter()
+                        .map(|s| s.path.as_str())
+                        .collect();
+                    parts.push(format!(
+                        "{} uncommitted path(s) belong to another changeset and were left untouched: {}",
+                        paths.len(),
+                        paths.join(", ")
+                    ));
+                }
+                if !outcome.report.unattributed.is_empty() {
+                    let paths: Vec<&str> = outcome
+                        .report
+                        .unattributed
+                        .iter()
+                        .map(|s| s.path.as_str())
+                        .collect();
+                    parts.push(format!(
+                        "{} uncommitted path(s) are not attributed to any changeset and were left untouched: {}",
+                        paths.len(),
+                        paths.join(", ")
+                    ));
+                }
+                parts.join(" ")
             } else {
                 "Nothing to commit.".to_string()
             };
@@ -1758,6 +1782,9 @@ impl RdmMcpServer {
             text.push_str(&format!("\n{note}"));
         }
         if let Some(note) = outcome.report.others_summary() {
+            text.push_str(&format!("\n{note}"));
+        }
+        if let Some(note) = outcome.report.unattributed_summary() {
             text.push_str(&format!("\n{note}"));
         }
         ok_text(text)
@@ -1801,6 +1828,9 @@ impl RdmMcpServer {
             text.push_str(&format!("\n{note}"));
         }
         if let Some(note) = report.others_summary() {
+            text.push_str(&format!("\n{note}"));
+        }
+        if let Some(note) = report.unattributed_summary() {
             text.push_str(&format!("\n{note}"));
         }
         ok_text(text)

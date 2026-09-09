@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use crate::ConfigCommand;
+use crate::commands::make_store;
 use crate::paths;
 
 pub fn run(
@@ -64,7 +65,9 @@ pub fn run(
                 let root = paths::expand_root(root)?;
                 let mut config = paths::load_repo_config(&root);
                 paths::set_config_field(&mut config, &key, &value)?;
-                paths::save_repo_config(&root, &config)?;
+                let mut store = make_store(&root)?;
+                rdm_core::io::save_config(&mut store, &config)
+                    .context("failed to write repo config")?;
                 println!("Set {key} = {value} in repo config");
             }
         }

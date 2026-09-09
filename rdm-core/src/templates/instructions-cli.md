@@ -81,7 +81,7 @@ rdm commit --all                             # land the whole working tree, ever
 rdm status --all                             # view the whole working tree, not just yours
 ```
 
-If `rdm commit` reports `Nothing in this session's changeset to commit.` while the tree is dirty, those paths belong to a different changeset: use `rdm session list` to find its id, then `rdm commit --changeset <id>`. Reads are never scoped — `rdm task show`, `rdm search`, and every other read see the whole working tree, including other sessions' uncommitted items.
+If `rdm commit` reports `Nothing in this session's changeset to commit.` while the tree is dirty, the listed paths fall into two distinct groups, printed separately: paths that belong to a different changeset (use `rdm session list` to find its id, then `rdm commit --changeset <id>`), and paths that are not attributed to any changeset at all — a write outside rdm, or dirt from before session-scoped commits — for which the only recovery is `rdm commit --all` (there is no owning changeset id to target). Reads are never scoped — `rdm task show`, `rdm search`, and every other read see the whole working tree, including other sessions' uncommitted items.
 
 ## Document reviews
 

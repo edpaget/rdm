@@ -238,9 +238,10 @@ fn commit_lands_the_regenerated_index_when_it_is_the_only_change() {
     init_repo(&dir);
 
     // Corrupt only the generated indexes; no user file differs from HEAD.
-    // These are raw `fs::write`s outside rdm, so they belong to no changeset
-    // — the scoped views must report them rather than sweep them, and the
-    // whole-tree views must still cover them.
+    // These are raw `fs::write`s outside rdm, so they belong to NO
+    // changeset at all — the scoped views must report them as unattributed
+    // rather than sweep them or misname them as another changeset's, and
+    // the whole-tree views must still cover them.
     std::fs::write(dir.path().join("INDEX.md"), "# stale\n").unwrap();
     std::fs::write(dir.path().join("projects/test/INDEX.md"), "# stale\n").unwrap();
 
@@ -252,8 +253,9 @@ fn commit_lands_the_regenerated_index_when_it_is_the_only_change() {
         .success()
         .stdout(predicate::str::contains("No uncommitted changes."))
         .stdout(predicate::str::contains(
-            "2 file(s) belong to other changesets and were left untouched",
-        ));
+            "2 file(s) are not attributed to any changeset",
+        ))
+        .stdout(predicate::str::contains("belong to other changesets").not());
 
     rdm()
         .arg("--root")

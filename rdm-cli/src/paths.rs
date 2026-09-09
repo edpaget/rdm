@@ -245,35 +245,13 @@ pub fn resolve_config_value(
     None
 }
 
-/// Saves a repo config to `<root>/rdm.toml` with a raw filesystem write.
-///
-/// **Non-store contexts only.** This bypasses the `Store`, so the write is
-/// never journaled and therefore belongs to no changeset — a scoped
-/// `rdm commit` cannot land it. Any caller that has (or can open) a
-/// `GitStore` must use [`rdm_core::io::save_config`] instead, which writes
-/// through the store and journals. The split is deliberate: routing the write
-/// is the fix, and an exemption list inside the commit path is the failure
-/// mode it avoids.
-///
-/// What legitimately remains here is config writing against a directory that
-/// is not a git-backed plan repo at all (`rdm config set` on a
-/// filesystem-only root).
-///
-/// # Errors
-///
-/// Returns an error if serialization or file I/O fails.
-pub fn save_repo_config(root: &Path, config: &rdm_core::config::Config) -> Result<()> {
-    let toml_str = config
-        .to_toml()
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .context("failed to serialize repo config")?;
-    std::fs::write(root.join("rdm.toml"), toml_str).context("failed to write rdm.toml")?;
-    Ok(())
-}
-
 /// Saves the global config to the XDG config path.
 ///
 /// Creates the parent directory if it does not exist.
+///
+/// **Audit exemption:** this writes `$XDG_CONFIG_HOME`, never `$RDM_ROOT`,
+/// so it never needs to go through the plan repo's `Store` and is one of the
+/// allowlisted raw `fs::write` sites in `no_raw_fs_write_audit`.
 ///
 /// # Errors
 ///

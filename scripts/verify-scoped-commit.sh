@@ -310,13 +310,19 @@ assert_absent "$TMP/b3.files" "projects/demo/tasks/orphan.md" \
     "the scoped commit SWEPT an unattributed path"
 grep -q "orphan.md" "$TMP/b3.out" ||
     fail "the unattributed path was not reported: $(cat "$TMP/b3.out")"
-for hint in "rdm session list" "rdm commit --changeset" "rdm commit --all"; do
-    grep -q -- "$hint" "$TMP/b3.out" ||
-        fail "recovery pointer '$hint' missing from: $(cat "$TMP/b3.out")"
+grep -q "are not attributed to any changeset" "$TMP/b3.out" ||
+    fail "orphan.md was not reported as unattributed: $(cat "$TMP/b3.out")"
+# No changeset actually owns this path, so only the whole-tree recovery
+# applies — the changeset-targeted hints would point at nothing.
+grep -q -- "rdm commit --all" "$TMP/b3.out" ||
+    fail "recovery pointer 'rdm commit --all' missing from: $(cat "$TMP/b3.out")"
+for hint in "rdm session list" "rdm commit --changeset" "belong to another changeset"; do
+    grep -q -- "$hint" "$TMP/b3.out" &&
+        fail "unattributed dirt wrongly offered the changeset-targeted hint '$hint': $(cat "$TMP/b3.out")"
 done
 grep -qx "Nothing to commit." "$TMP/b3.out" &&
     fail "printed the bare 'Nothing to commit.' while the tree was dirty"
-ok "unattributed dirt is named, with all three recovery pointers, and not swept"
+ok "unattributed dirt is named as unattributed, with only the --all recovery pointer, and not swept"
 
 # The whole-tree opt-in is the documented recovery and must actually work.
 env -u RDM_SESSION "$RDM_BIN" --root "$REPO_B3" commit --all -m "recover" >/dev/null

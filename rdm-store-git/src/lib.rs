@@ -116,12 +116,22 @@ pub struct StatusReport {
     /// Changes to files rdm generates for this changeset, per
     /// [`rdm_core::paths::is_derived_path`].
     pub derived: Vec<FileStatus>,
-    /// Dirty paths this changeset does not claim: another live session's
-    /// uncommitted work, or an orphaned changeset's.
+    /// Dirty paths this changeset does not claim, but that a real other live
+    /// or orphaned changeset does claim.
     ///
     /// Always empty in the whole-tree view, where by definition everything is
     /// in scope.
     pub others: Vec<FileStatus>,
+    /// Dirty paths claimed by no changeset at all — a write outside rdm (a
+    /// raw `fs::write` bypassing the `Store`), or dirt predating
+    /// session-scoped commits.
+    ///
+    /// Distinct from [`others`](Self::others): `others` names a *real* other
+    /// changeset a caller can recover with `rdm session list` /
+    /// `rdm commit --changeset <id>`; `unattributed` names dirt no changeset
+    /// owns, where the only recovery is `--all`. Always empty in the
+    /// whole-tree view, same as `others`.
+    pub unattributed: Vec<FileStatus>,
 }
 
 impl StatusReport {
@@ -131,7 +141,10 @@ impl StatusReport {
     /// This, not `user.is_empty()`, is the correct gate for a whole-tree
     /// commit or discard.
     pub fn is_clean(&self) -> bool {
-        self.user.is_empty() && self.derived.is_empty() && self.others.is_empty()
+        self.user.is_empty()
+            && self.derived.is_empty()
+            && self.others.is_empty()
+            && self.unattributed.is_empty()
     }
 
     /// Returns whether *this changeset* has nothing to commit.
@@ -145,7 +158,7 @@ impl StatusReport {
 
     /// Returns the total number of changed files across every list.
     pub fn total(&self) -> usize {
-        self.user.len() + self.derived.len() + self.others.len()
+        self.user.len() + self.derived.len() + self.others.len() + self.unattributed.len()
     }
 
     /// Returns the path-sorted union of every list.
@@ -161,6 +174,7 @@ impl StatusReport {
             .iter()
             .chain(self.derived.iter())
             .chain(self.others.iter())
+            .chain(self.unattributed.iter())
             .cloned()
             .collect();
         all.sort_by(|a, b| a.path.cmp(&b.path));
@@ -242,6 +256,26 @@ impl StatusReport {
             "{} file(s) belong to other changesets and were left untouched \
              (`rdm session list` to see them, `--all` to include them).",
             self.others.len()
+        ))
+    }
+
+    /// Returns the one-line note naming dirt no changeset claims at all, or
+    /// `None` when there is none.
+    ///
+    /// The `unattributed` counterpart to
+    /// [`others_summary`](Self::others_summary) — shared the same way, by
+    /// `rdm status`, `rdm commit`, `rdm discard` and their MCP counterparts.
+    /// Unlike `others`, there is no owning changeset id to name, so the only
+    /// recovery route offered is `--all`.
+    pub fn unattributed_summary(&self) -> Option<String> {
+        if self.unattributed.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "{} file(s) are not attributed to any changeset (a write outside \
+             rdm, or from before session-scoped commits) and were left \
+             untouched (`rdm commit --all` to include them).",
+            self.unattributed.len()
         ))
     }
 }
@@ -723,7 +757,8 @@ impl GitStore {
         self.journal_pending_side_writes();
         let journal = self.read_changeset(id)?;
         let owned = Self::owned_paths(&journal, extra_paths);
-        let report = self.git.git_status_report_scoped(&owned)?;
+        let all_owned = self.all_owned_paths();
+        let report = self.git.git_status_report_scoped(&owned, &all_owned)?;
 
         let mut scope = ChangesetScope {
             extra_writes: extra_paths.to_vec(),
@@ -791,8 +826,8 @@ impl GitStore {
     /// Returns the three-way working-tree status from this session's point of
     /// view.
     ///
-    /// See [`StatusReport`]: one partition into `user` / `derived` / `others`,
-    /// not two independent filters.
+    /// See [`StatusReport`]: one partition into `user` / `derived` /
+    /// `others` / `unattributed`, not two independent filters.
     ///
     /// # Errors
     ///
@@ -802,7 +837,8 @@ impl GitStore {
         let id = self.session().map(|s| s.id.clone());
         let journal = self.read_changeset(id.as_ref())?;
         let owned = Self::owned_paths(&journal, &[]);
-        self.git.git_status_report_scoped(&owned)
+        let all_owned = self.all_owned_paths();
+        self.git.git_status_report_scoped(&owned, &all_owned)
     }
 
     /// Restores **only** this session's changeset to HEAD, leaving every other
@@ -963,6 +999,33 @@ impl GitStore {
             .chain(extra.iter().cloned())
             .collect()
     }
+
+    /// The union of every live-or-orphaned changeset's journaled paths,
+    /// including this session's own.
+    ///
+    /// Used to tell a real other changeset's dirt (claimed by some id in this
+    /// set) from truly unattributed dirt (claimed by nothing here) — see
+    /// [`StatusReport`]'s `others` vs `unattributed` split. Degrades to an
+    /// empty set on any read/list failure, matching
+    /// [`read_changeset`](Self::read_changeset)'s existing fail-safe-to-
+    /// unattributed posture: a failure here can only ever move dirt into
+    /// `unattributed`, never sweep it, so it never fails open into treating
+    /// unowned dirt as someone else's.
+    fn all_owned_paths(&self) -> std::collections::BTreeSet<String> {
+        let Some(paths) = self.session_paths.as_ref() else {
+            return std::collections::BTreeSet::new();
+        };
+        let mut all = std::collections::BTreeSet::new();
+        let Ok(ids) = session::journal::list_changeset_ids(paths) else {
+            return all;
+        };
+        for id in ids {
+            if let Ok(journal) = self.read_changeset(Some(&id)) {
+                all.extend(journal.into_iter().map(|e| e.path));
+            }
+        }
+        all
+    }
 }
 
 /// What a scoped commit did, from one source so every porcelain reports the
@@ -982,13 +1045,20 @@ pub struct ScopedCommit {
 }
 
 impl ScopedCommit {
-    /// Returns whether the changeset was empty while the tree was dirty.
+    /// Returns whether the changeset was empty while the tree was dirty —
+    /// i.e. there is dirt outside this changeset to report, whether a real
+    /// other changeset's (`report.others`) or nobody's at all
+    /// (`report.unattributed`).
     ///
     /// The rung-4 fragmentation case, and the case of a session that mutated
     /// before scoping shipped. A caller must NOT print "Nothing to commit."
-    /// here — the tree is dirty and those paths need recovering.
+    /// here — the tree is dirty and those paths need recovering. Despite the
+    /// name, this does not mean the dirt itself is necessarily unattributed
+    /// (it may belong to a real other changeset) — see `others_summary`/
+    /// `unattributed_summary` for the distinction a caller must report.
     pub fn unattributed_dirt(&self) -> bool {
-        self.sha.is_none() && !self.report.others.is_empty()
+        self.sha.is_none()
+            && (!self.report.others.is_empty() || !self.report.unattributed.is_empty())
     }
 
     /// The one-line note naming journaled paths whose working-tree file has
@@ -1451,6 +1521,7 @@ mod tests {
             user: mk(user, "user-"),
             derived: mk(derived, "derived-"),
             others: Vec::new(),
+            unattributed: Vec::new(),
         }
     }
 

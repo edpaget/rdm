@@ -1216,18 +1216,25 @@ impl GitRepo {
             user,
             derived,
             others: Vec::new(),
+            unattributed: Vec::new(),
         })
     }
 
     /// Compares the working directory to HEAD and partitions the result into
-    /// **three** buckets in ONE pass: this changeset's user-authored edits,
-    /// this changeset's regenerated indexes, and everything else another
-    /// session left dirty.
+    /// **four** buckets in ONE pass: this changeset's user-authored edits,
+    /// this changeset's regenerated indexes, dirt a real other changeset
+    /// claims, and dirt no changeset claims at all.
     ///
     /// `owned` is exactly the path set the calling session's journal claims.
-    /// The changeset filter and the derived filter are deliberately not two
-    /// independent filters over the same list — one partition, so the view a
-    /// user reads and the set a commit lands can never drift apart.
+    /// `all_owned` is the union of every live-or-orphaned changeset's claimed
+    /// paths (this session's included) — a non-owned path found in
+    /// `all_owned` goes to `others` (a real other changeset owns it); a
+    /// non-owned path absent from `all_owned` goes to `unattributed` (no
+    /// changeset owns it — a raw write outside rdm, or dirt predating
+    /// session-scoped commits). The changeset filter and the derived filter
+    /// are deliberately not two independent filters over the same list — one
+    /// partition, so the view a user reads and the set a commit lands can
+    /// never drift apart.
     ///
     /// [`StatusReport::is_clean`] still means "nothing at all differs" and
     /// [`StatusReport::all`] still covers everything, so the destructive-action
@@ -1239,19 +1246,25 @@ impl GitRepo {
     pub(crate) fn git_status_report_scoped(
         &self,
         owned: &std::collections::BTreeSet<String>,
+        all_owned: &std::collections::BTreeSet<String>,
     ) -> Result<StatusReport> {
         let mut report = StatusReport {
             user: Vec::new(),
             derived: Vec::new(),
             others: Vec::new(),
+            unattributed: Vec::new(),
         };
         for fs in self.git_status_all()? {
-            if !owned.contains(&fs.path) {
+            if owned.contains(&fs.path) {
+                if rdm_core::paths::is_derived_path(&fs.path) {
+                    report.derived.push(fs);
+                } else {
+                    report.user.push(fs);
+                }
+            } else if all_owned.contains(&fs.path) {
                 report.others.push(fs);
-            } else if rdm_core::paths::is_derived_path(&fs.path) {
-                report.derived.push(fs);
             } else {
-                report.user.push(fs);
+                report.unattributed.push(fs);
             }
         }
         Ok(report)

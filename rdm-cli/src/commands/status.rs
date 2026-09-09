@@ -83,6 +83,9 @@ pub fn run(root: &Path, fetch: bool, all: bool) -> Result<()> {
     if let Some(note) = report.others_summary() {
         println!("  {note}");
     }
+    if let Some(note) = report.unattributed_summary() {
+        println!("  {note}");
+    }
 
     // Show sync status if a default remote is configured
     let config_path = root.join("rdm.toml");

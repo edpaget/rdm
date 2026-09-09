@@ -574,15 +574,18 @@ On success the landed paths are truncated out of the journal, so a second
 commit cannot re-commit a path another session has since edited.
 
 **The empty-changeset-but-dirty-tree diagnostic.** When this session's
-changeset is empty but the working tree is not — a rung-4 fragmented session,
-a raw `fs::write` outside rdm, or work done before this feature shipped —
-`rdm commit` does **not** print `Nothing to commit.` and does **not** sweep.
-It names the unattributed paths and prints all three recovery routes:
+changeset is empty but the working tree is not, `rdm commit` does **not**
+print `Nothing to commit.` and does **not** sweep. The dirty paths fall into
+two distinct groups, printed as two independent sections, because they need
+different recovery: a real other live-or-orphaned changeset's paths (`others`)
+can be targeted by id, while dirt no changeset claims at all (`unattributed`
+— a raw `fs::write` outside rdm, or work done before this feature shipped)
+has no id to target.
 
 ```text
 Nothing in this session's changeset to commit.
 
-1 uncommitted path(s) are attributed to another changeset:
+1 uncommitted path(s) belong to another changeset:
   projects/demo/tasks/orphan.md
 
 Recover them with one of:
@@ -591,15 +594,33 @@ Recover them with one of:
   rdm commit --all                 # commit the whole working tree
 ```
 
-A journaled path whose working-tree file has since vanished (a concurrent
+A genuinely unattributed path — say `rdm.toml` corrupted by a raw
+`fs::write` before it was routed through the `Store` — prints its own
+section instead, with only the one recovery route that applies (there is no
+owning changeset id to target):
+
+```text
+Nothing in this session's changeset to commit.
+
+1 uncommitted path(s) are not attributed to any changeset:
+  rdm.toml
+
+No changeset owns them, so recover them with:
+  rdm commit --all                 # commit the whole working tree
+```
+
+Both sections can print together when the tree holds a mix of the two. A
+journaled path whose working-tree file has since vanished (a concurrent
 discard, a manual `rm`) is skipped and reported, never fatal.
 
 ### `rdm status`
 
 Shows this session's changeset by default, `--all` for the whole tree. Output
-is one partition into three buckets: this session's own edits, this session's
-regenerated indexes (named separately), and a trailing line counting what
-belongs to other changesets and pointing at `rdm session list` / `--all`.
+is one partition into four buckets: this session's own edits, this session's
+regenerated indexes (named separately), a trailing line counting what belongs
+to other changesets and pointing at `rdm session list` / `--all`, and a
+further trailing line counting what is unattributed to any changeset and
+pointing at `--all` (the only route, since there is no owning changeset id).
 
 ### `rdm discard`
 

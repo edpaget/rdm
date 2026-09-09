@@ -266,12 +266,15 @@ commit: the orphaned subtree is dropped from the generation seed and its rows
 return on the owning session's next commit — see
 `docs/scoping-model-decision.md` § "INDEX.md Consistency in Partial Commits".
 
-**Store-bypassing writers are uncovered.** `rdm.toml` is written by the raw
-`fs::write` in `rdm-cli/src/paths.rs::save_repo_config`, and `.gitattributes`
-by `ensure_gitattributes` (`rdm-store-git/src/repo.rs`). Neither enters the
-staging overlay, so neither has a baseline and neither is checked. This is a
-known gap inherited from phase 5's own boundary, not an oversight. Both are
-effectively write-once, low-contention files.
+**One store-bypassing writer remains uncovered.** `.gitattributes` is written
+by `ensure_gitattributes` (`rdm-store-git/src/repo.rs`) as a raw `fs::write`
+that never enters the staging overlay, so it has no baseline and is not
+checked. (`rdm.toml`'s config-set path used to share this gap via
+`rdm-cli/src/paths.rs::save_repo_config`; that writer is gone — `rdm config
+set` now routes through `rdm_core::io::save_config`, which writes through the
+`Store` and is journaled like everything else.) This is a known gap inherited
+from phase 5's own boundary, not an oversight. It is an effectively
+write-once, low-contention file.
 
 **The check→act window is narrowed, not eliminated.** Between the digest
 comparison and the rename there remains an interval of microseconds in which

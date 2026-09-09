@@ -2708,12 +2708,21 @@ fn status_empty_on_clean_tree() {
         0,
         "expected no regenerated indexes on a freshly committed repo: {report}"
     );
-    // The `others` bucket is part of the tool's contract even when empty: an
-    // agent reads it to decide whether dirt it can see is its own to commit.
+    // The `others`/`unattributed` buckets are part of the tool's contract
+    // even when empty: an agent reads them to decide whether dirt it can see
+    // is its own to commit.
     assert_eq!(
         report["others"].as_array().expect("others array").len(),
         0,
         "expected no foreign changeset paths on a freshly committed repo: {report}"
+    );
+    assert_eq!(
+        report["unattributed"]
+            .as_array()
+            .expect("unattributed array")
+            .len(),
+        0,
+        "expected no unattributed paths on a freshly committed repo: {report}"
     );
 }
 
@@ -3817,5 +3826,54 @@ fn mcp_status_names_another_changesets_paths_under_others() {
     assert!(
         !generated.contains(&"projects/test-proj/tasks/foreign-task.md"),
         "a foreign changeset's path was misfiled as generated output: {report}"
+    );
+    // A real other changeset's dirt must never leak into `unattributed` too.
+    let unattributed: Vec<&str> = report["unattributed"]
+        .as_array()
+        .expect("unattributed array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(
+        unattributed.is_empty(),
+        "a real other changeset's path was misfiled as unattributed: {report}"
+    );
+}
+
+#[test]
+fn mcp_status_names_a_raw_write_path_under_unattributed() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    setup_plan_repo(tmp.path());
+
+    // A raw write outside rdm: it belongs to no changeset at all, distinct
+    // from a real other session's uncommitted work.
+    std::fs::write(tmp.path().join("projects/test-proj/stray.md"), "stray\n").unwrap();
+
+    let mut h =
+        McpTestHarness::spawn_with_env(tmp.path(), &[("RDM_SESSION", "mcp-server-session")]);
+
+    let response = h.call_tool("rdm_status", serde_json::json!({}));
+    let report = result_json(&response);
+
+    let unattributed: Vec<&str> = report["unattributed"]
+        .as_array()
+        .expect("unattributed array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    let others: Vec<&str> = report["others"]
+        .as_array()
+        .expect("others array")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+
+    assert!(
+        unattributed.contains(&"projects/test-proj/stray.md"),
+        "the raw-write path must be named under `unattributed`: {report}"
+    );
+    assert!(
+        others.is_empty(),
+        "an unattributed path was misfiled under `others`: {report}"
     );
 }

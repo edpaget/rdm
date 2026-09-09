@@ -685,22 +685,116 @@ fn commit_by_changeset_id_is_the_orphan_recovery_path() {
 fn commit_reports_unattributed_dirt_instead_of_sweeping_or_going_quiet() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
-    // A raw write outside rdm: it can belong to no changeset.
+    // A raw write outside rdm: it belongs to NO changeset at all — distinct
+    // from a real other changeset's dirt, which is covered by
+    // `status_defaults_to_the_callers_changeset_and_all_shows_everything`.
     std::fs::write(dir.path().join("projects/test/stray.md"), "stray\n").unwrap();
 
     rdm_as("cs-empty", &dir)
         .args(["commit", "-m", "nothing of mine"])
         .assert()
         .success()
+        .stdout(predicate::str::contains(
+            "are not attributed to any changeset",
+        ))
         .stdout(predicate::str::contains("stray.md"))
-        .stdout(predicate::str::contains("rdm session list"))
-        .stdout(predicate::str::contains("rdm commit --changeset"))
-        .stdout(predicate::str::contains("rdm commit --all"));
+        .stdout(predicate::str::contains("rdm commit --all"))
+        // No owning changeset id exists for genuinely unattributed dirt, so
+        // the changeset-targeted recovery routes must not be offered.
+        .stdout(predicate::str::contains("rdm session list").not())
+        .stdout(predicate::str::contains("rdm commit --changeset").not())
+        .stdout(predicate::str::contains("belong to another changeset").not());
 
     let files = last_commit_files(dir.path());
     assert!(
         !files.iter().any(|f| f == "projects/test/stray.md"),
         "an unattributed path was swept into a commit: {files:?}"
+    );
+}
+
+/// A combined scenario: one path a real other live changeset owns, and one
+/// path no changeset owns at all. `rdm commit` and `rdm discard` must print
+/// two distinct sections, each naming only its own path(s) and offering only
+/// the recovery routes that actually apply to that bucket.
+#[test]
+fn commit_distinguishes_a_mixed_others_and_unattributed_scenario() {
+    let dir = TempDir::new().unwrap();
+    // Both cs-a's and cs-b's task files stay uncommitted, so both are real
+    // other live changesets' dirt from a third session's point of view.
+    seed_two_changesets(&dir);
+    // Add a raw write outside rdm on top: genuinely unattributed dirt.
+    std::fs::write(dir.path().join("projects/test/stray.md"), "stray\n").unwrap();
+
+    // A third session, whose own changeset is empty, sees the full mix.
+    let assert = rdm_as("cs-c", &dir)
+        .args(["commit", "-m", "nothing of mine"])
+        .assert()
+        .success();
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("belong to another changeset") && stdout.contains("b-task.md"),
+        "expected an others section naming b-task.md, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("are not attributed to any changeset") && stdout.contains("stray.md"),
+        "expected an unattributed section naming stray.md, got:\n{stdout}"
+    );
+    // Cross-contamination check: the others section must not name the
+    // unattributed path and vice versa.
+    assert!(
+        !stdout.contains("are not attributed to any changeset") || {
+            let unattributed_section = stdout
+                .split("are not attributed to any changeset")
+                .nth(1)
+                .unwrap_or("");
+            !unattributed_section.contains("b-task.md")
+        },
+        "the unattributed section must not name a real other changeset's path:\n{stdout}"
+    );
+
+    let files = last_commit_files(dir.path());
+    assert!(
+        !files.iter().any(|f| f == "projects/test/tasks/b-task.md"),
+        "another changeset's path must never be swept: {files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f == "projects/test/stray.md"),
+        "an unattributed path must never be swept: {files:?}"
+    );
+}
+
+/// The `rdm discard` counterpart: an empty-changeset session must still name
+/// both buckets, and touch neither path.
+#[test]
+fn discard_distinguishes_a_mixed_others_and_unattributed_scenario() {
+    let dir = TempDir::new().unwrap();
+    seed_two_changesets(&dir);
+    std::fs::write(dir.path().join("projects/test/stray.md"), "stray\n").unwrap();
+
+    let assert = rdm_as("cs-c", &dir)
+        .args(["discard", "--force"])
+        .assert()
+        .success();
+    let output = assert.get_output();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("belong to other changesets"),
+        "expected an others note, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("are not attributed to any changeset"),
+        "expected an unattributed note, got:\n{stdout}"
+    );
+
+    // Neither path was touched: both still exist exactly as written.
+    assert!(dir.path().join("projects/test/tasks/a-task.md").exists());
+    assert!(dir.path().join("projects/test/tasks/b-task.md").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("projects/test/stray.md")).unwrap(),
+        "stray\n"
     );
 }
 

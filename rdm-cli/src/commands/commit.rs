@@ -80,23 +80,40 @@ pub fn run(
             if let Some(note) = outcome.report.others_summary() {
                 println!("  {note}");
             }
+            if let Some(note) = outcome.report.unattributed_summary() {
+                println!("  {note}");
+            }
         }
         // Deliberately NOT `Nothing to commit.` when the tree is dirty: those
-        // paths belong to no changeset this process can see, and silently
-        // saying nothing (or sweeping them) is how work gets lost.
+        // paths belong to no changeset this process can see (a real other
+        // changeset, or none at all), and silently saying nothing (or
+        // sweeping them) is how work gets lost.
         None if outcome.unattributed_dirt() => {
             println!("Nothing in this session's changeset to commit.");
-            println!(
-                "\n{} uncommitted path(s) are attributed to another changeset:",
-                outcome.report.others.len()
-            );
-            for fs in &outcome.report.others {
-                println!("  {}", fs.path);
+            if !outcome.report.others.is_empty() {
+                println!(
+                    "\n{} uncommitted path(s) belong to another changeset:",
+                    outcome.report.others.len()
+                );
+                for fs in &outcome.report.others {
+                    println!("  {}", fs.path);
+                }
+                println!("\nRecover them with one of:");
+                println!("  rdm session list                 # find the owning changeset");
+                println!("  rdm commit --changeset <id>      # commit that changeset");
+                println!("  rdm commit --all                 # commit the whole working tree");
             }
-            println!("\nRecover them with one of:");
-            println!("  rdm session list                 # find the owning changeset");
-            println!("  rdm commit --changeset <id>      # commit that changeset");
-            println!("  rdm commit --all                 # commit the whole working tree");
+            if !outcome.report.unattributed.is_empty() {
+                println!(
+                    "\n{} uncommitted path(s) are not attributed to any changeset:",
+                    outcome.report.unattributed.len()
+                );
+                for fs in &outcome.report.unattributed {
+                    println!("  {}", fs.path);
+                }
+                println!("\nNo changeset owns them, so recover them with:");
+                println!("  rdm commit --all                 # commit the whole working tree");
+            }
             if let Some(note) = outcome.skipped_summary() {
                 println!("\n{note}");
             }
