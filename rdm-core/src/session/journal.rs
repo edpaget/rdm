@@ -184,16 +184,22 @@ const COMPACT_LOCK_WAIT: Duration = Duration::from_millis(200);
 /// How stale a compaction lock must be before another process takes it over.
 const COMPACT_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 
-/// How many *lock-free* attempts an append makes before it stops racing
-/// [`compact`] and excludes it instead.
+/// The total number of write attempts one append may make.
+///
+/// The arithmetic is worth stating explicitly, because the loop bound reads
+/// off by one otherwise: [`append_line`] runs `for _ in 1..APPEND_ATTEMPTS`,
+/// which is `APPEND_ATTEMPTS - 1` **lock-free** attempts, and then makes one
+/// final attempt under [`compact`]'s own lock. At the value below that is
+/// 3 lock-free writes plus 1 locked write — 4 in total, which is what
+/// `a_journal_replaced_on_every_attempt_still_terminates` counts.
 ///
 /// Each attempt is one `O_APPEND` write plus the identity recheck that says
 /// whether it landed in the journal `path` still names. One redo covers a
-/// single racing compaction and four covers a burst, but the bound is not
-/// what makes the append safe: exhausting it escalates to the lock-guarded
-/// attempt in [`append_line`] rather than accepting a write that may already
-/// be doomed. Raising or lowering it trades attempts against escalations and
-/// changes no guarantee.
+/// single racing compaction and three covers a burst, but the bound is not
+/// what makes the append safe: exhausting the lock-free ones escalates to the
+/// lock-guarded attempt in [`append_line`] rather than accepting a write that
+/// may already be doomed. Raising or lowering it trades lock-free attempts
+/// against escalations and changes no guarantee.
 const APPEND_ATTEMPTS: usize = 4;
 
 /// How long the final, lock-guarded append waits for the compaction lock.
@@ -205,9 +211,9 @@ const APPEND_ATTEMPTS: usize = 4;
 /// escalation cannot come back empty-handed while the lock directory is
 /// usable, and it still cannot block a real run indefinitely.
 ///
-/// It is only ever reached after [`APPEND_ATTEMPTS`] lock-free writes have all
-/// lost to a concurrent compaction, so paying for it is already evidence of
-/// sustained contention rather than of the ordinary case.
+/// It is only ever reached after all `APPEND_ATTEMPTS - 1` lock-free writes
+/// have lost to a concurrent compaction, so paying for it is already evidence
+/// of sustained contention rather than of the ordinary case.
 const APPEND_LOCK_WAIT: Duration = Duration::from_secs(35);
 
 /// The environment variable naming a harness barrier file for the append
@@ -271,9 +277,10 @@ fn harness_barrier(var: &str) {
 ///    it. Redoing is safe to repeat, because the fold is keyed by path and
 ///    applied in file order: a duplicated line contributes exactly what the
 ///    original contributed. This covers the ordinary case at no cost.
-/// 2. **Escalate and exclude.** After [`APPEND_ATTEMPTS`] of those have all
-///    lost, it stops racing and takes [`compact`]'s own advisory lock before
-///    appending once more. Compaction *skips entirely* unless it holds that
+/// 2. **Escalate and exclude.** After the `APPEND_ATTEMPTS - 1` lock-free
+///    attempts have all lost, it stops racing and takes [`compact`]'s own
+///    advisory lock before appending once more — the last of the
+///    [`APPEND_ATTEMPTS`] writes an append may make. Compaction *skips entirely* unless it holds that
 ///    lock, so a write made while holding it cannot be replaced or unlinked
 ///    underneath. This is the step that makes "an appended entry is not lost
 ///    to compaction" an invariant rather than a bound: a fixed cap that simply
@@ -296,6 +303,8 @@ fn harness_barrier(var: &str) {
 ///
 /// Returns [`Error::Io`] if the journal cannot be opened or written.
 fn append_line(path: &std::path::Path, line: &str) -> Result<()> {
+    // `1..APPEND_ATTEMPTS` is APPEND_ATTEMPTS - 1 lock-free attempts; the
+    // escalated write below is the last one of the budget, not an extra.
     for _ in 1..APPEND_ATTEMPTS {
         if append_once(path, line)? {
             return Ok(());

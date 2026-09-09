@@ -471,3 +471,80 @@ fn gc_runs_and_reports_without_touching_journals() {
     // GC removes dead leases, never journals: no work is silently destroyed.
     assert_eq!(journal_paths(&dir, "alpha").len(), 3);
 }
+
+/// The sibling of the test above, covering the *other* half of the sweep.
+///
+/// `gc_runs_and_reports_without_touching_journals` pins a journal that still
+/// claims paths: gc must leave it alone. This one pins the journal that only
+/// exists because truncation is now an append-only tombstone rather than an
+/// inline delete — fully committed, folding to zero entries, and swept by
+/// nothing except `rdm session gc`.
+#[test]
+fn gc_sweeps_a_journal_whose_changeset_is_fully_committed() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    rdm(&dir)
+        .env("RDM_SESSION", "beta")
+        .args([
+            "task",
+            "create",
+            "beta-one",
+            "--title",
+            "Beta",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    assert!(
+        !journal_paths(&dir, "beta").is_empty(),
+        "the create should have journaled its writes"
+    );
+
+    let journal = dir.path().join(".git/rdm/changesets/beta.jsonl");
+    assert!(
+        journal.exists(),
+        "expected a journal at {}",
+        journal.display()
+    );
+
+    rdm(&dir)
+        .env("RDM_SESSION", "beta")
+        .args(["commit", "-m", "land beta"])
+        .assert()
+        .success();
+    assert!(
+        journal_paths(&dir, "beta").is_empty(),
+        "a fully-committed changeset claims nothing"
+    );
+    assert!(
+        journal.exists(),
+        "truncation appends a tombstone; it must not remove the file inline"
+    );
+    // `session list` already hides it, since it claims no path.
+    let listed = stdout(rdm(&dir).args(["session", "list"]));
+    assert!(
+        !listed.contains("beta"),
+        "a changeset claiming nothing has no work to recover, got: {listed}"
+    );
+
+    let out = stdout(rdm(&dir).args(["session", "gc"]));
+    let swept = out
+        .lines()
+        .find_map(|l| {
+            l.strip_prefix("Removed ")
+                .and_then(|rest| rest.strip_suffix(" fully-committed changeset journal(s)."))
+        })
+        .unwrap_or_else(|| panic!("expected the second sweep to report, got: {out}"))
+        .parse::<usize>()
+        .unwrap();
+    assert!(
+        swept >= 1,
+        "expected beta's journal to be swept, got: {out}"
+    );
+    assert!(
+        !journal.exists(),
+        "gc is the only thing that clears a fully-committed journal"
+    );
+}

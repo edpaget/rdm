@@ -51,6 +51,14 @@
 #
 # Requires: cargo-built rdm at target/debug/rdm (from this repo). No network.
 # Every wait is bounded and fails loudly — CI runs this unattended.
+#
+# Cost: the run is dominated by ONE cold `cargo build -p rdm-cli --offline`
+# under a scratch CARGO_TARGET_DIR, shared by sections 2b and 5b rather than
+# built twice. Measured on a 2026 laptop: ~13s for that build and ~37s for the
+# whole script; a 2-core CI runner pays proportionally more for the build
+# (~81s of CPU) and roughly two minutes overall. If that ever becomes
+# unacceptable, the remedy is a cheaper build — never a skipped or weakened
+# mutant self-test, without which sections 2 and 5 prove nothing.
 
 set -eu
 
