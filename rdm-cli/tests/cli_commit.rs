@@ -576,7 +576,9 @@ fn commit_all_clears_every_changesets_journal() {
     rdm_as("cs-a", &dir)
         .args(["commit", "--all", "-m", "land everything"])
         .assert()
-        .success();
+        .success()
+        .stdout(predicate::str::contains("Committed"))
+        .stdout(predicate::str::contains("Nothing to commit.").not());
 
     let out = rdm_as("cs-a", &dir)
         .args(["session", "list", "--format", "json"])
@@ -639,7 +641,8 @@ fn commit_all_clears_a_stale_journal_even_when_the_tree_is_already_clean() {
     rdm_as("cs-a", &dir)
         .args(["commit", "--all", "-m", "noop --all"])
         .assert()
-        .success();
+        .success()
+        .stdout(predicate::str::contains("Nothing to commit."));
 
     let out = rdm_as("cs-a", &dir)
         .args(["session", "list", "--format", "json"])

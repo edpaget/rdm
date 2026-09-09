@@ -4766,6 +4766,54 @@ mod tests {
     }
 
     #[test]
+    fn a_vanished_path_stays_journaled_across_the_widened_settled_truncation() {
+        // Regression guard for the `settled` widening added alongside the
+        // no-op-truncation fix: a vanished (skipped) write must never be
+        // swept into `settled` and truncated out of the journal, even though
+        // an unrelated path in the SAME changeset lands cleanly in the same
+        // commit. `a_journaled_path_that_vanished_is_skipped_not_fatal` above
+        // only checks `outcome.skipped_missing` — it never re-reads the
+        // journal, so it can't catch a truncation-side regression on its own.
+        let _guard = serial_scoped();
+        let dir = TempDir::new().unwrap();
+        let mut store = scoped_repo(&dir, "unit-missing-truncate");
+        make_task(&mut store, "vanishing");
+        make_task(&mut store, "landing");
+        std::fs::remove_file(dir.path().join("projects/demo/tasks/vanishing.md")).unwrap();
+
+        let outcome = store
+            .commit_changeset(Some("skip one, land the other"), &[])
+            .unwrap();
+        assert!(
+            outcome.sha.is_some(),
+            "the surviving task must still land as a real commit: {outcome:?}"
+        );
+        assert!(
+            outcome
+                .skipped_missing
+                .iter()
+                .any(|p| p == "projects/demo/tasks/vanishing.md"),
+            "the vanished path was not reported as skipped: {outcome:?}"
+        );
+
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+        let left = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        assert!(
+            left.iter()
+                .any(|e| e.path == "projects/demo/tasks/vanishing.md"),
+            "a vanished path must stay journaled after the commit that skipped \
+             it — settled must never sweep up a skipped path: {left:?}"
+        );
+        assert!(
+            !left
+                .iter()
+                .any(|e| e.path == "projects/demo/tasks/landing.md"),
+            "the path that actually landed must still be truncated as before: {left:?}"
+        );
+    }
+
+    #[test]
     fn a_scoped_discard_leaves_foreign_paths_and_their_index_rows() {
         let _guard = serial_scoped();
         let dir = TempDir::new().unwrap();
