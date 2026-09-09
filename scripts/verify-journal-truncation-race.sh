@@ -1,0 +1,605 @@
+#!/bin/sh
+# Hermetic regression for the changeset journal's truncation race:
+# `journal::truncate` under concurrent `journal::record` appends.
+#
+# Gates `plan-repo-concurrency/phase-15-concurrent-journal-truncation-race`:
+#
+#   1   the AC's stress scenario — N=40 parallel mutations across two projects
+#       plus M=6 interleaved commits, all under ONE shared RDM_SESSION —
+#       leaves every task present, no AUTHORED file stranded, a journal that
+#       claims nothing, and a final `rdm commit` with nothing to do and no
+#       "belong to another changeset" line. It also disentangles the
+#       separately-filed pre-flush index-read race
+#       (`index-regen-reads-before-flush-lock`): a derived INDEX.md may still
+#       be dirty here for that unrelated reason, and ONE quiescent
+#       regeneration must be enough to settle it, after which the tree is
+#       asserted fully clean
+#   2   determinism, not luck: two REAL processes interleaved at the
+#       documented RDM_HARNESS_JOURNAL_BARRIER seam — a commit parked inside
+#       `truncate` while a full `rdm task create` runs to completion — and the
+#       concurrently appended records survive, including the regenerated
+#       INDEX.md files, which name paths the parked commit is landing
+#   2b  the mutant-binary self-test: `truncate` reverted to its
+#       read-modify-write form, rebuilt, and re-run through section 2's
+#       interleave. The loss MUST reappear, or section 2 proves nothing
+#   3   assertion self-tests: corrupted expectations must go red
+#   4   the semantic-empty contract — "empty" means `read_journal` folds to
+#       zero entries, NOT that the file is gone. Truncation is append-only,
+#       so gating on file absence would make CI intermittently red for a
+#       correct implementation
+#
+# The window between a commit reading its journal and truncating it is opened
+# and closed inside one `rdm` invocation, so two real processes cannot be made
+# to interleave at it by timing alone. Hence the barrier seam, which follows
+# RDM_HARNESS_FLUSH_BARRIER's contract exactly: inert when unset, bounded when
+# set.
+#
+# Run after touching `journal::record` / `truncate` / `read_journal` /
+# `compact` / `gc_changesets` in rdm-core/src/session/journal.rs, either
+# `journal::truncate` call site in rdm-store-git (`commit_changeset_id`,
+# `commit_whole_tree`), or the RDM_HARNESS_JOURNAL_BARRIER seam.
+#
+# Requires: cargo-built rdm at target/debug/rdm (from this repo). No network.
+# Every wait is bounded and fails loudly — CI runs this unattended.
+
+set -eu
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+RDM_BIN="$REPO_ROOT/target/debug/rdm"
+
+if [ ! -x "$RDM_BIN" ]; then
+    echo "error: $RDM_BIN not found or not executable — run 'cargo build' first." >&2
+    exit 1
+fi
+
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT INT HUP TERM
+
+# Clear rdm-related env inherited from the caller's shell so the run never
+# touches the developer's real plan repo, and so every section's session
+# identity is the one it sets. An inherited RDM_HARNESS_JOURNAL_BARRIER is the
+# dangerous one: it would park every process in section 1 against a file that
+# never appears, turning the stress run into a silent 60-second no-op.
+unset RDM_ROOT RDM_PROJECT RDM_STAGE RDM_FORMAT RDM_SESSION
+unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID RDM_HARNESS_SESSION_ID
+unset RDM_HARNESS_FLUSH_BARRIER RDM_HARNESS_JOURNAL_BARRIER
+# An inherited git environment (set whenever this runs under a git hook) would
+# point every `git -C <temp-repo>` query below at the invoking repo instead.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+
+# `rdm <entity> create` reads a body from stdin when none is passed inline, so
+# an inherited open stdin would hang the run. Detach it once, for this script
+# and everything it spawns.
+exec </dev/null
+
+export GIT_AUTHOR_NAME="verify-bot"
+export GIT_AUTHOR_EMAIL="verify@example.invalid"
+export GIT_COMMITTER_NAME="verify-bot"
+export GIT_COMMITTER_EMAIL="verify@example.invalid"
+
+say() { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
+fail() {
+    printf '\n\033[1;31m[FAIL]\033[0m %s\n' "$*" >&2
+    exit 1
+}
+ok() { printf '\033[1;32m[ OK ]\033[0m %s\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# seed_repo <dir> [bin]: a plan repo with TWO projects, each holding one
+# committed task.
+#
+# Two projects because the reported symptom names BOTH index files — the
+# top-level INDEX.md and a per-project one — and a single-project repo would
+# exercise only half of it.
+#
+# Pins RDM_SESSION so the seeding short-circuits at rung 1 before any lease is
+# created: a lease held by this script's own pid would be inherited by every
+# process below and quietly merge sections that mean to be distinct.
+seed_repo() {
+    _dir=$1
+    _bin=${2:-$RDM_BIN}
+    mkdir -p "$_dir"
+    RDM_SESSION=harness-seed "$_bin" --root "$_dir" init --default-project alpha >/dev/null
+    RDM_SESSION=harness-seed "$_bin" --root "$_dir" project create beta \
+        --title "Beta" >/dev/null
+    for _p in alpha beta; do
+        RDM_SESSION=harness-seed "$_bin" --root "$_dir" task create "seed-$_p" \
+            --title "Seed $_p" --body "Body." --no-edit --project "$_p" >/dev/null
+    done
+    RDM_SESSION=harness-seed "$_bin" --root "$_dir" commit \
+        -m "seed: init plan repo, two projects and their tasks" >/dev/null
+}
+
+# journal_paths <repo> [bin]: how many paths the shared changeset still claims.
+#
+# Reads through `rdm session journal`, which routes through the tombstone-aware
+# fold — the same reader every consumer uses. Deliberately NOT a line count of
+# the raw .jsonl: truncation is append-only, so raw lines outlive what they
+# claim (see section 4).
+journal_paths() {
+    _bin=${2:-$RDM_BIN}
+    RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$1" session journal --format json |
+        tr ',' '\n' | sed -n 's/.*"path":"\([^"]*\)".*/\1/p' | sort
+}
+
+# await_parked <pid> <label>: bounded wait for a backgrounded process to reach
+# the truncation barrier.
+#
+# There is no readiness file to poll, so this asserts the property that
+# matters: after enough time to have finished, the process is still alive —
+# which it can only be because the barrier parked it. A process that was NOT
+# parked exits in well under a second, so this fails loudly rather than
+# silently degrading into "the two never actually raced".
+await_parked() {
+    _pid=$1
+    _label=$2
+    _i=0
+    while [ "$_i" -lt 40 ]; do
+        sleep 0.1
+        _i=$((_i + 1))
+    done
+    if ! kill -0 "$_pid" 2>/dev/null; then
+        fail "$_label exited instead of parking at RDM_HARNESS_JOURNAL_BARRIER — \
+the two processes never interleaved, so this section proves nothing"
+    fi
+}
+
+# await_exit <pid> <label> <status-file>: bounded `wait`, writing the exit
+# status to <status-file>.
+#
+# The status goes to a file rather than to stdout because `wait` only works on
+# a child of the *invoking* shell, and a command substitution would run this in
+# a subshell that owns no such child. The bound is on the release having
+# actually taken effect: a barrier that never released would otherwise hang CI
+# for its own 60 s ceiling per invocation.
+await_exit() {
+    _pid=$1
+    _label=$2
+    _statusfile=$3
+    _i=0
+    while kill -0 "$_pid" 2>/dev/null; do
+        sleep 0.2
+        _i=$((_i + 1))
+        if [ "$_i" -gt 150 ]; then
+            kill -9 "$_pid" 2>/dev/null || true
+            fail "$_label did not exit within 30s of releasing the barrier"
+        fi
+    done
+    set +e
+    wait "$_pid"
+    _st=$?
+    set -e
+    printf '%s' "$_st" >"$_statusfile"
+}
+
+# interleave <repo> <outdir> [bin]
+#
+# The deterministic scenario, factored out so sections 2 and 2b drive the
+# IDENTICAL sequence and differ only in the binary under test:
+#
+#   A stages a task, then starts `rdm commit` and parks inside `truncate`
+#   B runs a full `rdm task create` to completion — appending its own record
+#     AND rewriting both INDEX.md rows, which are paths A is landing
+#   A is released
+#
+# Both run under ONE session id, which is the whole point: at rung 3 every
+# parallel subagent and MCP call shares one, so "the only appender is the same
+# shell" is false.
+interleave() {
+    _repo=$1
+    _out=$2
+    _bin=${3:-$RDM_BIN}
+    mkdir -p "$_out"
+
+    RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create a-item \
+        --title "A item" --body "Body." --no-edit --project alpha >/dev/null
+
+    RDM_HARNESS_JOURNAL_BARRIER="$_out/go-a" RDM_SESSION="$SHARED_SESSION" \
+        "$_bin" --root "$_repo" commit -m "A: land the staged item" \
+        >"$_out/a.out" 2>"$_out/a.err" &
+    _apid=$!
+
+    await_parked "$_apid" "process A (rdm commit)"
+
+    set +e
+    RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create b-item \
+        --title "B item" --body "Body." --no-edit --project beta \
+        >"$_out/b.out" 2>"$_out/b.err"
+    printf '%s' "$?" >"$_out/b.status"
+    set -e
+
+    : >"$_out/go-a"
+    await_exit "$_apid" "process A (rdm commit)" "$_out/a.status"
+}
+
+SHARED_SESSION="shared-changeset"
+
+# ---------------------------------------------------------------------------
+# Section 1 — the AC's stress scenario
+# ---------------------------------------------------------------------------
+say "Section 1: 40 parallel mutations x 6 concurrent commits under one RDM_SESSION"
+
+REPO_1="$TMP/repo-1"
+seed_repo "$REPO_1"
+
+N_MUTATIONS=40
+M_COMMITS=6
+PIDS=""
+
+_i=1
+while [ "$_i" -le "$N_MUTATIONS" ]; do
+    if [ $((_i % 2)) -eq 0 ]; then _proj=alpha; else _proj=beta; fi
+    RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" task create "stress-$_i" \
+        --title "Stress $_i" --body "Body $_i." --no-edit --project "$_proj" \
+        >"$TMP/s1-create-$_i.out" 2>&1 &
+    PIDS="$PIDS $!"
+    # Interleave the commits INTO the create stream rather than after it, so
+    # each one really does run while other processes are appending.
+    if [ $((_i % (N_MUTATIONS / M_COMMITS))) -eq 0 ]; then
+        RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" commit \
+            -m "stress: interleaved commit at $_i" \
+            >"$TMP/s1-commit-$_i.out" 2>&1 &
+        PIDS="$PIDS $!"
+    fi
+    _i=$((_i + 1))
+done
+
+# Bounded wait on the whole fan-out. CI runs this unattended, so a hung child
+# must fail loudly rather than stall the job.
+_waited=0
+for _pid in $PIDS; do
+    while kill -0 "$_pid" 2>/dev/null; do
+        sleep 0.2
+        _waited=$((_waited + 1))
+        if [ "$_waited" -gt 900 ]; then
+            kill -9 "$_pid" 2>/dev/null || true
+            fail "the stress fan-out did not finish within ~180s"
+        fi
+    done
+    wait "$_pid" 2>/dev/null || true
+done
+ok "every stress process exited"
+
+# (a) all 40 tasks exist.
+MISSING=0
+_i=1
+while [ "$_i" -le "$N_MUTATIONS" ]; do
+    if [ $((_i % 2)) -eq 0 ]; then _proj=alpha; else _proj=beta; fi
+    RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" task show "stress-$_i" \
+        --project "$_proj" --no-body >/dev/null 2>&1 || MISSING=$((MISSING + 1))
+    _i=$((_i + 1))
+done
+[ "$MISSING" -eq 0 ] || fail "$MISSING of $N_MUTATIONS stress tasks are missing"
+ok "all $N_MUTATIONS tasks exist"
+
+# The commits raced the creates, so some work is legitimately still staged
+# when the fan-out ends. Land it with one final scoped commit — the point of
+# the section is that NOTHING is stranded, not that the races happened to
+# settle in a particular order.
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" commit \
+    -m "stress: land whatever the fan-out left staged" >"$TMP/s1-final.out" 2>&1 ||
+    fail "the settling commit failed: $(cat "$TMP/s1-final.out")"
+
+# (b-i) No AUTHORED path may be left dirty. This is the lost-append symptom
+#       stated exactly: a task file this changeset wrote but no longer claims
+#       is a journal entry that was destroyed.
+git -C "$REPO_1" status --porcelain >"$TMP/s1.status"
+grep -v 'INDEX\.md$' "$TMP/s1.status" >"$TMP/s1.authored" || true
+[ -s "$TMP/s1.authored" ] &&
+    fail "authored files are dirty after the fan-out — journaled paths were \
+lost, exactly the reported symptom:
+$(cat "$TMP/s1.authored")"
+ok "no authored file is left uncommitted"
+
+# (b-ii) A derived index may still be dirty here, and that is a DIFFERENT
+#        defect: `ops::mutate` regenerates INDEX.md from a disk snapshot taken
+#        before the flush lock, so under a fan-out the last writer can persist
+#        a staler index than the one already committed. It is filed separately
+#        as task `index-regen-reads-before-flush-lock` per this phase's
+#        Direction, and is disentangled here rather than hidden: one QUIESCENT
+#        regeneration — no concurrency, so no stale snapshot — must be enough
+#        to settle it. If a lost journal append were the cause, regenerating
+#        would not help, because the paths would not be journaled at all.
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" index \
+    >"$TMP/s1-index.out" 2>&1 ||
+    fail "the quiescent index regeneration failed: $(cat "$TMP/s1-index.out")"
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" commit \
+    -m "stress: land the regenerated indexes" >"$TMP/s1-index-commit.out" 2>&1 ||
+    fail "committing the regenerated indexes failed: $(cat "$TMP/s1-index-commit.out")"
+grep -qi 'another changeset' "$TMP/s1-index-commit.out" &&
+    fail "the regenerated indexes are attributed to another changeset — the \
+reported symptom is still present: $(cat "$TMP/s1-index-commit.out")"
+ok "one quiescent regeneration settles the derived indexes"
+
+# (b-iii) NOW the tree must be clean, with nothing whatsoever left over.
+git -C "$REPO_1" status --porcelain >"$TMP/s1.status"
+[ -s "$TMP/s1.status" ] &&
+    fail "the working tree is still dirty after a quiescent regeneration, so \
+the residue is not the separately-filed index race:
+$(cat "$TMP/s1.status")"
+ok "git status --porcelain is empty"
+
+# (c) the journal claims nothing.
+journal_paths "$REPO_1" >"$TMP/s1.journal"
+[ -s "$TMP/s1.journal" ] &&
+    fail "the changeset still claims paths after everything landed:
+$(cat "$TMP/s1.journal")"
+ok "the changeset journal claims no paths"
+
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" session list \
+    >"$TMP/s1.list" 2>&1
+grep -q "$SHARED_SESSION" "$TMP/s1.list" &&
+    fail "session list still reports the fully-committed changeset: $(cat "$TMP/s1.list")"
+ok "session list reports no changeset with work outstanding"
+
+# (d) a final commit has nothing to do, and nothing is unattributed.
+set +e
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" commit \
+    -m "stress: should be a no-op" >"$TMP/s1.noop" 2>&1
+S1_NOOP_STATUS=$?
+set -e
+[ "$S1_NOOP_STATUS" = "0" ] ||
+    fail "the no-op commit failed (exit $S1_NOOP_STATUS): $(cat "$TMP/s1.noop")"
+grep -qi 'another changeset' "$TMP/s1.noop" &&
+    fail "the reported symptom is still present — the indexes are attributed \
+elsewhere: $(cat "$TMP/s1.noop")"
+grep -qi 'not attributed to any changeset' "$TMP/s1.noop" &&
+    fail "paths were left unattributed: $(cat "$TMP/s1.noop")"
+ok "the final commit is a clean no-op with nothing unattributed"
+
+# ---------------------------------------------------------------------------
+# Section 2 — determinism, not luck
+# ---------------------------------------------------------------------------
+say "Section 2: a record appended while a commit is parked inside truncate survives"
+
+REPO_2="$TMP/repo-2"
+seed_repo "$REPO_2"
+interleave "$REPO_2" "$TMP/out-2"
+
+[ "$(cat "$TMP/out-2/b.status")" = "0" ] ||
+    fail "process B (the concurrent mutation) failed: $(cat "$TMP/out-2/b.err")"
+[ "$(cat "$TMP/out-2/a.status")" = "0" ] ||
+    fail "process A (the parked commit) failed: $(cat "$TMP/out-2/a.err")"
+ok "both processes exited 0"
+
+journal_paths "$REPO_2" >"$TMP/s2.journal"
+
+# B's own new file: a path the parked commit was NOT landing. The old
+# whole-file rewrite destroyed this unconditionally.
+grep -q '^projects/beta/tasks/b-item.md$' "$TMP/s2.journal" ||
+    fail "B's task is gone from the journal — the truncation destroyed a \
+concurrent append. Journal now holds:
+$(cat "$TMP/s2.journal")"
+ok "B's own record survived the truncation"
+
+# The sharp half. A staged its task under project `alpha`, so its changeset
+# claims the top-level INDEX.md and lands it — that path IS in A's tombstone.
+# B, mutating project `beta`, regenerates that same top-level INDEX.md with
+# different bytes while A is parked. A path-keyed tombstone sweeps B's record
+# here; a content-keyed one keeps it, because those bytes are not the bytes
+# that landed. This is what produced the reported dirty INDEX.md files.
+grep -q 'regenerated index file' "$TMP/out-2/a.out" ||
+    fail "the parked commit did not land any index file, so this section is \
+not exercising a concurrently-rewritten LANDED path: $(cat "$TMP/out-2/a.out")"
+grep -q '^INDEX.md$' "$TMP/s2.journal" ||
+    fail "INDEX.md is gone from the journal — B's rewrite of a path A landed \
+was swept, so the tree is left dirty and unattributed. Journal now holds:
+$(cat "$TMP/s2.journal")"
+ok "B's rewrite of the index A landed survived its tombstone"
+
+# `projects/alpha/INDEX.md` is the control: A landed it and B never touched
+# it, so it must be GONE. Truncation still has to work.
+grep -q '^projects/alpha/INDEX.md$' "$TMP/s2.journal" &&
+    fail "a path A landed and nobody re-recorded is still journaled — \
+truncation stopped working, so the changeset can re-commit it later"
+ok "a landed path nobody re-recorded is correctly dropped"
+
+# And the survivors are committable: the tree ends clean with nothing stranded.
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_2" commit \
+    -m "B: land what the interleave left staged" >"$TMP/s2.commit" 2>&1 ||
+    fail "the follow-up commit failed: $(cat "$TMP/s2.commit")"
+grep -qi 'another changeset' "$TMP/s2.commit" &&
+    fail "the follow-up commit reports paths belonging to another changeset: \
+$(cat "$TMP/s2.commit")"
+git -C "$REPO_2" status --porcelain >"$TMP/s2.status"
+[ -s "$TMP/s2.status" ] &&
+    fail "the tree is dirty after the interleave settled:
+$(cat "$TMP/s2.status")"
+ok "the survivors are committable and the tree ends clean"
+
+# ---------------------------------------------------------------------------
+# Section 2b — the mutant-binary self-test
+# ---------------------------------------------------------------------------
+say "Section 2b: with truncate reverted to read-modify-write, the loss reappears"
+
+MUT="$TMP/mutant"
+mkdir -p "$MUT"
+(cd "$REPO_ROOT" && git archive HEAD) | tar -x -C "$MUT" 2>/dev/null ||
+    fail "could not export a scratch source tree (is this a git checkout?)"
+
+# The phase's own uncommitted work is what we are testing, so overlay the
+# working-tree copies of the files that carry it.
+for f in rdm-core/src/session/journal.rs rdm-core/src/session/mod.rs \
+    rdm-core/src/session/lease.rs rdm-core/src/lock.rs rdm-core/src/lib.rs \
+    rdm-core/src/error.rs rdm-core/src/paths.rs rdm-core/src/store/mod.rs \
+    rdm-store-fs/src/lib.rs rdm-store-git/src/lib.rs rdm-store-git/src/commit.rs \
+    rdm-cli/src/commands/session.rs rdm-server/src/problem.rs; do
+    [ -f "$REPO_ROOT/$f" ] || fail "expected source file missing: $f"
+    mkdir -p "$MUT/$(dirname "$f")"
+    cp "$REPO_ROOT/$f" "$MUT/$f"
+done
+
+MUT_JOURNAL="$MUT/rdm-core/src/session/journal.rs"
+grep -q '^pub fn truncate(' "$MUT_JOURNAL" ||
+    fail "'truncate' is no longer a top-level fn — update this self-test to match"
+
+# Replace `truncate`'s whole body with the pre-fix read-modify-write form,
+# keeping the post-fix signature so the mutant still compiles under -D
+# warnings. The body is delimited by the fn's opening line and the next line
+# that is exactly `}` at column 0, which is how rustfmt renders every
+# top-level item in this file.
+# The barrier sits INSIDE the mutant's read -> write window, which is the
+# window the fix deletes. In the shipped code there is no such window, so its
+# barrier necessarily sits just before its single append; here it marks the
+# moment the committer has read and is about to rewrite, which is exactly
+# where a concurrent record used to be destroyed.
+cat >"$MUT/mutant-body.txt" <<'MUTBODY'
+    let landed_paths: Vec<String> = landed.iter().map(|e| e.path.clone()).collect();
+    let remaining: Vec<JournalEntry> = read_journal(paths, id)?
+        .into_iter()
+        .filter(|e| !landed_paths.contains(&e.path))
+        .collect();
+    harness_barrier();
+    let path = changeset_path(paths, id);
+    if remaining.is_empty() {
+        return match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(Error::Io(e)),
+        };
+    }
+    let line = serde_json::to_string(&JournalLine { paths: remaining })
+        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+    std::fs::write(&path, format!("{line}\n"))?;
+    Ok(())
+    // MUTATION
+MUTBODY
+
+awk -v bodyfile="$MUT/mutant-body.txt" '
+    /^pub fn truncate\(/ && !done {
+        print
+        while ((getline line < bodyfile) > 0) print line
+        close(bodyfile)
+        skip = 1
+        done = 1
+        next
+    }
+    skip && /^}$/ { skip = 0; print; next }
+    skip { next }
+    { print }
+' "$MUT_JOURNAL" >"$MUT_JOURNAL.new"
+mv "$MUT_JOURNAL.new" "$MUT_JOURNAL"
+grep -q '// MUTATION' "$MUT_JOURNAL" || fail "failed to plant the mutation"
+
+# The mutant must not also inherit the tombstone-aware fold's protection from
+# the OTHER direction, but it legitimately keeps `read_journal` — the pre-fix
+# code read the same way. Only the write half is reverted.
+say "  building the mutant (scratch CARGO_TARGET_DIR; ~1-2 min)"
+(cd "$MUT" && CARGO_TARGET_DIR="$MUT/target" cargo build -q -p rdm-cli --offline) ||
+    fail "the mutant build failed — the self-test cannot run"
+MUT_BIN="$MUT/target/debug/rdm"
+[ -x "$MUT_BIN" ] || fail "the mutant binary was not produced at $MUT_BIN"
+
+REPO_2B="$TMP/repo-2b"
+seed_repo "$REPO_2B" "$MUT_BIN"
+interleave "$REPO_2B" "$TMP/out-2b" "$MUT_BIN"
+
+[ "$(cat "$TMP/out-2b/a.status")" = "0" ] ||
+    fail "self-test is inconclusive: the mutant's process A failed for some \
+other reason (exit $(cat "$TMP/out-2b/a.status")): $(cat "$TMP/out-2b/a.err")"
+
+journal_paths "$REPO_2B" "$MUT_BIN" >"$TMP/s2b.journal"
+if grep -q '^projects/beta/tasks/b-item.md$' "$TMP/s2b.journal"; then
+    fail "the planted mutation did NOT reproduce the loss of B's own record — \
+section 2 may be passing for a reason other than append-only truncation. \
+Mutant journal:
+$(cat "$TMP/s2b.journal")"
+fi
+if grep -q '^INDEX.md$' "$TMP/s2b.journal"; then
+    fail "the planted mutation did NOT reproduce the loss of B's index \
+rewrite — section 2's sharp assertion may be vacuous. Mutant journal:
+$(cat "$TMP/s2b.journal")"
+fi
+ok "with the rewrite restored, BOTH of B's records are silently lost — section 2's pass is caused by the fix"
+
+git -C "$REPO_2B" status --porcelain >"$TMP/s2b.status"
+[ -s "$TMP/s2b.status" ] ||
+    fail "the mutant left a clean tree, so the reproduction is not the reported \
+symptom — re-check the interleave"
+ok "and the mutant leaves the reported dirty tree behind"
+
+# ---------------------------------------------------------------------------
+# Section 3 — assertion self-tests
+# ---------------------------------------------------------------------------
+say "Section 3: planted corruptions prove the assertions above are not vacuous"
+
+# (i) A path that is NOT in the journal must not match the greps section 2
+#     uses, or those greps would pass against anything.
+if grep -q '^projects/beta/tasks/not-a-real-item.md$' "$TMP/s2.journal"; then
+    fail "the journal grep matches a path that was never written — it is vacuous"
+fi
+ok "the journal grep does not match an invented path"
+
+# (ii) A deliberately dirty tree must trip section 1's cleanliness check, or
+#      that check would pass on any tree.
+printf 'planted\n' >"$REPO_1/planted-dirt.md"
+git -C "$REPO_1" status --porcelain >"$TMP/s3.status"
+[ -s "$TMP/s3.status" ] ||
+    fail "git status --porcelain reports nothing for a planted untracked file — \
+section 1's cleanliness assertion is vacuous"
+rm -f "$REPO_1/planted-dirt.md"
+ok "the cleanliness assertion catches a planted dirty file"
+
+# (iii) A journal that DOES claim a path must make section 1's emptiness check
+#       fail, or "claims nothing" would be unfalsifiable.
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" task create planted-claim \
+    --title "Planted" --body "Body." --no-edit --project alpha >/dev/null
+journal_paths "$REPO_1" >"$TMP/s3.journal"
+[ -s "$TMP/s3.journal" ] ||
+    fail "a freshly staged task claims no paths — the journal reader is vacuous"
+ok "the emptiness assertion catches a journal that still claims work"
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" commit \
+    -m "cleanup: land the planted claim" >/dev/null 2>&1
+
+# ---------------------------------------------------------------------------
+# Section 4 — the semantic-empty contract
+# ---------------------------------------------------------------------------
+say "Section 4: 'empty' is the fold, not the file"
+
+REPO_4="$TMP/repo-4"
+seed_repo "$REPO_4"
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_4" task create solo \
+    --title "Solo" --body "Body." --no-edit --project alpha >/dev/null
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_4" commit \
+    -m "land the solo task" >/dev/null
+
+journal_paths "$REPO_4" >"$TMP/s4.journal"
+[ -s "$TMP/s4.journal" ] &&
+    fail "the changeset still claims paths after a clean commit:
+$(cat "$TMP/s4.journal")"
+ok "the fold reports zero entries"
+
+# The file may still hold lines, and that is CORRECT: truncation is an append,
+# so the tombstone is itself a line. Gating on file absence would make this
+# harness intermittently red for a correct implementation, and would also go
+# red the moment compaction legitimately loses its length compare-and-swap.
+JOURNAL_FILE="$REPO_4/.git/rdm/changesets/$SHARED_SESSION.jsonl"
+if [ -f "$JOURNAL_FILE" ]; then
+    grep -q '"landed"' "$JOURNAL_FILE" ||
+        fail "the journal file survives but holds no tombstone — truncation did \
+not append one, so it is not append-only"
+    ok "the surviving file holds a tombstone line, and the fold resolves it to empty"
+else
+    ok "the journal file was compacted away; the fold agrees it is empty"
+fi
+
+# `rdm session gc` is the quiescent sweep, and it must leave the fold's answer
+# unchanged while removing the file.
+RDM_SESSION=gc-runner "$RDM_BIN" --root "$REPO_4" session gc >"$TMP/s4.gc" 2>&1 ||
+    fail "session gc failed: $(cat "$TMP/s4.gc")"
+grep -qi 'changeset journal' "$TMP/s4.gc" ||
+    fail "session gc does not report its changeset sweep: $(cat "$TMP/s4.gc")"
+[ -f "$JOURNAL_FILE" ] &&
+    fail "session gc left a fully-committed journal on disk: $JOURNAL_FILE"
+ok "session gc sweeps the fully-committed journal at a quiescent moment"
+
+journal_paths "$REPO_4" >"$TMP/s4b.journal"
+[ -s "$TMP/s4b.journal" ] &&
+    fail "the fold changed after gc — sweeping must be observationally inert"
+ok "the fold's answer is unchanged by the sweep"
+
+printf '\n\033[1;32mAll sections passed.\033[0m\n'

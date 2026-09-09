@@ -655,7 +655,7 @@ impl GitStore {
     ///
     /// No-op if the working tree already matches HEAD.
     ///
-    /// Clears **every** changeset's journal on disk afterward — live or
+    /// Tombstones **every** changeset's journal on disk afterward — live or
     /// orphaned, this session's or another's — regardless of whether this
     /// particular call landed a new commit. A whole-tree commit makes the
     /// entire working directory equal to the new HEAD unconditionally, so no
@@ -664,6 +664,15 @@ impl GitStore {
     /// phase's bug one level up. Best-effort, like every other journal
     /// write: a failure here must never fail an otherwise-successful commit.
     ///
+    /// Writing into another session's journal is exactly why truncation is an
+    /// `O_APPEND` tombstone rather than a rewrite: a record that session
+    /// appends concurrently cannot be destroyed by this loop. It is also why
+    /// a *newer* record of one of these paths correctly **survives** the
+    /// tombstone — it describes content this whole-tree commit did not
+    /// capture. Over-claiming survival is the safe direction: a path whose
+    /// blob already matches HEAD is truncated by the next scoped commit
+    /// anyway.
+    ///
     /// # Errors
     /// Returns [`Error::Git`] if the commit cannot be created.
     pub fn commit_whole_tree(&self, message: &str) -> Result<CommitReport> {
@@ -671,8 +680,7 @@ impl GitStore {
         if let Some(paths) = self.session_paths.as_ref() {
             for id in session::journal::list_changeset_ids(paths).unwrap_or_default() {
                 if let Ok(entries) = session::journal::read_journal(paths, &id) {
-                    let all_paths: Vec<String> = entries.into_iter().map(|e| e.path).collect();
-                    let _ = session::journal::truncate(paths, &id, &all_paths);
+                    let _ = session::journal::truncate(paths, &id, &entries);
                 }
             }
         }
@@ -699,7 +707,10 @@ impl GitStore {
     /// (`sha: None`). That is correctness, not hygiene: see
     /// [`journal::truncate`](rdm_core::session::journal::truncate). A
     /// vanished (skipped) path and a derived path deferred for an unlanded
-    /// project both stay journaled regardless.
+    /// project both stay journaled regardless — and so does a path another
+    /// process re-recorded, under the same session id, while this commit was
+    /// running: the tombstone names the exact entries that landed, so a newer
+    /// record of one of them survives and the next commit lands it.
     ///
     /// The returned [`ScopedCommit`] carries everything a porcelain needs to
     /// report — the sha, what landed, what was skipped as missing, and
@@ -811,7 +822,18 @@ impl GitStore {
         // fully no-op changeset still gets its journal cleared instead of
         // carrying a stale digest forward forever.
         if let (Some(paths), Some(id)) = (self.session_paths.as_ref(), id) {
-            let _ = session::journal::truncate(paths, id, &outcome.settled);
+            // Tombstone the journal *entries* that settled, not just their
+            // paths: truncation is content-keyed, so a path another session
+            // has re-recorded with different bytes since this commit read the
+            // journal keeps its newer record instead of being swept by it.
+            let settled: std::collections::HashSet<&str> =
+                outcome.settled.iter().map(String::as_str).collect();
+            let landed: Vec<JournalEntry> = journal
+                .iter()
+                .filter(|e| settled.contains(e.path.as_str()))
+                .cloned()
+                .collect();
+            let _ = session::journal::truncate(paths, id, &landed);
         }
 
         Ok(ScopedCommit {
@@ -3284,6 +3306,107 @@ mod tests {
         store.commit().unwrap();
         let entries = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
         assert_eq!(entries[0].kind, JournalKind::Delete);
+    }
+
+    #[test]
+    fn a_record_appended_inside_a_commits_truncation_window_survives() {
+        // The phase's defect, at the store boundary. Under one session id a
+        // parallel subagent's flush and this session's commit are two
+        // processes on the same journal. The window is between the
+        // committer's `read_changeset` and its `truncate`, so it is replayed
+        // here in that exact order — read as the committer reads, let the
+        // other process append, then truncate against what was read.
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        store
+            .write(&RelPath::new("a.md").unwrap(), "a".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+
+        // (1) the committer's read.
+        let read = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        assert_eq!(read.len(), 1, "only a.md is journaled so far");
+
+        // (2) the other process, mid-commit: a brand-new path, and a rewrite
+        //     of the very path the commit is about to land — the regenerated
+        //     INDEX.md case that made the reported run leave a dirty tree.
+        rdm_core::session::journal::record(
+            &paths,
+            &id,
+            &[
+                rdm_core::session::journal::JournalEntry {
+                    path: "b.md".to_string(),
+                    kind: JournalKind::Write,
+                    digest: Some(rdm_core::store::content_digest("b")),
+                },
+                rdm_core::session::journal::JournalEntry {
+                    path: "a.md".to_string(),
+                    kind: JournalKind::Write,
+                    digest: Some(rdm_core::store::content_digest("a, rewritten")),
+                },
+            ],
+        )
+        .unwrap();
+
+        // (3) the committer's truncation, against exactly what it read.
+        rdm_core::session::journal::truncate(&paths, &id, &read).unwrap();
+
+        let after = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        let names: Vec<&str> = after.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["a.md", "b.md"],
+            "neither the new path nor the rewrite of the landed path may be lost"
+        );
+        assert_eq!(
+            after
+                .iter()
+                .find(|e| e.path == "a.md")
+                .and_then(|e| e.digest.as_deref()),
+            Some(rdm_core::store::content_digest("a, rewritten").as_str()),
+            "the surviving record carries the NEW content identity"
+        );
+
+        // And the survivors are committable: the next scoped commit lands the
+        // work the truncation used to swallow.
+        store
+            .write(&RelPath::new("b.md").unwrap(), "b".to_string())
+            .unwrap();
+        store
+            .write(&RelPath::new("a.md").unwrap(), "a, rewritten".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        let landed = store
+            .commit_changeset(Some("land the survivors"), &[])
+            .unwrap();
+        assert!(landed.sha.is_some(), "the survivors must be committable");
+        assert!(landed.committed.iter().any(|p| p == "b.md"));
+        assert!(landed.committed.iter().any(|p| p == "a.md"));
+    }
+
+    #[test]
+    fn a_scoped_commit_leaves_a_journal_that_claims_nothing() {
+        // Truncation no longer deletes the file, so the property that matters
+        // is stated where it lives: the fold, not the filesystem.
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        store
+            .write(&RelPath::new("a.md").unwrap(), "a".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store.commit_changeset(Some("land it"), &[]).unwrap();
+
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+        assert!(
+            rdm_core::session::journal::read_journal(&paths, &id)
+                .unwrap()
+                .is_empty(),
+            "a fully-landed changeset claims nothing"
+        );
     }
 
     #[test]

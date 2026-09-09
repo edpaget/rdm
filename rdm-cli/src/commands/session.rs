@@ -116,6 +116,15 @@ pub fn run(root: &Path, format: OutputFormat, command: SessionCommand) -> Result
             let procs = rdm_core::session::system_process_table();
             let removed = rdm_core::session::lease::gc(&paths, procs);
             println!("Removed {removed} stale lease(s).");
+            // Sweeping journals is deliberately confined to this command.
+            // Truncation is an append-only tombstone, so a fully-committed
+            // journal keeps its lines until something rewrites it — and a
+            // rewrite can only ever be safe where no process could be
+            // appending. Post-GC, a changeset with no live lease is exactly
+            // that place.
+            let current = resolve(root, &paths).ok().map(|r| r.id);
+            let swept = journal::gc_changesets(&paths, procs, current.as_ref());
+            println!("Removed {swept} fully-committed changeset journal(s).");
         }
     }
     Ok(())

@@ -12,14 +12,39 @@
 //! optional — absent on a delete, and absent on lines written before the field
 //! existed — so an older journal stays readable.
 //!
+//! A commit does not rewrite this file. It appends a *tombstone* line naming
+//! the entries it proved are now reflected at HEAD:
+//!
+//! ```text
+//! {"landed":[{"path":"projects/demo/tasks/a.md","kind":"write","digest":"<sha256-hex>"}]}
+//! ```
+//!
+//! [`read_journal`] is the ordered fold that gives the file its meaning: a
+//! `paths` line inserts its entries, and a `landed` tombstone removes a path
+//! **only when the entry currently folded for it is byte-for-byte the entry
+//! that landed**. A concurrent session that rewrote the same path in between
+//! has a different `digest` (or a different `kind`), so its record survives
+//! the tombstone instead of being swept by it.
+//!
 //! Two properties fall out of the layout rather than out of discipline:
 //!
-//! - **Disjointness.** Concurrent sessions have distinct ids and therefore
-//!   distinct files, so one session physically cannot write into another's
-//!   journal.
-//! - **Lock-free appends.** Each batch is one `write_all` of one line to a file
-//!   opened with `O_APPEND`, which POSIX does not interleave, so there is no
-//!   lock and no read-modify-write race.
+//! - **Append-only.** *Every* write to a journal — a batch record and a
+//!   commit's truncation alike — is one `write_all` of one complete line to a
+//!   file opened with `O_APPEND`, which POSIX does not interleave. So there is
+//!   no lock, no read-modify-write window, and neither kind of write can
+//!   destroy the other. Compaction ([`compact`]) is the sole exception, and it
+//!   is deliberately confined to quiescent changesets — see its docs.
+//! - **Content-keyed truncation.** Because a tombstone identifies *what*
+//!   landed rather than *where* it sat in the file, the fold is independent of
+//!   byte offsets, so compaction can rewrite a journal without changing what a
+//!   later tombstone means.
+//!
+//! What does **not** fall out of the layout is disjointness. Concurrent
+//! sessions have distinct ids and therefore distinct files, so a *batch*
+//! record only ever reaches its own session's journal — but
+//! [`GitStore::commit_whole_tree`](../../../rdm_store_git/struct.GitStore.html)
+//! deliberately tombstones **every** changeset on disk, so one session does
+//! write into another's journal. `O_APPEND` is what keeps that safe.
 //!
 //! Recording is best-effort at every call site: an unwritable state directory
 //! must never fail a mutation. The cost of a lost record is bounded and
@@ -27,20 +52,23 @@
 //! scoped `rdm commit` names them and points at its recovery routes instead
 //! of sweeping them.
 //!
-//! Journals are never garbage-collected. A session killed mid-batch leaves an
-//! *orphaned* changeset, which [`list_changesets`] flags and
-//! [`adopt_changeset`] hands to a live session; only an explicit
-//! [`discard_changeset`] destroys one.
+//! A session killed mid-batch leaves an *orphaned* changeset, which
+//! [`list_changesets`] flags and [`adopt_changeset`] hands to a live session;
+//! an explicit [`discard_changeset`] destroys one outright. Journals that fold
+//! to nothing are swept by [`gc_changesets`] (behind `rdm session gc`), which
+//! only ever touches a changeset no live lease owns.
 
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use super::process::ProcessTable;
 use super::{SessionId, SessionPaths, lease};
 use crate::error::{Error, Result};
+use crate::lock::AdvisoryLock;
 
 /// Whether a journaled path was written or deleted by its batch.
 ///
@@ -98,7 +126,108 @@ pub struct ChangesetSummary {
 
 #[derive(Serialize, Deserialize)]
 struct JournalLine {
+    /// The batch's entries.
+    ///
+    /// **Must stay required.** `paths` being mandatory is what lets
+    /// [`read_journal`] tell a batch line from a [`TombstoneLine`] by trying
+    /// one and then the other: give it `#[serde(default)]` and every
+    /// `{"landed":[…]}` line would parse as an empty batch, silently turning
+    /// truncation into a no-op.
     paths: Vec<JournalEntry>,
+}
+
+/// A commit's truncation, written as one appended line rather than a rewrite.
+///
+/// `landed` holds the journal entries — path, kind *and* digest — that a
+/// commit proved are now reflected at HEAD. Carrying the whole entry rather
+/// than a bare path is what makes truncation content-keyed: the fold removes
+/// a path only when what is currently recorded for it is exactly what landed,
+/// so a concurrent session's newer record of the same path is not swept.
+#[derive(Serialize, Deserialize)]
+struct TombstoneLine {
+    /// The entries this commit landed.
+    ///
+    /// **Must stay required**, for the mirror of the reason above.
+    landed: Vec<JournalEntry>,
+}
+
+/// The environment variable naming a harness barrier file for truncation.
+///
+/// The window between a commit reading a journal and truncating it is opened
+/// and closed inside one `rdm` invocation, so a harness cannot interleave two
+/// real processes at it by racing them. When this is set, [`truncate`] blocks
+/// until the named file appears, letting a harness park a committing process
+/// there and drive a second process's mutation to completion before releasing
+/// it. It follows `RDM_HARNESS_FLUSH_BARRIER`'s contract exactly: inert when
+/// unset or empty, and bounded when set, so an abandoned harness can delay a
+/// real run but never wedge it.
+const HARNESS_JOURNAL_BARRIER: &str = "RDM_HARNESS_JOURNAL_BARRIER";
+
+/// How long the harness barrier waits before proceeding regardless.
+const HARNESS_BARRIER_CEILING: Duration = Duration::from_secs(60);
+
+/// How long compaction waits for the advisory lock before giving up.
+///
+/// Short on purpose: compaction is pure hygiene, so a contended lock should
+/// cost the caller nothing. Unlike every other `AdvisoryLock` user in rdm,
+/// losing this lock means *skip*, never *proceed unlocked* — see [`compact`].
+const COMPACT_LOCK_WAIT: Duration = Duration::from_millis(200);
+
+/// How stale a compaction lock must be before another process takes it over.
+const COMPACT_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
+
+/// Blocks until the harness barrier file appears, or the ceiling elapses.
+///
+/// Inert unless [`HARNESS_JOURNAL_BARRIER`] is set to a non-empty value.
+fn harness_barrier() {
+    let Ok(marker) = std::env::var(HARNESS_JOURNAL_BARRIER) else {
+        return;
+    };
+    if marker.is_empty() {
+        return;
+    }
+    let marker = PathBuf::from(marker);
+    let deadline = std::time::Instant::now() + HARNESS_BARRIER_CEILING;
+    while !marker.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Folds raw journal text into the set of entries it currently claims.
+///
+/// The single definition of what a journal *means*, shared by [`read_journal`]
+/// and [`compact`]. Lines are processed in file order:
+///
+/// - a `paths` line inserts each of its entries, last write winning for both
+///   `kind` and `digest`;
+/// - a `landed` tombstone removes a path **only if** the entry currently
+///   folded for it equals the entry that landed. A record appended after the
+///   tombstone therefore resurrects the path, and so does a record of
+///   *different* content appended before it — both describe a write this
+///   session has not yet landed.
+///
+/// Unparsable lines are skipped, so a torn tail cannot make an otherwise
+/// recoverable changeset unreadable. Skipping a torn *tombstone* leaves its
+/// paths journaled: an over-claim, never a loss.
+fn fold_lines(raw: &str) -> BTreeMap<String, JournalEntry> {
+    let mut merged: BTreeMap<String, JournalEntry> = BTreeMap::new();
+    for line in raw.lines() {
+        if let Ok(batch) = serde_json::from_str::<JournalLine>(line) {
+            for entry in batch.paths {
+                // Last write wins for the digest exactly as it does for the
+                // kind: a path this session flushed twice is owned by its most
+                // recent content, not its first.
+                merged.insert(entry.path.clone(), entry);
+            }
+        } else if let Ok(tombstone) = serde_json::from_str::<TombstoneLine>(line) {
+            for landed in &tombstone.landed {
+                if merged.get(&landed.path) == Some(landed) {
+                    merged.remove(&landed.path);
+                }
+            }
+        }
+    }
+    merged
 }
 
 /// Returns the on-disk path of `id`'s journal.
@@ -136,20 +265,26 @@ pub fn record(paths: &SessionPaths, id: &SessionId, entries: &[JournalEntry]) ->
     Ok(())
 }
 
-/// Reads `id`'s journal as a deduped, path-sorted union across every recorded
-/// batch.
+/// Reads what `id`'s journal currently claims: a deduped, path-sorted fold
+/// over every recorded batch and every commit's tombstone.
 ///
 /// A path written and later deleted (or vice versa) reports its **last**
 /// recorded kind, and likewise its last recorded
-/// [`digest`](JournalEntry::digest). Unparsable lines are skipped rather than
-/// failing the read, so a torn tail cannot make an otherwise-recoverable
-/// changeset unreadable.
+/// [`digest`](JournalEntry::digest). A path a commit landed is removed —
+/// unless it has since been recorded again with different content, in which
+/// case the newer record survives, because that write has *not* landed.
+/// Unparsable lines are skipped rather than failing the read, so a torn tail
+/// cannot make an otherwise-recoverable changeset unreadable.
 ///
 /// That collapse is load-bearing for the scoped commit's two content guards,
 /// not just a deduplication convenience: a path deleted and then recreated
 /// within one changeset reports `Write`, so it is routed to the commit's
 /// *write* guard (digest comparison) and never reaches its *delete* guard
-/// (working-tree presence check).
+/// (working-tree presence check). The fold preserves that across a tombstone
+/// too — a record appended after one carries its own `kind` and `digest`.
+///
+/// A journal written before tombstones existed folds exactly as it always
+/// did: with no `landed` line to apply, this degenerates to last-write-wins.
 ///
 /// # Errors
 ///
@@ -162,22 +297,11 @@ pub fn read_journal(paths: &SessionPaths, id: &SessionId) -> Result<Vec<JournalE
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(Error::Io(e)),
     };
-    let mut merged: BTreeMap<String, JournalEntry> = BTreeMap::new();
-    for line in raw.lines() {
-        let Ok(parsed) = serde_json::from_str::<JournalLine>(line) else {
-            continue;
-        };
-        for entry in parsed.paths {
-            // Last write wins for the digest exactly as it does for the kind:
-            // a path this session flushed twice is owned by its most recent
-            // content, not its first.
-            merged.insert(entry.path.clone(), entry);
-        }
-    }
-    Ok(merged.into_values().collect())
+    Ok(fold_lines(&raw).into_values().collect())
 }
 
-/// Drops `landed` from `id`'s journal, rewriting it with whatever remains.
+/// Records that `landed` is now reflected at HEAD, so `id`'s journal stops
+/// claiming it.
 ///
 /// **This is correctness, not cleanup.** A journal that still claims a path
 /// after that path has been committed lets this session's *next* commit
@@ -186,34 +310,150 @@ pub fn read_journal(paths: &SessionPaths, id: &SessionId) -> Result<Vec<JournalE
 /// successful commit is what keeps attribution honest across a session's
 /// second and subsequent commits.
 ///
-/// Rewrites the file as a single line holding the surviving entries (or
-/// removes it when nothing survives). Unlike [`record`], this is a
-/// read-modify-write, which is safe because a changeset is by construction
-/// owned by one session: the only appender is the same shell that is
-/// committing.
+/// Written as one appended tombstone line, using the same
+/// `O_APPEND` + single `write_all` as [`record`] — never as a rewrite. That
+/// is the whole point: under one session id, a parallel subagent or MCP call
+/// is a *different process* appending to this same file, so the previous
+/// read-modify-write silently destroyed anything recorded between its read
+/// and its write. Two single-line appends cannot destroy each other, so the
+/// window is gone rather than narrowed.
+///
+/// Truncation is content-keyed. The tombstone carries whole entries, and
+/// [`read_journal`]'s fold drops a path only when what it currently holds is
+/// exactly what landed. So a concurrent session that rewrote one of these
+/// paths in between — the regenerated `INDEX.md` files, in practice — keeps
+/// its record and its next commit still lands it.
+///
+/// An empty `landed` slice writes nothing at all, mirroring [`record`], so a
+/// fully no-op commit never grows the journal.
+///
+/// The file is not removed even when nothing survives; see [`compact`] for
+/// why cleanup is deliberately deferred to a quiescent moment.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if the journal cannot be read back or rewritten.
-/// Callers on the commit path swallow this: the commit itself has already
-/// landed, and failing afterwards would be worse than a stale journal.
-pub fn truncate(paths: &SessionPaths, id: &SessionId, landed: &[String]) -> Result<()> {
-    let remaining: Vec<JournalEntry> = read_journal(paths, id)?
-        .into_iter()
-        .filter(|e| !landed.contains(&e.path))
-        .collect();
-    let path = changeset_path(paths, id);
-    if remaining.is_empty() {
-        return match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(e) => Err(Error::Io(e)),
-        };
+/// Returns [`Error::Io`] if the state directory cannot be created or the
+/// append fails. Callers on the commit path swallow this: the commit itself
+/// has already landed, and failing afterwards would be worse than a stale
+/// journal — the paths simply stay journaled, which over-claims rather than
+/// loses.
+pub fn truncate(paths: &SessionPaths, id: &SessionId, landed: &[JournalEntry]) -> Result<()> {
+    harness_barrier();
+    if landed.is_empty() {
+        return Ok(());
     }
-    let line = serde_json::to_string(&JournalLine { paths: remaining })
-        .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
-    std::fs::write(&path, format!("{line}\n"))?;
+    let dir = paths.changesets_dir();
+    std::fs::create_dir_all(&dir)?;
+    let line = serde_json::to_string(&TombstoneLine {
+        landed: landed.to_vec(),
+    })
+    .map_err(|e| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(changeset_path(paths, id))?;
+    // One write_all of one complete line, exactly as `record` does it.
+    file.write_all(format!("{line}\n").as_bytes())?;
     Ok(())
+}
+
+/// Rewrites `id`'s journal as the entries it currently claims, or removes it
+/// when it claims nothing. Returns whether the file is gone afterwards.
+///
+/// Pure hygiene, and the **only** operation in this module that is not an
+/// append. Because a rewrite can destroy a concurrent `O_APPEND` record, this
+/// is deliberately not called from the commit path: see [`gc_changesets`],
+/// which applies it only to changesets no live lease owns, where by
+/// construction no appender exists.
+///
+/// Two guards keep it honest even so:
+///
+/// - The advisory lock at `<changesets>/<id>.lock`. Unlike every other
+///   [`AdvisoryLock`] user in rdm, an *unheld* guard means **skip**, not
+///   proceed unlocked: those callers are safe because a real correctness
+///   mechanism sits underneath (HEAD compare-and-swap; the content-digest
+///   precondition), and a journal rewrite has no such underlayer.
+/// - A compare-and-swap on the file's byte length. A journal only ever grows,
+///   so its length is a valid version token: if anything was appended between
+///   the fold and the rewrite, the length differs and compaction skips.
+///
+/// A residual window remains, and is not claimed closed: a writer that has
+/// already opened its `O_APPEND` descriptor when the length check passes
+/// writes into the inode this call is about to unlink or replace. It is
+/// bounded to the cleanup path and to a changeset with no live owner, and the
+/// contract is unconditional in the safe direction — compaction may fail to
+/// clean, never lose.
+///
+/// Losing the compare-and-swap repeatedly under sustained load leaves the
+/// journal growing: one small line per flushed batch plus one per commit.
+/// That is a size concern, not a correctness one.
+pub fn compact(paths: &SessionPaths, id: &SessionId) -> bool {
+    let lock = AdvisoryLock::acquire(
+        paths.changesets_dir().join(format!("{id}.lock")),
+        COMPACT_LOCK_WAIT,
+        COMPACT_LOCK_STALE_AFTER,
+    );
+    if !lock.held() {
+        return false;
+    }
+    let path = changeset_path(paths, id);
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let folded = fold_lines(&raw);
+    // The compare-and-swap: anything appended since the read makes the length
+    // differ, and losing means skip.
+    let unchanged = std::fs::metadata(&path)
+        .map(|md| md.len() == raw.len() as u64)
+        .unwrap_or(false);
+    if !unchanged {
+        return false;
+    }
+    if folded.is_empty() {
+        return std::fs::remove_file(&path).is_ok();
+    }
+    let entries: Vec<JournalEntry> = folded.into_values().collect();
+    let Ok(line) = serde_json::to_string(&JournalLine { paths: entries }) else {
+        return false;
+    };
+    let tmp = path.with_extension("jsonl.compacting");
+    if std::fs::write(&tmp, format!("{line}\n")).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    if std::fs::rename(&tmp, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    false
+}
+
+/// Compacts every changeset no live session owns, returning how many journals
+/// were removed outright.
+///
+/// The quiescent sweep behind `rdm session gc`. A changeset with no live lease
+/// (and that is not the caller's own) has no process that could be appending
+/// to it, so this is the one point at which [`compact`]'s rewrite races
+/// nothing at all. It is what keeps `rdm session list` from accumulating
+/// changesets that have been fully committed and now claim nothing, given that
+/// [`truncate`] no longer removes a journal inline.
+pub fn gc_changesets(
+    paths: &SessionPaths,
+    procs: &dyn ProcessTable,
+    current: Option<&SessionId>,
+) -> usize {
+    let live = lease::live_lease_ids(paths, procs);
+    let mut removed = 0;
+    for id in list_changeset_ids(paths).unwrap_or_default() {
+        let owned =
+            live.contains(id.as_str()) || current.is_some_and(|c| c.as_str() == id.as_str());
+        if owned {
+            continue;
+        }
+        if compact(paths, &id) {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// Lists every changeset on disk, flagging the ones no live session owns.
@@ -223,6 +463,13 @@ pub fn truncate(paths: &SessionPaths, id: &SessionId, landed: &[String]) -> Resu
 /// harness variable, or a per-process fallback) therefore read as orphaned once
 /// their session is gone — which is exactly the recoverable state
 /// [`adopt_changeset`] exists to resolve.
+///
+/// A changeset whose journal folds to nothing is **omitted**. It claims no
+/// path, so there is nothing for [`adopt_changeset`] or `rdm commit
+/// --changeset` to recover, and reporting it — especially as an orphan —
+/// would be noise pointing at no work. This keeps the listing identical to
+/// what it was when a fully-committed journal was deleted inline; the file
+/// itself is swept later by [`gc_changesets`].
 ///
 /// # Errors
 ///
@@ -251,8 +498,12 @@ pub fn list_changesets(
         };
         let owned =
             live.contains(id.as_str()) || current.is_some_and(|c| c.as_str() == id.as_str());
+        let claimed = read_journal(paths, &id)?.len();
+        if claimed == 0 {
+            continue;
+        }
         out.push(ChangesetSummary {
-            paths: read_journal(paths, &id)?.len(),
+            paths: claimed,
             orphaned: !owned,
             id: id.to_string(),
         });
@@ -597,7 +848,7 @@ mod tests {
         )
         .unwrap();
 
-        truncate(&p, &id, &["a.md".to_string()]).unwrap();
+        truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
         assert_eq!(
             read_journal(&p, &id).unwrap(),
             vec![entry("b.md", JournalKind::Write)],
@@ -606,16 +857,24 @@ mod tests {
     }
 
     #[test]
-    fn truncating_every_path_removes_the_journal_entirely() {
+    fn truncating_every_path_leaves_a_journal_that_claims_nothing() {
         let dir = TempDir::new().unwrap();
         let p = paths(&dir);
         let id = SessionId::new("s-trunc-all").unwrap();
         record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
 
-        truncate(&p, &id, &["a.md".to_string()]).unwrap();
-        assert!(!changeset_path(&p, &id).exists());
-        // Idempotent: truncating an already-gone journal is not an error.
-        truncate(&p, &id, &["a.md".to_string()]).unwrap();
+        truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        assert!(
+            read_journal(&p, &id).unwrap().is_empty(),
+            "the journal must claim nothing once everything landed"
+        );
+        // The FILE survives, deliberately: removing it is a rewrite, and a
+        // rewrite can destroy a concurrent O_APPEND record. Cleanup is
+        // `compact`/`gc_changesets`, at a quiescent moment.
+        assert!(changeset_path(&p, &id).exists());
+        // Idempotent: tombstoning an already-landed path claims nothing new.
+        truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        assert!(read_journal(&p, &id).unwrap().is_empty());
     }
 
     #[test]
@@ -628,13 +887,313 @@ mod tests {
         let p = paths(&dir);
         let id = SessionId::new("s-reclaim").unwrap();
         record(&p, &id, &[entry("shared.md", JournalKind::Write)]).unwrap();
-        truncate(&p, &id, &["shared.md".to_string()]).unwrap();
+        truncate(&p, &id, &[entry("shared.md", JournalKind::Write)]).unwrap();
         assert!(
             !read_journal(&p, &id)
                 .unwrap()
                 .iter()
                 .any(|e| e.path == "shared.md"),
             "a landed path must not survive in the journal"
+        );
+    }
+
+    #[test]
+    fn an_append_during_truncation_survives() {
+        // The defect this phase exists to close. Under one session id, a
+        // parallel subagent's `record` and this session's commit-time
+        // `truncate` are two processes writing the same file. The old
+        // read-modify-write destroyed anything appended in between; two
+        // O_APPEND lines cannot destroy each other.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-race").unwrap();
+        let landed = entry_with_digest("a.md", JournalKind::Write, "aaa");
+        record(&p, &id, std::slice::from_ref(&landed)).unwrap();
+
+        // The interleave: the other process appends between the committer
+        // reading the journal (it read exactly `landed`) and truncating it.
+        record(
+            &p,
+            &id,
+            &[entry_with_digest("b.md", JournalKind::Write, "bbb")],
+        )
+        .unwrap();
+        truncate(&p, &id, &[landed]).unwrap();
+
+        assert_eq!(
+            read_journal(&p, &id).unwrap(),
+            vec![entry_with_digest("b.md", JournalKind::Write, "bbb")],
+            "the concurrently appended entry must survive the truncation"
+        );
+    }
+
+    #[test]
+    fn a_concurrent_rewrite_of_a_landed_path_survives_its_tombstone() {
+        // The reported symptom, reduced: both sessions regenerate INDEX.md,
+        // so the racing append names a path that IS in `landed`. A
+        // path-keyed tombstone would sweep it and leave the file dirty and
+        // unattributed; a content-keyed one keeps it, because those bytes
+        // are not the bytes that landed.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-index").unwrap();
+        let landed = entry_with_digest("INDEX.md", JournalKind::Write, "old");
+        record(&p, &id, std::slice::from_ref(&landed)).unwrap();
+        record(
+            &p,
+            &id,
+            &[entry_with_digest("INDEX.md", JournalKind::Write, "new")],
+        )
+        .unwrap();
+
+        truncate(&p, &id, &[landed]).unwrap();
+
+        assert_eq!(
+            read_journal(&p, &id).unwrap(),
+            vec![entry_with_digest("INDEX.md", JournalKind::Write, "new")],
+            "a newer record of a landed path describes content that has NOT landed"
+        );
+    }
+
+    #[test]
+    fn an_append_after_a_tombstone_resurrects_its_path() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-resurrect").unwrap();
+        let landed = entry_with_digest("a.md", JournalKind::Write, "aaa");
+        record(&p, &id, std::slice::from_ref(&landed)).unwrap();
+        truncate(&p, &id, &[landed]).unwrap();
+        assert!(read_journal(&p, &id).unwrap().is_empty());
+
+        record(
+            &p,
+            &id,
+            &[entry_with_digest("a.md", JournalKind::Write, "ccc")],
+        )
+        .unwrap();
+        assert_eq!(
+            read_journal(&p, &id).unwrap(),
+            vec![entry_with_digest("a.md", JournalKind::Write, "ccc")],
+            "a write after the commit is a new uncommitted write"
+        );
+    }
+
+    #[test]
+    fn a_delete_then_recreate_spanning_a_tombstone_still_folds_to_write() {
+        // Phase 9's delete guard depends on this routing: a path that ends up
+        // `Write` reaches the commit's digest guard, never its working-tree
+        // presence check. A tombstone in the middle must not change that.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-route").unwrap();
+        let landed = entry("gone.md", JournalKind::Delete);
+        record(&p, &id, std::slice::from_ref(&landed)).unwrap();
+        truncate(&p, &id, &[landed]).unwrap();
+        record(
+            &p,
+            &id,
+            &[entry_with_digest("gone.md", JournalKind::Write, "back")],
+        )
+        .unwrap();
+
+        let read = read_journal(&p, &id).unwrap();
+        assert_eq!(read.len(), 1);
+        assert_eq!(
+            read[0].kind,
+            JournalKind::Write,
+            "recreation routes to Write"
+        );
+        assert_eq!(
+            read[0].digest.as_deref(),
+            Some("back"),
+            "with its NEW digest"
+        );
+    }
+
+    #[test]
+    fn truncate_with_no_landed_paths_writes_nothing() {
+        // A fully no-op commit must not grow the journal, exactly as an empty
+        // flush records nothing.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-noop").unwrap();
+        truncate(&p, &id, &[]).unwrap();
+        assert!(!changeset_path(&p, &id).exists(), "no journal was created");
+
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        let before = std::fs::read_to_string(changeset_path(&p, &id)).unwrap();
+        truncate(&p, &id, &[]).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(changeset_path(&p, &id)).unwrap(),
+            before,
+            "an empty truncation appends nothing"
+        );
+    }
+
+    #[test]
+    fn a_tombstone_is_never_parsed_as_an_empty_batch() {
+        // `JournalLine::paths` must stay required. If it ever gained
+        // `#[serde(default)]`, every tombstone would parse as an empty batch
+        // first, and truncation would silently become a no-op.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-discriminate").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        let raw = std::fs::read_to_string(changeset_path(&p, &id)).unwrap();
+        let tombstone = raw.lines().last().unwrap();
+        assert!(
+            tombstone.contains("\"landed\""),
+            "the last line is a tombstone"
+        );
+        assert!(
+            serde_json::from_str::<JournalLine>(tombstone).is_err(),
+            "a tombstone must not parse as a batch line"
+        );
+        assert!(read_journal(&p, &id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_reader_that_predates_tombstones_over_claims_rather_than_losing() {
+        // The cross-version edge: an OLDER rdm skips a `{"landed":…}` line as
+        // unparsable, so it keeps claiming paths that already landed. That is
+        // an over-claim — the safe direction — never a loss. Simulated here by
+        // folding only the batch lines, which is exactly what the old reader
+        // did.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-oldreader").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        let raw = std::fs::read_to_string(changeset_path(&p, &id)).unwrap();
+        let old_reader: Vec<String> = raw
+            .lines()
+            .filter_map(|l| serde_json::from_str::<JournalLine>(l).ok())
+            .flat_map(|b| b.paths)
+            .map(|e| e.path)
+            .collect();
+        assert_eq!(
+            old_reader,
+            vec!["a.md".to_string()],
+            "an older reader still claims the landed path — over-claim, not loss"
+        );
+    }
+
+    #[test]
+    fn compaction_collapses_a_journal_and_removes_an_empty_one() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-compact").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        record(&p, &id, &[entry("b.md", JournalKind::Write)]).unwrap();
+        truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        assert!(
+            !compact(&p, &id),
+            "a non-empty journal is rewritten, not removed"
+        );
+        let raw = std::fs::read_to_string(changeset_path(&p, &id)).unwrap();
+        assert_eq!(raw.lines().count(), 1, "collapsed to one line");
+        assert_eq!(
+            read_journal(&p, &id).unwrap(),
+            vec![entry("b.md", JournalKind::Write)],
+            "compaction preserves exactly what the fold claimed"
+        );
+
+        truncate(&p, &id, &[entry("b.md", JournalKind::Write)]).unwrap();
+        assert!(compact(&p, &id), "a journal claiming nothing is removed");
+        assert!(!changeset_path(&p, &id).exists());
+    }
+
+    #[test]
+    fn compaction_skips_when_the_lock_is_already_held() {
+        // The one place that diverges from rdm's proceed-anyway lock
+        // convention: with no correctness mechanism underneath a rewrite, an
+        // unheld guard must mean skip.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-locked").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        std::fs::create_dir_all(p.changesets_dir()).unwrap();
+        let held = p.changesets_dir().join(format!("{id}.lock"));
+        std::fs::write(&held, "").unwrap();
+
+        assert!(!compact(&p, &id), "compaction skipped");
+        assert!(
+            changeset_path(&p, &id).exists(),
+            "and left the journal untouched rather than rewriting it unlocked"
+        );
+    }
+
+    #[test]
+    fn a_changeset_that_claims_nothing_is_not_listed_and_is_swept_by_gc() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-empty").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        let table = MapProcessTable::empty(1);
+        assert!(
+            list_changesets(&p, &table, None).unwrap().is_empty(),
+            "a changeset with nothing to recover is not reported"
+        );
+        assert!(changeset_path(&p, &id).exists(), "the file is still there");
+
+        assert_eq!(gc_changesets(&p, &table, None), 1);
+        assert!(!changeset_path(&p, &id).exists(), "gc swept it");
+    }
+
+    #[test]
+    fn gc_leaves_a_changeset_that_still_claims_a_path() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-live-claim").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        let table = MapProcessTable::empty(1);
+        assert_eq!(gc_changesets(&p, &table, None), 0);
+        assert_eq!(
+            read_journal(&p, &id).unwrap(),
+            vec![entry("a.md", JournalKind::Write)]
+        );
+    }
+
+    #[test]
+    fn gc_never_touches_the_callers_own_changeset() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-mine").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        let table = MapProcessTable::empty(1);
+        assert_eq!(gc_changesets(&p, &table, Some(&id)), 0);
+        assert!(
+            changeset_path(&p, &id).exists(),
+            "the caller is a live appender by definition"
+        );
+    }
+
+    #[test]
+    fn the_harness_barrier_is_inert_when_unset_or_empty() {
+        // Asserted as a property of `truncate` itself rather than of the env
+        // var: if the seam ever stopped being inert, every real commit would
+        // stall for the 60s ceiling.
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-barrier").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        let started = std::time::Instant::now();
+        truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "an unset barrier must not park a real commit"
         );
     }
 

@@ -337,18 +337,115 @@ an unparsable line, so a required field would have made an older changeset
 quietly lose its paths. On a path recorded twice, the last digest wins, exactly
 as the last kind does.
 
+### Tombstones: truncation is an append too
+
+A commit does not rewrite the journal. It appends a second kind of line naming
+the entries it proved are now reflected at HEAD:
+
+```json
+{"landed":[{"path":"projects/demo/tasks/a.md","kind":"write","digest":"<sha256-hex>"}]}
+```
+
+This is not hygiene. The original `truncate` was a read → filter → whole-file
+`std::fs::write` (or `remove_file` when nothing survived), justified by "a
+changeset is by construction owned by one session: the only appender is the
+same shell that is committing". At rung 3 that premise is **false** — every
+parallel subagent and MCP call under one harness variable shares one id, so
+they are different *processes* on the same journal. Anything appended between
+that read and that write was destroyed. Reproduced with 40 parallel creates
+plus 6 concurrent commits under one `RDM_SESSION`: all 40 tasks landed, but
+both `INDEX.md` files were left dirty, the changeset reported zero journaled
+paths, and the next `rdm commit` disowned the indexes as belonging to another
+changeset.
+
+Making truncation an append closes it structurally rather than narrowing it:
+two single-line `O_APPEND` writes cannot destroy each other, so the window is
+gone, not smaller. A lock would only have narrowed it — rdm's `AdvisoryLock`
+is best-effort by construction (`acquire` returns an *unheld* guard on timeout
+and the caller proceeds anyway), and every other user is safe only because a
+real correctness mechanism sits underneath it (HEAD compare-and-swap for
+commits, the content-digest precondition for flushes). Truncation has no such
+underlayer, so a lock alone could not deliver "never lost". Locking `record`
+instead would forfeit its documented lock-free, best-effort contract.
+
+### The fold, and why tombstones carry whole entries
+
+`read_journal` is the ordered fold that gives the file its meaning:
+
+- a `paths` line inserts its entries, last write winning for both `kind` and
+  `digest`;
+- a `landed` tombstone removes a path **only when the entry currently folded
+  for it is exactly the entry that landed**.
+
+Carrying the whole entry rather than a bare path is what makes the common case
+correct. Both sessions regenerate `INDEX.md`, so the racing append names a path
+the committer *is* landing. A path-keyed tombstone would sweep it — the
+reported dirty-index symptom, one level down. A content-keyed one keeps it,
+because those bytes are not the bytes that landed, and the next commit lands
+them. A record appended *after* a tombstone likewise resurrects its path: that
+write has not landed either. Phase 9's delete-then-recreate routing survives
+both directions, since a resurrected record carries its own `kind`.
+
+A journal written before tombstones existed folds exactly as it always did.
+The cross-version edge runs the safe way too: an older rdm skips a
+`{"landed":…}` line as unparsable, so it keeps claiming paths that already
+landed — an over-claim, absorbed by truncation-at-HEAD, never a loss. That is
+why `JournalLine::paths` must stay a *required* field: give it
+`#[serde(default)]` and every tombstone would parse as an empty batch instead.
+
+### Compaction, and why it is confined to `rdm session gc`
+
+`compact` is the one operation here that is not an append: under an advisory
+lock at `<changesets>/<id>.lock`, it rewrites a journal as the entries it
+currently claims, or removes it when it claims none. Two guards, both
+deliberately stricter than the rest of rdm:
+
+- an **unheld** lock means *skip*, not proceed-unlocked, because no correctness
+  mechanism sits underneath a rewrite;
+- a compare-and-swap on the file's byte length. A journal only grows, so its
+  length is a valid version token; losing the CAS means skip.
+
+It is nonetheless **not** called from the commit path. A rewrite can destroy a
+concurrent `O_APPEND` record — a writer that already holds its descriptor when
+the length check passes writes into the inode about to be unlinked — and that
+residual is not claimed closed. So compaction runs only from `rdm session gc`,
+against changesets no live lease owns, where by construction no appender
+exists. The contract is unconditional in the safe direction: compaction may
+fail to clean, never lose.
+
+The consequence is that a fully-committed journal keeps its lines until gc
+sweeps it. `list_changesets` therefore **omits** a changeset whose fold is
+empty: it claims nothing, so there is nothing for `adopt` or `rdm commit
+--changeset` to recover, and this keeps the listing identical to what it was
+when truncation deleted the file inline. "Empty" means the fold reports zero
+entries — never that the file is gone. A harness that gates on file absence
+would go red for a correct implementation the moment compaction legitimately
+loses its CAS.
+
+Reads dedupe and sort the fold across lines; appends stay O(1). Line count
+still grows without bound within a live session — one small line per flushed
+batch plus one per commit — which is a size concern, not a correctness one.
+
 Two properties fall out of the layout rather than out of discipline:
 
-- **Disjointness** — concurrent sessions have distinct ids and therefore
-  distinct files, so one session physically cannot write into another's journal.
-- **Lock-free appends** — each batch is one `write_all` of one complete line to
-  a file opened `O_APPEND`, which POSIX does not interleave. No lock, no
-  read-modify-write race.
+- **Append-only** — *every* write to a journal, a batch record and a commit's
+  truncation alike, is one `write_all` of one complete line to a file opened
+  `O_APPEND`, which POSIX does not interleave. No lock, no read-modify-write
+  race, and neither kind of write can destroy the other.
+- **Content-keyed truncation** — a tombstone identifies *what* landed rather
+  than *where* it sat, so the fold is independent of byte offsets and
+  compaction can rewrite a journal without changing what a later tombstone
+  means.
 
-Reads dedupe and sort the union across lines (last recorded kind wins per
-path); appends stay O(1). **There is no compaction in this phase**, deliberately
-— a long autopilot session's journal grows without bound in line count, which
-is a size concern, not a correctness one.
+What does **not** fall out of the layout is disjointness, and the earlier
+claim that "one session physically cannot write into another's journal" was
+already false when it was written: `GitStore::commit_whole_tree` loops every
+changeset id on disk and tombstones each one. Concurrent sessions do have
+distinct ids and therefore distinct files, so a *batch* record only ever
+reaches its own journal — but the whole-tree committer deliberately reaches
+across, and `O_APPEND` is what keeps that safe. Over-claiming survival there is
+the safe direction: a path whose blob already matches HEAD is truncated by the
+next scoped commit anyway.
 
 ### Exactness
 
@@ -369,12 +466,18 @@ at commit time belongs to the scoped-commit phase.
 | Object | Created | Removed |
 | --- | --- | --- |
 | Lease | Once per parent, on the first bare invocation under it | By GC when its pid is dead or recycled; opportunistically during the ancestry walk **and on every creation** |
-| Journal | On the first flushed batch of a changeset | **Never automatically** — only by `rdm session discard --force` |
+| Journal | On the first flushed batch of a changeset | By `rdm session gc`, but **only** once its fold claims nothing *and* no live lease owns it; or outright by `rdm session discard --force` |
 
 GC (`rdm session gc`, opportunistically during adoption, and — since phase 11
 — once on every lease *creation*) removes leases whose owning process is gone
 or whose recorded start time no longer matches, bounded at 64 files per pass.
-It never touches a journal, so no work is silently destroyed.
+
+Explicit `rdm session gc` additionally sweeps journals, and only there. The
+two conditions are both load-bearing: a journal that still claims a path holds
+recoverable work, and a changeset with a live lease has a process that could be
+appending to it right now, which is the one thing compaction's rewrite cannot
+tolerate. Neither the lease sweep nor the journal sweep can destroy work — the
+journal sweep only ever removes a file whose fold is already empty.
 
 The create-path sweep is what keeps a *fragmenting* topology from also being a
 *leaking* one. Under a per-tool-call wrapper harness every invocation reaches
@@ -451,6 +554,22 @@ so two racing processes cannot be made to interleave at it by timing alone, and
 the lost-update gate (`scripts/verify-lost-update.sh`) needs a *deterministic*
 interleave of two real processes. See
 [`lost-update-evaluation.md`](lost-update-evaluation.md) § "Harness design".
+
+### `RDM_HARNESS_JOURNAL_BARRIER`
+
+The third member of the family, and the truncation-side sibling of the one
+above: same contract (inert when unset or empty, bounded by the same 60-second
+ceiling when set), same reason (the window a commit opens over its journal is
+also confined to one invocation).
+
+It names a file. When set, `journal::truncate` blocks until that file exists,
+which lets `scripts/verify-journal-truncation-race.sh` park a real `rdm commit`
+there, drive a full `rdm task create` in a second real process to completion,
+and only then release the first. In the shipped code the barrier sits just
+before truncation's single append, because there is no read → write window left
+to sit inside; that harness's mutant-binary self-test rebuilds the old
+read-modify-write `truncate` with the barrier planted *inside* that window and
+asserts the loss reappears.
 
 ## Degradation
 
