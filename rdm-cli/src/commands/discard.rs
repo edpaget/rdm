@@ -171,7 +171,11 @@ fn warn_other_changesets(store: &rdm_store_git::GitStore) {
         others.len()
     );
     for c in others {
-        let orphan = if c.orphaned { " (orphaned)" } else { "" };
-        eprintln!("  {} — {} path(s){orphan}", c.id, c.paths);
+        let flag = c
+            .liveness
+            .label()
+            .map(|l| format!(" ({l})"))
+            .unwrap_or_default();
+        eprintln!("  {} — {} path(s){flag}", c.id, c.paths);
     }
 }

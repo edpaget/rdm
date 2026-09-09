@@ -121,6 +121,33 @@ pub struct JournalEntry {
     pub digest: Option<String>,
 }
 
+/// The liveness state of a changeset when viewed from another session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LivenessState {
+    /// This is the caller's own changeset (unflagged).
+    Current,
+    /// A live lease backs this changeset (unflagged).
+    Live,
+    /// This changeset has no lease file, so liveness cannot be determined
+    /// from process metadata (labeled "unleased").
+    Unleased,
+    /// This changeset has a lease file, but the owning process is dead or
+    /// has been recycled (labeled "orphaned").
+    Orphaned,
+}
+
+impl LivenessState {
+    /// Returns the label shown in human output, or None if unflagged.
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            Self::Current | Self::Live => None,
+            Self::Unleased => Some("unleased"),
+            Self::Orphaned => Some("orphaned"),
+        }
+    }
+}
+
 /// A summary of one changeset on disk.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ChangesetSummary {
@@ -128,8 +155,8 @@ pub struct ChangesetSummary {
     pub id: String,
     /// How many distinct paths the changeset has journaled.
     pub paths: usize,
-    /// Whether no live session currently owns this changeset.
-    pub orphaned: bool,
+    /// The liveness state of this changeset.
+    pub liveness: LivenessState,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -813,18 +840,18 @@ pub fn gc_changesets(
     removed
 }
 
-/// Lists every changeset on disk, flagging the ones no live session owns.
+/// Lists every changeset on disk, reporting their liveness states.
 ///
-/// A changeset is orphaned when no live lease records its id and it is not the
-/// caller's own id. Ids that never had a lease (explicit `RDM_SESSION`, a
-/// harness variable, or a per-process fallback) therefore read as orphaned once
-/// their session is gone — which is exactly the recoverable state
-/// [`adopt_changeset`] exists to resolve.
+/// A changeset's liveness is determined as follows:
+/// - [`LivenessState::Current`] if it is the caller's own changeset.
+/// - [`LivenessState::Live`] if a live lease backs it.
+/// - [`LivenessState::Orphaned`] if it has a lease file but the owning process is dead.
+/// - [`LivenessState::Unleased`] if it has no lease file (liveness unknown).
 ///
 /// A changeset whose journal folds to nothing is **omitted**. It claims no
 /// path, so there is nothing for [`adopt_changeset`] or `rdm commit
-/// --changeset` to recover, and reporting it — especially as an orphan —
-/// would be noise pointing at no work. This keeps the listing identical to
+/// --changeset` to recover, and reporting it — especially with a liveness
+/// label — would be noise pointing at no work. This keeps the listing identical to
 /// what it was when a fully-committed journal was deleted inline; the file
 /// itself is swept later by [`gc_changesets`].
 ///
@@ -844,6 +871,7 @@ pub fn list_changesets(
         Err(e) => return Err(Error::Io(e)),
     };
     let live = lease::live_lease_ids(paths, procs);
+    let dead = lease::dead_lease_ids(paths, procs);
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -853,15 +881,22 @@ pub fn list_changesets(
         let Some(id) = SessionId::new(stem) else {
             continue;
         };
-        let owned =
-            live.contains(id.as_str()) || current.is_some_and(|c| c.as_str() == id.as_str());
         let claimed = read_journal(paths, &id)?.len();
         if claimed == 0 {
             continue;
         }
+        let liveness = if current.is_some_and(|c| c.as_str() == id.as_str()) {
+            LivenessState::Current
+        } else if live.contains(id.as_str()) {
+            LivenessState::Live
+        } else if dead.contains(id.as_str()) {
+            LivenessState::Orphaned
+        } else {
+            LivenessState::Unleased
+        };
         out.push(ChangesetSummary {
             paths: claimed,
-            orphaned: !owned,
+            liveness,
             id: id.to_string(),
         });
     }
@@ -2072,32 +2107,66 @@ the same again verified under compaction's lock, and one final write"
     }
 
     #[test]
-    fn list_flags_changesets_with_no_live_lease_as_orphaned() {
+    fn list_flags_unleased_changesets_as_unleased_not_orphaned() {
         let dir = TempDir::new().unwrap();
         let p = paths(&dir);
         let table = MapProcessTable::chain(10, &[(20, "s20")]);
 
         let live = lease::create_at_parent(&p, &table).unwrap();
         record(&p, &live, &[entry("a.md", JournalKind::Write)]).unwrap();
-        let orphan = SessionId::new("s-orphan").unwrap();
-        record(&p, &orphan, &[entry("b.md", JournalKind::Write)]).unwrap();
+        let unleased = SessionId::new("s-unleased").unwrap();
+        record(&p, &unleased, &[entry("b.md", JournalKind::Write)]).unwrap();
 
         let listed = list_changesets(&p, &table, None).unwrap();
         let by_id = |id: &str| listed.iter().find(|c| c.id == id).unwrap().clone();
-        assert!(!by_id(live.as_str()).orphaned);
-        assert!(by_id("s-orphan").orphaned);
-        assert_eq!(by_id("s-orphan").paths, 1);
+        assert_eq!(by_id(live.as_str()).liveness, LivenessState::Live);
+        assert_eq!(by_id("s-unleased").liveness, LivenessState::Unleased);
+        assert_eq!(by_id("s-unleased").paths, 1);
     }
 
     #[test]
-    fn the_callers_own_changeset_is_never_orphaned() {
+    fn the_callers_own_changeset_is_always_current() {
         let dir = TempDir::new().unwrap();
         let p = paths(&dir);
         let id = SessionId::new("explicit-one").unwrap();
         record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
         let listed = list_changesets(&p, &MapProcessTable::empty(1), Some(&id)).unwrap();
         assert_eq!(listed.len(), 1);
-        assert!(!listed[0].orphaned);
+        assert_eq!(listed[0].liveness, LivenessState::Current);
+    }
+
+    #[test]
+    fn list_flags_dead_lease_changesets_as_orphaned() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        // Create a lease for a process that is no longer alive.
+        // Start with a process table containing pid 20, then switch to one without it
+        // to simulate the process being gone.
+        let _table_with_process = MapProcessTable::chain(10, &[(20, "s20-alive")]);
+
+        let dead_id = SessionId::new("s-dead-proc").unwrap();
+        // Manually create a lease file for a dead process
+        let lease_path = p.leases_dir().join("999.lease");
+        std::fs::create_dir_all(p.leases_dir()).ok();
+        let lease = super::lease::Lease {
+            id: dead_id.as_str().to_string(),
+            start_time: "0x0102030405060708".to_string(),
+            created_utc: "2026-09-09T00:00:00Z".to_string(),
+        };
+        let mut f = std::fs::File::create(&lease_path).unwrap();
+        use std::io::Write as _;
+        f.write_all(serde_json::to_string(&lease).unwrap().as_bytes())
+            .unwrap();
+        drop(f);
+
+        // Record a changeset with this dead-lease id
+        record(&p, &dead_id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        // Now list from a process table that does NOT include pid 999 - the lease is dead
+        let table_no_process = MapProcessTable::chain(10, &[(20, "s20-other")]);
+        let listed = list_changesets(&p, &table_no_process, None).unwrap();
+        let by_id = |id: &str| listed.iter().find(|c| c.id == id).unwrap().clone();
+        assert_eq!(by_id("s-dead-proc").liveness, LivenessState::Orphaned);
     }
 
     #[test]

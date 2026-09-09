@@ -339,7 +339,7 @@ fn list_flags_orphans_and_adopt_repoints_the_caller() {
         .assert()
         .success();
 
-    // Seen from a different session, `orphaned-one` has no live lease.
+    // Seen from a different session, `orphaned-one` has no live lease (unleased).
     let raw = stdout(
         rdm(&dir)
             .env("RDM_SESSION", "someone-else")
@@ -352,7 +352,7 @@ fn list_flags_orphans_and_adopt_repoints_the_caller() {
         .iter()
         .find(|c| c["id"] == "orphaned-one")
         .expect("the changeset should be listed");
-    assert_eq!(orphan["orphaned"], true);
+    assert_eq!(orphan["liveness"], "unleased");
     assert_eq!(orphan["paths"], 3);
 
     // Adopting re-points the caller's lease, so a later bare invocation from

@@ -82,7 +82,11 @@ pub fn run(root: &Path, format: OutputFormat, command: SessionCommand) -> Result
                         println!("No changesets recorded.");
                     } else {
                         for summary in &summaries {
-                            let flag = if summary.orphaned { " (orphaned)" } else { "" };
+                            let flag = summary
+                                .liveness
+                                .label()
+                                .map(|l| format!(" ({l})"))
+                                .unwrap_or_default();
                             println!("{}  {} path(s){flag}", summary.id, summary.paths);
                         }
                     }

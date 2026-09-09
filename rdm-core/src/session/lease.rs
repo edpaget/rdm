@@ -278,6 +278,43 @@ pub fn live_lease_ids(paths: &SessionPaths, procs: &dyn ProcessTable) -> BTreeSe
     out
 }
 
+/// Returns the set of changeset ids that have a lease file but whose owning
+/// process is dead or has been recycled.
+///
+/// This is used to distinguish truly orphaned changesets (dead lease) from
+/// unleased changesets (no lease file at all). Both may appear orphaned from
+/// another session's perspective, but the distinction is important for
+/// labeling in `rdm session list`.
+pub fn dead_lease_ids(paths: &SessionPaths, procs: &dyn ProcessTable) -> BTreeSet<String> {
+    let trustworthy = procs.get(procs.self_pid()).is_some();
+    let mut out = BTreeSet::new();
+    let Ok(entries) = std::fs::read_dir(paths.leases_dir()) else {
+        return out;
+    };
+    for entry in entries.flatten() {
+        let Some(pid) = lease_pid_from_name(&entry.file_name().to_string_lossy()) else {
+            continue;
+        };
+        let Some(lease) = read_lease(paths, pid) else {
+            continue;
+        };
+        if !trustworthy {
+            // If we can't trust the process table, assume no leases are dead.
+            continue;
+        }
+        match procs.get(pid) {
+            Some(info) if info.start_time == lease.start_time => {
+                // Process is alive and start time matches - not dead.
+            }
+            _ => {
+                // Process is dead or pid was recycled.
+                out.insert(lease.id);
+            }
+        }
+    }
+    out
+}
+
 /// Extracts the pid from a `<pid>.lease` file name.
 fn lease_pid_from_name(name: &str) -> Option<u32> {
     name.strip_suffix(".lease")?.parse().ok()
