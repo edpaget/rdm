@@ -184,20 +184,23 @@ const COMPACT_LOCK_WAIT: Duration = Duration::from_millis(200);
 /// How stale a compaction lock must be before another process takes it over.
 const COMPACT_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 
-/// The total number of write attempts one append may make.
+/// The number of write attempts one append may make in each of its two
+/// phases.
 ///
 /// The arithmetic is worth stating explicitly, because the loop bound reads
-/// off by one otherwise: [`append_line`] runs `for _ in 1..APPEND_ATTEMPTS`,
-/// which is `APPEND_ATTEMPTS - 1` **lock-free** attempts, and then makes one
-/// final attempt under [`compact`]'s own lock. At the value below that is
-/// 3 lock-free writes plus 1 locked write — 4 in total, which is what
-/// `a_journal_replaced_on_every_attempt_still_terminates` counts.
+/// off by one otherwise. [`append_line`] runs `for _ in 1..APPEND_ATTEMPTS`
+/// **lock-free**, which is `APPEND_ATTEMPTS - 1` attempts; then it takes
+/// [`compact`]'s lock and runs the same bound again, verifying each write; and
+/// if even those all lose it makes one last unverified write rather than
+/// spinning. At the value below that is 3 lock-free writes, 3 verified locked
+/// writes, and 1 final write — `2 * APPEND_ATTEMPTS - 1` = 7 in total, which
+/// is what `a_journal_replaced_on_every_attempt_still_terminates` counts.
 ///
 /// Each attempt is one `O_APPEND` write plus the identity recheck that says
 /// whether it landed in the journal `path` still names. One redo covers a
 /// single racing compaction and three covers a burst, but the bound is not
 /// what makes the append safe: exhausting the lock-free ones escalates to the
-/// lock-guarded attempt in [`append_line`] rather than accepting a write that
+/// lock-guarded phase in [`append_line`] rather than accepting a write that
 /// may already be doomed. Raising or lowering it trades lock-free attempts
 /// against escalations and changes no guarantee.
 const APPEND_ATTEMPTS: usize = 4;
@@ -226,6 +229,18 @@ const APPEND_LOCK_WAIT: Duration = Duration::from_secs(35);
 /// [`HARNESS_JOURNAL_BARRIER`] does for truncation. Same contract: inert when
 /// unset or empty, bounded by [`HARNESS_BARRIER_CEILING`] when set.
 const HARNESS_APPEND_BARRIER: &str = "RDM_HARNESS_APPEND_BARRIER";
+
+/// The environment variable naming a harness barrier file for compaction.
+///
+/// When set, [`compact`] blocks after its checks have passed and before it
+/// does anything irreversible — the window in which its advisory lock can age
+/// past [`COMPACT_LOCK_STALE_AFTER`] and be taken over by an escalating
+/// [`append_line`] while it is still running. That window opens and closes
+/// inside one `rdm session gc` invocation and is bounded by wall-clock time no
+/// harness should wait on, so driving it across two real processes needs a
+/// seam. Same contract as the other two: inert when unset or empty, bounded by
+/// [`HARNESS_BARRIER_CEILING`] when set.
+const HARNESS_COMPACT_BARRIER: &str = "RDM_HARNESS_COMPACT_BARRIER";
 
 /// Blocks until the barrier file named by `var` appears, or the ceiling
 /// elapses.
@@ -292,32 +307,57 @@ fn harness_barrier(var: &str) {
 /// and [`APPEND_LOCK_WAIT`] exceeds [`COMPACT_LOCK_STALE_AFTER`], so it comes
 /// back held unless the lock directory itself is unusable.
 ///
-/// Two residuals are stated rather than claimed closed. A compaction that ran
-/// for longer than [`COMPACT_LOCK_STALE_AFTER`] can have its lock taken over
-/// while still running. And a writer that ignores this protocol altogether —
-/// [`discard_changeset`], which destroys a changeset deliberately, or
-/// out-of-band tampering — is outside what a lock the other party never takes
-/// can defend against.
+/// Taking the lock is not on its own enough, because
+/// [`AdvisoryLock::acquire`] takes a lock over on age alone: the escalation
+/// can be handed a lock whose previous holder is a [`compact`] still running
+/// past [`COMPACT_LOCK_STALE_AFTER`] and already past its own checks. Two
+/// things close that. This function keeps *verifying* under the lock — the
+/// locked phase runs the same identity recheck and redo as the lock-free one,
+/// so a write the dispossessed compaction replaced is written again — and
+/// [`compact`] asks [`AdvisoryLock::still_held`] immediately before its
+/// `rename`/`remove_file` and abandons the rewrite when it has been
+/// dispossessed. So the two parties detect the double-hold from both sides
+/// instead of one of them silently overwriting the other.
+///
+/// One residual is stated rather than claimed closed: a writer that ignores
+/// this protocol altogether — [`discard_changeset`], which destroys a
+/// changeset deliberately, or out-of-band tampering — is outside what a lock
+/// the other party never takes can defend against.
 ///
 /// # Errors
 ///
 /// Returns [`Error::Io`] if the journal cannot be opened or written.
 fn append_line(path: &std::path::Path, line: &str) -> Result<()> {
-    // `1..APPEND_ATTEMPTS` is APPEND_ATTEMPTS - 1 lock-free attempts; the
-    // escalated write below is the last one of the budget, not an extra.
+    // Phase one: `APPEND_ATTEMPTS - 1` lock-free attempts.
     for _ in 1..APPEND_ATTEMPTS {
         if append_once(path, line)? {
             return Ok(());
         }
     }
-    // Stop racing compaction and exclude it. Holding this lock is what makes
-    // the final write unraceable, so it is taken for the write itself and
-    // released immediately after.
+    // Phase two: stop racing compaction and exclude it. Holding this lock is
+    // what keeps a protocol-following compaction from starting at all, so it
+    // is taken for the writes themselves and released immediately after.
     let _lock = AdvisoryLock::acquire(
         compaction_lock_path(path),
         APPEND_LOCK_WAIT,
         COMPACT_LOCK_STALE_AFTER,
     );
+    for _ in 1..APPEND_ATTEMPTS {
+        // Verified, exactly as the lock-free phase is. Holding the lock is not
+        // proof the write landed: `AdvisoryLock::acquire` takes a lock over on
+        // age alone, so this lock may have come from a compaction still
+        // running past its own checks. That compaction abandons its rewrite
+        // once it sees it was dispossessed, but it may already have replaced
+        // the journal before this write reached it — in which case the remedy
+        // is the same as everywhere else in this module: write again against
+        // whatever `path` names now.
+        if append_once(path, line)? {
+            return Ok(());
+        }
+    }
+    // Every verified attempt lost. Stop spinning and write once more: the
+    // bound is what keeps this function terminating, and an over-claimed path
+    // is the module's safe direction.
     append_once(path, line)?;
     Ok(())
 }
@@ -381,9 +421,13 @@ fn wrote_to_the_live_journal(_file: &std::fs::File, _path: &std::path::Path) -> 
     true
 }
 
-/// A test-only callback run between opening the journal and writing to it.
+/// A test-only callback run at one of this module's race seams.
 #[cfg(test)]
-type AfterOpenHook = Box<dyn FnMut(&std::path::Path)>;
+type PathHook = Box<dyn FnMut(&std::path::Path)>;
+
+/// The type one of the seam slots below has.
+#[cfg(test)]
+type HookSlot = std::cell::RefCell<Option<PathHook>>;
 
 #[cfg(test)]
 thread_local! {
@@ -391,24 +435,64 @@ thread_local! {
     /// to it, so a unit test can drive the exact interleave a concurrent
     /// [`compact`] creates rather than racing threads for a window measured in
     /// microseconds.
-    static AFTER_OPEN_HOOK: std::cell::RefCell<Option<AfterOpenHook>> =
-        const { std::cell::RefCell::new(None) };
+    static AFTER_OPEN_HOOK: HookSlot = const { std::cell::RefCell::new(None) };
+
+    /// Test-only seam run inside [`compact`] between reading-and-folding the
+    /// journal and the compare-and-swap on its byte length — the window an
+    /// appended line has to land in for that check to *fail*. Without it the
+    /// mismatch branch is reachable only by timing luck, which is the one kind
+    /// of coverage the rest of this module deliberately does without.
+    static AFTER_FOLD_HOOK: HookSlot = const { std::cell::RefCell::new(None) };
+
+    /// Test-only seam run inside [`compact`] immediately before its
+    /// irreversible step, so a unit test can drive a staleness takeover of the
+    /// compaction lock at the one instant where it would otherwise cost an
+    /// appender its record.
+    static BEFORE_REWRITE_HOOK: HookSlot = const { std::cell::RefCell::new(None) };
 }
 
-/// Runs the test-only after-open seam, if one is installed.
+/// Runs whichever seam `slot` holds, if one is installed.
 #[cfg(test)]
-fn run_after_open_hook(path: &std::path::Path) {
-    AFTER_OPEN_HOOK.with(|hook| {
+fn run_hook(slot: &'static std::thread::LocalKey<HookSlot>, path: &std::path::Path) {
+    slot.with(|hook| {
         if let Some(f) = hook.borrow_mut().as_mut() {
             f(path);
         }
     });
 }
 
-/// The seam compiles away entirely outside tests.
+/// Runs the test-only after-open seam, if one is installed.
+#[cfg(test)]
+fn run_after_open_hook(path: &std::path::Path) {
+    run_hook(&AFTER_OPEN_HOOK, path);
+}
+
+/// Runs the test-only post-fold seam, if one is installed.
+#[cfg(test)]
+fn run_after_fold_hook(path: &std::path::Path) {
+    run_hook(&AFTER_FOLD_HOOK, path);
+}
+
+/// Runs the test-only pre-rewrite seam, if one is installed.
+#[cfg(test)]
+fn run_before_rewrite_hook(path: &std::path::Path) {
+    run_hook(&BEFORE_REWRITE_HOOK, path);
+}
+
+/// The seams compile away entirely outside tests.
 #[cfg(not(test))]
 #[inline]
 fn run_after_open_hook(_path: &std::path::Path) {}
+
+/// The seams compile away entirely outside tests.
+#[cfg(not(test))]
+#[inline]
+fn run_after_fold_hook(_path: &std::path::Path) {}
+
+/// The seams compile away entirely outside tests.
+#[cfg(not(test))]
+#[inline]
+fn run_before_rewrite_hook(_path: &std::path::Path) {}
 
 /// Folds raw journal text into the set of entries it currently claims.
 ///
@@ -580,7 +664,7 @@ pub fn truncate(paths: &SessionPaths, id: &SessionId, landed: &[JournalEntry]) -
 /// which parallel subagents and MCP calls share a changeset, so an unleased
 /// changeset may well have several processes appending to it.
 ///
-/// Three guards make it safe anyway, and only the third is unconditional:
+/// Four guards make it safe anyway, and only the last two are unconditional:
 ///
 /// - The advisory lock at [`compaction_lock_path`]. Unlike every other
 ///   [`AdvisoryLock`] user in rdm, an *unheld* guard means **skip**, not
@@ -603,6 +687,18 @@ pub fn truncate(paths: &SessionPaths, id: &SessionId, landed: &[JournalEntry]) -
 ///   all. So the record is not lost, and this call's contract holds
 ///   unconditionally in the safe direction: compaction may fail to clean,
 ///   never lose.
+/// - An [`AdvisoryLock::still_held`] check immediately before the
+///   irreversible step. The guard above depends on holding the lock actually
+///   excluding this call, and [`AdvisoryLock::acquire`] takes a lock over on
+///   age alone — so a compaction that legitimately outran
+///   [`COMPACT_LOCK_STALE_AFTER`] (slow disk, a descheduled process) can be
+///   dispossessed *while still running*, and would otherwise `rename` over
+///   the very append the successor made under the lock it now holds. Asking
+///   whether the lock file still carries this call's own token turns that
+///   silent double-hold into a detected one: a dispossessed compaction
+///   abandons its rewrite, discards its temporary file, and reports that it
+///   cleaned nothing. Skipping is always safe; rewriting under a lock this
+///   call no longer holds is not.
 ///
 /// Losing the compare-and-swap repeatedly under sustained load leaves the
 /// journal growing: one small line per flushed batch plus one per commit.
@@ -621,6 +717,7 @@ pub fn compact(paths: &SessionPaths, id: &SessionId) -> bool {
         return false;
     };
     let folded = fold_lines(&raw);
+    run_after_fold_hook(&path);
     // The compare-and-swap: anything appended since the read makes the length
     // differ, and losing means skip.
     let unchanged = std::fs::metadata(&path)
@@ -629,7 +726,16 @@ pub fn compact(paths: &SessionPaths, id: &SessionId) -> bool {
     if !unchanged {
         return false;
     }
+    // The last instant at which this call has done nothing irreversible: every
+    // check has passed and neither exit has been taken. Parking here is what
+    // lets a harness drive a real staleness takeover of the lock below.
+    harness_barrier(HARNESS_COMPACT_BARRIER);
     if folded.is_empty() {
+        // The unlink is irreversible, so re-establish ownership first.
+        run_before_rewrite_hook(&path);
+        if !lock.still_held() {
+            return false;
+        }
         return std::fs::remove_file(&path).is_ok();
     }
     let entries: Vec<JournalEntry> = folded.into_values().collect();
@@ -638,6 +744,13 @@ pub fn compact(paths: &SessionPaths, id: &SessionId) -> bool {
     };
     let tmp = path.with_extension("jsonl.compacting");
     if std::fs::write(&tmp, format!("{line}\n")).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return false;
+    }
+    // Last chance to notice a staleness takeover: the temporary file costs
+    // nothing to throw away, the `rename` past this point cannot be undone.
+    run_before_rewrite_hook(&path);
+    if !lock.still_held() {
         let _ = std::fs::remove_file(&tmp);
         return false;
     }
@@ -1364,6 +1477,180 @@ mod tests {
         );
     }
 
+    /// The compare-and-swap guard, driven at its own seam.
+    ///
+    /// Compaction folds a snapshot of the journal and then rewrites the file
+    /// from that snapshot; anything appended in between is in the file but not
+    /// in the snapshot, so rewriting would drop it. The length compare-and-swap
+    /// is what notices. Every other race window in this module is driven
+    /// deterministically through a seam rather than raced for, and this one is
+    /// no different: without the seam the mismatch branch is only ever reached
+    /// by timing luck, so a CAS computed backwards would pass the suite.
+    #[test]
+    fn compaction_skips_when_a_line_is_appended_between_its_fold_and_its_rewrite() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-cas").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        record(&p, &id, &[entry("b.md", JournalKind::Write)]).unwrap();
+        let path = changeset_path(&p, &id);
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let raced = std::cell::Cell::new(false);
+        {
+            let p2 = SessionPaths::new(p.base().to_path_buf());
+            let id2 = id.clone();
+            let _guard = with_after_fold_hook(move |_| {
+                if raced.replace(true) {
+                    return;
+                }
+                // A sibling process appending under the same shared id, after
+                // this compaction read the journal and before it rewrites it.
+                record(&p2, &id2, &[entry("c.md", JournalKind::Write)]).unwrap();
+            });
+            assert!(
+                !compact(&p, &id),
+                "a compaction whose snapshot went stale must not report a removal"
+            );
+        }
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            raw.starts_with(&before),
+            "the rewrite must have been abandoned, not applied to a stale fold"
+        );
+        let claimed = read_journal(&p, &id).unwrap();
+        assert!(
+            claimed.contains(&entry("c.md", JournalKind::Write)),
+            "the record appended across the fold must survive: {claimed:?}"
+        );
+        assert_eq!(claimed.len(), 3, "and so must the two that preceded it");
+    }
+
+    /// The blocking finding this fix answers, in its second form.
+    ///
+    /// `AdvisoryLock::acquire` takes a lock over on age alone, so a compaction
+    /// whose critical section legitimately outruns `COMPACT_LOCK_STALE_AFTER`
+    /// — a slow disk, a descheduled process — can be dispossessed while still
+    /// running. An appender that escalated then holds the lock, appends under
+    /// it, and would have its record renamed away by the compaction that no
+    /// longer holds anything. Compaction must notice before the rename.
+    #[test]
+    fn a_dispossessed_compaction_abandons_its_rewrite() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-taken-over").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        record(&p, &id, &[entry("b.md", JournalKind::Write)]).unwrap();
+        let path = changeset_path(&p, &id);
+        // Two lines that fold to one, so a rewrite is unmistakable in the raw
+        // bytes even though it would leave the folded reading identical.
+        let before = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(before.lines().count(), 2, "the fold must be collapsible");
+
+        let taken = std::cell::Cell::new(false);
+        {
+            let _guard = with_before_rewrite_hook(move |journal| {
+                if taken.replace(true) {
+                    return;
+                }
+                // The escalating appender takes the lock over mid-compaction.
+                take_over_the_compaction_lock(journal);
+            });
+            assert!(
+                !compact(&p, &id),
+                "a dispossessed compaction must report that it cleaned nothing"
+            );
+        }
+
+        assert!(
+            path.exists(),
+            "and must not have renamed over the journal the successor is appending to"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "the journal must be byte-for-byte what it was: a rewrite under a \
+lock this compaction no longer holds is exactly the loss being prevented"
+        );
+        assert!(
+            !path.with_extension("jsonl.compacting").exists(),
+            "and must have discarded its temporary file rather than leaving litter"
+        );
+        // Release the lock the seam took over, so the temp dir cleans up.
+        let _ = std::fs::remove_file(compaction_lock_path(&path));
+    }
+
+    /// The same dispossession on compaction's other exit: an empty fold, where
+    /// the irreversible step is `remove_file` rather than `rename`.
+    #[test]
+    fn a_dispossessed_compaction_does_not_remove_the_journal() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-taken-over-empty").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        let path = changeset_path(&p, &id);
+        assert!(read_journal(&p, &id).unwrap().is_empty(), "fold is empty");
+
+        let taken = std::cell::Cell::new(false);
+        {
+            let _guard = with_before_rewrite_hook(move |journal| {
+                if taken.replace(true) {
+                    return;
+                }
+                take_over_the_compaction_lock(journal);
+            });
+            assert!(
+                !compact(&p, &id),
+                "a dispossessed sweep must report that it removed nothing"
+            );
+        }
+
+        assert!(
+            path.exists(),
+            "the journal an escalated appender is writing to must survive the sweep"
+        );
+        let _ = std::fs::remove_file(compaction_lock_path(&path));
+    }
+
+    /// The end-to-end shape of the finding: an appender escalates into a
+    /// compaction's lock because that compaction is still running, appends,
+    /// and the record survives the compaction finishing afterwards.
+    #[test]
+    fn an_append_that_escalated_into_a_slow_compactions_lock_survives_it() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-slow-compact").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        let path = changeset_path(&p, &id);
+
+        let raced = std::cell::Cell::new(false);
+        {
+            let p2 = SessionPaths::new(p.base().to_path_buf());
+            let id2 = id.clone();
+            let _guard = with_before_rewrite_hook(move |journal| {
+                if raced.replace(true) {
+                    return;
+                }
+                // The appender: it lost every lock-free attempt, escalated,
+                // found this compaction's lock stale, took it over, and wrote.
+                take_over_the_compaction_lock(journal);
+                record(&p2, &id2, &[entry("b.md", JournalKind::Write)]).unwrap();
+            });
+            assert!(!compact(&p, &id));
+        }
+
+        let claimed = read_journal(&p, &id).unwrap();
+        assert!(
+            claimed.contains(&entry("b.md", JournalKind::Write)),
+            "the escalated append must not be renamed away: {claimed:?}"
+        );
+        assert!(path.exists());
+        let _ = std::fs::remove_file(compaction_lock_path(&path));
+    }
+
     #[test]
     fn a_changeset_that_claims_nothing_is_not_listed_and_is_swept_by_gc() {
         let dir = TempDir::new().unwrap();
@@ -1405,16 +1692,56 @@ mod tests {
     /// it directly is what makes these tests deterministic rather than a race
     /// two threads may or may not lose.
     fn with_after_open_hook(f: impl FnMut(&std::path::Path) + 'static) -> HookGuard {
-        AFTER_OPEN_HOOK.with(|hook| *hook.borrow_mut() = Some(Box::new(f)));
-        HookGuard
+        install_hook(&AFTER_OPEN_HOOK, f)
     }
 
-    struct HookGuard;
+    /// Installs a seam inside `compact` between its fold and its length
+    /// compare-and-swap, so a test can drive the CAS-mismatch branch.
+    fn with_after_fold_hook(f: impl FnMut(&std::path::Path) + 'static) -> HookGuard {
+        install_hook(&AFTER_FOLD_HOOK, f)
+    }
+
+    /// Installs a seam inside `compact` immediately before its irreversible
+    /// step, so a test can drive a staleness takeover of the compaction lock.
+    fn with_before_rewrite_hook(f: impl FnMut(&std::path::Path) + 'static) -> HookGuard {
+        install_hook(&BEFORE_REWRITE_HOOK, f)
+    }
+
+    fn install_hook(
+        slot: &'static std::thread::LocalKey<HookSlot>,
+        f: impl FnMut(&std::path::Path) + 'static,
+    ) -> HookGuard {
+        slot.with(|hook| *hook.borrow_mut() = Some(Box::new(f)));
+        HookGuard { slot }
+    }
+
+    struct HookGuard {
+        slot: &'static std::thread::LocalKey<HookSlot>,
+    }
 
     impl Drop for HookGuard {
         fn drop(&mut self) {
-            AFTER_OPEN_HOOK.with(|hook| *hook.borrow_mut() = None);
+            self.slot.with(|hook| *hook.borrow_mut() = None);
         }
+    }
+
+    /// Impersonates the staleness takeover an escalating `append_line` does
+    /// when it finds a compaction's lock older than `COMPACT_LOCK_STALE_AFTER`
+    /// — byte for byte what `AdvisoryLock::acquire` does in that case: remove
+    /// the incumbent's file and create its own, carrying its own token.
+    ///
+    /// Written as raw filesystem calls rather than by aging a real lock and
+    /// acquiring it, so the tests below hold no successor guard alive and
+    /// depend on no clock.
+    fn take_over_the_compaction_lock(journal: &std::path::Path) {
+        let lock_path = compaction_lock_path(journal);
+        assert!(
+            lock_path.exists(),
+            "the compaction under test is not holding its lock, so there is \
+nothing to take over and this test would prove nothing"
+        );
+        std::fs::remove_file(&lock_path).unwrap();
+        std::fs::write(&lock_path, b"rdm-lock successor 0 0\n").unwrap();
     }
 
     /// The blocking finding this fix answers.
@@ -1623,10 +1950,10 @@ escalation is doing the work"
         );
     }
 
-    /// The lock-free half is bounded, not conditional: a journal replaced on
-    /// *every* attempt still terminates, writing at most `APPEND_ATTEMPTS`
-    /// lines (the lock-free tries plus the one escalated write) and never
-    /// spinning.
+    /// Both halves are bounded, not conditional: a journal replaced on *every*
+    /// attempt still terminates, writing at most `2 * APPEND_ATTEMPTS - 1`
+    /// lines (the lock-free tries, the verified locked tries, and the one
+    /// final write) and never spinning.
     #[test]
     fn a_journal_replaced_on_every_attempt_still_terminates() {
         let dir = TempDir::new().unwrap();
@@ -1648,9 +1975,9 @@ escalation is doing the work"
 
         assert_eq!(
             attempts.get(),
-            APPEND_ATTEMPTS,
-            "the lock-free redo is bounded, and the escalated write that \
-follows it is the last one"
+            2 * APPEND_ATTEMPTS - 1,
+            "both phases are bounded: APPEND_ATTEMPTS - 1 lock-free writes, \
+the same again verified under compaction's lock, and one final write"
         );
     }
 
@@ -1672,19 +1999,23 @@ follows it is the last one"
 
     #[test]
     fn the_harness_barrier_is_inert_when_unset_or_empty() {
-        // Asserted as a property of `truncate` itself rather than of the env
-        // var: if the seam ever stopped being inert, every real commit would
-        // stall for the 60s ceiling.
+        // Asserted as a property of the operations themselves rather than of
+        // the env vars: if a seam ever stopped being inert, every real commit
+        // — or every `rdm session gc` — would stall for the 60s ceiling.
         let dir = TempDir::new().unwrap();
         let p = paths(&dir);
         let id = SessionId::new("s-barrier").unwrap();
         record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
 
         let started = std::time::Instant::now();
+        // `record` covers HARNESS_APPEND_BARRIER, `truncate` covers
+        // HARNESS_JOURNAL_BARRIER, `compact` covers HARNESS_COMPACT_BARRIER.
         truncate(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+        record(&p, &id, &[entry("b.md", JournalKind::Write)]).unwrap();
+        compact(&p, &id);
         assert!(
             started.elapsed() < Duration::from_secs(5),
-            "an unset barrier must not park a real commit"
+            "an unset barrier must not park a real commit or sweep"
         );
     }
 

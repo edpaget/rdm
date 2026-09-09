@@ -140,6 +140,7 @@ MUTANT_OVERLAY="rdm-core/src/session/mod.rs
 rdm-core/src/session/lease.rs
 rdm-core/src/session/journal.rs
 rdm-core/src/session/process.rs
+rdm-core/src/lock.rs
 rdm-cli/src/commands/commit.rs
 rdm-cli/src/commands/session.rs
 rdm-store-git/src/lib.rs

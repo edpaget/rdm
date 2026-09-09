@@ -35,6 +35,15 @@
 #   5b  the same interleave against a mutant whose append never redoes itself
 #       and never escalates to compaction's lock, which must lose the record —
 #       otherwise section 5 proves nothing
+#   6   the staleness-takeover residual: `AdvisoryLock::acquire` takes a lock
+#       over on age alone, so a compaction slow enough to outrun
+#       COMPACT_LOCK_STALE_AFTER can be dispossessed WHILE STILL RUNNING and
+#       would otherwise rename over the append the successor made under the
+#       lock it now holds. A real `rdm session gc` is parked at
+#       RDM_HARNESS_COMPACT_BARRIER, dispossessed, and a real `rdm task create`
+#       appends; the record must survive gc finishing
+#   6b  the mutant self-test for section 6: with compaction's pre-rewrite
+#       ownership re-check removed, that record MUST be lost
 #
 # The window between a commit reading its journal and truncating it is opened
 # and closed inside one `rdm` invocation, so two real processes cannot be made
@@ -44,21 +53,22 @@
 #
 # Run after touching `journal::record` / `truncate` / `read_journal` /
 # `append_line` / `compact` / `gc_changesets` in
-# rdm-core/src/session/journal.rs, either `journal::truncate` call site in
-# rdm-store-git (`commit_changeset_id`, `commit_whole_tree`), the
-# `rdm session gc` sweep in rdm-cli/src/commands/session.rs, or either of the
-# RDM_HARNESS_JOURNAL_BARRIER / RDM_HARNESS_APPEND_BARRIER seams.
+# rdm-core/src/session/journal.rs, `AdvisoryLock` in rdm-core/src/lock.rs,
+# either `journal::truncate` call site in rdm-store-git
+# (`commit_changeset_id`, `commit_whole_tree`), the `rdm session gc` sweep in
+# rdm-cli/src/commands/session.rs, or any of the RDM_HARNESS_JOURNAL_BARRIER /
+# RDM_HARNESS_APPEND_BARRIER / RDM_HARNESS_COMPACT_BARRIER seams.
 #
 # Requires: cargo-built rdm at target/debug/rdm (from this repo). No network.
 # Every wait is bounded and fails loudly — CI runs this unattended.
 #
 # Cost: the run is dominated by ONE cold `cargo build -p rdm-cli --offline`
-# under a scratch CARGO_TARGET_DIR, shared by sections 2b and 5b rather than
-# built twice. Measured on a 2026 laptop: ~13s for that build and ~37s for the
-# whole script; a 2-core CI runner pays proportionally more for the build
-# (~81s of CPU) and roughly two minutes overall. If that ever becomes
+# under a scratch CARGO_TARGET_DIR, shared by sections 2b, 5b and 6b rather
+# than built three times. Measured on a 2026 laptop: ~13s for that build and
+# ~46s for the whole script; a 2-core CI runner pays proportionally more for
+# the build (~81s of CPU) and roughly two minutes overall. If that ever becomes
 # unacceptable, the remedy is a cheaper build — never a skipped or weakened
-# mutant self-test, without which sections 2 and 5 prove nothing.
+# mutant self-test, without which sections 2, 5 and 6 prove nothing.
 
 set -eu
 
@@ -82,6 +92,7 @@ trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 unset RDM_ROOT RDM_PROJECT RDM_STAGE RDM_FORMAT RDM_SESSION
 unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID RDM_HARNESS_SESSION_ID
 unset RDM_HARNESS_FLUSH_BARRIER RDM_HARNESS_JOURNAL_BARRIER RDM_HARNESS_APPEND_BARRIER
+unset RDM_HARNESS_COMPACT_BARRIER
 # An inherited git environment (set whenever this runs under a git hook) would
 # point every `git -C <temp-repo>` query below at the invoking repo instead.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
@@ -571,6 +582,19 @@ mv "$MUT_JOURNAL.new" "$MUT_JOURNAL"
 grep -q '// MUTATION-APPEND' "$MUT_JOURNAL" ||
     fail "failed to plant the append mutation"
 
+# The third mutation, for section 6b: compaction stops re-checking that it
+# still owns its advisory lock before the irreversible step. Neutering the
+# condition rather than deleting the block keeps every binding used, so the
+# mutant still compiles under -D warnings.
+grep -q '!lock\.still_held()' "$MUT_JOURNAL" ||
+    fail "compaction no longer re-checks lock ownership by that name — update \
+this self-test to match"
+sed 's|!lock\.still_held()|false /* MUTATION-COMPACT */|g' \
+    "$MUT_JOURNAL" >"$MUT_JOURNAL.new"
+mv "$MUT_JOURNAL.new" "$MUT_JOURNAL"
+grep -q 'MUTATION-COMPACT' "$MUT_JOURNAL" ||
+    fail "failed to plant the compaction-ownership mutation"
+
 # The mutant must not also inherit the tombstone-aware fold's protection from
 # the OTHER direction, but it legitimately keeps `read_journal` — the pre-fix
 # code read the same way. Only the write half is reverted.
@@ -767,6 +791,162 @@ ok "without the redo the record is silently lost — section 5's pass is caused 
 
 git -C "$REPO_5B" status --porcelain >"$TMP/s5b.status"
 [ -s "$TMP/s5b.status" ] ||
+    fail "the mutant left a clean tree, so the loss is not observable — \
+re-check the interleave"
+ok "and the lost record leaves the reported dirty tree behind"
+
+# ---------------------------------------------------------------------------
+# Section 6 — the staleness-takeover residual, driven across real processes
+# ---------------------------------------------------------------------------
+say "Section 6: a record appended under a dispossessed compaction's lock survives"
+
+# What this section closes. `AdvisoryLock::acquire` (rdm-core/src/lock.rs)
+# takes a contended lock over purely on the age of its file, with no evidence
+# that the holder released or died — deliberately, so a lock left behind by a
+# killed process can never block a deadline-bounded caller forever. The cost is
+# that a compaction whose critical section legitimately outruns
+# COMPACT_LOCK_STALE_AFTER (slow disk, a descheduled process) is dispossessed
+# WHILE STILL RUNNING and is never told. An `append_line` that escalated then
+# holds that same lock, appends under it, and — before the fix — had its record
+# renamed away by the compaction that no longer held anything. Section 5's
+# interleave cannot reach this: it drives the sub-microsecond open-vs-write
+# window, not the 30-second ownership one.
+#
+# What is real here and what is not, stated plainly. The parked `rdm session
+# gc` is a real process holding a real compaction lock. The appending `rdm task
+# create` is a real process making a real journal append. The *takeover* is
+# simulated with `rm` plus a write of a foreign token, because forcing a real
+# escalation would need the journal replaced under an appender three times
+# while gc is parked, which cannot happen. That simulation is byte-for-byte
+# what `AdvisoryLock::acquire` does to a lock older than `stale_after`: remove
+# the incumbent's file, then create its own carrying its own token.
+takeover_interleave() {
+    _repo=$1
+    _out=$2
+    _bin=${3:-$RDM_BIN}
+    mkdir -p "$_out"
+    _journal="$_repo/.git/rdm/changesets/$SHARED_SESSION.jsonl"
+    _lock="$_repo/.git/rdm/changesets/$SHARED_SESSION.lock"
+
+    # `rdm session gc` sweeps every unowned changeset in turn, so the parked
+    # process below would otherwise park on whichever it reaches first — the
+    # seeding changeset, whose journal is fully committed. Sweep that away
+    # quiescently first, so the barrier is guaranteed to park the compaction of
+    # the changeset this section is actually about.
+    RDM_SESSION="gc-runner" "$_bin" --root "$_repo" session gc >/dev/null 2>&1 ||
+        fail "the pre-sweep failed"
+    _left=$(find "$_repo/.git/rdm/changesets" -name '*.jsonl' 2>/dev/null | wc -l)
+    [ "$(echo "$_left" | tr -d ' ')" = "0" ] ||
+        fail "the pre-sweep left $_left changeset journal(s) behind, so the \
+parked compaction below may park on the wrong one"
+
+    # Two claims, so compaction takes its `rename` exit (a non-empty fold) —
+    # the sharper of the two, since a replaced journal looks healthy afterwards
+    # while the lost bytes sit in an unlinked inode.
+    for _pre in pre-item pre-item-two; do
+        RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create "$_pre" \
+            --title "Pre $_pre" --body "Body." --no-edit --project alpha >/dev/null
+    done
+    wc -l <"$_journal" >"$_out/lines.before" 2>/dev/null || : >"$_out/lines.before"
+
+    RDM_HARNESS_COMPACT_BARRIER="$_out/go-g" RDM_SESSION="gc-runner" \
+        "$_bin" --root "$_repo" session gc \
+        >"$_out/g.out" 2>"$_out/g.err" &
+    _gpid=$!
+
+    await_parked "$_gpid" "process G (rdm session gc)"
+
+    [ -f "$_lock" ] ||
+        fail "the parked compaction is not holding its advisory lock at \
+$_lock, so there is nothing to take over and this section proves nothing"
+
+    # The takeover, exactly as AdvisoryLock::acquire performs it on a stale
+    # lock: unlink the incumbent's file, create our own with our own token.
+    rm -f "$_lock"
+    printf 'rdm-lock successor 0 0\n' >"$_lock"
+
+    # A real append, made under the lock the successor now holds.
+    set +e
+    RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create b-item \
+        --title "B item" --body "Body." --no-edit --project beta \
+        >"$_out/b.out" 2>"$_out/b.err"
+    printf '%s' "$?" >"$_out/b.status"
+    set -e
+
+    : >"$_out/go-g"
+    await_exit "$_gpid" "process G (rdm session gc)" "$_out/g.status"
+    wc -l <"$_journal" >"$_out/lines.after" 2>/dev/null || : >"$_out/lines.after"
+    # Release the successor's lock so nothing else in this run trips over it.
+    rm -f "$_lock"
+}
+
+REPO_6="$TMP/repo-6"
+seed_repo "$REPO_6"
+takeover_interleave "$REPO_6" "$TMP/out-6"
+
+[ "$(cat "$TMP/out-6/b.status")" = "0" ] ||
+    fail "the appender failed: $(cat "$TMP/out-6/b.err")"
+[ "$(cat "$TMP/out-6/g.status")" = "0" ] ||
+    fail "the parked gc failed: $(cat "$TMP/out-6/g.err")"
+ok "both the dispossessed sweep and the appender exited 0"
+
+[ "$(tr -d ' ' <"$TMP/out-6/lines.before")" = "2" ] ||
+    fail "expected two journal lines for the parked compaction to collapse, \
+got '$(tr -d ' ' <"$TMP/out-6/lines.before")' — the interleave is not set up \
+the way this section assumes"
+ok "the parked compaction had a real, collapsible rewrite in front of it"
+
+journal_paths "$REPO_6" >"$TMP/s6.journal"
+grep -q '^projects/beta/tasks/b-item.md$' "$TMP/s6.journal" ||
+    fail "the record appended under the successor's lock was renamed away by a \
+compaction that no longer owned the lock. Journal now holds:
+$(cat "$TMP/s6.journal")"
+ok "the record appended under the taken-over lock survived the sweep finishing"
+
+grep -q '^projects/alpha/tasks/pre-item-two.md$' "$TMP/s6.journal" ||
+    fail "the dispossessed compaction dropped a claim it had already folded, \
+which is a loss in the other direction. Journal now holds:
+$(cat "$TMP/s6.journal")"
+ok "and every claim the sweep had already folded is still claimed"
+
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_6" commit \
+    -m "land what the takeover interleave left staged" >"$TMP/s6.commit" 2>&1 ||
+    fail "the follow-up commit failed: $(cat "$TMP/s6.commit")"
+grep -qi 'another changeset' "$TMP/s6.commit" &&
+    fail "the follow-up commit disowns paths after the takeover: $(cat "$TMP/s6.commit")"
+git -C "$REPO_6" status --porcelain >"$TMP/s6.status"
+[ -s "$TMP/s6.status" ] &&
+    fail "the tree is dirty after the takeover interleave settled:
+$(cat "$TMP/s6.status")"
+ok "everything the interleave left is committable and the tree ends clean"
+
+# ---------------------------------------------------------------------------
+# Section 6b — the mutant self-test for section 6
+# ---------------------------------------------------------------------------
+say "Section 6b: without compaction's ownership re-check, that record is lost"
+
+REPO_6B="$TMP/repo-6b"
+seed_repo "$REPO_6B" "$MUT_BIN"
+takeover_interleave "$REPO_6B" "$TMP/out-6b" "$MUT_BIN"
+
+[ "$(cat "$TMP/out-6b/b.status")" = "0" ] ||
+    fail "self-test is inconclusive: the mutant's appender failed for some \
+other reason (exit $(cat "$TMP/out-6b/b.status")): $(cat "$TMP/out-6b/b.err")"
+[ "$(tr -d ' ' <"$TMP/out-6b/lines.after")" = "1" ] ||
+    fail "the mutant's dispossessed compaction did not rewrite the journal \
+(lines after: '$(tr -d ' ' <"$TMP/out-6b/lines.after")'), so this self-test is \
+inconclusive"
+
+journal_paths "$REPO_6B" "$MUT_BIN" >"$TMP/s6b.journal"
+if grep -q '^projects/beta/tasks/b-item.md$' "$TMP/s6b.journal"; then
+    fail "the planted mutation did NOT reproduce the loss — section 6 may be \
+passing for a reason other than compaction's ownership re-check. Mutant journal:
+$(cat "$TMP/s6b.journal")"
+fi
+ok "without the re-check the record is silently lost — section 6's pass is caused by the fix"
+
+git -C "$REPO_6B" status --porcelain >"$TMP/s6b.status"
+[ -s "$TMP/s6b.status" ] ||
     fail "the mutant left a clean tree, so the loss is not observable — \
 re-check the interleave"
 ok "and the lost record leaves the reported dirty tree behind"

@@ -1764,10 +1764,15 @@ mod commit_lock_tests {
             started.elapsed() < COMMIT_LOCK_WAIT,
             "takeover must be immediate, not after the wait deadline"
         );
-        assert_eq!(
+        assert!(
+            lock.still_held(),
+            "the stale file should have been removed and recreated carrying \
+             the taker's own ownership token"
+        );
+        assert_ne!(
             std::fs::read(&lock_path).unwrap(),
-            Vec::<u8>::new(),
-            "the stale file should have been removed and recreated empty"
+            b"pid 1 (killed)".to_vec(),
+            "the dead holder's bytes must not survive the takeover"
         );
     }
 

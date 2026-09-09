@@ -447,17 +447,38 @@ back held either because the holder released or because the lock file aged past
 staleness and was taken over. Reaching it at all already means sustained
 contention, so the ordinary path still pays nothing.
 
-With that in place the contract is unconditional in the safe direction —
+Taking the lock is not on its own enough, because `AdvisoryLock::acquire` takes
+a contended lock over purely on the age of its file, with no evidence that the
+holder released or died — deliberately, so a lock left behind by a killed
+process can never block a deadline-bounded caller forever. The cost is a
+**double hold**: a compaction whose critical section legitimately outruns the
+30s staleness horizon (slow disk, a descheduled process) is dispossessed while
+still running, and is never told. Before the escalation existed that cost
+nothing; with it, the dispossessed compaction would rename over the very append
+the successor made under the lock it now holds.
+
+Two changes close that, one on each side. The escalated phase keeps
+**verifying**: it runs the same identity recheck and redo as the lock-free
+phase, bounded the same way, so a write a dispossessed compaction replaced is
+written again rather than accepted. And compaction asks
+`AdvisoryLock::still_held` immediately before its `rename`/`remove_file` — a
+lock file that no longer carries this call's own token means it was
+dispossessed, so it discards its temporary file and reports that it cleaned
+nothing. Skipping is always safe; rewriting under a lock the caller no longer
+holds is not. The ownership token is also what makes releasing a guard safe:
+`Drop` deletes the lock file only while it is still this guard's own, so
+releasing a dispossessed guard cannot hand the lock to a third party while its
+successor believes it holds it.
+
+With all of that in place the contract is unconditional in the safe direction —
 compaction may fail to clean, never lose — and it holds for every rung, leased
 or not. On Windows there is nothing to detect: the platform refuses to rename
 over or unlink a file another process holds open.
 
-Two residuals are stated rather than claimed closed. A compaction that ran
-longer than the 30s staleness horizon can have its lock taken over while still
-running. And a writer that ignores the lock protocol altogether — an explicit
-`rdm session discard --force`, which destroys a changeset deliberately, or
-out-of-band tampering — is outside what a lock the other party never takes can
-defend against.
+One residual is stated rather than claimed closed: a writer that ignores the
+lock protocol altogether — an explicit `rdm session discard --force`, which
+destroys a changeset deliberately, or out-of-band tampering — is outside what a
+lock the other party never takes can defend against.
 
 The consequence is that a fully-committed journal keeps its lines until gc
 sweeps it. `list_changesets` therefore **omits** a changeset whose fold is
@@ -642,6 +663,27 @@ rebuilds the binary with the append's liveness check stubbed out to report
 every write as live — an append that neither redoes itself nor escalates to
 compaction's lock — and asserts the record is lost, so § 5 cannot pass
 vacuously.
+
+### `RDM_HARNESS_COMPACT_BARRIER`
+
+The fifth member, and the one that makes the *staleness* residual drivable
+rather than merely stated. Same contract once more: inert when unset or empty,
+bounded by the same 60-second ceiling when set.
+
+It names a file. When set, `compact` blocks after all its checks have passed
+and before it does anything irreversible — the window in which its advisory
+lock can age past the 30-second staleness horizon and be taken over by an
+escalating appender while the compaction is still running.
+`scripts/verify-journal-truncation-race.sh` § 6 parks a real `rdm session gc`
+there, performs the takeover `AdvisoryLock::acquire` would perform on a stale
+lock (unlink the incumbent's file, create its own carrying its own token),
+appends with a second real `rdm task create`, and only then releases the sweep;
+the appended record must survive. Its § 6b mutant rebuilds the binary with
+compaction's pre-rewrite ownership re-check neutered and asserts the record is
+lost, so § 6 cannot pass vacuously. The takeover itself is simulated rather
+than raced, because forcing a genuine escalation would require the journal to
+be replaced under an appender three times while the sweep is parked; everything
+else in the section is two real processes.
 
 ## Degradation
 
