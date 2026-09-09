@@ -760,8 +760,42 @@ fn discard_all_warning_correctly_labels_unleased_and_orphaned() {
         .assert()
         .success();
 
+    // Create an orphaned changeset: a session with a dead lease file.
+    // Create it in the plan repo's .git/rdm directory so rdm will discover it.
+    let git_dir = dir.path().join(".git");
+    let rdm_dir = git_dir.join("rdm");
+    let leases_dir = rdm_dir.join("leases");
+    let changesets_dir = rdm_dir.join("changesets");
+
+    std::fs::create_dir_all(&leases_dir).unwrap();
+    std::fs::create_dir_all(&changesets_dir).unwrap();
+
+    // Create a lease file for a dead PID (999999999 is unlikely to exist).
+    // The .lease file contains the session metadata.
+    let lease_path = leases_dir.join("999999999.lease");
+    let lease_content = serde_json::json!({
+        "id": "orphaned-for-warning",
+        "start_time": "0x0102030405060708",
+        "created_utc": "2026-09-09T00:00:00Z"
+    });
+    std::fs::write(&lease_path, lease_content.to_string()).unwrap();
+
+    // Create a journal file for the orphaned changeset so it has an entry in the changesets.
+    let changeset_path = changesets_dir.join("orphaned-for-warning.jsonl");
+    let journal_line = serde_json::json!({
+        "paths": [
+            {
+                "path": "task-orphaned.md",
+                "kind": "write",
+                "digest": "abc123def456"
+            }
+        ]
+    });
+    std::fs::write(&changeset_path, format!("{}\n", journal_line)).unwrap();
+
     // Now try to discard --all from a different session; the warning should
-    // show the unleased changeset with a "(unleased)" label.
+    // show both the unleased changeset with "(unleased)" and the orphaned
+    // changeset with "(orphaned)" labels.
     let output = rdm(&dir)
         .env("RDM_SESSION", "another-session")
         .args(["discard", "--all", "--force"])
@@ -769,6 +803,8 @@ fn discard_all_warning_correctly_labels_unleased_and_orphaned() {
         .success();
 
     let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
+
+    // Verify unleased changeset is labeled correctly
     assert!(
         stderr.contains("unleased-for-warning"),
         "warning should name the unleased changeset: {stderr}"
@@ -776,5 +812,88 @@ fn discard_all_warning_correctly_labels_unleased_and_orphaned() {
     assert!(
         stderr.contains("(unleased)"),
         "warning should label the changeset as unleased: {stderr}"
+    );
+
+    // Verify orphaned changeset is labeled correctly
+    assert!(
+        stderr.contains("orphaned-for-warning"),
+        "warning should name the orphaned changeset: {stderr}"
+    );
+    assert!(
+        stderr.contains("(orphaned)"),
+        "warning should label the changeset as orphaned: {stderr}"
+    );
+}
+
+#[test]
+fn session_list_renders_orphaned_label_for_dead_leases() {
+    // Tests that orphaned changesets (with dead leases) are correctly labeled
+    // as "orphaned" in both text and JSON output of `rdm session list`.
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Create an orphaned changeset in the plan repo's .git/rdm directory.
+    let git_dir = dir.path().join(".git");
+    let rdm_dir = git_dir.join("rdm");
+    let leases_dir = rdm_dir.join("leases");
+    let changesets_dir = rdm_dir.join("changesets");
+
+    std::fs::create_dir_all(&leases_dir).unwrap();
+    std::fs::create_dir_all(&changesets_dir).unwrap();
+
+    // Create a lease file for a dead PID.
+    let lease_path = leases_dir.join("888888888.lease");
+    let lease_content = serde_json::json!({
+        "id": "dead-lease-test",
+        "start_time": "0x0102030405060708",
+        "created_utc": "2026-09-09T00:00:00Z"
+    });
+    std::fs::write(&lease_path, lease_content.to_string()).unwrap();
+
+    // Create a journal file for the orphaned changeset.
+    let changeset_path = changesets_dir.join("dead-lease-test.jsonl");
+    let journal_line = serde_json::json!({
+        "paths": [
+            {
+                "path": "test-file.md",
+                "kind": "write",
+                "digest": "abc123def456"
+            }
+        ]
+    });
+    std::fs::write(&changeset_path, format!("{}\n", journal_line)).unwrap();
+
+    // Test JSON output: `rdm session list --format json` should show
+    // the literal string "orphaned" for the liveness field.
+    let raw = stdout(
+        rdm(&dir)
+            .env("RDM_SESSION", "some-other-session")
+            .args(["session", "list", "--format", "json"]),
+    );
+    let listed: serde_json::Value = serde_json::from_str(raw.lines().next_back().unwrap()).unwrap();
+    let orphan = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "dead-lease-test")
+        .expect("the orphaned changeset should be listed");
+    assert_eq!(
+        orphan["liveness"], "orphaned",
+        "JSON output should show liveness as 'orphaned' (not 'unleased')"
+    );
+
+    // Test text output: `rdm session list` should show "(orphaned)" in the output.
+    let raw_text = stdout(
+        rdm(&dir)
+            .env("RDM_SESSION", "another-other-session")
+            .args(["session", "list"]),
+    );
+    assert!(
+        raw_text.contains("(orphaned)"),
+        "text output should show '(orphaned)' label for dead-lease-test: {raw_text}"
+    );
+    assert!(
+        raw_text.contains("dead-lease-test"),
+        "text output should name the orphaned changeset: {raw_text}"
     );
 }
