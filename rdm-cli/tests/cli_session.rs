@@ -548,3 +548,233 @@ fn gc_sweeps_a_journal_whose_changeset_is_fully_committed() {
         "gc is the only thing that clears a fully-committed journal"
     );
 }
+
+#[test]
+fn two_harness_sessions_view_each_other_unleased_not_orphaned() {
+    // AC1: Two distinct harness sessions with CLAUDE_CODE_SESSION_ID should
+    // verify that session B does not see session A's still-active unleased
+    // changeset labeled as "orphaned".
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Session A (harness-derived id via CLAUDE_CODE_SESSION_ID): create a changeset.
+    // First, get session A's actual id, since harness vars are hashed to session ids.
+    let session_a_id = stdout(
+        rdm(&dir)
+            .env("CLAUDE_CODE_SESSION_ID", "harness-session-a")
+            .args(["session", "id"]),
+    )
+    .lines()
+    .next()
+    .unwrap()
+    .to_string();
+
+    rdm(&dir)
+        .env("CLAUDE_CODE_SESSION_ID", "harness-session-a")
+        .args([
+            "task",
+            "create",
+            "task-from-a",
+            "--title",
+            "Task from session A",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // Session B (different harness-derived id): list changesets and verify A's
+    // changeset is not labeled "orphaned", but as "unleased" instead.
+    let raw = stdout(
+        rdm(&dir)
+            .env("CLAUDE_CODE_SESSION_ID", "harness-session-b")
+            .args(["session", "list", "--format", "json"]),
+    );
+    let listed: serde_json::Value = serde_json::from_str(raw.lines().next_back().unwrap()).unwrap();
+    let a_changeset = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == session_a_id)
+        .unwrap_or_else(|| {
+            panic!(
+                "session A's changeset {} should be listed from session B, but found: {}",
+                session_a_id,
+                serde_json::to_string_pretty(&listed).unwrap_or_default()
+            )
+        });
+
+    // The critical assertion: A's unleased changeset is labeled "unleased", never "orphaned".
+    assert_eq!(
+        a_changeset["liveness"], "unleased",
+        "session A's unleased changeset must not be labeled 'orphaned'"
+    );
+    assert_eq!(a_changeset["paths"], 3);
+
+    // Session A's own row should have liveness "current".
+    let a_own = stdout(
+        rdm(&dir)
+            .env("CLAUDE_CODE_SESSION_ID", "harness-session-a")
+            .args(["session", "list", "--format", "json"]),
+    );
+    let a_listed: serde_json::Value =
+        serde_json::from_str(a_own.lines().next_back().unwrap()).unwrap();
+    let a_self = a_listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == session_a_id)
+        .expect("session A's own changeset should be listed");
+    assert_eq!(
+        a_self["liveness"], "current",
+        "caller's own changeset must be current, not unleased"
+    );
+}
+
+#[test]
+fn session_list_text_output_shows_unleased_label() {
+    // Tests AC3: The label used for unleased changesets does not say "orphaned"
+    // in human (non-JSON) output.
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    rdm(&dir)
+        .env("RDM_SESSION", "unleased-test")
+        .args([
+            "task",
+            "create",
+            "task-for-text",
+            "--title",
+            "Task",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // List from a different session in text (non-JSON) format.
+    let output = stdout(
+        rdm(&dir)
+            .env("RDM_SESSION", "viewer")
+            .args(["session", "list"]),
+    );
+
+    // The text output should show "(unleased)", never "(orphaned)".
+    assert!(
+        output.contains("unleased-test"),
+        "unleased changeset should appear in listing: {output}"
+    );
+    assert!(
+        output.contains("(unleased)"),
+        "text output should show '(unleased)' for unleased changesets: {output}"
+    );
+    assert!(
+        !output.contains("orphaned"),
+        "text output should never show 'orphaned' for unleased changesets: {output}"
+    );
+}
+
+#[test]
+fn caller_own_changeset_remains_unflagged() {
+    // AC4: The caller's own row remains unflagged, even if their changeset is unleased.
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    rdm(&dir)
+        .env("RDM_SESSION", "caller-own")
+        .args([
+            "task",
+            "create",
+            "caller-task",
+            "--title",
+            "Caller's task",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // Caller lists their own session: should show "current" liveness, not "unleased".
+    let json_out = stdout(
+        rdm(&dir)
+            .env("RDM_SESSION", "caller-own")
+            .args(["session", "list", "--format", "json"]),
+    );
+    let listed: serde_json::Value =
+        serde_json::from_str(json_out.lines().next_back().unwrap()).unwrap();
+    let own = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "caller-own")
+        .expect("caller's own changeset should be in listing");
+    assert_eq!(
+        own["liveness"], "current",
+        "caller's own changeset must be 'current', not 'unleased'"
+    );
+
+    // In text output, the caller's row should have no flag at all.
+    let text_out = stdout(
+        rdm(&dir)
+            .env("RDM_SESSION", "caller-own")
+            .args(["session", "list"]),
+    );
+    assert!(
+        text_out.contains("caller-own"),
+        "caller's changeset should appear in text listing: {text_out}"
+    );
+    // Find the line with caller-own and ensure it has no (unleased) or (orphaned) flag.
+    let caller_line = text_out
+        .lines()
+        .find(|l| l.contains("caller-own"))
+        .expect("caller-own should be in text output");
+    assert!(
+        !caller_line.contains("(unleased)") && !caller_line.contains("(orphaned)"),
+        "caller's own row must have no liveness flag: {caller_line}"
+    );
+}
+
+#[test]
+fn discard_all_warning_correctly_labels_unleased_and_orphaned() {
+    // Tests AC3 for the discard warning path: verify both text and liveness
+    // labels render correctly when rdm discard --all warns about other changesets.
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Create an unleased changeset (rung 1, no lease created).
+    rdm(&dir)
+        .env("RDM_SESSION", "unleased-for-warning")
+        .args([
+            "task",
+            "create",
+            "task-unleased",
+            "--title",
+            "Task",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // Now try to discard --all from a different session; the warning should
+    // show the unleased changeset with a "(unleased)" label.
+    let output = rdm(&dir)
+        .env("RDM_SESSION", "another-session")
+        .args(["discard", "--all", "--force"])
+        .assert()
+        .success();
+
+    let stderr = String::from_utf8_lossy(&output.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("unleased-for-warning"),
+        "warning should name the unleased changeset: {stderr}"
+    );
+    assert!(
+        stderr.contains("(unleased)"),
+        "warning should label the changeset as unleased: {stderr}"
+    );
+}

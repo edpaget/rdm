@@ -576,10 +576,11 @@ process. A table that reads as empty means "unknown", never "nothing is alive";
 treating it as the latter would sweep away every live session's lease.
 
 **Orphan recovery.** A session killed mid-batch leaves a journal with no live
-lease. `rdm session list` flags it `orphaned: true`; `rdm session adopt <id>`
-re-points the caller's immediate-parent lease at it, so the caller's shell
-resolves that changeset from then on; `rdm session discard <id> --force` drops
-it.
+lease. `rdm session list` flags it with `liveness: "unleased"` (no lease file,
+liveness unknown) or `liveness: "orphaned"` (dead lease, process gone or
+recycled); `rdm session adopt <id>` re-points the caller's immediate-parent
+lease at it, so the caller's shell resolves that changeset from then on;
+`rdm session discard <id> --force` drops it.
 
 Because adoption repoints the *immediate parent's* lease, it does nothing
 useful from inside an ephemeral per-tool-call wrapper shell: the repointed
@@ -770,17 +771,20 @@ applies its directive, and journals its own writes.
 | --- | --- |
 | `rdm session id` | Print this session's changeset id. `--format json` adds `rung`, `resolve_micros`, and `lease_bootstrapped`. Text mode prints the bare id for `$(...)` capture. |
 | `rdm session journal [--id <id>]` | Print a changeset's exact journaled path set. |
-| `rdm session list` | List every changeset, flagging orphans. |
+| `rdm session list` | List every changeset, reporting their liveness states. `--format json` has a `liveness` field per changeset: `"current"` (caller's own, unflagged), `"live"` (backed by live lease, unflagged), `"unleased"` (no lease, flagged), or `"orphaned"` (dead lease, flagged). |
 | `rdm session adopt <id>` | Re-point this session at an existing (usually orphaned) changeset. |
 | `rdm session discard <id> --force` | Delete a changeset's journal. Irreversible, hence the flag. |
 | `rdm session gc` | Remove leases whose owning process is gone or recycled. |
 
-The JSON field names (`id`, `rung`, `resolve_micros`, `orphaned`, `paths`) are
+The JSON field names (`id`, `rung`, `resolve_micros`, `liveness`, `paths`) are
 a stable target for the agent-surface phase; do not rename them casually.
 `lease_bootstrapped` (phase 11) is **additive** to that set: it is `true` only
 when this invocation reached rung 2 by *creating* a lease rather than
 inheriting one, which is how a caller can tell "my shell owns a changeset" from
-"every call is minting its own". Text mode is unchanged — still the bare id.
+"every call is minting its own". Note: the `orphaned` boolean field was replaced
+by the `liveness` string field (containing `"current"`, `"live"`, `"unleased"`,
+or `"orphaned"`) in the plan-repo-concurrency phase. Text mode is unchanged — still
+the bare id.
 
 `rdm commit` prints a cause-and-remedy advisory when a caller has no continuity
 to inherit and no harness variable set. It appears only on the two branches

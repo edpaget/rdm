@@ -245,17 +245,20 @@ pub fn repoint_parent_lease(
     Ok(true)
 }
 
-/// Returns the set of ids held by leases whose owning process is still live.
+/// Classifies each lease's id as either live or dead in a single directory scan.
 ///
-/// Used to decide whether a changeset is orphaned. When the process table
-/// cannot see the caller itself the table is untrustworthy, so *every*
-/// recorded id is reported live — never claim a session is gone on the
-/// strength of a table that reads as empty.
-pub fn live_lease_ids(paths: &SessionPaths, procs: &dyn ProcessTable) -> BTreeSet<String> {
+/// Returns a pair of (live_ids, dead_ids). When the process table is
+/// untrustworthy (cannot see the calling process), returns (all_ids, empty),
+/// since we must assume all leases are live to avoid sweeping valid sessions.
+fn classify_leases(
+    paths: &SessionPaths,
+    procs: &dyn ProcessTable,
+) -> (BTreeSet<String>, BTreeSet<String>) {
     let trustworthy = procs.get(procs.self_pid()).is_some();
-    let mut out = BTreeSet::new();
+    let mut live = BTreeSet::new();
+    let mut dead = BTreeSet::new();
     let Ok(entries) = std::fs::read_dir(paths.leases_dir()) else {
-        return out;
+        return (live, dead);
     };
     for entry in entries.flatten() {
         let Some(pid) = lease_pid_from_name(&entry.file_name().to_string_lossy()) else {
@@ -265,17 +268,32 @@ pub fn live_lease_ids(paths: &SessionPaths, procs: &dyn ProcessTable) -> BTreeSe
             continue;
         };
         if !trustworthy {
-            out.insert(lease.id);
+            // If we can't trust the process table, assume all leases are live.
+            live.insert(lease.id);
             continue;
         }
         match procs.get(pid) {
             Some(info) if info.start_time == lease.start_time => {
-                out.insert(lease.id);
+                // Process is alive and start time matches - live lease.
+                live.insert(lease.id);
             }
-            _ => {}
+            _ => {
+                // Process is dead or pid was recycled - dead lease.
+                dead.insert(lease.id);
+            }
         }
     }
-    out
+    (live, dead)
+}
+
+/// Returns the set of ids held by leases whose owning process is still live.
+///
+/// Used to decide whether a changeset is live. When the process table
+/// cannot see the caller itself the table is untrustworthy, so *every*
+/// recorded id is reported live — never claim a session is gone on the
+/// strength of a table that reads as empty.
+pub fn live_lease_ids(paths: &SessionPaths, procs: &dyn ProcessTable) -> BTreeSet<String> {
+    classify_leases(paths, procs).0
 }
 
 /// Returns the set of changeset ids that have a lease file but whose owning
@@ -286,33 +304,7 @@ pub fn live_lease_ids(paths: &SessionPaths, procs: &dyn ProcessTable) -> BTreeSe
 /// another session's perspective, but the distinction is important for
 /// labeling in `rdm session list`.
 pub fn dead_lease_ids(paths: &SessionPaths, procs: &dyn ProcessTable) -> BTreeSet<String> {
-    let trustworthy = procs.get(procs.self_pid()).is_some();
-    let mut out = BTreeSet::new();
-    let Ok(entries) = std::fs::read_dir(paths.leases_dir()) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let Some(pid) = lease_pid_from_name(&entry.file_name().to_string_lossy()) else {
-            continue;
-        };
-        let Some(lease) = read_lease(paths, pid) else {
-            continue;
-        };
-        if !trustworthy {
-            // If we can't trust the process table, assume no leases are dead.
-            continue;
-        }
-        match procs.get(pid) {
-            Some(info) if info.start_time == lease.start_time => {
-                // Process is alive and start time matches - not dead.
-            }
-            _ => {
-                // Process is dead or pid was recycled.
-                out.insert(lease.id);
-            }
-        }
-    }
-    out
+    classify_leases(paths, procs).1
 }
 
 /// Extracts the pid from a `<pid>.lease` file name.
@@ -619,6 +611,53 @@ mod tests {
         assert!(live.contains("s-live"));
         assert!(!live.contains("s-recycled"));
         assert!(!live.contains("s-dead"));
+    }
+
+    #[test]
+    fn live_lease_ids_assumes_all_are_live_when_process_table_is_untrustworthy() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        // Table that doesn't include self (10), so it's untrustworthy.
+        let table = MapProcessTableAlias::empty(10);
+        write_lease(&p, 20, "s-unknown", "s20");
+        write_lease(&p, 30, "s-also-unknown", "s30");
+
+        // When the table is untrustworthy, all recorded leases must be reported
+        // as live to avoid falsely orphaning still-running sessions.
+        let live = live_lease_ids(&p, &table);
+        assert!(live.contains("s-unknown"));
+        assert!(live.contains("s-also-unknown"));
+    }
+
+    #[test]
+    fn dead_lease_ids_reports_only_dead_leases() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let table = MapProcessTableAlias::chain(10, &[(20, "s20")]).with(40, 1, "s40");
+        write_lease(&p, 20, "s-live", "s20");
+        write_lease(&p, 40, "s-recycled", "different");
+        write_lease(&p, 55, "s-dead", "s55");
+
+        let dead = dead_lease_ids(&p, &table);
+        assert!(!dead.contains("s-live"));
+        assert!(dead.contains("s-recycled"));
+        assert!(dead.contains("s-dead"));
+    }
+
+    #[test]
+    fn dead_lease_ids_assumes_none_are_dead_when_process_table_is_untrustworthy() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        // Table that doesn't include self (10), so it's untrustworthy.
+        let table = MapProcessTableAlias::empty(10);
+        write_lease(&p, 20, "s-unknown", "s20");
+        write_lease(&p, 30, "s-also-unknown", "s30");
+
+        // When the table is untrustworthy, we must conservatively assume
+        // no leases are dead (fail safe by reporting live).
+        let dead = dead_lease_ids(&p, &table);
+        assert!(!dead.contains("s-unknown"));
+        assert!(!dead.contains("s-also-unknown"));
     }
 
     #[test]
