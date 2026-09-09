@@ -475,10 +475,16 @@ compaction may fail to clean, never lose — and it holds for every rung, leased
 or not. On Windows there is nothing to detect: the platform refuses to rename
 over or unlink a file another process holds open.
 
-One residual is stated rather than claimed closed: a writer that ignores the
-lock protocol altogether — an explicit `rdm session discard --force`, which
-destroys a changeset deliberately, or out-of-band tampering — is outside what a
-lock the other party never takes can defend against.
+Every writer rdm has follows the protocol. `rdm session discard --force` is
+the one that used not to: it destroys a changeset deliberately, and did it with
+a bare `remove_file`, which takes a sibling's concurrent append with it exactly
+as an unguarded compaction would — a lock buys nothing against a party that
+never asks for it. It now retires what it *read*, through the same
+content-keyed tombstone `truncate` appends, and then sweeps the file with an
+ordinary `compact`: so an uncontended discard still leaves no journal behind,
+and a contended one over-claims until `rdm session gc` rather than losing an
+append. The residual that remains is genuinely outside rdm — out-of-band
+tampering with the journal file by something else entirely.
 
 The consequence is that a fully-committed journal keeps its lines until gc
 sweeps it. `list_changesets` therefore **omits** a changeset whose fold is
@@ -536,7 +542,7 @@ at commit time belongs to the scoped-commit phase.
 | Object | Created | Removed |
 | --- | --- | --- |
 | Lease | Once per parent, on the first bare invocation under it | By GC when its pid is dead or recycled; opportunistically during the ancestry walk **and on every creation** |
-| Journal | On the first flushed batch of a changeset | By `rdm session gc`, but **only** once its fold claims nothing (and, as a cost filter rather than a safety one, no live lease names it); or outright by `rdm session discard --force` |
+| Journal | On the first flushed batch of a changeset | By `rdm session gc`, but **only** once its fold claims nothing (and, as a cost filter rather than a safety one, no live lease names it); or by `rdm session discard --force`, which retires every claim through a tombstone and then sweeps the file with the same `compact` |
 
 GC (`rdm session gc`, opportunistically during adoption, and — since phase 11
 — once on every lease *creation*) removes leases whose owning process is gone
@@ -644,6 +650,11 @@ before truncation's single append, because there is no read → write window lef
 to sit inside; that harness's mutant-binary self-test rebuilds the old
 read-modify-write `truncate` with the barrier planted *inside* that window and
 asserts the loss reappears.
+
+`journal::discard_changeset` routes through `truncate`, so the same barrier
+parks a real `rdm session discard --force` between reading what a changeset
+claims and retiring it — which is what § 7 of that harness drives, against its
+own mutant restoring the bare `remove_file`.
 
 ### `RDM_HARNESS_APPEND_BARRIER`
 

@@ -59,7 +59,7 @@
 //!
 //! A session killed mid-batch leaves an *orphaned* changeset, which
 //! [`list_changesets`] flags and [`adopt_changeset`] hands to a live session;
-//! an explicit [`discard_changeset`] destroys one outright. Journals that fold
+//! an explicit [`discard_changeset`] retires everything one claims. Journals that fold
 //! to nothing are swept by [`gc_changesets`] (behind `rdm session gc`), which
 //! skips changesets a live lease names. That skip is a courtesy, not a proof:
 //! rungs 1 and 3 resolve an id without ever creating a lease, so a changeset
@@ -245,10 +245,11 @@ const HARNESS_COMPACT_BARRIER: &str = "RDM_HARNESS_COMPACT_BARRIER";
 /// Blocks until the barrier file named by `var` appears, or the ceiling
 /// elapses.
 ///
-/// Inert unless `var` is set to a non-empty value. Shared by the two seams —
-/// [`HARNESS_JOURNAL_BARRIER`] around truncation and
-/// [`HARNESS_APPEND_BARRIER`] inside the append — so their contract is written
-/// once.
+/// Inert unless `var` is set to a non-empty value. Shared by all three seams —
+/// [`HARNESS_JOURNAL_BARRIER`] around truncation (and so around the discard
+/// that now routes through it), [`HARNESS_APPEND_BARRIER`] inside the append,
+/// and [`HARNESS_COMPACT_BARRIER`] inside compaction — so their contract is
+/// written once.
 fn harness_barrier(var: &str) {
     let Ok(marker) = std::env::var(var) else {
         return;
@@ -319,10 +320,14 @@ fn harness_barrier(var: &str) {
 /// dispossessed. So the two parties detect the double-hold from both sides
 /// instead of one of them silently overwriting the other.
 ///
-/// One residual is stated rather than claimed closed: a writer that ignores
-/// this protocol altogether — [`discard_changeset`], which destroys a
-/// changeset deliberately, or out-of-band tampering — is outside what a lock
-/// the other party never takes can defend against.
+/// Every writer in this module follows the protocol, including
+/// [`discard_changeset`], which destroys a changeset deliberately and used to
+/// do it with a bare `remove_file` — an unlink that took a sibling's
+/// concurrent append with it exactly as an unguarded compaction would, since a
+/// lock buys nothing against a party that never asks for it. It now retires
+/// what it read through [`truncate`], so it appends like everything else. The
+/// residual that remains is genuinely outside this module: out-of-band
+/// tampering with the journal file by something that is not rdm.
 ///
 /// # Errors
 ///
@@ -627,6 +632,10 @@ pub fn read_journal(paths: &SessionPaths, id: &SessionId) -> Result<Vec<JournalE
 ///
 /// The file is not removed even when nothing survives; see [`compact`] for
 /// why cleanup is deliberately deferred to a quiescent moment.
+///
+/// [`discard_changeset`] reuses this for the opposite reason — retiring what a
+/// deliberately destroyed changeset claims rather than what a commit landed —
+/// so that a discard, too, cannot take a sibling's concurrent append with it.
 ///
 /// # Errors
 ///
@@ -935,19 +944,49 @@ pub fn adopt_changeset(
     Ok(())
 }
 
-/// Deletes a changeset's journal.
+/// Retires everything `id`'s journal claims, so the changeset owns nothing
+/// afterwards.
 ///
-/// Returns `false` when there was nothing to delete.
+/// Returns `false` when it already claimed nothing — including when there is
+/// no journal at all — so `rdm session discard` can still tell a real discard
+/// from a no-op.
+///
+/// Written as a [`truncate`] over what the journal currently claims, **not**
+/// as a `remove_file`. That distinction is the difference between destroying a
+/// changeset and destroying whatever happens to be in the file when the
+/// removal lands: under one shared session id a sibling process may be
+/// appending *while* this runs, and an unlink takes its record with it. That
+/// is precisely the loss [`append_line`]'s protocol exists to prevent,
+/// arriving from the one writer that used to ignore the protocol outright — so
+/// the fix is to stop ignoring it rather than to document the hole. Going
+/// through [`truncate`] also makes the retirement content-keyed: a path
+/// recorded again with different content between this read and the tombstone
+/// keeps its record, and a record appended after the tombstone resurrects its
+/// path.
+///
+/// The file itself is then swept by an ordinary [`compact`], which removes it
+/// when the fold is empty and declines when it cannot take the compaction lock
+/// or loses its compare-and-swap. So the quiescent case — every real
+/// `rdm session discard --force` — still leaves no journal behind, and the
+/// contended case degrades to a journal that outlives its claims until
+/// `rdm session gc`, never to a lost append.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if the journal exists but cannot be removed.
+/// Returns [`Error::Io`] if the journal exists but cannot be read, or if the
+/// tombstone cannot be appended.
 pub fn discard_changeset(paths: &SessionPaths, id: &SessionId) -> Result<bool> {
-    match std::fs::remove_file(changeset_path(paths, id)) {
-        Ok(()) => Ok(true),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(Error::Io(e)),
+    let claimed = read_journal(paths, id)?;
+    if claimed.is_empty() {
+        // Nothing to retire. Sweep the file anyway when one is lying around
+        // claiming nothing, so a discard of an already-committed changeset
+        // still leaves the directory as clean as it used to.
+        let _ = compact(paths, id);
+        return Ok(false);
     }
+    truncate(paths, id, &claimed)?;
+    let _ = compact(paths, id);
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -2096,6 +2135,130 @@ the same again verified under compaction's lock, and one final write"
 
         assert!(discard_changeset(&p, &orphan).unwrap());
         assert!(!discard_changeset(&p, &orphan).unwrap());
+    }
+
+    /// A discard is a deliberate destruction, but only of what it read.
+    ///
+    /// This is the same interleave `an_append_during_truncation_survives`
+    /// pins for the commit path, arriving from the other writer: under one
+    /// shared session id a sibling process appends while the discard runs.
+    /// A bare `remove_file` — what this used to be — took that record with
+    /// it, which is the module's one unsafe direction.
+    #[test]
+    fn a_record_appended_during_a_discard_survives_it() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-discard-race").unwrap();
+        record(
+            &p,
+            &id,
+            &[entry_with_digest("a.md", JournalKind::Write, "aaa")],
+        )
+        .unwrap();
+
+        // The sibling's line lands between the discard reading the journal and
+        // writing its tombstone. Appended raw rather than through `record`,
+        // because re-entering the seam would double-borrow it.
+        let sibling = raw_batch(&[entry_with_digest("b.md", JournalKind::Write, "bbb")]);
+        let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+        {
+            let once = std::rc::Rc::clone(&fired);
+            let _guard = with_after_open_hook(move |path| {
+                if once.replace(true) {
+                    return;
+                }
+                append_raw(path, &sibling);
+            });
+            assert!(
+                discard_changeset(&p, &id).unwrap(),
+                "the changeset claimed a path, so this is a real discard"
+            );
+        }
+        assert!(
+            fired.get(),
+            "the interleave never ran — this test is vacuous"
+        );
+
+        assert_eq!(
+            read_journal(&p, &id).unwrap(),
+            vec![entry_with_digest("b.md", JournalKind::Write, "bbb")],
+            "the discard must retire what it read and nothing else"
+        );
+    }
+
+    /// Content-keyed, exactly as a commit's tombstone is: a path re-recorded
+    /// with different content during the discard keeps its record, because
+    /// those bytes are not the bytes the discard decided to retire.
+    #[test]
+    fn a_discard_retires_only_the_content_it_read() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-discard-rewrite").unwrap();
+        record(
+            &p,
+            &id,
+            &[entry_with_digest("INDEX.md", JournalKind::Write, "old")],
+        )
+        .unwrap();
+
+        let sibling = raw_batch(&[entry_with_digest("INDEX.md", JournalKind::Write, "new")]);
+        let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+        {
+            let once = std::rc::Rc::clone(&fired);
+            let _guard = with_after_open_hook(move |path| {
+                if once.replace(true) {
+                    return;
+                }
+                append_raw(path, &sibling);
+            });
+            assert!(discard_changeset(&p, &id).unwrap());
+        }
+
+        assert_eq!(
+            read_journal(&p, &id).unwrap(),
+            vec![entry_with_digest("INDEX.md", JournalKind::Write, "new")],
+            "the rewritten copy is not what the discard read, so it survives"
+        );
+    }
+
+    /// The observable `rdm session discard --force` promises: with nothing
+    /// else appending, the journal is gone when it returns, not merely
+    /// emptied. That is `compact`'s sweep, taken inline because a discard is
+    /// never on a hot path.
+    #[test]
+    fn a_quiescent_discard_leaves_no_journal_behind() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-discard-quiet").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        assert!(discard_changeset(&p, &id).unwrap());
+        assert!(
+            !changeset_path(&p, &id).exists(),
+            "an uncontended discard sweeps the file, as it always did"
+        );
+    }
+
+    /// Appends one already-formatted line the way a sibling process would,
+    /// bypassing `record` so the after-open seam is not re-entered.
+    fn append_raw(path: &std::path::Path, line: &str) {
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .unwrap();
+        file.write_all(line.as_bytes()).unwrap();
+    }
+
+    /// Renders `entries` as the batch line `record` would have written.
+    fn raw_batch(entries: &[JournalEntry]) -> String {
+        format!(
+            "{}\n",
+            serde_json::to_string(&JournalLine {
+                paths: entries.to_vec()
+            })
+            .unwrap()
+        )
     }
 
     #[test]

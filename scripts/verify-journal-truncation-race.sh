@@ -44,6 +44,14 @@
 #       appends; the record must survive gc finishing
 #   6b  the mutant self-test for section 6: with compaction's pre-rewrite
 #       ownership re-check removed, that record MUST be lost
+#   7   the last writer that used to ignore the protocol: `rdm session discard
+#       --force`, which destroys a changeset deliberately and did it with a
+#       bare `remove_file`. A real discard is parked mid-destruction while a
+#       real `rdm task create` appends under the same shared session id; the
+#       append must survive, and the discard must still retire everything it
+#       read
+#   7b  the mutant self-test for section 7: with the unlink restored, that
+#       record MUST be lost and its file left behind as unattributed dirt
 #
 # The window between a commit reading its journal and truncating it is opened
 # and closed inside one `rdm` invocation, so two real processes cannot be made
@@ -52,7 +60,7 @@
 # set.
 #
 # Run after touching `journal::record` / `truncate` / `read_journal` /
-# `append_line` / `compact` / `gc_changesets` in
+# `append_line` / `compact` / `gc_changesets` / `discard_changeset` in
 # rdm-core/src/session/journal.rs, `AdvisoryLock` in rdm-core/src/lock.rs,
 # either `journal::truncate` call site in rdm-store-git
 # (`commit_changeset_id`, `commit_whole_tree`), the `rdm session gc` sweep in
@@ -63,12 +71,12 @@
 # Every wait is bounded and fails loudly — CI runs this unattended.
 #
 # Cost: the run is dominated by ONE cold `cargo build -p rdm-cli --offline`
-# under a scratch CARGO_TARGET_DIR, shared by sections 2b, 5b and 6b rather
-# than built three times. Measured on a 2026 laptop: ~13s for that build and
-# ~46s for the whole script; a 2-core CI runner pays proportionally more for
-# the build (~81s of CPU) and roughly two minutes overall. If that ever becomes
+# under a scratch CARGO_TARGET_DIR, shared by sections 2b, 5b, 6b and 7b
+# rather than built four times. Measured on a 2026 laptop: ~13s for that build and
+# ~57s for the whole script; a 2-core CI runner pays proportionally more for
+# the build (~82s of CPU) and roughly two minutes overall. If that ever becomes
 # unacceptable, the remedy is a cheaper build — never a skipped or weakened
-# mutant self-test, without which sections 2, 5 and 6 prove nothing.
+# mutant self-test, without which sections 2, 5, 6 and 7 prove nothing.
 
 set -eu
 
@@ -595,6 +603,41 @@ mv "$MUT_JOURNAL.new" "$MUT_JOURNAL"
 grep -q 'MUTATION-COMPACT' "$MUT_JOURNAL" ||
     fail "failed to plant the compaction-ownership mutation"
 
+# The fourth mutation, for section 7b: `discard_changeset` reverted to the bare
+# `remove_file` it used to be — the one writer in the journal module that
+# ignored the append protocol outright. The barrier is planted where the fix
+# puts it (between reading what the changeset claims and destroying it), so
+# section 7's interleave drives both binaries identically.
+grep -q '^pub fn discard_changeset(' "$MUT_JOURNAL" ||
+    fail "'discard_changeset' is no longer a top-level fn — update this self-test"
+
+cat >"$MUT/mutant-discard.txt" <<'MUTDISCARD'
+    harness_barrier(HARNESS_JOURNAL_BARRIER);
+    match std::fs::remove_file(changeset_path(paths, id)) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(Error::Io(e)),
+    }
+    // MUTATION-DISCARD
+MUTDISCARD
+
+awk -v bodyfile="$MUT/mutant-discard.txt" '
+    /^pub fn discard_changeset\(/ && !done {
+        print
+        while ((getline line < bodyfile) > 0) print line
+        close(bodyfile)
+        skip = 1
+        done = 1
+        next
+    }
+    skip && /^}$/ { skip = 0; print; next }
+    skip { next }
+    { print }
+' "$MUT_JOURNAL" >"$MUT_JOURNAL.new"
+mv "$MUT_JOURNAL.new" "$MUT_JOURNAL"
+grep -q '// MUTATION-DISCARD' "$MUT_JOURNAL" ||
+    fail "failed to plant the discard mutation"
+
 # The mutant must not also inherit the tombstone-aware fold's protection from
 # the OTHER direction, but it legitimately keeps `read_journal` — the pre-fix
 # code read the same way. Only the write half is reverted.
@@ -950,5 +993,114 @@ git -C "$REPO_6B" status --porcelain >"$TMP/s6b.status"
     fail "the mutant left a clean tree, so the loss is not observable — \
 re-check the interleave"
 ok "and the lost record leaves the reported dirty tree behind"
+
+# ---------------------------------------------------------------------------
+# Section 7 — a deliberate destruction, run against an active appender
+# ---------------------------------------------------------------------------
+say "Section 7: a record appended while \`session discard\` runs survives it"
+
+# What this section closes. Sections 2, 5 and 6 all cover a writer that MEANS
+# to preserve the journal. `rdm session discard --force` means to destroy it,
+# and used to do that with a bare `remove_file` — an unlink that takes a
+# sibling's concurrent append with it exactly as an unguarded compaction would.
+# Under one shared session id that sibling is an ordinary parallel subagent, so
+# this is the same rung-3 shape as section 2 arriving from the other writer.
+# The remedy is not a lock: it is for the discard to retire what it READ,
+# through the same content-keyed tombstone every other writer appends.
+discard_interleave() {
+    _repo=$1
+    _out=$2
+    _bin=${3:-$RDM_BIN}
+    mkdir -p "$_out"
+
+    # Something for the discard to actually destroy, so a pass cannot come
+    # from a no-op discard.
+    RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create doomed-item \
+        --title "Doomed item" --body "Body." --no-edit --project alpha >/dev/null
+
+    RDM_HARNESS_JOURNAL_BARRIER="$_out/go-d" RDM_SESSION="discard-runner" \
+        "$_bin" --root "$_repo" session discard "$SHARED_SESSION" --force \
+        >"$_out/d.out" 2>"$_out/d.err" &
+    _dpid=$!
+
+    await_parked "$_dpid" "process D (rdm session discard)"
+
+    set +e
+    RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create b-item \
+        --title "B item" --body "Body." --no-edit --project beta \
+        >"$_out/b.out" 2>"$_out/b.err"
+    printf '%s' "$?" >"$_out/b.status"
+    set -e
+
+    : >"$_out/go-d"
+    await_exit "$_dpid" "process D (rdm session discard)" "$_out/d.status"
+}
+
+REPO_7="$TMP/repo-7"
+seed_repo "$REPO_7"
+discard_interleave "$REPO_7" "$TMP/out-7"
+
+[ "$(cat "$TMP/out-7/b.status")" = "0" ] ||
+    fail "process B (the appender) failed: $(cat "$TMP/out-7/b.err")"
+[ "$(cat "$TMP/out-7/d.status")" = "0" ] ||
+    fail "process D (the discard) failed: $(cat "$TMP/out-7/d.err")"
+ok "both the discard and the concurrent appender exited 0"
+
+journal_paths "$REPO_7" >"$TMP/s7.journal"
+grep -q '^projects/alpha/tasks/doomed-item.md$' "$TMP/s7.journal" &&
+    fail "the discard did not retire what it read, so this section is asserting \
+against a no-op. Journal now holds:
+$(cat "$TMP/s7.journal")"
+ok "the discard really did retire everything it read"
+
+grep -q '^projects/beta/tasks/b-item.md$' "$TMP/s7.journal" ||
+    fail "B's record is gone — the discard destroyed an append it never read. \
+Journal now holds:
+$(cat "$TMP/s7.journal")"
+ok "the concurrently appended record survived the discard"
+
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_7" commit \
+    -m "land what survived the discard interleave" >"$TMP/s7.commit" 2>&1 ||
+    fail "the follow-up commit failed: $(cat "$TMP/s7.commit")"
+git -C "$REPO_7" ls-tree -r --name-only HEAD >"$TMP/s7.tree"
+grep -q '^projects/beta/tasks/b-item.md$' "$TMP/s7.tree" ||
+    fail "B's file was never committed, so its surviving record bought nothing:
+$(cat "$TMP/s7.commit")"
+ok "and B's file is committed by its own session, not stranded as unattributed dirt"
+
+# ---------------------------------------------------------------------------
+# Section 7b — the mutant self-test for section 7
+# ---------------------------------------------------------------------------
+say "Section 7b: with the discard back to a bare remove_file, that record is lost"
+
+REPO_7B="$TMP/repo-7b"
+seed_repo "$REPO_7B" "$MUT_BIN"
+discard_interleave "$REPO_7B" "$TMP/out-7b" "$MUT_BIN"
+
+[ "$(cat "$TMP/out-7b/b.status")" = "0" ] ||
+    fail "self-test is inconclusive: the mutant's appender failed for some \
+other reason (exit $(cat "$TMP/out-7b/b.status")): $(cat "$TMP/out-7b/b.err")"
+
+journal_paths "$REPO_7B" "$MUT_BIN" >"$TMP/s7b.journal"
+if grep -q '^projects/beta/tasks/b-item.md$' "$TMP/s7b.journal"; then
+    fail "the planted mutation did NOT reproduce the loss — section 7 may be \
+passing for a reason other than the discard's tombstone. Mutant journal:
+$(cat "$TMP/s7b.journal")"
+fi
+ok "with the unlink restored the record is silently lost — section 7's pass is caused by the fix"
+
+RDM_SESSION="$SHARED_SESSION" "$MUT_BIN" --root "$REPO_7B" commit \
+    -m "try to land what the mutant left" >"$TMP/s7b.commit" 2>&1 || true
+git -C "$REPO_7B" ls-tree -r --name-only HEAD >"$TMP/s7b.tree"
+if grep -q '^projects/beta/tasks/b-item.md$' "$TMP/s7b.tree"; then
+    fail "the mutant committed B's file anyway, so the loss is not observable — \
+re-check the interleave"
+fi
+git -C "$REPO_7B" status --porcelain >"$TMP/s7b.status"
+grep -q 'projects/beta/tasks/b-item.md' "$TMP/s7b.status" ||
+    fail "the mutant left neither a commit nor a dirty file for B, so the \
+reproduction is not the reported symptom:
+$(cat "$TMP/s7b.status")"
+ok "and B's file is left behind as unattributed dirt — the reported symptom"
 
 printf '\n\033[1;32mAll sections passed.\033[0m\n'
