@@ -1,21 +1,22 @@
 //! A best-effort, age-bounded advisory file lock.
 //!
-//! Several places in rdm want the same narrow guarantee: *most of the time*,
+//! Two places in rdm want the same narrow guarantee: *most of the time*,
 //! keep two concurrent processes out of a short critical section, and **never**
 //! block indefinitely if the holder was killed. The scoped-commit path wants
 //! it around read-HEAD → build-tree → update-ref; the filesystem store's
-//! flush wants it around verify-baselines → rename; the session journal wants
-//! it around fold → rewrite.
+//! flush wants it around verify-baselines → rename.
 //!
-//! The first two are *advisory by construction*: failing to take the lock
-//! proceeds anyway rather than erroring, because in each case a real
-//! correctness mechanism sits underneath (the compare-and-swap on HEAD; the
-//! content-digest precondition). The lock only narrows the window in the
-//! common case. The journal's compaction is the exception — an unheld guard
-//! there means *skip* — and it is also the one caller whose critical section
-//! ends in an irreversible `rename`, so it asks [`AdvisoryLock::still_held`]
-//! before taking that step rather than trusting `stale_after` not to have
-//! dispossessed it mid-run.
+//! Both are *advisory by construction*: failing to take the lock proceeds
+//! anyway rather than erroring, because in each case a real correctness
+//! mechanism sits underneath (the compare-and-swap on HEAD; the content-digest
+//! precondition). The lock only narrows the window in the common case. That is
+//! also why the session journal does **not** use it: a journal rewrite has no
+//! such underlayer, so `journal::compact` needs exclusion the kernel enforces
+//! rather than a bound on how long a stale file may stand, and it takes a
+//! `File::lock` on a lock file of its own instead (see
+//! `rdm_core::session::journal`). A caller here whose critical section ends in
+//! an irreversible step can ask [`AdvisoryLock::still_held`] before taking it
+//! rather than trusting `stale_after` not to have dispossessed it mid-run.
 //!
 //! Living here rather than in each backend means the wait/staleness state
 //! machine exists once. The *durations* stay with the caller, since the commit

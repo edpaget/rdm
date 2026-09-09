@@ -127,9 +127,9 @@ pub fn run(root: &Path, format: OutputFormat, command: SessionCommand) -> Result
             // here because no-live-lease proves quiescence — it does not, since
             // an explicit RDM_SESSION and a harness-published id never create a
             // lease, and this command may well run from a process that shares
-            // neither with whoever is appending. The append itself is what
-            // makes the sweep safe: it redoes a write that landed in a journal
-            // compaction had already replaced.
+            // neither with whoever is appending. The journal lock is what
+            // makes the sweep safe: an append in flight holds it shared, so
+            // the sweep skips that changeset rather than rewriting under it.
             let current = resolve(root, &paths).ok().map(|r| r.id);
             let swept = journal::gc_changesets(&paths, procs, current.as_ref());
             println!("Removed {swept} fully-committed changeset journal(s).");

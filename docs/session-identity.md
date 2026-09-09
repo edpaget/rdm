@@ -395,85 +395,63 @@ why `JournalLine::paths` must stay a *required* field: give it
 
 ### Compaction, and why it is confined to `rdm session gc`
 
-`compact` is the one operation here that is not an append: under an advisory
-lock at `<changesets>/<id>.lock`, it rewrites a journal as the entries it
-currently claims, or removes it when it claims none. Two guards, both
-deliberately stricter than the rest of rdm:
+`compact` is the one operation here that is not an append: it rewrites a
+journal as the entries it currently claims, or removes it when it claims none.
+It is **not** called from the commit path — a rewrite is not worth doing on a
+hot one. What it is *not* justified by is quiescence, and this is worth stating
+flatly because an earlier draft of this document got it wrong. `gc_changesets`
+can only ask whether a live **lease** names a changeset, and rungs 1 and 3 — an
+explicit `RDM_SESSION`, a harness-published id — resolve without ever creating
+or reading one. Those are precisely the rungs under which parallel subagents
+and MCP calls share a changeset. So "no live lease owns it" is not evidence
+that nothing is appending, `current` excludes only the invoking gc process's
+own resolved id rather than any sibling sharing it, and `rdm session gc` run
+from an unrelated shell can and will try to compact a journal several
+processes are actively writing to.
 
-- an **unheld** lock means *skip*, not proceed-unlocked, because no correctness
-  mechanism sits underneath a rewrite;
-- a compare-and-swap on the file's byte length. A journal only grows, so its
-  length is a valid version token; losing the CAS means skip.
+What makes that safe is a lock, and specifically a lock the **kernel**
+enforces — `File::lock` (`flock` on Unix, `LockFileEx` on Windows) on one
+file, `<changesets>/journal.lock`, that nothing ever removes:
 
-It is nonetheless **not** called from the commit path: a rewrite is not worth
-doing on a hot one. What it is *not* justified by is quiescence, and this is
-worth stating flatly because an earlier draft of this document got it wrong.
-`gc_changesets` can only ask whether a live **lease** names a changeset, and
-rungs 1 and 3 — an explicit `RDM_SESSION`, a harness-published id — resolve
-without ever creating or reading one. Those are precisely the rungs under which
-parallel subagents and MCP calls share a changeset. So "no live lease owns it"
-is not evidence that nothing is appending, `current` excludes only the invoking
-gc process's own resolved id rather than any sibling sharing it, and
-`rdm session gc` run from an unrelated shell can and will compact a journal
-several processes are actively writing to.
+- every append holds it **shared**, from before it opens the journal until its
+  `write_all` has returned;
+- `compact` holds it **exclusively**, from before it reads the journal until
+  after its `rename` over the journal or `remove_file` of it.
 
-The third guard is what actually closes that, and it lives in the append rather
-than in the sweep. It has two stages, and the second is the one that makes the
-guarantee an invariant rather than a bound.
+Appends never wait on each other. A compaction that arrives while an append is
+in flight cannot take the exclusive side; it waits briefly
+(`COMPACT_LOCK_WAIT`, 200 ms) and then **skips**, because no correctness
+mechanism sits underneath a rewrite — this is the one place that diverges from
+rdm's proceed-anyway advisory-lock convention, and it is why the journal does
+not use `AdvisoryLock` at all. An append that arrives while a compaction is
+inside its critical section waits for it to finish, and only then opens the
+journal — which, opened *after* the lock, is by construction the file the
+rename left behind. There is no instant at which an append can land in an
+inode compaction is about to discard. That instant is exactly the window an
+earlier draft of this fix left open: compaction checked the journal's length
+once, early, and nothing re-checked it immediately before the `rename`, so an
+append made in between was written into the doomed inode, reported success,
+and was renamed away.
 
-**Detect and redo, lock-free.** After writing its line, an append compares the
-identity of the file it wrote to against the identity of the journal path now
-— on Unix, the `(dev, ino)` pair — and **redoes the write against the live
-journal when they differ**, including when compaction removed the file
-outright, in which case the redo recreates it. Both of compaction's
-destructive exits (`rename` over the journal, `remove_file` of it) leave an
-already-open `O_APPEND` descriptor pointing at an inode the path no longer
-names, so both are detectable after the fact even though neither is
-preventable before it. Repeating an append is harmless: the fold is keyed by
-path and applied in file order, so a duplicated line contributes exactly what
-the original did.
+A kernel lock is what turns this from a bound into a guarantee. It is released
+the instant its holder exits, cleanly or not, so a killed sweep can never wedge
+an append; there is no staleness horizon, so a slow sweep can never be
+dispossessed mid-run and rename over a record a successor wrote; and there is
+no double hold to detect from either side. The one bound that remains is on
+*waiting*: an append gives up after `APPEND_LOCK_WAIT` (10 s) if the exclusive
+side stays held by a holder that is alive but not running — stopped under a
+debugger, parked on a harness barrier nothing releases — and it gives up
+**without writing**. A record that was never written leaves its path on disk
+as unattributed work that the next `rdm commit` names; a record written blind
+into a doomed inode is the silent loss this whole mechanism exists to exclude.
+Every caller records best-effort, so the mutation itself still succeeds.
 
-**Escalate and exclude.** A bound on that redo is *not* by itself the
-guarantee, and an earlier draft of this fix treated it as one. After
-`APPEND_ATTEMPTS` lock-free writes have all lost, simply accepting the last one
-would accept a write already landing in a doomed inode — a silent loss, not the
-over-claim everything else here degrades to. So instead of accepting it, the
-append stops racing and takes **compaction's own advisory lock** before writing
-once more. Compaction *skips entirely* unless it holds that lock, so a write
-made while holding it cannot be replaced or unlinked underneath. The escalation
-terminates because `AdvisoryLock::acquire` is deadline-bounded and
-`APPEND_LOCK_WAIT` (35s) exceeds the lock's staleness horizon (30s): it comes
-back held either because the holder released or because the lock file aged past
-staleness and was taken over. Reaching it at all already means sustained
-contention, so the ordinary path still pays nothing.
-
-Taking the lock is not on its own enough, because `AdvisoryLock::acquire` takes
-a contended lock over purely on the age of its file, with no evidence that the
-holder released or died — deliberately, so a lock left behind by a killed
-process can never block a deadline-bounded caller forever. The cost is a
-**double hold**: a compaction whose critical section legitimately outruns the
-30s staleness horizon (slow disk, a descheduled process) is dispossessed while
-still running, and is never told. Before the escalation existed that cost
-nothing; with it, the dispossessed compaction would rename over the very append
-the successor made under the lock it now holds.
-
-Two changes close that, one on each side. The escalated phase keeps
-**verifying**: it runs the same identity recheck and redo as the lock-free
-phase, bounded the same way, so a write a dispossessed compaction replaced is
-written again rather than accepted. And compaction asks
-`AdvisoryLock::still_held` immediately before its `rename`/`remove_file` — a
-lock file that no longer carries this call's own token means it was
-dispossessed, so it discards its temporary file and reports that it cleaned
-nothing. Skipping is always safe; rewriting under a lock the caller no longer
-holds is not. The ownership token is also what makes releasing a guard safe:
-`Drop` deletes the lock file only while it is still this guard's own, so
-releasing a dispossessed guard cannot hand the lock to a third party while its
-successor believes it holds it.
-
-With all of that in place the contract is unconditional in the safe direction —
-compaction may fail to clean, never lose — and it holds for every rung, leased
-or not. On Windows there is nothing to detect: the platform refuses to rename
-over or unlink a file another process holds open.
+`compact` keeps one further check under the lock, a compare-and-swap on the
+journal's byte length between its fold and its rewrite. Against rdm's own
+writers it can never fire — none of them append without the lock — so it is
+not what carries the guarantee; it is one `stat`, and it turns a write made by
+something that ignored the lock entirely (a foreign process editing the file
+by hand) into a skip rather than a rewrite that drops the line.
 
 Every writer rdm has follows the protocol. `rdm session discard --force` is
 the one that used not to: it destroys a changeset deliberately, and did it with
@@ -483,8 +461,10 @@ never asks for it. It now retires what it *read*, through the same
 content-keyed tombstone `truncate` appends, and then sweeps the file with an
 ordinary `compact`: so an uncontended discard still leaves no journal behind,
 and a contended one over-claims until `rdm session gc` rather than losing an
-append. The residual that remains is genuinely outside rdm — out-of-band
-tampering with the journal file by something else entirely.
+append. Nothing rdm does can lose an appended entry to compaction. What the
+lock does not, and cannot, cover is something that is not rdm editing the
+journal file by hand — which sits outside every guarantee this document makes,
+not as a caveat on this one.
 
 The consequence is that a fully-committed journal keeps its lines until gc
 sweeps it. `list_changesets` therefore **omits** a changeset whose fold is
@@ -503,11 +483,11 @@ Two properties fall out of the layout rather than out of discipline:
 
 - **Append-only** — *every* write to a journal, a batch record and a commit's
   truncation alike, is one `write_all` of one complete line to a file opened
-  `O_APPEND`, which POSIX does not interleave. No lock, no read-modify-write
-  race, and neither kind of write can destroy the other. Compaction is the sole
-  exception, and appends do not trust it to be quiescent — they detect its
-  rewrite after the fact and redo themselves, and an append that keeps losing
-  takes compaction's own lock so no compaction can run at all.
+  `O_APPEND`, which POSIX does not interleave. No read-modify-write race, and
+  neither kind of write can destroy the other. Compaction is the sole
+  exception, and appends do not trust it to be quiescent — they hold the
+  journal lock shared while they write, and compaction cannot run without
+  holding it alone.
 - **Content-keyed truncation** — a tombstone identifies *what* landed rather
   than *where* it sat, so the fold is independent of byte offsets and
   compaction can rewrite a journal without changing what a later tombstone
@@ -555,9 +535,10 @@ work, so removing it would destroy something — while "no live lease owns it" i
 only a cost filter. It cannot be more than that, because rungs 1 and 3 never
 create a lease at all, so the changesets shared by parallel subagents are
 exactly the ones the check is blind to. Compaction survives that blindness for
-the reason given under "Compaction" above: an append that lands in a journal
-compaction has already replaced detects it and redoes itself against the live
-one. Neither sweep can destroy work.
+the reason given under "Compaction" above: an append in flight holds the
+journal lock shared, so a sweep cannot rewrite underneath it, and a sweep
+mid-rewrite holds an arriving append off until the rewritten file is the one
+it opens. Neither sweep can destroy work.
 
 The create-path sweep is what keeps a *fragmenting* topology from also being a
 *leaking* one. Under a per-tool-call wrapper harness every invocation reaches
@@ -659,43 +640,42 @@ own mutant restoring the bare `remove_file`.
 
 ### `RDM_HARNESS_APPEND_BARRIER`
 
-The fourth member, and the one that makes compaction's residual drivable. Same
-contract again: inert when unset or empty, bounded by the same 60-second
-ceiling when set.
+The fourth member, and the one that makes the exclusion drivable from the
+append's side. Same contract again: inert when unset or empty, bounded by the
+same 60-second ceiling when set.
 
 It names a file. When set, an append blocks between *opening* the journal and
-*writing* its line — the window in which a concurrent `compact` can `rename`
-over or `remove_file` the inode the open descriptor names. That window is one
+*writing* its line, holding the journal lock shared the whole time — the
+window in which a concurrent `compact` would have to `rename` over or
+`remove_file` the inode the open descriptor names. That window is one
 `write_all`'s worth of work, far below anything a harness could hit by timing,
 so `scripts/verify-journal-truncation-race.sh` § 5 parks a real `rdm task
 create` there, runs `rdm session gc` from a second real process under a
 *different* session id (which shares no lease with the appender, and cannot,
-since rung 1 creates none), and only then releases the first. Its § 5b mutant
-rebuilds the binary with the append's liveness check stubbed out to report
-every write as live — an append that neither redoes itself nor escalates to
-compaction's lock — and asserts the record is lost, so § 5 cannot pass
-vacuously.
+since rung 1 creates none), and asserts that the sweep left the journal
+exactly as it found it before releasing the appender. Its § 5b mutant rebuilds
+the binary with the lock stripped from both sides and asserts the sweep
+rewrites the journal under the parked append and the record is lost, so § 5
+cannot pass vacuously.
 
 ### `RDM_HARNESS_COMPACT_BARRIER`
 
-The fifth member, and the one that makes the *staleness* residual drivable
-rather than merely stated. Same contract once more: inert when unset or empty,
-bounded by the same 60-second ceiling when set.
+The fifth member, and the one that makes the exclusion drivable from
+compaction's side — the window the earlier draft left open. Same contract once
+more: inert when unset or empty, bounded by the same 60-second ceiling when
+set.
 
 It names a file. When set, `compact` blocks after all its checks have passed
-and before it does anything irreversible — the window in which its advisory
-lock can age past the 30-second staleness horizon and be taken over by an
-escalating appender while the compaction is still running.
+and before it does anything irreversible — after its length compare-and-swap,
+before its `rename` — holding the journal lock exclusively the whole time.
 `scripts/verify-journal-truncation-race.sh` § 6 parks a real `rdm session gc`
-there, performs the takeover `AdvisoryLock::acquire` would perform on a stale
-lock (unlink the incumbent's file, create its own carrying its own token),
-appends with a second real `rdm task create`, and only then releases the sweep;
-the appended record must survive. Its § 6b mutant rebuilds the binary with
-compaction's pre-rewrite ownership re-check neutered and asserts the record is
-lost, so § 6 cannot pass vacuously. The takeover itself is simulated rather
-than raced, because forcing a genuine escalation would require the journal to
-be replaced under an appender three times while the sweep is parked; everything
-else in the section is two real processes.
+there, starts a real `rdm task create` under the changeset being compacted,
+gives it a full second in which to write, and only then releases the sweep.
+The append must have waited: the rewritten journal must hold exactly the
+compacted line followed by the appended record, and the record must commit
+normally. Its § 6b mutant — the same lock-stripped binary — has the append
+land in the inode the parked sweep is about to rename over, and asserts the
+record is lost, so § 6 cannot pass vacuously.
 
 ## Degradation
 
