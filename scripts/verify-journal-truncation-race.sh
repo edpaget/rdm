@@ -27,6 +27,13 @@
 #       zero entries, NOT that the file is gone. Truncation is append-only,
 #       so gating on file absence would make CI intermittently red for a
 #       correct implementation
+#   5   `rdm session gc` — the ONE non-append operation — driven concurrently
+#       with an active append, from a process sharing neither the session id
+#       nor a lease with the appender. No lease can ever name a rung-1 or
+#       rung-3 changeset, so gc genuinely cannot tell that anyone is appending;
+#       the append must survive its compaction anyway
+#   5b  the same interleave against a mutant whose append never redoes itself,
+#       which must lose the record — otherwise section 5 proves nothing
 #
 # The window between a commit reading its journal and truncating it is opened
 # and closed inside one `rdm` invocation, so two real processes cannot be made
@@ -35,9 +42,11 @@
 # set.
 #
 # Run after touching `journal::record` / `truncate` / `read_journal` /
-# `compact` / `gc_changesets` in rdm-core/src/session/journal.rs, either
-# `journal::truncate` call site in rdm-store-git (`commit_changeset_id`,
-# `commit_whole_tree`), or the RDM_HARNESS_JOURNAL_BARRIER seam.
+# `append_line` / `compact` / `gc_changesets` in
+# rdm-core/src/session/journal.rs, either `journal::truncate` call site in
+# rdm-store-git (`commit_changeset_id`, `commit_whole_tree`), the
+# `rdm session gc` sweep in rdm-cli/src/commands/session.rs, or either of the
+# RDM_HARNESS_JOURNAL_BARRIER / RDM_HARNESS_APPEND_BARRIER seams.
 #
 # Requires: cargo-built rdm at target/debug/rdm (from this repo). No network.
 # Every wait is bounded and fails loudly — CI runs this unattended.
@@ -63,7 +72,7 @@ trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 # never appears, turning the stress run into a silent 60-second no-op.
 unset RDM_ROOT RDM_PROJECT RDM_STAGE RDM_FORMAT RDM_SESSION
 unset CLAUDE_CODE_SESSION_ID CLAUDE_SESSION_ID RDM_HARNESS_SESSION_ID
-unset RDM_HARNESS_FLUSH_BARRIER RDM_HARNESS_JOURNAL_BARRIER
+unset RDM_HARNESS_FLUSH_BARRIER RDM_HARNESS_JOURNAL_BARRIER RDM_HARNESS_APPEND_BARRIER
 # An inherited git environment (set whenever this runs under a git hook) would
 # point every `git -C <temp-repo>` query below at the invoking repo instead.
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
@@ -143,7 +152,7 @@ await_parked() {
         _i=$((_i + 1))
     done
     if ! kill -0 "$_pid" 2>/dev/null; then
-        fail "$_label exited instead of parking at RDM_HARNESS_JOURNAL_BARRIER — \
+        fail "$_label exited instead of parking at its harness barrier — \
 the two processes never interleaved, so this section proves nothing"
     fi
 }
@@ -214,6 +223,59 @@ interleave() {
 
     : >"$_out/go-a"
     await_exit "$_apid" "process A (rdm commit)" "$_out/a.status"
+}
+
+# gc_interleave <repo> <outdir> [bin]
+#
+# The gc-versus-append scenario, factored out so section 5 and its mutant
+# self-test drive the IDENTICAL sequence and differ only in the binary:
+#
+#   B stages a task and parks INSIDE its journal append at
+#     RDM_HARNESS_APPEND_BARRIER — descriptor open, line not yet written
+#   G runs `rdm session gc` as a DIFFERENT process under a DIFFERENT session
+#     id. It compacts B's changeset because nothing tells it not to: rung 1
+#     never creates a lease, so `live_lease_ids` cannot name B's id, and
+#     `current` only ever excludes G's own
+#   B is released and completes its write
+#
+# TWO claims are staged BEFORE B starts. Non-empty so compaction takes its
+# `rename` exit rather than its `remove_file` one — the sharper of the two,
+# since the replaced journal still looks perfectly healthy afterwards while B's
+# bytes sit in an unlinked inode. Two rather than one so the collapse is
+# *observable*: compaction always folds to exactly one line, so two lines
+# before and one after is the evidence that gc really rewrote the file and this
+# section is not asserting against a no-op.
+gc_interleave() {
+    _repo=$1
+    _out=$2
+    _bin=${3:-$RDM_BIN}
+    mkdir -p "$_out"
+    _journal="$_repo/.git/rdm/changesets/$SHARED_SESSION.jsonl"
+
+    for _pre in pre-item pre-item-two; do
+        RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create "$_pre" \
+            --title "Pre $_pre" --body "Body." --no-edit --project alpha >/dev/null
+    done
+
+    RDM_HARNESS_APPEND_BARRIER="$_out/go-b" RDM_SESSION="$SHARED_SESSION" \
+        "$_bin" --root "$_repo" task create b-item \
+        --title "B item" --body "Body." --no-edit --project beta \
+        >"$_out/b.out" 2>"$_out/b.err" &
+    _bpid=$!
+
+    await_parked "$_bpid" "process B (rdm task create)"
+
+    # Line counts are the evidence that compaction actually rewrote the file:
+    # it always folds to exactly one line, so two-then-one is a rewrite and
+    # two-then-two means gc skipped and this section asserts nothing.
+    wc -l <"$_journal" >"$_out/lines.before" 2>/dev/null || : >"$_out/lines.before"
+    RDM_SESSION="gc-runner" "$_bin" --root "$_repo" session gc \
+        >"$_out/g.out" 2>"$_out/g.err" ||
+        fail "session gc failed: $(cat "$_out/g.err")"
+    wc -l <"$_journal" >"$_out/lines.after" 2>/dev/null || : >"$_out/lines.after"
+
+    : >"$_out/go-b"
+    await_exit "$_bpid" "process B (rdm task create)" "$_out/b.status"
 }
 
 SHARED_SESSION="shared-changeset"
@@ -453,7 +515,7 @@ cat >"$MUT/mutant-body.txt" <<'MUTBODY'
         .into_iter()
         .filter(|e| !landed_paths.contains(&e.path))
         .collect();
-    harness_barrier();
+    harness_barrier(HARNESS_JOURNAL_BARRIER);
     let path = changeset_path(paths, id);
     if remaining.is_empty() {
         return match std::fs::remove_file(&path) {
@@ -484,6 +546,18 @@ awk -v bodyfile="$MUT/mutant-body.txt" '
 ' "$MUT_JOURNAL" >"$MUT_JOURNAL.new"
 mv "$MUT_JOURNAL.new" "$MUT_JOURNAL"
 grep -q '// MUTATION' "$MUT_JOURNAL" || fail "failed to plant the mutation"
+
+# The second mutation, for section 5b: an append that never redoes itself.
+# `APPEND_ATTEMPTS = 1` makes `append_line` take its bounded exit on the first
+# pass, so it never rechecks whether it wrote into a journal compaction had
+# already replaced — exactly the pre-fix behaviour.
+grep -q '^const APPEND_ATTEMPTS: usize = 4;$' "$MUT_JOURNAL" ||
+    fail "APPEND_ATTEMPTS is not the literal this self-test mutates — update it"
+sed 's|^const APPEND_ATTEMPTS: usize = 4;$|const APPEND_ATTEMPTS: usize = 1; // MUTATION-APPEND|' \
+    "$MUT_JOURNAL" >"$MUT_JOURNAL.new"
+mv "$MUT_JOURNAL.new" "$MUT_JOURNAL"
+grep -q '// MUTATION-APPEND' "$MUT_JOURNAL" ||
+    fail "failed to plant the append mutation"
 
 # The mutant must not also inherit the tombstone-aware fold's protection from
 # the OTHER direction, but it legitimately keeps `read_journal` — the pre-fix
@@ -601,5 +675,88 @@ journal_paths "$REPO_4" >"$TMP/s4b.journal"
 [ -s "$TMP/s4b.journal" ] &&
     fail "the fold changed after gc — sweeping must be observationally inert"
 ok "the fold's answer is unchanged by the sweep"
+
+# ---------------------------------------------------------------------------
+# Section 5 — the one non-append operation, run against an active appender
+# ---------------------------------------------------------------------------
+say "Section 5: a record appended while \`session gc\` compacts underneath survives"
+
+# Why this is a section and not a footnote: `gc_changesets` decides a changeset
+# is safe to rewrite when no live LEASE names it, and rungs 1 and 3 — an
+# explicit RDM_SESSION and a harness-published id, the two rungs under which
+# parallel subagents share a changeset at all — resolve without ever creating
+# one. So the liveness check is blind exactly where this phase's whole
+# reproduction lives, and gc invoked from an unrelated shell will happily
+# compact a journal several processes are appending to.
+REPO_5="$TMP/repo-5"
+seed_repo "$REPO_5"
+gc_interleave "$REPO_5" "$TMP/out-5"
+
+[ "$(cat "$TMP/out-5/b.status")" = "0" ] ||
+    fail "process B (the appender) failed: $(cat "$TMP/out-5/b.err")"
+ok "the appender exited 0 across the sweep"
+
+LINES_BEFORE=$(tr -d ' ' <"$TMP/out-5/lines.before")
+LINES_AFTER=$(tr -d ' ' <"$TMP/out-5/lines.after")
+[ "$LINES_BEFORE" = "2" ] ||
+    fail "expected two journal lines for gc to collapse, got '$LINES_BEFORE' — \
+the interleave is not set up the way this section assumes"
+[ "$LINES_AFTER" = "1" ] ||
+    fail "gc did not collapse the journal to one line (got '$LINES_AFTER'), so \
+it never compacted and this section is vacuous"
+ok "gc really did rewrite the journal under the parked appender"
+
+journal_paths "$REPO_5" >"$TMP/s5.journal"
+grep -q '^projects/beta/tasks/b-item.md$' "$TMP/s5.journal" ||
+    fail "B's record is gone — the compaction destroyed an append it could not \
+see. Journal now holds:
+$(cat "$TMP/s5.journal")"
+ok "B's record survived a compaction that replaced the file mid-append"
+
+grep -q '^projects/alpha/tasks/pre-item-two.md$' "$TMP/s5.journal" ||
+    fail "compaction dropped a claim it had already folded, which is a loss in \
+the other direction. Journal now holds:
+$(cat "$TMP/s5.journal")"
+ok "and the claim compaction folded is still claimed"
+
+RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_5" commit \
+    -m "land what the gc interleave left staged" >"$TMP/s5.commit" 2>&1 ||
+    fail "the follow-up commit failed: $(cat "$TMP/s5.commit")"
+grep -qi 'another changeset' "$TMP/s5.commit" &&
+    fail "the follow-up commit disowns paths after the sweep: $(cat "$TMP/s5.commit")"
+git -C "$REPO_5" status --porcelain >"$TMP/s5.status"
+[ -s "$TMP/s5.status" ] &&
+    fail "the tree is dirty after the gc interleave settled:
+$(cat "$TMP/s5.status")"
+ok "everything the interleave left is committable and the tree ends clean"
+
+# ---------------------------------------------------------------------------
+# Section 5b — the mutant self-test for section 5
+# ---------------------------------------------------------------------------
+say "Section 5b: with the append's redo removed, gc destroys the record"
+
+REPO_5B="$TMP/repo-5b"
+seed_repo "$REPO_5B" "$MUT_BIN"
+gc_interleave "$REPO_5B" "$TMP/out-5b" "$MUT_BIN"
+
+[ "$(cat "$TMP/out-5b/b.status")" = "0" ] ||
+    fail "self-test is inconclusive: the mutant's appender failed for some \
+other reason (exit $(cat "$TMP/out-5b/b.status")): $(cat "$TMP/out-5b/b.err")"
+[ "$(tr -d ' ' <"$TMP/out-5b/lines.after")" = "1" ] ||
+    fail "the mutant's gc never compacted, so this self-test is inconclusive"
+
+journal_paths "$REPO_5B" "$MUT_BIN" >"$TMP/s5b.journal"
+if grep -q '^projects/beta/tasks/b-item.md$' "$TMP/s5b.journal"; then
+    fail "the planted mutation did NOT reproduce the loss — section 5 may be \
+passing for a reason other than the append's redo. Mutant journal:
+$(cat "$TMP/s5b.journal")"
+fi
+ok "without the redo the record is silently lost — section 5's pass is caused by the fix"
+
+git -C "$REPO_5B" status --porcelain >"$TMP/s5b.status"
+[ -s "$TMP/s5b.status" ] ||
+    fail "the mutant left a clean tree, so the loss is not observable — \
+re-check the interleave"
+ok "and the lost record leaves the reported dirty tree behind"
 
 printf '\n\033[1;32mAll sections passed.\033[0m\n'

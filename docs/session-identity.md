@@ -405,13 +405,36 @@ deliberately stricter than the rest of rdm:
 - a compare-and-swap on the file's byte length. A journal only grows, so its
   length is a valid version token; losing the CAS means skip.
 
-It is nonetheless **not** called from the commit path. A rewrite can destroy a
-concurrent `O_APPEND` record — a writer that already holds its descriptor when
-the length check passes writes into the inode about to be unlinked — and that
-residual is not claimed closed. So compaction runs only from `rdm session gc`,
-against changesets no live lease owns, where by construction no appender
-exists. The contract is unconditional in the safe direction: compaction may
-fail to clean, never lose.
+It is nonetheless **not** called from the commit path: a rewrite is not worth
+doing on a hot one. What it is *not* justified by is quiescence, and this is
+worth stating flatly because an earlier draft of this document got it wrong.
+`gc_changesets` can only ask whether a live **lease** names a changeset, and
+rungs 1 and 3 — an explicit `RDM_SESSION`, a harness-published id — resolve
+without ever creating or reading one. Those are precisely the rungs under which
+parallel subagents and MCP calls share a changeset. So "no live lease owns it"
+is not evidence that nothing is appending, `current` excludes only the invoking
+gc process's own resolved id rather than any sibling sharing it, and
+`rdm session gc` run from an unrelated shell can and will compact a journal
+several processes are actively writing to.
+
+The third guard is what actually closes that, and it lives in the append rather
+than in the sweep. After writing its line, an append compares the identity of
+the file it wrote to against the identity of the journal path now — on Unix,
+the `(dev, ino)` pair — and **redoes the write against the live journal when
+they differ**, including when compaction removed the file outright, in which
+case the redo recreates it. Both of compaction's destructive exits (`rename`
+over the journal, `remove_file` of it) leave an already-open `O_APPEND`
+descriptor pointing at an inode the path no longer names, so both are
+detectable after the fact even though neither is preventable before it. The
+redo is bounded (`APPEND_ATTEMPTS`) rather than conditional, so it terminates
+unconditionally, and repeating an append is harmless: the fold is keyed by path
+and applied in file order, so a duplicated line contributes exactly what the
+original did.
+
+With that in place the contract is unconditional in the safe direction —
+compaction may fail to clean, never lose — and it holds for every rung, leased
+or not. On Windows there is nothing to detect: the platform refuses to rename
+over or unlink a file another process holds open.
 
 The consequence is that a fully-committed journal keeps its lines until gc
 sweeps it. `list_changesets` therefore **omits** a changeset whose fold is
@@ -431,7 +454,9 @@ Two properties fall out of the layout rather than out of discipline:
 - **Append-only** — *every* write to a journal, a batch record and a commit's
   truncation alike, is one `write_all` of one complete line to a file opened
   `O_APPEND`, which POSIX does not interleave. No lock, no read-modify-write
-  race, and neither kind of write can destroy the other.
+  race, and neither kind of write can destroy the other. Compaction is the sole
+  exception, and appends do not trust it to be quiescent — they detect its
+  rewrite after the fact and redo themselves.
 - **Content-keyed truncation** — a tombstone identifies *what* landed rather
   than *where* it sat, so the fold is independent of byte offsets and
   compaction can rewrite a journal without changing what a later tombstone
@@ -466,18 +491,22 @@ at commit time belongs to the scoped-commit phase.
 | Object | Created | Removed |
 | --- | --- | --- |
 | Lease | Once per parent, on the first bare invocation under it | By GC when its pid is dead or recycled; opportunistically during the ancestry walk **and on every creation** |
-| Journal | On the first flushed batch of a changeset | By `rdm session gc`, but **only** once its fold claims nothing *and* no live lease owns it; or outright by `rdm session discard --force` |
+| Journal | On the first flushed batch of a changeset | By `rdm session gc`, but **only** once its fold claims nothing (and, as a cost filter rather than a safety one, no live lease names it); or outright by `rdm session discard --force` |
 
 GC (`rdm session gc`, opportunistically during adoption, and — since phase 11
 — once on every lease *creation*) removes leases whose owning process is gone
 or whose recorded start time no longer matches, bounded at 64 files per pass.
 
-Explicit `rdm session gc` additionally sweeps journals, and only there. The
-two conditions are both load-bearing: a journal that still claims a path holds
-recoverable work, and a changeset with a live lease has a process that could be
-appending to it right now, which is the one thing compaction's rewrite cannot
-tolerate. Neither the lease sweep nor the journal sweep can destroy work — the
-journal sweep only ever removes a file whose fold is already empty.
+Explicit `rdm session gc` additionally sweeps journals, and only there. The two
+conditions differ in kind, which the table above flattens: "its fold claims
+nothing" is load-bearing — a journal that still claims a path holds recoverable
+work, so removing it would destroy something — while "no live lease owns it" is
+only a cost filter. It cannot be more than that, because rungs 1 and 3 never
+create a lease at all, so the changesets shared by parallel subagents are
+exactly the ones the check is blind to. Compaction survives that blindness for
+the reason given under "Compaction" above: an append that lands in a journal
+compaction has already replaced detects it and redoes itself against the live
+one. Neither sweep can destroy work.
 
 The create-path sweep is what keeps a *fragmenting* topology from also being a
 *leaking* one. Under a per-tool-call wrapper harness every invocation reaches
@@ -570,6 +599,23 @@ before truncation's single append, because there is no read → write window lef
 to sit inside; that harness's mutant-binary self-test rebuilds the old
 read-modify-write `truncate` with the barrier planted *inside* that window and
 asserts the loss reappears.
+
+### `RDM_HARNESS_APPEND_BARRIER`
+
+The fourth member, and the one that makes compaction's residual drivable. Same
+contract again: inert when unset or empty, bounded by the same 60-second
+ceiling when set.
+
+It names a file. When set, an append blocks between *opening* the journal and
+*writing* its line — the window in which a concurrent `compact` can `rename`
+over or `remove_file` the inode the open descriptor names. That window is one
+`write_all`'s worth of work, far below anything a harness could hit by timing,
+so `scripts/verify-journal-truncation-race.sh` § 5 parks a real `rdm task
+create` there, runs `rdm session gc` from a second real process under a
+*different* session id (which shares no lease with the appender, and cannot,
+since rung 1 creates none), and only then releases the first. Its § 5b mutant
+rebuilds the binary with `APPEND_ATTEMPTS = 1` — an append that never redoes
+itself — and asserts the record is lost, so § 5 cannot pass vacuously.
 
 ## Degradation
 
