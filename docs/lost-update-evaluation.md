@@ -371,3 +371,103 @@ and the `describe_path` item vocabulary (`task/<slug>`, `roadmap/<slug>`,
 `ReviewTarget::label`). Both are intended to be stable. The remedy an agent
 should take is always the same: re-run the command, which re-reads the current
 content.
+
+## Retry attribution (phase 16)
+
+This section is deliberately separate from Carve-outs above: a carve-out names
+a window the mechanism does not check at all. This names a property of a
+window the mechanism *does* check correctly — the refusal fires exactly when
+it should — but whose prescribed remedy has a consequence worth stating
+explicitly, because a session that only reads the refusal and never reads this
+document could reasonably expect the retry to restore *its own* original edit
+verbatim, and that is not quite what happens.
+
+### The scenario
+
+Every mutating rdm command is a read-modify-write over **current disk**, and a
+successful flush writes real bytes to the real path immediately — there is no
+in-memory-only staging that a later reader can miss. That single fact drives
+the whole sequence below.
+
+1. Session A reads item `X`, edits field `f1`, and flushes (`rdm task update
+   X --f1 …`) without committing. `X`'s on-disk bytes now carry A's `f1` edit.
+   A's changeset journals that flush's digest for `X`'s path.
+2. Session B reads `X` — which, being a fresh read of current disk, already
+   carries A's `f1` edit — edits a different field `f2`, and flushes without
+   committing either. `X`'s on-disk bytes now carry **both** `f1` and `f2`.
+   B's own changeset journals *this* flush's digest for the same path.
+3. Session A runs `rdm commit`. `build_changeset_tree` compares `X`'s current
+   on-disk digest against the one A's changeset journaled in step 1 and finds
+   a mismatch — B's flush in step 2 changed the bytes at that path after A's
+   own flush wrote them. A's commit is refused with
+   `Error::ChangesetPathOverwritten`, whose message (`rdm-core/src/error.rs`)
+   now says plainly that a retry will fold in whatever is on disk, which may
+   be another session's already-landed edit.
+4. Session A retries by re-running the exact command from step 1
+   (`rdm task update X --f1 …`, the Direction section's and the phase body's
+   prescribed remedy). That command re-reads `X` from disk as its baseline —
+   which already carries both `f1` and `f2` — and re-applies `f1` (a no-op
+   against what is already there, since A's own value never changed), so the
+   flush is byte-stable and A's changeset journal now agrees with disk. A then
+   runs `rdm commit`, which finds a matching digest and lands a single commit,
+   under A's message, whose tree holds `X` with both `f1` and `f2` applied —
+   the first commit to actually reach HEAD with either edit in it.
+5. Session B, which never committed, runs `rdm commit`. B's own journaled
+   digest (from step 2) still matches current disk — nothing has touched the
+   path since — but that content is now already at HEAD, landed by A's commit
+   in step 4. There is nothing left for B's changeset to contribute, so B's
+   commit reports "Nothing to commit." rather than creating an empty commit.
+
+### What the landed commit contains, and why that is acceptable
+
+The commit that lands under **A's message** carries **both** `f1` (A's edit)
+and `f2` (B's edit), because step 4's read-modify-write cycle read a document
+that already had `f2` applied and only re-applied `f1` on top of it. Nothing
+is silently lost: B's `f2` edit is present in the tree, in exactly the bytes B
+wrote, and is provable by inspecting the landed content — the digest guard's
+entire purpose is to make that provable rather than assumed. What shifts is
+**attribution**, not data: the commit message and authorship are A's, even
+though the tree also carries B's change. B's subsequent `rdm commit` correctly
+reports nothing pending: B's own changeset journal (recorded at its step 2
+flush) still matches current disk, but that content is already at HEAD via
+A's commit, so there is nothing left for B's changeset to land.
+
+This is accepted as the changeset model's deliberate **rebase-onto-current-disk
+semantics**, for the same reason phase 5's compare-and-swap and this
+document's own flush-time precondition are content-keyed rather than
+session-keyed (see Selected mechanism above): rdm's mutating commands are
+read-modify-write over "current disk," by design, so that a session's own
+sequential edits compose correctly. A retry is not a special case of that
+design — it is an ordinary invocation of the same read-modify-write command,
+and it behaves exactly as every other invocation of that command behaves: it
+reads what is there and edits it. Treating a retry differently (e.g. reading
+whatever the journal claims A's *original* baseline was, instead of current
+disk) would require the store to remember a stale baseline across the refusal
+and thread it back into a plain re-invocation of an ordinary CLI command,
+which no other rdm workflow does and which would silently reintroduce the
+very "am I overwriting someone else's flush" ambiguity the digest guard
+exists to resolve — this time one layer up, at the retry's own flush.
+
+### Rejected alternative: refuse until B commits
+
+The Direction section names this option: hold A's flush pending and refuse to
+let A commit until B's changeset has landed, rather than letting A's retry
+proceed against B's already-landed content. **Rejected**, for the same reason
+option (C) in Options considered above was rejected: it requires new
+cross-session state — tracking which sessions are "ahead" of which at a given
+path and blocking a commit on another session's future action — that
+contradicts the stateless-at-commit-time design the digest guard was built
+to keep. It would also convert a correctness signal (the refusal, which fires
+today) into a liveness hazard: A's retry-and-commit sequence would have no
+bound on how long it waits for B, on a path that includes the `Done:` hook,
+which `hook_timeout_secs` requires to never block indefinitely on another
+session's pace. The digest guard already gives A everything a well-behaved
+retry needs — a loud, before-the-fact refusal naming exactly which item and
+path changed underneath it — without introducing a wait.
+
+### Boundary
+
+This section covers only the two-session, same-command-retry sequence the
+phase's acceptance criterion names. A's retry that edits something *different*
+from its original attempt, or a third concurrent session `C`, are out of
+scope — see Edge cases in this phase's own approved plan.

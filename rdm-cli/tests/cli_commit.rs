@@ -1229,3 +1229,124 @@ fn a_backfilled_gitattributes_reaches_a_scoped_commit() {
         "the backfilled mapping never reached a commit: {files:?}"
     );
 }
+
+/// Locks the phase 16 retry-attribution decision recorded in
+/// `docs/lost-update-evaluation.md` § "Retry attribution (phase 16)".
+///
+/// Drives the full A-edits, B-edits, A-refused, A-retries-and-commits,
+/// B-nothing-to-commit sequence end to end via two real subprocesses (each
+/// `Command::cargo_bin` call is a genuine separate OS process) scoped by
+/// distinct `RDM_SESSION` values: A edits `--tags` and flushes without
+/// committing; B edits a different field (`--status`), also flushes without
+/// committing, on top of A's now-current disk content; A's commit is refused
+/// by `Error::ChangesetPathOverwritten` (the path changed underneath A's own
+/// changeset — B's flush landed after A's), naming the item and stating a
+/// retry folds in current disk content; A retries by re-running its own
+/// original command, which re-reads current disk (already carrying both A's
+/// and B's edits) and commits successfully, landing a single commit under
+/// A's message that carries both fields; B's own follow-up `rdm commit` then
+/// reports nothing pending, because A's commit already landed everything B
+/// had flushed.
+#[test]
+fn retry_after_digest_refusal_carries_other_sessions_content() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Seed the shared task and land it, so both A and B start from the same
+    // committed baseline.
+    rdm_as("seed", &dir)
+        .args([
+            "task",
+            "create",
+            "shared-task",
+            "--title",
+            "Shared",
+            "--tags",
+            "seed",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+    rdm_as("seed", &dir)
+        .args(["commit", "-m", "seed: shared-task"])
+        .assert()
+        .success();
+
+    let a_update = [
+        "task",
+        "update",
+        "shared-task",
+        "--tags",
+        "seed,ui",
+        "--no-edit",
+        "--project",
+        "test",
+    ];
+
+    // A edits tags and flushes without committing.
+    rdm_as("cs-a", &dir).args(a_update).assert().success();
+
+    // B edits a different field and flushes — also without committing — on
+    // top of A's now-current disk content.
+    rdm_as("cs-b", &dir)
+        .args([
+            "task",
+            "update",
+            "shared-task",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+
+    // A's commit is refused: B's flush changed the path underneath A's own
+    // changeset. The message names the item and states a retry will fold in
+    // current disk content.
+    rdm_as("cs-a", &dir)
+        .args(["commit", "-m", "a: add ui tag"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("task/shared-task"))
+        .stderr(predicate::str::contains("fold in"))
+        .stderr(predicate::str::contains("already-landed"));
+
+    // A retries by re-running its own original command, which re-reads
+    // current disk (already carrying B's status alongside A's own earlier
+    // tags) and commits successfully.
+    rdm_as("cs-a", &dir).args(a_update).assert().success();
+    rdm_as("cs-a", &dir)
+        .args(["commit", "-m", "a: add ui tag"])
+        .assert()
+        .success();
+
+    // The landed commit is attributed to A but carries both fields.
+    assert_eq!(last_commit_message(dir.path()).trim(), "a: add ui tag");
+    let content = show_at_head(dir.path(), "projects/test/tasks/shared-task.md");
+    assert!(
+        content.contains("ui"),
+        "A's retried edit did not land: {content}"
+    );
+    assert!(
+        content.contains("in-progress"),
+        "A's retry did not fold in B's flushed status: {content}"
+    );
+
+    // B never committed — A's commit already landed everything B had
+    // flushed, so B's own commit reports nothing pending.
+    let before = count_git_commits(dir.path());
+    rdm_as("cs-b", &dir)
+        .args(["commit", "-m", "b: nothing left"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Nothing to commit"));
+    assert_eq!(
+        count_git_commits(dir.path()),
+        before,
+        "B's redundant commit must not create an empty commit"
+    );
+}

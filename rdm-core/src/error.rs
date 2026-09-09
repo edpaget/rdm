@@ -479,8 +479,10 @@ impl std::fmt::Display for Error {
                     f,
                     "refusing to commit {item}: another session overwrote it after this changeset \
                      wrote it, so committing would land their content under your message. Nothing \
-                     was committed — re-run the command that produced your change, then commit. \
-                     Path: {path}"
+                     was committed — re-running the command that produced your change will fold in \
+                     whatever content is on disk now (which may be that other session's \
+                     already-landed edit) before committing under your message; re-read the item \
+                     first if that is not what you want. Path: {path}"
                 )
             }
             Error::ChangesetDeletePathRecreated { item, path } => {
