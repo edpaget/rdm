@@ -60,9 +60,6 @@ pub mod status;
 #[cfg(feature = "git")]
 pub mod worktree;
 
-#[cfg(feature = "mcp")]
-pub mod mcp;
-
 #[cfg(feature = "server")]
 pub mod serve;
 

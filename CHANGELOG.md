@@ -99,7 +99,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   **Migration:** use `rdm agent-config claude --skills --out <dir>` (or `--plugin --out <dir>`) for the agent lane, and `rdm agent-config <platform> --out <dir>` for instructions. Both emit the CLI-flavored surface, which is unchanged. If you relied on the generated `.mcp.json`, configure the MCP server through your client's own MCP configuration instead.
 
-  **The `rdm mcp` server subcommand and the `rdm-mcp` crate are unaffected by this change.** Only the agent-config *authoring fork* was retired; the MCP server itself still starts with `rdm mcp` and still exposes every tool it did before.
+  **The `rdm mcp` server subcommand and the `rdm-mcp` crate were unaffected by this change** at the time it landed; both are removed by the entry below.
+
+- **BREAKING: the `rdm mcp` command and the in-process MCP server are gone.** The `rdm-mcp` crate has been deleted along with the CLI's `mcp` feature, so `rdm mcp` now fails with the standard `unrecognized subcommand` error instead of starting a server, and a build with `mcp` in its feature list no longer compiles (it never existed for `--no-default-features`, and is no longer in `default`). Every tool the server used to expose (`rdm_status`, `rdm_commit`, `rdm_review_requests`, and the rest) is gone with it; the CLI and `rdm-server` (the HTTP REST API, still started with `rdm serve`) are unaffected and continue to work exactly as before.
+
+  **Migration:** there is no in-process MCP replacement — script against the CLI directly, or drive `rdm-server`'s REST API.
+
+  The `auto_init` global config key, whose only consumer was the MCP server's auto-initialize-on-first-call behavior, is retired along with it: `rdm config set auto_init <bool> --global` now reports it as an unknown key, and a global config file left over from before this change that still sets `auto_init` continues to parse without error — the key is simply ignored.
 
 ## [0.21.0] - 2026-09-03
 

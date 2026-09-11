@@ -2,8 +2,7 @@
 //!
 //! [`matches_all_tags`] is the single source of truth for `--tag` filtering
 //! across every rdm surface, so AND semantics, case sensitivity, and the
-//! empty-filter contract cannot drift between the CLI, core ops, search, and
-//! the MCP tools.
+//! empty-filter contract cannot drift between the CLI, core ops, and search.
 //!
 //! Some tags additionally carry internal, tool-managed meaning rather than
 //! being purely user-facing labels. This module also defines those reserved
@@ -28,8 +27,8 @@ pub const NEEDS_PLAN_REVIEW_TAG: &str = "needs-plan-review";
 /// AND).
 ///
 /// This is the single source of truth for tag filtering across every rdm
-/// surface (`task list`, `roadmap list`, `rdm list`, `search`, and the MCP
-/// list tools), so the semantics below cannot drift between them:
+/// surface (`task list`, `roadmap list`, `rdm list`, and `search`), so the
+/// semantics below cannot drift between them:
 ///
 /// - An empty `required` imposes no constraint and always matches — zero
 ///   `--tag` flags is the identity filter, never "items with no tags".

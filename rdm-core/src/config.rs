@@ -16,7 +16,6 @@ pub const KNOWN_KEYS: &[&str] = &[
     "default_format",
     "remote.default",
     "root",
-    "auto_init",
     "default_branch",
     "hook_timeout_secs",
     "server.quick_filters",
@@ -25,7 +24,7 @@ pub const KNOWN_KEYS: &[&str] = &[
 ];
 
 /// Keys that may only be set in the global config (not in a repo `rdm.toml`).
-pub const GLOBAL_ONLY_KEYS: &[&str] = &["root", "auto_init"];
+pub const GLOBAL_ONLY_KEYS: &[&str] = &["root"];
 
 /// Keys that may only be set in the repo config (not in the global config).
 pub const REPO_ONLY_KEYS: &[&str] = &["server.quick_filters", "dispatch.verify"];
@@ -184,10 +183,6 @@ pub struct GlobalConfig {
     /// The default branch name for post-commit hook filtering (e.g. `"main"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_branch: Option<String>,
-
-    /// When `true`, the MCP server auto-initializes the plan repo if uninitialized.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auto_init: Option<bool>,
 
     /// Wall-clock deadline (in seconds) for `rdm hook post-merge` /
     /// `rdm hook post-commit` execution. Defaults to a conservative built-in
@@ -631,6 +626,20 @@ default = "upstream"
         assert_eq!(config.default_branch, None);
         assert_eq!(config.models, None);
         assert_eq!(config.plan_review, None);
+    }
+
+    #[test]
+    fn parse_global_config_tolerates_retired_auto_init_key() {
+        // `auto_init` backed a now-removed command and no longer exists as a
+        // field. A global config file left over from before its retirement
+        // must still parse rather than erroring out and bricking every
+        // command.
+        let toml_str = r#"
+root = "/some/path"
+auto_init = true
+"#;
+        let config = GlobalConfig::from_toml(toml_str).unwrap();
+        assert_eq!(config.root, Some(PathBuf::from("/some/path")));
     }
 
     #[test]

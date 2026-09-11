@@ -637,8 +637,8 @@ pub fn read_journal(paths: &SessionPaths, id: &SessionId) -> Result<Vec<JournalE
 ///
 /// Written as one appended tombstone line, using the same
 /// `O_APPEND` + single `write_all` as [`record`] — never as a rewrite. That
-/// is the whole point: under one session id, a parallel subagent or MCP call
-/// is a *different process* appending to this same file, so the previous
+/// is the whole point: under one session id, a parallel subagent is a
+/// *different process* appending to this same file, so the previous
 /// read-modify-write silently destroyed anything recorded between its read
 /// and its write. Two single-line appends cannot destroy each other, so the
 /// window is gone rather than narrowed.
@@ -697,8 +697,8 @@ pub fn truncate(paths: &SessionPaths, id: &SessionId, landed: &[JournalEntry]) -
 /// ask whether a live *lease* names the changeset, and rungs 1 and 3 of the
 /// identity chain (an explicit `RDM_SESSION`, a harness-published id) resolve
 /// without ever creating or reading one. Those are precisely the rungs under
-/// which parallel subagents and MCP calls share a changeset, so an unleased
-/// changeset may well have several processes appending to it.
+/// which parallel subagents share a changeset, so an unleased changeset may
+/// well have several processes appending to it.
 ///
 /// Two guards make it safe anyway, and the first is the one that carries the
 /// guarantee:

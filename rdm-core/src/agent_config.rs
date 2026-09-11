@@ -2367,7 +2367,7 @@ mod tests {
         "`enhancement` (new capability",
         "`cli` (rdm-cli",
         "`core` (rdm-core",
-        "`server` (HTTP/MCP",
+        "`server` (HTTP",
         "`web-ui` (browser",
         "`docs` (documentation",
     ];

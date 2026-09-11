@@ -79,7 +79,7 @@ pub fn run(root: &Path, fetch: bool, all: bool) -> Result<()> {
         );
     }
     // Other sessions' work is named, never hidden and never silently swept.
-    // Shared wording with `rdm commit`/`rdm discard` and their MCP tools.
+    // Shared wording with `rdm commit`/`rdm discard`.
     if let Some(note) = report.others_summary() {
         println!("  {note}");
     }

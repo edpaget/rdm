@@ -698,8 +698,8 @@ pub fn filter_reviews(
 /// is `request-changes`, sorted by review id.
 ///
 /// This is the single definition of "reviews an agent must act on", shared
-/// by the CLI (`rdm review requests`) and the MCP server
-/// (`rdm_review_requests`) so the two surfaces can never disagree.
+/// by the CLI (`rdm review requests`) and rdm-server so the two surfaces can
+/// never disagree.
 ///
 /// # Errors
 ///

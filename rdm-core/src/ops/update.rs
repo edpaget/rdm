@@ -1,7 +1,7 @@
 //! Request types for the mutating `update` operations.
 //!
 //! These collapse the per-field "a value **or** its `clear_*` flag" protocol
-//! that the CLI, server, and MCP each hand-rolled (reject-both, then map to a
+//! that the CLI and server each hand-rolled (reject-both, then map to a
 //! sentinel) into three small types whose [`from_args`](BodyUpdate::from_args)
 //! constructors validate the mutually-exclusive flags **once** and return a
 //! matchable [`Error::ConflictingUpdate`].

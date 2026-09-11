@@ -51,7 +51,7 @@ fn run() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Guard: non-init commands require rdm.toml to exist at the resolved root.
-    // Exempt commands (Init, Bootstrap, Describe, AgentConfig, Hook, Model, Mcp,
+    // Exempt commands (Init, Bootstrap, Describe, AgentConfig, Hook, Model,
     // Info) are allowed to proceed without rdm.toml.
     let rdm_toml_exists = root.join("rdm.toml").exists();
     if !rdm_toml_exists {
@@ -69,10 +69,6 @@ fn run() -> Result<()> {
             #[cfg(feature = "git")]
             Command::Bootstrap { .. } | Command::Hook { .. } => {
                 // These commands are exempt; proceed.
-            }
-            #[cfg(feature = "mcp")]
-            Command::Mcp => {
-                // This command is exempt; proceed.
             }
             _ => {
                 // All other commands require rdm.toml.
@@ -198,9 +194,6 @@ fn run() -> Result<()> {
             limit,
             min_score_ratio,
         )?,
-
-        #[cfg(feature = "mcp")]
-        Command::Mcp => commands::mcp::run(root, &global_config)?,
 
         #[cfg(feature = "server")]
         Command::Serve {

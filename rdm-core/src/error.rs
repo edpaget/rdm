@@ -162,7 +162,7 @@ pub enum Error {
     /// An update tried to replace a non-empty body with an empty string
     /// without an explicit opt-in. Callers must use [`BodyUpdate::Clear`] to
     /// confirm the clobber (the CLI exposes this as `--clear-body`, the
-    /// HTTP/MCP surfaces as `clear_body: true`).
+    /// HTTP surface as `clear_body: true`).
     ///
     /// [`BodyUpdate::Clear`]: crate::ops::BodyUpdate::Clear
     BodyClobberRefused,

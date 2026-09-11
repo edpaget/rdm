@@ -16,7 +16,7 @@ use crate::{AppStore, OutputFormat, PhaseCommand};
 /// A leading blank line is always emitted, followed by `Prev:`/`Next:` lines
 /// for whichever neighbors exist. With `markdown` true, the lines use a `> …`
 /// backtick blockquote. This CLI vocabulary deliberately lives here rather than
-/// in `rdm-core`, so MCP/server output does not inherit CLI hints.
+/// in `rdm-core`, so server output does not inherit CLI hints.
 fn phase_nav_footer(
     prev: Option<&str>,
     next: Option<&str>,

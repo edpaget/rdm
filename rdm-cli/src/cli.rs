@@ -292,9 +292,6 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: ReviewCommand,
     },
-    /// Start the MCP server on stdin/stdout.
-    #[cfg(feature = "mcp")]
-    Mcp,
     /// Start the rdm REST API server.
     #[cfg(feature = "server")]
     Serve {

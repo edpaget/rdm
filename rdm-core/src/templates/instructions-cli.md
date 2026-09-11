@@ -133,7 +133,7 @@ For `phase create`, pass a bare slug like `hook-commit-bug` — rdm prepends `ph
   - `enhancement` (new capability or improvement)
   - `cli` (rdm-cli surface)
   - `core` (rdm-core library)
-  - `server` (HTTP/MCP server surface)
+  - `server` (HTTP server surface)
   - `web-ui` (browser UI)
   - `docs` (documentation)
 

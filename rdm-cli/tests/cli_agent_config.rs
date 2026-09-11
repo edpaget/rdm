@@ -178,7 +178,7 @@ const DEFAULT_TAG_GLOSSES: &[&str] = &[
     "`enhancement` (new capability",
     "`cli` (rdm-cli",
     "`core` (rdm-core",
-    "`server` (HTTP/MCP",
+    "`server` (HTTP",
     "`web-ui` (browser",
     "`docs` (documentation",
 ];

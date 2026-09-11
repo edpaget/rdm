@@ -64,10 +64,10 @@ pub fn project_index_path(project: &str) -> RelPath {
 ///
 /// Never. This function is **total** over arbitrary `&str` input, which is
 /// load-bearing: it is applied to every path a filesystem walk yields, so a
-/// panic here would take out `rdm status`, `rdm commit`, `rdm discard`, the
-/// post-command uncommitted hint, and the three MCP tools at once — including
-/// `rdm discard`, the very command a user would reach for to remove an
-/// offending path. It deliberately does **not** call [`project_index_path`],
+/// panic here would take out `rdm status`, `rdm commit`, `rdm discard`, and
+/// the post-command uncommitted hint at once — including `rdm discard`, the
+/// very command a user would reach for to remove an offending path. It
+/// deliberately does **not** call [`project_index_path`],
 /// whose `expect` would panic on a middle segment [`RelPath::new`] rejects
 /// (empty, `.`, `..`, or a literal `\`, which is an ordinary filename
 /// character on Unix); it builds the candidate through the fallible
@@ -428,7 +428,7 @@ mod tests {
         // filesystem walk can hand this to `is_derived_path` — but `RelPath`
         // rejects it. Answering `false` (rather than panicking through
         // `project_index_path`'s `expect`) is what keeps `rdm status` /
-        // `commit` / `discard` and the MCP tools alive on such a tree.
+        // `commit` / `discard` alive on such a tree.
         assert!(!is_derived_path(r"projects/a\b/INDEX.md"));
         assert!(!is_derived_path("projects/a\\/INDEX.md"));
         assert!(!is_derived_path(r"projects/\/INDEX.md"));
