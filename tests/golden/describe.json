@@ -16,6 +16,13 @@
         "required": true,
         "enum_values": [],
         "description": "Human-readable title."
+      },
+      {
+        "name": "source",
+        "type_name": "object",
+        "required": false,
+        "enum_values": [],
+        "description": "Optional source repo ({ repo, default_branch }) that rdm:src/ links in this project's documents resolve against."
       }
     ]
   },

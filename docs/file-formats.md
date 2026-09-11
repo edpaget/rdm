@@ -66,6 +66,9 @@ Located at `projects/<slug>/project.md`. Created by `rdm project create`.
 ---
 name: fbm
 title: Fantasy Baseball Manager
+source:
+  repo: https://github.com/acme/fbm
+  default_branch: main
 ---
 
 Optional project-level notes in the markdown body.
@@ -75,6 +78,7 @@ Optional project-level notes in the markdown body.
 |-------|----------|------|-------------|
 | `name` | yes | string | Project slug (matches the directory name) |
 | `title` | yes | string | Human-readable project title |
+| `source` | no | object | The code repository this project's `rdm:src/` links resolve against — `{ repo: String, default_branch: Option<String> }` |
 
 ## `roadmap.md`
 
@@ -239,5 +243,5 @@ All dates use ISO 8601 format: `YYYY-MM-DD` (e.g., `2026-03-14`). Dates are stor
 ## General Notes
 
 - **Slugs** are used as directory and file names. They should be lowercase, hyphen-separated identifiers (e.g., `fix-barrel-nulls`, `two-way-players`).
-- **`task`** is a reserved prefix and cannot be used as a roadmap slug.
+- **`task`** and **`src`** are reserved prefixes and cannot be used as roadmap slugs.
 - The markdown body in any file is free-form — `rdm` preserves it exactly as written. Use whatever markdown structure works for your team.

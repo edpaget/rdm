@@ -161,7 +161,8 @@ impl From<&Error> for ProblemDetail {
             | Error::InvalidCommentDocRef(_)
             | Error::QuoteNotFound { .. }
             | Error::QuoteAmbiguous { .. }
-            | Error::QuoteOccurrenceOutOfRange { .. } => ProblemDetail {
+            | Error::QuoteOccurrenceOutOfRange { .. }
+            | Error::ReservedRoadmapSlug(_) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Bad Request".to_string(),
                 status: 400,

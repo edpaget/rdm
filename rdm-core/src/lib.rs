@@ -26,6 +26,9 @@ pub mod hook;
 pub mod io;
 /// Serializable JSON output types for CLI and API consumers.
 pub mod json;
+/// The `rdm:` link scheme: parsing item and code references, and
+/// extracting them from markdown bodies.
+pub mod link;
 /// A best-effort, age-bounded advisory file lock, shared by the store's flush
 /// precondition and the scoped-commit path.
 pub mod lock;

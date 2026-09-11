@@ -26,6 +26,7 @@ pub fn create_project(
         frontmatter: Project {
             name: name.to_string(),
             title: title.to_string(),
+            source: None,
         },
         body: String::new(),
     };

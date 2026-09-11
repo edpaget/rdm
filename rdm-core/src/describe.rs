@@ -56,6 +56,13 @@ impl Describe for crate::model::Project {
                     enum_values: &[],
                     description: "Human-readable title.",
                 },
+                FieldInfo {
+                    name: "source",
+                    type_name: "object",
+                    required: false,
+                    enum_values: &[],
+                    description: "Optional source repo ({ repo, default_branch }) that rdm:src/ links in this project's documents resolve against.",
+                },
             ],
         }
     }
@@ -472,6 +479,10 @@ mod tests {
         let sample = crate::model::Project {
             name: "test".to_string(),
             title: "Test".to_string(),
+            source: Some(crate::model::Source {
+                repo: "https://github.com/acme/repo".to_string(),
+                default_branch: Some("main".to_string()),
+            }),
         };
         assert_fields_match(&sample);
     }

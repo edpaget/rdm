@@ -117,6 +117,9 @@ pub enum Error {
     },
     /// A slug already exists.
     DuplicateSlug(String),
+    /// A roadmap slug collided with a reserved prefix (see
+    /// [`crate::link::is_reserved_roadmap_slug`]).
+    ReservedRoadmapSlug(String),
     /// Adding a dependency would create a cycle.
     CyclicDependency(String),
     /// No project was specified and no default project is configured.
@@ -411,6 +414,12 @@ impl std::fmt::Display for Error {
             }
             Error::DuplicateSlug(slug) => {
                 write!(f, "'{slug}' already exists — choose a different name")
+            }
+            Error::ReservedRoadmapSlug(slug) => {
+                write!(
+                    f,
+                    "'{slug}' is a reserved prefix and cannot be used as a roadmap slug"
+                )
             }
             Error::CyclicDependency(msg) => {
                 write!(f, "cyclic dependency: {msg}")

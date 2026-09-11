@@ -45,27 +45,15 @@ pub fn parse_review_target_ref(
     project: &str,
     reference: &str,
 ) -> Result<ReviewTarget> {
-    let invalid = || Error::InvalidReviewTargetRef(reference.to_string());
-    let (kind, rest) = reference.split_once('/').ok_or_else(invalid)?;
-    match kind {
-        "roadmap" if !rest.is_empty() && !rest.contains('/') => Ok(ReviewTarget::Roadmap {
-            roadmap: rest.to_string(),
-        }),
-        "task" if !rest.is_empty() && !rest.contains('/') => Ok(ReviewTarget::Task {
-            slug: rest.to_string(),
-        }),
-        "phase" => {
-            let (roadmap, phase) = rest.split_once('/').ok_or_else(invalid)?;
-            if roadmap.is_empty() || phase.is_empty() || phase.contains('/') {
-                return Err(invalid());
-            }
-            let stem = crate::ops::phase::resolve_phase_stem(store, project, roadmap, phase)?;
-            Ok(ReviewTarget::Phase {
-                roadmap: roadmap.to_string(),
-                stem,
-            })
+    let target: ReviewTarget = reference
+        .parse()
+        .map_err(|_| Error::InvalidReviewTargetRef(reference.to_string()))?;
+    match target {
+        ReviewTarget::Phase { roadmap, stem } => {
+            let stem = crate::ops::phase::resolve_phase_stem(store, project, &roadmap, &stem)?;
+            Ok(ReviewTarget::Phase { roadmap, stem })
         }
-        _ => Err(invalid()),
+        other => Ok(other),
     }
 }
 
@@ -893,6 +881,7 @@ mod tests {
             frontmatter: Project {
                 name: "test".to_string(),
                 title: "Test Project".to_string(),
+                source: None,
             },
             body: String::new(),
         };

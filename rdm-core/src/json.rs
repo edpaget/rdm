@@ -820,6 +820,7 @@ mod tests {
             frontmatter: Project {
                 name: "acme".to_string(),
                 title: "Acme Corp".to_string(),
+                source: None,
             },
             body: "Project description.".to_string(),
         };

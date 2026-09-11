@@ -361,6 +361,7 @@ mod tests {
             frontmatter: Project {
                 name: "test".to_string(),
                 title: "Test Project".to_string(),
+                source: None,
             },
             body: String::new(),
         };

@@ -394,6 +394,19 @@ pub struct Project {
     pub name: String,
     /// Human-readable title.
     pub title: String,
+    /// A code repository this project's `rdm:src/` links resolve against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<Source>,
+}
+
+/// A code repository a project's `rdm:src/` links resolve against.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Source {
+    /// Repository location (e.g. a clone URL or filesystem path).
+    pub repo: String,
+    /// Branch `rdm:src/` links resolve against when no `@<rev>` is given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
 }
 
 /// Frontmatter for a roadmap phase file.
@@ -720,6 +733,55 @@ impl ReviewTarget {
             ReviewTarget::Phase { .. } => ReviewTargetKind::Phase,
             ReviewTarget::Task { .. } => ReviewTargetKind::Task,
         }
+    }
+}
+
+impl FromStr for ReviewTarget {
+    type Err = ParseError;
+
+    /// Parses the shared item-reference syntax: `roadmap/<slug>`,
+    /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+    ///
+    /// This is purely syntactic — it does not touch the store, so a
+    /// numeric phase identifier (`phase/x/2`) is kept verbatim in `stem`,
+    /// unresolved against any real phase. Resolving that against store
+    /// content (via
+    /// [`resolve_phase_stem`](crate::ops::phase::resolve_phase_stem)) is
+    /// the caller's job.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let invalid = || {
+            ParseError::new(
+                "item reference",
+                s,
+                "roadmap/<slug>, phase/<roadmap-slug>/<stem-or-number>, or task/<slug>",
+            )
+        };
+        let (kind, rest) = s.split_once('/').ok_or_else(invalid)?;
+        match kind {
+            "roadmap" if !rest.is_empty() && !rest.contains('/') => Ok(ReviewTarget::Roadmap {
+                roadmap: rest.to_string(),
+            }),
+            "task" if !rest.is_empty() && !rest.contains('/') => Ok(ReviewTarget::Task {
+                slug: rest.to_string(),
+            }),
+            "phase" => {
+                let (roadmap, stem) = rest.split_once('/').ok_or_else(invalid)?;
+                if roadmap.is_empty() || stem.is_empty() || stem.contains('/') {
+                    return Err(invalid());
+                }
+                Ok(ReviewTarget::Phase {
+                    roadmap: roadmap.to_string(),
+                    stem: stem.to_string(),
+                })
+            }
+            _ => Err(invalid()),
+        }
+    }
+}
+
+impl fmt::Display for ReviewTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.label())
     }
 }
 
@@ -1736,6 +1798,108 @@ title: Fantasy Baseball Manager
         assert!(yaml.contains("slug: fix-login"));
         let parsed: ReviewTarget = serde_yaml::from_str(&yaml).unwrap();
         assert_eq!(parsed, target);
+    }
+
+    #[test]
+    fn review_target_from_str_roadmap() {
+        let target: ReviewTarget = "roadmap/auth".parse().unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Roadmap {
+                roadmap: "auth".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn review_target_from_str_phase_keeps_raw_stem() {
+        let target: ReviewTarget = "phase/auth/phase-1-design".parse().unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Phase {
+                roadmap: "auth".to_string(),
+                stem: "phase-1-design".to_string(),
+            }
+        );
+        // A numeric identifier is kept verbatim — resolution is the caller's job.
+        let numeric: ReviewTarget = "phase/auth/2".parse().unwrap();
+        assert_eq!(
+            numeric,
+            ReviewTarget::Phase {
+                roadmap: "auth".to_string(),
+                stem: "2".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn review_target_from_str_task() {
+        let target: ReviewTarget = "task/fix-login".parse().unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Task {
+                slug: "fix-login".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn review_target_from_str_rejects_malformed() {
+        for bad in ["", "bogus/x", "roadmap/", "phase/only-roadmap", "task/a/b"] {
+            let err = bad.parse::<ReviewTarget>().unwrap_err();
+            assert!(err.to_string().contains("item reference"));
+        }
+    }
+
+    #[test]
+    fn review_target_display_round_trips_item_refs() {
+        for label in [
+            "roadmap/auth",
+            "phase/auth/phase-1-design",
+            "task/fix-login",
+        ] {
+            let target: ReviewTarget = label.parse().unwrap();
+            assert_eq!(target.to_string(), label);
+            let round_tripped: ReviewTarget = target.to_string().parse().unwrap();
+            assert_eq!(round_tripped, target);
+        }
+    }
+
+    #[test]
+    fn project_round_trips_with_source() {
+        let doc = crate::document::Document {
+            frontmatter: Project {
+                name: "acme".to_string(),
+                title: "Acme Corp".to_string(),
+                source: Some(Source {
+                    repo: "https://github.com/acme/repo".to_string(),
+                    default_branch: Some("main".to_string()),
+                }),
+            },
+            body: "Body text.\n".to_string(),
+        };
+        let rendered = doc.render().unwrap();
+        let parsed = crate::document::Document::<Project>::parse(&rendered).unwrap();
+        assert_eq!(parsed, doc);
+    }
+
+    #[test]
+    fn project_round_trips_without_source() {
+        let doc = crate::document::Document {
+            frontmatter: Project {
+                name: "acme".to_string(),
+                title: "Acme Corp".to_string(),
+                source: None,
+            },
+            body: "Body text.\n".to_string(),
+        };
+        let rendered = doc.render().unwrap();
+        assert!(
+            !rendered.contains("source:"),
+            "expected no source: key, got:\n{rendered}"
+        );
+        let parsed = crate::document::Document::<Project>::parse(&rendered).unwrap();
+        assert_eq!(parsed, doc);
     }
 
     #[test]

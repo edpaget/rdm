@@ -132,6 +132,8 @@ pub struct CreateRoadmap<'a> {
 /// # Errors
 ///
 /// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
+/// [`Error::ReservedRoadmapSlug`] if `slug` is a reserved prefix (see
+/// [`crate::link::is_reserved_roadmap_slug`]),
 /// [`Error::DuplicateSlug`] if the roadmap already exists,
 /// [`Error::Io`] if file creation fails, or
 /// [`Error::FrontmatterParse`] if frontmatter serialization fails.
@@ -146,6 +148,9 @@ pub fn create_roadmap(store: &mut impl Store, req: CreateRoadmap<'_>) -> Result<
     } = req;
     if !store.exists(&crate::paths::project_md_path(project)) {
         return Err(Error::ProjectNotFound(project.to_string()));
+    }
+    if crate::link::is_reserved_roadmap_slug(slug) {
+        return Err(Error::ReservedRoadmapSlug(slug.to_string()));
     }
     let roadmap_file = crate::paths::roadmap_path(project, slug);
     if store.exists(&roadmap_file) {
@@ -821,6 +826,47 @@ mod tests {
 
     fn slugs(docs: &[Document<Roadmap>]) -> Vec<String> {
         docs.iter().map(|d| d.frontmatter.roadmap.clone()).collect()
+    }
+
+    fn setup_store() -> crate::store::MemoryStore {
+        let mut store = crate::store::MemoryStore::new();
+        crate::ops::init::init(&mut store).unwrap();
+        crate::ops::project::create_project(&mut store, "acme", "Acme Corp").unwrap();
+        store
+    }
+
+    #[test]
+    fn create_roadmap_rejects_src_slug() {
+        let mut store = setup_store();
+        let err = create_roadmap(
+            &mut store,
+            CreateRoadmap {
+                project: "acme",
+                slug: "src",
+                title: "Src",
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::ReservedRoadmapSlug(ref s) if s == "src"));
+        assert!(err.to_string().contains("src"));
+    }
+
+    #[test]
+    fn create_roadmap_rejects_task_slug() {
+        let mut store = setup_store();
+        let err = create_roadmap(
+            &mut store,
+            CreateRoadmap {
+                project: "acme",
+                slug: "task",
+                title: "Task",
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::ReservedRoadmapSlug(ref s) if s == "task"));
+        assert!(err.to_string().contains("task"));
     }
 
     #[test]
