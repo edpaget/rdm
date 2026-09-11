@@ -172,7 +172,7 @@ SKSCRATCH="$TMP/skill-scratch"
 mkdir -p "$SKSCRATCH/scripts" "$SKSCRATCH/.claude/workflows/lib" "$SKSCRATCH/rdm-core/src/templates"
 cp "$SKILL_GEN" "$SKSCRATCH/scripts/gen-skill-review.sh"
 cp "$LIB" "$SKSCRATCH/.claude/workflows/lib/review.mjs"
-for t in skill-review-cli.md skill-review-mcp.md skill-plan-review-cli.md skill-plan-review-mcp.md; do
+for t in skill-review-cli.md skill-plan-review-cli.md; do
     cp "$TEMPLATES/$t" "$SKSCRATCH/rdm-core/src/templates/$t"
 done
 sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode code >/dev/null 2>&1 ||
@@ -201,7 +201,7 @@ fi
 # The scratch source was mutated above (code-mode prose), so restore it before
 # the plan self-test, then plant drift on a `//|plan|` line specifically.
 cp "$LIB" "$SKSCRATCH/.claude/workflows/lib/review.mjs"
-for t in skill-review-cli.md skill-review-mcp.md skill-plan-review-cli.md skill-plan-review-mcp.md; do
+for t in skill-review-cli.md skill-plan-review-cli.md; do
     cp "$TEMPLATES/$t" "$SKSCRATCH/rdm-core/src/templates/$t"
 done
 sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode plan >/dev/null 2>&1 ||
@@ -224,8 +224,8 @@ sh "$SKSCRATCH/scripts/gen-skill-review.sh" --mode bogus >/dev/null 2>&1 &&
     fail "an unknown --mode must be rejected"
 pass "plan drift detector fires on planted //|plan| drift, isolates from code, and heals"
 
-# The generated region is shared byte-for-byte between the cli and mcp
-# templates, so it must be identical in both and free of template placeholders.
+# The generated region is stamped into the shipped cli template, so it must be
+# free of template placeholders.
 extract_spec_region() {
     awk '
         index($0, "<!-- rdm:review-spec:begin") { inr = 1; next }
@@ -234,10 +234,7 @@ extract_spec_region() {
     ' "$1"
 }
 extract_spec_region "$TEMPLATES/skill-review-cli.md" >"$TMP/spec-cli"
-extract_spec_region "$TEMPLATES/skill-review-mcp.md" >"$TMP/spec-mcp"
 [ -s "$TMP/spec-cli" ] || fail "the generated spec region in skill-review-cli.md is EMPTY"
-diff -u "$TMP/spec-cli" "$TMP/spec-mcp" >/dev/null 2>&1 ||
-    fail "the generated spec region differs between the cli and mcp review templates"
 if grep -nE '\{proj_flag\}|\{proj_param\}|\{t_[a-z_]+\}|\{principles\}' "$TMP/spec-cli" >&2; then
     fail "a template placeholder leaked into the shared generated review spec"
 fi
@@ -250,17 +247,15 @@ done
 for word in reviewed rework escalated; do
     grep -q "$word" "$TMP/spec-cli" || fail "the rendered review spec is missing the '$word' outcome"
 done
-for t in skill-review-cli.md skill-review-mcp.md; do
-    if grep -n 'PASS WITH CONCERNS' "$TEMPLATES/$t" >&2; then
-        fail "$t still uses the retired PASS WITH CONCERNS verdict"
-    fi
-    if grep -n 'tasks have no .blocked. status' "$TEMPLATES/$t" >&2; then
-        fail "$t still claims tasks have no blocked status"
-    fi
-    grep -q 'rdm hook done-line' "$TEMPLATES/$t" ||
-        fail "$t must source the completion trailer from 'rdm hook done-line'"
-done
-pass "shared spec region is byte-identical, placeholder-free, and documents all seven dimensions"
+if grep -n 'PASS WITH CONCERNS' "$TEMPLATES/skill-review-cli.md" >&2; then
+    fail "skill-review-cli.md still uses the retired PASS WITH CONCERNS verdict"
+fi
+if grep -n 'tasks have no .blocked. status' "$TEMPLATES/skill-review-cli.md" >&2; then
+    fail "skill-review-cli.md still claims tasks have no blocked status"
+fi
+grep -q 'rdm hook done-line' "$TEMPLATES/skill-review-cli.md" ||
+    fail "skill-review-cli.md must source the completion trailer from 'rdm hook done-line'"
+pass "shared spec region is non-empty, placeholder-free, and documents all seven dimensions"
 
 # --- 1d. PLAN SPEC PROJECTION -------------------------------------------------
 # The plan render is produced by the same emitter from the same regions, so it
@@ -268,10 +263,7 @@ pass "shared spec region is byte-identical, placeholder-free, and documents all 
 # are the detector for a mistagged (or untagged) prose line leaking across.
 say "1d. Plan spec region: rendered, isolated from the code render, and gate-preserving"
 extract_spec_region "$TEMPLATES/skill-plan-review-cli.md" >"$TMP/plan-spec-cli"
-extract_spec_region "$TEMPLATES/skill-plan-review-mcp.md" >"$TMP/plan-spec-mcp"
 [ -s "$TMP/plan-spec-cli" ] || fail "the generated spec region in skill-plan-review-cli.md is EMPTY"
-diff -u "$TMP/plan-spec-cli" "$TMP/plan-spec-mcp" >/dev/null 2>&1 ||
-    fail "the generated spec region differs between the cli and mcp plan-review templates"
 if grep -nE '\{proj_flag\}|\{proj_param\}|\{t_[a-z_]+\}|\{principles\}' "$TMP/plan-spec-cli" >&2; then
     fail "a template placeholder leaked into the shared generated plan-review spec"
 fi
@@ -297,10 +289,10 @@ grep -q 'gate each phase \*\*individually\*\*' "$TMP/plan-spec-cli" ||
 # STATED on the rendered plan surfaces (not only in the JS), and must NOT leak
 # into the code render — the existing bidirectional mode-isolation discipline.
 #
-# DRIVER-AGNOSTIC BY CONSTRUCTION. The canonical spec is stamped into FOUR plan
+# DRIVER-AGNOSTIC BY CONSTRUCTION. The canonical spec is stamped into THREE plan
 # consumers, and only one of them (`.claude/skills/rdm-plan-review/SKILL.md`) is
 # driven by `rdm-wf-plan-review.js` — a LOCAL-ONLY workflow. The shipped
-# cli/mcp templates and the plugin skill perform the gate write themselves, in
+# cli template and the plugin skill perform the gate write themselves, in
 # hand-authored Bash prose, with no JS driver to hand args to and no returned
 # object to read fields off. So the policy is stated here in terms of the
 # WRITE ("if the write fails … do not perform the write at all"), never in
@@ -336,12 +328,10 @@ for driverfield in gateMode gateAction gateBlocked gateDeferred; do
         fail "1d-gate-policy: local-workflow driver internals ($driverfield) leaked into the SHARED plan spec — the shipped/plugin plan-review skill has no JS driver to use them; keep them in the local shim's hand-authored prose"
     fi
 done
-for shipped_plan in "$TEMPLATES/skill-plan-review-cli.md" "$TEMPLATES/skill-plan-review-mcp.md"; do
-    for driverfield in gateMode gateAction gateBlocked gateDeferred; do
-        if grep -nF "$driverfield" "$shipped_plan" >&2; then
-            fail "1d-gate-policy: $driverfield appears in $shipped_plan — the distributed plan-review skill never invokes rdm-wf-plan-review.js"
-        fi
-    done
+for driverfield in gateMode gateAction gateBlocked gateDeferred; do
+    if grep -nF "$driverfield" "$TEMPLATES/skill-plan-review-cli.md" >&2; then
+        fail "1d-gate-policy: $driverfield appears in $TEMPLATES/skill-plan-review-cli.md — the distributed plan-review skill never invokes rdm-wf-plan-review.js"
+    fi
 done
 pass "1d-gate-policy: the shared plan spec and both shipped templates are free of local-workflow driver internals"
 
@@ -389,16 +379,14 @@ done
 # The retired vocabulary may survive ONLY inside the generated block, and only
 # as the explicit "PASS/PWC collapse to reviewed" mapping note. The
 # hand-authored prose must speak the new vocabulary exclusively.
-for t in skill-plan-review-cli.md skill-plan-review-mcp.md; do
-    awk 'index($0, "<!-- rdm:review-spec:begin") { exit } { print }' "$TEMPLATES/$t" >"$TMP/plan-hand"
-    for retired in 'PASS WITH CONCERNS' 'REWORK'; do
-        if grep -n "$retired" "$TMP/plan-hand" >&2; then
-            fail "$t still uses the retired $retired verdict in its hand-authored prose"
-        fi
-    done
-    grep -q 'find → refute → filter → verdict → act → gate' "$TMP/plan-hand" ||
-        fail "$t must describe the canonical find → refute → filter → verdict → act → gate pipeline"
+awk 'index($0, "<!-- rdm:review-spec:begin") { exit } { print }' "$TEMPLATES/skill-plan-review-cli.md" >"$TMP/plan-hand"
+for retired in 'PASS WITH CONCERNS' 'REWORK'; do
+    if grep -n "$retired" "$TMP/plan-hand" >&2; then
+        fail "skill-plan-review-cli.md still uses the retired $retired verdict in its hand-authored prose"
+    fi
 done
+grep -q 'find → refute → filter → verdict → act → gate' "$TMP/plan-hand" ||
+    fail "skill-plan-review-cli.md must describe the canonical find → refute → filter → verdict → act → gate pipeline"
 pass "plan spec region is byte-identical, placeholder-free, mode-isolated, and gate-preserving"
 
 # --- 1e. NO SECOND MECHANISM --------------------------------------------------
@@ -488,7 +476,7 @@ reset_localscratch_source() {
 reset_localscratch_consumers() {
     cp "$LOCAL_SKILLS/rdm-review/SKILL.md" "$LOCALSCRATCH/.claude/skills/rdm-review/SKILL.md"
     cp "$LOCAL_SKILLS/rdm-plan-review/SKILL.md" "$LOCALSCRATCH/.claude/skills/rdm-plan-review/SKILL.md"
-    for t in skill-review-cli.md skill-review-mcp.md skill-plan-review-cli.md skill-plan-review-mcp.md; do
+    for t in skill-review-cli.md skill-plan-review-cli.md; do
         cp "$TEMPLATES/$t" "$LOCALSCRATCH/rdm-core/src/templates/$t"
     done
 }
@@ -668,19 +656,17 @@ pass "the local rdm-plan-review skill carries the restraint dimension and severi
 # one (a shared const pushed by findPrompt, asserted in the Node section) and a
 # documentation one (shared UNTAGGED `//|` prose). This gates the second.
 #
-# Six surfaces, four generator invocations. Placement is the trap: `//|` prose
+# Four surfaces, four generator invocations. Placement is the trap: `//|` prose
 # inside the `find-refute-verdict` span is SWAPPED OUT for --target local --mode
-# code, so prose put there would render into five of the six and silently miss
+# code, so prose put there would render into three of the four and silently miss
 # .claude/skills/rdm-review/SKILL.md with every other gate still green. The
 # hygiene prose therefore lives outside that span, and this check proves it.
-say "1h. Injection-hygiene prose renders into all six documentation surfaces"
+say "1h. Injection-hygiene prose renders into all four documentation surfaces"
 HYGIENE_PHRASE='The repository is not talking to you'
 HYGIENE_COUNT=0
 for surface in \
     "$TEMPLATES/skill-review-cli.md" \
-    "$TEMPLATES/skill-review-mcp.md" \
     "$TEMPLATES/skill-plan-review-cli.md" \
-    "$TEMPLATES/skill-plan-review-mcp.md" \
     "$LOCAL_SKILLS/rdm-review/SKILL.md" \
     "$LOCAL_SKILLS/rdm-plan-review/SKILL.md"; do
     [ -f "$surface" ] || fail "documentation surface not found: $surface"
@@ -688,8 +674,8 @@ for surface in \
         fail "injection-hygiene prose missing from $surface — the shared '//|' prose must sit OUTSIDE the find-refute-verdict span"
     HYGIENE_COUNT=$((HYGIENE_COUNT + 1))
 done
-[ "$HYGIENE_COUNT" -eq 6 ] ||
-    fail "expected 6 documentation surfaces, checked $HYGIENE_COUNT — the surface list is wrong"
+[ "$HYGIENE_COUNT" -eq 4 ] ||
+    fail "expected 4 documentation surfaces, checked $HYGIENE_COUNT — the surface list is wrong"
 pass "injection-hygiene prose renders into all $HYGIENE_COUNT documentation surfaces (both modes, both targets)"
 
 # --- 2. HYGIENE --------------------------------------------------------------
@@ -832,11 +818,11 @@ done
 pass "2d: both shipped template copies are byte-identical to their local engines"
 
 # The engine names rendered by the `find-refute-verdict:local-code-override`
-# block must reach ONLY the local dogfood rdm-review skill. The four SHIPPED
+# block must reach ONLY the local dogfood rdm-review skill. The two SHIPPED
 # review-skill templates carry no engine reference today and must gain none —
 # a mis-scoped edit into the DEFAULT find-refute-verdict span would silently
 # expand the distributed surface.
-for shipped_skill in skill-review-cli.md skill-review-mcp.md skill-plan-review-cli.md skill-plan-review-mcp.md; do
+for shipped_skill in skill-review-cli.md skill-plan-review-cli.md; do
     [ "$(grep -c 'rdm-wf-' "$REPO_ROOT/rdm-core/src/templates/$shipped_skill" || true)" -eq 0 ] ||
         fail "2d: $shipped_skill gained an engine reference — the local-code-override block must never render into a SHIPPED template"
 done
@@ -8877,7 +8863,7 @@ assert_plan_mutant_fails "$TMP/plan-mutant-no-tags-omission-tolerance.mjs" \
 
 # --- 7f. SHIM: the LOCAL rdm-plan-review shim gathers the payload verbatim -----
 # `.claude/skills/rdm-plan-review/SKILL.md` is a LOCAL dogfood shim; its
-# distributed template (rdm-core/src/templates/skill-plan-review-{cli,mcp}.md) is
+# distributed template (rdm-core/src/templates/skill-plan-review-cli.md) is
 # NOT a Workflow shim yet (tracked by task
 # convert-remaining-skill-templates-to-workflow-shims), so this check belongs
 # here and NOT in verify-agent-config-distribution.sh.
@@ -9219,8 +9205,7 @@ fi
 # copy keep contradicting the code, so these greps are deliberately whole-file.
 say "8b. Every rendered review skill states the pass-through rule, in hand-authored prose too"
 
-REVIEW_DOCS="$TEMPLATES/skill-review-cli.md $TEMPLATES/skill-review-mcp.md \
-$TEMPLATES/skill-plan-review-cli.md $TEMPLATES/skill-plan-review-mcp.md \
+REVIEW_DOCS="$TEMPLATES/skill-review-cli.md $TEMPLATES/skill-plan-review-cli.md \
 $REPO_ROOT/.claude/skills/rdm-review/SKILL.md $REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
 
 for doc in $REVIEW_DOCS; do
@@ -9253,7 +9238,7 @@ for doc in $REVIEW_DOCS; do
     grep -qF 'skipped, with a reason' "$doc" ||
         fail "8b: $doc's act step still reports a two-action vocabulary that cannot express a skip"
 done
-pass "8b: all six rendered review docs state the marker + disposition rule and drop every retired absolute"
+pass "8b: all four rendered review docs state the marker + disposition rule and drop every retired absolute"
 
 # --- 8c. PLANTED-MUTATION SELF-TESTS (non-vacuity, both directions) -----------
 # Four independent mutations, each of which MUST flip one of the section-8
@@ -10002,7 +9987,7 @@ for doc in $REVIEW_DOCS; do
     grep -qF 'maxRefutations' "$doc" ||
         fail "9b-skills: $doc does not name the per-run override"
 done
-pass "9b-skills: all six rendered review docs state the budget rule, its evidence, and all four state markers"
+pass "9b-skills: all four rendered review docs state the budget rule, its evidence, and all four state markers"
 
 # --- 9c. PLANTED-MUTATION SELF-TESTS (non-vacuity) ----------------------------
 # Seven independent mutations, each of which MUST flip one of section 9's
@@ -10286,8 +10271,8 @@ grep -qF 'scripts/verify-finder-collapse.sh' "$REPO_ROOT/CLAUDE.md" ||
     fail "10g: CLAUDE.md does not list the finder-collapse harness"
 pass "10g: restraint is listed as always-on everywhere, and the stale string is gone"
 
-CODE_RENDERS="$TEMPLATES/skill-review-cli.md $TEMPLATES/skill-review-mcp.md $REPO_ROOT/.claude/skills/rdm-review/SKILL.md"
-PLAN_RENDERS="$TEMPLATES/skill-plan-review-cli.md $TEMPLATES/skill-plan-review-mcp.md $REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
+CODE_RENDERS="$TEMPLATES/skill-review-cli.md $REPO_ROOT/.claude/skills/rdm-review/SKILL.md"
+PLAN_RENDERS="$TEMPLATES/skill-plan-review-cli.md $REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
 for doc in $CODE_RENDERS; do
     grep -qF 'NOT merged into one always-on finder' "$doc" ||
         fail "10g: $doc is missing the ac/correctness non-merge rationale"
@@ -10450,11 +10435,11 @@ pass "10f: all five mutations flip a 10c/10d/10e assertion, and the control pass
 #
 # `gen-skill-review.sh --check` gates render-vs-committed EQUALITY, never prose
 # COVERAGE — it stays fully green on a span you forgot to edit. This explicit
-# six-surface grep is therefore the only real gate, and the planted-mutation
+# four-surface grep is therefore the only real gate, and the planted-mutation
 # self-test below proves exactly that: it deletes the sentence from the OVERRIDE
 # span only, regenerates so `--check` would be green again, and asserts this
 # section still goes red.
-say "11. The finder-crash rule renders into all six surfaces, from BOTH //| spans"
+say "11. The finder-crash rule renders into all four surfaces, from BOTH //| spans"
 
 FINDER_CRASH_RE='A \*\*finder\*\* that returns nothing is retried \*\*once\*\*'
 ABSENT_AC_RE='does \*\*not\*\* count as an AC gap'
@@ -10469,7 +10454,7 @@ for doc in $CODE_RENDERS $PLAN_RENDERS; do
     grep -q 'recorded, never gated on' "$doc" ||
         fail "11: $doc does not state the recorded-never-gated policy"
 done
-pass "11: all six rendered surfaces state the finder-crash rule and the recorded-never-gated policy"
+pass "11: all four rendered surfaces state the finder-crash rule and the recorded-never-gated policy"
 
 # Mode isolation, BOTH directions: the absent-AC-table sentence is code-only.
 for doc in $CODE_RENDERS; do
@@ -10496,7 +10481,7 @@ cp "$LIB" "$PROSE/.claude/workflows/lib/review.mjs"
 cp "$REPO_ROOT/scripts/gen-skill-review.sh" "$PROSE/scripts/"
 cp "$REPO_ROOT/.claude/skills/rdm-review/SKILL.md" "$PROSE/.claude/skills/rdm-review/"
 cp "$REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md" "$PROSE/.claude/skills/rdm-plan-review/"
-for t in skill-review-cli skill-review-mcp skill-plan-review-cli skill-plan-review-mcp; do
+for t in skill-review-cli skill-plan-review-cli; do
     cp "$TEMPLATES/$t.md" "$PROSE/rdm-core/src/templates/"
 done
 
@@ -10543,7 +10528,7 @@ for doc in "$PROSE/rdm-core/src/templates/skill-review-cli.md" \
     grep -qE "$FINDER_CRASH_RE" "$doc" ||
         fail "11b: the default-span renders lost the rule too — the deletion was not override-scoped"
 done
-pass "11b: a one-span deletion leaves --check green but is caught by the six-surface grep"
+pass "11b: a one-span deletion leaves --check green but is caught by the four-surface grep"
 
 # --- 12. INTENT-ALIGNMENT DIMENSION -------------------------------------------
 # The plan-mode dimension that checks a plan against the operator-recorded

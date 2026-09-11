@@ -58,7 +58,7 @@
 #      NOT have become a headless pass-through), and
 #      `scripts/gen-skill-review.sh --check` still passes in both `--mode code`
 #      and `--mode plan` (proving the untouched, separately-generated
-#      `skill-review-{cli,mcp}.md` / `skill-plan-review-{cli,mcp}.md` templates
+#      `skill-review-cli.md` / `skill-plan-review-cli.md` templates
 #      are unaffected by this hand-authored prose trim).
 #   5. STATIC INVARIANT — `meta.phases` in rdm-wf-review-refute-fix.js lists exactly
 #      the distinct `phase:` tags the driver + the inlined review block
@@ -695,7 +695,7 @@ pass "3h: fallback assertions fire when the diff:signals else-branch is removed"
 
 # --- 3i. SKILL SHIM gathers the diff --------------------------------------
 # `.claude/skills/rdm-review/SKILL.md` is a LOCAL dogfood shim (its distributed
-# template `rdm-core/src/templates/skill-review-{cli,mcp}.md` is NOT a Workflow
+# template `rdm-core/src/templates/skill-review-cli.md` is NOT a Workflow
 # shim yet — tracked by task convert-remaining-skill-templates-to-workflow-shims),
 # so the gathering check lives here rather than in the distribution harness.
 say "3i. Skill shim gathers the branch diff and passes it as args.diff"

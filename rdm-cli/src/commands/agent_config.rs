@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
-use rdm_core::agent_config::{self, AgentConfigOptions, McpConfigOptions, Platform, SkillOptions};
+use rdm_core::agent_config::{self, AgentConfigOptions, Platform, SkillOptions};
 
 /// Generates agent configuration for AI coding assistants.
 ///
@@ -9,24 +9,19 @@ use rdm_core::agent_config::{self, AgentConfigOptions, McpConfigOptions, Platfor
 ///
 /// Returns an error if the platform is unknown, an unsupported flag
 /// combination is given, or any output file cannot be written.
-#[allow(clippy::too_many_arguments)]
 pub fn run(
-    root: &Path,
     platform: String,
     project: Option<String>,
     out: Option<PathBuf>,
     principles_file: Option<String>,
     skills: bool,
-    mcp: bool,
     user: bool,
     plugin: bool,
 ) -> Result<()> {
     let platform: Platform = platform.parse().map_err(|e: String| anyhow!(e))?;
 
-    // `--plugin`'s two hand-rolled checks run BEFORE the pre-existing Pi+`--mcp`
-    // check below: `--plugin --mcp` on a non-Claude platform must surface the
-    // plugin-specific "only supported for claude" message, never fall through to
-    // the Pi/`--mcp` message meant for a different, unrelated combination.
+    // `--plugin` is Claude-only: on any other platform the emit is rejected
+    // with the plugin-specific "only supported for claude" message.
     if plugin && platform != Platform::Claude {
         bail!(
             "--plugin is only supported for the claude platform (plugins are a Claude Code \
@@ -43,28 +38,19 @@ pub fn run(
         );
     }
 
-    if platform == Platform::Pi && mcp {
-        bail!(
-            "Pi does not support MCP natively. Use `--skills` for skill-based \
-             integration, or omit `--mcp` for an AGENTS.md integration."
-        );
-    }
-
     if plugin {
-        write_plugin(project, principles_file, mcp, &out)?;
+        write_plugin(project, principles_file, &out)?;
     } else if skills {
         write_skills(
             platform,
             project,
             principles_file,
-            mcp,
             user,
             &out,
-            root,
             agent_config::SUPERSEDED_WORKFLOWS,
         )?;
     } else {
-        write_instruction(platform, project, principles_file, mcp, user, &out, root)?;
+        write_instruction(platform, project, principles_file, user, &out)?;
     }
 
     Ok(())
@@ -88,21 +74,7 @@ fn write_output(path: &Path, contents: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Writes the `.mcp.json` file into `base_dir`, pointing at the plan `root`.
-///
-/// # Errors
-///
-/// Returns an error if the file cannot be written.
-fn write_mcp_json(base_dir: &Path, root: &Path) -> Result<()> {
-    let root_str = root.to_string_lossy().to_string();
-    let mcp_content = agent_config::generate_mcp_config(&McpConfigOptions {
-        root: Some(root_str),
-    });
-    let mcp_path = base_dir.join(".mcp.json");
-    write_output(&mcp_path, mcp_content.as_bytes())
-}
-
-/// Writes the Claude Code / Pi skill files (and `.mcp.json` when `--mcp`).
+/// Writes the Claude Code / Pi skill files.
 ///
 /// When the target is `Platform::Claude` and the output is a project
 /// directory (`--out`, not `--user`), this also emits the autonomous-lane
@@ -138,18 +110,16 @@ fn write_mcp_json(base_dir: &Path, root: &Path) -> Result<()> {
 /// [`agent_config::SUPERSEDED_WORKFLOWS`] directly) so tests can inject a
 /// synthetic non-empty table and observe that a `Failed` cleanup outcome
 /// never aborts the emit; `run` always passes the shipped production table.
-#[allow(clippy::too_many_arguments)]
 fn write_skills(
     platform: Platform,
     project: Option<String>,
     principles_file: Option<String>,
-    mcp: bool,
     user: bool,
     out: &Option<PathBuf>,
-    root: &Path,
     superseded_table: &[agent_config::SupersededWorkflow],
 ) -> Result<()> {
-    // Resolve the skills root and the base dir for .mcp.json.
+    // Resolve the skills root and the base dir the workflows/agents
+    // directories hang off.
     // --user → ~/.claude/skills or ~/.pi/agent/skills (base dir is
     // platform.user_level_dir()). --out <dir> → <dir>/<project_skills_subdir>
     // (base dir is <dir>). Other platforms reject --skills.
@@ -169,7 +139,6 @@ fn write_skills(
     let skill_files = agent_config::generate_skills(&SkillOptions {
         project,
         principles_file,
-        mcp,
     });
     for skill in &skill_files {
         let path = skills_root.join(skill.relative_path);
@@ -215,10 +184,6 @@ fn write_skills(
             }
         }
     }
-    // When --mcp, also write .mcp.json at the project (or user-level) root.
-    if mcp {
-        write_mcp_json(&base_dir, root)?;
-    }
     Ok(())
 }
 
@@ -231,22 +196,12 @@ fn write_skills(
 /// with no platform branching, no workflow-directory special-casing, and no
 /// superseded-file cleanup pass.
 ///
-/// `mcp` is threaded straight through to [`SkillOptions`], exactly as
-/// [`write_skills`] does — it controls whether the plugin's skill bodies
-/// reference MCP tool names or CLI commands, which is orthogonal to the
-/// plugin-vs-raw distribution question this phase adds. Unlike
-/// `write_skills`, this never writes a companion `.mcp.json`: that file
-/// belongs to a project or user config directory, not a plugin tree, and
-/// plugin MCP-server bundling is out of this phase's scope (installability
-/// is phase 4's).
-///
 /// # Errors
 ///
 /// Returns an error if `--out` was not supplied, or a file write fails.
 fn write_plugin(
     project: Option<String>,
     principles_file: Option<String>,
-    mcp: bool,
     out: &Option<PathBuf>,
 ) -> Result<()> {
     let dir = out
@@ -255,7 +210,6 @@ fn write_plugin(
     let files = agent_config::generate_plugin_files(&SkillOptions {
         project,
         principles_file,
-        mcp,
     });
     for file in &files {
         let path = dir.join(&file.relative_path);
@@ -264,8 +218,8 @@ fn write_plugin(
     Ok(())
 }
 
-/// Writes the instruction file (and `.mcp.json` when `--mcp`), or prints the
-/// instruction content to stdout when no output directory is resolved.
+/// Writes the instruction file, or prints the instruction content to stdout
+/// when no output directory is resolved.
 ///
 /// # Errors
 ///
@@ -275,38 +229,30 @@ fn write_instruction(
     platform: Platform,
     project: Option<String>,
     principles_file: Option<String>,
-    mcp: bool,
     user: bool,
     out: &Option<PathBuf>,
-    root: &Path,
 ) -> Result<()> {
-    // Resolve the output base dir and instruction file path. --user
-    // uses the platform-aware user-level path (which handles Pi's
-    // asymmetric layout); --out joins the conventional path under the
-    // supplied directory. `base_dir` is where .mcp.json lands.
-    let resolved: Option<(PathBuf, PathBuf)> = if user {
-        let base = platform.user_level_dir().map_err(|e| anyhow!(e))?;
-        let path = platform
-            .user_level_instruction_path()
-            .map_err(|e| anyhow!(e))?;
-        Some((base, path))
+    // Resolve the instruction file path. --user uses the platform-aware
+    // user-level path (which handles Pi's asymmetric layout); --out joins the
+    // conventional path under the supplied directory.
+    let resolved: Option<PathBuf> = if user {
+        Some(
+            platform
+                .user_level_instruction_path()
+                .map_err(|e| anyhow!(e))?,
+        )
     } else {
         out.as_ref()
-            .map(|dir| (dir.clone(), dir.join(platform.conventional_path())))
+            .map(|dir| dir.join(platform.conventional_path()))
     };
 
     let content = agent_config::generate_agent_config(&AgentConfigOptions {
         platform,
         project,
         principles_file,
-        mcp,
     });
-    if let Some((base_dir, path)) = resolved {
+    if let Some(path) = resolved {
         write_output(&path, content.as_bytes())?;
-        // When --mcp, also write .mcp.json in the output base dir
-        if mcp {
-            write_mcp_json(&base_dir, root)?;
-        }
     } else {
         print!("{content}");
     }
@@ -382,9 +328,7 @@ mod tests {
                 Some("distro-check".to_string()),
                 None,
                 false,
-                false,
                 &Some(out.clone()),
-                Path::new("."),
                 &table,
             )
         }));
@@ -430,11 +374,10 @@ mod tests {
     }
 
     /// `write_skills` must emit `.claude/agents/rdm-mechanical.md`
-    /// byte-identical to `generate_agents()`'s content, for both the plain
-    /// CLI (`mcp: false`) and `--mcp` variants — mirroring the workflow
-    /// scripts' emission, which both variants already share.
+    /// byte-identical to `generate_agents()`'s content — mirroring the
+    /// workflow scripts' emission.
     #[test]
-    fn write_skills_emits_agent_definitions_plain_and_mcp() {
+    fn write_skills_emits_agent_definitions() {
         let agent_content = agent_config::generate_agents()
             .into_iter()
             .find(|a| a.relative_path == "rdm-mechanical.md")
@@ -442,38 +385,30 @@ mod tests {
             .content
             .to_string();
 
-        for mcp in [false, true] {
-            let out_dir = tempfile::tempdir().unwrap();
-            let out = out_dir.path().to_path_buf();
-            write_skills(
-                Platform::Claude,
-                Some("distro-check".to_string()),
-                None,
-                mcp,
-                false,
-                &Some(out.clone()),
-                Path::new("."),
-                &[],
-            )
-            .unwrap();
+        let out_dir = tempfile::tempdir().unwrap();
+        let out = out_dir.path().to_path_buf();
+        write_skills(
+            Platform::Claude,
+            Some("distro-check".to_string()),
+            None,
+            false,
+            &Some(out.clone()),
+            &[],
+        )
+        .unwrap();
 
-            let agent_path = out.join(".claude/agents/rdm-mechanical.md");
-            let written = std::fs::read_to_string(&agent_path).unwrap_or_else(|e| {
-                panic!(
-                    "expected {} to be written (mcp={mcp}): {e}",
-                    agent_path.display()
-                )
-            });
-            assert_eq!(
-                written, agent_content,
-                "emitted rdm-mechanical.md must be byte-identical to generate_agents() (mcp={mcp})"
-            );
-        }
+        let agent_path = out.join(".claude/agents/rdm-mechanical.md");
+        let written = std::fs::read_to_string(&agent_path)
+            .unwrap_or_else(|e| panic!("expected {} to be written: {e}", agent_path.display()));
+        assert_eq!(
+            written, agent_content,
+            "emitted rdm-mechanical.md must be byte-identical to generate_agents()"
+        );
     }
 
     #[test]
     fn write_plugin_requires_out() {
-        let err = write_plugin(None, None, false, &None).unwrap_err();
+        let err = write_plugin(None, None, &None).unwrap_err();
         assert!(
             err.to_string().contains("--plugin requires --out"),
             "unexpected error: {err}"
@@ -484,7 +419,7 @@ mod tests {
     fn write_plugin_writes_manifest_skills_and_workflows() {
         let dir = tempfile::tempdir().unwrap();
         let out = Some(dir.path().to_path_buf());
-        write_plugin(Some("distro-check".to_string()), None, false, &out).unwrap();
+        write_plugin(Some("distro-check".to_string()), None, &out).unwrap();
 
         let manifest_path = dir.path().join(".claude-plugin/plugin.json");
         assert!(manifest_path.exists());
@@ -503,18 +438,7 @@ mod tests {
 
     #[test]
     fn run_rejects_plugin_on_non_claude_platform() {
-        let err = run(
-            Path::new("."),
-            "pi".to_string(),
-            None,
-            None,
-            None,
-            false,
-            false,
-            false,
-            true,
-        )
-        .unwrap_err();
+        let err = run("pi".to_string(), None, None, None, false, false, true).unwrap_err();
         assert!(
             err.to_string()
                 .contains("--plugin is only supported for the claude platform"),
@@ -524,18 +448,7 @@ mod tests {
 
     #[test]
     fn run_rejects_plugin_with_user() {
-        let err = run(
-            Path::new("."),
-            "claude".to_string(),
-            None,
-            None,
-            None,
-            false,
-            false,
-            true,
-            true,
-        )
-        .unwrap_err();
+        let err = run("claude".to_string(), None, None, None, false, true, true).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("--plugin cannot be combined with --user"),
@@ -544,30 +457,5 @@ mod tests {
         // Distinct from the --skills-without-destination message: guard
         // against an accidental copy-paste reuse of that string.
         assert!(!msg.contains("--skills requires --out or --user"));
-    }
-
-    #[test]
-    fn run_plugin_pi_mcp_precedence_is_plugin_message() {
-        // Both --plugin and --mcp are individually wrong for Pi; the
-        // plugin-specific rejection must win over the pre-existing Pi+--mcp
-        // check, since it runs first in `run`.
-        let err = run(
-            Path::new("."),
-            "pi".to_string(),
-            None,
-            None,
-            None,
-            false,
-            true,
-            false,
-            true,
-        )
-        .unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("--plugin is only supported for the claude platform"),
-            "unexpected error: {msg}"
-        );
-        assert!(!msg.contains("Pi does not support MCP"));
     }
 }

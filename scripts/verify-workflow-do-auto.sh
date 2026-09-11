@@ -7,7 +7,7 @@
 # `rdm-do` is untouched; `--auto --task` routes in the same way). As of the
 # `distribute-workflow-lane` roadmap's phase 2, this wiring is no longer a
 # dogfood-only, local edit: the distributed
-# `rdm-core/src/templates/skill-do-cli.md` / `skill-do-mcp.md` templates carry
+# `rdm-core/src/templates/skill-do-cli.md` template carries
 # the identical `--auto` -> dispatch-phase wiring, and the local SKILL.md is a
 # byte-for-byte regeneration of the CLI template (`rdm agent-config claude
 # --skills --project rdm --out .`) — there is no more hand-authored divergence
@@ -47,7 +47,6 @@ RDM_BIN="$REPO_ROOT/target/debug/rdm"
 SKILL="$REPO_ROOT/.claude/skills/rdm-do/SKILL.md"
 DISPATCH_WF="$REPO_ROOT/.claude/workflows/rdm-wf-dispatch-phase.js"
 TEMPLATE_CLI="$REPO_ROOT/rdm-core/src/templates/skill-do-cli.md"
-TEMPLATE_MCP="$REPO_ROOT/rdm-core/src/templates/skill-do-mcp.md"
 
 # Clear rdm-related env vars inherited from the caller's shell for hermeticity.
 unset RDM_ROOT RDM_PROJECT RDM_STAGE RDM_FORMAT RDM_PLAN_REPO RDM_PLAN_REPO_TOKEN RDM_PLAN_REPO_PATH 2>/dev/null || true
@@ -63,7 +62,6 @@ pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 [ -f "$SKILL" ] || fail "skill file not found: $SKILL"
 [ -f "$DISPATCH_WF" ] || fail "dispatch-phase workflow not found: $DISPATCH_WF"
 [ -f "$TEMPLATE_CLI" ] || fail "distributed template not found: $TEMPLATE_CLI"
-[ -f "$TEMPLATE_MCP" ] || fail "distributed template not found: $TEMPLATE_MCP"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
@@ -203,20 +201,18 @@ grep -qF 'the sentinel that signals a review is pending' "$TMP/skill.scratch" ||
     fail "stale-framing detector broken — a planted deferral sentence was not found"
 pass "finalize invokes the canonical rdm-review in both lanes; --auto reads outcome.status/writesCompletion; stale deferral framing gone"
 
-# AC2 positive proof: the distributed templates now carry the SAME --auto ->
+# AC2 positive proof: the distributed template now carries the SAME --auto ->
 # dispatch-phase wiring as the local dogfood SKILL.md — the divergence the old
 # "dogfood-only" note recorded is resolved, not merely deferred.
-for TEMPLATE in "$TEMPLATE_CLI" "$TEMPLATE_MCP"; do
-    grep -q 'dispatch-phase' "$TEMPLATE" ||
-        fail "AC2: $TEMPLATE must reference dispatch-phase — the --auto wiring is no longer dogfood-only"
-    grep -qF -- '- Workflow' "$TEMPLATE" ||
-        fail "AC2: $TEMPLATE frontmatter must list the Workflow tool"
-    grep -q '## Auto phase dispatch' "$TEMPLATE" ||
-        fail "AC2: $TEMPLATE must carry a '## Auto phase dispatch' section"
-    grep -q '## Auto task dispatch' "$TEMPLATE" ||
-        fail "AC2: $TEMPLATE must carry a '## Auto task dispatch' section"
-done
-pass "distributed templates (skill-do-cli.md, skill-do-mcp.md) reference dispatch-phase and the Workflow tool"
+grep -q 'dispatch-phase' "$TEMPLATE_CLI" ||
+    fail "AC2: $TEMPLATE_CLI must reference dispatch-phase — the --auto wiring is no longer dogfood-only"
+grep -qF -- '- Workflow' "$TEMPLATE_CLI" ||
+    fail "AC2: $TEMPLATE_CLI frontmatter must list the Workflow tool"
+grep -q '## Auto phase dispatch' "$TEMPLATE_CLI" ||
+    fail "AC2: $TEMPLATE_CLI must carry a '## Auto phase dispatch' section"
+grep -q '## Auto task dispatch' "$TEMPLATE_CLI" ||
+    fail "AC2: $TEMPLATE_CLI must carry a '## Auto task dispatch' section"
+pass "distributed template (skill-do-cli.md) references dispatch-phase and the Workflow tool"
 
 # Self-test: prove the positive detector is not a tautological no-op — strip
 # every dispatch-phase mention from a scratch copy and assert the detector

@@ -163,10 +163,6 @@ pub(crate) enum Command {
         /// Generate Claude Code skill files instead of an instruction file.
         #[arg(long, conflicts_with = "plugin")]
         skills: bool,
-        /// Generate MCP-oriented instructions (referencing MCP tool names instead of CLI commands).
-        /// When combined with --out, also writes .mcp.json alongside.
-        #[arg(long)]
-        mcp: bool,
         /// Write to the user-level config directory (e.g. ~/.claude/) instead of a project directory.
         /// Mutually exclusive with --out.
         #[arg(long, conflicts_with = "out")]

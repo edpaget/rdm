@@ -20,13 +20,13 @@ the canonical schema contracts they exchange.
 > unshipped set is now exactly: `lib/*.mjs` (no regeneration script travels
 > downstream to consume it) and the generator scripts
 > (`scripts/gen-workflow-review.sh` and friends). rdm's shipped autonomous skills
-> (`rdm-core/src/templates/skill-{autopilot,dispatch-phase}-{cli,mcp}.md`, and the
-> `--auto` section of `skill-do-{cli,mcp}.md`) are the user-facing autonomous
-> lane: `skill-autopilot-{cli,mcp}.md` is now a **prose** skill that itself
+> (`rdm-core/src/templates/skill-{autopilot,dispatch-phase}-cli.md`, and the
+> `--auto` section of `skill-do-cli.md`) are the user-facing autonomous
+> lane: `skill-autopilot-cli.md` is now a **prose** skill that itself
 > drives the roadmap loop, invoking `rdm-wf-dispatch-phase` (and, locally, `rdm-wf-estimate`)
 > as ordinary `Workflow` calls rather than being a thin shim over a workflow
 > script of its own — see `docs/workflow-vs-prose-boundary.md` for why autopilot
-> was retired from `.claude/workflows/` in favor of prose. `skill-dispatch-phase-{cli,mcp}.md`
+> was retired from `.claude/workflows/` in favor of prose. `skill-dispatch-phase-cli.md`
 > remains a thin shim that invokes `rdm-wf-dispatch-phase.js` via the `Workflow` tool,
 > instead of re-narrating the orchestration in prose. Distributing the
 > still-unshipped pieces (`lib/`, a downstream regeneration story) remains a
@@ -1694,10 +1694,10 @@ is written only by non-stamped code: the interactive skill's gate step and
 - the **skill-renderable spec** — a `review-spec` region nested *inside* the
   stamped block plus a `review-gate-spec` region *after* it, whose `//| `
   literate comment lines `scripts/gen-skill-review.sh` renders into
-  `rdm-core/src/templates/skill-review-{cli,mcp}.md` between
+  `rdm-core/src/templates/skill-review-cli.md` between
   `<!-- rdm:review-spec:begin/end -->` markers. It is mode-dispatched
   (`--mode code|plan`), and `--mode plan` renders the SAME regions into
-  `skill-plan-review-{cli,mcp}.md` — one source, one emitter, two skills. The
+  `skill-plan-review-cli.md` — one source, one emitter, two skills. The
   gate region sits outside the stamped block precisely because it is the one
   place the completion-trailer literal may appear.
 
@@ -1715,7 +1715,7 @@ line leaking across.
 
 `gen-skill-review.sh` also carries an orthogonal **`--target shipped|local`**
 axis (default `shipped`), independent of `--mode`: `shipped` renders the
-`rdm-core/src/templates/skill-{review,plan-review}-{cli,mcp}.md` files baked
+`rdm-core/src/templates/skill-{review,plan-review}-cli.md` files baked
 into released binaries; `local` renders this repo's own dogfood skill copies,
 `.claude/skills/{rdm-review,rdm-plan-review}/SKILL.md` — nothing else
 re-stamps them, so without this target they drift silently behind the
@@ -1761,7 +1761,7 @@ these keys.
 **Scope: these five fields and `gateMode` are `rdm-wf-plan-review.js` surface,
 and that workflow is local-only.** They are deliberately absent from the shared
 `//|plan|` review spec, and therefore from the shipped
-`skill-plan-review-{cli,mcp}.md` templates and `plugins/rdm/skills/plan-review/`
+`skill-plan-review-cli.md` templates and `plugins/rdm/skills/plan-review/`
 — those skills perform the gate write themselves, in hand-authored prose that
 shells out to `rdm … update --tags …`, and have no driver to pass `gateMode` to
 or returned unit to read `gateBlocked` off. The shared spec states the same
@@ -2132,13 +2132,11 @@ greps are worth keeping — they now guard a silent-wrong-binary failure rather
 than a loud one. The verified callers of the `rdm-wf-dispatch-phase` Workflow are
 `.claude/skills/rdm-dispatch-phase`, `.claude/skills/rdm-do` (both `--auto`
 flows), `.claude/skills/rdm-autopilot`, and the shipped
-`skill-dispatch-phase-{cli,mcp}.md` / `skill-do-{cli,mcp}.md` /
-`skill-autopilot-{cli,mcp}.md` templates. All of them pass `rdmBin`, asserted
+`skill-dispatch-phase-cli.md` / `skill-do-cli.md` /
+`skill-autopilot-cli.md` templates. All of them pass `rdmBin`, asserted
 per-shim by `verify-workflow-do-auto.sh`, `verify-workflow-do-auto-task.sh`,
 `verify-skill-autopilot.sh`, and `verify-agent-config-distribution.sh` § 6d, each
-with a planted-removal self-test. The MCP shims are included on purpose: an MCP
-shim runs no CLI commands of its own, but the workflow it invokes still shells
-out through Bash agents, so `rdmBin` remains meaningful there.
+with a planted-removal self-test.
 
 The `rdm-autopilot` shims were originally in that list only because of the
 fail-closed rule on the one `rdm-wf-dispatch-phase` call payload. Their own
@@ -2178,9 +2176,9 @@ still succeed without it and still return `{ mode, survivors, budget }`.
 Rewired callers: `.claude/skills/rdm-review` (the only caller of
 `rdm-wf-review-refute-fix`; its invocation prose sits ABOVE the
 `gen-skill-review.sh`-stamped region, and the shipped
-`skill-review-{cli,mcp}.md` templates invoke no workflow at all, so
+`skill-review-cli.md` templates invoke no workflow at all, so
 `lib/review.mjs` is never opened) and `.claude/skills/rdm-estimate` (the only
-caller of `rdm-wf-estimate.js`; `skill-estimate-{cli,mcp}.md` remains the `{proj_flag}`
+caller of `rdm-wf-estimate.js`; `skill-estimate-cli.md` remains the `{proj_flag}`
 prose rating loop and needs no change). Asserted per-shim by
 `verify-workflow-review-outcome.sh` § 4 and `verify-workflow-estimate.sh`'s
 HOIST-SHIM section, each with a planted-typo self-test; the allow-list is
@@ -2525,12 +2523,9 @@ the item from `not-started` straight to `blocked` with no in-progress signal.
 ### Which caller surfaces supply them today
 
 - **`rdm-wf-dispatch-phase`, `rdm-do --auto`** — supplied by the *distributed*
-  skill shims (`rdm-core/src/templates/skill-{dispatch-phase,do}-{cli,mcp}.md`)
+  skill shims (`rdm-core/src/templates/skill-{dispatch-phase,do}-cli.md`)
   and their local copies.
 - **`rdm-wf-plan-review`, `rdm-wf-backlog`, `rdm-wf-document`, `rdm-wf-review-refute-fix`, `rdm-wf-estimate`** — supplied
   only by this repo's **local** `.claude/skills/*/SKILL.md` dogfood copies. Their
   distributed templates are not yet Workflow shims; converting them is tracked by task
   `convert-remaining-skill-templates-to-workflow-shims`.
-- **MCP shims** hoist only what their tool surface produces. There is no MCP
-  model-resolve tool, so `mechanicalModel` — and, by the all-or-nothing rule,
-  `phaseMeta`/`taskMeta` — are omitted there and the in-workflow agent runs.

@@ -118,8 +118,8 @@ rates rather than silently inherited.
 (`.claude/workflows/`: `rdm-wf-dispatch-phase.js` and its lib; autopilot itself is now
 the prose `rdm-autopilot` skill, not a workflow file). The shipped prose skill
 templates under `rdm-core/src/templates/`
-(`skill-dispatch-phase-cli.md` and its MCP twin, which hardcode "at most one
-revise round") **remain at 1** pending the distribution follow-up, so
+(`skill-dispatch-phase-cli.md`, which hardcodes "at most one
+revise round") **remains at 1** pending the distribution follow-up, so
 `agent-config` consumers still get 1/1 until those templates are updated.
 
 ## Decision rule: auto-handle vs park vs raise

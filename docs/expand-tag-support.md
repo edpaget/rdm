@@ -138,7 +138,7 @@ Schema descriptions on each new field tell MCP clients the semantics (replace vs
 
 ### Agent-facing instructions
 
-`rdm agent-config` (both CLI and `--mcp` modes) now writes instruction templates that demonstrate every tag-related command, plus a short tagging-convention block:
+`rdm agent-config` now writes instruction templates that demonstrate every tag-related command, plus a short tagging-convention block:
 
 - Lowercase kebab-case (`bug`, `auth`, `tech-debt`).
 - Prefer existing tags — check with `rdm search "" --tag <candidate>` (or the MCP equivalent) before inventing a new one.

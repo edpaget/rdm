@@ -33,11 +33,10 @@
 #      matches.
 #   5. SCOPE NEGATIVES: every rejected flag combination in the phase body's
 #      matrix (`--plugin --skills`, `--plugin` with no destination,
-#      `--plugin --user`, `--plugin` on each non-Claude platform, and the
-#      Pi/`--plugin`/`--mcp` precedence case) errors with its own distinct,
-#      actionable message — never a generic reuse of another combination's
-#      text — and the pre-existing `--skills --user` positive control is
-#      unaffected.
+#      `--plugin --user`, and `--plugin` on each non-Claude platform) errors
+#      with its own distinct, actionable message — never a generic reuse of
+#      another combination's text — and the pre-existing `--skills --user`
+#      positive control is unaffected.
 #   6. PLANTED-CORRUPTION SELF-TESTS: one paired self-test per assertion
 #      above, proving none of sections 2-5 is vacuous.
 #
@@ -297,18 +296,6 @@ for platform in agents-md cursor copilot pi; do
 done
 MSG_PLATFORM=$(cat "$TMP/neg-d-pi.log")
 pass "--plugin rejected on agents-md, cursor, copilot, and pi"
-
-say "5e. Negative: --plugin --mcp on Pi surfaces the plugin message, not the unrelated Pi+--mcp message"
-if "$RDM_BIN" agent-config pi --plugin --mcp --out "$TMP/neg-e" >"$TMP/neg-e.log" 2>&1; then
-    fail "--plugin --mcp on pi unexpectedly succeeded"
-fi
-MSG_PI_MCP_PRECEDENCE=$(cat "$TMP/neg-e.log")
-printf '%s' "$MSG_PI_MCP_PRECEDENCE" | grep -q -- "--plugin is only supported for the claude platform" ||
-    fail "--plugin --mcp on pi: expected the plugin-specific message to win, got:\n$MSG_PI_MCP_PRECEDENCE"
-if printf '%s' "$MSG_PI_MCP_PRECEDENCE" | grep -q "Pi does not support MCP"; then
-    fail "--plugin --mcp on pi: the unrelated Pi+--mcp message leaked through — precedence regression"
-fi
-pass "--plugin --mcp on pi surfaces only the plugin-specific message"
 
 say "5f. Positive control: --skills --user still succeeds and writes neither workflows/ nor .claude-plugin/"
 mkdir -p "$TMP/user-home-control"

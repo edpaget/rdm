@@ -247,7 +247,7 @@ prompt now states this explicitly.
 4. **The policy is stated on every plan surface; the driver's field names are not.**
    `.claude/workflows/lib/review.mjs`'s `//|plan|` spec is stamped into **four** plan-review
    consumers — the local dogfood shim `.claude/skills/rdm-plan-review/SKILL.md`, the two
-   shipped templates `rdm-core/src/templates/skill-plan-review-{cli,mcp}.md`, and
+   shipped templates `rdm-core/src/templates/skill-plan-review-cli.md`, and
    `plugins/rdm/skills/plan-review/SKILL.md` — and only the first of those is driven by
    `rdm-wf-plan-review.js`. That workflow is **local-only**:
    `rdm-core/src/templates/workflows/` ships `rdm-wf-dispatch-phase.js` and

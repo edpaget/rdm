@@ -489,8 +489,8 @@ grep -qF 'planOnlySeen' "$SKILL" || fail "missing the planOnlySeen in-context de
 grep -qF 'plan-only-exhausted' "$SKILL" || fail "missing the plan-only-exhausted stop reason"
 pass "--plan-only dedup-via-in-context-set (planOnlySeen) present"
 
-# --- 1b. SHIPPED skill-autopilot-{cli,mcp}.md static invariants ---------------
-say "1b. Static invariants on the shipped skill-autopilot-{cli,mcp}.md templates"
+# --- 1b. SHIPPED skill-autopilot-cli.md static invariants --------------------
+say "1b. Static invariants on the shipped skill-autopilot-cli.md template"
 
 # These are a SEPARATE surface from the local dogfood skill above: they were
 # already fully threaded by phase 4's one-line carve-out (git diff main shows
@@ -498,7 +498,7 @@ say "1b. Static invariants on the shipped skill-autopilot-{cli,mcp}.md templates
 # invoke estimate. Written as its own function/loop rather than reusing
 # assert_autopilot_dispatch_rdmbin, per the plan's explicit "not copy-pasted"
 # requirement.
-SHIPPED_TEMPLATES="$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md $REPO_ROOT/rdm-core/src/templates/skill-autopilot-mcp.md"
+SHIPPED_TEMPLATES="$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md"
 
 assert_shipped_dispatch_line_has_keys() {
     file="$1"
@@ -584,11 +584,8 @@ pass "agentType-on-dispatch-phase-line detector fires when planted (self-test, b
 # docs/mechanical-agent-inventory.md). The CLI-flavored skills now fetch that
 # metadata themselves via Bash, mirroring dispatch-phase's own
 # `buildFetchPrompt`, and forward it as `phaseMeta` — skipping that agent
-# entirely on this path. The MCP template has no Bash or MCP model-resolve
-# tool, so it deliberately does NOT do this (matching the established
-# `skill-dispatch-phase-mcp.md`/`skill-do-mcp.md` precedent) and instead
-# documents why. This section pins both halves.
-say "1e. Phase-meta fetch hoist: local SKILL.md and shipped CLI/MCP templates"
+# entirely on this path. This section pins that.
+say "1e. Phase-meta fetch hoist: local SKILL.md and the shipped CLI template"
 
 # Local dogfood SKILL.md: the fetch sub-step must mirror buildFetchPrompt's
 # five model-resolve calls plus the phase-show read, all scoped to the one
@@ -671,42 +668,6 @@ if assert_local_phasemeta_fetch "$TMP/cli-phasemeta-mutant.md"; then
     fail "shipped CLI template phase-meta fetch detector missed a mangled command fragment — the check is vacuous"
 fi
 pass "shipped CLI template phase-meta fetch detector fires when a command fragment is mangled"
-
-# Shipped MCP template: the OPPOSITE expectation — no phaseMeta key on the
-# dispatch line, plus the deliberate-non-hoist explanatory note.
-MCP_TEMPLATE="$REPO_ROOT/rdm-core/src/templates/skill-autopilot-mcp.md"
-[ -f "$MCP_TEMPLATE" ] || fail "shipped MCP template not found: $MCP_TEMPLATE"
-
-assert_mcp_no_phasemeta() {
-    file="$1"
-    grep -F 'dispatch-phase` Workflow**' "$file" >"$TMP/mcp-dispatch-line" 2>/dev/null || return 1
-    [ -s "$TMP/mcp-dispatch-line" ] || return 1
-    grep -qF 'phaseMeta' "$TMP/mcp-dispatch-line" && return 1
-    return 0
-}
-assert_mcp_no_phasemeta "$MCP_TEMPLATE" ||
-    fail "$MCP_TEMPLATE: the dispatch-phase invocation line must NOT carry phaseMeta — MCP has no Bash or model-resolve tool to fetch it with"
-pass "shipped skill-autopilot-mcp.md: dispatch-phase invocation line carries no phaseMeta key"
-
-# Self-test: inject a bogus phaseMeta into a scratch copy's dispatch line and confirm detection.
-sed '/dispatch-phase` Workflow\*\*/ s/rdmBin/rdmBin, phaseMeta/' "$MCP_TEMPLATE" >"$TMP/mcp-phasemeta-mutant.md"
-if assert_mcp_no_phasemeta "$TMP/mcp-phasemeta-mutant.md"; then
-    fail "MCP no-phaseMeta detector missed an injected phaseMeta key — the check is vacuous"
-fi
-pass "MCP no-phaseMeta detector fires when phaseMeta is injected onto the dispatch line"
-
-grep -qF 'deliberately not done here' "$MCP_TEMPLATE" ||
-    fail "$MCP_TEMPLATE: missing the deliberate-non-hoist explanatory note (modeled on skill-dispatch-phase-mcp.md / skill-do-mcp.md)"
-grep -qF 'no MCP model-resolve tool' "$MCP_TEMPLATE" ||
-    fail "$MCP_TEMPLATE: the deliberate-non-hoist note must state the no-MCP-model-resolve-tool reason"
-pass "shipped skill-autopilot-mcp.md carries the deliberate-non-hoist explanatory note"
-
-# Self-test: strip the note from a scratch copy and confirm detection.
-sed '/deliberately not done here/d' "$MCP_TEMPLATE" >"$TMP/mcp-note-mutant.md"
-if grep -qF 'deliberately not done here' "$TMP/mcp-note-mutant.md"; then
-    fail "the deliberate-non-hoist note self-test mutation did not remove the note — self-test is broken"
-fi
-pass "deliberate-non-hoist-note detector correctly rejects a scratch copy missing the note (self-test)"
 
 # --- 1e-bis. Byte-identical-copy drift gate (local SKILL.md vs. shipped ------
 #     skill-autopilot-cli.md) -------------------------------------------------

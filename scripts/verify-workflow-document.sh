@@ -599,7 +599,7 @@ assert_wf_mutant_fails "$TMP/mutant-no-model-fallback.js" "drops the model:mecha
 
 # --- SHIM: the LOCAL rdm-document shim gathers and passes both hoists ---------
 # `.claude/skills/rdm-document/SKILL.md` is a LOCAL dogfood shim; its distributed
-# template (rdm-core/src/templates/skill-document-{cli,mcp}.md) is NOT a Workflow
+# template (rdm-core/src/templates/skill-document-cli.md) is NOT a Workflow
 # shim yet (tracked by task convert-remaining-skill-templates-to-workflow-shims),
 # so this check belongs here and NOT in verify-agent-config-distribution.sh.
 say "HOIST-SHIM. .claude/skills/rdm-document/SKILL.md gathers and passes mechanicalModel + roadmapMeta"

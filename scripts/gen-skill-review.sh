@@ -21,13 +21,13 @@
 #   <!-- rdm:review-spec:begin ... -->
 #   <!-- rdm:review-spec:end -->
 #
-# in each consumer template. Everything outside those markers — the cli/mcp tool
-# narrative, the `{proj_flag}` / `{proj_param}` / `{t_*}` placeholders, model
-# resolution prose — stays hand-authored.
+# in each consumer template. Everything outside those markers — the CLI tool
+# narrative, the `{proj_flag}` / `{principles}` placeholders, model resolution
+# prose — stays hand-authored.
 #
 # Target axis: --target shipped|local (default: shipped).
 #
-#   shipped — rdm-core/src/templates/skill-{review,plan-review}-{cli,mcp}.md,
+#   shipped — rdm-core/src/templates/skill-{review,plan-review}-cli.md,
 #             the templates baked into released binaries.
 #   local   — this repo's own dogfood skill copies,
 #             .claude/skills/{rdm-review,rdm-plan-review}/SKILL.md. Nothing else
@@ -59,11 +59,11 @@
 #   scripts/gen-skill-review.sh --target local --mode code   # stamp .claude/skills/rdm-review
 #
 # Modes:
-#   code (default) — consumers: skill-review-{cli,mcp}.md / rdm-review/SKILL.md
-#   plan           — consumers: skill-plan-review-{cli,mcp}.md / rdm-plan-review/SKILL.md
+#   code (default) — consumers: skill-review-cli.md / rdm-review/SKILL.md
+#   plan           — consumers: skill-plan-review-cli.md / rdm-plan-review/SKILL.md
 #
 # Targets:
-#   shipped (default) — rdm-core/src/templates/skill-{review,plan-review}-{cli,mcp}.md
+#   shipped (default) — rdm-core/src/templates/skill-{review,plan-review}-cli.md
 #   local              — .claude/skills/{rdm-review,rdm-plan-review}/SKILL.md
 #
 # `--check` is what scripts/verify-workflow-review.sh and CI use to prove no
@@ -115,8 +115,8 @@ case "$TARGET" in
 esac
 
 case "$TARGET-$MODE" in
-    shipped-code) set -- "$TEMPLATES/skill-review-cli.md" "$TEMPLATES/skill-review-mcp.md" ;;
-    shipped-plan) set -- "$TEMPLATES/skill-plan-review-cli.md" "$TEMPLATES/skill-plan-review-mcp.md" ;;
+    shipped-code) set -- "$TEMPLATES/skill-review-cli.md" ;;
+    shipped-plan) set -- "$TEMPLATES/skill-plan-review-cli.md" ;;
     local-code) set -- "$SKILLS/rdm-review/SKILL.md" ;;
     local-plan) set -- "$SKILLS/rdm-plan-review/SKILL.md" ;;
     *)
@@ -206,11 +206,12 @@ if grep -n '{rdm_bin}' "$specfile" >&2; then
     exit 1
 fi
 
-# The rendered region is shared byte-for-byte across the cli and mcp consumers,
-# so it must be free of surface-specific template placeholders. Reject rather
-# than ship an unrendered `{proj_flag}` into a generated skill.
+# The rendered region is shared byte-for-byte across the shipped cli template
+# and this repo's local skill copy, and nothing substitutes placeholders in the
+# latter — so it must be free of surface-specific template placeholders. Reject
+# rather than ship an unrendered `{proj_flag}` into a generated skill.
 if grep -nE '\{proj_flag\}|\{proj_param\}|\{t_[a-z_]+\}|\{principles\}' "$specfile" >&2; then
-    echo "error: the shared review spec must not contain template placeholders — they cannot render in both cli and mcp" >&2
+    echo "error: the shared review spec must not contain template placeholders — they cannot render in both the shipped cli template and the local skill" >&2
     exit 1
 fi
 

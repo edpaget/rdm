@@ -96,6 +96,14 @@ they are re-synced by `cp`, and `scripts/verify-agent-config-distribution.sh` pl
 
 ## Caller surfaces: which shims can actually hoist today
 
+> **2026-09-11 — the MCP skill surface was removed.** The `retire-mcp` roadmap
+> deleted `rdm agent-config --mcp`, the `.mcp.json` emission and all twelve
+> `*-mcp.md` templates; only the `-cli.md` templates ship now. Every MCP row and
+> `*-mcp.md` reference below is retained VERBATIM as historical record of what
+> was measured at the time — do not read it as describing a surface that still
+> exists, and do not restate its figures as current. (The `rdm mcp` server
+> subcommand and the `rdm-mcp` crate are unaffected.)
+
 Only **three** skills are Workflow-invoking shims on the *distribution* surface. The other five
 are shims **only** in this repo's local `.claude/skills/` dogfood copies; their distributed
 templates (`rdm-core/src/templates/skill-{plan-review,backlog,document,review,estimate}-{cli,mcp}.md`)

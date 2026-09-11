@@ -122,15 +122,6 @@ at the end of a successful landing) and the batch `rdm worktree prune` (for
 end-of-run cleanup) are complementary: the former tidies the item you just
 landed; the latter sweeps everything that has since reached `done`.
 
-## MCP variant
-
-The MCP build of `rdm-land` drives the status reads/updates and single-worktree
-cleanup through the `mcp__rdm__*` tools, but **delegates the git landing
-(steps 2–5) and the batch prune to a Bash-capable subagent** via the `Agent`
-tool: rebase and `merge --ff-only` are inherently shell work, and
-`rdm worktree prune` ships as a CLI command only this phase (the parallel
-`rdm_worktree_prune` MCP tool is a deferred follow-up).
-
 ## See also
 
 - [`docs/autonomous-loop.md`](./autonomous-loop.md) — the `rdm-autopilot` driver

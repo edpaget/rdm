@@ -8,10 +8,9 @@
 # inspects what it writes into a fresh, unrelated repo. This script closes
 # that gap. It:
 #
-#   1. Runs the real `target/debug/rdm agent-config claude --skills` (both
-#      the plain CLI variant and the `--mcp` variant) into hermetic temp
-#      dirs, under a project name ("distro-check") distinct from this repo's
-#      own dogfood project ("rdm"), and asserts the whole run never touches
+#   1. Runs the real `target/debug/rdm agent-config claude --skills` into a
+#      hermetic temp dir, under a project name ("distro-check") distinct from
+#      this repo's own dogfood project ("rdm"), and asserts the whole run never touches
 #      this repo's working tree (`git status --porcelain` before/after).
 #   2. STRUCTURAL: asserts all 11 skills land at their conventional paths
 #      with minimally-valid frontmatter, both workflow scripts land under
@@ -223,19 +222,20 @@ check_shim_refs_resolve() {
     [ "$SHIM_REF_UNRESOLVED" -eq 0 ]
 }
 
-# Scans every emitted SKILL.md under <skills_dir> for an unsubstituted `{t_*}`
-# MCP-tool placeholder. `render_mcp_skill` substitutes only the placeholders
-# named in that skill's tuple list, so a dropped tuple silently ships the
-# literal `{t_phase_list}` text — including inside `allowed-tools` frontmatter,
-# where it names no real tool. Prints a diagnostic per offender and returns
-# nonzero if any survive.
+# Scans every emitted SKILL.md under <skills_dir> for an unsubstituted render
+# placeholder. `render_skill` substitutes only the placeholders it is wired
+# for, so a dropped substitution silently ships the literal `{proj_flag}` text
+# — including inside `allowed-tools` frontmatter, where it names no real
+# project. The `{t_*}` arm is retained as a dead-vocabulary tripwire: that
+# vocabulary belonged to the retired MCP renderer and must never reappear.
+# Prints a diagnostic per offender and returns nonzero if any survive.
 check_no_unsubstituted_placeholders() {
     skills_dir=$1
     leaked=0
     for md in "$skills_dir"/*/SKILL.md; do
         [ -f "$md" ] || continue
-        if grep -n '{t_' "$md" >&2; then
-            echo "  unsubstituted: $md ships a literal {t_*} tool placeholder (see line above)" >&2
+        if grep -nE '\{t_|\{proj_param\}|\{proj_flag\}|\{principles\}' "$md" >&2; then
+            echo "  unsubstituted: $md ships a literal render placeholder (see line above)" >&2
             leaked=1
         fi
     done
@@ -302,59 +302,50 @@ say "0. Capturing $REPO_ROOT git status before emission (hermeticity baseline)"
 BEFORE_STATUS=$(git -C "$REPO_ROOT" status --porcelain)
 pass "baseline captured"
 
-# --- 1. emit cli + mcp variants into hermetic temp dirs ---------------------
-say "1. Emitting 'agent-config claude --skills' (cli and --mcp variants)"
+# --- 1. emit into a hermetic temp dir ---------------------------------------
+say "1. Emitting 'agent-config claude --skills'"
 "$RDM_BIN" agent-config claude --skills --project distro-check --out "$TMP/cli" >/dev/null
-"$RDM_BIN" agent-config claude --skills --mcp --project distro-check --out "$TMP/mcp" >/dev/null
-pass "emitted into $TMP/cli and $TMP/mcp"
+pass "emitted into $TMP/cli"
 
 # --- 2. structural: skills + workflows + agents land at conventional paths -
 say "2. Structural: all 11 skills + 2 workflow scripts + 1 agent definition present with valid frontmatter"
-for variant in cli mcp; do
-    for skill in $SKILLS; do
-        md="$TMP/$variant/.claude/skills/$skill/SKILL.md"
-        [ -f "$md" ] || fail "$variant: missing $md"
-        assert_valid_frontmatter "$md"
-    done
-    for wf in $WORKFLOWS; do
-        [ -f "$TMP/$variant/.claude/workflows/$wf" ] || fail "$variant: missing .claude/workflows/$wf"
-    done
-    for agent in $AGENTS; do
-        agent_md="$TMP/$variant/.claude/agents/$agent"
-        [ -f "$agent_md" ] || fail "$variant: missing .claude/agents/$agent"
-        assert_valid_frontmatter "$agent_md"
-    done
-    pass "$variant: 11 skills (valid frontmatter) + 2 workflow scripts + 1 agent definition (valid frontmatter) present"
+for skill in $SKILLS; do
+    md="$TMP/cli/.claude/skills/$skill/SKILL.md"
+    [ -f "$md" ] || fail "cli: missing $md"
+    assert_valid_frontmatter "$md"
 done
+for wf in $WORKFLOWS; do
+    [ -f "$TMP/cli/.claude/workflows/$wf" ] || fail "cli: missing .claude/workflows/$wf"
+done
+for agent in $AGENTS; do
+    agent_md="$TMP/cli/.claude/agents/$agent"
+    [ -f "$agent_md" ] || fail "cli: missing .claude/agents/$agent"
+    assert_valid_frontmatter "$agent_md"
+done
+pass "cli: 11 skills (valid frontmatter) + 2 workflow scripts + 1 agent definition (valid frontmatter) present"
 
-# --- 2b. every {t_*} tool placeholder is substituted in the emitted skills --
-say "2b. Substitution: no emitted skill ships a literal {t_*} tool placeholder"
-for variant in cli mcp; do
-    if check_no_unsubstituted_placeholders "$TMP/$variant/.claude/skills"; then
-        pass "$variant: every {t_*} placeholder substituted to a real mcp__rdm__ tool"
-    else
-        fail "$variant: an emitted skill ships an unsubstituted {t_*} placeholder (see lines above) — a tuple is missing from its render_mcp_skill tools list"
-    fi
-done
+# --- 2b. every render placeholder is substituted in the emitted skills ------
+say "2b. Substitution: no emitted skill ships a literal render placeholder"
+if check_no_unsubstituted_placeholders "$TMP/cli/.claude/skills"; then
+    pass "cli: every render placeholder substituted to a real value"
+else
+    fail "cli: an emitted skill ships an unsubstituted render placeholder (see lines above) — a substitution is missing from render_skill"
+fi
 
 # --- 3. byte-identity: emitted workflows + agents match this repo's own copies
 say "3. Byte-identity: emitted workflow scripts vs $REPO_ROOT/.claude/workflows"
-for variant in cli mcp; do
-    if check_workflows_byte_identical "$TMP/$variant"; then
-        pass "$variant: workflow scripts byte-identical to source"
-    else
-        fail "$variant: workflow scripts drifted from $REPO_ROOT/.claude/workflows (see drift lines above)"
-    fi
-done
+if check_workflows_byte_identical "$TMP/cli"; then
+    pass "cli: workflow scripts byte-identical to source"
+else
+    fail "cli: workflow scripts drifted from $REPO_ROOT/.claude/workflows (see drift lines above)"
+fi
 
 say "3a. Byte-identity: emitted agent definitions vs $REPO_ROOT/.claude/agents"
-for variant in cli mcp; do
-    if check_agents_byte_identical "$TMP/$variant"; then
-        pass "$variant: agent definitions byte-identical to source"
-    else
-        fail "$variant: agent definitions drifted from $REPO_ROOT/.claude/agents (see drift lines above)"
-    fi
-done
+if check_agents_byte_identical "$TMP/cli"; then
+    pass "cli: agent definitions byte-identical to source"
+else
+    fail "cli: agent definitions drifted from $REPO_ROOT/.claude/agents (see drift lines above)"
+fi
 
 # --- 3c. AGENT REFERENCE RESOLUTION -----------------------------------------
 # The successor to the removed `scripts/verify-workflow-review.sh` §2b
@@ -408,17 +399,15 @@ resolve_agent_refs() {
     rm -f "$refs_scratch"
     [ "$AGENT_REF_UNRESOLVED" -eq 0 ]
 }
-for variant in cli mcp; do
-    if resolve_agent_refs "$TMP/$variant"; then
-        pass "$variant: all $AGENT_REF_COUNT emitted agentType reference(s) resolve (0 expected today)"
-    else
-        fail "$variant: $AGENT_REF_UNRESOLVED unresolved agentType reference(s) (see lines above)"
-    fi
-    AGENTS_COUNT=$(find "$TMP/$variant/.claude/agents" -name '*.md' -type f | wc -l | tr -d ' ')
-    [ "$AGENTS_COUNT" -ge 1 ] ||
-        fail "$variant: expected >= 1 emitted agent definition, found $AGENTS_COUNT — the resolution check has nothing real to resolve against"
-    pass "$variant: $AGENTS_COUNT emitted agent definition(s) present (non-vacuity floor)"
-done
+if resolve_agent_refs "$TMP/cli"; then
+    pass "cli: all $AGENT_REF_COUNT emitted agentType reference(s) resolve (0 expected today)"
+else
+    fail "cli: $AGENT_REF_UNRESOLVED unresolved agentType reference(s) (see lines above)"
+fi
+AGENTS_COUNT=$(find "$TMP/cli/.claude/agents" -name '*.md' -type f | wc -l | tr -d ' ')
+[ "$AGENTS_COUNT" -ge 1 ] ||
+    fail "cli: expected >= 1 emitted agent definition, found $AGENTS_COUNT — the resolution check has nothing real to resolve against"
+pass "cli: $AGENTS_COUNT emitted agent definition(s) present (non-vacuity floor)"
 
 # --- 3c self-tests: prove the resolution check actually has teeth ----------
 # Each scratch copy is made from $TMP/cli AFTER the main 3c assertions above
@@ -501,40 +490,38 @@ pass "3b: planted unrelated file survived re-emission byte-for-byte, untouched"
 
 # --- 4. semantic: every shim reference resolves within the emitted tree ----
 say "4. Semantic: every emitted shim's workflow reference resolves in-tree"
-for variant in cli mcp; do
-    skills_dir="$TMP/$variant/.claude/skills"
-    workflows_dir="$TMP/$variant/.claude/workflows"
-    if check_shim_refs_resolve "$skills_dir" "$workflows_dir"; then
-        pass "$variant: all $SHIM_REF_COUNT shim reference(s) resolve"
-    else
-        fail "$variant: $SHIM_REF_UNRESOLVED unresolved shim reference(s) (see lines above)"
-    fi
-    [ "$SHIM_REF_COUNT" -ge 3 ] ||
-        fail "$variant: expected >= 3 total shim references (dispatch-phase skill x1, do skill x2), found $SHIM_REF_COUNT — check is not vacuous only if this floor holds"
+skills_dir="$TMP/cli/.claude/skills"
+workflows_dir="$TMP/cli/.claude/workflows"
+if check_shim_refs_resolve "$skills_dir" "$workflows_dir"; then
+    pass "cli: all $SHIM_REF_COUNT shim reference(s) resolve"
+else
+    fail "cli: $SHIM_REF_UNRESOLVED unresolved shim reference(s) (see lines above)"
+fi
+[ "$SHIM_REF_COUNT" -ge 3 ] ||
+    fail "cli: expected >= 3 total shim references (dispatch-phase skill x1, do skill x2), found $SHIM_REF_COUNT — check is not vacuous only if this floor holds"
 
-    grep -qF ".claude/workflows/$DISPATCH_WF" "$skills_dir/rdm-dispatch-phase/SKILL.md" ||
-        fail "$variant: rdm-dispatch-phase/SKILL.md must reference .claude/workflows/$DISPATCH_WF"
-    grep -qF ".claude/workflows/$DISPATCH_WF" "$skills_dir/rdm-do/SKILL.md" ||
-        fail "$variant: rdm-do/SKILL.md must reference .claude/workflows/$DISPATCH_WF"
-    pass "$variant: rdm-dispatch-phase/rdm-do carry their expected exact references"
+grep -qF ".claude/workflows/$DISPATCH_WF" "$skills_dir/rdm-dispatch-phase/SKILL.md" ||
+    fail "cli: rdm-dispatch-phase/SKILL.md must reference .claude/workflows/$DISPATCH_WF"
+grep -qF ".claude/workflows/$DISPATCH_WF" "$skills_dir/rdm-do/SKILL.md" ||
+    fail "cli: rdm-do/SKILL.md must reference .claude/workflows/$DISPATCH_WF"
+pass "cli: rdm-dispatch-phase/rdm-do carry their expected exact references"
 
-    # Every emitted skill's prose (not just rdm-autopilot's) must never
-    # instruct invoking a Workflow whose name does not resolve to a file in
-    # this same emitted tree -- that call would target a file this
-    # generator does not emit and would fail at the exact point the skill's
-    # contract depends on. rdm-autopilot composes only `rdm-wf-dispatch-phase`
-    # downstream; its `rdm-wf-estimate` pre-pass is intentionally dropped from the
-    # distributed template (see docs/workflow-vs-prose-boundary.md), so it
-    # must never instruct invoking `rdm-wf-estimate` either -- the same hazard that
-    # got `autopilot.js` itself retired from this surface.
-    if check_workflow_invocations_resolve "$skills_dir" "$workflows_dir"; then
-        pass "$variant: all $INVOCATION_COUNT Workflow-invocation instruction(s) across every emitted skill resolve"
-    else
-        fail "$variant: $INVOCATION_UNRESOLVED unresolved Workflow-invocation instruction(s) (see lines above)"
-    fi
-    [ "$INVOCATION_COUNT" -ge 5 ] ||
-        fail "$variant: expected >= 5 total Workflow-invocation instructions across all skills, found $INVOCATION_COUNT — check is not vacuous only if this floor holds"
-done
+# Every emitted skill's prose (not just rdm-autopilot's) must never
+# instruct invoking a Workflow whose name does not resolve to a file in
+# this same emitted tree -- that call would target a file this
+# generator does not emit and would fail at the exact point the skill's
+# contract depends on. rdm-autopilot composes only `rdm-wf-dispatch-phase`
+# downstream; its `rdm-wf-estimate` pre-pass is intentionally dropped from the
+# distributed template (see docs/workflow-vs-prose-boundary.md), so it
+# must never instruct invoking `rdm-wf-estimate` either -- the same hazard that
+# got `autopilot.js` itself retired from this surface.
+if check_workflow_invocations_resolve "$skills_dir" "$workflows_dir"; then
+    pass "cli: all $INVOCATION_COUNT Workflow-invocation instruction(s) across every emitted skill resolve"
+else
+    fail "cli: $INVOCATION_UNRESOLVED unresolved Workflow-invocation instruction(s) (see lines above)"
+fi
+[ "$INVOCATION_COUNT" -ge 5 ] ||
+    fail "cli: expected >= 5 total Workflow-invocation instructions across all skills, found $INVOCATION_COUNT — check is not vacuous only if this floor holds"
 
 # --- 5. planted-mutation self-tests: prove neither gate above is vacuous ---
 say "5a. Self-test: planted byte corruption in an emitted workflow script"
@@ -560,25 +547,23 @@ if check_shim_refs_resolve "$SCRATCH_SHIM/.claude/skills" "$SCRATCH_SHIM/.claude
 fi
 pass "self-test B: planted reference typo correctly turned the shim-reference gate red"
 
-say "5c. Self-test: planted unsubstituted {t_*} placeholder in an emitted skill"
+say "5c. Self-test: planted unsubstituted render placeholder in an emitted skill"
 SCRATCH_PH="$TMP/scratch-unsubstituted-placeholder"
 rm -rf "$SCRATCH_PH"
-cp -R "$TMP/mcp" "$SCRATCH_PH"
-# Mimic exactly what a dropped ("t_next", "rdm_next") tuple in
-# skill_autopilot_mcp would produce: the literal placeholder survives
-# rendering. (Not {t_phase_list}: that tuple — and the tool it named — was
-# removed from rdm-autopilot's MCP template entirely once the estimate
-# pre-pass was dropped downstream, so it no longer resolves anything here
-# and planting it would make this self-test vacuous.)
-sed 's/mcp__rdm__rdm_next/{t_next}/g' \
+cp -R "$TMP/cli" "$SCRATCH_PH"
+# Mimic exactly what a dropped `{proj_flag}` substitution in `render_skill`
+# would produce: the literal placeholder survives rendering. `proj_flag_str`
+# renders `--project distro-check` here, so un-rendering that string is the
+# faithful inverse of the real substitution.
+sed 's/--project distro-check/--project {proj_flag}/g' \
     "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md" >"$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md.new"
 mv "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md.new" "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md"
-grep -q '{t_next}' "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md" ||
-    fail "self-test C: could not plant the placeholder — rdm-autopilot no longer resolves {t_next}, so this self-test is vacuous"
+grep -q '{proj_flag}' "$SCRATCH_PH/.claude/skills/rdm-autopilot/SKILL.md" ||
+    fail "self-test C: could not plant the placeholder — rdm-autopilot no longer renders '--project distro-check', so this self-test is vacuous"
 if check_no_unsubstituted_placeholders "$SCRATCH_PH/.claude/skills" >/dev/null 2>&1; then
-    fail "self-test C: planted {t_next} placeholder was NOT detected — the substitution gate is vacuous"
+    fail "self-test C: planted {proj_flag} placeholder was NOT detected — the substitution gate is vacuous"
 fi
-pass "self-test C: planted {t_next} placeholder correctly turned the substitution gate red"
+pass "self-test C: planted {proj_flag} placeholder correctly turned the substitution gate red"
 
 say "5d. Self-test: planted invocation of a nonexistent Workflow name ('autopilot') in rdm-autopilot/SKILL.md"
 SCRATCH_AP="$TMP/scratch-autopilot-workflow-invocation"
@@ -821,9 +806,7 @@ fi
 say "6d. Hoist args: the three real Workflow shims gather and pass their optional args"
 
 # assert_shim_hoists <emitted-root> <variant> — each of the three shims must
-# name the arg keys it passes AND the command/tool it gathers them with. The MCP
-# variant deliberately omits the model-derived hoists (no MCP model-resolve
-# tool), so the two variants have different, explicitly-listed expectations.
+# name the arg keys it passes AND the command/tool it gathers them with.
 assert_shim_hoists() {
     root=$1
     variant=$2
@@ -845,42 +828,26 @@ assert_shim_hoists() {
     dp="$root/.claude/skills/rdm-dispatch-phase/SKILL.md"
     do_="$root/.claude/skills/rdm-do/SKILL.md"
 
-    # rdm-autopilot: next on both variants. No mechanicalModel/phaseList hoist
-    # any longer on either variant — the distributed template's `rdm-wf-estimate`
-    # pre-pass is intentionally dropped downstream (see
-    # docs/workflow-vs-prose-boundary.md), so there is nothing left to feed it.
+    # rdm-autopilot: next. No mechanicalModel/phaseList hoist any longer — the
+    # distributed template's `rdm-wf-estimate` pre-pass is intentionally
+    # dropped downstream (see docs/workflow-vs-prose-boundary.md), so there is
+    # nothing left to feed it.
     _need "$ap" 'next' || return 1
     if [ "$variant" = cli ]; then
         _need "$ap" 'rdm next --roadmap <slug> --format json' || return 1
     fi
-    # `next` must be documented as one-shot on both variants, or a caller could
-    # cache it and re-dispatch the same phase forever.
+    # `next` must be documented as one-shot, or a caller could cache it and
+    # re-dispatch the same phase forever.
     _need "$ap" 'one-shot, on the first loop iteration only' || return 1
     # dispatch-phase's `rdmBin` arg now DEFAULTS to a plain `rdm` on PATH, so an
     # emitted shim that omits it degrades to whatever rdm the downstream consumer
     # has on PATH rather than hard-breaking. The check is kept for exactly that
     # reason: a shim that names the arg lets a consumer pin a specific build.
-    # Asserted on BOTH variants and for ALL THREE shims — it is not a
-    # model-derived hoist, so it sits outside the cli-only guards.
+    # Asserted for ALL THREE shims — it is not a model-derived hoist, so it
+    # sits outside the cli-only guards.
     _need "$ap" 'rdmBin' || return 1
-    if [ "$variant" = mcp ]; then
-        # MCP has no `rdm phase show` CLI command to read a write back with, so
-        # the advance/park confirmation step needs its own dedicated tool.
-        _need "$ap" 'mcp__rdm__rdm_phase_show' || return 1
-        # The advance/park read-back calls must use the same project/roadmap/
-        # phase argument shape every other MCP template uses (server-side
-        # PhaseUpdateParams/PhaseParams both require `project` and `phase`,
-        # never a `stem` field) — a prior regression sent `stem:` with no
-        # `project:` and would have failed against the real MCP server.
-        _need "$ap" 'project: "distro-check", roadmap: "<slug>", phase: S' || return 1
-        if grep -qF 'with `stem: S,' "$ap"; then
-            HOIST_FAILURE="$variant: rdm-autopilot regressed to the wrong 'stem:' MCP arg shape"
-            return 1
-        fi
-    fi
 
-    # rdm-dispatch-phase: alreadyInProgress + rdmBin on both; phaseMeta/taskMeta
-    # CLI only.
+    # rdm-dispatch-phase: alreadyInProgress + rdmBin; phaseMeta/taskMeta.
     _need "$dp" 'alreadyInProgress' || return 1
     _need "$dp" 'rdmBin' || return 1
     if [ "$variant" = cli ]; then
@@ -891,7 +858,7 @@ assert_shim_hoists() {
         _need "$dp" '--status in-progress' || return 1
     fi
 
-    # rdm-do --auto: same contract, both flows.
+    # rdm-do --auto: same contract.
     _need "$do_" 'alreadyInProgress' || return 1
     _need "$do_" 'rdmBin' || return 1
     if [ "$variant" = cli ]; then
@@ -903,44 +870,30 @@ assert_shim_hoists() {
     return 0
 }
 
-for variant in cli mcp; do
-    if assert_shim_hoists "$TMP/$variant" "$variant"; then
-        pass "$variant: all $HOIST_REF_COUNT hoist-arg reference(s) present across the three real shims"
-    else
-        fail "$HOIST_FAILURE"
-    fi
-    # Occurrence floor, so the check can never pass vacuously: CLI asserts
-    # >= 16 references, MCP >= 9 (raised from 13/6 by the project-agnostic-lane
-    # roadmap, which added one `rdmBin` needle to each of the three
-    # shims on both variants; recomputed after the `rdm-wf-estimate` pre-pass —
-    # and its mechanicalModel/phaseList hoist — was dropped from the
-    # distributed rdm-autopilot template; MCP retains the rdm_phase_show
-    # read-back hoist, added alongside the {t_phase_show} placeholder, and
-    # the project/roadmap/phase argument-shape check on the advance/park
-    # read-back calls, added after those calls were found using the wrong
-    # `stem`-keyed, `project`-less argument shape). A drop below the floor
-    # means a shim silently stopped gathering.
-    if [ "$variant" = cli ]; then
-        [ "$HOIST_REF_COUNT" -ge 16 ] ||
-            fail "cli: expected >= 16 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
-    else
-        [ "$HOIST_REF_COUNT" -ge 9 ] ||
-            fail "mcp: expected >= 9 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
-    fi
-done
-pass "hoist-arg occurrence floors hold for both variants"
+if assert_shim_hoists "$TMP/cli" cli; then
+    pass "cli: all $HOIST_REF_COUNT hoist-arg reference(s) present across the three real shims"
+else
+    fail "$HOIST_FAILURE"
+fi
+# Occurrence floor, so the check can never pass vacuously: CLI asserts
+# >= 16 references (raised from 13 by the project-agnostic-lane roadmap,
+# which added one `rdmBin` needle to each of the three shims; recomputed
+# after the `rdm-wf-estimate` pre-pass — and its mechanicalModel/phaseList
+# hoist — was dropped from the distributed rdm-autopilot template). A drop
+# below the floor means a shim silently stopped gathering.
+[ "$HOIST_REF_COUNT" -ge 16 ] ||
+    fail "cli: expected >= 16 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
+pass "hoist-arg occurrence floor holds"
 
 # Negative: the five NON-shim skills must NOT have been dragged into this — if a
 # future edit turns them into shims, that is a deliberate change belonging to
 # task convert-remaining-skill-templates-to-workflow-shims, and this assertion
 # is the reminder to move their checks here at the same time.
-for variant in cli mcp; do
-    for skill in rdm-plan-review rdm-backlog rdm-document rdm-review rdm-estimate; do
-        md="$TMP/$variant/.claude/skills/$skill/SKILL.md"
-        if grep -qF '.claude/workflows' "$md"; then
-            fail "$variant: $skill became a Workflow shim — move its hoist-arg check into section 6d (see task convert-remaining-skill-templates-to-workflow-shims)"
-        fi
-    done
+for skill in rdm-plan-review rdm-backlog rdm-document rdm-review rdm-estimate; do
+    md="$TMP/cli/.claude/skills/$skill/SKILL.md"
+    if grep -qF '.claude/workflows' "$md"; then
+        fail "cli: $skill became a Workflow shim — move its hoist-arg check into section 6d (see task convert-remaining-skill-templates-to-workflow-shims)"
+    fi
 done
 pass "the five non-shim skills are still non-shims — their hoists correctly stay on the local dogfood copies"
 
@@ -1744,13 +1697,10 @@ say "7g. Staging model: the emitted instructions describe the changeset that exi
 #
 # The instructions are a different emission from `--skills` (they land as a
 # single CLAUDE.md), so they get their own emit here rather than reusing
-# $TMP/cli and $TMP/mcp.
+# $TMP/cli.
 "$RDM_BIN" agent-config claude --project distro-check --out "$TMP/inst-cli" >/dev/null
-"$RDM_BIN" agent-config claude --mcp --project distro-check --out "$TMP/inst-mcp" >/dev/null
 INST_CLI="$TMP/inst-cli/CLAUDE.md"
-INST_MCP="$TMP/inst-mcp/CLAUDE.md"
 [ -f "$INST_CLI" ] || fail "7g: no instruction file emitted at $INST_CLI"
-[ -f "$INST_MCP" ] || fail "7g: no instruction file emitted at $INST_MCP"
 
 # The retired claims, one per line. Adding a future one is a one-line edit.
 # Matched as FIXED strings (-F): they contain apostrophes and must never be
@@ -1787,30 +1737,24 @@ assert_no_retired_claim() {
 }
 
 # NEGATIVE: the retired claims must survive nowhere in the emitted tree —
-# instruction files AND every skill, in both variants.
-INST_TARGETS="$INST_CLI $INST_MCP"
-for variant in cli mcp; do
-    for skill in $SKILLS; do
-        INST_TARGETS="$INST_TARGETS $TMP/$variant/.claude/skills/$skill/SKILL.md"
-    done
+# the instruction file AND every skill.
+INST_TARGETS="$INST_CLI"
+for skill in $SKILLS; do
+    INST_TARGETS="$INST_TARGETS $TMP/cli/.claude/skills/$skill/SKILL.md"
 done
 # shellcheck disable=SC2086
 assert_no_retired_claim $INST_TARGETS ||
     fail "7g: a retired whole-tree staging claim survives in the emitted tree — fix the template under rdm-core/src/templates/, not the emitted copy"
-pass "7g: no retired whole-tree staging claim survives in either emitted variant"
+pass "7g: no retired whole-tree staging claim survives in the emitted tree"
 
 # POSITIVE FLOOR: the negative half above passes vacuously on an empty or
 # misdirected emission, so the concept must also be provably PRESENT.
-for f in "$INST_CLI" "$INST_MCP"; do
-    n=$(grep -c 'changeset' "$f" || true)
-    [ "$n" -ge 1 ] ||
-        fail "7g: $f never mentions a changeset — the negative half above would pass vacuously"
-done
+n=$(grep -c 'changeset' "$INST_CLI" || true)
+[ "$n" -ge 1 ] ||
+    fail "7g: $INST_CLI never mentions a changeset — the negative half above would pass vacuously"
 grep -Fq -- 'RDM_SESSION' "$INST_CLI" ||
     fail "7g: the emitted CLI instructions never name RDM_SESSION — an agent cannot pin its session"
-grep -Fq -- '{changes, generated, others}' "$INST_MCP" ||
-    fail "7g: the emitted MCP instructions never name the three-bucket rdm_status shape"
-pass "7g: the session/changeset concept is present in both emitted variants"
+pass "7g: the session/changeset concept is present in the emitted instructions"
 
 # AGREES WITH THE IMPLEMENTATION: every flag and subcommand the emitted prose
 # quotes must be accepted by the real binary. This is what makes "the docs
@@ -1830,19 +1774,17 @@ pass "7g: every flag and subcommand the emitted prose quotes is accepted by the 
 # UNIQUENESS (AC4): exactly ONE canonical statement per distribution unit. A
 # second copy inside a skill is drift waiting to happen and inflates the
 # byte-gated regeneration surface for no correctness gain.
-for variant in cli mcp; do
-    dupes=0
-    for skill in $SKILLS; do
-        md="$TMP/$variant/.claude/skills/$skill/SKILL.md"
-        [ -f "$md" ] || continue
-        if grep -Fq -- 'rdm session list' "$md" || grep -Fq -- 'RDM_SESSION' "$md"; then
-            echo "  duplicate explainer: $md restates the session/changeset model" >&2
-            dupes=$((dupes + 1))
-        fi
-    done
-    [ "$dupes" -eq 0 ] ||
-        fail "7g: $dupes emitted $variant skill(s) restate the session/changeset model — the instruction file is the single canonical statement"
+dupes=0
+for skill in $SKILLS; do
+    md="$TMP/cli/.claude/skills/$skill/SKILL.md"
+    [ -f "$md" ] || continue
+    if grep -Fq -- 'rdm session list' "$md" || grep -Fq -- 'RDM_SESSION' "$md"; then
+        echo "  duplicate explainer: $md restates the session/changeset model" >&2
+        dupes=$((dupes + 1))
+    fi
 done
+[ "$dupes" -eq 0 ] ||
+    fail "7g: $dupes emitted cli skill(s) restate the session/changeset model — the instruction file is the single canonical statement"
 pass "7g: the session/changeset explainer lives only in the instruction file, not duplicated into skills"
 
 # SELF-CONTAINMENT (AC4): a downstream tree contains none of this repo's

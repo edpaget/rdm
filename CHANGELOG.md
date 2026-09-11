@@ -93,6 +93,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `docs/file-formats.md` § "Merge driver" described behavior rdm did not have. It claimed `.gitattributes` was always present and tracked (it was written only by `rdm init`, and is untracked until committed) and that every command that opens the plan repo configured the driver (only the `.git/config` half was). It now describes what ships, including the best-effort contract, the untracked-until-committed window, and the post-discard re-ensure. A new paragraph in the `INDEX.md` section explains why generated files are reported separately from user changes but are still committed.
 
+### Removed
+
+- **BREAKING: `rdm agent-config --mcp` is gone.** The flag no longer exists on any `agent-config` invocation, so `rdm agent-config claude --skills --mcp` (and every other `--mcp` spelling) now fails with the standard `unexpected argument '--mcp'` error instead of emitting anything. With it go three things it used to produce: the `.mcp.json` file written alongside `--out`/`--user` output, the MCP-flavored instruction file, and the eleven MCP-flavored skill variants that referenced `mcp__rdm__*` tool names instead of `rdm` commands. `rdm agent-config pi --mcp`'s bespoke "Pi does not support MCP natively" rejection is likewise gone — with no flag to reject, Pi now reports the same unknown-argument error as every other platform.
+
+  **Migration:** use `rdm agent-config claude --skills --out <dir>` (or `--plugin --out <dir>`) for the agent lane, and `rdm agent-config <platform> --out <dir>` for instructions. Both emit the CLI-flavored surface, which is unchanged. If you relied on the generated `.mcp.json`, configure the MCP server through your client's own MCP configuration instead.
+
+  **The `rdm mcp` server subcommand and the `rdm-mcp` crate are unaffected by this change.** Only the agent-config *authoring fork* was retired; the MCP server itself still starts with `rdm mcp` and still exposes every tool it did before.
+
 ## [0.21.0] - 2026-09-03
 
 ### Added

@@ -2904,20 +2904,6 @@ for shim in \
 done
 pass "AC-PLAN-INTENT-HOIST: all three hoisting shims and their shipped CLI templates fetch the roadmap body and the verify command, and forward both"
 
-# The MCP flavors deliberately do NOT hoist (no model-resolve tool), so they must
-# not grow a roadmapBody instruction either — the in-workflow Stage-0 fetch is
-# their path and it already reads the roadmap body.
-for mcp in \
-    "$REPO_ROOT/rdm-core/src/templates/skill-autopilot-mcp.md" \
-    "$REPO_ROOT/rdm-core/src/templates/skill-do-mcp.md" \
-    "$REPO_ROOT/rdm-core/src/templates/skill-dispatch-phase-mcp.md"; do
-    [ -f "$mcp" ] || fail "AC-PLAN-INTENT-HOIST: MCP template not found: $mcp"
-    if grep -qF 'roadmapBody' "$mcp"; then
-        fail "AC-PLAN-INTENT-HOIST: $mcp must not hoist roadmapBody — MCP has no model-resolve tool, so the in-workflow Stage-0 fetch is its path"
-    fi
-done
-pass "AC-PLAN-INTENT-HOIST: the three MCP flavors carry no roadmapBody hoist"
-
 # Self-test: strip the field from one shim's phaseMeta literal and confirm detection.
 sed 's/body, roadmapBody, verify, models:/body, models:/' "$REPO_ROOT/.claude/skills/rdm-do/SKILL.md" >"$TMP/hoist-shim-mutant.md"
 if grep -qF 'body, roadmapBody, verify, models:' "$TMP/hoist-shim-mutant.md"; then
@@ -3506,7 +3492,7 @@ for needle in 'revise 1' 'revise 2' 'escalate' 'independent' 'maxPlanRevise' 'ma
 done
 # The which-lane note must record that the shipped prose templates remain at 1.
 grep -qE 'rdm-core/src/templates/' "$DOC" || fail "missing the which-lane note"
-grep -qE 'remain at 1|stay at 1|still 1' "$DOC" ||
+grep -qE 'remains? at 1|stays? at 1|still 1' "$DOC" ||
     fail "the which-lane note must state that the shipped prose templates remain at 1"
 pass "doc carries the attempt sequence, independence, override names, and the which-lane note"
 
@@ -5065,8 +5051,11 @@ SS_FILES=$(
         --include='SKILL.md' --include='skill-*.md' 2>/dev/null | sort
 )
 SS_COUNT=$(printf '%s\n' "$SS_FILES" | grep -c . || true)
-if [ "$SS_COUNT" -lt 12 ]; then
-    fail "9c-single-source: expected at least 12 rdmBin-bearing skill bodies, found $SS_COUNT — the inventory grep drifted"
+# Floor lowered 12 -> 11 when the retire-mcp roadmap deleted the three
+# rdmBin-bearing MCP skill templates (skill-{autopilot,do,dispatch-phase}-mcp.md).
+# Deliberate retune of a non-vacuity floor, not a relaxation of the check.
+if [ "$SS_COUNT" -lt 11 ]; then
+    fail "9c-single-source: expected at least 11 rdmBin-bearing skill bodies, found $SS_COUNT — the inventory grep drifted"
 fi
 for f in $SS_FILES; do
     assert_no_restated_rdm_bin_order "$f" ||

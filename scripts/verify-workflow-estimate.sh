@@ -964,7 +964,7 @@ assert_wf_mutant_fails "$TMP/mutant-weak-list-guard.js" "weakens the phaseList s
 
 # --- SHIM: the LOCAL rdm-estimate shim gathers and passes both hoists ---------
 # `.claude/skills/rdm-estimate/SKILL.md` is a LOCAL dogfood shim; its distributed
-# template (rdm-core/src/templates/skill-estimate-{cli,mcp}.md) is NOT a Workflow
+# template (rdm-core/src/templates/skill-estimate-cli.md) is NOT a Workflow
 # shim yet (tracked by task convert-remaining-skill-templates-to-workflow-shims),
 # so this check belongs here and NOT in verify-agent-config-distribution.sh.
 say "HOIST-SHIM. .claude/skills/rdm-estimate/SKILL.md gathers and passes mechanicalModel + phaseList"

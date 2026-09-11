@@ -166,8 +166,6 @@ pub struct AgentConfigOptions {
     pub project: Option<String>,
     /// Optional path to a principles file to reference in generated output.
     pub principles_file: Option<String>,
-    /// When `true`, generate instructions referencing MCP tool calls instead of CLI commands.
-    pub mcp: bool,
 }
 
 /// Generates agent configuration content for the given options.
@@ -184,16 +182,11 @@ pub struct AgentConfigOptions {
 ///     platform: Platform::AgentsMd,
 ///     project: Some("myproj".to_string()),
 ///     principles_file: None,
-///     mcp: false,
 /// });
 /// assert!(content.contains("--project myproj"));
 /// ```
 pub fn generate_agent_config(opts: &AgentConfigOptions) -> String {
-    let instructions = if opts.mcp {
-        agent_instructions_mcp(opts.project.as_deref(), opts.principles_file.as_deref())
-    } else {
-        agent_instructions(opts.project.as_deref(), opts.principles_file.as_deref())
-    };
+    let instructions = agent_instructions(opts.project.as_deref(), opts.principles_file.as_deref());
 
     match opts.platform {
         Platform::Cursor => {
@@ -270,8 +263,6 @@ pub struct SkillOptions {
     pub project: Option<String>,
     /// Optional path to a principles file to reference.
     pub principles_file: Option<String>,
-    /// When `true`, generate skills referencing MCP tool calls instead of CLI commands.
-    pub mcp: bool,
 }
 
 /// Generates Claude Code skill definition files.
@@ -280,10 +271,9 @@ pub struct SkillOptions {
 /// and content for a skill definition. Skills are reusable agent behaviors
 /// triggered by slash commands in Claude Code.
 ///
-/// Both the `mcp: false` (CLI) and `mcp: true` (MCP) branches return the
-/// same 11 skills, identified by `relative_path` — a cli/mcp skill-name
-/// parity test (`generate_skills_cli_mcp_name_parity`) asserts this holds so
-/// a future one-sided addition fails CI.
+/// The returned vector always holds the same 11 skills, identified by
+/// `relative_path`; `generate_skills_returns_eleven_files` asserts the count
+/// so a one-sided addition fails CI.
 ///
 /// # Examples
 ///
@@ -293,52 +283,26 @@ pub struct SkillOptions {
 /// let skills = generate_skills(&SkillOptions {
 ///     project: Some("myproj".to_string()),
 ///     principles_file: None,
-///     mcp: false,
 /// });
 /// assert_eq!(skills.len(), 11);
 /// assert!(skills[0].content.contains("--project myproj"));
-///
-/// let mcp_skills = generate_skills(&SkillOptions {
-///     project: Some("myproj".to_string()),
-///     principles_file: None,
-///     mcp: true,
-/// });
-/// assert_eq!(mcp_skills.len(), 11);
 /// ```
 pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
     let principles_note = opts.principles_file.as_deref().map(skill_principles_note);
-    if opts.mcp {
-        let proj = proj_param_str(opts.project.as_deref());
-        let proj_flag = proj_flag_str(opts.project.as_deref());
-        vec![
-            skill_roadmap_mcp(&proj, principles_note.as_deref()),
-            skill_do_mcp(&proj, principles_note.as_deref()),
-            skill_review_mcp(&proj, principles_note.as_deref()),
-            skill_document_mcp(&proj, principles_note.as_deref()),
-            skill_estimate_mcp(&proj, principles_note.as_deref()),
-            skill_dispatch_phase_mcp(&proj, principles_note.as_deref()),
-            skill_autopilot_mcp(&proj, principles_note.as_deref()),
-            skill_land_mcp(&proj, principles_note.as_deref()),
-            skill_revise_mcp(&proj, principles_note.as_deref()),
-            skill_plan_review_mcp(&proj, principles_note.as_deref()),
-            skill_backlog_mcp(&proj, &proj_flag, principles_note.as_deref()),
-        ]
-    } else {
-        let proj_flag = proj_flag_str(opts.project.as_deref());
-        vec![
-            skill_roadmap(&proj_flag, principles_note.as_deref()),
-            skill_do(&proj_flag, principles_note.as_deref()),
-            skill_review(&proj_flag, principles_note.as_deref()),
-            skill_document(&proj_flag, principles_note.as_deref()),
-            skill_estimate(&proj_flag, principles_note.as_deref()),
-            skill_dispatch_phase(&proj_flag, principles_note.as_deref()),
-            skill_autopilot(&proj_flag, principles_note.as_deref()),
-            skill_land(&proj_flag, principles_note.as_deref()),
-            skill_revise(&proj_flag, principles_note.as_deref()),
-            skill_plan_review(&proj_flag, principles_note.as_deref()),
-            skill_backlog(&proj_flag, principles_note.as_deref()),
-        ]
-    }
+    let proj_flag = proj_flag_str(opts.project.as_deref());
+    vec![
+        skill_roadmap(&proj_flag, principles_note.as_deref()),
+        skill_do(&proj_flag, principles_note.as_deref()),
+        skill_review(&proj_flag, principles_note.as_deref()),
+        skill_document(&proj_flag, principles_note.as_deref()),
+        skill_estimate(&proj_flag, principles_note.as_deref()),
+        skill_dispatch_phase(&proj_flag, principles_note.as_deref()),
+        skill_autopilot(&proj_flag, principles_note.as_deref()),
+        skill_land(&proj_flag, principles_note.as_deref()),
+        skill_revise(&proj_flag, principles_note.as_deref()),
+        skill_plan_review(&proj_flag, principles_note.as_deref()),
+        skill_backlog(&proj_flag, principles_note.as_deref()),
+    ]
 }
 
 /// The single canonical list of shipped engine names.
@@ -1075,7 +1039,6 @@ pub fn generate_plugin_manifest() -> String {
 /// let skills = generate_plugin_skills(&SkillOptions {
 ///     project: Some("myproj".to_string()),
 ///     principles_file: None,
-///     mcp: false,
 /// });
 /// assert_eq!(skills.len(), 11);
 /// assert_eq!(skills[0].relative_path, "skills/roadmap/SKILL.md");
@@ -1163,7 +1126,6 @@ pub fn generate_plugin_workflows() -> Vec<PluginFile> {
 /// let files = generate_plugin_files(&SkillOptions {
 ///     project: None,
 ///     principles_file: None,
-///     mcp: false,
 /// });
 /// assert_eq!(files.len(), 14);
 /// assert_eq!(files[0].relative_path, ".claude-plugin/plugin.json");
@@ -1328,309 +1290,6 @@ fn skill_plan_review(proj_flag: &str, principles_note: Option<&str>) -> SkillFil
     }
 }
 
-/// Options for generating MCP server configuration.
-pub struct McpConfigOptions {
-    /// Plan repo root path. When `Some`, the generated config includes `--root <path>`.
-    pub root: Option<String>,
-}
-
-/// Generates a `.mcp.json` configuration for the rdm MCP server.
-///
-/// The output is a JSON object with an `mcpServers.rdm` entry that tells
-/// MCP-aware clients how to launch the rdm MCP server.
-///
-/// # Examples
-///
-/// ```
-/// use rdm_core::agent_config::{McpConfigOptions, generate_mcp_config};
-///
-/// let json = generate_mcp_config(&McpConfigOptions { root: None });
-/// assert!(json.contains("mcpServers"));
-/// ```
-pub fn generate_mcp_config(opts: &McpConfigOptions) -> String {
-    let args: Vec<serde_json::Value> = match &opts.root {
-        Some(root) => vec![
-            serde_json::Value::String("--root".to_string()),
-            serde_json::Value::String(root.clone()),
-            serde_json::Value::String("mcp".to_string()),
-        ],
-        None => vec![serde_json::Value::String("mcp".to_string())],
-    };
-
-    let config = serde_json::json!({
-        "mcpServers": {
-            "rdm": {
-                "command": "rdm",
-                "args": args
-            }
-        }
-    });
-
-    serde_json::to_string_pretty(&config).expect("JSON serialization cannot fail")
-}
-
-/// Returns a quoted project name for use in MCP tool call examples.
-fn proj_param_str(project: Option<&str>) -> String {
-    match project {
-        Some(name) => format!("\"{name}\""),
-        None => "\"<PROJECT>\"".to_string(),
-    }
-}
-
-/// Generates MCP-oriented instruction content referencing MCP tool calls.
-fn agent_instructions_mcp(project: Option<&str>, principles_file: Option<&str>) -> String {
-    let proj_param = proj_param_str(project);
-    let principles = principles_file
-        .map(|p| format!("\n\n{}", section_principles(p)))
-        .unwrap_or_default();
-    include_str!("templates/instructions-mcp.md")
-        .replace("{proj_param}", &proj_param)
-        .replace("\n{principles}", &principles)
-}
-
-// ---------- MCP skill generators ----------
-
-fn mcp_tool_name(tool: &str) -> String {
-    format!("mcp__rdm__{tool}")
-}
-
-fn skill_roadmap_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-roadmap/SKILL.md",
-        content: render_mcp_skill(
-            include_str!("templates/skill-roadmap-mcp.md"),
-            proj,
-            principles_note,
-            &[
-                ("t_roadmap_create", "rdm_roadmap_create"),
-                ("t_phase_create", "rdm_phase_create"),
-                ("t_roadmap_show", "rdm_roadmap_show"),
-                // The interview step's "roadmap already exists" fallback
-                // writes the captured `## Intent` section back via a whole-body
-                // update, same mechanism as every other body section.
-                ("t_roadmap_update", "rdm_roadmap_update"),
-                ("t_commit", "rdm_commit"),
-            ],
-        ),
-    }
-}
-
-fn skill_do_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-do/SKILL.md",
-        content: render_mcp_skill(
-            include_str!("templates/skill-do-mcp.md"),
-            proj,
-            principles_note,
-            &[
-                ("t_phase_list", "rdm_phase_list"),
-                ("t_phase_show", "rdm_phase_show"),
-                ("t_phase_update", "rdm_phase_update"),
-                ("t_task_list", "rdm_task_list"),
-                ("t_task_show", "rdm_task_show"),
-                ("t_task_update", "rdm_task_update"),
-                ("t_task_create", "rdm_task_create"),
-                ("t_worktree_current", "rdm_worktree_current"),
-                ("t_worktree_add", "rdm_worktree_add"),
-                ("t_commit", "rdm_commit"),
-            ],
-        ),
-    }
-}
-
-fn skill_document_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-document/SKILL.md",
-        content: render_mcp_skill(
-            include_str!("templates/skill-document-mcp.md"),
-            proj,
-            principles_note,
-            &[
-                ("t_roadmap_show", "rdm_roadmap_show"),
-                ("t_phase_show", "rdm_phase_show"),
-            ],
-        ),
-    }
-}
-
-fn skill_review_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-review/SKILL.md",
-        content: render_mcp_skill(
-            include_str!("templates/skill-review-mcp.md"),
-            proj,
-            principles_note,
-            &[
-                ("t_phase_show", "rdm_phase_show"),
-                ("t_phase_update", "rdm_phase_update"),
-                ("t_task_show", "rdm_task_show"),
-                ("t_task_update", "rdm_task_update"),
-                ("t_task_create", "rdm_task_create"),
-                ("t_commit", "rdm_commit"),
-            ],
-        ),
-    }
-}
-
-fn skill_estimate_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-estimate/SKILL.md",
-        content: render_mcp_skill(
-            include_str!("templates/skill-estimate-mcp.md"),
-            proj,
-            principles_note,
-            &[
-                ("t_phase_list", "rdm_phase_list"),
-                ("t_phase_show", "rdm_phase_show"),
-                ("t_phase_update", "rdm_phase_update"),
-                ("t_roadmap_show", "rdm_roadmap_show"),
-            ],
-        ),
-    }
-}
-
-fn skill_dispatch_phase_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-dispatch-phase/SKILL.md",
-        content: render_mcp_skill(
-            include_str!("templates/skill-dispatch-phase-mcp.md"),
-            proj,
-            principles_note,
-            &[
-                ("t_phase_show", "rdm_phase_show"),
-                // The shim stamps the item in-progress itself and passes
-                // `alreadyInProgress: true`, so the workflow can skip its own
-                // dedicated stamp subagent.
-                ("t_phase_update", "rdm_phase_update"),
-                ("t_task_update", "rdm_task_update"),
-            ],
-        ),
-    }
-}
-
-fn skill_autopilot_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-autopilot/SKILL.md",
-        content: render_mcp_skill(
-            include_str!("templates/skill-autopilot-mcp.md"),
-            proj,
-            principles_note,
-            &[
-                ("t_next", "rdm_next"),
-                ("t_phase_update", "rdm_phase_update"),
-                // Read-back confirmation after an advance/park write, mirroring
-                // the CLI variant's `rdm phase show --format json` call.
-                ("t_phase_show", "rdm_phase_show"),
-            ],
-        ),
-    }
-}
-
-fn skill_land_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-land/SKILL.md",
-        content: render_mcp_skill(
-            include_str!("templates/skill-land-mcp.md"),
-            proj,
-            principles_note,
-            &[
-                ("t_phase_show", "rdm_phase_show"),
-                ("t_phase_update", "rdm_phase_update"),
-                ("t_task_show", "rdm_task_show"),
-                ("t_task_update", "rdm_task_update"),
-                ("t_worktree_current", "rdm_worktree_current"),
-                ("t_worktree_remove", "rdm_worktree_remove"),
-            ],
-        ),
-    }
-}
-
-fn skill_revise_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-revise/SKILL.md",
-        content: render_mcp_skill(
-            include_str!("templates/skill-revise-mcp.md"),
-            proj,
-            principles_note,
-            &[
-                ("t_review_requests", "rdm_review_requests"),
-                ("t_review_show", "rdm_review_show"),
-                ("t_review_address_comment", "rdm_review_address_comment"),
-                ("t_review_complete", "rdm_review_complete"),
-                ("t_phase_update", "rdm_phase_update"),
-                ("t_task_update", "rdm_task_update"),
-                ("t_roadmap_update", "rdm_roadmap_update"),
-                ("t_commit", "rdm_commit"),
-            ],
-        ),
-    }
-}
-
-fn skill_plan_review_mcp(proj: &str, principles_note: Option<&str>) -> SkillFile {
-    SkillFile {
-        relative_path: "rdm-plan-review/SKILL.md",
-        content: render_mcp_skill(
-            include_str!("templates/skill-plan-review-mcp.md"),
-            proj,
-            principles_note,
-            &[
-                ("t_phase_show", "rdm_phase_show"),
-                ("t_phase_update", "rdm_phase_update"),
-                ("t_task_show", "rdm_task_show"),
-                ("t_task_update", "rdm_task_update"),
-                ("t_task_create", "rdm_task_create"),
-                ("t_roadmap_show", "rdm_roadmap_show"),
-                ("t_roadmap_update", "rdm_roadmap_update"),
-                ("t_commit", "rdm_commit"),
-            ],
-        ),
-    }
-}
-
-/// Builds the `rdm-backlog` MCP skill.
-///
-/// Unlike every other `skill_*_mcp` generator, this template also embeds
-/// literal, never-executed `rdm` CLI command text in its "Grooming analysis"
-/// section (`rdm task update`, `rdm promote`, `rdm task merge`, `rdm roadmap
-/// archive`) — those commands are copy-paste output for a human to run
-/// later, not MCP tool calls this skill makes, since no MCP tool exists for
-/// merge/archive/promote. That literal CLI text still needs a concrete
-/// `--project` flag to be ready to paste, so this is the one MCP skill that
-/// also substitutes `{proj_flag}` (computed the same way the CLI skills
-/// compute it) alongside the usual `{proj_param}`/`{t_*}` substitutions.
-fn skill_backlog_mcp(proj: &str, proj_flag: &str, principles_note: Option<&str>) -> SkillFile {
-    let rendered = render_mcp_skill(
-        include_str!("templates/skill-backlog-mcp.md"),
-        proj,
-        principles_note,
-        &[
-            ("t_backlog_report", "rdm_backlog_report"),
-            ("t_roadmap_list", "rdm_roadmap_list"),
-            ("t_search", "rdm_search"),
-        ],
-    );
-    SkillFile {
-        relative_path: "rdm-backlog/SKILL.md",
-        content: rendered.replace("{proj_flag}", proj_flag),
-    }
-}
-
-fn render_mcp_skill(
-    template: &str,
-    proj: &str,
-    principles_note: Option<&str>,
-    tools: &[(&str, &str)],
-) -> String {
-    let principles = principles_note.unwrap_or("");
-    let mut result = template
-        .replace("{proj_param}", proj)
-        .replace("{principles}", principles);
-    for (placeholder, tool) in tools {
-        result = result.replace(&format!("{{{placeholder}}}"), &mcp_tool_name(tool));
-    }
-    result
-}
-
 fn section_principles(path: &str) -> String {
     format!(
         r#"## Principles
@@ -1754,7 +1413,6 @@ mod tests {
             platform: Platform::AgentsMd,
             project: Some("myproj".to_string()),
             principles_file: None,
-            mcp: false,
         });
         assert!(content.contains("--project myproj"));
         assert!(!content.contains("<PROJECT>"));
@@ -1766,7 +1424,6 @@ mod tests {
             platform: Platform::AgentsMd,
             project: Some("myproj".to_string()),
             principles_file: None,
-            mcp: false,
         });
         assert!(content.contains("## Document reviews"));
         assert!(content.contains("rdm review start --on task/<slug>"));
@@ -1783,6 +1440,13 @@ mod tests {
         assert!(content.contains("rdm-revise"));
     }
 
+    /// The emitted CLI instructions must teach the *scoped* commit model.
+    ///
+    /// `rdm status`/`commit`/`discard` have not operated on the whole plan
+    /// repo since commit scoping shipped, and an agent that believes they do
+    /// will either refuse to commit (fearing it sweeps a teammate's work) or
+    /// misread another changeset's paths as its own. The retired claim is
+    /// asserted absent so a future edit cannot quietly reintroduce it.
     #[test]
     fn cli_instructions_teach_linking_across_platforms() {
         for platform in [
@@ -1796,7 +1460,6 @@ mod tests {
                 platform,
                 project: Some("myproj".to_string()),
                 principles_file: None,
-                mcp: false,
             });
             assert!(
                 content.contains("## Linking"),
@@ -1831,7 +1494,6 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(content.contains("## Linking"));
         assert!(content.contains("rdm link check --on <ref> --project <PROJECT>"));
@@ -1847,46 +1509,11 @@ mod tests {
     }
 
     #[test]
-    fn mcp_instructions_teach_document_reviews() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::AgentsMd,
-            project: Some("myproj".to_string()),
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(content.contains("## Document reviews"));
-        // The four review tools and the loop.
-        assert!(content.contains("rdm_review_requests"));
-        assert!(content.contains("rdm_review_show"));
-        assert!(content.contains("rdm_review_address_comment"));
-        assert!(content.contains("rdm_review_complete"));
-        assert!(content.contains("rdm-revise"));
-        // Anchor/resolution semantics an agent must know.
-        assert!(content.contains("anchor_type"));
-        assert!(content.contains("drifted"));
-        assert!(content.contains("body_at_created_commit"));
-        // Commit provenance threading from update responses.
-        assert!(content.contains("Commit: <sha>"));
-        assert!(content.contains("applied_commit"));
-        // The project param is substituted.
-        assert!(content.contains("review_id: \"<id>\""));
-        assert!(!content.contains("<PROJECT>"));
-    }
-
-    /// The emitted CLI instructions must teach the *scoped* commit model.
-    ///
-    /// `rdm status`/`commit`/`discard` have not operated on the whole plan
-    /// repo since commit scoping shipped, and an agent that believes they do
-    /// will either refuse to commit (fearing it sweeps a teammate's work) or
-    /// misread another changeset's paths as its own. The retired claim is
-    /// asserted absent so a future edit cannot quietly reintroduce it.
-    #[test]
     fn cli_instructions_teach_session_scoped_commit() {
         let content = generate_agent_config(&AgentConfigOptions {
             platform: Platform::AgentsMd,
             project: Some("myproj".to_string()),
             principles_file: None,
-            mcp: false,
         });
         // The retired whole-tree claim.
         assert!(
@@ -1911,48 +1538,12 @@ mod tests {
         assert!(!content.contains("scoping-model-decision.md"));
     }
 
-    /// The emitted MCP instructions must teach the three-bucket status shape.
-    ///
-    /// `rdm_status` returns `{changes, generated, others}`; an agent told it
-    /// returns a flat list cannot tell its own edits from a concurrent
-    /// session's, which is the exact confusion the scoped model removed.
-    #[test]
-    fn mcp_instructions_teach_scoped_status_buckets() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::AgentsMd,
-            project: Some("myproj".to_string()),
-            principles_file: None,
-            mcp: true,
-        });
-        // The retired whole-tree claims.
-        assert!(
-            !content.contains("it reports the whole plan repo's git state"),
-            "emitted MCP instructions still claim whole-tree status semantics"
-        );
-        assert!(!content.contains("land every currently staged change"));
-        assert!(!content.contains("reverting the working tree to its last commit"));
-        // All three buckets are named.
-        assert!(content.contains("changes"));
-        assert!(content.contains("generated"));
-        assert!(content.contains("others"));
-        assert!(content.contains("{changes, generated, others}"));
-        // Commit is described as scoped to this session.
-        assert!(content.contains("changeset"));
-        assert!(content.contains("rdm_commit"));
-        // MCP exposes no session tools, so none may be invented here.
-        assert!(!content.contains("rdm_session"));
-        // Self-containment.
-        assert!(!content.contains("session-identity.md"));
-        assert!(!content.contains("scoping-model-decision.md"));
-    }
-
     #[test]
     fn generate_without_project_name() {
         let content = generate_agent_config(&AgentConfigOptions {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(content.contains("--project <PROJECT>"));
     }
@@ -1963,7 +1554,6 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(content.contains("# rdm"));
         assert!(content.contains("## Setup"));
@@ -1982,7 +1572,6 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(content.contains("rdm roadmap list"));
         assert!(content.contains("rdm task list"));
@@ -2004,7 +1593,6 @@ mod tests {
             platform: Platform::Cursor,
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(content.starts_with("---\n"));
         assert!(content.contains("description:"));
@@ -2019,7 +1607,6 @@ mod tests {
             platform: Platform::Claude,
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(!content.starts_with("---"));
     }
@@ -2030,7 +1617,6 @@ mod tests {
             platform: Platform::Copilot,
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(!content.starts_with("---"));
     }
@@ -2041,7 +1627,6 @@ mod tests {
             platform: Platform::AgentsMd,
             project: Some("myproj".to_string()),
             principles_file: None,
-            mcp: false,
         });
         assert!(content.contains("### Before starting work"));
         assert!(content.contains("### Implementing a roadmap phase"));
@@ -2056,7 +1641,6 @@ mod tests {
             platform: Platform::AgentsMd,
             project: Some("myproj".to_string()),
             principles_file: None,
-            mcp: false,
         });
         // Workflow section should embed the project flag
         assert!(content.contains("rdm roadmap list --project myproj"));
@@ -2069,7 +1653,6 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(content.contains("### Phase statuses"));
         assert!(content.contains("`not-started` → `in-progress`"));
@@ -2087,7 +1670,6 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(content.contains("### Task statuses"));
         assert!(content.contains("`open` → `in-progress`"));
@@ -2105,7 +1687,6 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: Some("docs/principles.md".to_string()),
-            mcp: false,
         });
         assert!(content.contains("## Principles"));
         assert!(content.contains("docs/principles.md"));
@@ -2117,7 +1698,6 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(!content.contains("## Principles"));
     }
@@ -2129,7 +1709,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         // Workflows are a separate emission surface (see `generate_workflows`)
         // and are not counted here — this assertion should not grow when the
@@ -2138,51 +1717,10 @@ mod tests {
     }
 
     #[test]
-    fn generate_skills_mcp_returns_eleven_files() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        // Was 10 (no `rdm-backlog` MCP twin) before `skill_backlog_mcp` was
-        // added — now matches the non-mcp branch's count.
-        assert_eq!(skills.len(), 11);
-    }
-
-    #[test]
-    fn generate_skills_cli_mcp_name_parity() {
-        // The same skill *names* (identified by relative_path) must be
-        // emitted on both platforms — a BTreeSet comparison so a future
-        // one-sided addition (a skill added to only one branch) fails even
-        // if both vecs coincidentally stay the same length or reorder.
-        let cli: std::collections::BTreeSet<&str> = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: false,
-        })
-        .iter()
-        .map(|s| s.relative_path)
-        .collect();
-        let mcp: std::collections::BTreeSet<&str> = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        })
-        .iter()
-        .map(|s| s.relative_path)
-        .collect();
-        assert_eq!(
-            cli, mcp,
-            "cli and mcp must emit the same set of skill relative_paths"
-        );
-    }
-
-    #[test]
     fn generate_skills_correct_paths() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert_eq!(skills[0].relative_path, "rdm-roadmap/SKILL.md");
         assert_eq!(skills[1].relative_path, "rdm-do/SKILL.md");
@@ -2633,7 +2171,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[10].content;
         assert!(content.contains("name: rdm-backlog"));
@@ -2660,39 +2197,14 @@ mod tests {
     }
 
     #[test]
-    fn skill_backlog_mcp_documents_the_grooming_plan() {
+    fn skill_revise_reply_cites_pinned_code_links() {
         let skills = generate_skills(&SkillOptions {
-            project: Some("myproj".to_string()),
+            project: None,
             principles_file: None,
-            mcp: true,
         });
-        let content = &skills[10].content;
-        assert!(content.contains("name: rdm-backlog"));
-        assert!(content.contains("$ARGUMENTS"));
-        // The one executed read call is the mcp tool, substituted.
-        assert!(content.contains("rdm_backlog_report"));
-        assert!(content.contains("rdm_roadmap_list"));
-        assert!(content.contains("rdm_search"));
-        // No leftover template placeholders.
-        assert!(!content.contains("{t_backlog_report}"));
-        assert!(!content.contains("{t_roadmap_list}"));
-        assert!(!content.contains("{t_search}"));
-        assert!(!content.contains("{proj_param}"));
-        assert!(!content.contains("{proj_flag}"));
-        // allowed-tools omits Bash — mcp skills never shell out.
-        assert!(!content.contains("- Bash"));
-        assert!(content.contains("Non-mutation guarantee"));
-        assert!(content.contains("never calls"));
-        // Proposed (never-executed) mutating commands stay literal CLI text,
-        // now with the concrete project substituted in.
-        assert!(content.contains("task update <slug> --status wont-fix"));
-        assert!(content.contains("task merge <survivor> --from"));
-        assert!(content.contains("promote <slug> --into <roadmap>"));
-        assert!(content.contains("roadmap archive <roadmap>"));
-        assert!(content.contains("--project myproj"));
-        assert!(content.contains("not MCP tool calls this skill makes"));
-        assert!(content.contains("## Open questions"));
-        assert!(content.contains("Nothing to groom"));
+        let content = &skills[8].content;
+        assert!(content.contains("rdm:src/"));
+        assert!(content.contains("pinned"));
     }
 
     #[test]
@@ -2700,7 +2212,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[8].content;
         assert!(content.contains("name: rdm-revise"));
@@ -2736,58 +2247,6 @@ mod tests {
         assert!(content.contains("leave the review submitted"));
     }
 
-    #[test]
-    fn skill_revise_reply_cites_pinned_code_links() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[8].content;
-        assert!(content.contains("rdm:src/"));
-        assert!(content.contains("pinned"));
-    }
-
-    #[test]
-    fn mcp_skill_revise_uses_review_tools_and_commit_threading() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[8].content;
-        assert!(content.contains("name: rdm-revise"));
-        assert!(content.contains("$ARGUMENTS"));
-        // Drives the loop through the four review tools plus the doc updates.
-        assert!(content.contains("rdm_review_requests"));
-        assert!(content.contains("rdm_review_show"));
-        assert!(content.contains("rdm_review_address_comment"));
-        assert!(content.contains("rdm_review_complete"));
-        assert!(content.contains("rdm_phase_update"));
-        assert!(content.contains("rdm_task_update"));
-        assert!(content.contains("rdm_roadmap_update"));
-        // Commit provenance is threaded from the update tool's response —
-        // the defaulting fallback is best-effort and never fires on wont-fix.
-        assert!(content.contains("Commit: <sha>"));
-        assert!(content.contains("applied_commit"));
-        assert!(content.contains("best-effort"));
-        assert!(content.contains("never defaults for `wont-fix`"));
-        // Clarification: no status leaves the comment open; complete refuses
-        // and lists open ids while clarification is pending.
-        assert!(content.contains("no `status`"));
-        assert!(content.contains("leave the review submitted"));
-        // Anchor dispatch against the inlined document bodies.
-        assert!(content.contains("body_at_created_commit"));
-        assert!(content.contains("current_body"));
-        assert!(content.contains("anchor_type"));
-        // MCP variant: Bash-free frontmatter, resolved mcp__rdm__ tool names.
-        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
-        assert!(!frontmatter.contains("  - Bash"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_review_requests"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_review_address_comment"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_task_update"));
-    }
-
     // --- rdm-plan-review skill tests ---
 
     #[test]
@@ -2795,7 +2254,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(skills[9].content.contains("name: rdm-plan-review"));
     }
@@ -2805,7 +2263,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(skills[9].content.contains("Agent"));
     }
@@ -2815,27 +2272,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
-        });
-        assert!(skills[9].content.contains("$ARGUMENTS"));
-    }
-
-    #[test]
-    fn mcp_skill_plan_review_has_correct_name() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(skills[9].content.contains("name: rdm-plan-review"));
-    }
-
-    #[test]
-    fn mcp_skill_plan_review_contains_arguments_variable() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
         });
         assert!(skills[9].content.contains("$ARGUMENTS"));
     }
@@ -2845,7 +2281,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[9].content;
         assert!(content.contains("**coherence** — *always.*"));
@@ -2859,27 +2294,10 @@ mod tests {
     }
 
     #[test]
-    fn mcp_skill_plan_review_covers_three_dimensions() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("**coherence** — *always.*"));
-        assert!(content.contains("**architectural-fit** — *always.*"));
-        assert!(content.contains("**unit-of-work** — *trigger: the target is a phase.*"));
-        assert!(
-            content.contains("add `unit-of-work` only when the target type from step 1 is a phase")
-        );
-    }
-
-    #[test]
     fn skill_plan_review_architecture_reviewer_falls_back_to_claude_md() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[9].content;
         assert!(content.contains("CLAUDE.md"));
@@ -2891,19 +2309,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("read-only"));
-        assert!(content.contains("parallel"));
-    }
-
-    #[test]
-    fn mcp_skill_plan_review_dispatches_read_only_reviewers() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
         });
         let content = &skills[9].content;
         assert!(content.contains("read-only"));
@@ -2915,7 +2320,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[9].content;
         assert!(content.contains("**reviewed**"));
@@ -2928,27 +2332,10 @@ mod tests {
     }
 
     #[test]
-    fn mcp_skill_plan_review_consolidates_single_verdict() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("**reviewed**"));
-        assert!(content.contains("**rework**"));
-        assert!(content.contains("**escalated**"));
-        assert!(content.contains("the first matching rule wins"));
-        assert!(!content.contains("**PASS WITH CONCERNS**"));
-        assert!(!content.contains("**REWORK**"));
-    }
-
-    #[test]
     fn skill_plan_review_categorizes_findings() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[9].content;
         assert!(content.contains("Small"));
@@ -2965,7 +2352,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[9].content;
         assert!(content.contains("never edits"));
@@ -2995,25 +2381,13 @@ mod tests {
     }
 
     #[test]
-    fn mcp_instructions_instruct_tagging_on_create() {
-        let content = agent_instructions_mcp(None, None);
-        assert!(content.contains("**Always pass `tags` when you create**"));
-        assert!(content.contains("untagged items are invisible to tag-filtered queries"));
-        assert!(content.contains("replaces the existing list"));
-    }
-
-    #[test]
     fn instructions_suggest_default_tag_vocabulary() {
         let cli = agent_instructions(None, None);
-        let mcp = agent_instructions_mcp(None, None);
         for pair in DEFAULT_TAG_GLOSSES {
             assert!(cli.contains(pair), "CLI instructions missing gloss {pair}");
-            assert!(mcp.contains(pair), "MCP instructions missing gloss {pair}");
         }
         assert!(cli.contains("not a closed set"));
-        assert!(mcp.contains("not a closed set"));
         assert!(cli.contains("--tags bug,cli"));
-        assert!(mcp.contains("tags: [\"bug\", \"cli\"]"));
     }
 
     #[test]
@@ -3031,28 +2405,11 @@ mod tests {
     }
 
     #[test]
-    fn mcp_instructions_teach_tag_list_discovery() {
-        let content = agent_instructions_mcp(None, None);
-        assert!(content.contains("rdm tag list"));
-        // No such MCP tool exists — don't invent one.
-        assert!(!content.contains("rdm_tag_list"));
-    }
-
-    #[test]
     fn instructions_leave_no_unsubstituted_placeholders() {
         for content in [
             agent_instructions(None, None),
             agent_instructions(Some("myproj"), None),
         ] {
-            assert!(!content.contains("{proj_flag}"));
-            assert!(!content.contains("{proj_param}"));
-        }
-        for content in [
-            agent_instructions_mcp(None, None),
-            agent_instructions_mcp(Some("myproj"), None),
-        ] {
-            // `agent_instructions_mcp` only substitutes `{proj_param}`; a
-            // `{proj_flag}` in the MCP template would leak verbatim.
             assert!(!content.contains("{proj_flag}"));
             assert!(!content.contains("{proj_param}"));
         }
@@ -3063,7 +2420,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[9].content;
         assert!(content.contains("needs-plan-review"));
@@ -3080,60 +2436,10 @@ mod tests {
     }
 
     #[test]
-    fn mcp_skill_plan_review_clears_tag_on_pass() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("needs-plan-review"));
-        assert!(content.contains(
-            "On **reviewed** — when the plan is clean or only has concerns/suggestions:"
-        ));
-        assert!(content.contains("Read the target's current tags via"));
-        assert!(content.contains("| **reviewed** | cleared | none |"));
-    }
-
-    #[test]
-    fn mcp_skill_plan_review_uses_array_tags_not_string() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[9].content;
-        // The MCP tags parameter is a JSON array (Option<Vec<String>>), never
-        // the CLI's comma-joined string convention.
-        assert!(content.contains("tags: [\"<remaining-tag-1>\", \"<remaining-tag-2>\"]"));
-        assert!(content.contains("tags: []"));
-        assert!(!content.contains("tags: \"<comma-joined-remaining-tags>\""));
-        assert!(!content.contains("tags: \"\""));
-    }
-
-    #[test]
     fn skill_plan_review_implementation_plan_mode_skips_gate() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("--implementation-plan"));
-        assert!(content.contains("no tag-gate step"));
-        assert!(content.contains("skip the Gate step entirely for this mode"));
-        assert!(content.contains("Skip this step entirely in `--implementation-plan` mode"));
-        // The carve-out also survives in the generated gate spec, so it cannot
-        // be lost on regeneration.
-        assert!(content.contains("**`--implementation-plan`** — **no gate at all.**"));
-    }
-
-    #[test]
-    fn mcp_skill_plan_review_implementation_plan_mode_skips_gate() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
         });
         let content = &skills[9].content;
         assert!(content.contains("--implementation-plan"));
@@ -3150,23 +2456,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("the *act* half is skipped entirely"));
-        assert!(content.contains("folding them back into the plan text is left to the caller"));
-        assert!(content.contains("skips the Act step's fix-application half the same way"));
-        assert!(content.contains(
-            "Skip this step's fix-application half entirely in `--implementation-plan` mode"
-        ));
-    }
-
-    #[test]
-    fn mcp_skill_plan_review_implementation_plan_mode_skips_step4_mutations() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
         });
         let content = &skills[9].content;
         assert!(content.contains("the *act* half is skipped entirely"));
@@ -3182,21 +2471,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[9].content;
-        // The phases-only trigger and its skip list are rendered from the
-        // canonical source, so assert the (line-wrapped) rendered fragments.
-        assert!(content.contains("*trigger: the target is a phase.* Skipped for"));
-        assert!(content.contains("tasks, standalone roadmap bodies, and `--implementation-plan`"));
-    }
-
-    #[test]
-    fn mcp_skill_plan_review_unit_of_work_reviewer_skips_implementation_plan() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
         });
         let content = &skills[9].content;
         // The phases-only trigger and its skip list are rendered from the
@@ -3210,7 +2484,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[9].content;
         assert!(content.contains("On **rework** or **escalated** — when changes are needed:"));
@@ -3223,27 +2496,10 @@ mod tests {
     }
 
     #[test]
-    fn mcp_skill_plan_review_leaves_tag_on_rework() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("On **rework** or **escalated** — when changes are needed:"));
-        assert!(content.contains(
-            "Do **not** call the update tool with `tags`. The `needs-plan-review` tag is left unchanged in place."
-        ));
-        assert!(content.contains("| **rework** | left in place | none |"));
-        assert!(content.contains("| **escalated** | left in place | none |"));
-    }
-
-    #[test]
     fn skill_plan_review_explains_tags_replace_semantics() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[9].content;
         assert!(content.contains("`--tags` replaces the whole list"));
@@ -3251,23 +2507,20 @@ mod tests {
 
     #[test]
     fn skill_plan_review_gates_each_phase_individually_under_roadmap() {
-        for mcp in [false, true] {
-            let skills = generate_skills(&SkillOptions {
-                project: None,
-                principles_file: None,
-                mcp,
-            });
-            let content = &skills[9].content;
-            assert!(
-                content.contains("Under `--roadmap <slug>`, gate each phase **individually**"),
-                "mcp={mcp}: per-phase roadmap gating missing from the hand-authored step"
-            );
-            // Backed by the generated gate spec so it survives regeneration.
-            assert!(
-                content.contains("gate each phase **individually**, and the roadmap"),
-                "mcp={mcp}: per-phase roadmap gating missing from the generated gate spec"
-            );
-        }
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[9].content;
+        assert!(
+            content.contains("Under `--roadmap <slug>`, gate each phase **individually**"),
+            "per-phase roadmap gating missing from the hand-authored step"
+        );
+        // Backed by the generated gate spec so it survives regeneration.
+        assert!(
+            content.contains("gate each phase **individually**, and the roadmap"),
+            "per-phase roadmap gating missing from the generated gate spec"
+        );
     }
 
     #[test]
@@ -3276,7 +2529,7 @@ mod tests {
         const END: &str = "<!-- rdm:review-spec:end -->";
         // Definitional phrases lifted verbatim from the generated plan block.
         // Bare words like "rework" recur legitimately in the hand-authored
-        // CLI/MCP mechanics, so only full definitions are listed.
+        // CLI mechanics, so only full definitions are listed.
         const DEFINITIONAL_PHRASES: &[&str] = &[
             "the work must not advance as-is",
             "recorded but non-gating",
@@ -3288,37 +2541,31 @@ mod tests {
             "*trigger: the target is a phase.*",
         ];
 
-        for mcp in [false, true] {
-            let skills = generate_skills(&SkillOptions {
-                project: None,
-                principles_file: None,
-                mcp,
-            });
-            let content = &skills[9].content;
-            let begin = content
-                .find(BEGIN)
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing begin marker"));
-            let end = content
-                .find(END)
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing end marker"));
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[9].content;
+        let begin = content
+            .find(BEGIN)
+            .unwrap_or_else(|| panic!("missing begin marker"));
+        let end = content
+            .find(END)
+            .unwrap_or_else(|| panic!("missing end marker"));
+        assert!(begin < end, "begin marker must precede end marker");
+
+        let before = &content[..begin];
+        let after = &content[end + END.len()..];
+
+        for phrase in DEFINITIONAL_PHRASES {
             assert!(
-                begin < end,
-                "mcp={mcp}: begin marker must precede end marker"
+                !before.contains(phrase),
+                "spec-definition phrase found before the generated block: {phrase:?}"
             );
-
-            let before = &content[..begin];
-            let after = &content[end + END.len()..];
-
-            for phrase in DEFINITIONAL_PHRASES {
-                assert!(
-                    !before.contains(phrase),
-                    "mcp={mcp}: spec-definition phrase found before the generated block: {phrase:?}"
-                );
-                assert!(
-                    !after.contains(phrase),
-                    "mcp={mcp}: spec-definition phrase found after the generated block: {phrase:?}"
-                );
-            }
+            assert!(
+                !after.contains(phrase),
+                "spec-definition phrase found after the generated block: {phrase:?}"
+            );
         }
     }
 
@@ -3330,24 +2577,21 @@ mod tests {
     #[test]
     fn skill_plan_review_captures_intent_outside_review_spec() {
         const BEGIN: &str = "<!-- rdm:review-spec:begin";
-        for mcp in [false, true] {
-            let skills = generate_skills(&SkillOptions {
-                project: None,
-                principles_file: None,
-                mcp,
-            });
-            let content = &skills[9].content;
-            let capture_pos = content
-                .find("Capture intent, if the target predates it")
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing intent-capture step marker"));
-            let begin_pos = content
-                .find(BEGIN)
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing review-spec begin marker"));
-            assert!(
-                capture_pos < begin_pos,
-                "mcp={mcp}: intent-capture step must land outside (before) the generated review-spec block"
-            );
-        }
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[9].content;
+        let capture_pos = content
+            .find("Capture intent, if the target predates it")
+            .unwrap_or_else(|| panic!("missing intent-capture step marker"));
+        let begin_pos = content
+            .find(BEGIN)
+            .unwrap_or_else(|| panic!("missing review-spec begin marker"));
+        assert!(
+            capture_pos < begin_pos,
+            "intent-capture step must land outside (before) the generated review-spec block"
+        );
     }
 
     /// The intent-capture step's "Write the result back" sub-item must
@@ -3359,43 +2603,37 @@ mod tests {
     /// steps) survives untouched, fails this test.
     #[test]
     fn skill_plan_review_persists_intent_write_back() {
-        for mcp in [false, true] {
-            let skills = generate_skills(&SkillOptions {
-                project: None,
-                principles_file: None,
-                mcp,
-            });
-            let content = &skills[9].content;
-            let capture_pos = content
-                .find("Capture intent, if the target predates it")
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing intent-capture step marker"));
-            let step_end = content[capture_pos..]
-                .find("\n## ")
-                .map(|p| capture_pos + p)
-                .unwrap_or(content.len());
-            let step_block = &content[capture_pos..step_end];
-            assert!(
-                step_block.contains("## Intent"),
-                "mcp={mcp}: intent-capture step must reference the '## Intent' section"
-            );
-            let (roadmap_update, task_update, commit) = if mcp {
-                ("rdm_roadmap_update", "rdm_task_update", "rdm_commit")
-            } else {
-                ("rdm roadmap update", "rdm task update", "rdm commit")
-            };
-            assert!(
-                step_block.contains(roadmap_update),
-                "mcp={mcp}: intent-capture step missing write-back roadmap update call"
-            );
-            assert!(
-                step_block.contains(task_update),
-                "mcp={mcp}: intent-capture step missing write-back task update call"
-            );
-            assert!(
-                step_block.contains(commit),
-                "mcp={mcp}: intent-capture step missing write-back commit call"
-            );
-        }
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[9].content;
+        let capture_pos = content
+            .find("Capture intent, if the target predates it")
+            .unwrap_or_else(|| panic!("missing intent-capture step marker"));
+        let step_end = content[capture_pos..]
+            .find("\n## ")
+            .map(|p| capture_pos + p)
+            .unwrap_or(content.len());
+        let step_block = &content[capture_pos..step_end];
+        assert!(
+            step_block.contains("## Intent"),
+            "intent-capture step must reference the '## Intent' section"
+        );
+        let (roadmap_update, task_update, commit) =
+            ("rdm roadmap update", "rdm task update", "rdm commit");
+        assert!(
+            step_block.contains(roadmap_update),
+            "intent-capture step missing write-back roadmap update call"
+        );
+        assert!(
+            step_block.contains(task_update),
+            "intent-capture step missing write-back task update call"
+        );
+        assert!(
+            step_block.contains(commit),
+            "intent-capture step missing write-back commit call"
+        );
     }
 
     /// The `## Intent` section is not just prose guidance — both the
@@ -3411,57 +2649,54 @@ mod tests {
     #[test]
     fn skill_intent_sections_carry_canonical_grammar() {
         const CAPTURED_VS_OPTIONAL: &str = "Goal` and `Done looks like` are what make a section count as captured rather than present-but-empty";
-        for mcp in [false, true] {
-            let skills = generate_skills(&SkillOptions {
-                project: None,
-                principles_file: None,
-                mcp,
-            });
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
 
-            // rdm-roadmap: step 2 ("Interview the operator"), bounded before
-            // step 3 ("Design phases").
-            let roadmap_content = &skills[0].content;
-            let interview_pos = roadmap_content
-                .find("Interview the operator")
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing interview step marker"));
-            let design_pos = roadmap_content[interview_pos..]
-                .find("\n3. **")
-                .map(|p| interview_pos + p)
-                .unwrap_or(roadmap_content.len());
-            let interview_block = &roadmap_content[interview_pos..design_pos];
-            for label in ["**Goal.**", "**Non-goals.**", "**Done looks like.**"] {
-                assert!(
-                    interview_block.contains(label),
-                    "mcp={mcp}: rdm-roadmap interview step missing canonical grammar label {label:?}"
-                );
-            }
+        // rdm-roadmap: step 2 ("Interview the operator"), bounded before
+        // step 3 ("Design phases").
+        let roadmap_content = &skills[0].content;
+        let interview_pos = roadmap_content
+            .find("Interview the operator")
+            .unwrap_or_else(|| panic!("missing interview step marker"));
+        let design_pos = roadmap_content[interview_pos..]
+            .find("\n3. **")
+            .map(|p| interview_pos + p)
+            .unwrap_or(roadmap_content.len());
+        let interview_block = &roadmap_content[interview_pos..design_pos];
+        for label in ["**Goal.**", "**Non-goals.**", "**Done looks like.**"] {
             assert!(
-                interview_block.contains(CAPTURED_VS_OPTIONAL),
-                "mcp={mcp}: rdm-roadmap interview step missing the captured-vs-optional sentence"
-            );
-
-            // rdm-plan-review: step 6 ("Capture intent, if the target
-            // predates it"), bounded before the next top-level `##` heading.
-            let plan_review_content = &skills[9].content;
-            let capture_pos = plan_review_content
-                .find("Capture intent, if the target predates it")
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing intent-capture step marker"));
-            let step_end = plan_review_content[capture_pos..]
-                .find("\n## ")
-                .map(|p| capture_pos + p)
-                .unwrap_or(plan_review_content.len());
-            let capture_block = &plan_review_content[capture_pos..step_end];
-            for label in ["**Goal.**", "**Non-goals.**", "**Done looks like.**"] {
-                assert!(
-                    capture_block.contains(label),
-                    "mcp={mcp}: rdm-plan-review capture step missing canonical grammar label {label:?}"
-                );
-            }
-            assert!(
-                capture_block.contains(CAPTURED_VS_OPTIONAL),
-                "mcp={mcp}: rdm-plan-review capture step missing the captured-vs-optional sentence"
+                interview_block.contains(label),
+                "rdm-roadmap interview step missing canonical grammar label {label:?}"
             );
         }
+        assert!(
+            interview_block.contains(CAPTURED_VS_OPTIONAL),
+            "rdm-roadmap interview step missing the captured-vs-optional sentence"
+        );
+
+        // rdm-plan-review: step 6 ("Capture intent, if the target
+        // predates it"), bounded before the next top-level `##` heading.
+        let plan_review_content = &skills[9].content;
+        let capture_pos = plan_review_content
+            .find("Capture intent, if the target predates it")
+            .unwrap_or_else(|| panic!("missing intent-capture step marker"));
+        let step_end = plan_review_content[capture_pos..]
+            .find("\n## ")
+            .map(|p| capture_pos + p)
+            .unwrap_or(plan_review_content.len());
+        let capture_block = &plan_review_content[capture_pos..step_end];
+        for label in ["**Goal.**", "**Non-goals.**", "**Done looks like.**"] {
+            assert!(
+                capture_block.contains(label),
+                "rdm-plan-review capture step missing canonical grammar label {label:?}"
+            );
+        }
+        assert!(
+            capture_block.contains(CAPTURED_VS_OPTIONAL),
+            "rdm-plan-review capture step missing the captured-vs-optional sentence"
+        );
     }
 
     #[test]
@@ -3469,7 +2704,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[7].content;
         assert!(content.contains("name: rdm-land"));
@@ -3510,47 +2744,44 @@ mod tests {
 
     #[test]
     fn skill_land_synthesizes_the_completion_trailer_before_the_rebase() {
-        for mcp in [false, true] {
-            let skills = generate_skills(&SkillOptions {
-                project: None,
-                principles_file: None,
-                mcp,
-            });
-            let content = &skills[7].content;
-            // Precondition 2 reads the completion policy off the autonomous
-            // OUTCOME rather than inferring it from a missing trailer...
-            assert!(
-                content.contains("`writesCompletion: true` on `reviewed`"),
-                "skill-land (mcp={mcp}) must state the OUTCOME carries writesCompletion on reviewed"
-            );
-            assert!(
-                content.contains("Read the policy off the outcome, do not infer it"),
-                "skill-land (mcp={mcp}) must instruct the lander to read the policy, not infer it"
-            );
-            // ...synthesizes the line from rdm (one home for the format)...
-            assert!(
-                content.contains("rdm hook done-line"),
-                "skill-land (mcp={mcp}) must source the trailer from rdm hook done-line"
-            );
-            assert!(
-                content.contains("git commit --amend"),
-                "skill-land (mcp={mcp}) must amend the synthesized trailer onto the branch tip"
-            );
-            // ...BEFORE the rebase/fast-forward, so landing needs no manual rebase.
-            assert!(
-                content.contains("**before** the rebase and fast-forward below"),
-                "skill-land (mcp={mcp}) must amend BEFORE the rebase so no manual rebase is ever needed"
-            );
-            assert!(
-                content.contains("never needs a manual rebase"),
-                "skill-land (mcp={mcp}) must state that an autonomous branch never needs a manual rebase"
-            );
-            // A failed done-line is an abort, not an empty amend.
-            assert!(
-                content.contains("never amend an empty trailer"),
-                "skill-land (mcp={mcp}) must abort rather than amend an empty trailer"
-            );
-        }
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[7].content;
+        // Precondition 2 reads the completion policy off the autonomous
+        // OUTCOME rather than inferring it from a missing trailer...
+        assert!(
+            content.contains("`writesCompletion: true` on `reviewed`"),
+            "skill-land must state the OUTCOME carries writesCompletion on reviewed"
+        );
+        assert!(
+            content.contains("Read the policy off the outcome, do not infer it"),
+            "skill-land must instruct the lander to read the policy, not infer it"
+        );
+        // ...synthesizes the line from rdm (one home for the format)...
+        assert!(
+            content.contains("rdm hook done-line"),
+            "skill-land must source the trailer from rdm hook done-line"
+        );
+        assert!(
+            content.contains("git commit --amend"),
+            "skill-land must amend the synthesized trailer onto the branch tip"
+        );
+        // ...BEFORE the rebase/fast-forward, so landing needs no manual rebase.
+        assert!(
+            content.contains("**before** the rebase and fast-forward below"),
+            "skill-land must amend BEFORE the rebase so no manual rebase is ever needed"
+        );
+        assert!(
+            content.contains("never needs a manual rebase"),
+            "skill-land must state that an autonomous branch never needs a manual rebase"
+        );
+        // A failed done-line is an abort, not an empty amend.
+        assert!(
+            content.contains("never amend an empty trailer"),
+            "skill-land must abort rather than amend an empty trailer"
+        );
     }
 
     #[test]
@@ -3558,7 +2789,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[6].content;
         assert!(content.contains("name: rdm-autopilot"));
@@ -3632,7 +2862,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[5].content;
         assert!(content.contains("name: rdm-dispatch-phase"));
@@ -3678,7 +2907,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[4].content;
         assert!(content.contains("name: rdm-estimate"));
@@ -3691,7 +2919,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -3717,7 +2944,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(skills[0].content.contains("name: rdm-roadmap"));
         assert!(skills[1].content.contains("name: rdm-do"));
@@ -3730,7 +2956,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: Some("myproj".to_string()),
             principles_file: None,
-            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -3751,7 +2976,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -3767,7 +2991,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -3783,7 +3006,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[0].content;
         assert!(content.contains("rdm roadmap create"));
@@ -3791,45 +3013,26 @@ mod tests {
         assert!(content.contains("rdm roadmap show"));
     }
 
+    /// The roadmap-authoring interview must be present, and run BEFORE phase
+    /// design — the interview's answers should shape the phase decomposition,
+    /// not be reconciled against it afterwards.
     #[test]
-    fn skill_roadmap_links_related_items() {
+    fn skill_roadmap_interviews_before_phase_design() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[0].content;
-        assert!(content.contains("rdm search"));
-        assert!(content.contains("rdm:roadmap/<slug>"));
-        assert!(content.contains("rdm:phase/<roadmap>/<stem>"));
-        assert!(content.contains("rdm:task/<slug>"));
-        assert!(content.contains("never invent a slug"));
-    }
-
-    /// The roadmap-authoring interview must be present, and run BEFORE phase
-    /// design, in both the CLI and MCP variants — the interview's answers
-    /// should shape the phase decomposition, not be reconciled against it
-    /// afterwards.
-    #[test]
-    fn skill_roadmap_interviews_before_phase_design() {
-        for mcp in [false, true] {
-            let skills = generate_skills(&SkillOptions {
-                project: None,
-                principles_file: None,
-                mcp,
-            });
-            let content = &skills[0].content;
-            let interview_pos = content
-                .find("Interview the operator")
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing interview step marker"));
-            let design_pos = content
-                .find("Design phases")
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing 'Design phases' step"));
-            assert!(
-                interview_pos < design_pos,
-                "mcp={mcp}: interview step must precede phase design"
-            );
-        }
+        let interview_pos = content
+            .find("Interview the operator")
+            .unwrap_or_else(|| panic!("missing interview step marker"));
+        let design_pos = content
+            .find("Design phases")
+            .unwrap_or_else(|| panic!("missing 'Design phases' step"));
+        assert!(
+            interview_pos < design_pos,
+            "interview step must precede phase design"
+        );
     }
 
     /// The captured `## Intent` section is not just asked for — it must
@@ -3842,57 +3045,47 @@ mod tests {
     /// `skill_roadmap_contains_rdm_commands`).
     #[test]
     fn skill_roadmap_persists_intent_via_update_fallback() {
-        for mcp in [false, true] {
-            let skills = generate_skills(&SkillOptions {
-                project: None,
-                principles_file: None,
-                mcp,
-            });
-            let content = &skills[0].content;
-            let fallback_pos = content
-                .find("roadmap already exists")
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing roadmap-already-exists fallback"));
-            let next_step_pos = content[fallback_pos..]
-                .find("\n5. **")
-                .map(|p| fallback_pos + p)
-                .unwrap_or(content.len());
-            let fallback_block = &content[fallback_pos..next_step_pos];
-            assert!(
-                fallback_block.contains("## Intent"),
-                "mcp={mcp}: fallback block must reference the '## Intent' section"
-            );
-            let update_call = if mcp {
-                "rdm_roadmap_update"
-            } else {
-                "rdm roadmap update"
-            };
-            assert!(
-                fallback_block.contains(update_call),
-                "mcp={mcp}: roadmap-already-exists fallback missing write-back call ({update_call})"
-            );
-        }
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[0].content;
+        let fallback_pos = content
+            .find("roadmap already exists")
+            .unwrap_or_else(|| panic!("missing roadmap-already-exists fallback"));
+        let next_step_pos = content[fallback_pos..]
+            .find("\n5. **")
+            .map(|p| fallback_pos + p)
+            .unwrap_or(content.len());
+        let fallback_block = &content[fallback_pos..next_step_pos];
+        assert!(
+            fallback_block.contains("## Intent"),
+            "fallback block must reference the '## Intent' section"
+        );
+        let update_call = "rdm roadmap update";
+        assert!(
+            fallback_block.contains(update_call),
+            "roadmap-already-exists fallback missing write-back call ({update_call})"
+        );
     }
 
     /// `AskUserQuestion` is the vehicle for the roadmap-authoring interview in
     /// Claude Code — it must be granted in both variants' `allowed-tools`.
     #[test]
     fn skill_roadmap_grants_ask_user_question() {
-        for mcp in [false, true] {
-            let skills = generate_skills(&SkillOptions {
-                project: None,
-                principles_file: None,
-                mcp,
-            });
-            let frontmatter = skills[0]
-                .content
-                .split("---")
-                .nth(1)
-                .expect("missing frontmatter");
-            assert!(
-                frontmatter.contains("AskUserQuestion"),
-                "mcp={mcp}: rdm-roadmap allowed-tools missing AskUserQuestion"
-            );
-        }
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let frontmatter = skills[0]
+            .content
+            .split("---")
+            .nth(1)
+            .expect("missing frontmatter");
+        assert!(
+            frontmatter.contains("AskUserQuestion"),
+            "rdm-roadmap allowed-tools missing AskUserQuestion"
+        );
     }
 
     #[test]
@@ -3900,7 +3093,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[1].content;
         // Phase flow commands.
@@ -3919,7 +3111,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: Some("docs/principles.md".to_string()),
-            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -3940,7 +3131,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         for skill in &skills {
             assert!(
@@ -3956,7 +3146,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[1].content;
         assert!(content.contains("Write"));
@@ -3968,7 +3157,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[1].content;
         assert!(content.contains("EnterPlanMode"));
@@ -3980,7 +3168,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[1].content;
         assert!(content.contains("Enter plan mode"));
@@ -3992,19 +3179,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[1].content;
-        assert!(content.contains("rdm-plan-review"));
-        assert!(content.contains("--implementation-plan"));
-    }
-
-    #[test]
-    fn mcp_skill_do_runs_implementation_plan_review() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
         });
         let content = &skills[1].content;
         assert!(content.contains("rdm-plan-review"));
@@ -4016,7 +3190,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[1].content;
         let plan_pos = content
@@ -4043,21 +3216,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[1].content;
-        assert!(content.contains("--auto"));
-        assert!(content.contains("blocking"));
-        assert!(content.contains("fold every surviving"));
-        assert!(content.contains("plan-review"));
-    }
-
-    #[test]
-    fn mcp_skill_do_auto_mode_folds_blocking_findings() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
         });
         let content = &skills[1].content;
         assert!(content.contains("--auto"));
@@ -4071,22 +3229,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
-        });
-        let frontmatter = skills[1]
-            .content
-            .split("---")
-            .nth(1)
-            .expect("missing frontmatter");
-        assert!(frontmatter.contains("Agent"));
-    }
-
-    #[test]
-    fn mcp_skill_do_has_agent_tool() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
         });
         let frontmatter = skills[1]
             .content
@@ -4101,7 +3243,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         // Roadmap skill should only have Read, Bash, Glob, Grep
         let frontmatter = skills[0]
@@ -4118,7 +3259,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[0].content;
         assert!(content.contains("needs-plan-review"));
@@ -4126,11 +3266,21 @@ mod tests {
     }
 
     #[test]
+    fn skill_review_act_cites_pinned_code_links() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("rdm:src/"));
+        assert!(content.contains("pinned"));
+    }
+
+    #[test]
     fn skill_review_contains_rdm_commands() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[2].content;
         assert!(content.contains("rdm phase show"));
@@ -4142,7 +3292,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(skills[2].content.contains("name: rdm-review"));
     }
@@ -4152,7 +3301,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[2].content;
         assert!(content.contains("Agent"));
@@ -4163,7 +3311,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(skills[2].content.contains("$ARGUMENTS"));
     }
@@ -4173,7 +3320,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[2].content;
         // Small findings are fixed inline and amended; large findings are filed as tasks.
@@ -4188,7 +3334,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[2].content;
         // The three canonical outcomes and the statuses they map to.
@@ -4207,7 +3352,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[2].content;
         assert!(content.contains("fleet"));
@@ -4234,7 +3378,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[2].content;
         assert!(content.contains("Refute"));
@@ -4251,76 +3394,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[2].content;
-        // Findings reach the act step with two provenances: refuter-verified,
-        // and non-gating ones the pipeline passed through un-refuted. The
-        // shipped skill must state both, and must NOT keep the retired
-        // absolute that forbids acting on anything un-refuted.
-        assert!(content.contains("un-refuted ones by disposition"));
-        assert!(content.contains("graded and failed to refute"));
-        assert!(content.contains("`unrefuted: true`"));
-        assert!(content.contains("reported, not verified"));
-        assert!(!content.contains("Never fix or file an unverified"));
-    }
-
-    #[test]
-    fn skill_review_act_cites_pinned_code_links() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[2].content;
-        assert!(content.contains("rdm:src/"));
-        assert!(content.contains("pinned"));
-    }
-
-    #[test]
-    fn skill_review_mcp_dispatches_adaptive_fleet() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[2].content;
-        assert!(content.contains("fleet"));
-        for dim in [
-            "**ac**",
-            "**correctness**",
-            "**tests**",
-            "**architecture**",
-            "**api-docs**",
-            "**changelog**",
-            "**security**",
-        ] {
-            assert!(content.contains(dim), "missing dimension: {dim}");
-        }
-        assert!(content.contains("trigger"));
-        assert!(content.contains("read-only"));
-    }
-
-    #[test]
-    fn skill_review_mcp_has_refute_pass() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[2].content;
-        assert!(content.contains("Refute"));
-        assert!(content.contains("`refuted` (boolean)"));
-        assert!(content.contains("never the agent that confirms it"));
-        assert!(content.contains("below **70**"));
-    }
-
-    #[test]
-    fn skill_review_mcp_acts_by_finding_provenance() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
         });
         let content = &skills[2].content;
         // Findings reach the act step with two provenances: refuter-verified,
@@ -4339,7 +3412,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[2].content;
         // Severity scale drives the verdict.
@@ -4359,32 +3431,10 @@ mod tests {
     }
 
     #[test]
-    fn skill_review_mcp_has_blocked_verdict() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[2].content;
-        assert!(content.contains("Severity scale"));
-        assert!(!content.contains("PASS WITH CONCERNS"));
-        assert!(!content.contains("**BLOCKED**"));
-        assert!(content.contains("**escalated**"));
-        assert!(content.contains("**rework**"));
-        assert!(content.contains("**reviewed**"));
-        assert!(content.contains("the first matching rule wins"));
-        // MCP gate uses the tool call with status "blocked" for an escalation.
-        assert!(content.contains("status: \"blocked\""));
-        assert!(!content.contains("tasks have no `blocked` status"));
-        assert!(content.contains("`blocked` is a valid task status"));
-    }
-
-    #[test]
     fn skill_review_sizes_the_fleet_via_model_policy() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[2].content;
         assert!(content.contains("rdm model resolve review-find"));
@@ -4396,25 +3446,10 @@ mod tests {
     }
 
     #[test]
-    fn skill_review_mcp_sizes_the_fleet_via_model_policy() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[2].content;
-        assert!(content.contains("rdm model resolve review-find"));
-        assert!(content.contains("rdm model resolve review-verify"));
-        assert!(content.contains("tier hint"));
-        assert!(content.contains("never the inherited session model"));
-    }
-
-    #[test]
     fn skill_document_contains_rdm_commands() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[3].content;
         assert!(content.contains("rdm roadmap show"));
@@ -4425,23 +3460,10 @@ mod tests {
     }
 
     #[test]
-    fn skill_document_cites_permalink_resolving_links() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[3].content;
-        assert!(content.contains("rdm:src/"));
-        assert!(content.contains("permalink"));
-    }
-
-    #[test]
     fn skill_document_has_write_edit_tools() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[3].content;
         assert!(content.contains("Write"));
@@ -4453,7 +3475,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let frontmatter = skills[3]
             .content
@@ -4469,7 +3490,6 @@ mod tests {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[1].content;
         // Finalize still stamps the transient needs-review marker via the update
@@ -4496,34 +3516,10 @@ mod tests {
     }
 
     #[test]
-    fn skill_do_finalize_adds_key_code_links() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[1].content;
-        assert!(content.contains("Key code"));
-        assert!(content.contains("rdm:src/"));
-    }
-
-    #[test]
-    fn skill_do_finalize_runs_link_check() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: false,
-        });
-        let content = &skills[1].content;
-        assert!(content.contains("rdm link check"));
-    }
-
-    #[test]
     fn skill_do_uses_worktree_and_run_modes() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
-            mcp: false,
         });
         let content = &skills[1].content;
         // Work happens in one worktree per roadmap, created via the roadmap-scoped
@@ -4577,723 +3573,37 @@ mod tests {
             platform: Platform::AgentsMd,
             project: None,
             principles_file: None,
-            mcp: false,
         });
         assert!(content.contains("Done:"));
         assert!(content.contains("<roadmap-slug>/<phase-stem>"));
     }
 
-    // --- MCP config generation tests ---
-
-    #[test]
-    fn mcp_config_is_valid_json() {
-        let output = generate_mcp_config(&McpConfigOptions { root: None });
-        let parsed: serde_json::Value = serde_json::from_str(&output).expect("invalid JSON");
-        assert!(parsed.is_object());
-    }
-
-    #[test]
-    fn mcp_config_without_root() {
-        let output = generate_mcp_config(&McpConfigOptions { root: None });
-        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
-        let args = parsed["mcpServers"]["rdm"]["args"]
-            .as_array()
-            .expect("args should be array");
-        assert_eq!(args.len(), 1);
-        assert_eq!(args[0], "mcp");
-    }
-
-    #[test]
-    fn mcp_config_with_root() {
-        let output = generate_mcp_config(&McpConfigOptions {
-            root: Some("/home/user/plans".to_string()),
-        });
-        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
-        let args = parsed["mcpServers"]["rdm"]["args"]
-            .as_array()
-            .expect("args should be array");
-        assert_eq!(args.len(), 3);
-        assert_eq!(args[0], "--root");
-        assert_eq!(args[1], "/home/user/plans");
-        assert_eq!(args[2], "mcp");
-    }
-
-    #[test]
-    fn mcp_config_has_correct_structure() {
-        let output = generate_mcp_config(&McpConfigOptions { root: None });
-        let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert_eq!(parsed["mcpServers"]["rdm"]["command"], "rdm");
-        assert!(parsed["mcpServers"]["rdm"]["args"].is_array());
-    }
-
-    // --- MCP agent instructions tests ---
-
-    #[test]
-    fn mcp_agent_config_references_mcp_tools() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::AgentsMd,
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(content.contains("rdm_roadmap_list"));
-        assert!(content.contains("rdm_task_list"));
-        assert!(content.contains("rdm_roadmap_show"));
-        assert!(content.contains("rdm_phase_show"));
-        assert!(content.contains("rdm_task_show"));
-        assert!(content.contains("rdm_phase_update"));
-        assert!(content.contains("rdm_task_update"));
-        assert!(content.contains("rdm_roadmap_create"));
-        assert!(content.contains("rdm_phase_create"));
-        assert!(content.contains("rdm_task_create"));
-        assert!(content.contains("rdm_search"));
-    }
-
-    #[test]
-    fn mcp_agent_config_no_bash_blocks() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::AgentsMd,
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(
-            !content.contains("```bash"),
-            "MCP instructions should not contain bash code blocks"
-        );
-    }
-
-    #[test]
-    fn mcp_agent_config_has_key_sections() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::AgentsMd,
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(content.contains("# rdm"));
-        assert!(content.contains("## Setup"));
-        assert!(content.contains("## Discovering work"));
-        assert!(content.contains("## Reading details"));
-        assert!(content.contains("## Searching"));
-        assert!(content.contains("## Updating status"));
-        assert!(content.contains("## Creating items"));
-        assert!(content.contains("## Planning workflow"));
-        assert!(content.contains("## Status transitions"));
-    }
-
-    #[test]
-    fn mcp_agent_config_with_project() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::AgentsMd,
-            project: Some("myproj".to_string()),
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(content.contains("\"myproj\""));
-        assert!(!content.contains("<PROJECT>"));
-    }
-
-    #[test]
-    fn mcp_agent_config_without_project() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::AgentsMd,
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(content.contains("\"<PROJECT>\""));
-    }
-
-    #[test]
-    fn mcp_agent_config_no_no_edit() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::AgentsMd,
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(
-            !content.contains("--no-edit"),
-            "MCP instructions should not mention --no-edit"
-        );
-    }
-
-    #[test]
-    fn mcp_agent_config_includes_done_convention() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::AgentsMd,
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(content.contains("Done:"));
-        assert!(content.contains("<roadmap-slug>/<phase-stem>"));
-    }
-
-    #[test]
-    fn mcp_agent_config_includes_promote() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::AgentsMd,
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(content.contains("rdm_task_promote"));
-    }
-
-    #[test]
-    fn mcp_agent_config_cursor_has_frontmatter() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::Cursor,
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(content.starts_with("---\n"));
-        assert!(content.contains("rdm_roadmap_list"));
-    }
-
-    #[test]
-    fn mcp_agent_config_principles_included() {
-        let content = generate_agent_config(&AgentConfigOptions {
-            platform: Platform::AgentsMd,
-            project: None,
-            principles_file: Some("docs/principles.md".to_string()),
-            mcp: true,
-        });
-        assert!(content.contains("## Principles"));
-        assert!(content.contains("docs/principles.md"));
-    }
-
-    // --- MCP skill generation tests ---
-
-    #[test]
-    fn mcp_skills_returns_eleven_files() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        // Workflows are a separate emission surface (see `generate_workflows`)
-        // and are not counted here, and are not MCP/CLI-flavored anyway.
-        // Was 10 (no `rdm-backlog` MCP twin) before `skill_backlog_mcp` was
-        // added — now matches the cli branch's count (see
-        // `generate_skills_cli_mcp_name_parity`).
-        assert_eq!(skills.len(), 11);
-    }
-
-    #[test]
-    fn mcp_skills_correct_paths() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        assert_eq!(skills[0].relative_path, "rdm-roadmap/SKILL.md");
-        assert_eq!(skills[1].relative_path, "rdm-do/SKILL.md");
-        assert_eq!(skills[2].relative_path, "rdm-review/SKILL.md");
-        assert_eq!(skills[3].relative_path, "rdm-document/SKILL.md");
-        assert_eq!(skills[4].relative_path, "rdm-estimate/SKILL.md");
-        assert_eq!(skills[5].relative_path, "rdm-dispatch-phase/SKILL.md");
-        assert_eq!(skills[6].relative_path, "rdm-autopilot/SKILL.md");
-        assert_eq!(skills[7].relative_path, "rdm-land/SKILL.md");
-        assert_eq!(skills[8].relative_path, "rdm-revise/SKILL.md");
-        assert_eq!(skills[9].relative_path, "rdm-plan-review/SKILL.md");
-        assert_eq!(skills[10].relative_path, "rdm-backlog/SKILL.md");
-    }
-
-    #[test]
-    fn mcp_skill_land_uses_mcp_tools() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[7].content;
-        assert!(content.contains("name: rdm-land"));
-        assert!(content.contains("$ARGUMENTS"));
-        // Same landing contract as the CLI variant.
-        assert!(content.contains("merge --ff-only"));
-        assert!(content.contains("linear history"));
-        assert!(content.contains("reviewed"));
-        assert!(content.contains("Done:"));
-        // CI-equivalent checks are discovered from the consuming repo, not hardcoded to rdm's
-        // own Rust toolchain (rdm's cargo triad appears only as an illustrative parenthetical).
-        assert!(content.contains("CI config"));
-        assert!(content.contains("docs/principles.md"));
-        assert!(content.contains("CLAUDE.md"));
-        assert!(content.contains("AGENTS.md"));
-        assert!(content.contains("abort and escalate"));
-        assert!(content.contains("no CI-equivalent checks determinable"));
-        assert!(content.contains("reviewed → done"));
-        assert!(content.contains("git rebase --abort"));
-        assert!(content.contains("docs/escalation-protocol.md"));
-        assert!(content.contains("never auto-lands"));
-        // Status reads/updates and single-worktree cleanup go through MCP tools.
-        assert!(content.contains("rdm_phase_show"));
-        assert!(content.contains("rdm_phase_update"));
-        assert!(content.contains("rdm_worktree_remove"));
-        // Batch prune has no MCP tool this phase — delegated as the CLI command.
-        assert!(content.contains("rdm worktree prune"));
-        // The git landing is delegated to a Bash-capable subagent via Agent.
-        assert!(content.contains("Agent"));
-        assert!(content.contains("subagent"));
-        // MCP variant: Bash-free frontmatter, mcp__rdm__ tools resolved.
-        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
-        assert!(!frontmatter.contains("  - Bash"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_phase_show"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_worktree_remove"));
-    }
-
-    #[test]
-    fn mcp_skill_autopilot_uses_mcp_tools() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[6].content;
-        assert!(content.contains("name: rdm-autopilot"));
-        // Drives one named roadmap; the slug is required and the loop never roams.
-        assert!(content.contains("required roadmap slug"));
-        assert!(content.contains("never roams to another roadmap"));
-        // The MCP `rdm_next` tool is named in the body wherever the loop
-        // driver is described.
-        assert!(content.contains("rdm_next"));
-        // Composes the per-phase dispatch workflow.
-        assert!(content.contains("dispatch-phase"));
-        // Bounded run + run-modes section + shared escalation protocol + batch queue.
-        assert!(content.contains("global step budget"));
-        assert!(content.contains("DEFAULT_GLOBAL_BUDGET"));
-        assert!(content.contains("docs/escalation-protocol.md"));
-        assert!(content.contains("rdm review blocked"));
-        // Full prose-parity content: the known-good stop-reason allowlist and
-        // the advance/park read-back confirmation loop via the new
-        // rdm_phase_show tool (the earlier placeholder sentence is gone).
-        assert!(!content.contains("full prose-parity documentation lands in a follow-up phase"));
-        assert!(
-            content
-                .contains("nothing`, `blocked-on-dependencies`, `budget`, `plan-only-exhausted`")
-        );
-        assert!(!content.contains("mechanical-model-unresolved"));
-        assert!(content.contains("mcp__rdm__rdm_phase_show"));
-        assert!(content.contains("up to **2** times total"));
-        // Regression: the advance and park call sites must use the same
-        // `project`/`roadmap`/`phase` argument shape every other MCP template
-        // uses (PhaseUpdateParams/PhaseParams on the server side), never the
-        // wrong `stem` field name or a missing `project`.
-        assert!(content.contains(
-            "call `mcp__rdm__rdm_phase_update` with `project: \"<PROJECT>\", roadmap: \"<slug>\", phase: S, status: <OUTCOME.status || \"reviewed\">`"
-        ));
-        assert!(content.contains(
-            "call `mcp__rdm__rdm_phase_show` with `project: \"<PROJECT>\", roadmap: \"<slug>\", phase: S` and confirm `status` matches"
-        ));
-        assert!(content.contains(
-            "call `mcp__rdm__rdm_phase_update` with `project: \"<PROJECT>\", roadmap: \"<slug>\", phase: S, status: \"blocked\", reason: \"<reason>\"`"
-        ));
-        assert!(content.contains(
-            "call `mcp__rdm__rdm_phase_show` with `project: \"<PROJECT>\", roadmap: \"<slug>\", phase: S` and confirm `status: \"blocked\"`"
-        ));
-        assert!(!content.contains("with `stem: S,"));
-        // No --land flag; dry-run / bounded modes including the two
-        // dispatch-phase budget overrides.
-        assert!(!content.contains("- `--land`"));
-        assert!(content.contains("There is no `--land` flag here"));
-        assert!(content.contains("--plan-only"));
-        assert!(content.contains("--max-phases"));
-        assert!(content.contains("--max-plan-revise"));
-        assert!(content.contains("--max-code-rework"));
-        // MCP variant: Workflow-only frontmatter, mcp__rdm__ tools resolved.
-        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
-        assert!(!frontmatter.contains("  - Bash"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_next"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_phase_show"));
-        // The distributed template no longer hoists a phase list: there is no
-        // `estimate` pre-pass downstream to feed it (see below), so the
-        // `rdm_phase_list` tool is neither allowed nor referenced.
-        assert!(!frontmatter.contains("mcp__rdm__rdm_phase_list"));
-        assert!(!content.contains("mcp__rdm__rdm_phase_list"));
-        assert!(!content.contains("phaseList"));
-        // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
-        assert!(!content.contains("Mandatory dispatch"));
-        assert!(!content.contains("inline-collapse"));
-        // generate_workflows() no longer ships an `autopilot.js` (2 files
-        // remain: rdm-wf-dispatch-phase.js, rdm-wf-review-refute-fix.js), so
-        // this template
-        // must never instruct invoking a Workflow literally named
-        // "autopilot" — that call would target a file this same generator
-        // does not emit. It may still name the one real Workflow it composes
-        // downstream (`rdm-wf-dispatch-phase`); the estimate pre-pass is
-        // intentionally dropped from this distributed template (see
-        // docs/workflow-vs-prose-boundary.md), so this template must never
-        // instruct invoking the estimate engine either, under EITHER its
-        // pre-rename bare name or its current `rdm-wf-` name.
-        assert!(!content.contains("Invoke the `autopilot`"));
-        assert!(!content.contains("the `autopilot` workflow"));
-        assert!(!content.contains(".claude/workflows/autopilot.js"));
-        assert!(!content.contains("Invoke the `estimate`"));
-        assert!(!content.contains("the `estimate` Workflow"));
-        assert!(!content.contains("Invoke the `rdm-wf-estimate`"));
-        assert!(!content.contains("the `rdm-wf-estimate` Workflow"));
-    }
-
-    #[test]
-    fn mcp_skill_dispatch_phase_uses_mcp_tools_and_plan_gate() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[5].content;
-        assert!(content.contains("name: rdm-dispatch-phase"));
-        // Thin shim invoking the Workflow tool, not per-tool MCP wiring — the
-        // workflow itself performs the worktree/status operations internally.
-        assert!(content.contains("thin shim"));
-        assert!(content.contains(".claude/workflows/rdm-wf-dispatch-phase.js"));
-        assert!(content.contains("--task"));
-        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
-        assert!(frontmatter.contains("Workflow"));
-        assert!(!frontmatter.contains("  - Bash"));
-        assert!(!frontmatter.contains("  - Edit"));
-        assert!(!frontmatter.contains("  - Write"));
-        // The in-progress stamp hoist: the shim stamps the item itself and
-        // passes `alreadyInProgress: true`, so the workflow skips its own
-        // stamp subagent. Both update tools must be allowed and resolved.
-        assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_task_update"));
-        assert!(content.contains("mcp__rdm__rdm_phase_update"));
-        assert!(content.contains("mcp__rdm__rdm_task_update"));
-        assert!(content.contains("alreadyInProgress"));
-        // Same bounded, independent plan gate and structured outcome as the CLI variant.
-        assert!(content.contains("separate, independent plan-review"));
-        assert!(content.contains("at most one revise round"));
-        assert!(content.contains("reviewed | rework | escalated"));
-        assert!(content.contains("\"status\""));
-        assert!(content.contains("\"writesCompletion\""));
-        assert!(content.contains("rdm-review"));
-        assert!(content.contains("rdm-land"));
-        // Escalation follows the shared protocol and records a stage-tagged reason.
-        assert!(content.contains("docs/escalation-protocol.md"));
-        assert!(content.contains("[plan]"));
-        assert!(content.contains("[code]"));
-        // The --permission-mode auto safety guardrail survives the rewrite.
-        assert!(content.contains("--permission-mode auto"));
-        assert!(content.contains("git stash -u"));
-        // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
-        assert!(!content.contains("Mandatory dispatch"));
-        assert!(!content.contains("inline-collapse"));
-    }
-
-    #[test]
-    fn mcp_skill_estimate_names_itself_and_uses_phase_update() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[4].content;
-        assert!(content.contains("name: rdm-estimate"));
-        assert!(content.contains("rdm_phase_update"));
-        // MCP skill must not list Bash in allowed-tools.
-        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
-        assert!(!frontmatter.contains("Bash"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
-    }
-
-    #[test]
-    fn mcp_skills_no_bash_in_allowed_tools() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        for skill in &skills {
-            // Extract frontmatter (between first and second ---)
-            let parts: Vec<&str> = skill.content.splitn(3, "---").collect();
-            let frontmatter = parts[1];
-            assert!(
-                !frontmatter.contains("  - Bash"),
-                "MCP skill {} should not list Bash in allowed-tools",
-                skill.relative_path
-            );
-        }
-    }
-
-    #[test]
-    fn mcp_skills_have_mcp_tools_in_allowed_tools() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        for skill in &skills {
-            assert!(
-                skill.content.contains("mcp__rdm__"),
-                "MCP skill {} should list mcp__rdm__ tools in allowed-tools",
-                skill.relative_path
-            );
-        }
-    }
-
-    /// Every `{t_*}` tool placeholder in an MCP skill template must have a
-    /// matching entry in that skill's substitution list. A dropped tuple leaves
-    /// the literal placeholder text in the shipped skill — including in its
-    /// `allowed-tools` frontmatter — which no content-presence assertion
-    /// catches, because unrelated placeholders still substitute fine.
-    #[test]
-    fn mcp_skills_substitute_every_tool_placeholder() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        for skill in &skills {
-            assert!(
-                !skill.content.contains("{t_"),
-                "MCP skill {} ships an unsubstituted tool placeholder: {}",
-                skill.relative_path,
-                skill
-                    .content
-                    .lines()
-                    .find(|line| line.contains("{t_"))
-                    .unwrap_or_default()
-                    .trim()
-            );
-        }
-    }
-
-    #[test]
-    fn mcp_skills_reference_mcp_tool_calls() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        // Roadmap skill should reference MCP create tools
-        assert!(skills[0].content.contains("rdm_roadmap_create"));
-        assert!(skills[0].content.contains("rdm_phase_create"));
-        // Do skill should reference both MCP phase and task tools
-        assert!(skills[1].content.contains("rdm_phase_list"));
-        assert!(skills[1].content.contains("rdm_phase_show"));
-        assert!(skills[1].content.contains("rdm_phase_update"));
-        assert!(skills[1].content.contains("rdm_task_list"));
-        assert!(skills[1].content.contains("rdm_task_show"));
-        assert!(skills[1].content.contains("rdm_task_update"));
-        // ...and the worktree tool that isolates its work.
-        assert!(skills[1].content.contains("rdm_worktree_add"));
-    }
-
-    #[test]
-    fn mcp_skills_have_correct_names() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        assert!(skills[0].content.contains("name: rdm-roadmap"));
-        assert!(skills[1].content.contains("name: rdm-do"));
-        assert!(skills[2].content.contains("name: rdm-review"));
-        assert!(skills[3].content.contains("name: rdm-document"));
-    }
-
-    #[test]
-    fn mcp_skill_roadmap_notes_plan_review_gate() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[0].content;
-        assert!(content.contains("needs-plan-review"));
-        assert!(content.contains("plan_review"));
-    }
-
-    #[test]
-    fn mcp_skills_use_project_param() {
-        let skills = generate_skills(&SkillOptions {
-            project: Some("myproj".to_string()),
-            principles_file: None,
-            mcp: true,
-        });
-        for skill in &skills {
-            assert!(
-                skill.content.contains("\"myproj\""),
-                "MCP skill {} should use project param",
-                skill.relative_path
-            );
-        }
-    }
-
-    #[test]
-    fn mcp_skills_contain_arguments_variable() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        for skill in &skills {
-            assert!(
-                skill.content.contains("$ARGUMENTS"),
-                "MCP skill {} missing $ARGUMENTS",
-                skill.relative_path
-            );
-        }
-    }
-
-    #[test]
-    fn mcp_skill_do_finalize_runs_canonical_review() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[1].content;
-        // Finalize still stamps the transient needs-review marker via the update
-        // tool...
-        assert!(content.contains("status: \"needs-review\""));
-        // ...but it no longer PARKS there: it actively invokes the canonical
-        // review as part of finalizing.
-        assert!(content.contains("Immediately invoke the `rdm-review` skill"));
-        // The review runs in BOTH lanes — interactive and --auto — not just one.
-        assert!(content.contains("This runs in **both** modes"));
-        assert!(
-            content
-                .contains("`--auto` (which skips only the human confirmation, never the review)")
-        );
-        // The completion trailer is sourced from rdm, never hand-typed...
-        assert!(content.contains("rdm hook done-line"));
-        assert!(content.contains("Never hand-type the completion trailer"));
-        // ...so the raw format string never appears in the shipped skill.
-        assert!(!content.contains("<roadmap-slug>/<phase-stem>"));
-        // The stale "park it and let a hook pick it up later" framing is gone.
-        assert!(!content.contains("deferred two-stage"));
-        assert!(!content.contains("the sentinel that signals a review is pending"));
-    }
-
-    #[test]
-    fn mcp_skill_do_supports_run_modes_and_worktree() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[1].content;
-        // The MCP variant supports the interactive/non-interactive run modes...
-        assert!(content.contains("--auto"));
-        assert!(content.contains("Run modes"));
-        // ...and drives the one-worktree-per-roadmap, work-in-place flow via the
-        // MCP worktree tools (not Bash, no EnterWorktree): it detects the current
-        // worktree with rdm_worktree_current and creates/reuses the roadmap
-        // worktree with rdm_worktree_add, following Match/None/Mismatch.
-        assert!(content.contains("rdm_worktree_current"));
-        assert!(content.contains("rdm_worktree_add"));
-        assert!(content.contains("**Match**"));
-        assert!(content.contains("**None**"));
-        assert!(content.contains("**Mismatch**"));
-        assert!(content.contains("work in place"));
-        // The roadmap-scoped item ref is used, plus the per-task ref for tasks.
-        assert!(content.contains("item: \"<slug>\""));
-        assert!(content.contains("item: \"task/<slug>\""));
-        // MCP hosts cd/open the returned path — EnterWorktree is not used here.
-        assert!(!content.contains("EnterWorktree"));
-        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
-        assert!(frontmatter.contains("mcp__rdm__rdm_worktree_current"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_worktree_add"));
-    }
-
-    #[test]
-    fn mcp_skill_do_implementation_plan_review_precedes_approval_gate() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[1].content;
-        let plan_pos = content
-            .find("Enter plan mode")
-            .expect("missing Enter plan mode step");
-        let review_pos = content
-            .find("rdm-plan-review")
-            .expect("missing rdm-plan-review reference");
-        let approval_pos = content
-            .find("Wait for user approval")
-            .expect("missing Wait for user approval step");
-        assert!(
-            plan_pos < review_pos,
-            "implementation-plan review step should come after drafting the plan"
-        );
-        assert!(
-            review_pos < approval_pos,
-            "implementation-plan review step should come before the approval gate"
-        );
-    }
-
-    #[test]
-    fn mcp_skill_review_categorizes_findings() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[2].content;
-        // Large findings are filed as tasks via the MCP create tool.
-        assert!(content.contains("rdm_task_create"));
-        assert!(content.contains("Small"));
-        assert!(content.contains("Large"));
-        assert!(content.contains("git commit --amend"));
-    }
-
-    #[test]
-    fn mcp_skill_review_drives_transition() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-            mcp: true,
-        });
-        let content = &skills[2].content;
-        // Transition is driven via the MCP update tools; the status comes from
-        // the generated outcome->status mapping (reviewed|in-progress|blocked).
-        assert!(content.contains("rdm_phase_update"));
-        assert!(content.contains("rdm_task_update"));
-        assert!(content.contains("status: \"<status>\""));
-        assert!(content.contains("`reviewed`, `in-progress`, or `blocked`"));
-        // allowed-tools frontmatter lists the new MCP tools.
-        let frontmatter = content.split("---").nth(1).expect("missing frontmatter");
-        assert!(frontmatter.contains("mcp__rdm__rdm_phase_update"));
-        assert!(frontmatter.contains("mcp__rdm__rdm_task_update"));
-    }
-
-    /// Both review skill variants share the generated review specification:
+    /// The shipped review skill carries the generated review specification:
     /// the canonical outcome vocabulary, the seven-dimension fleet including
-    /// the new `security` dimension, and a completion trailer sourced from
+    /// the `security` dimension, and a completion trailer sourced from
     /// `rdm hook done-line` rather than a hand-typed format string.
     #[test]
-    fn skill_review_shares_the_generated_spec_across_variants() {
-        for mcp in [false, true] {
-            let skills = generate_skills(&SkillOptions {
-                project: None,
-                principles_file: None,
-                mcp,
-            });
-            let content = &skills[2].content;
-            for needle in [
-                "**security**",
-                "**reviewed**",
-                "**rework**",
-                "**escalated**",
-                "rdm hook done-line",
-                "`blocked` is a valid task status",
-            ] {
-                assert!(content.contains(needle), "mcp={mcp}: missing {needle}");
-            }
-            for retired in ["PASS WITH CONCERNS", "**BLOCKED**", "**FAIL**"] {
-                assert!(
-                    !content.contains(retired),
-                    "mcp={mcp}: retired verdict word still present: {retired}"
-                );
-            }
+    fn skill_review_carries_the_generated_spec() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[2].content;
+        for needle in [
+            "**security**",
+            "**reviewed**",
+            "**rework**",
+            "**escalated**",
+            "rdm hook done-line",
+            "`blocked` is a valid task status",
+        ] {
+            assert!(content.contains(needle), "missing {needle}");
+        }
+        for retired in ["PASS WITH CONCERNS", "**BLOCKED**", "**FAIL**"] {
+            assert!(
+                !content.contains(retired),
+                "retired verdict word still present: {retired}"
+            );
         }
     }
 
@@ -5328,37 +3638,31 @@ mod tests {
             "needs a *human decision*",
         ];
 
-        for mcp in [false, true] {
-            let skills = generate_skills(&SkillOptions {
-                project: None,
-                principles_file: None,
-                mcp,
-            });
-            let content = &skills[2].content;
-            let begin = content
-                .find(BEGIN)
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing begin marker"));
-            let end = content
-                .find(END)
-                .unwrap_or_else(|| panic!("mcp={mcp}: missing end marker"));
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+        });
+        let content = &skills[2].content;
+        let begin = content
+            .find(BEGIN)
+            .unwrap_or_else(|| panic!("missing begin marker"));
+        let end = content
+            .find(END)
+            .unwrap_or_else(|| panic!("missing end marker"));
+        assert!(begin < end, "begin marker must precede end marker");
+
+        let before = &content[..begin];
+        let after = &content[end + END.len()..];
+
+        for phrase in DEFINITIONAL_PHRASES {
             assert!(
-                begin < end,
-                "mcp={mcp}: begin marker must precede end marker"
+                !before.contains(phrase),
+                "spec-definition phrase found before the generated block: {phrase:?}"
             );
-
-            let before = &content[..begin];
-            let after = &content[end + END.len()..];
-
-            for phrase in DEFINITIONAL_PHRASES {
-                assert!(
-                    !before.contains(phrase),
-                    "mcp={mcp}: spec-definition phrase found before the generated block: {phrase:?}"
-                );
-                assert!(
-                    !after.contains(phrase),
-                    "mcp={mcp}: spec-definition phrase found after the generated block: {phrase:?}"
-                );
-            }
+            assert!(
+                !after.contains(phrase),
+                "spec-definition phrase found after the generated block: {phrase:?}"
+            );
         }
     }
 
@@ -5371,11 +3675,10 @@ mod tests {
     // "raw `--skills` output is unchanged" a checkable claim rather than an
     // assertion of intent.
 
-    /// The four canonical [`SkillOptions`] combinations the raw-emission
+    /// The two canonical [`SkillOptions`] combinations the raw-emission
     /// baseline covers, each paired with the key prefix it contributes to the
-    /// fixture map: the CLI and MCP surfaces, each with and without a project
-    /// name and a principles file (the only two axes `generate_skills`
-    /// substitutes on).
+    /// fixture map: the CLI surface with and without a project name and a
+    /// principles file (the only two axes `generate_skills` substitutes on).
     fn raw_baseline_combos() -> Vec<(&'static str, SkillOptions)> {
         vec![
             (
@@ -5383,7 +3686,6 @@ mod tests {
                 SkillOptions {
                     project: None,
                     principles_file: None,
-                    mcp: false,
                 },
             ),
             (
@@ -5391,30 +3693,13 @@ mod tests {
                 SkillOptions {
                     project: Some("demo".to_string()),
                     principles_file: Some("PRINCIPLES.md".to_string()),
-                    mcp: false,
-                },
-            ),
-            (
-                "mcp-bare",
-                SkillOptions {
-                    project: None,
-                    principles_file: None,
-                    mcp: true,
-                },
-            ),
-            (
-                "mcp-full",
-                SkillOptions {
-                    project: Some("demo".to_string()),
-                    principles_file: Some("PRINCIPLES.md".to_string()),
-                    mcp: true,
                 },
             ),
         ]
     }
 
     /// Recomputes the `"<combo-key>/<relative_path>" -> "<sha256-hex>"` map
-    /// over the raw emission surface: [`generate_skills`] across all four
+    /// over the raw emission surface: [`generate_skills`] across both
     /// [`raw_baseline_combos`], plus [`generate_workflows`].
     fn raw_emission_checksums() -> std::collections::BTreeMap<String, String> {
         let mut map = std::collections::BTreeMap::new();
@@ -5513,13 +3798,11 @@ mod tests {
 
     // --- Plugin-layout emission tests ---
 
-    /// The two `SkillOptions` surfaces, keyed by the `mcp` flag, used by the
-    /// plugin tests that must hold on both.
-    fn plugin_test_opts(mcp: bool) -> SkillOptions {
+    /// The single `SkillOptions` surface used by the plugin tests.
+    fn plugin_test_opts() -> SkillOptions {
         SkillOptions {
             project: Some("demo".to_string()),
             principles_file: None,
-            mcp,
         }
     }
 
@@ -5600,61 +3883,58 @@ mod tests {
 
     #[test]
     fn plugin_files_have_expected_layout() {
-        for mcp in [false, true] {
-            let opts = plugin_test_opts(mcp);
-            let files = generate_plugin_files(&opts);
-            let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
-            assert_eq!(
-                paths,
-                vec![
-                    ".claude-plugin/plugin.json",
-                    "skills/roadmap/SKILL.md",
-                    "skills/do/SKILL.md",
-                    "skills/review/SKILL.md",
-                    "skills/document/SKILL.md",
-                    "skills/estimate/SKILL.md",
-                    "skills/dispatch-phase/SKILL.md",
-                    "skills/autopilot/SKILL.md",
-                    "skills/land/SKILL.md",
-                    "skills/revise/SKILL.md",
-                    "skills/plan-review/SKILL.md",
-                    "skills/backlog/SKILL.md",
-                    "workflows/rdm-wf-dispatch-phase.js",
-                    "workflows/rdm-wf-review-refute-fix.js",
-                ],
-                "mcp={mcp}"
-            );
-            assert_eq!(files.len(), 14, "mcp={mcp}");
+        let opts = plugin_test_opts();
+        let files = generate_plugin_files(&opts);
+        let paths: Vec<&str> = files.iter().map(|f| f.relative_path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                ".claude-plugin/plugin.json",
+                "skills/roadmap/SKILL.md",
+                "skills/do/SKILL.md",
+                "skills/review/SKILL.md",
+                "skills/document/SKILL.md",
+                "skills/estimate/SKILL.md",
+                "skills/dispatch-phase/SKILL.md",
+                "skills/autopilot/SKILL.md",
+                "skills/land/SKILL.md",
+                "skills/revise/SKILL.md",
+                "skills/plan-review/SKILL.md",
+                "skills/backlog/SKILL.md",
+                "workflows/rdm-wf-dispatch-phase.js",
+                "workflows/rdm-wf-review-refute-fix.js",
+            ]
+        );
+        assert_eq!(files.len(), 14);
 
-            for path in &paths {
-                let p = std::path::Path::new(path);
-                assert!(p.is_relative(), "mcp={mcp}: {path} is not relative");
-                assert!(
-                    !p.components()
-                        .any(|c| matches!(c, std::path::Component::ParentDir)),
-                    "mcp={mcp}: {path} contains a `..` component"
-                );
-                assert!(
-                    !path.starts_with(".claude-plugin/workflows")
-                        && !path.starts_with(".claude-plugin/skills"),
-                    "mcp={mcp}: {path} nests a plugin component inside `.claude-plugin/`"
-                );
-                assert!(!path.is_empty(), "mcp={mcp}: emitted an empty path");
-            }
-
-            // Skill-count parity with the raw surface.
-            assert_eq!(
-                generate_plugin_skills(&opts).len(),
-                generate_skills(&opts).len(),
-                "mcp={mcp}: plugin/raw skill count parity"
+        for path in &paths {
+            let p = std::path::Path::new(path);
+            assert!(p.is_relative(), "{path} is not relative");
+            assert!(
+                !p.components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir)),
+                "{path} contains a `..` component"
             );
-            assert_eq!(generate_plugin_skills(&opts).len(), 11, "mcp={mcp}");
+            assert!(
+                !path.starts_with(".claude-plugin/workflows")
+                    && !path.starts_with(".claude-plugin/skills"),
+                "{path} nests a plugin component inside `.claude-plugin/`"
+            );
+            assert!(!path.is_empty(), "emitted an empty path");
         }
+
+        // Skill-count parity with the raw surface.
+        assert_eq!(
+            generate_plugin_skills(&opts).len(),
+            generate_skills(&opts).len(),
+            "plugin/raw skill count parity"
+        );
+        assert_eq!(generate_plugin_skills(&opts).len(), 11);
     }
 
     #[test]
     fn plugin_skill_table_covers_exactly_the_raw_skill_set() {
-        let mut raw: Vec<&str> = generate_skills(&plugin_test_opts(false))
+        let mut raw: Vec<&str> = generate_skills(&plugin_test_opts())
             .iter()
             .map(|s| s.relative_path.split('/').next().unwrap())
             .collect();
@@ -5683,95 +3963,92 @@ mod tests {
             })
             .collect();
 
-        for mcp in [false, true] {
-            for principles in [None, Some("PRINCIPLES.md".to_string())] {
-                let opts = SkillOptions {
-                    project: Some("demo".to_string()),
-                    principles_file: principles.clone(),
-                    mcp,
-                };
-                let skills = generate_plugin_skills(&opts);
-                let joined: String = skills
-                    .iter()
-                    .map(|s| s.content.as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n");
+        for principles in [None, Some("PRINCIPLES.md".to_string())] {
+            let opts = SkillOptions {
+                project: Some("demo".to_string()),
+                principles_file: principles.clone(),
+            };
+            let skills = generate_plugin_skills(&opts);
+            let joined: String = skills
+                .iter()
+                .map(|s| s.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
 
+            assert_eq!(
+                joined.matches(".claude/workflows/").count(),
+                0,
+                "a plugin skill body still carries a `.claude/workflows/` path"
+            );
+            assert_eq!(
+                joined.matches("${CLAUDE_PLUGIN_ROOT}").count(),
+                0,
+                "the scriptPath branch was not the Phase-1 decision"
+            );
+            assert_eq!(joined.matches("scriptPath").count(), 0);
+            assert_eq!(
+                joined.matches("provisioned automatically by").count(),
+                0,
+                "plugin shims are not provisioned by `agent-config --skills`"
+            );
+
+            // EVERY mention of a shipped engine is namespaced, not just
+            // the ones that happened to sit inside a `.claude/workflows/`
+            // path literal. A plugin-installed shim reaches its engine
+            // only through the `rdm:` namespace, so a bare stem left in an
+            // operative "invoke the Workflow with …" instruction would not
+            // resolve at runtime.
+            let plugin_tokens = rdm_tokens(&joined);
+            for stem in &engine_stems {
+                let total = count_of(&plugin_tokens, stem.as_str());
+                let namespaced = joined.matches(&format!("{PLUGIN_NAME}:{stem}")).count();
                 assert_eq!(
-                    joined.matches(".claude/workflows/").count(),
+                    total - namespaced,
                     0,
-                    "mcp={mcp}: a plugin skill body still carries a `.claude/workflows/` path"
+                    "{total} mentions of {stem} but only {namespaced} namespaced — \
+                     a bare engine reference survives in a plugin skill body"
                 );
-                assert_eq!(
-                    joined.matches("${CLAUDE_PLUGIN_ROOT}").count(),
-                    0,
-                    "mcp={mcp}: the scriptPath branch was not the Phase-1 decision"
-                );
-                assert_eq!(joined.matches("scriptPath").count(), 0, "mcp={mcp}");
-                assert_eq!(
-                    joined.matches("provisioned automatically by").count(),
-                    0,
-                    "mcp={mcp}: plugin shims are not provisioned by `agent-config --skills`"
-                );
+            }
 
-                // EVERY mention of a shipped engine is namespaced, not just
-                // the ones that happened to sit inside a `.claude/workflows/`
-                // path literal. A plugin-installed shim reaches its engine
-                // only through the `rdm:` namespace, so a bare stem left in an
-                // operative "invoke the Workflow with …" instruction would not
-                // resolve at runtime.
-                let plugin_tokens = rdm_tokens(&joined);
-                for stem in &engine_stems {
-                    let total = count_of(&plugin_tokens, stem.as_str());
-                    let namespaced = joined.matches(&format!("{PLUGIN_NAME}:{stem}")).count();
-                    assert_eq!(
-                        total - namespaced,
-                        0,
-                        "mcp={mcp}: {total} mentions of {stem} but only {namespaced} namespaced — \
-                         a bare engine reference survives in a plugin skill body"
-                    );
-                }
+            // Non-vacuity: the shim engine really is referenced, and by
+            // every mention the raw surface makes of it.
+            let raw_joined: String = generate_skills(&opts)
+                .iter()
+                .map(|s| s.content.clone())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let raw_dispatch = count_of(&rdm_tokens(&raw_joined), "rdm-wf-dispatch-phase");
+            assert!(raw_dispatch > 0, "the check would be vacuous");
+            assert_eq!(
+                joined.matches("rdm:rdm-wf-dispatch-phase").count(),
+                raw_dispatch,
+                "expected all {raw_dispatch} raw engine mentions to be namespaced"
+            );
 
-                // Non-vacuity: the shim engine really is referenced, and by
-                // every mention the raw surface makes of it.
-                let raw_joined: String = generate_skills(&opts)
-                    .iter()
-                    .map(|s| s.content.clone())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let raw_dispatch = count_of(&rdm_tokens(&raw_joined), "rdm-wf-dispatch-phase");
-                assert!(raw_dispatch > 0, "mcp={mcp}: the check would be vacuous");
-                assert_eq!(
-                    joined.matches("rdm:rdm-wf-dispatch-phase").count(),
-                    raw_dispatch,
-                    "mcp={mcp}: expected all {raw_dispatch} raw engine mentions to be namespaced"
+            // Every namespaced reference the rewrite emits names a real
+            // emitted engine — no `rdm:` prefix is ever attached to a
+            // stem the plugin does not ship. Scoped to the invocation form
+            // the rewrite produces; the templates also carry unrelated
+            // pre-existing `<!-- rdm:review-spec:… -->` generator markers,
+            // which are HTML comments rather than engine references, and
+            // the document-linking roadmap's `rdm:` URI scheme
+            // (`rdm:roadmap/…`, `rdm:phase/…`, `rdm:task/…`, `rdm:src/…`)
+            // taught in the Linking-aware skill templates — a distinct
+            // namespace that happens to share the `rdm:` prefix syntax
+            // with engine invocation but is never rewritten (it names
+            // plan-repo items and source files, not shipped engines).
+            const LINK_SCHEME_KINDS: [&str; 4] = ["roadmap", "phase", "task", "src"];
+            for (idx, _) in joined.match_indices("`rdm:") {
+                let rest = &joined[idx + "`rdm:".len()..];
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                    .unwrap_or(rest.len());
+                let named = &rest[..end];
+                assert!(
+                    engine_stems.iter().any(|s| s == named)
+                        || LINK_SCHEME_KINDS.contains(&named),
+                    "`rdm:{named}` names no emitted engine and no known link-scheme kind"
                 );
-
-                // Every namespaced reference the rewrite emits names a real
-                // emitted engine — no `rdm:` prefix is ever attached to a
-                // stem the plugin does not ship. Scoped to the invocation form
-                // the rewrite produces; the templates also carry unrelated
-                // pre-existing `<!-- rdm:review-spec:… -->` generator markers,
-                // which are HTML comments rather than engine references, and
-                // the document-linking roadmap's `rdm:` URI scheme
-                // (`rdm:roadmap/…`, `rdm:phase/…`, `rdm:task/…`, `rdm:src/…`)
-                // taught in the Linking-aware skill templates — a distinct
-                // namespace that happens to share the `rdm:` prefix syntax
-                // with engine invocation but is never rewritten (it names
-                // plan-repo items and source files, not shipped engines).
-                const LINK_SCHEME_KINDS: [&str; 4] = ["roadmap", "phase", "task", "src"];
-                for (idx, _) in joined.match_indices("`rdm:") {
-                    let rest = &joined[idx + "`rdm:".len()..];
-                    let end = rest
-                        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-                        .unwrap_or(rest.len());
-                    let named = &rest[..end];
-                    assert!(
-                        engine_stems.iter().any(|s| s == named)
-                            || LINK_SCHEME_KINDS.contains(&named),
-                        "mcp={mcp}: `rdm:{named}` names no emitted engine and no known link-scheme kind"
-                    );
-                }
             }
         }
     }
@@ -5792,82 +4069,80 @@ mod tests {
             })
             .collect();
 
-        for mcp in [false, true] {
-            let opts = plugin_test_opts(mcp);
-            let raw_joined: String = generate_skills(&opts)
-                .iter()
-                .map(|s| s.content.clone())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let plugin_joined: String = generate_plugin_skills(&opts)
-                .iter()
-                .map(|s| s.content.clone())
-                .collect::<Vec<_>>()
-                .join("\n");
+        let opts = plugin_test_opts();
+        let raw_joined: String = generate_skills(&opts)
+            .iter()
+            .map(|s| s.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let plugin_joined: String = generate_plugin_skills(&opts)
+            .iter()
+            .map(|s| s.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
 
+        for stem in &engine_stems {
+            let raw_total = count_of(&rdm_tokens(&raw_joined), stem.as_str());
+            let plugin_total = count_of(&rdm_tokens(&plugin_joined), stem.as_str());
+            let plugin_namespaced = plugin_joined
+                .matches(&format!("{PLUGIN_NAME}:{stem}"))
+                .count();
+            assert_eq!(
+                plugin_total, raw_total,
+                "plugin emission changed how often {stem} occurs"
+            );
+            assert_eq!(
+                plugin_namespaced, raw_total,
+                "{plugin_namespaced} of {raw_total} {stem} mentions were namespaced"
+            );
+            assert_eq!(
+                raw_joined.matches(&format!("{PLUGIN_NAME}:{stem}")).count(),
+                0,
+                "the RAW surface must stay un-namespaced"
+            );
+        }
+
+        // The per-skill view: the three shim skills that actually dispatch
+        // must each carry only namespaced references. `autopilot` is the
+        // regression this pins — it never contained a `.claude/workflows/`
+        // path literal, so a path-literal-only rewrite left all of its
+        // mentions bare.
+        for file in generate_plugin_skills(&opts) {
             for stem in &engine_stems {
-                let raw_total = count_of(&rdm_tokens(&raw_joined), stem.as_str());
-                let plugin_total = count_of(&rdm_tokens(&plugin_joined), stem.as_str());
-                let plugin_namespaced = plugin_joined
+                let total = count_of(&rdm_tokens(&file.content), stem.as_str());
+                let namespaced = file
+                    .content
                     .matches(&format!("{PLUGIN_NAME}:{stem}"))
                     .count();
                 assert_eq!(
-                    plugin_total, raw_total,
-                    "mcp={mcp}: plugin emission changed how often {stem} occurs"
-                );
-                assert_eq!(
-                    plugin_namespaced, raw_total,
-                    "mcp={mcp}: {plugin_namespaced} of {raw_total} {stem} mentions were namespaced"
-                );
-                assert_eq!(
-                    raw_joined.matches(&format!("{PLUGIN_NAME}:{stem}")).count(),
-                    0,
-                    "mcp={mcp}: the RAW surface must stay un-namespaced"
+                    total,
+                    namespaced,
+                    "{} has {} bare mentions of {stem}",
+                    file.relative_path,
+                    total - namespaced
                 );
             }
-
-            // The per-skill view: the three shim skills that actually dispatch
-            // must each carry only namespaced references. `autopilot` is the
-            // regression this pins — it never contained a `.claude/workflows/`
-            // path literal, so a path-literal-only rewrite left all of its
-            // mentions bare.
-            for file in generate_plugin_skills(&opts) {
-                for stem in &engine_stems {
-                    let total = count_of(&rdm_tokens(&file.content), stem.as_str());
-                    let namespaced = file
-                        .content
-                        .matches(&format!("{PLUGIN_NAME}:{stem}"))
-                        .count();
-                    assert_eq!(
-                        total,
-                        namespaced,
-                        "mcp={mcp}: {} has {} bare mentions of {stem}",
-                        file.relative_path,
-                        total - namespaced
-                    );
-                }
-            }
-            let autopilot = generate_plugin_skills(&opts)
-                .into_iter()
-                .find(|f| f.relative_path == "skills/autopilot/SKILL.md")
-                .expect("the autopilot shim is emitted");
-            assert!(
-                autopilot
-                    .content
-                    .matches("rdm:rdm-wf-dispatch-phase")
-                    .count()
-                    > 0,
-                "mcp={mcp}: autopilot must namespace the engine it dispatches"
-            );
-
-            // Engines this distribution does NOT ship stay bare — namespacing
-            // them would name a plugin entry that does not exist.
-            assert_eq!(
-                plugin_joined.matches("rdm:rdm-wf-estimate").count(),
-                0,
-                "mcp={mcp}: rdm-wf-estimate is not shipped and must not be namespaced"
-            );
         }
+        let autopilot = generate_plugin_skills(&opts)
+            .into_iter()
+            .find(|f| f.relative_path == "skills/autopilot/SKILL.md")
+            .expect("the autopilot shim is emitted");
+        assert!(
+            autopilot
+                .content
+                .matches("rdm:rdm-wf-dispatch-phase")
+                .count()
+                > 0,
+            "autopilot must namespace the engine it dispatches"
+        );
+
+        // Engines this distribution does NOT ship stay bare — namespacing
+        // them would name a plugin entry that does not exist.
+        assert_eq!(
+            plugin_joined.matches("rdm:rdm-wf-estimate").count(),
+            0,
+            "rdm-wf-estimate is not shipped and must not be namespaced"
+        );
     }
 
     #[test]
@@ -6039,76 +4314,66 @@ mod tests {
 
     #[test]
     fn plugin_rewrites_are_order_independent() {
-        for mcp in [false, true] {
-            for skill in generate_skills(&plugin_test_opts(mcp)) {
-                let a = rewrite_skill_names(&rewrite_workflow_refs(&skill.content));
-                let b = rewrite_workflow_refs(&rewrite_skill_names(&skill.content));
-                assert_eq!(
-                    a, b,
-                    "mcp={mcp}: {} is order-sensitive",
-                    skill.relative_path
-                );
-            }
+        for skill in generate_skills(&plugin_test_opts()) {
+            let a = rewrite_skill_names(&rewrite_workflow_refs(&skill.content));
+            let b = rewrite_workflow_refs(&rewrite_skill_names(&skill.content));
+            assert_eq!(a, b, "{} is order-sensitive", skill.relative_path);
         }
     }
 
     #[test]
     fn plugin_skill_bodies_preserve_non_skill_rdm_identifiers() {
-        // CLI surface counts, then MCP. `rdm-side` appears only in the CLI
-        // prose, so the pair is deliberately asymmetric.
-        let expected: [(&str, usize, usize); 5] = [
-            // Bumped 20/19 -> 22/21 when the `resumeFromRunId` recovery sections
+        // CLI surface counts.
+        let expected: [(&str, usize); 5] = [
+            // Bumped 20 -> 22 when the `resumeFromRunId` recovery sections
             // began naming the real dispatch-phase file. Deliberate, as the
             // assertion message below instructs.
-            ("rdm-wf-dispatch-phase", 22, 21),
-            ("rdm-wf-estimate", 2, 2),
-            ("rdm-mechanical", 1, 1),
-            ("rdm-next", 1, 1),
-            ("rdm-side", 1, 0),
+            ("rdm-wf-dispatch-phase", 22),
+            ("rdm-wf-estimate", 2),
+            ("rdm-mechanical", 1),
+            ("rdm-next", 1),
+            ("rdm-side", 1),
         ];
 
-        for mcp in [false, true] {
-            let opts = plugin_test_opts(mcp);
-            let raw_joined: String = generate_skills(&opts)
-                .iter()
-                .map(|s| s.content.clone())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let plugin_joined: String = generate_plugin_skills(&opts)
-                .iter()
-                .map(|s| s.content.clone())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let raw_counts = rdm_tokens(&raw_joined);
-            let plugin_counts = rdm_tokens(&plugin_joined);
+        let opts = plugin_test_opts();
+        let raw_joined: String = generate_skills(&opts)
+            .iter()
+            .map(|s| s.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let plugin_joined: String = generate_plugin_skills(&opts)
+            .iter()
+            .map(|s| s.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let raw_counts = rdm_tokens(&raw_joined);
+        let plugin_counts = rdm_tokens(&plugin_joined);
 
-            for (token, cli_count, mcp_count) in expected {
-                let want = if mcp { mcp_count } else { cli_count };
-                assert_eq!(
-                    count_of(&raw_counts, token),
-                    want,
-                    "mcp={mcp}: raw occurrence count for {token} moved — update the literal deliberately"
-                );
-                assert_eq!(
-                    count_of(&plugin_counts, token),
-                    want,
-                    "mcp={mcp}: plugin emission changed the occurrence count of the non-skill identifier {token}"
-                );
-            }
+        for (token, want) in expected {
+            assert_eq!(
+                count_of(&raw_counts, token),
+                want,
+                "raw occurrence count for {token} moved — update the literal deliberately"
+            );
+            assert_eq!(
+                count_of(&plugin_counts, token),
+                want,
+                "plugin emission changed the occurrence count of the non-skill identifier {token}"
+            );
+        }
 
-            // And the rename is total in the other direction: not one of the
-            // eleven raw skill names survives anywhere in a plugin body.
-            for (raw_name, _) in PLUGIN_SKILL_NAMES {
-                assert_eq!(
-                    count_of(&plugin_counts, raw_name),
-                    0,
-                    "mcp={mcp}: {raw_name} survived the plugin rename"
-                );
-                assert!(
-                    count_of(&raw_counts, raw_name) > 0,
-                    "mcp={mcp}: {raw_name} is absent from raw emission — the check would be vacuous"
-                );
-            }
+        // And the rename is total in the other direction: not one of the
+        // eleven raw skill names survives anywhere in a plugin body.
+        for (raw_name, _) in PLUGIN_SKILL_NAMES {
+            assert_eq!(
+                count_of(&plugin_counts, raw_name),
+                0,
+                "{raw_name} survived the plugin rename"
+            );
+            assert!(
+                count_of(&raw_counts, raw_name) > 0,
+                "{raw_name} is absent from raw emission — the check would be vacuous"
+            );
         }
     }
 
@@ -6118,96 +4383,84 @@ mod tests {
         // name, not merely vanish. Counting the delta against the raw body
         // cancels prose words like "land" and "do" that legitimately occur in
         // both.
-        for mcp in [false, true] {
-            let opts = plugin_test_opts(mcp);
-            let raw_joined: String = generate_skills(&opts)
-                .iter()
-                .map(|s| s.content.clone())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let plugin_joined: String = generate_plugin_skills(&opts)
-                .iter()
-                .map(|s| s.content.clone())
-                .collect::<Vec<_>>()
-                .join("\n");
-            let raw_counts = kebab_tokens(&raw_joined);
-            let plugin_counts = kebab_tokens(&plugin_joined);
+        let opts = plugin_test_opts();
+        let raw_joined: String = generate_skills(&opts)
+            .iter()
+            .map(|s| s.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let plugin_joined: String = generate_plugin_skills(&opts)
+            .iter()
+            .map(|s| s.content.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let raw_counts = kebab_tokens(&raw_joined);
+        let plugin_counts = kebab_tokens(&plugin_joined);
 
-            let mut renamed_total = 0usize;
-            for (raw_name, plugin_name) in PLUGIN_SKILL_NAMES {
-                let raw_old = count_of(&raw_counts, raw_name);
-                assert!(
-                    raw_old > 0,
-                    "mcp={mcp}: {raw_name} absent from raw emission"
-                );
-                let delta = count_of(&plugin_counts, plugin_name) as i64
-                    - count_of(&raw_counts, plugin_name) as i64;
-                assert_eq!(
-                    delta, raw_old as i64,
-                    "mcp={mcp}: {raw_name} -> {plugin_name} gained {delta} occurrences but had {raw_old}"
-                );
-                renamed_total += raw_old;
-            }
-            // The CLI variant's rdm-do body names `rdm-land` twice more than the
-            // MCP variant's does (the ExitWorktree Mismatch-branch rewrite and its
-            // finalize note are CLI/prose-only additions; skill-do-mcp.md is
-            // untouched, out of scope since the MCP flow never calls
-            // EnterWorktree/ExitWorktree), so the two surfaces' totals diverge.
-            let expected = if mcp { 46 } else { 48 };
+        let mut renamed_total = 0usize;
+        for (raw_name, plugin_name) in PLUGIN_SKILL_NAMES {
+            let raw_old = count_of(&raw_counts, raw_name);
+            assert!(raw_old > 0, "{raw_name} absent from raw emission");
+            let delta = count_of(&plugin_counts, plugin_name) as i64
+                - count_of(&raw_counts, plugin_name) as i64;
             assert_eq!(
-                renamed_total, expected,
-                "mcp={mcp}: expected {expected} skill-name occurrences per surface"
+                delta, raw_old as i64,
+                "{raw_name} -> {plugin_name} gained {delta} occurrences but had {raw_old}"
             );
+            renamed_total += raw_old;
+        }
+        let expected = 48;
+        assert_eq!(
+            renamed_total, expected,
+            "expected {expected} skill-name occurrences per surface"
+        );
 
-            // The directory name and the frontmatter `name:` line are covered
-            // by the same pass.
-            for file in generate_plugin_skills(&opts) {
-                let dir = file
-                    .relative_path
-                    .trim_start_matches("skills/")
-                    .trim_end_matches("/SKILL.md");
-                assert!(
-                    file.content.contains(&format!("\nname: {dir}\n")),
-                    "mcp={mcp}: frontmatter name of {} does not match its directory",
-                    file.relative_path
-                );
-            }
+        // The directory name and the frontmatter `name:` line are covered
+        // by the same pass.
+        for file in generate_plugin_skills(&opts) {
+            let dir = file
+                .relative_path
+                .trim_start_matches("skills/")
+                .trim_end_matches("/SKILL.md");
+            assert!(
+                file.content.contains(&format!("\nname: {dir}\n")),
+                "frontmatter name of {} does not match its directory",
+                file.relative_path
+            );
         }
     }
 
     #[test]
     fn plugin_skill_bodies_carry_the_rdm_bin_resolution_note() {
-        for mcp in [false, true] {
-            let opts = plugin_test_opts(mcp);
-            let raw = generate_skills(&opts);
-            let plugin = generate_plugin_skills(&opts);
-            let mut noted = 0usize;
-            for (raw_skill, plugin_skill) in raw.iter().zip(plugin.iter()) {
-                let needs_note = raw_skill.content.contains("rdmBin");
-                let has_note = plugin_skill
-                    .content
-                    .contains("## Resolving `rdmBin` (plugin install)");
-                assert_eq!(
-                    needs_note, has_note,
-                    "mcp={mcp}: {} note presence does not match its rdmBin usage",
-                    plugin_skill.relative_path
-                );
-                if has_note {
-                    noted += 1;
-                    assert!(
-                        plugin_skill
-                            .content
-                            .contains("`RDM_BIN` environment variable")
-                    );
-                    assert!(plugin_skill.content.contains("--rdm-bin"));
-                    assert!(plugin_skill.content.contains("rdm binary not found."));
-                }
-            }
+        let opts = plugin_test_opts();
+        let raw = generate_skills(&opts);
+        let plugin = generate_plugin_skills(&opts);
+        let mut noted = 0usize;
+        for (raw_skill, plugin_skill) in raw.iter().zip(plugin.iter()) {
+            let needs_note = raw_skill.content.contains("rdmBin");
+            let has_note = plugin_skill
+                .content
+                .contains("## Resolving `rdmBin` (plugin install)");
             assert_eq!(
-                noted, 3,
-                "mcp={mcp}: expected the 3 rdmBin-carrying shims (autopilot, dispatch-phase, do)"
+                needs_note, has_note,
+                "{} note presence does not match its rdmBin usage",
+                plugin_skill.relative_path
             );
+            if has_note {
+                noted += 1;
+                assert!(
+                    plugin_skill
+                        .content
+                        .contains("`RDM_BIN` environment variable")
+                );
+                assert!(plugin_skill.content.contains("--rdm-bin"));
+                assert!(plugin_skill.content.contains("rdm binary not found."));
+            }
         }
+        assert_eq!(
+            noted, 3,
+            "expected the 3 rdmBin-carrying shims (autopilot, dispatch-phase, do)"
+        );
     }
 
     #[test]
@@ -6264,7 +4517,7 @@ mod tests {
     #[test]
     fn plugin_skill_and_engine_names_are_disjoint() {
         let skill_names: std::collections::BTreeSet<String> =
-            generate_plugin_skills(&plugin_test_opts(false))
+            generate_plugin_skills(&plugin_test_opts())
                 .iter()
                 .map(|f| {
                     f.relative_path

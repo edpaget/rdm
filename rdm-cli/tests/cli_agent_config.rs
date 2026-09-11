@@ -169,50 +169,6 @@ fn agent_config_cli_demonstrates_tags() {
         .stdout(predicate::str::contains("kebab-case"));
 }
 
-#[test]
-fn agent_config_mcp_demonstrates_tags() {
-    // The MCP instructions template should teach agents to pass tags on
-    // create/update calls and to filter via the list/search tools.
-    rdm()
-        .arg("agent-config")
-        .arg("--mcp")
-        .assert()
-        .success()
-        // Tags array on create tools.
-        .stdout(
-            predicate::str::contains("rdm_roadmap_create")
-                .and(predicate::str::contains("tags: [\"bug\", \"ui\"]")),
-        )
-        .stdout(
-            predicate::str::contains("rdm_phase_create")
-                .and(predicate::str::contains("tags: [\"audit\"]")),
-        )
-        .stdout(
-            predicate::str::contains("rdm_task_create")
-                .and(predicate::str::contains("tags: [\"bug\"]")),
-        )
-        // Tag filter on roadmap_list / phase_list / task_list.
-        .stdout(
-            predicate::str::contains("rdm_roadmap_list")
-                .and(predicate::str::contains("tag: \"bug\"")),
-        )
-        .stdout(
-            predicate::str::contains("rdm_phase_list")
-                .and(predicate::str::contains("tag: \"audit\"")),
-        )
-        .stdout(
-            predicate::str::contains("rdm_task_list").and(predicate::str::contains("tag: \"bug\"")),
-        )
-        // Search with tags array (AND semantics).
-        .stdout(
-            predicate::str::contains("rdm_search").and(predicate::str::contains("tags: [\"bug\"]")),
-        )
-        .stdout(predicate::str::contains("tags: [\"bug\", \"ui\"]"))
-        // Tagging convention guidance present.
-        .stdout(predicate::str::contains("Tagging convention"))
-        .stdout(predicate::str::contains("kebab-case"));
-}
-
 /// The seven suggested default tags, each paired with the leading fragment of
 /// its gloss. Assertions anchor to tag+gloss pairs rather than bare tag names —
 /// bare `bug`/`cli`/`server` already occur many times in both templates, so a
@@ -243,22 +199,6 @@ fn agent_config_cli_instructs_tagging_on_create() {
 }
 
 #[test]
-fn agent_config_mcp_instructs_tagging_on_create() {
-    rdm()
-        .arg("agent-config")
-        .arg("--mcp")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(
-            "**Always pass `tags` when you create**",
-        ))
-        .stdout(predicate::str::contains(
-            "untagged items are invisible to tag-filtered queries",
-        ))
-        .stdout(predicate::str::contains("replaces the existing list"));
-}
-
-#[test]
 fn agent_config_cli_suggests_default_tags() {
     let out = rdm().arg("agent-config").assert().success();
     let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
@@ -270,20 +210,6 @@ fn agent_config_cli_suggests_default_tags() {
     }
     assert!(stdout.contains("not a closed set"));
     assert!(stdout.contains("--tags bug,cli"));
-}
-
-#[test]
-fn agent_config_mcp_suggests_default_tags() {
-    let out = rdm().arg("agent-config").arg("--mcp").assert().success();
-    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
-    for pair in DEFAULT_TAG_GLOSSES {
-        assert!(
-            stdout.contains(pair),
-            "MCP agent-config output is missing the suggested tag gloss {pair}"
-        );
-    }
-    assert!(stdout.contains("not a closed set"));
-    assert!(stdout.contains("tags: [\"bug\", \"cli\"]"));
 }
 
 #[test]
@@ -309,21 +235,6 @@ fn agent_config_tag_list_respects_project_flag() {
         .assert()
         .success()
         .stdout(predicate::str::contains("rdm tag list --project myproj"));
-}
-
-#[test]
-fn agent_config_mcp_teaches_tag_list_discovery() {
-    rdm()
-        .arg("agent-config")
-        .arg("--mcp")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("rdm tag list"))
-        // There is no `rdm_tag_list` MCP tool — don't invent one.
-        .stdout(predicate::str::contains("rdm_tag_list").not())
-        // The MCP renderer never substitutes `{proj_flag}`; a stray placeholder
-        // would leak verbatim into agent-facing output.
-        .stdout(predicate::str::contains("{proj_flag}").not());
 }
 
 #[test]
@@ -728,149 +639,6 @@ fn agent_config_principles_with_project_and_out() {
     assert!(content.contains("PRINCIPLES.md"));
 }
 
-#[test]
-fn agent_config_mcp_produces_instructions() {
-    rdm()
-        .arg("agent-config")
-        .arg("--mcp")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("# rdm"))
-        .stdout(predicate::str::contains("rdm_roadmap_list"))
-        .stdout(predicate::str::contains("rdm_task_list"))
-        .stdout(predicate::str::contains("MCP tools"));
-}
-
-#[test]
-fn agent_config_mcp_no_bash_blocks() {
-    rdm()
-        .arg("agent-config")
-        .arg("--mcp")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("```bash").not());
-}
-
-#[test]
-fn agent_config_mcp_with_project() {
-    rdm()
-        .arg("agent-config")
-        .arg("--mcp")
-        .arg("--project")
-        .arg("myproj")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"myproj\""))
-        .stdout(predicate::str::contains("<PROJECT>").not());
-}
-
-#[test]
-fn agent_config_mcp_out_writes_instructions_and_mcp_json() {
-    let out = TempDir::new().unwrap();
-    rdm()
-        .arg("agent-config")
-        .arg("--mcp")
-        .arg("--out")
-        .arg(out.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Wrote").count(2));
-
-    // Should write the agent instructions file
-    let instructions_path = out.path().join("AGENTS.md");
-    assert!(instructions_path.exists());
-    let instructions = std::fs::read_to_string(&instructions_path).unwrap();
-    assert!(instructions.contains("rdm_roadmap_list"));
-
-    // Should also write .mcp.json
-    let mcp_path = out.path().join(".mcp.json");
-    assert!(mcp_path.exists());
-    let mcp_content = std::fs::read_to_string(mcp_path).unwrap();
-    let parsed: Value = serde_json::from_str(&mcp_content).expect("should be valid JSON");
-    assert!(parsed["mcpServers"]["rdm"]["command"].as_str().is_some());
-}
-
-#[test]
-fn agent_config_mcp_skills_writes_skills_and_mcp_json() {
-    let out = TempDir::new().unwrap();
-    rdm()
-        .arg("agent-config")
-        .arg("claude")
-        .arg("--mcp")
-        .arg("--skills")
-        .arg("--out")
-        .arg(out.path())
-        .assert()
-        .success();
-
-    // Should write skill files under <out>/.claude/skills/ with MCP tool references
-    let skill_content =
-        std::fs::read_to_string(out.path().join(".claude/skills/rdm-roadmap/SKILL.md")).unwrap();
-    assert!(skill_content.contains("mcp__rdm__"));
-    assert!(!skill_content.contains("  - Bash"));
-
-    // The new plan-review skill is also written, with MCP tool references and no Bash.
-    let plan_review_content =
-        std::fs::read_to_string(out.path().join(".claude/skills/rdm-plan-review/SKILL.md"))
-            .unwrap();
-    assert!(plan_review_content.contains("mcp__rdm__"));
-    assert!(!plan_review_content.contains("  - Bash"));
-
-    // Should also write .mcp.json at the project root, not under .claude/skills/
-    let mcp_path = out.path().join(".mcp.json");
-    assert!(mcp_path.exists());
-}
-
-#[test]
-fn agent_config_mcp_skills_generates_eleven_files_including_backlog() {
-    let dir = TempDir::new().unwrap();
-    rdm()
-        .arg("agent-config")
-        .arg("claude")
-        .arg("--mcp")
-        .arg("--skills")
-        .arg("--out")
-        .arg(dir.path())
-        .assert()
-        .success()
-        // 11 skill files + 2 workflow files + 1 agent definition +
-        // .mcp.json (only written when --mcp) = 15. Was 10 + 2 + 1 = 13
-        // before `rdm-backlog` gained an MCP twin, then 14 before
-        // `generate_agents()` shipped `rdm-mechanical.md` alongside the
-        // workflow scripts.
-        .stdout(predicate::str::contains("Wrote").count(15));
-
-    let skills_dir = dir.path().join(".claude/skills");
-    assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
-    assert!(skills_dir.join("rdm-do/SKILL.md").exists());
-    assert!(skills_dir.join("rdm-review/SKILL.md").exists());
-    assert!(skills_dir.join("rdm-document/SKILL.md").exists());
-    assert!(skills_dir.join("rdm-estimate/SKILL.md").exists());
-    assert!(skills_dir.join("rdm-dispatch-phase/SKILL.md").exists());
-    assert!(skills_dir.join("rdm-autopilot/SKILL.md").exists());
-    assert!(skills_dir.join("rdm-land/SKILL.md").exists());
-    assert!(skills_dir.join("rdm-revise/SKILL.md").exists());
-    assert!(skills_dir.join("rdm-plan-review/SKILL.md").exists());
-
-    let backlog_path = skills_dir.join("rdm-backlog/SKILL.md");
-    assert!(backlog_path.exists());
-    let backlog_content = std::fs::read_to_string(&backlog_path).unwrap();
-    assert!(backlog_content.contains("mcp__rdm__rdm_backlog_report"));
-    assert!(!backlog_content.contains("  - Bash"));
-    assert!(!backlog_content.contains("{t_backlog_report}"));
-}
-
-#[test]
-fn agent_config_mcp_no_plan_repo_needed() {
-    let dir = TempDir::new().unwrap();
-    rdm()
-        .current_dir(dir.path())
-        .arg("agent-config")
-        .arg("--mcp")
-        .assert()
-        .success();
-}
-
 // --user flag tests
 
 #[test]
@@ -1190,58 +958,6 @@ fn agent_config_pi_skills_user_writes_to_pi_agent_skills() {
     assert!(skills_dir.join("rdm-backlog/SKILL.md").exists());
 }
 
-#[test]
-fn agent_config_pi_mcp_rejected() {
-    rdm()
-        .arg("agent-config")
-        .arg("pi")
-        .arg("--mcp")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("Pi does not support MCP"))
-        .stderr(predicate::str::contains("--skills"));
-}
-
-#[test]
-fn agent_config_pi_mcp_skills_rejected() {
-    let dir = TempDir::new().unwrap();
-    rdm()
-        .arg("agent-config")
-        .arg("pi")
-        .arg("--mcp")
-        .arg("--skills")
-        .arg("--out")
-        .arg(dir.path())
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("Pi does not support MCP"));
-}
-
-#[test]
-fn agent_config_user_mcp_writes_instructions_and_mcp_json() {
-    let home = TempDir::new().unwrap();
-    rdm()
-        .env("HOME", home.path())
-        .arg("agent-config")
-        .arg("claude")
-        .arg("--user")
-        .arg("--mcp")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Wrote").count(2));
-
-    let instructions = home.path().join(".claude/CLAUDE.md");
-    assert!(instructions.exists(), "expected {}", instructions.display());
-    let content = std::fs::read_to_string(&instructions).unwrap();
-    assert!(content.contains("rdm_roadmap_list"));
-
-    let mcp_json = home.path().join(".claude/.mcp.json");
-    assert!(mcp_json.exists(), "expected {}", mcp_json.display());
-    let mcp_content: Value =
-        serde_json::from_str(&std::fs::read_to_string(&mcp_json).unwrap()).unwrap();
-    assert!(mcp_content["mcpServers"]["rdm"].is_object());
-}
-
 // --- --plugin: the new emission mode this phase adds ------------------------
 
 #[test]
@@ -1405,26 +1121,6 @@ fn agent_config_plugin_rejected_on_pi() {
 }
 
 #[test]
-fn agent_config_plugin_pi_mcp_precedence_is_plugin_message() {
-    // Both --plugin and --mcp are wrong for Pi; the plugin-specific message
-    // must win rather than falling through to the unrelated Pi+--mcp message.
-    let dir = TempDir::new().unwrap();
-    rdm()
-        .arg("agent-config")
-        .arg("pi")
-        .arg("--plugin")
-        .arg("--mcp")
-        .arg("--out")
-        .arg(dir.path())
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "--plugin is only supported for the claude platform",
-        ))
-        .stderr(predicate::str::contains("Pi does not support MCP").not());
-}
-
-#[test]
 fn agent_config_skills_and_user_still_works_unaffected_by_plugin() {
     // Positive control: --skills --user's pre-existing --out-only exclusivity
     // is unchanged by adding --plugin.
@@ -1440,4 +1136,37 @@ fn agent_config_skills_and_user_still_works_unaffected_by_plugin() {
         .stdout(predicate::str::contains("Wrote").count(11));
 
     assert!(!home.path().join(".claude/workflows").exists());
+}
+
+// --- --mcp is gone: clap rejects it, no hand-written message survives ------
+
+#[test]
+fn agent_config_mcp_flag_is_unknown_argument() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("agent-config")
+        .arg("claude")
+        .arg("--skills")
+        .arg("--mcp")
+        .arg("--out")
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument '--mcp'"))
+        .stderr(predicate::str::contains("Pi does not support MCP").not());
+}
+
+#[test]
+fn agent_config_pi_mcp_is_unknown_argument() {
+    // The bespoke Pi rejection was DELETED, not merely shadowed by an
+    // earlier check: Pi + --mcp now fails the same way every other unknown
+    // flag does.
+    rdm()
+        .arg("agent-config")
+        .arg("pi")
+        .arg("--mcp")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument '--mcp'"))
+        .stderr(predicate::str::contains("Pi does not support MCP").not());
 }

@@ -148,15 +148,12 @@ For agents that support [Model Context Protocol](https://modelcontextprotocol.io
 ```bash
 # Start the MCP server (stdio transport)
 rdm mcp
-
-# Generate MCP-oriented agent instructions (references MCP tool names instead of CLI commands)
-rdm agent-config --mcp --project fbm --out ~/Projects/fbm
-
-# Generate MCP-aware Claude Code skills + .mcp.json
-rdm agent-config claude --mcp --skills --project fbm --out ~/Projects/fbm
 ```
 
-Pi has no native MCP support, so `rdm agent-config pi --mcp` is rejected with an actionable error. Use `rdm agent-config pi --skills` (or omit `--mcp` for the AGENTS.md integration) instead.
+`rdm agent-config` emits CLI-flavored instructions and skills only — the MCP-flavored
+variants (and the `.mcp.json` they came with) were removed. Configure the MCP server
+through your client's own MCP configuration, and use `rdm agent-config claude --skills`
+(or `--plugin`) for the agent lane.
 
 #### Claude Code / Cursor / MCP Registry
 

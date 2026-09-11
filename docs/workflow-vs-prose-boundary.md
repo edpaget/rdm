@@ -80,12 +80,12 @@ too, until phase 3 retired it in favor of the prose `rdm-autopilot` skill); `rdm
 `spike-agent-type.js` are local-only, and every one of the local-only five references
 `agentType: 'rdm-mechanical'`, which a downstream tree has no definition for and which
 *raises* rather than degrading silently. So the phase 4 rewrite of the **distributed**
-`skill-autopilot-{cli,mcp}.md` cannot simply mirror the local prose skill by pointing at
+`skill-autopilot-cli.md` cannot simply mirror the local prose skill by pointing at
 `rdm-wf-estimate` — it needs an explicit answer (ship `rdm-wf-estimate.js` with the `agentType`
 stripped, inline the pre-pass in the shipped prose, or drop the pre-pass downstream).
 **Decided (phase 4): drop the pre-pass downstream.** The distributed `rdm-autopilot`
-template dispatches every phase at whatever tier `next.model` (or `{t_next}` on the MCP
-variant) already reports, defaulting to `medium`, and never invokes `rdm-wf-estimate` at all.
+template dispatches every phase at whatever tier `next.model` already reports,
+defaulting to `medium`, and never invokes `rdm-wf-estimate` at all.
 Shipping `rdm-wf-estimate.js` stays blocked on lifting the `agentType`-downstream rule (owned by
 `ship-mechanical-agent-type-downstream`, not this phase), and inlining the pre-pass in
 prose would duplicate `estimate.mjs`'s filtering/rating/writeback logic outside its
@@ -145,7 +145,7 @@ anymore, so there is no byte-identical-copy drift gate to run.
 `autopilot.js` had eight touchpoints, which is why this was a roadmap rather than a task:
 the two verify harnesses that drove it, the generator that stamped `estimate-core` into
 it, the distribution byte-identity gate, `agent_config.rs`'s emission, both
-`skill-autopilot-{cli,mcp}.md` shims, and the distributed template copy. They were
+`skill-autopilot-cli.md` shims, and the distributed template copy. They were
 enumerated in full under "Coupling to be unwound" in the roadmap body
 (`rdm roadmap show prose-autopilot-orchestration --project rdm`); that enumeration is
 canonical and is not duplicated here.

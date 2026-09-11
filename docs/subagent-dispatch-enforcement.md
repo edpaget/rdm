@@ -71,19 +71,19 @@ none conflicts with another.
 
 ## Where they land
 
-- `.claude/skills/rdm-autopilot/SKILL.md` and its CLI/MCP templates
-  (`rdm-core/src/templates/skill-autopilot-{cli,mcp}.md`): a new `### Mandatory
+- `.claude/skills/rdm-autopilot/SKILL.md` and its CLI template
+  (`rdm-core/src/templates/skill-autopilot-cli.md`): a new `### Mandatory
   dispatch — no inline work` section inside `## Loop`, after the
   bounded-state paragraph and before step 1; a "Self-check before proceeding"
   bullet appended to step 2's dispatch bullet list.
-- `.claude/skills/rdm-dispatch-phase/SKILL.md` and its CLI/MCP templates
-  (`rdm-core/src/templates/skill-dispatch-phase-{cli,mcp}.md`): a new `##
+- `.claude/skills/rdm-dispatch-phase/SKILL.md` and its CLI template
+  (`rdm-core/src/templates/skill-dispatch-phase-cli.md`): a new `##
   Mandatory dispatch — no inline work` section between `## Dispatch contract`
   and `## Steps`; "Self-check before proceeding" paragraphs at the end of
   steps 4, 5, and 6, and a one-sentence self-check appended to step 7's
   fail-fixable rework bullet; a mandatory-isolation lead-in prepended to `##
   Context isolation`.
-- The CLI and MCP templates under `rdm-core/src/templates/` were also
+- The CLI templates under `rdm-core/src/templates/` were also
   brought into sync with phase 1's synchronous-dispatch wording
   (`dispatched synchronously`, `never resume ... by message`, the
   `SendMessage`-to-orchestrator prohibition), which the two dogfood
