@@ -378,6 +378,37 @@ pub struct GitStore {
     session_paths: Option<SessionPaths>,
 }
 
+/// A test-only callback run at one of this store's race windows.
+#[cfg(test)]
+type SeamHook = Box<dyn FnMut()>;
+
+/// The slot a test-only seam lives in.
+#[cfg(test)]
+type SeamSlot = std::cell::RefCell<Option<SeamHook>>;
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only seam inside [`GitStore::commit_whole_tree`], after the
+    /// snapshot and before the tombstones, so a unit test can append a record
+    /// the snapshot did not capture and prove the tombstone spares it.
+    static AFTER_WHOLE_TREE_SNAPSHOT_SEAM: SeamSlot = const { std::cell::RefCell::new(None) };
+
+    /// Test-only seam inside [`GitStore::discard_changeset`], after the
+    /// restore and before the retirement, so a unit test can append a
+    /// sibling's record there and prove the retirement spares it.
+    static BEFORE_DISCARD_RETIRE_SEAM: SeamSlot = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs the seam installed in `slot`, if any.
+#[cfg(test)]
+fn run_seam(slot: &'static std::thread::LocalKey<SeamSlot>) {
+    slot.with(|hook| {
+        if let Some(f) = hook.borrow_mut().as_mut() {
+            f();
+        }
+    });
+}
+
 impl GitStore {
     /// Opens a `GitStore` for an existing git repository.
     ///
@@ -564,7 +595,8 @@ impl GitStore {
     /// Overrides the rung chain for **this store only**, without touching
     /// process-global environment state (which is both `unsafe` to mutate on
     /// a running server and inherently racy). Writes journal to `id`, and
-    /// [`session`](Self::session) reports it at [`Rung::Explicit`].
+    /// [`session`](Self::session) reports it at
+    /// [`Rung::Explicit`](rdm_core::session::Rung::Explicit).
     ///
     /// The motivating caller is a long-lived server told `--changeset <id>`:
     /// it advertises that id on every response, so its writes had better
@@ -596,11 +628,11 @@ impl GitStore {
     /// fail a mutation, and neither must the journal lock staying held past
     /// its bound (10 s, and only ever by a compaction that is alive but not
     /// running — see `journal::record`), in which case the record is
-    /// deliberately not written. Either failure is bounded and reported
-    /// rather than silent — the paths become unattributed, and
-    /// [`commit_changeset`] names them with recovery routes instead of
-    /// sweeping them. Called only *after* a successful flush, so the journal
-    /// can never claim a path that was not written.
+    /// deliberately not written. Either failure is swallowed here — this
+    /// call emits nothing — and surfaces at the next `rdm commit`: the paths
+    /// are unattributed, and [`commit_changeset`] names them with recovery
+    /// routes instead of sweeping them. Called only *after* a successful
+    /// flush, so the journal can never claim a path that was not written.
     ///
     /// [`commit_changeset`]: Self::commit_changeset
     fn record_journal(&self, touched: &[(RelPath, JournalKind, Option<String>)]) {
@@ -669,22 +701,44 @@ impl GitStore {
     ///
     /// Writing into another session's journal is exactly why truncation is an
     /// `O_APPEND` tombstone rather than a rewrite: a record that session
-    /// appends concurrently cannot be destroyed by this loop. It is also why
-    /// a *newer* record of one of these paths correctly **survives** the
-    /// tombstone — it describes content this whole-tree commit did not
-    /// capture. Over-claiming survival is the safe direction: a path whose
-    /// blob already matches HEAD is truncated by the next scoped commit
-    /// anyway.
+    /// appends concurrently cannot be destroyed by this loop. The ordering
+    /// is what makes the tombstone *sound*: every journal is read **before**
+    /// the snapshot and tombstoned from that read afterwards. A disk write
+    /// always precedes its journal record, so an entry read before the
+    /// snapshot is captured by it and is provably at HEAD; a record appended
+    /// after the read is not in the tombstone at all, so a *newer* record of
+    /// one of these paths **survives** — it may describe content this
+    /// whole-tree commit did not capture. A tombstone built from a read taken
+    /// *after* the snapshot would name exactly that record and drop it,
+    /// leaving its path on disk claimed by nobody. Over-claiming survival is
+    /// the safe direction: a path whose blob already matches HEAD is
+    /// truncated by the next scoped commit anyway.
     ///
     /// # Errors
     /// Returns [`Error::Git`] if the commit cannot be created.
     pub fn commit_whole_tree(&self, message: &str) -> Result<CommitReport> {
+        // Read first, snapshot second: see the ordering argument above.
+        let claimed: Vec<(session::SessionId, Vec<JournalEntry>)> = self
+            .session_paths
+            .as_ref()
+            .map(|paths| {
+                session::journal::list_changeset_ids(paths)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|id| {
+                        session::journal::read_journal(paths, &id)
+                            .ok()
+                            .map(|entries| (id, entries))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let report = self.git.git_commit(message)?;
+        #[cfg(test)]
+        run_seam(&AFTER_WHOLE_TREE_SNAPSHOT_SEAM);
         if let Some(paths) = self.session_paths.as_ref() {
-            for id in session::journal::list_changeset_ids(paths).unwrap_or_default() {
-                if let Ok(entries) = session::journal::read_journal(paths, &id) {
-                    let _ = session::journal::truncate(paths, &id, &entries);
-                }
+            for (id, entries) in &claimed {
+                let _ = session::journal::truncate(paths, id, entries);
             }
         }
         Ok(report)
@@ -881,8 +935,16 @@ impl GitStore {
     ///    so that one path is left untouched and reported skipped rather
     ///    than restored, exactly mirroring the digest/presence guard
     ///    [`commit_changeset_id`](Self::commit_changeset_id) already applies
-    ///    (see [`GitRepo::restore_paths_to_head_scoped`]);
-    /// 2. the changeset's journal is cleared;
+    ///    (see `GitRepo::restore_paths_to_head_scoped`);
+    /// 2. the entries this call read — restored or skipped alike — are
+    ///    retired from the journal through a content-keyed tombstone, so a
+    ///    record another process appended under the same session id after
+    ///    that read keeps its claim and its next commit lands it; the journal
+    ///    file itself is swept only if compaction can take the journal lock
+    ///    uncontended, and otherwise outlives its claims until
+    ///    `rdm session gc`. The retirement is best-effort: a journal-lock
+    ///    wait that expires leaves the claims in place rather than failing
+    ///    the discard;
     /// 3. the derived indexes are regenerated **from the resulting disk
     ///    state**, so another session's still-uncommitted rows survive — and
     ///    that regeneration is journaled to this (now empty) changeset, so the
@@ -932,6 +994,8 @@ impl GitStore {
             self.git
                 .restore_paths_to_head_scoped(&report.user, &digests, &deletes)?;
 
+        #[cfg(test)]
+        run_seam(&BEFORE_DISCARD_RETIRE_SEAM);
         // Retire exactly what was read and restored above, not whatever the
         // journal holds by now: under a shared session id a sibling's record
         // appended since that read names a path this discard never restored,
@@ -3315,13 +3379,117 @@ mod tests {
         assert_eq!(entries[0].kind, JournalKind::Delete);
     }
 
-    /// The store's scoped discard, at the same boundary. It restores paths
-    /// from a read of its own and must retire exactly that read afterwards —
-    /// not whatever the journal holds by then — so a sibling's record
-    /// appended between the read and the retirement keeps its claim, instead
-    /// of being retired unrestored and left on disk as unattributed dirt.
+    /// Installs a seam for the duration of the returned guard.
+    fn with_seam(
+        slot: &'static std::thread::LocalKey<SeamSlot>,
+        f: impl FnMut() + 'static,
+    ) -> SeamGuard {
+        slot.with(|hook| *hook.borrow_mut() = Some(Box::new(f)));
+        SeamGuard { slot }
+    }
+
+    struct SeamGuard {
+        slot: &'static std::thread::LocalKey<SeamSlot>,
+    }
+
+    impl Drop for SeamGuard {
+        fn drop(&mut self) {
+            self.slot.with(|hook| *hook.borrow_mut() = None);
+        }
+    }
+
+    /// A sibling's flush under the same session id: new bytes on disk, then
+    /// its record — in that order, exactly as `record_journal` promises.
+    fn sibling_flush(
+        root: &Path,
+        paths: &SessionPaths,
+        id: &session::SessionId,
+        name: &str,
+        body: &str,
+    ) {
+        std::fs::write(root.join(name), body).unwrap();
+        rdm_core::session::journal::record(
+            paths,
+            id,
+            &[JournalEntry {
+                path: name.to_string(),
+                kind: JournalKind::Write,
+                digest: Some(rdm_core::store::content_digest(body)),
+            }],
+        )
+        .unwrap();
+    }
+
+    /// The store's scoped discard restores paths from a read of its own and
+    /// must retire exactly that read afterwards — not whatever the journal
+    /// holds by then — so a sibling's record appended between the read and
+    /// the retirement keeps its claim, instead of being retired unrestored
+    /// and left on disk as unattributed dirt. Driven through the real
+    /// `discard_changeset` at its seam, so reverting the wiring to a fresh
+    /// re-read fails this test.
     #[test]
     fn a_record_appended_inside_a_discards_retirement_window_survives() {
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        store
+            .write(&RelPath::new("seed.md").unwrap(), "seed".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        store.commit_changeset(Some("seed"), &[]).unwrap();
+
+        // This session's own uncommitted work, which the discard will undo.
+        store
+            .write(&RelPath::new("a.md").unwrap(), "a".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+        let root = store.root().to_path_buf();
+        {
+            let (p2, id2, root2) = (paths.clone(), id.clone(), root.clone());
+            let _seam = with_seam(&BEFORE_DISCARD_RETIRE_SEAM, move || {
+                // The other process, after the discard's read and restore.
+                sibling_flush(&root2, &p2, &id2, "b.md", "b");
+            });
+            store.discard_changeset().unwrap();
+        }
+
+        assert!(
+            !root.join("a.md").exists(),
+            "this session's own work is restored"
+        );
+        assert!(
+            root.join("b.md").exists(),
+            "the sibling's file is left alone"
+        );
+        let after = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        assert!(
+            after.iter().any(|e| e.path == "b.md"),
+            "the record appended inside the window keeps its claim: {after:?}"
+        );
+        assert!(
+            !after.iter().any(|e| e.path == "a.md"),
+            "and what the discard read is retired: {after:?}"
+        );
+
+        // The survivor is committable by its own session rather than
+        // stranded as unattributed dirt.
+        let landed = store
+            .commit_changeset(Some("land the sibling's work"), &[])
+            .unwrap();
+        assert!(landed.sha.is_some(), "the survivor must be committable");
+        assert!(landed.committed.iter().any(|p| p == "b.md"));
+    }
+
+    /// The whole-tree commit tombstones every journal from a read taken
+    /// BEFORE its snapshot. A record appended after the snapshot names
+    /// content HEAD never received, so the tombstone must spare it; a
+    /// tombstone built from a read taken after the snapshot would name it
+    /// exactly and drop it. Driven through the real `commit_whole_tree` at
+    /// its seam, so reverting the ordering fails this test.
+    #[test]
+    fn a_record_appended_after_a_whole_tree_snapshot_survives_its_tombstone() {
         let dir = TempDir::new().unwrap();
         let mut store = store_already_mapped(&dir);
         store
@@ -3331,50 +3499,34 @@ mod tests {
 
         let paths = store.session_paths().unwrap().clone();
         let id = store.session().unwrap().id.clone();
-
-        // (1) the discarder's read, which is what it restores from.
-        let read = store.read_changeset(Some(&id)).unwrap();
-        assert_eq!(read.len(), 1, "only a.md is journaled so far");
-
-        // (2) the other process, mid-discard: a brand-new path under the
-        //     same session id.
-        rdm_core::session::journal::record(
-            &paths,
-            &id,
-            &[rdm_core::session::journal::JournalEntry {
-                path: "b.md".to_string(),
-                kind: JournalKind::Write,
-                digest: Some(rdm_core::store::content_digest("b")),
-            }],
-        )
-        .unwrap();
-
-        // (3) the discarder's retirement, against exactly what it read.
-        rdm_core::session::journal::retire(&paths, &id, &read).unwrap();
+        let root = store.root().to_path_buf();
+        {
+            let (p2, id2, root2) = (paths.clone(), id.clone(), root.clone());
+            let _seam = with_seam(&AFTER_WHOLE_TREE_SNAPSHOT_SEAM, move || {
+                // The other process, after the snapshot and before the
+                // tombstones: a rewrite of the very path being landed.
+                sibling_flush(&root2, &p2, &id2, "a.md", "a, rewritten");
+            });
+            store.commit_whole_tree("whole tree").unwrap();
+        }
 
         let after = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
-        let names: Vec<&str> = after.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(
-            names,
-            vec!["b.md"],
-            "what was read is retired; what was appended since keeps its claim"
+            after
+                .iter()
+                .find(|e| e.path == "a.md")
+                .and_then(|e| e.digest.as_deref()),
+            Some(rdm_core::store::content_digest("a, rewritten").as_str()),
+            "the record appended after the snapshot must survive the tombstone \
+with its new content identity: {after:?}"
         );
 
-        // And the survivor is committable by its own session rather than
-        // stranded as unattributed dirt.
-        store
-            .write(&RelPath::new("b.md").unwrap(), "b".to_string())
-            .unwrap();
-        store.commit().unwrap();
+        // And the next scoped commit lands exactly that content.
         let landed = store
-            .commit_changeset(Some("land the survivor"), &[])
+            .commit_changeset(Some("land the rewrite"), &[])
             .unwrap();
         assert!(landed.sha.is_some(), "the survivor must be committable");
-        assert!(landed.committed.iter().any(|p| p == "b.md"));
-        assert!(
-            !landed.committed.iter().any(|p| p == "a.md"),
-            "the retired path must not be re-landed"
-        );
+        assert!(landed.committed.iter().any(|p| p == "a.md"));
     }
 
     #[test]
