@@ -166,10 +166,14 @@ pub fn resolve_code_link(
 /// # Errors
 ///
 /// For [`Link::Item`], delegates to [`resolve_item_link`] — see its `#
-/// Errors`. For [`Link::Code`], returns
-/// [`crate::error::Error::ProjectNotFound`] if `project` doesn't exist (the
-/// project's `source` config must be loaded to build a `web_url`); otherwise
-/// see [`resolve_code_link`], which does not fail today.
+/// Errors`. For [`Link::Code`], the project's `source` config must be loaded
+/// first (to build a `web_url`) via [`crate::io::load_project`], which can
+/// return [`crate::error::Error::ProjectNotFound`] if `project` doesn't
+/// exist, [`crate::error::Error::Io`] if the project file cannot be read, or
+/// [`crate::error::Error::FrontmatterMissing`]/
+/// [`crate::error::Error::FrontmatterParse`] if its frontmatter is invalid —
+/// all propagated unmodified via `?`; otherwise see [`resolve_code_link`],
+/// which does not fail today.
 pub fn resolve_link(
     store: &impl Store,
     project: &str,
@@ -213,6 +217,14 @@ pub fn resolve_link(
 /// document, so output is deterministic across repeated calls even though
 /// the underlying listing order is not otherwise guaranteed.
 ///
+/// A [`ItemRef::Phase`] whose `stem` is a bare number is normalized to the
+/// roadmap's canonical stem before matching (via [`normalize_item_ref`]) —
+/// both `target` itself and every item link found in a scanned body — so a
+/// link written as `rdm:phase/auth/1` and a caller-supplied
+/// `rdm:phase/auth/phase-1-design` target are treated as the same reference,
+/// exactly as [`resolve_item_link`] already treats the two forms as
+/// equivalent for existence checks.
+///
 /// # Errors
 ///
 /// Returns [`crate::error::Error::ProjectNotFound`] if the project doesn't
@@ -221,62 +233,82 @@ pub fn resolve_link(
 /// directory cannot be listed or a file cannot be read, or
 /// [`crate::error::Error::FrontmatterMissing`]/
 /// [`crate::error::Error::FrontmatterParse`] if any scanned document has
-/// invalid frontmatter.
+/// invalid frontmatter — including while normalizing a numeric phase stem
+/// found in a link (see [`normalize_item_ref`]).
 pub fn backlinks(
     store: &impl Store,
     project: &str,
     target: &ItemRef,
 ) -> Result<Vec<BacklinkEntry>> {
+    // Normalize the caller's target the same way `resolve_item_link` would,
+    // so a caller passing a bare-number phase stem matches links written
+    // with the canonical stem, and vice versa — see `normalize_item_ref`.
+    let target = normalize_item_ref(store, project, target)?;
     let mut entries = Vec::new();
 
     for roadmap_doc in crate::ops::roadmap::list_roadmaps(store, project, None, None)? {
         let roadmap = roadmap_doc.frontmatter.roadmap.clone();
         collect_item_links(
+            store,
+            project,
             &roadmap_doc.body,
-            target,
+            &target,
             DocRef::Roadmap {
                 roadmap: roadmap.clone(),
             },
             &mut entries,
-        );
+        )?;
 
         for (stem, phase_doc) in crate::ops::phase::list_phases(store, project, &roadmap)? {
             collect_item_links(
+                store,
+                project,
                 &phase_doc.body,
-                target,
+                &target,
                 DocRef::Phase {
                     roadmap: roadmap.clone(),
                     stem,
                 },
                 &mut entries,
-            );
+            )?;
         }
     }
 
     for (slug, task_doc) in crate::ops::task::list_tasks(store, project)? {
-        collect_item_links(&task_doc.body, target, DocRef::Task { slug }, &mut entries);
+        collect_item_links(
+            store,
+            project,
+            &task_doc.body,
+            &target,
+            DocRef::Task { slug },
+            &mut entries,
+        )?;
     }
 
     for (id, review_doc) in crate::ops::reviews::list_reviews(store, project)? {
         collect_item_links(
+            store,
+            project,
             &review_doc.body,
-            target,
+            &target,
             DocRef::Review {
                 id: id.clone(),
                 comment: None,
             },
             &mut entries,
-        );
+        )?;
         for comment in &review_doc.frontmatter.comments {
             collect_item_links(
+                store,
+                project,
                 &comment.body,
-                target,
+                &target,
                 DocRef::Review {
                     id: id.clone(),
                     comment: Some(comment.id),
                 },
                 &mut entries,
-            );
+            )?;
         }
     }
 
@@ -289,21 +321,81 @@ pub fn backlinks(
     Ok(entries)
 }
 
-/// Finds every `rdm:` item link in `body` that resolves to exactly
-/// `target`, pushing one [`BacklinkEntry`] per occurrence tagged with
-/// `doc_ref`.
-fn collect_item_links(body: &str, target: &ItemRef, doc_ref: DocRef, out: &mut Vec<BacklinkEntry>) {
+/// Normalizes an [`ItemRef`] the same way [`resolve_item_link`] resolves one
+/// before checking existence: a [`ItemRef::Phase`] whose `stem` is a bare
+/// number is resolved to the roadmap's real phase stem via
+/// [`crate::ops::phase::resolve_phase_stem`]. Every other variant, and a
+/// `Phase` whose `stem` is already non-numeric, passes through unchanged.
+///
+/// This is what lets [`backlinks`] treat `rdm:phase/auth/1` and
+/// `rdm:phase/auth/phase-1-design` as the same target — the two forms
+/// [`resolve_item_link`] already treats as equivalent — regardless of which
+/// form a link in a document body used or which form the caller's target
+/// used.
+///
+/// An unresolvable roadmap or phase number folds to the input unchanged
+/// (mirroring [`resolve_item_link`]'s `exists: false` contract): the
+/// unresolved numeric stem simply will not equal any canonical stem, so it
+/// drops out of the match rather than erroring.
+///
+/// # Errors
+///
+/// Returns an error only for a genuine store failure while resolving a
+/// numeric phase identifier, per
+/// [`crate::ops::phase::resolve_phase_stem`] — e.g.
+/// [`crate::error::Error::Io`] or
+/// [`crate::error::Error::FrontmatterParse`]/
+/// [`crate::error::Error::FrontmatterMissing`].
+fn normalize_item_ref(store: &impl Store, project: &str, item_ref: &ItemRef) -> Result<ItemRef> {
+    match item_ref {
+        ItemRef::Phase { roadmap, stem } => {
+            match crate::ops::phase::resolve_phase_stem(store, project, roadmap, stem) {
+                Ok(resolved_stem) => Ok(ItemRef::Phase {
+                    roadmap: roadmap.clone(),
+                    stem: resolved_stem,
+                }),
+                // Unknown roadmap, or a phase number that doesn't match any
+                // phase in it — leave the reference as-is; it simply won't
+                // equal a canonical stem, per this function's contract.
+                Err(
+                    crate::error::Error::RoadmapNotFound(_) | crate::error::Error::PhaseNotFound(_),
+                ) => Ok(item_ref.clone()),
+                Err(e) => Err(e),
+            }
+        }
+        other => Ok(other.clone()),
+    }
+}
+
+/// Finds every `rdm:` item link in `body` that normalizes (via
+/// [`normalize_item_ref`]) to exactly `target`, pushing one
+/// [`BacklinkEntry`] per occurrence tagged with `doc_ref`.
+///
+/// # Errors
+///
+/// Returns an error only for a genuine store failure while normalizing a
+/// numeric phase stem found in a link — see [`normalize_item_ref`].
+fn collect_item_links(
+    store: &impl Store,
+    project: &str,
+    body: &str,
+    target: &ItemRef,
+    doc_ref: DocRef,
+    out: &mut Vec<BacklinkEntry>,
+) -> Result<()> {
     let (links, _diagnostics) = crate::link::extract_links(body);
     for (range, link) in links {
-        if let Link::Item(item_ref) = link
-            && item_ref == *target
-        {
-            out.push(BacklinkEntry {
-                document: doc_ref.clone(),
-                byte_range: range,
-            });
+        if let Link::Item(item_ref) = link {
+            let normalized = normalize_item_ref(store, project, &item_ref)?;
+            if normalized == *target {
+                out.push(BacklinkEntry {
+                    document: doc_ref.clone(),
+                    byte_range: range,
+                });
+            }
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -986,5 +1078,93 @@ mod tests {
                 comment: Some(3),
             }
         );
+    }
+
+    #[test]
+    fn backlinks_matches_bare_number_phase_link_against_canonical_stem_target() {
+        // Mirrors `resolve_item_link_existing_phase_by_number`: a link
+        // written with rdm's bare-number phase shorthand
+        // (`rdm:phase/auth/1`) must be found when querying with the
+        // phase's canonical stem, which is the form any real caller
+        // holding an actual Phase document will have.
+        let mut store = setup();
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            crate::ops::CreateRoadmap {
+                project: "demo",
+                slug: "auth",
+                title: "Auth",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            crate::ops::CreatePhase {
+                project: "demo",
+                roadmap: "auth",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: None,
+                tags: None,
+                difficulty: crate::ops::DifficultyUpdate::Keep,
+                model: crate::ops::ModelTierUpdate::Keep,
+            },
+        )
+        .unwrap();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "references-by-number",
+                title: "References by number",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("See [the phase](rdm:phase/auth/1) for background."),
+            },
+        )
+        .unwrap();
+
+        let target = ItemRef::Phase {
+            roadmap: "auth".to_string(),
+            stem: "phase-1-design".to_string(),
+        };
+        let entries = backlinks(&store, "demo", &target).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].document,
+            DocRef::Task {
+                slug: "references-by-number".to_string(),
+            }
+        );
+
+        // And the reverse: querying with the bare-number form still finds
+        // a link written with the canonical stem.
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "references-by-stem",
+                title: "References by stem",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("See [the phase](rdm:phase/auth/phase-1-design) for background."),
+            },
+        )
+        .unwrap();
+        let numeric_target = ItemRef::Phase {
+            roadmap: "auth".to_string(),
+            stem: "1".to_string(),
+        };
+        let entries = backlinks(&store, "demo", &numeric_target).unwrap();
+        assert_eq!(entries.len(), 2);
+        let docs: Vec<&DocRef> = entries.iter().map(|e| &e.document).collect();
+        assert!(docs.contains(&&DocRef::Task {
+            slug: "references-by-number".to_string(),
+        }));
+        assert!(docs.contains(&&DocRef::Task {
+            slug: "references-by-stem".to_string(),
+        }));
     }
 }
