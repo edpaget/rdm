@@ -753,8 +753,8 @@ applies its directive, and journals its own writes.
 | `rdm session journal [--id <id>]` | Print a changeset's exact journaled path set. |
 | `rdm session list` | List every changeset, reporting their liveness states. `--format json` has a `liveness` field per changeset: `"current"` (caller's own, unflagged), `"live"` (backed by live lease, unflagged), `"unleased"` (no lease, flagged), or `"orphaned"` (dead lease, flagged). |
 | `rdm session adopt <id>` | Re-point this session at an existing (usually orphaned) changeset. |
-| `rdm session discard <id> --force` | Delete a changeset's journal. Irreversible, hence the flag. |
-| `rdm session gc` | Remove leases whose owning process is gone or recycled. |
+| `rdm session discard <id> --force` | Retire every claim the changeset holds through a content-keyed tombstone, then sweep the file if nothing else is writing to it. Irreversible for the caller's own claims, hence the flag; a sibling's concurrent record survives. |
+| `rdm session gc` | Remove leases whose owning process is gone or recycled, and sweep (rewrite or remove) changeset journals that claim nothing and no live lease names — safe against concurrent appends because both sides take the journal lock. |
 
 The JSON field names (`id`, `rung`, `resolve_micros`, `liveness`, `paths`) are
 a stable target for the agent-surface phase; do not rename them casually.

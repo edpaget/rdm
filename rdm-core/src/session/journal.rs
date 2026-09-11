@@ -736,6 +736,11 @@ pub fn compact(paths: &SessionPaths, id: &SessionId) -> bool {
         Ok(JournalLock::Held(file)) => file,
         Ok(JournalLock::Contended | JournalLock::Unsupported) | Err(_) => return false,
     };
+    // Holding the lock proves no compaction of any journal here is mid-rename,
+    // so a temporary file left by one killed between its write and its
+    // rename is an orphan; sweep it rather than let it accumulate forever.
+    let tmp = path.with_extension("jsonl.compacting");
+    let _ = std::fs::remove_file(&tmp);
     let Ok(raw) = std::fs::read_to_string(&path) else {
         return false;
     };
@@ -762,7 +767,6 @@ pub fn compact(paths: &SessionPaths, id: &SessionId) -> bool {
     let Ok(line) = serde_json::to_string(&JournalLine { paths: entries }) else {
         return false;
     };
-    let tmp = path.with_extension("jsonl.compacting");
     if std::fs::write(&tmp, format!("{line}\n")).is_err() {
         let _ = std::fs::remove_file(&tmp);
         return false;

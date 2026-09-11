@@ -915,7 +915,19 @@ impl GitStore {
         self.journal_pending_side_writes();
         let id = self.session().map(|s| s.id.clone());
         let journal = self.read_changeset(id.as_ref())?;
-        let owned = Self::owned_paths(&journal, &[]);
+        self.status_report_for(&journal)
+    }
+
+    /// The scoped status report for one already-read journal.
+    ///
+    /// Split from [`status_report_scoped`](Self::status_report_scoped) so a
+    /// caller that goes on to act on the journal — the scoped discard — can
+    /// derive its report and its later retirement from **one** read. Two
+    /// reads would open a window between them: a sibling's record appended
+    /// in it would be in the retirement set but not in the restore set, and
+    /// its path would be retired unrestored.
+    fn status_report_for(&self, journal: &[JournalEntry]) -> Result<StatusReport> {
+        let owned = Self::owned_paths(journal, &[]);
         let all_owned = self.all_owned_paths();
         self.git.git_status_report_scoped(&owned, &all_owned)
     }
@@ -961,7 +973,12 @@ impl GitStore {
     /// Returns [`Error::Git`] if the HEAD tree cannot be read or files cannot
     /// be written, or a core error if the indexes cannot be regenerated.
     pub fn discard_changeset(&mut self) -> Result<ScopedDiscard> {
-        let report = self.status_report_scoped()?;
+        // ONE journal read feeds both the restore set (through the report)
+        // and the retirement below; see `status_report_for`.
+        self.journal_pending_side_writes();
+        let id = self.session().map(|s| s.id.clone());
+        let journal = self.read_changeset(id.as_ref())?;
+        let report = self.status_report_for(&journal)?;
         if report.is_changeset_clean() {
             let _ = self.git.ensure_gitattributes();
             return Ok(ScopedDiscard {
@@ -970,8 +987,6 @@ impl GitStore {
             });
         }
 
-        let id = self.session().map(|s| s.id.clone());
-        let journal = self.read_changeset(id.as_ref())?;
         let mut digests = std::collections::BTreeMap::new();
         let mut deletes = std::collections::BTreeSet::new();
         for entry in &journal {
