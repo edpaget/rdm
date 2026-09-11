@@ -1765,7 +1765,9 @@ mod commit_lock_tests {
             "takeover must be immediate, not after the wait deadline"
         );
         assert!(
-            lock.still_held(),
+            std::fs::read_to_string(&lock_path)
+                .unwrap()
+                .starts_with(&format!("rdm-lock {} ", std::process::id())),
             "the stale file should have been removed and recreated carrying \
              the taker's own ownership token"
         );

@@ -37,7 +37,8 @@
 //!   every append by a lock the kernel enforces. Compaction holds
 //!   `<changesets>/journal.lock` exclusively across its read, its fold and its
 //!   `rename`; every append holds the same lock shared across its open and its
-//!   write (see [`append_line`]). Two appends never wait on each other; a
+//!   write (the protocol is documented on [`compact`]). Two appends never wait
+//!   on each other; a
 //!   compaction waits for in-flight appends and skips if it cannot get in; an
 //!   append waits out a compaction and then opens the file it left behind. A
 //!   lock the kernel owns is released the instant its holder dies, so there
@@ -460,9 +461,9 @@ thread_local! {
     static AFTER_FOLD_HOOK: HookSlot = const { std::cell::RefCell::new(None) };
 
     /// Test-only seam run inside [`compact`] immediately before its
-    /// irreversible step, so a unit test can drive a staleness takeover of the
-    /// compaction lock at the one instant where it would otherwise cost an
-    /// appender its record.
+    /// irreversible step — after its compare-and-swap, with the journal lock
+    /// held — so a unit test can drive an append or a second compaction into
+    /// exactly the window the lock exists to close.
     static BEFORE_REWRITE_HOOK: HookSlot = const { std::cell::RefCell::new(None) };
 }
 
@@ -556,11 +557,22 @@ pub fn changeset_path(paths: &SessionPaths, id: &SessionId) -> PathBuf {
 /// An empty `entries` slice records nothing at all, so an empty flush can never
 /// leave behind a journal that claims a batch happened.
 ///
+/// Blocks at `RDM_HARNESS_APPEND_BARRIER` when that variable names a file
+/// (a test seam; inert otherwise).
+///
 /// # Errors
 ///
 /// Returns [`Error::Io`] if the state directory cannot be created or the
-/// append fails. Callers on the mutation path swallow this deliberately —
-/// journaling is best-effort.
+/// append fails — including the one case a caller is least likely to expect:
+/// the journal lock stayed held against this append for longer than
+/// `APPEND_LOCK_WAIT` (10 s). Every append takes `<changesets>/journal.lock`
+/// shared, and a running [`compact`] holds it exclusively for microseconds,
+/// so that wait is only ever exhausted by a compaction that is alive but not
+/// running (stopped under a debugger, parked on a harness barrier). When it
+/// is, **nothing is written**: the error means the batch was deliberately not
+/// recorded, so its paths surface as unattributed in the next `rdm commit`
+/// rather than being written into a file about to be thrown away. Callers on
+/// the mutation path swallow this deliberately — journaling is best-effort.
 pub fn record(paths: &SessionPaths, id: &SessionId, entries: &[JournalEntry]) -> Result<()> {
     if entries.is_empty() {
         return Ok(());
@@ -647,13 +659,18 @@ pub fn read_journal(paths: &SessionPaths, id: &SessionId) -> Result<Vec<JournalE
 /// deliberately destroyed changeset claims rather than what a commit landed —
 /// so that a discard, too, cannot take a sibling's concurrent append with it.
 ///
+/// Blocks at `RDM_HARNESS_JOURNAL_BARRIER` when that variable names a file
+/// (a test seam; inert otherwise).
+///
 /// # Errors
 ///
 /// Returns [`Error::Io`] if the state directory cannot be created or the
-/// append fails. Callers on the commit path swallow this: the commit itself
-/// has already landed, and failing afterwards would be worse than a stale
-/// journal — the paths simply stay journaled, which over-claims rather than
-/// loses.
+/// append fails, including the bounded wait on the journal lock described
+/// under [`record`] — a tombstone is an append like any other, and on that
+/// wait expiring nothing is written. Callers on the commit path swallow this:
+/// the commit itself has already landed, and failing afterwards would be
+/// worse than a stale journal — the paths simply stay journaled, which
+/// over-claims rather than loses.
 pub fn truncate(paths: &SessionPaths, id: &SessionId, landed: &[JournalEntry]) -> Result<()> {
     harness_barrier(HARNESS_JOURNAL_BARRIER);
     if landed.is_empty() {
@@ -687,7 +704,7 @@ pub fn truncate(paths: &SessionPaths, id: &SessionId, landed: &[JournalEntry]) -
 /// guarantee:
 ///
 /// - **The journal lock, held exclusively.** Every append holds
-///   [`journal_lock_path`] shared from before it opens the journal until its
+///   `<changesets>/journal.lock` shared from before it opens the journal until its
 ///   write has returned; this call holds it exclusively from before it reads
 ///   the journal until after its `rename` or `remove_file`. So an append in
 ///   flight keeps this call out, and this call keeps every later append
@@ -710,6 +727,9 @@ pub fn truncate(paths: &SessionPaths, id: &SessionId, landed: &[JournalEntry]) -
 /// Losing the compare-and-swap repeatedly under sustained load leaves the
 /// journal growing: one small line per flushed batch plus one per commit.
 /// That is a size concern, not a correctness one.
+///
+/// Blocks at `RDM_HARNESS_COMPACT_BARRIER` when that variable names a file
+/// (a test seam; inert otherwise).
 pub fn compact(paths: &SessionPaths, id: &SessionId) -> bool {
     let path = changeset_path(paths, id);
     let _lock = match lock_journal(&path, LockMode::Exclusive, COMPACT_LOCK_WAIT) {
@@ -771,7 +791,7 @@ pub fn compact(paths: &SessionPaths, id: &SessionId) -> bool {
 /// changesets simply avoids rewrites that would obviously lose their
 /// compare-and-swap.
 ///
-/// Safety comes from the journal lock instead (see [`append_line`] and
+/// Safety comes from the journal lock instead (the protocol is documented on
 /// [`compact`]): an append in flight holds it shared, so a sweep that arrives
 /// while one is running cannot take the exclusive hold it needs and skips that
 /// changeset; a sweep already inside its critical section holds the append
@@ -903,7 +923,7 @@ pub fn list_changeset_ids(paths: &SessionPaths) -> Result<Vec<SessionId>> {
 /// This is orphan recovery: after adopting, the caller's shell resolves `id`
 /// and its subsequent mutations append to that changeset's journal. Adoption
 /// works by repointing the caller's *parent-lease* state (rung 2) — since
-/// phase 10 reordered [`super::resolve_id`] to check a harness variable
+/// phase 10 reordered the identity chain ([`super::resolve_session`]) to check a harness variable
 /// (rung 3) before that lease, adoption is refused up front when a harness
 /// variable is present, rather than silently repointing a lease the caller's
 /// own next resolution will never reach.
@@ -951,7 +971,7 @@ pub fn adopt_changeset(
 /// changeset and destroying whatever happens to be in the file when the
 /// removal lands: under one shared session id a sibling process may be
 /// appending *while* this runs, and an unlink takes its record with it. That
-/// is precisely the loss [`append_line`]'s protocol exists to prevent,
+/// is precisely the loss the journal lock (see [`compact`]) exists to prevent,
 /// arriving from the one writer that used to ignore the protocol outright — so
 /// the fix is to stop ignoring it rather than to document the hole. Going
 /// through [`truncate`] also makes the retirement content-keyed: a path
@@ -969,19 +989,41 @@ pub fn adopt_changeset(
 /// # Errors
 ///
 /// Returns [`Error::Io`] if the journal exists but cannot be read, or if the
-/// tombstone cannot be appended.
+/// tombstone cannot be appended — including the bounded journal-lock wait
+/// described under [`record`], in which case nothing was retired.
 pub fn discard_changeset(paths: &SessionPaths, id: &SessionId) -> Result<bool> {
     let claimed = read_journal(paths, id)?;
-    if claimed.is_empty() {
-        // Nothing to retire. Sweep the file anyway when one is lying around
-        // claiming nothing, so a discard of an already-committed changeset
-        // still leaves the directory as clean as it used to.
-        let _ = compact(paths, id);
-        return Ok(false);
+    retire(paths, id, &claimed)?;
+    Ok(!claimed.is_empty())
+}
+
+/// Retires exactly `claimed` from `id`'s journal — the entries a caller read
+/// and has since acted on — and then sweeps the file.
+///
+/// The content-keyed half of [`discard_changeset`], split out for a caller
+/// that restores paths from a read of its *own*: the git store's scoped
+/// `rdm discard` reads the journal, restores those paths to HEAD, and only
+/// then retires them. Retiring on a fresh read at that point would take a
+/// sibling's record appended in between — a path the store never restored,
+/// now claimed by nobody, left on disk as unattributed dirt. Passing what was
+/// actually read keeps that record: [`truncate`]'s tombstone is content-keyed,
+/// so a path recorded after the read, or re-recorded with different content,
+/// keeps its claim and its next commit lands it.
+///
+/// An empty `claimed` retires nothing and still sweeps, so a discard of an
+/// already-committed changeset leaves the directory as clean as it used to.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if the tombstone cannot be appended — including the
+/// bounded journal-lock wait described under [`record`], in which case
+/// nothing was retired.
+pub fn retire(paths: &SessionPaths, id: &SessionId, claimed: &[JournalEntry]) -> Result<()> {
+    if !claimed.is_empty() {
+        truncate(paths, id, claimed)?;
     }
-    truncate(paths, id, &claimed)?;
     let _ = compact(paths, id);
-    Ok(true)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1746,6 +1788,47 @@ silent loss this module exists to exclude"
                 .unwrap()
                 .contains(&entry("b.md", JournalKind::Write)),
             "once the holder is gone the same append lands"
+        );
+    }
+
+    /// The store's scoped discard restores paths from a read of its own and
+    /// retires them afterwards. A sibling's record appended in between must
+    /// not be retired with them: it names a path the store never restored.
+    #[test]
+    fn retire_takes_only_what_was_read_and_keeps_a_record_appended_since() {
+        let dir = TempDir::new().unwrap();
+        let p = paths(&dir);
+        let id = SessionId::new("s-store-discard").unwrap();
+        record(&p, &id, &[entry("a.md", JournalKind::Write)]).unwrap();
+
+        // (1) the discarder's read, which is what it restores from.
+        let read = read_journal(&p, &id).unwrap();
+        assert_eq!(read, vec![entry("a.md", JournalKind::Write)]);
+
+        // (2) a sibling under the same id, mid-discard.
+        record(&p, &id, &[entry("b.md", JournalKind::Write)]).unwrap();
+
+        // (3) the discarder retires exactly what it read.
+        retire(&p, &id, &read).unwrap();
+
+        assert_eq!(
+            read_journal(&p, &id).unwrap(),
+            vec![entry("b.md", JournalKind::Write)],
+            "the record appended after the read must keep its claim"
+        );
+        assert!(
+            changeset_path(&p, &id).exists(),
+            "and the journal survives because it still claims something"
+        );
+
+        // With nothing appended in between, retiring what was read leaves a
+        // journal that claims nothing, and the sweep removes it.
+        let read = read_journal(&p, &id).unwrap();
+        retire(&p, &id, &read).unwrap();
+        assert!(read_journal(&p, &id).unwrap().is_empty());
+        assert!(
+            !changeset_path(&p, &id).exists(),
+            "swept once it claims nothing"
         );
     }
 

@@ -593,11 +593,14 @@ impl GitStore {
     ///
     /// Best-effort and non-fatal, mirroring the hook logger's
     /// swallow-failures contract: an unwritable state directory must never
-    /// fail a mutation. The failure is bounded and reported rather than
-    /// silent — the paths become unattributed, and [`commit_changeset`] names
-    /// them with recovery routes instead of sweeping them. Called only
-    /// *after* a successful flush, so the journal can never claim a path that
-    /// was not written.
+    /// fail a mutation, and neither must the journal lock staying held past
+    /// its bound (10 s, and only ever by a compaction that is alive but not
+    /// running — see `journal::record`), in which case the record is
+    /// deliberately not written. Either failure is bounded and reported
+    /// rather than silent — the paths become unattributed, and
+    /// [`commit_changeset`] names them with recovery routes instead of
+    /// sweeping them. Called only *after* a successful flush, so the journal
+    /// can never claim a path that was not written.
     ///
     /// [`commit_changeset`]: Self::commit_changeset
     fn record_journal(&self, touched: &[(RelPath, JournalKind, Option<String>)]) {
@@ -929,8 +932,12 @@ impl GitStore {
             self.git
                 .restore_paths_to_head_scoped(&report.user, &digests, &deletes)?;
 
+        // Retire exactly what was read and restored above, not whatever the
+        // journal holds by now: under a shared session id a sibling's record
+        // appended since that read names a path this discard never restored,
+        // and retiring it would leave that path on disk claimed by nobody.
         if let (Some(paths), Some(id)) = (self.session_paths.as_ref(), id.as_ref()) {
-            let _ = session::journal::discard_changeset(paths, id);
+            let _ = session::journal::retire(paths, id, &journal);
         }
 
         // Regenerate from what is actually on disk now: the point is that
@@ -3306,6 +3313,68 @@ mod tests {
         store.commit().unwrap();
         let entries = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
         assert_eq!(entries[0].kind, JournalKind::Delete);
+    }
+
+    /// The store's scoped discard, at the same boundary. It restores paths
+    /// from a read of its own and must retire exactly that read afterwards —
+    /// not whatever the journal holds by then — so a sibling's record
+    /// appended between the read and the retirement keeps its claim, instead
+    /// of being retired unrestored and left on disk as unattributed dirt.
+    #[test]
+    fn a_record_appended_inside_a_discards_retirement_window_survives() {
+        let dir = TempDir::new().unwrap();
+        let mut store = store_already_mapped(&dir);
+        store
+            .write(&RelPath::new("a.md").unwrap(), "a".to_string())
+            .unwrap();
+        store.commit().unwrap();
+
+        let paths = store.session_paths().unwrap().clone();
+        let id = store.session().unwrap().id.clone();
+
+        // (1) the discarder's read, which is what it restores from.
+        let read = store.read_changeset(Some(&id)).unwrap();
+        assert_eq!(read.len(), 1, "only a.md is journaled so far");
+
+        // (2) the other process, mid-discard: a brand-new path under the
+        //     same session id.
+        rdm_core::session::journal::record(
+            &paths,
+            &id,
+            &[rdm_core::session::journal::JournalEntry {
+                path: "b.md".to_string(),
+                kind: JournalKind::Write,
+                digest: Some(rdm_core::store::content_digest("b")),
+            }],
+        )
+        .unwrap();
+
+        // (3) the discarder's retirement, against exactly what it read.
+        rdm_core::session::journal::retire(&paths, &id, &read).unwrap();
+
+        let after = rdm_core::session::journal::read_journal(&paths, &id).unwrap();
+        let names: Vec<&str> = after.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["b.md"],
+            "what was read is retired; what was appended since keeps its claim"
+        );
+
+        // And the survivor is committable by its own session rather than
+        // stranded as unattributed dirt.
+        store
+            .write(&RelPath::new("b.md").unwrap(), "b".to_string())
+            .unwrap();
+        store.commit().unwrap();
+        let landed = store
+            .commit_changeset(Some("land the survivor"), &[])
+            .unwrap();
+        assert!(landed.sha.is_some(), "the survivor must be committable");
+        assert!(landed.committed.iter().any(|p| p == "b.md"));
+        assert!(
+            !landed.committed.iter().any(|p| p == "a.md"),
+            "the retired path must not be re-landed"
+        );
     }
 
     #[test]

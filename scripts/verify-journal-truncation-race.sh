@@ -11,9 +11,17 @@
 #       "belong to another changeset" line. It also disentangles the
 #       separately-filed pre-flush index-read race
 #       (`index-regen-reads-before-flush-lock`): a derived INDEX.md may still
-#       be dirty here for that unrelated reason, and ONE quiescent
-#       regeneration must be enough to settle it, after which the tree is
-#       asserted fully clean
+#       be dirty here for that unrelated reason, but only by LAGGING HEAD —
+#       a dirty index holding a row HEAD never received is a disowned index
+#       write, i.e. a lost append, and fails — and ONE quiescent regeneration
+#       must then settle the lag, after which the tree is asserted fully
+#       clean
+#   1b  the mutant self-test for section 1's drift-direction check: the same
+#       fan-out against the pre-fix mutant, up to three attempts, must leave a
+#       dirty index AHEAD of HEAD at least once. Which record a real fan-out
+#       loses is up to the scheduler, so this is bounded rather than
+#       deterministic; sections 2/2b, 5/5b and 6/6b are the deterministic
+#       proofs
 #   2   determinism, not luck: two REAL processes interleaved at the
 #       documented RDM_HARNESS_JOURNAL_BARRIER seam — a commit parked inside
 #       `truncate` while a full `rdm task create` runs to completion — and the
@@ -311,6 +319,112 @@ gc_interleave() {
     await_exit "$_bpid" "process B (rdm task create)" "$_out/b.status"
 }
 
+# stress_fanout <repo> <outdir> [bin]
+#
+# Section 1's scenario, factored out so section 1b can drive the IDENTICAL
+# fan-out against the mutant: N_MUTATIONS parallel `rdm task create`s across
+# two projects with M_COMMITS `rdm commit`s interleaved INTO the create stream,
+# all under one shared session id, then one settling commit for whatever the
+# races left staged.
+N_MUTATIONS=40
+M_COMMITS=6
+stress_fanout() {
+    _repo=$1
+    _out=$2
+    _bin=${3:-$RDM_BIN}
+    mkdir -p "$_out"
+    _pids=""
+    _i=1
+    while [ "$_i" -le "$N_MUTATIONS" ]; do
+        if [ $((_i % 2)) -eq 0 ]; then _proj=alpha; else _proj=beta; fi
+        RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create "stress-$_i" \
+            --title "Stress $_i" --body "Body $_i." --no-edit --project "$_proj" \
+            >"$_out/create-$_i.out" 2>&1 &
+        _pids="$_pids $!"
+        # Interleave the commits INTO the create stream rather than after it,
+        # so each one really does run while other processes are appending.
+        if [ $((_i % (N_MUTATIONS / M_COMMITS))) -eq 0 ]; then
+            RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" commit \
+                -m "stress: interleaved commit at $_i" \
+                >"$_out/commit-$_i.out" 2>&1 &
+            _pids="$_pids $!"
+        fi
+        _i=$((_i + 1))
+    done
+
+    # Bounded wait on the whole fan-out. CI runs this unattended, so a hung
+    # child must fail loudly rather than stall the job.
+    _waited=0
+    for _pid in $_pids; do
+        while kill -0 "$_pid" 2>/dev/null; do
+            sleep 0.2
+            _waited=$((_waited + 1))
+            if [ "$_waited" -gt 900 ]; then
+                kill -9 "$_pid" 2>/dev/null || true
+                fail "the stress fan-out did not finish within ~180s"
+            fi
+        done
+        wait "$_pid" 2>/dev/null || true
+    done
+
+    # The commits raced the creates, so some work is legitimately still
+    # staged when the fan-out ends. Land it with one final scoped commit —
+    # the point is that NOTHING is stranded, not that the races happened to
+    # settle in a particular order.
+    RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" commit \
+        -m "stress: land whatever the fan-out left staged" >"$_out/final.out" 2>&1 ||
+        fail "the settling commit failed: $(cat "$_out/final.out")"
+}
+
+# index_rows_ahead_of_head <repo> <outfile>
+#
+# The discriminator between the two defects a fan-out can leave behind in a
+# derived INDEX.md, decided by the DIRECTION of the drift. A stale derived
+# read (the separately-filed `index-regen-reads-before-flush-lock`) leaves the
+# working tree LAGGING HEAD — a per-project index missing task rows HEAD
+# already has, the top-level index counting fewer tasks per project. A lost
+# journal append leaves the tree AHEAD of HEAD: holding task rows or counts
+# HEAD never received, because the index write that carried them was made,
+# disowned, and never landed. Writes to <outfile> every row of a dirty index
+# that is ahead of HEAD; an empty file means every dirty index only lags.
+index_rows_ahead_of_head() {
+    _repo=$1
+    _ahead=$2
+    : >"$_ahead"
+    git -C "$_repo" status --porcelain >"$_ahead.status"
+    awk '{ print $2 }' "$_ahead.status" | grep 'INDEX\.md$' >"$_ahead.dirty" || true
+    while IFS= read -r _f <&3; do
+        git -C "$_repo" show "HEAD:$_f" >"$_ahead.head"
+        # First file: HEAD's rows, plus per-project task counts from its
+        # summary rows. Second file: the dirty index — print every row that
+        # is AHEAD of HEAD (a summary row counting more tasks, or any other
+        # row HEAD lacks).
+        awk -v file="$_f" '
+            function summary_count(line, cols) {
+                if (line !~ /^\| \[[^]]*\]\([^)]*\) \| [0-9]+ \| [0-9]+ \|/) return -1
+                split(line, cols, "|")
+                gsub(/ /, "", cols[2]); gsub(/ /, "", cols[4])
+                project = cols[2]
+                return cols[4] + 0
+            }
+            FNR == NR {
+                head_rows[$0] = 1
+                n = summary_count($0)
+                if (n >= 0) head_tasks[project] = n
+                next
+            }
+            /^\| / {
+                n = summary_count($0)
+                if (n >= 0) {
+                    if (!(project in head_tasks) || n > head_tasks[project]) print file ": " $0
+                    next
+                }
+                if (!($0 in head_rows)) print file ": " $0
+            }
+        ' "$_ahead.head" "$_repo/$_f" >>"$_ahead"
+    done 3<"$_ahead.dirty"
+}
+
 SHARED_SESSION="shared-changeset"
 
 # ---------------------------------------------------------------------------
@@ -320,43 +434,7 @@ say "Section 1: 40 parallel mutations x 6 concurrent commits under one RDM_SESSI
 
 REPO_1="$TMP/repo-1"
 seed_repo "$REPO_1"
-
-N_MUTATIONS=40
-M_COMMITS=6
-PIDS=""
-
-_i=1
-while [ "$_i" -le "$N_MUTATIONS" ]; do
-    if [ $((_i % 2)) -eq 0 ]; then _proj=alpha; else _proj=beta; fi
-    RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" task create "stress-$_i" \
-        --title "Stress $_i" --body "Body $_i." --no-edit --project "$_proj" \
-        >"$TMP/s1-create-$_i.out" 2>&1 &
-    PIDS="$PIDS $!"
-    # Interleave the commits INTO the create stream rather than after it, so
-    # each one really does run while other processes are appending.
-    if [ $((_i % (N_MUTATIONS / M_COMMITS))) -eq 0 ]; then
-        RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" commit \
-            -m "stress: interleaved commit at $_i" \
-            >"$TMP/s1-commit-$_i.out" 2>&1 &
-        PIDS="$PIDS $!"
-    fi
-    _i=$((_i + 1))
-done
-
-# Bounded wait on the whole fan-out. CI runs this unattended, so a hung child
-# must fail loudly rather than stall the job.
-_waited=0
-for _pid in $PIDS; do
-    while kill -0 "$_pid" 2>/dev/null; do
-        sleep 0.2
-        _waited=$((_waited + 1))
-        if [ "$_waited" -gt 900 ]; then
-            kill -9 "$_pid" 2>/dev/null || true
-            fail "the stress fan-out did not finish within ~180s"
-        fi
-    done
-    wait "$_pid" 2>/dev/null || true
-done
+stress_fanout "$REPO_1" "$TMP/out-1"
 ok "every stress process exited"
 
 # (a) all 40 tasks exist.
@@ -370,14 +448,6 @@ while [ "$_i" -le "$N_MUTATIONS" ]; do
 done
 [ "$MISSING" -eq 0 ] || fail "$MISSING of $N_MUTATIONS stress tasks are missing"
 ok "all $N_MUTATIONS tasks exist"
-
-# The commits raced the creates, so some work is legitimately still staged
-# when the fan-out ends. Land it with one final scoped commit — the point of
-# the section is that NOTHING is stranded, not that the races happened to
-# settle in a particular order.
-RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" commit \
-    -m "stress: land whatever the fan-out left staged" >"$TMP/s1-final.out" 2>&1 ||
-    fail "the settling commit failed: $(cat "$TMP/s1-final.out")"
 
 # (b-i) No AUTHORED path may be left dirty. This is the lost-append symptom
 #       stated exactly: a task file this changeset wrote but no longer claims
@@ -395,10 +465,29 @@ ok "no authored file is left uncommitted"
 #        before the flush lock, so under a fan-out the last writer can persist
 #        a staler index than the one already committed. It is filed separately
 #        as task `index-regen-reads-before-flush-lock` per this phase's
-#        Direction, and is disentangled here rather than hidden: one QUIESCENT
-#        regeneration — no concurrency, so no stale snapshot — must be enough
-#        to settle it. If a lost journal append were the cause, regenerating
-#        would not help, because the paths would not be journaled at all.
+#        Direction. The two defects are told apart by the DIRECTION of the
+#        drift, and that has to happen BEFORE anything is regenerated: a stale
+#        derived read leaves the working tree LAGGING HEAD — a per-project
+#        index missing task rows HEAD already has, the top-level index
+#        counting fewer tasks per project — whereas a lost journal append
+#        leaves the tree AHEAD of HEAD, holding task rows (or counts) HEAD
+#        never received, because the index write that carried them was made,
+#        disowned, and never landed. Regenerating first would erase the
+#        difference: `rdm index` journals what it writes, so it would re-claim
+#        and land a disowned index exactly as it settles a stale one. So: no
+#        dirty index may hold a task row HEAD lacks, nor count more tasks for
+#        a project than HEAD does. Section 1b proves this check is not
+#        vacuous by tripping it with the mutant.
+index_rows_ahead_of_head "$REPO_1" "$TMP/s1.index-ahead"
+[ -s "$TMP/s1.index-ahead" ] &&
+    fail "a dirty INDEX.md is AHEAD of HEAD — it holds task rows or counts HEAD \
+never received, so an index write was made and then disowned. That is a lost \
+journal append, not the separately-filed stale read:
+$(cat "$TMP/s1.index-ahead")"
+ok "every dirty derived index only lags HEAD: no task row or count on disk that HEAD lacks"
+
+#        Only now may one QUIESCENT regeneration — no concurrency, so no stale
+#        snapshot — settle the lag.
 RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" index \
     >"$TMP/s1-index.out" 2>&1 ||
     fail "the quiescent index regeneration failed: $(cat "$TMP/s1-index.out")"
@@ -674,6 +763,36 @@ git -C "$REPO_2B" status --porcelain >"$TMP/s2b.status"
     fail "the mutant left a clean tree, so the reproduction is not the reported \
 symptom — re-check the interleave"
 ok "and the mutant leaves the reported dirty tree behind"
+
+# ---------------------------------------------------------------------------
+# Section 1b — the mutant self-test for section 1's drift-direction check
+# ---------------------------------------------------------------------------
+say "Section 1b: against the mutant, the fan-out leaves a derived index AHEAD of HEAD"
+
+# Section 1 is a real fan-out, so which record a pre-fix binary loses is up
+# to the scheduler — but that it loses SOME index record, leaving a dirty
+# index holding rows HEAD never received, is what the reported symptom IS.
+# Drive the identical fan-out against the mutant a bounded number of times
+# and require the drift-direction check to trip at least once; a check that
+# never trips would let section 1 pass on the very defect it exists to catch.
+S1B_TRIPPED=0
+_attempt=1
+while [ "$_attempt" -le 3 ]; do
+    REPO_1B="$TMP/repo-1b-$_attempt"
+    seed_repo "$REPO_1B" "$MUT_BIN"
+    stress_fanout "$REPO_1B" "$TMP/out-1b-$_attempt" "$MUT_BIN"
+    index_rows_ahead_of_head "$REPO_1B" "$TMP/s1b-$_attempt.ahead"
+    if [ -s "$TMP/s1b-$_attempt.ahead" ]; then
+        S1B_TRIPPED=$_attempt
+        break
+    fi
+    _attempt=$((_attempt + 1))
+done
+[ "$S1B_TRIPPED" -gt 0 ] ||
+    fail "in 3 fan-outs against the mutant, no dirty index was ever AHEAD of \
+HEAD — section 1's drift-direction check may be vacuous"
+ok "attempt $S1B_TRIPPED: the mutant left an index holding rows HEAD never received — section 1's check is caused by the fix"
+head -3 "$TMP/s1b-$S1B_TRIPPED.ahead" | sed 's/^/       /'
 
 # ---------------------------------------------------------------------------
 # Section 3 — assertion self-tests

@@ -14,9 +14,15 @@
 //! such underlayer, so `journal::compact` needs exclusion the kernel enforces
 //! rather than a bound on how long a stale file may stand, and it takes a
 //! `File::lock` on a lock file of its own instead (see
-//! `rdm_core::session::journal`). A caller here whose critical section ends in
-//! an irreversible step can ask [`AdvisoryLock::still_held`] before taking it
-//! rather than trusting `stale_after` not to have dispossessed it mid-run.
+//! `rdm_core::session::journal`).
+//!
+//! Age-bounded takeover has one consequence a guard has to account for on
+//! its own: a holder whose critical section outruns `stale_after` can be
+//! dispossessed while still running, and is never told. So every guard
+//! records an ownership token in its lock file and, on release, deletes the
+//! file only while it still carries that token — releasing a dispossessed
+//! guard must never hand the lock to a third party while the successor
+//! believes it holds it.
 //!
 //! Living here rather than in each backend means the wait/staleness state
 //! machine exists once. The *durations* stay with the caller, since the commit
@@ -40,10 +46,7 @@ use std::time::{Duration, Instant, SystemTime};
 /// A held (or deliberately unheld) advisory lock, released on drop.
 ///
 /// [`AdvisoryLock::held`] reports which: an unheld guard is the degraded
-/// "proceed anyway" case, not an error. [`AdvisoryLock::still_held`] reports
-/// whether the lock this guard took is *still* the one on disk, which is a
-/// weaker and more useful question once staleness takeover is in play — see
-/// its own documentation.
+/// "proceed anyway" case, not an error.
 #[derive(Debug)]
 pub struct AdvisoryLock {
     path: Option<PathBuf>,
@@ -140,8 +143,10 @@ impl AdvisoryLock {
 
     /// Returns whether this guard actually took the lock.
     ///
-    /// Answers a question about *acquisition*, not about the present: see
-    /// [`AdvisoryLock::still_held`] for the latter.
+    /// Answers a question about *acquisition*, not about the present: a
+    /// guard that took the lock can have been dispossessed since by an
+    /// age-based takeover, which is why release re-checks ownership before
+    /// deleting anything.
     #[must_use]
     pub fn held(&self) -> bool {
         self.path.is_some()
@@ -150,25 +155,13 @@ impl AdvisoryLock {
     /// Returns whether the lock this guard took is still the one on disk.
     ///
     /// [`AdvisoryLock::acquire`] takes over a lock file older than
-    /// `stale_after` without any evidence that its holder released or died —
-    /// deliberately, because a lock left behind by a killed process must never
-    /// block a deadline-bounded caller forever. The cost is that a holder
-    /// whose critical section legitimately outruns `stale_after` can be
-    /// dispossessed *while still running*, and nothing tells it so.
-    ///
-    /// A caller whose critical section ends in an irreversible step (a
-    /// `rename` over shared state, an unlink) can ask this immediately before
-    /// that step and decline to take it. That converts the takeover from a
-    /// silent double-holder into a detected one, at the cost of one `read`.
-    /// It is not a substitute for holding the lock: it narrows nothing on its
-    /// own, and it can still be raced in the instant after it returns. What it
-    /// rules out is the *long* overlap — the one the takeover threshold
-    /// creates by construction, where the successor has already been running
-    /// for its own critical section.
-    ///
-    /// Always `false` for a guard that never took the lock.
-    #[must_use]
-    pub fn still_held(&self) -> bool {
+    /// `stale_after` without any evidence that its holder released or died,
+    /// so a holder whose critical section outruns `stale_after` can be
+    /// dispossessed while still running. This is what `Drop` asks before
+    /// deleting the lock file, so that a dispossessed guard releases nothing
+    /// that is no longer its own. Always `false` for a guard that never took
+    /// the lock.
+    fn still_held(&self) -> bool {
         let Some(path) = self.path.as_deref() else {
             return false;
         };
