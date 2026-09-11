@@ -13,6 +13,7 @@ use std::ops::Range;
 use std::str::FromStr;
 
 use pulldown_cmark::{Event, Options, Parser, Tag};
+use serde::Serialize;
 
 /// A plan item reference (`roadmap/<slug>`, `phase/<roadmap-slug>/<stem>`,
 /// or `task/<slug>`) — syntactically and semantically identical to a
@@ -257,6 +258,96 @@ pub struct LinkDiagnostic {
     pub uri: String,
     /// Why the destination failed to parse.
     pub error: LinkParseError,
+}
+
+/// The outcome of resolving a [`Link`] against a project's store — what a
+/// consumer (CLI/server/MCP) needs to act on it.
+///
+/// Produced by [`crate::ops::links::resolve_link`] and its narrower
+/// [`crate::ops::links::resolve_item_link`] /
+/// [`crate::ops::links::resolve_code_link`] entry points.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Resolved {
+    /// A resolved item reference.
+    Item {
+        /// The item reference that was resolved.
+        target: ItemRef,
+        /// Whether the target currently exists in the store. `false` for a
+        /// dangling reference (never an error — see
+        /// [`crate::ops::links::resolve_item_link`]'s doc comment).
+        exists: bool,
+    },
+    /// A resolved code reference.
+    Code {
+        /// Path to the file, relative to the source repository root.
+        path: String,
+        /// The resolved revision, per the precedence documented on
+        /// [`crate::ops::links::resolve_code_link`]. `None` when neither an
+        /// explicit `@rev` nor a stamped commit was available (the web URL,
+        /// if any, then falls back further to the project's default branch).
+        rev: Option<String>,
+        /// The line range carried over from the link, unvalidated.
+        lines: Option<(u32, Option<u32>)>,
+        /// The GitHub-style web URL for this reference, or `None` when the
+        /// project has no `source` configured.
+        web_url: Option<String>,
+    },
+    /// A link that could not be resolved for a reason other than "the
+    /// target doesn't exist" (that case is [`Resolved::Item`] with
+    /// `exists: false`). Reserved for resolution-time failures a future
+    /// phase may distinguish from plain not-found — nothing in this phase
+    /// constructs it.
+    Broken {
+        /// Why resolution could not proceed.
+        reason: String,
+    },
+}
+
+/// A document that references a [`ItemRef`] target, found by [`crate::ops::links::backlinks`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum DocRef {
+    /// A roadmap body.
+    Roadmap {
+        /// Roadmap slug.
+        roadmap: String,
+    },
+    /// A phase body.
+    Phase {
+        /// Roadmap the phase belongs to.
+        roadmap: String,
+        /// Phase file stem.
+        stem: String,
+    },
+    /// A task body.
+    Task {
+        /// Task slug.
+        slug: String,
+    },
+    /// A review's whole-document summary, or one of its comments.
+    Review {
+        /// Review id.
+        id: String,
+        /// Ordinal id of the comment the reference is in, or `None` for the
+        /// review's own summary body.
+        comment: Option<u32>,
+    },
+}
+
+/// One reference to a target found while scanning a project for backlinks.
+///
+/// Ordered (via [`DocRef`]'s derived [`Ord`]) by document kind (roadmap <
+/// phase < task < review), then by the document's own identity (slug/id,
+/// and comment index within a review), then — as a tiebreaker within the
+/// very same document — by [`Self::byte_range`]'s start, so output is
+/// deterministic across runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BacklinkEntry {
+    /// The document the reference was found in.
+    pub document: DocRef,
+    /// The byte range of the link within that document's body.
+    pub byte_range: Range<usize>,
 }
 
 /// The pulldown-cmark options this module parses markdown bodies with.

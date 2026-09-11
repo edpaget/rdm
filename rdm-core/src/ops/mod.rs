@@ -11,6 +11,9 @@ pub mod backlog;
 pub mod index;
 /// Plan repo initialization.
 pub mod init;
+/// Resolution of parsed `rdm:` links (item existence, code-link rev/URL)
+/// and backlink discovery (what references a given target).
+pub mod links;
 /// Next-actionable-phase selection for a single roadmap.
 pub mod next;
 /// Phase operations: list, create, update, remove, resolve.
@@ -34,6 +37,7 @@ pub mod task;
 /// `ReasonUpdate`).
 pub mod update;
 
+pub use links::{backlinks, build_web_url, resolve_code_link, resolve_item_link, resolve_link};
 pub use phase::CreatePhase;
 pub use reviews::CreateReview;
 pub use roadmap::CreateRoadmap;
