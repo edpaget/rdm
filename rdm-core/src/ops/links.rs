@@ -493,6 +493,93 @@ mod tests {
         );
     }
 
+    // --- resolve_link: the single dispatch entry point ---
+
+    #[test]
+    fn resolve_link_dispatches_item_links_to_resolve_item_link() {
+        let mut store = setup();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "fix-login",
+                title: "Fix login",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Body."),
+            },
+        )
+        .unwrap();
+        let target = ItemRef::Task {
+            slug: "fix-login".to_string(),
+        };
+        let via_resolve_link =
+            resolve_link(&store, "demo", None, &Link::Item(target.clone())).unwrap();
+        let via_resolve_item_link = resolve_item_link(&store, "demo", &target).unwrap();
+        assert_eq!(via_resolve_link, via_resolve_item_link);
+        assert_eq!(
+            via_resolve_link,
+            Resolved::Item {
+                target,
+                exists: true
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_link_dispatches_code_links_and_threads_containing_commit() {
+        let store = setup();
+        let link = Link::Code {
+            path: "src/a.rs".to_string(),
+            rev: None,
+            lines: Some((5, Some(12))),
+        };
+        let resolved = resolve_link(&store, "demo", Some("abc123"), &link).unwrap();
+        assert_eq!(
+            resolved,
+            Resolved::Code {
+                path: "src/a.rs".to_string(),
+                rev: Some("abc123".to_string()),
+                lines: Some((5, Some(12))),
+                web_url: None,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_link_dispatches_code_links_and_lets_explicit_rev_win_over_containing_commit() {
+        let store = setup();
+        let link = Link::Code {
+            path: "src/a.rs".to_string(),
+            rev: Some("def456".to_string()),
+            lines: None,
+        };
+        let resolved = resolve_link(&store, "demo", Some("abc123"), &link).unwrap();
+        assert_eq!(
+            resolved,
+            Resolved::Code {
+                path: "src/a.rs".to_string(),
+                rev: Some("def456".to_string()),
+                lines: None,
+                web_url: None,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_link_code_link_errors_project_not_found() {
+        let store = setup();
+        let link = Link::Code {
+            path: "src/a.rs".to_string(),
+            rev: None,
+            lines: None,
+        };
+        let err = resolve_link(&store, "no-such-project", None, &link).unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::ProjectNotFound(name) if name == "no-such-project")
+        );
+    }
+
     // --- AC2: code link rev-default precedence ---
 
     #[test]
