@@ -267,6 +267,12 @@ commit: the orphaned subtree is dropped from the generation seed and its rows
 return on the owning session's next commit — see
 `docs/scoping-model-decision.md` § "INDEX.md Consistency in Partial Commits".
 
+*Historical note:* this exemption becomes moot once INDEX.md generation is
+removed from the write path entirely — see
+[`docs/index-removal.md`](index-removal.md). The carve-out above is preserved
+as an accurate record of why it existed and how `reconcile_derived` worked
+while INDEX.md was still generated on every mutation.
+
 **One store-bypassing writer remains uncovered.** `.gitattributes` is written
 by `ensure_gitattributes` (`rdm-store-git/src/repo.rs`) as a raw `fs::write`
 that never enters the staging overlay, so it has no baseline and is not

@@ -181,6 +181,13 @@ Phase 4 has implemented the session-scoped journal mechanism with the following 
 
 ### INDEX.md Consistency in Partial Commits — **resolved by phase 5, completed by phase 8**
 
+> **Historical.** This section documents the mechanism that existed before
+> INDEX.md's removal (see [`docs/index-removal.md`](index-removal.md)). It is
+> retained, not deleted, because it is the binding record of why
+> `plan-repo-concurrency`'s phases 5 and 8 — a separate, already-completed
+> roadmap, not a phase of `retire-generated-index` — shaped
+> `reconcile_derived` and the orphaned-subtree projection the way they did.
+
 **How consistency is maintained:** INDEX.md is auto-generated from individual roadmap, phase, task, and review files — it is a computed artifact, not a source of truth. When a partial commit (from HEAD + caller's journaled paths) is created, the INDEX.md in that commit reflects exactly the entities that exist in that tree.
 
 **Phase 4's contribution:** The session journal (described above) records all paths touched by each mutation, including INDEX.md itself. When a partial tree is built from HEAD + journaled paths, INDEX.md is included if and only if this session regenerated it.

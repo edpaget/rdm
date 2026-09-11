@@ -91,12 +91,12 @@ Every persistent item — roadmaps, phases, tasks, projects — is stored as a m
 
 - **Frontmatter is typed.** Each item type (`Roadmap`, `Phase`, `Task`) is a struct with `Serialize` and `Deserialize` derives. The YAML frontmatter deserializes into the struct; the markdown body is a separate `String` field.
 - **Parse and render are symmetric.** `Document::parse(content)` splits frontmatter from body; `doc.render()` joins them back. Round-tripping preserves content.
-- **INDEX.md is generated, never edited.** The index is a derived view computed from individual files. It is regenerated on every write operation. This eliminates merge conflicts in multi-user workflows.
+- **INDEX.md is generated, never edited.** The index is a derived view computed from individual files. Merge conflicts in multi-user workflows are avoided because INDEX.md is excluded from the write path entirely (see [`docs/index-removal.md`](index-removal.md)), not because it is regenerated on every write operation.
 - **File layout is conventional.** `projects/<name>/roadmaps/<slug>/roadmap.md`, `projects/<name>/tasks/<slug>.md` — the path encodes the hierarchy. Core functions resolve paths from slugs; consumers never construct paths manually.
 
 ### Why
 
-Markdown with YAML frontmatter is human-readable, diff-friendly, and git-native. Typed frontmatter catches schema errors at parse time rather than at use time. A conventional file layout means the filesystem *is* the database — no separate index to keep in sync (INDEX.md is a convenience view, not a source of truth).
+Markdown with YAML frontmatter is human-readable, diff-friendly, and git-native. Typed frontmatter catches schema errors at parse time rather than at use time. A conventional file layout means the filesystem *is* the database — no separate index to keep in sync (INDEX.md is a convenience view, not a source of truth; this framing is what motivates removing INDEX.md as a generated artifact entirely — see [`docs/index-removal.md`](index-removal.md)).
 
 ---
 
