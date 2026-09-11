@@ -4,16 +4,11 @@ use rdm_core::json;
 use super::{commit_mutation, maybe_print_uncommitted_hint, reject_non_human};
 use crate::{AppStore, OutputFormat, ProjectCommand};
 
-pub fn run(
-    command: ProjectCommand,
-    store: &mut AppStore,
-    format: OutputFormat,
-    no_index: bool,
-) -> Result<()> {
+pub fn run(command: ProjectCommand, store: &mut AppStore, format: OutputFormat) -> Result<()> {
     match command {
         ProjectCommand::Create { name, title } => {
             let title = title.as_deref().unwrap_or(&name);
-            let doc = commit_mutation(store, &name, no_index, "failed to create project", |s| {
+            let doc = commit_mutation(store, "failed to create project", |s| {
                 rdm_core::ops::project::create_project(s, &name, title)
             })?;
             println!("Created project '{}'", doc.frontmatter.name);

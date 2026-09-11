@@ -21,7 +21,6 @@ use crate::paths;
 pub fn run(
     root: &Path,
     repo_config: &rdm_core::config::Config,
-    no_index: bool,
     task_slug: String,
     roadmap_slug: Option<String>,
     into: Option<String>,
@@ -42,13 +41,9 @@ pub fn run(
             if body.is_some() || no_edit {
                 bail!("--body and --no-edit only apply to --into; omit them with --roadmap-slug");
             }
-            let doc = commands::commit_mutation(
-                &mut store,
-                &project,
-                no_index,
-                "failed to promote task",
-                |s| rdm_core::ops::task::promote_task(s, &project, &task_slug, &new_roadmap),
-            )?;
+            let doc = commands::commit_mutation(&mut store, "failed to promote task", |s| {
+                rdm_core::ops::task::promote_task(s, &project, &task_slug, &new_roadmap)
+            })?;
             println!(
                 "Promoted task '{task_slug}' → roadmap '{}'",
                 doc.frontmatter.roadmap
@@ -56,12 +51,8 @@ pub fn run(
         }
         (None, Some(existing_roadmap)) => {
             let body_override = commands::resolve_body(body, no_edit)?;
-            let (phase_doc, task_doc) = commands::commit_mutation(
-                &mut store,
-                &project,
-                no_index,
-                "failed to consolidate task",
-                |s| {
+            let (phase_doc, task_doc) =
+                commands::commit_mutation(&mut store, "failed to consolidate task", |s| {
                     rdm_core::ops::task::consolidate_task_into_roadmap(
                         s,
                         &project,
@@ -69,8 +60,7 @@ pub fn run(
                         &existing_roadmap,
                         body_override.as_deref(),
                     )
-                },
-            )?;
+                })?;
             let phase_stem = rdm_core::model::phase_stem(phase_doc.frontmatter.phase, &task_slug);
             println!(
                 "Consolidated task '{task_slug}' → roadmap '{existing_roadmap}' as phase '{phase_stem}' (task status: {})",

@@ -256,7 +256,7 @@ pub async fn create_review(
         .filter(|a| !a.trim().is_empty())
         .unwrap_or_else(|| "api".to_string());
 
-    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::create_review(
             s,
             CreateReview {
@@ -330,7 +330,7 @@ pub async fn add_comment(
         ));
     }
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::add_comment(
             s,
             AddComment {
@@ -430,7 +430,7 @@ pub async fn update_comment(
     };
 
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::update_comment(
             s,
             UpdateComment {
@@ -498,7 +498,7 @@ pub async fn submit_review(
         ));
     }
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         if let Some(summary) = &req.summary {
             rdm_core::ops::reviews::set_summary(
                 s,
@@ -553,7 +553,7 @@ pub async fn update_review(
         }
     };
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::update_review(s, &project, &review_id, transition)
     })
     .map_err(core_error)?;
@@ -580,7 +580,7 @@ pub async fn delete_review(
     Path((project, review_id)): Path<(String, String)>,
 ) -> Result<Response, Response> {
     let mut store = state.store();
-    rdm_core::ops::mutate(&mut store, &project, |s| {
+    rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::delete_review(s, &project, &review_id, false)
     })
     .map_err(core_error)?;

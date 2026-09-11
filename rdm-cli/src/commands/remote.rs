@@ -74,7 +74,12 @@ pub fn run(
                             "Pulled {} commit(s) from {}/{}.",
                             result.commits_merged, result.remote, result.branch
                         );
-                        // Regenerate INDEX.md after pulling new content
+                        // Regenerate INDEX.md after pulling new content.
+                        // KEPT deliberately: this is merge/clone
+                        // reconciliation — HEAD moved under the working tree —
+                        // not a mutation, so it is not covered by the removal
+                        // of per-mutation regeneration. Its retirement rides
+                        // with the merge-driver work.
                         let mut new_store = make_store(root)?;
                         rdm_core::ops::index::generate_index(&mut new_store)
                             .context("failed to regenerate INDEX.md after pull")?;

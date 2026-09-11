@@ -50,41 +50,36 @@ pub use update::{
 use crate::error::Result;
 use crate::store::Store;
 
-/// Runs a mutating operation as a single transaction: applies `f`, regenerates
-/// the project's `INDEX.md`, then commits exactly once.
+/// Runs a mutating operation as a single transaction: one entity write, one
+/// flush.
 ///
 /// This is the one seam every frontend (CLI, server) should route
 /// mutations through. The mutating ops in this module are *commit-free* — they
-/// stage their writes but never commit — so `mutate` owns both the derived
-/// `INDEX.md` invariant and the single commit. Callers never name
-/// [`index::generate_index_for_project`] themselves; forgetting it (and thus
-/// shipping a stale index) is no longer possible.
+/// stage their writes but never commit — so `mutate` owns the single flush.
 ///
 /// `f` receives the store and performs the entity write (e.g.
-/// [`roadmap::create_roadmap`]). Because reads observe staged writes, the index
-/// regeneration sees the mutation `f` just staged. The single trailing
-/// [`Store::commit`] flushes the staged writes to disk without creating a git
-/// commit; landing a real commit is the separate, explicit responsibility of
-/// the store's commit-now pathway.
+/// [`roadmap::create_roadmap`]). The single trailing [`Store::commit`] flushes
+/// the staged writes to disk without creating a git commit; landing a real
+/// commit is the separate, explicit responsibility of the store's commit-now
+/// pathway.
+///
+/// A mutation touches only the paths `f` authored: no derived `INDEX.md` is
+/// regenerated here, so the changeset a mutation produces contains authored
+/// paths only. Refreshing the generated indexes is the explicit, standalone
+/// job of [`index::generate_index`].
 ///
 /// # Errors
 ///
-/// Propagates any error from `f`, from index regeneration, or from the commit.
-/// On error nothing is committed; the caller may discard the staged changes.
-pub fn mutate<S: Store, T>(
-    store: &mut S,
-    project: &str,
-    f: impl FnOnce(&mut S) -> Result<T>,
-) -> Result<T> {
+/// Propagates any error from `f` or from the commit. On error nothing is
+/// committed; the caller may discard the staged changes.
+pub fn mutate<S: Store, T>(store: &mut S, f: impl FnOnce(&mut S) -> Result<T>) -> Result<T> {
     let out = f(store)?;
-    index::generate_index_for_project(store, project)?;
     store.commit()?;
     Ok(out)
 }
 
 /// The outcome of a [`mutate_batch`] call: every step's individual result,
-/// plus the result of the shared finalize stage (index regeneration + the
-/// single commit).
+/// plus the result of the shared finalize stage (the single flush).
 ///
 /// `mutate_batch` is deliberately infallible at the top level and returns
 /// this struct unconditionally: a failure in the *shared* finalize stage
@@ -96,9 +91,8 @@ pub fn mutate<S: Store, T>(
 pub struct BatchOutcome {
     /// Per-step results, in the same order as the `steps` passed in.
     pub step_results: Vec<Result<()>>,
-    /// Result of the finalize stage: index regeneration (if any step
-    /// succeeded) followed by flushing the batch to the store. `Ok(())` when
-    /// both succeeded or when there was nothing to do.
+    /// Result of the finalize stage: flushing the batch to the store.
+    /// `Ok(())` when the flush succeeded or when there was nothing to do.
     ///
     /// For a git-backed store this flush does **not** create a git commit —
     /// [`Store::commit`] only ever flushes to disk. Callers that need the
@@ -122,9 +116,8 @@ pub type BatchStep<'a, S> = Box<dyn FnOnce(&mut S) -> Result<()> + 'a>;
 /// transaction: runs every step in `steps`, in order, **without**
 /// short-circuiting on an individual step's error (unlike [`mutate`]) — one
 /// bad step must not block the rest, matching the hook directive path's
-/// long-standing skip-and-continue contract. Regenerates the project's
-/// `INDEX.md` exactly once (only if at least one step succeeded), then flushes
-/// the batch to the store exactly once. The single commit message is computed
+/// long-standing skip-and-continue contract. Then flushes the batch to the
+/// store exactly once. The single commit message is computed
 /// (only if at least one step succeeded) by calling `message` with the full,
 /// in-order slice of per-step results, so the message can name only the steps
 /// that actually succeeded; it is returned in [`BatchOutcome::commit_message`]
@@ -139,22 +132,18 @@ pub type BatchStep<'a, S> = Box<dyn FnOnce(&mut S) -> Result<()> + 'a>;
 /// whatever data it already captured in its own closure/metadata to build the
 /// commit message and its own logging.
 ///
+/// Like [`mutate`], a batch touches only the paths its steps authored: no
+/// derived `INDEX.md` is regenerated here.
+///
 /// This function never returns `Err` itself — all failure reporting flows
 /// through the returned [`BatchOutcome`]. Individual step failures land in
-/// `step_results`; an index-regeneration or commit failure lands in
-/// `finalize_result`. When `finalize_result` is `Err`, **none** of the
-/// batch's successful steps are flushed — they remain uncommitted (see
-/// [`Store::commit`]'s flush-only semantics) rather than
-/// partially landing, but `step_results` still faithfully reports which
-/// steps' mutations were applied (staged). This is an intentional
-/// consequence of collapsing the batch into a single transaction — under
-/// the old per-directive-commit model, an unrelated later failure could not
-/// undo an earlier directive's already-committed success; under batching it
-/// can, in this one specific failure mode (e.g. index regen erroring due to
-/// unrelated corrupt data elsewhere in the project).
+/// `step_results`; a commit failure lands in `finalize_result`. When
+/// `finalize_result` is `Err`, **none** of the batch's successful steps are
+/// flushed — they remain uncommitted (see [`Store::commit`]'s flush-only
+/// semantics) rather than partially landing, but `step_results` still
+/// faithfully reports which steps' mutations were applied (staged).
 pub fn mutate_batch<'a, S: Store>(
     store: &mut S,
-    project: &str,
     steps: Vec<BatchStep<'a, S>>,
     message: impl FnOnce(&[Result<()>]) -> String,
 ) -> BatchOutcome {
@@ -168,14 +157,9 @@ pub fn mutate_batch<'a, S: Store>(
     // successful steps. The caller lands the real commit via the store's
     // blessed always-commit pathway.
     let commit_message = any_ok.then(|| message(&step_results));
-    let finalize_result = (|| {
-        if any_ok {
-            index::generate_index_for_project(store, project)?;
-        }
-        // Flush the batch to disk only. For a git-backed store this creates no
-        // git commit; the caller commits via `commit_message`.
-        store.commit()
-    })();
+    // Flush the batch to disk only. For a git-backed store this creates no
+    // git commit; the caller commits via `commit_message`.
+    let finalize_result = store.commit();
     BatchOutcome {
         step_results,
         finalize_result,

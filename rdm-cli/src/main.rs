@@ -34,6 +34,16 @@ fn run() -> Result<()> {
     let matches = Cli::command().get_matches();
     let root_source = matches.value_source("root");
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+
+    // `--no-index` is accepted for one release so no existing script breaks,
+    // but mutations no longer regenerate an index, so it has nothing to
+    // suppress. Warn on stderr only: `--format json` stdout must stay clean.
+    if cli.no_index {
+        eprintln!(
+            "warning: --no-index is deprecated and has no effect; INDEX.md is no longer regenerated on mutation."
+        );
+    }
+
     let global_config = paths::load_global_config();
 
     // Handle config commands early — some don't need a repo.
@@ -116,22 +126,22 @@ fn run() -> Result<()> {
 
         Command::Project { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::project::run(command, &mut store, format, cli.no_index)?;
+            commands::project::run(command, &mut store, format)?;
         }
 
         Command::Roadmap { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::roadmap::run(command, &mut store, &repo_config, format, cli.no_index)?;
+            commands::roadmap::run(command, &mut store, &repo_config, format)?;
         }
 
         Command::Phase { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::phase::run(command, &mut store, &repo_config, format, cli.no_index)?;
+            commands::phase::run(command, &mut store, &repo_config, format)?;
         }
 
         Command::Task { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::task::run(command, &mut store, &repo_config, format, cli.no_index)?;
+            commands::task::run(command, &mut store, &repo_config, format)?;
         }
 
         Command::Promote {
@@ -144,7 +154,6 @@ fn run() -> Result<()> {
         } => commands::promote::run(
             &root,
             &repo_config,
-            cli.no_index,
             task_slug,
             roadmap_slug,
             into,
@@ -244,7 +253,7 @@ fn run() -> Result<()> {
         #[cfg(feature = "git")]
         Command::Review { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::review::run(command, &mut store, &repo_config, format, cli.no_index)?;
+            commands::review::run(command, &mut store, &repo_config, format)?;
         }
 
         Command::List { project, all, tags } => {

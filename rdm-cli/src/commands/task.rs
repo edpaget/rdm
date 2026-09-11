@@ -14,7 +14,6 @@ pub fn run(
     store: &mut AppStore,
     repo_config: &Config,
     format: OutputFormat,
-    no_index: bool,
 ) -> Result<()> {
     match command {
         TaskCommand::Create {
@@ -32,7 +31,7 @@ pub fn run(
             let body = resolve_body(body, no_edit)?;
             let plan_review = paths::resolve_plan_review(repo_config)?;
             let tags = rdm_core::tags::stamp_plan_review_tag(tags, plan_review && !no_plan_review);
-            commit_mutation(store, &project, no_index, "failed to create task", |s| {
+            commit_mutation(store, "failed to create task", |s| {
                 rdm_core::ops::task::create_task(
                     s,
                     rdm_core::ops::task::CreateTask {
@@ -157,7 +156,7 @@ pub fn run(
             });
             #[cfg(not(feature = "git"))]
             let needs_review_warning: Option<String> = None;
-            let doc = commit_mutation(store, &project, no_index, "failed to update task", |s| {
+            let doc = commit_mutation(store, "failed to update task", |s| {
                 let mut doc = rdm_core::ops::task::update_task(
                     s,
                     &project,
@@ -197,10 +196,9 @@ pub fn run(
             no_edit: _,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let (_survivor_doc, closed) =
-                commit_mutation(store, &project, no_index, "failed to merge tasks", |s| {
-                    rdm_core::ops::task::merge_tasks(s, &project, &survivor, &from)
-                })?;
+            let (_survivor_doc, closed) = commit_mutation(store, "failed to merge tasks", |s| {
+                rdm_core::ops::task::merge_tasks(s, &project, &survivor, &from)
+            })?;
             // Report the count actually folded this call (deduped, minus any
             // already-superseded sources skipped as a no-op), not the raw input.
             let folded = closed.len();

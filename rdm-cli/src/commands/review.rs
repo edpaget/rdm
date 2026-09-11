@@ -63,7 +63,6 @@ pub fn run(
     store: &mut AppStore,
     repo_config: &Config,
     format: OutputFormat,
-    no_index: bool,
 ) -> Result<()> {
     match command {
         ReviewCommand::Pending { project } => {
@@ -167,53 +166,41 @@ pub fn run(
                             let stem = stem.to_string();
                             let sha = sha.clone();
                             let branch = target_branch.clone();
-                            commit_mutation(
-                                store,
-                                &project,
-                                no_index,
-                                "failed to restamp phase",
-                                |s| {
-                                    rdm_core::ops::phase::update_phase(
-                                        s,
-                                        &project,
-                                        &roadmap,
-                                        &stem,
-                                        Some(PhaseStatus::NeedsReview),
-                                        TagsUpdate::Keep,
-                                        BodyUpdate::Keep,
-                                        None,
-                                        Some(sha),
-                                        branch,
-                                        rdm_core::ops::TitleUpdate::Keep,
-                                    )
-                                },
-                            )?;
+                            commit_mutation(store, "failed to restamp phase", |s| {
+                                rdm_core::ops::phase::update_phase(
+                                    s,
+                                    &project,
+                                    &roadmap,
+                                    &stem,
+                                    Some(PhaseStatus::NeedsReview),
+                                    TagsUpdate::Keep,
+                                    BodyUpdate::Keep,
+                                    None,
+                                    Some(sha),
+                                    branch,
+                                    rdm_core::ops::TitleUpdate::Keep,
+                                )
+                            })?;
                         }
                         PendingReviewKind::Task => {
                             let slug = identifier.clone();
                             let sha = sha.clone();
                             let branch = target_branch.clone();
-                            commit_mutation(
-                                store,
-                                &project,
-                                no_index,
-                                "failed to restamp task",
-                                |s| {
-                                    rdm_core::ops::task::update_task(
-                                        s,
-                                        &project,
-                                        &slug,
-                                        Some(TaskStatus::NeedsReview),
-                                        None,
-                                        TagsUpdate::Keep,
-                                        BodyUpdate::Keep,
-                                        None,
-                                        Some(sha),
-                                        branch,
-                                        rdm_core::ops::TitleUpdate::Keep,
-                                    )
-                                },
-                            )?;
+                            commit_mutation(store, "failed to restamp task", |s| {
+                                rdm_core::ops::task::update_task(
+                                    s,
+                                    &project,
+                                    &slug,
+                                    Some(TaskStatus::NeedsReview),
+                                    None,
+                                    TagsUpdate::Keep,
+                                    BodyUpdate::Keep,
+                                    None,
+                                    Some(sha),
+                                    branch,
+                                    rdm_core::ops::TitleUpdate::Keep,
+                                )
+                            })?;
                         }
                     }
                     restamped.push((kind, identifier, target_branch));
@@ -305,7 +292,7 @@ pub fn run(
             let body = resolve_body(body, no_edit)?;
             let target = rdm_core::ops::reviews::parse_review_target_ref(store, &project, &on)
                 .context("failed to resolve review target")?;
-            let doc = commit_mutation(store, &project, no_index, "failed to start review", |s| {
+            let doc = commit_mutation(store, "failed to start review", |s| {
                 rdm_core::ops::reviews::create_review(
                     s,
                     CreateReview {
@@ -387,19 +374,18 @@ pub fn run(
                     "comment body must not be empty — pass --body <text> or pipe content via stdin"
                 );
             };
-            let updated =
-                commit_mutation(store, &project, no_index, "failed to add comment", |s| {
-                    rdm_core::ops::reviews::add_comment(
-                        s,
-                        AddComment {
-                            project: &project,
-                            review_id: &review_id,
-                            body: &body,
-                            doc: doc_scope,
-                            anchor,
-                        },
-                    )
-                })?;
+            let updated = commit_mutation(store, "failed to add comment", |s| {
+                rdm_core::ops::reviews::add_comment(
+                    s,
+                    AddComment {
+                        project: &project,
+                        review_id: &review_id,
+                        body: &body,
+                        doc: doc_scope,
+                        anchor,
+                    },
+                )
+            })?;
             let comment_id = updated
                 .frontmatter
                 .comments
@@ -435,7 +421,7 @@ pub fn run(
                     );
                 }
             }
-            let doc = commit_mutation(store, &project, no_index, "failed to submit review", |s| {
+            let doc = commit_mutation(store, "failed to submit review", |s| {
                 if let Some(b) = &body {
                     rdm_core::ops::reviews::set_summary(
                         s,
@@ -553,7 +539,7 @@ pub fn run(
                 );
             }
             let project = paths::resolve_project(project, repo_config)?;
-            let doc = commit_mutation(store, &project, no_index, "failed to update review", |s| {
+            let doc = commit_mutation(store, "failed to update review", |s| {
                 if let Some(comment_id) = comment {
                     rdm_core::ops::reviews::update_comment(
                         s,
@@ -589,7 +575,7 @@ pub fn run(
             project,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            commit_mutation(store, &project, no_index, "failed to delete review", |s| {
+            commit_mutation(store, "failed to delete review", |s| {
                 rdm_core::ops::reviews::delete_review(s, &project, &review_id, force)
             })
             .map_err(map_delete_not_draft)?;

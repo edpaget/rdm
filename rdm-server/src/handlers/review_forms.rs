@@ -285,7 +285,7 @@ pub async fn start_review_form(
         Err(e) => return redirect_err(&target_href, DRAFT_FRAGMENT, &e.to_string()),
     };
     if existing.is_none() {
-        let created = rdm_core::ops::mutate(&mut store, &project, |s| {
+        let created = rdm_core::ops::mutate(&mut store, |s| {
             rdm_core::ops::reviews::create_review(
                 s,
                 CreateReview {
@@ -353,7 +353,7 @@ pub async fn add_comment_form(
             redirect_err(&target_href, DRAFT_FRAGMENT, message)
         };
     }
-    let result = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let result = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::add_comment(
             s,
             AddComment {
@@ -501,7 +501,7 @@ pub async fn anchor_comment_form(
             "fallback",
         ),
     };
-    let result = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let result = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::add_comment(
             s,
             AddComment {
@@ -601,7 +601,7 @@ pub async fn edit_comment_form(
             None => DocUpdate::Clear,
         }
     };
-    let result = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let result = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::update_comment(
             s,
             UpdateComment {
@@ -653,7 +653,7 @@ pub async fn remove_comment_form(
             ResponseFormat::Html,
         );
     };
-    let result = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let result = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::remove_comment(s, &project, &review_id, comment_id)
     });
     // One shared post-mutate helper for all 22 handler mutation
@@ -707,7 +707,7 @@ pub async fn submit_review_form(
             }
         },
     };
-    let result = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let result = rdm_core::ops::mutate(&mut store, |s| {
         if !req.summary.trim().is_empty() {
             rdm_core::ops::reviews::set_summary(
                 s,
@@ -743,7 +743,7 @@ pub async fn dismiss_review_form(
         Err(response) => return response,
     };
     let fragment = format!("review-{review_id}");
-    let result = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let result = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::update_review(s, &project, &review_id, ReviewTransition::Dismissed)
     });
     // One shared post-mutate helper for all 22 handler mutation
@@ -769,7 +769,7 @@ pub async fn delete_review_form(
         Ok(href) => href,
         Err(response) => return response,
     };
-    let result = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let result = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::delete_review(s, &project, &review_id, false)
     });
     // One shared post-mutate helper for all 22 handler mutation

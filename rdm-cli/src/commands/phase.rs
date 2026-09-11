@@ -181,7 +181,6 @@ pub fn run(
     store: &mut AppStore,
     repo_config: &Config,
     format: OutputFormat,
-    no_index: bool,
 ) -> Result<()> {
     match command {
         PhaseCommand::Create {
@@ -203,7 +202,7 @@ pub fn run(
             let model_update = ModelTierUpdate::from_args(model, false)?;
             let plan_review = paths::resolve_plan_review(repo_config)?;
             let tags = rdm_core::tags::stamp_plan_review_tag(tags, plan_review);
-            let doc = commit_mutation(store, &project, no_index, "failed to create phase", |s| {
+            let doc = commit_mutation(store, "failed to create phase", |s| {
                 rdm_core::ops::phase::create_phase(
                     s,
                     rdm_core::ops::phase::CreatePhase {
@@ -393,7 +392,7 @@ pub fn run(
             let model_update = ModelTierUpdate::from_args(model, clear_model)?;
             let reason_update = ReasonUpdate::from_args(reason, clear_reason)?;
             let has_reason = !matches!(reason_update, ReasonUpdate::Keep);
-            let doc = commit_mutation(store, &project, no_index, "failed to update phase", |s| {
+            let doc = commit_mutation(store, "failed to update phase", |s| {
                 let mut doc = rdm_core::ops::phase::update_phase_with_estimate(
                     s,
                     &project,
@@ -434,7 +433,7 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
                 .context("failed to resolve phase")?;
-            commit_mutation(store, &project, no_index, "failed to remove phase", |s| {
+            commit_mutation(store, "failed to remove phase", |s| {
                 rdm_core::ops::phase::remove_phase(s, &project, &roadmap, &stem)
             })?;
             println!("Removed phase '{stem}' from roadmap '{roadmap}'");

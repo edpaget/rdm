@@ -541,7 +541,7 @@ pub async fn create_roadmap(
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
     let priority = req.priority.as_deref().map(parse_priority).transpose()?;
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::roadmap::create_roadmap(
             s,
             rdm_core::ops::roadmap::CreateRoadmap {
@@ -614,7 +614,7 @@ pub async fn update_roadmap(
         .map_err(|e| error_response(e, format))?;
 
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::roadmap::update_roadmap(
             s,
             &project,

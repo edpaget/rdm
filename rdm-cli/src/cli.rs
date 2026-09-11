@@ -22,7 +22,8 @@ pub(crate) struct Cli {
     #[arg(long, env = "RDM_ROOT")]
     pub root: Option<PathBuf>,
 
-    /// Suppress automatic INDEX.md regeneration after mutations.
+    /// Deprecated: no longer has any effect — INDEX.md is no longer
+    /// regenerated on mutation (run `rdm index`).
     #[arg(long, global = true)]
     pub no_index: bool,
 

@@ -77,9 +77,9 @@ fn build_project_index(store: &impl Store, project: &str) -> Result<ProjectIndex
 
 /// Generates `projects/{project}/INDEX.md` for a single project.
 ///
-/// This **commits**. It is a standalone entry point; mutation flows should
-/// instead go through [`crate::ops::mutate`], which uses the commit-free
-/// [`generate_index_for_project`] and commits once for the whole transaction.
+/// This **commits**. It is a standalone entry point: index generation is not
+/// part of any mutation transaction, so nothing calls it implicitly. The
+/// commit-free sibling is [`generate_index_for_project`].
 ///
 /// # Errors
 ///
@@ -102,9 +102,10 @@ pub fn generate_project_index(store: &mut impl Store, project: &str) -> Result<(
 /// writes the top-level `INDEX.md`.
 ///
 /// Unlike [`generate_index`], this function does **not** commit: it only
-/// stages the `INDEX.md` writes and leaves committing to the caller. It is
-/// the index step inside [`crate::ops::mutate`], which writes the entity,
-/// regenerates the index, and commits once.
+/// stages the `INDEX.md` writes and leaves committing to the caller. It has
+/// no implicit caller — mutations do not regenerate an index — so it is a
+/// standalone entry point for a caller that wants to stage a single
+/// project's index refresh inside a transaction of its own.
 ///
 /// # Errors
 ///
@@ -139,9 +140,9 @@ pub fn generate_index_for_project(store: &mut impl Store, project: &str) -> Resu
 /// then writes a formatted root index and per-project index files.
 ///
 /// This **commits** and rebuilds every project's index. It is the standalone
-/// full-repo rebuild (the `rdm index` command and post-merge/pull recovery);
-/// per-mutation index upkeep happens automatically inside
-/// [`crate::ops::mutate`] and need not call this.
+/// full-repo rebuild (the `rdm index` command and post-merge/pull recovery).
+/// Mutations never regenerate an index, so a generated index goes stale until
+/// a caller runs this explicitly.
 ///
 /// # Also driven over an in-memory projection
 ///

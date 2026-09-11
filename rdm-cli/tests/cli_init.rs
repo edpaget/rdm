@@ -25,7 +25,10 @@ fn init_creates_plan_repo() {
         .stdout(predicate::str::contains("Initialized plan repo"));
 
     assert!(dir.path().join("rdm.toml").exists());
-    assert!(dir.path().join("INDEX.md").exists());
+    assert!(
+        !dir.path().join("INDEX.md").exists(),
+        "init must not seed a generated INDEX.md — nothing maintains it; run `rdm index`"
+    );
 }
 
 #[test]
@@ -156,7 +159,7 @@ fn init_creates_parent_dirs() {
         .success();
 
     assert!(nested.join("rdm.toml").exists());
-    assert!(nested.join("INDEX.md").exists());
+    assert!(!nested.join("INDEX.md").exists());
 }
 
 #[test]
@@ -297,7 +300,7 @@ fn init_remote_clones_repo() {
         .stdout(predicate::str::contains("Cloned plan repo from"));
 
     assert!(target_path.join("rdm.toml").exists());
-    assert!(target_path.join("INDEX.md").exists());
+    assert!(!target_path.join("INDEX.md").exists());
 }
 
 #[test]

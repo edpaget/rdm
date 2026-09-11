@@ -116,7 +116,8 @@ fn status_commit_hint_and_discard_agree_on_the_user_change_count() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
 
-    // Exactly one user edit — which regenerates both index files.
+    // Exactly one user edit. A mutation regenerates no index, so this is the
+    // only path in the changeset.
     create_one_roadmap(&dir, "only-roadmap");
 
     // 1. `rdm status`
@@ -145,9 +146,8 @@ fn status_commit_hint_and_discard_agree_on_the_user_change_count() {
         "status count must be the user count, got: {out}"
     );
     assert!(
-        out.contains("2 generated index file(s) will be included in the next commit")
-            && out.contains("projects/test/INDEX.md"),
-        "the generated files must be named, not merely counted, got: {out}"
+        !out.contains("generated index file(s)"),
+        "a mutation stages no generated index, so status must not name one, got: {out}"
     );
 
     // 2. The post-command hint on a read-only command (stderr).
@@ -166,36 +166,165 @@ fn status_commit_hint_and_discard_agree_on_the_user_change_count() {
         "the hint must agree with status, got: {hint}"
     );
 
-    // 3. `rdm commit` — counts the user change, but lands the indexes too.
+    // 3. `rdm commit` — the commit contains exactly the authored file.
     rdm()
         .arg("--root")
         .arg(dir.path())
         .args(["commit", "-m", "feat: add only-roadmap"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "Committed 1 file(s) (plus 2 regenerated index file(s)).",
-        ));
+        .stdout(predicate::str::contains("Committed 1 file(s)."))
+        .stdout(predicate::str::contains("regenerated index file(s)").not());
 
     let files = last_commit_files(dir.path());
-    assert!(
-        files.iter().any(|f| f == "INDEX.md"),
-        "the root index must be in the commit, got: {files:?}"
-    );
-    assert!(
-        files.iter().any(|f| f == "projects/test/INDEX.md"),
-        "the project index must be in the commit, got: {files:?}"
+    assert_eq!(
+        files,
+        vec!["projects/test/roadmaps/only-roadmap/roadmap.md".to_string()],
+        "the commit must contain exactly the authored path, got: {files:?}"
     );
 }
 
 #[test]
-fn discard_reports_the_user_count_but_restores_the_indexes_too() {
+fn single_mutation_stages_exactly_one_path() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix bug",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "seed: add fix-bug"])
+        .assert()
+        .success();
+
+    // One status-only mutation.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+
+    let out = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).unwrap();
+    let listed = listed_changes(&out);
+    assert_eq!(
+        listed.len(),
+        1,
+        "a single mutation must stage exactly one path, got: {listed:?}"
+    );
+    assert!(
+        listed[0].contains("projects/test/tasks/fix-bug.md"),
+        "the staged path must be the task file, got: {listed:?}"
+    );
+    assert!(
+        out.contains("1 file(s) changed"),
+        "status count must be 1, got: {out}"
+    );
+    assert!(
+        !out.contains("generated index file(s)"),
+        "no generated index may be staged by a mutation, got: {out}"
+    );
+
+    // The session journal names exactly that one path.
+    let journal = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["session", "journal", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let journal: serde_json::Value = serde_json::from_slice(&journal).unwrap();
+    let paths: Vec<String> = journal["paths"]
+        .as_array()
+        .expect("journal paths array")
+        .iter()
+        .map(|e| e["path"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        paths,
+        vec!["projects/test/tasks/fix-bug.md".to_string()],
+        "the journal must name exactly the authored path, got: {paths:?}"
+    );
+
+    // And the commit contains exactly that file.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "chore: start fix-bug"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Committed 1 file(s)."))
+        .stdout(predicate::str::contains("regenerated index file(s)").not());
+
+    let files = last_commit_files(dir.path());
+    assert_eq!(
+        files,
+        vec!["projects/test/tasks/fix-bug.md".to_string()],
+        "the commit tree must name exactly the one task file, got: {files:?}"
+    );
+}
+
+#[test]
+fn discard_reports_the_user_count_and_leaves_the_index_untouched() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // Produce a committed index explicitly, so there is an on-disk derived
+    // file a discard could wrongly rewrite.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "chore: generate indexes"])
+        .assert()
+        .success();
+
     create_one_roadmap(&dir, "doomed-roadmap");
 
     let index_before = std::fs::read_to_string(dir.path().join("projects/test/INDEX.md")).unwrap();
-    assert!(index_before.contains("doomed-roadmap"));
+    assert!(
+        !index_before.contains("doomed-roadmap"),
+        "the mutation must not have written the new roadmap into the index"
+    );
 
     let out = rdm()
         .arg("--root")
@@ -203,9 +332,8 @@ fn discard_reports_the_user_count_but_restores_the_indexes_too() {
         .args(["discard", "--force"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "Discarded 1 file(s) (plus 2 regenerated index file(s)).",
-        ))
+        .stdout(predicate::str::contains("Discarded 1 file(s)."))
+        .stdout(predicate::str::contains("regenerated index file(s)").not())
         .get_output()
         .stdout
         .clone();
@@ -224,11 +352,11 @@ fn discard_reports_the_user_count_but_restores_the_indexes_too() {
         "discard must not list generated indexes, got: {listed:?}"
     );
 
-    // But the index file is nevertheless restored on disk.
+    // The on-disk index is byte-identical: a discard rewrites no derived path.
     let index_after = std::fs::read_to_string(dir.path().join("projects/test/INDEX.md")).unwrap();
-    assert!(
-        !index_after.contains("doomed-roadmap"),
-        "the regenerated index must still be restored, got: {index_after}"
+    assert_eq!(
+        index_before, index_after,
+        "a discard must leave the generated index exactly as it found it"
     );
 }
 

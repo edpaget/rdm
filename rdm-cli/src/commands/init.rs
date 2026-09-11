@@ -118,7 +118,7 @@ pub fn run(
 
     // Create project directory if --default-project was given.
     if let Some(ref proj) = default_project {
-        rdm_core::ops::mutate(&mut store, proj, |s| {
+        rdm_core::ops::mutate(&mut store, |s| {
             rdm_core::ops::project::create_project(s, proj, proj)
         })
         .with_context(|| format!("failed to create project '{proj}'"))?;

@@ -85,6 +85,10 @@ seed_repo() {
     _dir=$1
     mkdir -p "$_dir"
     RDM_SESSION=harness-seed "$RDM_BIN" --root "$_dir" init --default-project demo >/dev/null
+    # Mutations no longer regenerate an index, so the seed produces the
+    # generated indexes explicitly. Sections F/G then have a committed derived
+    # blob to prove later mutations and discards never rewrite.
+    RDM_SESSION=harness-seed "$RDM_BIN" --root "$_dir" index >/dev/null
     RDM_SESSION=harness-seed "$RDM_BIN" --root "$_dir" commit \
         -m "seed: init plan repo and project" >/dev/null
 }
@@ -201,18 +205,17 @@ assert_absent "$TMP/a.head" "projects/demo/tasks/alpha-task.md" \
     "beta's commit re-committed alpha's already-landed task"
 ok "each commit contains only its own task file — asserted in BOTH directions"
 
-# Each commit's non-task paths must be its own reconciled indexes and nothing
-# else. There is no third session, so anything beyond the two index files and
-# the session's own task would be a leak.
+# A mutation authors only its own entity file, so a scoped commit's tree must
+# hold nothing but task files — any index path here is a failure.
 for f in "$TMP/a.prev" "$TMP/a.head"; do
     while read -r p; do
         case "$p" in
-            projects/demo/tasks/*-task.md | INDEX.md | projects/demo/INDEX.md) ;;
+            projects/demo/tasks/*-task.md) ;;
             *) fail "unexpected path '$p' in a scoped commit: $(tr '\n' ' ' <"$f")" ;;
         esac
     done <"$f"
 done
-ok "each commit contains only its own task plus its own reconciled indexes"
+ok "each commit contains only its own task file, and nothing derived"
 
 [ -z "$(git -C "$REPO_A" status --porcelain)" ] ||
     fail "tree still dirty after both sessions committed: $(git -C "$REPO_A" status --porcelain)"
@@ -544,60 +547,66 @@ ok "the documented reconciliation command lands the server write"
 # ---------------------------------------------------------------------------
 # Section F — committed indexes reflect HEAD plus the committing changeset
 # ---------------------------------------------------------------------------
-say "Section F: the committed INDEX.md is HEAD plus this changeset only"
+say "Section F: a scoped commit contains only the authored paths of its changeset"
 
 REPO_F="$TMP/repo-f"
 seed_repo "$REPO_F"
+SEED_INDEX_F=$(git -C "$REPO_F" show "HEAD:projects/demo/INDEX.md" | cksum)
 RDM_SESSION=sess-f-a "$RDM_BIN" --root "$REPO_F" roadmap create alpha-map \
     --title "Alpha Map" --no-edit --project demo >/dev/null
 RDM_SESSION=sess-f-b "$RDM_BIN" --root "$REPO_F" roadmap create beta-map \
     --title "Beta Map" --no-edit --project demo >/dev/null
 
-# On disk the shared index now carries BOTH — that is the defect this scoping
-# exists to contain.
-grep -q "alpha-map" "$REPO_F/projects/demo/INDEX.md" ||
-    fail "the on-disk index does not carry alpha, so this section is vacuous"
-grep -q "beta-map" "$REPO_F/projects/demo/INDEX.md" ||
-    fail "the on-disk index does not carry beta, so this section is vacuous"
+# Vacuity guard: both roadmap files really are on disk and uncommitted.
+[ -f "$REPO_F/projects/demo/roadmaps/alpha-map/roadmap.md" ] &&
+    [ -f "$REPO_F/projects/demo/roadmaps/beta-map/roadmap.md" ] ||
+    fail "fixture files missing, section F is vacuous"
+B_BEFORE_F=$(cksum <"$REPO_F/projects/demo/roadmaps/beta-map/roadmap.md")
 
 RDM_SESSION=sess-f-a "$RDM_BIN" --root "$REPO_F" commit -m "add alpha-map" >/dev/null
-git -C "$REPO_F" show "HEAD:projects/demo/INDEX.md" >"$TMP/f.committed"
-grep -q "alpha-map" "$TMP/f.committed" ||
-    fail "A's commit's index does not contain A's row: $(cat "$TMP/f.committed")"
-grep -q "beta-map" "$TMP/f.committed" &&
-    fail "A's commit's index LEAKED B's uncommitted row: $(cat "$TMP/f.committed")"
-ok "the committed index carries A's row and NOT B's"
+commit_files "$REPO_F" >"$TMP/f.tree"
+[ "$(cat "$TMP/f.tree")" = "projects/demo/roadmaps/alpha-map/roadmap.md" ] ||
+    fail "A's commit is not exactly its own roadmap.md: $(tr '\n' ' ' <"$TMP/f.tree")"
+assert_absent "$TMP/f.tree" "projects/demo/roadmaps/beta-map/roadmap.md" \
+    "A's commit swept up B's uncommitted roadmap"
+ok "A's commit contains exactly its own authored path"
 
-grep -q "beta-map" "$REPO_F/projects/demo/INDEX.md" ||
-    fail "the on-disk index lost B's row — a scoped commit must not rewrite disk"
-ok "the on-disk index still carries both rows"
+[ "$(cksum <"$REPO_F/projects/demo/roadmaps/beta-map/roadmap.md")" = "$B_BEFORE_F" ] ||
+    fail "A's commit modified B's uncommitted file on disk"
+ok "B's file is still on disk, byte-identical, after A committed"
 
 RDM_SESSION=sess-f-b "$RDM_BIN" --root "$REPO_F" commit -m "add beta-map" >/dev/null
-git -C "$REPO_F" show "HEAD:projects/demo/INDEX.md" >"$TMP/f.committed2"
-grep -q "alpha-map" "$TMP/f.committed2" ||
-    fail "B's commit dropped A's already-landed row: $(cat "$TMP/f.committed2")"
-grep -q "beta-map" "$TMP/f.committed2" ||
-    fail "B's commit does not contain B's own row: $(cat "$TMP/f.committed2")"
-ok "B's later commit carries BOTH rows — HEAD now includes A"
+commit_files "$REPO_F" >"$TMP/f.tree2"
+[ "$(cat "$TMP/f.tree2")" = "projects/demo/roadmaps/beta-map/roadmap.md" ] ||
+    fail "B's commit is not exactly its own roadmap.md: $(tr '\n' ' ' <"$TMP/f.tree2")"
+ok "B's later commit contains exactly its own authored path"
+
+# The derived blob HEAD inherited from the seed is untouched throughout: no
+# mutation rewrote a derived path in the commit OR on disk.
+[ "$(git -C "$REPO_F" show "HEAD:projects/demo/INDEX.md" | cksum)" = "$SEED_INDEX_F" ] ||
+    fail "a mutation's commit rewrote the inherited derived index"
+[ "$(cksum <"$REPO_F/projects/demo/INDEX.md")" = "$SEED_INDEX_F" ] ||
+    fail "a mutation rewrote the derived index on disk"
+ok "the committed and on-disk derived index are byte-identical to the seed blob"
 
 [ -z "$(git -C "$REPO_F" status --porcelain)" ] ||
-    fail "the reconciled index does not match disk after both commits: $(git -C "$REPO_F" status --porcelain)"
-ok "the reconciled indexes converge on the on-disk state"
+    fail "tree still dirty after both sessions committed: $(git -C "$REPO_F" status --porcelain)"
+ok "both changesets landed — nothing left stranded on disk"
 
-# Self-test: a derived blob taken FROM DISK would carry B's row into A's
-# commit. Prove the assertion above can see that, using a whole-tree commit
-# (which is exactly "take the derived blob from disk") as the stand-in.
+# Self-test: a commit that takes its tree FROM DISK sweeps up B's uncommitted
+# file. Prove the exact-tree assertion above can see that, using a whole-tree
+# commit (which is exactly "take the tree from disk") as the stand-in.
 REPO_F2="$TMP/repo-f2"
 seed_repo "$REPO_F2"
 RDM_SESSION=sess-f2-a "$RDM_BIN" --root "$REPO_F2" roadmap create alpha-map \
     --title "Alpha Map" --no-edit --project demo >/dev/null
 RDM_SESSION=sess-f2-b "$RDM_BIN" --root "$REPO_F2" roadmap create beta-map \
     --title "Beta Map" --no-edit --project demo >/dev/null
-RDM_SESSION=sess-f2-a "$RDM_BIN" --root "$REPO_F2" commit --all -m "disk-sourced index" >/dev/null
-git -C "$REPO_F2" show "HEAD:projects/demo/INDEX.md" >"$TMP/f2.committed"
-grep -q "beta-map" "$TMP/f2.committed" ||
-    fail "self-test failed: a disk-sourced derived blob does NOT leak the other row, so section F proves nothing"
-ok "self-test: a disk-sourced derived blob IS caught by the same assertion"
+RDM_SESSION=sess-f2-a "$RDM_BIN" --root "$REPO_F2" commit --all -m "disk-sourced tree" >/dev/null
+commit_files "$REPO_F2" >"$TMP/f2.tree"
+contains_path "$TMP/f2.tree" "projects/demo/roadmaps/beta-map/roadmap.md" ||
+    fail "self-test failed: a disk-sourced commit does NOT sweep the other session's file, so section F proves nothing"
+ok "self-test: a disk-sourced commit IS caught by the same assertion"
 
 # ---------------------------------------------------------------------------
 # Section G — discard cannot destroy another session's work
@@ -615,6 +624,7 @@ A_FILE="$REPO_G/projects/demo/roadmaps/gone-map/roadmap.md"
 B_FILE="$REPO_G/projects/demo/roadmaps/kept-map/roadmap.md"
 [ -f "$A_FILE" ] && [ -f "$B_FILE" ] || fail "fixture files missing, section G is vacuous"
 B_BEFORE=$(cksum <"$B_FILE")
+G_INDEX_BEFORE=$(cksum <"$REPO_G/projects/demo/INDEX.md")
 
 RDM_SESSION=sess-g-a "$RDM_BIN" --root "$REPO_G" discard --force >"$TMP/g.out" 2>&1 ||
     fail "discard failed: $(cat "$TMP/g.out")"
@@ -627,18 +637,18 @@ ok "B's file is still on disk, byte-identical"
 grep -q "kept-map" "$REPO_G/.git/rdm/changesets/sess-g-b.jsonl" ||
     fail "B's journal no longer claims its file"
 ok "B's journal still lists its file"
-grep -q "kept-map" "$REPO_G/projects/demo/INDEX.md" ||
-    fail "the regenerated index dropped B's still-uncommitted row"
-grep -q "gone-map" "$REPO_G/projects/demo/INDEX.md" &&
-    fail "the regenerated index still carries the discarded roadmap"
-ok "the on-disk index kept B's row and dropped A's"
+[ "$(cksum <"$REPO_G/projects/demo/INDEX.md")" = "$G_INDEX_BEFORE" ] ||
+    fail "the discard rewrote a derived path it never authored"
+git -C "$REPO_G" status --porcelain | grep -q "INDEX.md" &&
+    fail "the discard left a derived index dirty: $(git -C "$REPO_G" status --porcelain)"
+ok "the discard left the generated index byte-identical and clean"
 
 RDM_SESSION=sess-g-b "$RDM_BIN" --root "$REPO_G" commit -m "add kept-map" >"$TMP/g.commit" 2>&1 ||
     fail "B could not commit after A's discard: $(cat "$TMP/g.commit")"
-git -C "$REPO_G" show "HEAD:projects/demo/INDEX.md" >"$TMP/g.index"
-grep -q "kept-map" "$TMP/g.index" || fail "B's commit landed a wrong index: $(cat "$TMP/g.index")"
-grep -q "gone-map" "$TMP/g.index" && fail "B's commit resurrected A's discarded roadmap"
-ok "B can still commit afterwards, with a correct index"
+commit_files "$REPO_G" >"$TMP/g.tree"
+[ "$(cat "$TMP/g.tree")" = "projects/demo/roadmaps/kept-map/roadmap.md" ] ||
+    fail "B's commit is not exactly its own roadmap.md: $(tr '\n' ' ' <"$TMP/g.tree")"
+ok "B can still commit afterwards, landing exactly its own authored path"
 
 # Negative arm: the whole-tree opt-in DOES destroy, and warns first.
 REPO_G2="$TMP/repo-g2"
@@ -832,28 +842,27 @@ ok "the committed tree and index are coherent: no dangling row, no orphan index"
 if grep -q 'projects/alt/INDEX.md' "$TMP/i.index"; then
     fail "the root index names a project index the commit does not contain"
 fi
-ok "accepted trade: B's own document is absent from the index B commits — the divergence is one-directional (tree ⊇ index) and heals below"
+ok "B's commit adds no project-index row for a project it does not contain"
 
-# Healing arm: the deferred rows return the moment A commits.
+# A's later commit lands exactly its own manifest — no derived path enters
+# either commit, because neither session authored one.
 RDM_SESSION=sess-i-a "$RDM_BIN" --root "$REPO_I" commit -m "land alt" >"$TMP/i.heal.out" 2>&1 ||
     fail "A could not commit afterwards: $(cat "$TMP/i.heal.out")"
 
+commit_files "$REPO_I" >"$TMP/i.commit2"
+[ "$(cat "$TMP/i.commit2")" = "projects/alt/project.md" ] ||
+    fail "A's commit is not exactly its own project.md: $(tr '\n' ' ' <"$TMP/i.commit2")"
 git -C "$REPO_I" ls-tree -r --name-only HEAD >"$TMP/i.tree2"
 git -C "$REPO_I" show "HEAD:INDEX.md" >"$TMP/i.index2"
 contains_path "$TMP/i.tree2" "projects/alt/project.md" ||
     fail "A's manifest did not land: $(tr '\n' ' ' <"$TMP/i.tree2")"
-contains_path "$TMP/i.tree2" "projects/alt/INDEX.md" ||
-    fail "the deferred project index did not return: $(tr '\n' ' ' <"$TMP/i.tree2")"
-grep -q 'projects/alt/INDEX.md' "$TMP/i.index2" ||
-    fail "the deferred root-index row did not return: $(cat "$TMP/i.index2")"
-git -C "$REPO_I" show "HEAD:projects/alt/INDEX.md" >"$TMP/i.altindex"
-grep -q 'b-task' "$TMP/i.altindex" ||
-    fail "B's task did not reappear in the reconciled project index: $(cat "$TMP/i.altindex")"
+assert_absent "$TMP/i.tree2" "projects/alt/INDEX.md" \
+    "a commit added a projects/*/INDEX.md HEAD did not already have"
 assert_no_dangling_links "$TMP/i.index2" "$TMP/i.tree2"
 assert_no_orphan_project_index "$TMP/i.tree2"
 [ -z "$(git -C "$REPO_I" status --porcelain)" ] ||
-    fail "the reconciled indexes did not converge on disk: $(git -C "$REPO_I" status --porcelain)"
-ok "the deferred rows return once the owning session lands its project"
+    fail "the tree did not converge after both sessions committed: $(git -C "$REPO_I" status --porcelain)"
+ok "neither commit adds a derived index, and the tree converges"
 
 # Self-test arm 1: a planted dangling row must be caught. Run in a subshell,
 # because `fail` exits.

@@ -134,7 +134,10 @@ fn init_creates_structure() {
     rdm_core::ops::init::init(&mut store).unwrap();
 
     assert!(store.exists(&rdm_core::paths::config_path()));
-    assert!(store.exists(&rdm_core::paths::index_path()));
+    assert!(
+        !store.exists(&rdm_core::paths::index_path()),
+        "init must not seed a generated INDEX.md — nothing maintains it"
+    );
 
     // Config should be parseable
     let toml_str = store.read(&rdm_core::paths::config_path()).unwrap();
@@ -4254,9 +4257,9 @@ fn init_delegates_to_init_with_config() {
     let config_via = rdm_core::io::load_config(&store_config).unwrap();
     assert_eq!(config_plain, config_via);
 
-    // Both create INDEX.md
-    assert!(store_plain.exists(&rdm_core::paths::index_path()));
-    assert!(store_config.exists(&rdm_core::paths::index_path()));
+    // Neither creates INDEX.md.
+    assert!(!store_plain.exists(&rdm_core::paths::index_path()));
+    assert!(!store_config.exists(&rdm_core::paths::index_path()));
 }
 
 // -- Index generation tests --
@@ -4622,10 +4625,10 @@ fn generate_index_for_project_only_writes_targeted_project() {
 }
 
 #[test]
-fn mutate_regenerates_index_and_commits_once() {
+fn mutate_commits_once_and_regenerates_no_index() {
     let mut store = MemoryStore::new();
     rdm_core::ops::init::init(&mut store).unwrap();
-    rdm_core::ops::mutate(&mut store, "fbm", |s| {
+    rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::project::create_project(s, "fbm", "FBM")
     })
     .unwrap();
@@ -4635,7 +4638,7 @@ fn mutate_regenerates_index_and_commits_once() {
     // commit, so it doubles as a commit counter.
     let before = store.head_sha().unwrap();
 
-    let doc = rdm_core::ops::mutate(&mut store, "fbm", |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::roadmap::create_roadmap(
             s,
             rdm_core::ops::roadmap::CreateRoadmap {
@@ -4649,7 +4652,7 @@ fn mutate_regenerates_index_and_commits_once() {
     .unwrap();
     assert_eq!(doc.frontmatter.roadmap, "alpha");
 
-    // The entity write + index regeneration collapse into exactly ONE commit.
+    // The entity write and the flush collapse into exactly ONE commit.
     let after = store.head_sha().unwrap();
     let counter = |sha: &str| sha.strip_prefix("mem-").unwrap().parse::<u32>().unwrap();
     assert_eq!(
@@ -4658,14 +4661,60 @@ fn mutate_regenerates_index_and_commits_once() {
         "ops::mutate must produce exactly one commit (before={before}, after={after})"
     );
 
-    // The index was regenerated inside the same transaction: the roadmap
-    // created by `f` is already referenced in the freshly written INDEX.md.
-    let project_index = store
-        .read(&rdm_core::paths::project_index_path("fbm"))
-        .unwrap();
+    // No derived index was produced by the mutation: the project has never
+    // had an index generated for it, and `mutate` does not create one.
     assert!(
-        project_index.contains("roadmaps/alpha/roadmap.md"),
-        "INDEX.md should reference the roadmap created in the same mutate(): {project_index}"
+        !store.exists(&rdm_core::paths::project_index_path("fbm")),
+        "ops::mutate must not regenerate the project INDEX.md"
+    );
+}
+
+#[test]
+fn mutate_writes_only_the_entity_path() {
+    let mut store = CountingStore::new(setup_with_project());
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix the bug",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    store.commit().unwrap();
+
+    // Measure only the transaction under test.
+    store.writes.clear();
+
+    rdm_core::ops::mutate(&mut store, |s| {
+        rdm_core::ops::task::update_task(
+            s,
+            "fbm",
+            "fix-bug",
+            Some(TaskStatus::InProgress),
+            None,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
+            None,
+            None,
+            None,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
+    })
+    .unwrap();
+
+    assert_eq!(
+        store.writes,
+        vec!["projects/fbm/tasks/fix-bug.md".to_string()],
+        "a status-only task update must write exactly the one task file; writes: {:?}",
+        store.writes
+    );
+    assert_eq!(
+        store.writes_matching("INDEX.md"),
+        0,
+        "ops::mutate must write no derived index path; writes: {:?}",
+        store.writes
     );
 }
 
@@ -4750,7 +4799,7 @@ fn mutate_batch_commits_exactly_once_for_multiple_steps() {
         }),
     ];
 
-    let outcome = rdm_core::ops::mutate_batch(&mut store, "fbm", steps, |_| {
+    let outcome = rdm_core::ops::mutate_batch(&mut store, steps, |_| {
         "rdm: apply 2 Done: directive(s)".to_string()
     });
 
@@ -4770,7 +4819,7 @@ fn mutate_batch_commits_exactly_once_for_multiple_steps() {
 }
 
 #[test]
-fn mutate_batch_regenerates_index_exactly_once_and_reflects_all_steps() {
+fn mutate_batch_writes_only_entity_paths() {
     let mut store = CountingStore::new(setup_with_project());
 
     let steps: Vec<rdm_core::ops::BatchStep<'_, CountingStore>> = vec![
@@ -4801,34 +4850,33 @@ fn mutate_batch_regenerates_index_exactly_once_and_reflects_all_steps() {
         }),
     ];
 
-    let outcome = rdm_core::ops::mutate_batch(&mut store, "fbm", steps, |_| {
+    let outcome = rdm_core::ops::mutate_batch(&mut store, steps, |_| {
         "rdm: apply 2 Done: directive(s)".to_string()
     });
 
     assert!(outcome.finalize_result.is_ok());
     assert!(outcome.step_results.iter().all(Result::is_ok));
 
-    // Narrow the needle to the per-project INDEX.md path specifically, since
-    // the root INDEX.md path also contains the substring "INDEX.md" and would
-    // otherwise double-count a single `generate_index_for_project` call.
     assert_eq!(
         store.writes_matching("projects/fbm/INDEX.md"),
-        1,
-        "INDEX.md must be regenerated exactly once per mutate_batch call; writes: {:?}",
+        0,
+        "mutate_batch must never write the per-project INDEX.md; writes: {:?}",
         store.writes
     );
-
-    let project_index = store
-        .inner
-        .read(&rdm_core::paths::project_index_path("fbm"))
-        .unwrap();
-    assert!(
-        project_index.contains("roadmaps/alpha/roadmap.md"),
-        "INDEX.md should reference the roadmap created in the batch: {project_index}"
+    assert_eq!(
+        store.writes_matching("INDEX.md"),
+        0,
+        "mutate_batch must write no derived index path at all; writes: {:?}",
+        store.writes
     );
-    assert!(
-        project_index.contains("fix-bug"),
-        "INDEX.md should reference the task created in the batch: {project_index}"
+    assert_eq!(
+        store.writes,
+        vec![
+            "projects/fbm/roadmaps/alpha/roadmap.md".to_string(),
+            "projects/fbm/tasks/fix-bug.md".to_string(),
+        ],
+        "the batch's write set must be exactly the two entity files; writes: {:?}",
+        store.writes
     );
 }
 
@@ -4849,7 +4897,6 @@ fn mutate_batch_reapplying_same_step_preserves_completed_date() {
 
     let first_outcome = rdm_core::ops::mutate_batch(
         &mut store,
-        "fbm",
         vec![Box::new(|s| {
             rdm_core::ops::phase::update_phase(
                 s,
@@ -4875,7 +4922,6 @@ fn mutate_batch_reapplying_same_step_preserves_completed_date() {
 
     let second_outcome = rdm_core::ops::mutate_batch(
         &mut store,
-        "fbm",
         vec![Box::new(|s| {
             rdm_core::ops::phase::update_phase(
                 s,
@@ -4961,7 +5007,7 @@ fn mutate_batch_preserves_each_steps_own_sha() {
         }),
     ];
 
-    let outcome = rdm_core::ops::mutate_batch(&mut store, "fbm", steps, |_| {
+    let outcome = rdm_core::ops::mutate_batch(&mut store, steps, |_| {
         "rdm: apply 2 Done: directive(s)".to_string()
     });
     assert!(outcome.finalize_result.is_ok());
@@ -5050,7 +5096,7 @@ fn mutate_batch_continues_after_a_failing_step() {
         }),
     ];
 
-    let outcome = rdm_core::ops::mutate_batch(&mut store, "fbm", steps, |_| {
+    let outcome = rdm_core::ops::mutate_batch(&mut store, steps, |_| {
         "rdm: apply 2 Done: directive(s)".to_string()
     });
 
@@ -5144,7 +5190,7 @@ fn mutate_batch_exposes_step_results_when_finalize_fails() {
         }),
     ];
 
-    let outcome = rdm_core::ops::mutate_batch(&mut store, "fbm", steps, |_| {
+    let outcome = rdm_core::ops::mutate_batch(&mut store, steps, |_| {
         "rdm: apply 2 Done: directive(s)".to_string()
     });
 

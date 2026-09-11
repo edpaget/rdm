@@ -286,10 +286,8 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
         .assert()
         .success();
 
-    // Status reports exactly the two entity files as user changes. INDEX
-    // regeneration also rewrites the top-level INDEX.md and
-    // projects/test/INDEX.md, but those are generated output and are reported
-    // on their own line rather than counted.
+    // Status reports exactly the two entity files as user changes, and
+    // nothing else: a mutation writes no derived index.
     let status_out = rdm()
         .arg("--root")
         .arg(dir.path())
@@ -320,8 +318,8 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
         "generated indexes must not appear in the change listing, got: {listed:?}"
     );
     assert!(
-        status_out.contains("2 generated index file(s) will be included in the next commit"),
-        "generated indexes must still be named, got: {status_out}"
+        !status_out.contains("generated index file(s)"),
+        "a mutation stages no generated index, got: {status_out}"
     );
 
     // Commit lands exactly one new commit.
@@ -331,9 +329,7 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
         .args(["commit", "-m", "feat: add e2e roadmap and phase"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "Committed 2 file(s) (plus 2 regenerated index file(s)).",
-        ));
+        .stdout(predicate::str::contains("Committed 2 file(s)."));
 
     let commits_after = count_git_commits(dir.path());
     assert_eq!(
@@ -352,15 +348,15 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
         files.iter().any(|f| f.ends_with("phase-1-e2e-phase.md")),
         "commit should include phase-1-e2e-phase.md, got: {files:?}"
     );
-    // The generated indexes are excluded from the count but NOT from the
-    // commit — that is the whole contract.
-    assert!(
-        files.iter().any(|f| f == "INDEX.md"),
-        "commit should include the regenerated root INDEX.md, got: {files:?}"
+    // And nothing derived: the commit is exactly what the session authored.
+    assert_eq!(
+        files.len(),
+        2,
+        "the commit must contain exactly the two authored files, got: {files:?}"
     );
     assert!(
-        files.iter().any(|f| f == "projects/test/INDEX.md"),
-        "commit should include the regenerated project INDEX.md, got: {files:?}"
+        !files.iter().any(|f| f.ends_with("INDEX.md")),
+        "no generated index may reach the commit, got: {files:?}"
     );
 }
 
@@ -462,19 +458,17 @@ fn commit_lands_under_a_project_another_changeset_has_not_committed() {
         "A's uncommitted manifest was swept in: {tree:?}"
     );
     assert!(
-        !tree.iter().any(|p| p == "projects/alt/INDEX.md"),
-        "an orphan project index landed: {tree:?}"
-    );
-    let index = show_at_head(dir.path(), "INDEX.md");
-    assert!(
-        !index.contains("projects/alt/INDEX.md"),
-        "the root index links a path the tree does not contain: {index}"
+        !tree.iter().any(|p| p.ends_with("INDEX.md")),
+        "a mutation's commit must carry no derived index at all: {tree:?}"
     );
 }
 
-/// The heal: the deferred rows return the moment the owning session commits.
+/// The owning session's later commit lands its own manifest and nothing
+/// derived: with the index off the write path there are no deferred rows to
+/// heal, so the invariant this scenario protects is simply that each commit
+/// carries exactly its author's paths.
 #[test]
-fn a_deferred_index_row_returns_when_the_owning_changeset_commits() {
+fn the_owning_changeset_lands_its_manifest_and_nothing_derived() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
     rdm_as("cs-a", &dir)
@@ -505,21 +499,17 @@ fn a_deferred_index_row_returns_when_the_owning_changeset_commits() {
         .success();
 
     let tree = committed_tree_paths(dir.path());
-    for want in ["projects/alt/project.md", "projects/alt/INDEX.md"] {
-        assert!(
-            tree.iter().any(|p| p == want),
-            "{want} missing after the owning session committed: {tree:?}"
-        );
-    }
-    let index = show_at_head(dir.path(), "INDEX.md");
     assert!(
-        index.contains("projects/alt/INDEX.md"),
-        "the deferred root-index row did not return: {index}"
+        tree.iter().any(|p| p == "projects/alt/project.md"),
+        "projects/alt/project.md missing after the owning session committed: {tree:?}"
     );
-    let project_index = show_at_head(dir.path(), "projects/alt/INDEX.md");
     assert!(
-        project_index.contains("b-task"),
-        "B's task did not reappear in the reconciled project index: {project_index}"
+        tree.iter().any(|p| p == "projects/alt/tasks/b-task.md"),
+        "B's earlier commit was lost: {tree:?}"
+    );
+    assert!(
+        !tree.iter().any(|p| p.ends_with("INDEX.md")),
+        "neither commit may add a derived index HEAD did not already have: {tree:?}"
     );
 }
 
@@ -924,10 +914,9 @@ fn discard_defaults_to_the_callers_changeset() {
         dir.path().join("projects/test/tasks/b-task.md").exists(),
         "a scoped discard destroyed another changeset's file"
     );
-    let index = std::fs::read_to_string(dir.path().join("projects/test/INDEX.md")).unwrap();
     assert!(
-        index.contains("b-task"),
-        "the regenerated index dropped the other changeset's row: {index}"
+        !dir.path().join("projects/test/INDEX.md").exists(),
+        "a discard must not conjure a generated index: neither session wrote one"
     );
 }
 

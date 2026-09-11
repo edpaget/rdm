@@ -260,21 +260,37 @@ fn index_dependency_graph() {
 }
 
 #[test]
-fn mutation_auto_generates_index() {
+fn a_mutation_generates_no_index_but_rdm_index_does() {
     let dir = TempDir::new().unwrap();
     rdm()
         .arg("--root")
         .arg(dir.path())
-        .arg("--no-index")
         .arg("init")
         .assert()
         .success();
 
-    // project create should auto-generate index
+    // `project create` is a mutation: it writes only the entity file.
     rdm()
         .arg("--root")
         .arg(dir.path())
         .args(["project", "create", "fbm"])
+        .assert()
+        .success();
+
+    assert!(
+        !dir.path().join("INDEX.md").exists(),
+        "a mutation must not create the top-level INDEX.md"
+    );
+    assert!(
+        !dir.path().join("projects/fbm/INDEX.md").exists(),
+        "a mutation must not create a per-project INDEX.md"
+    );
+
+    // The explicit `rdm index` command still produces both levels.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
         .assert()
         .success();
 
@@ -284,34 +300,27 @@ fn mutation_auto_generates_index() {
 }
 
 #[test]
-fn no_index_flag_suppresses() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
+fn no_index_flag_is_accepted_and_ignored() {
+    // `--no-index` is retained for one release so existing scripts keep
+    // working, but mutations no longer regenerate an index, so it has nothing
+    // left to suppress: it must parse, exit 0, warn on stderr only, and leave
+    // the mutation's on-disk result byte-identical to a run without it.
+    let with_flag = TempDir::new().unwrap();
+    let without_flag = TempDir::new().unwrap();
 
-    // Create a roadmap so project-level index has content
-    rdm()
+    for dir in [&with_flag, &without_flag] {
+        init_with_project(dir);
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args(["roadmap", "create", "alpha", "--project", "fbm"])
+            .assert()
+            .success();
+    }
+
+    let flagged = rdm()
         .arg("--root")
-        .arg(dir.path())
-        .arg("--no-index")
-        .args(["roadmap", "create", "alpha", "--project", "fbm"])
-        .assert()
-        .success();
-
-    // Generate full index so both levels exist
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .arg("index")
-        .assert()
-        .success();
-
-    let root_before = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
-    let project_before = std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
-
-    // Mutate with --no-index: create a phase
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
+        .arg(with_flag.path())
         .arg("--no-index")
         .args([
             "phase",
@@ -324,17 +333,48 @@ fn no_index_flag_suppresses() {
         ])
         .assert()
         .success();
-
-    let root_after = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
-    let project_after = std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
-
-    assert_eq!(
-        root_before, root_after,
-        "--no-index should prevent top-level INDEX.md regeneration"
+    let flagged = flagged.get_output();
+    let stderr = String::from_utf8_lossy(&flagged.stderr);
+    assert!(
+        stderr.contains("--no-index is deprecated and has no effect"),
+        "the deprecation warning must land on stderr: {stderr}"
     );
+    let stdout = String::from_utf8_lossy(&flagged.stdout);
+    assert!(
+        !stdout.contains("--no-index"),
+        "the deprecation warning must never contaminate stdout: {stdout}"
+    );
+
+    let unflagged = rdm()
+        .arg("--root")
+        .arg(without_flag.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--roadmap",
+            "alpha",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+    let unflagged_stderr = String::from_utf8_lossy(&unflagged.get_output().stderr).to_string();
+    assert!(
+        !unflagged_stderr.contains("--no-index"),
+        "the warning must not fire when the flag is absent: {unflagged_stderr}"
+    );
+
+    let phase_rel = "projects/fbm/roadmaps/alpha/phase-1-core.md";
     assert_eq!(
-        project_before, project_after,
-        "--no-index should prevent project-level INDEX.md regeneration"
+        std::fs::read_to_string(with_flag.path().join(phase_rel)).unwrap(),
+        std::fs::read_to_string(without_flag.path().join(phase_rel)).unwrap(),
+        "--no-index must not change what a mutation writes"
+    );
+    assert!(
+        !with_flag.path().join("projects/fbm/INDEX.md").exists()
+            && !without_flag.path().join("projects/fbm/INDEX.md").exists(),
+        "neither run may produce a per-project INDEX.md"
     );
 }
 
@@ -376,7 +416,8 @@ fn index_after_phase_update() {
     let before = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
     assert!(before.contains("not started"));
 
-    // Update phase to done (auto-generates index)
+    // Update phase to done. The mutation itself writes no index, so the
+    // explicit `rdm index` below is what refreshes it.
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -393,6 +434,17 @@ fn index_after_phase_update() {
         ])
         .assert()
         .success();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap(),
+        before,
+        "the mutation itself must leave INDEX.md untouched"
+    );
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
+        .assert()
+        .success();
 
     let after = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
     assert!(
@@ -402,7 +454,7 @@ fn index_after_phase_update() {
 }
 
 #[test]
-fn mutation_only_rewrites_targeted_project_index() {
+fn rdm_index_only_rewrites_the_targeted_project_index() {
     let dir = TempDir::new().unwrap();
     rdm()
         .arg("--root")
@@ -441,7 +493,7 @@ fn mutation_only_rewrites_targeted_project_index() {
     let proj_b_index_before =
         std::fs::read_to_string(dir.path().join("projects/proj-b/INDEX.md")).unwrap();
 
-    // Mutate proj-a (auto-regenerates index for proj-a only)
+    // Mutate proj-a, then refresh only proj-a's index explicitly.
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -454,6 +506,12 @@ fn mutation_only_rewrites_targeted_project_index() {
             "--project",
             "proj-a",
         ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
         .assert()
         .success();
 
@@ -647,7 +705,7 @@ fn index_after_promote() {
         "task should appear in project index before promote"
     );
 
-    // Promote task to roadmap (auto-generates index)
+    // Promote task to roadmap, then refresh the indexes explicitly.
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -659,6 +717,17 @@ fn index_after_promote() {
             "--project",
             "fbm",
         ])
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap(),
+        root_before,
+        "the promote mutation itself must leave INDEX.md untouched"
+    );
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
         .assert()
         .success();
 

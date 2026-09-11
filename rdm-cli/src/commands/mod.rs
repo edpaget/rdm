@@ -11,7 +11,6 @@ use anyhow::{Context, Result, bail};
 use is_terminal::IsTerminal;
 use rdm_core::model::PhaseStatus;
 use rdm_core::search::ItemStatus;
-use rdm_core::store::Store;
 
 #[cfg(feature = "git")]
 use crate::paths;
@@ -237,31 +236,20 @@ pub fn reject_non_human(format: OutputFormat, command_name: &str) -> Result<()> 
 
 /// Runs a mutating op as a single transaction and prints the staging hint.
 ///
-/// Wraps `f` in [`rdm_core::ops::mutate`], so the entity write, `INDEX.md`
-/// regeneration, and the single staged flush happen together — the CLI never
-/// has to remember to regenerate the index. `context` labels any failure.
+/// Wraps `f` in [`rdm_core::ops::mutate`], so the entity write and the single
+/// staged flush happen together. `context` labels any failure.
 ///
-/// `--no-index` is honored as an escape hatch: the mutation is still applied
-/// and staged, but the index is left stale (the user can rebuild it later
-/// with `rdm index`). The trailing `rdm commit` hint is always printed —
-/// staging is the only workflow, and the hint names the caller's *changeset*
-/// rather than the working tree because that is what the eventual `rdm
-/// commit` will land: this is the first place an agent meets the concept, so
-/// it must not imply the whole plan repo is about to be swept up.
+/// The trailing `rdm commit` hint is always printed — staging is the only
+/// workflow, and the hint names the caller's *changeset* rather than the
+/// working tree because that is what the eventual `rdm commit` will land:
+/// this is the first place an agent meets the concept, so it must not imply
+/// the whole plan repo is about to be swept up.
 pub fn commit_mutation<T>(
     store: &mut AppStore,
-    project: &str,
-    no_index: bool,
     context: &str,
     f: impl FnOnce(&mut AppStore) -> rdm_core::error::Result<T>,
 ) -> Result<T> {
-    let out = if no_index {
-        let out = f(store).with_context(|| context.to_string())?;
-        store.commit().with_context(|| context.to_string())?;
-        out
-    } else {
-        rdm_core::ops::mutate(store, project, f).with_context(|| context.to_string())?
-    };
+    let out = rdm_core::ops::mutate(store, f).with_context(|| context.to_string())?;
     #[cfg(feature = "git")]
     eprintln!("  (staged in this session's changeset — run `rdm commit` to persist)");
     Ok(out)
@@ -272,9 +260,10 @@ pub fn commit_mutation<T>(
 /// Called after read-only commands (list, show, search) so the user is aware
 /// that the data they see includes uncommitted staged mutations.
 ///
-/// Counts only user-authored changes: regenerated `INDEX.md` files are derived
-/// output, and hinting about them made every read-only command report
-/// uncommitted changes after any mutation.
+/// Counts only user-authored changes: generated `INDEX.md` files are derived
+/// output, so a stale one left by `rdm index` (or by a plan repo predating
+/// the removal of per-mutation regeneration) must not make every read-only
+/// command report uncommitted changes.
 #[cfg(feature = "git")]
 pub fn maybe_print_uncommitted_hint(store: &AppStore) {
     if let Ok(report) = store.git().git_status_report()
@@ -461,9 +450,9 @@ fn build_batch_commit_message(
 /// with the associated commit SHA.
 ///
 /// All directives are applied as a single [`rdm_core::ops::mutate_batch`]
-/// transaction: one `INDEX.md` regeneration and one plan-repo commit cover
-/// every directive in `directives_with_sha`, rather than one commit per
-/// directive. The resulting commit's message enumerates each successfully
+/// transaction: one plan-repo commit covers every directive in
+/// `directives_with_sha`, rather than one commit per directive. The resulting
+/// commit's message enumerates each successfully
 /// applied directive as a `Done: <target> (<sha>)` line, so per-directive
 /// provenance survives the collapse into a single commit. That commit is
 /// produced via [`rdm_store_git::GitStore::commit_changeset`], which bypasses
@@ -493,8 +482,7 @@ fn build_batch_commit_message(
 /// - **Rung 4 (per-process)** — neither a harness variable nor a reachable
 ///   lease (a bare `git merge` in a fresh process tree), so the hook resolves
 ///   a fresh id and its changeset contains *only* what the hook itself just
-///   wrote: the status flips and their regenerated indexes. Nothing else can
-///   ride along.
+///   wrote: the status flips, and nothing else can ride along.
 ///
 /// Bounded exactly as before: the `RDM_GIT_SUBPROCESS` short-circuit still
 /// returns before any of this, and the added work (one journal read plus a
@@ -509,9 +497,9 @@ fn build_batch_commit_message(
 /// # Errors
 ///
 /// Returns an error if the store cannot be opened, the project cannot be
-/// resolved, or the batch's shared finalize stage (index regeneration or the
-/// single commit) fails. In the finalize-failure case, every per-directive
-/// outcome has already been logged before the error is returned.
+/// resolved, or the batch's shared finalize stage (the single flush) fails.
+/// In the finalize-failure case, every per-directive outcome has already been
+/// logged before the error is returned.
 #[cfg(feature = "git")]
 pub fn apply_done_directives(
     root: &Path,
@@ -636,13 +624,13 @@ pub fn apply_done_directives(
     }
 
     let message_metas = metas.clone();
-    let mut outcome = rdm_core::ops::mutate_batch(&mut store, &project, steps, move |results| {
+    let mut outcome = rdm_core::ops::mutate_batch(&mut store, steps, move |results| {
         build_batch_commit_message(&message_metas, results)
     });
 
     // Log every per-directive outcome unconditionally, before inspecting the
     // shared finalize result — this preserves per-directive log fidelity even
-    // when the index regen / commit step below fails.
+    // when the commit step below fails.
     for (meta, result) in metas.iter().zip(outcome.step_results.iter()) {
         match meta {
             DirectiveMeta::Phase { roadmap, stem, sha } => match result {

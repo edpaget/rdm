@@ -850,8 +850,9 @@ impl GitRepo {
         //     exit 0 on both sides, so refuse instead.
         //
         // Derived indexes are exempt for the same reason they are exempt from
-        // the write loop: every mutation regenerates them, so a derived index
-        // this changeset deleted is legitimately present again. Their
+        // the write loop: whatever regenerates them (`rdm index`, a pull, a
+        // merge resolution) may legitimately refill a derived index this
+        // changeset deleted. Their
         // commit-time correctness is `reconcile_derived`'s, not this loop's.
         //
         // A delete-then-*recreate* within one changeset never reaches here:
@@ -940,6 +941,12 @@ impl GitRepo {
     /// Deterministic by construction — ordered maps throughout, no timestamps,
     /// no hash-iteration ordering — so committing the same changeset twice
     /// against the same HEAD yields the same tree oid.
+    ///
+    /// Ordinary mutations journal no derived paths any more, so the
+    /// `changeset.derived.is_empty()` early return makes this a structural
+    /// no-op for them; the remaining producers are the explicit `rdm index`
+    /// command and the merge/clone reconciliation paths. The derived-path
+    /// class itself is deleted by a later phase of `retire-generated-index`.
     fn reconcile_derived(
         &self,
         repo: &gix::Repository,

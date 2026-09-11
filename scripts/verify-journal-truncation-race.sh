@@ -8,25 +8,25 @@
 #       plus M=6 interleaved commits, all under ONE shared RDM_SESSION —
 #       leaves every task present, no AUTHORED file stranded, a journal that
 #       claims nothing, and a final `rdm commit` with nothing to do and no
-#       "belong to another changeset" line. It also disentangles the
-#       separately-filed pre-flush index-read race
-#       (`index-regen-reads-before-flush-lock`): a derived INDEX.md may still
-#       be dirty here for that unrelated reason, but only by LAGGING HEAD —
-#       a dirty index holding a row HEAD never received is a disowned index
-#       write, i.e. a lost append, and fails — and ONE quiescent regeneration
-#       must then settle the lag, after which the tree is asserted fully
-#       clean
-#   1b  the mutant self-test for section 1's drift-direction check: the same
-#       fan-out against the pre-fix mutant, up to three attempts, must leave a
-#       dirty index AHEAD of HEAD at least once. Which record a real fan-out
-#       loses is up to the scheduler, so this is bounded rather than
-#       deterministic; sections 2/2b, 5/5b and 6/6b are the deterministic
-#       proofs
+#       "belong to another changeset" line. A mutation's changeset holds only
+#       authored paths, so a dirty path after the fan-out has exactly one
+#       possible cause — a journal entry that was destroyed, i.e. a lost
+#       append — and the tree is asserted clean immediately, with no
+#       regeneration step in between to blur the question
+#   1b  the self-test for section 1's cleanliness check, run as a
+#       deterministic A/B: the same create fan-out, but racing a commit
+#       pinned open at the RDM_HARNESS_JOURNAL_BARRIER seam. Under the fix
+#       every record appended in that window survives and the tree ends
+#       clean; under the pre-fix mutant they are all destroyed and their task
+#       files are stranded with nothing claiming them. One authored path per
+#       mutation leaves too small a window to catch by luck, so the seam is
+#       pinned rather than gambled on — see the section's own note
 #   2   determinism, not luck: two REAL processes interleaved at the
 #       documented RDM_HARNESS_JOURNAL_BARRIER seam — a commit parked inside
-#       `truncate` while a full `rdm task create` runs to completion — and the
-#       concurrently appended records survive, including the regenerated
-#       INDEX.md files, which name paths the parked commit is landing
+#       `truncate` while a full `rdm task create` AND a full `rdm task update`
+#       run to completion — and the concurrently appended records survive,
+#       including the rewrite of a path the parked commit is landing, whose
+#       bytes differ from the ones it landed
 #   2b  the mutant-binary self-test: `truncate` reverted to its
 #       read-modify-write form, rebuilt, and re-run through section 2's
 #       interleave. The loss MUST reappear, or section 2 proves nothing
@@ -230,9 +230,11 @@ await_exit() {
 # The deterministic scenario, factored out so sections 2 and 2b drive the
 # IDENTICAL sequence and differ only in the binary under test:
 #
-#   A stages a task, then starts `rdm commit` and parks inside `truncate`
-#   B runs a full `rdm task create` to completion — appending its own record
-#     AND rewriting both INDEX.md rows, which are paths A is landing
+#   A stages TWO tasks (a-item and a-control), then starts `rdm commit` and
+#     parks inside `truncate`
+#   B runs a full `rdm task create` to completion — appending its own record —
+#     AND a full `rdm task update` on a-item, rewriting, with DIFFERENT bytes,
+#     a path A is landing
 #   A is released
 #
 # Both run under ONE session id, which is the whole point: at rung 3 every
@@ -246,9 +248,11 @@ interleave() {
 
     RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create a-item \
         --title "A item" --body "Body." --no-edit --project alpha >/dev/null
+    RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create a-control \
+        --title "A control" --body "Body." --no-edit --project alpha >/dev/null
 
     RDM_HARNESS_JOURNAL_BARRIER="$_out/go-a" RDM_SESSION="$SHARED_SESSION" \
-        "$_bin" --root "$_repo" commit -m "A: land the staged item" \
+        "$_bin" --root "$_repo" commit -m "A: land the staged items" \
         >"$_out/a.out" 2>"$_out/a.err" &
     _apid=$!
 
@@ -259,6 +263,14 @@ interleave() {
         --title "B item" --body "Body." --no-edit --project beta \
         >"$_out/b.out" 2>"$_out/b.err"
     printf '%s' "$?" >"$_out/b.status"
+    # The sharp half: rewrite, with different bytes, a path A is landing. Only
+    # a content-keyed tombstone can tell B's bytes from the ones A landed.
+    cksum <"$_repo/projects/alpha/tasks/a-item.md" >"$_out/a-item.before"
+    RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task update a-item \
+        --status in-progress --no-edit --project alpha \
+        >"$_out/b2.out" 2>"$_out/b2.err"
+    printf '%s' "$?" >"$_out/b2.status"
+    cksum <"$_repo/projects/alpha/tasks/a-item.md" >"$_out/a-item.after"
     set -e
 
     : >"$_out/go-a"
@@ -319,6 +331,23 @@ gc_interleave() {
     await_exit "$_bpid" "process B (rdm task create)" "$_out/b.status"
 }
 
+# await_fanout <pids>: bounded wait on a whole fan-out. CI runs this
+# unattended, so a hung child must fail loudly rather than stall the job.
+await_fanout() {
+    _waited=0
+    for _pid in $1; do
+        while kill -0 "$_pid" 2>/dev/null; do
+            sleep 0.2
+            _waited=$((_waited + 1))
+            if [ "$_waited" -gt 900 ]; then
+                kill -9 "$_pid" 2>/dev/null || true
+                fail "the fan-out did not finish within ~180s"
+            fi
+        done
+        wait "$_pid" 2>/dev/null || true
+    done
+}
+
 # stress_fanout <repo> <outdir> [bin]
 #
 # Section 1's scenario, factored out so section 1b can drive the IDENTICAL
@@ -352,20 +381,7 @@ stress_fanout() {
         _i=$((_i + 1))
     done
 
-    # Bounded wait on the whole fan-out. CI runs this unattended, so a hung
-    # child must fail loudly rather than stall the job.
-    _waited=0
-    for _pid in $_pids; do
-        while kill -0 "$_pid" 2>/dev/null; do
-            sleep 0.2
-            _waited=$((_waited + 1))
-            if [ "$_waited" -gt 900 ]; then
-                kill -9 "$_pid" 2>/dev/null || true
-                fail "the stress fan-out did not finish within ~180s"
-            fi
-        done
-        wait "$_pid" 2>/dev/null || true
-    done
+    await_fanout "$_pids"
 
     # The commits raced the creates, so some work is legitimately still
     # staged when the fan-out ends. Land it with one final scoped commit —
@@ -376,53 +392,64 @@ stress_fanout() {
         fail "the settling commit failed: $(cat "$_out/final.out")"
 }
 
-# index_rows_ahead_of_head <repo> <outfile>
+# parked_fanout <repo> <outdir> <bin>
 #
-# The discriminator between the two defects a fan-out can leave behind in a
-# derived INDEX.md, decided by the DIRECTION of the drift. A stale derived
-# read (the separately-filed `index-regen-reads-before-flush-lock`) leaves the
-# working tree LAGGING HEAD — a per-project index missing task rows HEAD
-# already has, the top-level index counting fewer tasks per project. A lost
-# journal append leaves the tree AHEAD of HEAD: holding task rows or counts
-# HEAD never received, because the index write that carried them was made,
-# disowned, and never landed. Writes to <outfile> every row of a dirty index
-# that is ahead of HEAD; an empty file means every dirty index only lags.
-index_rows_ahead_of_head() {
+# Section 1b's scenario: the SAME parallel create fan-out as `stress_fanout`,
+# but with the commit it races pinned open at the documented
+# RDM_HARNESS_JOURNAL_BARRIER seam instead of left to the scheduler.
+#
+#   P stages one task, starts `rdm commit`, and parks inside `truncate`
+#   the whole N_MUTATIONS create fan-out runs to completion while P is parked,
+#     appending its records into the window
+#   P is released, then one settling commit lands whatever is still claimed
+#
+# Under the shipped append-only `truncate` every one of those records is
+# still claimed when P wakes, so the settling commit lands them all and the
+# tree ends clean. Under the read-modify-write mutant P rewrites the journal
+# from the snapshot it read BEFORE parking, so every record appended in the
+# window is destroyed and its task file is stranded — which is precisely
+# what section 1's post-fan-out cleanliness check must catch.
+#
+# Deliberately NOT the vehicle for section 1 itself: section 1 is the AC's
+# real, unbarriered stress scenario. This is its self-test, and a self-test
+# is allowed to pin the seam rather than gamble on it.
+parked_fanout() {
     _repo=$1
-    _ahead=$2
-    : >"$_ahead"
-    git -C "$_repo" status --porcelain >"$_ahead.status"
-    awk '{ print $2 }' "$_ahead.status" | grep 'INDEX\.md$' >"$_ahead.dirty" || true
-    while IFS= read -r _f <&3; do
-        git -C "$_repo" show "HEAD:$_f" >"$_ahead.head"
-        # First file: HEAD's rows, plus per-project task counts from its
-        # summary rows. Second file: the dirty index — print every row that
-        # is AHEAD of HEAD (a summary row counting more tasks, or any other
-        # row HEAD lacks).
-        awk -v file="$_f" '
-            function summary_count(line, cols) {
-                if (line !~ /^\| \[[^]]*\]\([^)]*\) \| [0-9]+ \| [0-9]+ \|/) return -1
-                split(line, cols, "|")
-                gsub(/ /, "", cols[2]); gsub(/ /, "", cols[4])
-                project = cols[2]
-                return cols[4] + 0
-            }
-            FNR == NR {
-                head_rows[$0] = 1
-                n = summary_count($0)
-                if (n >= 0) head_tasks[project] = n
-                next
-            }
-            /^\| / {
-                n = summary_count($0)
-                if (n >= 0) {
-                    if (!(project in head_tasks) || n > head_tasks[project]) print file ": " $0
-                    next
-                }
-                if (!($0 in head_rows)) print file ": " $0
-            }
-        ' "$_ahead.head" "$_repo/$_f" >>"$_ahead"
-    done 3<"$_ahead.dirty"
+    _out=$2
+    _bin=$3
+    mkdir -p "$_out"
+
+    RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create parked-item \
+        --title "Parked item" --body "Body." --no-edit --project alpha >/dev/null
+
+    RDM_HARNESS_JOURNAL_BARRIER="$_out/go-p" RDM_SESSION="$SHARED_SESSION" \
+        "$_bin" --root "$_repo" commit -m "P: land the staged item" \
+        >"$_out/p.out" 2>"$_out/p.err" &
+    _ppid=$!
+
+    await_parked "$_ppid" "process P (rdm commit)"
+
+    _pids=""
+    _i=1
+    while [ "$_i" -le "$N_MUTATIONS" ]; do
+        if [ $((_i % 2)) -eq 0 ]; then _proj=alpha; else _proj=beta; fi
+        RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" task create "stress-$_i" \
+            --title "Stress $_i" --body "Body $_i." --no-edit --project "$_proj" \
+            >"$_out/create-$_i.out" 2>&1 &
+        _pids="$_pids $!"
+        _i=$((_i + 1))
+    done
+    await_fanout "$_pids"
+
+    : >"$_out/go-p"
+    await_exit "$_ppid" "process P (rdm commit)" "$_out/p.status"
+    [ "$(cat "$_out/p.status")" = "0" ] ||
+        fail "the parked commit failed (exit $(cat "$_out/p.status")): $(cat "$_out/p.err")"
+
+    RDM_SESSION="$SHARED_SESSION" "$_bin" --root "$_repo" commit \
+        -m "stress: land whatever the parked fan-out left staged" \
+        >"$_out/final.out" 2>&1 ||
+        fail "the settling commit failed: $(cat "$_out/final.out")"
 }
 
 SHARED_SESSION="shared-changeset"
@@ -460,52 +487,18 @@ lost, exactly the reported symptom:
 $(cat "$TMP/s1.authored")"
 ok "no authored file is left uncommitted"
 
-# (b-ii) A derived index may still be dirty here, and that is a DIFFERENT
-#        defect: `ops::mutate` regenerates INDEX.md from a disk snapshot taken
-#        before the flush lock, so under a fan-out the last writer can persist
-#        a staler index than the one already committed. It is filed separately
-#        as task `index-regen-reads-before-flush-lock` per this phase's
-#        Direction. The two defects are told apart by the DIRECTION of the
-#        drift, and that has to happen BEFORE anything is regenerated: a stale
-#        derived read leaves the working tree LAGGING HEAD — a per-project
-#        index missing task rows HEAD already has, the top-level index
-#        counting fewer tasks per project — whereas a lost journal append
-#        leaves the tree AHEAD of HEAD, holding task rows (or counts) HEAD
-#        never received, because the index write that carried them was made,
-#        disowned, and never landed. Regenerating first would erase the
-#        difference: `rdm index` journals what it writes, so it would re-claim
-#        and land a disowned index exactly as it settles a stale one. So: no
-#        dirty index may hold a task row HEAD lacks, nor count more tasks for
-#        a project than HEAD does. Section 1b proves this check is not
-#        vacuous by tripping it with the mutant.
-index_rows_ahead_of_head "$REPO_1" "$TMP/s1.index-ahead"
-[ -s "$TMP/s1.index-ahead" ] &&
-    fail "a dirty INDEX.md is AHEAD of HEAD — it holds task rows or counts HEAD \
-never received, so an index write was made and then disowned. That is a lost \
-journal append, not the separately-filed stale read:
-$(cat "$TMP/s1.index-ahead")"
-ok "every dirty derived index only lags HEAD: no task row or count on disk that HEAD lacks"
-
-#        Only now may one QUIESCENT regeneration — no concurrency, so no stale
-#        snapshot — settle the lag.
-RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" index \
-    >"$TMP/s1-index.out" 2>&1 ||
-    fail "the quiescent index regeneration failed: $(cat "$TMP/s1-index.out")"
-RDM_SESSION="$SHARED_SESSION" "$RDM_BIN" --root "$REPO_1" commit \
-    -m "stress: land the regenerated indexes" >"$TMP/s1-index-commit.out" 2>&1 ||
-    fail "committing the regenerated indexes failed: $(cat "$TMP/s1-index-commit.out")"
-grep -qi 'another changeset' "$TMP/s1-index-commit.out" &&
-    fail "the regenerated indexes are attributed to another changeset — the \
-reported symptom is still present: $(cat "$TMP/s1-index-commit.out")"
-ok "one quiescent regeneration settles the derived indexes"
-
-# (b-iii) NOW the tree must be clean, with nothing whatsoever left over.
+# (b-ii) And the whole tree is clean, immediately — with NO regeneration step
+#        in between. A mutation's changeset holds only authored paths, so
+#        there is no derived residue whose drift direction has to be
+#        disentangled from a lost append: any dirty path here has exactly one
+#        possible cause, a journal entry that was destroyed. Section 1b proves
+#        this check is not vacuous by tripping it with the mutant.
 git -C "$REPO_1" status --porcelain >"$TMP/s1.status"
 [ -s "$TMP/s1.status" ] &&
-    fail "the working tree is still dirty after a quiescent regeneration, so \
-the residue is not the separately-filed index race:
+    fail "the working tree is dirty immediately after the fan-out — a mutation \
+writes only paths it journals, so a dirty path is a destroyed journal entry:
 $(cat "$TMP/s1.status")"
-ok "git status --porcelain is empty"
+ok "git status --porcelain is empty immediately after the fan-out"
 
 # (c) the journal claims nothing.
 journal_paths "$REPO_1" >"$TMP/s1.journal"
@@ -560,24 +553,29 @@ concurrent append. Journal now holds:
 $(cat "$TMP/s2.journal")"
 ok "B's own record survived the truncation"
 
-# The sharp half. A staged its task under project `alpha`, so its changeset
-# claims the top-level INDEX.md and lands it — that path IS in A's tombstone.
-# B, mutating project `beta`, regenerates that same top-level INDEX.md with
-# different bytes while A is parked. A path-keyed tombstone sweeps B's record
-# here; a content-keyed one keeps it, because those bytes are not the bytes
-# that landed. This is what produced the reported dirty INDEX.md files.
-grep -q 'regenerated index file' "$TMP/out-2/a.out" ||
-    fail "the parked commit did not land any index file, so this section is \
+# The sharp half. A staged `a-item` and is landing it — that path IS in A's
+# tombstone. While A is parked, B rewrites the SAME path with different bytes
+# via `task update`. A path-keyed tombstone sweeps B's record here; a
+# content-keyed one keeps it, because those bytes are not the bytes that
+# landed. This is what produced the reported dirty files.
+[ "$(cat "$TMP/out-2/b2.status")" = "0" ] ||
+    fail "process B's update of the contended path failed: $(cat "$TMP/out-2/b2.err")"
+[ "$(cat "$TMP/out-2/a-item.before")" != "$(cat "$TMP/out-2/a-item.after")" ] ||
+    fail "B's update produced IDENTICAL bytes, so the content-keyed tombstone \
+assertion below would be vacuous"
+grep -q 'Committed 2 file(s)' "$TMP/out-2/a.out" ||
+    fail "the parked commit did not land both staged tasks, so this section is \
 not exercising a concurrently-rewritten LANDED path: $(cat "$TMP/out-2/a.out")"
-grep -q '^INDEX.md$' "$TMP/s2.journal" ||
-    fail "INDEX.md is gone from the journal — B's rewrite of a path A landed \
-was swept, so the tree is left dirty and unattributed. Journal now holds:
+grep -q '^projects/alpha/tasks/a-item.md$' "$TMP/s2.journal" ||
+    fail "projects/alpha/tasks/a-item.md is gone from the journal — B's \
+rewrite of a path A landed was swept, so the tree is left dirty and \
+unattributed. Journal now holds:
 $(cat "$TMP/s2.journal")"
-ok "B's rewrite of the index A landed survived its tombstone"
+ok "B's rewrite of the path A landed survived its tombstone"
 
-# `projects/alpha/INDEX.md` is the control: A landed it and B never touched
-# it, so it must be GONE. Truncation still has to work.
-grep -q '^projects/alpha/INDEX.md$' "$TMP/s2.journal" &&
+# `projects/alpha/tasks/a-control.md` is the control: A landed it and B never
+# touched it, so it must be GONE. Truncation still has to work.
+grep -q '^projects/alpha/tasks/a-control.md$' "$TMP/s2.journal" &&
     fail "a path A landed and nobody re-recorded is still journaled — \
 truncation stopped working, so the changeset can re-commit it later"
 ok "a landed path nobody re-recorded is correctly dropped"
@@ -751,9 +749,10 @@ section 2 may be passing for a reason other than append-only truncation. \
 Mutant journal:
 $(cat "$TMP/s2b.journal")"
 fi
-if grep -q '^INDEX.md$' "$TMP/s2b.journal"; then
-    fail "the planted mutation did NOT reproduce the loss of B's index \
-rewrite — section 2's sharp assertion may be vacuous. Mutant journal:
+if grep -q '^projects/alpha/tasks/a-item.md$' "$TMP/s2b.journal"; then
+    fail "the planted mutation did NOT reproduce the loss of B's rewrite of \
+the contended path — section 2's sharp assertion may be vacuous. Mutant \
+journal:
 $(cat "$TMP/s2b.journal")"
 fi
 ok "with the rewrite restored, BOTH of B's records are silently lost — section 2's pass is caused by the fix"
@@ -765,34 +764,60 @@ symptom — re-check the interleave"
 ok "and the mutant leaves the reported dirty tree behind"
 
 # ---------------------------------------------------------------------------
-# Section 1b — the mutant self-test for section 1's drift-direction check
+# Section 1b — the self-test for section 1's post-fan-out cleanliness check
 # ---------------------------------------------------------------------------
-say "Section 1b: against the mutant, the fan-out leaves a derived index AHEAD of HEAD"
+say "Section 1b: the same fan-out with one commit parked at the seam"
 
-# Section 1 is a real fan-out, so which record a pre-fix binary loses is up
-# to the scheduler — but that it loses SOME index record, leaving a dirty
-# index holding rows HEAD never received, is what the reported symptom IS.
-# Drive the identical fan-out against the mutant a bounded number of times
-# and require the drift-direction check to trip at least once; a check that
-# never trips would let section 1 pass on the very defect it exists to catch.
-S1B_TRIPPED=0
-_attempt=1
-while [ "$_attempt" -le 3 ]; do
-    REPO_1B="$TMP/repo-1b-$_attempt"
-    seed_repo "$REPO_1B" "$MUT_BIN"
-    stress_fanout "$REPO_1B" "$TMP/out-1b-$_attempt" "$MUT_BIN"
-    index_rows_ahead_of_head "$REPO_1B" "$TMP/s1b-$_attempt.ahead"
-    if [ -s "$TMP/s1b-$_attempt.ahead" ]; then
-        S1B_TRIPPED=$_attempt
-        break
-    fi
-    _attempt=$((_attempt + 1))
-done
-[ "$S1B_TRIPPED" -gt 0 ] ||
-    fail "in 3 fan-outs against the mutant, no dirty index was ever AHEAD of \
-HEAD — section 1's drift-direction check may be vacuous"
-ok "attempt $S1B_TRIPPED: the mutant left an index holding rows HEAD never received — section 1's check is caused by the fix"
-head -3 "$TMP/s1b-$S1B_TRIPPED.ahead" | sed 's/^/       /'
+# Section 1 asserts the tree is clean immediately after the fan-out. That
+# check is only worth anything if a destroyed journal append would trip it,
+# so drive an A/B of the SAME create fan-out with the commit it races pinned
+# open at RDM_HARNESS_JOURNAL_BARRIER: clean under the fix, dirty under the
+# mutant, from one scenario.
+#
+# This replaces an earlier bounded three-attempt gamble on an unbarriered
+# mutant fan-out. That worked only while every mutation ALSO wrote the two
+# derived indexes: the hot shared index path was appended by all 40 processes
+# and landed by every commit, so some record reliably fell in the mutant's
+# read-modify-write window. Now that a mutation journals exactly one authored
+# path (`retire-generated-index` phase 2), each path has a single writer and
+# the window is hit only by luck — measured at 0 trips in 26 unbarriered
+# fan-outs against the mutant, i.e. the old self-test had become the vacuous
+# thing it exists to prevent. Pinning the seam is strictly stronger than
+# re-tuning the gamble: it is deterministic, and it still fails loudly if the
+# fix stops holding.
+
+REPO_1B_OK="$TMP/repo-1b-fixed"
+seed_repo "$REPO_1B_OK"
+parked_fanout "$REPO_1B_OK" "$TMP/out-1b-fixed" "$RDM_BIN"
+git -C "$REPO_1B_OK" status --porcelain >"$TMP/s1b-fixed.dirty"
+[ -s "$TMP/s1b-fixed.dirty" ] &&
+    fail "the fixed binary left the tree dirty after the parked fan-out, so \
+this A/B cannot attribute the mutant's dirt to the planted defect:
+$(cat "$TMP/s1b-fixed.dirty")"
+ok "under the fix, every record appended while the commit was parked survives — the tree ends clean"
+
+REPO_1B_MUT="$TMP/repo-1b-mutant"
+seed_repo "$REPO_1B_MUT" "$MUT_BIN"
+parked_fanout "$REPO_1B_MUT" "$TMP/out-1b-mutant" "$MUT_BIN"
+git -C "$REPO_1B_MUT" status --porcelain >"$TMP/s1b-mutant.dirty"
+[ -s "$TMP/s1b-mutant.dirty" ] ||
+    fail "the mutant left a clean tree after the parked fan-out — section 1's \
+post-fan-out cleanliness check may be vacuous"
+
+# Sharpen it: the dirt must be stranded AUTHORED task files that nothing
+# claims, which is the lost-append symptom stated exactly — not, say, an
+# unrelated file the scenario happened to leave behind.
+grep -q 'projects/.*/tasks/stress-.*\.md$' "$TMP/s1b-mutant.dirty" ||
+    fail "the mutant's dirt is not a stranded stress task file, so it is not \
+the lost-append symptom:
+$(cat "$TMP/s1b-mutant.dirty")"
+journal_paths "$REPO_1B_MUT" "$MUT_BIN" >"$TMP/s1b-mutant.journal"
+grep -q 'stress-' "$TMP/s1b-mutant.journal" &&
+    fail "the mutant still claims the stranded paths, so they were not lost — \
+re-check the parked fan-out:
+$(cat "$TMP/s1b-mutant.journal")"
+ok "under the mutant, $(wc -l <"$TMP/s1b-mutant.dirty" | tr -d ' ') authored file(s) are stranded with nothing claiming them — section 1's check is caused by the fix"
+head -3 "$TMP/s1b-mutant.dirty" | sed 's/^/       /'
 
 # ---------------------------------------------------------------------------
 # Section 3 — assertion self-tests

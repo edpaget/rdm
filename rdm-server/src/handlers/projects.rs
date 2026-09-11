@@ -96,7 +96,7 @@ pub async fn create_project(
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, &req.name, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::project::create_project(s, &req.name, &req.title)
     })
     .map_err(|e| error_response(e, format))?;

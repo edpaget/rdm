@@ -511,11 +511,15 @@ So the journal can be neither a superset of what landed nor a claim about a
 batch that failed, and an empty flush records nothing at all rather than an
 empty line.
 
-The derived `INDEX.md` files land in **every** session's journal, because
-`ops::mutate` regenerates them on every mutation. That is correct here — every
-session really did write them — and it is asserted deliberately in
-`scripts/verify-session-identity.sh` § F. Reconciling the shared derived index
-at commit time belongs to the scoped-commit phase.
+The derived `INDEX.md` files used to land in **every** session's journal,
+because `ops::mutate` regenerated them on every mutation. As of
+`retire-generated-index` phase 2 that is no longer true: a mutation journals
+only the paths it authored, so no journal names a derived path unless that
+session ran an explicit index regeneration (`rdm index`, or the post-merge /
+post-pull reconciliation). `scripts/verify-session-identity.sh` § F now
+asserts the inverse — neither journal may name an `INDEX.md` at all. The full
+prose sweep for the removal is a later phase of that roadmap; see
+[`index-removal.md`](index-removal.md).
 
 ## Lifecycle
 

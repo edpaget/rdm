@@ -365,16 +365,16 @@ json_lines "$TMP/e.out" >"$TMP/e.json"
 paths_of "$TMP/e.json" >"$TMP/e.paths"
 [ -s "$TMP/e.paths" ] || fail "the journal is empty after a mutation"
 cat >"$TMP/e.expected" <<'EOF'
-INDEX.md
-projects/demo/INDEX.md
 projects/demo/tasks/alpha-one.md
 EOF
 # Whole-set equality, deliberately: a `grep -q` containment check would pass on
 # a superset, which is precisely the failure mode that would make a later
-# scoped commit unsound.
+# scoped commit unsound. A mutation regenerates no index, so the expected set
+# is the single authored path — strictly stronger than the three-path set this
+# replaces.
 diff -u "$TMP/e.expected" "$TMP/e.paths" ||
     fail "the journal is not exactly the mutation's own paths"
-ok "the journal lists exactly the task file plus the two regenerated indexes"
+ok "the journal lists exactly the one authored task file"
 
 # ---------------------------------------------------------------------------
 # Section F — two coexisting journals are disjoint
@@ -415,13 +415,14 @@ grep -q '^projects/demo/tasks/alpha-one.md$' "$TMP/f-beta.paths" &&
     fail "beta's journal contains alpha's task — the journals are not disjoint"
 ok "neither journal contains the other session's task"
 
-# The shared derived index lands in BOTH journals, and that is correct: every
-# session really did rewrite it, because ops::mutate regenerates it on every
-# mutation. Reconciling that at commit time belongs to the scoped-commit phase
-# and is deliberately not pre-solved here.
-grep -q '^INDEX.md$' "$TMP/f-alpha.paths" || fail "alpha's journal omits the derived index"
-grep -q '^INDEX.md$' "$TMP/f-beta.paths" || fail "beta's journal omits the derived index"
-ok "the shared derived index is journaled by both sessions, as intended"
+# The inverse of what this arm used to assert: no derived index lands in
+# either journal, because a mutation authors only its own entity file. There
+# is therefore no shared derived path for two sessions to contend over.
+grep -q 'INDEX\.md$' "$TMP/f-alpha.paths" &&
+    fail "alpha's journal names a derived index: $(tr '\n' ' ' <"$TMP/f-alpha.paths")"
+grep -q 'INDEX\.md$' "$TMP/f-beta.paths" &&
+    fail "beta's journal names a derived index: $(tr '\n' ' ' <"$TMP/f-beta.paths")"
+ok "neither journal names any INDEX.md — mutations journal no derived paths"
 
 # ---------------------------------------------------------------------------
 # Section G — invisible to `rdm status` and to a whole-tree commit

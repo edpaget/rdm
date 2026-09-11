@@ -957,10 +957,12 @@ impl GitStore {
     ///    `rdm session gc`. The retirement is best-effort: a journal-lock
     ///    wait that expires leaves the claims in place rather than failing
     ///    the discard;
-    /// 3. the derived indexes are regenerated **from the resulting disk
-    ///    state**, so another session's still-uncommitted rows survive — and
-    ///    that regeneration is journaled to this (now empty) changeset, so the
-    ///    session owns what it just rewrote;
+    /// 3. **no derived index is regenerated.** The restore in step 1 put this
+    ///    changeset's authored paths back to their HEAD blobs, so HEAD's
+    ///    committed index is already correct for them. Regenerating from live
+    ///    disk would newly dirty a derived path and journal it into a session
+    ///    that authored none. Another session's dirty index belongs to that
+    ///    session's changeset and is left untouched here;
     /// 4. the `.gitattributes` merge-driver mapping is re-ensured, exactly as
     ///    the whole-tree discard does.
     ///
@@ -971,7 +973,7 @@ impl GitStore {
     /// # Errors
     ///
     /// Returns [`Error::Git`] if the HEAD tree cannot be read or files cannot
-    /// be written, or a core error if the indexes cannot be regenerated.
+    /// be written.
     pub fn discard_changeset(&mut self) -> Result<ScopedDiscard> {
         // ONE journal read feeds both the restore set (through the report)
         // and the retirement below; see `status_report_for`.
@@ -1019,9 +1021,13 @@ impl GitStore {
             let _ = session::journal::retire(paths, id, &journal);
         }
 
-        // Regenerate from what is actually on disk now: the point is that
-        // another session's uncommitted rows must survive this discard.
-        rdm_core::ops::index::generate_index(self)?;
+        // No index is regenerated here. The restore above puts this
+        // changeset's authored paths back to their HEAD blobs, so HEAD's
+        // committed index is already correct for them; regenerating from live
+        // disk would newly dirty a derived path and journal it into a session
+        // that authored none — precisely what mutations no longer do. Another
+        // session's dirty index belongs to that session's changeset and must
+        // not be rewritten from here.
         Store::commit(self)?;
 
         // Reinstate the merge-driver mapping the restore may have removed.
@@ -1547,7 +1553,8 @@ mod tests {
         store.commit().unwrap();
         store.commit_whole_tree("seed: plan repo").unwrap();
 
-        // One user edit plus the two indexes a mutation regenerates.
+        // One user edit plus two stale indexes standing in for what `rdm
+        // index` regenerates.
         std::fs::write(
             dir.path().join("projects/demo/roadmaps/auth/roadmap.md"),
             "edited",
@@ -4368,7 +4375,7 @@ with its new content identity: {after:?}"
         let mut store = GitStore::init(dir.path()).unwrap();
         rdm_core::ops::init::init_with_config(&mut store, rdm_core::config::Config::default())
             .unwrap();
-        rdm_core::ops::mutate(&mut store, "demo", |s| {
+        rdm_core::ops::mutate(&mut store, |s| {
             rdm_core::ops::project::create_project(s, "demo", "Demo")
         })
         .unwrap();
@@ -4385,7 +4392,7 @@ with its new content identity: {after:?}"
     /// Like [`make_task`], but in a named project — the cross-changeset tests
     /// need a project whose `project.md` is *not* in HEAD.
     fn make_task_in(store: &mut GitStore, project: &str, slug: &str) {
-        rdm_core::ops::mutate(store, project, |s| {
+        rdm_core::ops::mutate(store, |s| {
             rdm_core::ops::task::create_task(
                 s,
                 rdm_core::ops::task::CreateTask {
@@ -4583,7 +4590,7 @@ with its new content identity: {after:?}"
         // title to its own existing value, so the serialized content is
         // byte-identical to what's already at HEAD.
         let path = rdm_core::paths::task_path("demo", "t1");
-        rdm_core::ops::mutate(&mut store_a, "demo", |s| {
+        rdm_core::ops::mutate(&mut store_a, |s| {
             rdm_core::ops::task::update_task(
                 s,
                 "demo",
@@ -4619,7 +4626,7 @@ with its new content identity: {after:?}"
 
         // Another session overwrites the same path and lands its edit.
         let mut store_b = switch_session(&dir, "unit-noop-b");
-        rdm_core::ops::mutate(&mut store_b, "demo", |s| {
+        rdm_core::ops::mutate(&mut store_b, |s| {
             rdm_core::ops::task::update_task(
                 s,
                 "demo",
@@ -4663,7 +4670,7 @@ with its new content identity: {after:?}"
         make_task(&mut store_a, "t1");
         store_a.commit_changeset(Some("land t1"), &[]).unwrap();
 
-        rdm_core::ops::mutate(&mut store_a, "demo", |s| {
+        rdm_core::ops::mutate(&mut store_a, |s| {
             rdm_core::ops::task::update_task(
                 s,
                 "demo",
@@ -4695,7 +4702,7 @@ with its new content identity: {after:?}"
         drop(store_a);
 
         let mut store_b = switch_session(&dir, "unit-all-noop-b");
-        rdm_core::ops::mutate(&mut store_b, "demo", |s| {
+        rdm_core::ops::mutate(&mut store_b, |s| {
             rdm_core::ops::task::update_task(
                 s,
                 "demo",
@@ -4840,7 +4847,7 @@ with its new content identity: {after:?}"
     /// `b_id` creates `b-task` under it. The caller commits.
     fn arrange_orphaned_parent(dir: &TempDir, a_id: &str, b_id: &str) -> GitStore {
         let mut store_a = scoped_repo(dir, a_id);
-        rdm_core::ops::mutate(&mut store_a, "alt", |s| {
+        rdm_core::ops::mutate(&mut store_a, |s| {
             rdm_core::ops::project::create_project(s, "alt", "Alt").map(|_| ())
         })
         .unwrap();
@@ -4862,6 +4869,11 @@ with its new content identity: {after:?}"
 
         let mut store_b = switch_session(dir, b_id);
         make_task_in(&mut store_b, "alt", "b-task");
+        // Mutations no longer produce derived paths, so B runs the explicit
+        // index generation (`rdm index`) to put them in its changeset — that
+        // is the only remaining way a changeset holds a derived path, and it
+        // is what `reconcile_derived`'s deferral logic exists to handle.
+        rdm_core::ops::index::generate_index(&mut store_b).unwrap();
         store_b
     }
 
@@ -4925,6 +4937,18 @@ with its new content identity: {after:?}"
 
         let store_a = switch_session(&dir, "unit-heal-a");
         store_a.commit_changeset(Some("land alt"), &[]).unwrap();
+        drop(store_a);
+
+        // The derived path is still B's — it stayed in B's journal when the
+        // reconciliation deferred it — so B is the session that lands it,
+        // now that the owning project is in HEAD. Regenerating first is what
+        // a user does (`rdm index`); it is also what refreshes the root index
+        // that commit landed with `alt` pruned out of it.
+        let mut store_b = switch_session(&dir, "unit-heal-b");
+        rdm_core::ops::index::generate_index(&mut store_b).unwrap();
+        store_b
+            .commit_changeset(Some("land the healed index"), &[])
+            .unwrap();
 
         let tree = head_tree_paths(&dir);
         for want in ["projects/alt/project.md", "projects/alt/INDEX.md"] {
@@ -4970,10 +4994,17 @@ with its new content identity: {after:?}"
         );
         drop(store_b);
 
-        // Once A lands its project, the previously-deferred index row
-        // reappears — the existing heal this AC guards against regressing.
+        // Once A lands its project, B's next commit lands the previously
+        // deferred index row — the existing heal this AC guards against
+        // regressing. The row is B's, so B is the session that lands it.
         let store_a = switch_session(&dir, "unit-deferred-a");
         store_a.commit_changeset(Some("land alt"), &[]).unwrap();
+        drop(store_a);
+        let mut store_b2 = switch_session(&dir, "unit-deferred-b");
+        rdm_core::ops::index::generate_index(&mut store_b2).unwrap();
+        store_b2
+            .commit_changeset(Some("land the healed index"), &[])
+            .unwrap();
 
         let tree = head_tree_paths(&dir);
         assert!(
@@ -5245,7 +5276,7 @@ with its new content identity: {after:?}"
     }
 
     #[test]
-    fn a_scoped_discard_leaves_foreign_paths_and_their_index_rows() {
+    fn a_scoped_discard_leaves_foreign_paths_and_rewrites_no_derived_path() {
         let _guard = serial_scoped();
         let dir = TempDir::new().unwrap();
 
@@ -5270,14 +5301,16 @@ with its new content identity: {after:?}"
             dir.path().join("projects/demo/tasks/survivor.md").exists(),
             "a scoped discard destroyed another session's file"
         );
-        let index = std::fs::read_to_string(dir.path().join("projects/demo/INDEX.md")).unwrap();
+        // The discard rewrites no derived path at all: neither session wrote
+        // one, so conjuring one here would journal a derived path into a
+        // changeset that authored none.
         assert!(
-            index.contains("survivor"),
-            "the regenerated index dropped the other session's row: {index}"
+            !dir.path().join("projects/demo/INDEX.md").exists(),
+            "a discard must not generate a project index nobody wrote"
         );
         assert!(
-            !index.contains("discarded"),
-            "the regenerated index kept the discarded row: {index}"
+            !dir.path().join("INDEX.md").exists(),
+            "a discard must not generate a root index nobody wrote"
         );
     }
 
@@ -5291,7 +5324,7 @@ with its new content identity: {after:?}"
 
         // Write-then-discard: a follow-up edit to an already-committed path,
         // touched only by this session, inside one uncommitted batch.
-        rdm_core::ops::mutate(&mut store, "demo", |s| {
+        rdm_core::ops::mutate(&mut store, |s| {
             rdm_core::ops::task::update_task(
                 s,
                 "demo",
@@ -5346,7 +5379,7 @@ with its new content identity: {after:?}"
         make_task(&mut mine, "contested");
         mine.commit_changeset(Some("seed contested"), &[]).unwrap();
         // A's own edit, journaled but never committed.
-        rdm_core::ops::mutate(&mut mine, "demo", |s| {
+        rdm_core::ops::mutate(&mut mine, |s| {
             rdm_core::ops::task::update_task(
                 s,
                 "demo",
@@ -5368,7 +5401,7 @@ with its new content identity: {after:?}"
         // B overwrites the same never-committed path with different content.
         unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-disc-overwrite-b") };
         let mut theirs = GitStore::new(dir.path()).unwrap();
-        rdm_core::ops::mutate(&mut theirs, "demo", |s| {
+        rdm_core::ops::mutate(&mut theirs, |s| {
             rdm_core::ops::task::update_task(
                 s,
                 "demo",
@@ -5415,7 +5448,7 @@ with its new content identity: {after:?}"
         make_task(&mut mine, "deleted-then-recreated");
         mine.commit_changeset(Some("seed"), &[]).unwrap();
         let task_path = rdm_core::paths::task_path("demo", "deleted-then-recreated");
-        rdm_core::ops::mutate(&mut mine, "demo", |s| s.delete(&task_path)).unwrap();
+        rdm_core::ops::mutate(&mut mine, |s| s.delete(&task_path)).unwrap();
         drop(mine);
 
         // B recreates a task at the same slug/path, with content that
@@ -5425,7 +5458,7 @@ with its new content identity: {after:?}"
         unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-disc-recreate-b") };
         let mut theirs = GitStore::new(dir.path()).unwrap();
         make_task(&mut theirs, "deleted-then-recreated");
-        rdm_core::ops::mutate(&mut theirs, "demo", |s| {
+        rdm_core::ops::mutate(&mut theirs, |s| {
             rdm_core::ops::task::update_task(
                 s,
                 "demo",
@@ -5478,7 +5511,7 @@ with its new content identity: {after:?}"
         mine.commit_changeset(Some("seed legacy-contested"), &[])
             .unwrap();
         // A's own edit, journaled but never committed.
-        rdm_core::ops::mutate(&mut mine, "demo", |s| {
+        rdm_core::ops::mutate(&mut mine, |s| {
             rdm_core::ops::task::update_task(
                 s,
                 "demo",
@@ -5515,7 +5548,7 @@ with its new content identity: {after:?}"
         // B overwrites the same never-committed path with different content.
         unsafe { std::env::set_var(rdm_core::session::RDM_SESSION_ENV, "unit-disc-legacy-b") };
         let mut theirs = GitStore::new(dir.path()).unwrap();
-        rdm_core::ops::mutate(&mut theirs, "demo", |s| {
+        rdm_core::ops::mutate(&mut theirs, |s| {
             rdm_core::ops::task::update_task(
                 s,
                 "demo",
@@ -5577,7 +5610,7 @@ with its new content identity: {after:?}"
         store
             .commit_changeset(Some("seed vanishing-write"), &[])
             .unwrap();
-        rdm_core::ops::mutate(&mut store, "demo", |s| {
+        rdm_core::ops::mutate(&mut store, |s| {
             rdm_core::ops::task::update_task(
                 s,
                 "demo",

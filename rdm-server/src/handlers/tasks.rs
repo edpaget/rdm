@@ -353,7 +353,7 @@ pub async fn create_task(
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::task::create_task(
             s,
             rdm_core::ops::task::CreateTask {
@@ -432,7 +432,7 @@ pub async fn update_task(
         .map_err(|e| error_response(e, format))?;
 
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::task::update_task(
             s,
             &project,
@@ -487,7 +487,7 @@ pub async fn promote_task(
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
     let mut store = state.store();
-    rdm_core::ops::mutate(&mut store, &project, |s| {
+    rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::task::promote_task(s, &project, &task_slug, &req.roadmap_slug)
     })
     .map_err(|e| error_response(e, format))?;

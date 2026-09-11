@@ -321,7 +321,7 @@ pub async fn create_phase(
 ) -> Result<Response, Response> {
     let axum::Json(req) = payload.map_err(json_rejection_response)?;
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::phase::create_phase(
             s,
             rdm_core::ops::phase::CreatePhase {
@@ -402,7 +402,7 @@ pub async fn update_phase(
     let mut store = state.store();
     let stem = rdm_core::ops::phase::resolve_phase_stem(&store, &project, &roadmap, &phase_id)
         .map_err(|e| error_response(e, format))?;
-    let doc = rdm_core::ops::mutate(&mut store, &project, |s| {
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::phase::update_phase(
             s,
             &project,

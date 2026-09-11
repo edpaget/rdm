@@ -216,16 +216,12 @@ fn journal_lists_exactly_the_mutations_paths() {
         .assert()
         .success();
 
-    // Exactly the task file plus the two indexes `ops::mutate` regenerates —
+    // Exactly the one authored task file — a mutation regenerates no index —
     // asserted as whole-set equality, so a superset fails.
-    let expected: BTreeSet<String> = [
-        "INDEX.md",
-        "projects/demo/INDEX.md",
-        "projects/demo/tasks/alpha-one.md",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
+    let expected: BTreeSet<String> = ["projects/demo/tasks/alpha-one.md"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let actual = journal_paths(&dir, "alpha");
     assert!(!actual.is_empty(), "the journal must not be empty");
     assert_eq!(actual, expected);
@@ -259,10 +255,17 @@ fn concurrent_journals_never_contain_each_others_paths() {
     assert!(!alpha.contains("projects/demo/tasks/beta-one.md"));
     assert!(beta.contains("projects/demo/tasks/beta-one.md"));
     assert!(!beta.contains("projects/demo/tasks/alpha-one.md"));
-    // The shared derived index lands in BOTH journals. That is correct here:
-    // `ops::mutate` regenerates it on every mutation, so every session really
-    // did write it. Reconciling it at commit time is a later phase's problem.
-    assert!(alpha.contains("INDEX.md") && beta.contains("INDEX.md"));
+    // And neither journal names a derived index at all: a mutation authors
+    // only its own entity file, so there is no shared derived path for two
+    // sessions to contend over in the first place.
+    assert!(
+        !alpha.iter().any(|p| p.ends_with("INDEX.md")),
+        "alpha's journal named a derived index: {alpha:?}"
+    );
+    assert!(
+        !beta.iter().any(|p| p.ends_with("INDEX.md")),
+        "beta's journal named a derived index: {beta:?}"
+    );
 }
 
 #[test]
@@ -353,7 +356,7 @@ fn list_flags_orphans_and_adopt_repoints_the_caller() {
         .find(|c| c["id"] == "orphaned-one")
         .expect("the changeset should be listed");
     assert_eq!(orphan["liveness"], "unleased");
-    assert_eq!(orphan["paths"], 3);
+    assert_eq!(orphan["paths"], 1);
 
     // Adopting re-points the caller's lease, so a later bare invocation from
     // the same parent resolves the orphaned changeset instead of its own.
@@ -469,7 +472,7 @@ fn gc_runs_and_reports_without_touching_journals() {
     let out = stdout(rdm(&dir).args(["session", "gc"]));
     assert!(out.contains("stale lease(s)"), "got: {out}");
     // GC removes dead leases, never journals: no work is silently destroyed.
-    assert_eq!(journal_paths(&dir, "alpha").len(), 3);
+    assert_eq!(journal_paths(&dir, "alpha").len(), 1);
 }
 
 /// The sibling of the test above, covering the *other* half of the sweep.
@@ -610,7 +613,7 @@ fn two_harness_sessions_view_each_other_unleased_not_orphaned() {
         a_changeset["liveness"], "unleased",
         "session A's unleased changeset must not be labeled 'orphaned'"
     );
-    assert_eq!(a_changeset["paths"], 3);
+    assert_eq!(a_changeset["paths"], 1);
 
     // Session A's own row should have liveness "current".
     let a_own = stdout(

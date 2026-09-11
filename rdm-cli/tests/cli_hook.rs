@@ -2040,15 +2040,17 @@ fn hook_post_commit_then_post_merge_batch_idempotent() {
 }
 
 #[test]
-fn hook_post_commit_logs_directives_even_when_index_regen_fails() {
+fn hook_post_commit_applies_directives_despite_an_unrelated_corrupt_roadmap() {
     let plan_dir = TempDir::new().unwrap();
     let project_dir = TempDir::new().unwrap();
     init_with_phase(&plan_dir);
     init_project_repo(&project_dir);
 
     // Corrupt an unrelated roadmap directly on disk (bypassing `rdm`, since
-    // this is a hermetic fixture, not the dogfood plan repo) so that index
-    // regeneration fails for the whole project.
+    // this is a hermetic fixture, not the dogfood plan repo). This used to
+    // break the batch, because the shared finalize stage rescanned the whole
+    // project to regenerate its index; the batch no longer reads anything but
+    // the documents its own directives name.
     let broken_dir = plan_dir.path().join("projects/test-proj/roadmaps/broken");
     fs::create_dir_all(&broken_dir).unwrap();
     fs::write(
@@ -2099,20 +2101,35 @@ fn hook_post_commit_logs_directives_even_when_index_regen_fails() {
     let log = read_log(&project_dir);
     assert!(
         log.contains("post-commit apply-phase status=ok"),
-        "per-directive log fidelity must survive a shared index-regen failure: {log}"
+        "the directive must still apply: {log}"
     );
     assert!(
-        log.contains("batch-commit-error"),
-        "log missing batch-commit-error event: {log}"
+        !log.contains("batch-commit-error"),
+        "unrelated corrupt data elsewhere in the project must not fail the batch: {log}"
     );
 
-    // The batch is all-or-nothing: a finalize failure must leave the plan
-    // repo's history untouched — no partial or index-less commit lands.
+    // The directive's commit lands, and carries only the phase file.
     let commits_after = plan_repo_commit_count(&plan_dir);
     assert_eq!(
-        commits_after, commits_before,
-        "a finalize failure must not create a plan-repo commit"
+        commits_after,
+        commits_before + 1,
+        "the batch must land exactly one plan-repo commit"
     );
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"));
 }
 
 #[test]

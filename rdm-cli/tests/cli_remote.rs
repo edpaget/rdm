@@ -889,6 +889,15 @@ fn seed_stale_ours_index_conflict() -> (TempDir, TempDir, String) {
         .args(["project", "create", "demo"])
         .assert()
         .success();
+    // Mutations regenerate no index, so the conflicting indexes have to be
+    // produced explicitly — otherwise no `INDEX.md` ever diverges and the
+    // merge-driver assertions below would pass vacuously.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
+        .assert()
+        .success();
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -925,6 +934,12 @@ fn seed_stale_ours_index_conflict() -> (TempDir, TempDir, String) {
     rdm()
         .arg("--root")
         .arg(clone_dir.path())
+        .arg("index")
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(clone_dir.path())
         .args(["commit", "-m", "add clone-roadmap"])
         .assert()
         .success();
@@ -940,6 +955,12 @@ fn seed_stale_ours_index_conflict() -> (TempDir, TempDir, String) {
         .arg("--root")
         .arg(dir.path())
         .args(["roadmap", "create", "local-roadmap", "--project", "demo"])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
         .assert()
         .success();
     rdm()
