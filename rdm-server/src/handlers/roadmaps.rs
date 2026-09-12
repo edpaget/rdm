@@ -1954,9 +1954,11 @@ mod tests {
         // INDEX.md, regenerated over the same fixture, must agree.
         let mut store = state.store();
         rdm_core::ops::index::generate_project_index(&mut store, "demo").unwrap();
-        let index_md =
-            rdm_core::store::Store::read(&store, &rdm_core::paths::project_index_path("demo"))
-                .unwrap();
+        let index_md = rdm_core::store::Store::read(
+            &store,
+            &rdm_core::store::RelPath::new("projects/demo/INDEX.md").unwrap(),
+        )
+        .unwrap();
         let alpha_row = index_md
             .lines()
             .find(|l| l.contains("[alpha]"))

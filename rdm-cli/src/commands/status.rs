@@ -7,8 +7,8 @@ use crate::commands;
 /// Shows this session's uncommitted changes and the repo's sync status.
 ///
 /// The default view is scoped to the caller's changeset and comes from a
-/// single three-way partition (`user` / `derived` / `others`), so what is
-/// listed here and what `rdm commit` will land can never disagree. `all`
+/// single three-way partition (`user` / `others` / `unattributed`), so what
+/// is listed here and what `rdm commit` will land can never disagree. `all`
 /// switches to the whole-tree view.
 ///
 /// # Errors
@@ -66,16 +66,6 @@ pub fn run(root: &Path, fetch: bool, all: bool) -> Result<()> {
         println!(
             "\n{} file(s) changed. Run `rdm commit` to persist or `rdm discard --force` to reset.",
             report.user.len()
-        );
-    }
-    // Generated indexes are not user changes, but they are not hidden either:
-    // name them so it is obvious what the next `rdm commit` will sweep up.
-    if !report.derived.is_empty() {
-        let paths: Vec<&str> = report.derived.iter().map(|fs| fs.path.as_str()).collect();
-        println!(
-            "  ({} generated index file(s) will be included in the next commit: {})",
-            report.derived.len(),
-            paths.join(", ")
         );
     }
     // Other sessions' work is named, never hidden and never silently swept.

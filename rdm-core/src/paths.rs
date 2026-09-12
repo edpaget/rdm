@@ -11,140 +11,9 @@ pub fn config_path() -> RelPath {
     RelPath::new("rdm.toml").expect("valid path")
 }
 
-/// Returns the path to `INDEX.md`.
-pub fn index_path() -> RelPath {
-    RelPath::new("INDEX.md").expect("valid path")
-}
-
 /// Returns the path to a project's directory.
 pub fn project_path(project: &str) -> RelPath {
     RelPath::new(&format!("projects/{project}")).expect("valid path")
-}
-
-/// Returns the path to a project's `INDEX.md` file.
-pub fn project_index_path(project: &str) -> RelPath {
-    RelPath::new(&format!("projects/{project}/INDEX.md")).expect("valid path")
-}
-
-/// Returns whether `path` is a file rdm *generates* rather than one a user
-/// authored.
-///
-/// Membership is exactly the set
-/// [`ops::index::generate_index`](crate::ops::index::generate_index) writes,
-/// and nothing else:
-///
-/// - the root index, [`index_path`] — `INDEX.md`
-/// - one per-project index per project, [`project_index_path`] —
-///   `projects/<name>/INDEX.md`
-///
-/// The check round-trips through the same construction those two builders use
-/// rather than sniffing the string, so it cannot drift into matching paths the
-/// generator never writes. In particular it is **not** a suffix match on
-/// `INDEX.md`: an `INDEX.md` a user authored anywhere else in the tree (say
-/// `projects/demo/roadmaps/auth/INDEX.md`) is a real user change that must
-/// keep showing up in `rdm status`.
-///
-/// `.gitattributes` is deliberately **excluded**. An older rdm wrote it on
-/// open (to install an `INDEX.md` merge driver that has since been retired),
-/// which made it look derived; it never was. It is a real, committable,
-/// hand-customizable user file, and hiding a user's own `*.bin binary` line
-/// from `rdm status` would be a real failure. Nothing in rdm writes it any
-/// more, so every change to it is now unambiguously the user's.
-///
-/// # Invariant
-///
-/// This function must be kept in lockstep with `generate_index`'s write set.
-/// If a future change makes the generator emit a third file (an archive
-/// index, say), it must be added here in the same change — otherwise
-/// `rdm status` will report generated output as a user change again.
-///
-/// # Panics
-///
-/// Never. This function is **total** over arbitrary `&str` input, which is
-/// load-bearing: it is applied to every path a filesystem walk yields, so a
-/// panic here would take out `rdm status`, `rdm commit`, `rdm discard`, and
-/// the post-command uncommitted hint at once — including `rdm discard`, the
-/// very command a user would reach for to remove an offending path. It
-/// deliberately does **not** call [`project_index_path`],
-/// whose `expect` would panic on a middle segment [`RelPath::new`] rejects
-/// (empty, `.`, `..`, or a literal `\`, which is an ordinary filename
-/// character on Unix); it builds the candidate through the fallible
-/// [`RelPath::new`] instead, so every current *and future* `RelPath`
-/// restriction is handled by construction rather than by re-enumerating those
-/// rules here.
-///
-/// # Examples
-///
-/// ```
-/// use rdm_core::paths::is_derived_path;
-///
-/// assert!(is_derived_path("INDEX.md"));
-/// assert!(is_derived_path("projects/demo/INDEX.md"));
-/// // A user-authored INDEX.md elsewhere in the tree is not derived.
-/// assert!(!is_derived_path("projects/demo/roadmaps/auth/INDEX.md"));
-/// assert!(!is_derived_path(".gitattributes"));
-/// // Segments RelPath rejects are answered `false`, not a panic.
-/// assert!(!is_derived_path(r"projects/a\b/INDEX.md"));
-/// ```
-pub fn is_derived_path(path: &str) -> bool {
-    if path == index_path().as_str() {
-        return true;
-    }
-    let segments: Vec<&str> = path.split('/').collect();
-    if segments.len() == 3 && segments[0] == "projects" && segments[2] == "INDEX.md" {
-        // Round-trip through the fallible `RelPath::new` rather than through
-        // `project_index_path`, which `expect`s. `path` arrives from a
-        // filesystem walk, so the middle segment is arbitrary: it can be
-        // empty, `.`, `..`, or contain a literal `\` (a legal filename
-        // character on Unix that `RelPath` rejects). Constructing the
-        // candidate fallibly answers `false` for every such segment — and for
-        // any rule `RelPath` gains later — instead of panicking.
-        return RelPath::new(&format!("projects/{}/INDEX.md", segments[1]))
-            .is_ok_and(|candidate| candidate.as_str() == path);
-    }
-    false
-}
-
-/// Reports whether a store path is a project's `project.md` manifest.
-///
-/// The manifest is the sentinel every `list_*` op checks before enumerating a
-/// project (`list_roadmaps`, `list_tasks`, `list_reviews`): a `projects/<p>/`
-/// subtree without one is not a project rdm can read. Exposed so a caller
-/// deciding whether a project exists in some *projection* of the tree — such
-/// as the commit-time seed in `rdm-store-git` — asks this question in one
-/// place rather than re-spelling the `project.md` literal.
-///
-/// # Panics
-///
-/// Never. Like [`is_derived_path`], this is **total** over arbitrary `&str`:
-/// it is applied to paths a HEAD tree walk yields, whose middle segment can be
-/// empty, `.`, `..`, or contain a literal `\` (an ordinary filename character
-/// on Unix). It deliberately does not route through the `expect`-ing
-/// `project_md_path` builder; it round-trips the candidate through the
-/// fallible [`RelPath::new`], so every current *and future* `RelPath`
-/// restriction is handled by construction.
-///
-/// # Examples
-///
-/// ```
-/// use rdm_core::paths::is_project_manifest;
-///
-/// assert!(is_project_manifest("projects/demo/project.md"));
-/// // A derived index is not a manifest.
-/// assert!(!is_project_manifest("projects/demo/INDEX.md"));
-/// // A `project.md` nested deeper is not a project's manifest.
-/// assert!(!is_project_manifest("projects/demo/roadmaps/a/project.md"));
-/// // Segments RelPath rejects are answered `false`, not a panic.
-/// assert!(!is_project_manifest(r"projects/a\b/project.md"));
-/// ```
-#[must_use]
-pub fn is_project_manifest(path: &str) -> bool {
-    let segments: Vec<&str> = path.split('/').collect();
-    if segments.len() == 3 && segments[0] == "projects" && segments[2] == "project.md" {
-        return RelPath::new(&format!("projects/{}/project.md", segments[1]))
-            .is_ok_and(|candidate| candidate.as_str() == path);
-    }
-    false
 }
 
 /// Names the plan item a store path holds, in the `<kind>/<id>` vocabulary the
@@ -171,9 +40,16 @@ pub fn is_project_manifest(path: &str) -> bool {
 ///
 /// # Panics
 ///
-/// Never. Like [`is_derived_path`], this is applied to arbitrary paths from a
-/// filesystem walk or a journal line, so it is **total**: an unrecognized
-/// shape falls back to the raw path rather than panicking.
+/// Never. This function is **total** over arbitrary `&str` input, and that
+/// totality is load-bearing: it is applied to paths that arrive from a
+/// filesystem walk or a journal line — where a segment can be empty, `.`,
+/// `..`, or contain a literal `\` (an ordinary filename character on Unix
+/// that [`RelPath`] rejects) — while building the `ChangesetPathOverwritten`,
+/// `ChangesetDeletePathRecreated` and `StaleWrite` error messages, so a panic
+/// here would take out the very commands reporting the problem. It is total
+/// by construction rather than by assertion: it only splits and slices the
+/// input and never routes through an `expect`-ing [`RelPath`] builder, so an
+/// unrecognized shape falls back to the raw path instead of panicking.
 ///
 /// # Examples
 ///
@@ -297,18 +173,8 @@ mod tests {
     }
 
     #[test]
-    fn index_path_is_correct() {
-        assert_eq!(index_path().as_str(), "INDEX.md");
-    }
-
-    #[test]
     fn project_path_is_correct() {
         assert_eq!(project_path("fbm").as_str(), "projects/fbm");
-    }
-
-    #[test]
-    fn project_index_path_is_correct() {
-        assert_eq!(project_index_path("fbm").as_str(), "projects/fbm/INDEX.md");
     }
 
     #[test]
@@ -392,68 +258,8 @@ mod tests {
     }
 
     #[test]
-    fn is_derived_path_matches_only_generated_indexes() {
-        // The exact write set of `ops::index::generate_index`.
-        assert!(is_derived_path("INDEX.md"));
-        assert!(is_derived_path("projects/demo/INDEX.md"));
-        assert!(is_derived_path(project_index_path("fbm").as_str()));
-        assert!(is_derived_path(index_path().as_str()));
-
-        // Everything else is a user change, including nested INDEX.md files
-        // a naive suffix match would sweep up.
-        assert!(!is_derived_path("projects/demo/roadmaps/r/INDEX.md"));
-        assert!(!is_derived_path("projects/demo/tasks/INDEX.md"));
-        assert!(!is_derived_path("projects/INDEX.md"));
-        assert!(!is_derived_path("notes/INDEX.md"));
-        assert!(!is_derived_path("INDEX.md.bak"));
-        assert!(!is_derived_path("projects/demo/roadmap.md"));
-        assert!(!is_derived_path("projects/demo/INDEX.md/nested.md"));
-        assert!(!is_derived_path(".gitattributes"));
-        assert!(!is_derived_path("rdm.toml"));
-        assert!(!is_derived_path(""));
-    }
-
-    #[test]
-    fn is_derived_path_does_not_panic_on_traversal_segments() {
-        assert!(!is_derived_path("projects/../INDEX.md"));
-        assert!(!is_derived_path("projects/./INDEX.md"));
-        assert!(!is_derived_path("projects//INDEX.md"));
-    }
-
-    #[test]
-    fn is_derived_path_does_not_panic_on_segments_relpath_rejects() {
-        // A literal backslash is an ordinary filename character on Unix, so a
-        // filesystem walk can hand this to `is_derived_path` — but `RelPath`
-        // rejects it. Answering `false` (rather than panicking through
-        // `project_index_path`'s `expect`) is what keeps `rdm status` /
-        // `commit` / `discard` alive on such a tree.
-        assert!(!is_derived_path(r"projects/a\b/INDEX.md"));
-        assert!(!is_derived_path("projects/a\\/INDEX.md"));
-        assert!(!is_derived_path(r"projects/\/INDEX.md"));
-        // A leading slash makes the whole path absolute, which `RelPath` also
-        // rejects; the leading empty segment means this is not even 3
-        // segments, but assert it is total here regardless.
-        assert!(!is_derived_path("/projects/demo/INDEX.md"));
-    }
-
-    #[test]
     fn project_md_path_is_correct() {
         assert_eq!(project_md_path("fbm").as_str(), "projects/fbm/project.md");
-    }
-
-    /// Lockstep: the sentinel every `list_*` op checks and the sentinel the
-    /// commit-time seed pruner checks must be the same path shape.
-    #[test]
-    fn is_project_manifest_matches_project_md_path() {
-        assert!(is_project_manifest(project_md_path("fbm").as_str()));
-        assert!(!is_project_manifest(project_index_path("fbm").as_str()));
-        assert!(!is_project_manifest("projects/fbm"));
-        assert!(!is_project_manifest("rdm.toml"));
-        assert!(!is_project_manifest("project.md"));
-        // Total over segments `RelPath` rejects.
-        assert!(!is_project_manifest("projects//project.md"));
-        assert!(!is_project_manifest("projects/../project.md"));
-        assert!(!is_project_manifest(r"projects/a\b/project.md"));
     }
 
     #[test]

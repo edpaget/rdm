@@ -1754,6 +1754,11 @@ n=$(grep -c 'changeset' "$INST_CLI" || true)
     fail "7g: $INST_CLI never mentions a changeset — the negative half above would pass vacuously"
 grep -Fq -- 'RDM_SESSION' "$INST_CLI" ||
     fail "7g: the emitted CLI instructions never name RDM_SESSION — an agent cannot pin its session"
+# rdm has no generated-path class since
+# `retire-generated-index/phase-4-collapse-derived-path-class`, so the retired
+# bucket must not reappear in the emitted instructions.
+grep -Fq -- 'generated' "$INST_CLI" &&
+    fail "7g: $INST_CLI still names a generated-file bucket, which rdm no longer has"
 pass "7g: the session/changeset concept is present in the emitted instructions"
 
 # AGREES WITH THE IMPLEMENTATION: every flag and subcommand the emitted prose

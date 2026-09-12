@@ -141,9 +141,12 @@ ok() { printf '\033[1;32m[ OK ]\033[0m %s\n' "$*"; }
 # seed_repo <dir> [bin]: a plan repo with TWO projects, each holding one
 # committed task.
 #
-# Two projects because the reported symptom names BOTH index files — the
+# Two projects because the reported symptom named BOTH index files — the
 # top-level INDEX.md and a per-project one — and a single-project repo would
-# exercise only half of it.
+# have exercised only half of it. Mutations write no index at all now, so the
+# second project no longer serves that purpose; it is kept because the
+# scenario below is a genuine multi-project fan-out and reproducing the
+# original shape costs nothing.
 #
 # Pins RDM_SESSION so the seeding short-circuits at rung 1 before any lease is
 # created: a lease held by this script's own pid would be inherited by every
@@ -488,8 +491,8 @@ $(cat "$TMP/s1.authored")"
 ok "no authored file is left uncommitted"
 
 # (b-ii) And the whole tree is clean, immediately — with NO regeneration step
-#        in between. A mutation's changeset holds only authored paths, so
-#        there is no derived residue whose drift direction has to be
+#        in between. A mutation's changeset holds only the paths it authored,
+#        so there is no index residue whose drift direction has to be
 #        disentangled from a lost append: any dirty path here has exactly one
 #        possible cause, a journal entry that was destroyed. Section 1b proves
 #        this check is not vacuous by tripping it with the mutant.
@@ -608,9 +611,11 @@ mkdir -p "$MUT"
 for f in rdm-core/src/session/journal.rs rdm-core/src/session/mod.rs \
     rdm-core/src/session/lease.rs rdm-core/src/lock.rs rdm-core/src/lib.rs \
     rdm-core/src/error.rs rdm-core/src/paths.rs rdm-core/src/store/mod.rs \
+    rdm-core/src/ops/index.rs \
     rdm-store-fs/src/lib.rs rdm-store-git/src/lib.rs rdm-store-git/src/commit.rs \
     rdm-store-git/src/repo.rs rdm-store-git/src/remote.rs \
-    rdm-cli/src/commands/session.rs rdm-server/src/problem.rs; do
+    rdm-cli/src/commands/session.rs rdm-cli/src/commands/status.rs \
+    rdm-mcp/src/server.rs rdm-server/src/problem.rs; do
     [ -f "$REPO_ROOT/$f" ] || fail "expected source file missing: $f"
     mkdir -p "$MUT/$(dirname "$f")"
     cp "$REPO_ROOT/$f" "$MUT/$f"
@@ -777,7 +782,7 @@ say "Section 1b: the same fan-out with one commit parked at the seam"
 #
 # This replaces an earlier bounded three-attempt gamble on an unbarriered
 # mutant fan-out. That worked only while every mutation ALSO wrote the two
-# derived indexes: the hot shared index path was appended by all 40 processes
+# INDEX.md files: the hot shared index path was appended by all 40 processes
 # and landed by every commit, so some record reliably fell in the mutant's
 # read-modify-write window. Now that a mutation journals exactly one authored
 # path (`retire-generated-index` phase 2), each path has a single writer and

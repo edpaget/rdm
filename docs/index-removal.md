@@ -125,6 +125,13 @@ been part of the original design.
    also gone, nothing in the codebase produces `INDEX.md` at all, under any
    command, opt-in or otherwise.
 
+   *Landed.* Phase 4 (`phase-4-collapse-derived-path-class`) carried out
+   exactly the deletion this list enumerates: `is_derived_path`, `index_path`,
+   `project_index_path`, `is_project_manifest`, `ChangesetScope::derived`,
+   `reconcile_derived`, `drop_orphaned_project_subtrees`, the
+   `StatusReport::derived` bucket and the `verify_baselines` exemption are all
+   gone. The `tree ⊇ index` divergence carve-out ceased to exist with them.
+
 ## Existing plan repos
 
 Every plan repo in existence today has both `INDEX.md` and

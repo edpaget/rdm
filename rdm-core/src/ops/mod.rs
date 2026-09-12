@@ -63,10 +63,10 @@ use crate::store::Store;
 /// commit is the separate, explicit responsibility of the store's commit-now
 /// pathway.
 ///
-/// A mutation touches only the paths `f` authored: no derived `INDEX.md` is
+/// A mutation touches only the paths `f` authored: no `INDEX.md` is
 /// regenerated here, so the changeset a mutation produces contains authored
-/// paths only. Refreshing the generated indexes is the explicit, standalone
-/// job of [`index::generate_index`].
+/// paths only. Refreshing an index is the explicit, standalone job of
+/// [`index::generate_index`].
 ///
 /// # Errors
 ///
@@ -133,7 +133,7 @@ pub type BatchStep<'a, S> = Box<dyn FnOnce(&mut S) -> Result<()> + 'a>;
 /// commit message and its own logging.
 ///
 /// Like [`mutate`], a batch touches only the paths its steps authored: no
-/// derived `INDEX.md` is regenerated here.
+/// `INDEX.md` is regenerated here.
 ///
 /// This function never returns `Err` itself — all failure reporting flows
 /// through the returned [`BatchOutcome`]. Individual step failures land in

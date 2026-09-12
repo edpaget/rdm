@@ -15,9 +15,9 @@
 //! different things:
 //!
 //! - [`GitStore::commit_changeset`] — **the default.** Builds the commit tree
-//!   from HEAD plus exactly this session's journaled paths, reconciling the
-//!   generated indexes in memory. A path another session left dirty is
-//!   structurally unreachable.
+//!   from HEAD plus exactly this session's journaled paths, and nothing else:
+//!   no path class is reconstructed or reconciled on the way. A path another
+//!   session left dirty is structurally unreachable.
 //! - [`GitStore::commit_whole_tree`] — the explicitly-named machine-global
 //!   escape hatch. Rebuilds from the whole working directory, sweeping up
 //!   whatever anyone left dirty. Reserved for fixture seeding and the user's
@@ -80,17 +80,19 @@ pub struct FileStatus {
 }
 
 /// Uncommitted working-tree changes, partitioned into what *this* changeset
-/// authored, what rdm generated for it, and what some other session left
-/// dirty.
+/// authored and what some other session left dirty.
 ///
 /// Returned by [`GitRepo::git_status_report`] (the whole-tree view, where
-/// `others` is always empty) and by [`GitStore::status_report_scoped`] (the
-/// changeset view). It is the only way to observe working-tree changes from
-/// outside this crate. The generated `INDEX.md` files are rewritten by every
-/// mutation, and a shared plan repo can hold several sessions' uncommitted
-/// work at once: without this partition a session cannot tell its own edits
-/// from derived output or from a neighbour's, and so cannot predict what its
-/// `rdm commit` will land.
+/// `others` and `unattributed` are always empty) and by
+/// [`GitStore::status_report_scoped`] (the changeset view). It is the only
+/// way to observe working-tree changes from outside this crate. A shared plan
+/// repo can hold several sessions' uncommitted work at once: without this
+/// partition a session cannot tell its own edits from a neighbour's, and so
+/// cannot predict what its `rdm commit` will land.
+///
+/// rdm has no generated-path class. Every path here is one some session
+/// authored, including an `INDEX.md` a session produced by running
+/// `rdm index` — that is an ordinary write by whoever ran it.
 ///
 /// # The one rule every consumer follows
 ///
@@ -98,24 +100,18 @@ pub struct FileStatus {
 /// [`user`](Self::user).**
 ///
 /// An action that rewrites the whole working tree — `rdm commit --all`,
-/// `rdm discard --all` — must be gated by the raw truth, because a tree
-/// holding *only* regenerated indexes is still dirty and must still be
-/// committable (otherwise it stays dirty forever and `rdm remote pull`
-/// refuses to run). But every count and listing shown to a human or an agent
-/// comes from `user`, with `derived` and `others` surfaced separately and by
-/// name so nothing is hidden.
+/// `rdm discard --all` — must be gated by the raw truth, so it sees a
+/// neighbour's dirt too. But every count and listing shown to a human or an
+/// agent comes from `user`, with `others` and `unattributed` surfaced
+/// separately and by name so nothing is hidden.
 ///
-/// **One partition, not two filters.** The changeset split and the derived
-/// split are decided together in a single pass, so the view a user reads and
-/// the set a scoped commit lands can never disagree.
+/// **One partition, not stacked filters.** The three buckets are decided
+/// together in a single pass, so the view a user reads and the set a scoped
+/// commit lands can never disagree.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct StatusReport {
-    /// Changes this changeset authored — everything of its own that is not
-    /// generated output.
+    /// Changes this changeset authored.
     pub user: Vec<FileStatus>,
-    /// Changes to files rdm generates for this changeset, per
-    /// [`rdm_core::paths::is_derived_path`].
-    pub derived: Vec<FileStatus>,
     /// Dirty paths this changeset does not claim, but that a real other live
     /// or orphaned changeset does claim.
     ///
@@ -141,10 +137,7 @@ impl StatusReport {
     /// This, not `user.is_empty()`, is the correct gate for a whole-tree
     /// commit or discard.
     pub fn is_clean(&self) -> bool {
-        self.user.is_empty()
-            && self.derived.is_empty()
-            && self.others.is_empty()
-            && self.unattributed.is_empty()
+        self.user.is_empty() && self.others.is_empty() && self.unattributed.is_empty()
     }
 
     /// Returns whether *this changeset* has nothing to commit.
@@ -153,26 +146,26 @@ impl StatusReport {
     /// another session's work while this changeset owns nothing at all — the
     /// case a scoped `rdm commit` must report rather than sweep.
     pub fn is_changeset_clean(&self) -> bool {
-        self.user.is_empty() && self.derived.is_empty()
+        self.user.is_empty()
     }
 
     /// Returns the total number of changed files across every list.
     pub fn total(&self) -> usize {
-        self.user.len() + self.derived.len() + self.others.len() + self.unattributed.len()
+        self.user.len() + self.others.len() + self.unattributed.len()
     }
 
     /// Returns the path-sorted union of every list.
     ///
     /// This is the raw truth about what a *whole-tree* commit will contain —
     /// feed it to [`GitRepo::default_commit_message`], never `user` alone,
-    /// since a derived-only tree has an empty `user` list. A scoped commit's
-    /// message comes from [`changeset`](Self::changeset) instead, so an
-    /// auto-generated message can never name another session's file.
+    /// since in a scoped report `user` omits another session's dirt that a
+    /// whole-tree commit would still land. A scoped commit's message comes
+    /// from [`changeset`](Self::changeset) instead, so an auto-generated
+    /// message can never name another session's file.
     pub fn all(&self) -> Vec<FileStatus> {
         let mut all: Vec<FileStatus> = self
             .user
             .iter()
-            .chain(self.derived.iter())
             .chain(self.others.iter())
             .chain(self.unattributed.iter())
             .cloned()
@@ -186,12 +179,7 @@ impl StatusReport {
     /// The scoped counterpart to [`all`](Self::all), and the only correct
     /// input to a scoped commit's default message.
     pub fn changeset(&self) -> Vec<FileStatus> {
-        let mut all: Vec<FileStatus> = self
-            .user
-            .iter()
-            .chain(self.derived.iter())
-            .cloned()
-            .collect();
+        let mut all: Vec<FileStatus> = self.user.clone();
         all.sort_by(|a, b| a.path.cmp(&b.path));
         all
     }
@@ -207,17 +195,7 @@ impl StatusReport {
     /// Only meaningful when the report is not [`is_clean`](Self::is_clean) —
     /// callers gate on that first and print their own no-op message.
     pub fn commit_summary(&self) -> String {
-        let derived = self.derived.len();
-        if self.user.is_empty() {
-            format!("Committed {derived} regenerated index file(s).")
-        } else if derived > 0 {
-            format!(
-                "Committed {} file(s) (plus {derived} regenerated index file(s)).",
-                self.user.len()
-            )
-        } else {
-            format!("Committed {} file(s).", self.user.len())
-        }
+        format!("Committed {} file(s).", self.user.len())
     }
 
     /// Returns the one-line summary a caller prints after discarding this
@@ -235,15 +213,7 @@ impl StatusReport {
     ///
     /// Only meaningful when the report is not [`is_clean`](Self::is_clean).
     pub fn discard_summary(&self) -> String {
-        let derived = self.derived.len();
-        if derived > 0 {
-            format!(
-                "Discarded {} file(s) (plus {derived} generated index file(s)).",
-                self.user.len()
-            )
-        } else {
-            format!("Discarded {} file(s).", self.user.len())
-        }
+        format!("Discarded {} file(s).", self.user.len())
     }
 
     /// Returns the one-line note naming what this action deliberately left
@@ -765,8 +735,7 @@ impl GitStore {
     /// HEAD — and this happens even when the commit itself is a no-op
     /// (`sha: None`). That is correctness, not hygiene: see
     /// [`journal::truncate`](rdm_core::session::journal::truncate). A
-    /// vanished (skipped) path and a derived path deferred for an unlanded
-    /// project both stay journaled regardless — and so does a path another
+    /// vanished (skipped) path stays journaled regardless — and so does a path another
     /// process re-recorded, under the same session id, while this commit was
     /// running: the tombstone names the exact entries that landed, so a newer
     /// record of one of them survives and the next commit lands it.
@@ -778,8 +747,8 @@ impl GitStore {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Git`] if the tree cannot be built, the derived
-    /// indexes cannot be reconciled, or HEAD moves twice under the commit.
+    /// Returns [`Error::Git`] if the tree cannot be built or HEAD moves
+    /// twice under the commit.
     pub fn commit_changeset(
         &self,
         message: Option<&str>,
@@ -815,13 +784,7 @@ impl GitStore {
             ..ChangesetScope::default()
         };
         for entry in &journal {
-            if rdm_core::paths::is_derived_path(&entry.path) {
-                if entry.kind == JournalKind::Write {
-                    scope.derived.push(entry.path.clone());
-                } else {
-                    scope.deletes.push(entry.path.clone());
-                }
-            } else if entry.kind == JournalKind::Write {
+            if entry.kind == JournalKind::Write {
                 scope.writes.push(entry.path.clone());
                 // Carry the base-blob identity through so the tree builder can
                 // refuse a path another session has overwritten since.
@@ -887,8 +850,8 @@ impl GitStore {
     /// Returns the three-way working-tree status from this session's point of
     /// view.
     ///
-    /// See [`StatusReport`]: one partition into `user` / `derived` /
-    /// `others` / `unattributed`, not two independent filters.
+    /// See [`StatusReport`]: one partition into `user` / `others` /
+    /// `unattributed`, not stacked filters.
     ///
     /// # Errors
     ///
@@ -938,15 +901,14 @@ impl GitStore {
     ///    `rdm session gc`. The retirement is best-effort: a journal-lock
     ///    wait that expires leaves the claims in place rather than failing
     ///    the discard;
-    /// 3. **no derived index is regenerated.** Mutations no longer write one,
-    ///    so the only derived path a changeset can hold is one this session
-    ///    regenerated itself (an explicit `rdm index`, or a pull/resolve
-    ///    reconciliation). Step 1 restores those like any other claimed path
-    ///    — they are this session's uncommitted work, and a discard that
-    ///    left them dirty would strand a file whose journal claim it just
-    ///    retired. Regenerating instead would re-dirty a path the discard is
-    ///    meant to clean. A derived path *another* session dirtied is not in
-    ///    this changeset at all and is left untouched, as it always was.
+    /// 3. **no index is regenerated.** An `INDEX.md` this session produced
+    ///    (an explicit `rdm index`, or a pull/resolve reconciliation) is an
+    ///    ordinary claimed path: step 1 restores it like any other, because
+    ///    it is this session's uncommitted work and a discard that left it
+    ///    dirty would strand a file whose journal claim it just retired.
+    ///    Regenerating instead would re-dirty a path the discard is meant to
+    ///    clean. An `INDEX.md` *another* session dirtied is not in this
+    ///    changeset at all and is left untouched.
     ///
     /// Nothing is put back afterwards. The discard used to re-ensure the
     /// `.gitattributes` merge-driver mapping as a fourth step, reported to the
@@ -990,13 +952,10 @@ impl GitStore {
             }
         }
 
-        // Both halves of this changeset, derived included: `report.derived`
-        // holds only paths *this* session journaled (see
-        // `git_status_report_scoped`), so restoring them cannot reach another
-        // session's dirty index, and leaving them out would abandon a file
-        // whose claim the retirement below removes.
-        let mut claimed = report.user.clone();
-        claimed.extend(report.derived.iter().cloned());
+        // Exactly this changeset's own paths: `report.user` holds only paths
+        // *this* session journaled (see `git_status_report_scoped`), so
+        // restoring them cannot reach another session's dirt.
+        let claimed = report.user.clone();
         let (restored, skipped_overwritten) = self
             .git
             .restore_paths_to_head_scoped(&claimed, &digests, &deletes)?;
@@ -1011,12 +970,11 @@ impl GitStore {
             let _ = session::journal::retire(paths, id, &journal);
         }
 
-        // No index is regenerated here. Mutations no longer write one, so
-        // the restore above has already put every path this changeset claims
-        // — derived ones included — back to its HEAD blob. Regenerating would
-        // re-dirty a path the discard just cleaned. A derived path another
-        // session dirtied belongs to that session's changeset and must not be
-        // rewritten from here.
+        // No index is regenerated here. The restore above has already put
+        // every path this changeset claims back to its HEAD blob, an
+        // `INDEX.md` among them. Regenerating would re-dirty a path the
+        // discard just cleaned, and an `INDEX.md` another session dirtied
+        // belongs to that session's changeset anyway.
         Store::commit(self)?;
 
         Ok(ScopedDiscard {
@@ -1168,7 +1126,7 @@ pub struct ScopedDiscard {
     /// The three-way status as it was before the discard.
     pub report: StatusReport,
     /// The paths actually restored to HEAD (or removed, for a path this
-    /// changeset added), derived ones included.
+    /// changeset added).
     pub restored: Vec<String>,
     /// Journaled paths left untouched because another session's content —
     /// an overwrite of a journaled write, or a recreation of a journaled
@@ -1180,24 +1138,14 @@ impl ScopedDiscard {
     /// Returns the one-line summary a caller prints after discarding this
     /// outcome's changes.
     ///
-    /// Mirrors [`StatusReport::discard_summary`], but **both** counts come
-    /// from what was actually [`restored`](Self::restored) rather than from
+    /// Mirrors [`StatusReport::discard_summary`], but the count comes from
+    /// what was actually [`restored`](Self::restored) rather than from
     /// everything this changeset owned — they differ exactly when a path was
     /// [`skipped_overwritten`](Self::skipped_overwritten), and a count taken
     /// from the pre-discard report would claim a skipped path had been
     /// handled.
     pub fn discard_summary(&self) -> String {
-        let derived = self
-            .restored
-            .iter()
-            .filter(|p| rdm_core::paths::is_derived_path(p))
-            .count();
-        let user = self.restored.len() - derived;
-        if derived > 0 {
-            format!("Discarded {user} file(s) (plus {derived} generated index file(s)).")
-        } else {
-            format!("Discarded {user} file(s).")
-        }
+        format!("Discarded {} file(s).", self.restored.len())
     }
 
     /// The one-line note naming paths left in place because another
@@ -1479,7 +1427,7 @@ mod tests {
     }
 
     #[test]
-    fn git_status_report_partitions_generated_indexes_from_user_changes() {
+    fn git_status_report_reports_every_dirty_path_as_a_change() {
         let dir = TempDir::new().unwrap();
         let mut store = GitStore::init(dir.path()).unwrap();
         store
@@ -1500,8 +1448,9 @@ mod tests {
         store.commit().unwrap();
         store.commit_whole_tree("seed: plan repo").unwrap();
 
-        // One user edit plus two stale indexes standing in for what `rdm
-        // index` regenerates.
+        // One authored edit plus two stale indexes standing in for what `rdm
+        // index` writes. All three are ordinary changes: rdm has no
+        // generated-path class, so nothing is split out.
         std::fs::write(
             dir.path().join("projects/demo/roadmaps/auth/roadmap.md"),
             "edited",
@@ -1515,22 +1464,18 @@ mod tests {
         .unwrap();
 
         let report = store.git().git_status_report().unwrap();
+        let user: Vec<&str> = report.user.iter().map(|s| s.path.as_str()).collect();
         assert_eq!(
-            report.user.len(),
-            1,
-            "expected exactly the one user edit, got: {:?}",
-            report.user
+            user,
+            vec![
+                "INDEX.md",
+                "projects/demo/INDEX.md",
+                "projects/demo/roadmaps/auth/roadmap.md",
+            ],
+            "every dirty path is a change, the two indexes included"
         );
-        assert_eq!(
-            report.user[0].path,
-            "projects/demo/roadmaps/auth/roadmap.md"
-        );
-        assert_eq!(
-            report.derived.len(),
-            2,
-            "expected both regenerated indexes, got: {:?}",
-            report.derived
-        );
+        assert!(report.others.is_empty());
+        assert!(report.unattributed.is_empty());
         assert_eq!(report.total(), 3);
         assert!(!report.is_clean());
 
@@ -1559,30 +1504,22 @@ mod tests {
 
         assert!(store.git().git_status_report().unwrap().is_clean());
 
-        // Derived-only dirty tree: no user changes, but decidedly not clean.
+        // An index-only dirty tree is an ordinary dirty tree.
         std::fs::write(dir.path().join("INDEX.md"), "# Index (regenerated)\n").unwrap();
         let report = store.git().git_status_report().unwrap();
-        assert!(report.user.is_empty());
-        assert_eq!(report.derived.len(), 1);
-        assert!(
-            !report.is_clean(),
-            "a derived-only tree must still be committable — gating commit on \
-             user.is_empty() would leave it dirty forever"
-        );
+        assert_eq!(report.user.len(), 1);
+        assert_eq!(report.user[0].path, "INDEX.md");
+        assert!(!report.is_clean());
     }
 
-    fn report_of(user: usize, derived: usize) -> StatusReport {
-        let mk = |n: usize, prefix: &str| {
-            (0..n)
+    fn report_of(user: usize) -> StatusReport {
+        StatusReport {
+            user: (0..user)
                 .map(|i| FileStatus {
-                    path: format!("{prefix}{i}.md"),
+                    path: format!("user-{i}.md"),
                     change: FileChange::Modified,
                 })
-                .collect()
-        };
-        StatusReport {
-            user: mk(user, "user-"),
-            derived: mk(derived, "derived-"),
+                .collect(),
             others: Vec::new(),
             unattributed: Vec::new(),
         }
@@ -1592,49 +1529,45 @@ mod tests {
     // through these two methods, so covering the methods covers every
     // interface and pins them to the same wording.
     #[test]
-    fn commit_summary_covers_all_three_branches() {
-        assert_eq!(report_of(2, 0).commit_summary(), "Committed 2 file(s).");
-        assert_eq!(
-            report_of(1, 2).commit_summary(),
-            "Committed 1 file(s) (plus 2 regenerated index file(s))."
-        );
-        assert_eq!(
-            report_of(0, 2).commit_summary(),
-            "Committed 2 regenerated index file(s)."
-        );
+    fn commit_summary_is_one_count_with_no_path_class() {
+        assert_eq!(report_of(2).commit_summary(), "Committed 2 file(s).");
+        assert_eq!(report_of(3).commit_summary(), "Committed 3 file(s).");
+        // The retired generated/regenerated suffixes must never come back.
+        for n in 0..4 {
+            let summary = report_of(n).commit_summary();
+            assert!(!summary.contains("index file(s)"), "{summary}");
+        }
     }
 
     #[test]
-    fn discard_summary_covers_both_branches() {
-        assert_eq!(report_of(2, 0).discard_summary(), "Discarded 2 file(s).");
-        // "generated", not "regenerated": a discard restores these to HEAD
-        // along with everything else — nothing recomputes them afterwards.
-        assert_eq!(
-            report_of(1, 2).discard_summary(),
-            "Discarded 1 file(s) (plus 2 generated index file(s))."
-        );
+    fn discard_summary_is_one_count_with_no_path_class() {
+        assert_eq!(report_of(2).discard_summary(), "Discarded 2 file(s).");
+        assert_eq!(report_of(3).discard_summary(), "Discarded 3 file(s).");
+        for n in 0..4 {
+            let summary = report_of(n).discard_summary();
+            assert!(!summary.contains("index file(s)"), "{summary}");
+        }
     }
 
-    /// A scoped discard's counts must come from what it actually restored,
-    /// derived paths included — never from the pre-discard report, which
-    /// would claim a skipped path had been handled.
+    /// A scoped discard's count must come from what it actually restored —
+    /// never from the pre-discard report, which would claim a skipped path
+    /// had been handled.
     #[test]
     fn scoped_discard_summary_counts_only_what_it_restored() {
-        let nothing_derived = ScopedDiscard {
-            report: report_of(2, 0),
+        let plain = ScopedDiscard {
+            report: report_of(2),
             restored: vec![
                 "projects/demo/tasks/a.md".into(),
                 "projects/demo/tasks/b.md".into(),
             ],
             ..ScopedDiscard::default()
         };
-        assert_eq!(nothing_derived.discard_summary(), "Discarded 2 file(s).");
+        assert_eq!(plain.discard_summary(), "Discarded 2 file(s).");
 
         // One authored path plus the two indexes this session regenerated
-        // itself: all three were restored, so all three are counted, split by
-        // kind rather than folded together.
-        let with_derived = ScopedDiscard {
-            report: report_of(1, 2),
+        // itself: all three were restored, and all three count the same way.
+        let with_indexes = ScopedDiscard {
+            report: report_of(3),
             restored: vec![
                 "INDEX.md".into(),
                 "projects/demo/INDEX.md".into(),
@@ -1642,23 +1575,17 @@ mod tests {
             ],
             ..ScopedDiscard::default()
         };
-        assert_eq!(
-            with_derived.discard_summary(),
-            "Discarded 1 file(s) (plus 2 generated index file(s))."
-        );
+        assert_eq!(with_indexes.discard_summary(), "Discarded 3 file(s).");
 
-        // The sharp case: the report says this changeset owned two indexes,
-        // but the guard skipped both. Counting the report would claim they
-        // were handled; counting `restored` tells the truth.
-        let all_derived_skipped = ScopedDiscard {
-            report: report_of(1, 2),
+        // The sharp case: the report says this changeset owned three paths,
+        // but the guard skipped two of them. Counting the report would claim
+        // they were handled; counting `restored` tells the truth.
+        let mostly_skipped = ScopedDiscard {
+            report: report_of(3),
             restored: vec!["projects/demo/tasks/a.md".into()],
             skipped_overwritten: vec!["INDEX.md".into(), "projects/demo/INDEX.md".into()],
         };
-        assert_eq!(
-            all_derived_skipped.discard_summary(),
-            "Discarded 1 file(s)."
-        );
+        assert_eq!(mostly_skipped.discard_summary(), "Discarded 1 file(s).");
     }
 
     #[test]
@@ -1682,8 +1609,8 @@ mod tests {
     fn git_status_report_treats_gitattributes_as_a_user_change() {
         // The classification claim survives the writer's removal and is worth
         // pinning precisely because nothing in rdm authors the file now: every
-        // change to it is the user's, and must be landable rather than hidden
-        // as derived. Hand-seeded, since rdm no longer writes it.
+        // change to it is the user's, and must be landable rather than hidden.
+        // Hand-seeded, since rdm no longer writes it.
         let dir = legacy_repo_without_gitattributes();
         std::fs::write(dir.path().join(".gitattributes"), "*.bin binary\n").unwrap();
         let store = GitStore::new(dir.path()).unwrap();
@@ -1694,7 +1621,6 @@ mod tests {
             "a user's .gitattributes must be landable, so it is a user change: {:?}",
             report.user
         );
-        assert!(report.derived.is_empty());
     }
 
     #[test]
@@ -4305,23 +4231,6 @@ with its new content identity: {after:?}"
         }
     }
 
-    /// AC-3 assertion 2: no `projects/<p>/INDEX.md` without its manifest.
-    ///
-    /// A general scan rather than a hardcoded project name, so it also catches
-    /// a regression under some future project.
-    fn assert_no_orphan_project_index(tree: &[String]) {
-        for path in tree {
-            let segments: Vec<&str> = path.split('/').collect();
-            if segments.len() == 3 && segments[0] == "projects" && segments[2] == "INDEX.md" {
-                let manifest = format!("projects/{}/project.md", segments[1]);
-                assert!(
-                    tree.contains(&manifest),
-                    "the committed tree holds {path} but not {manifest}: {tree:?}"
-                );
-            }
-        }
-    }
-
     /// Rebinds the process-global session id and reopens the store.
     ///
     /// A fresh construction is how [`scoped_repo`] binds identity, so it must
@@ -4686,13 +4595,20 @@ with its new content identity: {after:?}"
         );
     }
 
-    // ---- cross-changeset derived-index dependencies ----
+    // ---- committing under a project another session has not landed ----
     //
     // Session A creates a project and does not commit; session B creates a
-    // document under it and commits first. B's `projects/alt/INDEX.md` has a
-    // parent entity visible in neither HEAD nor B's own changeset. See
-    // `docs/scoping-model-decision.md` § "INDEX.md Consistency in Partial
-    // Commits".
+    // document under it, runs `rdm index`, and commits first. This used to be
+    // the hard case: index generation ran INSIDE the commit, so B's commit had
+    // to reconcile an index for a project visible in neither HEAD nor B's own
+    // changeset — handled by a seed-side orphan prune whose accepted cost was a
+    // one-directional `tree ⊇ index` divergence.
+    //
+    // Nothing regenerates at commit time any more, so the hazard is
+    // structurally absent rather than defended against: B's `INDEX.md` is a
+    // file B wrote on disk, journaled like any other, and B's commit lands
+    // exactly B's own paths. These tests are kept, and re-aimed at that
+    // stronger and simpler property.
 
     /// Arranges the three-session fixture and returns B's store, uncommitted.
     ///
@@ -4722,10 +4638,9 @@ with its new content identity: {after:?}"
 
         let mut store_b = switch_session(dir, b_id);
         make_task_in(&mut store_b, "alt", "b-task");
-        // Mutations no longer produce derived paths, so B runs the explicit
-        // index generation (`rdm index`) to put them in its changeset — that
-        // is the only remaining way a changeset holds a derived path, and it
-        // is what `reconcile_derived`'s deferral logic exists to handle.
+        // Mutations write no index, so B runs the explicit generation
+        // (`rdm index`) to put both index paths in its changeset as ordinary
+        // authored writes.
         rdm_core::ops::index::generate_index(&mut store_b).unwrap();
         store_b
     }
@@ -4736,29 +4651,41 @@ with its new content identity: {after:?}"
         let dir = TempDir::new().unwrap();
         let store_b = arrange_orphaned_parent(&dir, "unit-orphan-a", "unit-orphan-b");
 
-        // The `unwrap` is the reproduction: before the seed-side prune this
-        // panics on `Error::Git("failed to reconcile the generated indexes
-        // against HEAD: project not found: alt …")`.
+        // Historically this panicked on `Error::Git("failed to reconcile the
+        // indexes against HEAD: project not found: alt …")`, because
+        // the commit regenerated the index itself. It cannot now: the commit
+        // reads no project, so there is no project to fail to find.
         let outcome = store_b.commit_changeset(Some("land b"), &[]).unwrap();
         assert!(outcome.sha.is_some(), "B's commit should have landed");
 
+        // The stronger property the prune only approximated: the commit is
+        // exactly B's own paths, and A's staged manifest is untouched.
         let tree = head_tree_paths(&dir);
+        for want in [
+            "INDEX.md",
+            "projects/alt/INDEX.md",
+            "projects/alt/tasks/b-task.md",
+        ] {
+            assert!(tree.iter().any(|p| p == want), "{want} missing: {tree:?}");
+        }
+        assert!(
+            !tree.iter().any(|p| p == "projects/alt/project.md"),
+            "A's uncommitted manifest must not have been swept in: {tree:?}"
+        );
         let index = git_in(&dir, &["show", "HEAD:INDEX.md"]);
         assert_no_dangling_links(&index, &tree);
-        assert_no_orphan_project_index(&tree);
     }
 
-    /// The accepted consequence of dropping the orphaned subtree at the seed.
+    /// The inverse of what the seed-side prune used to force.
     ///
-    /// B's own task lands in the tree, but the root index B commits carries no
-    /// row for it: emitting `projects/alt/INDEX.md` for a project whose
-    /// `project.md` this commit does not contain is exactly the orphan the
-    /// coherence assertion forbids. The divergence is one-directional
-    /// (`tree ⊇ index`) and self-healing — see
-    /// `the_deferred_rows_return_once_the_owning_session_lands_its_project`
-    /// and `docs/scoping-model-decision.md` § "INDEX.md Consistency".
+    /// The prune dropped `alt` out of the projection, so the root index B
+    /// committed carried no row for it: a deliberate, self-healing
+    /// `tree ⊇ index` divergence. With nothing regenerating at commit time
+    /// that divergence has no way to arise — B commits the exact bytes it
+    /// wrote on disk, rows and all. The carve-out ceased to exist rather
+    /// than being maintained.
     #[test]
-    fn b_task_is_deliberately_absent_from_the_index_b_commits() {
+    fn b_commits_the_exact_index_it_wrote_with_no_rows_dropped() {
         let _guard = serial_scoped();
         let dir = TempDir::new().unwrap();
         let store_b = arrange_orphaned_parent(&dir, "unit-omit-a", "unit-omit-b");
@@ -4775,13 +4702,24 @@ with its new content identity: {after:?}"
         );
         let index = git_in(&dir, &["show", "HEAD:INDEX.md"]);
         assert!(
-            !index.contains("projects/alt/INDEX.md"),
-            "accepted: the deferred row must be absent, not dangling: {index}"
+            index.contains("projects/alt/INDEX.md"),
+            "the row B generated on disk must land verbatim, not be pruned \
+             out of an in-memory projection: {index}"
+        );
+        assert_eq!(
+            index,
+            std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap(),
+            "the committed index must be byte-identical to the one on disk"
         );
     }
 
+    /// The tree still converges once the owning session lands its project.
+    ///
+    /// The property survives the deferral machinery that used to produce it:
+    /// A's manifest lands on A's own commit, B's index rows were already
+    /// there, and a later `rdm index` refresh is an ordinary write.
     #[test]
-    fn the_deferred_rows_return_once_the_owning_session_lands_its_project() {
+    fn the_tree_converges_once_the_owning_session_lands_its_project() {
         let _guard = serial_scoped();
         let dir = TempDir::new().unwrap();
         let store_b = arrange_orphaned_parent(&dir, "unit-heal-a", "unit-heal-b");
@@ -4792,15 +4730,10 @@ with its new content identity: {after:?}"
         store_a.commit_changeset(Some("land alt"), &[]).unwrap();
         drop(store_a);
 
-        // The derived path is still B's — it stayed in B's journal when the
-        // reconciliation deferred it — so B is the session that lands it,
-        // now that the owning project is in HEAD. Regenerating first is what
-        // a user does (`rdm index`); it is also what refreshes the root index
-        // that commit landed with `alt` pruned out of it.
         let mut store_b = switch_session(&dir, "unit-heal-b");
         rdm_core::ops::index::generate_index(&mut store_b).unwrap();
         store_b
-            .commit_changeset(Some("land the healed index"), &[])
+            .commit_changeset(Some("refresh the index"), &[])
             .unwrap();
 
         let tree = head_tree_paths(&dir);
@@ -4813,26 +4746,27 @@ with its new content identity: {after:?}"
         let index = git_in(&dir, &["show", "HEAD:INDEX.md"]);
         assert!(
             index.contains("projects/alt/INDEX.md"),
-            "the deferred root-index row did not return: {index}"
+            "the root-index row for the landed project is missing: {index}"
         );
         let project_index = git_in(&dir, &["show", "HEAD:projects/alt/INDEX.md"]);
         assert!(
             project_index.contains("b-task"),
-            "B's task did not reappear in the reconciled project index: {project_index}"
+            "B's task is missing from the project index: {project_index}"
         );
         assert_no_dangling_links(&index, &tree);
-        assert_no_orphan_project_index(&tree);
     }
 
+    /// The counterpart of the retired deferral: an index path B wrote is
+    /// settled by B's own commit and leaves B's journal there and then.
+    ///
+    /// Nothing defers it for an unlanded project any more, so nothing may
+    /// strand it in the journal either — a claim left behind would make a
+    /// later `rdm discard` revert a path this commit already landed.
     #[test]
-    fn a_deferred_derived_path_stays_journaled_until_its_project_lands() {
-        // AC3: the widened `settled` set from this phase must not sweep up a
-        // derived path `reconcile_derived` deferred for a project another
-        // session hasn't landed yet — the phase 8 heal depends on it staying
-        // journaled until that session lands its project.
+    fn an_index_is_settled_by_the_commit_that_lands_it() {
         let _guard = serial_scoped();
         let dir = TempDir::new().unwrap();
-        let store_b = arrange_orphaned_parent(&dir, "unit-deferred-a", "unit-deferred-b");
+        let store_b = arrange_orphaned_parent(&dir, "unit-settled-a", "unit-settled-b");
         let b_paths = store_b.session_paths().unwrap().clone();
         let b_id = store_b.session().unwrap().id.clone();
 
@@ -4840,35 +4774,17 @@ with its new content identity: {after:?}"
 
         let after_b = rdm_core::session::journal::read_journal(&b_paths, &b_id).unwrap();
         assert!(
-            after_b.iter().any(|e| e.path == "projects/alt/INDEX.md"),
-            "the deferred derived path must still be journaled after B's own \
-             commit, proving the widened `settled` set did not truncate a \
-             path `reconcile_derived` deferred: {after_b:?}"
+            after_b.is_empty(),
+            "B's commit landed every path it claimed, indexes included, so \
+             nothing may stay journaled: {after_b:?}"
         );
-        drop(store_b);
-
-        // Once A lands its project, B's next commit lands the previously
-        // deferred index row — the existing heal this AC guards against
-        // regressing. The row is B's, so B is the session that lands it.
-        let store_a = switch_session(&dir, "unit-deferred-a");
-        store_a.commit_changeset(Some("land alt"), &[]).unwrap();
-        drop(store_a);
-        let mut store_b2 = switch_session(&dir, "unit-deferred-b");
-        rdm_core::ops::index::generate_index(&mut store_b2).unwrap();
-        store_b2
-            .commit_changeset(Some("land the healed index"), &[])
-            .unwrap();
-
         let tree = head_tree_paths(&dir);
-        assert!(
-            tree.iter().any(|p| p == "projects/alt/INDEX.md"),
-            "projects/alt/INDEX.md missing after the owning session landed: {tree:?}"
-        );
-        let index = git_in(&dir, &["show", "HEAD:INDEX.md"]);
-        assert!(
-            index.contains("projects/alt/INDEX.md"),
-            "the deferred root-index row did not return: {index}"
-        );
+        for want in ["INDEX.md", "projects/alt/INDEX.md"] {
+            assert!(
+                tree.iter().any(|p| p == want),
+                "{want} must have landed in B's own commit: {tree:?}"
+            );
+        }
     }
 
     #[test]
@@ -5154,9 +5070,9 @@ with its new content identity: {after:?}"
             dir.path().join("projects/demo/tasks/survivor.md").exists(),
             "a scoped discard destroyed another session's file"
         );
-        // The discard rewrites no derived path at all: neither session wrote
-        // one, so conjuring one here would journal a derived path into a
-        // changeset that authored none.
+        // The discard writes no INDEX.md at all: neither session wrote one,
+        // so conjuring one here would journal a path into a changeset that
+        // authored none.
         assert!(
             !dir.path().join("projects/demo/INDEX.md").exists(),
             "a discard must not generate a project index nobody wrote"
@@ -5535,18 +5451,11 @@ with its new content identity: {after:?}"
                 .any(|f| f.path.ends_with("theirs-status.md")),
             "the other session's path is not in `others`: {report:?}"
         );
-        assert!(
-            report
-                .derived
-                .iter()
-                .all(|f| rdm_core::paths::is_derived_path(&f.path)),
-            "a non-derived path landed in `derived`: {report:?}"
-        );
         assert!(!report.is_clean(), "is_clean must still mean the raw truth");
         assert!(!report.is_changeset_clean(), "this changeset does own work");
         assert_eq!(
             report.total(),
-            report.user.len() + report.derived.len() + report.others.len(),
+            report.user.len() + report.others.len() + report.unattributed.len(),
             "total must cover every bucket"
         );
     }
@@ -5623,11 +5532,8 @@ with its new content identity: {after:?}"
 
         assert_eq!(
             report.total(),
-            report.user.len()
-                + report.derived.len()
-                + report.others.len()
-                + report.unattributed.len(),
-            "total must cover all four buckets"
+            report.user.len() + report.others.len() + report.unattributed.len(),
+            "total must cover all three buckets"
         );
     }
 }

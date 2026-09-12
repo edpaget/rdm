@@ -88,7 +88,8 @@ fn build_project_index(store: &impl Store, project: &str) -> Result<ProjectIndex
 pub fn generate_project_index(store: &mut impl Store, project: &str) -> Result<()> {
     let pi = build_project_index(store, project)?;
     let content = display::format_project_index(&pi);
-    let path = crate::paths::project_index_path(project);
+    let path =
+        crate::store::RelPath::new(&format!("projects/{project}/INDEX.md")).expect("valid path");
     store.write(&path, content)?;
     store.commit()?;
     Ok(())
@@ -121,16 +122,17 @@ pub fn generate_index_for_project(store: &mut impl Store, project: &str) -> Resu
         // Only write per-project INDEX.md for the targeted project
         if project_name == project {
             let project_content = display::format_project_index(&pi);
-            let project_index_path = crate::paths::project_index_path(project_name);
-            store.write(&project_index_path, project_content)?;
+            let out = crate::store::RelPath::new(&format!("projects/{project_name}/INDEX.md"))
+                .expect("valid path");
+            store.write(&out, project_content)?;
         }
 
         project_indices.push(pi);
     }
 
     let content = display::format_top_level_index(&project_indices);
-    let index_path = crate::paths::index_path();
-    store.write(&index_path, content)?;
+    let out = crate::store::RelPath::new("INDEX.md").expect("valid path");
+    store.write(&out, content)?;
     Ok(())
 }
 
@@ -141,20 +143,8 @@ pub fn generate_index_for_project(store: &mut impl Store, project: &str) -> Resu
 ///
 /// This **commits** and rebuilds every project's index. It is the standalone
 /// full-repo rebuild (the `rdm index` command and post-merge/pull recovery).
-/// Mutations never regenerate an index, so a generated index goes stale until
-/// a caller runs this explicitly.
-///
-/// # Also driven over an in-memory projection
-///
-/// The session-scoped commit path in `rdm-store-git` runs this against a
-/// [`MemoryStore`](crate::store::MemoryStore) seeded with HEAD's blobs plus
-/// exactly the committing changeset, and takes back only the derived paths
-/// that changeset journaled. It must therefore stay free of filesystem
-/// assumptions — every read and write here goes through the `Store` trait,
-/// and nothing may reach for `std::fs`, a real path, or a clock. Breaking
-/// that would silently reintroduce the defect scoping exists to fix: an index
-/// regenerated from the live filesystem already carries every other session's
-/// rows.
+/// Mutations never write an index, so one on disk goes stale until a caller
+/// runs this explicitly.
 ///
 /// # Errors
 ///
@@ -169,15 +159,16 @@ pub fn generate_index(store: &mut impl Store) -> Result<()> {
 
         // Write per-project INDEX.md
         let project_content = display::format_project_index(&pi);
-        let project_index_path = crate::paths::project_index_path(project_name);
-        store.write(&project_index_path, project_content)?;
+        let out = crate::store::RelPath::new(&format!("projects/{project_name}/INDEX.md"))
+            .expect("valid path");
+        store.write(&out, project_content)?;
 
         project_indices.push(pi);
     }
 
     let content = display::format_top_level_index(&project_indices);
-    let index_path = crate::paths::index_path();
-    store.write(&index_path, content)?;
+    let out = crate::store::RelPath::new("INDEX.md").expect("valid path");
+    store.write(&out, content)?;
     store.commit()?;
     Ok(())
 }

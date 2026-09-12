@@ -260,10 +260,11 @@ pub fn commit_mutation<T>(
 /// Called after read-only commands (list, show, search) so the user is aware
 /// that the data they see includes uncommitted staged mutations.
 ///
-/// Counts only user-authored changes: generated `INDEX.md` files are derived
-/// output, so a stale one left by `rdm index` (or by a plan repo predating
-/// the removal of per-mutation regeneration) must not make every read-only
-/// command report uncommitted changes.
+/// Counts `report.user`. rdm has no generated-path class, so in the
+/// whole-tree view that is every dirty path — a stale tracked `INDEX.md` left
+/// by an old `rdm index` (or by a plan repo predating the removal of
+/// per-mutation regeneration) now counts toward the hint like any other
+/// uncommitted file, and `rdm status` lists it by name.
 #[cfg(feature = "git")]
 pub fn maybe_print_uncommitted_hint(store: &AppStore) {
     if let Ok(report) = store.git().git_status_report()

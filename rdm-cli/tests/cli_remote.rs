@@ -854,8 +854,8 @@ fn remote_pull_regenerates_index() {
     );
 
     // INDEX.md should exist (regenerated after pull)
-    let index_path = dir.path().join("INDEX.md");
-    assert!(index_path.exists(), "INDEX.md should exist after pull");
+    let index_file = dir.path().join("INDEX.md");
+    assert!(index_file.exists(), "INDEX.md should exist after pull");
 
     let _ = bare_dir;
 }
@@ -1047,7 +1047,7 @@ fn merge_origin(dir: &TempDir) -> (std::process::ExitStatus, String) {
 #[test]
 fn a_legacy_repo_merges_index_md_via_gits_builtin_three_way() {
     let (dir, bare_dir) = seed_legacy_index_conflict();
-    let index_path = dir.path().join("projects/demo/INDEX.md");
+    let index_file = dir.path().join("projects/demo/INDEX.md");
 
     let (status, stderr) = merge_origin(&dir);
 
@@ -1055,7 +1055,7 @@ fn a_legacy_repo_merges_index_md_via_gits_builtin_three_way() {
         !status.success(),
         "a genuine two-sided INDEX.md conflict must fail the merge"
     );
-    let merged = std::fs::read_to_string(&index_path).unwrap();
+    let merged = std::fs::read_to_string(&index_file).unwrap();
     assert!(
         merged.contains("<<<<<<< HEAD") && merged.contains(">>>>>>>"),
         "git's built-in three-way merge must leave ordinary conflict markers, got: {merged}"
@@ -1094,7 +1094,7 @@ fn a_legacy_repo_merges_index_md_via_gits_builtin_three_way() {
         .assert()
         .success();
 
-    let converged = std::fs::read_to_string(&index_path).unwrap();
+    let converged = std::fs::read_to_string(&index_file).unwrap();
     assert!(
         !converged.contains("<<<<<<<"),
         "the regenerated index must carry no conflict markers, got: {converged}"
@@ -1121,15 +1121,15 @@ fn a_legacy_repo_merges_index_md_via_gits_builtin_three_way() {
 #[test]
 fn a_stale_driver_section_resolves_silently_to_ours() {
     let (dir, bare_dir) = seed_legacy_index_conflict();
-    let index_path = dir.path().join("projects/demo/INDEX.md");
-    let ours = std::fs::read_to_string(&index_path).unwrap();
+    let index_file = dir.path().join("projects/demo/INDEX.md");
+    let ours = std::fs::read_to_string(&index_file).unwrap();
 
     install_stale_driver_section(dir.path());
 
     let (status, _stderr) = merge_origin(&dir);
 
     assert!(!status.success(), "a failing driver reports a conflict");
-    let merged = std::fs::read_to_string(&index_path).unwrap();
+    let merged = std::fs::read_to_string(&index_file).unwrap();
     assert!(
         !merged.contains("<<<<<<<"),
         "the damning part: no conflict markers at all, got: {merged}"

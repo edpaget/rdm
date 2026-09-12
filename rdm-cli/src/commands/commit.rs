@@ -119,10 +119,10 @@ pub fn run(
             }
             print_continuity_advisory(&store);
         }
-        // A changeset can reduce to nothing *because* its files vanished — the
-        // regenerated indexes then reconcile straight back to HEAD and the tree
-        // matches. Reporting only `Nothing to commit.` there would tell a
-        // session its work was a no-op when in fact the work is gone.
+        // A changeset can reduce to nothing *because* its files vanished, so
+        // every path it named was skipped and the tree still matches HEAD.
+        // Reporting only `Nothing to commit.` there would tell a session its
+        // work was a no-op when in fact the work is gone.
         None => {
             println!("Nothing to commit.");
             if let Some(note) = outcome.skipped_summary() {

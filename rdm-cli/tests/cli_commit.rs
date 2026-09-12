@@ -287,7 +287,7 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
         .success();
 
     // Status reports exactly the two entity files as user changes, and
-    // nothing else: a mutation writes no derived index.
+    // nothing else: a mutation writes no INDEX.md.
     let status_out = rdm()
         .arg("--root")
         .arg(dir.path())
@@ -315,11 +315,11 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
     );
     assert!(
         !listed.iter().any(|l| l.contains("INDEX.md")),
-        "generated indexes must not appear in the change listing, got: {listed:?}"
+        "no INDEX.md may appear in the change listing, got: {listed:?}"
     );
     assert!(
         !status_out.contains("generated index file(s)"),
-        "a mutation stages no generated index, got: {status_out}"
+        "a mutation stages no INDEX.md, got: {status_out}"
     );
 
     // Commit lands exactly one new commit.
@@ -348,7 +348,7 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
         files.iter().any(|f| f.ends_with("phase-1-e2e-phase.md")),
         "commit should include phase-1-e2e-phase.md, got: {files:?}"
     );
-    // And nothing derived: the commit is exactly what the session authored.
+    // And nothing else: the commit is exactly what the session authored.
     assert_eq!(
         files.len(),
         2,
@@ -356,7 +356,7 @@ fn end_to_end_stage_then_commit_lands_one_commit() {
     );
     assert!(
         !files.iter().any(|f| f.ends_with("INDEX.md")),
-        "no generated index may reach the commit, got: {files:?}"
+        "no INDEX.md may reach the commit, got: {files:?}"
     );
 }
 
@@ -459,16 +459,16 @@ fn commit_lands_under_a_project_another_changeset_has_not_committed() {
     );
     assert!(
         !tree.iter().any(|p| p.ends_with("INDEX.md")),
-        "a mutation's commit must carry no derived index at all: {tree:?}"
+        "a mutation's commit must carry no INDEX.md at all: {tree:?}"
     );
 }
 
 /// The owning session's later commit lands its own manifest and nothing
-/// derived: with the index off the write path there are no deferred rows to
+/// else: with the index off the write path there are no deferred rows to
 /// heal, so the invariant this scenario protects is simply that each commit
 /// carries exactly its author's paths.
 #[test]
-fn the_owning_changeset_lands_its_manifest_and_nothing_derived() {
+fn the_owning_changeset_lands_its_manifest_and_nothing_else() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
     rdm_as("cs-a", &dir)
@@ -509,7 +509,7 @@ fn the_owning_changeset_lands_its_manifest_and_nothing_derived() {
     );
     assert!(
         !tree.iter().any(|p| p.ends_with("INDEX.md")),
-        "neither commit may add a derived index HEAD did not already have: {tree:?}"
+        "neither commit may add an INDEX.md HEAD did not already have: {tree:?}"
     );
 }
 
@@ -792,9 +792,9 @@ fn discard_distinguishes_a_mixed_others_and_unattributed_scenario() {
 /// commit lands nothing.
 ///
 /// This is the branch that used to go quiet. Removing the only file a
-/// changeset owns leaves nothing to skip *around*: the regenerated indexes
-/// reconcile straight back to HEAD, the scoped tree equals HEAD, and the commit
-/// correctly returns no SHA. Printing a bare `Nothing to commit.` there tells
+/// changeset owns leaves nothing to skip *around*: every path it named is
+/// skipped, the scoped tree equals HEAD, and the commit correctly returns no
+/// SHA. Printing a bare `Nothing to commit.` there tells
 /// the session its work was a no-op when in fact the work is gone — so the skip
 /// note has to survive onto this branch too.
 #[test]
@@ -916,7 +916,7 @@ fn discard_defaults_to_the_callers_changeset() {
     );
     assert!(
         !dir.path().join("projects/test/INDEX.md").exists(),
-        "a discard must not conjure a generated index: neither session wrote one"
+        "a discard must not conjure an INDEX.md: neither session wrote one"
     );
 }
 

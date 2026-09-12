@@ -214,7 +214,14 @@ mod tests {
     }
 
     #[test]
-    fn classify_index_file() {
+    fn classify_index_file_is_an_ordinary_unrecognized_path() {
+        // `Other` is correct here for a structural reason, not because rdm
+        // treats an index specially: `projects/<p>/INDEX.md` round-trips
+        // through none of the roadmap/phase/task builders, so it is not a
+        // plan item. Now that rdm has no generated-path class, an `INDEX.md`
+        // someone committed is an ordinary user file that can genuinely
+        // conflict — and `rdm conflicts` showing it as a plain path is
+        // exactly right for one.
         let item = classify_path("projects/myproj/INDEX.md");
         assert_eq!(item.kind, ConflictItemKind::Other);
         assert_eq!(item.project, None);

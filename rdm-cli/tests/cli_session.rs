@@ -255,16 +255,16 @@ fn concurrent_journals_never_contain_each_others_paths() {
     assert!(!alpha.contains("projects/demo/tasks/beta-one.md"));
     assert!(beta.contains("projects/demo/tasks/beta-one.md"));
     assert!(!beta.contains("projects/demo/tasks/alpha-one.md"));
-    // And neither journal names a derived index at all: a mutation authors
-    // only its own entity file, so there is no shared derived path for two
+    // And neither journal names an INDEX.md at all: a mutation authors
+    // only its own entity file, so there is no shared index path for two
     // sessions to contend over in the first place.
     assert!(
         !alpha.iter().any(|p| p.ends_with("INDEX.md")),
-        "alpha's journal named a derived index: {alpha:?}"
+        "alpha's journal named an INDEX.md: {alpha:?}"
     );
     assert!(
         !beta.iter().any(|p| p.ends_with("INDEX.md")),
-        "beta's journal named a derived index: {beta:?}"
+        "beta's journal named an INDEX.md: {beta:?}"
     );
 }
 

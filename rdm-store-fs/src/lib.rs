@@ -39,7 +39,7 @@ use std::time::Duration;
 
 use rdm_core::error::{Error, Result};
 use rdm_core::lock::AdvisoryLock;
-use rdm_core::paths::{describe_path, is_derived_path};
+use rdm_core::paths::describe_path;
 use rdm_core::session::journal::JournalKind;
 use rdm_core::store::{
     Baseline, DirEntry, DirEntryKind, RelPath, StagedEntry, StagedOverlay, Store, VersionedStore,
@@ -235,14 +235,14 @@ impl FsStore {
     fn verify_baselines(&self) -> Result<()> {
         let baselines = self.snapshot_baselines();
         for key in self.staged.keys() {
-            // Derived indexes are regenerated from disk by every mutation, so
-            // two concurrent sessions legitimately rewrite them; without this
-            // exemption every concurrent mutation would falsely trip. Their
-            // commit-time correctness is owned by the scoped commit's
-            // in-memory reconciliation, not by this check.
-            if is_derived_path(key) {
-                continue;
-            }
+            // No path class is exempt. `INDEX.md` used to be, on the grounds
+            // that every mutation regenerated it from disk so two sessions
+            // legitimately rewrote it; mutations write no index any more, and
+            // nothing reconciles one at commit time to paper over a clobber,
+            // so it needs this check like any other path. A blind write is
+            // covered too — `Store::write` records the on-disk bytes as its
+            // baseline — which is what makes an uncontested `rdm index` land
+            // while a contested one is refused.
             let Some(baseline) = baselines.get(key) else {
                 continue;
             };
@@ -1049,30 +1049,48 @@ mod tests {
     }
 
     #[test]
-    fn derived_indexes_are_exempt_from_the_check() {
-        // Every mutation regenerates the indexes from disk, so two concurrent
-        // sessions legitimately rewrite them. Without the exemption, every
-        // concurrent mutation would falsely trip.
+    fn an_index_write_is_checked_like_any_other_path() {
+        // rdm has no generated-path class: an `INDEX.md` is an ordinary file.
+        // A read-then-write of one is refused after a concurrent overwrite,
+        // exactly like any authored document.
         let (dir, mut store) = setup();
         let root_index = RelPath::new("INDEX.md").unwrap();
-        let project_index = RelPath::new("projects/demo/INDEX.md").unwrap();
         write_disk(&dir, root_index.as_str(), "old root");
-        write_disk(&dir, project_index.as_str(), "old project");
 
         store.read(&root_index).unwrap();
-        store.read(&project_index).unwrap();
         store.write(&root_index, "new root".to_string()).unwrap();
-        store
-            .write(&project_index, "new project".to_string())
-            .unwrap();
-
         other_session_writes(&dir, root_index.as_str(), "their root");
-        other_session_writes(&dir, project_index.as_str(), "their project");
 
-        store.commit().unwrap();
+        let err = store.commit().unwrap_err();
+        assert!(
+            matches!(&err, Error::StaleWrite { path, .. } if path == "INDEX.md"),
+            "a read-then-write of INDEX.md must be refused like any other \
+             overwritten path, got {err:?}"
+        );
         assert_eq!(
             fs::read_to_string(dir.path().join("INDEX.md")).unwrap(),
-            "new root"
+            "their root",
+            "the refusal must leave the other session's content in place"
+        );
+
+        // The other direction, and the shape `rdm index` actually takes: the
+        // generator writes an index it never read, and nothing overwrites it
+        // in between, so the write lands. This is the case removing the
+        // exemption must not brick. Note a blind write is NOT baseline-free —
+        // `write` records whatever is on disk at write time (see `Store::write`
+        // above) — so an index write is guarded from that instant, exactly
+        // like any other blind write.
+        let (dir2, mut store2) = setup();
+        let project_index = RelPath::new("projects/demo/INDEX.md").unwrap();
+        write_disk(&dir2, project_index.as_str(), "old project");
+        store2
+            .write(&project_index, "new project".to_string())
+            .unwrap();
+        store2.commit().unwrap();
+        assert_eq!(
+            fs::read_to_string(dir2.path().join(project_index.as_str())).unwrap(),
+            "new project",
+            "an uncontested index regeneration must still land"
         );
     }
 

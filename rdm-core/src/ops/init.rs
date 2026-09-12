@@ -22,11 +22,9 @@ pub fn init(store: &mut impl Store) -> Result<()> {
 /// Creates `rdm.toml` (populated from `config`). The config is validated
 /// before any files are written.
 ///
-/// No `INDEX.md` is created: the generated indexes are not maintained by any
-/// mutation, so seeding a fresh repo with one would plant a file that is
-/// stale from the first write onward — and a changeset mixing that derived
-/// path with entity writes would commit a reconciled index the working tree
-/// never receives. Run [`crate::ops::index::generate_index`] (the `rdm index`
+/// No `INDEX.md` is created: no mutation maintains one, so seeding a fresh
+/// repo with one would plant a file that is stale from the first write
+/// onward. Run [`crate::ops::index::generate_index`] (the `rdm index`
 /// command) to produce one explicitly.
 ///
 /// # Errors

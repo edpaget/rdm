@@ -154,7 +154,7 @@ fn status_commit_hint_and_discard_agree_on_the_user_change_count() {
     );
     assert!(
         !listed.iter().any(|l| l.contains("INDEX.md")),
-        "status must not list generated indexes as changes, got: {listed:?}"
+        "status must not list an INDEX.md as a change: a mutation writes none, got: {listed:?}"
     );
     assert!(
         out.contains("1 file(s) changed"),
@@ -162,7 +162,8 @@ fn status_commit_hint_and_discard_agree_on_the_user_change_count() {
     );
     assert!(
         !out.contains("generated index file(s)"),
-        "a mutation stages no generated index, so status must not name one, got: {out}"
+        "a mutation stages no INDEX.md, and the retired generated-index line must \
+         never come back, got: {out}"
     );
 
     // 2. The post-command hint on a read-only command (stderr).
@@ -406,8 +407,8 @@ fn discard_reverts_an_index_this_session_regenerated_itself() {
         .assert()
         .success();
 
-    let index_path = dir.path().join("projects/test/INDEX.md");
-    let committed_index = std::fs::read_to_string(&index_path).unwrap();
+    let index_file = dir.path().join("projects/test/INDEX.md");
+    let committed_index = std::fs::read_to_string(&index_file).unwrap();
 
     // One mutation, then an explicit regeneration that folds it into the
     // index — both now belong to this one changeset.
@@ -419,7 +420,7 @@ fn discard_reverts_an_index_this_session_regenerated_itself() {
         .assert()
         .success();
 
-    let dirty_index = std::fs::read_to_string(&index_path).unwrap();
+    let dirty_index = std::fs::read_to_string(&index_file).unwrap();
     assert!(
         dirty_index.contains("doomed-roadmap"),
         "the explicit regeneration must have folded the mutation into the index, got: \
@@ -432,16 +433,17 @@ fn discard_reverts_an_index_this_session_regenerated_itself() {
         .args(["discard", "--force"])
         .assert()
         .success()
-        // Counted, named separately, and described as generated rather than
-        // regenerated: the discard restored them, it did not recompute them.
-        .stdout(predicate::str::contains(
-            "Discarded 1 file(s) (plus 2 generated index file(s)).",
-        ))
-        .stdout(predicate::str::contains("regenerated index file(s)").not());
+        // One count over every restored path: the two indexes this session
+        // regenerated are ordinary claimed paths, not a separate class. The
+        // negatives are standing guards that the retired wording never
+        // returns.
+        .stdout(predicate::str::contains("Discarded 3 file(s)."))
+        .stdout(predicate::str::contains("regenerated index file(s)").not())
+        .stdout(predicate::str::contains("generated index file(s)").not());
 
     // The index this session dirtied is back at its committed content — not
     // left holding a roadmap that no longer exists.
-    let index_after = std::fs::read_to_string(&index_path).unwrap();
+    let index_after = std::fs::read_to_string(&index_file).unwrap();
     assert_eq!(
         committed_index, index_after,
         "a discard must revert the index this same session regenerated"
@@ -502,26 +504,28 @@ fn commit_lands_the_regenerated_index_when_it_is_the_only_change() {
         .args(["status", "--all"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "2 generated index file(s) will be included in the next commit",
-        ));
+        // Two ordinary changes in the whole-tree view, listed by name rather
+        // than summarized on a generated-index line that no longer exists.
+        .stdout(predicate::str::contains("2 file(s) changed."))
+        .stdout(predicate::str::contains("INDEX.md"))
+        .stdout(predicate::str::contains("projects/test/INDEX.md"))
+        .stdout(predicate::str::contains("generated index file(s)").not());
 
     let head_before = String::from_utf8_lossy(&git(dir.path(), &["rev-parse", "HEAD"]).stdout)
         .trim()
         .to_string();
 
-    // Gated on the raw truth: a derived-only tree must still be committable
-    // through the whole-tree opt-in, which is the documented recovery for
-    // out-of-band index corruption.
+    // Gated on the raw truth: an index-only dirty tree must still be
+    // committable through the whole-tree opt-in, which is the documented
+    // recovery for out-of-band index corruption.
     rdm()
         .arg("--root")
         .arg(dir.path())
         .args(["commit", "--all", "-m", "chore: regenerate indexes"])
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "Committed 2 regenerated index file(s).",
-        ));
+        .stdout(predicate::str::contains("Committed 2 file(s)."))
+        .stdout(predicate::str::contains("regenerated index file(s)").not());
 
     let head_after = String::from_utf8_lossy(&git(dir.path(), &["rev-parse", "HEAD"]).stdout)
         .trim()

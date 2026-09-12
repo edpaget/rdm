@@ -195,9 +195,7 @@ async fn autocommit_lands_the_mutation_scoped_to_the_advertised_changeset() {
     let paths = head_paths(dir.path());
     // Still scoped, and now exactly scoped: a mutation regenerates no index,
     // so the changeset holds one authored path and the commit carries that
-    // path and nothing else. Whole-set equality, deliberately — the previous
-    // form also admitted any derived path, which a mutation can no longer
-    // produce, so it could not have caught a regenerated index leaking back in.
+    // path and nothing else. Whole-set equality, deliberately.
     assert_eq!(
         paths,
         vec!["projects/demo/tasks/landed-task.md".to_string()],

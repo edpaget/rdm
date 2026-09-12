@@ -212,9 +212,8 @@ pub(crate) enum Command {
     },
     /// Commit this session's changeset to git.
     ///
-    /// By default the commit contains only the paths this session wrote (plus
-    /// its own regenerated indexes, reconciled against HEAD). Another
-    /// session's uncommitted work is never swept in.
+    /// By default the commit contains only the paths this session wrote.
+    /// Another session's uncommitted work is never swept in.
     #[cfg(feature = "git")]
     Commit {
         /// Commit message (auto-generated if omitted).

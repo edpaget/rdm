@@ -646,8 +646,7 @@ pub fn read_journal(paths: &SessionPaths, id: &SessionId) -> Result<Vec<JournalE
 /// Truncation is content-keyed. The tombstone carries whole entries, and
 /// [`read_journal`]'s fold drops a path only when what it currently holds is
 /// exactly what landed. So a concurrent session that rewrote one of these
-/// paths in between — the regenerated `INDEX.md` files, in practice — keeps
-/// its record and its next commit still lands it.
+/// paths in between keeps its record and its next commit still lands it.
 ///
 /// An empty `landed` slice writes nothing at all, mirroring [`record`], so a
 /// fully no-op commit never grows the journal.
@@ -1357,11 +1356,12 @@ mod tests {
 
     #[test]
     fn a_concurrent_rewrite_of_a_landed_path_survives_its_tombstone() {
-        // The reported symptom, reduced: both sessions regenerate INDEX.md,
-        // so the racing append names a path that IS in `landed`. A
+        // The reported symptom, reduced: two sessions write the same shared
+        // path, so the racing append names a path that IS in `landed`. A
         // path-keyed tombstone would sweep it and leave the file dirty and
         // unattributed; a content-keyed one keeps it, because those bytes
-        // are not the bytes that landed.
+        // are not the bytes that landed. (`INDEX.md` below is just a
+        // conveniently-shared path — rdm gives it no special status.)
         let dir = TempDir::new().unwrap();
         let p = paths(&dir);
         let id = SessionId::new("s-index").unwrap();

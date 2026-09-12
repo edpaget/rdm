@@ -27,7 +27,7 @@ fn init_creates_plan_repo() {
     assert!(dir.path().join("rdm.toml").exists());
     assert!(
         !dir.path().join("INDEX.md").exists(),
-        "init must not seed a generated INDEX.md — nothing maintains it; run `rdm index`"
+        "init must not seed an INDEX.md — nothing maintains it; run `rdm index`"
     );
 }
 

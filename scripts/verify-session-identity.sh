@@ -136,13 +136,24 @@ write_sequence() {
 # uncommitted file in the set changed with it (e.g. a new struct field and its
 # initializer), and a self-test that cannot build reports a harness failure
 # instead of the regression it exists to detect.
+# Keep this list in step with the working tree: a file left out that a listed
+# one depends on makes a mutant fail to BUILD, which reports as an
+# inconclusive self-test rather than as the defect the arm is looking for.
+# `paths.rs`, `ops/index.rs`, `rdm-store-fs/src/lib.rs`, `status.rs` and
+# `rdm-mcp/src/server.rs` are here because they consume API the listed
+# `rdm-core`/`rdm-store-git` files changed.
 MUTANT_OVERLAY="rdm-core/src/session/mod.rs
 rdm-core/src/session/lease.rs
 rdm-core/src/session/journal.rs
 rdm-core/src/session/process.rs
 rdm-core/src/lock.rs
+rdm-core/src/paths.rs
+rdm-core/src/ops/index.rs
+rdm-store-fs/src/lib.rs
 rdm-cli/src/commands/commit.rs
 rdm-cli/src/commands/session.rs
+rdm-cli/src/commands/status.rs
+rdm-mcp/src/server.rs
 rdm-store-git/src/lib.rs
 rdm-store-git/src/commit.rs
 rdm-store-git/src/repo.rs
@@ -397,8 +408,8 @@ for _pair in "alpha:alpha-one" "beta:beta-one"; do
 done
 # Two distinct long-lived parents, hence two coexisting changesets. They run
 # one after the other so the assertion is about identity scoping and not about
-# whichever of two racing writers last regenerated the shared index — that
-# lost-update window is a separate phase's subject.
+# whichever of two racing writers last wrote a shared path — that lost-update
+# window is a separate harness's subject (`verify-lost-update.sh`).
 sh "$TMP/f-alpha.sh" >"$TMP/f-alpha.out" 2>&1 || fail "session alpha failed"
 sh "$TMP/f-beta.sh" >"$TMP/f-beta.out" 2>&1 || fail "session beta failed"
 
@@ -417,14 +428,16 @@ grep -q '^projects/demo/tasks/alpha-one.md$' "$TMP/f-beta.paths" &&
     fail "beta's journal contains alpha's task — the journals are not disjoint"
 ok "neither journal contains the other session's task"
 
-# The inverse of what this arm used to assert: no derived index lands in
-# either journal, because a mutation authors only its own entity file. There
-# is therefore no shared derived path for two sessions to contend over.
+# The inverse of what this arm used to assert: no INDEX.md lands in either
+# journal, because a mutation authors only its own entity file. There is
+# therefore no shared index path for two sessions to contend over. (An
+# INDEX.md CAN be journaled — by an explicit `rdm index` — but only as an
+# ordinary authored write; rdm has no generated-path class.)
 grep -q 'INDEX\.md$' "$TMP/f-alpha.paths" &&
-    fail "alpha's journal names a derived index: $(tr '\n' ' ' <"$TMP/f-alpha.paths")"
+    fail "alpha's journal names an INDEX.md: $(tr '\n' ' ' <"$TMP/f-alpha.paths")"
 grep -q 'INDEX\.md$' "$TMP/f-beta.paths" &&
-    fail "beta's journal names a derived index: $(tr '\n' ' ' <"$TMP/f-beta.paths")"
-ok "neither journal names any INDEX.md — mutations journal no derived paths"
+    fail "beta's journal names an INDEX.md: $(tr '\n' ' ' <"$TMP/f-beta.paths")"
+ok "neither journal names any INDEX.md — a mutation journals only what it authored"
 
 # ---------------------------------------------------------------------------
 # Section G — invisible to `rdm status` and to a whole-tree commit

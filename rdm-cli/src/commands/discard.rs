@@ -7,9 +7,9 @@ use crate::commands;
 /// Discards uncommitted changes, restoring them to HEAD.
 ///
 /// By default this is **changeset-scoped**: only paths this session journaled
-/// are restored, the generated indexes are regenerated from the resulting
-/// disk state (so another session's still-uncommitted rows survive), and this
-/// session's journal is cleared. `--all` opts into the historical whole-tree
+/// are restored — an `INDEX.md` this session regenerated among them, since it
+/// is an ordinary claimed path and nothing recomputes one afterwards — and
+/// this session's journal is cleared. `--all` opts into the historical whole-tree
 /// destruction, which requires `--force` as well and first names every other
 /// live changeset it is about to destroy.
 ///

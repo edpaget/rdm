@@ -360,11 +360,15 @@ changeset is by construction owned by one session: the only appender is the
 same shell that is committing". At rung 3 that premise is **false** — every
 parallel subagent under one harness variable shares one id, so
 they are different *processes* on the same journal. Anything appended between
-that read and that write was destroyed. Reproduced with 40 parallel creates
-plus 6 concurrent commits under one `RDM_SESSION`: all 40 tasks landed, but
-both `INDEX.md` files were left dirty, the changeset reported zero journaled
-paths, and the next `rdm commit` disowned the indexes as belonging to another
-changeset.
+that read and that write was destroyed. Reproduced — *at the time, when every
+mutation also rewrote the two `INDEX.md` files, which is what gave 40 parallel
+processes a hot shared path to contend on* — with 40 parallel creates plus 6
+concurrent commits under one `RDM_SESSION`: all 40 tasks landed, but both
+`INDEX.md` files were left dirty, the changeset reported zero journaled paths,
+and the next `rdm commit` disowned the indexes as belonging to another
+changeset. Mutations write no index now, so
+`scripts/verify-journal-truncation-race.sh` reproduces the same loss at a
+pinned barrier seam rather than by relying on that contention.
 
 Making truncation an append closes it structurally rather than narrowing it:
 two single-line `O_APPEND` writes cannot destroy each other, so the window is
@@ -386,12 +390,13 @@ instead would forfeit its documented lock-free, best-effort contract.
   for it is exactly the entry that landed**.
 
 Carrying the whole entry rather than a bare path is what makes the common case
-correct. Both sessions regenerate `INDEX.md`, so the racing append names a path
-the committer *is* landing. A path-keyed tombstone would sweep it — the
-reported dirty-index symptom, one level down. A content-keyed one keeps it,
-because those bytes are not the bytes that landed, and the next commit lands
-them. A record appended *after* a tombstone likewise resurrects its path: that
-write has not landed either. Phase 9's delete-then-recreate routing survives
+correct. Two sessions writing the same shared path — historically `INDEX.md`,
+which every mutation rewrote; today any document two sessions both touch —
+means the racing append names a path the committer *is* landing. A path-keyed
+tombstone would sweep it: the reported dirty-index symptom, one level down. A
+content-keyed one keeps it, because those bytes are not the bytes that landed,
+and the next commit lands them. A record appended *after* a tombstone likewise
+resurrects its path: that write has not landed either. Phase 9's delete-then-recreate routing survives
 both directions, since a resurrected record carries its own `kind`.
 
 A journal written before tombstones existed folds exactly as it always did.
@@ -519,15 +524,17 @@ So the journal can be neither a superset of what landed nor a claim about a
 batch that failed, and an empty flush records nothing at all rather than an
 empty line.
 
-The derived `INDEX.md` files used to land in **every** session's journal,
-because `ops::mutate` regenerated them on every mutation. As of
-`retire-generated-index` phase 2 that is no longer true: a mutation journals
-only the paths it authored, so no journal names a derived path unless that
-session ran an explicit index regeneration (`rdm index`, or the post-merge /
-post-pull reconciliation). `scripts/verify-session-identity.sh` § F now
-asserts the inverse — neither journal may name an `INDEX.md` at all. The full
-prose sweep for the removal is a later phase of that roadmap; see
-[`index-removal.md`](index-removal.md).
+A journal names whatever paths its session wrote, and nothing else. There is
+no class of path rdm treats specially here: `INDEX.md` is journaled if and
+only if that session wrote it, which today means an explicit `rdm index` (or
+the post-merge / post-pull reconciliation). A mutation journals only the paths
+it authored, so `scripts/verify-session-identity.sh` § F asserts neither of
+two concurrent mutations' journals may name an `INDEX.md` at all.
+
+*Historically* the two indexes landed in **every** session's journal, because
+`ops::mutate` regenerated them on every mutation. `retire-generated-index`
+phase 2 cut that write path and phase 4 deleted the derived-path class it
+justified; see [`index-removal.md`](index-removal.md).
 
 ## Lifecycle
 
@@ -793,16 +800,16 @@ surfaces built on them.
 ### `rdm commit`
 
 Commits **this session's changeset**: the tree is HEAD plus exactly the paths
-this session journaled, with its regenerated `INDEX.md` files reconciled in
-memory against HEAD (never taken from disk — the on-disk index already holds
-every session's rows). A path another session left dirty is structurally
-unreachable, not filtered out late.
+this session journaled, full stop. A path another session left dirty is
+structurally unreachable, not filtered out late.
 
-The reconciled index is complete in one direction only: it never names a path
-the commit does not contain, but a document whose *project* was created by
-another session that has not committed yet lands in the tree with no index row
-for it. The row appears as soon as that session commits — see
-`docs/scoping-model-decision.md` § "INDEX.md Consistency in Partial Commits".
+Nothing is reconciled or regenerated at commit time. An `INDEX.md` enters a
+commit only as a path some session wrote, carrying the bytes that session put
+on disk. (Until `retire-generated-index` phase 4 the commit rebuilt the
+indexes in memory from HEAD plus the changeset, which bought a deliberate
+one-directional `tree ⊇ index` divergence; that mechanism, and the divergence
+with it, no longer exist — see `docs/scoping-model-decision.md`
+§ "INDEX.md Consistency in Partial Commits", kept as a historical record.)
 
 | Flag | Meaning |
 | --- | --- |
@@ -856,19 +863,21 @@ discard, a manual `rm`) is skipped and reported, never fatal.
 ### `rdm status`
 
 Shows this session's changeset by default, `--all` for the whole tree. Output
-is one partition into four buckets: this session's own edits, this session's
-regenerated indexes (named separately), a trailing line counting what belongs
-to other changesets and pointing at `rdm session list` / `--all`, and a
-further trailing line counting what is unattributed to any changeset and
-pointing at `--all` (the only route, since there is no owning changeset id).
+is one partition into three buckets: this session's own edits, a trailing line
+counting what belongs to other changesets and pointing at `rdm session list` /
+`--all`, and a further trailing line counting what is unattributed to any
+changeset and pointing at `--all` (the only route, since there is no owning
+changeset id). A dirty `INDEX.md` this session wrote is listed among its own
+edits like any other file.
 
 ### `rdm discard`
 
 Changeset-scoped by default: restores only this session's journaled paths to
-HEAD, clears its journal, and regenerates the indexes **from the resulting
-disk state** so another session's still-uncommitted rows survive.
-`--force --all` retains the whole-tree destruction, and prints the other live
-changesets it is about to destroy before doing it.
+HEAD and clears its journal. Nothing is regenerated afterwards — an `INDEX.md`
+this session wrote is one of its journaled paths and is restored with the
+rest, while one another session dirtied is not in this changeset and is left
+alone. `--force --all` retains the whole-tree destruction, and prints the
+other live changesets it is about to destroy before doing it.
 
 Scoping alone only guarantees a *disjoint* path is safe — it says nothing
 about a path two sessions both journaled. For that case the scoped restore

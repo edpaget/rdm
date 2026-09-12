@@ -14,7 +14,8 @@
 //! - [`CommitScope::Changeset`] builds `HEAD` plus **only** the paths the
 //!   caller names in a [`ChangesetScope`]. A path this caller did not write is
 //!   structurally unreachable — it is never read, never blobbed, and never
-//!   enters the tree.
+//!   enters the tree. There is no path class rdm treats specially here: every
+//!   committed path is one the changeset authored.
 //!
 //! The `ChangesetScope` a `GitStore` passes here comes from
 //! [`rdm_core::session::journal`], which records exactly which paths each
@@ -30,7 +31,7 @@ use gix::object::tree::EntryKind;
 use gix::objs::tree::EntryMode;
 use rdm_core::error::{Error, Result};
 use rdm_core::lock::AdvisoryLock;
-use rdm_core::store::{RelPath, Store};
+use rdm_core::store::RelPath;
 
 use crate::repo::GitRepo;
 use crate::{FileChange, FileStatus, HeadCommitInfo, StatusReport};
@@ -44,16 +45,10 @@ use crate::{FileChange, FileStatus, HeadCommitInfo, StatusReport};
 /// naming the paths it covers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChangesetScope {
-    /// Non-derived paths whose working-tree content this changeset wrote.
+    /// Paths whose working-tree content this changeset wrote.
     pub writes: Vec<String>,
     /// Paths this changeset removed.
     pub deletes: Vec<String>,
-    /// Derived paths (`INDEX.md`) this changeset journaled.
-    ///
-    /// These are **never** read from disk: the on-disk index already carries
-    /// other sessions' rows. They are reconciled in memory as HEAD plus this
-    /// changeset — see [`GitRepo::create_git_commit`].
-    pub derived: Vec<String>,
     /// Paths a caller wrote outside the `Store` and is vouching for on this
     /// commit only.
     ///
@@ -92,13 +87,10 @@ pub struct ChangesetScope {
 impl ChangesetScope {
     /// Returns whether the scope names no paths at all.
     pub fn is_empty(&self) -> bool {
-        self.writes.is_empty()
-            && self.deletes.is_empty()
-            && self.derived.is_empty()
-            && self.extra_writes.is_empty()
+        self.writes.is_empty() && self.deletes.is_empty() && self.extra_writes.is_empty()
     }
 
-    /// Returns every non-derived write, journaled or caller-supplied.
+    /// Returns every write, journaled or caller-supplied.
     fn all_writes(&self) -> impl Iterator<Item = &String> {
         self.writes.iter().chain(self.extra_writes.iter())
     }
@@ -141,11 +133,10 @@ pub struct CommitReport {
     /// blob.
     ///
     /// Wider than `committed`: it also covers a no-op write-back (content
-    /// already equal to HEAD) and every non-deferred reconciled derived path.
-    /// It excludes `skipped_missing` paths and any derived path deferred for
-    /// an unlanded project. This is the set a caller truncates a session's
-    /// journal against, so an idempotent write still clears the journal even
-    /// when the commit itself is a no-op (`sha: None`).
+    /// already equal to HEAD). It excludes `skipped_missing` paths. This is
+    /// the set a caller truncates a session's journal against, so an
+    /// idempotent write still clears the journal even when the commit itself
+    /// is a no-op (`sha: None`).
     pub(crate) settled: Vec<String>,
 }
 
@@ -262,59 +253,6 @@ fn sort_tree_entries(entries: &mut [gix::objs::tree::Entry]) {
         };
         sort_key(a).cmp(&sort_key(b))
     });
-}
-
-/// Names the project a store path lives under, if any.
-///
-/// `projects/<p>/<something>/…` yields `Some(<p>)`. Everything else yields
-/// `None` — including a top-level file literally named `projects/foo` (two
-/// segments, no subtree), `projects/` alone, and any path outside `projects/`.
-/// Total and allocation-free; the returned name borrows from `path`.
-fn project_segment(path: &str) -> Option<&str> {
-    let mut segments = path.split('/');
-    if segments.next()? != "projects" {
-        return None;
-    }
-    let project = segments.next()?;
-    // A third non-empty segment is what distinguishes a project *subtree*
-    // from a top-level file that merely happens to be named `projects/foo`.
-    let third = segments.next()?;
-    if project.is_empty() || third.is_empty() {
-        return None;
-    }
-    Some(project)
-}
-
-/// Removes every `projects/<p>/**` entry whose `projects/<p>/project.md` is
-/// absent from the same map, and returns the dropped project names, sorted.
-///
-/// The `project.md` manifest is the sentinel `list_roadmaps`/`list_tasks`/
-/// `list_reviews` check before enumerating a project, so a subtree without one
-/// makes [`rdm_core::ops::index::generate_index`] raise `ProjectNotFound`.
-/// Pruning such a subtree out of the *seed* is what lets index generation
-/// succeed for every other project.
-///
-/// Deterministic by construction: ordered collections throughout, never a
-/// `HashSet`, because the caller sits on the commit's tree-oid path.
-fn drop_orphaned_project_subtrees(files: &mut BTreeMap<String, String>) -> Vec<String> {
-    let mut owned: BTreeSet<&str> = BTreeSet::new();
-    let mut seen: BTreeSet<&str> = BTreeSet::new();
-    for key in files.keys() {
-        if let Some(project) = project_segment(key) {
-            seen.insert(project);
-            if rdm_core::paths::is_project_manifest(key) {
-                owned.insert(project);
-            }
-        }
-    }
-    // Collected as owned `String`s before mutating, to end the borrow of
-    // `files` that `owned`/`seen` hold.
-    let orphans: BTreeSet<String> = seen.difference(&owned).map(|p| (*p).to_string()).collect();
-    if orphans.is_empty() {
-        return Vec::new();
-    }
-    files.retain(|key, _| project_segment(key).is_none_or(|p| !orphans.contains(p)));
-    orphans.into_iter().collect()
 }
 
 /// An in-memory nested tree assembled from a flat `path -> blob oid` map.
@@ -539,9 +477,8 @@ impl GitRepo {
     ///
     /// [`CommitScope::Changeset`] instead seeds a flat `path -> blob oid` map
     /// from HEAD and applies **only** the named changeset on top — writes read
-    /// from the working tree, deletes removed, derived indexes reconciled in
-    /// memory. A path no one named is not filtered out late; it is never
-    /// reachable. The ref update is a compare-and-swap against the HEAD the
+    /// from the working tree, deletes removed. A path no one named is not
+    /// filtered out late; it is never reachable. The ref update is a compare-and-swap against the HEAD the
     /// map was seeded from, with one rebuild-and-retry.
     ///
     /// # Residual race
@@ -556,9 +493,8 @@ impl GitRepo {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Git`] if the tree cannot be built, the derived
-    /// indexes cannot be reconciled, or the ref update fails twice in a row
-    /// against a moving HEAD.
+    /// Returns [`Error::Git`] if the tree cannot be built or the ref update
+    /// fails twice in a row against a moving HEAD.
     pub(crate) fn create_git_commit(
         &self,
         message: &str,
@@ -762,15 +698,13 @@ impl GitRepo {
     /// changed), the journaled paths skipped because their working-tree file
     /// has since vanished, and the wider set of paths this changeset can now
     /// prove are correctly reflected at the resulting tree — `settled` —
-    /// which is `committed` plus every non-derived write whose content
-    /// already matched HEAD (so it never entered `committed`) plus every
-    /// non-derived delete that reached past the recreated-check, including a
-    /// no-op delete of a path already absent (e.g. another session deleted
-    /// and landed the same path first), plus every non-deferred reconciled
-    /// derived path. `settled` excludes `skipped` paths and any derived path
-    /// `reconcile_derived` deferred for an unlanded project, so a caller can
-    /// safely truncate a session's journal against it even on a fully no-op
-    /// commit — write or delete.
+    /// which is `committed` plus every write whose content already matched
+    /// HEAD (so it never entered `committed`) plus every delete that reached
+    /// past the recreated-check, including a no-op delete of a path already
+    /// absent (e.g. another session deleted and landed the same path first).
+    /// `settled` excludes `skipped` paths, so a caller can safely truncate a
+    /// session's journal against it even on a fully no-op commit — write or
+    /// delete.
     fn build_changeset_tree(
         &self,
         repo: &gix::Repository,
@@ -781,16 +715,7 @@ impl GitRepo {
         let mut committed: Vec<String> = Vec::new();
         let mut skipped: Vec<String> = Vec::new();
 
-        // Derived paths are reconciled from HEAD-plus-this-changeset in
-        // memory, never read from disk: the on-disk index already carries
-        // other sessions' rows, which is precisely the defect this scoping
-        // exists to fix.
-        let derived = self.reconcile_derived(repo, changeset, head)?;
-
         for path in changeset.all_writes() {
-            if rdm_core::paths::is_derived_path(path) {
-                continue;
-            }
             let file = self.root.join(path);
             let content = match std::fs::read(&file) {
                 Ok(c) => c,
@@ -850,29 +775,19 @@ impl GitRepo {
         //     emptied. Applying the delete would destroy their content with
         //     exit 0 on both sides, so refuse instead.
         //
-        // Derived indexes are exempt for the same reason they are exempt from
-        // the write loop: whatever regenerates them (`rdm index`, a pull, a
-        // merge resolution) may legitimately refill a derived index this
-        // changeset deleted. Their
-        // commit-time correctness is `reconcile_derived`'s, not this loop's.
-        //
         // A delete-then-*recreate* within one changeset never reaches here:
         // `read_journal` collapses a path to its last recorded kind, so the
         // recreate journals as a `Write` and the write guard above owns it.
         //
-        // Every non-derived delete that reaches past the recreated-check is
-        // settled, whether or not it actually removed an entry from the tree:
+        // Every delete that reaches past the recreated-check is settled,
+        // whether or not it actually removed an entry from the tree:
         // `entries.remove(path).is_some()` is false exactly when the path was
         // already absent (e.g. another session deleted and landed it first),
         // which is the state this delete asked for just as much as one that
-        // removed a live entry. A derived delete is excluded here (not
-        // untracked — every derived delete that actually removes an entry
-        // already lands in `committed` below, same as before) because its
-        // commit-time correctness is `reconcile_derived`'s, not this loop's,
-        // matching the write guard's own derived exemption above.
+        // removed a live entry.
         let mut settled_deletes: Vec<String> = Vec::new();
         for path in &changeset.deletes {
-            if !rdm_core::paths::is_derived_path(path) && self.root.join(path).exists() {
+            if self.root.join(path).exists() {
                 return Err(Error::ChangesetDeletePathRecreated {
                     item: rdm_core::paths::describe_path(path),
                     path: path.clone(),
@@ -881,20 +796,7 @@ impl GitRepo {
             if entries.remove(path).is_some() {
                 committed.push(path.clone());
             }
-            if !rdm_core::paths::is_derived_path(path) {
-                settled_deletes.push(path.clone());
-            }
-        }
-
-        for (path, content) in &derived {
-            let blob = repo
-                .write_blob(content)
-                .map_err(|e| Error::Git(format!("failed to write blob for {path}: {e}")))?
-                .detach();
-            if entries.get(path) != Some(&blob) {
-                committed.push(path.clone());
-            }
-            entries.insert(path.clone(), blob);
+            settled_deletes.push(path.clone());
         }
 
         committed.sort();
@@ -904,141 +806,22 @@ impl GitRepo {
         // `settled`: every path this changeset can now prove is correctly
         // reflected at the tree just built, whether or not this specific
         // commit changed its blob. Starts from `committed` (paths that DID
-        // change), then widens to every non-derived write that already
-        // matched HEAD (skipping only what vanished — those stay journaled),
-        // every non-derived delete that reached past the recreated-check
-        // (including a no-op delete of a path already absent — settled_deletes,
-        // above), then every non-deferred reconciled derived path (`derived`'s
-        // keys already exclude anything `reconcile_derived` deferred for an
-        // unlanded project).
+        // change), then widens to every write that already matched HEAD
+        // (skipping only what vanished — those stay journaled) and every
+        // delete that reached past the recreated-check (including a no-op
+        // delete of a path already absent — settled_deletes, above).
         let mut settled = committed.clone();
         for path in changeset.all_writes() {
-            if !rdm_core::paths::is_derived_path(path) && !skipped.contains(path) {
+            if !skipped.contains(path) {
                 settled.push(path.clone());
             }
         }
         settled.extend(settled_deletes);
-        settled.extend(derived.keys().cloned());
         settled.sort();
         settled.dedup();
 
         let tree_id = write_tree_from_map(repo, &entries)?;
         Ok((tree_id, committed, skipped, settled))
-    }
-
-    /// Regenerates the derived indexes this changeset journaled, from HEAD
-    /// plus this changeset only.
-    ///
-    /// Projects HEAD's document bytes into an in-memory store, applies this
-    /// changeset's non-derived writes and deletes, re-runs
-    /// [`rdm_core::ops::index::generate_index`] there, and returns **only**
-    /// the derived paths this changeset journaled. Every other index stays at
-    /// its HEAD oid, so an unrelated project's index is never silently
-    /// rewritten by an unrelated session's commit.
-    ///
-    /// A merge cannot interleave with this: a scoped commit performs none.
-    ///
-    /// Deterministic by construction — ordered maps throughout, no timestamps,
-    /// no hash-iteration ordering — so committing the same changeset twice
-    /// against the same HEAD yields the same tree oid.
-    ///
-    /// Ordinary mutations journal no derived paths any more, so the
-    /// `changeset.derived.is_empty()` early return makes this a structural
-    /// no-op for them; the remaining producers are the explicit `rdm index`
-    /// command and the merge/clone reconciliation paths. The derived-path
-    /// class itself is deleted by a later phase of `retire-generated-index`.
-    fn reconcile_derived(
-        &self,
-        repo: &gix::Repository,
-        changeset: &ChangesetScope,
-        head: Option<gix::ObjectId>,
-    ) -> Result<BTreeMap<String, Vec<u8>>> {
-        if changeset.derived.is_empty() {
-            return Ok(BTreeMap::new());
-        }
-        // Non-UTF-8 blobs are skipped when projecting into the in-memory
-        // store (documents are text), but they keep their HEAD oid in the
-        // tree, so nothing is dropped from the commit.
-        let mut files: BTreeMap<String, String> = self
-            .collect_blobs_at(repo, head)?
-            .into_iter()
-            .filter_map(|(path, bytes)| String::from_utf8(bytes).ok().map(|s| (path, s)))
-            .collect();
-
-        for path in changeset.all_writes() {
-            if rdm_core::paths::is_derived_path(path) {
-                continue;
-            }
-            match std::fs::read_to_string(self.root.join(path)) {
-                Ok(content) => {
-                    files.insert(path.clone(), content);
-                }
-                Err(_) => {
-                    files.remove(path);
-                }
-            }
-        }
-        for path in &changeset.deletes {
-            files.remove(path);
-        }
-
-        // `files` is now exactly `HEAD ∪ this changeset's writes − its
-        // deletes`, so "absent from both HEAD and this changeset" reduces to
-        // "absent from `files`". Drop every `projects/<p>/**` subtree whose
-        // `project.md` is missing from that projection: such a parent is owned
-        // by a *third* session that has not committed yet, and without the
-        // drop `list_reviews`/`list_roadmaps`/`list_tasks` raise
-        // `ProjectNotFound` and abort an otherwise-good commit with a
-        // misleading `project not found` for a project the user did just
-        // create.
-        //
-        // The fix point is the SEED, not the output path, and this was traced
-        // against the real code:
-        //
-        //   * `generate_index` is ONE whole-store call, so there is no
-        //     per-path regeneration to skip.
-        //   * "Skip the offending derived path and fall back to its HEAD blob"
-        //     fails twice over: the orphan has no HEAD blob (the owning
-        //     session never committed the project), and the ROOT `INDEX.md`
-        //     is not skipped at all yet still fails, because `list_projects`
-        //     enumerates `projects/*` *directories* — this changeset's own
-        //     write under the orphaned project creates that directory in the
-        //     seeded store.
-        //
-        // The cost is a one-directional divergence (`tree ⊇ index`) that is
-        // never dangling and heals on the owning session's next commit. See
-        // `docs/scoping-model-decision.md` § "INDEX.md Consistency in Partial
-        // Commits".
-        let _deferred = drop_orphaned_project_subtrees(&mut files);
-
-        let seed: Vec<(&str, &str)> = files
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        let mut mem = rdm_core::store::MemoryStore::with_contents(seed);
-        rdm_core::ops::index::generate_index(&mut mem).map_err(|e| {
-            Error::Git(format!(
-                "failed to reconcile the generated indexes against HEAD: {e}"
-            ))
-        })?;
-        mem.commit()?;
-
-        let mut out = BTreeMap::new();
-        for path in &changeset.derived {
-            let Ok(rel) = RelPath::new(path) else {
-                continue;
-            };
-            // This skip is load-bearing, not merely defensive: a
-            // `projects/<p>/INDEX.md` this changeset journaled for a subtree
-            // the seed pruned above was never generated, so it is simply not
-            // produced here. That is what keeps the commit free of an orphan
-            // project index — one whose `project.md` the commit does not also
-            // contain — and leaves the path journaled for the next commit.
-            if let Ok(content) = mem.read(&rel) {
-                out.insert(path.clone(), content.into_bytes());
-            }
-        }
-        Ok(out)
     }
 
     /// Creates a whole-tree git commit with the given message.
@@ -1083,8 +866,8 @@ impl GitRepo {
     ///
     /// # Errors
     ///
-    /// Returns `Error::Git` if the tree cannot be built, the derived indexes
-    /// cannot be reconciled, or HEAD moves twice under the commit.
+    /// Returns `Error::Git` if the tree cannot be built or HEAD moves twice
+    /// under the commit.
     pub(crate) fn git_commit_changeset(
         &self,
         message: &str,
@@ -1199,8 +982,8 @@ impl GitRepo {
         Ok(statuses)
     }
 
-    /// Compares the working directory to HEAD, splitting the result into
-    /// user-authored changes and rdm-generated output.
+    /// Compares the working directory to HEAD, reporting every differing
+    /// path as a change.
     ///
     /// This is the sole entry point for observing working-tree changes from
     /// outside this crate. See [`StatusReport`] for the contract every
@@ -1208,29 +991,25 @@ impl GitRepo {
     /// [`StatusReport::is_clean`], but report counts and listings from
     /// [`StatusReport::user`].
     ///
-    /// Membership of `derived` is decided by
-    /// [`rdm_core::paths::is_derived_path`].
+    /// In the whole-tree view there is nothing to attribute to anyone else,
+    /// so every differing path lands in `user` and the `others` /
+    /// `unattributed` buckets stay empty. Attribution is the scoped
+    /// counterpart's job (`git_status_report_scoped`, crate-internal).
     ///
     /// # Errors
     ///
     /// Returns `Error::Git` if the repository state cannot be read.
     pub fn git_status_report(&self) -> Result<StatusReport> {
-        let (derived, user) = self
-            .git_status_all()?
-            .into_iter()
-            .partition(|fs| rdm_core::paths::is_derived_path(&fs.path));
         Ok(StatusReport {
-            user,
-            derived,
+            user: self.git_status_all()?,
             others: Vec::new(),
             unattributed: Vec::new(),
         })
     }
 
     /// Compares the working directory to HEAD and partitions the result into
-    /// **four** buckets in ONE pass: this changeset's user-authored edits,
-    /// this changeset's regenerated indexes, dirt a real other changeset
-    /// claims, and dirt no changeset claims at all.
+    /// **three** buckets in ONE pass: this changeset's own edits, dirt a real
+    /// other changeset claims, and dirt no changeset claims at all.
     ///
     /// `owned` is exactly the path set the calling session's journal claims.
     /// `all_owned` is the union of every live-or-orphaned changeset's claimed
@@ -1238,10 +1017,9 @@ impl GitRepo {
     /// `all_owned` goes to `others` (a real other changeset owns it); a
     /// non-owned path absent from `all_owned` goes to `unattributed` (no
     /// changeset owns it — a raw write outside rdm, or dirt predating
-    /// session-scoped commits). The changeset filter and the derived filter
-    /// are deliberately not two independent filters over the same list — one
-    /// partition, so the view a user reads and the set a commit lands can
-    /// never drift apart.
+    /// session-scoped commits). It is ONE partition over the status list, so
+    /// the view a user reads and the set a commit lands can never drift
+    /// apart.
     ///
     /// [`StatusReport::is_clean`] still means "nothing at all differs" and
     /// [`StatusReport::all`] still covers everything, so the destructive-action
@@ -1257,17 +1035,12 @@ impl GitRepo {
     ) -> Result<StatusReport> {
         let mut report = StatusReport {
             user: Vec::new(),
-            derived: Vec::new(),
             others: Vec::new(),
             unattributed: Vec::new(),
         };
         for fs in self.git_status_all()? {
             if owned.contains(&fs.path) {
-                if rdm_core::paths::is_derived_path(&fs.path) {
-                    report.derived.push(fs);
-                } else {
-                    report.user.push(fs);
-                }
+                report.user.push(fs);
             } else if all_owned.contains(&fs.path) {
                 report.others.push(fs);
             } else {
@@ -1384,12 +1157,11 @@ impl GitRepo {
     /// a path whose on-disk content has vanished or is not valid UTF-8: the
     /// guard can only refuse a *comparison it can make*, never a missing one.
     ///
-    /// The check applies to **every** path the caller lists, derived ones
-    /// included: since mutations stopped regenerating an index, a derived
-    /// path reaches a changeset only through an explicit `rdm index` (or a
-    /// pull/resolve reconciliation), and nothing regenerates one afterwards
-    /// to paper over a clobber — so it needs the same guard as an authored
-    /// path rather than a blanket exemption.
+    /// The check applies to **every** path the caller lists, with no path
+    /// class exempt. An `INDEX.md` reaches a changeset only through an
+    /// explicit `rdm index` (or a pull/resolve reconciliation), and nothing
+    /// regenerates one afterwards to paper over a clobber — so it needs the
+    /// same guard as any other path.
     ///
     /// Returns `(restored, skipped)` — the paths actually restored (or
     /// removed, for a path this changeset added) and the paths left
@@ -1773,94 +1545,6 @@ mod commit_lock_tests {
              never error or hang — the compare-and-swap is the correctness \
              mechanism, the lock is only an optimization"
         );
-    }
-}
-
-#[cfg(test)]
-mod orphaned_subtree_tests {
-    use super::*;
-
-    fn map(paths: &[&str]) -> BTreeMap<String, String> {
-        paths
-            .iter()
-            .map(|p| ((*p).to_string(), "body".to_string()))
-            .collect()
-    }
-
-    fn keys(files: &BTreeMap<String, String>) -> Vec<String> {
-        files.keys().cloned().collect()
-    }
-
-    #[test]
-    fn drops_a_subtree_with_no_manifest() {
-        let mut files = map(&[
-            "projects/alt/tasks/b.md",
-            "projects/alt/roadmaps/r/roadmap.md",
-        ]);
-        let dropped = drop_orphaned_project_subtrees(&mut files);
-        assert_eq!(dropped, vec!["alt".to_string()]);
-        assert!(keys(&files).is_empty(), "{:?}", keys(&files));
-    }
-
-    #[test]
-    fn keeps_a_project_that_has_its_manifest() {
-        let paths = [
-            "projects/demo/project.md",
-            "projects/demo/INDEX.md",
-            "projects/demo/tasks/a.md",
-        ];
-        let mut files = map(&paths);
-        assert!(drop_orphaned_project_subtrees(&mut files).is_empty());
-        assert_eq!(keys(&files).len(), paths.len());
-    }
-
-    #[test]
-    fn never_touches_paths_outside_projects() {
-        let mut files = map(&["rdm.toml", "INDEX.md", ".gitattributes"]);
-        assert!(drop_orphaned_project_subtrees(&mut files).is_empty());
-        assert_eq!(keys(&files).len(), 3);
-    }
-
-    #[test]
-    fn ignores_a_top_level_file_named_projects_foo() {
-        // Two segments, no subtree: treating this as a project named `foo`
-        // would delete an unrelated file from the seed.
-        let mut files = map(&["projects/foo", "projects/demo/project.md"]);
-        assert!(drop_orphaned_project_subtrees(&mut files).is_empty());
-        assert!(keys(&files).iter().any(|k| k == "projects/foo"));
-    }
-
-    #[test]
-    fn is_a_no_op_on_an_empty_map() {
-        let mut files: BTreeMap<String, String> = BTreeMap::new();
-        assert!(drop_orphaned_project_subtrees(&mut files).is_empty());
-        assert!(files.is_empty());
-    }
-
-    #[test]
-    fn returns_the_dropped_names_sorted() {
-        let mut files = map(&[
-            "projects/zeta/tasks/z.md",
-            "projects/alpha/tasks/a.md",
-            "projects/mid/tasks/m.md",
-            "projects/kept/project.md",
-        ]);
-        let dropped = drop_orphaned_project_subtrees(&mut files);
-        assert_eq!(dropped, vec!["alpha", "mid", "zeta"]);
-        assert_eq!(keys(&files), vec!["projects/kept/project.md"]);
-    }
-
-    #[test]
-    fn project_segment_is_total() {
-        assert_eq!(project_segment("projects/demo/project.md"), Some("demo"));
-        assert_eq!(project_segment("projects/demo/tasks/a.md"), Some("demo"));
-        assert_eq!(project_segment("projects/foo"), None);
-        assert_eq!(project_segment("projects/"), None);
-        assert_eq!(project_segment("projects"), None);
-        assert_eq!(project_segment("projects//a.md"), None);
-        assert_eq!(project_segment("projects/demo/"), None);
-        assert_eq!(project_segment("rdm.toml"), None);
-        assert_eq!(project_segment(""), None);
     }
 }
 

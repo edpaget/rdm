@@ -13,16 +13,18 @@
 #   E  `rdm init --remote` lands its config commit, a legacy repo gains no
 #      rdm-authored dirt and its stale merge-driver config section is swept,
 #      and a server mutation is attributable
-#   F  committed indexes reflect HEAD plus the committing changeset only
+#   F  a commit contains exactly its own changeset's authored paths; an
+#      INDEX.md inherited from the seed is rewritten by neither a mutation's
+#      commit nor its disk write
 #   G  `rdm discard` cannot destroy another session's work, on a disjoint
 #      path (G) or a path both sessions journaled — an overwritten write
 #      (G3) or a recreated delete (G4) is left in place and reported skipped
-#      rather than clobbered; a derived path is not exempt from either half:
-#      the discarding session's own regenerated index is restored (G5) while
-#      one another session overwrote since is skipped and reported (G6)
+#      rather than clobbered; an `rdm index`-produced INDEX.md is an ordinary
+#      path in the discarding session's changeset, so it is restored like any
+#      other (G5) while one another session overwrote since is skipped and
+#      reported (G6)
 #   H  reads stay shared — no read isolation was introduced
-#   I  a commit under a project another session has not landed still lands,
-#      with a coherent index
+#   I  a commit under a project another session has not landed still lands
 #
 # Sections C, D, F, G3/G4, G6 and I carry planted-mutation self-tests proving
 # they can fail.
@@ -88,9 +90,9 @@ seed_repo() {
     _dir=$1
     mkdir -p "$_dir"
     RDM_SESSION=harness-seed "$RDM_BIN" --root "$_dir" init --default-project demo >/dev/null
-    # Mutations no longer regenerate an index, so the seed produces the
-    # generated indexes explicitly. Sections F/G then have a committed derived
-    # blob to prove later mutations and discards never rewrite.
+    # Mutations write no index, so the seed produces the two INDEX.md files
+    # explicitly. Sections F/G then have a committed index blob to prove later
+    # mutations and discards never rewrite.
     RDM_SESSION=harness-seed "$RDM_BIN" --root "$_dir" index >/dev/null
     RDM_SESSION=harness-seed "$RDM_BIN" --root "$_dir" commit \
         -m "seed: init plan repo and project" >/dev/null
@@ -218,7 +220,7 @@ for f in "$TMP/a.prev" "$TMP/a.head"; do
         esac
     done <"$f"
 done
-ok "each commit contains only its own task file, and nothing derived"
+ok "each commit contains only its own task file, and nothing else"
 
 [ -z "$(git -C "$REPO_A" status --porcelain)" ] ||
     fail "tree still dirty after both sessions committed: $(git -C "$REPO_A" status --porcelain)"
@@ -621,13 +623,14 @@ commit_files "$REPO_F" >"$TMP/f.tree2"
     fail "B's commit is not exactly its own roadmap.md: $(tr '\n' ' ' <"$TMP/f.tree2")"
 ok "B's later commit contains exactly its own authored path"
 
-# The derived blob HEAD inherited from the seed is untouched throughout: no
-# mutation rewrote a derived path in the commit OR on disk.
+# The INDEX.md blob HEAD inherited from the seed is untouched throughout: a
+# mutation writes no index, so the seeded blob must survive both commits
+# byte-identically, in the tree AND on disk.
 [ "$(git -C "$REPO_F" show "HEAD:projects/demo/INDEX.md" | cksum)" = "$SEED_INDEX_F" ] ||
-    fail "a mutation's commit rewrote the inherited derived index"
+    fail "a mutation's commit rewrote the inherited projects/demo/INDEX.md"
 [ "$(cksum <"$REPO_F/projects/demo/INDEX.md")" = "$SEED_INDEX_F" ] ||
-    fail "a mutation rewrote the derived index on disk"
-ok "the committed and on-disk derived index are byte-identical to the seed blob"
+    fail "a mutation rewrote projects/demo/INDEX.md on disk"
+ok "the committed and on-disk projects/demo/INDEX.md are byte-identical to the seed blob"
 
 [ -z "$(git -C "$REPO_F" status --porcelain)" ] ||
     fail "tree still dirty after both sessions committed: $(git -C "$REPO_F" status --porcelain)"
@@ -678,10 +681,10 @@ grep -q "kept-map" "$REPO_G/.git/rdm/changesets/sess-g-b.jsonl" ||
     fail "B's journal no longer claims its file"
 ok "B's journal still lists its file"
 [ "$(cksum <"$REPO_G/projects/demo/INDEX.md")" = "$G_INDEX_BEFORE" ] ||
-    fail "the discard rewrote a derived path it never authored"
+    fail "the discard rewrote projects/demo/INDEX.md, a path it never authored"
 git -C "$REPO_G" status --porcelain | grep -q "INDEX.md" &&
-    fail "the discard left a derived index dirty: $(git -C "$REPO_G" status --porcelain)"
-ok "the discard left the generated index byte-identical and clean"
+    fail "the discard left projects/demo/INDEX.md dirty: $(git -C "$REPO_G" status --porcelain)"
+ok "the discard left projects/demo/INDEX.md byte-identical and clean"
 
 RDM_SESSION=sess-g-b "$RDM_BIN" --root "$REPO_G" commit -m "add kept-map" >"$TMP/g.commit" 2>&1 ||
     fail "B could not commit after A's discard: $(cat "$TMP/g.commit")"
@@ -706,13 +709,13 @@ grep -q "sess-g2-b" "$TMP/g2.err" ||
 ok "--all destroys other sessions' work and names them first"
 
 # --- G5: the discarding session regenerated the index ITSELF ---------------
-# G above proves a discard leaves a derived path it never authored alone.
-# That is only half the contract: since mutations stopped regenerating an
-# index, the one way a changeset holds a derived path is an explicit
-# `rdm index` — the workflow the CHANGELOG points users at. Such a path IS
-# this session's uncommitted work, and the discard must revert it. Skipping
-# it while still retiring its journal claim would strand the file on disk
-# holding the reverted mutation's content, attributed to nobody.
+# G above proves a discard leaves an INDEX.md it never authored alone. That is
+# only half the contract: the one way a changeset holds an INDEX.md is an
+# explicit `rdm index`, and such a path IS this session's own uncommitted
+# work — rdm has no generated-path class exempting it. The discard must
+# revert it like any other claimed path. Skipping it while still retiring its
+# journal claim would strand the file on disk holding the reverted mutation's
+# content, attributed to nobody.
 say "Section G5: a discard reverts the index the discarding session regenerated itself"
 
 REPO_G5="$TMP/repo-g5"
@@ -729,7 +732,7 @@ grep -q "doomed-map" "$G5_INDEX" ||
     fail "fixture: the explicit regeneration did not fold the mutation into the index, G5 is vacuous"
 [ "$(cksum <"$G5_INDEX")" != "$G5_COMMITTED" ] ||
     fail "fixture: the index is unchanged after regeneration, G5 is vacuous"
-ok "A's own changeset now holds both an authored path and a derived one"
+ok "A's own changeset now holds a roadmap and the two INDEX.md files it wrote"
 
 RDM_SESSION=sess-g5-a "$RDM_BIN" --root "$REPO_G5" discard --force \
     >"$TMP/g5.out" 2>&1 || fail "A's discard failed: $(cat "$TMP/g5.out")"
@@ -744,12 +747,16 @@ ok "the index A regenerated is back at its committed content"
     fail "the discard stranded dirt: $(git -C "$REPO_G5" status --porcelain)"
 ok "the tree is clean — nothing orphaned"
 
-# The summary must not claim it regenerated anything: it restored them.
+# One count over every restored path — the roadmap plus the two INDEX.md
+# files. The two negatives are standing guards that the retired
+# generated/regenerated wording never comes back.
 grep -q "regenerated index file" "$TMP/g5.out" &&
     fail "the discard claimed it regenerated an index it merely restored: $(cat "$TMP/g5.out")"
-grep -q "Discarded 1 file(s) (plus 2 generated index file(s))." "$TMP/g5.out" ||
-    fail "the discard did not count the indexes it restored: $(cat "$TMP/g5.out")"
-ok "the discard reports the restored indexes honestly, split from the authored count"
+grep -q "generated index file" "$TMP/g5.out" &&
+    fail "the discard reported a retired generated-index count: $(cat "$TMP/g5.out")"
+grep -q "Discarded 3 file(s)." "$TMP/g5.out" ||
+    fail "the discard did not count every path it restored: $(cat "$TMP/g5.out")"
+ok "the discard counts every restored path once, with no path class"
 
 RDM_SESSION=sess-g5-a "$RDM_BIN" --root "$REPO_G5" status >"$TMP/g5.status" 2>&1 ||
     fail "status failed after the discard: $(cat "$TMP/g5.status")"
@@ -757,16 +764,16 @@ grep -q "not attributed" "$TMP/g5.status" &&
     fail "the discard left unattributed dirt behind: $(cat "$TMP/g5.status")"
 ok "no unattributed dirt is left needing a manual --all"
 
-# --- G6: another session overwrote the derived path this one journaled ------
-# G5's sibling, and the other half of extending the discard's digest guard to
-# derived paths. G5 proves a session's OWN regenerated index is restored;
-# this proves the guard is not blind on the way in. Two sessions each run an
-# explicit `rdm index`, so both journal a write to the SAME derived path with
-# different content. A's discard must apply the same digest check it applies
-# to an authored path (G3) and leave B's bytes alone: with per-mutation
-# regeneration gone there is no downstream regeneration left to paper over a
-# clobber, so a silent overwrite here would simply destroy B's work.
-say "Section G6: discard leaves a derived path another session overwrote since"
+# --- G6: another session overwrote the INDEX.md this one journaled ---------
+# G5's sibling. An INDEX.md is an ordinary claimed path, so the same digest
+# guard applies to it: G5 proves a session's own regenerated index is
+# restored, and this proves the guard is not blind on the way in. Two
+# sessions each run an explicit `rdm index`, so both journal a write to the
+# SAME path with different content. A's discard must apply the same digest
+# check it applies to an authored path (G3) and leave B's bytes alone;
+# nothing regenerates an index afterwards to paper over a clobber, so a
+# silent overwrite here would simply destroy B's work.
+say "Section G6: discard leaves an INDEX.md another session overwrote since"
 
 REPO_G6="$TMP/repo-g6"
 seed_repo "$REPO_G6"
@@ -789,15 +796,15 @@ grep -q "b-map" "$G6_INDEX" ||
 RDM_SESSION=sess-g6-a "$RDM_BIN" --root "$REPO_G6" session journal \
     >"$TMP/g6.journal" 2>&1 || fail "could not read A's journal: $(cat "$TMP/g6.journal")"
 grep -q "projects/demo/INDEX.md" "$TMP/g6.journal" ||
-    fail "fixture: A never journaled the derived path, section G6 is vacuous: $(cat "$TMP/g6.journal")"
-ok "both sessions journaled the same derived path; B's bytes are on disk"
+    fail "fixture: A never journaled projects/demo/INDEX.md, section G6 is vacuous: $(cat "$TMP/g6.journal")"
+ok "both sessions journaled projects/demo/INDEX.md; B's bytes are on disk"
 G6_BEFORE=$(cksum <"$G6_INDEX")
 
 RDM_SESSION=sess-g6-a "$RDM_BIN" --root "$REPO_G6" discard --force \
     >"$TMP/g6.out" 2>&1 || fail "A's discard failed: $(cat "$TMP/g6.out")"
 
 [ "$(cksum <"$G6_INDEX")" = "$G6_BEFORE" ] ||
-    fail "A's discard clobbered the derived path B overwrote since"
+    fail "A's discard clobbered projects/demo/INDEX.md, which B overwrote since"
 grep -q "b-map" "$G6_INDEX" ||
     fail "A's discard destroyed B's row in the shared index"
 ok "B's regenerated index survives A's discard, byte-identical"
@@ -809,21 +816,38 @@ ok "A's own authored path is still discarded — the skip is per-path, not all-o
 grep -q "skipped" "$TMP/g6.out" ||
     fail "A's discard did not report a skipped path: $(cat "$TMP/g6.out")"
 grep -q "INDEX.md" "$TMP/g6.out" ||
-    fail "A's discard did not name the skipped derived path: $(cat "$TMP/g6.out")"
-ok "A's discard reports the skipped derived path by name"
+    fail "A's discard did not name the skipped INDEX.md: $(cat "$TMP/g6.out")"
+ok "A's discard reports the skipped INDEX.md by name"
 
+# B's commit lands the exact bytes B wrote. That used to mean something
+# narrower: the commit regenerated the index in memory from HEAD plus B's own
+# changeset, so a row for a-map — a roadmap in neither — was reconciled away,
+# and this asserted its absence. Nothing reconciles now, so B commits the file
+# B produced, a-map row and all: B ran `rdm index` while a-map was still on
+# disk, and A discarded it afterwards. A stale row is the honest consequence
+# of an index being an ordinary tracked file rdm no longer maintains — the
+# same staleness `rdm index` has had since mutations stopped regenerating.
+# Re-running `rdm index` is the fix, and phases 5/6 retire the file outright.
 RDM_SESSION=sess-g6-b "$RDM_BIN" --root "$REPO_G6" commit -m "land B" \
     >"$TMP/g6.commit" 2>&1 || fail "B could not commit after A's discard: $(cat "$TMP/g6.commit")"
-git -C "$REPO_G6" show "HEAD:projects/demo/INDEX.md" | grep -q "b-map" ||
-    fail "B's commit did not land B's index content"
-git -C "$REPO_G6" show "HEAD:projects/demo/INDEX.md" | grep -q "a-map" &&
-    fail "B's commit landed a row for the roadmap A discarded"
-ok "B's commit still lands B's content, and only B's"
+git -C "$REPO_G6" show "HEAD:projects/demo/INDEX.md" >"$TMP/g6.committed"
+grep -q "b-map" "$TMP/g6.committed" ||
+    fail "B's commit did not land B's index content: $(cat "$TMP/g6.committed")"
+[ "$(cksum <"$TMP/g6.committed")" = "$(cksum <"$G6_INDEX")" ] ||
+    fail "B's commit did not land the exact bytes on disk: $(cat "$TMP/g6.committed")"
+ok "B's commit lands exactly the index bytes B wrote, byte-identical to disk"
+
+# And B's commit is still scoped: it carries B's own paths and never A's
+# discarded roadmap file, which is the safety property this section exists for.
+commit_files "$REPO_G6" >"$TMP/g6.tree"
+assert_absent "$TMP/g6.tree" "projects/demo/roadmaps/a-map/roadmap.md" \
+    "B's commit swept up the roadmap A discarded"
+ok "B's commit carries none of A's discarded work"
 
 # Self-test: the same unconditional restore-to-HEAD stand-in G3/G4 use. If the
-# guard did not cover derived paths, A's discard would take this shape on
-# INDEX.md — so the stand-in must visibly destroy B's row, proving the
-# byte-identity assertion above is capable of failing.
+# guard did not cover INDEX.md, A's discard would take this shape on it — so
+# the stand-in must visibly destroy B's row, proving the byte-identity
+# assertion above is capable of failing.
 REPO_G6S="$TMP/repo-g6-selftest"
 seed_repo "$REPO_G6S"
 G6S_INDEX="$REPO_G6S/projects/demo/INDEX.md"
@@ -912,7 +936,7 @@ ok "A's discard reports the recreated path by name"
 # unconditional restore-to-HEAD, with no per-path content check) and stands
 # in for the pre-fix scoped behavior on this ONE shared path, the same way
 # section F's self-test uses `commit --all` as a stand-in for a disk-sourced
-# derived blob.
+# disk-sourced index blob.
 REPO_G3S="$TMP/repo-g3-selftest"
 seed_repo "$REPO_G3S"
 RDM_SESSION=sess-g3s-a "$RDM_BIN" --root "$REPO_G3S" task create shared \
@@ -971,6 +995,21 @@ ok "rdm search crosses the session boundary — no read isolation was introduced
 # ---------------------------------------------------------------------------
 # Section I — a commit under a project another session has not landed
 # ---------------------------------------------------------------------------
+#
+# This section was written to gate a seed-side orphan-subtree prune: index
+# generation used to run INSIDE the commit, so B's commit read a project whose
+# `project.md` was in neither HEAD nor B's own changeset and aborted with a
+# misleading `project not found`. The prune dropped such a subtree out of the
+# projection, at the cost of a one-directional `tree ⊇ index` divergence.
+#
+# Nothing regenerates at commit time now, so the hazard is STRUCTURALLY
+# ABSENT rather than pruned: a commit reads no project, so there is no project
+# for it to fail to find, and no index for a divergence to open up in. The
+# section is kept rather than deleted because it now proves the stronger and
+# simpler property directly — B's commit carries exactly B's own authored
+# path, A's manifest is untouched, no orphan project index appears, and the
+# tree converges once A commits — and because deleting it would silently drop
+# that convergence coverage.
 say "Section I: B commits under a project A created but never committed"
 
 REPO_I="$TMP/repo-i"
@@ -1018,8 +1057,8 @@ if grep -q 'projects/alt/INDEX.md' "$TMP/i.index"; then
 fi
 ok "B's commit adds no project-index row for a project it does not contain"
 
-# A's later commit lands exactly its own manifest — no derived path enters
-# either commit, because neither session authored one.
+# A's later commit lands exactly its own manifest. No INDEX.md enters either
+# commit, because neither session wrote one — not because a prune removed it.
 RDM_SESSION=sess-i-a "$RDM_BIN" --root "$REPO_I" commit -m "land alt" >"$TMP/i.heal.out" 2>&1 ||
     fail "A could not commit afterwards: $(cat "$TMP/i.heal.out")"
 
@@ -1036,7 +1075,7 @@ assert_no_dangling_links "$TMP/i.index2" "$TMP/i.tree2"
 assert_no_orphan_project_index "$TMP/i.tree2"
 [ -z "$(git -C "$REPO_I" status --porcelain)" ] ||
     fail "the tree did not converge after both sessions committed: $(git -C "$REPO_I" status --porcelain)"
-ok "neither commit adds a derived index, and the tree converges"
+ok "neither commit adds an INDEX.md, and the tree converges"
 
 # Self-test arm 1: a planted dangling row must be caught. Run in a subshell,
 # because `fail` exits.

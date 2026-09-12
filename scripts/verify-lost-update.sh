@@ -282,9 +282,26 @@ if grep -q 'phase-9-content-checked-deletes' "$DELETE_LOOP_SRC"; then
 fi
 grep -q "Error::$DELETE_VARIANT" "$DELETE_LOOP_SRC" ||
     fail "the delete loop in rdm-store-git/src/commit.rs must raise Error::$DELETE_VARIANT"
-grep -q 'is_derived_path(path) && self.root.join(path).exists()' "$DELETE_LOOP_SRC" ||
-    fail "the delete loop must be a working-tree presence check exempting derived paths"
-ok "the delete loop carries the guard and exempts derived indexes"
+grep -q 'self.root.join(path).exists()' "$DELETE_LOOP_SRC" ||
+    fail "the delete loop must be a working-tree presence check"
+ok "the delete loop carries the guard as a working-tree presence check"
+
+# The derived-path exemption WAS a named carve-out of this record too. Phase 4
+# of `retire-generated-index` deleted the class outright, so — exactly as with
+# the deletes carve-out above — this asserts the INVERSE of what it used to:
+# the live heading must be gone, the record must name the phase that closed it,
+# and no exempting call may survive in the delete loop.
+DERIVED_CARVEOUT='^\*\*Derived indexes are exempt\.\*\*'
+if grep -qE "$DERIVED_CARVEOUT" "$DOC"; then
+    fail "the derived-index carve-out is closed — **Derived indexes are \
+exempt.** must no longer stand as a live heading in the record"
+fi
+grep -q 'phase-4-collapse-derived-path-class' "$DOC" ||
+    fail "the record must name the phase that closed the derived-index carve-out"
+if grep -q 'is_derived_path' "$DELETE_LOOP_SRC"; then
+    fail "the delete loop still calls is_derived_path, which no longer exists"
+fi
+ok "the derived-index carve-out is recorded as closed, with no exemption left in the loop"
 
 # `ChangesetScope::digests`' rustdoc must no longer imply that a path absent
 # from the map is committed unchecked: that fail-open answer is write-scoped
@@ -319,7 +336,22 @@ fi
 } >"$TMP/doc-carveout-mutant.md"
 grep -qE "$DELETE_CARVEOUT" "$TMP/doc-carveout-mutant.md" ||
     fail "self-test: the carve-out predicate cannot see the heading it is supposed to forbid"
-rm -f "$TMP/doc-mutant.md" "$TMP/commit-mutant.rs" "$TMP/doc-carveout-mutant.md"
+
+# Same, for the derived-index carve-out: a copy that DOES carry the live
+# heading must be observed by the predicate that forbids it.
+{
+    cat "$DOC"
+    printf '\n%s\n' '**Derived indexes are exempt.** (planted)'
+} >"$TMP/doc-derived-mutant.md"
+grep -qE "$DERIVED_CARVEOUT" "$TMP/doc-derived-mutant.md" ||
+    fail "self-test: the derived carve-out predicate cannot see the heading it is supposed to forbid"
+# ...and it must NOT fire on the real record, which names the closed carve-out
+# only in past tense.
+grep -qE "$DERIVED_CARVEOUT" "$DOC" &&
+    fail "self-test: the derived carve-out predicate fires on the real record"
+
+rm -f "$TMP/doc-mutant.md" "$TMP/commit-mutant.rs" "$TMP/doc-carveout-mutant.md" \
+    "$TMP/doc-derived-mutant.md"
 ok "self-test: each inverted check discriminates in both directions"
 
 # Self-test: the section must go red when the record is absent.
@@ -369,11 +401,18 @@ mkdir -p "$MUT"
     fail "could not export a scratch source tree (is this a git checkout?)"
 
 # The phase's own uncommitted work is what we are testing, so overlay the
-# working-tree copies of the files that carry it.
+# working-tree copies of the files that carry it. Keep this list in step with
+# the working tree: a file left out that a listed one depends on makes the
+# mutant fail to BUILD, which reports as an inconclusive self-test rather than
+# as the lost update the arm is looking for. `status.rs`, `ops/index.rs` and
+# `rdm-mcp/src/server.rs` are here because they consume API this phase's
+# `paths.rs` / `StatusReport` changes altered.
 for f in rdm-store-fs/src/lib.rs rdm-core/src/store/mod.rs rdm-core/src/error.rs \
     rdm-core/src/paths.rs rdm-core/src/lock.rs rdm-core/src/lib.rs \
     rdm-core/src/session/journal.rs rdm-core/src/session/mod.rs \
-    rdm-cli/src/commands/session.rs rdm-store-git/src/lib.rs \
+    rdm-cli/src/commands/session.rs rdm-cli/src/commands/status.rs \
+    rdm-core/src/ops/index.rs rdm-mcp/src/server.rs \
+    rdm-store-git/src/lib.rs \
     rdm-store-git/src/commit.rs rdm-store-git/src/repo.rs \
     rdm-store-git/src/remote.rs rdm-server/src/problem.rs; do
     [ -f "$REPO_ROOT/$f" ] || fail "expected source file missing: $f"
@@ -724,7 +763,9 @@ mkdir -p "$MUT2"
 for f in rdm-store-fs/src/lib.rs rdm-core/src/store/mod.rs rdm-core/src/error.rs \
     rdm-core/src/paths.rs rdm-core/src/lock.rs rdm-core/src/lib.rs \
     rdm-core/src/session/journal.rs rdm-core/src/session/mod.rs \
-    rdm-cli/src/commands/session.rs rdm-store-git/src/lib.rs \
+    rdm-cli/src/commands/session.rs rdm-cli/src/commands/status.rs \
+    rdm-core/src/ops/index.rs rdm-mcp/src/server.rs \
+    rdm-store-git/src/lib.rs \
     rdm-store-git/src/commit.rs rdm-store-git/src/repo.rs \
     rdm-store-git/src/remote.rs rdm-server/src/problem.rs; do
     [ -f "$REPO_ROOT/$f" ] || fail "expected source file missing: $f"

@@ -216,12 +216,12 @@ consults HEAD. A HEAD basis was considered and rejected outright: it conflates
 uncommitted batch", and would therefore falsely refuse the stage-then-`rdm
 commit` batching workflow rdm prescribes.
 
-**Derived indexes are exempt**, exactly as they are in the write loop
-(`rdm_core::paths::is_derived_path`). A journaled delete of a derived path is
-routed into `ChangesetScope::deletes` by `commit_changeset_id`, and every
-mutation regenerates those files, so an index this changeset deleted is
-legitimately present again. Their commit-time correctness stays
-`reconcile_derived`'s.
+**No path is exempt.** *(An `INDEX.md` exemption here was closed by
+`retire-generated-index/phase-4-collapse-derived-path-class` — see the
+Carve-outs section below.)* A journaled delete of any path, `INDEX.md`
+included, is routed into `ChangesetScope::deletes` by `commit_changeset_id`
+and gets the same presence check, because nothing regenerates an index
+afterwards to make its reappearance legitimate.
 
 **Where the refusal lives.** `Error::ChangesetDeletePathRecreated { item, path }`
 is defined in `rdm-core/src/error.rs`, raised from the delete loop of
@@ -256,23 +256,30 @@ outside rdm.
 
 These are deliberate gaps, named so they are not mistaken for coverage.
 
-**Derived indexes are exempt.** `INDEX.md` and `projects/<p>/INDEX.md`
-(`rdm_core::paths::is_derived_path`) are regenerated from disk by every
-mutation via `ops::mutate`, so two concurrent sessions legitimately rewrite
-them. Without this exemption every concurrent mutation would falsely trip.
-Their commit-time correctness is already owned by phase 5's `reconcile_derived`,
-which builds them in memory as HEAD-plus-this-changeset rather than reading the
-shared on-disk copy. Since phase 8, a derived index whose parent project is
-owned by an *uncommitted third session* is deferred rather than failing the
-commit: the orphaned subtree is dropped from the generation seed and its rows
-return on the owning session's next commit — see
-`docs/scoping-model-decision.md` § "INDEX.md Consistency in Partial Commits".
+**No derived-path exemption remains — closed.** *(Closed by
+`retire-generated-index/phase-4-collapse-derived-path-class`.)* This carve-out
+named `INDEX.md` and `projects/<p>/INDEX.md` as exempt from the guard.
+Historically they were regenerated from disk by every mutation via
+`ops::mutate`, so two concurrent sessions legitimately rewrote them and
+without the exemption every concurrent mutation would have falsely tripped;
+their commit-time correctness was owned instead by phase 5's
+`reconcile_derived`, which built them in memory as HEAD-plus-this-changeset,
+with phase 8 deferring one whose parent project belonged to an uncommitted
+third session.
 
-*Historical note:* this exemption becomes moot once INDEX.md generation is
-removed from the write path entirely — see
-[`docs/index-removal.md`](index-removal.md). The carve-out above is preserved
-as an accurate record of why it existed and how `reconcile_derived` worked
-while INDEX.md was still generated on every mutation.
+None of that machinery exists any more. Phase 2 of `retire-generated-index`
+cut index generation out of the mutation transaction, emptying the class;
+phase 4 deleted `rdm_core::paths::is_derived_path`, `ChangesetScope::derived`,
+`reconcile_derived` and the orphaned-subtree prune outright, and with them the
+exemption in `verify_baselines`. An `INDEX.md` is now an ordinary path: it is
+checked exactly like an authored document at flush time and at commit time,
+and the one-directional `tree ⊇ index` divergence the deferral bought has
+ceased to exist rather than being maintained — there is no index for a commit
+to diverge from. The historical account above is kept as the record of why
+the exemption existed while it did; see
+[`docs/index-removal.md`](index-removal.md) and
+`docs/scoping-model-decision.md` § "INDEX.md Consistency in Partial Commits",
+which is likewise marked historical.
 
 **No store-bypassing writer remains — closed.** *(Closed by
 `retire-generated-index/phase-3-retire-merge-driver`.)* This carve-out named
