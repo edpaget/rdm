@@ -55,7 +55,7 @@
 //!
 //! `gen-skill-review.sh --target shipped|local` (default `shipped`) selects the
 //! consumer set: `shipped` renders `rdm-core/src/templates/skill-{review,
-//! plan-review}-{cli,mcp}.md`; `local` renders this repo's own dogfood copies,
+//! plan-review}-cli.md`; `local` renders this repo's own dogfood copies,
 //! `.claude/skills/{rdm-review,rdm-plan-review}/SKILL.md`. A THIRD, innermost
 //! marker pair nested inside `review-spec` — `find-refute-verdict` and its
 //! sibling `find-refute-verdict:local-code-override` — lets `--target local

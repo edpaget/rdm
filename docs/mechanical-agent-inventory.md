@@ -101,8 +101,11 @@ they are re-synced by `cp`, and `scripts/verify-agent-config-distribution.sh` pl
 > `*-mcp.md` templates; only the `-cli.md` templates ship now. Every MCP row and
 > `*-mcp.md` reference below is retained VERBATIM as historical record of what
 > was measured at the time — do not read it as describing a surface that still
-> exists, and do not restate its figures as current. (The `rdm mcp` server
-> subcommand and the `rdm-mcp` crate are unaffected.)
+> exists, and do not restate its figures as current. (At the time this note was
+> written, the `rdm mcp` server subcommand and the `rdm-mcp` crate were
+> unaffected; a later phase of this same roadmap subsequently deleted both —
+> see `retire-mcp/phase-2-crate-and-subcommand` and the CHANGELOG's "the `rdm mcp`
+> command and the in-process MCP server are gone" entry.)
 
 Only **three** skills are Workflow-invoking shims on the *distribution* surface. The other five
 are shims **only** in this repo's local `.claude/skills/` dogfood copies; their distributed
