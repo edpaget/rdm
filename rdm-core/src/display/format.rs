@@ -1892,4 +1892,42 @@ mod tests {
         assert_eq!(format_review_list(&[]), "No reviews found.\n");
         assert_eq!(format_review_list_md(&[]), "No reviews found.\n");
     }
+
+    #[test]
+    fn link_check_report_lists_diagnostics_distinctly() {
+        use crate::json::{LinkCheckReportJson, LinkDiagnosticJson};
+        use crate::link::DocRef;
+
+        let report = LinkCheckReportJson {
+            on: None,
+            links_checked: 1,
+            code_links_checked: 0,
+            dangling: Vec::new(),
+            diagnostics: vec![LinkDiagnosticJson {
+                document: DocRef::Task {
+                    slug: "malformed".to_string(),
+                },
+                range_start: 5,
+                range_end: 20,
+                uri: "rdm:foo/bar".to_string(),
+                error: "unrecognized link kind 'foo' in 'rdm:foo/bar'".to_string(),
+            }],
+            missing_at_rev: Vec::new(),
+            path_verification_skipped: None,
+        };
+
+        let out = format_link_check_report(&report);
+        assert!(out.contains("task/malformed"), "{out}");
+        assert!(out.contains("rdm:foo/bar"), "{out}");
+        assert!(
+            out.contains("unrecognized link kind"),
+            "expected the diagnostic's error text to appear: {out}"
+        );
+        assert!(out.contains("parse error"), "{out}");
+        assert!(out.contains("1 problem(s) found"), "{out}");
+        // A pure-diagnostic report never mentions dangling/missing-at-rev
+        // labels — the diagnostic is the only broken finding.
+        assert!(!out.contains("dangling link in"), "{out}");
+        assert!(!out.contains("missing at rev in"), "{out}");
+    }
 }

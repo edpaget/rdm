@@ -1276,4 +1276,49 @@ mod tests {
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["project"], "rdm");
     }
+
+    #[test]
+    fn link_check_report_to_json_maps_diagnostics_distinctly_from_dangling() {
+        use crate::link::LinkParseError;
+        use crate::ops::links::{CheckDiagnostic, LinkCheckReport};
+
+        let report = LinkCheckReport {
+            links_checked: 0,
+            dangling: Vec::new(),
+            code_links: Vec::new(),
+            diagnostics: vec![CheckDiagnostic {
+                document: DocRef::Task {
+                    slug: "malformed".to_string(),
+                },
+                diagnostic: crate::link::LinkDiagnostic {
+                    range: 5..20,
+                    uri: "rdm:foo/bar".to_string(),
+                    error: LinkParseError::UnknownKind {
+                        uri: "rdm:foo/bar".to_string(),
+                        kind: "foo".to_string(),
+                    },
+                },
+            }],
+            missing_at_rev: Vec::new(),
+            path_verification_skipped: None,
+        };
+
+        let json = link_check_report_to_json(&report, None);
+        assert_eq!(json.diagnostics.len(), 1);
+        assert!(json.dangling.is_empty());
+        assert!(json.missing_at_rev.is_empty());
+        let diag = &json.diagnostics[0];
+        assert_eq!(diag.uri, "rdm:foo/bar");
+        assert_eq!(diag.range_start, 5);
+        assert_eq!(diag.range_end, 20);
+        assert!(
+            !diag.error.is_empty(),
+            "diagnostic error message must not be empty"
+        );
+
+        let v = serde_json::to_value(&json).unwrap();
+        assert_eq!(v["diagnostics"][0]["uri"], "rdm:foo/bar");
+        assert_eq!(v["dangling"], serde_json::json!([]));
+        assert_eq!(v["missing_at_rev"], serde_json::json!([]));
+    }
 }

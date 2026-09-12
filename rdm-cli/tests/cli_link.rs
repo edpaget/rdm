@@ -108,6 +108,58 @@ fn check_reports_dangling_link_with_source_document_link_text_and_target() {
         .stdout(predicate::str::contains("task/does-not-exist"));
 }
 
+// --- `link check` reports malformed `rdm:` destinations as diagnostics,
+// distinct from dangling item links and missing-at-rev findings, and the
+// diagnostic alone drives a nonzero exit in both text and JSON output ---
+
+#[test]
+fn check_reports_parse_diagnostic_distinct_from_dangling_and_missing_at_rev() {
+    let plan = init_plan_repo();
+    create_task(
+        plan.path(),
+        "malformed",
+        "Malformed",
+        "See [bad](rdm:foo/bar) for background.",
+    );
+
+    // Run outside any git checkout so path verification is skipped and the
+    // exit code depends purely on the parse diagnostic.
+    let nongit = TempDir::new().unwrap();
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(nongit.path())
+        .args(["link", "check", "--project", "demo"])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains("task/malformed"))
+        .stdout(predicate::str::contains("rdm:foo/bar"))
+        .stdout(predicate::str::contains("parse error"));
+
+    let json = json_stdout(
+        rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .current_dir(nongit.path())
+            .args(["link", "check", "--project", "demo", "--format", "json"]),
+    );
+    let diagnostics = json["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 1, "expected one diagnostic: {json}");
+    assert_eq!(diagnostics[0]["uri"], "rdm:foo/bar");
+    assert!(
+        diagnostics[0]["error"]
+            .as_str()
+            .is_some_and(|s| !s.is_empty()),
+        "expected a non-empty parse error message: {json}"
+    );
+    // No dangling item link and nothing missing at rev — the diagnostic is
+    // the sole broken finding.
+    assert_eq!(json["dangling"], serde_json::json!([]));
+    assert_eq!(json["missing_at_rev"], serde_json::json!([]));
+}
+
 // --- AC2: `--on` scopes to one document; clean documents exit 0 ---
 
 #[test]
