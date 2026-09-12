@@ -28,6 +28,11 @@ use crate::{AppStore, LinkCommand, OutputFormat};
 /// full URL parse: it deliberately does not reconcile scheme differences
 /// (`git@host:org/repo.git` vs `https://host/org/repo`), so those still
 /// compare unequal.
+///
+/// Feature-gated with its only caller, [`repo_matches_source`]: without the
+/// `git` feature there is no checkout to compare against, so this would
+/// otherwise be dead code under `-D warnings`.
+#[cfg(feature = "git")]
 fn normalize_repo_locator(locator: &str) -> String {
     locator
         .trim_end_matches('/')
@@ -307,4 +312,96 @@ fn item_path_for(store: &AppStore, project: &str, link: &Link) -> Result<Option<
     let path = rdm_core::ops::links::item_ref_path(store, project, target)
         .context("failed to resolve item link path")?;
     Ok(Some(path.as_str().to_string()))
+}
+
+#[cfg(all(test, feature = "git"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_repo_locator_trims_trailing_slash_then_dot_git() {
+        assert_eq!(
+            normalize_repo_locator("https://example.com/org/repo.git/"),
+            "https://example.com/org/repo"
+        );
+        assert_eq!(
+            normalize_repo_locator("https://example.com/org/repo.git"),
+            "https://example.com/org/repo"
+        );
+        assert_eq!(
+            normalize_repo_locator("https://example.com/org/repo/"),
+            "https://example.com/org/repo"
+        );
+        assert_eq!(
+            normalize_repo_locator("https://example.com/org/repo"),
+            "https://example.com/org/repo"
+        );
+    }
+
+    #[test]
+    fn normalize_repo_locator_does_not_reconcile_scheme_differences() {
+        // Deliberately not a full URL parse: an SSH-style locator and an
+        // HTTPS locator for the same underlying repo still compare unequal.
+        assert_ne!(
+            normalize_repo_locator("git@example.com:org/repo.git"),
+            normalize_repo_locator("https://example.com/org/repo")
+        );
+    }
+
+    #[test]
+    fn repo_matches_source_compares_url_form_via_origin_remote() {
+        let repo = TempDirGuard::new_git_repo();
+        rdm_git::run_git_at(
+            repo.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.com/org/repo.git",
+            ],
+        )
+        .unwrap();
+
+        assert!(repo_matches_source(
+            repo.path(),
+            "https://example.com/org/repo"
+        ));
+        assert!(repo_matches_source(
+            repo.path(),
+            "https://example.com/org/repo.git/"
+        ));
+        assert!(!repo_matches_source(
+            repo.path(),
+            "https://example.com/org/other-repo"
+        ));
+    }
+
+    #[test]
+    fn repo_matches_source_false_when_origin_remote_unset() {
+        let repo = TempDirGuard::new_git_repo();
+        assert!(!repo_matches_source(
+            repo.path(),
+            "https://example.com/org/repo"
+        ));
+    }
+
+    /// Minimal throwaway git checkout for these unit tests — the CLI
+    /// integration tests in `cli_link.rs` cover the full `link check`
+    /// path-verification behavior end to end; these cover just the two
+    /// small pure/near-pure comparison helpers directly.
+    struct TempDirGuard(tempfile::TempDir);
+
+    impl TempDirGuard {
+        fn new_git_repo() -> Self {
+            let dir = tempfile::TempDir::new().unwrap();
+            rdm_git::run_git_at(dir.path(), &["init", "-q", "-b", "main"]).unwrap();
+            rdm_git::run_git_at(dir.path(), &["config", "user.email", "test@test.com"]).unwrap();
+            rdm_git::run_git_at(dir.path(), &["config", "user.name", "test"]).unwrap();
+            Self(dir)
+        }
+
+        fn path(&self) -> &std::path::Path {
+            self.0.path()
+        }
+    }
 }

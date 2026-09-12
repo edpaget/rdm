@@ -688,3 +688,118 @@ fn check_outside_checkout_skips_path_verification_and_exit_depends_on_dangling_o
         .assert()
         .success();
 }
+
+// --- URL-form `source.repo`: `repo_matches_source` compares the checkout's
+// `origin` remote, normalized, rather than a canonicalized filesystem path
+// (see `check_inside_checkout_reports_missing_at_rev_distinct_from_dangling`
+// for the filesystem-path branch) ---
+
+#[test]
+fn check_inside_checkout_matches_url_source_via_origin_remote() {
+    let plan = init_plan_repo();
+
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "main"]);
+    std::fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "initial"]);
+    // Trailing `/` and `.git` on the remote, vs. the configured source
+    // carrying neither — `repo_matches_source` must normalize both sides
+    // before comparing rather than requiring a byte-for-byte match.
+    git(
+        src.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.com/org/repo.git/",
+        ],
+    );
+    set_project_source(plan.path(), "demo", "https://example.com/org/repo");
+
+    create_task(
+        plan.path(),
+        "url-source",
+        "URL source",
+        "Code: [src](rdm:src/does-not-exist.rs).",
+    );
+
+    let json = json_stdout(
+        rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .current_dir(src.path())
+            .args([
+                "link",
+                "check",
+                "--on",
+                "task/url-source",
+                "--project",
+                "demo",
+                "--format",
+                "json",
+            ]),
+    );
+
+    // Path verification actually ran against this checkout — no skip note,
+    // and the missing path was found.
+    assert!(json.get("path_verification_skipped").is_none(), "{json}");
+    let missing_at_rev = json["missing_at_rev"].as_array().unwrap();
+    assert_eq!(missing_at_rev.len(), 1, "expected one finding: {json}");
+    assert_eq!(missing_at_rev[0]["path"], "does-not-exist.rs");
+}
+
+#[test]
+fn check_inside_checkout_mismatched_origin_remote_skips_verification() {
+    let plan = init_plan_repo();
+
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "main"]);
+    std::fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "initial"]);
+    git(
+        src.path(),
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.com/org/other-repo.git",
+        ],
+    );
+    set_project_source(plan.path(), "demo", "https://example.com/org/repo");
+
+    create_task(
+        plan.path(),
+        "url-mismatch",
+        "URL mismatch",
+        "Code: [src](rdm:src/does-not-exist.rs).",
+    );
+
+    let json = json_stdout(
+        rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .current_dir(src.path())
+            .args([
+                "link",
+                "check",
+                "--on",
+                "task/url-mismatch",
+                "--project",
+                "demo",
+                "--format",
+                "json",
+            ]),
+    );
+
+    // Never verified against this checkout — its origin doesn't match the
+    // configured URL source, so no false "missing at rev".
+    assert_eq!(json["missing_at_rev"], serde_json::json!([]));
+    assert!(
+        json["path_verification_skipped"]
+            .as_str()
+            .is_some_and(|s| s.contains("not the project's configured source")),
+        "expected a mismatch skip note: {json}"
+    );
+}
