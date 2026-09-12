@@ -17,12 +17,14 @@
 #   G  `rdm discard` cannot destroy another session's work, on a disjoint
 #      path (G) or a path both sessions journaled — an overwritten write
 #      (G3) or a recreated delete (G4) is left in place and reported skipped
-#      rather than clobbered
+#      rather than clobbered; a derived path is not exempt from either half:
+#      the discarding session's own regenerated index is restored (G5) while
+#      one another session overwrote since is skipped and reported (G6)
 #   H  reads stay shared — no read isolation was introduced
 #   I  a commit under a project another session has not landed still lands,
 #      with a coherent index
 #
-# Sections C, D, F, G3/G4 and I carry planted-mutation self-tests proving
+# Sections C, D, F, G3/G4, G6 and I carry planted-mutation self-tests proving
 # they can fail.
 #
 # Run after touching rdm-store-git's commit/status/discard paths, the
@@ -754,6 +756,88 @@ RDM_SESSION=sess-g5-a "$RDM_BIN" --root "$REPO_G5" status >"$TMP/g5.status" 2>&1
 grep -q "not attributed" "$TMP/g5.status" &&
     fail "the discard left unattributed dirt behind: $(cat "$TMP/g5.status")"
 ok "no unattributed dirt is left needing a manual --all"
+
+# --- G6: another session overwrote the derived path this one journaled ------
+# G5's sibling, and the other half of extending the discard's digest guard to
+# derived paths. G5 proves a session's OWN regenerated index is restored;
+# this proves the guard is not blind on the way in. Two sessions each run an
+# explicit `rdm index`, so both journal a write to the SAME derived path with
+# different content. A's discard must apply the same digest check it applies
+# to an authored path (G3) and leave B's bytes alone: with per-mutation
+# regeneration gone there is no downstream regeneration left to paper over a
+# clobber, so a silent overwrite here would simply destroy B's work.
+say "Section G6: discard leaves a derived path another session overwrote since"
+
+REPO_G6="$TMP/repo-g6"
+seed_repo "$REPO_G6"
+G6_INDEX="$REPO_G6/projects/demo/INDEX.md"
+G6_COMMITTED=$(cksum <"$G6_INDEX")
+
+RDM_SESSION=sess-g6-a "$RDM_BIN" --root "$REPO_G6" roadmap create a-map \
+    --title "A's roadmap" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g6-a "$RDM_BIN" --root "$REPO_G6" index >/dev/null
+RDM_SESSION=sess-g6-b "$RDM_BIN" --root "$REPO_G6" roadmap create b-map \
+    --title "B's roadmap" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g6-b "$RDM_BIN" --root "$REPO_G6" index >/dev/null
+
+# Both sessions journaled a write to this path; B's regeneration landed last,
+# so the bytes on disk are B's and they differ from what A journaled.
+grep -q "b-map" "$G6_INDEX" ||
+    fail "fixture: B's regeneration did not land its row, section G6 is vacuous"
+[ "$(cksum <"$G6_INDEX")" != "$G6_COMMITTED" ] ||
+    fail "fixture: the index still matches HEAD, section G6 is vacuous"
+RDM_SESSION=sess-g6-a "$RDM_BIN" --root "$REPO_G6" session journal \
+    >"$TMP/g6.journal" 2>&1 || fail "could not read A's journal: $(cat "$TMP/g6.journal")"
+grep -q "projects/demo/INDEX.md" "$TMP/g6.journal" ||
+    fail "fixture: A never journaled the derived path, section G6 is vacuous: $(cat "$TMP/g6.journal")"
+ok "both sessions journaled the same derived path; B's bytes are on disk"
+G6_BEFORE=$(cksum <"$G6_INDEX")
+
+RDM_SESSION=sess-g6-a "$RDM_BIN" --root "$REPO_G6" discard --force \
+    >"$TMP/g6.out" 2>&1 || fail "A's discard failed: $(cat "$TMP/g6.out")"
+
+[ "$(cksum <"$G6_INDEX")" = "$G6_BEFORE" ] ||
+    fail "A's discard clobbered the derived path B overwrote since"
+grep -q "b-map" "$G6_INDEX" ||
+    fail "A's discard destroyed B's row in the shared index"
+ok "B's regenerated index survives A's discard, byte-identical"
+
+[ ! -f "$REPO_G6/projects/demo/roadmaps/a-map/roadmap.md" ] ||
+    fail "A's own authored file survived its own discard"
+ok "A's own authored path is still discarded — the skip is per-path, not all-or-nothing"
+
+grep -q "skipped" "$TMP/g6.out" ||
+    fail "A's discard did not report a skipped path: $(cat "$TMP/g6.out")"
+grep -q "INDEX.md" "$TMP/g6.out" ||
+    fail "A's discard did not name the skipped derived path: $(cat "$TMP/g6.out")"
+ok "A's discard reports the skipped derived path by name"
+
+RDM_SESSION=sess-g6-b "$RDM_BIN" --root "$REPO_G6" commit -m "land B" \
+    >"$TMP/g6.commit" 2>&1 || fail "B could not commit after A's discard: $(cat "$TMP/g6.commit")"
+git -C "$REPO_G6" show "HEAD:projects/demo/INDEX.md" | grep -q "b-map" ||
+    fail "B's commit did not land B's index content"
+git -C "$REPO_G6" show "HEAD:projects/demo/INDEX.md" | grep -q "a-map" &&
+    fail "B's commit landed a row for the roadmap A discarded"
+ok "B's commit still lands B's content, and only B's"
+
+# Self-test: the same unconditional restore-to-HEAD stand-in G3/G4 use. If the
+# guard did not cover derived paths, A's discard would take this shape on
+# INDEX.md — so the stand-in must visibly destroy B's row, proving the
+# byte-identity assertion above is capable of failing.
+REPO_G6S="$TMP/repo-g6-selftest"
+seed_repo "$REPO_G6S"
+G6S_INDEX="$REPO_G6S/projects/demo/INDEX.md"
+RDM_SESSION=sess-g6s-a "$RDM_BIN" --root "$REPO_G6S" roadmap create a-map \
+    --title "A's roadmap" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g6s-a "$RDM_BIN" --root "$REPO_G6S" index >/dev/null
+RDM_SESSION=sess-g6s-b "$RDM_BIN" --root "$REPO_G6S" roadmap create b-map \
+    --title "B's roadmap" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g6s-b "$RDM_BIN" --root "$REPO_G6S" index >/dev/null
+RDM_SESSION=sess-g6s-a "$RDM_BIN" --root "$REPO_G6S" discard --force --all \
+    >/dev/null 2>&1 || fail "self-test: whole-tree discard failed unexpectedly"
+grep -q "b-map" "$G6S_INDEX" &&
+    fail "self-test failed: the unconditional-restore stand-in did NOT destroy B's index row, so section G6's assertion proves nothing"
+ok "self-test: an unconditional restore-to-HEAD IS caught by section G6's assertion"
 
 # --- G3: overlapping-path arm — A writes twice, B overwrites once after ----
 # A's own path-set scoping (G above) only protects a DISJOINT path. Here A

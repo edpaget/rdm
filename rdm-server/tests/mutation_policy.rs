@@ -193,20 +193,15 @@ async fn autocommit_lands_the_mutation_scoped_to_the_advertised_changeset() {
     let after = head_sha(dir.path());
     assert_ne!(after, before, "autocommit must land a real commit");
     let paths = head_paths(dir.path());
-    assert!(
-        paths
-            .iter()
-            .any(|p| p == "projects/demo/tasks/landed-task.md"),
-        "the mutation must be in the commit, got {paths:?}"
-    );
-    // Still scoped: the commit carries this changeset's own write plus the
-    // generated indexes it journaled, and nothing else.
-    assert!(
-        paths
-            .iter()
-            .all(|p| p == "projects/demo/tasks/landed-task.md"
-                || rdm_core::paths::is_derived_path(p)),
-        "the commit must stay inside the changeset's own paths, got {paths:?}"
+    // Still scoped, and now exactly scoped: a mutation regenerates no index,
+    // so the changeset holds one authored path and the commit carries that
+    // path and nothing else. Whole-set equality, deliberately — the previous
+    // form also admitted any derived path, which a mutation can no longer
+    // produce, so it could not have caught a regenerated index leaking back in.
+    assert_eq!(
+        paths,
+        vec!["projects/demo/tasks/landed-task.md".to_string()],
+        "the commit must be exactly the changeset's one authored path, got {paths:?}"
     );
 }
 

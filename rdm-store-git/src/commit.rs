@@ -1384,6 +1384,13 @@ impl GitRepo {
     /// a path whose on-disk content has vanished or is not valid UTF-8: the
     /// guard can only refuse a *comparison it can make*, never a missing one.
     ///
+    /// The check applies to **every** path the caller lists, derived ones
+    /// included: since mutations stopped regenerating an index, a derived
+    /// path reaches a changeset only through an explicit `rdm index` (or a
+    /// pull/resolve reconciliation), and nothing regenerates one afterwards
+    /// to paper over a clobber — so it needs the same guard as an authored
+    /// path rather than a blanket exemption.
+    ///
     /// Returns `(restored, skipped)` — the paths actually restored (or
     /// removed, for a path this changeset added) and the paths left
     /// untouched because another session's content or recreation was
