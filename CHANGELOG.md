@@ -26,6 +26,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `rdm remote pull` no longer makes an exception for `.gitattributes`. That carve-out existed only because rdm dirtied the file itself on every repo open; with no writer, every uncommitted change to it is yours, and a diverged pull refuses on it like any other dirty path rather than restoring it out from under you. A fast-forward still leaves that judgment to git, unchanged.
+
+- `rdm discard --force` no longer reports `reinstalled: .gitattributes (rdm-managed)`, because it no longer puts anything back: rdm authors no file of its own into the worktree, so a discard now leaves a tree that matches `HEAD` exactly.
+
 - **`INDEX.md` and `projects/<p>/INDEX.md` are no longer regenerated on every mutation.** A commit now contains only the files you authored: `rdm status` after a single `rdm task update --status` names exactly one path, `rdm commit` reports `Committed 1 file(s).` with no regenerated-index suffix, and `rdm discard --force` leaves the generated indexes on disk exactly as it found them — unless *your own* session regenerated one with `rdm index`, in which case it is part of your changeset and is restored along with everything else you wrote (reported as a `(plus N generated index file(s))` suffix), so a discard never strands a half-updated index nobody owns. This takes the plan repo's central write-contention object off the write path — two sessions mutating different files no longer both write the same two derived files. Refresh the generated indexes on demand with `rdm index`; existing repos keep their tracked `INDEX.md` files, which simply stop being updated (nothing is auto-deleted). `rdm init` no longer seeds an `INDEX.md` either, since nothing would maintain it — run `rdm index` if you want one. `rdm remote pull` and `rdm resolve` still regenerate after a merge or clone, where HEAD genuinely moved under the working tree.
 
 - **Breaking for direct `rdm-core` library consumers:** `rdm_core::ops::mutate` and `rdm_core::ops::mutate_batch` no longer take a `project` argument and no longer regenerate the index — the transaction is one entity write plus one flush. Index regeneration is now only ever explicit, via `rdm_core::ops::index::generate_index` / `generate_index_for_project`, and is no longer a failure source inside a mutation or a batch's `finalize_result`.
@@ -59,7 +63,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `--no-index` is still accepted but has no effect, since mutations no longer regenerate an index. Passing it prints a one-line deprecation warning on stderr (never on stdout, so `--format json` output stays clean) and is otherwise ignored. It will be removed in a future release.
 
+### Removed
+
+- **The `rdm-index` git merge driver is gone, in both halves.** rdm no longer writes `merge=rdm-index` lines into your `.gitattributes`, and no longer installs a `[merge "rdm-index"]` section in `.git/config`. With mutations no longer regenerating `INDEX.md`, the driver had no job left — it existed only to resolve conflicts on a file rdm rewrote from both sides of a merge. `INDEX.md` now merges the way every other file does, with git's built-in three-way merge: a conflict is an ordinary conflict, with ordinary `<<<<<<<` markers, fixable with `rdm resolve <file>` or by regenerating with `rdm index`. A clean-but-stale merge self-heals on the next `rdm index`, which `rdm remote pull` already runs for you. Together with the backfill/discard/pull entries below (added earlier in this same unreleased cycle and never shipped), this retires the whole mechanism; see `docs/file-formats.md` § "INDEX.md and merges".
+
+- `rdm index` no longer accepts the internal `--merge-output` / `--merge-path` flags, which existed solely so git could invoke it as that merge driver. Plain `rdm index` is unchanged.
+
 ### Fixed
+
+- **rdm removes the stale `[merge "rdm-index"]` section it used to install in your `.git/config`, on the next command.** It cannot be left in place: with the driver's flags gone, its command now fails, and git treats a failing merge driver as a conflict whose result is your own side, unmodified and with no conflict markers — so *every* `INDEX.md` merge, including one that would have merged cleanly, would silently drop the incoming rows. A `[merge "rdm-index"]` section you customized yourself is recognized and preserved. The sweep is best-effort: against a read-only `.git/config` rdm warns and continues rather than failing the command.
+
+- A tracked `.gitattributes` carrying `merge=rdm-index` is **left alone** — it is a file you may have edited, and it is harmless without a configured driver: git falls back to its built-in three-way merge, with proper conflict markers and nothing on stderr. Delete the lines if you like; you do not have to.
 
 - The refusal `rdm commit` prints when another session's flush has overwritten a path this changeset journaled (`Error::ChangesetPathOverwritten`) now states plainly what re-running the recommended command actually does: it re-reads current disk, so the retry will fold in whatever content is there now — which may be another session's already-landed edit — before committing under this session's message. Previously the message only said to "re-run the command that produced your change, then commit," without saying what that retry carries. See `docs/lost-update-evaluation.md` § "Retry attribution (phase 16)" for the recorded decision (this is accepted as the changeset model's rebase-onto-current-disk semantics, not a bug) and its rejected alternative (refuse until the other session commits).
 

@@ -247,9 +247,10 @@ owned by the write guard.
 
 **Residual: a store-bypassing recreate still trips it.** A raw `fs::write`
 outside the store that lands on a path this changeset deleted reads as
-"present" and is refused, even when it is the same session that wrote it. This
-is consistent with — and covered by — the "Store-bypassing writers are
-uncovered" carve-out below, which stays.
+"present" and is refused, even when it is the same session that wrote it. It is a
+narrow residual, and it stays: with rdm's own store-bypassing writer gone (see
+the closed carve-out below) the only way to reach it is a raw `fs::write` from
+outside rdm.
 
 ## Carve-outs
 
@@ -273,15 +274,27 @@ removed from the write path entirely — see
 as an accurate record of why it existed and how `reconcile_derived` worked
 while INDEX.md was still generated on every mutation.
 
-**One store-bypassing writer remains uncovered.** `.gitattributes` is written
-by `ensure_gitattributes` (`rdm-store-git/src/repo.rs`) as a raw `fs::write`
-that never enters the staging overlay, so it has no baseline and is not
-checked. (`rdm.toml`'s config-set path used to share this gap via
-`rdm-cli/src/paths.rs::save_repo_config`; that writer is gone — `rdm config
+**No store-bypassing writer remains — closed.** *(Closed by
+`retire-generated-index/phase-3-retire-merge-driver`.)* This carve-out named
+one gap: `.gitattributes`, written by `ensure_gitattributes`
+(`rdm-store-git/src/repo.rs`) as a raw `fs::write` that never entered the
+staging overlay, so it had no baseline and was not checked. That writer is
+gone with the `rdm-index` merge driver, along with the
+`journal_side_write` / `journal_pending_side_writes` plumbing that existed
+solely to give its output a changeset to belong to. rdm now authors no file of
+its own into the worktree at all.
+
+The migration sweep that replaced it
+(`GitRepo::remove_rdm_index_driver_section`, which removes the stale
+`[merge "rdm-index"]` section an older rdm installed) is **not** a new
+store-bypassing writer: it touches only `.git/config`, which is untracked,
+outside the worktree, and invisible to `rdm status` and to every commit. It
+needs no baseline because it is not a plan-repo path.
+
+(`rdm.toml`'s config-set path used to share the original gap via
+`rdm-cli/src/paths.rs::save_repo_config`; that writer is gone too — `rdm config
 set` now routes through `rdm_core::io::save_config`, which writes through the
-`Store` and is journaled like everything else.) This is a known gap inherited
-from phase 5's own boundary, not an oversight. It is an effectively
-write-once, low-contention file.
+`Store` and is journaled like everything else.)
 
 **The check→act window is narrowed, not eliminated.** Between the digest
 comparison and the rename there remains an interval of microseconds in which

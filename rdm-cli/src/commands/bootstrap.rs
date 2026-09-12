@@ -392,8 +392,8 @@ fn clone_fresh(
     rdm_core::ops::init::init_with_config(&mut store, rdm_core::config::Config::default())
         .context("failed to initialize cloned repo as a plan repo")?;
     // Scoped: everything `init_with_config` wrote is journaled to this
-    // process's changeset, as is the `.gitattributes` back-fill the store
-    // performed on open.
+    // process's changeset. Opening the store authors nothing of its own into
+    // the worktree, so the changeset is exactly the init's writes.
     store
         .commit_changeset(Some("rdm: initialize plan repo via bootstrap --init"), &[])
         .context("failed to commit initial plan repo state")?;

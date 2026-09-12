@@ -860,26 +860,26 @@ fn remote_pull_regenerates_index() {
     let _ = bare_dir;
 }
 
-/// The sentinel line committed into the local side's `projects/demo/INDEX.md`,
-/// making the committed `ours` blob deliberately STALE relative to its own
-/// source markdown.
+/// Seeds a two-sided `projects/demo/INDEX.md` conflict in a LEGACY repo: HEAD
+/// tracks a `.gitattributes` carrying both `merge=rdm-index` lines (as every
+/// plan repo an older rdm touched does), and no merge driver is configured.
 ///
-/// This is what makes the merge-driver tests below discriminating: git
-/// pre-loads `%A` with the `ours` content, so a driver that regenerates the
-/// file on disk but never writes `%A` (i.e. one missing `--merge-output %A
-/// --merge-path %P`) leaves this sentinel in the merge result, while the real
-/// driver's regeneration cannot contain it.
-const STALE_OURS_SENTINEL: &str = "<!-- STALE-OURS-SENTINEL -->";
-
-/// Seeds a two-sided `projects/demo/INDEX.md` conflict in which the local
-/// side's committed index is deliberately stale.
-///
-/// Returns the local plan repo, the bare remote (kept alive by the caller),
-/// and a `PATH` with the test `rdm` binary prepended — git spawns the merge
-/// driver as a plain subprocess and must resolve `rdm` from `PATH`.
-fn seed_stale_ours_index_conflict() -> (TempDir, TempDir, String) {
+/// Returns the local plan repo and the bare remote (kept alive by the caller).
+/// The caller runs the merge itself, directly via `git merge` rather than
+/// `rdm remote pull`, whose porcelain regenerates `INDEX.md` again after a
+/// successful pull and would mask what is isolated here.
+fn seed_legacy_index_conflict() -> (TempDir, TempDir) {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
+
+    // rdm no longer writes `.gitattributes`, so the legacy shape has to be
+    // seeded by hand. This is the file that outlives the change on every
+    // existing plan repo, and the whole point of the tests below.
+    std::fs::write(
+        dir.path().join(".gitattributes"),
+        "INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n",
+    )
+    .unwrap();
 
     // Seed a shared project before diverging so both sides touch the same
     // project-level INDEX.md as well as the root one.
@@ -891,19 +891,30 @@ fn seed_stale_ours_index_conflict() -> (TempDir, TempDir, String) {
         .success();
     // Mutations regenerate no index, so the conflicting indexes have to be
     // produced explicitly — otherwise no `INDEX.md` ever diverges and the
-    // merge-driver assertions below would pass vacuously.
+    // merge assertions below would pass vacuously.
     rdm()
         .arg("--root")
         .arg(dir.path())
         .arg("index")
         .assert()
         .success();
+    // `--all` sweeps the hand-written `.gitattributes`, which belongs to no
+    // changeset.
     rdm()
         .arg("--root")
         .arg(dir.path())
-        .args(["commit", "-m", "add demo project"])
+        .args(["commit", "--all", "-m", "add demo project"])
         .assert()
         .success();
+    let tracked = git_cmd()
+        .args(["ls-tree", "--name-only", "HEAD"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&tracked.stdout).contains(".gitattributes"),
+        "the legacy fixture must track .gitattributes, or it proves nothing"
+    );
 
     let bare_dir = setup_bare_remote(&dir, "origin");
 
@@ -950,7 +961,7 @@ fn seed_stale_ours_index_conflict() -> (TempDir, TempDir, String) {
         .unwrap();
 
     // Make a locally-divergent roadmap that also touches INDEX.md and
-    // projects/demo/INDEX.md.
+    // projects/demo/INDEX.md — the same rows, so the merge really conflicts.
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -970,44 +981,39 @@ fn seed_stale_ours_index_conflict() -> (TempDir, TempDir, String) {
         .assert()
         .success();
 
-    // Now make the local side's COMMITTED index stale relative to its own
-    // source markdown, by appending a sentinel line and committing that
-    // tampered file. `rdm commit` commits the working tree verbatim and
-    // performs no regeneration, so the sentinel survives into HEAD.
-    //
-    // Both sides still modify the same index, so the conflict and the driver
-    // invocation are unchanged — but `ours` is no longer what a regeneration
-    // would produce, which is exactly what the assertions below rely on.
-    let index_path = dir.path().join("projects/demo/INDEX.md");
-    let mut index = std::fs::read_to_string(&index_path).unwrap();
-    index.push_str(&format!("\n{STALE_OURS_SENTINEL}\n"));
-    std::fs::write(&index_path, index).unwrap();
-    // `--all` is load-bearing: the tampering above is a raw `fs::write`
-    // outside rdm, so it belongs to no changeset and the scoped default
-    // deliberately refuses to sweep it.
+    // Re-fetch so the tracking ref sees the just-pushed clone-roadmap commit.
     rdm()
         .arg("--root")
         .arg(dir.path())
-        .args([
-            "commit",
-            "--all",
-            "-m",
-            "chore: tamper with the committed index",
-        ])
+        .arg("remote")
+        .arg("fetch")
+        .arg("origin")
         .assert()
         .success();
-    let committed = git_cmd()
-        .args(["show", "HEAD:projects/demo/INDEX.md"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    assert!(
-        String::from_utf8_lossy(&committed.stdout).contains(STALE_OURS_SENTINEL),
-        "the stale-ours fixture must actually be committed"
-    );
 
-    // The merge driver is configured as a bare `rdm index ...` command, so
-    // the `rdm` binary must be resolvable on PATH for git to invoke it.
+    (dir, bare_dir)
+}
+
+/// Appends the `[merge "rdm-index"]` section an older rdm installed, whose
+/// driver command names flags `rdm index` no longer accepts.
+fn install_stale_driver_section(dir: &std::path::Path) {
+    let config_path = dir.join(".git").join("config");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&config_path)
+        .unwrap();
+    use std::io::Write;
+    writeln!(
+        file,
+        "\n[merge \"rdm-index\"]\n\tname = rdm INDEX.md merge driver\n\tdriver = rdm --root . index --merge-output %A --merge-path %P"
+    )
+    .unwrap();
+}
+
+/// Runs `git merge --no-edit origin/main` with the test `rdm` binary on
+/// `PATH` (so a configured driver, if any, really resolves) and returns the
+/// exit status plus captured stderr.
+fn merge_origin(dir: &TempDir) -> (std::process::ExitStatus, String) {
     let bin_dir = std::path::Path::new(env!("CARGO_BIN_EXE_rdm"))
         .parent()
         .unwrap();
@@ -1016,98 +1022,71 @@ fn seed_stale_ours_index_conflict() -> (TempDir, TempDir, String) {
         bin_dir.display(),
         std::env::var("PATH").unwrap_or_default()
     );
-
-    // Re-fetch so the tracking ref sees the just-pushed clone-roadmap commit.
-    // The merge itself is left to the caller, which merges directly via
-    // `git merge` (bypassing `rdm remote pull`'s own porcelain, which —
-    // independent of the merge driver — always regenerates INDEX.md again
-    // after a successful pull and flushes it straight to disk without
-    // re-staging into git; that step would otherwise mask what is isolated
-    // here).
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
+    let out = git_cmd()
         .env("PATH", &path)
-        .arg("remote")
-        .arg("fetch")
-        .arg("origin")
-        .assert()
-        .success();
-
-    (dir, bare_dir, path)
-}
-
-/// Runs `git merge origin/main` with the driver resolvable on `PATH` and
-/// returns the merge commit's `projects/demo/INDEX.md` blob.
-fn merge_and_read_merged_index(dir: &TempDir, path: &str) -> String {
-    let merge_output = git_cmd()
-        .env("PATH", path)
         .args(["merge", "--no-edit", "origin/main"])
         .current_dir(dir.path())
         .output()
         .unwrap();
-    assert!(
-        merge_output.status.success(),
-        "expected the merge driver to auto-resolve the INDEX.md conflict, got: {}",
-        String::from_utf8_lossy(&merge_output.stderr)
-    );
-
-    let blob = git_cmd()
-        .args(["show", "HEAD:projects/demo/INDEX.md"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    assert!(blob.status.success());
-    String::from_utf8_lossy(&blob.stdout).to_string()
+    (out.status, String::from_utf8_lossy(&out.stderr).to_string())
 }
 
+/// THE migration evidence for retiring the `rdm-index` merge driver.
+///
+/// Every existing plan repo will keep a tracked `.gitattributes` carrying
+/// `merge=rdm-index` long after rdm stops configuring a driver for that name,
+/// and this records — against a real `git merge`, not by reasoning — what git
+/// then does: it silently falls back to its built-in three-way merge.
+/// Measured on git 2.55.0: `CONFLICT (content)`, exit 1, ordinary
+/// `<<<<<<< HEAD` / `>>>>>>>` markers in the file, `UU` in porcelain, and
+/// NOTHING on stderr about the unknown driver.
+///
+/// That is why the stale `.gitattributes` line is left alone (it is a user
+/// file, and it is inert), while the stale `.git/config` section is not — see
+/// the control below.
 #[test]
-fn pull_with_conflicting_index_md_auto_resolves_via_merge_driver() {
-    let (dir, bare_dir, path) = seed_stale_ours_index_conflict();
+fn a_legacy_repo_merges_index_md_via_gits_builtin_three_way() {
+    let (dir, bare_dir) = seed_legacy_index_conflict();
+    let index_path = dir.path().join("projects/demo/INDEX.md");
 
-    let merged = merge_and_read_merged_index(&dir, &path);
+    let (status, stderr) = merge_origin(&dir);
 
-    // THE discriminating assertion. This blob is exactly the `%A` content git
-    // copied back into the merge result, so it can only be sentinel-free if
-    // the driver wrote `%A` via `--merge-output %A --merge-path %P`. A bare
-    // `driver = rdm index` regenerates on disk but leaves `%A` holding the
-    // stale `ours` blob — see the negative control below.
     assert!(
-        !merged.contains(STALE_OURS_SENTINEL),
-        "the merge commit must hold the driver's regeneration, not the stale \
-         `ours` blob, got: {merged}"
+        !status.success(),
+        "a genuine two-sided INDEX.md conflict must fail the merge"
+    );
+    let merged = std::fs::read_to_string(&index_path).unwrap();
+    assert!(
+        merged.contains("<<<<<<< HEAD") && merged.contains(">>>>>>>"),
+        "git's built-in three-way merge must leave ordinary conflict markers, got: {merged}"
     );
     assert!(
-        merged.contains("local-roadmap"),
-        "the driver's regeneration must still carry the local roadmap, got: {merged}"
+        merged.contains("local-roadmap") && merged.contains("clone-roadmap"),
+        "both sides' rows must be present in the conflicted file, got: {merged}"
     );
-
-    // With the driver installed, the working tree is self-consistent with what
-    // git just committed — no leftover conflict markers, no diff between the
-    // merge commit and disk. Under the stale-ours fixture this is
-    // discriminating too: with a bare driver the committed blob is the stale
-    // `ours` while disk holds the regenerated content, so the tree is dirty.
-    let status = git_cmd()
-        .args(["status", "--porcelain"])
+    let porcelain = git_cmd()
+        .args(["status", "--porcelain", "--", "projects/demo/INDEX.md"])
         .current_dir(dir.path())
         .output()
         .unwrap();
-    let status_out = String::from_utf8_lossy(&status.stdout);
     assert!(
-        status_out.trim().is_empty(),
-        "expected a clean working tree immediately after the merge driver ran \
-         (no stale %A content), got: {status_out}"
+        String::from_utf8_lossy(&porcelain.stdout).starts_with("UU"),
+        "the conflicted index must be UU, got: {}",
+        String::from_utf8_lossy(&porcelain.stdout)
+    );
+    assert!(
+        !stderr.to_lowercase().contains("driver"),
+        "git must say nothing about the absent driver, got: {stderr}"
     );
 
-    // The merge driver regenerates from whatever's on disk at the moment it
-    // runs; because git's merge machinery doesn't guarantee every
-    // concurrently-merged sibling file is materialized in the working tree
-    // before drivers run for other conflicting paths, the driver's own
-    // regeneration can be transiently stale immediately post-merge (a known,
-    // accepted limitation — see the plan's "mid-merge sibling-content
-    // caveat"). A follow-up `rdm index` (exactly what `rdm remote pull`
-    // already does after every successful pull) always converges to the
-    // fully correct state.
+    // The recovery path is real and one command long: `rdm resolve` marks the
+    // file resolved, completes the merge, and regenerates a correct index.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["resolve", "projects/demo/INDEX.md"])
+        .assert()
+        .success();
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -1115,48 +1094,54 @@ fn pull_with_conflicting_index_md_auto_resolves_via_merge_driver() {
         .assert()
         .success();
 
-    let project_index = std::fs::read_to_string(dir.path().join("projects/demo/INDEX.md")).unwrap();
+    let converged = std::fs::read_to_string(&index_path).unwrap();
     assert!(
-        project_index.contains("clone-roadmap"),
-        "expected clone-roadmap in the fully-converged project index, got: {project_index}"
+        !converged.contains("<<<<<<<"),
+        "the regenerated index must carry no conflict markers, got: {converged}"
     );
     assert!(
-        project_index.contains("local-roadmap"),
-        "expected local-roadmap in the fully-converged project index, got: {project_index}"
+        converged.contains("local-roadmap") && converged.contains("clone-roadmap"),
+        "the regenerated index must carry both sides' roadmaps, got: {converged}"
     );
 
     let _ = bare_dir;
 }
 
-/// Negative control for the test above: proves its sentinel assertion is not
-/// vacuous by removing ONLY the `%A`/`%P` wiring from the driver command.
+/// The non-vacuity control, and the reason the migration sweep in
+/// `GitRepo::remove_rdm_index_driver_section` is load-bearing rather than
+/// cosmetic.
 ///
-/// `--root .` is deliberately kept — dropping it too would make this test pass
-/// for the wrong reason (root resolution rather than the merge-output wiring).
+/// With the stale `[merge "rdm-index"]` section left in `.git/config`, its
+/// driver command now fails (`rdm index` no longer accepts
+/// `--merge-output`/`--merge-path`), and git's response is far worse than the
+/// fallback above: the merge result is the unmodified `ours` blob with NO
+/// conflict markers, so the local side wins silently and the incoming rows
+/// vanish. Measured on git 2.55.0 — and it fires on non-conflicting merges
+/// too, which is why the section must be removed rather than tolerated.
 #[test]
-fn bare_index_merge_driver_leaves_the_stale_ours_blob_in_the_merge_result() {
-    let (dir, bare_dir, path) = seed_stale_ours_index_conflict();
+fn a_stale_driver_section_resolves_silently_to_ours() {
+    let (dir, bare_dir) = seed_legacy_index_conflict();
+    let index_path = dir.path().join("projects/demo/INDEX.md");
+    let ours = std::fs::read_to_string(&index_path).unwrap();
 
-    // Strip `--merge-output %A --merge-path %P` from the installed driver.
-    let config_path = dir.path().join(".git").join("config");
-    let config = std::fs::read_to_string(&config_path).unwrap();
+    install_stale_driver_section(dir.path());
+
+    let (status, _stderr) = merge_origin(&dir);
+
+    assert!(!status.success(), "a failing driver reports a conflict");
+    let merged = std::fs::read_to_string(&index_path).unwrap();
     assert!(
-        config.contains("driver = rdm --root . index --merge-output %A --merge-path %P"),
-        "expected the shipped driver command, got: {config}"
+        !merged.contains("<<<<<<<"),
+        "the damning part: no conflict markers at all, got: {merged}"
     );
-    let bare = config.replace(
-        "driver = rdm --root . index --merge-output %A --merge-path %P",
-        "driver = rdm --root . index",
+    assert_eq!(
+        merged, ours,
+        "the merge result is the untouched `ours` blob — the incoming side is \
+         silently dropped, which is why the sweep removes this section"
     );
-    std::fs::write(&config_path, &bare).unwrap();
-
-    let merged = merge_and_read_merged_index(&dir, &path);
-
     assert!(
-        merged.contains(STALE_OURS_SENTINEL),
-        "without --merge-output %A --merge-path %P the merge result must be \
-         the stale `ours` blob — if this ever stops holding, the positive \
-         test's assertion has stopped discriminating, got: {merged}"
+        !merged.contains("clone-roadmap"),
+        "the incoming roadmap must be absent, proving the silent loss"
     );
 
     let _ = bare_dir;
@@ -1198,192 +1183,103 @@ fn status_with_fetch_flag() {
     let _ = bare_dir;
 }
 
-/// End-to-end guard for the pull carve-out: rdm's own backfilled
-/// `.gitattributes` must never wedge a diverged `rdm remote pull`.
+/// The retargeted form of the two deleted "not wedged by the backfilled merge
+/// mapping" tests, covering BOTH pull paths in one place.
 ///
-/// Before the carve-out this refused with "cannot pull with uncommitted
-/// changes — commit or discard first", and the instruction was unfollowable:
-/// `rdm discard --force` re-ensures the mapping, so the tree could never come
-/// clean again.
+/// Their premise — rdm dirtying a legacy repo's tree on open, then needing a
+/// carve-out to get past its own dirt — is gone with the writer. What must
+/// stay true in its place is stronger and simpler: opening a legacy repo
+/// authors nothing, so neither the diverged merge nor the fast-forward has
+/// anything to trip over. If a writer ever comes back, the wedge comes back
+/// with it and this goes red.
 #[test]
-fn diverged_pull_is_not_wedged_by_the_backfilled_merge_mapping() {
-    let dir = TempDir::new().unwrap();
-    init_repo(&dir);
+fn a_legacy_repo_pulls_cleanly_because_rdm_authors_no_dirt() {
+    for fast_forward in [false, true] {
+        let dir = TempDir::new().unwrap();
+        init_repo(&dir);
 
-    // Make this a repo that predates the mapping: drop it from HEAD entirely.
-    git_cmd()
-        .args(["rm", "--cached", "--quiet", ".gitattributes"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    std::fs::remove_file(dir.path().join(".gitattributes")).unwrap();
-    git_cmd()
-        .args(["commit", "-q", "-m", "legacy: drop .gitattributes"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    let bare_dir = setup_bare_remote(&dir, "origin");
-    git_cmd()
-        .args(["push", "-q", "origin", "HEAD:refs/heads/main"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    // Remote moves ahead on its own file.
-    let clone_dir = TempDir::new().unwrap();
-    git_cmd()
-        .args(["clone", "-q"])
-        .arg(bare_dir.path())
-        .arg(clone_dir.path())
-        .output()
-        .unwrap();
-    std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
-    for args in [
-        vec!["add", "."],
-        vec!["commit", "-q", "-m", "remote work"],
-        vec!["push", "-q"],
-    ] {
+        let bare_dir = setup_bare_remote(&dir, "origin");
         git_cmd()
-            .args(&args)
-            .current_dir(clone_dir.path())
+            .args(["push", "-q", "origin", "HEAD:refs/heads/main"])
+            .current_dir(dir.path())
             .output()
             .unwrap();
-    }
 
-    // Local moves ahead too, so the pull takes the diverged merge path.
-    std::fs::write(dir.path().join("local.md"), "local").unwrap();
-    git_cmd()
-        .args(["add", "."])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    git_cmd()
-        .args(["commit", "-q", "-m", "local work"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    // Any rdm command reopens the store and backfills the mapping, dirtying a
-    // tree the user never touched.
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .arg("status")
-        .assert()
-        .success();
-    assert!(dir.path().join(".gitattributes").exists());
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["remote", "pull", "origin"])
-        .assert()
-        .success();
-
-    assert!(dir.path().join("remote.md").exists());
-    let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
-    assert!(
-        attrs.contains("merge=rdm-index"),
-        "the pull must leave the mapping installed, got: {attrs}"
-    );
-
-    let _ = bare_dir;
-}
-
-/// The fast-forward-only sibling of the guard above, and the commoner case: a
-/// legacy repo that is merely *behind* a peer which has already committed the
-/// mapping.
-///
-/// This path used to skip the working-tree guard entirely, so the backfilled
-/// *untracked* `.gitattributes` collided with the incoming committed one and
-/// git refused with "the following untracked working tree files would be
-/// overwritten by merge". Like the diverged case, it was unrecoverable through
-/// the CLI: `rdm discard --force` reinstalls the file.
-#[test]
-fn fast_forward_pull_is_not_wedged_by_the_backfilled_merge_mapping() {
-    let dir = TempDir::new().unwrap();
-    init_repo(&dir);
-
-    // Make this a repo that predates the mapping: drop it from HEAD entirely.
-    git_cmd()
-        .args(["rm", "--cached", "--quiet", ".gitattributes"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-    std::fs::remove_file(dir.path().join(".gitattributes")).unwrap();
-    git_cmd()
-        .args(["commit", "-q", "-m", "legacy: drop .gitattributes"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    let bare_dir = setup_bare_remote(&dir, "origin");
-    git_cmd()
-        .args(["push", "-q", "origin", "HEAD:refs/heads/main"])
-        .current_dir(dir.path())
-        .output()
-        .unwrap();
-
-    // The remote moves ahead and commits its own mapping, exactly as any peer's
-    // `rdm commit` does once the backfill has shipped.
-    let clone_dir = TempDir::new().unwrap();
-    git_cmd()
-        .args(["clone", "-q"])
-        .arg(bare_dir.path())
-        .arg(clone_dir.path())
-        .output()
-        .unwrap();
-    std::fs::write(
-        clone_dir.path().join(".gitattributes"),
-        "INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n",
-    )
-    .unwrap();
-    std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
-    for args in [
-        vec!["add", "."],
-        vec!["commit", "-q", "-m", "remote work"],
-        vec!["push", "-q"],
-    ] {
+        // The remote moves ahead and commits a `.gitattributes` of its own,
+        // exactly as a peer that hand-maintains the file does — landing right
+        // where rdm's back-fill used to sit on the fast-forward path.
+        let clone_dir = TempDir::new().unwrap();
         git_cmd()
-            .args(&args)
-            .current_dir(clone_dir.path())
+            .args(["clone", "-q"])
+            .arg(bare_dir.path())
+            .arg(clone_dir.path())
             .output()
             .unwrap();
-    }
-
-    // The local side stays put, so the pull takes the fast-forward-only path.
-    // Any rdm command reopens the store and backfills the mapping as an
-    // untracked file, right where the incoming commit wants to write.
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .arg("status")
-        .assert()
-        .success();
-    let porcelain = git_cmd()
-        .args(["status", "--porcelain"])
-        .current_dir(dir.path())
-        .output()
+        std::fs::write(
+            clone_dir.path().join(".gitattributes"),
+            "INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n",
+        )
         .unwrap();
-    assert!(
-        String::from_utf8_lossy(&porcelain.stdout).contains("?? .gitattributes"),
-        "the backfill must leave an untracked .gitattributes, or this proves nothing"
-    );
+        std::fs::write(clone_dir.path().join("remote.md"), "remote").unwrap();
+        for args in [
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "remote work"],
+            vec!["push", "-q"],
+        ] {
+            git_cmd()
+                .args(&args)
+                .current_dir(clone_dir.path())
+                .output()
+                .unwrap();
+        }
 
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["remote", "pull", "origin"])
-        .assert()
-        .success();
+        if !fast_forward {
+            // Local moves ahead too, so the pull takes the diverged path.
+            std::fs::write(dir.path().join("local.md"), "local").unwrap();
+            git_cmd()
+                .args(["add", "."])
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            git_cmd()
+                .args(["commit", "-q", "-m", "local work"])
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+        }
 
-    assert!(dir.path().join("remote.md").exists());
-    let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
-    assert!(
-        attrs.contains("merge=rdm-index"),
-        "the pull must leave the mapping installed, got: {attrs}"
-    );
+        // Any rdm command reopens the store. It must author nothing.
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .arg("status")
+            .assert()
+            .success();
+        let porcelain = git_cmd()
+            .args(["status", "--porcelain"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&porcelain.stdout).trim(),
+            "",
+            "opening a legacy repo must author no dirt (fast_forward={fast_forward})"
+        );
 
-    let _ = bare_dir;
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args(["remote", "pull", "origin"])
+            .assert()
+            .success();
+
+        assert!(dir.path().join("remote.md").exists());
+        let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+        assert!(
+            attrs.contains("merge=rdm-index"),
+            "the peer's committed .gitattributes must arrive by the pull, got: {attrs}"
+        );
+
+        let _ = bare_dir;
+    }
 }

@@ -252,11 +252,10 @@ impl GitRepo {
     /// commit would otherwise invoke an interactive editor and hang
     /// indefinitely waiting for input nobody will send.
     ///
-    /// Before either merge shape runs, an uncommitted `.gitattributes` that is
-    /// byte-for-byte rdm's own merge-mapping backfill is restored to HEAD and
-    /// re-ensured afterwards, so a repo that predates the mapping is not wedged
-    /// by dirt rdm itself created. Only the diverged path refuses on other
-    /// uncommitted changes; a fast-forward leaves that judgment to git.
+    /// A diverged pull refuses on any uncommitted change, with no carve-out:
+    /// rdm authors no file of its own into the worktree any more, so every
+    /// dirty path is the user's. A fast-forward leaves that judgment to git,
+    /// which is long-standing behavior.
     ///
     /// # Errors
     ///
@@ -301,23 +300,17 @@ impl GitRepo {
 
         let tracking_ref = format!("{remote_name}/{branch}");
 
-        // Pre-merge working-tree guard. Shared by *both* paths below — the
-        // diverged real merge and the fast-forward-only one — because the
-        // mapping write wedges them both, just with different git errors.
+        // Pre-merge working-tree guard for the diverged path.
         //
-        // rdm writes the `.gitattributes` merge mapping itself on every repo
-        // open, so a repo predating the mapping is dirty through no act of the
-        // user's. Left in the way, a diverged merge refuses on the dirty tree,
-        // and `git merge --ff-only` refuses with "the following untracked
-        // working tree files would be overwritten by merge" the moment the
-        // remote history carries its own committed copy — which it does as
-        // soon as any peer has run `rdm commit`. Neither is recoverable by the
-        // instruction the error gives: `rdm discard` re-ensures the mapping, so
-        // the tree can never come clean and every later pull fails identically.
-        // Restore exactly that file to HEAD for the duration of the merge; it
-        // is re-ensured immediately afterwards. `is_rdm_mapping_write` matches
-        // only rdm's own byte-for-byte write, so nothing user-authored is
-        // dropped.
+        // This used to carve out an uncommitted `.gitattributes` that was
+        // byte-for-byte rdm's own merge-mapping back-fill, restoring it to
+        // HEAD for the duration of the merge: rdm wrote that file on every
+        // open, so a repo predating the mapping was dirty through no act of
+        // the user's, and refusing on it wedged the pull unrecoverably. With
+        // the merge driver retired rdm writes nothing into the worktree, so
+        // there is no rdm-authored dirt left to carve out — and the carve-out
+        // had to go with the writer, or a genuine user edit to
+        // `.gitattributes` would stay silently discardable.
         //
         // Genuine user dirt is handled differently per path, deliberately: a
         // diverged pull needs a real merge commit and refuses outright, while a
@@ -325,22 +318,10 @@ impl GitRepo {
         // not collide with the incoming ones. That is long-standing behavior
         // this guard must not tighten.
         let statuses = self.git_status_all()?;
-        let mut mapping_write = Vec::new();
-        let mut blocking = Vec::new();
-        for fs in statuses {
-            if self.is_rdm_mapping_write(&fs)? {
-                mapping_write.push(fs);
-            } else {
-                blocking.push(fs);
-            }
-        }
-        if ahead > 0 && !blocking.is_empty() {
+        if ahead > 0 && !statuses.is_empty() {
             return Err(GitError::Git(
                 "cannot pull with uncommitted changes — commit or discard first".to_string(),
             ));
-        }
-        if !mapping_write.is_empty() {
-            self.restore_paths_to_head(&mapping_write)?;
         }
 
         // Sync the git index with HEAD (GitStore commits bypass the index)
@@ -349,10 +330,6 @@ impl GitRepo {
         if ahead > 0 {
             // Diverged — attempt a real merge
             let output = self.run_git(&["merge", "--no-edit", &tracking_ref])?;
-
-            // Put back the mapping restored above. A no-op when nothing was
-            // restored, or when the merge brought its own committed copy.
-            let _ = self.ensure_gitattributes();
 
             if !output.status.success() {
                 // Check if this is a merge conflict
@@ -383,13 +360,8 @@ impl GitRepo {
             }));
         }
 
-        // Fast-forward merge (behind only). The index is already synced and the
-        // mapping write already restored by the shared guard above.
+        // Fast-forward merge (behind only). The index is already synced above.
         let output = self.run_git(&["merge", "--ff-only", &tracking_ref])?;
-
-        // Put back the mapping restored above. A no-op when nothing was
-        // restored, or when the fast-forward brought its own committed copy.
-        let _ = self.ensure_gitattributes();
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

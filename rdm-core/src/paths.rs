@@ -40,18 +40,16 @@ pub fn project_index_path(project: &str) -> RelPath {
 /// The check round-trips through the same construction those two builders use
 /// rather than sniffing the string, so it cannot drift into matching paths the
 /// generator never writes. In particular it is **not** a suffix match on
-/// `INDEX.md`: the
-/// `**/INDEX.md merge=rdm-index` line rdm installs in `.gitattributes` is
-/// deliberately broader than the generator's write set, and an `INDEX.md` a
-/// user authored anywhere else in the tree (say
+/// `INDEX.md`: an `INDEX.md` a user authored anywhere else in the tree (say
 /// `projects/demo/roadmaps/auth/INDEX.md`) is a real user change that must
 /// keep showing up in `rdm status`.
 ///
-/// `.gitattributes` is deliberately **excluded**. rdm writes it on open, so it
-/// looks derived, but it is a real, committable, hand-customizable file that
-/// must be landed for the merge-driver mapping to travel with clones — hiding
-/// a user's own `*.bin binary` line from `rdm status` would be a worse failure
-/// than showing rdm's own one-time write.
+/// `.gitattributes` is deliberately **excluded**. An older rdm wrote it on
+/// open (to install an `INDEX.md` merge driver that has since been retired),
+/// which made it look derived; it never was. It is a real, committable,
+/// hand-customizable user file, and hiding a user's own `*.bin binary` line
+/// from `rdm status` would be a real failure. Nothing in rdm writes it any
+/// more, so every change to it is now unambiguously the user's.
 ///
 /// # Invariant
 ///
@@ -401,8 +399,8 @@ mod tests {
         assert!(is_derived_path(project_index_path("fbm").as_str()));
         assert!(is_derived_path(index_path().as_str()));
 
-        // Everything else is a user change, including INDEX.md files the
-        // `**/INDEX.md` gitattributes line would match.
+        // Everything else is a user change, including nested INDEX.md files
+        // a naive suffix match would sweep up.
         assert!(!is_derived_path("projects/demo/roadmaps/r/INDEX.md"));
         assert!(!is_derived_path("projects/demo/tasks/INDEX.md"));
         assert!(!is_derived_path("projects/INDEX.md"));

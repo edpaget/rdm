@@ -119,10 +119,7 @@ fn run() -> Result<()> {
             plan_repo, path, branch, init, token, command, print_root, cli.format,
         )?,
 
-        Command::Index {
-            merge_output,
-            merge_path,
-        } => commands::index::run(&root, merge_output.as_deref(), merge_path.as_deref())?,
+        Command::Index => commands::index::run(&root)?,
 
         Command::Project { command } => {
             let mut store = commands::make_store(&root)?;

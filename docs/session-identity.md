@@ -327,8 +327,16 @@ session's bytes under this changeset's message (see
 in both directions:
 
 - absent on a `delete`, which has no bytes to identify;
-- absent on lines written before the field existed, and on paths written
-  outside the store entirely (`.gitattributes`), which have no staged content.
+- absent on lines written before the field existed — a changeset in flight
+  across an rdm upgrade still carries them.
+
+  There is no live store-bypassing writer any more. The one that existed —
+  rdm's own `.gitattributes` merge-driver back-fill, journaled through
+  `journal_side_write` with no digest because it had no staged content to
+  identify — was removed with the merge driver by
+  `retire-generated-index/phase-3-retire-merge-driver`. The optional-digest
+  contract stays exactly as it is: the legacy-line case above is reason
+  enough on its own, and it is what keeps the upgrade path safe.
 
 A line without it stays parsable — the field is `#[serde(default)]` — and every
 consumer skips its check rather than failing, so a changeset in flight when rdm
@@ -930,6 +938,6 @@ applies to what a *write* action lands or destroys, never to what you can see.
   disjoint concurrent commits (A), the same with no session id set plus
   rung-2 continuity and rung-4 degradation (B/B2/B3), the `Done:` hook path
   (C, distinct — every other section can pass while the hook still sweeps),
-  the commit-primitive call-site allowlist (D), `init --remote` /
-  `.gitattributes` back-fill / server reconciliation (E), committed-index
+  the commit-primitive call-site allowlist (D), `init --remote` / the
+  legacy-repo migration sweep / server reconciliation (E), committed-index
   reconciliation (F), scoped discard (G), and shared reads (H).

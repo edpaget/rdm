@@ -35,10 +35,6 @@ const ALLOWED: &[(&str, &str)] = &[
         "installs git hook shims into .git/hooks/, untracked git-internal plumbing",
     ),
     (
-        "rdm-cli/src/commands/index.rs",
-        "writes the git merge-driver's %A temp output, a path supplied by git itself, outside $RDM_ROOT",
-    ),
-    (
         "rdm-core/src/session/journal.rs",
         "truncate writes changeset-journal bookkeeping under $RDM_ROOT/.git/rdm/, deliberately untracked — it records what the Store should commit, so routing it through the Store would be circular",
     ),

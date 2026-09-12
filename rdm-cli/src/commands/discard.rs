@@ -50,7 +50,7 @@ pub fn run(root: &Path, force: bool, all: bool) -> Result<()> {
             .discard_whole_tree()
             .context("failed to discard changes")?;
         println!("{}", report.discard_summary());
-        print_per_file(&store, &report);
+        print_per_file(&report);
         return Ok(());
     }
 
@@ -71,7 +71,7 @@ pub fn run(root: &Path, force: bool, all: bool) -> Result<()> {
         .discard_changeset()
         .context("failed to discard changes")?;
     println!("{}", outcome.discard_summary());
-    print_per_file_scoped(&store, &outcome);
+    print_per_file_scoped(&outcome);
     if let Some(note) = outcome.skipped_summary() {
         println!("  {note}");
     }
@@ -84,28 +84,19 @@ pub fn run(root: &Path, force: bool, all: bool) -> Result<()> {
     Ok(())
 }
 
-/// Prints the per-file discard lines, re-reading status so the `reinstalled:`
-/// case is honest.
+/// Prints the per-file discard lines.
 ///
-/// `git_discard`/`discard_changeset` re-install the INDEX.md merge mapping
-/// after restoring the tree, so a `.gitattributes` just deleted is back on
-/// disk. Re-reading tells us which paths that actually applies to, so the
-/// lines below never claim a file was removed while it is sitting right there.
+/// The restore is HEAD-exact: rdm authors no file of its own into the
+/// worktree, so every path the report named is genuinely back at its HEAD
+/// content (or gone) by the time this runs. There is no `reinstalled:` case
+/// any more — the retired `INDEX.md` merge driver was what put a just-deleted
+/// `.gitattributes` straight back on disk.
 ///
 /// Used only by the `--all` whole-tree path, which has no per-path
 /// skip/overwrite guard — see [`print_per_file_scoped`] for the
 /// changeset-scoped counterpart.
-fn print_per_file(store: &rdm_store_git::GitStore, report: &rdm_store_git::StatusReport) {
-    let still_changed: Vec<String> = store
-        .git()
-        .git_status_report()
-        .map(|after| after.all().iter().map(|fs| fs.path.clone()).collect())
-        .unwrap_or_default();
+fn print_per_file(report: &rdm_store_git::StatusReport) {
     for fs in &report.user {
-        if still_changed.contains(&fs.path) {
-            println!("  reinstalled: {} (rdm-managed)", fs.path);
-            continue;
-        }
         let prefix = match fs.change {
             rdm_store_git::FileChange::Added => "  removed:  ",
             rdm_store_git::FileChange::Modified => "  restored: ",
@@ -120,22 +111,13 @@ fn print_per_file(store: &rdm_store_git::GitStore, report: &rdm_store_git::Statu
 /// deliberately left in place (`skipped_overwritten`) gets an honest
 /// `skipped:` line instead of a `removed:`/`restored:` one that would
 /// falsely claim this discard reverted it.
-fn print_per_file_scoped(store: &rdm_store_git::GitStore, outcome: &rdm_store_git::ScopedDiscard) {
-    let still_changed: Vec<String> = store
-        .git()
-        .git_status_report()
-        .map(|after| after.all().iter().map(|fs| fs.path.clone()).collect())
-        .unwrap_or_default();
+fn print_per_file_scoped(outcome: &rdm_store_git::ScopedDiscard) {
     for fs in &outcome.report.user {
         if outcome.skipped_overwritten.contains(&fs.path) {
             println!(
                 "  skipped:  {} (changed by another session — left in place)",
                 fs.path
             );
-            continue;
-        }
-        if still_changed.contains(&fs.path) {
-            println!("  reinstalled: {} (rdm-managed)", fs.path);
             continue;
         }
         let prefix = match fs.change {

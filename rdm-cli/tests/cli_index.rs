@@ -542,124 +542,44 @@ fn rdm_index_only_rewrites_the_targeted_project_index() {
     );
 }
 
+/// The `rdm-index` merge driver is retired: `rdm index` is plain porcelain
+/// again and accepts no internal merge-driver flags.
 #[test]
-fn index_merge_output_writes_regenerated_root_index() {
+fn index_rejects_the_retired_merge_driver_flags() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);
 
-    let out_file = dir.path().join("merge-output.tmp");
-    std::fs::write(&out_file, "stale content").unwrap();
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
+    for args in [
+        vec!["index", "--merge-output", "/tmp/does-not-matter"],
+        vec!["index", "--merge-path", "INDEX.md"],
+        vec![
             "index",
             "--merge-output",
-            out_file.to_str().unwrap(),
+            "/tmp/does-not-matter",
             "--merge-path",
             "INDEX.md",
-        ])
-        .assert()
-        .success();
-
-    let root_index = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
-    let merge_output = std::fs::read_to_string(&out_file).unwrap();
-    assert_eq!(merge_output, root_index);
+        ],
+    ] {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("unexpected argument"));
+    }
 }
 
+/// ...and the help text describes no driver either.
 #[test]
-fn index_merge_output_writes_regenerated_project_index() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
+fn index_help_mentions_no_merge_driver() {
     rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .arg("--no-index")
-        .args(["roadmap", "create", "alpha", "--project", "fbm"])
+        .args(["index", "--help"])
         .assert()
-        .success();
-
-    let out_file = dir.path().join("merge-output.tmp");
-    std::fs::write(&out_file, "stale content").unwrap();
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "index",
-            "--merge-output",
-            out_file.to_str().unwrap(),
-            "--merge-path",
-            "projects/fbm/INDEX.md",
-        ])
-        .assert()
-        .success();
-
-    let project_index = std::fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
-    let root_index = std::fs::read_to_string(dir.path().join("INDEX.md")).unwrap();
-    let merge_output = std::fs::read_to_string(&out_file).unwrap();
-    assert_eq!(merge_output, project_index);
-    assert_ne!(
-        merge_output, root_index,
-        "merge output should match the targeted project index, not the root index"
-    );
-}
-
-#[test]
-fn index_merge_output_without_merge_path_rejected() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["index", "--merge-output", "/tmp/does-not-matter"])
-        .assert()
-        .failure();
-}
-
-#[test]
-fn index_merge_path_without_merge_output_rejected() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["index", "--merge-path", "INDEX.md"])
-        .assert()
-        .failure();
-}
-
-#[test]
-fn index_merge_path_nonexistent_index_fails_with_context() {
-    let dir = TempDir::new().unwrap();
-    init_with_project(&dir);
-
-    let out_file = dir.path().join("merge-output.tmp");
-
-    // A syntactically valid path that no regeneration ever writes: the
-    // driver must fail cleanly (git then treats the file as an unresolved
-    // conflict), not panic or silently succeed.
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args([
-            "index",
-            "--merge-output",
-            out_file.to_str().unwrap(),
-            "--merge-path",
-            "projects/ghost/INDEX.md",
-        ])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("projects/ghost/INDEX.md"));
-
-    assert!(
-        !out_file.exists(),
-        "no merge output should be written when the index path doesn't exist"
-    );
+        .success()
+        .stdout(predicate::str::contains("--merge-output").not())
+        .stdout(predicate::str::contains("--merge-path").not())
+        .stdout(predicate::str::contains("merge driver").not());
 }
 
 #[test]

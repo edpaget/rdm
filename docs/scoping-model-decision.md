@@ -222,9 +222,21 @@ Two alternatives were rejected:
 
 Two shapes are out of scope by construction rather than by defense: a `projects/<p>/INDEX.md` already in HEAD without its manifest, and a changeset that *deletes* a `project.md` while HEAD keeps the rest of the subtree. Both would leave an inherited index in the tree, and both are unreachable through rdm today — a `project.md` is always created and committed alongside its index, and rdm has no project-delete command at all. The prune is deliberately scoped to what generation sees; it never deletes an inherited path from the tree, because deleting inherited paths is precisely the sweeping behavior scoping exists to prevent.
 
-### Merge Driver: Out of Scope (Correctly)
+### Merge Driver: Out of Scope (Correctly) — **superseded: the driver is gone**
 
-The rdm-index merge driver (`rdm-store-git/src/repo.rs`) automatically regenerates `INDEX.md` when git detects conflicts during a merge. However, changesets never perform a merge — a changeset-scoped commit constructs its tree from HEAD plus the caller's journaled paths (a direct write operation, no three-way merge). Therefore, the rdm-index merge driver is not involved in changeset-scoped commits and is orthogonal to this decision. It remains orthogonal as long as phase 5's partial-tree mechanism avoids merging.
+> **Superseded by `retire-generated-index/phase-3-retire-merge-driver`.** The
+> `rdm-index` merge driver has been retired outright, in both halves: rdm no
+> longer writes `.gitattributes` and no longer installs a
+> `[merge "rdm-index"]` section in `.git/config`. With mutations no longer
+> regenerating `INDEX.md` (phase 2), the driver had no job left — it existed
+> solely to resolve conflicts on a file rdm rewrote from both sides of a
+> merge. `INDEX.md` now merges with git's built-in three-way merge; see
+> [`docs/file-formats.md`](file-formats.md) § "INDEX.md and merges". The
+> reasoning below is retained because it remains the binding record of *why*
+> the driver was orthogonal to changeset scoping, which is what let it be
+> removed without touching the scoping model.
+
+The rdm-index merge driver (`rdm-store-git/src/repo.rs`) automatically regenerated `INDEX.md` when git detected conflicts during a merge. However, changesets never perform a merge — a changeset-scoped commit constructs its tree from HEAD plus the caller's journaled paths (a direct write operation, no three-way merge). Therefore, the rdm-index merge driver was not involved in changeset-scoped commits and was orthogonal to this decision. It remains orthogonal as long as phase 5's partial-tree mechanism avoids merging.
 
 ### `rdm status` and `rdm discard` — **resolved by phase 5**
 
@@ -234,8 +246,15 @@ The rdm-index merge driver (`rdm-store-git/src/repo.rs`) automatically regenerat
 
 1. restore only this changeset's journaled non-derived paths to HEAD (added ones removed, modified/deleted ones written back);
 2. clear this changeset's journal;
-3. regenerate the derived indexes **from the resulting disk state**, so another session's still-uncommitted rows survive — and journal that regeneration to this (now empty) changeset, so the session owns what it just rewrote;
-4. re-ensure the `.gitattributes` merge-driver mapping, reported as `reinstalled:` exactly as before.
+3. regenerate the derived indexes **from the resulting disk state**, so another session's still-uncommitted rows survive — and journal that regeneration to this (now empty) changeset, so the session owns what it just rewrote.
+
+> **Superseded in part by `retire-generated-index`.** Step 3 was retired by
+> phase 2 (a discard restores the derived paths this changeset claims rather
+> than regenerating them — regenerating would re-dirty what the discard just
+> cleaned), and a fourth step — "re-ensure the `.gitattributes` merge-driver
+> mapping, reported as `reinstalled:`" — was retired by phase 3 along with the
+> merge driver itself. The discard now leaves a tree that matches HEAD
+> exactly, and `reinstalled:` is no longer a line `rdm discard` can print.
 
 The whole-tree behavior is retained behind an explicit `--all`, which requires `--force` as well and **first names every other live changeset it is about to destroy** (from `journal::list_changesets`). The scoped path lives on `GitStore`, not in the CLI, so every store-backed caller inherits identical behavior.
 

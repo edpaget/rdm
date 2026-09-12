@@ -10,8 +10,9 @@
 #   C  the `Done:` hook path is scoped — a DISTINCT section, because every
 #      other criterion can pass while `apply_done_directives` still sweeps
 #   D  every commit primitive call site is on an explicit allowlist
-#   E  `rdm init --remote` lands its config commit, a backfilled
-#      `.gitattributes` reaches a commit, and a server mutation is attributable
+#   E  `rdm init --remote` lands its config commit, a legacy repo gains no
+#      rdm-authored dirt and its stale merge-driver config section is swept,
+#      and a server mutation is attributable
 #   F  committed indexes reflect HEAD plus the committing changeset only
 #   G  `rdm discard` cannot destroy another session's work, on a disjoint
 #      path (G) or a path both sessions journaled — an overwritten write
@@ -471,7 +472,7 @@ ok "self-test: the real, unmutated tree passes"
 # ---------------------------------------------------------------------------
 # Section E — Store-bypassing writers still reach a commit
 # ---------------------------------------------------------------------------
-say "Section E: init --remote, a backfilled .gitattributes, and server writes"
+say "Section E: init --remote, the legacy-repo migration sweep, and server writes"
 
 # --- E1: `rdm init --remote` lands its config commit ------------------------
 SRC_E="$TMP/repo-e-src"
@@ -488,27 +489,64 @@ grep -q 'default = "origin"' "$CLONE_E/rdm.toml" ||
     fail "the committed rdm.toml does not carry the remote setting"
 ok "rdm init --remote still lands its rdm.toml config commit"
 
-# --- E2: a backfilled `.gitattributes` reaches a commit ---------------------
+# --- E2: a legacy repo gains no rdm-authored dirt ---------------------------
+# The inversion of the old "a backfilled .gitattributes reaches a scoped
+# commit" arm. The `rdm-index` merge driver is retired, so rdm authors nothing
+# of its own into the worktree: a legacy repo (HEAD carrying the now-inert
+# `merge=rdm-index` attributes) must commit EXACTLY the authored path, leave
+# the user's tracked file byte-for-byte alone, and come up clean on a fresh
+# open.
 REPO_E2="$TMP/repo-e2"
 seed_repo "$REPO_E2"
-# Rewrite HEAD so it predates the merge mapping. Raw git deliberately: every
-# rdm command re-ensures the mapping on open, so the removal cannot be made
-# through rdm.
-git -C "$REPO_E2" rm --cached --quiet .gitattributes
-git -C "$REPO_E2" commit --quiet -m "chore: pre-driver repo"
-rm -f "$REPO_E2/.gitattributes"
-git -C "$REPO_E2" ls-tree --name-only HEAD | grep -q '^\.gitattributes$' &&
-    fail "HEAD still carries .gitattributes, so this arm is vacuous"
+# Seed the legacy shape by hand — raw git deliberately, since rdm no longer
+# writes either half of the driver.
+printf 'INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n' >"$REPO_E2/.gitattributes"
+git -C "$REPO_E2" add .gitattributes
+git -C "$REPO_E2" commit --quiet -m "chore: legacy merge-driver attributes"
+git -C "$REPO_E2" ls-tree --name-only HEAD | grep -q '^\.gitattributes$' ||
+    fail "the legacy fixture must track .gitattributes, so this arm is vacuous"
+E2_ATTRS_BEFORE=$(cksum <"$REPO_E2/.gitattributes")
 
-# Opening the repo backfills the file; the very next scoped commit must carry
-# it even though no Store batch ever wrote it.
 RDM_SESSION=sess-e2 "$RDM_BIN" --root "$REPO_E2" task create e2-task \
     --title "E2" --no-edit --project demo >/dev/null
 RDM_SESSION=sess-e2 "$RDM_BIN" --root "$REPO_E2" commit -m "add e2-task" >/dev/null
 commit_files "$REPO_E2" HEAD >"$TMP/e2.files"
-contains_path "$TMP/e2.files" ".gitattributes" ||
-    fail "the backfilled .gitattributes never reached a commit: $(cat "$TMP/e2.files")"
-ok "a backfilled .gitattributes reaches a scoped commit"
+contains_path "$TMP/e2.files" "projects/demo/tasks/e2-task.md" ||
+    fail "the authored task never reached the commit: $(cat "$TMP/e2.files")"
+assert_absent "$TMP/e2.files" ".gitattributes" \
+    "rdm authored a .gitattributes into a commit"
+[ "$(cksum <"$REPO_E2/.gitattributes")" = "$E2_ATTRS_BEFORE" ] ||
+    fail "rdm rewrote the user's tracked .gitattributes"
+
+# A fresh open must name nothing: no rdm-authored dirt to report.
+RDM_SESSION=sess-e2b "$RDM_BIN" --root "$REPO_E2" status >"$TMP/e2.status" 2>&1
+grep -qE '^  (added|modified|deleted):' "$TMP/e2.status" &&
+    fail "a fresh open of a legacy repo named changed paths: $(cat "$TMP/e2.status")"
+ok "a legacy repo commits only authored paths and gains no rdm-authored dirt"
+
+# --- E2b: the stale `[merge "rdm-index"]` config section is swept -----------
+# Migration, and the one thing this phase DOES write: left in place, that
+# section names a command that now fails, and git turns every INDEX.md merge —
+# even a non-conflicting one — into a spurious conflict silently resolved to
+# `ours`. Removing it is required, not cosmetic.
+cat >>"$REPO_E2/.git/config" <<'STALE'
+
+[harness-canary]
+	keep = yes
+[merge "rdm-index"]
+	name = rdm INDEX.md merge driver
+	driver = rdm --root . index --merge-output %A --merge-path %P
+STALE
+git -C "$REPO_E2" config --get merge.rdm-index.driver >/dev/null ||
+    fail "the stale section was not installed, so this arm is vacuous"
+
+RDM_SESSION=sess-e2c "$RDM_BIN" --root "$REPO_E2" list --project demo >/dev/null 2>&1
+
+[ -z "$(git -C "$REPO_E2" config --get merge.rdm-index.driver || true)" ] ||
+    fail "the stale [merge \"rdm-index\"] section survived an rdm command"
+[ "$(git -C "$REPO_E2" config --get harness-canary.keep || true)" = "yes" ] ||
+    fail "the sweep removed more than its own section"
+ok "the stale merge-driver config section is swept, unrelated sections survive"
 
 # --- E3: a store-bypassing server-shaped write is attributable -------------
 # `rdm-server`'s shipped default is staging-only: its writes are journaled to

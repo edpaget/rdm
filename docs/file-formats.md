@@ -218,23 +218,44 @@ They are still included in every commit. This is why a `rdm status` that says `N
 
 Only the two paths the generator writes count as generated: the root `INDEX.md` and each `projects/<name>/INDEX.md`. An `INDEX.md` you authored anywhere else in the tree is an ordinary user file.
 
-### Merge driver
+### INDEX.md and merges
 
-Because `INDEX.md` is generated, it can cause merge conflicts when multiple branches modify plan data. `rdm` configures a git merge driver so conflicts on `INDEX.md` and `projects/*/INDEX.md` are resolved by regenerating the file from source-of-truth markdown instead of a three-way text merge. No setup command is needed — this is fully automatic.
+`INDEX.md` is generated, so two branches that both touch plan data can both
+touch it, and git can report a conflict there. Git merges it with its ordinary
+three-way merge, exactly as it does any other text file.
 
-The driver has two halves, and **every command that opens the plan repo ensures both**:
+A conflict on `INDEX.md` is therefore an ordinary conflict, with ordinary
+`<<<<<<<` markers, and you have two one-command ways out:
 
-- The mapping in the worktree's `.gitattributes` — the lines `INDEX.md merge=rdm-index` and `**/INDEX.md merge=rdm-index`. Existing content in the file is preserved; the entries are appended only if they are not already there.
-- The `[merge "rdm-index"]` section in the repo-local `.git/config`, which defines the driver command.
+- `rdm resolve <file>` — marks it resolved, completes the merge, and
+  regenerates the index from the source-of-truth markdown.
+- `rdm index` — regenerates every index from scratch.
 
-Practical consequences:
+A merge that succeeds *cleanly* can still leave a semantically wrong index,
+because a three-way text merge knows nothing about what the rows mean. That is
+harmless: nothing reads the index back, and the next `rdm index` corrects it —
+which `rdm remote pull` already runs for you after every successful pull.
 
-- The `.gitattributes` write is an ordinary working-tree change. It appears in `rdm status` until your next `rdm commit` lands it — at which point it is tracked and travels with clones. Committing it is what makes the mapping available to everyone who clones the repo.
-- A repo created or cloned before the merge driver shipped — or by any path other than `rdm init` — is backfilled automatically on the next command. There is nothing to run.
-- A clone inherits `.gitattributes` when the source committed it, and otherwise re-creates it on first open.
-- `rdm discard --force` reverts the working tree to `HEAD`, but the mapping is re-ensured immediately afterwards, so a discard can never silently un-map the repo. It reports that file as `reinstalled:` rather than `removed:`, since it is back on disk by the time the command returns.
-- `rdm remote pull` makes one exception for the mapping, on **both** the diverged-merge and the fast-forward paths: an untracked or modified `.gitattributes` whose content is *exactly* rdm's own mapping write is restored to `HEAD` for the duration of the merge and re-ensured afterwards. Without the exception a repo that predates the mapping could never pull. A diverged pull refuses on any dirty tree and would tell you to "commit or discard first", which discard cannot satisfy because it puts the mapping straight back; a fast-forward would fail in git with "the following untracked working tree files would be overwritten by merge" as soon as the remote history carried its own committed copy — equally unrecoverable. The exception is byte-exact, so a `.gitattributes` you edited yourself still blocks a diverged pull and is never discarded on your behalf. Only the diverged path refuses on other uncommitted changes; a fast-forward still leaves that judgment to git, which accepts local edits that do not collide with the incoming ones.
-- Installation is best-effort on open and on clone: against a read-only repo `rdm` prints a warning and continues rather than failing the command. Only the explicit `rdm init` treats an installation failure as fatal.
+#### Migration from the `rdm-index` merge driver
+
+Earlier versions of rdm configured a custom `rdm-index` git merge driver, in
+two halves: `merge=rdm-index` lines in the worktree's `.gitattributes`, and a
+matching `[merge "rdm-index"]` section in the repo-local `.git/config`. Both
+are retired. What happens to an existing repo that still carries them:
+
+- The tracked `.gitattributes` lines are **left alone**. That file is yours —
+  you may have added your own rules to it — and a `merge=rdm-index` attribute
+  naming a driver that is not configured is inert: git falls back to its
+  built-in three-way merge, with proper conflict markers and nothing on stderr.
+  Delete the lines if you like; you do not have to.
+- The `[merge "rdm-index"]` section in `.git/config` is **removed
+  automatically** on the next rdm command. It cannot be left in place: its
+  driver command no longer exists, and git treats a failing merge driver as a
+  conflict whose result is your own side, unmodified and unmarked — turning
+  every `INDEX.md` merge, even one that would have merged cleanly, into a
+  silent loss of the incoming rows.
+- A `[merge "rdm-index"]` section you customized yourself is preserved: only
+  rdm's own driver command is recognized and removed.
 
 ## Dates
 

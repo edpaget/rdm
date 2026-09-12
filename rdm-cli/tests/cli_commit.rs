@@ -1162,37 +1162,17 @@ fn init_remote_still_lands_its_config_commit() {
     );
 }
 
+/// The inversion of `a_backfilled_gitattributes_reaches_a_scoped_commit`: a
+/// legacy repo whose HEAD never carried `.gitattributes` gains nothing of
+/// rdm's on open, so a scoped commit carries EXACTLY the authored path.
+///
+/// The property that test pinned — a store-bypassing write reaching a
+/// commit — has no writer left; `commit_changeset`'s `extra_paths` capability
+/// is now unexercised in-tree.
 #[test]
-fn a_backfilled_gitattributes_reaches_a_scoped_commit() {
+fn a_legacy_repo_commits_only_the_authored_path() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
-
-    // Rewrite HEAD so it predates the merge mapping. Raw git deliberately:
-    // every rdm command re-ensures the mapping on open.
-    let git = |args: &[&str]| {
-        std::process::Command::new("git")
-            // Clear the whole inherited git env, not just GIT_DIR: this suite
-            // runs from inside the pre-commit hook, where GIT_INDEX_FILE also
-            // points at the outer repo.
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .args(args)
-            .current_dir(dir.path())
-            .output()
-            .unwrap()
-    };
-    assert!(
-        git(&["rm", "--cached", "--quiet", ".gitattributes"])
-            .status
-            .success()
-    );
-    assert!(
-        git(&["commit", "--quiet", "-m", "pre-driver"])
-            .status
-            .success()
-    );
-    std::fs::remove_file(dir.path().join(".gitattributes")).unwrap();
 
     rdm_as("cs-attrs", &dir)
         .args([
@@ -1214,8 +1194,13 @@ fn a_backfilled_gitattributes_reaches_a_scoped_commit() {
 
     let files = last_commit_files(dir.path());
     assert!(
-        files.iter().any(|f| f == ".gitattributes"),
-        "the backfilled mapping never reached a commit: {files:?}"
+        !files.iter().any(|f| f == ".gitattributes"),
+        "rdm must author no .gitattributes into a commit: {files:?}"
+    );
+    assert_eq!(
+        files,
+        vec!["projects/test/tasks/x.md".to_string()],
+        "the commit must carry exactly the authored path, got: {files:?}"
     );
 }
 

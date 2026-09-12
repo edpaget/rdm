@@ -59,8 +59,9 @@ pub struct ChangesetScope {
     ///
     /// This is the explicit include-these-paths capability, not a standing
     /// exemption list: the paths are supplied per commit by the caller that
-    /// wrote them (e.g. a back-filled `.gitattributes`), and nothing persists
-    /// between commits.
+    /// wrote them, and nothing persists between commits. No in-tree caller
+    /// populates it today — the retired `.gitattributes` back-fill was its
+    /// only client — but it remains reachable from public API.
     pub extra_writes: Vec<String>,
     /// The content identity this changeset journaled for each write, when the
     /// journal recorded one.
@@ -935,8 +936,7 @@ impl GitRepo {
     /// its HEAD oid, so an unrelated project's index is never silently
     /// rewritten by an unrelated session's commit.
     ///
-    /// The `rdm-index` merge driver is ruled out by name here: it fires only
-    /// during a merge, and a scoped commit performs none.
+    /// A merge cannot interleave with this: a scoped commit performs none.
     ///
     /// Deterministic by construction — ordered maps throughout, no timestamps,
     /// no hash-iteration ordering — so committing the same changeset twice
@@ -1282,20 +1282,9 @@ impl GitRepo {
     /// Overwrites modified files, deletes added files, and restores deleted
     /// files. This is a destructive operation.
     ///
-    /// # Behavior note — not literally HEAD-exact
-    ///
-    /// After the restore loop this re-ensures the rdm-managed
-    /// `.gitattributes` merge-driver mapping (best-effort, errors swallowed so
-    /// a discard can never fail on it). Without that, a discard would silently
-    /// un-map the repo from the `INDEX.md` merge driver in both failure
-    /// shapes: an as-yet-uncommitted `.gitattributes` is `Added` and would be
-    /// deleted outright, and a tracked one whose HEAD blob predates the
-    /// mapping would be reverted to a version without it. The mapping is
-    /// re-appended either way, so the post-discard tree may differ from HEAD
-    /// by exactly that file.
-    ///
-    /// Doing this here rather than in the CLI command is what makes every
-    /// caller of this shared primitive inherit the fix.
+    /// The resulting tree is HEAD-exact: rdm no longer authors any file of
+    /// its own into the worktree, so there is nothing to put back after the
+    /// restore loop.
     ///
     /// # Errors
     ///
@@ -1305,28 +1294,19 @@ impl GitRepo {
         // Deliberately the raw list: a discard restores the whole tree.
         let status = self.git_status_all()?;
         if status.is_empty() {
-            // Still re-ensure: a clean tree can nevertheless be un-mapped if
-            // HEAD's `.gitattributes` predates the mapping.
-            let _ = self.ensure_gitattributes();
             return Ok(());
         }
 
-        self.restore_paths_to_head(&status)?;
-
-        // Reinstate the merge-driver mapping the restore may have just
-        // removed (see the behavior note above). Best-effort by design: a
-        // discard must never fail because of it.
-        let _ = self.ensure_gitattributes();
-
-        Ok(())
+        self.restore_paths_to_head(&status)
     }
 
     /// Restores exactly the listed paths to their HEAD content.
     ///
-    /// The restore half of [`git_discard`](Self::git_discard), *without* its
-    /// re-ensure of the `.gitattributes` mapping — a caller that wants the
-    /// file left at HEAD (the pull guard, which restores it only so
-    /// `git merge` will accept the tree) would be defeated by it.
+    /// The restore half of [`git_discard`](Self::git_discard), shared with
+    /// [`restore_paths_to_head_scoped`](Self::restore_paths_to_head_scoped):
+    /// one definition of "put these paths back to their HEAD blob", so the
+    /// whole-tree and changeset-scoped discards can never drift in how they
+    /// restore a file, only in which files they pick.
     ///
     /// `status` entries must come from [`git_status_all`](Self::git_status_all)
     /// on this same repo. A `Modified`/`Deleted` path absent from HEAD is
@@ -1449,33 +1429,6 @@ impl GitRepo {
         }
 
         Ok((restored, skipped))
-    }
-
-    /// Returns whether `fs` is the `.gitattributes` merge-driver mapping rdm
-    /// wrote itself, and nothing else.
-    ///
-    /// True only when the path is `.gitattributes` and its working-tree
-    /// content is *exactly* what
-    /// [`ensure_gitattributes`](Self::ensure_gitattributes) produces from
-    /// HEAD's content. A user's own edit to the file — whether or not the
-    /// mapping is also present — therefore answers `false` and is never
-    /// discarded on their behalf.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Error::Git` if the HEAD tree cannot be read.
-    pub(crate) fn is_rdm_mapping_write(&self, fs: &FileStatus) -> Result<bool> {
-        if fs.path != crate::repo::GITATTRIBUTES_PATH {
-            return Ok(false);
-        }
-        let repo = self.repo.to_thread_local();
-        let head_files = self.collect_head_blobs(&repo)?;
-        let head_content = head_files
-            .get(&fs.path)
-            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
-            .unwrap_or_default();
-        let working = std::fs::read_to_string(self.root.join(&fs.path)).unwrap_or_default();
-        Ok(working == crate::repo::gitattributes_with_mapping(&head_content))
     }
 
     /// Syncs the git index with HEAD.

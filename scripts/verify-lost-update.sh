@@ -374,7 +374,8 @@ for f in rdm-store-fs/src/lib.rs rdm-core/src/store/mod.rs rdm-core/src/error.rs
     rdm-core/src/paths.rs rdm-core/src/lock.rs rdm-core/src/lib.rs \
     rdm-core/src/session/journal.rs rdm-core/src/session/mod.rs \
     rdm-cli/src/commands/session.rs rdm-store-git/src/lib.rs \
-    rdm-store-git/src/commit.rs rdm-server/src/problem.rs; do
+    rdm-store-git/src/commit.rs rdm-store-git/src/repo.rs \
+    rdm-store-git/src/remote.rs rdm-server/src/problem.rs; do
     [ -f "$REPO_ROOT/$f" ] || fail "expected source file missing: $f"
     mkdir -p "$MUT/$(dirname "$f")"
     cp "$REPO_ROOT/$f" "$MUT/$f"
@@ -724,7 +725,8 @@ for f in rdm-store-fs/src/lib.rs rdm-core/src/store/mod.rs rdm-core/src/error.rs
     rdm-core/src/paths.rs rdm-core/src/lock.rs rdm-core/src/lib.rs \
     rdm-core/src/session/journal.rs rdm-core/src/session/mod.rs \
     rdm-cli/src/commands/session.rs rdm-store-git/src/lib.rs \
-    rdm-store-git/src/commit.rs rdm-server/src/problem.rs; do
+    rdm-store-git/src/commit.rs rdm-store-git/src/repo.rs \
+    rdm-store-git/src/remote.rs rdm-server/src/problem.rs; do
     [ -f "$REPO_ROOT/$f" ] || fail "expected source file missing: $f"
     mkdir -p "$MUT2/$(dirname "$f")"
     cp "$REPO_ROOT/$f" "$MUT2/$f"

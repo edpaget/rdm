@@ -16,7 +16,7 @@ fn rdm() -> Command {
 }
 
 /// Initialize a plan repo with a project and an initial git commit, so the
-/// `.gitattributes` written by `rdm init` is already tracked.
+/// tests below start from a committed HEAD and a clean tree.
 fn init_repo(dir: &TempDir) {
     rdm()
         .arg("--root")
@@ -60,22 +60,37 @@ fn last_commit_files(dir: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// Rewrites HEAD so it has no `.gitattributes` at all, simulating a plan repo
-/// created before the merge driver shipped.
+/// Seeds a repo into the shape a plan repo created by an OLD rdm is in:
+/// HEAD tracks a `.gitattributes` carrying the `merge=rdm-index` lines, and
+/// `.git/config` carries the matching `[merge "rdm-index"]` driver section.
 ///
-/// Uses raw git deliberately: every `rdm` command re-ensures the mapping on
-/// open, so the removal cannot be committed through `rdm commit`.
-fn drop_gitattributes_from_head(dir: &std::path::Path) {
-    let out = git(dir, &["rm", "--cached", "--quiet", ".gitattributes"]);
-    assert!(out.status.success(), "git rm failed: {out:?}");
-    let out = git(dir, &["commit", "--quiet", "-m", "chore: pre-driver repo"]);
-    assert!(out.status.success(), "git commit failed: {out:?}");
-    std::fs::remove_file(dir.join(".gitattributes")).unwrap();
-    let out = git(dir, &["ls-tree", "--name-only", "HEAD"]);
-    assert!(
-        !String::from_utf8_lossy(&out.stdout).contains(".gitattributes"),
-        "HEAD must no longer carry .gitattributes"
+/// Uses raw git deliberately: rdm no longer writes either half, so neither can
+/// be produced by driving the CLI.
+fn seed_legacy_merge_driver(dir: &std::path::Path) {
+    std::fs::write(
+        dir.join(".gitattributes"),
+        "INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n",
+    )
+    .unwrap();
+    let out = git(dir, &["add", ".gitattributes"]);
+    assert!(out.status.success(), "git add failed: {out:?}");
+    let out = git(
+        dir,
+        &["commit", "--quiet", "-m", "chore: legacy merge driver"],
     );
+    assert!(out.status.success(), "git commit failed: {out:?}");
+
+    let config_path = dir.join(".git").join("config");
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&config_path)
+        .unwrap();
+    use std::io::Write;
+    writeln!(
+        file,
+        "\n[merge \"rdm-index\"]\n\tname = rdm INDEX.md merge driver\n\tdriver = rdm --root . index --merge-output %A --merge-path %P"
+    )
+    .unwrap();
 }
 
 /// The `added:`/`modified:`/`deleted:` listing lines of `rdm status` output.
@@ -525,18 +540,17 @@ fn commit_lands_the_regenerated_index_when_it_is_the_only_change() {
 }
 
 // ---------------------------------------------------------------------------
-// AC1 — the mapping is backfilled with no user action, and survives a discard
+// The merge driver is retired: rdm installs neither half, authors no dirt,
+// and reinstates nothing on discard. These are the inversions of the three
+// tests that used to pin the opposite.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn read_only_command_backfills_the_mapping_with_no_user_action() {
+fn a_read_only_command_creates_no_gitattributes_and_leaves_status_empty() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
 
-    // Simulate a repo that predates the merge driver.
-    drop_gitattributes_from_head(dir.path());
-
-    // A plain read-only command — no opt-in, no setup command.
+    // A plain read-only command on a repo that never carried the file.
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -544,88 +558,36 @@ fn read_only_command_backfills_the_mapping_with_no_user_action() {
         .assert()
         .success();
 
-    let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
     assert!(
-        attrs.contains("INDEX.md merge=rdm-index") && attrs.contains("**/INDEX.md merge=rdm-index"),
-        "a read-only command must restore both mapping lines, got: {attrs}"
+        !dir.path().join(".gitattributes").exists(),
+        "a read-only command must author nothing into the worktree"
     );
-}
-
-#[test]
-fn discard_force_leaves_the_mapping_installed() {
-    let dir = TempDir::new().unwrap();
-    init_repo(&dir);
-
-    // Make the mapping uncommitted — the `Added` shape a discard would
-    // otherwise delete outright: drop it from HEAD, then let the next open
-    // re-add it into the worktree.
-    drop_gitattributes_from_head(dir.path());
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["list", "--project", "test"])
-        .assert()
-        .success();
-    assert!(dir.path().join(".gitattributes").exists());
 
     let out = rdm()
         .arg("--root")
         .arg(dir.path())
-        .args(["discard", "--force"])
+        .arg("status")
         .assert()
         .success();
-
-    let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap_or_default();
-    assert!(
-        attrs.contains("merge=rdm-index"),
-        "a discard must never silently un-map the repo, got: {attrs}"
-    );
-
-    // ...and it must not claim it removed a file that is sitting right there.
     let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
     assert!(
-        stdout.contains("reinstalled: .gitattributes"),
-        "the mapping rdm put straight back must be reported as reinstalled, got: {stdout}"
-    );
-    assert!(
-        !stdout.contains("removed:  .gitattributes"),
-        "reporting the still-present mapping as removed is a false statement, got: {stdout}"
+        listed_changes(&stdout).is_empty(),
+        "rdm status must name zero paths after a read-only command, got: {stdout}"
     );
 }
 
-// ---------------------------------------------------------------------------
-// AC3 — the operative claim of the rewritten docs paragraph, checked
-// behaviorally (no test asserts on documentation prose)
-// ---------------------------------------------------------------------------
-
 #[test]
-fn every_command_that_opens_the_repo_installs_both_merge_driver_halves() {
+fn no_command_installs_a_merge_driver_and_the_stale_section_is_swept() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
+    seed_legacy_merge_driver(dir.path());
 
-    // Strip BOTH halves.
-    drop_gitattributes_from_head(dir.path());
     let config_path = dir.path().join(".git").join("config");
-    let config = std::fs::read_to_string(&config_path).unwrap();
-    let stripped: String = {
-        let mut out = String::new();
-        let mut skipping = false;
-        for line in config.lines() {
-            if line.trim_start().starts_with('[') {
-                skipping = line.contains("[merge \"rdm-index\"]");
-            }
-            if !skipping {
-                out.push_str(line);
-                out.push('\n');
-            }
-        }
-        out
-    };
-    std::fs::write(&config_path, &stripped).unwrap();
-    assert!(!stripped.contains("[merge \"rdm-index\"]"));
     assert!(
-        stripped.contains("[core]"),
-        "the strip must keep the rest of the config, got: {stripped}"
+        std::fs::read_to_string(&config_path)
+            .unwrap()
+            .contains("[merge \"rdm-index\"]"),
+        "the fixture must start with the stale section, or this proves nothing"
     );
 
     // A plain read-only command.
@@ -636,37 +598,72 @@ fn every_command_that_opens_the_repo_installs_both_merge_driver_halves() {
         .assert()
         .success();
 
-    let attrs = std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
-    assert!(
-        attrs.contains("INDEX.md merge=rdm-index") && attrs.contains("**/INDEX.md merge=rdm-index"),
-        "worktree half missing after open, got: {attrs}"
-    );
     let config = std::fs::read_to_string(&config_path).unwrap();
     assert!(
-        config.contains("[merge \"rdm-index\"]") && config.contains("driver = rdm --root . index"),
-        "config half missing after open, got: {config}"
+        !config.contains("[merge \"rdm-index\"]"),
+        "the stale driver section must be swept on open, got: {config}"
+    );
+    assert!(
+        config.contains("[core]"),
+        "the sweep must remove only that section, got: {config}"
     );
 
-    // The doc's second claim: the written `.gitattributes` is an ordinary
-    // working-tree change — visible in status, landed by the next commit.
-    rdm()
+    // The tracked `.gitattributes` is a user file and is deliberately left
+    // alone: inert without a configured driver, and possibly hand-edited.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap(),
+        "INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n",
+        "the user's tracked .gitattributes must be left byte-for-byte alone"
+    );
+
+    // ...and touching neither leaves the tree clean.
+    let out = rdm()
         .arg("--root")
         .arg(dir.path())
         .arg("status")
         .assert()
-        .success()
-        .stdout(predicate::str::contains(".gitattributes"));
+        .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
+    assert!(
+        listed_changes(&stdout).is_empty(),
+        "the sweep touches only .git/config, which is invisible to status, got: {stdout}"
+    );
+}
 
-    rdm()
+#[test]
+fn discard_force_reinstates_nothing() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    seed_legacy_merge_driver(dir.path());
+
+    // Some real dirt for the discard to act on. Raw `fs::write` belongs to no
+    // changeset, so `--all` is what reaches it — and `--all` is the whole-tree
+    // path, which is where the `reinstalled:` line used to come from.
+    std::fs::write(dir.path().join(".gitattributes"), "*.bin binary\n").unwrap();
+
+    let out = rdm()
         .arg("--root")
         .arg(dir.path())
-        .args(["commit", "-m", "chore: install merge mapping"])
+        .args(["discard", "--force", "--all"])
         .assert()
         .success();
+    let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
 
-    let files = last_commit_files(dir.path());
     assert!(
-        files.iter().any(|f| f == ".gitattributes"),
-        "the mapping must be committable so it travels with clones, got: {files:?}"
+        !stdout.contains("reinstalled:"),
+        "a discard puts nothing back any more, so it must never say reinstalled, got: {stdout}"
+    );
+
+    // The tree matches HEAD exactly — including the file rdm used to rewrite.
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".gitattributes")).unwrap(),
+        "INDEX.md merge=rdm-index\n**/INDEX.md merge=rdm-index\n",
+        "the discard must restore HEAD's content, not rdm's own"
+    );
+    let porcelain = git(dir.path(), &["status", "--porcelain"]);
+    assert_eq!(
+        String::from_utf8_lossy(&porcelain.stdout).trim(),
+        "",
+        "the post-discard tree must be HEAD-exact"
     );
 }
