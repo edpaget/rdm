@@ -1492,6 +1492,58 @@ mod tests {
         )));
     }
 
+    /// An `rdm:` link written inside a review summary or comment body must
+    /// get the same item/broken rewrite as roadmap/phase/task bodies, never
+    /// a raw `rdm:`-scheme href (which no browser can navigate).
+    #[tokio::test]
+    async fn get_task_html_renders_rdm_links_in_review_bodies() {
+        let (_dir, state) = setup();
+        let mut store = state.store();
+        let doc = rdm_core::ops::reviews::create_review(
+            &mut store,
+            rdm_core::ops::reviews::CreateReview {
+                project: "demo",
+                author: "reviewer",
+                target: ReviewTarget::Task {
+                    slug: "bug-fix".to_string(),
+                },
+                body: Some("See [the other task](rdm:task/feature) for context."),
+            },
+        )
+        .unwrap();
+        let id = doc.frontmatter.id.clone();
+        rdm_core::ops::reviews::add_comment(
+            &mut store,
+            rdm_core::ops::reviews::AddComment {
+                project: "demo",
+                review_id: &id,
+                body: "Also see [a ghost](rdm:task/does-not-exist).",
+                doc: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+        rdm_core::ops::reviews::submit_review(&mut store, "demo", &id, Some(Verdict::Comment))
+            .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+
+        let html = get_html(&state, "/projects/demo/tasks/bug-fix").await;
+        assert!(
+            html.contains(
+                r#"<a class="rdm-link-item rdm-status-open" href="/projects/demo/tasks/feature">the other task</a>"#
+            ),
+            "review summary link did not get item-link markup: {html}"
+        );
+        assert!(
+            html.contains(r#"<span class="rdm-link-broken" title="target not found: task/does-not-exist">a ghost</span>"#),
+            "review comment link did not get broken-link markup: {html}"
+        );
+        assert!(
+            !html.contains("href=\"rdm:"),
+            "a raw, non-navigable rdm: href leaked into the rendered page: {html}"
+        );
+    }
+
     /// Reviewer-controlled fields (author, anchor quote) must render
     /// entity-escaped: Askama auto-escaping is the XSS boundary for review
     /// content, so pin it.

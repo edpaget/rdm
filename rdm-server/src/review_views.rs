@@ -8,7 +8,7 @@
 //! [`PageDoc`](crate::review_views::PageDoc) they pass (which also drives the cross-document links between
 //! roadmap reviews and the phases their `doc`-scoped comments point at).
 
-use crate::markdown::{HighlightSpan, render_markdown};
+use crate::markdown::{HighlightSpan, render_markdown_with_links};
 use crate::templates::{
     DocLink, DocOption, DraftCommentView, DraftPanelView, DraftReviewView, ReviewCommentView,
     ReviewView, comment_status_class, comment_status_label, relative_time, review_state_class,
@@ -111,10 +111,18 @@ impl PageReviews {
 /// bytes the current-body resolution ranges do not index) — quote previews
 /// still render.
 ///
+/// Each comment body, comment reply, and review summary body is resolved
+/// for `rdm:` links (via [`crate::link_render::resolve_body_links`]) and
+/// rendered through [`render_markdown_with_links`], the same treatment
+/// applied to roadmap/phase/task bodies — so an `rdm:` link written inside
+/// a review gets the item/code/broken markup rather than a raw, dead href.
+///
 /// # Errors
 ///
 /// Propagates `rdm_core::ops::reviews::list_reviews` failures (project not
-/// found, unreadable reviews directory, malformed review file).
+/// found, unreadable reviews directory, malformed review file) and
+/// `crate::link_render::resolve_body_links` failures for any comment,
+/// reply, or summary body.
 pub fn page_reviews(
     store: &impl rdm_core::store::VersionedStore,
     project: &str,
@@ -169,13 +177,29 @@ pub fn page_reviews(
                 },
             };
 
+            // Reviews carry no stamped commit (unlike phase/task bodies),
+            // so a code link in a comment/reply/summary always falls back
+            // to the project's default branch — same precedent as roadmap
+            // bodies in the HTML handlers.
+            let body_links =
+                crate::link_render::resolve_body_links(store, project, None, &comment.body)?;
+            let body_html = render_markdown_with_links(&comment.body, &body_links);
+            let reply_html = match comment.reply.as_deref() {
+                Some(reply) => {
+                    let reply_links =
+                        crate::link_render::resolve_body_links(store, project, None, reply)?;
+                    Some(render_markdown_with_links(reply, &reply_links))
+                }
+                None => None,
+            };
+
             comments.push(ReviewCommentView {
                 anchor_ref,
                 status: comment_status_label(&comment.status).to_string(),
                 status_class: comment_status_class(&comment.status).to_string(),
                 applied_commit: comment.applied_commit.clone(),
-                body_html: render_markdown(&comment.body),
-                reply_html: comment.reply.as_deref().map(render_markdown),
+                body_html,
+                reply_html,
                 cross_link: cross_link(project, page, id, review, comment),
                 anchor_label: comment
                     .anchor
@@ -186,6 +210,8 @@ pub fn page_reviews(
                 outdated,
             });
         }
+        let summary_links =
+            crate::link_render::resolve_body_links(store, project, None, &doc.body)?;
         reviews.push(ReviewView {
             id: id.clone(),
             author: review.author.clone(),
@@ -200,7 +226,7 @@ pub fn page_reviews(
                 .verdict
                 .as_ref()
                 .map(|v| verdict_class(v).to_string()),
-            summary_html: render_markdown(&doc.body),
+            summary_html: render_markdown_with_links(&doc.body, &summary_links),
             comments,
             dismiss_href: (review.state == ReviewState::Submitted)
                 .then(|| format!("/projects/{project}/reviews/{id}/form/dismiss")),

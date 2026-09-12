@@ -674,4 +674,66 @@ mod tests {
         .unwrap();
         assert!(entries.is_empty());
     }
+
+    /// A roadmap target has no status field, so unlike the phase/task arms
+    /// of `classify_item`, it must get the bare `rdm-link-item` class with
+    /// no `rdm-status-*` suffix -- proven end to end through resolve AND
+    /// render, since a roadmap-target `rdm:` link is never actually
+    /// rendered on any page in the rest of the test suite (every occurrence
+    /// elsewhere is used only as a backlink *source*, never fetched via
+    /// `get_html`/a HAL request).
+    #[test]
+    fn item_link_to_roadmap_gets_bare_item_class() {
+        let (_dir, mut store) = tmp_store();
+        seed_roadmap_with_phase(&mut store, "auth", "Design", "Phase body.");
+        let body = "See [the roadmap](rdm:roadmap/auth) for details.";
+        let links = resolve_body_links(&store, "demo", None, body).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].action,
+            RenderAction::ItemLink {
+                href: "/projects/demo/roadmaps/auth".to_string(),
+                class: "rdm-link-item".to_string(),
+            }
+        );
+
+        let html = crate::markdown::render_markdown_with_links(body, &links);
+        assert!(
+            html.contains(
+                r#"<a class="rdm-link-item" href="/projects/demo/roadmaps/auth">the roadmap</a>"#
+            ),
+            "got: {html}"
+        );
+    }
+
+    /// [`outgoing_link_views`]'s doc comment promises a broken link and a
+    /// no-`source` code link are omitted from the HAL array while still
+    /// appearing in the raw per-occurrence JSON -- pin both halves of that
+    /// contract, since neither was covered anywhere else (every handler
+    /// test that inspects `_links["rdm:link"]`/`_embedded["links"]` uses
+    /// exactly one, always-navigable item link).
+    #[test]
+    fn outgoing_link_views_omits_broken_and_no_url_links_from_hal_but_keeps_them_in_json() {
+        let (_dir, mut store) = tmp_store();
+        seed_task(&mut store, "fix-bug", "Fix bug");
+        let body = "[ok](rdm:task/fix-bug) [gone](rdm:task/does-not-exist) [src](rdm:src/a/b.rs)";
+        let links = resolve_body_links(&store, "demo", None, body).unwrap();
+        assert_eq!(links.len(), 3);
+        assert!(matches!(links[0].action, RenderAction::ItemLink { .. }));
+        assert!(matches!(links[1].action, RenderAction::Broken { .. }));
+        assert_eq!(
+            links[2].action,
+            RenderAction::CodeLink {
+                web_url: None,
+                no_link_display: "a/b.rs".to_string(),
+            }
+        );
+
+        let (hal, json) = outgoing_link_views(&links);
+        // Every occurrence, navigable or not, gets a raw JSON entry.
+        assert_eq!(json.len(), 3);
+        // Only the navigable item link makes it into the HAL array.
+        assert_eq!(hal.len(), 1);
+        assert_eq!(hal[0].href, "/projects/demo/tasks/fix-bug");
+    }
 }
