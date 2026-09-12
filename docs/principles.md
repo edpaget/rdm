@@ -8,7 +8,7 @@ This document codifies the architectural principles that govern the rdm codebase
 
 All business logic, data models, parsing, and domain rules live in `rdm-core`. **All plan-repo persistence is abstracted behind the `Store` trait** — core never reads or writes a plan document directly, and the storage implementations live in separate crates (`rdm-store-fs`, `rdm-store-git`). CLI and server crates are thin layers that wire a concrete store to core and format output.
 
-- **New interfaces call core.** Whether it's a TUI, an MCP server, or a WASM module, new frontends import and call `rdm-core`. They do not duplicate logic.
+- **New interfaces call core.** Whether it's a TUI or a WASM module, new frontends import and call `rdm-core`. They do not duplicate logic.
 - **Core has no knowledge of its consumers or its storage backend.** `rdm-core` must never depend on `rdm-cli`, `rdm-server`, `rdm-store-fs`, or any interaction-layer crate. Dependencies flow strictly downward. Core reads and writes plan data through the `Store` trait, never through concrete I/O types.
 - **Formatting belongs in core when reusable.** Display logic that multiple interfaces need (e.g., `format_index()`, `format_search_results()`) lives in `rdm-core::display`. Interface-specific formatting (e.g., terminal colors, HTML templates) stays in the consuming crate.
 - **Direct I/O in core is confined to three non-plan-data categories.** The `Store` trait abstracts *plan documents*; it was never the seam for machinery that must exist before, around, or outside a store. Core therefore touches `std::fs` directly in exactly three cases, and no others:

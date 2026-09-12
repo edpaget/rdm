@@ -6,9 +6,9 @@
 
 A tool for managing project roadmaps, phases, and tasks as git-tracked markdown files — designed to be driven by your LLM coding assistant.
 
-Work with your assistant to plan and implement large changes in a structured, repeatable way. You only need to allowlist a single CLI tool or MCP server. Plans are stored in a separate repo to keep your codebase free of planning artifacts.
+Work with your assistant to plan and implement large changes in a structured, repeatable way. You only need to allowlist a single CLI tool. Plans are stored in a separate repo to keep your codebase free of planning artifacts.
 
-`rdm` offers CLI, MCP, and REST interfaces.
+`rdm` offers CLI and REST interfaces.
 
 ## Installation
 
@@ -23,7 +23,6 @@ curl -fsSL https://github.com/edpaget/rdm/releases/download/v0.18.2/install.sh |
 brew install edpaget/rdm/rdm-cli
 
 # npm / npx (macOS x64/arm64, Linux x64/arm64) — downloads the matching release binary on install
-npx -y @edpaget/rdm mcp           # start the MCP server (default entry point for MCP clients)
 npx -y @edpaget/rdm --help        # run any rdm CLI command without installing globally
 npm install -g @edpaget/rdm       # or install globally so `rdm` is on PATH
 
@@ -42,7 +41,7 @@ claude plugin install rdm@rdm
 
 This installs 11 skills (`rdm:roadmap`, `rdm:do`, `rdm:dispatch-phase`, …) and 2 workflow engines, namespaced so they cannot collide with your own. The skills invoke the `rdm` binary you installed above via `PATH`; see [Claude Code Plugin Marketplace](#claude-code-plugin-marketplace-recommended) for overriding that and for the fallback path.
 
-For other assistants, or if you cannot use the plugin marketplace, ask your assistant to run `rdm --help` and initialize the tool. Tell it whether you want to use the CLI or MCP server so it installs the correct prompts and configuration.
+For other assistants, or if you cannot use the plugin marketplace, ask your assistant to run `rdm --help` and initialize the tool.
 
 ### Manual Initialization
 
@@ -82,7 +81,7 @@ rdm task update fix-barrel-nulls --project fbm --status done
 
 ## AI Agent Integration
 
-rdm is designed to work with AI coding agents. Instead of granting filesystem access to your plan repo, you allowlist the `rdm` binary or MCP server and the agent reads and writes roadmaps through the CLI.
+rdm is designed to work with AI coding agents. Instead of granting filesystem access to your plan repo, you allowlist the `rdm` binary and the agent reads and writes roadmaps through the CLI.
 
 ### Claude Code Plugin Marketplace (Recommended)
 
@@ -140,49 +139,6 @@ An earlier auto-review Stop hook / Pi extension pair, which reprompted whenever 
 #### Headless / unattended runs
 
 To run the worktree loop unattended, drive Pi in a non-interactive mode (`pi -p "<prompt>"`, or `--mode json` / `--mode rpc` for structured I/O) backed by a sandbox (OpenShell, Gondolin, or Docker) so the agent can create worktrees and apply changes without an interactive terminal.
-
-### MCP Server
-
-For agents that support [Model Context Protocol](https://modelcontextprotocol.io/), rdm exposes all operations as MCP tools — projects, roadmaps, phases, tasks, search, worktrees, and document reviews. The review tools (`rdm_review_requests`, `rdm_review_show`, `rdm_review_address_comment`, `rdm_review_complete`) close the revision loop: an agent discovers submitted change-request reviews, gets each comment with its anchor resolution and the referenced document bodies in one call, applies edits through the update tools (which only stage — landing each with `rdm_commit`, whose response reports the resulting commit for provenance), and drives the review to `addressed`:
-
-```bash
-# Start the MCP server (stdio transport)
-rdm mcp
-```
-
-`rdm agent-config` emits CLI-flavored instructions and skills only — the MCP-flavored
-variants (and the `.mcp.json` they came with) were removed. Configure the MCP server
-through your client's own MCP configuration, and use `rdm agent-config claude --skills`
-(or `--plugin`) for the agent lane.
-
-#### Claude Code / Cursor / MCP Registry
-
-Register rdm with [Claude Code](https://github.com/anthropics/claude-code) (uses the published npm package):
-
-```bash
-# User-scoped (available in every project)
-claude mcp add rdm -- npx -y @edpaget/rdm mcp
-
-# Or project-scoped (writes to .mcp.json in the current repo)
-claude mcp add --scope project rdm -- npx -y @edpaget/rdm mcp
-```
-
-For [Cursor](https://docs.cursor.com/context/model-context-protocol), add the
-following to `~/.cursor/mcp.json` (or the project-scoped `.cursor/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "rdm": {
-      "command": "npx",
-      "args": ["-y", "@edpaget/rdm", "mcp"]
-    }
-  }
-}
-```
-
-rdm is also published to the [MCP Registry](https://github.com/modelcontextprotocol/registry)
-under the canonical name `io.github.edpaget/rdm`.
 
 ### Claude Code web sandbox
 
@@ -329,32 +285,7 @@ package:
 Once that's in place, tagging a release triggers
 `.github/workflows/release.yml`, which dispatches to
 `.github/workflows/publish-npm-oidc.yml` and publishes with
-`npm publish --provenance` using the GitHub-issued OIDC token. The
-publish workflow also injects `mcpName: io.github.edpaget/rdm` into the
-published `package.json` so the MCP Registry can verify ownership.
-
-#### Submitting to the MCP Registry
-
-The first release that ships with `mcpName` in `package.json` unlocks the
-[MCP Registry](https://github.com/modelcontextprotocol/registry)
-submission. This is a manual, one-time step (subsequent releases only
-need to be re-pushed to the registry if `server.json` changes):
-
-1. Install the publisher CLI:
-   ```bash
-   brew install mcp-publisher
-   ```
-2. Bump `server.json` so its `version` (and the matching `packages[].version`)
-   tracks the released npm version.
-3. Authenticate with GitHub (interactive OAuth — claims the
-   `io.github.edpaget` namespace):
-   ```bash
-   mcp-publisher login github
-   ```
-4. From the repo root, push `server.json` to the registry:
-   ```bash
-   mcp-publisher publish
-   ```
+`npm publish --provenance` using the GitHub-issued OIDC token.
 
 ## License
 

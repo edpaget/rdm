@@ -212,7 +212,7 @@ rdm index
 
 ### Generated files in `rdm status`
 
-Because index files are generated rather than authored, `rdm status`, `rdm commit`, `rdm discard` and the corresponding MCP tools (`rdm_status`, `rdm_commit`, `rdm_discard`) report them **separately** from your own changes. Counts and listings cover only user-authored files; regenerated indexes are named on their own line (or, over MCP, in a separate `generated` array).
+Because index files are generated rather than authored, `rdm status`, `rdm commit`, and `rdm discard` report them **separately** from your own changes. Counts and listings cover only user-authored files; regenerated indexes are named on their own line.
 
 They are still included in every commit. This is why a `rdm status` that says `No uncommitted changes.` can be immediately followed by a `rdm commit` that lands index files: `status` is telling you that *you* changed nothing, while `commit` is gated on whether anything at all differs from `HEAD`. A tree holding only regenerated indexes must stay committable — otherwise it would remain dirty forever and `rdm remote pull` would refuse to run.
 

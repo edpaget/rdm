@@ -23,8 +23,8 @@
 #      review closes as `addressed` and drops out of `review requests`.
 #
 # Run after touching the review resolution model (ops/reviews.rs update
-# paths, anchor drift resolution, `rdm review requests/update`, the MCP
-# review tools, or the rdm-revise skill templates).
+# paths, anchor drift resolution, `rdm review requests/update`, or the
+# rdm-revise skill templates).
 #
 # Requires: cargo-built rdm at target/debug/rdm (from this repo).
 

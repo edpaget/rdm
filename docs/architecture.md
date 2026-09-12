@@ -9,7 +9,6 @@ rdm (workspace)
 ├── rdm-core/         # library: data model, parsing, validation, display, index generation
 ├── rdm-cli/          # binary: CLI porcelain over rdm-core (clap)
 ├── rdm-server/       # binary: REST API over rdm-core (axum)
-├── rdm-mcp/          # library: MCP server over rdm-core (stdio transport)
 ├── rdm-store-fs/     # library: filesystem Store implementation (atomic writes)
 └── rdm-store-git/    # library: git-backed Store implementation (wraps rdm-store-fs)
 ```
@@ -18,7 +17,7 @@ rdm (workspace)
 
 All business logic, data models, parsing, and domain rules live in `rdm-core`. The core crate performs no filesystem or network I/O — all storage is abstracted behind the `Store` trait, and I/O implementations live in separate crates (`rdm-store-fs`, `rdm-store-git`).
 
-New interfaces — whether a TUI, an MCP server, or a WASM module — import and call `rdm-core`. They do not duplicate logic.
+New interfaces — whether a TUI or a WASM module — import and call `rdm-core`. They do not duplicate logic.
 
 ## The Store Trait
 

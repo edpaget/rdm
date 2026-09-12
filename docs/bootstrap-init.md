@@ -91,18 +91,14 @@ Highest precedence first:
 4. **Global config** (`$XDG_CONFIG_HOME/rdm/config.toml`)
 5. **Built-in defaults**
 
-### MCP server initialization
-
-Users installing rdm from an MCP marketplace (e.g., Cursor) can initialize through the `rdm_init` MCP tool without a terminal.
-
-Enable `auto_init` in global config to transparently initialize on the first MCP tool call:
-
-```toml
-# ~/.config/rdm/config.toml
-auto_init = true
-```
-
-Without `auto_init`, MCP tools return a structured error guiding the user to call `rdm_init`.
+> **2026-09-11 — MCP server initialization was removed.** rdm previously
+> shipped an `rdm_init` MCP tool and an `auto_init` global config key so a
+> client installing rdm from an MCP marketplace could initialize a plan repo
+> without a terminal. The `retire-mcp` roadmap deleted the `rdm-mcp` crate
+> (and `auto_init` with it, since that tool was its only consumer); a global
+> config file left over from before this change that still sets `auto_init`
+> continues to parse without error but the key is ignored. Initialize via
+> `rdm init` from a terminal instead — see "First-time setup" above.
 
 ## Limitations
 

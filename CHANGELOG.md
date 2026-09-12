@@ -107,6 +107,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
   The `auto_init` global config key, whose only consumer was the MCP server's auto-initialize-on-first-call behavior, is retired along with it: `rdm config set auto_init <bool> --global` now reports it as an unknown key, and a global config file left over from before this change that still sets `auto_init` continues to parse without error — the key is simply ignored.
 
+- **BREAKING: rdm is no longer distributed or documented as an MCP server.** `server.json` and the npm package's `mcpName` field are gone, so the release workflow no longer registers rdm with the MCP Registry and the npm-published package carries no MCP metadata at all. The README's `### MCP Server` section — starting the server, registering it with Claude Code or Cursor, and submitting to the MCP Registry — has been removed, along with `docs/remote-mcp-server.md`. This is documentation and distribution metadata catching up to the `rdm mcp` command's removal above; nothing here changes runtime behavior beyond that.
+
+  **What still works:** `npx -y @edpaget/rdm` / `npm install -g @edpaget/rdm` remain the documented npm install path for the CLI, `@edpaget/rdm` stays the npm package name, and the CLI and `rdm-server` REST API are unaffected. **What to use instead of the removed MCP server:** the CLI directly, or `rdm-server`'s REST API (`rdm serve`).
+
 ## [0.21.0] - 2026-09-03
 
 ### Added
