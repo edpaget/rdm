@@ -228,9 +228,8 @@ pub async fn list_roadmaps(
             Ok(hal_response(resource))
         }
         ResponseFormat::Html => {
-            // Same counting pass as INDEX.md generation (phase-targeted
-            // reviews roll up into their parent roadmap), so the two
-            // surfaces always report the same numbers.
+            // Phase-targeted reviews roll up into their parent roadmap so
+            // the roadmap row reports a single combined count.
             let review_counts = rdm_core::ops::reviews::count_open_reviews(&store, &project)
                 .map_err(|e| error_response(e, format))?;
             let views: Vec<RoadmapSummaryView> = summaries
@@ -1922,11 +1921,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_roadmaps_html_shows_rolled_up_counts_matching_index() {
+    async fn list_roadmaps_html_shows_rolled_up_review_counts() {
         let (_dir, state) = setup();
         // One roadmap-targeted review with 1 open comment, one
         // phase-targeted review with 2 — the roadmap row must roll them up
-        // to 2 open reviews / 3 open comments, exactly like INDEX.md.
+        // to 2 open reviews / 3 open comments.
         author_submitted_review(
             &state,
             ReviewTarget::Roadmap {
@@ -1949,24 +1948,6 @@ mod tests {
                 r#"<a href="/projects/demo/roadmaps/alpha#reviews">2 open (3 comments)</a>"#
             ),
             "got: {html}"
-        );
-
-        // INDEX.md, regenerated over the same fixture, must agree.
-        let mut store = state.store();
-        rdm_core::ops::index::generate_project_index(&mut store, "demo").unwrap();
-        let index_md = rdm_core::store::Store::read(
-            &store,
-            &rdm_core::store::RelPath::new("projects/demo/INDEX.md").unwrap(),
-        )
-        .unwrap();
-        let alpha_row = index_md
-            .lines()
-            .find(|l| l.contains("[alpha]"))
-            .expect("alpha row present in INDEX.md");
-        let cells: Vec<&str> = alpha_row.split('|').map(str::trim).collect();
-        assert!(
-            cells.contains(&"2") && cells.contains(&"3"),
-            "INDEX.md must report the same 2 open reviews / 3 open comments: {alpha_row}"
         );
     }
 

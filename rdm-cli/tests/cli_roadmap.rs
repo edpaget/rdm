@@ -1669,17 +1669,6 @@ fn roadmap_update_title_renames_in_place() {
         .assert()
         .success()
         .stdout(predicate::str::contains("New Title").and(predicate::str::contains("two-way")));
-
-    // The update writes no index — an explicit `rdm index` produces one, and
-    // it renders roadmaps by slug (not title).
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .arg("index")
-        .assert()
-        .success();
-    let index = fs::read_to_string(dir.path().join("projects/fbm/INDEX.md")).unwrap();
-    assert!(index.contains("two-way"));
 }
 
 #[test]

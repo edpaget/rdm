@@ -139,21 +139,18 @@ write_sequence() {
 # Keep this list in step with the working tree: a file left out that a listed
 # one depends on makes a mutant fail to BUILD, which reports as an
 # inconclusive self-test rather than as the defect the arm is looking for.
-# `paths.rs`, `ops/index.rs`, `rdm-store-fs/src/lib.rs`, `status.rs` and
-# `rdm-mcp/src/server.rs` are here because they consume API the listed
-# `rdm-core`/`rdm-store-git` files changed.
+# `paths.rs`, `rdm-store-fs/src/lib.rs` and `status.rs` are here because they
+# consume API the listed `rdm-core`/`rdm-store-git` files changed.
 MUTANT_OVERLAY="rdm-core/src/session/mod.rs
 rdm-core/src/session/lease.rs
 rdm-core/src/session/journal.rs
 rdm-core/src/session/process.rs
 rdm-core/src/lock.rs
 rdm-core/src/paths.rs
-rdm-core/src/ops/index.rs
 rdm-store-fs/src/lib.rs
 rdm-cli/src/commands/commit.rs
 rdm-cli/src/commands/session.rs
 rdm-cli/src/commands/status.rs
-rdm-mcp/src/server.rs
 rdm-store-git/src/lib.rs
 rdm-store-git/src/commit.rs
 rdm-store-git/src/repo.rs

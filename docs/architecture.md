@@ -6,7 +6,7 @@ rdm is a Rust workspace with a layered architecture. The core library is the sou
 
 ```
 rdm (workspace)
-├── rdm-core/         # library: data model, parsing, validation, display, index generation
+├── rdm-core/         # library: data model, parsing, validation, display
 ├── rdm-cli/          # binary: CLI porcelain over rdm-core (clap)
 ├── rdm-server/       # binary: REST API over rdm-core (axum)
 ├── rdm-store-fs/     # library: filesystem Store implementation (atomic writes)
@@ -45,7 +45,7 @@ The server supports content negotiation: `application/hal+json` for API consumer
 
 Every persistent item (roadmaps, phases, tasks, projects) is stored as a markdown file with YAML frontmatter. The `Document<T>` generic wrapper enforces this structure. `Document::parse()` and `doc.render()` are symmetric — round-tripping preserves content.
 
-`INDEX.md` is a derived view computed from individual files and regenerated on every write operation. It is never edited by hand.
+rdm generates no derived index file. `rdm list --format markdown` produces a browsable snapshot on demand instead — see [`docs/index-removal.md`](index-removal.md) for the removal decision.
 
 ## Further Reading
 

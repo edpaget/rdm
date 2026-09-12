@@ -404,14 +404,12 @@ mkdir -p "$MUT"
 # working-tree copies of the files that carry it. Keep this list in step with
 # the working tree: a file left out that a listed one depends on makes the
 # mutant fail to BUILD, which reports as an inconclusive self-test rather than
-# as the lost update the arm is looking for. `status.rs`, `ops/index.rs` and
-# `rdm-mcp/src/server.rs` are here because they consume API this phase's
-# `paths.rs` / `StatusReport` changes altered.
+# as the lost update the arm is looking for. `status.rs` is here because it
+# consumes API this phase's `paths.rs` / `StatusReport` changes altered.
 for f in rdm-store-fs/src/lib.rs rdm-core/src/store/mod.rs rdm-core/src/error.rs \
     rdm-core/src/paths.rs rdm-core/src/lock.rs rdm-core/src/lib.rs \
     rdm-core/src/session/journal.rs rdm-core/src/session/mod.rs \
     rdm-cli/src/commands/session.rs rdm-cli/src/commands/status.rs \
-    rdm-core/src/ops/index.rs rdm-mcp/src/server.rs \
     rdm-store-git/src/lib.rs \
     rdm-store-git/src/commit.rs rdm-store-git/src/repo.rs \
     rdm-store-git/src/remote.rs rdm-server/src/problem.rs; do
@@ -764,7 +762,6 @@ for f in rdm-store-fs/src/lib.rs rdm-core/src/store/mod.rs rdm-core/src/error.rs
     rdm-core/src/paths.rs rdm-core/src/lock.rs rdm-core/src/lib.rs \
     rdm-core/src/session/journal.rs rdm-core/src/session/mod.rs \
     rdm-cli/src/commands/session.rs rdm-cli/src/commands/status.rs \
-    rdm-core/src/ops/index.rs rdm-mcp/src/server.rs \
     rdm-store-git/src/lib.rs \
     rdm-store-git/src/commit.rs rdm-store-git/src/repo.rs \
     rdm-store-git/src/remote.rs rdm-server/src/problem.rs; do

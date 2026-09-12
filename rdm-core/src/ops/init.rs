@@ -22,10 +22,8 @@ pub fn init(store: &mut impl Store) -> Result<()> {
 /// Creates `rdm.toml` (populated from `config`). The config is validated
 /// before any files are written.
 ///
-/// No `INDEX.md` is created: no mutation maintains one, so seeding a fresh
-/// repo with one would plant a file that is stale from the first write
-/// onward. Run [`crate::ops::index::generate_index`] (the `rdm index`
-/// command) to produce one explicitly.
+/// No `INDEX.md` is created: rdm no longer generates one at all. Use
+/// `rdm list --format markdown` for a browsable snapshot instead.
 ///
 /// # Errors
 ///

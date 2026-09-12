@@ -23,7 +23,7 @@ rdm init --default-project myproject --default-format json
 ```
 
 This creates:
-- The plan repo directory (with `rdm.toml` and `INDEX.md`)
+- The plan repo directory (with `rdm.toml`)
 - Global config at `~/.config/rdm/config.toml`
 - The `myproject` project directory
 

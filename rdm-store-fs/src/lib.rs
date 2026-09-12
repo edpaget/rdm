@@ -1073,13 +1073,13 @@ mod tests {
             "the refusal must leave the other session's content in place"
         );
 
-        // The other direction, and the shape `rdm index` actually takes: the
-        // generator writes an index it never read, and nothing overwrites it
-        // in between, so the write lands. This is the case removing the
+        // The other direction, and the shape the retired `rdm index` used to
+        // take: a blind write of a path never read, with nothing overwriting
+        // it in between, so the write lands. This is the case removing the
         // exemption must not brick. Note a blind write is NOT baseline-free —
         // `write` records whatever is on disk at write time (see `Store::write`
-        // above) — so an index write is guarded from that instant, exactly
-        // like any other blind write.
+        // above) — so an index-shaped write is guarded from that instant,
+        // exactly like any other blind write.
         let (dir2, mut store2) = setup();
         let project_index = RelPath::new("projects/demo/INDEX.md").unwrap();
         write_disk(&dir2, project_index.as_str(), "old project");

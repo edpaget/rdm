@@ -25,15 +25,14 @@ Endpoints mirror the CLI commands. All endpoints accept and return JSON by defau
 | `GET` | `/projects/:project/tasks/:task` | Show task details |
 | `POST` | `/projects/:project/tasks` | Create a new task |
 | `PATCH` | `/projects/:project/tasks/:task` | Update a task |
-| `GET` | `/index` | Get the generated index |
 
 ## Mutations Are Staged, Not Committed
 
 A running server is **one session**, and every write it makes is attributed to
 that session's changeset. By default the server **stages** mutations to disk and
 commits nothing — a `POST` or `PATCH` that returns `201`/`200` has written the
-markdown file and regenerated the affected `INDEX.md`, but has created no git
-commit. Landing them is a separate, explicit step.
+markdown file, but has created no git commit. Landing them is a separate,
+explicit step.
 
 That default is deliberately loud on three surfaces rather than one, because a
 boot-time warning on a server that has been up for a week is indistinguishable

@@ -7,8 +7,6 @@
 /// Read-only backlog grooming report: stale tasks, duplicate clusters, tag
 /// clusters, archivable roadmaps.
 pub mod backlog;
-/// Index generation operations.
-pub mod index;
 /// Plan repo initialization.
 pub mod init;
 /// Resolution of parsed `rdm:` links (item existence, code-link rev/URL)
@@ -63,10 +61,9 @@ use crate::store::Store;
 /// commit is the separate, explicit responsibility of the store's commit-now
 /// pathway.
 ///
-/// A mutation touches only the paths `f` authored: no `INDEX.md` is
-/// regenerated here, so the changeset a mutation produces contains authored
-/// paths only. Refreshing an index is the explicit, standalone job of
-/// [`index::generate_index`].
+/// A mutation touches only the paths `f` authored: no derived file exists any
+/// longer, so the changeset a mutation produces always contains authored
+/// paths only.
 ///
 /// # Errors
 ///

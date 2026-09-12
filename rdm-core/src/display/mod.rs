@@ -1,19 +1,16 @@
-//! Display formatting and index generation for roadmaps, phases, and projects.
+//! Display formatting for roadmaps, phases, and projects.
 //!
 //! - [`format`] — terminal formatting functions for human-readable output
-//! - [`index`] — INDEX.md generation from pre-aggregated project data
 mod format;
-mod index;
 
 pub use format::*;
-pub use index::*;
 
 /// Formats a roadmap progress label from done/total phase counts.
 ///
 /// Returns `no phases` when `total` is zero, `complete` when every phase is
 /// done, and `{done}/{total} done` otherwise. This is the shared wording used
 /// by the JSON summary and (with an extra `not started` special-case at the
-/// call site) the INDEX tables.
+/// call site) other roadmap listing tables.
 #[must_use]
 pub fn roadmap_progress_label(done: usize, total: usize) -> String {
     if total == 0 {

@@ -7,7 +7,7 @@ rdm is a Rust CLI for managing project roadmaps, phases, and tasks. "Zero-depend
 ### Architecture
 
 ```
-rdm-core/       # library: data model, parsing, file I/O, index generation
+rdm-core/       # library: data model, parsing, file I/O
 rdm-cli/        # binary: CLI porcelain over rdm-core
 rdm-server/     # binary: REST API over rdm-core
 ```
@@ -17,7 +17,7 @@ Core is the source of truth. CLI and server are thin layers. New interfaces (TUI
 ### Key Concepts
 
 - **Plan repo**: a git-managed directory (`RDM_ROOT`) containing markdown files for roadmaps and tasks
-- **INDEX.md**: auto-generated from individual files — never edited by hand
+- rdm generates no derived index file; use `rdm list --format markdown` for a browsable snapshot (see [`docs/index-removal.md`](docs/index-removal.md))
 - **Roadmaps** contain ordered **phases** (not-started | in-progress | needs-review | reviewed | done | blocked | wont-fix)
 - **Tasks** are standalone work items (open | in-progress | needs-review | reviewed | done | wont-fix)
 - Agent integration: `rdm agent-config` generates config for AI agents to interact via CLI

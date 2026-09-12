@@ -23,7 +23,7 @@ pub(crate) struct Cli {
     pub root: Option<PathBuf>,
 
     /// Deprecated: no longer has any effect — INDEX.md is no longer
-    /// regenerated on mutation (run `rdm index`).
+    /// regenerated or generated at all.
     #[arg(long, global = true)]
     pub no_index: bool,
 
@@ -135,8 +135,6 @@ pub(crate) enum Command {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Generate INDEX.md from current repo state.
-    Index,
     /// Generate agent configuration for AI coding assistants.
     AgentConfig {
         /// Target platform (claude, agents-md, cursor, copilot, pi).

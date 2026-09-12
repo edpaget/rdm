@@ -36,8 +36,9 @@ fn run() -> Result<()> {
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
 
     // `--no-index` is accepted for one release so no existing script breaks,
-    // but mutations no longer regenerate an index, so it has nothing to
-    // suppress. Warn on stderr only: `--format json` stdout must stay clean.
+    // but rdm no longer generates an index at all (the `rdm index` command
+    // itself is gone), so it has nothing to suppress. Warn on stderr only:
+    // `--format json` stdout must stay clean.
     if cli.no_index {
         eprintln!(
             "warning: --no-index is deprecated and has no effect; INDEX.md is no longer regenerated on mutation."
@@ -118,8 +119,6 @@ fn run() -> Result<()> {
         } => commands::bootstrap::run_command(
             plan_repo, path, branch, init, token, command, print_root, cli.format,
         )?,
-
-        Command::Index => commands::index::run(&root)?,
 
         Command::Project { command } => {
             let mut store = commands::make_store(&root)?;
@@ -230,7 +229,7 @@ fn run() -> Result<()> {
         #[cfg(feature = "git")]
         Command::Remote { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::remote::run(command, &mut store, &root, &repo_config)?;
+            commands::remote::run(command, &mut store, &repo_config)?;
         }
 
         #[cfg(feature = "git")]

@@ -91,8 +91,9 @@ pub struct FileStatus {
 /// cannot predict what its `rdm commit` will land.
 ///
 /// rdm has no generated-path class. Every path here is one some session
-/// authored, including an `INDEX.md` a session produced by running
-/// `rdm index` — that is an ordinary write by whoever ran it.
+/// authored — including a tracked `INDEX.md` left over from a plan repo
+/// that predates the removal of `rdm index`, which is an ordinary write
+/// like any other.
 ///
 /// # The one rule every consumer follows
 ///
@@ -901,14 +902,14 @@ impl GitStore {
     ///    `rdm session gc`. The retirement is best-effort: a journal-lock
     ///    wait that expires leaves the claims in place rather than failing
     ///    the discard;
-    /// 3. **no index is regenerated.** An `INDEX.md` this session produced
-    ///    (an explicit `rdm index`, or a pull/resolve reconciliation) is an
-    ///    ordinary claimed path: step 1 restores it like any other, because
-    ///    it is this session's uncommitted work and a discard that left it
-    ///    dirty would strand a file whose journal claim it just retired.
-    ///    Regenerating instead would re-dirty a path the discard is meant to
-    ///    clean. An `INDEX.md` *another* session dirtied is not in this
-    ///    changeset at all and is left untouched.
+    /// 3. **no index is regenerated** — nothing in rdm generates one any
+    ///    more. If this session's changeset happens to include an `INDEX.md`
+    ///    write (an ordinary hand-edited file, same as any other path), step
+    ///    1 restores it like any other claimed path, because it is this
+    ///    session's uncommitted work and a discard that left it dirty would
+    ///    strand a file whose journal claim it just retired. An `INDEX.md`
+    ///    *another* session dirtied is not in this changeset at all and is
+    ///    left untouched.
     ///
     /// Nothing is put back afterwards. The discard used to re-ensure the
     /// `.gitattributes` merge-driver mapping as a fourth step, reported to the
@@ -1448,9 +1449,9 @@ mod tests {
         store.commit().unwrap();
         store.commit_whole_tree("seed: plan repo").unwrap();
 
-        // One authored edit plus two stale indexes standing in for what `rdm
-        // index` writes. All three are ordinary changes: rdm has no
-        // generated-path class, so nothing is split out.
+        // One authored edit plus two hand-edited INDEX.md-shaped files. All
+        // three are ordinary changes: rdm has no generated-path class, so
+        // nothing is split out.
         std::fs::write(
             dir.path().join("projects/demo/roadmaps/auth/roadmap.md"),
             "edited",
@@ -1564,8 +1565,9 @@ mod tests {
         };
         assert_eq!(plain.discard_summary(), "Discarded 2 file(s).");
 
-        // One authored path plus the two indexes this session regenerated
-        // itself: all three were restored, and all three count the same way.
+        // One authored path plus two INDEX.md-shaped paths this session
+        // wrote itself: all three were restored, and all three count the
+        // same way.
         let with_indexes = ScopedDiscard {
             report: report_of(3),
             restored: vec![
@@ -4204,8 +4206,8 @@ with its new content identity: {after:?}"
 
     /// Every markdown link target in a rendered index body.
     ///
-    /// Well-defined because `display::format_top_level_index` emits one row
-    /// per project whose only link target is `projects/<name>/INDEX.md`.
+    /// Well-defined because the test fixtures below emit one row per project
+    /// whose only link target is `projects/<name>/INDEX.md`.
     fn index_link_targets(index: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut rest = index;
@@ -4597,18 +4599,41 @@ with its new content identity: {after:?}"
 
     // ---- committing under a project another session has not landed ----
     //
-    // Session A creates a project and does not commit; session B creates a
-    // document under it, runs `rdm index`, and commits first. This used to be
-    // the hard case: index generation ran INSIDE the commit, so B's commit had
-    // to reconcile an index for a project visible in neither HEAD nor B's own
-    // changeset — handled by a seed-side orphan prune whose accepted cost was a
-    // one-directional `tree ⊇ index` divergence.
+    // Session A creates a project and does not commit; session B separately
+    // writes two `INDEX.md`-shaped paths (standing in for the retired
+    // `rdm index` command, which used to produce this exact shape) and
+    // commits first. This used to be the hard case: index generation ran
+    // INSIDE the commit, so B's commit had to reconcile an index for a
+    // project visible in neither HEAD nor B's own changeset — handled by a
+    // seed-side orphan prune whose accepted cost was a one-directional
+    // `tree ⊇ index` divergence.
     //
     // Nothing regenerates at commit time any more, so the hazard is
     // structurally absent rather than defended against: B's `INDEX.md` is a
     // file B wrote on disk, journaled like any other, and B's commit lands
     // exactly B's own paths. These tests are kept, and re-aimed at that
     // stronger and simpler property.
+
+    /// Writes `INDEX.md` and `projects/<project>/INDEX.md` as two ordinary
+    /// staged writes and commits them, standing in for a run of the retired
+    /// `rdm index` command (which produced exactly this shape: a root index
+    /// linking to each project's index, and a project index listing its
+    /// items).
+    fn write_fake_index(store: &mut GitStore, project: &str, item_slug: &str) {
+        store
+            .write(
+                &RelPath::new("INDEX.md").unwrap(),
+                format!("# Plan Index\n\n- [{project}](projects/{project}/INDEX.md)\n"),
+            )
+            .unwrap();
+        store
+            .write(
+                &RelPath::new(&format!("projects/{project}/INDEX.md")).unwrap(),
+                format!("# Project: {project}\n\n- {item_slug}\n"),
+            )
+            .unwrap();
+        store.commit().unwrap();
+    }
 
     /// Arranges the three-session fixture and returns B's store, uncommitted.
     ///
@@ -4638,10 +4663,9 @@ with its new content identity: {after:?}"
 
         let mut store_b = switch_session(dir, b_id);
         make_task_in(&mut store_b, "alt", "b-task");
-        // Mutations write no index, so B runs the explicit generation
-        // (`rdm index`) to put both index paths in its changeset as ordinary
-        // authored writes.
-        rdm_core::ops::index::generate_index(&mut store_b).unwrap();
+        // Mutations write no index, so B writes the two index-shaped paths
+        // itself to put both in its changeset as ordinary authored writes.
+        write_fake_index(&mut store_b, "alt", "b-task");
         store_b
     }
 
@@ -4717,7 +4741,7 @@ with its new content identity: {after:?}"
     ///
     /// The property survives the deferral machinery that used to produce it:
     /// A's manifest lands on A's own commit, B's index rows were already
-    /// there, and a later `rdm index` refresh is an ordinary write.
+    /// there, and a later index refresh is an ordinary write.
     #[test]
     fn the_tree_converges_once_the_owning_session_lands_its_project() {
         let _guard = serial_scoped();
@@ -4731,7 +4755,7 @@ with its new content identity: {after:?}"
         drop(store_a);
 
         let mut store_b = switch_session(&dir, "unit-heal-b");
-        rdm_core::ops::index::generate_index(&mut store_b).unwrap();
+        write_fake_index(&mut store_b, "alt", "b-task");
         store_b
             .commit_changeset(Some("refresh the index"), &[])
             .unwrap();

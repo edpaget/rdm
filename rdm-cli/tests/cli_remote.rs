@@ -806,7 +806,7 @@ fn conflicts_no_merge_in_progress() {
 }
 
 #[test]
-fn remote_pull_regenerates_index() {
+fn remote_pull_writes_no_index() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
 
@@ -853,11 +853,33 @@ fn remote_pull_regenerates_index() {
         "extra.md should exist after pull"
     );
 
-    // INDEX.md should exist (regenerated after pull)
-    let index_file = dir.path().join("INDEX.md");
-    assert!(index_file.exists(), "INDEX.md should exist after pull");
+    // Nothing in rdm generates an index any more, so a pull that never had
+    // one on either side must not conjure one either.
+    assert!(
+        !dir.path().join("INDEX.md").exists(),
+        "pull must not write an INDEX.md that neither side had"
+    );
 
     let _ = bare_dir;
+}
+
+/// Writes literal `INDEX.md` + `projects/<project>/INDEX.md` content naming
+/// `roadmap`, standing in for the shape the retired `rdm index` command used
+/// to produce. Written directly to disk rather than through rdm, since
+/// nothing in rdm writes this content any more — the caller is responsible
+/// for sweeping these untracked/modified paths into a commit (e.g. via
+/// `rdm commit --all`).
+fn write_fake_index(dir: &std::path::Path, project: &str, roadmap: &str) {
+    std::fs::write(
+        dir.join("INDEX.md"),
+        format!("# Plan Index\n\n- [{project}](projects/{project}/INDEX.md)\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(format!("projects/{project}/INDEX.md")),
+        format!("# Project: {project}\n\n- {roadmap}\n"),
+    )
+    .unwrap();
 }
 
 /// Seeds a two-sided `projects/demo/INDEX.md` conflict in a LEGACY repo: HEAD
@@ -866,8 +888,7 @@ fn remote_pull_regenerates_index() {
 ///
 /// Returns the local plan repo and the bare remote (kept alive by the caller).
 /// The caller runs the merge itself, directly via `git merge` rather than
-/// `rdm remote pull`, whose porcelain regenerates `INDEX.md` again after a
-/// successful pull and would mask what is isolated here.
+/// `rdm remote pull`, which no longer touches `INDEX.md` at all.
 fn seed_legacy_index_conflict() -> (TempDir, TempDir) {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
@@ -889,17 +910,12 @@ fn seed_legacy_index_conflict() -> (TempDir, TempDir) {
         .args(["project", "create", "demo"])
         .assert()
         .success();
-    // Mutations regenerate no index, so the conflicting indexes have to be
-    // produced explicitly — otherwise no `INDEX.md` ever diverges and the
-    // merge assertions below would pass vacuously.
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .arg("index")
-        .assert()
-        .success();
-    // `--all` sweeps the hand-written `.gitattributes`, which belongs to no
-    // changeset.
+    // Nothing in rdm writes an index any more, so the conflicting indexes
+    // have to be produced explicitly — otherwise no `INDEX.md` ever diverges
+    // and the merge assertions below would pass vacuously.
+    write_fake_index(dir.path(), "demo", "(no roadmaps yet)");
+    // `--all` sweeps the hand-written `.gitattributes` and INDEX.md files,
+    // which belong to no changeset.
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -942,16 +958,11 @@ fn seed_legacy_index_conflict() -> (TempDir, TempDir) {
         .args(["roadmap", "create", "clone-roadmap", "--project", "demo"])
         .assert()
         .success();
+    write_fake_index(clone_dir.path(), "demo", "clone-roadmap");
     rdm()
         .arg("--root")
         .arg(clone_dir.path())
-        .arg("index")
-        .assert()
-        .success();
-    rdm()
-        .arg("--root")
-        .arg(clone_dir.path())
-        .args(["commit", "-m", "add clone-roadmap"])
+        .args(["commit", "--all", "-m", "add clone-roadmap"])
         .assert()
         .success();
     git_cmd()
@@ -968,16 +979,11 @@ fn seed_legacy_index_conflict() -> (TempDir, TempDir) {
         .args(["roadmap", "create", "local-roadmap", "--project", "demo"])
         .assert()
         .success();
+    write_fake_index(dir.path(), "demo", "local-roadmap");
     rdm()
         .arg("--root")
         .arg(dir.path())
-        .arg("index")
-        .assert()
-        .success();
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .args(["commit", "-m", "add local-roadmap"])
+        .args(["commit", "--all", "-m", "add local-roadmap"])
         .assert()
         .success();
 
@@ -1079,29 +1085,30 @@ fn a_legacy_repo_merges_index_md_via_gits_builtin_three_way() {
         "git must say nothing about the absent driver, got: {stderr}"
     );
 
-    // The recovery path is real and one command long: `rdm resolve` marks the
-    // file resolved, completes the merge, and regenerates a correct index.
+    // The recovery path is real and one command long: `rdm resolve` marks
+    // the file resolved and completes the merge, taking the content as the
+    // user (or their merge tool) left it — nothing regenerates it afterward.
+    std::fs::write(
+        &index_file,
+        "# Project: demo\n\n- local-roadmap\n- clone-roadmap\n",
+    )
+    .unwrap();
     rdm()
         .arg("--root")
         .arg(dir.path())
         .args(["resolve", "projects/demo/INDEX.md"])
         .assert()
         .success();
-    rdm()
-        .arg("--root")
-        .arg(dir.path())
-        .arg("index")
-        .assert()
-        .success();
 
     let converged = std::fs::read_to_string(&index_file).unwrap();
     assert!(
         !converged.contains("<<<<<<<"),
-        "the regenerated index must carry no conflict markers, got: {converged}"
+        "the resolved index must carry no conflict markers, got: {converged}"
     );
     assert!(
         converged.contains("local-roadmap") && converged.contains("clone-roadmap"),
-        "the regenerated index must carry both sides' roadmaps, got: {converged}"
+        "the resolved index must carry both sides' roadmaps exactly as the user \
+         wrote them, got: {converged}"
     );
 
     let _ = bare_dir;

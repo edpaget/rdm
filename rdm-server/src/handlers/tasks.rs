@@ -158,8 +158,6 @@ pub async fn list_tasks(
             Ok(hal_response(resource))
         }
         ResponseFormat::Html => {
-            // Same counting pass as INDEX.md generation, so the two
-            // surfaces always agree.
             let review_counts = rdm_core::ops::reviews::count_open_reviews(&store, &project)
                 .map_err(|e| error_response(e, format))?;
             let rows: Vec<TaskRow> = filtered

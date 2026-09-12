@@ -1711,7 +1711,7 @@ mod tests {
     #[test]
     fn count_open_reviews_store_pass_matches_in_memory_pass() {
         // The store-reading entry point and the slice-based pass must agree:
-        // INDEX generation and the web handlers may enter through either.
+        // the web handlers may enter through either.
         let mut store = setup_store();
         let (id, doc) = counted_review(
             "2026-07-01-1200-aaaa",

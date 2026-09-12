@@ -426,7 +426,7 @@ pub struct RoadmapSummaryView {
     /// CSS class for the priority badge, if set.
     pub priority_class: Option<String>,
     /// Number of open (submitted) reviews on the roadmap, phase-targeted
-    /// reviews rolled up (same numbers as `INDEX.md`).
+    /// reviews rolled up.
     pub open_reviews: usize,
     /// Number of open comments across those reviews.
     pub open_comments: usize,
@@ -593,8 +593,7 @@ pub struct TaskRow {
     pub priority: String,
     /// CSS class for the priority badge.
     pub priority_class: String,
-    /// Number of open (submitted) reviews on the task (same numbers as
-    /// `INDEX.md`).
+    /// Number of open (submitted) reviews on the task.
     pub open_reviews: usize,
     /// Number of open comments across those reviews.
     pub open_comments: usize,

@@ -21,7 +21,6 @@ pub mod backlinks;
 pub mod backlog;
 pub mod config;
 pub mod describe;
-pub mod index;
 pub mod info;
 pub mod init;
 pub mod link;
@@ -262,9 +261,9 @@ pub fn commit_mutation<T>(
 ///
 /// Counts `report.user`. rdm has no generated-path class, so in the
 /// whole-tree view that is every dirty path — a stale tracked `INDEX.md` left
-/// by an old `rdm index` (or by a plan repo predating the removal of
-/// per-mutation regeneration) now counts toward the hint like any other
-/// uncommitted file, and `rdm status` lists it by name.
+/// over from a plan repo that predates the removal of `rdm index` now counts
+/// toward the hint like any other uncommitted file, and `rdm status` lists it
+/// by name.
 #[cfg(feature = "git")]
 pub fn maybe_print_uncommitted_hint(store: &AppStore) {
     if let Ok(report) = store.git().git_status_report()
@@ -687,8 +686,8 @@ pub fn apply_done_directives(
         }
     }
 
-    // Surface any flush / index-regen failure before attempting the commit —
-    // if the store never flushed cleanly there is nothing safe to commit.
+    // Surface any flush failure before attempting the commit — if the store
+    // never flushed cleanly there is nothing safe to commit.
     if let Err(e) = outcome.finalize_result {
         let msg = format!("{e}");
         logger.log(hook, "batch-commit-error", &[("error", msg.as_str())]);

@@ -9,8 +9,8 @@ use crate::commands;
 ///
 /// # Errors
 ///
-/// Returns an error if the store cannot be opened, conflict resolution fails,
-/// or post-merge index regeneration fails.
+/// Returns an error if the store cannot be opened or conflict resolution
+/// fails.
 pub fn run(root: &Path, file: String) -> Result<()> {
     let mut store = commands::make_store(root)?;
     let result = store
@@ -20,11 +20,6 @@ pub fn run(root: &Path, file: String) -> Result<()> {
     println!("Resolved: {}", result.path);
     if result.merge_completed {
         println!("All conflicts resolved — merge complete.");
-        // Regenerate INDEX.md after merge completion. KEPT deliberately:
-        // post-merge reconciliation, where HEAD moved under the working tree,
-        // not a mutation; its retirement rides with the merge-driver work.
-        rdm_core::ops::index::generate_index(&mut store)
-            .context("failed to regenerate INDEX.md after merge")?;
     } else {
         println!(
             "{} conflict(s) remaining. Run `rdm conflicts` to see them.",

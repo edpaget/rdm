@@ -934,11 +934,10 @@ impl GitRepo {
     /// that are added, modified, or deleted.
     ///
     /// Deliberately `pub(crate)`: outside this crate the only entry point is
-    /// [`git_status_report`](Self::git_status_report), so no out-of-crate call
-    /// site can reacquire a list that conflates generated `INDEX.md` output
-    /// with the user's own edits. The three legitimate raw callers are all
-    /// in-crate whole-tree operations — [`git_commit`](Self::git_commit),
-    /// [`git_discard`](Self::git_discard), and the pull clean-tree guard.
+    /// [`git_status_report`](Self::git_status_report). The three legitimate
+    /// raw callers are all in-crate whole-tree operations —
+    /// [`git_commit`](Self::git_commit), [`git_discard`](Self::git_discard),
+    /// and the pull clean-tree guard.
     ///
     /// # Errors
     ///
@@ -1158,10 +1157,9 @@ impl GitRepo {
     /// guard can only refuse a *comparison it can make*, never a missing one.
     ///
     /// The check applies to **every** path the caller lists, with no path
-    /// class exempt. An `INDEX.md` reaches a changeset only through an
-    /// explicit `rdm index` (or a pull/resolve reconciliation), and nothing
-    /// regenerates one afterwards to paper over a clobber — so it needs the
-    /// same guard as any other path.
+    /// class exempt. Nothing in rdm generates an `INDEX.md` any more — one
+    /// present in a changeset is an ordinary tracked path a session wrote
+    /// deliberately, so it needs the same guard as any other path.
     ///
     /// Returns `(restored, skipped)` — the paths actually restored (or
     /// removed, for a path this changeset added) and the paths left
