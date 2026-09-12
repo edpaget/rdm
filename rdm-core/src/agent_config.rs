@@ -4045,8 +4045,7 @@ mod tests {
                     .unwrap_or(rest.len());
                 let named = &rest[..end];
                 assert!(
-                    engine_stems.iter().any(|s| s == named)
-                        || LINK_SCHEME_KINDS.contains(&named),
+                    engine_stems.iter().any(|s| s == named) || LINK_SCHEME_KINDS.contains(&named),
                     "`rdm:{named}` names no emitted engine and no known link-scheme kind"
                 );
             }

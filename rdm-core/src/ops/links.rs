@@ -214,7 +214,7 @@ pub fn resolve_code_link(
 }
 
 /// Resolves any [`Link`] — item or code — against the store. The single
-/// entry point later CLI/server/MCP phases dispatch through regardless of
+/// entry point later CLI/server phases dispatch through regardless of
 /// link kind.
 ///
 /// `containing_commit` is the stamped `commit` of the document the link was

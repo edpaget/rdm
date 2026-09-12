@@ -261,7 +261,7 @@ pub struct LinkDiagnostic {
 }
 
 /// The outcome of resolving a [`Link`] against a project's store — what a
-/// consumer (CLI/server/MCP) needs to act on it.
+/// consumer (CLI/server) needs to act on it.
 ///
 /// Produced by [`crate::ops::links::resolve_link`] and its narrower
 /// [`crate::ops::links::resolve_item_link`] /
