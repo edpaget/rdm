@@ -390,9 +390,16 @@ fn doc_ref_view(store: &impl Store, project: &str, doc: &DocRef) -> Option<Refer
         }
         DocRef::Review { id, comment } => {
             let d = rdm_core::io::load_review(store, project, id).ok()?;
-            let mut href = format!("/projects/{project}/reviews/{id}");
-            if let Some(c) = comment {
-                href.push_str(&format!("#comment-{id}-c{c}"));
+            // Reviews render inline on their *target*'s detail page (see
+            // `review_views::cross_link`), never at a standalone HTML
+            // route -- `/projects/{project}/reviews/{id}` is JSON-only
+            // (`handlers::reviews::get_review`). Point at the page the
+            // review actually appears on, anchored to the comment or the
+            // review's own summary.
+            let mut href = crate::review_views::target_detail_href(project, &d.frontmatter.target);
+            match comment {
+                Some(c) => href.push_str(&format!("#comment-{id}-c{c}")),
+                None => href.push_str(&format!("#review-{id}")),
             }
             Some(ReferencedByEntry {
                 href,
@@ -511,6 +518,60 @@ mod tests {
         );
     }
 
+    /// Configures `project`'s `source` field directly on disk (there is no
+    /// public ops-level setter for it yet -- `Project::source` is written
+    /// only by `rdm project create`'s hardcoded `None`), so this end-to-end
+    /// test can drive a real `rdm:src/...@rev#L5-L12` link through the full
+    /// store-config -> resolve -> render pipeline the AC requires, rather
+    /// than a fabricated `RenderAction::CodeLink`.
+    fn seed_project_source(store: &mut FsStore, project: &str, repo: &str) {
+        let doc = rdm_core::document::Document {
+            frontmatter: rdm_core::model::Project {
+                name: project.to_string(),
+                title: "Demo".to_string(),
+                source: Some(rdm_core::model::Source {
+                    repo: repo.to_string(),
+                    default_branch: None,
+                }),
+            },
+            body: String::new(),
+        };
+        let content = doc.render().unwrap();
+        let path =
+            rdm_core::store::RelPath::new(&format!("projects/{project}/project.md")).unwrap();
+        rdm_core::store::Store::write(store, &path, content).unwrap();
+        rdm_core::store::Store::commit(store).unwrap();
+    }
+
+    #[test]
+    fn code_link_with_source_resolves_to_live_github_permalink_html() {
+        let (_dir, mut store) = tmp_store();
+        seed_project_source(&mut store, "demo", "https://github.com/acme/demo");
+
+        let body = "See [src](rdm:src/a/b.rs@abc123#L5-L12) for details.";
+        let links = resolve_body_links(&store, "demo", None, body).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].action,
+            RenderAction::CodeLink {
+                web_url: Some("https://github.com/acme/demo/blob/abc123/a/b.rs#L5-L12".to_string()),
+                no_link_display: "a/b.rs@abc123".to_string(),
+            }
+        );
+
+        // Drive the resolved action through the actual render pipeline, so
+        // the whole chain -- store config, resolution, and the rendered
+        // `<a>` markup a browser would follow -- is proven live, not
+        // asserted piecemeal.
+        let html = crate::markdown::render_markdown_with_links(body, &links);
+        assert!(
+            html.contains(
+                r#"<a class="rdm-link-code" target="_blank" rel="noopener" href="https://github.com/acme/demo/blob/abc123/a/b.rs#L5-L12">src</a>"#
+            ),
+            "got: {html}"
+        );
+    }
+
     #[test]
     fn repeated_item_link_is_memoized() {
         let (_dir, mut store) = tmp_store();
@@ -545,6 +606,58 @@ mod tests {
             "/projects/demo/roadmaps/auth/phases/phase-1-design"
         );
         assert!(entries[0].title.contains("Design"));
+    }
+
+    #[test]
+    fn referenced_by_finds_review_comment_link_with_working_html_href() {
+        let (_dir, mut store) = tmp_store();
+        seed_task(&mut store, "fix-bug", "Fix bug");
+        seed_task(&mut store, "reviewed-task", "Reviewed task");
+
+        let review = rdm_core::ops::reviews::create_review(
+            &mut store,
+            rdm_core::ops::reviews::CreateReview {
+                project: "demo",
+                author: "ed",
+                target: ItemRef::Task {
+                    slug: "reviewed-task".to_string(),
+                },
+                body: None,
+            },
+        )
+        .unwrap();
+        let review_id = review.frontmatter.id.clone();
+        rdm_core::ops::reviews::add_comment(
+            &mut store,
+            rdm_core::ops::reviews::AddComment {
+                project: "demo",
+                review_id: &review_id,
+                body: "See [the other task](rdm:task/fix-bug).",
+                doc: None,
+                anchor: None,
+            },
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+
+        // The review targets `reviewed-task`, so its comment must show up
+        // as a "Referenced by" entry on `fix-bug`'s page, pointing at a
+        // real HTML anchor on the REVIEW'S TARGET's detail page -- never
+        // the JSON-only `/reviews/{id}` route.
+        let entries = referenced_by(
+            &store,
+            "demo",
+            &ItemRef::Task {
+                slug: "fix-bug".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].href,
+            format!("/projects/demo/tasks/reviewed-task#comment-{review_id}-c1")
+        );
+        assert!(entries[0].title.contains("Review by"));
     }
 
     #[test]

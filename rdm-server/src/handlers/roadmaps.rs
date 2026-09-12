@@ -2369,4 +2369,72 @@ mod tests {
             "got: {html}"
         );
     }
+
+    #[tokio::test]
+    async fn get_roadmap_json_includes_link_relations() {
+        let (_dir, state) = setup();
+        let mut store = state.store();
+        rdm_core::ops::task::create_task(
+            &mut store,
+            rdm_core::ops::task::CreateTask {
+                project: "demo",
+                slug: "referenced",
+                title: "Referenced",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::roadmap::update_roadmap(
+            &mut store,
+            "demo",
+            "alpha",
+            rdm_core::ops::BodyUpdate::Set("See [the task](rdm:task/referenced).".to_string()),
+            rdm_core::ops::PriorityUpdate::Keep,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
+        .unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "beta",
+                title: "Beta Roadmap",
+                body: Some("See [alpha](rdm:roadmap/alpha)."),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get("/projects/demo/roadmaps/alpha")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            json["_links"]["rdm:link"]["href"],
+            "/projects/demo/tasks/referenced"
+        );
+        let links_embedded = json["_embedded"]["links"].as_array().unwrap();
+        assert_eq!(links_embedded.len(), 1);
+        assert_eq!(links_embedded[0]["kind"], "item");
+        assert_eq!(links_embedded[0]["exists"], true);
+
+        assert_eq!(
+            json["_links"]["rdm:backlink"]["href"],
+            "/projects/demo/roadmaps/beta"
+        );
+        let backlinks_embedded = json["_embedded"]["backlinks"].as_array().unwrap();
+        assert_eq!(backlinks_embedded.len(), 1);
+        assert_eq!(backlinks_embedded[0]["kind"], "roadmap");
+    }
 }
