@@ -313,27 +313,64 @@ pub fn is_ancestor_at(path: &Path, ancestor_sha: &str, descendant_sha: &str) -> 
 
 /// Whether `file_path` exists at `rev` in the repository at `repo_path`.
 ///
-/// Shells out to `git cat-file -e <rev>:<file_path>`. Unlike
-/// [`is_ancestor_of_head_at`] and its siblings, *any* nonzero exit here is
-/// treated as "not found" (`Ok(false)`) rather than an error — `cat-file -e`
-/// exits nonzero uniformly whether `rev` doesn't exist, `file_path` doesn't
-/// exist at `rev`, or `rev:file_path` names something other than a blob, and
-/// none of those is a tool failure worth distinguishing from plain
+/// Shells out to `git cat-file -e <rev>:<file_path>`, but first confirms
+/// `rev` itself resolves in this checkout (`git cat-file -e <rev>^{commit}`)
+/// — a shallow or partial clone (e.g. `actions/checkout` with
+/// `fetch-depth: 1`) can lack a historical commit entirely, which must not
+/// be misreported as "the path was deleted". When `rev` doesn't resolve,
+/// returns `Ok(None)` ("inconclusive" — the caller should treat this like a
+/// transient git hiccup, not a genuine missing-path finding) rather than
+/// folding it into `Ok(Some(false))`.
+///
+/// Once `rev` is confirmed to resolve, *any* nonzero exit from the
+/// path-level `cat-file -e` is treated as "not found" (`Ok(Some(false))`)
+/// rather than an error — it exits nonzero uniformly whether `file_path`
+/// doesn't exist at `rev` or `rev:file_path` names something other than a
+/// blob, and neither is a tool failure worth distinguishing from plain
 /// not-found for this function's caller (`rdm link check`'s path
-/// verification, which folds every such case into one "missing at pinned
-/// rev" finding). Only a spawn failure (git not installed, or `repo_path`
+/// verification). Only a spawn failure (git not installed, or `repo_path`
 /// not inside a git repository) is an [`Err`].
 ///
 /// # Errors
 ///
 /// Returns [`Error::Git`] if git is not installed or `repo_path` is not
 /// inside a git repository.
-pub fn path_exists_at_rev(repo_path: &Path, rev: &str, file_path: &str) -> Result<bool> {
+pub fn path_exists_at_rev(repo_path: &Path, rev: &str, file_path: &str) -> Result<Option<bool>> {
+    let rev_check = run_git_at(repo_path, &["cat-file", "-e", &format!("{rev}^{{commit}}")])?;
+    if !rev_check.status.success() {
+        return Ok(None);
+    }
     let output = run_git_at(
         repo_path,
         &["cat-file", "-e", &format!("{rev}:{file_path}")],
     )?;
-    Ok(output.status.success())
+    Ok(Some(output.status.success()))
+}
+
+/// The URL configured for `remote` in the repository at `repo_path`, or
+/// `None` if no such remote is configured.
+///
+/// Shells out to `git remote get-url <remote>`. A nonzero exit (no such
+/// remote) is `Ok(None)`, not an error — only a spawn failure (git not
+/// installed, or `repo_path` not inside a git repository) is an [`Err`].
+/// Used by `rdm link check`'s path verification to confirm the checkout it
+/// found is actually the project's configured `source.repo`, not merely
+/// *some* git repository that happens to contain the invoking `cwd`.
+///
+/// # Errors
+///
+/// Returns [`Error::Git`] if git is not installed or `repo_path` is not
+/// inside a git repository.
+pub fn remote_url(repo_path: &Path, remote: &str) -> Result<Option<String>> {
+    let output = run_git_at(repo_path, &["remote", "get-url", remote])?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if url.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(url))
 }
 
 #[cfg(test)]
@@ -550,7 +587,10 @@ mod tests {
         let dir = init_repo();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         let sha = commit_file(dir.path(), "src/a.rs", "fn main() {}");
-        assert!(path_exists_at_rev(dir.path(), &sha, "src/a.rs").unwrap());
+        assert_eq!(
+            path_exists_at_rev(dir.path(), &sha, "src/a.rs").unwrap(),
+            Some(true)
+        );
     }
 
     #[test]
@@ -558,7 +598,10 @@ mod tests {
         let dir = init_repo();
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         let sha = commit_file(dir.path(), "src/a.rs", "fn main() {}");
-        assert!(!path_exists_at_rev(dir.path(), &sha, "src/does-not-exist.rs").unwrap());
+        assert_eq!(
+            path_exists_at_rev(dir.path(), &sha, "src/does-not-exist.rs").unwrap(),
+            Some(false)
+        );
     }
 
     #[test]
@@ -566,16 +609,49 @@ mod tests {
         let dir = init_repo();
         let base_sha = commit_file(dir.path(), "base.md", "base");
         commit_file(dir.path(), "later.md", "later");
-        assert!(!path_exists_at_rev(dir.path(), &base_sha, "later.md").unwrap());
+        assert_eq!(
+            path_exists_at_rev(dir.path(), &base_sha, "later.md").unwrap(),
+            Some(false)
+        );
     }
 
     #[test]
-    fn path_exists_at_rev_false_for_unresolvable_rev() {
+    fn path_exists_at_rev_none_for_unresolvable_rev() {
         let dir = init_repo();
         commit_file(dir.path(), "init.md", "init");
-        // `git cat-file -e <bogus>:<path>` exits nonzero for an
-        // unresolvable rev exactly as it does for a missing path — both
-        // fold into `Ok(false)` per this function's contract.
-        assert!(!path_exists_at_rev(dir.path(), "not-a-rev", "init.md").unwrap());
+        // An unresolvable rev is inconclusive, not "missing" — distinct
+        // from a rev that resolves but lacks the path (see
+        // `path_exists_at_rev_false_for_missing_path`), so a shallow clone
+        // missing the pinned commit is never misreported as a deleted file.
+        assert_eq!(
+            path_exists_at_rev(dir.path(), "not-a-rev", "init.md").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn remote_url_returns_configured_origin() {
+        let dir = init_repo();
+        commit_file(dir.path(), "init.md", "init");
+        git(
+            dir.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.com/org/repo.git",
+            ],
+        );
+        assert_eq!(
+            remote_url(dir.path(), "origin").unwrap(),
+            Some("https://example.com/org/repo.git".to_string())
+        );
+    }
+
+    #[test]
+    fn remote_url_none_when_remote_absent() {
+        let dir = init_repo();
+        commit_file(dir.path(), "init.md", "init");
+        assert_eq!(remote_url(dir.path(), "origin").unwrap(), None);
     }
 }

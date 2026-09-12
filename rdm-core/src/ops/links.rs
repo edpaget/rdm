@@ -46,23 +46,81 @@ pub fn resolve_item_link(store: &impl Store, project: &str, target: &ItemRef) ->
         ItemRef::Roadmap { roadmap } => store.exists(&crate::paths::roadmap_path(project, roadmap)),
         ItemRef::Task { slug } => store.exists(&crate::paths::task_path(project, slug)),
         ItemRef::Phase { roadmap, stem } => {
-            match crate::ops::phase::resolve_phase_stem(store, project, roadmap, stem) {
-                Ok(resolved_stem) => {
-                    store.exists(&crate::paths::phase_path(project, roadmap, &resolved_stem))
-                }
-                // Unknown roadmap, or a phase number that doesn't match any
-                // phase in it — both are "doesn't exist", not a store
-                // failure.
-                Err(
-                    crate::error::Error::RoadmapNotFound(_) | crate::error::Error::PhaseNotFound(_),
-                ) => false,
-                Err(e) => return Err(e),
-            }
+            let (resolved_stem, found) = resolve_phase_stem_lenient(store, project, roadmap, stem)?;
+            found && store.exists(&crate::paths::phase_path(project, roadmap, &resolved_stem))
         }
     };
     Ok(Resolved::Item {
         target: target.clone(),
         exists,
+    })
+}
+
+/// Resolves a possibly-numeric phase stem to the roadmap's canonical stem,
+/// via [`crate::ops::phase::resolve_phase_stem`], folding an unknown roadmap
+/// or an unmatched phase number into "not found" (`found: false`, `stem`
+/// returned as given) rather than propagating them as errors — the same
+/// leniency [`resolve_item_link`] has always applied. Any other error (a
+/// genuine store failure, e.g. `Io` or a `FrontmatterParse`) is propagated.
+///
+/// Shared by [`resolve_item_link`] (existence check) and [`item_ref_path`]
+/// (path lookup) so numeric-phase-stem normalization and its error-folding
+/// policy live in exactly one place.
+///
+/// # Errors
+///
+/// Propagates any [`crate::ops::phase::resolve_phase_stem`] error other than
+/// [`crate::error::Error::RoadmapNotFound`]/[`crate::error::Error::PhaseNotFound`].
+fn resolve_phase_stem_lenient(
+    store: &impl Store,
+    project: &str,
+    roadmap: &str,
+    stem: &str,
+) -> Result<(String, bool)> {
+    match crate::ops::phase::resolve_phase_stem(store, project, roadmap, stem) {
+        Ok(resolved_stem) => Ok((resolved_stem, true)),
+        // Unknown roadmap, or a phase number that doesn't match any phase in
+        // it — both are "doesn't exist", not a store failure.
+        Err(crate::error::Error::RoadmapNotFound(_) | crate::error::Error::PhaseNotFound(_)) => {
+            Ok((stem.to_string(), false))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Computes the plan-repo-relative path an [`ItemRef`] names — the single
+/// authoritative implementation of "what path does this reference resolve
+/// to", shared by [`resolve_item_link`]'s own existence check (via
+/// [`resolve_phase_stem_lenient`]) and any caller that additionally wants
+/// the path itself (`rdm-cli`'s `link resolve`/`link list`, which pass it
+/// through to [`crate::json::resolved_to_json`] since
+/// [`Resolved::Item`](crate::link::Resolved::Item) doesn't carry one — see
+/// that type's doc comment).
+///
+/// This does not check whether the resulting path exists — see
+/// [`resolve_item_link`] for that. A dangling roadmap or unmatched numeric
+/// phase stem is never an error: resolution falls back to the stem exactly
+/// as written, mirroring `resolve_item_link`'s never-errors-on-dangling
+/// contract, so the returned path may not correspond to any real file.
+///
+/// # Errors
+///
+/// Propagates any [`crate::ops::phase::resolve_phase_stem`] error other than
+/// `RoadmapNotFound`/`PhaseNotFound` (e.g. `Io`, `FrontmatterParse`) when
+/// `target` is a [`ItemRef::Phase`] with a numeric stem.
+pub fn item_ref_path(
+    store: &impl Store,
+    project: &str,
+    target: &ItemRef,
+) -> Result<crate::store::RelPath> {
+    Ok(match target {
+        ItemRef::Roadmap { roadmap } => crate::paths::roadmap_path(project, roadmap),
+        ItemRef::Task { slug } => crate::paths::task_path(project, slug),
+        ItemRef::Phase { roadmap, stem } => {
+            let (resolved_stem, _found) =
+                resolve_phase_stem_lenient(store, project, roadmap, stem)?;
+            crate::paths::phase_path(project, roadmap, &resolved_stem)
+        }
     })
 }
 
@@ -1062,6 +1120,111 @@ mod tests {
                 exists: true
             }
         );
+    }
+
+    // --- item_ref_path: the shared path-lookup `resolve_item_link` and
+    // `rdm-cli`'s `link resolve`/`link list` both build on ---
+
+    #[test]
+    fn item_ref_path_roadmap_and_task() {
+        let store = setup();
+        assert_eq!(
+            item_ref_path(
+                &store,
+                "demo",
+                &ItemRef::Roadmap {
+                    roadmap: "auth".to_string()
+                }
+            )
+            .unwrap()
+            .as_str(),
+            "projects/demo/roadmaps/auth/roadmap.md"
+        );
+        assert_eq!(
+            item_ref_path(
+                &store,
+                "demo",
+                &ItemRef::Task {
+                    slug: "fix-login".to_string()
+                }
+            )
+            .unwrap()
+            .as_str(),
+            "projects/demo/tasks/fix-login.md"
+        );
+    }
+
+    #[test]
+    fn item_ref_path_normalizes_a_numeric_phase_stem_to_the_canonical_one() {
+        let mut store = setup();
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            crate::ops::CreateRoadmap {
+                project: "demo",
+                slug: "auth",
+                title: "Auth",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            crate::ops::CreatePhase {
+                project: "demo",
+                roadmap: "auth",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: None,
+                tags: None,
+                difficulty: crate::ops::DifficultyUpdate::Keep,
+                model: crate::ops::ModelTierUpdate::Keep,
+            },
+        )
+        .unwrap();
+        // Same path whether the caller names the phase by its canonical
+        // stem or by its bare number — mirrors `resolve_item_link`'s own
+        // existence check treating the two forms as equivalent.
+        let by_number = item_ref_path(
+            &store,
+            "demo",
+            &ItemRef::Phase {
+                roadmap: "auth".to_string(),
+                stem: "1".to_string(),
+            },
+        )
+        .unwrap();
+        let by_stem = item_ref_path(
+            &store,
+            "demo",
+            &ItemRef::Phase {
+                roadmap: "auth".to_string(),
+                stem: "phase-1-design".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(by_number, by_stem);
+        assert_eq!(
+            by_stem.as_str(),
+            "projects/demo/roadmaps/auth/phase-1-design.md"
+        );
+    }
+
+    #[test]
+    fn item_ref_path_falls_back_to_the_stem_as_written_for_a_dangling_phase_reference() {
+        let store = setup();
+        // Unknown roadmap: never an error, per `resolve_item_link`'s
+        // never-errors-on-dangling contract, which this shares.
+        let path = item_ref_path(
+            &store,
+            "demo",
+            &ItemRef::Phase {
+                roadmap: "ghost".to_string(),
+                stem: "3".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(path.as_str(), "projects/demo/roadmaps/ghost/3.md");
     }
 
     // --- resolve_link: the single dispatch entry point ---

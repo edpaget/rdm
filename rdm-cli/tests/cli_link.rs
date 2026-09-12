@@ -74,6 +74,21 @@ fn create_task(plan: &Path, slug: &str, title: &str, body: &str) {
         .success();
 }
 
+/// Hand-edits `projects/<project>/project.md`'s frontmatter to add a
+/// `source: { repo: <repo> }` block — there is no CLI command to set a
+/// project's `source` yet, so path-verification fixtures write the file
+/// directly, the same way other fixtures in this crate reach past the CLI
+/// for setup the product surface doesn't yet expose.
+fn set_project_source(plan: &Path, project: &str, repo: &str) {
+    let path = plan.join("projects").join(project).join("project.md");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let rest = content.strip_prefix("---\n").expect("frontmatter open");
+    let end = rest.find("\n---").expect("frontmatter close");
+    let (frontmatter, tail) = rest.split_at(end);
+    let new_content = format!("---\n{frontmatter}\nsource:\n  repo: \"{repo}\"{tail}");
+    std::fs::write(&path, new_content).unwrap();
+}
+
 fn json_stdout(cmd: &mut Command) -> Value {
     let output = cmd.assert().get_output().stdout.clone();
     serde_json::from_slice(&output).unwrap_or_else(|e| {
@@ -255,6 +270,25 @@ fn list_resolves_outgoing_links_and_handles_empty_document() {
             .any(|e| e["uri"] == "rdm:task/also-missing" && e["exists"] == false)
     );
 
+    // Same populated document, default (text) format: a summary line plus
+    // one rendered `format_resolved` line per link, showing the resolved
+    // path and exists/missing state — not just the empty-list branch.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["link", "list", "--on", "task/referrer", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "task/referrer: 2 outgoing link(s)",
+        ))
+        .stdout(predicate::str::contains(
+            "rdm:task/fix-login -> projects/demo/tasks/fix-login.md (exists)",
+        ))
+        .stdout(predicate::str::contains(
+            "rdm:task/also-missing -> projects/demo/tasks/also-missing.md (missing)",
+        ));
+
     // Empty document: JSON `[]`, text summary line, both exit 0.
     let empty_json = json_stdout(rdm().arg("--root").arg(plan.path()).args([
         "link",
@@ -301,6 +335,72 @@ fn resolve_emits_documented_json_shape() {
             "line": 18
         })
     );
+}
+
+// --- `resolve`'s JSON also populates `end_line`/`web_url` for a line-range
+// code link when the project has a `source` configured ---
+
+#[test]
+fn resolve_reports_end_line_and_web_url_for_a_line_range_when_source_configured() {
+    let plan = init_plan_repo();
+    set_project_source(plan.path(), "demo", "https://github.com/acme/widgets");
+
+    let json = json_stdout(rdm().arg("--root").arg(plan.path()).args([
+        "link",
+        "resolve",
+        "rdm:src/a/b.rs@abc#L5-L12",
+        "--project",
+        "demo",
+        "--format",
+        "json",
+    ]));
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "kind": "code",
+            "path": "a/b.rs",
+            "rev": "abc",
+            "line": 5,
+            "end_line": 12,
+            "web_url": "https://github.com/acme/widgets/blob/abc/a/b.rs#L5-L12"
+        })
+    );
+}
+
+// --- `resolve`/`list`'s default (text) format renders both an item and a
+// code link via `format_resolved` — not just their JSON shapes ---
+
+#[test]
+fn resolve_default_format_renders_item_and_code_links_as_text() {
+    let plan = init_plan_repo();
+    create_task(plan.path(), "present", "Present", "Body.");
+    set_project_source(plan.path(), "demo", "https://github.com/acme/widgets");
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["link", "resolve", "rdm:task/present", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "rdm:task/present -> projects/demo/tasks/present.md (exists)",
+        ));
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "link",
+            "resolve",
+            "rdm:src/a/b.rs@abc#L5-L12",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "rdm:src/a/b.rs@abc#L5-L12 -> a/b.rs@abc#L5-L12 (https://github.com/acme/widgets/blob/abc/a/b.rs#L5-L12)",
+        ));
 }
 
 #[test]
@@ -404,6 +504,10 @@ fn check_inside_checkout_reports_missing_at_rev_distinct_from_dangling() {
     std::fs::write(src.path().join("README.md"), "# project").unwrap();
     git(src.path(), &["add", "."]);
     git(src.path(), &["commit", "-m", "initial"]);
+    // The project must be configured with this checkout as its source, or
+    // path verification correctly refuses to trust an unrelated checkout —
+    // see `check_inside_a_non_matching_checkout_skips_verification`.
+    set_project_source(plan.path(), "demo", &src.path().to_string_lossy());
 
     create_task(
         plan.path(),
@@ -451,6 +555,82 @@ fn check_inside_checkout_reports_missing_at_rev_distinct_from_dangling() {
         .assert()
         .failure()
         .code(1);
+}
+
+#[test]
+fn check_inside_a_non_matching_checkout_skips_verification() {
+    let plan = init_plan_repo();
+
+    // The project's *actual* configured source, elsewhere on disk.
+    let configured_src = TempDir::new().unwrap();
+    git(configured_src.path(), &["init", "-b", "main"]);
+    std::fs::write(configured_src.path().join("README.md"), "# project").unwrap();
+    git(configured_src.path(), &["add", "."]);
+    git(configured_src.path(), &["commit", "-m", "initial"]);
+    set_project_source(
+        plan.path(),
+        "demo",
+        &configured_src.path().to_string_lossy(),
+    );
+
+    // An unrelated git checkout that happens to contain `cwd` — e.g. the
+    // plan repo itself is git-managed, or any other repo on the machine.
+    let unrelated = TempDir::new().unwrap();
+    git(unrelated.path(), &["init", "-b", "main"]);
+    std::fs::write(unrelated.path().join("README.md"), "# unrelated").unwrap();
+    git(unrelated.path(), &["add", "."]);
+    git(unrelated.path(), &["commit", "-m", "initial"]);
+
+    create_task(
+        plan.path(),
+        "code-link",
+        "Code link",
+        "Code: [src](rdm:src/does-not-exist.rs).",
+    );
+
+    let json = json_stdout(
+        rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .current_dir(unrelated.path())
+            .args([
+                "link",
+                "check",
+                "--on",
+                "task/code-link",
+                "--project",
+                "demo",
+                "--format",
+                "json",
+            ]),
+    );
+
+    // Never verified against the unrelated repo — no false "missing at
+    // rev" from a coincidentally-present-or-absent path in the wrong repo.
+    assert_eq!(json["missing_at_rev"], serde_json::json!([]));
+    assert!(
+        json["path_verification_skipped"]
+            .as_str()
+            .is_some_and(|s| s.contains("not the project's configured source")),
+        "expected a mismatch skip note: {json}"
+    );
+
+    // No dangling item link, no diagnostics, and the one code link's real
+    // status was never verified — exit 0.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(unrelated.path())
+        .args([
+            "link",
+            "check",
+            "--on",
+            "task/code-link",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
 }
 
 #[test]

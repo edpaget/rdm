@@ -21,6 +21,43 @@ use rdm_core::{display, json};
 use crate::paths;
 use crate::{AppStore, LinkCommand, OutputFormat};
 
+/// Trims a trailing `/` and a trailing `.git` (in that order) so a source
+/// URL/path can be compared for equality regardless of those two common
+/// stylistic variations — e.g. `https://example.com/org/repo` and
+/// `https://example.com/org/repo.git/` normalize to the same value. Not a
+/// full URL parse: it deliberately does not reconcile scheme differences
+/// (`git@host:org/repo.git` vs `https://host/org/repo`), so those still
+/// compare unequal.
+fn normalize_repo_locator(locator: &str) -> String {
+    locator
+        .trim_end_matches('/')
+        .trim_end_matches(".git")
+        .to_string()
+}
+
+/// Whether the git repository at `repo` is actually the project's
+/// configured `source.repo`, not merely *some* git repository that happens
+/// to contain the invoking `cwd`.
+///
+/// `source.repo` may name a filesystem path or a clone URL (see
+/// [`rdm_core::model::Source`]'s doc comment): a filesystem path is compared
+/// via canonicalized-path equality; otherwise `repo`'s configured `origin`
+/// remote (if any) is compared against `source.repo`, both normalized via
+/// [`normalize_repo_locator`].
+#[cfg(feature = "git")]
+fn repo_matches_source(repo: &std::path::Path, source_repo: &str) -> bool {
+    let source_path = std::path::Path::new(source_repo);
+    if source_path.is_dir()
+        && let (Ok(a), Ok(b)) = (repo.canonicalize(), source_path.canonicalize())
+    {
+        return a == b;
+    }
+    match rdm_git::remote_url(repo, "origin") {
+        Ok(Some(origin)) => normalize_repo_locator(&origin) == normalize_repo_locator(source_repo),
+        _ => false,
+    }
+}
+
 /// Runs `rdm link` subcommands.
 ///
 /// # Errors
@@ -94,17 +131,20 @@ fn check(
 /// to verify a code link's path against (see
 /// [`rdm_core::ops::links::LinkCheckReport`]'s doc comment).
 ///
-/// Three distinct outcomes, never conflated: git not installed or `cwd` not
-/// inside a checkout both fall through to the "skipped" note (git itself
-/// already distinguishes "not installed" as a spawn failure from "not a
-/// repo" as a clean `discover_project_repo` `Err`, but both mean the same
-/// thing to this caller — no checkout to verify against); inside a checkout,
-/// each code link's path is checked at its pinned revision (falling back to
-/// the project's configured default branch, then `"main"`, when the link
-/// itself carries no resolved rev — mirroring `resolve_code_link`'s own
-/// `web_url` fallback) and a single failed lookup (a spawn error, treated as
-/// inconclusive and fail-open — never a false "missing" from a transient git
-/// hiccup) never aborts the rest of the report.
+/// Distinct outcomes, never conflated:
+/// - Git not installed, `cwd` not inside any checkout, the project has no
+///   `source` configured, or the discovered checkout doesn't match the
+///   project's configured `source.repo` (see [`repo_matches_source`]) — all
+///   fall through to a "skipped" note explaining which of those applies,
+///   rather than silently verifying against an unrelated repository.
+/// - Inside the *matching* checkout, each code link's path is checked at its
+///   pinned revision (falling back to the project's configured default
+///   branch, then `"main"`, when the link itself carries no resolved rev —
+///   mirroring `resolve_code_link`'s own `web_url` fallback).
+/// - A single failed lookup — a spawn error, or a pinned revision this
+///   checkout cannot resolve (e.g. a shallow clone missing the commit) — is
+///   treated as inconclusive and fail-open, never a false "missing", and
+///   never aborts the rest of the report.
 fn verify_paths_at_pinned_rev(store: &AppStore, project: &str, report: &mut LinkCheckReport) {
     #[cfg(feature = "git")]
     {
@@ -116,32 +156,52 @@ fn verify_paths_at_pinned_rev(store: &AppStore, project: &str, report: &mut Link
                 return;
             }
         };
-        match rdm_git::worktree::discover_project_repo(&cwd) {
-            Ok(repo) => {
-                let default_rev = rdm_core::io::load_project(store, project)
-                    .ok()
-                    .and_then(|doc| doc.frontmatter.source)
-                    .and_then(|source| source.default_branch)
-                    .unwrap_or_else(|| "main".to_string());
-                for link in report.code_links.clone() {
-                    let rev = link.rev.clone().unwrap_or_else(|| default_rev.clone());
-                    let exists =
-                        rdm_git::path_exists_at_rev(&repo, &rev, &link.path).unwrap_or(true);
-                    if !exists {
-                        report
-                            .missing_at_rev
-                            .push(rdm_core::ops::links::MissingAtRevFinding {
-                                document: link.document,
-                                byte_range: link.byte_range,
-                                path: link.path,
-                                rev,
-                            });
-                    }
-                }
-            }
+        let repo = match rdm_git::worktree::discover_project_repo(&cwd) {
+            Ok(repo) => repo,
             Err(_) => {
                 report.path_verification_skipped =
                     Some("not inside a source-repo checkout".to_string());
+                return;
+            }
+        };
+        let source = rdm_core::io::load_project(store, project)
+            .ok()
+            .and_then(|doc| doc.frontmatter.source);
+        let source = match source {
+            Some(source) => source,
+            None => {
+                report.path_verification_skipped = Some(
+                    "project has no configured source repo — skipping path verification"
+                        .to_string(),
+                );
+                return;
+            }
+        };
+        if !repo_matches_source(&repo, &source.repo) {
+            report.path_verification_skipped = Some(format!(
+                "cwd is inside a git checkout, but not the project's configured source ({}) — skipping path verification",
+                source.repo
+            ));
+            return;
+        }
+        let default_rev = source.default_branch.unwrap_or_else(|| "main".to_string());
+        for link in report.code_links.clone() {
+            let rev = link.rev.clone().unwrap_or_else(|| default_rev.clone());
+            // `Ok(None)` (the pinned rev doesn't resolve in this checkout —
+            // e.g. a shallow clone) and `Err` (a spawn failure) are both
+            // inconclusive: fail open rather than report a false "missing".
+            let exists = rdm_git::path_exists_at_rev(&repo, &rev, &link.path)
+                .unwrap_or(Some(true))
+                .unwrap_or(true);
+            if !exists {
+                report
+                    .missing_at_rev
+                    .push(rdm_core::ops::links::MissingAtRevFinding {
+                        document: link.document,
+                        byte_range: link.byte_range,
+                        path: link.path,
+                        rev,
+                    });
             }
         }
     }
@@ -172,7 +232,7 @@ fn list(
         let resolved =
             rdm_core::ops::links::resolve_link(store, &project, containing_commit.as_deref(), link)
                 .context("failed to resolve link")?;
-        let item_path = item_path_for(store, &project, link);
+        let item_path = item_path_for(store, &project, link)?;
         entries.push((
             link.to_string(),
             json::resolved_to_json(&resolved, item_path.as_deref()),
@@ -217,7 +277,7 @@ fn resolve(
     // resolve further, via that document's stamped commit.
     let resolved = rdm_core::ops::links::resolve_link(store, &project, None, &link)
         .context("failed to resolve link")?;
-    let item_path = item_path_for(store, &project, &link);
+    let item_path = item_path_for(store, &project, &link)?;
     let resolved_json = json::resolved_to_json(&resolved, item_path.as_deref());
 
     match format {
@@ -235,32 +295,16 @@ fn resolve(
 
 /// For an item link, computes the plan-repo-relative path to the target
 /// document — [`rdm_core::link::Resolved::Item`] doesn't carry one (see its
-/// doc comment) — via [`rdm_core::paths`]'s path builders, resolving a
-/// numeric phase stem first via
-/// [`rdm_core::ops::phase::resolve_phase_stem`] so the path matches the item
-/// that was actually checked. `None` for a code link (its own `path` field
-/// already covers it).
-///
-/// A dangling target (roadmap/phase not found) is not an error here: an
-/// unresolvable numeric phase stem simply falls back to the identifier as
-/// written, mirroring [`rdm_core::ops::links::resolve_item_link`]'s
-/// never-errors-on-dangling contract.
-fn item_path_for(store: &AppStore, project: &str, link: &Link) -> Option<String> {
+/// doc comment) — via [`rdm_core::ops::links::item_ref_path`], the single
+/// authoritative implementation numeric-phase-stem resolution also backs
+/// for [`rdm_core::ops::links::resolve_item_link`]'s own existence check.
+/// `None` for a code link (its own `path` field already covers it).
+fn item_path_for(store: &AppStore, project: &str, link: &Link) -> Result<Option<String>> {
     let target = match link {
         Link::Item(target) => target,
-        Link::Code { .. } => return None,
+        Link::Code { .. } => return Ok(None),
     };
-    let path = match target {
-        rdm_core::link::ItemRef::Roadmap { roadmap } => {
-            rdm_core::paths::roadmap_path(project, roadmap)
-        }
-        rdm_core::link::ItemRef::Task { slug } => rdm_core::paths::task_path(project, slug),
-        rdm_core::link::ItemRef::Phase { roadmap, stem } => {
-            let resolved_stem =
-                rdm_core::ops::phase::resolve_phase_stem(store, project, roadmap, stem)
-                    .unwrap_or_else(|_| stem.clone());
-            rdm_core::paths::phase_path(project, roadmap, &resolved_stem)
-        }
-    };
-    Some(path.as_str().to_string())
+    let path = rdm_core::ops::links::item_ref_path(store, project, target)
+        .context("failed to resolve item link path")?;
+    Ok(Some(path.as_str().to_string()))
 }
