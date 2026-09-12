@@ -32,6 +32,8 @@ The specification of that pipeline — which dimensions run, how findings are gr
 
    From those same diff signals, derive a **tier hint** for step 2's fleet: `small` (localized, single module, no risky surface — a typo fix, a one-line log message), `medium` (an ordinary change — new logic in one module, a bugfix), or `large` (touches public API, a security-sensitive surface, spans multiple modules/crates, adds a dependency, or is user-facing). This is a read of the **diff's risk**, not the phase's own difficulty rating — a "hard" phase can still land a small, low-risk diff, and vice versa.
 
+   Capture the diff's head SHA (`git rev-parse HEAD`) — steps 5 and 6 cite it in pinned `rdm:src/` links.
+
 ### 2. Find — dispatch the review fleet (parallel)
 
 Dispatch one **read-only** `Agent` per applicable dimension, per **Review specification § Dimensions** below. Run the always-on dimensions unconditionally; add each triggered dimension when its trigger fires against the diff from step 1. State which dimensions you launched, and why, in the report.
@@ -56,14 +58,14 @@ Apply **Review specification § Filter & consolidate**, then **§ Verdict** to r
 
 Present a single structured report:
 - The AC table: each criterion with PASS / FAIL / PARTIAL and evidence.
-- Surviving findings grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation.
+- Surviving findings grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation — cite the location as a pinned `rdm:src/<path>@<sha>#Lline` link, using the head SHA captured in step 1, when one is available so a reader can click through instead of a bare `file:line`.
 - The outcome: **reviewed**, **rework**, or **escalated**, and the one rule that decided it.
 
 ### 6. Act
 
-Apply **Review specification § Act**. File large findings as tasks with:
+Apply **Review specification § Act**. File large findings as tasks, citing the finding's location as a pinned `rdm:src/<path>@<sha>#Lline` link (the head SHA from step 1) in the body instead of a bare `file:line`:
 ```bash
-rdm task create <slug> --title "Review finding: description" --body "Details." --tags <tag1>,<tag2> --no-edit {proj_flag}
+rdm task create <slug> --title "Review finding: description" --body "Details. See rdm:src/<path>@<sha>#Lline." --tags <tag1>,<tag2> --no-edit {proj_flag}
 ```
 
 ### 7. Gate — transition by outcome

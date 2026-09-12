@@ -13,7 +13,7 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
 {principles}
 ## Steps
 
-1. **Explore the codebase** to understand the current state relevant to `$ARGUMENTS`. Read key files, search for related code, and build context.
+1. **Explore the codebase** to understand the current state relevant to `$ARGUMENTS`. Read key files, search for related code, and build context. Also run `rdm search <topic> {proj_flag}` for related existing plan items — an overlapping roadmap, phase, or task you should link to or build on rather than duplicate.
 2. **Interview the operator — human-in-the-loop only.** Before designing phases, run a short, bounded interview so the plan is shaped by the operator's actual intent instead of being reconciled against it afterward:
    - Ask at most 3-5 questions, one at a time, selected by impact x uncertainty — only where the answer would change how the work is broken into phases.
    - Each question is closed-form: 2-4 mutually exclusive options with a recommended default, or a short answer with a suggested value, so the operator can reply in one token. Use the question-asking tool available in your environment (e.g. `AskUserQuestion`, granted in this skill's `allowed-tools`).
@@ -75,6 +75,9 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
 - Tag the roadmap and phases so related work is findable. Use lowercase
   kebab-case (`auth`, `tech-debt`); prefer existing tags — check with
   `rdm search "" --tag <candidate> {proj_flag}` before inventing a new one.
+- Link related existing items in Context/Intent prose using `rdm:roadmap/<slug>`,
+  `rdm:phase/<roadmap>/<stem>`, `rdm:task/<slug>` — check with `rdm search` first
+  (step 1), never invent a slug.
 - If `plan_review` is enabled, every roadmap and phase created above already
   carries a `needs-plan-review` tag — leave it in place, don't strip it by
   hand. It's cleared only by manually running the `rdm-plan-review` skill

@@ -1784,6 +1784,69 @@ mod tests {
     }
 
     #[test]
+    fn cli_instructions_teach_linking_across_platforms() {
+        for platform in [
+            Platform::Claude,
+            Platform::AgentsMd,
+            Platform::Cursor,
+            Platform::Copilot,
+            Platform::Pi,
+        ] {
+            let content = generate_agent_config(&AgentConfigOptions {
+                platform,
+                project: Some("myproj".to_string()),
+                principles_file: None,
+                mcp: false,
+            });
+            assert!(
+                content.contains("## Linking"),
+                "{platform:?} missing Linking section"
+            );
+            assert!(
+                content.contains("rdm:roadmap/<slug>"),
+                "{platform:?} missing roadmap link form"
+            );
+            assert!(
+                content.contains("rdm:phase/<roadmap-slug>/<stem-or-number>"),
+                "{platform:?} missing phase link form"
+            );
+            assert!(
+                content.contains("rdm:task/<slug>"),
+                "{platform:?} missing task link form"
+            );
+            assert!(
+                content.contains("rdm:src/<path>[@<rev>][#Lstart[-Lend]]"),
+                "{platform:?} missing code link form"
+            );
+            assert!(
+                content.contains("rdm link check --on <ref> --project myproj"),
+                "{platform:?} did not substitute --project myproj into the Linking section"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_instructions_linking_section_substitutes_placeholder_project() {
+        let content = generate_agent_config(&AgentConfigOptions {
+            platform: Platform::AgentsMd,
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        assert!(content.contains("## Linking"));
+        assert!(content.contains("rdm link check --on <ref> --project <PROJECT>"));
+        // No accidental hardcoded project name leaking into the section.
+        let linking = content
+            .split("## Linking")
+            .nth(1)
+            .expect("missing Linking section")
+            .split("## Planning workflow")
+            .next()
+            .expect("missing following section");
+        assert!(!linking.contains("{proj_flag}"));
+    }
+
+    #[test]
     fn mcp_instructions_teach_document_reviews() {
         let content = generate_agent_config(&AgentConfigOptions {
             platform: Platform::AgentsMd,
@@ -2671,6 +2734,18 @@ mod tests {
         // Close only when nothing is open; otherwise stay submitted.
         assert!(content.contains("--state addressed"));
         assert!(content.contains("leave the review submitted"));
+    }
+
+    #[test]
+    fn skill_revise_reply_cites_pinned_code_links() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[8].content;
+        assert!(content.contains("rdm:src/"));
+        assert!(content.contains("pinned"));
     }
 
     #[test]
@@ -3716,6 +3791,21 @@ mod tests {
         assert!(content.contains("rdm roadmap show"));
     }
 
+    #[test]
+    fn skill_roadmap_links_related_items() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[0].content;
+        assert!(content.contains("rdm search"));
+        assert!(content.contains("rdm:roadmap/<slug>"));
+        assert!(content.contains("rdm:phase/<roadmap>/<stem>"));
+        assert!(content.contains("rdm:task/<slug>"));
+        assert!(content.contains("never invent a slug"));
+    }
+
     /// The roadmap-authoring interview must be present, and run BEFORE phase
     /// design, in both the CLI and MCP variants — the interview's answers
     /// should shape the phase decomposition, not be reconciled against it
@@ -4176,6 +4266,18 @@ mod tests {
     }
 
     #[test]
+    fn skill_review_act_cites_pinned_code_links() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[2].content;
+        assert!(content.contains("rdm:src/"));
+        assert!(content.contains("pinned"));
+    }
+
+    #[test]
     fn skill_review_mcp_dispatches_adaptive_fleet() {
         let skills = generate_skills(&SkillOptions {
             project: None,
@@ -4323,6 +4425,18 @@ mod tests {
     }
 
     #[test]
+    fn skill_document_cites_permalink_resolving_links() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[3].content;
+        assert!(content.contains("rdm:src/"));
+        assert!(content.contains("permalink"));
+    }
+
+    #[test]
     fn skill_document_has_write_edit_tools() {
         let skills = generate_skills(&SkillOptions {
             project: None,
@@ -4379,6 +4493,29 @@ mod tests {
         // The stale "park it and let a hook pick it up later" framing is gone.
         assert!(!content.contains("deferred two-stage"));
         assert!(!content.contains("the sentinel that signals a review is pending"));
+    }
+
+    #[test]
+    fn skill_do_finalize_adds_key_code_links() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("Key code"));
+        assert!(content.contains("rdm:src/"));
+    }
+
+    #[test]
+    fn skill_do_finalize_runs_link_check() {
+        let skills = generate_skills(&SkillOptions {
+            project: None,
+            principles_file: None,
+            mcp: false,
+        });
+        let content = &skills[1].content;
+        assert!(content.contains("rdm link check"));
     }
 
     #[test]
@@ -5615,7 +5752,14 @@ mod tests {
                 // stem the plugin does not ship. Scoped to the invocation form
                 // the rewrite produces; the templates also carry unrelated
                 // pre-existing `<!-- rdm:review-spec:… -->` generator markers,
-                // which are HTML comments rather than engine references.
+                // which are HTML comments rather than engine references, and
+                // the document-linking roadmap's `rdm:` URI scheme
+                // (`rdm:roadmap/…`, `rdm:phase/…`, `rdm:task/…`, `rdm:src/…`)
+                // taught in the Linking-aware skill templates — a distinct
+                // namespace that happens to share the `rdm:` prefix syntax
+                // with engine invocation but is never rewritten (it names
+                // plan-repo items and source files, not shipped engines).
+                const LINK_SCHEME_KINDS: [&str; 4] = ["roadmap", "phase", "task", "src"];
                 for (idx, _) in joined.match_indices("`rdm:") {
                     let rest = &joined[idx + "`rdm:".len()..];
                     let end = rest
@@ -5623,8 +5767,9 @@ mod tests {
                         .unwrap_or(rest.len());
                     let named = &rest[..end];
                     assert!(
-                        engine_stems.iter().any(|s| s == named),
-                        "mcp={mcp}: `rdm:{named}` names no emitted engine"
+                        engine_stems.iter().any(|s| s == named)
+                            || LINK_SCHEME_KINDS.contains(&named),
+                        "mcp={mcp}: `rdm:{named}` names no emitted engine and no known link-scheme kind"
                     );
                 }
             }

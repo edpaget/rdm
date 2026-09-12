@@ -378,6 +378,28 @@ Structured feedback on a roadmap, phase, or task document, with comments anchore
 
 `--quote` must match the document text exactly; it is located in the document **as of the review's `created_commit`**, so it stays valid after later edits. An ambiguous quote fails with a 1-based occurrence list — re-run with `--occurrence <n>`. On a roadmap review, `--doc phase/<stem-or-number>` scopes a comment to one of the roadmap's phases. `rdm search <query> --type review --project rdm` matches review summaries and comment bodies.
 
+### Linking
+
+Bodies can carry `rdm:` links — write them as ordinary Markdown links, e.g. `[the auth roadmap](rdm:roadmap/auth)`. Three item-link forms, using the same identifiers as `Done:` lines and `review --on`:
+
+- `rdm:roadmap/<slug>`
+- `rdm:phase/<roadmap-slug>/<stem-or-number>`
+- `rdm:task/<slug>`
+
+And one pinned code-link form, for a specific file (optionally a revision and line range) in the project's configured `source` repo:
+
+- `rdm:src/<path>[@<rev>][#Lstart[-Lend]]` — e.g. `rdm:src/rdm-core/src/link.rs@a1b2c3d#L42-L58`
+
+```bash
+./target/debug/rdm link check --project rdm                       # validate every rdm: link in the project (CI-friendly, nonzero on anything broken)
+./target/debug/rdm link check --on task/<slug> --project rdm      # scope the check to one document
+./target/debug/rdm link list --on phase/<slug>/<stem> --project rdm  # a document's outgoing links, resolved
+./target/debug/rdm link resolve rdm:task/fix-login --project rdm  # resolve a single URI given on the command line
+./target/debug/rdm backlinks task/fix-login --project rdm         # documents that reference this item
+```
+
+Rules: use exact slugs/stems as printed by rdm, never invented or paraphrased — run `./target/debug/rdm search <topic> --project rdm` first if unsure an item exists. Pin a code link with the revision from `git rev-parse HEAD` in this source repo, or omit `@rev` inside a phase/task body to fall back to that item's own stamped `commit` field once one is recorded. Run `./target/debug/rdm link check --on <ref> --project rdm` before finalizing a body edit and treat a nonzero exit — a dangling item link, or a code link whose path doesn't exist at its pinned revision — as blocking.
+
 ### Plan review
 
 A second, earlier gate than the document-review flow above: it reviews a roadmap/phase/task's **plan** before implementation begins, rather than the diff after implementation. Controlled by the `plan_review` config flag (`./target/debug/rdm config set plan_review true`, `RDM_PLAN_REVIEW` env override, default `false`) — enabled for this repo's own plan data. While the flag is on, `roadmap create` / `phase create` / `task create` automatically stamp a reserved `needs-plan-review` tag onto every new item, alongside any user-supplied `--tags`.

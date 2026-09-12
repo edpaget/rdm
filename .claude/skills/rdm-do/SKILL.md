@@ -73,15 +73,16 @@ For unattended Claude Code runs (where no human is present to approve permission
 9. **Review with user** _(interactive only; `--auto` finalizes without waiting)_: present a summary of the changes and ask the user to confirm they are ready to finalize.
 10. **Finalize — commit, then actively run the canonical code review.** Finalize never *parks* work for someone else to review later; it drives the review itself. This runs in **both** modes: interactively (after the step-9 confirmation) and under `--auto` (which skips only the human confirmation, never the review).
 
-    1. **Commit the implementation diff** — a plain `git commit` of the code diff in the **source repo**, on the worktree's branch.
-    2. **Mark the item `needs-review`** as a transient marker so the review has a well-defined starting state, and land that plan-repo change:
-       - phase: `rdm phase update <phase> --status needs-review --no-edit --roadmap <slug> --project rdm`
-       - task: `rdm task update <slug> --status needs-review --no-edit --project rdm`
+    1. **Commit the implementation diff** — a plain `git commit` of the code diff in the **source repo**, on the worktree's branch. Capture its SHA (`git rev-parse HEAD`).
+    2. **Compose a `## Key code` list and mark the item `needs-review`.** Bodies are whole-document-authoritative, so read-modify-write rather than assume anything appends in place: read the item's current body, derive the files that commit touched (`git show --name-only <sha>`), append (or replace) a `## Key code` section listing one pinned `rdm:src/<path>@<sha>` link per touched file, then update body and status together and land that plan-repo change:
+       - phase: `rdm phase update <phase> --body "$body" --status needs-review --no-edit --roadmap <slug> --project rdm`
+       - task: `rdm task update <slug> --body "$body" --status needs-review --no-edit --project rdm`
        - land the plan-repo status change: `rdm commit -m "chore(plan): finalize <phase-or-task>"`
 
        This `rdm commit` is a **separate, plan-repo** git commit — distinct from the source-repo `git commit` of the implementation diff above. Do not conflate the two: one lands your code, the other lands the plan-repo status update.
-    3. **Immediately invoke the `rdm-review` skill** against the item. It is the canonical review — the same find → refute → filter → verdict → gate pipeline the autonomous lane runs — so every finalize is actively reviewed, in either mode.
-    4. **The review owns the gate.** It persists the status its outcome maps to — `reviewed`, `in-progress` (rework), or `blocked` with a `[code]`-prefixed reason (escalated) — and on `reviewed` **only**, it amends the land-time completion trailer onto the branch commit.
+    3. **Run `rdm link check --on <ref> --project rdm`** (`--on phase/<slug>/<stem>` or `--on task/<slug>`) before proceeding to review. Treat a nonzero exit as a blocking issue to fix first — most likely a typo'd path in the `## Key code` list just added.
+    4. **Immediately invoke the `rdm-review` skill** against the item. It is the canonical review — the same find → refute → filter → verdict → gate pipeline the autonomous lane runs — so every finalize is actively reviewed, in either mode.
+    5. **The review owns the gate.** It persists the status its outcome maps to — `reviewed`, `in-progress` (rework), or `blocked` with a `[code]`-prefixed reason (escalated) — and on `reviewed` **only**, it amends the land-time completion trailer onto the branch commit.
 
     **Never hand-type the completion trailer.** Finalize does not write it at all: on the interactive path the review gate writes it, and on the autonomous path `rdm-land` writes it at land time. Both source the exact line from `rdm hook done-line --roadmap <slug> --phase <stem>` (or `--task <slug>`), so the format string has exactly one home. Use the exact roadmap slug / phase stem / task slug from the rdm commands you ran earlier — do NOT invent or paraphrase them. The commit stays on the worktree's branch, which is left for merge to main (the merge hook flips `reviewed` → `done`).
 

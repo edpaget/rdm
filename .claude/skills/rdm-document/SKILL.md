@@ -21,7 +21,7 @@ This skill is a thin shim over the `rdm-wf-document` Workflow (`.claude/workflow
    - **`result.aborted === true`**: report why and stop — this is a human decision, not a retry.
      - `result.incompletePhases` non-empty: list each incomplete phase and its status; the roadmap isn't ready to document yet.
      - `result.incompletePhases` empty (a fetch or synthesis failure): relay that the roadmap could not be read or drafted, and suggest checking the slug.
-   - **success**: Read the file at `result.path` and present `result.draft` (or the file contents) to the user. Summarize what was generated and note any gaps the draft itself calls out (e.g., phases without commit SHAs, internal-only phases folded into "How it works"). **The task is not done until the user has reviewed and approved the documentation** — this is the workflow's only human touch, and it happens here, never inside `rdm-wf-document.js`.
+   - **success**: Read the file at `result.path` and present `result.draft` (or the file contents) to the user. Summarize what was generated and note any gaps the draft itself calls out (e.g., phases without commit SHAs, internal-only phases folded into "How it works"). If the draft's "How it works" section cites an implementation location, it should be a pinned `rdm:src/<path>@<sha>[#Lline]` link rather than a bare commit SHA — flag it to the user if it isn't, since a bare SHA is a gap the workflow's synthesis step (`rdm-wf-document.js`, out of this shim's scope) should be revisited to fix. **The task is not done until the user has reviewed and approved the documentation** — this is the workflow's only human touch, and it happens here, never inside `rdm-wf-document.js`.
 
 ## Edge cases
 

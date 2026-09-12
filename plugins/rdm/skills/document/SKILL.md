@@ -27,7 +27,7 @@ Generate user-facing documentation from a completed rdm roadmap. `$ARGUMENTS` sh
    - **Overview** — what the feature is
    - **Motivation** — why it was built
    - **Usage** — concrete examples (CLI commands, config options)
-   - **How it works** (optional) — architecture/internals for complex features
+   - **How it works** (optional) — architecture/internals for complex features; when it cites where something is implemented, use a pinned `rdm:src/<path>@<sha>[#Lline]` link (built from the same phase `commit` field gathered in step 4) rather than a bare SHA or `file:line` — the web UI and editor integrations resolve it to a permalink
    - **Limitations** (optional) — known gaps
 8. **Write** the documentation to the output path.
 9. **Present the draft** to the user for review before considering done.
@@ -39,3 +39,4 @@ Generate user-facing documentation from a completed rdm roadmap. `$ARGUMENTS` sh
 - Internal/refactoring phases: mention in "How it works" if relevant, omit from Usage
 - Derive content from both phase descriptions (intent) and code diffs (what shipped)
 - If phases lack commit SHAs, note which ones and rely on descriptions alone
+- When citing an implementation location, compose a pinned `rdm:src/<path>@<sha>[#Lline]` link (which the web UI and editor integrations resolve to a permalink) instead of writing a bare commit SHA or hash in the prose

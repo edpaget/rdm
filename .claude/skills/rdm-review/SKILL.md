@@ -44,6 +44,8 @@ The dimension-finding and per-finding-refuting mechanics (step 2 below) are now 
 
    and keep `diff = { changedFiles: [<the paths from the first command, verbatim>], diffText: "<the second command's output, truncated to the first 40000 characters>" }`. Pass it as `args.diff` in step 2. It is **optional** — omit it (or omit it when either command fails) and the workflow runs its own `diff:signals` agent exactly as before. Use the three-dot `main...HEAD` base and the 40000-character truncation verbatim: the workflow feeds this straight into `deriveSignals`, so a different base or a summarized diff silently changes which review dimensions run.
 
+   Also capture the diff's head SHA (`git rev-parse HEAD`) — steps 3 and 4 cite it in pinned `rdm:src/` links.
+
 ### 2. Review — invoke the canonical pipeline (find → refute → verdict)
 
 Invoke the `rdm-wf-review-refute-fix` Workflow tool to run the dimension-finding and per-finding-refuting mechanics — **Review specification § Dimensions / Find / Refute / Filter & consolidate / Verdict** below describe exactly what it does, so you can explain the result, but you no longer perform those steps by hand:
@@ -63,14 +65,14 @@ Always pass `gate: false` (or omit `gate`) — this skill owns the gate (step 5 
 
 Present a single structured report from the workflow's result:
 - The AC table: each criterion with PASS / FAIL / PARTIAL and evidence, drawn from the `ac`-concern findings.
-- Surviving `findings` grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation.
+- Surviving `findings` grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation — cite the location as a pinned `rdm:src/<path>@<sha>#Lline` link, using the head SHA captured in step 1, when one is available so a reader can click through instead of a bare `file:line`.
 - The `outcome` (**reviewed**, **rework**, or **escalated**) and `summary`.
 
 ### 4. Act
 
-Apply **Review specification § Act**. File large findings as tasks with:
+Apply **Review specification § Act**. File large findings as tasks, citing the finding's location as a pinned `rdm:src/<path>@<sha>#Lline` link (the head SHA from step 1) in the body instead of a bare `file:line`:
 ```bash
-./target/debug/rdm task create <slug> --title "Review finding: description" --body "Details." --tags <tag1>,<tag2> --no-edit --project rdm
+./target/debug/rdm task create <slug> --title "Review finding: description" --body "Details. See rdm:src/<path>@<sha>#Lline." --tags <tag1>,<tag2> --no-edit --project rdm
 ```
 
 ### 5. Gate — transition by outcome
