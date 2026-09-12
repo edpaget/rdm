@@ -311,6 +311,31 @@ pub fn is_ancestor_at(path: &Path, ancestor_sha: &str, descendant_sha: &str) -> 
     }
 }
 
+/// Whether `file_path` exists at `rev` in the repository at `repo_path`.
+///
+/// Shells out to `git cat-file -e <rev>:<file_path>`. Unlike
+/// [`is_ancestor_of_head_at`] and its siblings, *any* nonzero exit here is
+/// treated as "not found" (`Ok(false)`) rather than an error — `cat-file -e`
+/// exits nonzero uniformly whether `rev` doesn't exist, `file_path` doesn't
+/// exist at `rev`, or `rev:file_path` names something other than a blob, and
+/// none of those is a tool failure worth distinguishing from plain
+/// not-found for this function's caller (`rdm link check`'s path
+/// verification, which folds every such case into one "missing at pinned
+/// rev" finding). Only a spawn failure (git not installed, or `repo_path`
+/// not inside a git repository) is an [`Err`].
+///
+/// # Errors
+///
+/// Returns [`Error::Git`] if git is not installed or `repo_path` is not
+/// inside a git repository.
+pub fn path_exists_at_rev(repo_path: &Path, rev: &str, file_path: &str) -> Result<bool> {
+    let output = run_git_at(
+        repo_path,
+        &["cat-file", "-e", &format!("{rev}:{file_path}")],
+    )?;
+    Ok(output.status.success())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,5 +543,39 @@ mod tests {
 
         let commits = commit_messages_since_at(dir.path(), Some("HEAD")).unwrap();
         assert!(commits.is_empty());
+    }
+
+    #[test]
+    fn path_exists_at_rev_true_for_committed_path() {
+        let dir = init_repo();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        let sha = commit_file(dir.path(), "src/a.rs", "fn main() {}");
+        assert!(path_exists_at_rev(dir.path(), &sha, "src/a.rs").unwrap());
+    }
+
+    #[test]
+    fn path_exists_at_rev_false_for_missing_path() {
+        let dir = init_repo();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        let sha = commit_file(dir.path(), "src/a.rs", "fn main() {}");
+        assert!(!path_exists_at_rev(dir.path(), &sha, "src/does-not-exist.rs").unwrap());
+    }
+
+    #[test]
+    fn path_exists_at_rev_false_when_path_added_after_rev() {
+        let dir = init_repo();
+        let base_sha = commit_file(dir.path(), "base.md", "base");
+        commit_file(dir.path(), "later.md", "later");
+        assert!(!path_exists_at_rev(dir.path(), &base_sha, "later.md").unwrap());
+    }
+
+    #[test]
+    fn path_exists_at_rev_false_for_unresolvable_rev() {
+        let dir = init_repo();
+        commit_file(dir.path(), "init.md", "init");
+        // `git cat-file -e <bogus>:<path>` exits nonzero for an
+        // unresolvable rev exactly as it does for a missing path — both
+        // fold into `Ok(false)` per this function's contract.
+        assert!(!path_exists_at_rev(dir.path(), "not-a-rev", "init.md").unwrap());
     }
 }

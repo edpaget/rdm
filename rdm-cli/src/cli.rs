@@ -361,6 +361,74 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: TagCommand,
     },
+    /// Validate `rdm:` links and inspect how one resolves.
+    ///
+    /// The editor-integration contract lives here: an editor extracts the
+    /// `rdm:` URI under the cursor and calls `link resolve --format json` to
+    /// get a jump target, while `link check` is the validation story agents
+    /// run before finalizing (nonzero exit when anything is broken).
+    Link {
+        #[command(subcommand)]
+        command: LinkCommand,
+    },
+    /// List documents that reference a plan item.
+    Backlinks {
+        /// The referenced item: `roadmap/<slug>`,
+        /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+        reference: String,
+        /// Project the referenced item belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum LinkCommand {
+    /// Validate every `rdm:` link in a project (or one document).
+    ///
+    /// Reports dangling item links (a target that doesn't exist) and parse
+    /// diagnostics (a malformed `rdm:` destination). Inside a source-repo
+    /// checkout, also verifies each code link's path exists at its pinned
+    /// revision, reported as a distinct "missing at rev" finding; outside a
+    /// checkout, path verification is skipped and the report says so.
+    /// Exits nonzero when anything is broken — CI-friendly.
+    Check {
+        /// Scope the check to one document: `roadmap/<slug>`,
+        /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`. A
+        /// roadmap scope checks only the roadmap's own body, not its
+        /// phases. Omit to check the whole project.
+        #[arg(long)]
+        on: Option<String>,
+        /// Project to check.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// List one document's outgoing links, resolved.
+    List {
+        /// The document to list outgoing links for: `roadmap/<slug>`,
+        /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+        #[arg(long)]
+        on: String,
+        /// Project the document belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Resolve a single `rdm:` URI given on the command line.
+    ///
+    /// A URI resolved this way has no containing document, so a code
+    /// link's revision resolves only as far as an explicit `@rev` on the
+    /// URI itself — it cannot fall back to a phase or task's stamped
+    /// commit the way a link found inside a real document body can (see
+    /// `link list`). A non-existent item reference resolves successfully
+    /// with `exists: false`, never as an error; only a malformed URI is a
+    /// CLI error.
+    Resolve {
+        /// The `rdm:` URI to resolve.
+        uri: String,
+        /// Project to resolve item references against.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

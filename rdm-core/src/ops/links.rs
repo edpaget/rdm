@@ -5,6 +5,8 @@
 //! on ([`Resolved`]), and inverts the relationship — given a target, finds
 //! every document that references it ([`backlinks`]).
 
+use std::ops::Range;
+
 use crate::error::Result;
 use crate::link::{BacklinkEntry, DocRef, ItemRef, Link, Resolved};
 use crate::model::Project;
@@ -246,71 +248,9 @@ pub fn backlinks(
     let target = normalize_item_ref(store, project, target)?;
     let mut entries = Vec::new();
 
-    for roadmap_doc in crate::ops::roadmap::list_roadmaps(store, project, None, None)? {
-        let roadmap = roadmap_doc.frontmatter.roadmap.clone();
-        collect_item_links(
-            store,
-            project,
-            &roadmap_doc.body,
-            &target,
-            DocRef::Roadmap {
-                roadmap: roadmap.clone(),
-            },
-            &mut entries,
-        )?;
-
-        for (stem, phase_doc) in crate::ops::phase::list_phases(store, project, &roadmap)? {
-            collect_item_links(
-                store,
-                project,
-                &phase_doc.body,
-                &target,
-                DocRef::Phase {
-                    roadmap: roadmap.clone(),
-                    stem,
-                },
-                &mut entries,
-            )?;
-        }
-    }
-
-    for (slug, task_doc) in crate::ops::task::list_tasks(store, project)? {
-        collect_item_links(
-            store,
-            project,
-            &task_doc.body,
-            &target,
-            DocRef::Task { slug },
-            &mut entries,
-        )?;
-    }
-
-    for (id, review_doc) in crate::ops::reviews::list_reviews(store, project)? {
-        collect_item_links(
-            store,
-            project,
-            &review_doc.body,
-            &target,
-            DocRef::Review {
-                id: id.clone(),
-                comment: None,
-            },
-            &mut entries,
-        )?;
-        for comment in &review_doc.frontmatter.comments {
-            collect_item_links(
-                store,
-                project,
-                &comment.body,
-                &target,
-                DocRef::Review {
-                    id: id.clone(),
-                    comment: Some(comment.id),
-                },
-                &mut entries,
-            )?;
-        }
-    }
+    walk_project_bodies(store, project, |doc_ref, body, _containing_commit| {
+        collect_item_links(store, project, body, &target, doc_ref, &mut entries)
+    })?;
 
     entries.sort_by(|a, b| {
         a.document
@@ -319,6 +259,82 @@ pub fn backlinks(
     });
 
     Ok(entries)
+}
+
+/// Walks every roadmap, phase, task, and review body (and review comment) in
+/// `project`, invoking `f` once per document with its [`DocRef`] identity,
+/// its markdown body, and (for a phase or task) its stamped `commit` — the
+/// `containing_commit` [`resolve_link`] needs to resolve a code link's
+/// revision precedence.
+///
+/// This is the shared document-walking loop behind both [`backlinks`] (which
+/// filters for links matching one target) and [`check_project`] (which
+/// resolves every link it finds) — factored out so the two scans can never
+/// silently drift in which documents they visit.
+///
+/// # Errors
+///
+/// Returns [`crate::error::Error::ProjectNotFound`] if the project doesn't
+/// exist, [`crate::error::Error::RoadmapNotFound`] if a roadmap disappears
+/// between listing and reading its phases, [`crate::error::Error::Io`] if a
+/// directory cannot be listed or a file cannot be read,
+/// [`crate::error::Error::FrontmatterMissing`]/
+/// [`crate::error::Error::FrontmatterParse`] if any scanned document has
+/// invalid frontmatter, or whatever error `f` itself returns.
+fn walk_project_bodies<F>(store: &impl Store, project: &str, mut f: F) -> Result<()>
+where
+    F: FnMut(DocRef, &str, Option<&str>) -> Result<()>,
+{
+    for roadmap_doc in crate::ops::roadmap::list_roadmaps(store, project, None, None)? {
+        let roadmap = roadmap_doc.frontmatter.roadmap.clone();
+        f(
+            DocRef::Roadmap {
+                roadmap: roadmap.clone(),
+            },
+            &roadmap_doc.body,
+            None,
+        )?;
+
+        for (stem, phase_doc) in crate::ops::phase::list_phases(store, project, &roadmap)? {
+            let commit = phase_doc.frontmatter.commit.clone();
+            f(
+                DocRef::Phase {
+                    roadmap: roadmap.clone(),
+                    stem,
+                },
+                &phase_doc.body,
+                commit.as_deref(),
+            )?;
+        }
+    }
+
+    for (slug, task_doc) in crate::ops::task::list_tasks(store, project)? {
+        let commit = task_doc.frontmatter.commit.clone();
+        f(DocRef::Task { slug }, &task_doc.body, commit.as_deref())?;
+    }
+
+    for (id, review_doc) in crate::ops::reviews::list_reviews(store, project)? {
+        f(
+            DocRef::Review {
+                id: id.clone(),
+                comment: None,
+            },
+            &review_doc.body,
+            None,
+        )?;
+        for comment in &review_doc.frontmatter.comments {
+            f(
+                DocRef::Review {
+                    id: id.clone(),
+                    comment: Some(comment.id),
+                },
+                &comment.body,
+                None,
+            )?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Normalizes an [`ItemRef`] the same way [`resolve_item_link`] resolves one
@@ -396,6 +412,279 @@ fn collect_item_links(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `link check` — project- or document-wide validation
+// ---------------------------------------------------------------------------
+
+/// One `rdm:` item link found to be dangling — its target doesn't exist.
+///
+/// Never constructed for a code link: per [`resolve_item_link`]'s contract a
+/// dangling *item* reference is a normal, expected outcome (the author
+/// renamed or deleted the thing it pointed at), which is exactly what
+/// `link check` exists to surface; a code link's path/rev validity is a
+/// separate concern (see [`MissingAtRevFinding`]), since core has no
+/// source-repo checkout to validate against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DanglingLink {
+    /// The document the link was found in.
+    pub document: DocRef,
+    /// Byte range of the link within that document's body.
+    pub byte_range: Range<usize>,
+    /// The raw `rdm:` URI text, as written in the document.
+    pub uri: String,
+    /// The missing target.
+    pub target: ItemRef,
+}
+
+/// One `rdm:src/` code link found while checking a project or document,
+/// carried forward so a caller with a source-repo checkout (`rdm-cli`'s
+/// `link check`, behind the `git` feature) can additionally verify the path
+/// exists at the pinned revision — a check core itself cannot perform, since
+/// it has no checkout to look in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeLinkFinding {
+    /// The document the link was found in.
+    pub document: DocRef,
+    /// Byte range of the link within that document's body.
+    pub byte_range: Range<usize>,
+    /// Path to the file, relative to the source repository root.
+    pub path: String,
+    /// The resolved revision (see [`resolve_code_link`]'s precedence), or
+    /// `None` when neither an explicit `@rev` nor a stamped commit was
+    /// available.
+    pub rev: Option<String>,
+}
+
+/// A malformed `rdm:` link destination found while checking a project or
+/// document, tagged with the document it was found in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckDiagnostic {
+    /// The document the malformed link was found in.
+    pub document: DocRef,
+    /// The parse diagnostic itself.
+    pub diagnostic: crate::link::LinkDiagnostic,
+}
+
+/// A code link whose path does not exist at its pinned revision, found by a
+/// caller's checkout-aware path-verification pass (never constructed by
+/// [`check_project`]/[`check_document`] themselves — see [`LinkCheckReport`]'s
+/// doc comment).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MissingAtRevFinding {
+    /// The document the link was found in.
+    pub document: DocRef,
+    /// Byte range of the link within that document's body.
+    pub byte_range: Range<usize>,
+    /// Path to the file, relative to the source repository root.
+    pub path: String,
+    /// The revision the path was checked at.
+    pub rev: String,
+}
+
+/// The result of checking a project (or one document) for broken `rdm:`
+/// links — the aggregation [`check_project`]/[`check_document`] build by
+/// resolving every link [`crate::link::extract_links`] finds.
+///
+/// `missing_at_rev` and `path_verification_skipped` are never populated by
+/// [`check_project`]/[`check_document`] themselves: core has no source-repo
+/// checkout to verify a code link's path against (see
+/// [`crate::ops::links::resolve_code_link`]'s doc comment on why that
+/// validation is deliberately out of scope here). A caller that does have a
+/// checkout — `rdm-cli`'s `link check`, behind the `git` feature — fills
+/// these two fields in after the fact, using [`code_links`](Self::code_links)
+/// as its worklist, before handing the report to a formatter. This keeps one
+/// report shape and one pair of formatters
+/// ([`crate::display::format_link_check_report`] /
+/// [`crate::json::link_check_report_to_json`]) serving both the
+/// checkout-aware and checkout-less cases.
+#[derive(Debug, Clone, Default)]
+pub struct LinkCheckReport {
+    /// Count of successfully-parsed `rdm:` links resolved (item or code) —
+    /// distinct from `diagnostics`, which counts links that failed to parse
+    /// in the first place.
+    pub links_checked: usize,
+    /// Item links whose target does not exist.
+    pub dangling: Vec<DanglingLink>,
+    /// Every code link found, for a caller-side path-verification pass.
+    pub code_links: Vec<CodeLinkFinding>,
+    /// Malformed `rdm:` destinations found while parsing.
+    pub diagnostics: Vec<CheckDiagnostic>,
+    /// Code links found missing at their pinned revision by a caller-side
+    /// checkout-aware verification pass. Always empty from
+    /// [`check_project`]/[`check_document`] themselves.
+    pub missing_at_rev: Vec<MissingAtRevFinding>,
+    /// Set by a caller when checkout-aware path verification did not run
+    /// (not inside a checkout, or built without git support) so the report
+    /// can say so explicitly rather than silently omitting `missing_at_rev`.
+    /// Always `None` from [`check_project`]/[`check_document`] themselves.
+    pub path_verification_skipped: Option<String>,
+}
+
+/// Resolves every `rdm:` link in `body` and folds the outcome into `report`.
+///
+/// # Errors
+///
+/// Propagates whatever [`resolve_link`] returns for a genuine store/project
+/// failure (a dangling item target is never one of these — see
+/// [`resolve_item_link`]'s contract).
+fn check_body(
+    store: &impl Store,
+    project: &str,
+    doc_ref: &DocRef,
+    body: &str,
+    containing_commit: Option<&str>,
+    report: &mut LinkCheckReport,
+) -> Result<()> {
+    let (links, diagnostics) = crate::link::extract_links(body);
+
+    for diagnostic in diagnostics {
+        report.diagnostics.push(CheckDiagnostic {
+            document: doc_ref.clone(),
+            diagnostic,
+        });
+    }
+
+    for (range, link) in links {
+        let resolved = resolve_link(store, project, containing_commit, &link)?;
+        report.links_checked += 1;
+        match (&link, resolved) {
+            (Link::Item(target), Resolved::Item { exists: false, .. }) => {
+                report.dangling.push(DanglingLink {
+                    document: doc_ref.clone(),
+                    byte_range: range,
+                    uri: link.to_string(),
+                    target: target.clone(),
+                });
+            }
+            (Link::Code { .. }, Resolved::Code { path, rev, .. }) => {
+                report.code_links.push(CodeLinkFinding {
+                    document: doc_ref.clone(),
+                    byte_range: range,
+                    path,
+                    rev,
+                });
+            }
+            // A resolved item link that exists needs no further action; a
+            // `Resolved::Broken` isn't constructed by anything today (see
+            // `Resolved::Broken`'s doc comment).
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+/// Loads the body (and, for a phase or task, the stamped `commit` used to
+/// resolve a code link's revision) of the document `target` refers to.
+///
+/// Shared by [`check_document`] and `rdm-cli`'s `link list` command, which
+/// both need "the one document an [`ItemRef`] names" rather than a whole
+/// project scan.
+///
+/// # Errors
+///
+/// Returns [`crate::error::Error::RoadmapNotFound`],
+/// [`crate::error::Error::PhaseNotFound`], or
+/// [`crate::error::Error::TaskNotFound`] if the target doesn't exist,
+/// [`crate::error::Error::Io`] on a read failure, or
+/// [`crate::error::Error::FrontmatterMissing`]/
+/// [`crate::error::Error::FrontmatterParse`] if its frontmatter is invalid —
+/// including while resolving a numeric phase stem via
+/// [`crate::ops::phase::resolve_phase_stem`].
+pub fn load_document_body(
+    store: &impl Store,
+    project: &str,
+    target: &ItemRef,
+) -> Result<(DocRef, String, Option<String>)> {
+    match target {
+        ItemRef::Roadmap { roadmap } => {
+            let doc = crate::io::load_roadmap(store, project, roadmap)?;
+            Ok((
+                DocRef::Roadmap {
+                    roadmap: roadmap.clone(),
+                },
+                doc.body,
+                None,
+            ))
+        }
+        ItemRef::Phase { roadmap, stem } => {
+            let resolved_stem =
+                crate::ops::phase::resolve_phase_stem(store, project, roadmap, stem)?;
+            let doc = crate::io::load_phase(store, project, roadmap, &resolved_stem)?;
+            let commit = doc.frontmatter.commit.clone();
+            Ok((
+                DocRef::Phase {
+                    roadmap: roadmap.clone(),
+                    stem: resolved_stem,
+                },
+                doc.body,
+                commit,
+            ))
+        }
+        ItemRef::Task { slug } => {
+            let doc = crate::io::load_task(store, project, slug)?;
+            let commit = doc.frontmatter.commit.clone();
+            Ok((DocRef::Task { slug: slug.clone() }, doc.body, commit))
+        }
+    }
+}
+
+/// Checks every roadmap, phase, task, and review body in `project` for
+/// broken `rdm:` links: dangling item references, and (as a worklist for a
+/// checkout-aware caller) every code link found — see [`LinkCheckReport`].
+///
+/// # Errors
+///
+/// Same as [`walk_project_bodies`]/[`resolve_link`]: propagates
+/// [`crate::error::Error::ProjectNotFound`], `RoadmapNotFound`, `Io`,
+/// `FrontmatterMissing`/`FrontmatterParse`, or (via a `Code` link)
+/// `ProjectNotFound` while loading the project's `source` config.
+pub fn check_project(store: &impl Store, project: &str) -> Result<LinkCheckReport> {
+    let mut report = LinkCheckReport::default();
+    walk_project_bodies(store, project, |doc_ref, body, containing_commit| {
+        check_body(
+            store,
+            project,
+            &doc_ref,
+            body,
+            containing_commit,
+            &mut report,
+        )
+    })?;
+    Ok(report)
+}
+
+/// Checks one document (a roadmap, phase, or task — see [`load_document_body`])
+/// for broken `rdm:` links, scoped to just that document's own body.
+///
+/// A roadmap target checks only the roadmap's own body, not its phases —
+/// scope it to a specific phase with `phase/<roadmap>/<stem-or-number>` to
+/// check that instead.
+///
+/// # Errors
+///
+/// Same as [`load_document_body`]/[`resolve_link`]: propagates
+/// `RoadmapNotFound`/`PhaseNotFound`/`TaskNotFound` if the target doesn't
+/// exist, `Io`, `FrontmatterMissing`/`FrontmatterParse`, or `ProjectNotFound`
+/// while loading the project's `source` config for a code link.
+pub fn check_document(
+    store: &impl Store,
+    project: &str,
+    target: &ItemRef,
+) -> Result<LinkCheckReport> {
+    let mut report = LinkCheckReport::default();
+    let (doc_ref, body, containing_commit) = load_document_body(store, project, target)?;
+    check_body(
+        store,
+        project,
+        &doc_ref,
+        &body,
+        containing_commit.as_deref(),
+        &mut report,
+    )?;
+    Ok(report)
 }
 
 #[cfg(test)]
@@ -1488,5 +1777,331 @@ mod tests {
         assert!(
             matches!(err, crate::error::Error::ProjectNotFound(name) if name == "no-such-project")
         );
+    }
+
+    // --- `link check` / `check_project` / `check_document` ---
+
+    #[test]
+    fn check_document_clean_task_reports_zero_broken() {
+        let mut store = setup();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "clean",
+                title: "Clean",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("No links here."),
+            },
+        )
+        .unwrap();
+        let report = check_document(
+            &store,
+            "demo",
+            &ItemRef::Task {
+                slug: "clean".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(report.dangling.is_empty());
+        assert!(report.diagnostics.is_empty());
+        assert!(report.code_links.is_empty());
+        assert_eq!(report.links_checked, 0);
+    }
+
+    #[test]
+    fn check_document_finds_dangling_link_with_uri_and_target() {
+        let mut store = setup();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "has-dangling",
+                title: "Has dangling",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("See [ghost](rdm:task/does-not-exist) for context."),
+            },
+        )
+        .unwrap();
+        let target = ItemRef::Task {
+            slug: "has-dangling".to_string(),
+        };
+        let report = check_document(&store, "demo", &target).unwrap();
+        assert_eq!(report.dangling.len(), 1);
+        let dangling = &report.dangling[0];
+        assert_eq!(
+            dangling.document,
+            DocRef::Task {
+                slug: "has-dangling".to_string()
+            }
+        );
+        assert_eq!(dangling.uri, "rdm:task/does-not-exist");
+        assert_eq!(
+            dangling.target,
+            ItemRef::Task {
+                slug: "does-not-exist".to_string()
+            }
+        );
+        assert_eq!(report.links_checked, 1);
+    }
+
+    #[test]
+    fn check_document_existing_target_is_not_dangling() {
+        let mut store = setup();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "fix-login",
+                title: "Fix login",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Body."),
+            },
+        )
+        .unwrap();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "referrer",
+                title: "Referrer",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("See [fix](rdm:task/fix-login)."),
+            },
+        )
+        .unwrap();
+        let report = check_document(
+            &store,
+            "demo",
+            &ItemRef::Task {
+                slug: "referrer".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(report.dangling.is_empty());
+        assert_eq!(report.links_checked, 1);
+    }
+
+    #[test]
+    fn check_document_roadmap_scope_does_not_fan_out_into_phases() {
+        // A dangling link in a phase body must not surface when the check
+        // is scoped to the roadmap itself — `--on roadmap/<slug>` checks
+        // only the roadmap's own body.
+        let mut store = setup();
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            crate::ops::CreateRoadmap {
+                project: "demo",
+                slug: "auth",
+                title: "Auth",
+                body: Some("No links in the roadmap body."),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            crate::ops::CreatePhase {
+                project: "demo",
+                roadmap: "auth",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: Some("See [ghost](rdm:task/does-not-exist)."),
+                tags: None,
+                difficulty: crate::ops::DifficultyUpdate::Keep,
+                model: crate::ops::ModelTierUpdate::Keep,
+            },
+        )
+        .unwrap();
+        let report = check_document(
+            &store,
+            "demo",
+            &ItemRef::Roadmap {
+                roadmap: "auth".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(report.dangling.is_empty());
+        assert_eq!(report.links_checked, 0);
+    }
+
+    #[test]
+    fn check_document_numeric_phase_stem_resolves_and_reports_canonical_doc_ref() {
+        let mut store = setup();
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            crate::ops::CreateRoadmap {
+                project: "demo",
+                slug: "auth",
+                title: "Auth",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            crate::ops::CreatePhase {
+                project: "demo",
+                roadmap: "auth",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: Some("See [ghost](rdm:task/does-not-exist)."),
+                tags: None,
+                difficulty: crate::ops::DifficultyUpdate::Keep,
+                model: crate::ops::ModelTierUpdate::Keep,
+            },
+        )
+        .unwrap();
+        let report = check_document(
+            &store,
+            "demo",
+            &ItemRef::Phase {
+                roadmap: "auth".to_string(),
+                stem: "1".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(report.dangling.len(), 1);
+        assert_eq!(
+            report.dangling[0].document,
+            DocRef::Phase {
+                roadmap: "auth".to_string(),
+                stem: "phase-1-design".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn check_document_task_not_found_errors() {
+        let store = setup();
+        let err = check_document(
+            &store,
+            "demo",
+            &ItemRef::Task {
+                slug: "never-existed".to_string(),
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, crate::error::Error::TaskNotFound(slug) if slug == "never-existed"));
+    }
+
+    #[test]
+    fn check_project_aggregates_dangling_links_and_code_links_across_documents() {
+        let mut store = setup();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "a",
+                title: "A",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("See [ghost](rdm:task/missing) and [src](rdm:src/a/b.rs@abc#L5)."),
+            },
+        )
+        .unwrap();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "b",
+                title: "B",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Also [ghost2](rdm:task/missing2)."),
+            },
+        )
+        .unwrap();
+
+        let report = check_project(&store, "demo").unwrap();
+        assert_eq!(report.dangling.len(), 2);
+        assert_eq!(report.code_links.len(), 1);
+        assert_eq!(report.code_links[0].path, "a/b.rs");
+        assert_eq!(report.code_links[0].rev, Some("abc".to_string()));
+        assert!(report.diagnostics.is_empty());
+        assert_eq!(report.links_checked, 3);
+    }
+
+    #[test]
+    fn check_project_collects_parse_diagnostics() {
+        let mut store = setup();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "bad-link",
+                title: "Bad link",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("A [bad](rdm:foo/bar) link."),
+            },
+        )
+        .unwrap();
+        let report = check_project(&store, "demo").unwrap();
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].diagnostic.uri, "rdm:foo/bar");
+        assert!(report.dangling.is_empty());
+    }
+
+    #[test]
+    fn check_project_errors_project_not_found() {
+        let store = setup();
+        let err = check_project(&store, "no-such-project").unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::ProjectNotFound(name) if name == "no-such-project")
+        );
+    }
+
+    #[test]
+    fn load_document_body_resolves_numeric_phase_stem() {
+        let mut store = setup();
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            crate::ops::CreateRoadmap {
+                project: "demo",
+                slug: "auth",
+                title: "Auth",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            crate::ops::CreatePhase {
+                project: "demo",
+                roadmap: "auth",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: Some("Phase body."),
+                tags: None,
+                difficulty: crate::ops::DifficultyUpdate::Keep,
+                model: crate::ops::ModelTierUpdate::Keep,
+            },
+        )
+        .unwrap();
+        let (doc_ref, body, _commit) = load_document_body(
+            &store,
+            "demo",
+            &ItemRef::Phase {
+                roadmap: "auth".to_string(),
+                stem: "1".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            doc_ref,
+            DocRef::Phase {
+                roadmap: "auth".to_string(),
+                stem: "phase-1-design".to_string(),
+            }
+        );
+        assert_eq!(body.trim(), "Phase body.");
     }
 }

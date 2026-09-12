@@ -8,6 +8,7 @@ use serde::Serialize;
 
 use crate::anchor::{Resolution, ResolvedComment};
 use crate::document::Document;
+use crate::link::{BacklinkEntry, DocRef, Resolved};
 use crate::model::{
     Anchor, CommentDoc, Difficulty, ModelTier, Phase, PhaseStatus, Priority, Project, Review,
     ReviewCommentStatus, ReviewState, ReviewTarget, Roadmap, Task, TaskStatus, Verdict,
@@ -604,6 +605,260 @@ pub fn review_to_json(
                 resolution: resolution_to_json(resolutions.get(i).unwrap_or(&unresolved)),
             })
             .collect(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Link types
+// ---------------------------------------------------------------------------
+
+/// The documented JSON shape for a resolved `rdm:` link: `kind` is always
+/// present, every other field is present only when it applies to that kind
+/// (`path`/`exists` for `"item"`; `path`/`rev`/`line`/`end_line`/`web_url`
+/// for `"code"`) — see [`resolved_to_json`].
+#[derive(Debug, Clone, Serialize)]
+pub struct ResolvedLinkJson {
+    /// `"item"`, `"code"`, or `"broken"`.
+    pub kind: &'static str,
+    /// Item kind: the plan-repo-relative path to the target document.
+    /// Code kind: the source path, relative to the source repository root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Code kind only: the resolved revision.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
+    /// Code kind only: the start line, if the link named one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    /// Code kind only: the end line, if the link named a range.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<u32>,
+    /// Code kind only: the GitHub-style web URL, if the project has a
+    /// `source` configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_url: Option<String>,
+    /// Item kind only: whether the target currently exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exists: Option<bool>,
+    /// Broken kind only: why resolution could not proceed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Builds the documented flat JSON shape for a [`Resolved`] link.
+///
+/// `item_path` is supplied by the caller for [`Resolved::Item`] — core's
+/// [`Resolved`] type doesn't carry a path (see `resolve_item_link`'s doc
+/// comment), so a caller that wants one (`rdm-cli`'s `link resolve`/`link
+/// list`) computes it via [`crate::paths::roadmap_path`]/`phase_path`/
+/// `task_path`, resolving a numeric phase stem first, and passes it through
+/// here. Ignored for `Resolved::Code`/`Resolved::Broken`.
+#[must_use]
+pub fn resolved_to_json(resolved: &Resolved, item_path: Option<&str>) -> ResolvedLinkJson {
+    match resolved {
+        Resolved::Item { exists, .. } => ResolvedLinkJson {
+            kind: "item",
+            path: item_path.map(str::to_string),
+            rev: None,
+            line: None,
+            end_line: None,
+            web_url: None,
+            exists: Some(*exists),
+            reason: None,
+        },
+        Resolved::Code {
+            path,
+            rev,
+            lines,
+            web_url,
+        } => ResolvedLinkJson {
+            kind: "code",
+            path: Some(path.clone()),
+            rev: rev.clone(),
+            line: lines.map(|(start, _)| start),
+            end_line: lines.and_then(|(_, end)| end),
+            web_url: web_url.clone(),
+            exists: None,
+            reason: None,
+        },
+        Resolved::Broken { reason } => ResolvedLinkJson {
+            kind: "broken",
+            path: None,
+            rev: None,
+            line: None,
+            end_line: None,
+            web_url: None,
+            exists: None,
+            reason: Some(reason.clone()),
+        },
+    }
+}
+
+/// One outgoing link from a document, resolved — the JSON shape `rdm-cli`'s
+/// `link list` emits per entry.
+#[derive(Debug, Clone, Serialize)]
+pub struct OutgoingLinkJson {
+    /// The raw `rdm:` URI text, as written in the document.
+    pub uri: String,
+    /// The resolved link.
+    #[serde(flatten)]
+    pub resolved: ResolvedLinkJson,
+}
+
+/// Builds an [`OutgoingLinkJson`] from a link's raw URI text and its already
+/// [`resolved_to_json`]-mapped resolution.
+#[must_use]
+pub fn outgoing_link_to_json(uri: &str, resolved: ResolvedLinkJson) -> OutgoingLinkJson {
+    OutgoingLinkJson {
+        uri: uri.to_string(),
+        resolved,
+    }
+}
+
+/// One document referencing a backlink target, in JSON.
+#[derive(Debug, Clone, Serialize)]
+pub struct BacklinkEntryJson {
+    /// The referencing document.
+    #[serde(flatten)]
+    pub document: DocRef,
+    /// Byte offset of the link's start within that document's body.
+    pub range_start: usize,
+    /// Byte offset of the link's end within that document's body.
+    pub range_end: usize,
+}
+
+/// Builds a [`BacklinkEntryJson`] from a [`BacklinkEntry`].
+#[must_use]
+pub fn backlink_entry_to_json(entry: &BacklinkEntry) -> BacklinkEntryJson {
+    BacklinkEntryJson {
+        document: entry.document.clone(),
+        range_start: entry.byte_range.start,
+        range_end: entry.byte_range.end,
+    }
+}
+
+/// One dangling item link, in JSON.
+#[derive(Debug, Clone, Serialize)]
+pub struct DanglingLinkJson {
+    /// The document the link was found in.
+    #[serde(flatten)]
+    pub document: DocRef,
+    /// Byte offset of the link's start within that document's body.
+    pub range_start: usize,
+    /// Byte offset of the link's end within that document's body.
+    pub range_end: usize,
+    /// The raw `rdm:` URI text, as written in the document.
+    pub uri: String,
+    /// The missing target, in `<kind>/<id>` reference syntax.
+    pub target: String,
+}
+
+/// One malformed `rdm:` link destination, in JSON.
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkDiagnosticJson {
+    /// The document the malformed link was found in.
+    #[serde(flatten)]
+    pub document: DocRef,
+    /// Byte offset of the link's start within that document's body.
+    pub range_start: usize,
+    /// Byte offset of the link's end within that document's body.
+    pub range_end: usize,
+    /// The raw, unparsed `rdm:` destination text.
+    pub uri: String,
+    /// Why the destination failed to parse.
+    pub error: String,
+}
+
+/// One code link found missing at its pinned revision, in JSON.
+#[derive(Debug, Clone, Serialize)]
+pub struct MissingAtRevJson {
+    /// The document the link was found in.
+    #[serde(flatten)]
+    pub document: DocRef,
+    /// Byte offset of the link's start within that document's body.
+    pub range_start: usize,
+    /// Byte offset of the link's end within that document's body.
+    pub range_end: usize,
+    /// Path to the file, relative to the source repository root.
+    pub path: String,
+    /// The revision the path was checked at.
+    pub rev: String,
+}
+
+/// The full `link check` report, in JSON.
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkCheckReportJson {
+    /// The document reference the check was scoped to, or absent for a
+    /// project-wide check.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on: Option<String>,
+    /// Count of successfully-parsed links resolved.
+    pub links_checked: usize,
+    /// Count of code links found (a caller's path-verification worklist
+    /// size).
+    pub code_links_checked: usize,
+    /// Item links whose target does not exist.
+    pub dangling: Vec<DanglingLinkJson>,
+    /// Malformed `rdm:` destinations found while parsing.
+    pub diagnostics: Vec<LinkDiagnosticJson>,
+    /// Code links found missing at their pinned revision, distinct from
+    /// `dangling` (an item-link concern) and `diagnostics` (a parse-error
+    /// concern).
+    pub missing_at_rev: Vec<MissingAtRevJson>,
+    /// Set when checkout-aware path verification did not run (not inside a
+    /// checkout, or built without git support).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_verification_skipped: Option<String>,
+}
+
+/// Builds a [`LinkCheckReportJson`] from a
+/// [`LinkCheckReport`](crate::ops::links::LinkCheckReport).
+///
+/// `on` is the `--on` reference the check was scoped to (as passed on the
+/// command line), or `None` for a project-wide check.
+#[must_use]
+pub fn link_check_report_to_json(
+    report: &crate::ops::links::LinkCheckReport,
+    on: Option<&str>,
+) -> LinkCheckReportJson {
+    LinkCheckReportJson {
+        on: on.map(str::to_string),
+        links_checked: report.links_checked,
+        code_links_checked: report.code_links.len(),
+        dangling: report
+            .dangling
+            .iter()
+            .map(|d| DanglingLinkJson {
+                document: d.document.clone(),
+                range_start: d.byte_range.start,
+                range_end: d.byte_range.end,
+                uri: d.uri.clone(),
+                target: d.target.label(),
+            })
+            .collect(),
+        diagnostics: report
+            .diagnostics
+            .iter()
+            .map(|d| LinkDiagnosticJson {
+                document: d.document.clone(),
+                range_start: d.diagnostic.range.start,
+                range_end: d.diagnostic.range.end,
+                uri: d.diagnostic.uri.clone(),
+                error: d.diagnostic.error.to_string(),
+            })
+            .collect(),
+        missing_at_rev: report
+            .missing_at_rev
+            .iter()
+            .map(|m| MissingAtRevJson {
+                document: m.document.clone(),
+                range_start: m.byte_range.start,
+                range_end: m.byte_range.end,
+                path: m.path.clone(),
+                rev: m.rev.clone(),
+            })
+            .collect(),
+        path_verification_skipped: report.path_verification_skipped.clone(),
     }
 }
 

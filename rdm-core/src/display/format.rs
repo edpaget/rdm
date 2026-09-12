@@ -849,6 +849,157 @@ pub fn format_review_list_md(reviews: &[(String, Document<Review>)]) -> String {
     build_review_list(reviews, RenderFlavor::Markdown).to_string()
 }
 
+// ---------------------------------------------------------------------------
+// Link formatters
+// ---------------------------------------------------------------------------
+
+/// Renders a [`DocRef`](crate::link::DocRef) in the same `<kind>/<id>`
+/// syntax [`ReviewTarget::label`](crate::model::ReviewTarget::label) uses
+/// for the three variants it shares with [`ItemRef`](crate::link::ItemRef),
+/// plus a review-specific rendering distinguishing a whole-review summary
+/// from one of its comments.
+fn format_doc_ref(doc_ref: &crate::link::DocRef) -> String {
+    use crate::link::DocRef;
+    match doc_ref {
+        DocRef::Roadmap { roadmap } => format!("roadmap/{roadmap}"),
+        DocRef::Phase { roadmap, stem } => format!("phase/{roadmap}/{stem}"),
+        DocRef::Task { slug } => format!("task/{slug}"),
+        DocRef::Review { id, comment: None } => format!("review/{id}"),
+        DocRef::Review {
+            id,
+            comment: Some(n),
+        } => format!("review/{id}#comment-{n}"),
+    }
+}
+
+/// One-line human summary of a resolved `rdm:` link, for `rdm link resolve`
+/// and `rdm link list`.
+#[must_use]
+pub fn format_resolved(uri: &str, resolved: &crate::json::ResolvedLinkJson) -> String {
+    match resolved.kind {
+        "item" => {
+            let exists = resolved.exists.unwrap_or(false);
+            format!(
+                "{uri} -> {} ({})\n",
+                resolved.path.as_deref().unwrap_or("?"),
+                if exists { "exists" } else { "missing" }
+            )
+        }
+        "code" => {
+            let mut line = format!("{uri} -> {}", resolved.path.as_deref().unwrap_or("?"));
+            if let Some(rev) = &resolved.rev {
+                line.push_str(&format!("@{rev}"));
+            }
+            if let Some(start) = resolved.line {
+                line.push_str(&format!("#L{start}"));
+                match resolved.end_line {
+                    Some(end) if end != start => line.push_str(&format!("-L{end}")),
+                    _ => {}
+                }
+            }
+            if let Some(web_url) = &resolved.web_url {
+                line.push_str(&format!(" ({web_url})"));
+            }
+            line.push('\n');
+            line
+        }
+        _ => format!(
+            "{uri} -> unresolved ({})\n",
+            resolved.reason.as_deref().unwrap_or("unknown")
+        ),
+    }
+}
+
+/// Formats a document's outgoing links (`rdm link list`) as human-readable
+/// text: a summary line, then one indented line per link via
+/// [`format_resolved`].
+#[must_use]
+pub fn format_outgoing_links(
+    on: &str,
+    entries: &[(String, crate::json::ResolvedLinkJson)],
+) -> String {
+    if entries.is_empty() {
+        return format!("{on}: no outgoing links.\n");
+    }
+    let mut out = format!("{on}: {} outgoing link(s)\n", entries.len());
+    for (uri, resolved) in entries {
+        out.push_str("  ");
+        out.push_str(&format_resolved(uri, resolved));
+    }
+    out
+}
+
+/// Formats a target's backlinks (`rdm backlinks`) as human-readable text.
+#[must_use]
+pub fn format_backlinks(target: &str, entries: &[crate::link::BacklinkEntry]) -> String {
+    if entries.is_empty() {
+        return format!("{target}: no backlinks found.\n");
+    }
+    let mut out = format!("{target}: {} backlink(s)\n", entries.len());
+    for entry in entries {
+        out.push_str(&format!("  {}\n", format_doc_ref(&entry.document)));
+    }
+    out
+}
+
+/// Formats a `link check` report (`rdm link check`) as human-readable text.
+///
+/// A clean report (nothing dangling, no diagnostics, nothing missing at
+/// rev) prints a one-line summary; otherwise every finding is listed —
+/// dangling item links, parse diagnostics, and missing-at-rev code links
+/// each labeled distinctly — followed by a problem count. Either way, a
+/// `path_verification_skipped` note (if set) is appended last.
+#[must_use]
+pub fn format_link_check_report(report: &crate::json::LinkCheckReportJson) -> String {
+    let broken = report.dangling.len() + report.diagnostics.len() + report.missing_at_rev.len();
+    let mut out = String::new();
+
+    if broken == 0 {
+        match &report.on {
+            Some(on) => out.push_str(&format!(
+                "{on}: {} link(s) checked, all resolve cleanly.\n",
+                report.links_checked
+            )),
+            None => out.push_str(&format!(
+                "project: all links resolve cleanly ({} link(s) checked, {} code link(s)).\n",
+                report.links_checked, report.code_links_checked
+            )),
+        }
+    } else {
+        for d in &report.dangling {
+            out.push_str(&format!(
+                "dangling link in {}: {} -> {} does not exist\n",
+                format_doc_ref(&d.document),
+                d.uri,
+                d.target
+            ));
+        }
+        for diag in &report.diagnostics {
+            out.push_str(&format!(
+                "parse error in {}: '{}' — {}\n",
+                format_doc_ref(&diag.document),
+                diag.uri,
+                diag.error
+            ));
+        }
+        for m in &report.missing_at_rev {
+            out.push_str(&format!(
+                "missing at rev in {}: {}@{} does not exist at that revision\n",
+                format_doc_ref(&m.document),
+                m.path,
+                m.rev
+            ));
+        }
+        out.push_str(&format!("{broken} problem(s) found.\n"));
+    }
+
+    if let Some(skip) = &report.path_verification_skipped {
+        out.push_str(&format!("note: path verification skipped: {skip}\n"));
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

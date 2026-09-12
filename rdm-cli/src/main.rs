@@ -288,6 +288,14 @@ fn run() -> Result<()> {
             let mut store = commands::make_store(&root)?;
             commands::tag::run(command, &mut store, &repo_config, format)?;
         }
+        Command::Link { command } => {
+            let mut store = commands::make_store(&root)?;
+            commands::link::run(command, &mut store, &repo_config, format)?;
+        }
+        Command::Backlinks { reference, project } => {
+            let mut store = commands::make_store(&root)?;
+            commands::backlinks::run(&mut store, &repo_config, format, reference, project)?;
+        }
     }
 
     Ok(())
