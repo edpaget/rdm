@@ -526,10 +526,13 @@ empty line.
 
 A journal names whatever paths its session wrote, and nothing else. There is
 no class of path rdm treats specially here: `INDEX.md` is journaled if and
-only if that session wrote it, which today means an explicit `rdm index` (or
-the post-merge / post-pull reconciliation). A mutation journals only the paths
-it authored, so `scripts/verify-session-identity.sh` § F asserts neither of
-two concurrent mutations' journals may name an `INDEX.md` at all.
+only if that session wrote it. Since `retire-generated-index` phase 5 deleted
+`rdm index` and the post-merge / post-pull reconciliation that used to call
+it (see [`index-removal.md`](index-removal.md)), nothing in rdm writes an
+INDEX.md any longer, so no session's journal can name one. A mutation
+journals only the paths it authored, so `scripts/verify-session-identity.sh`
+§ F asserts neither of two concurrent mutations' journals may name an
+`INDEX.md` at all.
 
 *Historically* the two indexes landed in **every** session's journal, because
 `ops::mutate` regenerated them on every mutation. `retire-generated-index`

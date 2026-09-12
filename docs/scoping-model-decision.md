@@ -224,7 +224,7 @@ The divergence step 3 introduced was `tree ⊇ index`, never the reverse. A dang
 
 **The accepted consequence, stated explicitly:** the committing session's own new document was absent from the index *it* committed. That was accepted, because the alternative — emitting `projects/<p>/INDEX.md` for a project whose manifest the commit does not contain — was exactly the orphan the guarantee above forbade. Nothing was lost from the tree: the document itself still landed.
 
-**None of this is live any more.** A commit takes the bytes a session wrote and nothing else, so the committing session's own new document is present in whatever index that session last generated on disk, and a stale index is repaired the ordinary way — by running `rdm index` again.
+**None of this is live any more.** A commit takes the bytes a session wrote and nothing else. `rdm index` itself is gone (`retire-generated-index` phase 5; see [`index-removal.md`](index-removal.md)) — nothing generates or repairs an INDEX.md any longer, and any copy still tracked from before removal is just an ordinary file like any other.
 
 Two alternatives were rejected at the time:
 
