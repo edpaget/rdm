@@ -665,6 +665,58 @@ grep -q "sess-g2-b" "$TMP/g2.err" ||
     fail "--all did not name the changeset it was about to destroy: $(cat "$TMP/g2.err")"
 ok "--all destroys other sessions' work and names them first"
 
+# --- G5: the discarding session regenerated the index ITSELF ---------------
+# G above proves a discard leaves a derived path it never authored alone.
+# That is only half the contract: since mutations stopped regenerating an
+# index, the one way a changeset holds a derived path is an explicit
+# `rdm index` — the workflow the CHANGELOG points users at. Such a path IS
+# this session's uncommitted work, and the discard must revert it. Skipping
+# it while still retiring its journal claim would strand the file on disk
+# holding the reverted mutation's content, attributed to nobody.
+say "Section G5: a discard reverts the index the discarding session regenerated itself"
+
+REPO_G5="$TMP/repo-g5"
+seed_repo "$REPO_G5"
+G5_INDEX="$REPO_G5/projects/demo/INDEX.md"
+G5_COMMITTED=$(cksum <"$G5_INDEX")
+
+# One mutation plus an explicit regeneration, both in session A's changeset.
+RDM_SESSION=sess-g5-a "$RDM_BIN" --root "$REPO_G5" roadmap create doomed-map \
+    --title "Doomed" --no-edit --project demo >/dev/null
+RDM_SESSION=sess-g5-a "$RDM_BIN" --root "$REPO_G5" index >/dev/null
+
+grep -q "doomed-map" "$G5_INDEX" ||
+    fail "fixture: the explicit regeneration did not fold the mutation into the index, G5 is vacuous"
+[ "$(cksum <"$G5_INDEX")" != "$G5_COMMITTED" ] ||
+    fail "fixture: the index is unchanged after regeneration, G5 is vacuous"
+ok "A's own changeset now holds both an authored path and a derived one"
+
+RDM_SESSION=sess-g5-a "$RDM_BIN" --root "$REPO_G5" discard --force \
+    >"$TMP/g5.out" 2>&1 || fail "A's discard failed: $(cat "$TMP/g5.out")"
+
+[ ! -f "$REPO_G5/projects/demo/roadmaps/doomed-map/roadmap.md" ] ||
+    fail "A's authored file survived its own discard"
+[ "$(cksum <"$G5_INDEX")" = "$G5_COMMITTED" ] ||
+    fail "the discard did NOT revert the index this same session regenerated: $(cksum <"$G5_INDEX")"
+ok "the index A regenerated is back at its committed content"
+
+[ -z "$(git -C "$REPO_G5" status --porcelain)" ] ||
+    fail "the discard stranded dirt: $(git -C "$REPO_G5" status --porcelain)"
+ok "the tree is clean — nothing orphaned"
+
+# The summary must not claim it regenerated anything: it restored them.
+grep -q "regenerated index file" "$TMP/g5.out" &&
+    fail "the discard claimed it regenerated an index it merely restored: $(cat "$TMP/g5.out")"
+grep -q "Discarded 1 file(s) (plus 2 generated index file(s))." "$TMP/g5.out" ||
+    fail "the discard did not count the indexes it restored: $(cat "$TMP/g5.out")"
+ok "the discard reports the restored indexes honestly, split from the authored count"
+
+RDM_SESSION=sess-g5-a "$RDM_BIN" --root "$REPO_G5" status >"$TMP/g5.status" 2>&1 ||
+    fail "status failed after the discard: $(cat "$TMP/g5.status")"
+grep -q "not attributed" "$TMP/g5.status" &&
+    fail "the discard left unattributed dirt behind: $(cat "$TMP/g5.status")"
+ok "no unattributed dirt is left needing a manual --all"
+
 # --- G3: overlapping-path arm — A writes twice, B overwrites once after ----
 # A's own path-set scoping (G above) only protects a DISJOINT path. Here A
 # and B both journal writes to the SAME never-committed path: A's discard

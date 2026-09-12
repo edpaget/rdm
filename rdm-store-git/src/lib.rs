@@ -227,14 +227,18 @@ impl StatusReport {
     /// shared by every caller of `rdm discard` for the same reason. There is
     /// no user-empty branch here: `git_discard` restores
     /// everything, so a derived-only discard still reports `0 file(s)` plus
-    /// the named regenerated count.
+    /// the named generated count.
+    ///
+    /// The generated files are described as *discarded*, not regenerated:
+    /// a discard restores them to HEAD along with everything else, and
+    /// nothing recomputes them afterwards.
     ///
     /// Only meaningful when the report is not [`is_clean`](Self::is_clean).
     pub fn discard_summary(&self) -> String {
         let derived = self.derived.len();
         if derived > 0 {
             format!(
-                "Discarded {} file(s) (plus {derived} regenerated index file(s)).",
+                "Discarded {} file(s) (plus {derived} generated index file(s)).",
                 self.user.len()
             )
         } else {
@@ -938,8 +942,8 @@ impl GitStore {
     ///
     /// The shipped `rdm discard` design. Concretely:
     ///
-    /// 1. this changeset's non-derived paths are restored to HEAD (added ones
-    ///    removed, modified/deleted ones written back) — **except** a path
+    /// 1. this changeset's paths are restored to HEAD (added ones removed,
+    ///    modified/deleted ones written back) — **except** a path
     ///    whose on-disk content no longer matches what this changeset
     ///    journaled writing there, or whose journaled delete has been
     ///    recreated on disk since: either signals another session's
@@ -957,12 +961,15 @@ impl GitStore {
     ///    `rdm session gc`. The retirement is best-effort: a journal-lock
     ///    wait that expires leaves the claims in place rather than failing
     ///    the discard;
-    /// 3. **no derived index is regenerated.** The restore in step 1 put this
-    ///    changeset's authored paths back to their HEAD blobs, so HEAD's
-    ///    committed index is already correct for them. Regenerating from live
-    ///    disk would newly dirty a derived path and journal it into a session
-    ///    that authored none. Another session's dirty index belongs to that
-    ///    session's changeset and is left untouched here;
+    /// 3. **no derived index is regenerated.** Mutations no longer write one,
+    ///    so the only derived path a changeset can hold is one this session
+    ///    regenerated itself (an explicit `rdm index`, or a pull/resolve
+    ///    reconciliation). Step 1 restores those like any other claimed path
+    ///    — they are this session's uncommitted work, and a discard that
+    ///    left them dirty would strand a file whose journal claim it just
+    ///    retired. Regenerating instead would re-dirty a path the discard is
+    ///    meant to clean. A derived path *another* session dirtied is not in
+    ///    this changeset at all and is left untouched, as it always was;
     /// 4. the `.gitattributes` merge-driver mapping is re-ensured, exactly as
     ///    the whole-tree discard does.
     ///
@@ -992,9 +999,6 @@ impl GitStore {
         let mut digests = std::collections::BTreeMap::new();
         let mut deletes = std::collections::BTreeSet::new();
         for entry in &journal {
-            if rdm_core::paths::is_derived_path(&entry.path) {
-                continue;
-            }
             match entry.kind {
                 JournalKind::Write => {
                     if let Some(digest) = &entry.digest {
@@ -1007,9 +1011,16 @@ impl GitStore {
             }
         }
 
-        let (restored, skipped_overwritten) =
-            self.git
-                .restore_paths_to_head_scoped(&report.user, &digests, &deletes)?;
+        // Both halves of this changeset, derived included: `report.derived`
+        // holds only paths *this* session journaled (see
+        // `git_status_report_scoped`), so restoring them cannot reach another
+        // session's dirty index, and leaving them out would abandon a file
+        // whose claim the retirement below removes.
+        let mut claimed = report.user.clone();
+        claimed.extend(report.derived.iter().cloned());
+        let (restored, skipped_overwritten) = self
+            .git
+            .restore_paths_to_head_scoped(&claimed, &digests, &deletes)?;
 
         #[cfg(test)]
         run_seam(&BEFORE_DISCARD_RETIRE_SEAM);
@@ -1021,13 +1032,12 @@ impl GitStore {
             let _ = session::journal::retire(paths, id, &journal);
         }
 
-        // No index is regenerated here. The restore above puts this
-        // changeset's authored paths back to their HEAD blobs, so HEAD's
-        // committed index is already correct for them; regenerating from live
-        // disk would newly dirty a derived path and journal it into a session
-        // that authored none — precisely what mutations no longer do. Another
-        // session's dirty index belongs to that session's changeset and must
-        // not be rewritten from here.
+        // No index is regenerated here. Mutations no longer write one, so
+        // the restore above has already put every path this changeset claims
+        // — derived ones included — back to its HEAD blob. Regenerating would
+        // re-dirty a path the discard just cleaned. A derived path another
+        // session dirtied belongs to that session's changeset and must not be
+        // rewritten from here.
         Store::commit(self)?;
 
         // Reinstate the merge-driver mapping the restore may have removed.
@@ -1212,8 +1222,8 @@ impl ScopedCommit {
 pub struct ScopedDiscard {
     /// The three-way status as it was before the discard.
     pub report: StatusReport,
-    /// The non-derived paths actually restored to HEAD (or removed, for a
-    /// path this changeset added).
+    /// The paths actually restored to HEAD (or removed, for a path this
+    /// changeset added), derived ones included.
     pub restored: Vec<String>,
     /// Journaled paths left untouched because another session's content —
     /// an overwrite of a journaled write, or a recreation of a journaled
@@ -1225,19 +1235,23 @@ impl ScopedDiscard {
     /// Returns the one-line summary a caller prints after discarding this
     /// outcome's changes.
     ///
-    /// Mirrors [`StatusReport::discard_summary`], but counts what was
-    /// actually [`restored`](Self::restored) rather than everything this
-    /// changeset owned — the two differ exactly when a path was
-    /// [`skipped_overwritten`](Self::skipped_overwritten).
+    /// Mirrors [`StatusReport::discard_summary`], but **both** counts come
+    /// from what was actually [`restored`](Self::restored) rather than from
+    /// everything this changeset owned — they differ exactly when a path was
+    /// [`skipped_overwritten`](Self::skipped_overwritten), and a count taken
+    /// from the pre-discard report would claim a skipped path had been
+    /// handled.
     pub fn discard_summary(&self) -> String {
-        let derived = self.report.derived.len();
+        let derived = self
+            .restored
+            .iter()
+            .filter(|p| rdm_core::paths::is_derived_path(p))
+            .count();
+        let user = self.restored.len() - derived;
         if derived > 0 {
-            format!(
-                "Discarded {} file(s) (plus {derived} regenerated index file(s)).",
-                self.restored.len()
-            )
+            format!("Discarded {user} file(s) (plus {derived} generated index file(s)).")
         } else {
-            format!("Discarded {} file(s).", self.restored.len())
+            format!("Discarded {user} file(s).")
         }
     }
 
@@ -1660,9 +1674,57 @@ mod tests {
     #[test]
     fn discard_summary_covers_both_branches() {
         assert_eq!(report_of(2, 0).discard_summary(), "Discarded 2 file(s).");
+        // "generated", not "regenerated": a discard restores these to HEAD
+        // along with everything else — nothing recomputes them afterwards.
         assert_eq!(
             report_of(1, 2).discard_summary(),
-            "Discarded 1 file(s) (plus 2 regenerated index file(s))."
+            "Discarded 1 file(s) (plus 2 generated index file(s))."
+        );
+    }
+
+    /// A scoped discard's counts must come from what it actually restored,
+    /// derived paths included — never from the pre-discard report, which
+    /// would claim a skipped path had been handled.
+    #[test]
+    fn scoped_discard_summary_counts_only_what_it_restored() {
+        let nothing_derived = ScopedDiscard {
+            report: report_of(2, 0),
+            restored: vec![
+                "projects/demo/tasks/a.md".into(),
+                "projects/demo/tasks/b.md".into(),
+            ],
+            ..ScopedDiscard::default()
+        };
+        assert_eq!(nothing_derived.discard_summary(), "Discarded 2 file(s).");
+
+        // One authored path plus the two indexes this session regenerated
+        // itself: all three were restored, so all three are counted, split by
+        // kind rather than folded together.
+        let with_derived = ScopedDiscard {
+            report: report_of(1, 2),
+            restored: vec![
+                "INDEX.md".into(),
+                "projects/demo/INDEX.md".into(),
+                "projects/demo/tasks/a.md".into(),
+            ],
+            ..ScopedDiscard::default()
+        };
+        assert_eq!(
+            with_derived.discard_summary(),
+            "Discarded 1 file(s) (plus 2 generated index file(s))."
+        );
+
+        // The sharp case: the report says this changeset owned two indexes,
+        // but the guard skipped both. Counting the report would claim they
+        // were handled; counting `restored` tells the truth.
+        let all_derived_skipped = ScopedDiscard {
+            report: report_of(1, 2),
+            restored: vec!["projects/demo/tasks/a.md".into()],
+            skipped_overwritten: vec!["INDEX.md".into(), "projects/demo/INDEX.md".into()],
+        };
+        assert_eq!(
+            all_derived_skipped.discard_summary(),
+            "Discarded 1 file(s)."
         );
     }
 

@@ -360,6 +360,102 @@ fn discard_reports_the_user_count_and_leaves_the_index_untouched() {
     );
 }
 
+/// A derived index this session regenerated *itself* is part of its own
+/// changeset, and a discard must actually discard it.
+///
+/// The sibling of the test above, and the case that separates "another
+/// session's dirty index is left alone" (correct) from "any dirty index is
+/// left alone" (an orphan). Since mutations stopped regenerating the index,
+/// the only way a changeset holds a derived path is an explicit `rdm index`
+/// — the very workflow the CHANGELOG points users at. If the discard skipped
+/// it while still retiring its journal claim, the file would be left on disk
+/// holding the reverted mutation's content, attributed to nobody, and
+/// `rdm status` would report it as unattributed dirt needing `--all`.
+#[test]
+fn discard_reverts_an_index_this_session_regenerated_itself() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+
+    // A committed baseline index, so the regeneration below is a modification
+    // of a tracked file rather than an add.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", "chore: generate indexes"])
+        .assert()
+        .success();
+
+    let index_path = dir.path().join("projects/test/INDEX.md");
+    let committed_index = std::fs::read_to_string(&index_path).unwrap();
+
+    // One mutation, then an explicit regeneration that folds it into the
+    // index — both now belong to this one changeset.
+    create_one_roadmap(&dir, "doomed-roadmap");
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("index")
+        .assert()
+        .success();
+
+    let dirty_index = std::fs::read_to_string(&index_path).unwrap();
+    assert!(
+        dirty_index.contains("doomed-roadmap"),
+        "the explicit regeneration must have folded the mutation into the index, got: \
+         {dirty_index}"
+    );
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["discard", "--force"])
+        .assert()
+        .success()
+        // Counted, named separately, and described as generated rather than
+        // regenerated: the discard restored them, it did not recompute them.
+        .stdout(predicate::str::contains(
+            "Discarded 1 file(s) (plus 2 generated index file(s)).",
+        ))
+        .stdout(predicate::str::contains("regenerated index file(s)").not());
+
+    // The index this session dirtied is back at its committed content — not
+    // left holding a roadmap that no longer exists.
+    let index_after = std::fs::read_to_string(&index_path).unwrap();
+    assert_eq!(
+        committed_index, index_after,
+        "a discard must revert the index this same session regenerated"
+    );
+
+    // Nothing is stranded: the tree is clean and nothing is unattributed.
+    let porcelain = git(dir.path(), &["status", "--porcelain"]);
+    let porcelain = String::from_utf8(porcelain.stdout).unwrap();
+    assert!(
+        porcelain.trim().is_empty(),
+        "the tree must be clean after the discard, got: {porcelain}"
+    );
+
+    let out = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).unwrap();
+    assert!(
+        !out.contains("not attributed"),
+        "the discard must not strand unattributed dirt, got: {out}"
+    );
+}
+
 #[test]
 fn commit_lands_the_regenerated_index_when_it_is_the_only_change() {
     let dir = TempDir::new().unwrap();
