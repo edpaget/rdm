@@ -466,6 +466,32 @@ mod tests {
     }
 
     #[test]
+    fn resolve_item_link_existing_roadmap() {
+        let mut store = setup();
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            crate::ops::CreateRoadmap {
+                project: "demo",
+                slug: "auth",
+                title: "Auth",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let target = ItemRef::Roadmap {
+            roadmap: "auth".to_string(),
+        };
+        let resolved = resolve_item_link(&store, "demo", &target).unwrap();
+        assert_eq!(
+            resolved,
+            Resolved::Item {
+                target,
+                exists: true
+            }
+        );
+    }
+
+    #[test]
     fn resolve_item_link_dangling_roadmap_never_errors() {
         let store = setup();
         let target = ItemRef::Roadmap {
@@ -563,6 +589,103 @@ mod tests {
                 exists: false
             }
         );
+    }
+
+    #[test]
+    fn resolve_item_link_numeric_phase_stem_propagates_frontmatter_parse_error() {
+        // A corrupted phase file discovered while resolving a numeric
+        // stem is a genuine store failure, not a "doesn't exist" case —
+        // it must propagate rather than fold into `exists: false` the way
+        // RoadmapNotFound/PhaseNotFound do (see the two tests above).
+        let mut store = setup();
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            crate::ops::CreateRoadmap {
+                project: "demo",
+                slug: "auth",
+                title: "Auth",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            crate::ops::CreatePhase {
+                project: "demo",
+                roadmap: "auth",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: None,
+                tags: None,
+                difficulty: crate::ops::DifficultyUpdate::Keep,
+                model: crate::ops::ModelTierUpdate::Keep,
+            },
+        )
+        .unwrap();
+        // Overwrite the phase file with a `phase` field of the wrong
+        // type — valid YAML syntax, invalid for `Phase::phase: u32` — so
+        // `list_phases` (which `resolve_phase_stem` calls to resolve a
+        // numeric stem) fails with a real `FrontmatterParse`, not a
+        // not-found variant.
+        store
+            .write(
+                &crate::paths::phase_path("demo", "auth", "phase-1-design"),
+                "---\nphase: not-a-number\ntitle: Design\nstatus: not-started\n---\n\nBody.\n"
+                    .to_string(),
+            )
+            .unwrap();
+        let target = ItemRef::Phase {
+            roadmap: "auth".to_string(),
+            stem: "1".to_string(),
+        };
+        let err = resolve_item_link(&store, "demo", &target).unwrap_err();
+        assert!(matches!(err, crate::error::Error::FrontmatterParse(_)));
+    }
+
+    #[test]
+    fn normalize_item_ref_numeric_phase_stem_propagates_frontmatter_parse_error() {
+        // Mirrors the `resolve_item_link` test above for
+        // `normalize_item_ref`'s identical `Err(e) => Err(e)` fallthrough.
+        let mut store = setup();
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            crate::ops::CreateRoadmap {
+                project: "demo",
+                slug: "auth",
+                title: "Auth",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            crate::ops::CreatePhase {
+                project: "demo",
+                roadmap: "auth",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: None,
+                tags: None,
+                difficulty: crate::ops::DifficultyUpdate::Keep,
+                model: crate::ops::ModelTierUpdate::Keep,
+            },
+        )
+        .unwrap();
+        store
+            .write(
+                &crate::paths::phase_path("demo", "auth", "phase-1-design"),
+                "---\nphase: not-a-number\ntitle: Design\nstatus: not-started\n---\n\nBody.\n"
+                    .to_string(),
+            )
+            .unwrap();
+        let item_ref = ItemRef::Phase {
+            roadmap: "auth".to_string(),
+            stem: "1".to_string(),
+        };
+        let err = normalize_item_ref(&store, "demo", &item_ref).unwrap_err();
+        assert!(matches!(err, crate::error::Error::FrontmatterParse(_)));
     }
 
     #[test]
@@ -1148,6 +1271,66 @@ mod tests {
     }
 
     #[test]
+    fn backlinks_finds_reference_in_review_summary_body() {
+        // The doc comment on `backlinks` promises a scan of "every ...
+        // review body (and review comment)" — this covers the review's own
+        // top-level body (`DocRef::Review { comment: None, .. }`), which
+        // every other review fixture in this file leaves link-free in
+        // favor of putting the link in a comment.
+        let mut store = setup();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "fix-login",
+                title: "Fix login",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Body."),
+            },
+        )
+        .unwrap();
+        let doc = Document {
+            frontmatter: Review {
+                id: "2026-07-01-0900-dddd".to_string(),
+                author: "ed".to_string(),
+                target: ReviewTarget::Task {
+                    slug: "fix-login".to_string(),
+                },
+                state: ReviewState::Draft,
+                verdict: None,
+                created: Utc.with_ymd_and_hms(2026, 7, 1, 9, 0, 0).unwrap(),
+                submitted: None,
+                created_commit: None,
+                comments: vec![ReviewComment {
+                    id: 1,
+                    doc: None,
+                    status: ReviewCommentStatus::Open,
+                    applied_commit: None,
+                    anchor: None,
+                    body: "No link in this comment.".to_string(),
+                    reply: None,
+                }],
+            },
+            body: "Summary references [the fix](rdm:task/fix-login) directly.".to_string(),
+        };
+        crate::io::write_review(&mut store, "demo", "2026-07-01-0900-dddd", &doc).unwrap();
+
+        let target = ItemRef::Task {
+            slug: "fix-login".to_string(),
+        };
+        let entries = backlinks(&store, "demo", &target).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].document,
+            DocRef::Review {
+                id: "2026-07-01-0900-dddd".to_string(),
+                comment: None,
+            }
+        );
+    }
+
+    #[test]
     fn backlinks_matches_bare_number_phase_link_against_canonical_stem_target() {
         // Mirrors `resolve_item_link_existing_phase_by_number`: a link
         // written with rdm's bare-number phase shorthand
@@ -1289,5 +1472,21 @@ mod tests {
         };
         let entries = backlinks(&store, "demo", &target).unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn backlinks_errors_project_not_found() {
+        // Mirrors `resolve_link_code_link_errors_project_not_found`: a
+        // genuine store failure (here, from `list_roadmaps`'s own
+        // project-existence check) must propagate, not fold into an empty
+        // result the way a dangling target does.
+        let store = setup();
+        let target = ItemRef::Task {
+            slug: "fix-login".to_string(),
+        };
+        let err = backlinks(&store, "no-such-project", &target).unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::ProjectNotFound(name) if name == "no-such-project")
+        );
     }
 }
