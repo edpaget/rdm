@@ -174,6 +174,23 @@ pub async fn get_phase(
 
     match format {
         ResponseFormat::HalJson => {
+            let target = rdm_core::model::ReviewTarget::Phase {
+                roadmap: roadmap.clone(),
+                stem: stem.clone(),
+            };
+            let body_links = crate::link_render::resolve_body_links(
+                &store,
+                &project,
+                doc.frontmatter.commit.as_deref(),
+                &doc.body,
+            )
+            .map_err(|e| error_response(e, format))?;
+            let (outgoing_hal, outgoing_json) =
+                crate::link_render::outgoing_link_views(&body_links);
+            let (backlink_hal, backlink_json) =
+                crate::link_render::backlink_views(&store, &project, &target)
+                    .map_err(|e| error_response(e, format))?;
+
             let self_href = format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}");
             let mut resource = HalResource::new(
                 PhaseDetail {
@@ -187,7 +204,11 @@ pub async fn get_phase(
             .with_link(
                 "roadmap",
                 HalLink::new(format!("/projects/{project}/roadmaps/{roadmap}")),
-            );
+            )
+            .with_links("rdm:link", outgoing_hal)
+            .with_links("rdm:backlink", backlink_hal)
+            .with_embedded("links", outgoing_json)
+            .with_embedded("backlinks", backlink_json);
 
             if let Some(ref prev) = prev_href {
                 resource = resource.with_link("prev", HalLink::new(prev.clone()));
@@ -199,6 +220,22 @@ pub async fn get_phase(
             Ok(hal_response(resource))
         }
         ResponseFormat::Html => {
+            let body_links = crate::link_render::resolve_body_links(
+                &store,
+                &project,
+                doc.frontmatter.commit.as_deref(),
+                &doc.body,
+            )
+            .map_err(|e| error_response(e, format))?;
+            let referenced_by = crate::link_render::referenced_by(
+                &store,
+                &project,
+                &rdm_core::model::ReviewTarget::Phase {
+                    roadmap: roadmap.clone(),
+                    stem: stem.clone(),
+                },
+            )
+            .map_err(|e| error_response(e, format))?;
             // Inline highlights index the *current* body; a pinned `?at=`
             // view renders historical bytes, so highlighting is disabled
             // there (quote previews still render).
@@ -232,7 +269,7 @@ pub async fn get_phase(
             // Exclusive render modes: selection annotations while the
             // viewer's draft is open, inline review highlights otherwise.
             let annotated = draft_panel.as_ref().is_some_and(|p| p.draft.is_some());
-            let body_html = page_reviews.render_body(&doc.body, annotated);
+            let body_html = page_reviews.render_body(&doc.body, annotated, &body_links);
             let page = PhaseDetailPage {
                 project,
                 roadmap,
@@ -250,6 +287,7 @@ pub async fn get_phase(
                 next_href,
                 revision: filters.at,
                 reviews: page_reviews.reviews,
+                referenced_by,
                 draft_panel,
                 // A bare `?draft_error=` must not render an empty alert banner.
                 draft_error: filters.draft_error.filter(|s| !s.trim().is_empty()),
@@ -1785,5 +1823,52 @@ mod tests {
         rdm_core::store::Store::commit(&mut store).unwrap();
         let html = get_html(&state, "/projects/demo/roadmaps/alpha/phases/2").await;
         assert!(!html.contains("form/dismiss"), "got: {html}");
+    }
+
+    /// AC1: an `rdm:task/<slug>` link in a phase body renders as an anchor
+    /// to the task detail page with a status class, and the linked page
+    /// loads.
+    #[tokio::test]
+    async fn get_phase_html_renders_task_link_with_status_class() {
+        let (_dir, state) = setup();
+        let mut store = state.store();
+        rdm_core::ops::task::create_task(
+            &mut store,
+            rdm_core::ops::task::CreateTask {
+                project: "demo",
+                slug: "fix-bug",
+                title: "Fix bug",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::phase::update_phase(
+            &mut store,
+            "demo",
+            "alpha",
+            "phase-2-second",
+            None,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Set(
+                "See [the task](rdm:task/fix-bug) for details.".to_string(),
+            ),
+            None,
+            None,
+            None,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha/phases/2").await;
+        assert!(
+            html.contains(
+                r#"<a class="rdm-link-item rdm-status-open" href="/projects/demo/tasks/fix-bug">the task</a>"#
+            ),
+            "got: {html}"
+        );
+
+        // The linked page loads.
+        get_html(&state, "/projects/demo/tasks/fix-bug").await;
     }
 }

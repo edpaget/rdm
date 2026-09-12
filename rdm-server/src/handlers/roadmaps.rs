@@ -332,6 +332,21 @@ pub async fn get_roadmap(
 
     match format {
         ResponseFormat::HalJson => {
+            let target = rdm_core::model::ReviewTarget::Roadmap {
+                roadmap: roadmap.clone(),
+            };
+            // A roadmap body carries no stamped commit (only phases/tasks
+            // do), so a code link in it always falls back to the project's
+            // default branch.
+            let body_links =
+                crate::link_render::resolve_body_links(&store, &project, None, &roadmap_doc.body)
+                    .map_err(|e| error_response(e, format))?;
+            let (outgoing_hal, outgoing_json) =
+                crate::link_render::outgoing_link_views(&body_links);
+            let (backlink_hal, backlink_json) =
+                crate::link_render::backlink_views(&store, &project, &target)
+                    .map_err(|e| error_response(e, format))?;
+
             let mut phase_embedded = Vec::new();
             for (stem, phase_doc) in &phases {
                 let phase_resource = HalResource::new(
@@ -356,7 +371,11 @@ pub async fn get_roadmap(
                 self_href,
             )
             .with_link("project", HalLink::new(format!("/projects/{project}")))
-            .with_embedded("phases", phase_embedded);
+            .with_links("rdm:link", outgoing_hal)
+            .with_links("rdm:backlink", backlink_hal)
+            .with_embedded("phases", phase_embedded)
+            .with_embedded("links", outgoing_json)
+            .with_embedded("backlinks", backlink_json);
 
             Ok(hal_response(resource))
         }
@@ -372,6 +391,17 @@ pub async fn get_roadmap(
             );
             let quick_filters =
                 state.quick_filter_views_for_path(&detail_path, filters.tag.as_deref());
+            let body_links =
+                crate::link_render::resolve_body_links(&store, &project, None, &roadmap_doc.body)
+                    .map_err(|e| error_response(e, format))?;
+            let referenced_by = crate::link_render::referenced_by(
+                &store,
+                &project,
+                &rdm_core::model::ReviewTarget::Roadmap {
+                    roadmap: roadmap.clone(),
+                },
+            )
+            .map_err(|e| error_response(e, format))?;
             // Inline highlights index the *current* body; a pinned `?at=`
             // view disables them (quote previews still render). Doc-scoped
             // comments never highlight here — they link through to their
@@ -406,35 +436,48 @@ pub async fn get_roadmap(
             // Exclusive render modes: selection annotations while the
             // viewer's draft is open, inline review highlights otherwise.
             let annotated = draft_panel.as_ref().is_some_and(|p| p.draft.is_some());
-            let body_html = page_reviews.render_body(&roadmap_doc.body, annotated);
+            let body_html = page_reviews.render_body(&roadmap_doc.body, annotated, &body_links);
             // Each phase body renders into its collapsed disclosure. This
             // is one markdown render per phase per request (bodies were
             // already loaded for the table); collapsed-by-default keeps
             // the browser cost off the initial view. Phase-6 inline
             // highlights deliberately do NOT extend into these bodies —
             // doc-scoped comments keep linking through to the phase page —
-            // so annotations are the only instrumentation here.
-            let phase_rows: Vec<PhaseRow> = phases
-                .iter()
-                .map(|(stem, doc)| {
-                    let status_cls = phase_status_class(&doc.frontmatter.status).to_string();
-                    let body_html = (filters.at.is_none() && !doc.body.is_empty()).then(|| {
-                        if annotated {
-                            crate::markdown::render_markdown_annotated(&doc.body)
-                        } else {
-                            crate::markdown::render_markdown(&doc.body)
-                        }
-                    });
-                    PhaseRow {
-                        phase: doc.frontmatter.phase,
-                        stem: stem.clone(),
-                        title: doc.frontmatter.title.clone(),
-                        status: doc.frontmatter.status.to_string(),
-                        status_class: status_cls,
-                        body_html,
-                    }
-                })
-                .collect();
+            // so annotations are the only instrumentation here. Each phase
+            // gets its OWN resolved-link list, using ITS OWN containing
+            // commit — a shared context would mis-resolve rev-less code
+            // links inside phase bodies.
+            let mut phase_rows: Vec<PhaseRow> = Vec::with_capacity(phases.len());
+            for (stem, doc) in &phases {
+                let status_cls = phase_status_class(&doc.frontmatter.status).to_string();
+                let body_html = if filters.at.is_none() && !doc.body.is_empty() {
+                    let phase_links = crate::link_render::resolve_body_links(
+                        &store,
+                        &project,
+                        doc.frontmatter.commit.as_deref(),
+                        &doc.body,
+                    )
+                    .map_err(|e| error_response(e, format))?;
+                    Some(if annotated {
+                        crate::markdown::render_markdown_annotated_with_links(
+                            &doc.body,
+                            &phase_links,
+                        )
+                    } else {
+                        crate::markdown::render_markdown_with_links(&doc.body, &phase_links)
+                    })
+                } else {
+                    None
+                };
+                phase_rows.push(PhaseRow {
+                    phase: doc.frontmatter.phase,
+                    stem: stem.clone(),
+                    title: doc.frontmatter.title.clone(),
+                    status: doc.frontmatter.status.to_string(),
+                    status_class: status_cls,
+                    body_html,
+                });
+            }
             let page = RoadmapDetailPage {
                 project,
                 slug: roadmap_doc.frontmatter.roadmap,
@@ -453,6 +496,7 @@ pub async fn get_roadmap(
                 active_tag: filters.tag,
                 revision: filters.at,
                 reviews: page_reviews.reviews,
+                referenced_by,
                 draft_panel,
                 // A bare `?draft_error=` must not render an empty alert banner.
                 draft_error: filters.draft_error.filter(|s| !s.trim().is_empty()),
@@ -2265,5 +2309,64 @@ mod tests {
         assert!(html.contains("rdm-src"), "annotations active: {html}");
         // The quote preview in the reviews section still renders.
         assert!(html.contains("roadmap span"), "{html}");
+    }
+
+    /// AC1/AC5: a phase body's `rdm:` link renders on the roadmap detail
+    /// page (each phase disclosure gets its own resolved-link context), and
+    /// a roadmap referenced by another document shows a "Referenced by"
+    /// section.
+    #[tokio::test]
+    async fn get_roadmap_html_renders_phase_link_and_referenced_by() {
+        let (_dir, state) = setup();
+        let mut store = state.store();
+        rdm_core::ops::task::create_task(
+            &mut store,
+            rdm_core::ops::task::CreateTask {
+                project: "demo",
+                slug: "fix-bug",
+                title: "Fix bug",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::phase::update_phase(
+            &mut store,
+            "demo",
+            "alpha",
+            "phase-2-second",
+            None,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Set("See [the bug](rdm:task/fix-bug).".to_string()),
+            None,
+            None,
+            None,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
+        .unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "beta",
+                title: "Beta Roadmap",
+                body: Some("See [alpha](rdm:roadmap/alpha)."),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+
+        let html = get_html(&state, "/projects/demo/roadmaps/alpha").await;
+        assert!(
+            html.contains(
+                r#"<a class="rdm-link-item rdm-status-open" href="/projects/demo/tasks/fix-bug">the bug</a>"#
+            ),
+            "got: {html}"
+        );
+        assert!(html.contains("Referenced by"), "got: {html}");
+        assert!(
+            html.contains(r#"<a href="/projects/demo/roadmaps/beta">Beta Roadmap</a>"#),
+            "got: {html}"
+        );
     }
 }

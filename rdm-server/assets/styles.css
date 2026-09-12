@@ -699,3 +699,48 @@ mark.rdm-anchor.is-active { background: var(--anchor-highlight-bg); }
   border-left: 3px solid var(--color-border-light);
   padding-left: 0.5rem;
 }
+
+/* Rendered `rdm:` links (see rdm-server/src/link_render.rs and markdown.rs). */
+.rdm-link-item { color: var(--color-link); }
+.rdm-link-item.rdm-status-done,
+.rdm-link-item.rdm-status-wont-fix {
+  color: var(--color-muted);
+  text-decoration: line-through;
+}
+.rdm-link-code { color: var(--color-link); }
+.rdm-link-code.rdm-link-nolink {
+  color: var(--color-muted);
+  background: var(--color-code-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.25rem;
+  cursor: default;
+  text-decoration: none;
+}
+.rdm-link-broken {
+  color: var(--color-muted);
+  border-bottom: 1px dashed var(--color-muted);
+  cursor: help;
+}
+
+.referenced-by-section {
+  margin-top: 2rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-border-light);
+}
+.referenced-by-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+}
+.referenced-by-list li { padding: 0.25rem 0; }
+.badge-referenced-by-kind {
+  display: inline-block;
+  font-size: 0.75rem;
+  color: var(--color-muted);
+  border: 1px solid var(--color-border-light);
+  border-radius: 0.25rem;
+  padding: 0 0.35rem;
+  margin-right: 0.35rem;
+}

@@ -448,6 +448,19 @@ pub struct RoadmapsPage {
     pub active_tag: Option<String>,
 }
 
+/// One entry in a detail page's "Referenced by" section: a document
+/// elsewhere in the plan repo that links to the page's own item via an
+/// `rdm:` link, per `rdm_core::ops::links::backlinks`.
+pub struct ReferencedByEntry {
+    /// Href of the referencing document's own detail (or review) page.
+    pub href: String,
+    /// Human-readable title for the referencing document.
+    pub title: String,
+    /// Kind label ("Roadmap", "Phase", "Task", or "Review"), shown as a
+    /// small badge ahead of the title.
+    pub kind_label: String,
+}
+
 /// A phase row for the roadmap detail page's per-phase disclosures.
 pub struct PhaseRow {
     /// Phase number.
@@ -504,6 +517,9 @@ pub struct RoadmapDetailPage {
     pub revision: Option<String>,
     /// Non-draft reviews of this roadmap, oldest first.
     pub reviews: Vec<ReviewView>,
+    /// Documents elsewhere in the plan repo that link to this roadmap.
+    /// Empty when there are none — the "Referenced by" section is omitted.
+    pub referenced_by: Vec<ReferencedByEntry>,
     /// Draft-review panel; `None` when viewing a pinned `?at=` revision.
     pub draft_panel: Option<DraftPanelView>,
     /// Inline error from a redirected review-form action, if any.
@@ -551,6 +567,9 @@ pub struct PhaseDetailPage {
     /// Non-draft reviews of this phase (including roadmap-review comments
     /// scoped into it), oldest first.
     pub reviews: Vec<ReviewView>,
+    /// Documents elsewhere in the plan repo that link to this phase. Empty
+    /// when there are none — the "Referenced by" section is omitted.
+    pub referenced_by: Vec<ReferencedByEntry>,
     /// Draft-review panel; `None` when viewing a pinned `?at=` revision.
     pub draft_panel: Option<DraftPanelView>,
     /// Inline error from a redirected review-form action, if any.
@@ -630,6 +649,9 @@ pub struct TaskDetailPage {
     pub revision: Option<String>,
     /// Non-draft reviews of this task, oldest first.
     pub reviews: Vec<ReviewView>,
+    /// Documents elsewhere in the plan repo that link to this task. Empty
+    /// when there are none — the "Referenced by" section is omitted.
+    pub referenced_by: Vec<ReferencedByEntry>,
     /// Draft-review panel; `None` when viewing a pinned `?at=` revision.
     pub draft_panel: Option<DraftPanelView>,
     /// Inline error from a redirected review-form action, if any.
@@ -828,6 +850,7 @@ mod tests {
             status_options: task_status_options(&rdm_core::model::TaskStatus::Open),
             revision,
             reviews: Vec::new(),
+            referenced_by: Vec::new(),
             draft_panel: None,
             draft_error: None,
             annotated: false,
@@ -884,6 +907,7 @@ mod tests {
             active_tag: None,
             revision,
             reviews: Vec::new(),
+            referenced_by: Vec::new(),
             draft_panel: None,
             draft_error: None,
             annotated: false,
@@ -922,6 +946,7 @@ mod tests {
             active_tag: None,
             revision: Some("abcdef1".to_string()),
             reviews: Vec::new(),
+            referenced_by: Vec::new(),
             draft_panel: None,
             draft_error: None,
             annotated: false,
@@ -971,6 +996,7 @@ mod tests {
             status_options: phase_status_options(&rdm_core::model::PhaseStatus::InProgress),
             revision,
             reviews: Vec::new(),
+            referenced_by: Vec::new(),
             draft_panel: None,
             draft_error: None,
             annotated: false,

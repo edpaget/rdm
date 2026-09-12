@@ -77,6 +77,7 @@
     <button type="submit" name="clear_tags" value="true">Clear tags</button>
   </form>
 </details>
+{% include "_referenced_by.html" %}
 {% if let Some(panel) = draft_panel %}
 {% include "_draft_panel.html" %}
 {% endif %}

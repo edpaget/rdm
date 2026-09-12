@@ -219,6 +219,22 @@ pub async fn get_task(
 
     match format {
         ResponseFormat::HalJson => {
+            let target = rdm_core::model::ReviewTarget::Task {
+                slug: task_slug.clone(),
+            };
+            let body_links = crate::link_render::resolve_body_links(
+                &store,
+                &project,
+                doc.frontmatter.commit.as_deref(),
+                &doc.body,
+            )
+            .map_err(|e| error_response(e, format))?;
+            let (outgoing_hal, outgoing_json) =
+                crate::link_render::outgoing_link_views(&body_links);
+            let (backlink_hal, backlink_json) =
+                crate::link_render::backlink_views(&store, &project, &target)
+                    .map_err(|e| error_response(e, format))?;
+
             let self_href = format!("/projects/{project}/tasks/{task_slug}");
             let resource = HalResource::new(
                 TaskDetail {
@@ -229,11 +245,30 @@ pub async fn get_task(
                 },
                 self_href,
             )
-            .with_link("project", HalLink::new(format!("/projects/{project}")));
+            .with_link("project", HalLink::new(format!("/projects/{project}")))
+            .with_links("rdm:link", outgoing_hal)
+            .with_links("rdm:backlink", backlink_hal)
+            .with_embedded("links", outgoing_json)
+            .with_embedded("backlinks", backlink_json);
 
             Ok(hal_response(resource))
         }
         ResponseFormat::Html => {
+            let body_links = crate::link_render::resolve_body_links(
+                &store,
+                &project,
+                doc.frontmatter.commit.as_deref(),
+                &doc.body,
+            )
+            .map_err(|e| error_response(e, format))?;
+            let referenced_by = crate::link_render::referenced_by(
+                &store,
+                &project,
+                &rdm_core::model::ReviewTarget::Task {
+                    slug: task_slug.clone(),
+                },
+            )
+            .map_err(|e| error_response(e, format))?;
             // Inline highlights index the *current* body; a pinned `?at=`
             // view disables them (quote previews still render).
             let page_reviews = crate::review_views::page_reviews(
@@ -262,7 +297,7 @@ pub async fn get_task(
             // Exclusive render modes: selection annotations while the
             // viewer's draft is open, inline review highlights otherwise.
             let annotated = draft_panel.as_ref().is_some_and(|p| p.draft.is_some());
-            let body_html = page_reviews.render_body(&doc.body, annotated);
+            let body_html = page_reviews.render_body(&doc.body, annotated, &body_links);
             let page = TaskDetailPage {
                 project,
                 slug: task_slug,
@@ -278,6 +313,7 @@ pub async fn get_task(
                 body_md: doc.body,
                 revision: filters.at,
                 reviews: page_reviews.reviews,
+                referenced_by,
                 draft_panel,
                 // A bare `?draft_error=` must not render an empty alert banner.
                 draft_error: filters.draft_error.filter(|s| !s.trim().is_empty()),
@@ -1607,5 +1643,131 @@ mod tests {
         assert!(html.contains(r#"<span class="rdm-src" data-so="#), "{html}");
         assert!(!html.contains("<mark"), "exclusive modes: {html}");
         assert!(html.contains("data-rdm-anchor-action="), "{html}");
+    }
+
+    /// AC5: a task referenced by a phase's `rdm:` link shows a "Referenced
+    /// by" section listing that phase.
+    #[tokio::test]
+    async fn get_task_html_shows_referenced_by_section() {
+        let (_dir, state) = setup();
+        let mut store = state.store();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "alpha",
+                title: "Alpha",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: Some("See [the bug](rdm:task/bug-fix)."),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+
+        let html = get_html(&state, "/projects/demo/tasks/bug-fix").await;
+        assert!(html.contains("Referenced by"), "got: {html}");
+        assert!(
+            html.contains(
+                r#"<a href="/projects/demo/roadmaps/alpha/phases/phase-1-design">Phase 1: Design</a>"#
+            ),
+            "got: {html}"
+        );
+    }
+
+    /// AC5: the section is absent entirely when there are no backlinks.
+    #[tokio::test]
+    async fn get_task_html_omits_referenced_by_when_no_backlinks() {
+        let (_dir, state) = setup();
+        let html = get_html(&state, "/projects/demo/tasks/bug-fix").await;
+        assert!(!html.contains("Referenced by"), "got: {html}");
+        assert!(!html.contains("referenced-by-section"), "got: {html}");
+    }
+
+    /// AC6: the JSON detail response carries resolved outgoing links and
+    /// backlinks as HAL `_links`/`_embedded`.
+    #[tokio::test]
+    async fn get_task_json_includes_link_relations() {
+        let (_dir, state) = setup();
+        let mut store = state.store();
+        rdm_core::ops::task::update_task(
+            &mut store,
+            "demo",
+            "bug-fix",
+            None,
+            None,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Set("See [the feature](rdm:task/feature) too.".to_string()),
+            None,
+            None,
+            None,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
+        .unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: "demo",
+                slug: "alpha",
+                title: "Alpha",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            rdm_core::ops::phase::CreatePhase {
+                project: "demo",
+                roadmap: "alpha",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: Some("See [the bug](rdm:task/bug-fix)."),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::get("/projects/demo/tasks/bug-fix")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 65536).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(
+            json["_links"]["rdm:link"]["href"],
+            "/projects/demo/tasks/feature"
+        );
+        let links_embedded = json["_embedded"]["links"].as_array().unwrap();
+        assert_eq!(links_embedded.len(), 1);
+        assert_eq!(links_embedded[0]["kind"], "item");
+        assert_eq!(links_embedded[0]["exists"], true);
+
+        assert_eq!(
+            json["_links"]["rdm:backlink"]["href"],
+            "/projects/demo/roadmaps/alpha/phases/phase-1-design"
+        );
+        let backlinks_embedded = json["_embedded"]["backlinks"].as_array().unwrap();
+        assert_eq!(backlinks_embedded.len(), 1);
+        assert_eq!(backlinks_embedded[0]["kind"], "phase");
     }
 }

@@ -31,6 +31,24 @@ impl HalLink {
     }
 }
 
+/// The value under one `_links` relation key: a single [`HalLink`] object
+/// (the common case, and the only shape every relation produced before
+/// [`HalResource::with_links`] existed), or an array of them for a relation
+/// that is naturally multi-valued (outgoing `rdm:` links, backlinks).
+///
+/// `#[serde(untagged)]` means a single-element relation still serializes as
+/// a bare link object, byte-identical to before this type existed — every
+/// existing `with_link` caller and `_links["rel"]["href"]`-style assertion
+/// is unaffected.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum HalLinkValue {
+    /// One link — serializes as a plain link object.
+    Single(HalLink),
+    /// Several links under the same relation — serializes as a JSON array.
+    Multi(Vec<HalLink>),
+}
+
 /// A HAL resource wrapping domain data of type `T`.
 ///
 /// The domain data fields are flattened into the top-level JSON object
@@ -38,7 +56,7 @@ impl HalLink {
 #[derive(Debug, Clone, Serialize)]
 pub struct HalResource<T: Serialize> {
     /// HAL links keyed by relation name. Always includes at least `"self"`.
-    pub _links: HashMap<String, HalLink>,
+    pub _links: HashMap<String, HalLinkValue>,
 
     /// Embedded sub-resources keyed by relation name.
     #[serde(skip_serializing_if = "HashMap::is_empty")]
@@ -53,7 +71,10 @@ impl<T: Serialize> HalResource<T> {
     /// Creates a new HAL resource with a `self` link.
     pub fn new(data: T, self_href: impl Into<String>) -> Self {
         let mut links = HashMap::new();
-        links.insert("self".to_string(), HalLink::new(self_href));
+        links.insert(
+            "self".to_string(),
+            HalLinkValue::Single(HalLink::new(self_href)),
+        );
         HalResource {
             _links: links,
             _embedded: HashMap::new(),
@@ -63,7 +84,27 @@ impl<T: Serialize> HalResource<T> {
 
     /// Adds a link with the given relation name.
     pub fn with_link(mut self, rel: impl Into<String>, link: HalLink) -> Self {
-        self._links.insert(rel.into(), link);
+        self._links.insert(rel.into(), HalLinkValue::Single(link));
+        self
+    }
+
+    /// Adds a naturally multi-valued relation (outgoing `rdm:` links,
+    /// backlinks): serializes as a single link object when `links` has
+    /// exactly one element (matching [`with_link`](Self::with_link)'s
+    /// shape), as a JSON array when it has more, and is a no-op — the
+    /// relation key is left absent rather than set to an empty array —
+    /// when `links` is empty.
+    pub fn with_links(mut self, rel: impl Into<String>, mut links: Vec<HalLink>) -> Self {
+        match links.len() {
+            0 => {}
+            1 => {
+                self._links
+                    .insert(rel.into(), HalLinkValue::Single(links.remove(0)));
+            }
+            _ => {
+                self._links.insert(rel.into(), HalLinkValue::Multi(links));
+            }
+        }
         self
     }
 
@@ -185,5 +226,57 @@ mod tests {
         assert_eq!(json["_links"]["collection"]["href"], "/widgets");
         assert_eq!(json["_links"]["collection"]["title"], "All widgets");
         assert_eq!(json["_embedded"]["related"][0]["id"], 1);
+    }
+
+    #[test]
+    fn with_links_single_serializes_as_object() {
+        let resource = HalResource::new(
+            Widget {
+                name: "a".into(),
+                count: 1,
+            },
+            "/widgets/a",
+        )
+        .with_links("rdm:link", vec![HalLink::new("/projects/p/tasks/x")]);
+        let json = serde_json::to_value(&resource).unwrap();
+        assert!(json["_links"]["rdm:link"].is_object());
+        assert_eq!(json["_links"]["rdm:link"]["href"], "/projects/p/tasks/x");
+    }
+
+    #[test]
+    fn with_links_multiple_serializes_as_array() {
+        let resource = HalResource::new(
+            Widget {
+                name: "a".into(),
+                count: 1,
+            },
+            "/widgets/a",
+        )
+        .with_links(
+            "rdm:link",
+            vec![
+                HalLink::new("/projects/p/tasks/x"),
+                HalLink::new("/projects/p/tasks/y"),
+            ],
+        );
+        let json = serde_json::to_value(&resource).unwrap();
+        let arr = json["_links"]["rdm:link"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["href"], "/projects/p/tasks/x");
+        assert_eq!(arr[1]["href"], "/projects/p/tasks/y");
+    }
+
+    #[test]
+    fn with_links_empty_omits_relation() {
+        let resource = HalResource::new(
+            Widget {
+                name: "a".into(),
+                count: 1,
+            },
+            "/widgets/a",
+        )
+        .with_links("rdm:link", vec![]);
+        let json = serde_json::to_value(&resource).unwrap();
+        assert!(!json["_links"].as_object().unwrap().contains_key("rdm:link"));
     }
 }

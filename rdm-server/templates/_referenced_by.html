@@ -1,0 +1,10 @@
+{% if !referenced_by.is_empty() %}
+<section id="referenced-by" class="referenced-by-section" aria-label="Referenced by">
+  <h2>Referenced by</h2>
+  <ul class="referenced-by-list">
+    {% for r in referenced_by %}
+    <li><span class="badge badge-referenced-by-kind">{{ r.kind_label }}</span> <a href="{{ r.href }}">{{ r.title }}</a></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}

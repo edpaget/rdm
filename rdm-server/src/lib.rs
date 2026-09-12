@@ -18,6 +18,9 @@ pub mod extract;
 pub mod hal;
 /// HTTP request handlers.
 pub mod handlers;
+/// Classification of resolved `rdm:` links into renderable actions, and
+/// "Referenced by" backlink views.
+pub mod link_render;
 /// Markdown-to-HTML rendering.
 pub mod markdown;
 /// RFC 9457 Problem Details for HTTP APIs.

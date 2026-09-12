@@ -79,18 +79,26 @@ impl PageReviews {
     /// The two instrumentation modes are exclusive: with `annotate` set
     /// (the viewer has an open draft, so the select-to-anchor gesture is
     /// live) the body renders through
-    /// [`render_markdown_annotated`](crate::markdown::render_markdown_annotated)
+    /// [`render_markdown_annotated_with_links`](crate::markdown::render_markdown_annotated_with_links)
     /// and the collected highlight spans are skipped; otherwise resolved
     /// review anchors highlight inline as before (plain
-    /// [`render_markdown`] when there are none).
+    /// [`render_markdown_with_links`](crate::markdown::render_markdown_with_links)
+    /// when there are none). `links` is the page document's own resolved
+    /// `rdm:` links (see `crate::link_render::resolve_body_links`), threaded
+    /// through in every branch so links render in every mode.
     #[must_use]
-    pub fn render_body(&self, body: &str, annotate: bool) -> String {
+    pub fn render_body(
+        &self,
+        body: &str,
+        annotate: bool,
+        links: &[crate::link_render::BodyLink],
+    ) -> String {
         if annotate {
-            crate::markdown::render_markdown_annotated(body)
+            crate::markdown::render_markdown_annotated_with_links(body, links)
         } else if self.highlights.is_empty() {
-            render_markdown(body)
+            crate::markdown::render_markdown_with_links(body, links)
         } else {
-            crate::markdown::render_markdown_with_highlights(body, &self.highlights)
+            crate::markdown::render_markdown_with_highlights(body, &self.highlights, links)
         }
     }
 }

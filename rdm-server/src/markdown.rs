@@ -4,6 +4,8 @@ use std::ops::Range;
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
 
+use crate::link_render::{BodyLink, RenderAction};
+
 /// First start-sentinel code point: the start marker for span `i` is
 /// `U+E100 + i`. Both markers carry the span's identity through rendering
 /// so a marker that gets consumed (e.g. percent-encoded inside a link
@@ -66,19 +68,179 @@ fn end_index(c: char) -> Option<usize> {
 /// assert!(html.contains("<strong>bold</strong>"));
 /// ```
 pub fn render_markdown(input: &str) -> String {
-    let parser = Parser::new_ext(input, cmark_options()).filter(|event| {
-        !matches!(
-            event,
-            Event::Html(_)
-                | Event::InlineHtml(_)
-                | Event::Start(Tag::HtmlBlock)
-                | Event::End(TagEnd::HtmlBlock)
-        )
-    });
+    render_markdown_with_links(input, &[])
+}
+
+/// Renders Markdown to HTML like [`render_markdown`], additionally
+/// rewriting every `rdm:`-scheme link destination per its resolved
+/// [`RenderAction`] (from [`crate::link_render::resolve_body_links`]):
+///
+/// - [`RenderAction::ItemLink`] — the link becomes `<a class="{class}"
+///   href="{href}">`, with the original link text passed through unchanged.
+/// - [`RenderAction::CodeLink`] with a `web_url` — becomes `<a
+///   class="rdm-link-code" target="_blank" rel="noopener" href="{web_url}">`,
+///   original text passed through.
+/// - [`RenderAction::CodeLink`] with no `web_url` (no `source` configured) —
+///   becomes a non-navigable `<span class="rdm-link-code
+///   rdm-link-nolink">{path}[@{rev}]</span>`; the original link text is
+///   discarded in favor of this fabricated display text.
+/// - [`RenderAction::Broken`] — becomes `<span class="rdm-link-broken"
+///   title="{reason}">`, original link text passed through, never an `<a>`.
+///
+/// `links` must be in document order and cover every `rdm:`-destined link
+/// [`Start(Tag::Link)`](pulldown_cmark::Tag::Link) event this parse
+/// encounters, in the same order — the source
+/// [`crate::link_render::resolve_body_links`] was called against. Matching
+/// is positional (by occurrence order), not by byte range, so this also
+/// works against a byte-shifted copy of the source (see
+/// [`render_markdown_with_highlights`]). A non-`rdm:` link (`https:`,
+/// relative, etc.) never consumes an entry and renders exactly as
+/// [`render_markdown`] would. Passing `&[]` is equivalent to
+/// [`render_markdown`].
+#[must_use]
+pub fn render_markdown_with_links(input: &str, links: &[BodyLink]) -> String {
+    let mut rewriter = LinkRewriter::new(links);
+    let mut events: Vec<Event> = Vec::new();
+    for event in Parser::new_ext(input, cmark_options()) {
+        if is_user_html(&event) {
+            continue;
+        }
+        rewriter.handle(event, &mut events);
+    }
 
     let mut html_output = String::new();
-    html::push_html(&mut html_output, parser);
+    html::push_html(&mut html_output, events.into_iter());
     html_output
+}
+
+/// What [`LinkRewriter`] is doing between a rewritten link's `Start` and
+/// `End` events.
+enum RewriteState {
+    /// Not currently inside a rewritten link: pass events through as-is.
+    None,
+    /// Inside an item, code-with-url, or broken link: inner events pass
+    /// through unchanged; close with this HTML tag at `End(TagEnd::Link)`.
+    CloseWith(&'static str),
+    /// Inside a no-source code link: discard every inner event, then emit
+    /// this display text (as an `Event::Text`, so it gets HTML-escaped) and
+    /// close with `</span>` at `End(TagEnd::Link)`.
+    Suppress(String),
+}
+
+/// Rewrites `rdm:`-destined link events per a pre-resolved [`RenderAction`]
+/// list, matched to `Start(Tag::Link)` events by occurrence order. Shared by
+/// [`render_markdown_with_links`] and
+/// [`render_markdown_annotated_with_links`].
+struct LinkRewriter<'a> {
+    links: &'a [BodyLink],
+    cursor: usize,
+    state: RewriteState,
+}
+
+impl<'a> LinkRewriter<'a> {
+    fn new(links: &'a [BodyLink]) -> Self {
+        LinkRewriter {
+            links,
+            cursor: 0,
+            state: RewriteState::None,
+        }
+    }
+
+    /// Whether `event` must be routed through [`Self::handle`] rather than a
+    /// caller's own per-event-type processing (used by
+    /// [`render_markdown_annotated_with_links`], which otherwise wraps text
+    /// runs in `rdm-src` annotation spans): the start of an `rdm:` link
+    /// (always, to begin rewriting), the end of a link currently being
+    /// rewritten (to close it out), or any event at all while suppressing a
+    /// no-source code link's inner content.
+    fn should_intercept(&self, event: &Event<'_>) -> bool {
+        match event {
+            Event::Start(Tag::Link { dest_url, .. }) => dest_url.starts_with("rdm:"),
+            Event::End(TagEnd::Link) => !matches!(self.state, RewriteState::None),
+            _ => matches!(self.state, RewriteState::Suppress(_)),
+        }
+    }
+
+    /// Handles one event, pushing zero or more output events into `out`.
+    fn handle<'ev>(&mut self, event: Event<'ev>, out: &mut Vec<Event<'ev>>) {
+        match event {
+            Event::Start(Tag::Link { ref dest_url, .. }) if dest_url.starts_with("rdm:") => {
+                let action = self.links.get(self.cursor).map(|l| l.action.clone());
+                self.cursor += 1;
+                match action {
+                    Some(RenderAction::ItemLink { href, class }) => {
+                        out.push(Event::Html(
+                            format!(
+                                "<a class=\"{}\" href=\"{}\">",
+                                escape_attr(&class),
+                                escape_attr(&href)
+                            )
+                            .into(),
+                        ));
+                        self.state = RewriteState::CloseWith("</a>");
+                    }
+                    Some(RenderAction::CodeLink {
+                        web_url: Some(url), ..
+                    }) => {
+                        out.push(Event::Html(
+                            format!(
+                                "<a class=\"rdm-link-code\" target=\"_blank\" rel=\"noopener\" href=\"{}\">",
+                                escape_attr(&url)
+                            )
+                            .into(),
+                        ));
+                        self.state = RewriteState::CloseWith("</a>");
+                    }
+                    Some(RenderAction::CodeLink {
+                        web_url: None,
+                        no_link_display,
+                    }) => {
+                        out.push(Event::Html(
+                            "<span class=\"rdm-link-code rdm-link-nolink\">".into(),
+                        ));
+                        self.state = RewriteState::Suppress(no_link_display);
+                    }
+                    Some(RenderAction::Broken { reason }) => {
+                        out.push(Event::Html(
+                            format!(
+                                "<span class=\"rdm-link-broken\" title=\"{}\">",
+                                escape_attr(&reason)
+                            )
+                            .into(),
+                        ));
+                        self.state = RewriteState::CloseWith("</span>");
+                    }
+                    // No resolved entry for this occurrence (a mismatch
+                    // between `links` and what this parse encountered) —
+                    // fail safe to default rendering rather than guessing.
+                    None => out.push(event),
+                }
+            }
+            Event::End(TagEnd::Link) => {
+                match std::mem::replace(&mut self.state, RewriteState::None) {
+                    RewriteState::CloseWith(tag) => out.push(Event::Html(tag.into())),
+                    RewriteState::Suppress(display) => {
+                        out.push(Event::Text(display.into()));
+                        out.push(Event::Html("</span>".into()));
+                    }
+                    RewriteState::None => out.push(event),
+                }
+            }
+            other => {
+                if !matches!(self.state, RewriteState::Suppress(_)) {
+                    out.push(other);
+                }
+            }
+        }
+    }
+}
+
+/// Appends `value` to `out` with the five HTML attribute-significant
+/// characters escaped, returning the escaped copy.
+fn escape_attr(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    push_attr_escaped(&mut out, value);
+    out
 }
 
 /// The single set of pulldown-cmark options every rendering entry point
@@ -182,10 +344,28 @@ pub fn source_runs(source: &str) -> Vec<SourceRun> {
 /// compose.
 #[must_use]
 pub fn render_markdown_annotated(source: &str) -> String {
+    render_markdown_annotated_with_links(source, &[])
+}
+
+/// Renders Markdown to HTML like [`render_markdown_annotated`], additionally
+/// applying the same `rdm:`-link rewrite [`render_markdown_with_links`]
+/// documents. Inner text/code runs of an item link, or a code link with a
+/// `web_url`, still get their own `rdm-src` annotation span as usual; a
+/// no-source code link's fabricated `path[@rev]` display text is not
+/// annotatable (it doesn't correspond to a literal source range) and is
+/// emitted unwrapped. See [`render_markdown_with_links`] for `links`'
+/// contract (document order, one entry per `rdm:`-destined link occurrence).
+#[must_use]
+pub fn render_markdown_annotated_with_links(source: &str, links: &[BodyLink]) -> String {
     let mut events: Vec<Event> = Vec::new();
     let mut in_image = 0usize;
+    let mut rewriter = LinkRewriter::new(links);
     for (event, range) in Parser::new_ext(source, cmark_options()).into_offset_iter() {
         if is_user_html(&event) {
+            continue;
+        }
+        if rewriter.should_intercept(&event) {
+            rewriter.handle(event, &mut events);
             continue;
         }
         match event {
@@ -290,7 +470,19 @@ pub struct HighlightSpan {
 /// formatting drift: the highlighted text is always right, only its
 /// emphasis styling may degrade. Pinned by
 /// `highlight_boundary_can_drop_punctuation_dependent_emphasis`.
-pub fn render_markdown_with_highlights(source: &str, highlights: &[HighlightSpan]) -> String {
+///
+/// `links` applies the same `rdm:`-link rewrite [`render_markdown_with_links`]
+/// documents, on the **sentinel-instrumented** source (never the pristine
+/// one) — the same copy that gets re-parsed for sentinel survivorship —
+/// since `links` must already be in the occurrence order this function's
+/// internal re-parse encounters, which [`LinkRewriter`] matches
+/// positionally rather than by byte range (byte ranges shift once sentinels
+/// are spliced in). Pass `&[]` when the body has no `rdm:` links.
+pub fn render_markdown_with_highlights(
+    source: &str,
+    highlights: &[HighlightSpan],
+    links: &[BodyLink],
+) -> String {
     // Sanitize pre-existing sentinel-block characters first (same-width
     // replacement, so the caller's byte offsets stay valid).
     let sanitized: String = source
@@ -321,7 +513,7 @@ pub fn render_markdown_with_highlights(source: &str, highlights: &[HighlightSpan
     kept.truncate(HL_MAX_SPANS);
 
     if kept.is_empty() {
-        return render_markdown(&sanitized);
+        return render_markdown_with_links(&sanitized, links);
     }
 
     // Splice sentinels in descending offset order so earlier offsets stay
@@ -336,7 +528,7 @@ pub fn render_markdown_with_highlights(source: &str, highlights: &[HighlightSpan
         instrumented.insert(span.range.start, start_sentinel);
     }
 
-    let rendered = render_markdown(&instrumented);
+    let rendered = render_markdown_with_links(&instrumented, links);
 
     // Survivorship pre-pass: a span materializes only when both its markers
     // survived rendering, outside HTML tags, in start-before-end order.
@@ -524,7 +716,8 @@ mod tests {
     #[test]
     fn highlight_wraps_single_word() {
         let src = "The quick brown fox.";
-        let html = render_markdown_with_highlights(src, &[hl(range_of(src, "quick"), "r1-c1")]);
+        let html =
+            render_markdown_with_highlights(src, &[hl(range_of(src, "quick"), "r1-c1")], &[]);
         assert!(
             html.contains(r#"<mark class="rdm-anchor" data-rdm-anchor="r1-c1">quick</mark>"#),
             "got: {html}"
@@ -535,7 +728,7 @@ mod tests {
     fn highlight_spans_bold_boundary() {
         let src = "start **bold** end";
         let html =
-            render_markdown_with_highlights(src, &[hl(range_of(src, "start **bold**"), "a")]);
+            render_markdown_with_highlights(src, &[hl(range_of(src, "start **bold**"), "a")], &[]);
         assert!(
             html.contains(r#"<mark class="rdm-anchor" data-rdm-anchor="a">start <strong>bold</strong></mark> end"#),
             "got: {html}"
@@ -551,6 +744,7 @@ mod tests {
                 hl(range_of(src, "gamma"), "second"),
                 hl(range_of(src, "alpha"), "first"),
             ],
+            &[],
         );
         let first = html.find(r#"data-rdm-anchor="first">alpha</mark>"#);
         let second = html.find(r#"data-rdm-anchor="second">gamma</mark>"#);
@@ -567,6 +761,7 @@ mod tests {
                 hl(range_of(src, "one two"), "kept"),
                 hl(range_of(src, "two three"), "dropped"),
             ],
+            &[],
         );
         assert!(
             html.contains(r#"data-rdm-anchor="kept">one two</mark>"#),
@@ -578,7 +773,7 @@ mod tests {
     #[test]
     fn highlight_out_of_bounds_range_is_dropped() {
         let src = "short body";
-        let html = render_markdown_with_highlights(src, &[hl(0..999, "x")]);
+        let html = render_markdown_with_highlights(src, &[hl(0..999, "x")], &[]);
         assert_eq!(html, render_markdown(src));
     }
 
@@ -586,7 +781,7 @@ mod tests {
     fn highlight_non_char_boundary_range_is_dropped() {
         let src = "héllo world";
         // é occupies bytes 1..3, so an end offset of 2 lands mid-char.
-        let html = render_markdown_with_highlights(src, &[hl(1..2, "x")]);
+        let html = render_markdown_with_highlights(src, &[hl(1..2, "x")], &[]);
         assert_eq!(html, render_markdown(src));
     }
 
@@ -594,7 +789,7 @@ mod tests {
     fn highlight_empty_slice_matches_plain_render() {
         let src = "# Heading\n\nSome **bold** text.\n";
         assert_eq!(
-            render_markdown_with_highlights(src, &[]),
+            render_markdown_with_highlights(src, &[], &[]),
             render_markdown(src)
         );
     }
@@ -602,7 +797,7 @@ mod tests {
     #[test]
     fn highlight_still_strips_raw_html() {
         let src = "before <script>alert('x')</script> after";
-        let html = render_markdown_with_highlights(src, &[hl(range_of(src, "before"), "a")]);
+        let html = render_markdown_with_highlights(src, &[hl(range_of(src, "before"), "a")], &[]);
         assert!(!html.contains("<script>"), "got: {html}");
         assert!(
             html.contains(r#"data-rdm-anchor="a">before</mark>"#),
@@ -613,7 +808,7 @@ mod tests {
     #[test]
     fn highlight_multibyte_content_is_char_boundary_safe() {
         let src = "Café notes: the résumé draft — naïve.";
-        let html = render_markdown_with_highlights(src, &[hl(range_of(src, "résumé"), "mb")]);
+        let html = render_markdown_with_highlights(src, &[hl(range_of(src, "résumé"), "mb")], &[]);
         assert!(
             html.contains(r#"data-rdm-anchor="mb">résumé</mark>"#),
             "got: {html}"
@@ -629,6 +824,7 @@ mod tests {
                 hl(range_of(src, "second item"), "li"),
                 hl(range_of(src, "cell two"), "td"),
             ],
+            &[],
         );
         assert!(
             html.contains(r#"data-rdm-anchor="li">second item</mark>"#),
@@ -644,7 +840,7 @@ mod tests {
     fn highlight_anchor_ref_attribute_is_escaped() {
         let src = "hello world";
         let html =
-            render_markdown_with_highlights(src, &[hl(range_of(src, "hello"), r#"a"b<c>&d"#)]);
+            render_markdown_with_highlights(src, &[hl(range_of(src, "hello"), r#"a"b<c>&d"#)], &[]);
         assert!(
             html.contains(r#"data-rdm-anchor="a&quot;b&lt;c&gt;&amp;d">hello</mark>"#),
             "got: {html}"
@@ -657,7 +853,8 @@ mod tests {
     #[test]
     fn highlight_sanitizes_pre_existing_sentinel_chars() {
         let src = "evil \u{E000} and \u{E100} and \u{E001} then the quoted span here.";
-        let html = render_markdown_with_highlights(src, &[hl(range_of(src, "quoted span"), "c1")]);
+        let html =
+            render_markdown_with_highlights(src, &[hl(range_of(src, "quoted span"), "c1")], &[]);
         assert!(
             html.contains(r#"data-rdm-anchor="c1">quoted span</mark>"#),
             "highlight must land despite hostile sentinels: {html}"
@@ -685,7 +882,7 @@ mod tests {
             render_markdown(src).contains("<em>bar</em>"),
             "baseline: plain render keeps the emphasis"
         );
-        let html = render_markdown_with_highlights(src, &[hl(range_of(src, "_bar_"), "e")]);
+        let html = render_markdown_with_highlights(src, &[hl(range_of(src, "_bar_"), "e")], &[]);
         assert!(
             !html.contains("<em>"),
             "known drift: sentinel breaks the preceded-by-punctuation exception: {html}"
@@ -704,7 +901,7 @@ mod tests {
     fn highlight_consumed_end_emits_no_mark_and_stays_well_formed() {
         let src = "intro [text](http://example.com/target) tail";
         let url_mid = src.find("target").unwrap() + 3;
-        let html = render_markdown_with_highlights(src, &[hl(0..url_mid, "gone")]);
+        let html = render_markdown_with_highlights(src, &[hl(0..url_mid, "gone")], &[]);
         assert!(
             !html.contains("<mark"),
             "span must degrade entirely: {html}"
@@ -730,6 +927,7 @@ mod tests {
         let html = render_markdown_with_highlights(
             src,
             &[hl(0..url_mid, "broken"), hl(range_of(src, "tail"), "ok")],
+            &[],
         );
         assert!(
             !html.contains("broken"),
@@ -761,6 +959,7 @@ mod tests {
                 hl(url_mid..end_in_text, "broken"),
                 hl(range_of(src, "tail"), "sib"),
             ],
+            &[],
         );
         assert!(
             !html.contains("broken"),
@@ -783,7 +982,7 @@ mod tests {
     #[test]
     fn highlight_inside_link_destination_degrades_cleanly() {
         let src = "[text](http://example.com/path) tail";
-        let html = render_markdown_with_highlights(src, &[hl(range_of(src, "path"), "u")]);
+        let html = render_markdown_with_highlights(src, &[hl(range_of(src, "path"), "u")], &[]);
         assert!(!html.contains("<mark"), "got: {html}");
         for c in html.chars() {
             assert!(!is_sentinel(c), "no sentinel may leak: {html}");
@@ -962,5 +1161,249 @@ mod tests {
             "image alt must not be a run: {runs:?}"
         );
         assert!(runs.iter().any(|r| r.content == "before "));
+    }
+
+    // -- rdm: link rewrite (render_markdown_with_links /
+    // render_markdown_annotated_with_links / render_markdown_with_highlights) --
+
+    /// Builds a [`BodyLink`] for a test; `range`/`resolved` are never
+    /// consulted by the render-time rewrite (matching is by occurrence
+    /// order, and `resolved` only matters to the JSON API), so both are
+    /// filled with an inert placeholder.
+    fn link(action: RenderAction) -> BodyLink {
+        BodyLink {
+            range: 0..0,
+            uri: "rdm:test".to_string(),
+            item_path: None,
+            resolved: rdm_core::link::Resolved::Broken {
+                reason: String::new(),
+            },
+            action,
+        }
+    }
+
+    fn item_link(href: &str, class: &str) -> RenderAction {
+        RenderAction::ItemLink {
+            href: href.to_string(),
+            class: class.to_string(),
+        }
+    }
+
+    #[test]
+    fn with_links_item_link_renders_anchor_with_status_class() {
+        let src = "See [the task](rdm:task/fix-bug) now.";
+        let html = render_markdown_with_links(
+            src,
+            &[link(item_link(
+                "/projects/demo/tasks/fix-bug",
+                "rdm-link-item rdm-status-open",
+            ))],
+        );
+        assert!(
+            html.contains(
+                r#"<a class="rdm-link-item rdm-status-open" href="/projects/demo/tasks/fix-bug">the task</a>"#
+            ),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn with_links_code_link_with_url_renders_permalink() {
+        let src = "[src](rdm:src/a.rs#L5-L12)";
+        let html = render_markdown_with_links(
+            src,
+            &[link(RenderAction::CodeLink {
+                web_url: Some("https://github.com/org/repo/blob/main/a.rs#L5-L12".to_string()),
+                no_link_display: "a.rs@main".to_string(),
+            })],
+        );
+        assert!(
+            html.contains(
+                r#"<a class="rdm-link-code" target="_blank" rel="noopener" href="https://github.com/org/repo/blob/main/a.rs#L5-L12">src</a>"#
+            ),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn with_links_code_link_without_url_renders_nolink_span() {
+        let src = "[src](rdm:src/a.rs@main)";
+        let html = render_markdown_with_links(
+            src,
+            &[link(RenderAction::CodeLink {
+                web_url: None,
+                no_link_display: "a.rs@main".to_string(),
+            })],
+        );
+        assert!(
+            html.contains(r#"<span class="rdm-link-code rdm-link-nolink">a.rs@main</span>"#),
+            "got: {html}"
+        );
+        assert!(!html.contains("<a"), "must not be navigable: {html}");
+        assert!(
+            !html.contains("src<"),
+            "original link text must be discarded: {html}"
+        );
+    }
+
+    #[test]
+    fn with_links_broken_renders_span_with_title_no_anchor() {
+        let src = "[gone](rdm:task/does-not-exist)";
+        let html = render_markdown_with_links(
+            src,
+            &[link(RenderAction::Broken {
+                reason: "target not found: task/does-not-exist".to_string(),
+            })],
+        );
+        assert!(
+            html.contains(
+                r#"<span class="rdm-link-broken" title="target not found: task/does-not-exist">gone</span>"#
+            ),
+            "got: {html}"
+        );
+        assert!(!html.contains("<a"), "must never be a live anchor: {html}");
+    }
+
+    #[test]
+    fn with_links_malformed_uri_renders_broken_span() {
+        let src = "[bad](rdm:foo/bar)";
+        let html = render_markdown_with_links(
+            src,
+            &[link(RenderAction::Broken {
+                reason: "unknown link kind 'foo' in 'rdm:foo/bar'".to_string(),
+            })],
+        );
+        assert!(
+            html.contains(r#"<span class="rdm-link-broken""#),
+            "got: {html}"
+        );
+        assert!(!html.contains("<a"), "got: {html}");
+    }
+
+    #[test]
+    fn with_links_non_rdm_link_is_untouched_and_does_not_consume_an_entry() {
+        let src = "[ext](https://example.com) and [t](rdm:task/x)";
+        let html = render_markdown_with_links(
+            src,
+            &[link(item_link("/projects/demo/tasks/x", "rdm-link-item"))],
+        );
+        assert!(
+            html.contains(r#"<a href="https://example.com">ext</a>"#),
+            "non-rdm link renders exactly as render_markdown would: {html}"
+        );
+        assert!(
+            html.contains(r#"<a class="rdm-link-item" href="/projects/demo/tasks/x">t</a>"#),
+            "the one rdm: link still consumes the one resolved entry: {html}"
+        );
+    }
+
+    #[test]
+    fn with_links_empty_matches_plain_render() {
+        let src = "[t](rdm:task/x) and [ext](https://example.com)";
+        assert_eq!(render_markdown_with_links(src, &[]), render_markdown(src));
+    }
+
+    /// AC4: one source carrying an item link, a code link (no source, so a
+    /// non-navigable span), and a broken link, rendered through all three
+    /// `_with_links` entry points — `render_markdown_with_links`,
+    /// `render_markdown_annotated_with_links`, and
+    /// `render_markdown_with_highlights` (both with an empty and a
+    /// non-empty, unrelated highlight list) — must rewrite the three links
+    /// identically, and each mode's own pre-existing instrumentation
+    /// (`rdm-src` spans / a surviving `<mark>`) must stay intact.
+    #[test]
+    fn table_driven_link_rewrite_identical_across_all_three_entry_points() {
+        let src =
+            "Item [t](rdm:task/x), code [c](rdm:src/a.rs), broken [b](rdm:task/gone). Tail text.";
+        let links = vec![
+            link(item_link(
+                "/projects/demo/tasks/x",
+                "rdm-link-item rdm-status-open",
+            )),
+            link(RenderAction::CodeLink {
+                web_url: None,
+                no_link_display: "a.rs".to_string(),
+            }),
+            link(RenderAction::Broken {
+                reason: "target not found: task/gone".to_string(),
+            }),
+        ];
+
+        let plain = render_markdown_with_links(src, &links);
+        let annotated = render_markdown_annotated_with_links(src, &links);
+        let highlighted_no_span = render_markdown_with_highlights(src, &[], &links);
+        let highlighted_with_span = render_markdown_with_highlights(
+            src,
+            &[hl(range_of(src, "Tail text"), "unrelated")],
+            &links,
+        );
+
+        // Plain and highlighted modes carry no inner instrumentation, so
+        // the rewrite's inner text is exactly the original link text.
+        // Annotated mode additionally wraps that same inner text in its own
+        // `rdm-src` span — still inside the rewritten wrapper, just not
+        // adjacent to the wrapper's own opening tag.
+        for (name, html) in [
+            ("plain", &plain),
+            ("highlighted (empty)", &highlighted_no_span),
+            ("highlighted (with span)", &highlighted_with_span),
+        ] {
+            assert!(
+                html.contains(
+                    r#"<a class="rdm-link-item rdm-status-open" href="/projects/demo/tasks/x">t</a>"#
+                ),
+                "{name}: item link rewrite missing: {html}"
+            );
+            assert!(
+                html.contains(
+                    r#"<span class="rdm-link-broken" title="target not found: task/gone">b</span>"#
+                ),
+                "{name}: broken link rewrite missing: {html}"
+            );
+        }
+        for (name, html) in [
+            ("plain", &plain),
+            ("annotated", &annotated),
+            ("highlighted (empty)", &highlighted_no_span),
+            ("highlighted (with span)", &highlighted_with_span),
+        ] {
+            assert!(
+                html.contains(r#"<span class="rdm-link-code rdm-link-nolink">a.rs</span>"#),
+                "{name}: code link rewrite missing: {html}"
+            );
+            assert!(
+                !html.contains("rdm:"),
+                "{name}: raw rdm: uri must never leak: {html}"
+            );
+        }
+        assert!(
+            annotated.contains(
+                r#"<a class="rdm-link-item rdm-status-open" href="/projects/demo/tasks/x">"#
+            ) && annotated.contains(">t</span></a>"),
+            "annotated: item link wrapper present with its rdm-src-wrapped inner text: {annotated}"
+        );
+        assert!(
+            annotated
+                .contains(r#"<span class="rdm-link-broken" title="target not found: task/gone">"#)
+                && annotated.contains(">b</span></span>"),
+            "annotated: broken span wrapper present with its rdm-src-wrapped inner text: {annotated}"
+        );
+
+        // Each mode's own pre-existing instrumentation survives alongside
+        // the link rewrite.
+        assert!(
+            annotated.contains(r#"<span class="rdm-src""#),
+            "annotated mode must still emit rdm-src spans: {annotated}"
+        );
+        assert!(
+            highlighted_with_span.contains(
+                r#"<mark class="rdm-anchor" data-rdm-anchor="unrelated">Tail text</mark>"#
+            ),
+            "an unrelated highlight must still survive: {highlighted_with_span}"
+        );
+        assert!(
+            !highlighted_no_span.contains("<mark"),
+            "no highlight spans means no <mark>: {highlighted_no_span}"
+        );
     }
 }
