@@ -499,6 +499,73 @@ mod tests {
     }
 
     #[test]
+    fn resolve_item_link_dangling_phase_numeric_stem_unknown_roadmap_never_errors() {
+        // Mirrors the test above but with a *numeric* stem, which is the
+        // one shape that actually drives execution into
+        // `resolve_phase_stem`'s `Err(RoadmapNotFound)` arm — a non-numeric
+        // stem short-circuits before ever calling `list_phases`.
+        let store = setup();
+        let target = ItemRef::Phase {
+            roadmap: "ghost".to_string(),
+            stem: "1".to_string(),
+        };
+        let resolved = resolve_item_link(&store, "demo", &target).unwrap();
+        assert_eq!(
+            resolved,
+            Resolved::Item {
+                target,
+                exists: false
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_item_link_dangling_phase_numeric_stem_not_found_in_known_roadmap_never_errors() {
+        // The roadmap exists and has a phase 1, but phase 99 does not —
+        // this drives `resolve_phase_stem`'s `Err(PhaseNotFound)` arm,
+        // which `resolve_item_link` must also fold into `exists: false`
+        // rather than propagating.
+        let mut store = setup();
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            crate::ops::CreateRoadmap {
+                project: "demo",
+                slug: "auth",
+                title: "Auth",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            crate::ops::CreatePhase {
+                project: "demo",
+                roadmap: "auth",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: None,
+                tags: None,
+                difficulty: crate::ops::DifficultyUpdate::Keep,
+                model: crate::ops::ModelTierUpdate::Keep,
+            },
+        )
+        .unwrap();
+        let target = ItemRef::Phase {
+            roadmap: "auth".to_string(),
+            stem: "99".to_string(),
+        };
+        let resolved = resolve_item_link(&store, "demo", &target).unwrap();
+        assert_eq!(
+            resolved,
+            Resolved::Item {
+                target,
+                exists: false
+            }
+        );
+    }
+
+    #[test]
     fn resolve_item_link_existing_phase_by_stem() {
         let mut store = setup();
         crate::ops::roadmap::create_roadmap(
@@ -1166,5 +1233,61 @@ mod tests {
         assert!(docs.contains(&&DocRef::Task {
             slug: "references-by-stem".to_string(),
         }));
+    }
+
+    #[test]
+    fn backlinks_numeric_target_in_unknown_roadmap_degrades_gracefully() {
+        // Mirrors `resolve_item_link_dangling_phase_numeric_stem_unknown_roadmap_never_errors`
+        // for `normalize_item_ref`'s identical fold-to-unchanged branch: a
+        // numeric stem against a roadmap that doesn't exist must not error
+        // out of `backlinks`, and (having nothing to normalize to) simply
+        // finds no matches.
+        let store = setup();
+        let target = ItemRef::Phase {
+            roadmap: "ghost".to_string(),
+            stem: "1".to_string(),
+        };
+        let entries = backlinks(&store, "demo", &target).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn backlinks_numeric_target_not_found_in_known_roadmap_degrades_gracefully() {
+        // Mirrors `resolve_item_link_dangling_phase_numeric_stem_not_found_in_known_roadmap_never_errors`:
+        // the roadmap exists but has no phase 99, so `normalize_item_ref`
+        // folds to the input unchanged instead of erroring, and `backlinks`
+        // still completes successfully with no matches.
+        let mut store = setup();
+        crate::ops::roadmap::create_roadmap(
+            &mut store,
+            crate::ops::CreateRoadmap {
+                project: "demo",
+                slug: "auth",
+                title: "Auth",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            &mut store,
+            crate::ops::CreatePhase {
+                project: "demo",
+                roadmap: "auth",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: None,
+                tags: None,
+                difficulty: crate::ops::DifficultyUpdate::Keep,
+                model: crate::ops::ModelTierUpdate::Keep,
+            },
+        )
+        .unwrap();
+        let target = ItemRef::Phase {
+            roadmap: "auth".to_string(),
+            stem: "99".to_string(),
+        };
+        let entries = backlinks(&store, "demo", &target).unwrap();
+        assert!(entries.is_empty());
     }
 }
