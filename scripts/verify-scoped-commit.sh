@@ -414,7 +414,6 @@ rdm-cli/src/commands/commit.rs
 rdm-cli/src/commands/mod.rs
 rdm-cli/src/commands/bootstrap.rs
 rdm-cli/src/commands/init.rs
-rdm-mcp/src/server.rs
 rdm-server/src/state.rs
 rdm-server/tests/git_history.rs
 rdm-server/tests/mutation_policy.rs'

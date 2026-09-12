@@ -24,9 +24,9 @@
 //! on first touch and dropped by the flush (or the [`Store::discard`]) that
 //! ends the cycle, so the next touch observes the world afresh. That is what
 //! makes a session's own sequential writes safe — no session id is consulted
-//! anywhere, and a store that outlives one flush (the MCP server holds one for
-//! its whole session) keeps re-observing rather than staying pinned to what it
-//! last wrote.
+//! anywhere, and a store that outlives one flush (a long-lived host process
+//! can hold one across many calls) keeps re-observing rather than staying
+//! pinned to what it last wrote.
 
 #![warn(missing_docs)]
 
@@ -509,8 +509,7 @@ impl Store for FsStore {
         // from disk, correctly derived, and retried exactly as the error
         // message advises — would be refused forever, because a plain read
         // never re-seeds an already-recorded baseline. That wedges any
-        // long-lived store, and the MCP server holds one for its whole
-        // session.
+        // long-lived store — a host process holding one across many calls.
         if let Ok(mut baselines) = self.baselines.lock() {
             baselines.clear();
         }
@@ -934,9 +933,9 @@ mod tests {
 
     #[test]
     fn a_long_lived_store_re_observes_after_each_flush() {
-        // A store that outlives one flush — the MCP server holds exactly one
-        // for its whole session and flushes on every tool call — must not
-        // stay pinned to what it wrote last time. Otherwise the first
+        // A store that outlives one flush — a long-lived host process
+        // holding exactly one across many calls — must not stay pinned to
+        // what it wrote last time. Otherwise the first
         // external edit to a path this store once wrote would refuse every
         // later write to it forever, including the retry the error message
         // itself recommends.

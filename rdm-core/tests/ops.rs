@@ -485,18 +485,18 @@ fn create_roadmap_with_tags() {
             title: "Tagged",
             body: None,
             priority: None,
-            tags: Some(vec!["api".to_string(), "mcp".to_string()]),
+            tags: Some(vec!["api".to_string(), "cli".to_string()]),
         },
     )
     .unwrap();
     assert_eq!(
         doc.frontmatter.tags,
-        Some(vec!["api".to_string(), "mcp".to_string()])
+        Some(vec!["api".to_string(), "cli".to_string()])
     );
     let loaded = rdm_core::io::load_roadmap(&store, "fbm", "tagged").unwrap();
     assert_eq!(
         loaded.frontmatter.tags,
-        Some(vec!["api".to_string(), "mcp".to_string()])
+        Some(vec!["api".to_string(), "cli".to_string()])
     );
 }
 

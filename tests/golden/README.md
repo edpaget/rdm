@@ -7,7 +7,7 @@ machines and days. `scripts/verify-golden-json.sh` re-captures and diffs
 against these files on every CI run (it matches the `scripts/verify-*.sh`
 glob CI already runs), so a change to rdm's JSON shape turns into a red test
 at the source instead of a silent contract break for anything consuming this
-CLI's `--format json` output (an editor plugin, an MCP server, a script).
+CLI's `--format json` output (an editor plugin, a script, a REST client).
 
 ## The 20 captured commands
 

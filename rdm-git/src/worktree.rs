@@ -893,8 +893,8 @@ fn run_git_at(path: &Path, args: &[&str]) -> Result<Output> {
 //
 // These helpers bridge a raw item reference (as a user types it) to a validated
 // [`ItemRef`] against the plan `store`, and discover the distinct project repo.
-// They live here — beside [`ItemRef`] — so both the CLI and the MCP server share
-// one implementation rather than duplicating the resolution logic.
+// They live here — beside [`ItemRef`] — so every interface shares one
+// implementation rather than duplicating the resolution logic.
 
 /// Canonicalizes an item reference against the plan `store`, validating that it
 /// exists before any git mutation. A numeric phase identifier is resolved to its

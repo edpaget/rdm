@@ -199,8 +199,8 @@ impl StatusReport {
     /// Returns the one-line summary a caller prints after committing this
     /// report's changes.
     ///
-    /// Lives here, not in each interface, so `rdm commit` and the MCP
-    /// `rdm_commit` tool can never disagree about how the same report is
+    /// Lives here, not in each interface, so `rdm commit` and every other
+    /// caller can never disagree about how the same report is
     /// summarized. Follows the crate rule above: the count is `user`, and
     /// `derived` is named separately rather than folded in or hidden.
     ///
@@ -224,8 +224,8 @@ impl StatusReport {
     /// report's changes.
     ///
     /// The discard counterpart to [`commit_summary`](Self::commit_summary),
-    /// shared by `rdm discard` and the MCP `rdm_discard` tool for the same
-    /// reason. There is no user-empty branch here: `git_discard` restores
+    /// shared by every caller of `rdm discard` for the same reason. There is
+    /// no user-empty branch here: `git_discard` restores
     /// everything, so a derived-only discard still reports `0 file(s)` plus
     /// the named regenerated count.
     ///
@@ -245,8 +245,8 @@ impl StatusReport {
     /// Returns the one-line note naming what this action deliberately left
     /// alone, or `None` when nothing belongs to another session.
     ///
-    /// Shared by `rdm status`, `rdm commit`, `rdm discard` and their MCP
-    /// counterparts so the three can never describe the same situation
+    /// Shared by every caller of `rdm status`, `rdm commit`, and `rdm
+    /// discard` so the three can never describe the same situation
     /// differently.
     pub fn others_summary(&self) -> Option<String> {
         if self.others.is_empty() {
@@ -264,7 +264,7 @@ impl StatusReport {
     ///
     /// The `unattributed` counterpart to
     /// [`others_summary`](Self::others_summary) — shared the same way, by
-    /// `rdm status`, `rdm commit`, `rdm discard` and their MCP counterparts.
+    /// every caller of `rdm status`, `rdm commit`, and `rdm discard`.
     /// Unlike `others`, there is no owning changeset id to name, so the only
     /// recovery route offered is `--all`.
     pub fn unattributed_summary(&self) -> Option<String> {
@@ -684,7 +684,7 @@ impl GitStore {
     /// whatever any session left dirty, so it is reserved for the two places
     /// that legitimately want that: seeding a fixture, and the user's own
     /// `--all` opt-in on `rdm commit`. Everything else — the CLI's default
-    /// `rdm commit`, the `Done:` hook, the MCP commit tool, `rdm init
+    /// `rdm commit`, the `Done:` hook, `rdm init
     /// --remote`, `rdm bootstrap --init` — goes through
     /// [`commit_changeset`](Self::commit_changeset).
     ///
@@ -1239,7 +1239,7 @@ impl ScopedDiscard {
     /// session's content or recreation was detected there since this
     /// changeset last wrote them, or `None` when none were.
     ///
-    /// Shared by `rdm discard` and the MCP `rdm_discard` tool, mirroring
+    /// Shared by every caller of `rdm discard`, mirroring
     /// [`ScopedCommit::skipped_summary`], so the two can never describe the
     /// same situation differently.
     pub fn skipped_summary(&self) -> Option<String> {
@@ -1311,9 +1311,10 @@ impl VersionedStore for GitStore {
 }
 
 // Compile-time assertion: GitStore must implement Send + Sync.
-// Catch regressions at the store crate level (not just downstream in rdm-mcp
-// when wrapping GitStore in Mutex<AppStore>). Fails at library build time
-// if GitStore loses either trait.
+// Catch regressions at the store crate level (not just downstream in
+// rdm-server, which boxes stores as `dyn VersionedStore + Send + Sync` for
+// its async handlers). Fails at library build time if GitStore loses either
+// trait.
 static_assertions::assert_impl_all!(GitStore: Send, Sync);
 
 #[cfg(test)]
@@ -1322,9 +1323,9 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
 
-    // GitStore must be Send + Sync so it can be wrapped in Mutex for the
-    // async MCP server. These assertions catch regressions at the store
-    // crate level rather than downstream in rdm-mcp.
+    // GitStore must be Send + Sync so it can be boxed for rdm-server's
+    // async handlers. These assertions catch regressions at the store
+    // crate level rather than downstream in rdm-server.
     #[test]
     fn gitstore_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
@@ -1633,9 +1634,9 @@ mod tests {
         }
     }
 
-    // The CLI's `rdm commit`/`rdm discard` and the MCP `rdm_commit`/`rdm_discard`
-    // tools both render their summary through these two methods, so covering the
-    // methods covers both interfaces and pins them to the same wording.
+    // Every interface's `rdm commit`/`rdm discard` renders its summary
+    // through these two methods, so covering the methods covers every
+    // interface and pins them to the same wording.
     #[test]
     fn commit_summary_covers_all_three_branches() {
         assert_eq!(report_of(2, 0).commit_summary(), "Committed 2 file(s).");

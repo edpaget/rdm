@@ -1264,9 +1264,9 @@ mod tests {
     #[test]
     fn roadmap_summary_with_tags() {
         let mut doc = make_roadmap_doc("fbm", "tagged", "Tagged");
-        doc.frontmatter.tags = Some(vec!["api".to_string(), "mcp".to_string()]);
+        doc.frontmatter.tags = Some(vec!["api".to_string(), "cli".to_string()]);
         let output = format_roadmap_summary(&doc, &[], None);
-        assert!(output.contains("Tags: api, mcp"));
+        assert!(output.contains("Tags: api, cli"));
     }
 
     #[test]
@@ -1511,9 +1511,9 @@ mod tests {
     #[test]
     fn roadmap_summary_md_with_tags() {
         let mut doc = make_roadmap_doc("fbm", "tagged", "Tagged");
-        doc.frontmatter.tags = Some(vec!["api".to_string(), "mcp".to_string()]);
+        doc.frontmatter.tags = Some(vec!["api".to_string(), "cli".to_string()]);
         let output = format_roadmap_summary_md(&doc, &[], None);
-        assert!(output.contains("- **Tags:** api, mcp"));
+        assert!(output.contains("- **Tags:** api, cli"));
     }
 
     #[test]

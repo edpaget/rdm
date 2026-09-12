@@ -1055,11 +1055,11 @@ mod tests {
     #[test]
     fn roadmap_and_phase_tags_round_trip_through_json() {
         let mut rm_doc = make_roadmap_doc("acme", "alpha", "Alpha");
-        rm_doc.frontmatter.tags = Some(vec!["api".to_string(), "mcp".to_string()]);
+        rm_doc.frontmatter.tags = Some(vec!["api".to_string(), "cli".to_string()]);
         let rj = roadmap_to_json(&rm_doc, &[], None);
-        assert_eq!(rj.tags, Some(vec!["api".to_string(), "mcp".to_string()]));
+        assert_eq!(rj.tags, Some(vec!["api".to_string(), "cli".to_string()]));
         let rsj = roadmap_summary_to_json(&rm_doc, &[]);
-        assert_eq!(rsj.tags, Some(vec!["api".to_string(), "mcp".to_string()]));
+        assert_eq!(rsj.tags, Some(vec!["api".to_string(), "cli".to_string()]));
 
         let mut p_doc = make_phase_doc(1, "X", PhaseStatus::NotStarted);
         p_doc.frontmatter.tags = Some(vec!["infra".to_string()]);

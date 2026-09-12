@@ -1,6 +1,6 @@
 #!/bin/sh
 # Hermetic end-to-end regression for the argv/JSON contract an editor plugin
-# integration depends on when it shells out to rdm directly (no MCP layer).
+# integration depends on when it shells out to rdm directly.
 # Matches the scripts/verify-*.sh glob CI already runs, so no separate CI
 # wiring is needed once this file exists.
 #

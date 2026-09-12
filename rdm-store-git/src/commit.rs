@@ -123,7 +123,7 @@ pub enum CommitScope<'a> {
 type ChangesetTreeResult = (gix::ObjectId, Vec<String>, Vec<String>, Vec<String>);
 
 /// What a commit actually did, reported from one place so every porcelain
-/// (CLI, MCP, server) states the same facts.
+/// (CLI, server) states the same facts.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CommitReport {
     /// The new commit's SHA, or `None` when there was nothing to commit.
@@ -1144,7 +1144,7 @@ impl GitRepo {
     /// that are added, modified, or deleted.
     ///
     /// Deliberately `pub(crate)`: outside this crate the only entry point is
-    /// [`git_status_report`](Self::git_status_report), so no CLI or MCP call
+    /// [`git_status_report`](Self::git_status_report), so no out-of-crate call
     /// site can reacquire a list that conflates generated `INDEX.md` output
     /// with the user's own edits. The three legitimate raw callers are all
     /// in-crate whole-tree operations — [`git_commit`](Self::git_commit),
@@ -1287,8 +1287,8 @@ impl GitRepo {
     /// re-appended either way, so the post-discard tree may differ from HEAD
     /// by exactly that file.
     ///
-    /// Doing this here rather than in the CLI command is what makes the MCP
-    /// `rdm_discard` tool inherit the fix.
+    /// Doing this here rather than in the CLI command is what makes every
+    /// caller of this shared primitive inherit the fix.
     ///
     /// # Errors
     ///

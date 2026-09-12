@@ -1405,12 +1405,12 @@ roadmap: tagged
 title: Tagged Roadmap
 phases:
   - phase-1-only
-tags: [api, mcp]
+tags: [api, cli]
 "#;
         let roadmap: Roadmap = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(
             roadmap.tags,
-            Some(vec!["api".to_string(), "mcp".to_string()])
+            Some(vec!["api".to_string(), "cli".to_string()])
         );
     }
 
