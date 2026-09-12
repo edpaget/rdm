@@ -150,8 +150,9 @@ store that had once written a path would stay pinned to *its own* last bytes.
 The first time another session edited that path, every subsequent write to it
 would be refused forever — including the re-read-and-retry the error message
 recommends — until the process was restarted. Single-shot CLI invocations would
-never notice, but a store is not always single-shot: the MCP server holds one
-`GitStore` for its entire session and flushes on every tool call. Clearing keeps
+never notice, but a store is not always single-shot: a long-lived host process
+can hold one `GitStore` across many operations and flush repeatedly (the
+now-retired MCP server was one such caller). Clearing keeps
 the protection intact (a drift *within* a cycle is still caught on a reused
 store) while keeping the recovery path open.
 
@@ -347,10 +348,12 @@ that outlives one flush — the shape the baseline lifetime above exists for. Th
 is gated in Rust instead, at both layers: `rdm-store-fs`'s
 `a_long_lived_store_re_observes_after_each_flush` (with
 `a_stale_write_is_still_refused_on_a_reused_store` proving the protection
-survives the clearing), and `rdm-mcp`'s
-`task_update_survives_an_external_edit_between_tool_calls`, which drives the
-real production surface: two tool calls against one long-lived server with a
-separate `rdm` process editing the same task in between.
+survives the clearing). The now-retired `rdm-mcp` crate's
+`task_update_survives_an_external_edit_between_tool_calls` previously drove
+this same scenario against a real long-lived-server production surface — two
+tool calls against one long-lived server with a separate `rdm` process editing
+the same task in between — and is gone along with that crate; the store-level
+unit test above remains the coverage for the long-lived-store scenario itself.
 
 ## Interaction with phase 5
 

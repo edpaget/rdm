@@ -16,8 +16,8 @@ stayed uncoupled. The *scoped commit choke point* phase is that later work, and
 it inverted the boundary: `GitRepo::create_git_commit` now takes an explicit
 commit scope, `commit_now` is gone in favor of `GitStore::commit_changeset` /
 `commit_whole_tree`, `git_status` is now the three-bucket `git_status_report`,
-and all five committers — `rdm commit`, `apply_done_directives` (the `Done:`
-hooks), the MCP `rdm_commit` tool, `bootstrap`, and `init` — build their tree
+and all four committers — `rdm commit`, `apply_done_directives` (the `Done:`
+hooks), `bootstrap`, and `init` — build their tree
 from a changeset. § I is inverted to match and now asserts the coupling *is*
 present while `commit.rs` still resolves no session identity of its own. What
 each surface does with a changeset is described under
@@ -350,7 +350,7 @@ This is not hygiene. The original `truncate` was a read → filter → whole-fil
 `std::fs::write` (or `remove_file` when nothing survived), justified by "a
 changeset is by construction owned by one session: the only appender is the
 same shell that is committing". At rung 3 that premise is **false** — every
-parallel subagent and MCP call under one harness variable shares one id, so
+parallel subagent under one harness variable shares one id, so
 they are different *processes* on the same journal. Anything appended between
 that read and that write was destroyed. Reproduced with 40 parallel creates
 plus 6 concurrent commits under one `RDM_SESSION`: all 40 tasks landed, but
@@ -403,7 +403,7 @@ flatly because an earlier draft of this document got it wrong. `gc_changesets`
 can only ask whether a live **lease** names a changeset, and rungs 1 and 3 — an
 explicit `RDM_SESSION`, a harness-published id — resolve without ever creating
 or reading one. Those are precisely the rungs under which parallel subagents
-and MCP calls share a changeset. So "no live lease owns it" is not evidence
+share a changeset. So "no live lease owns it" is not evidence
 that nothing is appending, `current` excludes only the invoking gc process's
 own resolved id rather than any sibling sharing it, and `rdm session gc` run
 from an unrelated shell can and will try to compact a journal several

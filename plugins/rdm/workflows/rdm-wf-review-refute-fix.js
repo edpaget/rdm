@@ -204,7 +204,7 @@ const DIMENSIONS = {
       when: (s) => !!s.publicApiChanged,
     },
     //|code| - **changelog** — *trigger: the diff makes a user-facing change (CLI
-    //|code|   commands, API endpoints, MCP tools, config options, observable
+    //|code|   commands, API endpoints, config options, observable
     //|code|   behavior).* A user-facing change MUST carry a changelog entry in the
     //|code|   same commit; a missing entry is **blocking**. Read the project's
     //|code|   principles document (`docs/principles.md` if present, otherwise
@@ -215,7 +215,7 @@ const DIMENSIONS = {
       key: 'changelog',
       title: 'Changelog',
       focus:
-        "A user-facing change (CLI command, API endpoint, MCP tool, config option, or observable behavior) MUST carry a changelog entry in the SAME commit — a missing entry is a `blocking` finding. Read the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for the changelog file, its format, and its categories. The entry must describe the change from a user's perspective, not internal implementation details.",
+        "A user-facing change (CLI command, API endpoint, config option, or observable behavior) MUST carry a changelog entry in the SAME commit — a missing entry is a `blocking` finding. Read the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for the changelog file, its format, and its categories. The entry must describe the change from a user's perspective, not internal implementation details.",
       when: (s) => !!s.userFacing,
     },
     //|code| - **security** — *trigger: the diff touches auth, input parsing or

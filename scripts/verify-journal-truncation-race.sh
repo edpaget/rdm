@@ -236,7 +236,7 @@ await_exit() {
 #   A is released
 #
 # Both run under ONE session id, which is the whole point: at rung 3 every
-# parallel subagent and MCP call shares one, so "the only appender is the same
+# parallel subagent shares one, so "the only appender is the same
 # shell" is false.
 interleave() {
     _repo=$1

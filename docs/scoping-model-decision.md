@@ -120,7 +120,7 @@ When a git hook is spawned outside of any rdm-initiated git operation (e.g., a u
 
 **CLI**: Fully covered. The `rdm` command-line tool reads/mutates/commits, and all three operations are scoped to the caller's session identity.
 
-**MCP**: Fully covered. The MCP server exposes read/mutate/commit operations with the same session identity semantics as the CLI. An MCP client can batch its mutations and commit them under a single session.
+> **2026-09-12 — the MCP server was removed.** It previously exposed read/mutate/commit operations with the same session identity semantics as the CLI, including batching mutations and committing them under a single session. That surface is gone; script against the CLI directly, or drive `rdm-server`'s REST API.
 
 **rdm-server**: **Settled by phase 5 — staging-only by default, autocommit opt-in.**
 
@@ -230,7 +230,7 @@ The rdm-index merge driver (`rdm-store-git/src/repo.rs`) automatically regenerat
 3. regenerate the derived indexes **from the resulting disk state**, so another session's still-uncommitted rows survive — and journal that regeneration to this (now empty) changeset, so the session owns what it just rewrote;
 4. re-ensure the `.gitattributes` merge-driver mapping, reported as `reinstalled:` exactly as before.
 
-The whole-tree behavior is retained behind an explicit `--all`, which requires `--force` as well and **first names every other live changeset it is about to destroy** (from `journal::list_changesets`). The scoped path lives on `GitStore`, not in the CLI, so the MCP `rdm_discard` tool inherits identical behavior.
+The whole-tree behavior is retained behind an explicit `--all`, which requires `--force` as well and **first names every other live changeset it is about to destroy** (from `journal::list_changesets`). The scoped path lives on `GitStore`, not in the CLI, so every store-backed caller inherits identical behavior.
 
 Rejected alternative: leaving discard whole-tree and warning. A destructive default that silently deletes a concurrent session's added files is the same class of defect as a sweeping commit, and a warning does not undo it.
 

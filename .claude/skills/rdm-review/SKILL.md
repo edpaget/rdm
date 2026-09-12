@@ -166,7 +166,7 @@ Rank survivors most-severe first, then by confidence descending, then by id.
   must carry — failure modes, abort conditions, safety invariants,
   examples.
 - **changelog** — *trigger: the diff makes a user-facing change (CLI
-  commands, API endpoints, MCP tools, config options, observable
+  commands, API endpoints, config options, observable
   behavior).* A user-facing change MUST carry a changelog entry in the
   same commit; a missing entry is **blocking**. Read the project's
   principles document (`docs/principles.md` if present, otherwise
