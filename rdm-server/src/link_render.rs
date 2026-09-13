@@ -481,6 +481,29 @@ mod tests {
         rdm_core::store::Store::commit(store).unwrap();
     }
 
+    /// Seeds a plan implementing `task/<implements_task>` with `body`. Plans
+    /// have no rdm-server detail route yet, so this exists to exercise the
+    /// `Plan` arms of `classify_item` and `doc_ref_view`, which the shared
+    /// rendering module reaches today through any body that links to a plan
+    /// and through `referenced_by` on anything a plan body links to.
+    fn seed_plan(store: &mut FsStore, slug: &str, title: &str, implements_task: &str, body: &str) {
+        rdm_core::ops::plan::create_plan(
+            store,
+            rdm_core::ops::plan::CreatePlan {
+                project: "demo",
+                slug,
+                title,
+                implements: ItemRef::Task {
+                    slug: implements_task.to_string(),
+                },
+                supersedes: None,
+                body: Some(body),
+            },
+        )
+        .unwrap();
+        rdm_core::store::Store::commit(store).unwrap();
+    }
+
     #[test]
     fn item_link_to_existing_task_gets_status_class() {
         let (_dir, mut store) = tmp_store();
@@ -749,5 +772,72 @@ mod tests {
         // Only the navigable item link makes it into the HAL array.
         assert_eq!(hal.len(), 1);
         assert_eq!(hal[0].href, "/projects/demo/tasks/fix-bug");
+    }
+
+    #[test]
+    fn item_link_to_plan_gets_bare_item_class() {
+        let (_dir, mut store) = tmp_store();
+        seed_task(&mut store, "fix-bug", "Fix bug");
+        seed_plan(
+            &mut store,
+            "impl-fix-bug",
+            "Implement fix",
+            "fix-bug",
+            "Plan body.",
+        );
+        let body = "See [the plan](rdm:plan/impl-fix-bug) for details.";
+        let links = resolve_body_links(&store, "demo", None, body).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].action,
+            RenderAction::ItemLink {
+                // The project-page stub href until plan detail routes land.
+                href: "/projects/demo".to_string(),
+                class: "rdm-link-item".to_string(),
+            }
+        );
+
+        let html = crate::markdown::render_markdown_with_links(body, &links);
+        assert!(
+            html.contains(r#"<a class="rdm-link-item" href="/projects/demo">the plan</a>"#),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn item_link_to_dangling_plan_is_broken() {
+        let (_dir, store) = tmp_store();
+        let body = "See [gone](rdm:plan/does-not-exist).";
+        let links = resolve_body_links(&store, "demo", None, body).unwrap();
+        assert_eq!(links.len(), 1);
+        assert!(
+            matches!(&links[0].action, RenderAction::Broken { reason } if reason.contains("does-not-exist"))
+        );
+    }
+
+    #[test]
+    fn referenced_by_finds_plan_linking_task() {
+        let (_dir, mut store) = tmp_store();
+        seed_task(&mut store, "fix-bug", "Fix bug");
+        seed_task(&mut store, "other-task", "Other task");
+        seed_plan(
+            &mut store,
+            "impl-fix-bug",
+            "Implement fix",
+            "other-task",
+            "Depends on [the task](rdm:task/fix-bug).",
+        );
+        let entries = referenced_by(
+            &store,
+            "demo",
+            &ItemRef::Task {
+                slug: "fix-bug".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].kind_label, "Plan");
+        assert_eq!(entries[0].title, "Implement fix");
+        assert_eq!(entries[0].href, "/projects/demo");
     }
 }

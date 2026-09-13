@@ -456,8 +456,8 @@ pub struct ReferencedByEntry {
     pub href: String,
     /// Human-readable title for the referencing document.
     pub title: String,
-    /// Kind label ("Roadmap", "Phase", "Task", or "Review"), shown as a
-    /// small badge ahead of the title.
+    /// Kind label ("Roadmap", "Phase", "Task", "Plan", or "Review"), shown
+    /// as a small badge ahead of the title.
     pub kind_label: String,
 }
 
