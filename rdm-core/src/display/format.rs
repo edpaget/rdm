@@ -2187,6 +2187,111 @@ mod tests {
         assert!(output.contains("Reply: Done in f00dfeed."), "{output}");
     }
 
+    /// A submitted review whose target is a [`ReviewTarget::Change`]: it
+    /// carries a `base`, a `change_branch` and an `implements` plan, plus a
+    /// single file-quote-anchored comment. This is the shape that drives the
+    /// `Base:`/`Branch:`/`Implements:` metadata lines and the per-comment
+    /// `Source:` permalink, none of which any other fixture here exercises.
+    fn make_change_review_doc() -> Document<Review> {
+        Document {
+            frontmatter: Review {
+                id: "2026-09-01-0900-c0de".to_string(),
+                author: "ed".to_string(),
+                target: ReviewTarget::Change {
+                    head: "a".repeat(40),
+                    base: Some("b".repeat(40)),
+                },
+                state: ReviewState::Submitted,
+                verdict: Some(Verdict::Comment),
+                created: Utc.with_ymd_and_hms(2026, 9, 1, 9, 0, 0).unwrap(),
+                submitted: Some(Utc.with_ymd_and_hms(2026, 9, 1, 9, 30, 0).unwrap()),
+                created_commit: None,
+                comments: vec![ReviewComment {
+                    id: 1,
+                    doc: None,
+                    status: ReviewCommentStatus::Open,
+                    applied_commit: None,
+                    anchor: Some(Anchor::FileQuote {
+                        path: "src/lib.rs".to_string(),
+                        quote: "fn two_renamed() {}".to_string(),
+                        occurrence: 1,
+                        start_line: 2,
+                        end_line: 3,
+                    }),
+                    body: "Name reads oddly.".to_string(),
+                    reply: None,
+                }],
+                implements: Some(ReviewTarget::Plan {
+                    slug: "rename-fns".to_string(),
+                }),
+                change_branch: Some("topic".to_string()),
+            },
+            body: "Change summary.".to_string(),
+        }
+    }
+
+    fn make_change_resolutions() -> Vec<ResolvedComment> {
+        vec![ResolvedComment {
+            resolution: Resolution::Original {
+                range: 0..19,
+                drifted: false,
+            },
+            quote: Some("fn two_renamed() {}".to_string()),
+        }]
+    }
+
+    #[test]
+    fn review_detail_terminal_renders_change_metadata_and_source_permalink() {
+        let doc = make_change_review_doc();
+        let output = format_review_detail(
+            "2026-09-01-0900-c0de",
+            &doc,
+            &make_change_resolutions(),
+            None,
+        );
+        let head = "a".repeat(40);
+        assert!(
+            output.contains(&format!("Base: {}", "b".repeat(40))),
+            "{output}"
+        );
+        assert!(output.contains("Branch: topic"), "{output}");
+        assert!(
+            output.contains("Implements: rdm:plan/rename-fns"),
+            "{output}"
+        );
+        // The permalink pins the quoted span to the reviewed head, with the
+        // inclusive line range the anchor recorded.
+        assert!(
+            output.contains(&format!("Source: rdm:src/src/lib.rs@{head}#L2-L3")),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn review_detail_md_renders_change_metadata_and_source_permalink() {
+        let doc = make_change_review_doc();
+        let output = format_review_detail_md(
+            "2026-09-01-0900-c0de",
+            &doc,
+            &make_change_resolutions(),
+            None,
+        );
+        let head = "a".repeat(40);
+        assert!(
+            output.contains(&format!("**Base:** {}", "b".repeat(40))),
+            "{output}"
+        );
+        assert!(output.contains("**Branch:** topic"), "{output}");
+        assert!(
+            output.contains("**Implements:** rdm:plan/rename-fns"),
+            "{output}"
+        );
+        assert!(
+            output.contains(&format!("Source: rdm:src/src/lib.rs@{head}#L2-L3")),
+            "{output}"
+        );
+    }
+
     #[test]
     fn review_list_renders_row_fields_and_open_counts() {
         let reviews = vec![("2026-07-01-1430-a1b2".to_string(), make_review_doc())];
