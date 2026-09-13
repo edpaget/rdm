@@ -96,8 +96,15 @@ impl From<&Error> for ProblemDetail {
             | Error::PlanSupersedesSelf(_)
             | Error::ReviewImplementsInvalidKind(_)
             | Error::ReviewImplementsNotApplicable(_)
+            | Error::ReviewImplementsNoApprovedPlan(_)
+            | Error::ReviewImplementsAmbiguous { .. }
             | Error::ChangeTargetHasNoDocument(_)
             | Error::ChangePathNotInRevision { .. }
+            | Error::ChangeRevisionNotFound(_)
+            | Error::ChangeBaseNotFound(_)
+            | Error::ChangeNoMergeBase { .. }
+            | Error::ChangeQuoteNeedsPath
+            | Error::ChangePathNeedsQuote
             | Error::QuoteOutsideChangedHunks { .. } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Bad Request".to_string(),

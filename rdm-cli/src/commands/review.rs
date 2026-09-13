@@ -715,17 +715,13 @@ fn resolve_all(
     }
 }
 
-/// Resolves a parsed `change/<rev>` target into a stored one: a full
-/// 40-character head SHA plus the base the change is diffed against.
+/// Discovers the source checkout and hands the parsed `change/<rev>` target
+/// to [`rdm_core::change::resolve_change_target`], which owns every rule
+/// about head/base/branch resolution.
 ///
-/// `base` precedence: an explicit `--base` (rev-parsed), else the merge-base
-/// of the head with the project's default branch, itself resolved
-/// `project.source.default_branch` → the repo's `rdm.toml`
-/// `default_branch` → `"main"`.
-///
-/// Also returns the source checkout's current branch, stamped on the review
-/// so later drift is measured against the branch the change was on rather
-/// than whatever HEAD happens to be. `None` on a detached HEAD.
+/// The CLI's share is exactly the environment-bound part: *which* checkout
+/// to read (cwd vs. the project's configured `source.repo`) and which branch
+/// the project calls its default.
 fn resolve_change_target(
     store: &AppStore,
     project: &str,
@@ -740,90 +736,39 @@ fn resolve_change_target(
     }
     #[cfg(feature = "git")]
     {
-        use rdm_core::source::SourceRepo;
         let ReviewTarget::Change { head: rev, .. } = parsed else {
             bail!("internal: resolve_change_target called on a non-change target");
         };
         let source = crate::source_repo::discover_source_repo(store, project)?;
-        let head = source
-            .rev_parse(rev)
-            .context("failed to resolve the reviewed revision")?
-            .ok_or_else(|| {
-                anyhow::anyhow!(
-                    "'{rev}' does not name a commit in the source repository — pass --on change/<sha>, a branch name, or change/HEAD from inside the checkout"
-                )
-            })?;
-
-        let base = match base {
-            Some(explicit) => source
-                .rev_parse(explicit)
-                .context("failed to resolve --base")?
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "--base '{explicit}' does not name a commit in the source repository"
-                    )
-                })?,
-            None => {
-                let default_branch = default_source_branch(store, project, repo_config);
-                source
-                    .merge_base(&head, &default_branch)
-                    .context("failed to compute the change's merge base")?
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "no merge base between {head} and '{default_branch}' — unrelated history, an orphan branch, or a shallow clone; pass --base <rev> to name the revision the change is diffed against"
-                        )
-                    })?
-            }
-        };
-        let branch = source.current_branch().ok().flatten();
-        Ok((
-            ReviewTarget::Change {
-                head,
-                base: Some(base),
-            },
-            branch,
-        ))
+        let default_branch = rdm_core::ops::reviews::source_default_branch(
+            store,
+            project,
+            repo_config.default_branch.as_deref(),
+        );
+        Ok(rdm_core::change::resolve_change_target(
+            &source,
+            rev,
+            base,
+            &default_branch,
+        )?)
     }
-}
-
-/// The branch a change's merge-base is computed against:
-/// `project.source.default_branch` → the plan repo's `rdm.toml`
-/// `default_branch` → `"main"`.
-fn default_source_branch(store: &AppStore, project: &str, repo_config: &Config) -> String {
-    rdm_core::io::load_project(store, project)
-        .ok()
-        .and_then(|doc| doc.frontmatter.source)
-        .and_then(|source| source.default_branch)
-        .or_else(|| repo_config.default_branch.clone())
-        .unwrap_or_else(|| "main".to_string())
 }
 
 /// Resolves `--implements` for a `change/` review: the explicit reference
 /// when given, otherwise inferred from the worktree the command is running
 /// in.
 ///
-/// Inference requires the checkout to map to a plan item (via
-/// [`rdm_git::worktree::current`]) that has **exactly one** `approved`
-/// plan. Zero and many are both actionable errors naming `--implements`,
-/// with the candidates listed in the many case. A roadmap-level worktree
-/// has no single item to look plans up for, so it errors too rather than
-/// guessing across the roadmap's phases.
+/// Both rules live in core ([`rdm_core::ops::plan::parse_implements_reference`]
+/// and [`rdm_core::ops::plan::infer_implemented_plan`]); what stays here is
+/// the environmental step neither can do — asking the current directory
+/// which plan item it is a worktree for.
 fn resolve_implements(
     store: &AppStore,
     project: &str,
     explicit: Option<&str>,
 ) -> Result<Option<ReviewTarget>> {
     if let Some(raw) = explicit {
-        let stripped = raw.strip_prefix("rdm:").unwrap_or(raw);
-        let parsed: ReviewTarget = stripped.parse().map_err(|_| {
-            anyhow::anyhow!("invalid --implements '{raw}' — expected rdm:plan/<slug>")
-        })?;
-        if !matches!(parsed, ReviewTarget::Plan { .. }) {
-            return Err(anyhow::Error::new(
-                rdm_core::error::Error::ReviewImplementsInvalidKind(parsed.label()),
-            ));
-        }
-        return Ok(Some(parsed));
+        return Ok(Some(rdm_core::ops::plan::parse_implements_reference(raw)?));
     }
     #[cfg(not(feature = "git"))]
     {
@@ -853,42 +798,16 @@ fn resolve_implements(
                 "could not read this worktree's plan item ({e}) — pass --implements rdm:plan/<slug>"
             ),
         };
-        let approved = rdm_core::ops::plan::approved_plans_for(store, project, &item)
-            .context("failed to list approved plans for this worktree's item")?;
-        match approved.as_slice() {
-            [(slug, _)] => Ok(Some(ReviewTarget::Plan { slug: slug.clone() })),
-            [] => bail!(
-                "no approved plan for {} — pass --implements rdm:plan/<slug>, or approve one (`rdm plan list --implements {}`)",
-                item.label(),
-                item.label()
-            ),
-            many => {
-                let candidates: Vec<String> = many
-                    .iter()
-                    .map(|(slug, _)| format!("rdm:plan/{slug}"))
-                    .collect();
-                bail!(
-                    "{} has {} approved plans, so the implemented plan is ambiguous — pass --implements with one of: {}",
-                    item.label(),
-                    many.len(),
-                    candidates.join(", ")
-                )
-            }
-        }
+        Ok(Some(rdm_core::ops::plan::infer_implemented_plan(
+            store, project, &item,
+        )?))
     }
 }
 
-/// Derives a `change/` review comment's anchor from `--path`/`--quote`.
-///
-/// Requires `--path` alongside `--quote` (a change review has no single
-/// document to search), reads the file's content at the reviewed `head`,
-/// computes the hunks the change touches in it, and hands both to
-/// [`rdm_core::change::derive_file_quote`], which enforces the
-/// inside-a-touched-hunk rule.
-///
-/// Unlike the read path, this **fails loudly** when the source repository
-/// is unreachable: a stored anchor that was never checked against real
-/// content would silently mislead every later reader.
+/// Discovers the source checkout and hands `--path`/`--quote` to
+/// [`rdm_core::change::derive_change_anchor`], which owns the pairing rule,
+/// the head-side content read, the hunk computation and the
+/// inside-a-touched-hunk check.
 fn derive_change_anchor(
     store: &AppStore,
     project: &str,
@@ -898,64 +817,20 @@ fn derive_change_anchor(
     path: Option<&str>,
     occurrence: Option<usize>,
 ) -> Result<Option<rdm_core::model::Anchor>> {
-    let Some(quote) = quote else {
-        if path.is_some() {
-            bail!("--path needs --quote — pass both, or neither for a whole-change comment");
-        }
+    if quote.is_none() && path.is_none() {
         return Ok(None);
-    };
-    let Some(path) = path else {
-        bail!(
-            "--quote on a change review needs --path <repo-relative path> naming the file the quote lives in"
-        );
-    };
-    let path = rdm_core::change::normalize_source_path(path)?;
+    }
     #[cfg(not(feature = "git"))]
     {
-        let _ = (store, project, head, base, quote, occurrence);
+        let _ = (store, project, head, base, quote, path, occurrence);
         bail!("this build has no git support — `change/` reviews require the `git` feature");
     }
     #[cfg(feature = "git")]
     {
-        use rdm_core::source::SourceRepo;
         let source = crate::source_repo::discover_source_repo(store, project)?;
-        let content = source
-            .file_at(head, &path)
-            .context("failed to read the quoted file at the reviewed head")?
-            .ok_or_else(|| {
-                anyhow::Error::new(rdm_core::error::Error::ChangePathNotInRevision {
-                    path: path.clone(),
-                    rev: head.to_string(),
-                })
-            })?;
-        let (hunks, range_label) = match base {
-            Some(base) => {
-                let diff = source
-                    .unified_diff(base, head, &path)
-                    .context("failed to diff the quoted file")?
-                    .unwrap_or_default();
-                (
-                    rdm_core::change::parse_hunks(&diff),
-                    format!(
-                        "{}..{}",
-                        &base[..base.len().min(12)],
-                        &head[..head.len().min(12)]
-                    ),
-                )
-            }
-            // A review with no recorded base (hand-edited frontmatter)
-            // cannot compute hunks; treat the whole file as untouched so the
-            // error names the real problem rather than anchoring blindly.
-            None => (Vec::new(), "this change".to_string()),
-        };
-        Ok(Some(rdm_core::change::derive_file_quote(
-            &content,
-            &path,
-            quote,
-            occurrence,
-            &hunks,
-            &range_label,
-        )?))
+        Ok(rdm_core::change::derive_change_anchor(
+            &source, head, base, quote, path, occurrence,
+        )?)
     }
 }
 

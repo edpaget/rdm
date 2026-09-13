@@ -18,6 +18,31 @@ use crate::model::{
 };
 use crate::store::{DirEntryKind, Store, VersionedStore};
 
+/// The branch a `change/` review's merge base is computed against.
+///
+/// Precedence: the project's own `source.default_branch`, else the plan
+/// repo's `rdm.toml` `default_branch`, else the literal `"main"` — the same
+/// ladder [`crate::ops::links::resolve_code_link`] walks for `rdm:src/`
+/// resolution, kept in core so every interface that starts a change review
+/// picks the same branch.
+///
+/// A project that cannot be loaded degrades to `config_default`: naming the
+/// branch is not the place to fail a `review start`, and the merge-base
+/// lookup that consumes it reports its own actionable error.
+#[must_use]
+pub fn source_default_branch(
+    store: &impl Store,
+    project: &str,
+    config_default: Option<&str>,
+) -> String {
+    crate::io::load_project(store, project)
+        .ok()
+        .and_then(|doc| doc.frontmatter.source)
+        .and_then(|source| source.default_branch)
+        .or_else(|| config_default.map(str::to_string))
+        .unwrap_or_else(|| "main".to_string())
+}
+
 /// Parses a review target reference into a [`ReviewTarget`].
 ///
 /// Accepted forms:
@@ -1003,6 +1028,60 @@ mod tests {
             },
             body: "Review summary.".to_string(),
         }
+    }
+
+    /// Rewrites the test project with a `source` block.
+    fn with_source(store: &mut MemoryStore, repo: &str, default_branch: Option<&str>) {
+        let doc = Document {
+            frontmatter: Project {
+                name: "test".to_string(),
+                title: "Test Project".to_string(),
+                source: Some(crate::model::Source {
+                    repo: repo.to_string(),
+                    default_branch: default_branch.map(str::to_string),
+                }),
+            },
+            body: String::new(),
+        };
+        store
+            .write(
+                &crate::paths::project_md_path("test"),
+                doc.render().unwrap(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn source_default_branch_walks_project_then_config_then_main() {
+        let mut store = setup_store();
+        // No `source` block at all: the plan repo's config wins, else "main".
+        assert_eq!(source_default_branch(&store, "test", None), "main");
+        assert_eq!(
+            source_default_branch(&store, "test", Some("trunk")),
+            "trunk"
+        );
+        // A `source` block with no default_branch is still not an answer.
+        with_source(&mut store, "/tmp/src", None);
+        assert_eq!(
+            source_default_branch(&store, "test", Some("trunk")),
+            "trunk"
+        );
+        // The project's own default_branch outranks the config's.
+        with_source(&mut store, "/tmp/src", Some("develop"));
+        assert_eq!(
+            source_default_branch(&store, "test", Some("trunk")),
+            "develop"
+        );
+    }
+
+    #[test]
+    fn source_default_branch_degrades_for_an_unknown_project() {
+        let store = setup_store();
+        assert_eq!(
+            source_default_branch(&store, "nope", Some("trunk")),
+            "trunk"
+        );
+        assert_eq!(source_default_branch(&store, "nope", None), "main");
     }
 
     #[test]

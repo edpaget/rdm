@@ -313,6 +313,64 @@ pub fn approved_plans_for(
         .collect())
 }
 
+/// Infers the single `approved` plan `target` implements, as the
+/// `plan/<slug>` reference a `change/` review records in `implements`.
+///
+/// This is the domain rule behind an omitted `--implements`: exactly one
+/// approved plan is unambiguous and is used; zero and many are both
+/// actionable, *matchable* errors rather than a guess, matching the
+/// treatment [`Error::ReviewImplementsInvalidKind`] and
+/// [`Error::ReviewImplementsNotApplicable`] already give the explicit
+/// failure modes.
+///
+/// # Errors
+///
+/// Returns [`Error::ReviewImplementsNoApprovedPlan`] when `target` has no
+/// approved plan, [`Error::ReviewImplementsAmbiguous`] (listing every
+/// candidate) when it has more than one, or anything
+/// [`approved_plans_for`] returns.
+pub fn infer_implemented_plan(
+    store: &impl Store,
+    project: &str,
+    target: &ItemRef,
+) -> Result<ItemRef> {
+    let approved = approved_plans_for(store, project, target)?;
+    match approved.as_slice() {
+        [(slug, _)] => Ok(ItemRef::Plan { slug: slug.clone() }),
+        [] => Err(Error::ReviewImplementsNoApprovedPlan(target.label())),
+        many => Err(Error::ReviewImplementsAmbiguous {
+            item: target.label(),
+            candidates: many
+                .iter()
+                .map(|(slug, _)| format!("rdm:plan/{slug}"))
+                .collect(),
+        }),
+    }
+}
+
+/// Parses an explicit `--implements` reference into the `plan/<slug>` it
+/// must name.
+///
+/// Accepts both the canonical `rdm:plan/<slug>` URI and the bare
+/// `plan/<slug>` reference — the `rdm:` prefix is stripped before parsing —
+/// and rejects every other kind, so `--implements phase/x/y` fails with the
+/// same matchable error as `--implements nonsense`.
+///
+/// # Errors
+///
+/// Returns [`Error::ReviewImplementsInvalidKind`] when `raw` does not parse
+/// as a reference at all, or parses as any kind other than a plan.
+pub fn parse_implements_reference(raw: &str) -> Result<ItemRef> {
+    let stripped = raw.strip_prefix("rdm:").unwrap_or(raw);
+    let parsed: ItemRef = stripped
+        .parse()
+        .map_err(|_| Error::ReviewImplementsInvalidKind(raw.to_string()))?;
+    if !matches!(parsed, ItemRef::Plan { .. }) {
+        return Err(Error::ReviewImplementsInvalidKind(parsed.label()));
+    }
+    Ok(parsed)
+}
+
 /// Lists the `change/<sha>` reviews whose `implements` names `plan/<slug>`,
 /// in review-id order.
 ///
@@ -545,6 +603,102 @@ mod tests {
                 body: Some("## Approach\n\nDetails.\n"),
             },
         )
+    }
+
+    // -- --implements resolution (the rule behind an omitted flag) --
+
+    #[test]
+    fn infer_implemented_plan_picks_the_single_approved_plan() {
+        let mut store = setup_store();
+        create(&mut store, "plan-a", task_ref()).unwrap();
+        create(&mut store, "plan-b", task_ref()).unwrap();
+        // Only one of the two is approved, so there is no ambiguity.
+        set_plan_status(&mut store, "test", "plan-b", PlanStatus::Approved).unwrap();
+        assert_eq!(
+            infer_implemented_plan(&store, "test", &task_ref()).unwrap(),
+            ItemRef::Plan {
+                slug: "plan-b".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn infer_implemented_plan_errors_when_nothing_is_approved() {
+        let mut store = setup_store();
+        // A draft plan does not count.
+        create(&mut store, "plan-a", task_ref()).unwrap();
+        let err = infer_implemented_plan(&store, "test", &task_ref()).unwrap_err();
+        assert!(matches!(err, Error::ReviewImplementsNoApprovedPlan(_)));
+        let text = err.to_string();
+        assert!(
+            text.contains("no approved plan") && text.contains("--implements"),
+            "zero approved plans must name --implements: {text}"
+        );
+    }
+
+    #[test]
+    fn infer_implemented_plan_lists_every_candidate_when_ambiguous() {
+        let mut store = setup_store();
+        create(&mut store, "plan-a", task_ref()).unwrap();
+        create(&mut store, "plan-b", task_ref()).unwrap();
+        set_plan_status(&mut store, "test", "plan-a", PlanStatus::Approved).unwrap();
+        set_plan_status(&mut store, "test", "plan-b", PlanStatus::Approved).unwrap();
+        let err = infer_implemented_plan(&store, "test", &task_ref()).unwrap_err();
+        let Error::ReviewImplementsAmbiguous { ref candidates, .. } = err else {
+            panic!("expected an ambiguous inference, got {err:?}");
+        };
+        assert_eq!(candidates, &["rdm:plan/plan-a", "rdm:plan/plan-b"]);
+        let text = err.to_string();
+        assert!(
+            text.contains("rdm:plan/plan-a") && text.contains("rdm:plan/plan-b"),
+            "an ambiguous inference must list every candidate: {text}"
+        );
+    }
+
+    #[test]
+    fn infer_implemented_plan_ignores_plans_for_another_item() {
+        let mut store = setup_store();
+        create(&mut store, "plan-a", task_ref()).unwrap();
+        set_plan_status(&mut store, "test", "plan-a", PlanStatus::Approved).unwrap();
+        let phase = ItemRef::Phase {
+            roadmap: "auth".to_string(),
+            stem: "phase-2-ship".to_string(),
+        };
+        assert!(matches!(
+            infer_implemented_plan(&store, "test", &phase),
+            Err(Error::ReviewImplementsNoApprovedPlan(_))
+        ));
+    }
+
+    #[test]
+    fn parse_implements_reference_accepts_both_spellings_of_a_plan() {
+        for raw in ["rdm:plan/impl-login", "plan/impl-login"] {
+            assert_eq!(
+                parse_implements_reference(raw).unwrap(),
+                ItemRef::Plan {
+                    slug: "impl-login".to_string()
+                },
+                "{raw} must parse"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_implements_reference_rejects_every_other_kind() {
+        for raw in [
+            "task/fix-login",
+            "rdm:phase/auth/phase-2-ship",
+            "roadmap/auth",
+            "not a reference",
+        ] {
+            assert!(
+                matches!(
+                    parse_implements_reference(raw),
+                    Err(Error::ReviewImplementsInvalidKind(_))
+                ),
+                "{raw} must be refused as an --implements reference"
+            );
+        }
     }
 
     // -- AC1: create-time validation --

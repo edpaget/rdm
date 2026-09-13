@@ -51,6 +51,17 @@ pub enum Error {
     /// A review's `--implements` was given on a target kind that cannot
     /// implement a plan (everything but `change/<sha>`).
     ReviewImplementsNotApplicable(String),
+    /// A review's `--implements` was left to inference, but the item it
+    /// would have been inferred from has no `approved` plan.
+    ReviewImplementsNoApprovedPlan(String),
+    /// A review's `--implements` was left to inference, but the item it
+    /// would have been inferred from has more than one `approved` plan.
+    ReviewImplementsAmbiguous {
+        /// Label of the item the inference ran against.
+        item: String,
+        /// Every approved plan, as a `rdm:plan/<slug>` reference.
+        candidates: Vec<String>,
+    },
     /// The plan a new plan would supersede does not exist.
     PlanSupersedesMissing(String),
     /// A plan's `supersedes` named a reference kind that is not a plan
@@ -168,6 +179,26 @@ pub enum Error {
         /// The revision it was looked up at.
         rev: String,
     },
+    /// The revision a `change/<rev>` review names does not resolve in the
+    /// project's source repository.
+    ChangeRevisionNotFound(String),
+    /// The revision `--base` names does not resolve in the project's source
+    /// repository.
+    ChangeBaseNotFound(String),
+    /// A `change/` review's head and the project's default branch share no
+    /// common ancestor, so the reviewed range cannot be derived.
+    ChangeNoMergeBase {
+        /// The reviewed head, as a full SHA.
+        head: String,
+        /// The branch the merge base was looked for against.
+        branch: String,
+    },
+    /// A `--quote` was given on a `change/` review without the `--path`
+    /// that says which file to locate it in.
+    ChangeQuoteNeedsPath,
+    /// A `--path` was given on a `change/` review with no `--quote` to
+    /// locate in it.
+    ChangePathNeedsQuote,
     /// A slug already exists.
     DuplicateSlug(String),
     /// A roadmap slug collided with a reserved prefix (see
@@ -389,6 +420,20 @@ impl std::fmt::Display for Error {
                     "--implements records which plan a reviewed *change* implements, so it does not apply to a review of '{label}' — start the review with --on change/<sha> to use it"
                 )
             }
+            Error::ReviewImplementsNoApprovedPlan(item) => {
+                write!(
+                    f,
+                    "no approved plan for {item} — pass --implements rdm:plan/<slug>, or approve one (`rdm plan list --implements {item}`)"
+                )
+            }
+            Error::ReviewImplementsAmbiguous { item, candidates } => {
+                write!(
+                    f,
+                    "{item} has {} approved plans, so the implemented plan is ambiguous — pass --implements with one of: {}",
+                    candidates.len(),
+                    candidates.join(", ")
+                )
+            }
             Error::PlanSupersedesMissing(slug) => {
                 write!(
                     f,
@@ -553,6 +598,36 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "'{path}' does not exist at {rev} — check the path (it is relative to the source repository root), or omit --path/--quote for a whole-change comment"
+                )
+            }
+            Error::ChangeRevisionNotFound(rev) => {
+                write!(
+                    f,
+                    "'{rev}' does not name a commit in the source repository — pass --on change/<sha>, a branch name, or change/HEAD from inside the checkout"
+                )
+            }
+            Error::ChangeBaseNotFound(rev) => {
+                write!(
+                    f,
+                    "--base '{rev}' does not name a commit in the source repository"
+                )
+            }
+            Error::ChangeNoMergeBase { head, branch } => {
+                write!(
+                    f,
+                    "no merge base between {head} and '{branch}' — unrelated history, an orphan branch, or a shallow clone; pass --base <rev> to name the revision the change is diffed against"
+                )
+            }
+            Error::ChangeQuoteNeedsPath => {
+                write!(
+                    f,
+                    "--quote on a change review needs --path <repo-relative path> naming the file the quote lives in"
+                )
+            }
+            Error::ChangePathNeedsQuote => {
+                write!(
+                    f,
+                    "--path needs --quote — pass both, or neither for a whole-change comment"
                 )
             }
             Error::DuplicateSlug(slug) => {

@@ -169,13 +169,27 @@ is testable with no process spawned.
 
 ## Where the code lives
 
+Every rule below — target pinning, base derivation, anchor derivation, anchor
+resolution, `--implements` resolution — is a **domain** rule and lives in
+core, taking `&impl SourceRepo` so it is unit-testable against
+`MemorySourceRepo` with no process spawned and no temp repository on disk.
+The CLI's share is only what is genuinely environmental: deciding *which*
+checkout to read, asking the cwd which worktree it is, and formatting output.
+
 | concern | module |
 |---|---|
 | the read-only port + test double | `rdm-core/src/source.rs` |
 | hunk parsing, anchoring, resolution, permalinks | `rdm-core/src/change.rs` |
+| target pinning (`resolve_change_target`) and anchor derivation (`derive_change_anchor`) | `rdm-core/src/change.rs` |
+| the default branch the merge base is taken against (`source_default_branch`) | `rdm-core/src/ops/reviews.rs` |
+| `--implements` parsing and single-approved-plan inference | `rdm-core/src/ops/plan.rs` |
 | the git implementation | `rdm-git/src/source.rs` |
 | source-repo discovery from the cwd | `rdm-cli/src/source_repo.rs` |
-| CLI wiring (`start`/`comment`/`show`) | `rdm-cli/src/commands/review.rs` |
+| CLI wiring: discovery + core calls + formatting | `rdm-cli/src/commands/review.rs` |
+
+Every failure mode above is a matchable `rdm_core::Error` variant rather than
+a formatted string, so the server and MCP layers map them onto their own
+status codes without re-deriving the rule (`rdm-server/src/problem.rs`).
 
 Integration coverage: `rdm-cli/tests/cli_review_change.rs` (real temp git
 source repo + real temp plan repo) and § 7 of

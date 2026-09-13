@@ -308,6 +308,163 @@ pub fn derive_file_quote(
     })
 }
 
+/// Pins a `change/<rev>` review target against the source repository.
+///
+/// This is the *construction* half of the change-review target, the mirror
+/// of [`resolve_change_comment`]'s resolution half, and it lives here for
+/// the same reason: every rule below is a domain rule, and every one of
+/// them is unit-testable against
+/// [`MemorySourceRepo`](crate::source::MemorySourceRepo) with no process
+/// spawned. The caller supplies only what is genuinely environmental — which
+/// checkout to read (`source`) and which branch the project calls its
+/// default (`default_branch`).
+///
+/// `rev` is rev-parsed to a full 40-character SHA, so `HEAD`, a branch name
+/// and an abbreviation all pin to the same target and two reviews of one
+/// commit compare equal.
+///
+/// `base` precedence: an explicit `base_override` (itself rev-parsed), else
+/// the merge base of the head with `default_branch`. A missing merge base is
+/// an error, never a silent fallback to the root commit or to the head —
+/// either would empty the diff and put every quote outside every hunk.
+///
+/// Also returns the checkout's current branch, which the review stamps so
+/// later drift is measured against the branch the change was on rather than
+/// whatever `HEAD` happens to be by then. `None` on a detached HEAD, and a
+/// repository that cannot answer at all degrades to `None` rather than
+/// failing the whole `review start`.
+///
+/// # Errors
+///
+/// Returns [`Error::ChangeRevisionNotFound`] when `rev` names no commit,
+/// [`Error::ChangeBaseNotFound`] when `base_override` names no commit,
+/// [`Error::ChangeNoMergeBase`] when head and `default_branch` share no
+/// ancestor, or whatever error the [`SourceRepo`] itself reports when it
+/// cannot be queried.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::change::resolve_change_target;
+/// use rdm_core::model::ReviewTarget;
+/// use rdm_core::source::MemorySourceRepo;
+///
+/// let head = "a".repeat(40);
+/// let base = "b".repeat(40);
+/// let source = MemorySourceRepo::new()
+///     .with_rev("HEAD", &head)
+///     .with_merge_base(&head, "main", &base)
+///     .with_branch("phase/auth/phase-1-design");
+///
+/// let (target, branch) = resolve_change_target(&source, "HEAD", None, "main").unwrap();
+/// assert_eq!(target, ReviewTarget::Change { head, base: Some(base) });
+/// assert_eq!(branch.as_deref(), Some("phase/auth/phase-1-design"));
+/// ```
+pub fn resolve_change_target(
+    source: &impl SourceRepo,
+    rev: &str,
+    base_override: Option<&str>,
+    default_branch: &str,
+) -> Result<(ReviewTarget, Option<String>)> {
+    let head = source
+        .rev_parse(rev)?
+        .ok_or_else(|| Error::ChangeRevisionNotFound(rev.to_string()))?;
+    let base =
+        match base_override {
+            Some(explicit) => source
+                .rev_parse(explicit)?
+                .ok_or_else(|| Error::ChangeBaseNotFound(explicit.to_string()))?,
+            None => source.merge_base(&head, default_branch)?.ok_or_else(|| {
+                Error::ChangeNoMergeBase {
+                    head: head.clone(),
+                    branch: default_branch.to_string(),
+                }
+            })?,
+        };
+    // A repository that cannot name its branch is not a reason to refuse the
+    // review: drift then falls back to the repository's HEAD.
+    let branch = source.current_branch().ok().flatten();
+    Ok((
+        ReviewTarget::Change {
+            head,
+            base: Some(base),
+        },
+        branch,
+    ))
+}
+
+/// Derives a `change/` review comment's anchor from an optional
+/// `--path`/`--quote` pair.
+///
+/// The pair is all-or-nothing: neither means a whole-change comment
+/// (`Ok(None)`), both anchor into the file, and either alone is an error
+/// naming the missing flag. With both present, the file's content is read
+/// **at `head`**, the hunks the change touches in it are computed from
+/// `base..head`, and both are handed to [`derive_file_quote`], which
+/// enforces the inside-a-touched-hunk rule.
+///
+/// Unlike [`resolve_change_comment`], this path **fails loudly** when the
+/// source repository cannot answer: a stored anchor that was never checked
+/// against real content would silently mislead every later reader.
+///
+/// A review with no recorded `base` (only reachable by hand-editing the
+/// frontmatter) yields no hunks, so the error names the real problem rather
+/// than anchoring blindly.
+///
+/// # Errors
+///
+/// Returns [`Error::ChangePathNeedsQuote`] or [`Error::ChangeQuoteNeedsPath`]
+/// when only one of the pair is given, [`Error::ChangePathNotInRevision`]
+/// when `path` is not repo-relative or does not exist at `head`, anything
+/// [`derive_file_quote`] returns (quote not found, ambiguous, occurrence out
+/// of range, outside every touched hunk), or whatever error the
+/// [`SourceRepo`] reports when it cannot be queried.
+pub fn derive_change_anchor(
+    source: &impl SourceRepo,
+    head: &str,
+    base: Option<&str>,
+    quote: Option<&str>,
+    path: Option<&str>,
+    occurrence: Option<usize>,
+) -> Result<Option<Anchor>> {
+    let Some(quote) = quote else {
+        if path.is_some() {
+            return Err(Error::ChangePathNeedsQuote);
+        }
+        return Ok(None);
+    };
+    let Some(path) = path else {
+        return Err(Error::ChangeQuoteNeedsPath);
+    };
+    let path = normalize_source_path(path)?;
+    let content = source
+        .file_at(head, &path)?
+        .ok_or_else(|| Error::ChangePathNotInRevision {
+            path: path.clone(),
+            rev: head.to_string(),
+        })?;
+    let (hunks, range_label) = match base {
+        Some(base) => {
+            let diff = source.unified_diff(base, head, &path)?.unwrap_or_default();
+            (
+                parse_hunks(&diff),
+                format!("{}..{}", abbreviate(base), abbreviate(head)),
+            )
+        }
+        None => (Vec::new(), "this change".to_string()),
+    };
+    derive_file_quote(&content, &path, quote, occurrence, &hunks, &range_label).map(Some)
+}
+
+/// The first twelve characters of a revision, for an error message.
+fn abbreviate(rev: &str) -> &str {
+    let mut at = rev.len().min(12);
+    while at > 0 && !rev.is_char_boundary(at) {
+        at -= 1;
+    }
+    &rev[..at]
+}
+
 /// The head-side byte range an [`Anchor::FileQuote`] occupies in `content`.
 ///
 /// Uses the recorded `occurrence` when it still selects a match, and falls
@@ -904,5 +1061,360 @@ mod tests {
                 "expected {bad:?} to be rejected"
             );
         }
+    }
+
+    // ---- resolve_change_target -------------------------------------------
+
+    /// Head sha, base sha, and a diff the two share, for target tests.
+    fn target_repo() -> (String, String, MemorySourceRepo) {
+        let head = "a".repeat(40);
+        let base = "b".repeat(40);
+        let source = MemorySourceRepo::new()
+            .with_rev("HEAD", &head)
+            .with_rev("aaaaaaa", &head)
+            .with_rev("topic", &head)
+            .with_rev("main", &base)
+            .with_merge_base(&head, "main", &base)
+            .with_branch("phase/auth/phase-1-design");
+        (head, base, source)
+    }
+
+    #[test]
+    fn resolve_change_target_pins_head_base_and_branch() {
+        let (head, base, source) = target_repo();
+        for rev in ["HEAD", "aaaaaaa", "topic"] {
+            let (target, branch) = resolve_change_target(&source, rev, None, "main").unwrap();
+            assert_eq!(
+                target,
+                ReviewTarget::Change {
+                    head: head.clone(),
+                    base: Some(base.clone()),
+                },
+                "{rev} must pin the same full-sha target"
+            );
+            assert_eq!(branch.as_deref(), Some("phase/auth/phase-1-design"));
+        }
+    }
+
+    #[test]
+    fn resolve_change_target_prefers_an_explicit_base_over_the_merge_base() {
+        let (head, _, source) = target_repo();
+        let other = "c".repeat(40);
+        let source = source.with_rev("v1.0", &other);
+        let (target, _) = resolve_change_target(&source, "HEAD", Some("v1.0"), "main").unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Change {
+                head,
+                base: Some(other),
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_change_target_rejects_an_unknown_head_and_an_unknown_base() {
+        let (_, _, source) = target_repo();
+        assert!(matches!(
+            resolve_change_target(&source, "nope", None, "main"),
+            Err(Error::ChangeRevisionNotFound(rev)) if rev == "nope"
+        ));
+        assert!(matches!(
+            resolve_change_target(&source, "HEAD", Some("nope"), "main"),
+            Err(Error::ChangeBaseNotFound(rev)) if rev == "nope"
+        ));
+    }
+
+    #[test]
+    fn resolve_change_target_names_base_when_there_is_no_merge_base() {
+        // Unrelated histories: the head resolves, the merge base does not.
+        let head = "a".repeat(40);
+        let source = MemorySourceRepo::new().with_rev("HEAD", &head);
+        let err = resolve_change_target(&source, "HEAD", None, "main").unwrap_err();
+        assert!(matches!(err, Error::ChangeNoMergeBase { .. }));
+        let text = err.to_string();
+        assert!(
+            text.contains("--base") && text.contains("main"),
+            "a missing merge base must name --base and the branch: {text}"
+        );
+    }
+
+    #[test]
+    fn resolve_change_target_reports_no_branch_on_a_detached_head() {
+        let head = "a".repeat(40);
+        let base = "b".repeat(40);
+        let source = MemorySourceRepo::new()
+            .with_rev("HEAD", &head)
+            .with_merge_base(&head, "main", &base);
+        let (_, branch) = resolve_change_target(&source, "HEAD", None, "main").unwrap();
+        assert_eq!(branch, None, "a detached HEAD must not stamp a branch");
+    }
+
+    #[test]
+    fn resolve_change_target_honors_a_non_default_default_branch() {
+        let head = "a".repeat(40);
+        let base = "b".repeat(40);
+        let source = MemorySourceRepo::new()
+            .with_rev("HEAD", &head)
+            .with_merge_base(&head, "develop", &base);
+        assert!(resolve_change_target(&source, "HEAD", None, "main").is_err());
+        let (target, _) = resolve_change_target(&source, "HEAD", None, "develop").unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Change {
+                head,
+                base: Some(base)
+            }
+        );
+    }
+
+    // ---- derive_change_anchor --------------------------------------------
+
+    /// A two-line file at `head` whose second line the change touched.
+    fn anchor_repo() -> MemorySourceRepo {
+        MemorySourceRepo::new()
+            .with_file(
+                "head1",
+                "src/lib.rs",
+                "fn untouched() {}\nfn touched() {}\n",
+            )
+            .with_diff(
+                "base1",
+                "head1",
+                "src/lib.rs",
+                "@@ -2 +2 @@\n-old\n+fn touched() {}\n",
+            )
+    }
+
+    #[test]
+    fn derive_change_anchor_without_path_or_quote_is_a_whole_change_comment() {
+        let source = anchor_repo();
+        assert_eq!(
+            derive_change_anchor(&source, "head1", Some("base1"), None, None, None).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn derive_change_anchor_requires_both_halves_of_the_pair() {
+        let source = anchor_repo();
+        assert!(matches!(
+            derive_change_anchor(
+                &source,
+                "head1",
+                Some("base1"),
+                None,
+                Some("src/lib.rs"),
+                None
+            ),
+            Err(Error::ChangePathNeedsQuote)
+        ));
+        assert!(matches!(
+            derive_change_anchor(
+                &source,
+                "head1",
+                Some("base1"),
+                Some("fn touched"),
+                None,
+                None
+            ),
+            Err(Error::ChangeQuoteNeedsPath)
+        ));
+    }
+
+    #[test]
+    fn derive_change_anchor_anchors_inside_a_touched_hunk() {
+        let source = anchor_repo();
+        let anchor = derive_change_anchor(
+            &source,
+            "head1",
+            Some("base1"),
+            Some("fn touched"),
+            Some("./src/lib.rs"),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            anchor,
+            Anchor::FileQuote {
+                // The leading `./` is normalized away so the emitted
+                // permalink parses.
+                path: "src/lib.rs".to_string(),
+                quote: "fn touched".to_string(),
+                occurrence: 1,
+                start_line: 2,
+                end_line: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn derive_change_anchor_refuses_a_quote_outside_every_touched_hunk() {
+        let source = anchor_repo();
+        let err = derive_change_anchor(
+            &source,
+            "head1",
+            Some("base1"),
+            Some("fn untouched"),
+            Some("src/lib.rs"),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::QuoteOutsideChangedHunks {
+                nearest: Some((2, 2)),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn derive_change_anchor_reports_a_path_missing_at_head() {
+        let source = anchor_repo();
+        let err = derive_change_anchor(
+            &source,
+            "head1",
+            Some("base1"),
+            Some("anything"),
+            Some("src/gone.rs"),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::ChangePathNotInRevision { ref path, .. } if path == "src/gone.rs"
+        ));
+    }
+
+    #[test]
+    fn derive_change_anchor_reports_an_untouched_path_distinctly() {
+        // The file exists at head but the change does not touch it: no
+        // nearest hunk, so the message must not invent one.
+        let source = MemorySourceRepo::new().with_file("head1", "src/other.rs", "fn other() {}\n");
+        let err = derive_change_anchor(
+            &source,
+            "head1",
+            Some("base1"),
+            Some("fn other"),
+            Some("src/other.rs"),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::QuoteOutsideChangedHunks { nearest: None, .. }
+        ));
+        assert!(
+            err.to_string().contains("is not touched by"),
+            "an untouched path needs its own message: {err}"
+        );
+    }
+
+    #[test]
+    fn derive_change_anchor_with_no_recorded_base_names_the_untouched_path() {
+        // A hand-edited review frontmatter with no base yields no hunks
+        // rather than anchoring blindly.
+        let source = anchor_repo();
+        let err = derive_change_anchor(
+            &source,
+            "head1",
+            None,
+            Some("fn touched"),
+            Some("src/lib.rs"),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::QuoteOutsideChangedHunks { nearest: None, .. }
+        ));
+    }
+
+    #[test]
+    fn derive_change_anchor_disambiguates_with_occurrence() {
+        let source = MemorySourceRepo::new()
+            .with_file("head1", "src/lib.rs", "dup\ndup\n")
+            .with_diff(
+                "base1",
+                "head1",
+                "src/lib.rs",
+                "@@ -1,2 +1,2 @@\n+dup\n+dup\n",
+            );
+        // Ambiguous without --occurrence...
+        assert!(matches!(
+            derive_change_anchor(
+                &source,
+                "head1",
+                Some("base1"),
+                Some("dup"),
+                Some("src/lib.rs"),
+                None
+            ),
+            Err(Error::QuoteAmbiguous { .. })
+        ));
+        // ...and the 2nd occurrence records the line it really sits on.
+        let anchor = derive_change_anchor(
+            &source,
+            "head1",
+            Some("base1"),
+            Some("dup"),
+            Some("src/lib.rs"),
+            Some(2),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            anchor,
+            Anchor::FileQuote {
+                path: "src/lib.rs".to_string(),
+                quote: "dup".to_string(),
+                occurrence: 2,
+                start_line: 2,
+                end_line: 2,
+            }
+        );
+    }
+
+    #[test]
+    fn derive_change_anchor_rejects_a_non_relative_path() {
+        let source = anchor_repo();
+        assert!(
+            derive_change_anchor(
+                &source,
+                "head1",
+                Some("base1"),
+                Some("fn touched"),
+                Some("../escape.rs"),
+                None
+            )
+            .is_err()
+        );
+    }
+
+    /// The anchor a derivation produces must be the one resolution accepts:
+    /// derive at head, resolve against a tip that still carries the quote.
+    #[test]
+    fn a_derived_anchor_round_trips_through_resolution() {
+        let source = anchor_repo().with_file(
+            "tip",
+            "src/lib.rs",
+            "fn untouched() {}\nfn touched() {} // extended\n",
+        );
+        let anchor = derive_change_anchor(
+            &source,
+            "head1",
+            Some("base1"),
+            Some("fn touched"),
+            Some("src/lib.rs"),
+            None,
+        )
+        .unwrap();
+        let review = review_with(anchor);
+        let resolved = resolve_change_comments(&source, &review, "tip");
+        assert!(matches!(
+            resolved[0].resolution,
+            Resolution::Original { drifted: false, .. }
+        ));
     }
 }
