@@ -11,8 +11,8 @@
 #      other criterion can pass while `apply_done_directives` still sweeps
 #   D  every commit primitive call site is on an explicit allowlist
 #   E  `rdm init --remote` lands its config commit, a legacy repo gains no
-#      rdm-authored dirt and its stale merge-driver config section is swept,
-#      and a server mutation is attributable
+#      rdm-authored dirt and its `.git/config` is left byte-identical, and a
+#      server mutation is attributable
 #   F  a commit contains exactly its own changeset's authored paths; an
 #      INDEX.md inherited from the seed is rewritten by neither a mutation's
 #      commit nor its disk write
