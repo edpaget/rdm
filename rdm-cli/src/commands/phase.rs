@@ -280,17 +280,32 @@ pub fn run(
             });
             let next_stem = pos.and_then(|i| phases.get(i + 1).map(|(s, _)| s.as_str()));
 
+            // Implementation plans implementing this phase. Note that under
+            // `--at <sha>` only the *body* is historical — the plan list
+            // always reflects current state, matching `Revision:` semantics.
+            let plans = rdm_core::ops::plan::plans_implementing(
+                store,
+                &project,
+                &rdm_core::link::ItemRef::Phase {
+                    roadmap: roadmap.clone(),
+                    stem: stem.clone(),
+                },
+            )
+            .context("failed to list plans implementing this phase")?;
+
             let revision = at.as_deref();
             match format {
                 OutputFormat::Human => {
-                    let mut out = display::format_phase_detail(&stem, &doc, revision);
+                    let mut out =
+                        display::format_phase_detail_with_plans(&stem, &doc, revision, &plans);
                     out.push_str(&phase_nav_footer(
                         prev_stem, next_stem, &roadmap, &project, false,
                     ));
                     print!("{out}");
                 }
                 OutputFormat::Markdown => {
-                    let mut out = display::format_phase_detail_md(&stem, &doc, revision);
+                    let mut out =
+                        display::format_phase_detail_md_with_plans(&stem, &doc, revision, &plans);
                     out.push_str(&phase_nav_footer(
                         prev_stem, next_stem, &roadmap, &project, true,
                     ));
@@ -298,7 +313,13 @@ pub fn run(
                 }
                 OutputFormat::Json => {
                     let j =
-                        json::phase_to_json(&stem, &doc, &roadmap, prev_stem, next_stem, revision);
+                        json::phase_to_json(&stem, &doc, &roadmap, prev_stem, next_stem, revision)
+                            .with_plans(
+                                plans
+                                    .iter()
+                                    .map(|(s, d)| json::plan_ref_to_json(s, d))
+                                    .collect(),
+                            );
                     let mut j = serde_json::to_value(j)?;
                     if !no_body && at.is_none() {
                         j["estimate_snapshot"] = serde_json::Value::String(

@@ -10,8 +10,9 @@ use crate::anchor::{Resolution, ResolvedComment};
 use crate::document::Document;
 use crate::link::{BacklinkEntry, DocRef, Resolved};
 use crate::model::{
-    Anchor, CommentDoc, Difficulty, ModelTier, Phase, PhaseStatus, Priority, Project, Review,
-    ReviewCommentStatus, ReviewState, ReviewTarget, Roadmap, Task, TaskStatus, Verdict,
+    Anchor, CommentDoc, Difficulty, ModelTier, Phase, PhaseStatus, Plan, PlanStatus, Priority,
+    Project, Review, ReviewCommentStatus, ReviewState, ReviewTarget, Roadmap, Task, TaskStatus,
+    Verdict,
 };
 use crate::search::{ItemKind, SearchResult};
 
@@ -88,8 +89,26 @@ pub struct PhaseJson {
     /// Stem of the next phase, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_phase: Option<String>,
+    /// Implementation plans that implement this phase. Omitted entirely when
+    /// empty, so a phase with no plan serializes exactly as it did before
+    /// plans existed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plans: Vec<PlanRefJson>,
     /// Markdown body content.
     pub body: String,
+}
+
+impl PhaseJson {
+    /// Attaches the plans implementing this phase.
+    ///
+    /// A builder rather than a `phase_to_json` parameter so every existing
+    /// caller stays untouched and the common no-plan case keeps the exact
+    /// bytes it had.
+    #[must_use]
+    pub fn with_plans(mut self, plans: Vec<PlanRefJson>) -> Self {
+        self.plans = plans;
+        self
+    }
 }
 
 /// Full task detail with body.
@@ -119,12 +138,105 @@ pub struct TaskJson {
     /// Reason the task was closed (a retire/supersede note), if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_reason: Option<String>,
+    /// Implementation plans that implement this task. Omitted entirely when
+    /// empty, so a task with no plan serializes exactly as it did before
+    /// plans existed.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub plans: Vec<PlanRefJson>,
     /// Markdown body content.
     pub body: String,
     /// Git revision the body was read from (only set when this view was
     /// requested at a specific historical SHA).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revision: Option<String>,
+}
+
+impl TaskJson {
+    /// Attaches the plans implementing this task.
+    ///
+    /// A builder rather than a `task_to_json` parameter so every existing
+    /// caller stays untouched and the common no-plan case keeps the exact
+    /// bytes it had.
+    #[must_use]
+    pub fn with_plans(mut self, plans: Vec<PlanRefJson>) -> Self {
+        self.plans = plans;
+        self
+    }
+}
+
+/// Full implementation-plan detail with body and the reviews on it.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanJson {
+    /// Plan slug.
+    pub slug: String,
+    /// Project the plan belongs to.
+    pub project: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Current status (derived from reviews).
+    pub status: PlanStatus,
+    /// The phase or task this plan implements, as the canonical `rdm:` URI.
+    pub implements: String,
+    /// The earlier plan this one replaces, as the canonical `rdm:` URI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+    /// Creation date.
+    pub created: NaiveDate,
+    /// Last-modified date.
+    pub updated: NaiveDate,
+    /// Markdown body content.
+    pub body: String,
+    /// Reviews targeting this plan, in id order. Omitted when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub reviews: Vec<PlanReviewRefJson>,
+}
+
+/// Plan summary for list output (no body, no reviews).
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanSummaryJson {
+    /// Plan slug.
+    pub slug: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Current status.
+    pub status: PlanStatus,
+    /// The phase or task this plan implements, as the canonical `rdm:` URI.
+    pub implements: String,
+    /// The earlier plan this one replaces, as the canonical `rdm:` URI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<String>,
+    /// Creation date.
+    pub created: NaiveDate,
+    /// Last-modified date.
+    pub updated: NaiveDate,
+}
+
+/// A back-reference to a plan, embedded in the phase or task it implements.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanRefJson {
+    /// Plan slug.
+    pub slug: String,
+    /// Human-readable title.
+    pub title: String,
+    /// Current status.
+    pub status: PlanStatus,
+}
+
+/// A back-reference to a review, embedded in the plan it targets.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanReviewRefJson {
+    /// Review id.
+    pub id: String,
+    /// Who authored the review.
+    pub author: String,
+    /// Lifecycle state.
+    pub state: ReviewState,
+    /// Verdict stamped on submit; absent on drafts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<Verdict>,
+    /// When the review was submitted; absent on drafts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submitted: Option<DateTime<Utc>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +427,7 @@ pub fn phase_to_json(
         roadmap: roadmap.to_string(),
         prev_phase: prev.map(String::from),
         next_phase: next.map(String::from),
+        plans: Vec::new(),
         body: doc.body.clone(),
     }
 }
@@ -336,6 +449,7 @@ pub fn task_to_json(slug: &str, doc: &Document<Task>, revision: Option<&str>) ->
         completed: fm.completed,
         commit: fm.commit.clone(),
         close_reason: fm.close_reason.clone(),
+        plans: Vec::new(),
         body: doc.body.clone(),
         revision: revision.map(String::from),
     }
@@ -388,6 +502,65 @@ pub fn task_summary_to_json(slug: &str, doc: &Document<Task>) -> TaskSummaryJson
         priority: fm.priority,
         created: fm.created,
         tags: fm.tags.clone(),
+    }
+}
+
+/// Build a [`PlanJson`] from a plan document, its slug, and the reviews
+/// targeting it.
+///
+/// `reviews` is what the caller already loaded (see
+/// [`crate::ops::reviews::filter_reviews`]); a pure mapper, like every other
+/// `*_to_json` here.
+pub fn plan_to_json(
+    slug: &str,
+    doc: &Document<Plan>,
+    reviews: &[(String, Document<Review>)],
+) -> PlanJson {
+    let fm = &doc.frontmatter;
+    PlanJson {
+        slug: slug.to_string(),
+        project: fm.project.clone(),
+        title: fm.title.clone(),
+        status: fm.status,
+        implements: format!("rdm:{}", fm.implements.label()),
+        supersedes: fm.supersedes.as_ref().map(|r| format!("rdm:{}", r.label())),
+        created: fm.created,
+        updated: fm.updated,
+        body: doc.body.clone(),
+        reviews: reviews
+            .iter()
+            .map(|(id, rd)| PlanReviewRefJson {
+                id: id.clone(),
+                author: rd.frontmatter.author.clone(),
+                state: rd.frontmatter.state,
+                verdict: rd.frontmatter.verdict,
+                submitted: rd.frontmatter.submitted,
+            })
+            .collect(),
+    }
+}
+
+/// Build a [`PlanSummaryJson`] from a plan document and its slug.
+pub fn plan_summary_to_json(slug: &str, doc: &Document<Plan>) -> PlanSummaryJson {
+    let fm = &doc.frontmatter;
+    PlanSummaryJson {
+        slug: slug.to_string(),
+        title: fm.title.clone(),
+        status: fm.status,
+        implements: format!("rdm:{}", fm.implements.label()),
+        supersedes: fm.supersedes.as_ref().map(|r| format!("rdm:{}", r.label())),
+        created: fm.created,
+        updated: fm.updated,
+    }
+}
+
+/// Build a [`PlanRefJson`] back-reference from a plan document and its slug,
+/// for embedding in the phase or task the plan implements.
+pub fn plan_ref_to_json(slug: &str, doc: &Document<Plan>) -> PlanRefJson {
+    PlanRefJson {
+        slug: slug.to_string(),
+        title: doc.frontmatter.title.clone(),
+        status: doc.frontmatter.status,
     }
 }
 

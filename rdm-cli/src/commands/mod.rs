@@ -28,6 +28,7 @@ pub mod list;
 pub mod model;
 pub mod next;
 pub mod phase;
+pub mod plan;
 pub mod project;
 pub mod promote;
 pub mod roadmap;

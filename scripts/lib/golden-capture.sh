@@ -21,8 +21,11 @@
 #       review (author fixed to "fixture-bot", matching the fixture's own
 #       GIT_AUTHOR_NAME/EMAIL convention, so the review's `author` field is
 #       deterministic across machines without needing its own redaction
-#       rule) on task/fixture-task-open and one worktree on the same task,
-#       then runs the 20-command JSON-contract inventory (see GOLDEN_NAMES
+#       rule) on task/fixture-task-open, one worktree on the same task, and
+#       one implementation plan implementing it (seeded HERE, not in the
+#       shared rdm-plan-fixture.sh, so only the golden lane changes and
+#       scripts/verify-plugin-loop.sh is unaffected),
+#       then runs the 23-command JSON-contract inventory (see GOLDEN_NAMES
 #       below) and writes each command's raw stdout verbatim to
 #       <out_dir>/<name>.json. On success, FIXTURE_ROOT/FIXTURE_PLAN/
 #       FIXTURE_PROJECT are left set (exactly like fixture_setup leaves
@@ -39,7 +42,7 @@
 #       can compute the raw and OS-canonicalized forms of the fixture's temp
 #       directory.
 #
-# The 20-command inventory (GOLDEN_NAMES, in capture order) and the reason
+# The 23-command inventory (GOLDEN_NAMES, in capture order) and the reason
 # each of these three commands is dropped instead of captured, per the
 # phase's own step-1 escape hatch:
 #   - `status`         (rdm-cli/src/commands/status.rs `run(root, fetch)`
@@ -73,13 +76,13 @@
 #       AND by run) -> `<REVIEW-ID>`. Scoped to the review-id shape so the
 #       small stable per-comment integer `id` field is never touched.
 
-# GOLDEN_NAMES — the 20 captured golden filenames (without the .json
+# GOLDEN_NAMES — the 23 captured golden filenames (without the .json
 # extension), in capture order. Single source of truth for both
 # capture-golden.sh and verify-golden-json.sh; only verify-golden-json.sh
 # reads it (golden_capture_all's own filenames above are literal), a
 # usage shellcheck cannot see across a source boundary.
 # shellcheck disable=SC2034
-GOLDEN_NAMES="info roadmap-list roadmap-show phase-list phase-show task-list task-show list search next tree describe tag-list backlog-report model-show review-list review-show review-requests worktree-list worktree-current"
+GOLDEN_NAMES="info roadmap-list roadmap-show phase-list phase-show task-list task-show list search next tree describe tag-list backlog-report model-show review-list review-show review-requests worktree-list worktree-current plan-create plan-show plan-list"
 
 # _golden_rdm <args...> — invoke the fixture-rooted rdm binary. Internal.
 _golden_rdm() {
@@ -161,7 +164,18 @@ golden_capture_all() {
         return 1
     fi
 
-    # --- Capture the 18 project-scoped / project-independent commands.
+    # --- Seed one implementation plan on the same task. Captured as
+    # plan-create.json (`plan create --format json` prints the created plan),
+    # so the create shape is frozen alongside show/list.
+    if ! _golden_rdm plan create fixture-plan --implements task/fixture-task-open --title "Fixture Plan" --body "## Approach
+
+Seeded plan body." --no-edit --project "$proj" --format json >"$_golden_out_dir/plan-create.json" 2>/dev/null; then
+        echo "golden_capture_all: 'rdm plan create' failed" >&2
+        fixture_teardown
+        return 1
+    fi
+
+    # --- Capture the 20 project-scoped / project-independent commands.
     _golden_capture_one info info --format json --project "$proj" || {
         fixture_teardown
         return 1
@@ -231,6 +245,14 @@ golden_capture_all() {
         return 1
     }
     _golden_capture_one review-requests review requests --format json --project "$proj" || {
+        fixture_teardown
+        return 1
+    }
+    _golden_capture_one plan-show plan show fixture-plan --format json --project "$proj" || {
+        fixture_teardown
+        return 1
+    }
+    _golden_capture_one plan-list plan list --format json --project "$proj" || {
         fixture_teardown
         return 1
     }
@@ -310,8 +332,8 @@ golden_redact() {
         # the closing quote immediately after the 10-digit date).
         sed -E -i.bak 's/"(created|submitted)": "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z"/"\1": "<DATETIME>"/g' "$f"
 
-        # (b) created/completed NaiveDate fields.
-        sed -E -i.bak 's/"(created|completed)": "[0-9]{4}-[0-9]{2}-[0-9]{2}"/"\1": "<DATE>"/g' "$f"
+        # (b) created/completed/updated NaiveDate fields.
+        sed -E -i.bak 's/"(created|completed|updated)": "[0-9]{4}-[0-9]{2}-[0-9]{2}"/"\1": "<DATE>"/g' "$f"
 
         # (c) commit-SHA-shaped fields.
         sed -E -i.bak 's/"(commit|applied_commit|created_commit|review_sha)": "[0-9a-f]{7,40}"/"\1": "<SHA>"/g' "$f"

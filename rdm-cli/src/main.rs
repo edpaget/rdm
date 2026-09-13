@@ -140,6 +140,11 @@ fn run() -> Result<()> {
             commands::task::run(command, &mut store, &repo_config, format)?;
         }
 
+        Command::Plan { command } => {
+            let mut store = commands::make_store(&root)?;
+            commands::plan::run(command, &mut store, &repo_config, format, cli.no_index)?;
+        }
+
         Command::Promote {
             task_slug,
             roadmap_slug,

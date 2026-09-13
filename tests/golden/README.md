@@ -9,15 +9,19 @@ glob CI already runs), so a change to rdm's JSON shape turns into a red test
 at the source instead of a silent contract break for anything consuming this
 CLI's `--format json` output (an editor plugin, a script, a REST client).
 
-## The 20 captured commands
+## The 23 captured commands
 
 Each command below is captured with `--format json` (or the bare form,
 noted) against a hermetic fixture plan repo built by
 `scripts/lib/rdm-plan-fixture.sh`, with one submitted `request-changes`
 review (authored by the fixed `fixture-bot` identity, matching the
 fixture's own `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` convention, so the
-`author` field is reproducible across machines without needing redaction)
-and one worktree seeded on top of the standard fixture seed. See
+`author` field is reproducible across machines without needing redaction),
+one worktree, and one implementation plan seeded on top of the standard
+fixture seed. The plan is seeded inside `golden_capture_all` rather than in
+the shared `scripts/lib/rdm-plan-fixture.sh`, so only the golden lane
+changes and `scripts/verify-plugin-loop.sh` (which drives the same fixture)
+is unaffected. See
 `scripts/lib/golden-capture.sh` for the exact invocation of each.
 
 | Golden file | Command |
@@ -42,6 +46,9 @@ and one worktree seeded on top of the standard fixture seed. See
 | `review-requests.json` | `rdm review requests --format json --project <proj>` |
 | `worktree-list.json` | `rdm worktree list --format json` (cwd-derived, no `--project`) |
 | `worktree-current.json` | `rdm worktree current --format json` (cwd-derived, run from inside the seeded worktree — from the bare code repo root it returns `null`) |
+| `plan-create.json` | `rdm plan create fixture-plan --implements task/fixture-task-open --format json --project <proj>` (the seeding call itself; `plan create --format json` prints the created plan) |
+| `plan-show.json` | `rdm plan show fixture-plan --format json --project <proj>` |
+| `plan-list.json` | `rdm plan list --format json --project <proj>` |
 
 ## Commands dropped instead of captured
 
@@ -69,8 +76,8 @@ machine or different ones — are byte-identical:
    `rdm worktree add/list/current` print the canonicalized form of the
    *same* directory — so both forms are redacted, longest-first) →
    `<TMPDIR>`.
-2. **`created`/`completed` NaiveDate fields** (roadmap/phase/task
-   frontmatter, `YYYY-MM-DD`) → `<DATE>`.
+2. **`created`/`completed`/`updated` NaiveDate fields** (roadmap/phase/task/
+   plan frontmatter, `YYYY-MM-DD`) → `<DATE>`.
 3. **Commit-SHA-shaped fields** (`commit`, `applied_commit`,
    `created_commit`, `review_sha`) → `<SHA>`.
 4. **Review `created`/`submitted` RFC3339 datetimes** — distinct from rule 2's

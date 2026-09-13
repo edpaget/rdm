@@ -8,5 +8,12 @@
   "tags": [
     "bug"
   ],
+  "plans": [
+    {
+      "slug": "fixture-plan",
+      "title": "Fixture Plan",
+      "status": "draft"
+    }
+  ],
   "body": "An open task tagged bug.\n"
 }

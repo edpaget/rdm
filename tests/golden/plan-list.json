@@ -1,0 +1,10 @@
+[
+  {
+    "slug": "fixture-plan",
+    "title": "Fixture Plan",
+    "status": "draft",
+    "implements": "rdm:task/fixture-task-open",
+    "created": "<DATE>",
+    "updated": "<DATE>"
+  }
+]

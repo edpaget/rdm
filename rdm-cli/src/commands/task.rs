@@ -62,16 +62,33 @@ pub fn run(
             if no_body {
                 doc.body = String::new();
             }
+            // Implementation plans implementing this task. Under `--at <sha>`
+            // only the *body* is historical — the plan list always reflects
+            // current state, matching `Revision:` semantics.
+            let plans = rdm_core::ops::plan::plans_implementing(
+                store,
+                &project,
+                &rdm_core::link::ItemRef::Task { slug: slug.clone() },
+            )
+            .context("failed to list plans implementing this task")?;
+
             let revision = at.as_deref();
             match format {
-                OutputFormat::Human => {
-                    print!("{}", display::format_task_detail(&slug, &doc, revision))
-                }
-                OutputFormat::Markdown => {
-                    print!("{}", display::format_task_detail_md(&slug, &doc, revision))
-                }
+                OutputFormat::Human => print!(
+                    "{}",
+                    display::format_task_detail_with_plans(&slug, &doc, revision, &plans)
+                ),
+                OutputFormat::Markdown => print!(
+                    "{}",
+                    display::format_task_detail_md_with_plans(&slug, &doc, revision, &plans)
+                ),
                 OutputFormat::Json => {
-                    let j = json::task_to_json(&slug, &doc, revision);
+                    let j = json::task_to_json(&slug, &doc, revision).with_plans(
+                        plans
+                            .iter()
+                            .map(|(s, d)| json::plan_ref_to_json(s, d))
+                            .collect(),
+                    );
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&j).context("failed to serialize task")?

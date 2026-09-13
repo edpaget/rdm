@@ -2,7 +2,7 @@ use rdm_core::display::RoadmapWithPhases;
 use rdm_core::document::Document;
 #[cfg(feature = "git")]
 use rdm_core::model::Review;
-use rdm_core::model::{Phase, Task};
+use rdm_core::model::{Phase, Plan, Task};
 use rdm_core::search::SearchResult;
 use tabled::builder::Builder;
 use tabled::settings::peaker::Priority;
@@ -104,6 +104,26 @@ pub fn format_task_table(tasks: &[(String, Document<Task>)]) -> String {
         headers.push("Tags");
     }
     build_table_dyn(headers, rows)
+}
+
+/// Renders implementation plans as a table.
+pub fn format_plan_table(plans: &[(String, Document<Plan>)]) -> String {
+    if plans.is_empty() {
+        return "No plans found.\n".to_string();
+    }
+    let rows = plans
+        .iter()
+        .map(|(slug, doc)| {
+            let fm = &doc.frontmatter;
+            vec![
+                slug.clone(),
+                fm.title.clone(),
+                fm.status.to_string(),
+                format!("rdm:{}", fm.implements.label()),
+            ]
+        })
+        .collect();
+    build_table_dyn(vec!["Slug", "Title", "Status", "Implements"], rows)
 }
 
 #[cfg(feature = "git")]

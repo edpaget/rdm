@@ -9,7 +9,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use rdm_core::model::{
-    Difficulty, ModelTier, PhaseStatus, Priority, RoadmapSort, TaskStatus, TaskStatusFilter,
+    Difficulty, ModelTier, PhaseStatus, PlanStatus, Priority, RoadmapSort, TaskStatus,
+    TaskStatusFilter,
 };
 #[cfg(feature = "git")]
 use rdm_core::model::{ReviewCommentStatus, ReviewState, Verdict};
@@ -111,6 +112,11 @@ pub(crate) enum Command {
     Task {
         #[command(subcommand)]
         command: TaskCommand,
+    },
+    /// Manage implementation plans.
+    Plan {
+        #[command(subcommand)]
+        command: PlanCommand,
     },
     /// Promote a task to a new roadmap, or consolidate it into an existing one.
     Promote {
@@ -782,6 +788,96 @@ pub(crate) enum PhaseCommand {
         /// Project the roadmap belongs to.
         #[arg(long)]
         project: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PlanCommand {
+    /// Create a new implementation plan.
+    Create {
+        /// Plan slug.
+        slug: String,
+        /// Human-readable title.
+        #[arg(long)]
+        title: Option<String>,
+        /// The phase or task this plan implements:
+        /// `phase/<roadmap>/<stem-or-number>` or `task/<slug>`.
+        #[arg(long)]
+        implements: String,
+        /// An earlier plan this one replaces (`plan/<slug>`). Creating this
+        /// plan marks the named one `superseded`.
+        #[arg(long)]
+        supersedes: Option<String>,
+        /// Project to create the plan in.
+        #[arg(long)]
+        project: Option<String>,
+        /// Body content for the plan. Accepts any text verbatim (backticks,
+        /// em-dashes, other Unicode/punctuation included) and always takes
+        /// precedence over stdin — stdin is never read once this is set.
+        #[arg(long)]
+        body: Option<String>,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+    },
+    /// Show a plan, with the reviews targeting it.
+    Show {
+        /// Plan slug.
+        slug: String,
+        /// Project the plan belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Suppress body content in output.
+        #[arg(long)]
+        no_body: bool,
+    },
+    /// List plans.
+    List {
+        /// Project to list plans for.
+        #[arg(long)]
+        project: Option<String>,
+        /// Only plans implementing this phase or task
+        /// (`phase/<roadmap>/<stem-or-number>` or `task/<slug>`).
+        #[arg(long)]
+        implements: Option<String>,
+        /// Filter by status (draft, approved, changes-requested, superseded).
+        #[arg(long)]
+        status: Option<PlanStatus>,
+    },
+    /// Update a plan's title and/or body.
+    ///
+    /// A plan's status is derived from reviews (`rdm review submit --verdict`)
+    /// and from a later plan's `--supersedes`, so there is no `--status` flag.
+    Update {
+        /// Plan slug.
+        slug: String,
+        /// Project the plan belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// New title (renames the plan in place; the slug is unchanged).
+        #[arg(long)]
+        title: Option<String>,
+        /// Body content for the plan. Accepts any text verbatim and always
+        /// takes precedence over stdin — `update` never reads stdin at all.
+        #[arg(long, conflicts_with = "clear_body")]
+        body: Option<String>,
+        /// Clear an existing body (replace it with an empty string).
+        #[arg(long, conflicts_with = "body")]
+        clear_body: bool,
+        /// Suppress interactive editor for body content.
+        #[arg(long)]
+        no_edit: bool,
+    },
+    /// Delete a plan.
+    Delete {
+        /// Plan slug to delete.
+        slug: String,
+        /// Project the plan belongs to.
+        #[arg(long)]
+        project: Option<String>,
+        /// Confirm deletion (required).
+        #[arg(long)]
+        force: bool,
     },
 }
 

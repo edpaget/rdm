@@ -9,7 +9,7 @@ use crate::anchor::{Resolution, ResolvedComment};
 use crate::ast;
 use crate::display::truncate_snippet;
 use crate::document::Document;
-use crate::model::{Phase, Review, Roadmap, Task};
+use crate::model::{Phase, Plan, Review, Roadmap, Task};
 use crate::search::SearchResult;
 
 /// A roadmap document paired with its phases (stem + phase document).
@@ -185,6 +185,7 @@ fn build_phase_detail(
     stem: &str,
     doc: &Document<Phase>,
     revision: Option<&str>,
+    plans: &[(String, Document<Plan>)],
     flavor: RenderFlavor,
 ) -> ast::Document {
     let fm = &doc.frontmatter;
@@ -217,6 +218,9 @@ fn build_phase_detail(
             if let Some(tags) = &fm.tags {
                 items.push(meta_bullet("Tags", &tags.join(", ")));
             }
+            if let Some(label) = plans_label(plans) {
+                items.push(meta_bullet("Plans", &label));
+            }
             d.push(ast::Block::UnorderedList { items });
         }
         RenderFlavor::Terminal => {
@@ -243,6 +247,9 @@ fn build_phase_detail(
             if let Some(tags) = &fm.tags {
                 d.paragraph(&format!("Tags: {}", tags.join(", ")));
             }
+            if let Some(label) = plans_label(plans) {
+                d.paragraph(&format!("Plans: {label}"));
+            }
         }
     }
 
@@ -254,12 +261,44 @@ fn build_phase_detail(
     d
 }
 
+/// Renders a `Plans:` metadata value — `slug (status)`, comma-joined — or
+/// `None` when nothing implements the item, so the line is omitted entirely
+/// rather than rendered empty.
+fn plans_label(plans: &[(String, Document<Plan>)]) -> Option<String> {
+    if plans.is_empty() {
+        return None;
+    }
+    Some(
+        plans
+            .iter()
+            .map(|(slug, d)| format!("{slug} ({})", d.frontmatter.status))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
 /// Formats a single phase detail view.
 ///
 /// When `revision` is `Some`, a `Revision: <sha>` line is rendered near
 /// the top of the output to signal a historical view.
 pub fn format_phase_detail(stem: &str, doc: &Document<Phase>, revision: Option<&str>) -> String {
-    build_phase_detail(stem, doc, revision, RenderFlavor::Terminal).to_string()
+    build_phase_detail(stem, doc, revision, &[], RenderFlavor::Terminal).to_string()
+}
+
+/// [`format_phase_detail`] with the implementation plans that implement this
+/// phase rendered as a `Plans:` metadata line.
+///
+/// The plan list always reflects **current** state, even under a historical
+/// `revision` — only the body is read at a past SHA, matching the existing
+/// `Revision:` semantics.
+#[must_use]
+pub fn format_phase_detail_with_plans(
+    stem: &str,
+    doc: &Document<Phase>,
+    revision: Option<&str>,
+    plans: &[(String, Document<Plan>)],
+) -> String {
+    build_phase_detail(stem, doc, revision, plans, RenderFlavor::Terminal).to_string()
 }
 
 /// Formats a single phase detail as Markdown with heading, bullet metadata, and body.
@@ -268,7 +307,19 @@ pub fn format_phase_detail(stem: &str, doc: &Document<Phase>, revision: Option<&
 /// near the top of the output to signal a historical view.
 #[must_use]
 pub fn format_phase_detail_md(stem: &str, doc: &Document<Phase>, revision: Option<&str>) -> String {
-    build_phase_detail(stem, doc, revision, RenderFlavor::Markdown).to_string()
+    build_phase_detail(stem, doc, revision, &[], RenderFlavor::Markdown).to_string()
+}
+
+/// [`format_phase_detail_md`] with a `- **Plans:**` bullet. See
+/// [`format_phase_detail_with_plans`] for the current-state caveat.
+#[must_use]
+pub fn format_phase_detail_md_with_plans(
+    stem: &str,
+    doc: &Document<Phase>,
+    revision: Option<&str>,
+    plans: &[(String, Document<Plan>)],
+) -> String {
+    build_phase_detail(stem, doc, revision, plans, RenderFlavor::Markdown).to_string()
 }
 
 /// Builds a phase list document (table of number, title, status, stem).
@@ -450,6 +501,7 @@ fn build_task_detail(
     slug: &str,
     doc: &Document<Task>,
     revision: Option<&str>,
+    plans: &[(String, Document<Plan>)],
     flavor: RenderFlavor,
 ) -> ast::Document {
     let fm = &doc.frontmatter;
@@ -478,6 +530,9 @@ fn build_task_detail(
             if let Some(tags) = &fm.tags {
                 items.push(meta_bullet("Tags", &tags.join(", ")));
             }
+            if let Some(label) = plans_label(plans) {
+                items.push(meta_bullet("Plans", &label));
+            }
             d.push(ast::Block::UnorderedList { items });
         }
         RenderFlavor::Terminal => {
@@ -500,6 +555,9 @@ fn build_task_detail(
             if let Some(tags) = &fm.tags {
                 d.paragraph(&format!("Tags: {}", tags.join(", ")));
             }
+            if let Some(label) = plans_label(plans) {
+                d.paragraph(&format!("Plans: {label}"));
+            }
         }
     }
 
@@ -516,7 +574,22 @@ fn build_task_detail(
 /// When `revision` is `Some`, a `Revision: <sha>` line is rendered near
 /// the top of the output to signal a historical view.
 pub fn format_task_detail(slug: &str, doc: &Document<Task>, revision: Option<&str>) -> String {
-    build_task_detail(slug, doc, revision, RenderFlavor::Terminal).to_string()
+    build_task_detail(slug, doc, revision, &[], RenderFlavor::Terminal).to_string()
+}
+
+/// [`format_task_detail`] with the implementation plans that implement this
+/// task rendered as a `Plans:` metadata line.
+///
+/// The plan list always reflects **current** state, even under a historical
+/// `revision` — only the body is read at a past SHA.
+#[must_use]
+pub fn format_task_detail_with_plans(
+    slug: &str,
+    doc: &Document<Task>,
+    revision: Option<&str>,
+    plans: &[(String, Document<Plan>)],
+) -> String {
+    build_task_detail(slug, doc, revision, plans, RenderFlavor::Terminal).to_string()
 }
 
 /// Formats a single task detail as Markdown with heading, bullet metadata, and body.
@@ -525,7 +598,19 @@ pub fn format_task_detail(slug: &str, doc: &Document<Task>, revision: Option<&st
 /// near the top of the output to signal a historical view.
 #[must_use]
 pub fn format_task_detail_md(slug: &str, doc: &Document<Task>, revision: Option<&str>) -> String {
-    build_task_detail(slug, doc, revision, RenderFlavor::Markdown).to_string()
+    build_task_detail(slug, doc, revision, &[], RenderFlavor::Markdown).to_string()
+}
+
+/// [`format_task_detail_md`] with a `- **Plans:**` bullet. See
+/// [`format_task_detail_with_plans`] for the current-state caveat.
+#[must_use]
+pub fn format_task_detail_md_with_plans(
+    slug: &str,
+    doc: &Document<Task>,
+    revision: Option<&str>,
+    plans: &[(String, Document<Plan>)],
+) -> String {
+    build_task_detail(slug, doc, revision, plans, RenderFlavor::Markdown).to_string()
 }
 
 /// Builds a task list document (table of slug, title, status, priority).
@@ -582,6 +667,148 @@ pub fn format_task_list(tasks: &[(String, Document<Task>)]) -> String {
 #[must_use]
 pub fn format_task_list_md(tasks: &[(String, Document<Task>)]) -> String {
     build_task_list(tasks, RenderFlavor::Markdown).to_string()
+}
+
+/// Builds a single plan detail document.
+///
+/// `reviews` is the list of reviews targeting the plan, rendered as a
+/// `Reviews:` metadata line (omitted when empty).
+fn build_plan_detail(
+    slug: &str,
+    doc: &Document<Plan>,
+    reviews: &[(String, Document<Review>)],
+    flavor: RenderFlavor,
+) -> ast::Document {
+    let fm = &doc.frontmatter;
+    let mut d = ast::Document::new();
+    d.heading(1, &fm.title);
+    d.push(ast::Block::BlankLine);
+
+    let implements = format!("rdm:{}", fm.implements.label());
+    let supersedes = fm.supersedes.as_ref().map(|r| format!("rdm:{}", r.label()));
+    let reviews_label = reviews_label(reviews);
+
+    match flavor {
+        RenderFlavor::Markdown => {
+            let mut items = vec![
+                meta_bullet("Slug", slug),
+                meta_bullet("Status", &fm.status.to_string()),
+                meta_bullet("Implements", &implements),
+            ];
+            if let Some(sup) = &supersedes {
+                items.push(meta_bullet("Supersedes", sup));
+            }
+            items.push(meta_bullet("Created", &fm.created.to_string()));
+            items.push(meta_bullet("Updated", &fm.updated.to_string()));
+            if let Some(label) = &reviews_label {
+                items.push(meta_bullet("Reviews", label));
+            }
+            d.push(ast::Block::UnorderedList { items });
+        }
+        RenderFlavor::Terminal => {
+            d.paragraph(&format!("Slug: {slug}"));
+            d.paragraph(&format!("Status: {}", fm.status));
+            d.paragraph(&format!("Implements: {implements}"));
+            if let Some(sup) = &supersedes {
+                d.paragraph(&format!("Supersedes: {sup}"));
+            }
+            d.paragraph(&format!("Created: {}", fm.created));
+            d.paragraph(&format!("Updated: {}", fm.updated));
+            if let Some(label) = &reviews_label {
+                d.paragraph(&format!("Reviews: {label}"));
+            }
+        }
+    }
+
+    if !doc.body.is_empty() {
+        d.push(ast::Block::BlankLine);
+        d.raw(&doc.body);
+    }
+
+    d
+}
+
+/// Renders a `Reviews:` metadata value — `id (state[/verdict])`, comma-joined
+/// — or `None` when the plan has no reviews.
+fn reviews_label(reviews: &[(String, Document<Review>)]) -> Option<String> {
+    if reviews.is_empty() {
+        return None;
+    }
+    Some(
+        reviews
+            .iter()
+            .map(|(id, rd)| match rd.frontmatter.verdict {
+                Some(v) => format!("{id} ({}/{v})", rd.frontmatter.state),
+                None => format!("{id} ({})", rd.frontmatter.state),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
+/// Formats a single plan detail view.
+#[must_use]
+pub fn format_plan_detail(
+    slug: &str,
+    doc: &Document<Plan>,
+    reviews: &[(String, Document<Review>)],
+) -> String {
+    build_plan_detail(slug, doc, reviews, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a single plan detail as Markdown with heading, bullet metadata,
+/// and body.
+#[must_use]
+pub fn format_plan_detail_md(
+    slug: &str,
+    doc: &Document<Plan>,
+    reviews: &[(String, Document<Review>)],
+) -> String {
+    build_plan_detail(slug, doc, reviews, RenderFlavor::Markdown).to_string()
+}
+
+/// Builds a plan list document (table of slug, title, status, implements).
+fn build_plan_list(plans: &[(String, Document<Plan>)], flavor: RenderFlavor) -> ast::Document {
+    let mut d = ast::Document::new();
+    if plans.is_empty() {
+        d.paragraph("No plans found.");
+        return d;
+    }
+    if flavor == RenderFlavor::Markdown {
+        d.heading(2, "Plans");
+        d.push(ast::Block::BlankLine);
+    }
+    let rows = plans
+        .iter()
+        .map(|(slug, pd)| {
+            let fm = &pd.frontmatter;
+            vec![
+                vec![ast::Inline::Text(slug.clone())],
+                vec![ast::Inline::Text(fm.title.clone())],
+                vec![ast::Inline::Text(fm.status.to_string())],
+                vec![ast::Inline::Text(format!("rdm:{}", fm.implements.label()))],
+            ]
+        })
+        .collect();
+    d.push(ast::Block::Table {
+        headers: header_cells(&["Slug", "Title", "Status", "Implements"]),
+        rows,
+        aligns: vec![],
+    });
+    d
+}
+
+/// Formats a list of plans as a table with slug, title, status, and
+/// implements columns.
+#[must_use]
+pub fn format_plan_list(plans: &[(String, Document<Plan>)]) -> String {
+    build_plan_list(plans, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a list of plans as a Markdown table under a `## Plans` heading.
+#[must_use]
+pub fn format_plan_list_md(plans: &[(String, Document<Plan>)]) -> String {
+    build_plan_list(plans, RenderFlavor::Markdown).to_string()
 }
 
 /// Formats a dependency graph as a human-readable list.

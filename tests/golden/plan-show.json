@@ -1,0 +1,10 @@
+{
+  "slug": "fixture-plan",
+  "project": "fixture-proj",
+  "title": "Fixture Plan",
+  "status": "draft",
+  "implements": "rdm:task/fixture-task-open",
+  "created": "<DATE>",
+  "updated": "<DATE>",
+  "body": "## Approach\n\nSeeded plan body.\n"
+}
