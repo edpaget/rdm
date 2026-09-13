@@ -895,6 +895,10 @@ rdm_plan commit -m "chore(plan): seed rm roadmap with 2 in-progress phases" >/de
 pass "seeded roadmap rm with phase-1-a/phase-2-b, both in-progress"
 
 say "2b. advance -> rdm phase update --status reviewed, confirmed by a read-back"
+# Stays green under the core-enforced `reviewed` gate: this hermetic plan repo
+# is seeded with no `gates.reviewed` key, and the gate ships default-OFF, so
+# `check_reviewed_gate` returns NotApplicable and the write is unconditional.
+# See docs/core-enforced-gates.md.
 rdm_plan phase update phase-1-a --status reviewed --no-edit --roadmap rm --project verify >/dev/null
 OUT_A=$(rdm_plan phase show phase-1-a --roadmap rm --project verify --format json --no-body)
 printf '%s' "$OUT_A" | grep -qF '"status": "reviewed"' || fail "phase-1-a expected status reviewed, got: $OUT_A"
@@ -1064,6 +1068,8 @@ rdm_plan phase create x --title "Phase X" --number 1 --body "Phase X." \
     --no-edit --roadmap rm2 --project verify >/dev/null
 # Exactly the state autopilot leaves behind: the phase advanced to `reviewed`,
 # the work committed on the roadmap branch, nothing landed.
+# Same as 2b: `gates.reviewed` is unset in this hermetic seed, so the
+# `reviewed` gate is NotApplicable here.
 rdm_plan phase update phase-1-x --status reviewed --no-edit --roadmap rm2 --project verify >/dev/null
 rdm_plan commit -m "chore(plan): seed rm2/phase-1-x as reviewed" >/dev/null
 pass "seeded hermetic plan repo: rm2/phase-1-x is reviewed"
@@ -1133,5 +1139,59 @@ if rdm_plan hook done-line --roadmap rm2 --phase phase-1-x --task t >/dev/null 2
     fail "rdm hook done-line must reject both --phase and --task together"
 fi
 pass "rdm hook done-line rejects malformed requests, so the lander aborts rather than amending an empty trailer"
+
+# --- 5. --override-gate IS FOR HUMANS ONLY ------------------------------------
+#
+# `--override-gate` bypasses the core `reviewed` transition gate's record
+# preconditions. It exists for an operator making a judgment call, and its whole
+# value is that the bypass is rare and audited. An autonomous loop that reached
+# for it would turn the gate into decoration — so assert, mechanically, that
+# neither the local autopilot skill nor the shipped template can ever emit it.
+#
+# Phase 6's orchestrator harness inherits this same check;
+# scripts/verify-workflow-dispatch.sh carries the sibling grep over the
+# dispatch-phase surfaces.
+say "5. --override-gate: neither the autopilot skill nor its shipped template emits it"
+
+OVERRIDE_SURFACES="$SKILL
+$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md
+$REPO_ROOT/rdm-core/src/templates/skill-autopilot-mcp.md"
+
+check_no_override() {
+    # $1: root under which the (relative-or-absolute) files live. Prints the
+    # offending file for any surface that mentions the flag.
+    for f in $OVERRIDE_SURFACES; do
+        rel=${f#"$REPO_ROOT"/}
+        target="$1/$rel"
+        [ -f "$target" ] || continue
+        if grep -qF -e '--override-gate' "$target"; then
+            printf '%s\n' "$rel"
+        fi
+    done
+}
+
+OFFENDERS=$(check_no_override "$REPO_ROOT")
+[ -z "$OFFENDERS" ] || fail "autopilot surface(s) emit --override-gate, which is operator-only:
+$OFFENDERS
+
+An autonomous loop must never bypass the reviewed gate. Park the item instead
+and let a human decide."
+pass "no autopilot surface emits --override-gate"
+
+# Self-test: plant the flag into a scratch copy and prove the check goes red.
+OG_SCRATCH="$TMP/override-scratch"
+mkdir -p "$OG_SCRATCH/.claude/skills/rdm-autopilot"
+cp "$SKILL" "$OG_SCRATCH/.claude/skills/rdm-autopilot/SKILL.md"
+printf '\nrdm phase update <stem> --status reviewed --override-gate "autopilot said so"\n' \
+    >>"$OG_SCRATCH/.claude/skills/rdm-autopilot/SKILL.md"
+PLANTED=$(check_no_override "$OG_SCRATCH")
+printf '%s' "$PLANTED" | grep -q 'rdm-autopilot/SKILL.md' ||
+    fail "self-test failed: a planted --override-gate is NOT caught, so section 5 proves nothing"
+pass "self-test: a planted --override-gate IS caught"
+
+# Heal: the real tree still passes (restated so both arms are explicit).
+[ -z "$(check_no_override "$REPO_ROOT")" ] ||
+    fail "self-test failed: the real, unmutated tree does not pass section 5"
+pass "self-test: the real, unmutated tree passes"
 
 say "verify-skill-autopilot.sh: ALL GREEN"

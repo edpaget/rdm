@@ -997,6 +997,95 @@ pub fn discover_distinct_project_repo(cwd: &Path, plan_root: &Path) -> Result<Pa
     Ok(repo)
 }
 
+/// The production [`WorktreeProbe`](rdm_core::worktree::WorktreeProbe): reports
+/// the rdm-managed worktree of the project repo at `repo_root` that
+/// corresponds to a plan item, and whether it is clean.
+///
+/// Worktrees are keyed per **roadmap**, shared by all of that roadmap's
+/// phases, so a phase resolves to its roadmap's worktree — with a per-phase
+/// worktree preferred when one actually exists, which is the shape
+/// `rdm worktree add <roadmap>/<phase>` produces. A sibling phase's
+/// uncommitted edit therefore blocks this phase's `reviewed` transition; that
+/// is deliberate (`docs/verify-gate.md` § 8), and the refusal names the dirty
+/// paths so an operator can tell instantly that the dirt was not theirs.
+#[derive(Debug, Clone)]
+pub struct GitWorktreeProbe {
+    repo_root: PathBuf,
+}
+
+impl GitWorktreeProbe {
+    /// Builds a probe over the project (code) repo rooted at `repo_root`.
+    #[must_use]
+    pub fn new(repo_root: PathBuf) -> Self {
+        Self { repo_root }
+    }
+
+    /// The canonical worktree item strings to look for, most specific first.
+    ///
+    /// A core [`ItemRef::Phase`](rdm_core::link::ItemRef::Phase) can be served
+    /// by either a per-phase worktree or its roadmap's shared one; the
+    /// per-phase entry wins when both exist.
+    fn candidates(item: &rdm_core::link::ItemRef) -> Vec<String> {
+        match item {
+            rdm_core::link::ItemRef::Phase { roadmap, stem } => vec![
+                ItemRef::Phase {
+                    roadmap: roadmap.clone(),
+                    stem: stem.clone(),
+                }
+                .canonical(),
+                ItemRef::Roadmap {
+                    roadmap: roadmap.clone(),
+                }
+                .canonical(),
+            ],
+            rdm_core::link::ItemRef::Task { slug } => {
+                vec![ItemRef::Task { slug: slug.clone() }.canonical()]
+            }
+            rdm_core::link::ItemRef::Roadmap { roadmap } => vec![
+                ItemRef::Roadmap {
+                    roadmap: roadmap.clone(),
+                }
+                .canonical(),
+            ],
+            // A plan or a change names no worktree of its own — the gate is
+            // only ever evaluated against a phase or a task.
+            rdm_core::link::ItemRef::Plan { .. } | rdm_core::link::ItemRef::Change { .. } => {
+                Vec::new()
+            }
+        }
+    }
+}
+
+impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
+    fn worktree_for(
+        &self,
+        item: &rdm_core::link::ItemRef,
+    ) -> rdm_core::error::Result<Option<rdm_core::worktree::WorktreeCheck>> {
+        let wanted = Self::candidates(item);
+        if wanted.is_empty() {
+            return Ok(None);
+        }
+        let entries =
+            list(&self.repo_root).map_err(|e| rdm_core::error::Error::Git(e.to_string()))?;
+        // Most specific candidate first, so a per-phase worktree beats the
+        // roadmap-wide one when both are registered.
+        for want in &wanted {
+            let Some(info) = entries.iter().find(|w| &w.item == want) else {
+                continue;
+            };
+            let porcelain = crate::status_porcelain_at(&info.path)
+                .map_err(|e| rdm_core::error::Error::Git(e.to_string()))?;
+            return Ok(Some(rdm_core::worktree::WorktreeCheck::from_porcelain(
+                &info.path.display().to_string(),
+                &porcelain,
+            )));
+        }
+        // rdm manages no worktree for this item — a benign miss, which the
+        // gate treats as "no worktree to check" rather than as a failure.
+        Ok(None)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

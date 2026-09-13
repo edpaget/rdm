@@ -287,6 +287,10 @@ rdm_plan commit -m "chore(plan): seed 3 in-progress tasks" >/dev/null
 pass "seeded t-reviewed/t-rework/t-escalated, all in-progress"
 
 say "3b. reviewed -> task update --status reviewed"
+# Stays green under the core-enforced `reviewed` transition gate: this
+# hermetic plan repo is seeded with no `gates.reviewed` key, and the gate ships
+# default-OFF, so `check_reviewed_gate` returns NotApplicable and the write is
+# unconditional. See docs/core-enforced-gates.md.
 rdm_plan task update t-reviewed --status reviewed --no-edit --project verify >/dev/null
 OUT_A=$(rdm_plan task show t-reviewed --project verify --format json --no-body)
 printf '%s' "$OUT_A" | grep -qF '"status": "reviewed"' ||

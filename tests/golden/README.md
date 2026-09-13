@@ -9,7 +9,7 @@ glob CI already runs), so a change to rdm's JSON shape turns into a red test
 at the source instead of a silent contract break for anything consuming this
 CLI's `--format json` output (an editor plugin, a script, a REST client).
 
-## The 23 captured commands
+## The 24 captured commands
 
 Each command below is captured with `--format json` (or the bare form,
 noted) against a hermetic fixture plan repo built by
@@ -49,6 +49,7 @@ is unaffected. See
 | `plan-create.json` | `rdm plan create fixture-plan --implements task/fixture-task-open --format json --project <proj>` (the seeding call itself; `plan create --format json` prints the created plan) |
 | `plan-show.json` | `rdm plan show fixture-plan --format json --project <proj>` |
 | `plan-list.json` | `rdm plan list --format json --project <proj>` |
+| `verify-resolve.json` | `rdm verify resolve --format json --project <proj>` |
 
 ## Commands dropped instead of captured
 

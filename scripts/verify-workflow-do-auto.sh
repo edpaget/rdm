@@ -262,6 +262,10 @@ rdm_plan commit -m "chore(plan): seed rm roadmap with 3 in-progress phases" >/de
 pass "seeded roadmap rm with phase-1-a/phase-2-b/phase-3-c, all in-progress"
 
 say "2b. reviewed -> phase update --status reviewed"
+# Stays green under the core-enforced `reviewed` transition gate: this
+# hermetic plan repo is seeded with no `gates.reviewed` key, and the gate ships
+# default-OFF, so `check_reviewed_gate` returns NotApplicable and the write is
+# unconditional. See docs/core-enforced-gates.md.
 rdm_plan phase update phase-1-a --status reviewed --no-edit --roadmap rm --project verify >/dev/null
 OUT_A=$(rdm_plan phase show phase-1-a --roadmap rm --project verify --format json --no-body)
 printf '%s' "$OUT_A" | grep -qF '"status": "reviewed"' || fail "phase-1-a expected status reviewed, got: $OUT_A"

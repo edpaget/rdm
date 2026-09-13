@@ -77,6 +77,12 @@ If you want ordering or parallelism, put it in the thing your one command invoke
 
 ## 4. The two layers, and why both exist
 
+> The status model these layers write into is settled: rdm adds no `planned` rung between
+> `in-progress` and `reviewed`. The decision and its evidence are recorded in
+> [`plan-review-gate-policy.md`](plan-review-gate-policy.md) § "The `planned` status
+> decision".
+
+
 Hard enforcement lives in two places, and they are **not** substitutes for each other.
 
 ### Commit-time: fast, mandatory, non-bypassable
@@ -241,8 +247,71 @@ Pre-existing dirt the dispatch did not create will now force `rework`. That is t
 direction — `reviewed` must mean landable — and the finding names the paths so an operator
 can tell instantly that the dirt was not the dispatch's.
 
+## 9. The CLI surface: `rdm verify`
+
+Two subcommands read the same `dispatch.verify` key from outside the dispatch pipeline.
+Both resolve it through the very accessor `rdm config get dispatch.verify --raw` uses, so
+the surfaces can never disagree about what is configured.
+
+```bash
+rdm verify resolve [--format json] [--project <p>]
+rdm verify run     [--item <ref>] [--format json] [--project <p>]
+```
+
+### `rdm verify resolve`
+
+Reports the configured command, or the literal `unresolved`. It is a **query** and always
+exits 0.
+
+```json
+{ "resolved": true,  "command": "bash scripts/ci.sh" }
+{ "resolved": false, "command": null }
+```
+
+### `rdm verify run`
+
+Runs the command via `sh -c` in the item's worktree (or the current directory when
+`--item` is omitted), merging stdout and stderr — a verification command's diagnosis
+routinely lands on stderr, and reading one stream would miss it.
+
+```json
+{ "resolved": true, "command": "bash scripts/ci.sh", "exit": 7, "tail": "…" }
+```
+
+`--item` takes the same grammar as `rdm worktree add`: `<roadmap>/<phase>`,
+`task/<slug>`, or a bare `<roadmap>`. An item with no worktree is an actionable error
+naming the `rdm worktree add` that would create one.
+
+It reuses § 6's failure semantics verbatim rather than restating them: the **last** 4000
+characters of merged output, and a multi-line value refused up front.
+
+### Exit-code contract
+
+| Situation | rdm's exit code | `resolved` |
+|---|---|---|
+| No command configured | `2` | `false` |
+| Command ran | the command's own exit code | `true` |
+| Command killed by a signal | `1` | `true`, with `"exit": null` |
+
+The signal case is fail-closed, mirroring `normalizeVerifyResult`: an unrunnable
+verification is never a pass.
+
+Note the one ambiguity, and key off the payload rather than the process: a command that
+*legitimately* exits 2 is indistinguishable by exit code from "unresolved". The
+`resolved` field is the contract; the exit code exists so `rdm verify run && …` composes
+in a shell.
+
+### Discovery is deliberately not here
+
+`rdm verify` implements resolution step 1 only. The discovery ladder of § 2 — CI config,
+`docs/principles.md`, `CLAUDE.md`/`AGENTS.md` — stays an **agent** step in the
+orchestrator, and its result is written into the plan document rather than into config.
+A guess must never silently become a project's durable verification contract.
+
 ## See also
 
+- [`core-enforced-gates.md`](core-enforced-gates.md) — the write-time `reviewed`
+  transition gate, which moves § 8's worktree-clean assertion into `rdm-core`.
 - [`workflow-schemas.md`](workflow-schemas.md) § "Verify gate" — the result schema and the
   `verify:run` label.
 - [`escalation-protocol.md`](escalation-protocol.md) — the budgets this gate reuses.

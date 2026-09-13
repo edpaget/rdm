@@ -133,12 +133,24 @@ fn run() -> Result<()> {
 
         Command::Phase { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::phase::run(command, &mut store, &repo_config, format)?;
+            commands::phase::run(
+                command,
+                &mut store,
+                &root,
+                &repo_config,
+                format,
+            )?;
         }
 
         Command::Task { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::task::run(command, &mut store, &repo_config, format)?;
+            commands::task::run(
+                command,
+                &mut store,
+                &root,
+                &repo_config,
+                format,
+            )?;
         }
 
         Command::Plan { command } => {
@@ -246,6 +258,11 @@ fn run() -> Result<()> {
         #[cfg(feature = "git")]
         Command::Worktree { command } => {
             commands::worktree::run(command, &root, &repo_config, format)?;
+        }
+
+        #[cfg(feature = "git")]
+        Command::Verify { command } => {
+            commands::verify::run(command, &root, &repo_config, format)?;
         }
 
         Command::Session { command } => {

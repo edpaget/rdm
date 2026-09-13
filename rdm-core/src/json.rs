@@ -10,9 +10,9 @@ use crate::anchor::{Resolution, ResolvedComment};
 use crate::document::Document;
 use crate::link::{BacklinkEntry, DocRef, Resolved};
 use crate::model::{
-    Anchor, CommentDoc, Difficulty, ModelTier, Phase, PhaseStatus, Plan, PlanStatus, Priority,
-    Project, Review, ReviewCommentStatus, ReviewState, ReviewTarget, Roadmap, Task, TaskStatus,
-    Verdict,
+    Anchor, CommentDoc, Difficulty, GateOverride, ModelTier, Phase, PhaseStatus, Plan, PlanStatus,
+    Priority, Project, Review, ReviewCommentStatus, ReviewState, ReviewTarget, Roadmap, Task,
+    TaskStatus, Verdict,
 };
 use crate::search::{ItemKind, SearchResult};
 
@@ -77,6 +77,11 @@ pub struct PhaseJson {
     /// Reason the phase was parked as `blocked` (an escalation note), if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<String>,
+    /// An operator's recorded bypass of the `reviewed` transition gate, if
+    /// one authorized this phase's current status. Omitted when absent, so a
+    /// never-overridden phase serializes exactly as it did before the gate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate_override: Option<GateOverride>,
     /// Git revision the body was read from (only set when this view was
     /// requested at a specific historical SHA).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -138,6 +143,10 @@ pub struct TaskJson {
     /// Reason the task was closed (a retire/supersede note), if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_reason: Option<String>,
+    /// An operator's recorded bypass of the `reviewed` transition gate, if
+    /// one authorized this task's current status. Omitted when absent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gate_override: Option<GateOverride>,
     /// Implementation plans that implement this task. Omitted entirely when
     /// empty, so a task with no plan serializes exactly as it did before
     /// plans existed.
@@ -485,6 +494,7 @@ pub fn phase_to_json(
         difficulty: fm.difficulty,
         model: fm.model,
         blocked_reason: fm.blocked_reason.clone(),
+        gate_override: fm.gate_override.clone(),
         revision: revision.map(String::from),
         roadmap: roadmap.to_string(),
         prev_phase: prev.map(String::from),
@@ -511,6 +521,7 @@ pub fn task_to_json(slug: &str, doc: &Document<Task>, revision: Option<&str>) ->
         completed: fm.completed,
         commit: fm.commit.clone(),
         close_reason: fm.close_reason.clone(),
+        gate_override: fm.gate_override.clone(),
         plans: Vec::new(),
         body: doc.body.clone(),
         revision: revision.map(String::from),
@@ -1195,6 +1206,7 @@ mod tests {
                 difficulty: None,
                 model: None,
                 blocked_reason: None,
+                gate_override: None,
             },
             body: String::new(),
         }
@@ -1229,6 +1241,7 @@ mod tests {
                 review_sha: None,
                 review_branch: None,
                 close_reason: None,
+                gate_override: None,
             },
             body: String::new(),
         }

@@ -359,7 +359,11 @@ Always pass `--no-edit` to prevent the CLI from opening an interactive editor (w
 ./target/debug/rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> --project rdm
 ./target/debug/rdm task update <slug> --status done --no-edit --project rdm
 ./target/debug/rdm commit -m "chore(plan): update status"  # land the batch
+./target/debug/rdm verify resolve --project rdm            # the configured dispatch.verify command, or `unresolved`
+./target/debug/rdm verify run --item <roadmap> --format json --project rdm  # run it in the item's worktree
 ```
+
+`--status reviewed` can be gated on real plan + change-review records and a clean worktree (repo-only `gates.reviewed`, default OFF, with an audited `--override-gate "<reason>"` for humans only) — canonical: [`docs/core-enforced-gates.md`](docs/core-enforced-gates.md).
 
 ### Document reviews
 

@@ -97,6 +97,7 @@ mod tests {
                 difficulty: None,
                 model: None,
                 blocked_reason: None,
+                gate_override: None,
             },
             body: "## Context\n\nDetails.\n".to_string(),
         };
@@ -122,6 +123,7 @@ mod tests {
                 difficulty: None,
                 model: None,
                 blocked_reason: None,
+                gate_override: None,
             },
             body: "Body text.\n".to_string(),
         };

@@ -410,6 +410,35 @@ pub fn change_reviews_for_plan(
     Ok(out)
 }
 
+/// Lists the `change/<sha>` reviews that **approve** the change implementing
+/// `plan/<slug>`, in review-id order.
+///
+/// [`change_reviews_for_plan`] narrowed to reviews carrying
+/// [`Verdict::Approve`](crate::model::Verdict::Approve) that have actually
+/// been submitted. A draft never carries a verdict, so the state filter only
+/// matters as belt-and-braces; an `addressed` or `dismissed` review that *was*
+/// submitted with `approve` still counts, because the approval happened.
+///
+/// This is the record precondition (b) of the `reviewed` transition gate —
+/// see [`crate::ops::gate::check_reviewed_gate`].
+///
+/// # Errors
+///
+/// Same as [`change_reviews_for_plan`].
+pub fn approving_change_reviews_for_plan(
+    store: &impl Store,
+    project: &str,
+    slug: &str,
+) -> Result<Vec<(String, Document<crate::model::Review>)>> {
+    Ok(change_reviews_for_plan(store, project, slug)?
+        .into_iter()
+        .filter(|(_, doc)| {
+            doc.frontmatter.verdict == Some(crate::model::Verdict::Approve)
+                && doc.frontmatter.state != crate::model::ReviewState::Draft
+        })
+        .collect())
+}
+
 /// Updates a plan's title and/or body, bumping its `updated` date.
 ///
 /// There is deliberately no status parameter: a plan's status is derived
@@ -555,6 +584,7 @@ mod tests {
                     difficulty: None,
                     model: None,
                     blocked_reason: None,
+                    gate_override: None,
                 },
                 body: String::new(),
             },
@@ -577,6 +607,7 @@ mod tests {
                     review_sha: None,
                     review_branch: None,
                     close_reason: None,
+                    gate_override: None,
                 },
                 body: String::new(),
             },

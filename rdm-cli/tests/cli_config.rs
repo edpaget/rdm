@@ -883,6 +883,71 @@ fn config_get_raw_prints_the_bare_value() {
 }
 
 #[test]
+fn gates_reviewed_round_trips_and_is_repo_only() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    // Repo scope: set, then read back both annotated and raw.
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "gates.reviewed", "true"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo config"));
+
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "gates.reviewed", "--raw"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("true\n"));
+
+    // A non-boolean value is rejected actionably.
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "gates.reviewed", "yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("use 'true' or 'false'"));
+
+    // Global scope: refused — whether a project enforces the gate is a
+    // property of the project, never of a user.
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "gates.reviewed", "true", "--global"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("repo config"));
+}
+
+#[test]
+fn gates_reviewed_is_unset_by_default() {
+    // The gate ships OFF. An unset key is what keeps every existing plan repo
+    // — and rdm's own harnesses — behaving exactly as before.
+    let (config_dir, _root_dir) = setup_repo();
+    rdm()
+        .env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "get", "gates.reviewed"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(not set)"));
+}
+
+#[test]
 fn config_get_raw_prints_nothing_when_unset() {
     let (config_dir, _root_dir) = setup_repo();
 

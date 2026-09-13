@@ -64,3 +64,7 @@ pub mod store;
 pub mod tags;
 /// Hierarchical tree view of plan repo contents.
 pub mod tree;
+/// The read-only worktree port the `reviewed` transition gate's cleanliness
+/// precondition reads through, plus a fail-closed `git status --porcelain`
+/// parser and an in-memory double for tests.
+pub mod worktree;

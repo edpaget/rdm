@@ -5,8 +5,10 @@ use chrono::Local;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus};
+use crate::ops::gate::{GateDecision, ReviewedGate, check_reviewed_gate};
 use crate::ops::update::{
-    BodyUpdate, DifficultyUpdate, ModelTierUpdate, ReasonUpdate, TagsUpdate, TitleUpdate,
+    BodyUpdate, DifficultyUpdate, GateOverrideUpdate, ModelTierUpdate, ReasonUpdate, TagsUpdate,
+    TitleUpdate,
 };
 use crate::store::{DirEntryKind, Store};
 
@@ -145,6 +147,7 @@ pub fn create_phase(store: &mut impl Store, req: CreatePhase<'_>) -> Result<Docu
             difficulty: None,
             model: None,
             blocked_reason: None,
+            gate_override: None,
         },
         body: body.unwrap_or_default().to_string(),
     };
@@ -211,6 +214,95 @@ pub fn update_phase(
     review_branch: Option<String>,
     title: TitleUpdate,
 ) -> Result<Document<Phase>> {
+    update_phase_inner(
+        store,
+        project,
+        roadmap,
+        phase_stem,
+        status,
+        tags,
+        body,
+        commit,
+        review_sha,
+        review_branch,
+        title,
+        GateOverrideUpdate::ClearOnLeavingReviewed,
+    )
+}
+
+/// [`update_phase`], refusing a transition to [`PhaseStatus::Reviewed`] unless
+/// the `reviewed` gate's preconditions hold.
+///
+/// This is the entry point every surface that can receive a *user-supplied*
+/// status uses. [`update_phase`] itself stays unchecked on purpose: the
+/// restamp path, the exit-0-contracted `Done:` hook path, and core's own
+/// consolidate/merge writes all write statuses that can never be `reviewed`,
+/// and must never acquire a gate failure mode. `scripts/verify-reviewed-gate.sh`
+/// is what keeps that ungated set from silently growing.
+///
+/// The gate is evaluated **before** the single load+write, so a refusal leaves
+/// the phase file untouched. Exactly one store write happens per call, whether
+/// the gate fires or not — a second write would journal the path twice and
+/// trip the store's content-digest optimistic-concurrency precondition
+/// (`docs/lost-update-evaluation.md`).
+///
+/// # Errors
+///
+/// Everything [`update_phase`] returns, plus — only when `status` is
+/// `Some(`[`PhaseStatus::Reviewed`]`)` and the gate is enforcing —
+/// [`Error::GateNoApprovedPlan`], [`Error::GateNoApprovedChangeReview`],
+/// [`Error::GateWorktreeDirty`], [`Error::GateWorktreeUnobservable`], and
+/// [`Error::GateOverrideEmptyReason`]. See
+/// [`check_reviewed_gate`](crate::ops::gate::check_reviewed_gate).
+#[allow(clippy::too_many_arguments)]
+pub fn update_phase_gated(
+    store: &mut impl Store,
+    project: &str,
+    roadmap: &str,
+    phase_stem: &str,
+    status: Option<PhaseStatus>,
+    tags: TagsUpdate,
+    body: BodyUpdate,
+    commit: Option<String>,
+    review_sha: Option<String>,
+    review_branch: Option<String>,
+    title: TitleUpdate,
+    gate: &ReviewedGate<'_>,
+) -> Result<Document<Phase>> {
+    let gate_override = resolve_phase_gate(store, project, roadmap, phase_stem, status, gate)?;
+    update_phase_inner(
+        store,
+        project,
+        roadmap,
+        phase_stem,
+        status,
+        tags,
+        body,
+        commit,
+        review_sha,
+        review_branch,
+        title,
+        gate_override,
+    )
+}
+
+/// The shared body of [`update_phase`] and [`update_phase_gated`]: exactly one
+/// load and one write.
+#[allow(clippy::too_many_arguments)]
+fn update_phase_inner(
+    store: &mut impl Store,
+    project: &str,
+    roadmap: &str,
+    phase_stem: &str,
+    status: Option<PhaseStatus>,
+    tags: TagsUpdate,
+    body: BodyUpdate,
+    commit: Option<String>,
+    review_sha: Option<String>,
+    review_branch: Option<String>,
+    title: TitleUpdate,
+    gate_override: GateOverrideUpdate,
+) -> Result<Document<Phase>> {
     let path = crate::paths::phase_path(project, roadmap, phase_stem);
     if !store.exists(&path) {
         return Err(Error::PhaseNotFound(phase_stem.to_string()));
@@ -226,9 +318,41 @@ pub fn update_phase(
         review_sha,
         review_branch,
         title,
+        gate_override,
     )?;
     crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
     Ok(doc)
+}
+
+/// Runs the `reviewed` gate for a phase write and maps the decision onto the
+/// [`GateOverrideUpdate`] the single write will apply.
+///
+/// Reborrows the store immutably (`&*store`) so the gate's plan/review reads
+/// observe the same staged state the write will land into.
+fn resolve_phase_gate(
+    store: &mut impl Store,
+    project: &str,
+    roadmap: &str,
+    phase_stem: &str,
+    status: Option<PhaseStatus>,
+    gate: &ReviewedGate<'_>,
+) -> Result<GateOverrideUpdate> {
+    if status != Some(PhaseStatus::Reviewed) {
+        return Ok(GateOverrideUpdate::ClearOnLeavingReviewed);
+    }
+    let item = crate::link::ItemRef::Phase {
+        roadmap: roadmap.to_string(),
+        stem: phase_stem.to_string(),
+    };
+    Ok(match check_reviewed_gate(&*store, project, &item, gate)? {
+        GateDecision::Overridden(o) => GateOverrideUpdate::Set(o),
+        // A satisfied gate drops any override the item was carrying: the write
+        // is authorized by real records now, so a stale bypass must stop
+        // claiming otherwise.
+        GateDecision::Satisfied { .. } => GateOverrideUpdate::Clear,
+        // Gate disabled — behave exactly like the ungated primitive.
+        GateDecision::NotApplicable => GateOverrideUpdate::ClearOnLeavingReviewed,
+    })
 }
 
 /// Applies a status/tags/body/commit/review update to an already-loaded phase
@@ -256,7 +380,15 @@ fn apply_phase_update(
     review_sha: Option<String>,
     review_branch: Option<String>,
     title: TitleUpdate,
+    gate_override: GateOverrideUpdate,
 ) -> Result<()> {
+    // Stamp/clear the recorded gate override in lockstep with the status, so
+    // an override authorizes exactly the `reviewed` write it was made for.
+    gate_override.apply(
+        &mut doc.frontmatter.gate_override,
+        status.is_some(),
+        status == Some(PhaseStatus::Reviewed),
+    );
     if let Some(status) = status {
         if status.is_terminal() && doc.frontmatter.status == status {
             // Already at this terminal state: only update commit if a new one is provided
@@ -329,6 +461,92 @@ pub fn update_phase_with_estimate(
     model: ModelTierUpdate,
     title: TitleUpdate,
 ) -> Result<Document<Phase>> {
+    update_phase_with_estimate_inner(
+        store,
+        project,
+        roadmap,
+        phase_stem,
+        status,
+        tags,
+        body,
+        commit,
+        review_sha,
+        review_branch,
+        difficulty,
+        model,
+        title,
+        GateOverrideUpdate::ClearOnLeavingReviewed,
+    )
+}
+
+/// [`update_phase_with_estimate`], refusing a transition to
+/// [`PhaseStatus::Reviewed`] unless the `reviewed` gate's preconditions hold.
+///
+/// This is the entry point the CLI's `phase update` uses. See
+/// [`update_phase_gated`] for why the ungated primitive stays unchecked, and
+/// note that [`update_phase_with_estimate`] does **not** delegate to
+/// [`update_phase`] — both call [`apply_phase_update`] independently — so each
+/// needs its own gated sibling.
+///
+/// # Errors
+///
+/// Everything [`update_phase_with_estimate`] returns, plus the five gate
+/// variants listed on [`update_phase_gated`].
+#[allow(clippy::too_many_arguments)]
+pub fn update_phase_with_estimate_gated(
+    store: &mut impl Store,
+    project: &str,
+    roadmap: &str,
+    phase_stem: &str,
+    status: Option<PhaseStatus>,
+    tags: TagsUpdate,
+    body: BodyUpdate,
+    commit: Option<String>,
+    review_sha: Option<String>,
+    review_branch: Option<String>,
+    difficulty: DifficultyUpdate,
+    model: ModelTierUpdate,
+    title: TitleUpdate,
+    gate: &ReviewedGate<'_>,
+) -> Result<Document<Phase>> {
+    let gate_override = resolve_phase_gate(store, project, roadmap, phase_stem, status, gate)?;
+    update_phase_with_estimate_inner(
+        store,
+        project,
+        roadmap,
+        phase_stem,
+        status,
+        tags,
+        body,
+        commit,
+        review_sha,
+        review_branch,
+        difficulty,
+        model,
+        title,
+        gate_override,
+    )
+}
+
+/// The shared body of [`update_phase_with_estimate`] and its gated sibling:
+/// exactly one load and one write.
+#[allow(clippy::too_many_arguments)]
+fn update_phase_with_estimate_inner(
+    store: &mut impl Store,
+    project: &str,
+    roadmap: &str,
+    phase_stem: &str,
+    status: Option<PhaseStatus>,
+    tags: TagsUpdate,
+    body: BodyUpdate,
+    commit: Option<String>,
+    review_sha: Option<String>,
+    review_branch: Option<String>,
+    difficulty: DifficultyUpdate,
+    model: ModelTierUpdate,
+    title: TitleUpdate,
+    gate_override: GateOverrideUpdate,
+) -> Result<Document<Phase>> {
     let path = crate::paths::phase_path(project, roadmap, phase_stem);
     if !store.exists(&path) {
         return Err(Error::PhaseNotFound(phase_stem.to_string()));
@@ -344,6 +562,7 @@ pub fn update_phase_with_estimate(
         review_sha,
         review_branch,
         title,
+        gate_override,
     )?;
     apply_phase_estimate(&mut doc, difficulty, model);
     crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;

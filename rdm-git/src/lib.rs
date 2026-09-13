@@ -216,6 +216,27 @@ pub fn current_branch_at(path: &Path) -> Result<Option<String>> {
     Ok(full_ref.strip_prefix("refs/heads/").map(|s| s.to_string()))
 }
 
+/// Raw `git status --porcelain` output for the working tree at `path`.
+///
+/// Returned verbatim (lossily UTF-8 decoded) for
+/// [`rdm_core::worktree::parse_porcelain`] to interpret, so the "what counts
+/// as dirty" rule lives in core — where it is unit-tested — rather than being
+/// re-derived at each git call site.
+///
+/// # Errors
+///
+/// Returns [`Error::Git`] if `path` is not inside a git repository, git is not
+/// installed, or the command exits non-zero (carrying its stderr).
+pub fn status_porcelain_at(path: &Path) -> Result<String> {
+    let output = run_git_at(path, &["status", "--porcelain"])?;
+    if !output.status.success() {
+        return Err(Error::Git(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// Whether `sha` is an ancestor of (or equal to) HEAD in the repo at `path`.
 ///
 /// Shells out to `git merge-base --is-ancestor <sha> HEAD`: exit code 0 means

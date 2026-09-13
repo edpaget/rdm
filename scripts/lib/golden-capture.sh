@@ -25,7 +25,7 @@
 #       one implementation plan implementing it (seeded HERE, not in the
 #       shared rdm-plan-fixture.sh, so only the golden lane changes and
 #       scripts/verify-plugin-loop.sh is unaffected),
-#       then runs the 23-command JSON-contract inventory (see GOLDEN_NAMES
+#       then runs the 24-command JSON-contract inventory (see GOLDEN_NAMES
 #       below) and writes each command's raw stdout verbatim to
 #       <out_dir>/<name>.json. On success, FIXTURE_ROOT/FIXTURE_PLAN/
 #       FIXTURE_PROJECT are left set (exactly like fixture_setup leaves
@@ -42,7 +42,7 @@
 #       can compute the raw and OS-canonicalized forms of the fixture's temp
 #       directory.
 #
-# The 23-command inventory (GOLDEN_NAMES, in capture order) and the reason
+# The 24-command inventory (GOLDEN_NAMES, in capture order) and the reason
 # each of these three commands is dropped instead of captured, per the
 # phase's own step-1 escape hatch:
 #   - `status`         (rdm-cli/src/commands/status.rs `run(root, fetch)`
@@ -82,7 +82,7 @@
 # reads it (golden_capture_all's own filenames above are literal), a
 # usage shellcheck cannot see across a source boundary.
 # shellcheck disable=SC2034
-GOLDEN_NAMES="info roadmap-list roadmap-show phase-list phase-show task-list task-show list search next tree describe tag-list backlog-report model-show review-list review-show review-requests worktree-list worktree-current plan-create plan-show plan-list"
+GOLDEN_NAMES="info roadmap-list roadmap-show phase-list phase-show task-list task-show list search next tree describe tag-list backlog-report model-show review-list review-show review-requests worktree-list worktree-current plan-create plan-show plan-list verify-resolve"
 
 # _golden_rdm <args...> — invoke the fixture-rooted rdm binary. Internal.
 _golden_rdm() {
@@ -253,6 +253,13 @@ Seeded plan body." --no-edit --project "$proj" --format json >"$_golden_out_dir/
         return 1
     }
     _golden_capture_one plan-list plan list --format json --project "$proj" || {
+        fixture_teardown
+        return 1
+    }
+    # `verify resolve` is deterministic — it reads a config key and never runs
+    # anything. `verify run` is deliberately NOT captured: it executes a
+    # project-supplied command, whose output is not a JSON contract rdm owns.
+    _golden_capture_one verify-resolve verify resolve --format json --project "$proj" || {
         fixture_teardown
         return 1
     }

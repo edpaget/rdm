@@ -7,6 +7,7 @@ use rdm_core::ops::{
 };
 
 use super::{commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, resolve_body};
+use crate::commands;
 use crate::paths;
 use crate::table;
 use crate::{AppStore, OutputFormat, PhaseCommand};
@@ -179,6 +180,7 @@ fn empty_finalize_warning(
 pub fn run(
     command: PhaseCommand,
     store: &mut AppStore,
+    root: &std::path::Path,
     repo_config: &Config,
     format: OutputFormat,
 ) -> Result<()> {
@@ -354,10 +356,20 @@ pub fn run(
             reason,
             clear_reason,
             commit,
+            override_gate,
             no_edit: _,
         } => {
             if commit.is_some() && !matches!(status, Some(s) if s.is_terminal()) {
                 anyhow::bail!("--commit can only be used with --status done or --status wont-fix");
+            }
+            // Reject an override on a transition the gate never guards, rather
+            // than silently ignoring it — otherwise an operator records a
+            // bypass on an item that was never gated.
+            if override_gate.is_some() && status != Some(rdm_core::model::PhaseStatus::Reviewed) {
+                anyhow::bail!(
+                    "--override-gate can only be used with --status reviewed — it bypasses the \
+                     `reviewed` transition gate, and no other transition is gated"
+                );
             }
             let project = paths::resolve_project(project, repo_config)?;
             let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
@@ -428,13 +440,42 @@ pub fn run(
             });
             #[cfg(not(feature = "git"))]
             let needs_review_warning: Option<String> = None;
+            // Build the `reviewed` transition gate BEFORE the needs-review
+            // warning is consumed below, so a gate refusal can never change
+            // whether that warning was computed.
+            let gate_enabled = paths::resolve_reviewed_gate(repo_config)?;
+            let gate_actor = if override_gate.is_some() {
+                Some(paths::resolve_review_author(None)?)
+            } else {
+                None
+            };
+            let gate_probe: Option<commands::GateProbe> = if gate_enabled {
+                // Degrade to `probe: None` when the cwd is not a distinct
+                // project repo: rule (c) is "if `rdm worktree` knows one", and
+                // from outside a project checkout it knows nothing. A
+                // deliberate fail-open on (c) alone — (a) and (b) still apply.
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|cwd| {
+                        rdm_git::worktree::discover_distinct_project_repo(&cwd, root).ok()
+                    })
+                    .map(commands::GateProbe::new)
+            } else {
+                None
+            };
+            let gate = commands::build_reviewed_gate(
+                gate_enabled,
+                gate_probe.as_ref(),
+                override_gate.as_deref(),
+                gate_actor.as_deref(),
+            );
             let title_update = TitleUpdate::from_args(title);
             let difficulty_update = DifficultyUpdate::from_args(difficulty, clear_difficulty)?;
             let model_update = ModelTierUpdate::from_args(model, clear_model)?;
             let reason_update = ReasonUpdate::from_args(reason, clear_reason)?;
             let has_reason = !matches!(reason_update, ReasonUpdate::Keep);
             let doc = commit_mutation(store, "failed to update phase", |s| {
-                let mut doc = rdm_core::ops::phase::update_phase_with_estimate(
+                let mut doc = rdm_core::ops::phase::update_phase_with_estimate_gated(
                     s,
                     &project,
                     &roadmap,
@@ -448,6 +489,7 @@ pub fn run(
                     difficulty_update,
                     model_update,
                     title_update,
+                    &gate,
                 )?;
                 if has_reason {
                     doc = rdm_core::ops::phase::set_phase_blocked_reason(

@@ -169,6 +169,13 @@
         "required": false,
         "enum_values": [],
         "description": "Reason the phase was parked as blocked (an escalation note), if any."
+      },
+      {
+        "name": "gate_override",
+        "type_name": "object",
+        "required": false,
+        "enum_values": [],
+        "description": "An operator's recorded bypass of the reviewed transition gate (reason, actor, date), if one authorized this phase's current status."
       }
     ]
   },
@@ -250,6 +257,13 @@
         "required": false,
         "enum_values": [],
         "description": "Reason the task was closed (a retire/supersede note), if any."
+      },
+      {
+        "name": "gate_override",
+        "type_name": "object",
+        "required": false,
+        "enum_values": [],
+        "description": "An operator's recorded bypass of the reviewed transition gate (reason, actor, date), if one authorized this task's current status."
       }
     ]
   },

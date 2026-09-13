@@ -430,8 +430,15 @@ pub async fn update_task(
         .map_err(|e| error_response(e, format))?;
 
     let mut store = state.store();
+    // Gated for the same reason as the phase handler: a caller-supplied status
+    // can be `reviewed`. No worktree probe — see `reviewed_gate_enabled`.
+    let gate = if crate::state::reviewed_gate_enabled(&state.plan_root) {
+        rdm_core::ops::ReviewedGate::enforcing(None)
+    } else {
+        rdm_core::ops::ReviewedGate::disabled()
+    };
     let doc = rdm_core::ops::mutate(&mut store, |s| {
-        rdm_core::ops::task::update_task(
+        rdm_core::ops::task::update_task_gated(
             s,
             &project,
             &task_slug,
@@ -443,6 +450,7 @@ pub async fn update_task(
             None,
             None,
             rdm_core::ops::TitleUpdate::Keep,
+            &gate,
         )
     })
     .map_err(|e| error_response(e, format))?;

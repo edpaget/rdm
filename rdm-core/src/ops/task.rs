@@ -5,7 +5,8 @@ use chrono::Local;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{Phase, PhaseStatus, Priority, Roadmap, Task, TaskStatus, TaskStatusFilter};
-use crate::ops::update::{BodyUpdate, ReasonUpdate, TagsUpdate, TitleUpdate};
+use crate::ops::gate::{GateDecision, ReviewedGate, check_reviewed_gate};
+use crate::ops::update::{BodyUpdate, GateOverrideUpdate, ReasonUpdate, TagsUpdate, TitleUpdate};
 use crate::store::{DirEntryKind, Store};
 
 /// Criteria for filtering a list of tasks.
@@ -138,6 +139,7 @@ pub fn create_task(store: &mut impl Store, req: CreateTask<'_>) -> Result<Docume
             review_sha: None,
             review_branch: None,
             close_reason: None,
+            gate_override: None,
         },
         body: body.unwrap_or_default().to_string(),
     };
@@ -232,6 +234,108 @@ pub fn update_task(
     review_branch: Option<String>,
     title: TitleUpdate,
 ) -> Result<Document<Task>> {
+    update_task_inner(
+        store,
+        project,
+        slug,
+        status,
+        priority,
+        tags,
+        body,
+        commit,
+        review_sha,
+        review_branch,
+        title,
+        GateOverrideUpdate::ClearOnLeavingReviewed,
+    )
+}
+
+/// [`update_task`], refusing a transition to [`TaskStatus::Reviewed`] unless
+/// the `reviewed` gate's preconditions hold.
+///
+/// The task-side sibling of
+/// [`update_phase_gated`](crate::ops::phase::update_phase_gated); see it for
+/// why the ungated primitive stays unchecked and why exactly one store write
+/// happens per call.
+///
+/// # Errors
+///
+/// Everything [`update_task`] returns, plus — only when `status` is
+/// `Some(`[`TaskStatus::Reviewed`]`)` and the gate is enforcing —
+/// [`Error::GateNoApprovedPlan`], [`Error::GateNoApprovedChangeReview`],
+/// [`Error::GateWorktreeDirty`], [`Error::GateWorktreeUnobservable`], and
+/// [`Error::GateOverrideEmptyReason`].
+#[allow(clippy::too_many_arguments)]
+pub fn update_task_gated(
+    store: &mut impl Store,
+    project: &str,
+    slug: &str,
+    status: Option<TaskStatus>,
+    priority: Option<Priority>,
+    tags: TagsUpdate,
+    body: BodyUpdate,
+    commit: Option<String>,
+    review_sha: Option<String>,
+    review_branch: Option<String>,
+    title: TitleUpdate,
+    gate: &ReviewedGate<'_>,
+) -> Result<Document<Task>> {
+    let gate_override = resolve_task_gate(store, project, slug, status, gate)?;
+    update_task_inner(
+        store,
+        project,
+        slug,
+        status,
+        priority,
+        tags,
+        body,
+        commit,
+        review_sha,
+        review_branch,
+        title,
+        gate_override,
+    )
+}
+
+/// Runs the `reviewed` gate for a task write and maps the decision onto the
+/// [`GateOverrideUpdate`] the single write will apply.
+fn resolve_task_gate(
+    store: &mut impl Store,
+    project: &str,
+    slug: &str,
+    status: Option<TaskStatus>,
+    gate: &ReviewedGate<'_>,
+) -> Result<GateOverrideUpdate> {
+    if status != Some(TaskStatus::Reviewed) {
+        return Ok(GateOverrideUpdate::ClearOnLeavingReviewed);
+    }
+    let item = crate::link::ItemRef::Task {
+        slug: slug.to_string(),
+    };
+    Ok(match check_reviewed_gate(&*store, project, &item, gate)? {
+        GateDecision::Overridden(o) => GateOverrideUpdate::Set(o),
+        GateDecision::Satisfied { .. } => GateOverrideUpdate::Clear,
+        GateDecision::NotApplicable => GateOverrideUpdate::ClearOnLeavingReviewed,
+    })
+}
+
+/// The shared body of [`update_task`] and [`update_task_gated`]: exactly one
+/// load and one write.
+#[allow(clippy::too_many_arguments)]
+fn update_task_inner(
+    store: &mut impl Store,
+    project: &str,
+    slug: &str,
+    status: Option<TaskStatus>,
+    priority: Option<Priority>,
+    tags: TagsUpdate,
+    body: BodyUpdate,
+    commit: Option<String>,
+    review_sha: Option<String>,
+    review_branch: Option<String>,
+    title: TitleUpdate,
+    gate_override: GateOverrideUpdate,
+) -> Result<Document<Task>> {
     let path = crate::paths::task_path(project, slug);
     if !store.exists(&path) {
         return Err(Error::TaskNotFound(slug.to_string()));
@@ -239,6 +343,13 @@ pub fn update_task(
 
     let mut doc = crate::io::load_task(store, project, slug)?;
     title.apply(&mut doc.frontmatter.title)?;
+    // Stamp/clear the recorded gate override in lockstep with the status, so
+    // an override authorizes exactly the `reviewed` write it was made for.
+    gate_override.apply(
+        &mut doc.frontmatter.gate_override,
+        status.is_some(),
+        status == Some(TaskStatus::Reviewed),
+    );
     if let Some(status) = status {
         if status.is_terminal() && doc.frontmatter.status == status {
             // Already at this terminal state: only update commit if a new one
@@ -343,6 +454,7 @@ pub fn promote_task(
             difficulty: None,
             model: None,
             blocked_reason: None,
+            gate_override: None,
         },
         body: task_doc.body,
     };
@@ -422,6 +534,9 @@ pub fn consolidate_task_into_roadmap(
         task_doc.body
     );
 
+    // Deliberately UNGATED: writes `Done`, which the `reviewed` gate never
+    // guards, and is a core-internal consolidation rather than a user-supplied
+    // status. On the allowlist in `scripts/verify-reviewed-gate.sh`.
     let updated_task = update_task(
         store,
         project,
@@ -588,6 +703,8 @@ pub fn merge_tasks(
         // to its body, then stamp the close_reason pointer.
         let source_pointer_body =
             format!("{}\n\nSuperseded by task `{survivor}`.", source_doc.body);
+        // Deliberately UNGATED: writes `WontFix`. On the allowlist in
+        // `scripts/verify-reviewed-gate.sh`.
         update_task(
             store,
             project,
@@ -611,6 +728,8 @@ pub fn merge_tasks(
     }
 
     // 7. Write the survivor once with the unioned tags and accumulated body.
+    // Deliberately UNGATED: writes `status: None` (tags/body only). On the
+    // allowlist in `scripts/verify-reviewed-gate.sh`.
     let survivor_updated = update_task(
         store,
         project,
@@ -744,6 +863,7 @@ mod tests {
             review_sha: None,
             review_branch: None,
             close_reason: None,
+            gate_override: None,
         }
     }
 

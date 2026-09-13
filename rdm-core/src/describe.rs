@@ -205,6 +205,13 @@ impl Describe for crate::model::Phase {
                     enum_values: &[],
                     description: "Reason the phase was parked as blocked (an escalation note), if any.",
                 },
+                FieldInfo {
+                    name: "gate_override",
+                    type_name: "object",
+                    required: false,
+                    enum_values: &[],
+                    description: "An operator's recorded bypass of the reviewed transition gate (reason, actor, date), if one authorized this phase's current status.",
+                },
             ],
         }
     }
@@ -285,6 +292,13 @@ impl Describe for crate::model::Task {
                     required: false,
                     enum_values: &[],
                     description: "Reason the task was closed (a retire/supersede note), if any.",
+                },
+                FieldInfo {
+                    name: "gate_override",
+                    type_name: "object",
+                    required: false,
+                    enum_values: &[],
+                    description: "An operator's recorded bypass of the reviewed transition gate (reason, actor, date), if one authorized this task's current status.",
                 },
             ],
         }
@@ -515,6 +529,11 @@ mod tests {
             difficulty: Some(crate::model::Difficulty::Hard),
             model: Some(crate::model::ModelTier::Large),
             blocked_reason: Some("ambiguous acceptance criterion".to_string()),
+            gate_override: Some(crate::model::GateOverride {
+                reason: "operator: hotfix".to_string(),
+                actor: "alice".to_string(),
+                at: chrono::NaiveDate::from_ymd_opt(2026, 9, 13).unwrap(),
+            }),
         };
         assert_fields_match(&sample);
     }
@@ -533,6 +552,11 @@ mod tests {
             review_sha: None,
             review_branch: None,
             close_reason: Some("superseded by task/other".to_string()),
+            gate_override: Some(crate::model::GateOverride {
+                reason: "operator: hotfix".to_string(),
+                actor: "alice".to_string(),
+                at: chrono::NaiveDate::from_ymd_opt(2026, 9, 13).unwrap(),
+            }),
         };
         assert_fields_match(&sample);
     }

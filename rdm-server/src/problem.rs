@@ -91,7 +91,23 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(err.to_string()),
                 instance: None,
             },
-            Error::PlanImplementsInvalidKind(_)
+            // The `reviewed` transition gate refused: the request named a
+            // legal transition, but a precondition of it does not hold yet.
+            // 409 Conflict rather than 400 — nothing about the request is
+            // malformed; the plan repo's state is what forbids it, and the
+            // detail names the record that would fix it.
+            Error::GateNoApprovedPlan(_)
+            | Error::GateNoApprovedChangeReview { .. }
+            | Error::GateWorktreeDirty { .. }
+            | Error::GateWorktreeUnobservable { .. } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
+            Error::GateOverrideEmptyReason
+            | Error::PlanImplementsInvalidKind(_)
             | Error::PlanSupersedesInvalidKind(_)
             | Error::PlanSupersedesSelf(_)
             | Error::ReviewImplementsInvalidKind(_)

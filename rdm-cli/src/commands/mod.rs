@@ -56,6 +56,10 @@ pub mod resolve;
 pub mod review;
 #[cfg(feature = "git")]
 pub mod status;
+/// `rdm verify resolve` / `rdm verify run` — the CLI surface over the
+/// repo-only `dispatch.verify` key.
+#[cfg(feature = "git")]
+pub mod verify;
 #[cfg(feature = "git")]
 pub mod worktree;
 
@@ -232,6 +236,42 @@ pub fn reject_non_human(format: OutputFormat, command_name: &str) -> Result<()> 
         );
     }
     Ok(())
+}
+
+/// The concrete [`WorktreeProbe`](rdm_core::worktree::WorktreeProbe) the CLI's
+/// `reviewed` gate reads through.
+///
+/// Aliased rather than named inline so the phase and task `update` arms stay
+/// feature-agnostic: without the `git` feature there is no worktree to probe,
+/// and the always-empty in-memory double stands in so the call sites need no
+/// second code path.
+#[cfg(feature = "git")]
+pub type GateProbe = rdm_git::worktree::GitWorktreeProbe;
+/// See the `git`-enabled alias above.
+#[cfg(not(feature = "git"))]
+pub type GateProbe = rdm_core::worktree::MemoryWorktreeProbe;
+
+/// Assembles the [`ReviewedGate`](rdm_core::ops::ReviewedGate) one `phase
+/// update` / `task update` invocation is evaluated against.
+///
+/// Shared by both arms so the two can never drift in *when* the gate enforces,
+/// which probe it reads through, or how an operator override is attached.
+pub fn build_reviewed_gate<'a>(
+    enabled: bool,
+    probe: Option<&'a GateProbe>,
+    reason: Option<&'a str>,
+    actor: Option<&'a str>,
+) -> rdm_core::ops::ReviewedGate<'a> {
+    if !enabled {
+        return rdm_core::ops::ReviewedGate::disabled();
+    }
+    let gate = rdm_core::ops::ReviewedGate::enforcing(
+        probe.map(|p| p as &dyn rdm_core::worktree::WorktreeProbe),
+    );
+    match (reason, actor) {
+        (Some(r), Some(a)) => gate.with_override(r, a),
+        _ => gate,
+    }
 }
 
 /// Runs a mutating op as a single transaction and prints the staging hint.
@@ -569,6 +609,12 @@ pub fn apply_done_directives(
                 let sha_owned = sha.clone();
                 let stem_for_step = stem.clone();
                 steps.push(Box::new(move |s| {
+                    // Deliberately UNGATED: this is the `Done:` post-merge /
+                    // post-commit hook path, which is contractually exit-0 and
+                    // must never acquire a failure mode (CLAUDE.md's hook
+                    // reliability guarantee). It writes `Done`, which the
+                    // `reviewed` gate never guards anyway. On the allowlist in
+                    // `scripts/verify-reviewed-gate.sh`.
                     rdm_core::ops::phase::update_phase(
                         s,
                         &project_owned,
@@ -595,6 +641,9 @@ pub fn apply_done_directives(
                 let slug_owned = slug.clone();
                 let sha_owned = sha.clone();
                 steps.push(Box::new(move |s| {
+                    // Deliberately UNGATED: same `Done:` hook path as above,
+                    // writing `Done`. On the allowlist in
+                    // `scripts/verify-reviewed-gate.sh`.
                     rdm_core::ops::task::update_task(
                         s,
                         &project_owned,

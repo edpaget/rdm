@@ -655,6 +655,7 @@ let x = 1;
                     review_sha: None,
                     review_branch: None,
                     close_reason: None,
+                    gate_override: None,
                 },
                 body: String::new(),
             },

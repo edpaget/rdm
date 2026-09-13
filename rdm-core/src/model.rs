@@ -409,6 +409,27 @@ pub struct Source {
     pub default_branch: Option<String>,
 }
 
+/// An operator's recorded bypass of the `reviewed` transition gate.
+///
+/// Stamped on a phase or task by `--override-gate "<reason>"`, which waives
+/// the gate's *record* preconditions — an approved implementation plan and an
+/// approving `change/` review — but never its worktree-cleanliness
+/// precondition. It exists so a bypass is an audited act rather than an
+/// invisible one: the reason, who did it, and when are all part of the item.
+///
+/// It is cleared whenever the item leaves `reviewed` (see
+/// [`GateOverrideUpdate`](crate::ops::update::GateOverrideUpdate)), so a stale
+/// override can never authorize a later `reviewed` write.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GateOverride {
+    /// Why the gate was bypassed, verbatim as the operator typed it.
+    pub reason: String,
+    /// Who bypassed it, resolved the same way a review's author is.
+    pub actor: String,
+    /// The date the bypass was recorded.
+    pub at: NaiveDate,
+}
+
 /// Frontmatter for a roadmap phase file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Phase {
@@ -451,6 +472,14 @@ pub struct Phase {
     /// until explicitly cleared, so resuming a phase never loses why it stalled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_reason: Option<String>,
+    /// An operator's recorded bypass of the `reviewed` transition gate, if
+    /// one authorized this phase's current `reviewed` status.
+    ///
+    /// Skipped when absent, so every phase file written before the gate
+    /// existed still loads and a never-overridden phase serializes exactly as
+    /// it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_override: Option<GateOverride>,
 }
 
 impl Phase {
@@ -505,6 +534,11 @@ pub struct Task {
     /// explicitly cleared, so reopening a task never loses why it was retired.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub close_reason: Option<String>,
+    /// An operator's recorded bypass of the `reviewed` transition gate, if
+    /// one authorized this task's current `reviewed` status. Mirrors
+    /// [`Phase::gate_override`], including the skip-when-absent serialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate_override: Option<GateOverride>,
 }
 
 /// Lifecycle status of an implementation [`Plan`] document.
@@ -1819,6 +1853,7 @@ status: not-started
             difficulty: None,
             model: None,
             blocked_reason: None,
+            gate_override: None,
         };
         let yaml = serde_yaml::to_string(&phase).unwrap();
         assert!(!yaml.contains("difficulty"));
@@ -1840,6 +1875,7 @@ status: not-started
             difficulty: Some(Difficulty::Hard),
             model: Some(ModelTier::Large),
             blocked_reason: None,
+            gate_override: None,
         };
         let yaml = serde_yaml::to_string(&phase).unwrap();
         assert!(yaml.contains("difficulty: hard"));
@@ -1863,6 +1899,7 @@ status: not-started
             difficulty: None,
             model: None,
             blocked_reason: Some("ambiguous acceptance criterion".to_string()),
+            gate_override: None,
         };
         let yaml = serde_yaml::to_string(&phase).unwrap();
         assert!(yaml.contains("blocked_reason: ambiguous acceptance criterion"));
@@ -1978,6 +2015,7 @@ created: 2026-01-01
             review_sha: None,
             review_branch: None,
             close_reason: Some("superseded by task/survivor".to_string()),
+            gate_override: None,
         };
         let yaml = serde_yaml::to_string(&task).unwrap();
         assert!(yaml.contains("close_reason: superseded by task/survivor"));
@@ -1990,6 +2028,7 @@ created: 2026-01-01
         // None is omitted from the serialized form.
         let task = Task {
             close_reason: None,
+            gate_override: None,
             ..task
         };
         let yaml = serde_yaml::to_string(&task).unwrap();
@@ -2472,5 +2511,100 @@ title: Fantasy Baseball Manager
             !msg.contains("missing field"),
             "a present-but-mistyped field must not be reported as missing, got: {msg}"
         );
+    }
+
+    // --- AC4: the recorded status-model decision, mechanically enforced -----
+    //
+    // `docs/plan-review-gate-policy.md` records the decision that rdm adds NO
+    // `planned` status between `in-progress` and `reviewed` — the plan
+    // document's own `PlanStatus` already carries that signal, and a seventh
+    // phase status would be a second source of truth for one fact. These two
+    // tests are what make that decision cost something to reverse: adopting a
+    // new status cannot land silently, it must come with a deliberate edit
+    // here and therefore a deliberate revisit of the recorded decision.
+
+    #[test]
+    fn phase_status_variants_are_exactly_the_seven_recorded() {
+        let all = [
+            PhaseStatus::NotStarted,
+            PhaseStatus::InProgress,
+            PhaseStatus::NeedsReview,
+            PhaseStatus::Reviewed,
+            PhaseStatus::Done,
+            PhaseStatus::Blocked,
+            PhaseStatus::WontFix,
+        ];
+        // Exhaustive match: a new variant fails to compile here first.
+        let names: Vec<&str> = all
+            .iter()
+            .map(|s| match s {
+                PhaseStatus::NotStarted => "not-started",
+                PhaseStatus::InProgress => "in-progress",
+                PhaseStatus::NeedsReview => "needs-review",
+                PhaseStatus::Reviewed => "reviewed",
+                PhaseStatus::Done => "done",
+                PhaseStatus::Blocked => "blocked",
+                PhaseStatus::WontFix => "wont-fix",
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "not-started",
+                "in-progress",
+                "needs-review",
+                "reviewed",
+                "done",
+                "blocked",
+                "wont-fix"
+            ],
+            "the phase status set changed — revisit the recorded `planned`-status \
+             decision in docs/plan-review-gate-policy.md before updating this list"
+        );
+        for (s, name) in all.iter().zip(names.iter()) {
+            assert_eq!(s.to_string(), *name);
+        }
+    }
+
+    #[test]
+    fn task_status_variants_are_exactly_the_seven_recorded() {
+        let all = [
+            TaskStatus::Open,
+            TaskStatus::InProgress,
+            TaskStatus::NeedsReview,
+            TaskStatus::Reviewed,
+            TaskStatus::Done,
+            TaskStatus::Blocked,
+            TaskStatus::WontFix,
+        ];
+        let names: Vec<&str> = all
+            .iter()
+            .map(|s| match s {
+                TaskStatus::Open => "open",
+                TaskStatus::InProgress => "in-progress",
+                TaskStatus::NeedsReview => "needs-review",
+                TaskStatus::Reviewed => "reviewed",
+                TaskStatus::Done => "done",
+                TaskStatus::Blocked => "blocked",
+                TaskStatus::WontFix => "wont-fix",
+            })
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "open",
+                "in-progress",
+                "needs-review",
+                "reviewed",
+                "done",
+                "blocked",
+                "wont-fix"
+            ],
+            "the task status set changed — revisit the recorded `planned`-status \
+             decision in docs/plan-review-gate-policy.md before updating this list"
+        );
+        for (s, name) in all.iter().zip(names.iter()) {
+            assert_eq!(s.to_string(), *name);
+        }
     }
 }

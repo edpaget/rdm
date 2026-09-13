@@ -5233,4 +5233,64 @@ grep -qF 'verify-gate.md' "$REPO_ROOT/CLAUDE.md" ||
     fail "10: CLAUDE.md must point at docs/verify-gate.md"
 pass "10: docs/workflow-schemas.md and CLAUDE.md both point at the canonical write-up"
 
+# --- 11. --override-gate IS FOR HUMANS ONLY -----------------------------------
+#
+# The sibling of scripts/verify-skill-autopilot.sh § 5, over the dispatch
+# surfaces. `--override-gate` bypasses the core `reviewed` transition gate's
+# record preconditions; it exists for an operator making a judgment call, and an
+# orchestrator that reached for it would turn the gate into decoration.
+#
+# NOTE for phase 6: the prose orchestrator's own harness inherits this check —
+# add its surfaces to OVERRIDE_SURFACES below rather than writing a third copy.
+say "11. --override-gate: no dispatch surface emits it"
+
+OVERRIDE_SURFACES="$WF
+$LIB
+$REPO_ROOT/.claude/skills/rdm-dispatch-phase/SKILL.md
+$REPO_ROOT/rdm-core/src/templates/skill-dispatch-phase-cli.md"
+
+check_no_override() {
+    # $1: root under which the surfaces live. Prints each offending file.
+    for f in $OVERRIDE_SURFACES; do
+        rel=${f#"$REPO_ROOT"/}
+        target="$1/$rel"
+        [ -f "$target" ] || continue
+        if grep -qF -e '--override-gate' "$target"; then
+            printf '%s\n' "$rel"
+        fi
+    done
+}
+
+# Non-vacuity floor: the surfaces must actually exist, or the loop above would
+# skip every one of them and pass on nothing.
+SURFACE_COUNT=0
+for f in $OVERRIDE_SURFACES; do
+    [ -f "$f" ] && SURFACE_COUNT=$((SURFACE_COUNT + 1))
+done
+[ "$SURFACE_COUNT" -eq 4 ] ||
+    fail "11: expected 4 dispatch surfaces to scan, found $SURFACE_COUNT — the check would pass vacuously"
+
+OFFENDERS=$(check_no_override "$REPO_ROOT")
+[ -z "$OFFENDERS" ] || fail "11: dispatch surface(s) emit --override-gate, which is operator-only:
+$OFFENDERS
+
+An orchestrator must never bypass the reviewed gate. Return a rework/escalated
+OUTCOME instead and let a human decide."
+pass "11: no dispatch surface emits --override-gate (4 surfaces scanned)"
+
+# Self-test: plant the flag and prove the check goes red.
+OG_SCRATCH="$TMP/override-scratch"
+mkdir -p "$OG_SCRATCH/.claude/workflows"
+cp "$WF" "$OG_SCRATCH/.claude/workflows/rdm-wf-dispatch-phase.js"
+printf '\n// rdm phase update <stem> --status reviewed --override-gate "dispatch said so"\n' \
+    >>"$OG_SCRATCH/.claude/workflows/rdm-wf-dispatch-phase.js"
+PLANTED=$(check_no_override "$OG_SCRATCH")
+printf '%s' "$PLANTED" | grep -q 'rdm-wf-dispatch-phase.js' ||
+    fail "11: self-test failed — a planted --override-gate is NOT caught, so section 11 proves nothing"
+pass "11: self-test — a planted --override-gate IS caught"
+
+[ -z "$(check_no_override "$REPO_ROOT")" ] ||
+    fail "11: self-test failed — the real, unmutated tree does not pass"
+pass "11: self-test — the real, unmutated tree passes"
+
 say "verify-workflow-dispatch.sh: ALL GREEN"

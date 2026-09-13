@@ -5,6 +5,7 @@ use rdm_core::json;
 use rdm_core::ops::{BodyUpdate, ReasonUpdate, TagsUpdate, TitleUpdate};
 
 use super::{commit_mutation, map_body_clobber, maybe_print_uncommitted_hint, resolve_body};
+use crate::commands;
 use crate::paths;
 use crate::table;
 use crate::{AppStore, OutputFormat, TaskCommand};
@@ -12,6 +13,7 @@ use crate::{AppStore, OutputFormat, TaskCommand};
 pub fn run(
     command: TaskCommand,
     store: &mut AppStore,
+    root: &std::path::Path,
     repo_config: &Config,
     format: OutputFormat,
 ) -> Result<()> {
@@ -112,8 +114,17 @@ pub fn run(
             commit,
             reason,
             clear_reason,
+            override_gate,
             no_edit: _,
         } => {
+            // Reject an override on a transition the gate never guards, rather
+            // than silently ignoring it.
+            if override_gate.is_some() && status != Some(rdm_core::model::TaskStatus::Reviewed) {
+                anyhow::bail!(
+                    "--override-gate can only be used with --status reviewed — it bypasses the \
+                     `reviewed` transition gate, and no other transition is gated"
+                );
+            }
             let project = paths::resolve_project(project, repo_config)?;
             let title = TitleUpdate::from_args(title);
             // `update` consults the body only when the user is explicit:
@@ -173,8 +184,35 @@ pub fn run(
             });
             #[cfg(not(feature = "git"))]
             let needs_review_warning: Option<String> = None;
+            // Build the `reviewed` transition gate ABOVE the mutation, and
+            // after the needs-review warning is computed, so a refusal cannot
+            // change whether that warning exists.
+            let gate_enabled = paths::resolve_reviewed_gate(repo_config)?;
+            let gate_actor = if override_gate.is_some() {
+                Some(paths::resolve_review_author(None)?)
+            } else {
+                None
+            };
+            let gate_probe: Option<commands::GateProbe> = if gate_enabled {
+                // Degrade to `probe: None` outside a distinct project repo —
+                // rule (c) is "if `rdm worktree` knows one".
+                std::env::current_dir()
+                    .ok()
+                    .and_then(|cwd| {
+                        rdm_git::worktree::discover_distinct_project_repo(&cwd, root).ok()
+                    })
+                    .map(commands::GateProbe::new)
+            } else {
+                None
+            };
+            let gate = commands::build_reviewed_gate(
+                gate_enabled,
+                gate_probe.as_ref(),
+                override_gate.as_deref(),
+                gate_actor.as_deref(),
+            );
             let doc = commit_mutation(store, "failed to update task", |s| {
-                let mut doc = rdm_core::ops::task::update_task(
+                let mut doc = rdm_core::ops::task::update_task_gated(
                     s,
                     &project,
                     &slug,
@@ -186,6 +224,7 @@ pub fn run(
                     review_sha,
                     review_branch,
                     title,
+                    &gate,
                 )?;
                 if has_reason {
                     doc = rdm_core::ops::task::set_task_close_reason(

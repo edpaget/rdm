@@ -7,6 +7,9 @@
 /// Read-only backlog grooming report: stale tasks, duplicate clusters, tag
 /// clusters, archivable roadmaps.
 pub mod backlog;
+/// The write-time `reviewed` transition gate: approved plan, approving change
+/// review, clean worktree.
+pub mod gate;
 /// Plan repo initialization.
 pub mod init;
 /// Resolution of parsed `rdm:` links (item existence, code-link rev/URL)
@@ -38,6 +41,7 @@ pub mod task;
 /// `ReasonUpdate`).
 pub mod update;
 
+pub use gate::{GateDecision, GateOverrideRequest, ReviewedGate, check_reviewed_gate};
 pub use links::{backlinks, build_web_url, resolve_code_link, resolve_item_link, resolve_link};
 pub use phase::CreatePhase;
 pub use plan::CreatePlan;
@@ -45,8 +49,8 @@ pub use reviews::CreateReview;
 pub use roadmap::CreateRoadmap;
 pub use task::CreateTask;
 pub use update::{
-    BodyUpdate, DifficultyUpdate, ModelTierUpdate, PriorityUpdate, ReasonUpdate, TagsUpdate,
-    TitleUpdate,
+    BodyUpdate, DifficultyUpdate, GateOverrideUpdate, ModelTierUpdate, PriorityUpdate,
+    ReasonUpdate, TagsUpdate, TitleUpdate,
 };
 
 use crate::error::Result;

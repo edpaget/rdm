@@ -21,13 +21,14 @@ pub const KNOWN_KEYS: &[&str] = &[
     "server.quick_filters",
     "plan_review",
     "dispatch.verify",
+    "gates.reviewed",
 ];
 
 /// Keys that may only be set in the global config (not in a repo `rdm.toml`).
 pub const GLOBAL_ONLY_KEYS: &[&str] = &["root"];
 
 /// Keys that may only be set in the repo config (not in the global config).
-pub const REPO_ONLY_KEYS: &[&str] = &["server.quick_filters", "dispatch.verify"];
+pub const REPO_ONLY_KEYS: &[&str] = &["server.quick_filters", "dispatch.verify", "gates.reviewed"];
 
 /// Where a configuration value was resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +109,25 @@ pub struct DispatchConfig {
     /// runner the command invokes. See `docs/verify-gate.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify: Option<String>,
+}
+
+/// Configuration for rdm's write-time gates (`[gates]` table).
+///
+/// Repo-only: whether a project enforces the `reviewed` transition gate is a
+/// property of the project's process, never of a user, so this table has no
+/// counterpart on [`GlobalConfig`] — the same treatment [`DispatchConfig`]
+/// gets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GatesConfig {
+    /// When `true`, `phase update --status reviewed` and `task update --status
+    /// reviewed` refuse unless an approved implementation plan, an approving
+    /// `change/` review naming it, and a clean worktree all exist.
+    ///
+    /// Defaults to `false`: the gate is opt-in, so enabling core-enforced
+    /// gates is always a deliberate act and no existing plan repo changes
+    /// behavior on upgrade. See `docs/core-enforced-gates.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewed: Option<bool>,
 }
 
 /// Per-step model tier overrides within `[models.steps]`.
@@ -292,6 +312,14 @@ pub struct Config {
     /// fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch: Option<DispatchConfig>,
+
+    /// Write-time gate configuration (`[gates]` table).
+    ///
+    /// Repo-only — deliberately absent from [`GlobalConfig`], and carried
+    /// through [`Config::with_global_defaults`] unchanged with no global
+    /// fallback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gates: Option<GatesConfig>,
 }
 
 impl Config {
@@ -352,6 +380,7 @@ impl Config {
             plan_review: self.plan_review.or(global.plan_review),
             // Repo-only: no global fallback exists to fall back TO.
             dispatch: self.dispatch.clone(),
+            gates: self.gates.clone(),
         }
     }
 }
@@ -426,6 +455,29 @@ pub fn parse_plan_review_env(value: &str) -> Result<bool> {
         "false" => Ok(false),
         other => Err(Error::InvalidConfigValue {
             key: "RDM_PLAN_REVIEW".to_string(),
+            value: other.to_string(),
+            valid: "true or false".to_string(),
+        }),
+    }
+}
+
+/// Parses the `RDM_REVIEWED_GATE` env var into a boolean.
+///
+/// Like [`parse_plan_review_env`], this is a loud override rather than a fuzzy
+/// boolean parse, so a typo (`"1"`, `"yes"`, `"True"`, an empty string)
+/// surfaces as an error instead of silently resolving to `false` and quietly
+/// disabling the gate.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidConfigValue`] if `value` is anything other than
+/// `"true"` or `"false"`.
+pub fn parse_reviewed_gate_env(value: &str) -> Result<bool> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(Error::InvalidConfigValue {
+            key: "RDM_REVIEWED_GATE".to_string(),
             value: other.to_string(),
             valid: "true or false".to_string(),
         }),
@@ -1131,5 +1183,64 @@ mechanical = "small"
         // A global config cannot supply one: an unset repo value stays unset.
         let empty = Config::default().with_global_defaults(&global);
         assert_eq!(empty.dispatch, None);
+    }
+
+    // --- gates.reviewed tests ---
+
+    #[test]
+    fn parse_reviewed_gate_env_true_and_false() {
+        assert!(parse_reviewed_gate_env("true").unwrap());
+        assert!(!parse_reviewed_gate_env("false").unwrap());
+    }
+
+    #[test]
+    fn parse_reviewed_gate_env_invalid_rejected() {
+        for bad in ["1", "yes", "True", "", "on"] {
+            let err = parse_reviewed_gate_env(bad).unwrap_err();
+            assert!(
+                err.to_string().contains("RDM_REVIEWED_GATE"),
+                "expected the key named in: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn gates_reviewed_toml_roundtrip() {
+        let toml_str = "[gates]\nreviewed = true\n";
+        let config = Config::from_toml(toml_str).unwrap();
+        let gates = config.gates.clone().expect("gates section parsed");
+        assert_eq!(gates.reviewed, Some(true));
+        let back = config.to_toml().unwrap();
+        assert!(back.contains("[gates]"), "round-tripped: {back}");
+        assert!(back.contains("reviewed = true"), "round-tripped: {back}");
+    }
+
+    #[test]
+    fn gates_table_omitted_when_unset() {
+        let config = Config::default();
+        let toml_str = config.to_toml().unwrap();
+        assert!(
+            !toml_str.contains("[gates]"),
+            "an unset gates table must not be serialized: {toml_str}"
+        );
+    }
+
+    #[test]
+    fn gates_is_repo_only_and_survives_global_merge() {
+        let repo_config = Config {
+            gates: Some(GatesConfig {
+                reviewed: Some(true),
+            }),
+            ..Default::default()
+        };
+        let global = GlobalConfig::default();
+        let merged = repo_config.with_global_defaults(&global);
+        assert_eq!(
+            merged.gates.and_then(|g| g.reviewed),
+            Some(true),
+            "the repo-only gates table must survive the global merge unchanged"
+        );
+        assert!(REPO_ONLY_KEYS.contains(&"gates.reviewed"));
+        assert!(KNOWN_KEYS.contains(&"gates.reviewed"));
     }
 }

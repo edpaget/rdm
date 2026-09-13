@@ -48,6 +48,9 @@ stage = false                  # true = defer git commits until `rdm commit`
 
 [remote]
 default = "origin"             # default git remote for push/pull
+
+[gates]
+reviewed = true                # enforce the `reviewed` transition gate
 ```
 
 | Field | Type | Default | Description |
@@ -56,6 +59,7 @@ default = "origin"             # default git remote for push/pull
 | `default_format` | string | `"human"` | Output format. Valid values: `human`, `json`, `table`, `markdown` |
 | `stage` | bool | `false` | When `true`, mutations write files but skip the git commit until you run `rdm commit` |
 | `remote.default` | string | *(none)* | Default git remote name |
+| `gates.reviewed` | bool | `false` | When `true`, `phase update --status reviewed` / `task update --status reviewed` refuse unless an approved plan, an approving `change/` review naming it, and a clean worktree all exist. Repo-only. See [`core-enforced-gates.md`](core-enforced-gates.md) |
 
 A global config file at `~/.config/rdm/config.toml` supports the same fields plus `root` (path to the plan repo). Repo-level settings in `rdm.toml` override global settings. The `--project` flag, `RDM_PROJECT` env var, and `default_project` config form a resolution chain (flag wins).
 
@@ -149,6 +153,32 @@ The current valuation engine treats pitchers and hitters as separate entities...
 | `status` | yes | string | `not-started` \| `in-progress` \| `needs-review` \| `reviewed` \| `done` \| `blocked` \| `wont-fix` |
 | `completed` | no | date | Completion date (YYYY-MM-DD). Set automatically when status becomes `done` or `wont-fix` |
 | `commit` | no | string | Git commit SHA. Recorded by the post-merge hook or `--commit` flag |
+| `gate_override` | no | object | An operator's recorded bypass of the `reviewed` transition gate. See below |
+
+### The `gate_override` block
+
+Both phase and task files may carry a `gate_override` block, written by
+`--override-gate "<reason>"` when an operator bypasses the core `reviewed`
+transition gate's record preconditions:
+
+```yaml
+gate_override:
+  reason: "operator: hotfix, plan filed retroactively"
+  actor: alice
+  at: 2026-09-13
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `reason` | yes | string | Why the gate was bypassed, verbatim as the operator typed it. Never empty |
+| `actor` | yes | string | Who bypassed it, resolved like a review's author (`RDM_REVIEW_AUTHOR`, then `$USER`) |
+| `at` | yes | date | The date the bypass was recorded (YYYY-MM-DD) |
+
+The block is **absent entirely** unless an override is in force — a file that
+was never overridden serializes exactly as it did before the gate existed — and
+is **removed** whenever the item leaves `reviewed`, so a stale override can
+never authorize a later `reviewed` write. See
+[`core-enforced-gates.md`](core-enforced-gates.md).
 
 ### Status transitions
 
@@ -187,6 +217,7 @@ renamed to `barrel_pct`.
 | `tags` | no | list of strings | | Free-form labels for filtering |
 | `completed` | no | date | | Completion date (YYYY-MM-DD). Set automatically when status becomes `done` or `wont-fix` |
 | `commit` | no | string | | Git commit SHA |
+| `gate_override` | no | object | | An operator's recorded bypass of the `reviewed` transition gate — same shape and lifecycle as a phase's, documented above |
 
 ### Status transitions
 

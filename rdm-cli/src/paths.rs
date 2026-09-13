@@ -198,6 +198,39 @@ fn resolve_plan_review_inner(
     Ok(config.plan_review.unwrap_or(false))
 }
 
+/// Resolves whether the core-enforced `reviewed` transition gate is enabled,
+/// from the `RDM_REVIEWED_GATE` env var and config.
+///
+/// The `config` should already have global defaults merged via
+/// [`rdm_core::config::Config::with_global_defaults`]. Priority: env → config
+/// `gates.reviewed` → `false`.
+///
+/// Defaulting to `false` is load-bearing: the gate is opt-in, so no existing
+/// plan repo — and none of rdm's own hermetic harnesses — changes behavior
+/// until a project deliberately sets `gates.reviewed`.
+///
+/// # Errors
+///
+/// Returns an error if `RDM_REVIEWED_GATE` is set to a value other than the
+/// literal `"true"` or `"false"`.
+pub fn resolve_reviewed_gate(config: &rdm_core::config::Config) -> Result<bool> {
+    resolve_reviewed_gate_inner(std::env::var("RDM_REVIEWED_GATE").ok(), config)
+}
+
+fn resolve_reviewed_gate_inner(
+    env_value: Option<String>,
+    config: &rdm_core::config::Config,
+) -> Result<bool> {
+    if let Some(v) = env_value {
+        return rdm_core::config::parse_reviewed_gate_env(&v).map_err(|e| anyhow::anyhow!("{e}"));
+    }
+    Ok(config
+        .gates
+        .as_ref()
+        .and_then(|g| g.reviewed)
+        .unwrap_or(false))
+}
+
 /// Resolves the output format from the CLI flag, `RDM_FORMAT` env var, and config.
 ///
 /// Priority: flag → env → config `default_format` → Human (as string `"human"`).
@@ -283,6 +316,11 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
         "plan_review" => config.plan_review.map(|b| b.to_string()),
         "dispatch.verify" => config.dispatch.as_ref().and_then(|d| d.verify.clone()),
+        "gates.reviewed" => config
+            .gates
+            .as_ref()
+            .and_then(|g| g.reviewed)
+            .map(|b| b.to_string()),
         // NOTE: a malformed RDM_SERVER_QUICK_FILTERS env value is echoed
         // back raw with "(source: environment variable)" by the generic
         // resolution chain in commands/config.rs — a pre-existing quirk of
@@ -362,6 +400,9 @@ pub fn set_config_field(
             }
             config.dispatch.get_or_insert_with(Default::default).verify = Some(cmd.to_string());
         }
+        "gates.reviewed" => {
+            config.gates.get_or_insert_with(Default::default).reviewed = Some(parse_bool(value)?);
+        }
         "root" => bail!("'{key}' can only be set in global config — use --global"),
         _ => bail!(
             "unknown config key: {key} — valid keys: {}",
@@ -394,7 +435,7 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
         "plan_review" => {
             config.plan_review = Some(parse_bool(value)?);
         }
-        "server.quick_filters" | "dispatch.verify" => {
+        "server.quick_filters" | "dispatch.verify" | "gates.reviewed" => {
             bail!("'{key}' can only be set in repo config — omit --global")
         }
         _ => bail!(

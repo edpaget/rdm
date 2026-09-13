@@ -63,6 +63,7 @@ fn write_and_load_phase() {
             difficulty: None,
             model: None,
             blocked_reason: None,
+            gate_override: None,
         },
         body: "## Steps\n\n1. Do things.\n".to_string(),
     };
@@ -97,6 +98,7 @@ fn write_and_load_task() {
             review_sha: None,
             review_branch: None,
             close_reason: None,
+            gate_override: None,
         },
         body: "Details.\n".to_string(),
     };
@@ -3078,6 +3080,7 @@ fn promote_task_to_roadmap() {
             review_sha: None,
             review_branch: None,
             close_reason: None,
+            gate_override: None,
         },
         body: "Task body content.\n".to_string(),
     };
@@ -3186,6 +3189,7 @@ fn consolidate_appends_phase_with_number_body_tags_and_provenance() {
             review_sha: None,
             review_branch: None,
             close_reason: None,
+            gate_override: None,
         },
         body: "Original task body.".to_string(),
     };
@@ -3420,6 +3424,7 @@ fn consolidate_already_terminal_task_errors() {
                 review_sha: None,
                 review_branch: None,
                 close_reason: None,
+                gate_override: None,
             },
             body: "Body.".to_string(),
         };

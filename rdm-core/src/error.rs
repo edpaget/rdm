@@ -62,6 +62,39 @@ pub enum Error {
         /// Every approved plan, as a `rdm:plan/<slug>` reference.
         candidates: Vec<String>,
     },
+    /// The `reviewed` transition gate refused: the item has no `approved`
+    /// implementation plan. Carries the item's label.
+    GateNoApprovedPlan(String),
+    /// The `reviewed` transition gate refused: the item has at least one
+    /// `approved` plan, but none of them is named by an approving `change/`
+    /// review's `implements`.
+    GateNoApprovedChangeReview {
+        /// Label of the item being transitioned.
+        item: String,
+        /// Every approved plan that was checked, as a `plan/<slug>` reference.
+        plans: Vec<String>,
+    },
+    /// The `reviewed` transition gate refused: the item's worktree has
+    /// uncommitted changes.
+    GateWorktreeDirty {
+        /// Absolute path of the dirty worktree.
+        path: String,
+        /// The uncommitted paths, already capped.
+        paths: Vec<String>,
+        /// How many further uncommitted paths the cap dropped.
+        truncated: usize,
+    },
+    /// The `reviewed` transition gate refused: the item's worktree could not
+    /// be observed at all. Fail-closed — an unobservable worktree is never a
+    /// clean one.
+    GateWorktreeUnobservable {
+        /// Label of the item being transitioned.
+        item: String,
+        /// What went wrong when probing the worktree.
+        cause: String,
+    },
+    /// `--override-gate` was passed an empty or whitespace-only reason.
+    GateOverrideEmptyReason,
     /// The plan a new plan would supersede does not exist.
     PlanSupersedesMissing(String),
     /// A plan's `supersedes` named a reference kind that is not a plan
@@ -432,6 +465,68 @@ impl std::fmt::Display for Error {
                     "{item} has {} approved plans, so the implemented plan is ambiguous — pass --implements with one of: {}",
                     candidates.len(),
                     candidates.join(", ")
+                )
+            }
+            Error::GateNoApprovedPlan(item) => {
+                write!(
+                    f,
+                    "refusing to mark {item} reviewed: no approved implementation plan implements it — \
+                     write one with `rdm plan create <slug> --implements {item}`, then approve it with \
+                     `rdm review start --on plan/<slug>` and `rdm review submit <id> --verdict approve` \
+                     (or bypass the record checks with `--override-gate \"<reason>\"`)"
+                )
+            }
+            Error::GateNoApprovedChangeReview { item, plans } => {
+                write!(
+                    f,
+                    "refusing to mark {item} reviewed: no approving change review implements {} — \
+                     record one with `rdm review start --on change/HEAD --implements plan/{}`, then \
+                     `rdm review submit <id> --verdict approve` (or bypass the record checks with \
+                     `--override-gate \"<reason>\"`). Checked: {}",
+                    if plans.len() == 1 {
+                        format!("plan/{}", plans[0])
+                    } else {
+                        format!("any of its {} approved plans", plans.len())
+                    },
+                    plans.first().map_or("<slug>", String::as_str),
+                    plans
+                        .iter()
+                        .map(|p| format!("plan/{p}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            }
+            Error::GateWorktreeDirty {
+                path,
+                paths,
+                truncated,
+            } => {
+                let more = if *truncated > 0 {
+                    format!(" …and {truncated} more")
+                } else {
+                    String::new()
+                };
+                write!(
+                    f,
+                    "refusing to mark this item reviewed: worktree {path} has uncommitted changes: {}{more} — \
+                     commit or stash them, then retry. `--override-gate` does NOT bypass this check: it waives \
+                     the plan and change-review records only.",
+                    paths.join(", ")
+                )
+            }
+            Error::GateWorktreeUnobservable { item, cause } => {
+                write!(
+                    f,
+                    "refusing to mark {item} reviewed: its worktree could not be inspected ({cause}) — \
+                     an unobservable worktree is never a clean one. Fix the repository (or run from the \
+                     project checkout), then retry. `--override-gate` does NOT bypass this check."
+                )
+            }
+            Error::GateOverrideEmptyReason => {
+                write!(
+                    f,
+                    "--override-gate requires a non-empty reason — it is recorded on the item as the \
+                     audit trail for the bypass, e.g. --override-gate \"hotfix: plan filed retroactively\""
                 )
             }
             Error::PlanSupersedesMissing(slug) => {

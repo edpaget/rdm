@@ -1014,6 +1014,7 @@ mod tests {
                 difficulty: None,
                 model: None,
                 blocked_reason: None,
+                gate_override: None,
             },
             body: body.to_string(),
         };
@@ -1034,6 +1035,7 @@ mod tests {
                 review_sha: None,
                 review_branch: None,
                 close_reason: None,
+                gate_override: None,
             },
             body: body.to_string(),
         };

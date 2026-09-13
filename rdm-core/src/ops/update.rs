@@ -7,7 +7,7 @@
 //! matchable [`Error::ConflictingUpdate`].
 
 use crate::error::{Error, Result};
-use crate::model::{Difficulty, ModelTier, Priority};
+use crate::model::{Difficulty, GateOverride, ModelTier, Priority};
 
 /// How an update should treat a document's markdown body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,6 +323,62 @@ impl ReasonUpdate {
     }
 }
 
+/// How an update should treat a phase's or task's recorded gate override.
+///
+/// Unlike its siblings this is not a user-facing keep/set/clear protocol — no
+/// flag maps onto it directly. It is how the `reviewed` transition gate
+/// communicates its decision down into the single write that applies the
+/// status change, so the override is stamped (or dropped) *in lockstep* with
+/// the status rather than in a second write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GateOverrideUpdate {
+    /// Leave the recorded override exactly as it is.
+    Keep,
+    /// Record this override — an operator bypassed the gate's record checks
+    /// on this very transition.
+    Set(GateOverride),
+    /// Drop any recorded override unconditionally.
+    ///
+    /// What a *satisfied* gate passes: the write is authorized by real plan
+    /// and change-review records now, so a previously recorded bypass is no
+    /// longer operative and must not keep claiming otherwise in `phase show`.
+    Clear,
+    /// Drop the override on any status change **away from** `reviewed`, and
+    /// preserve it otherwise.
+    ///
+    /// This is what the ungated primitives pass, so the restamp, `Done:`-hook
+    /// and merge paths clear it too: an override authorizes exactly the
+    /// `reviewed` write it was made for, and can never be reused to authorize
+    /// a later one.
+    ClearOnLeavingReviewed,
+}
+
+impl GateOverrideUpdate {
+    /// Applies this update to an item's `gate_override` in place, given
+    /// whether the status write being applied lands on `reviewed`.
+    ///
+    /// `status_changed` is `false` for a `status: None` update, which
+    /// preserves the existing override just as it preserves every other
+    /// status-coupled field.
+    pub(crate) fn apply(
+        self,
+        slot: &mut Option<GateOverride>,
+        status_changed: bool,
+        lands_on_reviewed: bool,
+    ) {
+        match self {
+            GateOverrideUpdate::Keep => {}
+            GateOverrideUpdate::Set(o) => *slot = Some(o),
+            GateOverrideUpdate::Clear => *slot = None,
+            GateOverrideUpdate::ClearOnLeavingReviewed => {
+                if status_changed && !lands_on_reviewed {
+                    *slot = None;
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,5 +557,56 @@ mod tests {
 
         ModelTierUpdate::Clear.apply(&mut m);
         assert_eq!(m, None);
+    }
+
+    fn an_override() -> GateOverride {
+        GateOverride {
+            reason: "operator: hotfix".to_string(),
+            actor: "alice".to_string(),
+            at: chrono::NaiveDate::from_ymd_opt(2026, 9, 13).unwrap(),
+        }
+    }
+
+    #[test]
+    fn gate_override_keep_never_touches_the_slot() {
+        let mut slot = Some(an_override());
+        GateOverrideUpdate::Keep.apply(&mut slot, true, false);
+        assert!(slot.is_some());
+        let mut slot = None;
+        GateOverrideUpdate::Keep.apply(&mut slot, true, true);
+        assert!(slot.is_none());
+    }
+
+    #[test]
+    fn gate_override_clear_drops_it_unconditionally() {
+        let mut slot = Some(an_override());
+        GateOverrideUpdate::Clear.apply(&mut slot, true, true);
+        assert!(slot.is_none());
+    }
+
+    #[test]
+    fn gate_override_set_stamps_the_override() {
+        let mut slot = None;
+        GateOverrideUpdate::Set(an_override()).apply(&mut slot, true, true);
+        assert_eq!(slot.as_ref().unwrap().actor, "alice");
+    }
+
+    #[test]
+    fn clear_on_leaving_reviewed_drops_only_on_a_move_away_from_reviewed() {
+        // A status change away from `reviewed` drops it.
+        let mut slot = Some(an_override());
+        GateOverrideUpdate::ClearOnLeavingReviewed.apply(&mut slot, true, false);
+        assert!(slot.is_none(), "a stale override must never survive");
+
+        // A status change that lands ON `reviewed` preserves it (the gated
+        // entry will have replaced it with `Set` when it is a fresh bypass).
+        let mut slot = Some(an_override());
+        GateOverrideUpdate::ClearOnLeavingReviewed.apply(&mut slot, true, true);
+        assert!(slot.is_some());
+
+        // `status: None` preserves it, like every other status-coupled field.
+        let mut slot = Some(an_override());
+        GateOverrideUpdate::ClearOnLeavingReviewed.apply(&mut slot, false, false);
+        assert!(slot.is_some());
     }
 }

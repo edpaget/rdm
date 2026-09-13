@@ -27,6 +27,25 @@ use crate::templates::{QuickFilterView, quick_filter_views};
 pub type StoreFactory =
     Arc<dyn Fn(&Path, Option<&SessionId>) -> Box<dyn VersionedStore + Send + Sync> + Send + Sync>;
 
+/// Whether this plan repo enforces the core `reviewed` transition gate.
+///
+/// Read from `<plan_root>/rdm.toml`'s repo-only `gates.reviewed` key on each
+/// mutation rather than cached at boot, so an operator toggling the gate does
+/// not have to restart a long-lived server. Defaults to `false` — the gate is
+/// opt-in, and a malformed or missing config must never silently enable it.
+///
+/// The server passes no worktree probe, so the gate's cleanliness precondition
+/// is a documented skip here: an HTTP request carries no project checkout to
+/// inspect.
+#[must_use]
+pub fn reviewed_gate_enabled(plan_root: &std::path::Path) -> bool {
+    std::fs::read_to_string(plan_root.join("rdm.toml"))
+        .ok()
+        .and_then(|c| rdm_core::config::Config::from_toml(&c).ok())
+        .and_then(|c| c.gates.and_then(|g| g.reviewed))
+        .unwrap_or(false)
+}
+
 /// Shared application state for the rdm server.
 #[derive(Clone)]
 pub struct AppState {

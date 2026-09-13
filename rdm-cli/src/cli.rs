@@ -272,6 +272,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: WorktreeCommand,
     },
+    /// Resolve and run the project's configured verification command.
+    #[cfg(feature = "git")]
+    Verify {
+        #[command(subcommand)]
+        command: VerifyCommand,
+    },
     /// Inspect this session's changeset identity and journal.
     Session {
         #[command(subcommand)]
@@ -774,6 +780,15 @@ pub(crate) enum PhaseCommand {
         /// Git commit SHA to associate with phase completion.
         #[arg(long)]
         commit: Option<String>,
+        /// Operator bypass of the `reviewed` gate's record checks, with the
+        /// reason recorded on the phase.
+        ///
+        /// Waives the approved-plan and approving-change-review preconditions
+        /// only — a dirty worktree still refuses. Requires
+        /// `--status reviewed`. For humans: no rdm skill or workflow ever
+        /// passes it.
+        #[arg(long, value_name = "REASON")]
+        override_gate: Option<String>,
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,
@@ -966,6 +981,15 @@ pub(crate) enum TaskCommand {
         /// Remove the recorded close reason from this task.
         #[arg(long, conflicts_with = "reason")]
         clear_reason: bool,
+        /// Operator bypass of the `reviewed` gate's record checks, with the
+        /// reason recorded on the task.
+        ///
+        /// Waives the approved-plan and approving-change-review preconditions
+        /// only — a dirty worktree still refuses. Requires
+        /// `--status reviewed`. For humans: no rdm skill or workflow ever
+        /// passes it.
+        #[arg(long, value_name = "REASON")]
+        override_gate: Option<String>,
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,
@@ -1363,6 +1387,39 @@ impl From<ReviewTransitionArg> for rdm_core::ops::reviews::ReviewTransition {
 ///
 /// Every subcommand is read-only except `adopt`, `discard`, and `gc`, and none
 /// of them touch plan data — session state lives outside the committable tree.
+/// Subcommands of `rdm verify`, the CLI surface over the repo-only
+/// `dispatch.verify` key (see `docs/verify-gate.md`).
+#[derive(Subcommand)]
+pub(crate) enum VerifyCommand {
+    /// Report the configured verification command, or `unresolved`.
+    ///
+    /// Always exits 0 — this is a query. Callers key off the `resolved` field
+    /// of `--format json`, never off the process exit code.
+    Resolve {
+        /// Project to resolve against.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Run the configured verification command and report its result.
+    ///
+    /// Exit codes: 2 when no command is configured; the command's own exit
+    /// code once it runs (so `rdm verify run && …` composes); 1 when the
+    /// command was killed by a signal — fail-closed, because an unrunnable
+    /// verification is never a pass. A command that legitimately exits 2 is
+    /// indistinguishable from `unresolved` by exit code alone, which is why
+    /// the JSON payload's `resolved` field is the contract.
+    Run {
+        /// Plan item whose worktree to run in (`<roadmap>/<phase>`,
+        /// `task/<slug>`, or a bare `<roadmap>`). Omit to run in the current
+        /// directory.
+        #[arg(long)]
+        item: Option<String>,
+        /// Project the item belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
 #[derive(Subcommand)]
 pub(crate) enum SessionCommand {
     /// Print this session's changeset id (add `--format json` for the rung and

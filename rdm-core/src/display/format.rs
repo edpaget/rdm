@@ -209,6 +209,9 @@ fn build_phase_detail(
             if let Some(reason) = &fm.blocked_reason {
                 items.push(meta_bullet("Blocked reason", reason));
             }
+            if let Some(o) = &fm.gate_override {
+                items.push(meta_bullet("Gate override", &gate_override_label(o)));
+            }
             if let Some(date) = fm.completed {
                 items.push(meta_bullet("Completed", &date.to_string()));
             }
@@ -238,6 +241,9 @@ fn build_phase_detail(
             if let Some(reason) = &fm.blocked_reason {
                 d.paragraph(&format!("Blocked reason: {reason}"));
             }
+            if let Some(o) = &fm.gate_override {
+                d.paragraph(&format!("Gate override: {}", gate_override_label(o)));
+            }
             if let Some(date) = fm.completed {
                 d.paragraph(&format!("Completed: {date}"));
             }
@@ -259,6 +265,15 @@ fn build_phase_detail(
     }
 
     d
+}
+
+/// Renders a recorded gate override as the single line both the phase and task
+/// detail views show: `<reason> (by <actor>, <date>)`.
+///
+/// Kept as one function so the two views (and the markdown/terminal flavors of
+/// each) can never drift into describing an audited bypass differently.
+fn gate_override_label(o: &crate::model::GateOverride) -> String {
+    format!("{} (by {}, {})", o.reason, o.actor, o.at)
 }
 
 /// Renders a `Plans:` metadata value — `slug (status)`, comma-joined — or
@@ -527,6 +542,9 @@ fn build_task_detail(
             if let Some(reason) = &fm.close_reason {
                 items.push(meta_bullet("Close reason", reason));
             }
+            if let Some(o) = &fm.gate_override {
+                items.push(meta_bullet("Gate override", &gate_override_label(o)));
+            }
             if let Some(tags) = &fm.tags {
                 items.push(meta_bullet("Tags", &tags.join(", ")));
             }
@@ -551,6 +569,9 @@ fn build_task_detail(
             }
             if let Some(reason) = &fm.close_reason {
                 d.paragraph(&format!("Close reason: {reason}"));
+            }
+            if let Some(o) = &fm.gate_override {
+                d.paragraph(&format!("Gate override: {}", gate_override_label(o)));
             }
             if let Some(tags) = &fm.tags {
                 d.paragraph(&format!("Tags: {}", tags.join(", ")));
@@ -1318,6 +1339,7 @@ mod tests {
                 difficulty: None,
                 model: None,
                 blocked_reason: None,
+                gate_override: None,
             },
             body: String::new(),
         }
@@ -1361,6 +1383,7 @@ mod tests {
                 review_sha: None,
                 review_branch: None,
                 close_reason: None,
+                gate_override: None,
             },
             body: String::new(),
         }

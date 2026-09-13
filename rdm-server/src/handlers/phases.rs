@@ -402,8 +402,17 @@ pub async fn update_phase(
     let mut store = state.store();
     let stem = rdm_core::ops::phase::resolve_phase_stem(&store, &project, &roadmap, &phase_id)
         .map_err(|e| error_response(e, format))?;
+    // The server accepts a caller-supplied status, so it can reach `reviewed`
+    // and must go through the gated entry. No worktree probe: an HTTP request
+    // carries no project checkout, so the gate's cleanliness precondition is a
+    // documented skip here — (a) and (b) still apply.
+    let gate = if crate::state::reviewed_gate_enabled(&state.plan_root) {
+        rdm_core::ops::ReviewedGate::enforcing(None)
+    } else {
+        rdm_core::ops::ReviewedGate::disabled()
+    };
     let doc = rdm_core::ops::mutate(&mut store, |s| {
-        rdm_core::ops::phase::update_phase(
+        rdm_core::ops::phase::update_phase_gated(
             s,
             &project,
             &roadmap,
@@ -415,6 +424,7 @@ pub async fn update_phase(
             None,
             None,
             rdm_core::ops::TitleUpdate::Keep,
+            &gate,
         )
     })
     .map_err(|e| error_response(e, format))?;
