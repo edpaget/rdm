@@ -93,10 +93,12 @@ fn normalize(store: &impl Store, project: &str, item_ref: &ItemRef) -> Result<It
 ///
 /// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
 /// [`Error::PlanExists`] if a plan with the same slug already exists,
-/// [`Error::PlanImplementsInvalidKind`] if `implements` (or `supersedes`)
-/// names a reference kind that cannot be used there,
+/// [`Error::PlanImplementsInvalidKind`] if `implements` names a reference
+/// kind that cannot be implemented by a plan,
 /// [`Error::PlanImplementsMissing`] if the implemented phase or task does
-/// not exist, [`Error::PlanSupersedesSelf`] if the plan names itself,
+/// not exist, [`Error::PlanSupersedesInvalidKind`] if `supersedes` names
+/// anything other than a `plan/<slug>` reference,
+/// [`Error::PlanSupersedesSelf`] if the plan names itself,
 /// [`Error::PlanSupersedesMissing`] if the superseded plan does not exist,
 /// [`Error::Io`] if file creation fails, or [`Error::FrontmatterParse`] if
 /// frontmatter serialization fails.
@@ -140,7 +142,7 @@ pub fn create_plan(store: &mut impl Store, req: CreatePlan<'_>) -> Result<Docume
             slug: predecessor, ..
         } = target
         else {
-            return Err(Error::PlanImplementsInvalidKind(target.label()));
+            return Err(Error::PlanSupersedesInvalidKind(target.label()));
         };
         if predecessor == slug {
             return Err(Error::PlanSupersedesSelf(slug.to_string()));
@@ -673,9 +675,14 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, Error::PlanImplementsInvalidKind(_)),
+            matches!(err, Error::PlanSupersedesInvalidKind(_)),
             "{err:?}"
         );
+        // The rendered message must name the flag that was actually wrong:
+        // `--implements` was fine here, only `--supersedes` was not.
+        let rendered = err.to_string();
+        assert!(rendered.contains("--supersedes plan/<slug>"), "{rendered}");
+        assert!(!rendered.contains("--implements"), "{rendered}");
     }
 
     #[test]

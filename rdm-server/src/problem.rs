@@ -89,7 +89,9 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(err.to_string()),
                 instance: None,
             },
-            Error::PlanImplementsInvalidKind(_) | Error::PlanSupersedesSelf(_) => ProblemDetail {
+            Error::PlanImplementsInvalidKind(_)
+            | Error::PlanSupersedesInvalidKind(_)
+            | Error::PlanSupersedesSelf(_) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Bad Request".to_string(),
                 status: 400,

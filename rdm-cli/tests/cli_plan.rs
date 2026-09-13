@@ -297,6 +297,37 @@ fn plan_create_rejects_a_malformed_implements_reference() {
 }
 
 #[test]
+fn plan_create_rejects_a_non_plan_supersedes_kind() {
+    let dir = init_repo();
+    create_plan(&dir, "impl-auth", "task/fix-login");
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "plan",
+            "create",
+            "impl-auth-v2",
+            "--implements",
+            "task/fix-login",
+            "--supersedes",
+            "task/fix-login",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        // The message must name the flag that was actually wrong. Here
+        // `--implements` was valid and only `--supersedes` was not, so
+        // pointing the reader at `--implements` would misdirect them.
+        .stderr(
+            predicate::str::contains("is not a plan and cannot be superseded")
+                .and(predicate::str::contains("--supersedes plan/<slug>"))
+                .and(predicate::str::contains("--implements").not()),
+        );
+}
+
+#[test]
 fn plan_create_supersedes_flips_the_predecessor() {
     let dir = init_repo();
     create_plan(&dir, "impl-v1", "task/fix-login");
@@ -322,6 +353,136 @@ fn plan_create_supersedes_flips_the_predecessor() {
     assert_eq!(v1["status"], "superseded");
     assert_eq!(v2["status"], "draft");
     assert_eq!(v2["supersedes"], "rdm:plan/impl-v1");
+}
+
+fn stdout_of(dir: &TempDir, args: &[&str]) -> String {
+    let out = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(args)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn plan_show_and_list_render_markdown() {
+    let dir = init_repo();
+    create_plan(&dir, "impl-auth", "task/fix-login");
+
+    let show = stdout_of(
+        &dir,
+        &[
+            "plan",
+            "show",
+            "impl-auth",
+            "--project",
+            "fbm",
+            "--format",
+            "markdown",
+        ],
+    );
+    assert!(show.starts_with("# impl-auth"), "{show}");
+    assert!(show.contains("- **Slug:** impl-auth"), "{show}");
+    assert!(show.contains("- **Status:** draft"), "{show}");
+    assert!(
+        show.contains("- **Implements:** rdm:task/fix-login"),
+        "{show}"
+    );
+    assert!(show.contains("## Approach"), "{show}");
+
+    let list = stdout_of(
+        &dir,
+        &["plan", "list", "--project", "fbm", "--format", "markdown"],
+    );
+    assert!(list.contains("## Plans"), "{list}");
+    assert!(
+        list.contains("| Slug | Title | Status | Implements |"),
+        "{list}"
+    );
+    assert!(list.contains("rdm:task/fix-login"), "{list}");
+}
+
+#[test]
+fn phase_and_task_show_render_a_markdown_plans_bullet() {
+    let dir = init_repo();
+    create_plan(&dir, "impl-auth", "task/fix-login");
+    create_plan(&dir, "impl-design", "phase/auth/phase-1-design");
+
+    let task_md = stdout_of(
+        &dir,
+        &[
+            "task",
+            "show",
+            "fix-login",
+            "--project",
+            "fbm",
+            "--format",
+            "markdown",
+        ],
+    );
+    assert!(
+        task_md.contains("- **Plans:** impl-auth (draft)"),
+        "{task_md}"
+    );
+
+    let phase_md = stdout_of(
+        &dir,
+        &[
+            "phase",
+            "show",
+            "phase-1-design",
+            "--roadmap",
+            "auth",
+            "--project",
+            "fbm",
+            "--format",
+            "markdown",
+        ],
+    );
+    assert!(
+        phase_md.contains("- **Plans:** impl-design (draft)"),
+        "{phase_md}"
+    );
+
+    // The bullet is absent when nothing implements the item.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "build",
+            "--title",
+            "Build",
+            "--number",
+            "2",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+    let other_md = stdout_of(
+        &dir,
+        &[
+            "phase",
+            "show",
+            "phase-2-build",
+            "--roadmap",
+            "auth",
+            "--project",
+            "fbm",
+            "--format",
+            "markdown",
+        ],
+    );
+    assert!(!other_md.contains("**Plans:**"), "{other_md}");
 }
 
 #[test]

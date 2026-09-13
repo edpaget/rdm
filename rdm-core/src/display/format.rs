@@ -1231,8 +1231,9 @@ pub fn format_link_check_report(report: &crate::json::LinkCheckReportJson) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{PhaseStatus, Priority, TaskStatus};
-    use chrono::NaiveDate;
+    use crate::link::ItemRef;
+    use crate::model::{PhaseStatus, PlanStatus, Priority, TaskStatus};
+    use chrono::{DateTime, NaiveDate};
 
     fn make_phase_doc(num: u32, title: &str, status: PhaseStatus) -> Document<Phase> {
         Document {
@@ -2157,5 +2158,222 @@ mod tests {
         // labels — the diagnostic is the only broken finding.
         assert!(!out.contains("dangling link in"), "{out}");
         assert!(!out.contains("missing at rev in"), "{out}");
+    }
+
+    fn make_plan_doc(
+        slug: &str,
+        title: &str,
+        status: PlanStatus,
+        implements: ItemRef,
+        supersedes: Option<ItemRef>,
+    ) -> Document<Plan> {
+        Document {
+            frontmatter: Plan {
+                project: "fbm".to_string(),
+                plan: slug.to_string(),
+                title: title.to_string(),
+                implements,
+                supersedes,
+                status,
+                created: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+                updated: NaiveDate::from_ymd_opt(2026, 3, 16).unwrap(),
+            },
+            body: "Plan body.".to_string(),
+        }
+    }
+
+    fn make_plan_review_doc(id: &str, plan_slug: &str) -> Document<Review> {
+        Document {
+            frontmatter: Review {
+                id: id.to_string(),
+                author: "reviewer".to_string(),
+                target: ReviewTarget::Plan {
+                    slug: plan_slug.to_string(),
+                },
+                state: ReviewState::Submitted,
+                verdict: Some(Verdict::Approve),
+                created: DateTime::from_timestamp(1_770_000_000, 0).unwrap(),
+                submitted: Some(DateTime::from_timestamp(1_770_000_100, 0).unwrap()),
+                created_commit: None,
+                comments: Vec::new(),
+            },
+            body: String::new(),
+        }
+    }
+
+    #[test]
+    fn plan_detail_md_renders_metadata_bullets_and_body() {
+        let doc = make_plan_doc(
+            "design-auth",
+            "Design auth",
+            PlanStatus::Approved,
+            ItemRef::Phase {
+                roadmap: "auth".to_string(),
+                stem: "phase-1-design".to_string(),
+            },
+            Some(ItemRef::Plan {
+                slug: "design-auth-v0".to_string(),
+            }),
+        );
+        let md = format_plan_detail_md("design-auth", &doc, &[]);
+        assert!(md.starts_with("# Design auth"), "{md}");
+        assert!(md.contains("- **Slug:** design-auth"), "{md}");
+        assert!(md.contains("- **Status:** approved"), "{md}");
+        assert!(
+            md.contains("- **Implements:** rdm:phase/auth/phase-1-design"),
+            "{md}"
+        );
+        assert!(
+            md.contains("- **Supersedes:** rdm:plan/design-auth-v0"),
+            "{md}"
+        );
+        assert!(md.contains("- **Created:** 2026-03-15"), "{md}");
+        assert!(md.contains("- **Updated:** 2026-03-16"), "{md}");
+        // No reviews passed, so the bullet is omitted entirely.
+        assert!(!md.contains("**Reviews:**"), "{md}");
+        assert!(md.contains("Plan body."), "{md}");
+    }
+
+    #[test]
+    fn plan_detail_md_omits_supersedes_and_renders_reviews() {
+        let doc = make_plan_doc(
+            "design-auth",
+            "Design auth",
+            PlanStatus::Draft,
+            ItemRef::Task {
+                slug: "fix-login".to_string(),
+            },
+            None,
+        );
+        let reviews = vec![(
+            "2026-07-01-1430-a1b2".to_string(),
+            make_plan_review_doc("2026-07-01-1430-a1b2", "design-auth"),
+        )];
+        let md = format_plan_detail_md("design-auth", &doc, &reviews);
+        assert!(!md.contains("**Supersedes:**"), "{md}");
+        assert!(md.contains("- **Implements:** rdm:task/fix-login"), "{md}");
+        assert!(
+            md.contains("- **Reviews:** 2026-07-01-1430-a1b2 (submitted/approve)"),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn plan_list_md_renders_a_table_under_a_heading() {
+        let plans = vec![
+            (
+                "design-auth".to_string(),
+                make_plan_doc(
+                    "design-auth",
+                    "Design auth",
+                    PlanStatus::Approved,
+                    ItemRef::Task {
+                        slug: "fix-login".to_string(),
+                    },
+                    None,
+                ),
+            ),
+            (
+                "design-search".to_string(),
+                make_plan_doc(
+                    "design-search",
+                    "Design search",
+                    PlanStatus::Draft,
+                    ItemRef::Phase {
+                        roadmap: "search".to_string(),
+                        stem: "phase-2-index".to_string(),
+                    },
+                    None,
+                ),
+            ),
+        ];
+        let md = format_plan_list_md(&plans);
+        assert!(md.contains("## Plans"), "{md}");
+        // Column order must stay slug, title, status, implements.
+        let header = md
+            .lines()
+            .find(|l| l.contains("Slug"))
+            .unwrap_or_else(|| panic!("no header row in:\n{md}"));
+        let cols: Vec<&str> = header.trim_matches('|').split('|').map(str::trim).collect();
+        assert_eq!(cols, vec!["Slug", "Title", "Status", "Implements"], "{md}");
+        assert!(md.contains("rdm:task/fix-login"), "{md}");
+        assert!(md.contains("rdm:phase/search/phase-2-index"), "{md}");
+        assert!(md.contains("approved"), "{md}");
+        assert!(md.contains("draft"), "{md}");
+    }
+
+    #[test]
+    fn plan_list_md_reports_the_empty_case() {
+        let md = format_plan_list_md(&[]);
+        assert!(md.contains("No plans found."), "{md}");
+        assert!(!md.contains("## Plans"), "{md}");
+    }
+
+    #[test]
+    fn phase_detail_md_with_plans_adds_a_plans_bullet_only_when_populated() {
+        let doc = make_phase_doc(1, "Design", PhaseStatus::InProgress);
+        let empty = format_phase_detail_md_with_plans("phase-1-design", &doc, None, &[]);
+        assert!(!empty.contains("**Plans:**"), "{empty}");
+        // With no plans the output must match the plain markdown formatter.
+        assert_eq!(empty, format_phase_detail_md("phase-1-design", &doc, None));
+
+        let plans = vec![(
+            "design-auth".to_string(),
+            make_plan_doc(
+                "design-auth",
+                "Design auth",
+                PlanStatus::Approved,
+                ItemRef::Phase {
+                    roadmap: "auth".to_string(),
+                    stem: "phase-1-design".to_string(),
+                },
+                None,
+            ),
+        )];
+        let populated = format_phase_detail_md_with_plans("phase-1-design", &doc, None, &plans);
+        assert!(
+            populated.contains("- **Plans:** design-auth (approved)"),
+            "{populated}"
+        );
+    }
+
+    #[test]
+    fn task_detail_md_with_plans_adds_a_plans_bullet_only_when_populated() {
+        let doc = make_task_doc("Fix login", TaskStatus::Open, Priority::Medium, None);
+        let empty = format_task_detail_md_with_plans("fix-login", &doc, None, &[]);
+        assert!(!empty.contains("**Plans:**"), "{empty}");
+        assert_eq!(empty, format_task_detail_md("fix-login", &doc, None));
+
+        let plans = vec![
+            (
+                "design-auth".to_string(),
+                make_plan_doc(
+                    "design-auth",
+                    "Design auth",
+                    PlanStatus::Draft,
+                    ItemRef::Task {
+                        slug: "fix-login".to_string(),
+                    },
+                    None,
+                ),
+            ),
+            (
+                "design-auth-v2".to_string(),
+                make_plan_doc(
+                    "design-auth-v2",
+                    "Design auth v2",
+                    PlanStatus::Superseded,
+                    ItemRef::Task {
+                        slug: "fix-login".to_string(),
+                    },
+                    None,
+                ),
+            ),
+        ];
+        let populated = format_task_detail_md_with_plans("fix-login", &doc, None, &plans);
+        assert!(
+            populated.contains("- **Plans:** design-auth (draft), design-auth-v2 (superseded)"),
+            "{populated}"
+        );
     }
 }

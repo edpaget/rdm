@@ -45,6 +45,9 @@ pub enum Error {
     PlanImplementsInvalidKind(String),
     /// The plan a new plan would supersede does not exist.
     PlanSupersedesMissing(String),
+    /// A plan's `supersedes` named a reference kind that is not a plan
+    /// (only `plan/<slug>` can be superseded).
+    PlanSupersedesInvalidKind(String),
     /// A plan named itself in its own `supersedes` field.
     PlanSupersedesSelf(String),
     /// The specified review was not found.
@@ -335,6 +338,12 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "superseded plan not found: {slug} — pass --supersedes plan/<slug> naming an existing plan"
+                )
+            }
+            Error::PlanSupersedesInvalidKind(label) => {
+                write!(
+                    f,
+                    "'{label}' is not a plan and cannot be superseded — pass --supersedes plan/<slug> naming an existing plan"
                 )
             }
             Error::PlanSupersedesSelf(slug) => {
