@@ -16,6 +16,9 @@ pub mod links;
 pub mod next;
 /// Phase operations: list, create, update, remove, resolve.
 pub mod phase;
+/// Implementation-plan operations: create, list, update, delete, and the
+/// review-derived status flips.
+pub mod plan;
 /// Project operations: create, list.
 pub mod project;
 /// Review operations: enumerate items awaiting review.

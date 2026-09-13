@@ -79,6 +79,7 @@ pub fn describe_path(path: &str) -> String {
     };
     let described = match rest {
         ["tasks", file] => file.strip_suffix(".md").map(|s| format!("task/{s}")),
+        ["plans", file] => file.strip_suffix(".md").map(|s| format!("plan/{s}")),
         ["reviews", file] => file.strip_suffix(".md").map(|s| format!("review/{s}")),
         ["roadmaps", roadmap, "roadmap.md"] => Some(format!("roadmap/{roadmap}")),
         ["roadmaps", roadmap, file] => file
@@ -125,6 +126,16 @@ pub fn tasks_dir(project: &str) -> RelPath {
 /// Returns the path to a task file.
 pub fn task_path(project: &str, task_slug: &str) -> RelPath {
     RelPath::new(&format!("projects/{project}/tasks/{task_slug}.md")).expect("valid path")
+}
+
+/// Returns the path to a project's implementation-plans directory.
+pub fn plans_dir(project: &str) -> RelPath {
+    RelPath::new(&format!("projects/{project}/plans")).expect("valid path")
+}
+
+/// Returns the path to an implementation-plan file.
+pub fn plan_path(project: &str, plan_slug: &str) -> RelPath {
+    RelPath::new(&format!("projects/{project}/plans/{plan_slug}.md")).expect("valid path")
 }
 
 /// Returns the path to a project's reviews directory.
@@ -197,6 +208,10 @@ mod tests {
             describe_path(review_path("rdm", "rv-abc123").as_str()),
             "review/rv-abc123"
         );
+        assert_eq!(
+            describe_path(plan_path("rdm", "impl-auth-v2").as_str()),
+            "plan/impl-auth-v2"
+        );
 
         // The spellings must match `ReviewTarget::label` exactly, or the CLI
         // ends up with two vocabularies for the same items.
@@ -219,6 +234,13 @@ mod tests {
             ReviewTarget::Phase {
                 roadmap: "auth".to_string(),
                 stem: "phase-1-design".to_string()
+            }
+            .label()
+        );
+        assert_eq!(
+            describe_path(plan_path("rdm", "impl-auth-v2").as_str()),
+            ReviewTarget::Plan {
+                slug: "impl-auth-v2".to_string()
             }
             .label()
         );

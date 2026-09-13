@@ -199,6 +199,9 @@ fn classify_item(store: &impl Store, project: &str, resolved: &Resolved) -> Rend
                 .ok()
                 .map(|doc| doc.frontmatter.status.to_string()),
         ),
+        // A plan has a status, but no rdm-server detail route yet, so it
+        // renders with the bare item class until plan support lands.
+        ItemRef::Plan { .. } => "rdm-link-item".to_string(),
     };
     RenderAction::ItemLink { href, class }
 }
@@ -386,6 +389,17 @@ fn doc_ref_view(store: &impl Store, project: &str, doc: &DocRef) -> Option<Refer
                 ),
                 title: d.frontmatter.title,
                 kind_label: "Task".to_string(),
+            })
+        }
+        DocRef::Plan { slug } => {
+            let d = rdm_core::io::load_plan(store, project, slug).ok()?;
+            Some(ReferencedByEntry {
+                href: crate::review_views::target_detail_href(
+                    project,
+                    &ItemRef::Plan { slug: slug.clone() },
+                ),
+                title: d.frontmatter.title,
+                kind_label: "Plan".to_string(),
             })
         }
         DocRef::Review { id, comment } => {

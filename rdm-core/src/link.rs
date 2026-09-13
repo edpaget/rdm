@@ -1,5 +1,6 @@
 //! The `rdm:` link scheme: item references (`rdm:roadmap/<slug>`,
-//! `rdm:phase/<roadmap-slug>/<stem>`, `rdm:task/<slug>`) and code
+//! `rdm:phase/<roadmap-slug>/<stem>`, `rdm:task/<slug>`,
+//! `rdm:plan/<slug>`) and code
 //! references (`rdm:src/<path>[@<rev>][#L<start>[-L<end>]]`), plus
 //! [`extract_links`] to find them inside a markdown body.
 //!
@@ -16,7 +17,7 @@ use pulldown_cmark::{Event, Options, Parser, Tag};
 use serde::Serialize;
 
 /// A plan item reference (`roadmap/<slug>`, `phase/<roadmap-slug>/<stem>`,
-/// or `task/<slug>`) — syntactically and semantically identical to a
+/// `task/<slug>`, or `plan/<slug>`) — syntactically and semantically identical to a
 /// [`crate::model::ReviewTarget`], so the two share one type rather than
 /// duplicating the grammar.
 pub type ItemRef = crate::model::ReviewTarget;
@@ -24,7 +25,7 @@ pub type ItemRef = crate::model::ReviewTarget;
 /// A parsed `rdm:` link destination.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Link {
-    /// A reference to a roadmap, phase, or task.
+    /// A reference to a roadmap, phase, task, or implementation plan.
     Item(ItemRef),
     /// A reference to a location in the source repository.
     Code {
@@ -45,8 +46,8 @@ pub enum Link {
 pub enum LinkParseError {
     /// The URI did not start with the `rdm:` scheme prefix.
     MissingScheme(String),
-    /// The URI's first path segment was not `roadmap`, `phase`, `task`, or
-    /// `src`.
+    /// The URI's first path segment was not `roadmap`, `phase`, `task`,
+    /// `plan`, or `src`.
     UnknownKind {
         /// The full URI that failed to parse.
         uri: String,
@@ -55,8 +56,8 @@ pub enum LinkParseError {
     },
     /// An `rdm:src/` URI had no path after the `src/` prefix.
     EmptyPath(String),
-    /// An `rdm:roadmap/`, `rdm:phase/`, or `rdm:task/` URI's remainder did
-    /// not match the shared item-reference grammar.
+    /// An `rdm:roadmap/`, `rdm:phase/`, `rdm:task/`, or `rdm:plan/` URI's
+    /// remainder did not match the shared item-reference grammar.
     InvalidItemRef {
         /// The full URI that failed to parse.
         uri: String,
@@ -91,7 +92,7 @@ impl std::fmt::Display for LinkParseError {
             LinkParseError::UnknownKind { uri, kind } => {
                 write!(
                     f,
-                    "unknown link kind '{kind}' in '{uri}' — expected roadmap, phase, task, or src"
+                    "unknown link kind '{kind}' in '{uri}' — expected roadmap, phase, task, plan, or src"
                 )
             }
             LinkParseError::EmptyPath(uri) => {
@@ -120,8 +121,8 @@ impl std::error::Error for LinkParseError {}
 
 /// Parses an `rdm:` URI into a [`Link`].
 ///
-/// Item form: `rdm:<kind>/<ref>` where `<kind>` is `roadmap`, `phase`, or
-/// `task` and `<ref>` follows [`ItemRef`]'s grammar.
+/// Item form: `rdm:<kind>/<ref>` where `<kind>` is `roadmap`, `phase`,
+/// `task`, or `plan` and `<ref>` follows [`ItemRef`]'s grammar.
 ///
 /// Code form: `rdm:src/<path>[@<rev>][#L<start>[-L<end>]]`. The split
 /// assumes a source path never itself contains a literal `@` or `#` — the
@@ -131,7 +132,7 @@ impl std::error::Error for LinkParseError {}
 ///
 /// Returns [`LinkParseError::MissingScheme`] if `uri` does not start with
 /// `rdm:`, [`LinkParseError::UnknownKind`] if the first path segment is not
-/// `roadmap`, `phase`, `task`, or `src`, [`LinkParseError::InvalidItemRef`]
+/// `roadmap`, `phase`, `task`, `plan`, or `src`, [`LinkParseError::InvalidItemRef`]
 /// if an item form's remainder does not match [`ItemRef`]'s grammar,
 /// [`LinkParseError::EmptyPath`] if a `src` form has no path,
 /// [`LinkParseError::InvalidLineRange`] if a `src` form's `#`-fragment is
@@ -143,7 +144,7 @@ pub fn parse(uri: &str) -> Result<Link, LinkParseError> {
         .ok_or_else(|| LinkParseError::MissingScheme(uri.to_string()))?;
     let (kind, remainder) = rest.split_once('/').unwrap_or((rest, ""));
     match kind {
-        "roadmap" | "phase" | "task" => {
+        "roadmap" | "phase" | "task" | "plan" => {
             let item_ref_str = format!("{kind}/{remainder}");
             let item_ref = ItemRef::from_str(&item_ref_str).map_err(|source| {
                 LinkParseError::InvalidItemRef {
@@ -325,6 +326,11 @@ pub enum DocRef {
         /// Task slug.
         slug: String,
     },
+    /// An implementation-plan body.
+    Plan {
+        /// Plan slug.
+        slug: String,
+    },
     /// A review's whole-document summary, or one of its comments.
     Review {
         /// Review id.
@@ -338,7 +344,7 @@ pub enum DocRef {
 /// One reference to a target found while scanning a project for backlinks.
 ///
 /// Ordered (via [`DocRef`]'s derived [`Ord`]) by document kind (roadmap <
-/// phase < task < review), then by the document's own identity (slug/id,
+/// phase < task < plan < review), then by the document's own identity (slug/id,
 /// and comment index within a review), then — as a tiebreaker within the
 /// very same document — by [`Self::byte_range`]'s start, so output is
 /// deterministic across runs.
@@ -402,11 +408,13 @@ pub fn extract_links(body: &str) -> (Vec<(Range<usize>, Link)>, Vec<LinkDiagnost
 /// Roadmap slugs reserved for rdm's own use — never a valid roadmap slug.
 ///
 /// `task` is the `Done:`-line/`rdm hook done-line` prefix
-/// ([`crate::hook::format_done_directive`]); `src` is the `rdm:src/` link
-/// prefix. Both are enforced here as the natural single home for a future
-/// consolidation of `hook::format_done_directive`'s separate ad hoc `task`
-/// check onto this list — not attempted in this phase.
-pub(crate) const RESERVED_ROADMAP_SLUGS: &[&str] = &["task", "src"];
+/// ([`crate::hook::format_done_directive`]); `plan` is the implementation-plan
+/// reference kind (`rdm:plan/<slug>`, `rdm review --on plan/<slug>`); `src` is
+/// the `rdm:src/` link prefix. All three are enforced here as the natural
+/// single home for a future consolidation of
+/// `hook::format_done_directive`'s separate ad hoc `task` check onto this
+/// list — not attempted in this phase.
+pub(crate) const RESERVED_ROADMAP_SLUGS: &[&str] = &["task", "plan", "src"];
 
 /// Whether `slug` is reserved and therefore invalid as a roadmap slug.
 #[must_use]
@@ -679,6 +687,25 @@ mod tests {
     #[test]
     fn task_is_reserved() {
         assert!(is_reserved_roadmap_slug("task"));
+    }
+
+    #[test]
+    fn plan_is_reserved() {
+        // A roadmap literally named `plan` would shadow the `plan/<slug>`
+        // reference kind, exactly as `task` would shadow `task/<slug>`.
+        assert!(is_reserved_roadmap_slug("plan"));
+    }
+
+    #[test]
+    fn parse_plan_item_ref() {
+        let link = parse("rdm:plan/impl-auth-v2").unwrap();
+        assert_eq!(
+            link,
+            Link::Item(ItemRef::Plan {
+                slug: "impl-auth-v2".to_string()
+            })
+        );
+        assert_eq!(link.to_string(), "rdm:plan/impl-auth-v2");
     }
 
     #[test]

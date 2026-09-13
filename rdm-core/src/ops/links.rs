@@ -45,6 +45,7 @@ pub fn resolve_item_link(store: &impl Store, project: &str, target: &ItemRef) ->
     let exists = match target {
         ItemRef::Roadmap { roadmap } => store.exists(&crate::paths::roadmap_path(project, roadmap)),
         ItemRef::Task { slug } => store.exists(&crate::paths::task_path(project, slug)),
+        ItemRef::Plan { slug } => store.exists(&crate::paths::plan_path(project, slug)),
         ItemRef::Phase { roadmap, stem } => {
             let (resolved_stem, found) = resolve_phase_stem_lenient(store, project, roadmap, stem)?;
             found && store.exists(&crate::paths::phase_path(project, roadmap, &resolved_stem))
@@ -116,6 +117,7 @@ pub fn item_ref_path(
     Ok(match target {
         ItemRef::Roadmap { roadmap } => crate::paths::roadmap_path(project, roadmap),
         ItemRef::Task { slug } => crate::paths::task_path(project, slug),
+        ItemRef::Plan { slug } => crate::paths::plan_path(project, slug),
         ItemRef::Phase { roadmap, stem } => {
             let (resolved_stem, _found) =
                 resolve_phase_stem_lenient(store, project, roadmap, stem)?;
@@ -319,7 +321,7 @@ pub fn backlinks(
     Ok(entries)
 }
 
-/// Walks every roadmap, phase, task, and review body (and review comment) in
+/// Walks every roadmap, phase, task, plan, and review body (and review comment) in
 /// `project`, invoking `f` once per document with its [`DocRef`] identity,
 /// its markdown body, and (for a phase or task) its stamped `commit` — the
 /// `containing_commit` [`resolve_link`] needs to resolve a code link's
@@ -369,6 +371,12 @@ where
     for (slug, task_doc) in crate::ops::task::list_tasks(store, project)? {
         let commit = task_doc.frontmatter.commit.clone();
         f(DocRef::Task { slug }, &task_doc.body, commit.as_deref())?;
+    }
+
+    // Plans are visited after tasks and before reviews so `DocRef`'s derived
+    // `Ord` (roadmap < phase < task < plan < review) matches visit order.
+    for (slug, plan_doc) in crate::ops::plan::list_plans(store, project)? {
+        f(DocRef::Plan { slug }, &plan_doc.body, None)?;
     }
 
     for (id, review_doc) in crate::ops::reviews::list_reviews(store, project)? {
@@ -685,6 +693,12 @@ pub fn load_document_body(
             let doc = crate::io::load_task(store, project, slug)?;
             let commit = doc.frontmatter.commit.clone();
             Ok((DocRef::Task { slug: slug.clone() }, doc.body, commit))
+        }
+        ItemRef::Plan { slug } => {
+            let doc = crate::io::load_plan(store, project, slug)?;
+            // A plan stamps no completing commit, so code links inside a plan
+            // body have no containing-commit fallback revision.
+            Ok((DocRef::Plan { slug: slug.clone() }, doc.body, None))
         }
     }
 }

@@ -63,6 +63,39 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("review not found: {id}")),
                 instance: None,
             },
+            // Plans are a CLI-only document kind for now — rdm-server exposes
+            // no plan routes, so these can only surface via a shared code
+            // path. Map them to the same shapes their task/roadmap siblings
+            // use: not-found for a missing document, 409 for a slug clash,
+            // 400 for a rejected reference.
+            Error::PlanNotFound(slug) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Not Found".to_string(),
+                status: 404,
+                detail: Some(format!("plan not found: {slug}")),
+                instance: None,
+            },
+            Error::PlanImplementsMissing(_) | Error::PlanSupersedesMissing(_) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Not Found".to_string(),
+                status: 404,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
+            Error::PlanExists(_) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
+            Error::PlanImplementsInvalidKind(_) | Error::PlanSupersedesSelf(_) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
             Error::ReviewTargetMissing(msg) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Not Found".to_string(),

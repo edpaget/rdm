@@ -855,7 +855,7 @@ pub fn format_review_list_md(reviews: &[(String, Document<Review>)]) -> String {
 
 /// Renders a [`DocRef`](crate::link::DocRef) in the same `<kind>/<id>`
 /// syntax [`ReviewTarget::label`](crate::model::ReviewTarget::label) uses
-/// for the three variants it shares with [`ItemRef`](crate::link::ItemRef),
+/// for the four variants it shares with [`ItemRef`](crate::link::ItemRef),
 /// plus a review-specific rendering distinguishing a whole-review summary
 /// from one of its comments.
 fn format_doc_ref(doc_ref: &crate::link::DocRef) -> String {
@@ -864,6 +864,7 @@ fn format_doc_ref(doc_ref: &crate::link::DocRef) -> String {
         DocRef::Roadmap { roadmap } => format!("roadmap/{roadmap}"),
         DocRef::Phase { roadmap, stem } => format!("phase/{roadmap}/{stem}"),
         DocRef::Task { slug } => format!("task/{slug}"),
+        DocRef::Plan { slug } => format!("plan/{slug}"),
         DocRef::Review { id, comment: None } => format!("review/{id}"),
         DocRef::Review {
             id,

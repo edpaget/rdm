@@ -53,7 +53,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Phase, PhaseStatus, Priority, Task, TaskStatus};
+    use crate::model::{
+        Phase, PhaseStatus, Plan, PlanStatus, Priority, ReviewTarget, Task, TaskStatus,
+    };
     use chrono::NaiveDate;
 
     #[test]
@@ -130,6 +132,66 @@ mod tests {
     }
 
     #[test]
+    fn parse_render_plan_round_trip() {
+        // Every field populated (including `supersedes`) so the `rdm:` serde
+        // shim is exercised in BOTH directions.
+        let original = Document {
+            frontmatter: Plan {
+                project: "rdm".to_string(),
+                plan: "impl-auth-v2".to_string(),
+                title: "Auth implementation, second attempt".to_string(),
+                implements: ReviewTarget::Phase {
+                    roadmap: "auth".to_string(),
+                    stem: "phase-1-design".to_string(),
+                },
+                supersedes: Some(ReviewTarget::Plan {
+                    slug: "impl-auth-v1".to_string(),
+                }),
+                status: PlanStatus::ChangesRequested,
+                created: NaiveDate::from_ymd_opt(2026, 3, 14).unwrap(),
+                updated: NaiveDate::from_ymd_opt(2026, 3, 15).unwrap(),
+            },
+            body: "## Approach\n\nDetails.\n".to_string(),
+        };
+        let rendered = original.render().unwrap();
+        // The canonical `rdm:`-prefixed URI form, not a tagged mapping.
+        assert!(rendered.contains("implements: rdm:phase/auth/phase-1-design"));
+        assert!(rendered.contains("supersedes: rdm:plan/impl-auth-v1"));
+        assert!(rendered.contains("status: changes-requested"));
+
+        let parsed: Document<Plan> = Document::parse(&rendered).unwrap();
+        assert_eq!(parsed.frontmatter, original.frontmatter);
+        assert_eq!(parsed.body, original.body);
+    }
+
+    #[test]
+    fn parse_plan_document_accepts_a_bare_item_ref() {
+        // Hand-edited files may omit the `rdm:` scheme prefix.
+        let content = "---\nproject: rdm\nplan: impl-auth\ntitle: Auth plan\nimplements: task/fix-login\nstatus: draft\ncreated: 2026-03-14\nupdated: 2026-03-14\n---\n\nBody.\n";
+        let doc: Document<Plan> = Document::parse(content).unwrap();
+        assert_eq!(
+            doc.frontmatter.implements,
+            ReviewTarget::Task {
+                slug: "fix-login".to_string()
+            }
+        );
+        assert_eq!(doc.frontmatter.supersedes, None);
+        assert_eq!(doc.frontmatter.status, PlanStatus::Draft);
+        // ...and it is re-serialized in the canonical form regardless.
+        assert!(
+            doc.render()
+                .unwrap()
+                .contains("implements: rdm:task/fix-login")
+        );
+    }
+
+    #[test]
+    fn parse_plan_document_rejects_a_code_reference() {
+        let content = "---\nproject: rdm\nplan: impl-auth\ntitle: Auth plan\nimplements: rdm:src/main.rs\nstatus: draft\ncreated: 2026-03-14\nupdated: 2026-03-14\n---\n\nBody.\n";
+        assert!(Document::<Plan>::parse(content).is_err());
+    }
+
+    #[test]
     fn parse_missing_frontmatter() {
         let content = "No frontmatter here.";
         let result = Document::<Phase>::parse(content);
@@ -140,7 +202,7 @@ mod tests {
 
     use crate::model::{
         Anchor, CommentDoc, CommentDocKind, Review, ReviewComment, ReviewCommentStatus,
-        ReviewState, ReviewTarget, Verdict,
+        ReviewState, Verdict,
     };
     use chrono::{TimeZone, Utc};
 

@@ -33,6 +33,12 @@ pub fn target_detail_href(project: &str, target: &ReviewTarget) -> String {
             format!("/projects/{project}/roadmaps/{roadmap}/phases/{stem}")
         }
         ReviewTarget::Task { slug } => format!("/projects/{project}/tasks/{slug}"),
+        // Plans have no detail route yet — real rdm-server support for the
+        // `plan/<slug>` kind (routes, detail views, review forms) is
+        // deliberately deferred to separately planned rdm-server work. Point
+        // at the project page so a review list containing a plan-targeted
+        // review still renders an inert, well-formed link instead of a 500.
+        ReviewTarget::Plan { .. } => format!("/projects/{project}"),
     }
 }
 
@@ -471,5 +477,30 @@ fn stored_quote(anchor: &Anchor) -> Option<String> {
     match anchor {
         Anchor::TextQuote { quote, .. } => Some(quote.clone()),
         Anchor::Unknown { .. } => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `plan/<slug>` review-target kind has no rdm-server detail route
+    /// yet, but `target_detail_href` has no fallback arm — so the stub must
+    /// exist AND be a well-formed in-app path. Without it, a review list
+    /// containing a plan-targeted review could not render at all.
+    #[test]
+    fn target_detail_href_handles_plan_target() {
+        let href = target_detail_href(
+            "rdm",
+            &ReviewTarget::Plan {
+                slug: "impl-auth-v2".to_string(),
+            },
+        );
+        assert!(!href.is_empty());
+        assert!(
+            href.starts_with('/'),
+            "expected an app-relative path: {href}"
+        );
+        assert_eq!(href, "/projects/rdm");
     }
 }

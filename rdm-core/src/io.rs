@@ -7,7 +7,7 @@
 use crate::config::Config;
 use crate::document::Document;
 use crate::error::{Error, Result};
-use crate::model::{Phase, Project, Review, Roadmap, Task};
+use crate::model::{Phase, Plan, Project, Review, Roadmap, Task};
 use crate::store::{Store, VersionedStore};
 
 /// Loads and parses `rdm.toml` from the plan repo root.
@@ -116,6 +116,32 @@ pub fn load_task(store: &impl Store, project: &str, task_slug: &str) -> Result<D
     let path = crate::paths::task_path(project, task_slug);
     if !store.exists(&path) {
         return Err(Error::TaskNotFound(task_slug.to_string()));
+    }
+    let content = store.read(&path)?;
+    Document::parse(&content)
+}
+
+/// Loads and parses an implementation-plan document from the store.
+///
+/// Parsing never validates the plan's `implements`/`supersedes` targets: a
+/// plan whose implemented phase or task has been renamed or deleted (a
+/// dangling reference) still loads, so renames never corrupt the plan store.
+///
+/// There is deliberately no `load_plan_at`: nothing reads a plan's
+/// *frontmatter* at a historical revision. Review anchors read a plan's
+/// historical **body** through [`crate::anchor`]'s generic path-based
+/// history reader instead.
+///
+/// # Errors
+///
+/// Returns [`Error::PlanNotFound`] if the plan file does not exist,
+/// [`Error::Io`] on read failure, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+/// YAML is invalid.
+pub fn load_plan(store: &impl Store, project: &str, plan_slug: &str) -> Result<Document<Plan>> {
+    let path = crate::paths::plan_path(project, plan_slug);
+    if !store.exists(&path) {
+        return Err(Error::PlanNotFound(plan_slug.to_string()));
     }
     let content = store.read(&path)?;
     Document::parse(&content)
@@ -318,6 +344,24 @@ pub fn write_task(
     doc: &Document<Task>,
 ) -> Result<()> {
     let path = crate::paths::task_path(project, task_slug);
+    let content = doc.render()?;
+    store.write(&path, content)?;
+    Ok(())
+}
+
+/// Writes an implementation-plan document to the store.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if writing fails, or
+/// [`Error::FrontmatterParse`] if the frontmatter cannot be serialized.
+pub fn write_plan(
+    store: &mut impl Store,
+    project: &str,
+    plan_slug: &str,
+    doc: &Document<Plan>,
+) -> Result<()> {
+    let path = crate::paths::plan_path(project, plan_slug);
     let content = doc.render()?;
     store.write(&path, content)?;
     Ok(())

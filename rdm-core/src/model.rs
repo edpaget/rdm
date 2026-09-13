@@ -507,6 +507,184 @@ pub struct Task {
     pub close_reason: Option<String>,
 }
 
+/// Lifecycle status of an implementation [`Plan`] document.
+///
+/// A plan starts `draft`. It is never set directly by a status flag: it is
+/// **derived from reviews** — submitting a review on `plan/<slug>` with
+/// verdict `approve` marks it `approved`, `request-changes` marks it
+/// `changes-requested`, and creating a later plan whose `supersedes` names
+/// it marks it `superseded`. `superseded` is terminal and is never
+/// downgraded by a later verdict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PlanStatus {
+    /// Written but not yet reviewed.
+    Draft,
+    /// A review on this plan was submitted with verdict `approve`.
+    Approved,
+    /// A review on this plan was submitted with verdict `request-changes`.
+    ChangesRequested,
+    /// A later plan named this one in its `supersedes` field. Terminal.
+    Superseded,
+}
+
+impl PlanStatus {
+    /// Returns `true` for terminal states (`Superseded` only).
+    ///
+    /// A superseded plan is closed for good: a later review verdict never
+    /// downgrades it back to `approved`/`changes-requested`. Mirrors
+    /// [`TaskStatus::is_terminal`] and [`PhaseStatus::is_terminal`].
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, PlanStatus::Superseded)
+    }
+}
+
+impl fmt::Display for PlanStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlanStatus::Draft => write!(f, "draft"),
+            PlanStatus::Approved => write!(f, "approved"),
+            PlanStatus::ChangesRequested => write!(f, "changes-requested"),
+            PlanStatus::Superseded => write!(f, "superseded"),
+        }
+    }
+}
+
+impl FromStr for PlanStatus {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "draft" => Ok(PlanStatus::Draft),
+            "approved" => Ok(PlanStatus::Approved),
+            "changes-requested" => Ok(PlanStatus::ChangesRequested),
+            "superseded" => Ok(PlanStatus::Superseded),
+            other => Err(ParseError::new(
+                "plan status",
+                other,
+                "draft, approved, changes-requested, or superseded",
+            )),
+        }
+    }
+}
+
+/// Serde shim serializing a [`ReviewTarget`] as the canonical `rdm:`-prefixed
+/// URI string (`rdm:phase/auth/phase-1-design`) rather than as a tagged
+/// mapping.
+///
+/// Deserialization routes through [`crate::link::parse`], so a plan's
+/// `implements`/`supersedes` frontmatter shares exactly one grammar with
+/// `Done:` lines, `rdm review --on`, and `rdm:` body links. A bare
+/// `phase/auth/phase-1-design` (no `rdm:` prefix) is also accepted, for
+/// hand-edited files; serialization always emits the `rdm:` form.
+pub(crate) mod plan_ref {
+    use super::ReviewTarget;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// Parses either the canonical `rdm:<kind>/…` form or a bare
+    /// `<kind>/…` item reference.
+    pub(crate) fn parse_ref<E: serde::de::Error>(raw: &str) -> Result<ReviewTarget, E> {
+        let uri = if raw.starts_with("rdm:") {
+            raw.to_string()
+        } else {
+            format!("rdm:{raw}")
+        };
+        match crate::link::parse(&uri) {
+            Ok(crate::link::Link::Item(item_ref)) => Ok(item_ref),
+            Ok(crate::link::Link::Code { .. }) => Err(E::custom(format!(
+                "'{raw}' is a source-code reference; expected an item reference like rdm:phase/<roadmap>/<stem>, rdm:task/<slug>, or rdm:plan/<slug>"
+            ))),
+            Err(e) => Err(E::custom(e.to_string())),
+        }
+    }
+
+    /// Serializes a reference as `rdm:<kind>/…`.
+    pub(crate) fn serialize<S: Serializer>(
+        value: &ReviewTarget,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&format!("rdm:{}", value.label()))
+    }
+
+    /// Deserializes a reference from either accepted string form.
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<ReviewTarget, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        parse_ref(&raw)
+    }
+
+    /// The `Option` flavor, for the optional `supersedes` field.
+    pub(crate) mod option {
+        use super::super::ReviewTarget;
+        use serde::{Deserialize, Deserializer, Serializer};
+
+        /// Serializes `Some(ref)` as `rdm:<kind>/…`; `None` is skipped by
+        /// the field's `skip_serializing_if`.
+        pub(crate) fn serialize<S: Serializer>(
+            value: &Option<ReviewTarget>,
+            serializer: S,
+        ) -> Result<S::Ok, S::Error> {
+            match value {
+                Some(v) => serializer.serialize_str(&format!("rdm:{}", v.label())),
+                None => serializer.serialize_none(),
+            }
+        }
+
+        /// Deserializes an optional reference from either accepted string form.
+        pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<ReviewTarget>, D::Error> {
+            let raw: Option<String> = Option::deserialize(deserializer)?;
+            match raw {
+                Some(raw) => super::parse_ref(&raw).map(Some),
+                None => Ok(None),
+            }
+        }
+    }
+}
+
+/// Frontmatter for an implementation-plan file.
+///
+/// A plan is a first-class document describing how one phase or task will
+/// be implemented, so it can be reviewed with anchored comments, superseded
+/// by a later attempt, and linked from the item it implements. It lives at
+/// `projects/<project>/plans/<slug>.md`.
+///
+/// `implements` is required and names exactly one phase or task;
+/// `supersedes`, when present, names the earlier plan this one replaces.
+/// Both round-trip through the shared `rdm:` item-reference grammar (see
+/// [`plan_ref`]). Neither is validated at parse time — a plan whose target
+/// was renamed or deleted still loads, mirroring [`ReviewTarget`]'s
+/// dangling-target policy. Existence is checked when a plan is *created*,
+/// by the operations layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Plan {
+    /// Project this plan belongs to.
+    pub project: String,
+    /// Plan slug identifier (matches the file stem).
+    pub plan: String,
+    /// Human-readable title.
+    pub title: String,
+    /// The phase or task this plan implements. Exactly one target.
+    #[serde(with = "crate::model::plan_ref")]
+    pub implements: ReviewTarget,
+    /// The earlier plan this one replaces, if any.
+    #[serde(
+        default,
+        with = "crate::model::plan_ref::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub supersedes: Option<ReviewTarget>,
+    /// Current status, derived from reviews rather than set directly.
+    pub status: PlanStatus,
+    /// Date the plan was created.
+    pub created: NaiveDate,
+    /// Date the plan was last modified.
+    pub updated: NaiveDate,
+}
+
 /// Frontmatter for a roadmap file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Roadmap {
@@ -682,7 +860,7 @@ impl FromStr for ReviewCommentStatus {
 /// The plan item a review targets.
 ///
 /// Serialized as a tagged mapping keyed on `kind` (`roadmap` | `phase` |
-/// `task`). Target existence is deliberately **not** validated at parse
+/// `task` | `plan`). Target existence is deliberately **not** validated at parse
 /// time — a review whose target has been renamed or deleted (a dangling
 /// target) still loads, so renames never corrupt the review store.
 /// Existence is checked when a review is *created*, by the operations
@@ -707,11 +885,17 @@ pub enum ReviewTarget {
         /// Task slug.
         slug: String,
     },
+    /// An implementation plan for a phase or task.
+    Plan {
+        /// Plan slug.
+        slug: String,
+    },
 }
 
 impl ReviewTarget {
     /// Renders the target in the CLI's `<kind>/<id>` reference syntax:
-    /// `roadmap/<slug>`, `phase/<roadmap-slug>/<stem>`, or `task/<slug>`.
+    /// `roadmap/<slug>`, `phase/<roadmap-slug>/<stem>`, `task/<slug>`, or
+    /// `plan/<slug>`.
     ///
     /// This is the same syntax `rdm review start --on` and `rdm review list
     /// --on` accept, so labels round-trip as command arguments.
@@ -721,6 +905,7 @@ impl ReviewTarget {
             ReviewTarget::Roadmap { roadmap } => format!("roadmap/{roadmap}"),
             ReviewTarget::Phase { roadmap, stem } => format!("phase/{roadmap}/{stem}"),
             ReviewTarget::Task { slug } => format!("task/{slug}"),
+            ReviewTarget::Plan { slug } => format!("plan/{slug}"),
         }
     }
 
@@ -732,6 +917,7 @@ impl ReviewTarget {
             ReviewTarget::Roadmap { .. } => ReviewTargetKind::Roadmap,
             ReviewTarget::Phase { .. } => ReviewTargetKind::Phase,
             ReviewTarget::Task { .. } => ReviewTargetKind::Task,
+            ReviewTarget::Plan { .. } => ReviewTargetKind::Plan,
         }
     }
 }
@@ -740,7 +926,8 @@ impl FromStr for ReviewTarget {
     type Err = ParseError;
 
     /// Parses the shared item-reference syntax: `roadmap/<slug>`,
-    /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+    /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`, or
+    /// `plan/<slug>`.
     ///
     /// This is purely syntactic — it does not touch the store, so a
     /// numeric phase identifier (`phase/x/2`) is kept verbatim in `stem`,
@@ -753,7 +940,7 @@ impl FromStr for ReviewTarget {
             ParseError::new(
                 "item reference",
                 s,
-                "roadmap/<slug>, phase/<roadmap-slug>/<stem-or-number>, or task/<slug>",
+                "roadmap/<slug>, phase/<roadmap-slug>/<stem-or-number>, task/<slug>, or plan/<slug>",
             )
         };
         let (kind, rest) = s.split_once('/').ok_or_else(invalid)?;
@@ -762,6 +949,9 @@ impl FromStr for ReviewTarget {
                 roadmap: rest.to_string(),
             }),
             "task" if !rest.is_empty() && !rest.contains('/') => Ok(ReviewTarget::Task {
+                slug: rest.to_string(),
+            }),
+            "plan" if !rest.is_empty() && !rest.contains('/') => Ok(ReviewTarget::Plan {
                 slug: rest.to_string(),
             }),
             "phase" => {
@@ -796,6 +986,8 @@ pub enum ReviewTargetKind {
     Phase,
     /// A standalone task.
     Task,
+    /// An implementation plan.
+    Plan,
 }
 
 impl fmt::Display for ReviewTargetKind {
@@ -804,6 +996,7 @@ impl fmt::Display for ReviewTargetKind {
             ReviewTargetKind::Roadmap => write!(f, "roadmap"),
             ReviewTargetKind::Phase => write!(f, "phase"),
             ReviewTargetKind::Task => write!(f, "task"),
+            ReviewTargetKind::Plan => write!(f, "plan"),
         }
     }
 }
@@ -816,10 +1009,11 @@ impl FromStr for ReviewTargetKind {
             "roadmap" => Ok(ReviewTargetKind::Roadmap),
             "phase" => Ok(ReviewTargetKind::Phase),
             "task" => Ok(ReviewTargetKind::Task),
+            "plan" => Ok(ReviewTargetKind::Plan),
             other => Err(ParseError::new(
                 "review target kind",
                 other,
-                "roadmap, phase, or task",
+                "roadmap, phase, task, or plan",
             )),
         }
     }

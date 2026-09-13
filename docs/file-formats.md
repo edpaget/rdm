@@ -19,6 +19,9 @@ my-plans/
         ├── tasks/
         │   ├── <task-slug>.md
         │   └── ...
+        ├── plans/
+        │   ├── <plan-slug>.md          # implementation plans
+        │   └── ...
         └── archive/
             └── roadmaps/
                 └── <roadmap-slug>/    # archived roadmaps (same structure)
@@ -194,6 +197,65 @@ A task can also be marked `wont-fix` from any non-terminal state. Both `done` an
 ### Priority ordering
 
 `low` &lt; `medium` &lt; `high` &lt; `critical`
+
+## Plan Files
+
+Located at `projects/<project>/plans/<slug>.md`. Created by `rdm plan create`.
+
+An implementation plan describes *how* one phase or task will be implemented. It is a
+document in its own right — separate from the phase body — so that it can be reviewed
+with anchored comments, revised without drifting the anchors of reviews on the phase,
+and superseded by a later attempt while the earlier one stays readable.
+
+```yaml
+---
+project: rdm
+plan: impl-auth-v2
+title: Auth implementation, second attempt
+implements: rdm:phase/auth/phase-1-design
+supersedes: rdm:plan/impl-auth-v1
+status: changes-requested
+created: 2026-03-14
+updated: 2026-03-15
+---
+
+## Approach
+
+Extract the token verifier behind a trait, then swap the backing store.
+```
+
+| Field | Required | Type | Default | Description |
+|-------|----------|------|---------|-------------|
+| `project` | yes | string | | Project slug |
+| `plan` | yes | string | | Plan slug (matches the file stem) |
+| `title` | yes | string | | Human-readable title |
+| `implements` | yes | item ref | | Exactly one `rdm:phase/<roadmap>/<stem>` or `rdm:task/<slug>` — the item this plan implements |
+| `supersedes` | no | item ref | | An `rdm:plan/<slug>` naming the earlier plan this one replaces |
+| `status` | yes | string | `draft` | `draft` \| `approved` \| `changes-requested` \| `superseded` |
+| `created` | yes | date | *(today)* | Creation date (YYYY-MM-DD). Set automatically |
+| `updated` | yes | date | *(today)* | Last-modified date (YYYY-MM-DD). Set automatically |
+
+`implements` and `supersedes` use the same `rdm:` item-reference grammar as `Done:`
+lines, `rdm review --on`, and `rdm:` body links. A bare `phase/auth/phase-1-design`
+(no `rdm:` prefix) is accepted when parsing a hand-edited file; rdm always writes the
+`rdm:` form back. Neither reference is validated at parse time — a plan whose
+implemented phase or task was renamed or deleted still loads, so renames never corrupt
+the plan store. Existence is checked when a plan is *created*.
+
+Note that `implements` is frontmatter, not a body link, so `rdm link check` does not
+validate it — only `rdm:` links inside a plan's markdown body are checked.
+
+### Status transitions
+
+A plan's status is **derived from reviews**, never set with a status flag:
+
+- `draft` &rarr; `approved` — a review on `plan/<slug>` was submitted with verdict `approve`
+- `draft` &rarr; `changes-requested` — ...submitted with verdict `request-changes`
+- a verdict of `comment` leaves the status unchanged
+- any state &rarr; `superseded` — a later plan named this one in its `supersedes` field
+
+`superseded` is terminal: a review submitted against an already-superseded plan never
+downgrades it back to `approved` or `changes-requested`.
 
 ## `INDEX.md`
 

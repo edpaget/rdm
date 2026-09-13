@@ -34,6 +34,19 @@ pub enum Error {
     TaskMergeIntoSelf(String),
     /// A task merge was requested with no source tasks to fold in.
     TaskMergeNoSources,
+    /// The specified implementation plan was not found.
+    PlanNotFound(String),
+    /// A plan with the requested slug already exists.
+    PlanExists(String),
+    /// The phase or task a plan would implement does not exist.
+    PlanImplementsMissing(String),
+    /// A plan's `implements` named a reference kind that cannot be
+    /// implemented (only a phase or a task can be).
+    PlanImplementsInvalidKind(String),
+    /// The plan a new plan would supersede does not exist.
+    PlanSupersedesMissing(String),
+    /// A plan named itself in its own `supersedes` field.
+    PlanSupersedesSelf(String),
     /// The specified review was not found.
     ReviewNotFound(String),
     /// The plan item a review would target does not exist.
@@ -292,6 +305,42 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "no source tasks to merge — pass at least one --from <slug>"
+                )
+            }
+            Error::PlanNotFound(slug) => {
+                write!(
+                    f,
+                    "plan not found: {slug} — list existing plans with `rdm plan list`"
+                )
+            }
+            Error::PlanExists(slug) => {
+                write!(
+                    f,
+                    "plan '{slug}' already exists — choose a different slug, or supersede it with `rdm plan create <new-slug> --supersedes plan/{slug}`"
+                )
+            }
+            Error::PlanImplementsMissing(msg) => {
+                write!(
+                    f,
+                    "plan target not found: {msg} — pass --implements with an existing phase or task"
+                )
+            }
+            Error::PlanImplementsInvalidKind(label) => {
+                write!(
+                    f,
+                    "'{label}' cannot be implemented by a plan — pass --implements phase/<roadmap>/<stem-or-number> or --implements task/<slug>"
+                )
+            }
+            Error::PlanSupersedesMissing(slug) => {
+                write!(
+                    f,
+                    "superseded plan not found: {slug} — pass --supersedes plan/<slug> naming an existing plan"
+                )
+            }
+            Error::PlanSupersedesSelf(slug) => {
+                write!(
+                    f,
+                    "plan '{slug}' cannot supersede itself — drop --supersedes, or name a different plan"
                 )
             }
             Error::ReviewNotFound(id) => {

@@ -415,11 +415,19 @@ pub enum Resolution {
 }
 
 /// The document a comment's anchor should be resolved against.
+///
+/// Adding a kind here requires arms in exactly three places —
+/// [`doc_selector_for`], [`doc_path`], and [`load_body_current`].
+/// [`load_body_at`] deliberately needs none: it reads history generically
+/// through [`doc_path`], so a new kind's historical-body reads (and
+/// therefore `body_for_comment`, `current_body_for_comment`, and
+/// `resolve_against_history`) light up for free.
 #[derive(Clone, Copy)]
 enum DocSelector<'a> {
     Roadmap { roadmap: &'a str },
     Phase { roadmap: &'a str, stem: &'a str },
     Task { slug: &'a str },
+    Plan { slug: &'a str },
 }
 
 /// Picks the document a comment points at: its `doc` selector when it
@@ -448,6 +456,7 @@ fn doc_selector_for<'a>(target: &'a ReviewTarget, doc: Option<&'a CommentDoc>) -
         ReviewTarget::Roadmap { roadmap } => DocSelector::Roadmap { roadmap },
         ReviewTarget::Phase { roadmap, stem } => DocSelector::Phase { roadmap, stem },
         ReviewTarget::Task { slug } => DocSelector::Task { slug },
+        ReviewTarget::Plan { slug } => DocSelector::Plan { slug },
     }
 }
 
@@ -457,6 +466,7 @@ fn doc_path(project: &str, selector: DocSelector<'_>) -> crate::store::RelPath {
         DocSelector::Roadmap { roadmap } => crate::paths::roadmap_path(project, roadmap),
         DocSelector::Phase { roadmap, stem } => crate::paths::phase_path(project, roadmap, stem),
         DocSelector::Task { slug } => crate::paths::task_path(project, slug),
+        DocSelector::Plan { slug } => crate::paths::plan_path(project, slug),
     }
 }
 
@@ -492,6 +502,7 @@ fn load_body_current(
             io::load_phase(store, project, roadmap, stem).map(|d| d.body)
         }
         DocSelector::Task { slug } => io::load_task(store, project, slug).map(|d| d.body),
+        DocSelector::Plan { slug } => io::load_plan(store, project, slug).map(|d| d.body),
     }
 }
 
@@ -760,9 +771,10 @@ pub fn resolve_comments(
 mod tests {
     use super::*;
     use crate::document::Document;
-    use crate::io::{write_phase, write_roadmap, write_task};
+    use crate::io::{write_phase, write_plan, write_roadmap, write_task};
     use crate::model::{
-        Phase, PhaseStatus, Priority, ReviewCommentStatus, ReviewState, Roadmap, Task, TaskStatus,
+        Phase, PhaseStatus, Plan, PlanStatus, Priority, ReviewCommentStatus, ReviewState, Roadmap,
+        Task, TaskStatus,
     };
     use crate::store::{MemoryStore, Store};
 
@@ -991,6 +1003,31 @@ mod tests {
         write_task(store, "test", "fix", &doc).unwrap();
     }
 
+    fn seed_plan(store: &mut MemoryStore, body: &str) {
+        let doc = Document {
+            frontmatter: Plan {
+                project: "test".to_string(),
+                plan: "impl-fix".to_string(),
+                title: "Fix implementation plan".to_string(),
+                implements: ReviewTarget::Task {
+                    slug: "fix".to_string(),
+                },
+                supersedes: None,
+                status: PlanStatus::Draft,
+                created: chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(),
+                updated: chrono::NaiveDate::from_ymd_opt(2026, 7, 1).unwrap(),
+            },
+            body: body.to_string(),
+        };
+        write_plan(store, "test", "impl-fix", &doc).unwrap();
+    }
+
+    fn plan_target() -> ReviewTarget {
+        ReviewTarget::Plan {
+            slug: "impl-fix".to_string(),
+        }
+    }
+
     fn comment(anchor: Option<Anchor>, doc: Option<CommentDoc>) -> ReviewComment {
         ReviewComment {
             id: 1,
@@ -1068,6 +1105,55 @@ mod tests {
             }
             other => panic!("expected Original, got {other:?}"),
         }
+    }
+
+    /// A plan-targeted review resolves, drifts, and gives up exactly as a
+    /// task-targeted one does — `load_body_at` reads plan history through
+    /// `doc_path` with no plan-specific arm of its own.
+    #[test]
+    fn plan_anchor_reports_resolved_then_drifted() {
+        let mut store = MemoryStore::new();
+        seed_plan(&mut store, "intro. the quoted span here. outro.");
+        store.commit().unwrap();
+        let sha1 = store.head_sha().unwrap();
+
+        let rev = review(plan_target(), Some(&sha1));
+        let c = comment(Some(tq("quoted span", "the ", " here")), None);
+
+        // Resolved against the body the reviewer saw, with no drift.
+        match resolve_against_history(&store, "test", &rev, &c) {
+            Resolution::Original { range, drifted } => {
+                assert!(!drifted);
+                let body = crate::io::load_plan(&store, "test", "impl-fix")
+                    .unwrap()
+                    .body;
+                assert_eq!(&body[range], "quoted span");
+            }
+            other => panic!("expected Original, got {other:?}"),
+        }
+
+        // Edit the plan body: the same anchor now reports drift.
+        seed_plan(&mut store, "intro. the reworded span here. outro.");
+        store.commit().unwrap();
+        match resolve_against_history(&store, "test", &rev, &c) {
+            Resolution::Original { drifted, .. } => assert!(drifted),
+            other => panic!("expected Original, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_anchor_absent_from_every_version_is_unresolved() {
+        let mut store = MemoryStore::new();
+        seed_plan(&mut store, "nothing matching in here at all.");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+
+        let rev = review(plan_target(), Some(&sha));
+        let c = comment(Some(tq("quoted span", "the ", " here")), None);
+        assert!(matches!(
+            resolve_against_history(&store, "test", &rev, &c),
+            Resolution::Unresolved
+        ));
     }
 
     #[test]

@@ -147,6 +147,11 @@ fn validate_target_exists(store: &impl Store, project: &str, target: &ReviewTarg
                 return Err(Error::ReviewTargetMissing(format!("task '{slug}'")));
             }
         }
+        ReviewTarget::Plan { slug } => {
+            if !store.exists(&crate::paths::plan_path(project, slug)) {
+                return Err(Error::ReviewTargetMissing(format!("plan '{slug}'")));
+            }
+        }
     }
     Ok(())
 }
@@ -173,7 +178,7 @@ fn validate_comment_doc(
                 Ok(())
             }
         },
-        ReviewTarget::Phase { .. } | ReviewTarget::Task { .. } => {
+        ReviewTarget::Phase { .. } | ReviewTarget::Task { .. } | ReviewTarget::Plan { .. } => {
             Err(Error::CommentDocNotApplicable)
         }
     }
@@ -860,6 +865,10 @@ pub fn count_open_reviews_in(reviews: &[(String, Document<Review>)]) -> OpenRevi
             ReviewTarget::Roadmap { roadmap } => (&mut counts.roadmaps, roadmap),
             ReviewTarget::Phase { roadmap, .. } => (&mut counts.roadmaps, roadmap),
             ReviewTarget::Task { slug } => (&mut counts.tasks, slug),
+            // Plans have no counts bucket: `OpenReviewCounts` backs the
+            // server's roadmap/task list pages, and plan list pages are out
+            // of scope until rdm-server gains real plan support.
+            ReviewTarget::Plan { .. } => continue,
         };
         let entry = map.entry(key.clone()).or_default();
         entry.open_reviews += 1;
