@@ -1146,3 +1146,82 @@ fn change_is_a_review_target_but_never_a_link() {
     );
     let _ = src;
 }
+
+// --- the guards that keep --base/--implements change-only ---
+
+/// `--base` and `--implements` describe a *change* review. Passing either on
+/// any other target kind must be refused, by a message naming the flag and how
+/// to use it, rather than silently ignored — otherwise a caller that mistyped
+/// `--on` would get a review that quietly dropped what it asked for.
+#[test]
+fn base_and_implements_are_refused_on_every_non_change_target() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "create",
+            "fix-login",
+            "--title",
+            "Fix login",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    for on in [
+        "task/fix-login",
+        "phase/auth/phase-1-design",
+        "roadmap/auth",
+        "plan/design-plan",
+    ] {
+        for (flag, value, needle) in [
+            (
+                "--base",
+                head.as_str(),
+                "--base only applies to a change review",
+            ),
+            (
+                "--implements",
+                "rdm:plan/design-plan",
+                "--implements records which plan a reviewed *change* implements",
+            ),
+        ] {
+            let out = rdm()
+                .arg("--root")
+                .arg(plan.path())
+                .args([
+                    "review",
+                    "start",
+                    "--on",
+                    on,
+                    flag,
+                    value,
+                    "--no-edit",
+                    "--project",
+                    "demo",
+                ])
+                .current_dir(src.path())
+                .assert()
+                .failure()
+                .get_output()
+                .stderr
+                .clone();
+            let text = String::from_utf8_lossy(&out);
+            assert!(
+                text.contains(needle),
+                "`review start --on {on} {flag}` must be refused by a message naming the flag, got: {text}"
+            );
+            assert!(
+                text.contains("change/<sha>"),
+                "`review start --on {on} {flag}` must say how to use the flag, got: {text}"
+            );
+        }
+    }
+}

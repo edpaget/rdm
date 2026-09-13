@@ -7886,3 +7886,68 @@ fn merge_source_superseded_by_different_survivor_is_not_skipped() {
         Some("superseded by task/survivor-two")
     );
 }
+
+/// `implements` records the plan a reviewed *change* realizes, so it is
+/// meaningless on a review of a plan-repo document. Every non-change target
+/// must be refused by [`Error::ReviewImplementsNotApplicable`] naming that
+/// target, even when the plan it points at really exists — otherwise the
+/// field would quietly accumulate a second meaning per target kind.
+#[test]
+fn create_review_rejects_implements_on_every_non_change_target() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    add_roadmap_alpha_with_phase(&mut store);
+    rdm_core::ops::plan::create_plan(
+        &mut store,
+        rdm_core::ops::plan::CreatePlan {
+            project: "fbm",
+            slug: "the-plan",
+            title: "The plan",
+            implements: rdm_core::link::ItemRef::Task {
+                slug: "fix-login".to_string(),
+            },
+            supersedes: None,
+            body: None,
+        },
+    )
+    .unwrap();
+    let existing_plan = rdm_core::link::ItemRef::Plan {
+        slug: "the-plan".to_string(),
+    };
+
+    for target in [
+        task_review_target(),
+        ReviewTarget::Phase {
+            roadmap: "alpha".to_string(),
+            stem: "phase-1-core".to_string(),
+        },
+        ReviewTarget::Roadmap {
+            roadmap: "alpha".to_string(),
+        },
+        ReviewTarget::Plan {
+            slug: "the-plan".to_string(),
+        },
+    ] {
+        let label = target.label();
+        let err = rdm_core::ops::reviews::create_review(
+            &mut store,
+            CreateReview {
+                project: "fbm",
+                author: "ed",
+                target,
+                body: None,
+                implements: Some(existing_plan.clone()),
+                change_branch: None,
+            },
+        )
+        .unwrap_err();
+        match &err {
+            Error::ReviewImplementsNotApplicable(named) => assert_eq!(named, &label),
+            other => panic!("expected ReviewImplementsNotApplicable for {label}, got {other:?}"),
+        }
+        // The message names the flag and the one target kind it applies to.
+        let text = err.to_string();
+        assert!(text.contains("--implements"), "for {label}: {text}");
+        assert!(text.contains("change/<sha>"), "for {label}: {text}");
+    }
+}
