@@ -87,9 +87,17 @@ HEAD:
 
 | state | meaning |
 |---|---|
-| `resolved` | the path exists at the tip and still contains the quoted text byte-for-byte |
-| `drifted` | the path exists at the tip but the quoted text does not |
+| `resolved` | the path exists at the tip and every occurrence the quote had at `head` survives byte-for-byte |
+| `drifted` | the path exists at the tip but holds fewer occurrences of the quoted text than `head` did |
 | `unresolved` | the path is gone at the tip (or the comment has no anchor) |
+
+The test is *occurrence count*, not position: code that merely moved within
+the file keeps its count and still reads as resolved, because the reviewer's
+words are still true of it. Counting rather than a plain substring search is
+what keeps a duplicated quote honest — when a file holds the same text twice
+and the author edits exactly the occurrence the reviewer anchored to, the
+surviving other copy would satisfy a `contains` check and the comment would
+read "still true" although the line it named is gone.
 
 The reported byte range always indexes the **head-side** content, matching
 `Resolution::Original`'s "the body the reviewer saw" contract.

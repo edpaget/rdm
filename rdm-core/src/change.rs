@@ -24,12 +24,23 @@
 //! branch, else the repository's HEAD):
 //!
 //! - the path is gone at the tip → [`Resolution::Unresolved`]
-//! - the quote is still present, byte-for-byte → `Original { drifted: false }`
-//! - the path survives but the quoted text is gone → `Original { drifted: true }`
+//! - every occurrence the quote had at `head` survives at the tip,
+//!   byte-for-byte → `Original { drifted: false }`
+//! - the path survives but the tip holds fewer occurrences of the quoted
+//!   text than `head` did → `Original { drifted: true }`
 //!
-//! Presence at the tip is what is tested, not position: code that merely
-//! moved within the file still reads as resolved, because the reviewer's
-//! words are still true of it. Only an edit to the quoted text is drift.
+//! Occurrence *count* at the tip is what is tested, not position: code that
+//! merely moved within the file still reads as resolved, because the
+//! reviewer's words are still true of it. Only an edit to the quoted text is
+//! drift.
+//!
+//! Counting rather than a bare substring search is what keeps a duplicated
+//! quote honest. When a file holds the same text twice and the author edits
+//! exactly the occurrence the reviewer anchored to, the surviving *other*
+//! copy would satisfy a `contains` check, and the comment would read "still
+//! true" although the line it named is gone. Requiring the tip to retain at
+//! least as many occurrences as `head` had reports that as drift, while a
+//! pure relocation — which preserves the count — still resolves.
 //!
 //! The reported byte range always indexes the **head-side** content, matching
 //! [`Resolution::Original`]'s "the body the reviewer saw" contract.
@@ -478,6 +489,13 @@ fn head_range(content: &str, quote: &str, occurrence: u32) -> Option<Range<usize
     Some(start..start + quote.len())
 }
 
+/// How many times `quote` occurs in `content`, counting non-overlapping
+/// matches left to right — exactly the population [`head_range`] indexes
+/// into and [`derive_file_quote`] disambiguates with `--occurrence`.
+fn occurrence_count(content: &str, quote: &str) -> usize {
+    content.match_indices(quote).count()
+}
+
 /// Resolves one change-review comment against the source repository.
 ///
 /// `tip` is the revision drift is measured against — the review's stamped
@@ -489,9 +507,11 @@ fn head_range(content: &str, quote: &str, occurrence: u32) -> Option<Range<usize
 ///    the file missing at `head` → [`Resolution::Unresolved`].
 /// 2. The quote located at `head` but the path gone at `tip` →
 ///    [`Resolution::Unresolved`].
-/// 3. The quote still present at `tip`, byte-for-byte →
-///    `Original { drifted: false }`.
-/// 4. Otherwise → `Original { drifted: true }`.
+/// 3. `tip` holds at least as many byte-for-byte occurrences of the quote as
+///    `head` did → `Original { drifted: false }`.
+/// 4. Otherwise — including the case where an unrelated duplicate of the
+///    quote survives but the anchored one was edited away → `Original
+///    { drifted: true }`.
 ///
 /// Infallible, exactly like
 /// [`crate::anchor::resolve_against_history`]: any source-repository error
@@ -537,7 +557,10 @@ pub fn resolve_change_comment(
         // also not evidence it was deleted — degrade, never guess.
         Ok(None) | Err(_) => return unresolved,
     };
-    let drifted = !tip_content.contains(quote.as_str());
+    // Count, don't `contains`: a surviving *duplicate* of the quote elsewhere
+    // in the file must not mask an edit to the occurrence that was anchored.
+    // A pure relocation preserves the count and still resolves.
+    let drifted = occurrence_count(&tip_content, quote) < occurrence_count(&head_content, quote);
     ResolvedComment {
         resolution: Resolution::Original { range, drifted },
         quote: Some(quote.clone()),
@@ -968,6 +991,58 @@ mod tests {
             panic!("expected an Original resolution");
         };
         assert!(drifted);
+    }
+
+    /// The duplicate-quote regression: `CONTENT` holds `beta` twice, the
+    /// comment anchors the **second** one, and the tip edits exactly that
+    /// occurrence while the unrelated first copy survives untouched. A bare
+    /// `tip_content.contains(quote)` reads that as "still true"; counting
+    /// occurrences reports the drift it is.
+    #[test]
+    fn resolve_reports_drifted_when_only_the_anchored_duplicate_was_edited() {
+        let source = MemorySourceRepo::new()
+            .with_file("head1", "src/lib.rs", CONTENT)
+            .with_file("tip", "src/lib.rs", "alpha\nbeta\ngamma\nBETA\n");
+        let mut review = review_with(Some(Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "beta".to_string(),
+            occurrence: 2,
+            start_line: 4,
+            end_line: 4,
+        }));
+        review.comments[0].body = "the second beta".to_string();
+        let resolved = resolve_change_comments(&source, &review, "tip");
+        let Resolution::Original { drifted, range } = resolved[0].resolution.clone() else {
+            panic!("expected an Original resolution");
+        };
+        assert!(
+            drifted,
+            "editing the anchored occurrence is drift even when a duplicate survives"
+        );
+        // The reported range still indexes the head-side content.
+        assert_eq!(&CONTENT[range], "beta");
+    }
+
+    /// The other half of the same rule: text that merely *moved* keeps its
+    /// occurrence count, so it must still resolve.
+    #[test]
+    fn resolve_reports_resolved_when_a_duplicated_quote_only_moved() {
+        let source = MemorySourceRepo::new()
+            .with_file("head1", "src/lib.rs", CONTENT)
+            .with_file("tip", "src/lib.rs", "beta\nalpha\ngamma\nbeta\n");
+        let review = review_with(Some(Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "beta".to_string(),
+            occurrence: 2,
+            start_line: 4,
+            end_line: 4,
+        }));
+        let Resolution::Original { drifted, .. } =
+            resolve_change_comments(&source, &review, "tip")[0].resolution
+        else {
+            panic!("expected an Original resolution");
+        };
+        assert!(!drifted, "a pure relocation preserves the count");
     }
 
     #[test]

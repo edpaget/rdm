@@ -101,7 +101,12 @@ fn init_plan_repo(source: &Path) -> TempDir {
 /// Hand-edits `project.md`'s frontmatter to add `source: { repo: … }` —
 /// there is no CLI command to set it, so fixtures write the file directly,
 /// exactly as `cli_link.rs` does.
+///
+/// Clears any existing block first, so calling this twice *replaces* the
+/// configured source instead of writing a duplicate YAML key (which parses
+/// as an error and would silently read back as "no source configured").
 fn set_project_source(plan: &Path, project: &str, repo: &str) {
+    clear_project_source(plan, project);
     let path = plan.join("projects").join(project).join("project.md");
     let content = std::fs::read_to_string(&path).unwrap();
     let rest = content.strip_prefix("---\n").expect("frontmatter open");
@@ -112,6 +117,30 @@ fn set_project_source(plan: &Path, project: &str, repo: &str) {
         format!("---\n{frontmatter}\nsource:\n  repo: \"{repo}\"{tail}"),
     )
     .unwrap();
+}
+
+/// Removes the `source:` block [`set_project_source`] wrote, leaving the
+/// project configuring no source repo at all.
+fn clear_project_source(plan: &Path, project: &str) {
+    let path = plan.join("projects").join(project).join("project.md");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let kept: Vec<&str> = content
+        .lines()
+        .filter(|l| !l.starts_with("source:") && !l.starts_with("  repo:"))
+        .collect();
+    std::fs::write(&path, format!("{}\n", kept.join("\n"))).unwrap();
+}
+
+/// A git repository that is emphatically *not* the project's source: its own
+/// `main`, its own single commit, and no `origin` remote.
+fn init_unrelated_repo() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    std::fs::write(p.join("README.md"), "not the source repo\n").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "unrelated"]);
+    dir
 }
 
 const BASE_FILE: &str = "fn one() {}\nfn two() {}\nfn three() {}\n";
@@ -1224,4 +1253,161 @@ fn base_and_implements_are_refused_on_every_non_change_target() {
             );
         }
     }
+}
+
+// --- source-repo discovery: which checkout a change review reads from ---
+//
+// `discover_source_repo`'s whole reason to exist is refusing to answer
+// "which repository is this?" with "whichever one the cwd happens to be
+// in". Every other test in this file runs from a checkout that *is* the
+// project's configured `source.repo`, so these four cover the branches
+// where the cwd and the configuration disagree — or where one of them is
+// absent entirely.
+
+/// cwd is a git checkout, but a different one from the project's source,
+/// and `source.repo` names a local directory: the configured source wins,
+/// so the pinned head is the *source* repo's tip and never the cwd's.
+#[test]
+fn change_review_prefers_the_configured_source_over_an_unrelated_checkout() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let other = init_unrelated_repo();
+
+    let source_head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    let other_head = git_out(other.path(), &["rev-parse", "HEAD"]);
+    assert_ne!(source_head, other_head, "the fixture repos must differ");
+
+    let id = start_change_review(
+        plan.path(),
+        other.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(
+        j["target"]["head"], source_head,
+        "change/HEAD must pin the configured source repo's tip, not the cwd's"
+    );
+    assert_eq!(j["change_branch"], "topic");
+}
+
+/// Same disagreement, but `source.repo` is a URL rather than a local path,
+/// so there is nothing to fall back to: refuse, and say which repository
+/// was expected.
+#[test]
+fn change_review_refuses_an_unrelated_checkout_when_the_source_is_not_local() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    set_project_source(plan.path(), "demo", "https://example.com/org/repo");
+    let other = init_unrelated_repo();
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            "change/HEAD",
+            "--implements",
+            "rdm:plan/design-plan",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(other.path())
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("inside a git checkout, but not project 'demo''s configured source repo"),
+        "expected the repo-confusion refusal: {text}"
+    );
+    assert!(
+        text.contains("https://example.com/org/repo"),
+        "the refusal must name the configured repo: {text}"
+    );
+}
+
+/// No `source.repo` at all: there is nothing to contradict the cwd, so the
+/// checkout the operator is standing in is the one that gets read.
+#[test]
+fn change_review_uses_the_cwd_checkout_when_the_project_configures_no_source() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    clear_project_source(plan.path(), "demo");
+    let other = init_unrelated_repo();
+    let other_head = git_out(other.path(), &["rev-parse", "HEAD"]);
+
+    let id = start_change_review(
+        plan.path(),
+        other.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    let j = review_json(plan.path(), other.path(), &id);
+    assert_eq!(j["target"]["head"], other_head);
+    assert_eq!(j["change_branch"], "main");
+}
+
+/// Outside any checkout: the two no-cwd-repo branches each name what to do,
+/// and they say different things depending on whether a source is
+/// configured at all.
+#[test]
+fn change_review_start_names_what_to_do_when_no_checkout_is_reachable() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let nowhere = TempDir::new().unwrap();
+
+    let start_from_nowhere = |plan: &Path| -> String {
+        let out = rdm()
+            .arg("--root")
+            .arg(plan)
+            .args([
+                "review",
+                "start",
+                "--on",
+                "change/HEAD",
+                "--implements",
+                "rdm:plan/design-plan",
+                "--no-edit",
+                "--project",
+                "demo",
+            ])
+            .current_dir(nowhere.path())
+            .assert()
+            .failure()
+            .get_output()
+            .stderr
+            .clone();
+        String::from_utf8_lossy(&out).to_string()
+    };
+
+    // A configured-but-unreachable source names that source.
+    set_project_source(plan.path(), "demo", "https://example.com/org/repo");
+    let text = start_from_nowhere(plan.path());
+    assert!(
+        text.contains("not inside a git checkout, and project 'demo''s configured source repo"),
+        "expected the unreachable-source message: {text}"
+    );
+    assert!(text.contains("https://example.com/org/repo"), "{text}");
+
+    // No configured source at all points at `source.repo` in project.md.
+    clear_project_source(plan.path(), "demo");
+    let text = start_from_nowhere(plan.path());
+    assert!(
+        text.contains("configures no source repo"),
+        "expected the no-source message: {text}"
+    );
+    assert!(
+        text.contains("source.repo"),
+        "the no-source message must name what to set: {text}"
+    );
 }
