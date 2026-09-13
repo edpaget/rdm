@@ -312,6 +312,15 @@ the self-test fails). The re-baseline above was therefore done directly through
 the module's own `checkPromptFidelity`. A first-class re-baseline path is worth
 adding.
 
+**The quote-verification clause is conditional for exactly this reason.** The
+`quote` field added to the finding contract (see `docs/workflow-schemas.md`
+§ `FINDING`) is verified by the refuter, but `refutePrompt` appends that clause
+ONLY when the finding it is grading actually carries a `quote`. No corpus finding
+does, so all 56 recorded `promptSha256` values still regenerate byte-for-byte and
+§ 3 stays green with no re-baseline. Making the clause unconditional would move
+every one of those prompts and demand the re-baseline command that does not
+exist.
+
 
 - **The corpus is deliberately weighted.** `mechanically-true-not-a-defect` is
   42.9 % of items, far above its production incidence. Every aggregate here is a

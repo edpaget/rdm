@@ -292,6 +292,10 @@ function makeAgent(opts) {
     if (label === 'gate:persist') {
       return o.gateAck || { ok: true };
     }
+    if (label === 'persist:review') {
+      if (o.persistThrows) throw new Error('persist agent failed');
+      return o.persistAck || { ok: true, reviewId: 'REVIEW-42' };
+    }
     const parts = label.split(':');
     if (parts[0] === 'find') {
       const dim = parts[2];
@@ -656,6 +660,73 @@ for (const [name, bad] of [
 }
 console.log('3g OK: args.diff hoist eliminates the agent, threads identical signals, and falls back on anything malformed');
 
+// ---------------------------------------------------------------- 3h. persist
+// The opt-in `persist` step. It is OFF by default (so every case above ran
+// without it), it derives the PREFIXED `phase/<roadmap>/<stem>` review ref
+// rather than reusing the bare worktree ref, it threads the ack's id onto the
+// OUTCOME only when it ran, and it can never change the outcome/status/gate.
+{
+  // Default off: no persist agent, no reviewId key.
+  const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
+  const out = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1' }, a.agent, refPipeline, refParallel, () => {});
+  assert.equal(a.calls.filter((c) => c.label === 'persist:review').length, 0, 'persist is OFF by default');
+  assert.equal(Object.prototype.hasOwnProperty.call(out, 'reviewId'), false, 'no reviewId key when persist did not run');
+}
+{
+  // Phase shape: the review ref MUST be prefixed. The bare `rm/1` worktree ref
+  // is rejected by `rdm review --on` (ReviewTarget::from_str).
+  const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
+  const out = await run(
+    { mode: 'code', rdmBin: RDM_BIN_ARG, project: 'demo', roadmap: 'rm', phase: '1', persist: true },
+    a.agent, refPipeline, refParallel, () => {}
+  );
+  assert.equal(out.reviewId, 'REVIEW-42', 'the ack reviewId lands on the OUTCOME');
+  const p = a.calls.find((c) => c.label === 'persist:review').prompt;
+  assert.ok(p.includes(' review start --on phase/rm/1 '), 'the phase persist ref is phase/<roadmap>/<phase>');
+  assert.ok(!/review start --on rm\/1[ \n]/.test(p), 'the BARE <roadmap>/<phase> worktree ref must never reach `rdm review --on`');
+  assert.ok(!p.includes('Done:'), 'the persist prompt carries no land-time completion directive');
+  // The persist step carries NO agentType — this engine is DISTRIBUTED.
+  const o = a.calls.find((c) => c.label === 'persist:review').opts || {};
+  assert.equal(o.agentType, undefined, 'the DISTRIBUTED engine must not thread agentType at the persist site');
+}
+{
+  const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
+  const out = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, task: 'my-task', persist: true }, a.agent, refPipeline, refParallel, () => {});
+  assert.equal(out.reviewId, 'REVIEW-42');
+  assert.ok(a.calls.find((c) => c.label === 'persist:review').prompt.includes(' --on task/my-task '), 'the task persist ref is task/<slug>');
+}
+{
+  // An explicit `{ on }` overrides the derived ref on this single-unit path.
+  const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
+  await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', persist: { on: 'plan/p1' } }, a.agent, refPipeline, refParallel, () => {});
+  assert.ok(a.calls.find((c) => c.label === 'persist:review').prompt.includes(' --on plan/p1 '), 'an explicit persist.on overrides the derived ref');
+}
+{
+  // A thrown persist changes nothing and omits reviewId.
+  const blocking = [{ id: 'x1', concern: 'correctness', severity: 'blocking', confidence: 95, what_fails: 'boom' }];
+  const a = makeAgent({ diffResult: HOIST_DIFF, findings: { ...CLEAN, correctness: blocking }, verdicts: {}, persistThrows: true });
+  const out = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', persist: true }, a.agent, refPipeline, refParallel, () => {});
+  assert.equal(out.outcome, 'rework', 'a failed persist must not change the outcome');
+  assert.equal(out.status, 'in-progress', 'nor the status');
+  assert.equal(Object.prototype.hasOwnProperty.call(out, 'reviewId'), false, 'a failed persist omits reviewId');
+}
+{
+  // The persist step runs BEFORE the optional gate.
+  const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
+  await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', persist: true, gate: true }, a.agent, refPipeline, refParallel, () => {});
+  const labels = a.calls.map((c) => c.label);
+  assert.ok(labels.indexOf('persist:review') < labels.indexOf('gate:persist'), 'persist runs before the optional gate');
+}
+for (const legacy of [{ mode: 'plan', context: {}, persist: true }, { mode: 'code', context: {}, persist: { on: 'task/x' } }]) {
+  const a = makeAgent({ findings: CLEAN, verdicts: {} });
+  await assert.rejects(
+    () => run(legacy, a.agent, refPipeline, refParallel, () => {}),
+    /persist requires \{ roadmap, phase \} or \{ task \}/,
+    'persist on a survivors-only shape throws — never silently ignored'
+  );
+}
+console.log('3h OK: persist is opt-in, derives the prefixed review ref, threads reviewId only when it ran, and cannot change the outcome');
+
 console.log('ALL BEHAVIOR CHECKS PASSED');
 NODE_TEST
 
@@ -921,8 +992,15 @@ function makeCapture() {
     const label = (opts && opts.label) || '';
     if (label === 'diff:signals') return { changedFiles: ['rdm-core/src/lib.rs'], diffText: '' };
     if (label === 'gate:persist') return { ok: true };
+    if (label === 'persist:review') return { ok: true, reviewId: 'REVIEW-42' };
     const parts = label.split(':');
-    if (parts[0] === 'find') return { findings: [] };
+    if (parts[0] === 'find') {
+      // ONE finding, so the persist step emits a `review comment` invocation
+      // too — a zero-survivor run would skip it and narrow the scan.
+      return parts[2] === 'correctness'
+        ? { findings: [{ id: 'c1', concern: 'correctness', severity: 'concern', confidence: 80, what_fails: 'x', quote: 'a span' }] }
+        : { findings: [] };
+    }
     if (parts[0] === 'refute') return { refuted: false, confidence: 90 };
     throw new Error('unexpected agent label: ' + label);
   };
@@ -962,8 +1040,12 @@ async function capture(args) {
   return scan(c.prompts);
 }
 
-const BASE_PHASE = { mode: 'code', roadmap: 'rm', phase: '1', gate: true };
-const BASE_TASK = { mode: 'code', task: 'my-task', gate: true };
+// Every capture run turns `persist` ON too: the persist step emits FOUR more
+// rdm invocations (`review start` / `review comment` / `review submit`, which
+// are PROJECT-SCOPED, and `commit`, which is not), so leaving it off would let
+// a project-flag regression in the writer ship unseen.
+const BASE_PHASE = { mode: 'code', roadmap: 'rm', phase: '1', gate: true, persist: true };
+const BASE_TASK = { mode: 'code', task: 'my-task', gate: true, persist: true };
 
 for (const [mode, base] of [['phase', BASE_PHASE], ['task', BASE_TASK]]) {
   // --- Run A: a project IS configured.
@@ -983,7 +1065,12 @@ for (const [mode, base] of [['phase', BASE_PHASE], ['task', BASE_TASK]]) {
   }
 
   // Non-vacuity floors: the scan must actually have reached both command shapes.
-  const need = mode === 'task' ? ['worktree add', 'task update'] : ['worktree add', 'phase update'];
+  const need = (mode === 'task' ? ['worktree add', 'task update'] : ['worktree add', 'phase update']).concat([
+    'review start',
+    'review comment',
+    'review submit',
+    'commit',
+  ]);
   for (const n of need) {
     assert.ok(seen.has(n), mode + ': expected at least one `rdm ' + n + '` occurrence, saw: ' + [...seen].join(', '));
   }

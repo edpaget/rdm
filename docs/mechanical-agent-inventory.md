@@ -21,7 +21,7 @@ accepts), [`docs/autonomous-loop.md`](autonomous-loop.md).
 grep -n "label: *['\"]" .claude/workflows/*.js | grep -v spike-agent-type
 ```
 
-**44 labelled `agent()` call sites** across the six workflow scripts:
+**46 labelled `agent()` call sites** across the six workflow scripts:
 
 | file | call sites |
 |---|---|
@@ -29,9 +29,9 @@ grep -n "label: *['\"]" .claude/workflows/*.js | grep -v spike-agent-type
 | `rdm-wf-dispatch-phase.js` | 14 |
 | `rdm-wf-document.js` | 5 |
 | `rdm-wf-estimate.js` | 5 |
-| `rdm-wf-plan-review.js` | 12 |
-| `rdm-wf-review-refute-fix.js` | 5 |
-| **total** | **44** |
+| `rdm-wf-plan-review.js` | 13 |
+| `rdm-wf-review-refute-fix.js` | 6 |
+| **total** | **46** |
 
 (`autopilot.js` carried 7 of the original 44 call sites; it was retired in favor of the prose
 `rdm-autopilot` skill by the `workflow-orchestration` roadmap's phase 3 — see
@@ -151,6 +151,7 @@ can supply the hoist today.
 | `diff:signals` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | n/a — absorbed, no caller needed | **absorbable** | `runCodeGate` calls `d.implement(...)` immediately before every `d.review()` with nothing in between, so the implementer — already in the worktree it just wrote to — reports the same two `git diff` commands. One-shot handoff (`pendingDiff` read-and-cleared) preserves per-round freshness. Works on **every** path, including autopilot-nested. | no |
 | `diff:signals` | `rdm-wf-review-refute-fix.js` | unprojected driver | yes | local shim only (`rdm-review`) | **hoistable** | No adjacent implementer in this workflow (it reviews an already-implemented item), but `worktreeRef` is fully determined by `args`, so the caller can run the diff itself. | partly (distributed-caller path) |
 | `gate:persist` | `rdm-wf-review-refute-fix.js` | unprojected driver | yes | — | **irreducible** | A write whose status/reason are computed mid-run from the classified outcome. | **yes** |
+| `persist:review` | `rdm-wf-review-refute-fix.js` | unprojected driver | **no — DISTRIBUTED** | — | **irreducible** | The opt-in review WRITER (`persist: { on }`): it opens an rdm review on the item, writes one comment per surviving finding, submits it with the mapped verdict, and commits. Its whole input is the classified outcome and the survivor list this run just produced, so nothing a caller could pre-compute substitutes for it. Runs only when `persist` is supplied, so it adds one call SITE and zero agents to a default run. Deliberately carries NO `agentType`: this engine is distributed, and threading it is owned by task `thread-agent-type-into-distributed-workflows` (gated by `verify-workflow-review.sh` § 2c(v)). | **yes** |
 | `model:mechanical` | `autopilot.js` | unprojected driver | yes | distributed shim — **CLI only** | **hoistable** | Pure bootstrap read of `rdm model resolve mechanical`, before everything. MCP has no model-resolve tool, so the MCP shim omits it and the agent runs. | partly (MCP path) |
 | `estimate:list` | `autopilot.js` | unprojected driver | yes | distributed shim (CLI + MCP) | **hoistable** | `rdm phase list --format json` — read-only, pre-run, no judgment agent before it. | no |
 | `fetch:next` | `autopilot.js` | unprojected driver | yes | distributed shim (CLI + MCP) | **hoistable — first iteration only** | `rdm next` is what *advances the cursor* once advance/park has persisted a status, so a cached result is only valid for iteration 1. Consumed strictly one-shot (`pendingNext`); iterations 2..N always re-read live state. | **yes** (iterations 2..N) |
@@ -168,6 +169,7 @@ can supply the hoist today.
 | `fetch:<kind>` (`fetch:task` / `fetch:phase`) | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | local shim only | **hoistable — PRIORITY** | Same — see below. | partly (distributed-caller path) |
 | `fetch:wontfix` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | local shim only | **hoistable** | One `rdm search` covering the whole run, read-only, before any unit is reviewed. | partly (distributed-caller path) |
 | `act:round-note:*` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | — | **irreducible** | A write whose round number and finding list are computed mid-run. | **yes** |
+| `persist:review:*` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | — | **irreducible** | The same opt-in review writer, per review unit, from the LOCAL-ONLY consumer — so this copy DOES thread `agentType: 'rdm-mechanical'` and pin the mechanical model. A write whose target, verdict and comment list are all computed mid-run. With `persist` on it REPLACES `act:round-note:*` (the round state moves into the persisted reviews), so a persist-on run's per-unit count is 1 here and 0 there; with `persist` off it never fires. | **yes** |
 | `gate:clear-tag:*` | `rdm-wf-plan-review.js` | **byte-copied** `plan-review-driver` | no | — | **irreducible as a write, but SKIPPABLE** | A write keyed on the per-unit outcome the pipeline just produced, so it cannot be hoisted ahead of the run. Two changes from `phase-4-plan-review-gate-blocked-by-safety-classifier`: (a) the prompt is now **evidence-carrying** — a four-clause authorization preamble plus the rendered review evidence (dimensions that ran, findings produced, findings graded by an independent refuter, blocking survivors, the exact tag list to write) — because a bare two-command instruction was blocked as self-approval three times across two recorded runs; (b) a caller may pass **`gateMode: 'return'`**, under which the driver computes the gate as a returned `gateAction` and dispatches **no agent at all**, so a `'return'`-mode run's per-unit count for this site is 0 rather than 1. The agent-count totals above are unchanged: they count call SITES, and this remains one site. See [`plan-review-gate-policy.md`](plan-review-gate-policy.md). | **yes** |
 | `model:mechanical` | `rdm-wf-backlog.js` | unprojected driver | no | local shim only (`rdm-backlog`) | **hoistable** | Same bootstrap read. | partly (distributed-caller path) |
 | `fetch:report` | `rdm-wf-backlog.js` | unprojected driver | no | local shim only | **hoistable** | `rdm backlog report --format json` is read-only whoever runs it, so hoisting it does not weaken the propose-only contract. | partly (distributed-caller path) |
@@ -660,6 +662,17 @@ the new site is on `rdm-wf-plan-review.js`, not on the dispatch-phase path those
 the same intent gate's dispatch-phase half deliberately folds its roadmap read into the EXISTING
 Stage-0 fetch agent rather than adding a second call site, precisely so
 `scripts/measure-hoist-delta.mjs --check` stays byte-identical.
+
+**Two more call sites were added by the review-persistence phase** of the
+`agent-orchestrated-dispatch` roadmap: `persist:review` on `rdm-wf-review-refute-fix.js` and
+`persist:review:*` on `rdm-wf-plan-review.js` (and its `lib/plan-review.mjs` original) — the opt-in
+writer that records a review's surviving findings as a real rdm review. The counts that moved:
+§ Raw inventory's total 44 → **46**, its `rdm-wf-plan-review.js` row 12 → **13** and its
+`rdm-wf-review-refute-fix.js` row 5 → **6**, and § Maintenance routes' threaded-site count 17 →
+**19** (the plan-review copy is threaded in BOTH the lib and the workflow; the distributed
+review-refute-fix site deliberately is not). What did NOT move: the § Measured delta figures —
+neither site is on the dispatch-phase path those figures measure — and no DEFAULT run's agent count,
+because both sites fire only when a caller passes `persist`.
 
 The comparison point for the eventual change is pinned in `docs/token-baseline.json` under
 `mechanicalContextTrim`, quoting phase 4's per-class pre-change medians verbatim so a later run

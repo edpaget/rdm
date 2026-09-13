@@ -578,6 +578,7 @@ function INTENT_MISSING_NOTICE() {
 //|plan|   concern: <coherence|architectural-fit|restraint|unit-of-work>
 //|code|   location: <path>:<line>
 //|plan|   location: <section/heading or phase stem>
+//|   quote: <verbatim excerpt of the reviewed text this finding is about; omit for a whole-document finding>
 //|   severity: blocking | concern | suggestion
 //|   confidence: 0-100
 //|   what-fails: <the specific problem>
@@ -632,6 +633,7 @@ function findPrompt(mode, dim, context) {
   lines.push(
     'Report only findings you can back with concrete evidence. One strong finding beats five weak ones.',
     'Return JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.',
+    'Each finding MAY also carry `quote`: a VERBATIM excerpt, copied character for character out of the reviewed text, of the span the finding is about. Never paraphrase, reflow, or truncate mid-character — prefer a short span that appears exactly once. Omit `quote` entirely for a finding about the document as a whole.',
     'Return an empty `findings` array if the dimension is clean.'
   );
   return lines.join('\n');
@@ -751,7 +753,7 @@ function findPrompt(mode, dim, context) {
 //|plan|   dimension and surfaces as an ordinary finding.
 function refutePrompt(mode, dim, finding, context) {
   const target = (context && context.target) || '(the target described in your working directory)';
-  return [
+  const lines = [
     'You are a READ-ONLY refuter. Do not edit any files.',
     'A prior reviewer raised this ' + dim.key + ' finding against ' + target + ':',
     JSON.stringify(finding, null, 2),
@@ -759,8 +761,25 @@ function refutePrompt(mode, dim, finding, context) {
       (mode === 'code' ? 'code' : 'plan') +
       ' proves otherwise. Read the actual cited location and its surrounding context before deciding.',
     REFUTER_LAUNDERING_GUARD,
-    'Return JSON matching the VERDICT schema: refuted (boolean — true if the finding does not hold up), confidence (0-100 in your verdict), and rationale.',
-  ].join('\n');
+  ];
+  // QUOTE VERIFICATION — appended ONLY when the finding actually carries a
+  // quote. The conditional is load-bearing, not a micro-optimization: a 56-item
+  // adjudicated finding corpus records a promptSha256 per item, regenerated
+  // through THIS function by a gate that fails on any drift, and no corpus
+  // finding carries a `quote` key. An unconditional clause would move every one
+  // of those bytes and demand a corpus re-baseline for which no supported
+  // command exists. See docs/refuter-model-tiering.md § Maintenance gap.
+  // (That corpus's harness is deliberately not named here: no workflow script may
+  // reference it, or the measurement instrument would sit in the hot path.)
+  if (typeof finding.quote === 'string' && finding.quote.trim() !== '') {
+    lines.push(
+      'This finding carries a `quote` — an excerpt the finder claims was copied verbatim out of the reviewed text. Confirm it appears EXACTLY, byte for byte, in that text. Set `quote_ok: false` if it does not (paraphrased, reflowed, drawn from somewhere else, or simply absent), otherwise `quote_ok: true`. `quote_ok` is INDEPENDENT of `refuted`: a real finding can carry a bad quote, and a refuted one can carry a perfect quote.'
+    );
+  }
+  lines.push(
+    'Return JSON matching the VERDICT schema: refuted (boolean — true if the finding does not hold up), confidence (0-100 in your verdict), and rationale.'
+  );
+  return lines.join('\n');
 }
 
 //|
@@ -1028,6 +1047,14 @@ const FINDINGS_SCHEMA = {
           // (file, line, category) dedupe key is deliberately NOT implemented here.
           category: { type: 'string' },
           location: { type: 'string' },
+          // Optional VERBATIM excerpt of the reviewed text the finding is about.
+          // Free-form `location` prose cannot be anchored; this can — the persist
+          // writer below turns it into an `rdm review comment --quote` anchor, and
+          // a finding without one becomes a whole-document comment. NOT in
+          // `required`: a whole-document finding legitimately has none.
+          // AC_REVIEW_SCHEMA aliases this same sub-schema, so it is accepted there
+          // too (see docs/workflow-schemas.md § FINDING).
+          quote: { type: 'string', minLength: 1 },
           severity: { type: 'string', enum: ['blocking', 'concern', 'suggestion'] },
           confidence: { type: 'integer', minimum: 0, maximum: 100 },
           what_fails: { type: 'string' },
@@ -1076,8 +1103,23 @@ const VERDICT_SCHEMA = {
     refuted: { type: 'boolean' },
     confidence: { type: 'integer', minimum: 0, maximum: 100 },
     rationale: { type: 'string' },
+    // Did the finding's `quote` appear verbatim in the reviewed text? OPTIONAL
+    // and independent of `refuted` (see refutePrompt's conditional clause). Only
+    // an explicit `false` strips the quote; absent means "not checked".
+    quote_ok: { type: 'boolean' },
   },
 };
+
+// stripQuote(finding) — a shallow copy with the `quote` KEY ABSENT (not set to
+// `undefined`): the writer tests `typeof f.quote === 'string'`, but a consumer
+// that JSON.stringifies a survivor would serialize an explicit `undefined` away
+// unevenly, and the harness asserts key absence directly. Pure; never mutates
+// its argument.
+function stripQuote(finding) {
+  const copy = { ...(finding || {}) };
+  delete copy.quote;
+  return copy;
+}
 
 // Pure: does a finding survive its refutation and the confidence floor?
 // A finding is dropped if a refuter refuted it OR its confidence is below the floor.
@@ -1737,6 +1779,283 @@ function summarizeFindings(findings) {
   return list.length + ' finding(s); top: [' + sev + '] ' + what;
 }
 
+// --- Persisting a review as an rdm review ------------------------------------
+// The WRITER half of the review: turn a finished review result into the exact
+// `rdm review start` / `rdm review comment` / `rdm review submit` / `rdm commit`
+// command sequence that records it as a real rdm review — the SAME artifact a
+// human reviewer produces, rather than an ephemeral OUTCOME field.
+//
+// Single-sourced here, inside the stamped block, so every consumer gets the
+// identical writer. Two rules make that safe:
+//
+//   1. `target` is an OPAQUE, already-well-formed rdm review ref. The writer
+//      does NO per-kind branching and adds NO prefix of its own — every prefix is
+//      built by the consumer (`persistTargetFor` in lib/plan-review.mjs,
+//      `persistReviewTarget` in rdm-wf-review-refute-fix.js). That is what lets a
+//      future target kind reuse this writer unchanged.
+//   2. NO `agentType` literal appears anywhere below. The agent type running the
+//      step is a per-consumer parameter: the local-only plan-review workflow
+//      passes `rdm-mechanical`, the DISTRIBUTED review workflow passes nothing
+//      (see CLAUDE.md § `.claude/agents/`, gated by verify-workflow-review.sh §2c).
+
+// PERSIST_VERDICT — outcome → the `rdm review submit --verdict` value. `rework`
+// and `escalated` BOTH map to request-changes: rdm has no third "needs a human
+// decision" verdict. They stay tellable apart on the persisted artifact because
+// persistReviewSummary prefixes an escalated review's body with the mode's
+// `[code]`/`[plan]` escalation prefix.
+const PERSIST_VERDICT = { reviewed: 'approve', rework: 'request-changes', escalated: 'request-changes' };
+
+// persistVerdictFor(outcome) — THROWS on anything outside the vocabulary rather
+// than defaulting. A silent fallback to rdm's third verdict (`comment`) would
+// persist a review that reads like a clean one.
+function persistVerdictFor(outcome) {
+  if (!Object.prototype.hasOwnProperty.call(PERSIST_VERDICT, outcome)) {
+    throw new Error(
+      'review: cannot persist an unrecognized outcome "' + String(outcome) + '" (expected one of ' + OUTCOMES.join(', ') + ')'
+    );
+  }
+  return PERSIST_VERDICT[outcome];
+}
+
+// JSON Schema the persist agent's acknowledgement must satisfy.
+const PERSIST_ACK_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['ok'],
+  properties: {
+    ok: { type: 'boolean' },
+    reviewId: { type: 'string' },
+    anchored: { type: 'integer', minimum: 0 },
+    wholeDocument: { type: 'integer', minimum: 0 },
+  },
+};
+
+// The comment-body header convention: the finding metadata rdm's comment
+// frontmatter has no field for, carried on the first six lines of the body in a
+// fixed `key: value` order. TOTAL, never sparse — every key is always emitted,
+// with the literal `none` sentinel for an absent `unrefutedReason` — and every
+// value is single-line, so the inverse parser can be line-based. Extending core
+// comment frontmatter instead is recorded as a follow-up task, not done here.
+// Documented in docs/workflow-schemas.md § "Persisted review comment body".
+const PERSIST_HEADER_KEYS = ['severity', 'confidence', 'refuted', 'unrefutedReason', 'dimension', 'finding-id'];
+
+// persistHeaderValue(v) — collapse to a single line. A header value that spanned
+// lines would desynchronize the line-based parser for every key after it.
+function persistHeaderValue(v) {
+  return String(v === undefined || v === null ? '' : v)
+    .replace(/[\r\n]+/g, ' ')
+    .trim();
+}
+
+// formatCommentBody(finding) — the six header lines, a blank line, then the
+// finding's own prose. `refuted` is always `false`: a refuted finding never
+// reaches the writer, because `survives()` dropped it.
+function formatCommentBody(finding) {
+  const f = finding || {};
+  const lines = [
+    'severity: ' + persistHeaderValue(f.severity || 'concern'),
+    'confidence: ' + persistHeaderValue(f.confidence === undefined || f.confidence === null ? 0 : f.confidence),
+    'refuted: false',
+    'unrefutedReason: ' + persistHeaderValue(f.unrefutedReason || 'none'),
+    'dimension: ' + persistHeaderValue(f.concern || ''),
+    'finding-id: ' + persistHeaderValue(f.id || ''),
+    '',
+    persistHeaderValue(f.concern || ''),
+    'What fails: ' + String(f.what_fails === undefined || f.what_fails === null ? '' : f.what_fails),
+  ];
+  if (f.why) lines.push('Why: ' + String(f.why));
+  if (f.recommendation) lines.push('Recommendation: ' + String(f.recommendation));
+  return lines.join('\n');
+}
+
+// parseCommentHeader(body) — the INVERSE of formatCommentBody, single-sourced
+// beside it so the two cannot drift. Returns null when the header is absent or
+// malformed (a human-written comment), never throws. `whatFails` is recovered
+// from the body's own `What fails: ` line so a persisted comment can be turned
+// back into the `{ severity, concern, what_fails }` shape repeat detection
+// consumes.
+function parseCommentHeader(body) {
+  const text = typeof body === 'string' ? body : '';
+  const lines = text.split('\n');
+  if (lines.length < PERSIST_HEADER_KEYS.length) return null;
+  const values = {};
+  for (let i = 0; i < PERSIST_HEADER_KEYS.length; i++) {
+    const key = PERSIST_HEADER_KEYS[i];
+    const line = lines[i];
+    if (typeof line !== 'string') return null;
+    const prefix = key + ':';
+    if (line.indexOf(prefix) !== 0) return null;
+    let v = line.slice(prefix.length);
+    if (v.slice(0, 1) === ' ') v = v.slice(1);
+    values[key] = v;
+  }
+  const rest = lines.slice(PERSIST_HEADER_KEYS.length).join('\n');
+  let whatFails = '';
+  const restLines = rest.split('\n');
+  for (let i = 0; i < restLines.length; i++) {
+    if (restLines[i].indexOf('What fails: ') === 0) {
+      whatFails = restLines[i].slice('What fails: '.length);
+      break;
+    }
+  }
+  const confidence = parseInt(values.confidence, 10);
+  return {
+    severity: values.severity,
+    confidence: Number.isFinite(confidence) ? confidence : null,
+    refuted: values.refuted === 'true',
+    unrefutedReason: values.unrefutedReason,
+    dimension: values.dimension,
+    findingId: values['finding-id'],
+    whatFails: whatFails,
+    rest: rest.replace(/^\n+/, ''),
+  };
+}
+
+// persistRdmBin / persistProjectFlag — the SAME environment-arg contract every
+// workflow consumer implements (`resolveRdmBin` / `projectFlag`), re-spelled
+// under distinct names because this block is stamped VERBATIM into files that
+// already declare those two.
+function persistRdmBin(value) {
+  if (typeof value === 'string' && value.trim() !== '') return value;
+  if (value === undefined || value === null || typeof value === 'string') return 'rdm';
+  throw new Error('review: rdmBin must be a string path to the rdm executable (omit it to default to `rdm` on PATH)');
+}
+function persistProjectFlag(cfg) {
+  const project = cfg && cfg.project;
+  if (!project) return '';
+  if (typeof project !== 'string' || !/^[A-Za-z0-9._-]+$/.test(project)) {
+    throw new Error('review: project must be a plain project name matching /^[A-Za-z0-9._-]+$/ (got "' + String(project) + '")');
+  }
+  return ' --project ' + project;
+}
+
+// persistReviewSurvivors(result) — the ranked survivor list, under either name
+// the two consumers use for it.
+function persistReviewSurvivors(result) {
+  const r = result || {};
+  if (Array.isArray(r.survivors)) return r.survivors;
+  if (Array.isArray(r.findings)) return r.findings;
+  return [];
+}
+
+// persistReviewMode(result) — the review mode, validated through the gate table
+// so an unknown one throws here rather than producing a mislabelled artifact.
+function persistReviewMode(result) {
+  const mode = (result || {}).mode;
+  gateFor(mode, 'escalated');
+  return mode;
+}
+
+// persistReviewSummary(result) — the `rdm review start --body` text. ALWAYS
+// NON-EMPTY: rdm-core's submit_review raises ReviewEmpty for a review with
+// neither comments nor a summary, which is exactly the clean `reviewed` case.
+function persistReviewSummary(result) {
+  const r = result || {};
+  const base = summarizeFindings(persistReviewSurvivors(r));
+  if (r.outcome === 'escalated') {
+    return gateFor(persistReviewMode(r), 'escalated').reasonPrefix + ' escalated: ' + base;
+  }
+  return String(r.outcome) + ': ' + base;
+}
+
+// persistHeredocTag(base, value) — a quoted-heredoc delimiter guaranteed not to
+// occur as a whole line inside `value`. Deterministic (no randomness — the
+// workflow runtime forbids it): extend with `X` until unique.
+function persistHeredocTag(base, value) {
+  let tag = base;
+  while (('\n' + String(value) + '\n').indexOf('\n' + tag + '\n') !== -1) tag = tag + 'X';
+  return tag;
+}
+
+// persistCapture(varName, base, value) — capture arbitrary text into a shell
+// variable through a QUOTED heredoc, which keeps backticks, `$`, double quotes,
+// em-dashes and newlines literal. Never interpolate a finding's text into a
+// command line directly.
+function persistCapture(varName, base, value) {
+  const tag = persistHeredocTag(base, value);
+  return varName + "=$(cat <<'" + tag + "'\n" + String(value) + '\n' + tag + '\n)';
+}
+
+// persistReviewCommands(result, target, cfg) — the ORDERED shell commands that
+// record this review. Returned as DATA (not only embedded in a prompt) so the
+// verify harness can execute EXACTLY what the prompt tells the agent to run.
+//
+// LINE SHAPE IS PART OF THE CONTRACT. Every line that invokes rdm is indented by
+// two spaces — the convention every prompt in this lane uses for a command line,
+// and the shape scripts/verify-workflow-review-outcome.sh § 6b scans to check the
+// project-flag allow-list. Shell plumbing (heredoc bodies, their terminators,
+// variable assignments) stays flush-left: a heredoc terminator must start its
+// line, and a flush-left line is correctly not read as a command invocation.
+function persistReviewCommands(result, target, cfg) {
+  if (typeof target !== 'string' || target.trim() === '' || target.indexOf('/') === -1) {
+    throw new Error(
+      'review: persist target must be an already-well-formed rdm review ref — "roadmap/<slug>", ' +
+        '"phase/<roadmap-slug>/<stem-or-number>", "task/<slug>" or "plan/<slug>" (got ' +
+        JSON.stringify(target) +
+        '). The consumer builds the ref; the writer never prefixes one.'
+    );
+  }
+  const bin = persistRdmBin(cfg && cfg.rdmBin);
+  const proj = persistProjectFlag(cfg);
+  const mode = persistReviewMode(result);
+  const verdict = persistVerdictFor((result || {}).outcome);
+  const survivors = persistReviewSurvivors(result);
+  const summary = persistReviewSummary(result);
+  const IND = '  ';
+  const cmds = [];
+  cmds.push('RDM_PERSIST_START_JSON=${TMPDIR:-/tmp}/rdm-persist-start.$$.json');
+  cmds.push(
+    persistCapture('RDM_PERSIST_SUMMARY', 'RDM_PERSIST_SUMMARY_EOF', summary) +
+      '\n' +
+      IND +
+      bin +
+      ' review start --on ' +
+      target +
+      ' --body "$RDM_PERSIST_SUMMARY" --no-edit --format json' +
+      proj +
+      ' > "$RDM_PERSIST_START_JSON"' +
+      '\n' +
+      'RDM_REVIEW_ID=$(sed -n \'s/.*"id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$RDM_PERSIST_START_JSON" | head -n 1)'
+  );
+  for (let i = 0; i < survivors.length; i++) {
+    const f = survivors[i] || {};
+    const hasQuote = typeof f.quote === 'string' && f.quote.trim() !== '';
+    let cmd = persistCapture('RDM_PERSIST_BODY', 'RDM_PERSIST_BODY_EOF', formatCommentBody(f)) + '\n';
+    if (hasQuote) {
+      cmd += persistCapture('RDM_PERSIST_QUOTE', 'RDM_PERSIST_QUOTE_EOF', f.quote) + '\n';
+      cmd +=
+        IND + bin + ' review comment "$RDM_REVIEW_ID" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' + proj;
+    } else {
+      cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY" --no-edit' + proj;
+    }
+    cmds.push(cmd);
+  }
+  cmds.push(IND + bin + ' review submit "$RDM_REVIEW_ID" --verdict ' + verdict + ' --no-edit' + proj);
+  // Session-scoped by the changeset model, so a concurrent dispatch's staged
+  // work is never swept in. NEVER `--all`, and never `rdm discard`.
+  cmds.push(IND + bin + ' commit -m "chore(plan): record ' + mode + ' review of ' + target + '"');
+  cmds.push('printf \'reviewId=%s\\n\' "$RDM_REVIEW_ID"');
+  return cmds;
+}
+
+// buildPersistReviewPrompts(result, target, deps) — the prompt an agent runs,
+// the ack schema it must satisfy, and the commands themselves. The agent type is
+// NOT decided here (see the header rule above): the caller supplies it.
+function buildPersistReviewPrompts(result, target, deps) {
+  const commands = persistReviewCommands(result, target, deps);
+  const prompt = [
+    'You are a mechanical review-persistence agent. Do not plan, implement, or review anything, and edit no source files.',
+    'Run these commands IN ORDER in ONE shell session — later commands read shell variables the earlier ones set:',
+    commands.join('\n'),
+    'ANCHORING FALLBACK — never skip a comment and never abort the persist:',
+    '  - If an `review comment` call fails because the quote is AMBIGUOUS (it occurs more than once), re-run that SAME command with ` --occurrence 1` appended.',
+    '  - If it fails a SECOND time for ANY reason (quote not found, occurrence out of range, still ambiguous), re-run it once more with the `--quote` and `--occurrence` flags REMOVED ENTIRELY, leaving a whole-document comment, and count it in `wholeDocument`.',
+    '  - A comment that will not anchor still gets written. A failing comment never stops the remaining comments, the submit, or the commit.',
+    'Return a PERSIST_ACK object: `ok` (true only if review start, every comment, the submit and the commit all exited 0), `reviewId` (the id captured into RDM_REVIEW_ID), `anchored` (how many comments landed with a quote anchor) and `wholeDocument` (how many landed without one).',
+  ].join('\n');
+  return { prompt: prompt, schema: PERSIST_ACK_SCHEMA, commands: commands };
+}
+
 // --- Plan-standalone consolidation helpers -----------------------------------
 // Three pure, post-pipeline consolidation/gate helpers the standalone
 // plan-review workflow (.claude/workflows/rdm-wf-plan-review.js) consumes. They are
@@ -2178,7 +2497,19 @@ function buildReviewPipeline(mode, deps) {
           schema: VERDICT_SCHEMA,
           model: verifyModel,
         })
-          .then((verdict) => ({ finding: c.finding, verdict: verdict }))
+          .then((verdict) => ({
+            // QUOTE CLEARING. An explicit `quote_ok: false` means the refuter
+            // read the reviewed text and the excerpt is not in it — keep the
+            // FINDING (its truth is `refuted`'s business, not the quote's) but
+            // drop the unanchorable excerpt so the writer emits a whole-document
+            // comment instead of failing the persist. Absent/true leaves the
+            // finding untouched. Only GRADED findings pass through here: a
+            // non-gating, over-budget, or refuter-crashed finding keeps an
+            // UNVERIFIED quote by design, and the writer's runtime
+            // whole-document fallback is what protects those.
+            finding: verdict && verdict.quote_ok === false ? stripQuote(c.finding) : c.finding,
+            verdict: verdict,
+          }))
           // A refuter CRASH is not proof of refutation. Keep the finding as
           // un-refuted (verdict=null ⇒ survives() retains it if confidence ≥
           // floor) instead of silently dropping it as if it were refuted.
@@ -2498,6 +2829,15 @@ export {
   AC_ENTRY_SCHEMA,
   AC_REVIEW_SCHEMA,
   survives,
+  stripQuote,
+  PERSIST_VERDICT,
+  persistVerdictFor,
+  PERSIST_ACK_SCHEMA,
+  PERSIST_HEADER_KEYS,
+  formatCommentBody,
+  parseCommentHeader,
+  persistReviewCommands,
+  buildPersistReviewPrompts,
   rankFindings,
   DEFAULT_MAX_REFUTATIONS,
   resolveRefutationBudget,

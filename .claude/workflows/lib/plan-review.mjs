@@ -38,6 +38,9 @@ import {
   resolveRefutationBudget,
   buildReviewCoverage,
   coverageSummaryClause,
+  buildPersistReviewPrompts,
+  parseCommentHeader,
+  PERSIST_ACK_SCHEMA,
 } from './review.mjs';
 
 // >>> plan-review-driver:begin <<<
@@ -202,6 +205,18 @@ function parsePlanArgs(rawArgs) {
   // parse time, before any agent() call — the resolveRefutationBudget
   // precedent — so an illegal value throws instead of burning tokens.
   const gateMode = resolvePlanGateMode(a.gateMode)
+  // The PERSIST switch — record this review as a REAL rdm review (see
+  // docs/workflow-schemas.md § "Persisting a review"). Read from a STRUCTURED
+  // key only, exactly like `fetched` and `gateMode` above: a positional target
+  // slug must never be able to turn writing into the plan repo on. Default OFF,
+  // so every existing caller and harness is byte-unchanged.
+  let persist = resolvePersistArg(a.persist)
+  // `--implementation-plan` has no persisted item to hang a review off, so there
+  // is nothing to write to: persist is forced off and the in-context round note
+  // is kept. Surfaced as a flag so the driver can log it rather than silently
+  // dropping a caller's request.
+  const persistIgnored = !!(persist && kind === 'implementation-plan')
+  if (persistIgnored) persist = null
 
   return {
     kind: kind,
@@ -216,7 +231,52 @@ function parsePlanArgs(rawArgs) {
     verifyModel: verifyModel,
     maxRefutations: maxRefutations,
     gateMode: gateMode,
+    persist: persist,
+    persistIgnored: persistIgnored,
   }
+}
+
+// resolvePersistArg(value) — the four legal shapes of the `persist` arg, and a
+// THROW on anything else:
+//
+//   absent / null / false        -> null            (off, the default)
+//   true / {}                    -> { on: null }    (on; derive the ref per unit)
+//   { on: '<rdm review ref>' }   -> { on: '<ref>' } (on; explicit single target)
+//
+// Throwing on an unrecognized shape is deliberate: a silent "off" would turn a
+// typo into a review that was never recorded, with nothing in the transcript to
+// say so.
+function resolvePersistArg(value) {
+  if (value === undefined || value === null || value === false) return null
+  if (value === true) return { on: null }
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    const on = value.on
+    if (on === undefined || on === null) return { on: null }
+    if (typeof on === 'string' && on.trim() !== '') return { on: on.trim() }
+  }
+  throw new Error(
+    'plan-review: persist must be omitted, `true`, `{}`, or `{ on: "<rdm review ref>" }` — got ' + JSON.stringify(value)
+  )
+}
+
+// persistTargetFor(unit, persist, unitCount) — the `rdm review --on` ref for ONE
+// review unit. Pure.
+//
+// An explicit `persist.on` is honored ONLY on a single-unit run. A roadmap
+// fan-out reviews N units independently, so collapsing them onto one caller-
+// supplied target would merge N independent reviews into one — the ref is
+// derived per unit instead.
+//
+// This is the ONE place a plan-review persist ref is built. The writer treats
+// `target` as opaque and never prefixes anything (see review.mjs's
+// persistReviewCommands), so a mistake here cannot be repaired downstream.
+function persistTargetFor(unit, persist, unitCount) {
+  const u = unit || {}
+  const count = typeof unitCount === 'number' ? unitCount : 1
+  if (persist && typeof persist.on === 'string' && persist.on !== '' && count === 1) return persist.on
+  if (u.kind === 'phase') return 'phase/' + u.roadmap + '/' + u.ident
+  if (u.kind === 'task') return 'task/' + u.ident
+  return 'roadmap/' + u.ident
 }
 
 // PLAN_GATE_MODES / resolvePlanGateMode(value) — the two legal dispositions of
@@ -596,22 +656,91 @@ function extractTaskFromJson(json, expectedSlug) {
 // fix-plan-review-gate-tag-clobber). All parsing, extraction, and identity
 // validation now happen deterministically in THIS FILE, after the agent
 // returns (see the extract*FromJson / parse* functions above).
-function buildPhaseFetchPrompt(roadmap, phase) {
+// --- The prior-review READ, folded into the existing fetch agents -------------
+// With `persist` on, the round number and the prior round's findings come from
+// the reviews already recorded on the target rather than from a `## Plan Review
+// Round` body note. That read is appended as EXTRA COMMAND BLOCKS to the fetch
+// agent that already runs — it adds ZERO new mechanical agent sites, which is
+// the discipline this file is held to (see buildRoadmapFetchPrompt's
+// "must not be reintroduced" note).
+//
+// When `opts` is absent the three builders below return BYTE-IDENTICAL text to
+// what they always returned, so the persist-off path is provably unchanged.
+
+// persistTargetsOf(opts) — the validated, non-empty target list, or [].
+function persistTargetsOf(opts) {
+  if (!opts || !Array.isArray(opts.persistTargets)) return []
+  return opts.persistTargets.filter((t) => typeof t === 'string' && t !== '')
+}
+
+// reviewListBlockLines(target) — the instructions for ONE extra `review list`
+// command block, in the same marker-delimited shape buildRoadmapFetchPrompt
+// already uses.
+function reviewListBlockLines(target) {
+  return [
+    'Then run:',
+    '  ./target/debug/rdm review list --on ' + target + ' --project rdm --format json',
+    'Before its output, print a line by itself: ===CMD: review list --on ' + target + '===',
+    "Then print that command's raw stdout verbatim, exactly as above. If it fails or prints nothing,",
+    'still print its marker line followed by an empty body.',
+  ]
+}
+
+// buildMarkedShowFetchPrompt(label, showCmd, targets) — the MULTI-BLOCK variant
+// of a single-item fetch: the same `<kind> show` read, marker-delimited so the
+// appended `review list` blocks can ride along in one transcript.
+function buildMarkedShowFetchPrompt(label, showCmd, targets) {
+  const lines = [
+    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
+    'Run this command in the repo root:',
+    '  ' + showCmd,
+    'Before its output, print a line by itself: ===CMD: ' + label + '===',
+    "Then print that command's raw stdout, character for character, exactly as printed — do not",
+    'summarize, reformat, extract fields, rename anything, or comment on it.',
+  ]
+  for (let i = 0; i < targets.length; i++) {
+    const block = reviewListBlockLines(targets[i])
+    for (let j = 0; j < block.length; j++) lines.push(block[j])
+  }
+  lines.push(
+    'Return a RAW_STDOUT object: `transcript` — the concatenation of every ===CMD: ...=== marker line',
+    'and the raw stdout that follows it, one block per command, in the order the commands were run.'
+  )
+  return lines.join('\n')
+}
+
+// extractShowBlockStdout(transcript, prefix) — the raw stdout of the marker
+// block whose recorded command starts with `prefix`, or '' when absent. Used to
+// unwrap the marked single-item fetch above back into the plain JSON stdout the
+// non-persist path parses directly.
+function extractShowBlockStdout(transcript, prefix) {
+  const blocks = parseTranscriptBlocks(transcript)
+  const block = blocks.find((b) => b.command.indexOf(prefix) === 0)
+  return block ? block.stdout : ''
+}
+
+function buildPhaseFetchPrompt(roadmap, phase, opts) {
+  const showCmd = './target/debug/rdm phase show ' + phase + ' --roadmap ' + roadmap + ' --project rdm --format json'
+  const targets = persistTargetsOf(opts)
+  if (targets.length > 0) return buildMarkedShowFetchPrompt('phase show ' + phase, showCmd, targets)
   return [
     'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
     'Run exactly this command in the repo root:',
-    '  ./target/debug/rdm phase show ' + phase + ' --roadmap ' + roadmap + ' --project rdm --format json',
+    '  ' + showCmd,
     'Return a RAW_STDOUT object: `transcript` — the ENTIRE raw stdout of that command, character for',
     'character, exactly as printed. Do not summarize, reformat, extract fields, rename anything, or',
     'comment on it — copy it verbatim.',
     'If the command fails or prints nothing, return an empty string for `transcript`.',
   ].join('\n')
 }
-function buildTaskFetchPrompt(slug) {
+function buildTaskFetchPrompt(slug, opts) {
+  const showCmd = './target/debug/rdm task show ' + slug + ' --project rdm --format json'
+  const targets = persistTargetsOf(opts)
+  if (targets.length > 0) return buildMarkedShowFetchPrompt('task show ' + slug, showCmd, targets)
   return [
     'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
     'Run exactly this command in the repo root:',
-    '  ./target/debug/rdm task show ' + slug + ' --project rdm --format json',
+    '  ' + showCmd,
     'Return a RAW_STDOUT object: `transcript` — the ENTIRE raw stdout of that command, character for',
     'character, exactly as printed. Do not summarize, reformat, extract fields, rename anything, or',
     'comment on it — copy it verbatim.',
@@ -636,8 +765,8 @@ function buildTaskFetchPrompt(slug) {
 // multi-command shape (one `roadmap show` call, then one `phase show` call per
 // phase the agent just read) and changes ONLY the output contract: verbatim,
 // delimited transcription instead of composed JSON.
-function buildRoadmapFetchPrompt(slug) {
-  return [
+function buildRoadmapFetchPrompt(slug, opts) {
+  const head = [
     'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
     'Run this command in the repo root:',
     '  ./target/debug/rdm roadmap show ' + slug + ' --project rdm --format json',
@@ -650,11 +779,36 @@ function buildRoadmapFetchPrompt(slug) {
     'Before each of those outputs, print a line by itself: ===CMD: phase show <stem>=== (substituting',
     'the real stem value you read), then print that command\'s raw stdout verbatim, exactly as with the',
     'roadmap command above.',
+  ]
+  const targets = persistTargetsOf(opts)
+  for (let i = 0; i < targets.length; i++) {
+    const block = reviewListBlockLines(targets[i])
+    for (let j = 0; j < block.length; j++) head.push(block[j])
+  }
+  // A roadmap fan-out's PHASE refs are not knowable before the fetch (the stems
+  // are what this very command reads), so they are asked for as a TEMPLATE over
+  // the stems the agent just read — exactly like the `phase show <stem>` block
+  // above — rather than as an enumerated target list.
+  const phasePrefix =
+    opts && typeof opts.persistPhaseTargetPrefix === 'string' && opts.persistPhaseTargetPrefix !== ''
+      ? opts.persistPhaseTargetPrefix
+      : ''
+  if (phasePrefix) {
+    head.push(
+      'For EACH phase stem you read above, ALSO run:',
+      '  ./target/debug/rdm review list --on ' + phasePrefix + '<stem> --project rdm --format json',
+      'Before each of those outputs, print a line by itself: ===CMD: review list --on ' + phasePrefix + '<stem>===',
+      "(substituting the real stem value you read), then print that command's raw stdout verbatim. If it",
+      'fails or prints nothing, still print its marker line followed by an empty body.'
+    )
+  }
+  head.push(
     'Return a RAW_STDOUT object: `transcript` — the concatenation of every ===CMD: ...=== marker line',
     'and the raw stdout that follows it, one block per command, in the order the commands were run.',
     'If the roadmap command fails or prints nothing, still print its marker line followed by an empty',
-    'body, and run no phase commands.',
-  ].join('\n')
+    'body, and run no phase commands.'
+  )
+  return head.join('\n')
 }
 
 // buildRoadmapBodyCheckPrompt(slug) — a SECOND, INDEPENDENT mechanical fetch,
@@ -1183,6 +1337,85 @@ function buildActPrompt(kind, roadmap, ident, survivors) {
 // purely by being repeated. Only an actual fix (the finder stops reporting
 // it) or an explicit human `wont-fix` removes a finding from the outcome.
 
+// --- The review-derived round channel ----------------------------------------
+// The persisted-review replacement for parseRoundNotes. Same `{ round, findings }`
+// shape, so everything downstream — `round = prior.round + 1`,
+// `classifyRoundOutcome(round, survivors)`, `partitionRepeats(survivors,
+// prior.findings)` — is literally unchanged and the round-3 cap and the
+// reporting-only repeat rule are preserved BY CONSTRUCTION rather than by a
+// second implementation.
+
+// extractPriorReviewsFromTranscript(transcript, target) — the `rdm review list
+// --on <target> --format json` array out of the fetch transcript, or null when
+// the block is missing or unparseable. Never throws; matched by the block's own
+// RECORDED COMMAND, never by transcript order.
+function extractPriorReviewsFromTranscript(transcript, target) {
+  if (typeof target !== 'string' || target === '') return null
+  const needle = 'review list --on ' + target
+  const blocks = parseTranscriptBlocks(transcript)
+  const block = blocks.find((b) => {
+    const c = String(b.command).trim()
+    if (c === needle) return true
+    // A prefix match must end on a boundary, or `--on phase/rm/1` would also
+    // match a block recorded for `--on phase/rm/10`.
+    return c.indexOf(needle) === 0 && /\s/.test(c.charAt(needle.length))
+  })
+  if (!block) return null
+  try {
+    const v = JSON.parse(String(block.stdout))
+    return Array.isArray(v) ? v : null
+  } catch (e) {
+    return null
+  }
+}
+
+// priorRoundFromReviews(reviews) — how many rounds this target has already
+// been through: every non-draft review recorded against it. A null/unparseable
+// list fails TOWARD 0 (the cap engages later, never never) — the same stance
+// parseRoundNotes takes on a body with no well-formed header.
+//
+// A HUMAN's review on the same target counts. That is deliberate: a round is a
+// pass over the plan, whoever made it, and filtering by author would let an
+// agent loop forever alongside a human who keeps requesting changes.
+function priorRoundFromReviews(reviews) {
+  if (!Array.isArray(reviews)) return 0
+  return reviews.filter((r) => r && r.state !== 'draft').length
+}
+
+// latestPriorReview(reviews) — the most recently created non-draft review, by
+// `created` then `id` (both are timestamp-ordered), never by array position.
+function latestPriorReview(reviews) {
+  if (!Array.isArray(reviews)) return null
+  const considered = reviews.filter((r) => r && r.state !== 'draft')
+  if (considered.length === 0) return null
+  let best = considered[0]
+  for (let i = 1; i < considered.length; i++) {
+    const key = (r) => String((r && (r.created || r.id)) || '')
+    if (key(considered[i]) > key(best)) best = considered[i]
+  }
+  return best
+}
+
+// priorFindingsFromReviews(reviews) — the LATEST prior review's comments, mapped
+// back into the `{ severity, concern, what_fails }` shape `partitionRepeats`
+// consumes, through the writer's own inverse parser (`parseCommentHeader`) so
+// the two cannot drift. A comment whose body does not carry the header — a
+// human-written one — is SKIPPED, never crashed on and never signature-matched
+// as a repeat.
+function priorFindingsFromReviews(reviews) {
+  const latest = latestPriorReview(reviews)
+  if (!latest) return []
+  const comments = Array.isArray(latest.comments) ? latest.comments : []
+  const out = []
+  for (let i = 0; i < comments.length; i++) {
+    const c = comments[i]
+    const h = parseCommentHeader(c && c.body)
+    if (!h) continue
+    out.push({ severity: h.severity, concern: h.dimension, what_fails: h.whatFails })
+  }
+  return out
+}
+
 const ROUND_HEADER_RE = /^## Plan Review Round (\d+) — (\S+)\s*$/
 
 // parseRoundNotes(body) — read every well-formed `## Plan Review Round N —
@@ -1322,6 +1555,15 @@ function suppressWontFixed(survivors, wontFixedTexts) {
 // classifyRoundOutcome(round, survivors) — the round-outcome capper. EVERY
 // round classifies from the FULL (wont-fix-suppressed but repeat-unfiltered)
 // survivor set via classifyPlanOutcome, exactly as an uncapped run would.
+//
+// TWO CHANNELS, ONE CLASSIFIER. The prior `{ round, findings }` state now comes
+// from EITHER the `## Plan Review Round` body note (persist off) or the reviews
+// persisted on the target (persist on) — and that is the ONLY difference between
+// them. The channel supplies `{ round, findings }` and nothing else; this
+// function, its input (the repeat-UNFILTERED survivor list), and the
+// reporting-only rule on `partitionRepeats` are identical on both. A repeat can
+// therefore never age a still-present blocking finding out into a pass on either
+// channel.
 // Round 3+ then escalates only when that base outcome is still non-`reviewed`,
 // so an item can never loop forever on an unresolved finding — while a plan
 // that was genuinely fixed on the third pass still passes. The cap is an
@@ -1711,6 +1953,13 @@ async function runPlanReviewDriver(args, deps) {
   if (parsed.gateMode === 'return') _gateMode = 'return'
   // Already validated by parsePlanArgs via the review core's single validator.
   const maxRefutations = parsed.maxRefutations
+  // The PERSIST switch, resolved once. `persistOn` is the single boolean every
+  // branch below consults; `persist` carries the optional explicit target.
+  const persist = parsed.persist
+  const persistOn = !!persist
+  if (parsed.persistIgnored) {
+    _log('plan-review: --implementation-plan has no persisted target — persist ignored')
+  }
 
   // reviewUnit — run find → refute → filter for ONE review unit, then strip
   // non-phase unit-of-work survivors, drop anything already resolved
@@ -1718,7 +1967,7 @@ async function runPlanReviewDriver(args, deps) {
   // the round cap. Returns a per-unit result the act + gate steps consume
   // independently. `wontFixedTexts` is the SAME list for every unit in a run
   // (one search covers the whole run, not one per unit).
-  async function reviewUnit(unit, wontFixedTexts) {
+  async function reviewUnit(unit, wontFixedTexts, persistOn) {
     // runPlanReview is a `runReview` from the canonical review source and
     // resolves `{ survivors, acTable, budget, coverage }`; `acTable` is always
     // `null` in plan mode (the `ac` dimension does not exist there) and is
@@ -1732,7 +1981,11 @@ async function runPlanReviewDriver(args, deps) {
     const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, intent: unit.intent, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: unit.targetType, hasIntent: unit.hasIntent === true } })
     const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
     const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
-    const prior = parseRoundNotes(unit.body)
+    // THE CHANNEL SWITCH. Both branches produce the SAME `{ round, findings }`
+    // shape; everything below this line is identical on either channel.
+    const prior = persistOn
+      ? { round: priorRoundFromReviews(unit.priorReviews), findings: priorFindingsFromReviews(unit.priorReviews) }
+      : parseRoundNotes(unit.body)
     const round = prior.round + 1
     const outcome = classifyRoundOutcome(round, survivors)
     const partition = partitionRepeats(survivors, prior.findings)
@@ -1800,6 +2053,11 @@ async function runPlanReviewDriver(args, deps) {
   // schema validation could not catch. A payload the shape guard rejects falls
   // through to the agent below, which is left byte-unchanged.
   let fetched = null
+  // The RAW fetch transcript, kept so the persist-on round channel can read the
+  // `review list --on <target>` blocks that ride along in it. Empty on the hoist
+  // path (there is no transcript to read), which degrades to round 0 / no prior
+  // findings — the same fail-toward stance parseRoundNotes takes.
+  let fetchTranscript = ''
   if (hoistedFetchedOk(parsed.fetched, kind)) {
     fetched = parsed.fetched
     _log('plan-review: ' + kind + ' payload hoisted from caller args (no fetch agent)')
@@ -1812,15 +2070,19 @@ async function runPlanReviewDriver(args, deps) {
     // that result, with ONE bounded retry (a fresh, independent agent call —
     // never a re-use of the first attempt's result) before falling through to
     // the existing fail-closed `fetched = null` / `built.fetchFailed` path.
+    const roadmapFetchOpts = persistOn
+      ? { persistTargets: ['roadmap/' + parsed.roadmap], persistPhaseTargetPrefix: 'phase/' + parsed.roadmap + '/' }
+      : undefined
     const attemptRoadmapFetch = async () => {
       try {
-        const raw = await _agent(buildRoadmapFetchPrompt(parsed.roadmap), {
+        const raw = await _agent(buildRoadmapFetchPrompt(parsed.roadmap, roadmapFetchOpts), {
           label: 'fetch:roadmap',
           phase: 'Read',
           agentType: 'rdm-mechanical',
           schema: RAW_STDOUT_SCHEMA,
           model: _mechanicalModel,
         })
+        fetchTranscript = (raw && typeof raw.transcript === 'string' && raw.transcript) || ''
         return assembleRoadmapFetchFromTranscript(raw && raw.transcript, parsed.roadmap)
       } catch (e) {
         return null
@@ -1874,8 +2136,16 @@ async function runPlanReviewDriver(args, deps) {
       }
     }
   } else {
+    // With persist on, this fetch's transcript becomes marker-delimited (the
+    // `review list` blocks ride along in it), so the show output is unwrapped
+    // out of its own block below instead of being parsed as the whole stdout.
+    const unitPersistTarget = kind === 'task' ? 'task/' + parsed.task : 'phase/' + parsed.roadmap + '/' + parsed.phase
+    const unitFetchOpts = persistOn ? { persistTargets: [unitPersistTarget] } : undefined
+    const showBlockPrefix = kind === 'task' ? 'task show ' + parsed.task : 'phase show ' + parsed.phase
     const fetchPrompt =
-      kind === 'task' ? buildTaskFetchPrompt(parsed.task) : buildPhaseFetchPrompt(parsed.roadmap, parsed.phase)
+      kind === 'task'
+        ? buildTaskFetchPrompt(parsed.task, unitFetchOpts)
+        : buildPhaseFetchPrompt(parsed.roadmap, parsed.phase, unitFetchOpts)
     // Same fetchTranscriptionOk + one-bounded-retry treatment as the roadmap
     // branch above, applied to the task/phase shape.
     const attemptUnitFetch = async () => {
@@ -1887,7 +2157,10 @@ async function runPlanReviewDriver(args, deps) {
           schema: RAW_STDOUT_SCHEMA,
           model: _mechanicalModel,
         })
-        const parsedStdout = parseJsonStdout(raw && raw.transcript)
+        fetchTranscript = (raw && typeof raw.transcript === 'string' && raw.transcript) || ''
+        const parsedStdout = parseJsonStdout(
+          persistOn ? extractShowBlockStdout(fetchTranscript, showBlockPrefix) : raw && raw.transcript
+        )
         const extracted = parsedStdout.ok
           ? kind === 'task'
             ? extractTaskFromJson(parsedStdout.value, parsed.task)
@@ -1959,6 +2232,20 @@ async function runPlanReviewDriver(args, deps) {
   // line — never dropped silently.
   const skippedPhases = built.skippedPhases || []
 
+  // Thread each unit's PRIOR REVIEWS off the transcript the fetch already
+  // returned, so reviewUnit needs no extra fetch. Built with the SAME
+  // persistTargetFor the persist step writes with, so the round derivation reads
+  // reviews from exactly the ref the writer writes to. `null` (no block, or an
+  // unparseable one) fails toward round 0.
+  if (persistOn) {
+    for (let i = 0; i < units.length; i++) {
+      units[i].priorReviews = extractPriorReviewsFromTranscript(
+        fetchTranscript,
+        persistTargetFor(units[i], persist, units.length)
+      )
+    }
+  }
+
   // FAIL-CLOSED: an unread plan must NOT be silently marked reviewed / have its
   // tag cleared. Report the failure and mutate nothing.
   if (built.fetchFailed) {
@@ -2005,7 +2292,7 @@ async function runPlanReviewDriver(args, deps) {
 
   // Review each unit independently (parallel per-unit fan-out — a phase's outcome
   // never changes a sibling's). A single phase/task target is a one-element list.
-  const results = await _parallel(units.map((u) => () => reviewUnit(u, wontFixedTexts)))
+  const results = await _parallel(units.map((u) => () => reviewUnit(u, wontFixedTexts, persistOn)))
 
   // Act + gate each unit independently. Both halves are skipped in
   // --implementation-plan mode (handled by the early return above); the explicit
@@ -2036,7 +2323,12 @@ async function runPlanReviewDriver(args, deps) {
     // remaining findings (not just the newly-reported subset), so nothing open
     // is hidden from a future reader — this runs even when survivors is empty
     // (a round-3+ escalation can have zero findings and still must be capped).
-    if (kind !== 'implementation-plan' && r.outcome !== 'reviewed') {
+    // With `persist` on, the round state lives in the persisted reviews, so the
+    // body note is not written at all — leaving both channels running would put
+    // the agent's findings somewhere a human reviewer's never appear.
+    // `formatRoundNote`/`buildRoundNoteWritePrompt` stay in the file: the
+    // persist-off path below still reaches them, unchanged.
+    if (!persistOn && kind !== 'implementation-plan' && r.outcome !== 'reviewed') {
       try {
         await _agent(buildRoundNoteWritePrompt(u.kind, u.roadmap, u.ident, r.round, r.outcome, r.survivors), {
           label: 'act:round-note:' + u.kind + ':' + u.ident,
@@ -2045,6 +2337,42 @@ async function runPlanReviewDriver(args, deps) {
         })
       } catch (e) {
         _log('plan-review: round-note write failed for ' + u.kind + '/' + u.ident)
+      }
+    }
+
+    // --- Persist the review (opt-in; skipped for implementation-plan) ---
+    // Record this unit's surviving findings as a REAL rdm review on the unit's
+    // own target, so an agent's review is the same artifact a human's is. The
+    // agent type is supplied HERE, by this local-only consumer — the writer in
+    // review.mjs carries no agentType literal, because it is stamped verbatim
+    // into a DISTRIBUTED engine that must not thread one.
+    //
+    // FAIL-SOFT: a thrown agent, an `ok: false` ack, or a missing id logs loudly
+    // and leaves `outcome`, the gate and the tag exactly as they were. A review
+    // that failed to record is a lost audit trail, never a changed verdict.
+    let reviewId = null
+    if (persistOn && kind !== 'implementation-plan') {
+      const persistTarget = persistTargetFor(u, persist, units.length)
+      try {
+        const persistPrompts = buildPersistReviewPrompts(
+          { mode: 'plan', outcome: r.outcome, survivors: r.survivors },
+          persistTarget,
+          { rdmBin: './target/debug/rdm', project: 'rdm' }
+        )
+        const ack = await _agent(persistPrompts.prompt, {
+          label: 'persist:review:' + u.kind + ':' + u.ident,
+          phase: 'Act',
+          agentType: 'rdm-mechanical',
+          schema: PERSIST_ACK_SCHEMA,
+          model: _mechanicalModel,
+        })
+        if (ack && ack.ok === true && typeof ack.reviewId === 'string' && ack.reviewId !== '') {
+          reviewId = ack.reviewId
+        } else {
+          _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (ack: ' + JSON.stringify(ack) + ')')
+        }
+      } catch (e) {
+        _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (' + String((e && e.message) || e) + ')')
       }
     }
 
@@ -2174,6 +2502,9 @@ async function runPlanReviewDriver(args, deps) {
     // The two gate clauses are mutually exclusive by construction (a deferred
     // unit is never blocked), so at most one is ever appended.
     reportedUnit.summary = r.summary + gateFailureClause(reportedUnit) + gateDeferredClause(reportedUnit)
+    // PRESENT ONLY WHEN THE PERSIST RAN. Never `reviewId: null` — an
+    // always-present key would change the OUTCOME of every persist-omitted run.
+    if (reviewId) reportedUnit.reviewId = reviewId
     reported.push(reportedUnit)
     _log(
       'plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + reportedUnit.summary + formatUnitBudget(r.budget)
@@ -2212,6 +2543,7 @@ async function runPlanReviewDriver(args, deps) {
     result.gateAction = reported[0].gateAction
     result.gateBlocked = reported[0].gateBlocked
     result.gateDeferred = reported[0].gateDeferred
+    if (reported[0].reviewId) result.reviewId = reported[0].reviewId
   }
   if (kind === 'roadmap') {
     // Previously unset for roadmap kind (there is no single unit to flatten
@@ -2276,6 +2608,12 @@ export {
   extractPhaseFromJson,
   extractTaskFromJson,
   assembleRoadmapFetchFromTranscript,
+  resolvePersistArg,
+  persistTargetFor,
+  extractPriorReviewsFromTranscript,
+  priorRoundFromReviews,
+  priorFindingsFromReviews,
+  extractShowBlockStdout,
   parseRoundNotes,
   formatRoundNote,
   findingSignature,

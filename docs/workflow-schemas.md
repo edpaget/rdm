@@ -1132,6 +1132,7 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | `concern`       | string (required)                        | the dimension key (`ac`, `correctness`, …)        |
 | `category`      | string                                   | **optional**; security-style slug (injection / authorization / memory / crypto / exposure) |
 | `location`      | string                                   | `file:line`, section heading, or phase stem       |
+| `quote`         | string                                   | **optional**; a VERBATIM excerpt of the reviewed text this finding is about — what makes a persisted comment anchorable |
 | `severity`      | `blocking` \| `concern` \| `suggestion`  | required; drives ranking and the overall verdict  |
 | `confidence`    | integer 0–100 (required)                 | the finder's confidence **in the finding**        |
 | `what_fails`    | string (required)                        | the specific problem                              |
@@ -1152,6 +1153,28 @@ which is the DIMENSION identity three consumers match on
 `concern: f.concern || dim.key` backfill). The reference agent's
 `(file, line, category)` **dedupe key is NOT implemented** in this pipeline — the
 field is a carrier, not a half-built dedupe, and no consumer reads it today.
+
+**`quote` is what makes a finding anchorable.** `location` is free-form prose —
+`rdm review comment --quote` needs text that matches the reviewed document
+EXACTLY, so the finder is asked for a verbatim excerpt instead, short enough to
+be unique and never paraphrased. A finding about the document as a whole simply
+omits it. The refuter VERIFIES it: `refutePrompt` appends a quote-verification
+clause **only when the finding carries a quote** (a conditional that keeps the
+56-item refuter-agreement corpus's recorded `promptSha256` values regenerating —
+see `docs/refuter-model-tiering.md` § Maintenance gap), and an explicit
+`quote_ok: false` verdict makes the pipeline `stripQuote` the finding: the
+finding survives on its own merits and simply loses an excerpt that would not
+have anchored. `quote_ok` is independent of `refuted`. A finding that was never
+graded (`unrefuted` / `refuterError`) keeps an UNVERIFIED quote — the writer's
+runtime whole-document fallback is what protects those.
+
+The code-mode `ac` dimension's prompt deliberately says nothing about `quote`.
+It returns early from its own `AC_REVIEW_SCHEMA` branch and never reaches the
+shared FINDINGS-schema prompt line, its prompt text is byte-pinned by
+`scripts/verify-workflow-review.sh`'s `CODE_PROMPT_BASELINE.ac`, and its
+`findings` array is narrative-only. Structurally `quote` is still accepted there,
+because `AC_REVIEW_SCHEMA.properties.findings` aliases the same sub-schema. See
+§ "Persisted review comment body" and § "Persisting a review" below.
 
 **Security severity maps onto the existing three-value ladder.** The `security`
 dimension's impact scale is expressed directly in `blocking` / `concern` /
@@ -1226,6 +1249,123 @@ channel that distinguishes them is `coverage.acTableAbsent` (see `OUTCOME`
 finder still resolved nothing after its one retry. It is recorded and named in
 the summary, and it does NOT count as an AC gap.
 
+### Persisted review comment body
+
+Every comment `buildPersistReviewPrompts` writes starts with a fixed six-line
+header carrying the finding metadata rdm's comment frontmatter has no field for,
+followed by a blank line, then the finding's own prose. The key ORDER is fixed
+and the header is TOTAL — every key is always emitted, never sparse:
+
+```
+severity: blocking
+confidence: 90
+refuted: false
+unrefutedReason: none
+dimension: coherence
+finding-id: f1
+
+coherence
+What fails: the retry backoff strategy is unspecified
+Why: no stated rule covers it
+Recommendation: state the backoff policy
+```
+
+Rules:
+
+- The six keys, in this order: `severity`, `confidence`, `refuted`,
+  `unrefutedReason`, `dimension`, `finding-id`.
+- `unrefutedReason: none` is the SENTINEL for a finding that carries none — the
+  key is never omitted.
+- `refuted` is always `false`: a refuted finding never reaches the writer,
+  because `survives()` already dropped it.
+- Every header VALUE is single-line (embedded newlines are collapsed to spaces),
+  so the inverse parser can be line-based.
+- `formatCommentBody` and its inverse `parseCommentHeader` live side by side in
+  `.claude/workflows/lib/review.mjs` so the two cannot drift.
+  `parseCommentHeader` returns `null` — never throws — on a body without the
+  header, which is how a human-written comment is skipped rather than
+  misread as a finding.
+
+Carrying this metadata in comment FRONTMATTER instead is recorded as a
+follow-up (`extend-review-comment-frontmatter-with-finding-metadata`), not done
+here.
+
+### Persisting a review (`persist: { on }`)
+
+Both review workflows can record their surviving findings as a REAL rdm review
+instead of leaving them in an ephemeral OUTCOME. It is OPT-IN and defaults OFF,
+so a caller that omits it gets a byte-identical OUTCOME to before.
+
+`persist` is read from STRUCTURED ARG KEYS ONLY — never tokenized out of an
+`$ARGUMENTS` flag string. Legal shapes: absent / `false` (off), `true` or `{}`
+(on; derive the ref per unit), `{ on: '<ref>' }` (on; explicit target). Anything
+else throws.
+
+**THREE ref grammars are in play and must never be conflated.** This is the one
+sharp edge:
+
+| ref | grammar | used by |
+| --- | --- | --- |
+| worktree ref | `<roadmap>/<phase>` or `task/<slug>` | `rdm worktree add` (`ItemRef::parse`) |
+| prompt context target | free-form human-readable label | `context.target`, threaded into every find/refute prompt (byte-pinned) |
+| review ref | `roadmap/<slug>` \| `phase/<roadmap-slug>/<stem-or-number>` \| `task/<slug>` \| `plan/<slug>` | `rdm review --on` (`ReviewTarget::from_str`) |
+
+`rdm-wf-review-refute-fix.js`'s existing `worktreeRef` and `reviewTarget` are
+BOTH the first shape; `rdm review --on` rejects it. The persist `--on` ref is
+therefore a THIRD variable, `persistReviewTarget`, and `lib/plan-review.mjs`
+derives its own per unit through `persistTargetFor` (`phase/<roadmap>/<ident>` |
+`task/<slug>` | `roadmap/<slug>`). A numeric phase identifier is legal —
+`parse_review_target_ref` resolves `phase/<roadmap>/1` through
+`resolve_phase_stem` — so it is never pre-resolved in the workflow.
+
+The writer itself (`persistReviewCommands` / `buildPersistReviewPrompts` in
+`lib/review.mjs`) treats `target` as an OPAQUE, already-well-formed ref: no
+per-kind branching, no prefixing, and a throw on a ref with no `/`. That is what
+lets a future target kind reuse it unchanged.
+
+**Emitted commands**, in order: `rdm review start --on <target> --body <summary>
+--no-edit --format json` → one `rdm review comment` per survivor → `rdm review
+submit --verdict <v>` → a session-scoped `rdm commit`. Quotes and bodies are
+captured through QUOTED HEREDOCS, never interpolated into a command line, so
+backticks, `$`, double quotes, em-dashes and newlines ride through literally. A
+survivor carrying a `quote` gets `--quote`; one without becomes a whole-document
+comment. The prompt spells a two-step anchoring fallback — `--occurrence 1` on
+ambiguity, then drop `--quote` entirely on a second failure — so a comment is
+never skipped and the persist never aborts on an anchoring failure. `review
+start` always carries a NON-EMPTY `--body`, or `submit_review` would raise
+`ReviewEmpty` on a clean review with no comments.
+
+**Verdict mapping** (`PERSIST_VERDICT` / `persistVerdictFor`, which THROWS on an
+unrecognized outcome rather than defaulting to `comment`):
+
+| outcome | verdict |
+| --- | --- |
+| `reviewed` | `approve` |
+| `rework` | `request-changes` |
+| `escalated` | `request-changes`, with the mode's `[code]`/`[plan]` escalation prefix on the review body |
+
+The OUTCOME gains a `reviewId` key **only when the persist step actually ran** —
+never `reviewId: null`. A failed persist logs loudly and changes nothing else.
+
+**The agent type is a per-consumer parameter.** The writer contains no
+`agentType` literal. `rdm-wf-plan-review.js` is local-only and runs the step with
+`agentType: 'rdm-mechanical'`; `rdm-wf-review-refute-fix.js` is DISTRIBUTED and
+threads none (see CLAUDE.md § `.claude/agents/`; threading it is owned by task
+`thread-agent-type-into-distributed-workflows`).
+
+**The round channel.** With `persist` on, plan review stops appending
+`## Plan Review Round <N>` notes to the reviewed document and derives the same
+`{ round, findings }` state from the reviews recorded on the target: the round
+number is the count of non-draft reviews (`priorRoundFromReviews`), and the
+prior round's findings are the latest review's comment bodies read back through
+`parseCommentHeader` (`priorFindingsFromReviews`). A human's review on the same
+target legitimately advances the round — a round is a pass over the plan,
+whoever made it. Everything downstream is unchanged, so the round-3 escalation
+cap and the REPORTING-ONLY repeat rule are preserved by construction rather than
+by a second implementation. `--implementation-plan` has no persisted target, so
+persist is forced off there and it keeps the in-context note. With `persist`
+off, the body-note channel behaves exactly as it always has.
+
 ### `VERDICT`
 
 A refuter agent's grade of a single `FINDING`. A **fresh** refuter grades each
@@ -1236,6 +1376,7 @@ finding — the finder never grades its own work.
 | `refuted`    | boolean (required)       | `true` ⇒ the finding does not hold up ⇒ dropped        |
 | `confidence` | integer 0–100 (required) | the refuter's confidence in **its verdict** (advisory) |
 | `rationale`  | string                   | why the finding was or was not refuted                 |
+| `quote_ok`   | boolean                  | **optional**; did the finding's `quote` appear VERBATIM in the reviewed text? Requested only when the finding carries one, and INDEPENDENT of `refuted` — an explicit `false` strips the quote, never the finding |
 
 `VERDICT` is the **single-finding** contract, and it is the contract the shipped
 pipeline uses. A batched sibling — one refuter per dimension over that review
