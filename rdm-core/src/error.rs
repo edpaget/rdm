@@ -95,6 +95,12 @@ pub enum Error {
     },
     /// `--override-gate` was passed an empty or whitespace-only reason.
     GateOverrideEmptyReason,
+    /// `--override-gate` was passed while the `reviewed` transition gate is
+    /// not enforcing, so there is nothing to bypass. Refused rather than
+    /// silently ignored: the whole point of the override is that a bypass is
+    /// an audited act, and honoring it as a no-op would discard the reason and
+    /// actor the operator supplied without telling them.
+    GateOverrideGateDisabled,
     /// The plan a new plan would supersede does not exist.
     PlanSupersedesMissing(String),
     /// A plan's `supersedes` named a reference kind that is not a plan
@@ -520,6 +526,15 @@ impl std::fmt::Display for Error {
                     "refusing to mark {item} reviewed: its worktree could not be inspected ({cause}) — \
                      an unobservable worktree is never a clean one. Fix the repository (or run from the \
                      project checkout), then retry. `--override-gate` does NOT bypass this check."
+                )
+            }
+            Error::GateOverrideGateDisabled => {
+                write!(
+                    f,
+                    "--override-gate has nothing to bypass: the `reviewed` transition gate is not \
+                     enforcing in this plan repo, so the write needs no override and the reason and \
+                     actor would not be recorded — drop the flag, or enable the gate first with \
+                     `rdm config set gates.reviewed true`"
                 )
             }
             Error::GateOverrideEmptyReason => {

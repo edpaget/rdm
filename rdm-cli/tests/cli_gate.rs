@@ -643,6 +643,95 @@ fn override_gate_rejects_an_empty_reason_and_a_non_reviewed_status() {
 }
 
 #[test]
+fn override_gate_is_refused_rather_than_silently_dropped_when_the_gate_is_off() {
+    // Regression: `--override-gate` used to exit 0 and record nothing at all
+    // when `gates.reviewed` was off (the shipped default) — the reason and
+    // actor the operator explicitly supplied were discarded with no feedback,
+    // and `phase show`/`task show` silently disagreed with the request. The
+    // override exists so that a bypass is an *audited* act, so a bypass that
+    // cannot be audited is refused, exactly as one on an ungated transition is.
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["config", "set", "gates.reviewed", "false"])
+        .assert()
+        .success();
+
+    // Phase.
+    let mut cmd = rdm();
+    cmd.env("RDM_REVIEW_AUTHOR", "alice");
+    let err = stderr_of(
+        cmd.arg("--root")
+            .arg(plan.path())
+            .args([
+                "phase",
+                "update",
+                "phase-1-design",
+                "--status",
+                "reviewed",
+                "--override-gate",
+                "sneaky reason",
+                "--no-edit",
+                "--roadmap",
+                "auth",
+                "--project",
+                "demo",
+            ])
+            .current_dir(&wt)
+            .assert()
+            .failure(),
+    );
+    assert!(
+        err.contains("--override-gate has nothing to bypass"),
+        "{err}"
+    );
+    assert!(
+        err.contains("rdm config set gates.reviewed true"),
+        "remediation missing: {err}"
+    );
+    // The refusal is a refusal: the status did not move and nothing was
+    // recorded.
+    let json = phase_json(plan.path());
+    assert_eq!(json["status"], "not-started");
+    assert!(json.get("gate_override").is_none(), "{json}");
+
+    // Task, same contract.
+    let mut cmd = rdm();
+    cmd.env("RDM_REVIEW_AUTHOR", "alice");
+    let err = stderr_of(
+        cmd.arg("--root")
+            .arg(plan.path())
+            .args([
+                "task",
+                "update",
+                "solo",
+                "--status",
+                "reviewed",
+                "--override-gate",
+                "sneaky reason",
+                "--no-edit",
+                "--project",
+                "demo",
+            ])
+            .current_dir(&wt)
+            .assert()
+            .failure(),
+    );
+    assert!(
+        err.contains("--override-gate has nothing to bypass"),
+        "{err}"
+    );
+
+    // And the same write without the flag still succeeds — the refusal is
+    // scoped to the override, not to the disabled gate's write path.
+    mark_reviewed(plan.path(), &wt, &[]).success();
+    assert_eq!(phase_json(plan.path())["status"], "reviewed");
+}
+
+#[test]
 fn the_task_flow_gates_and_overrides_identically() {
     let src = init_source_repo();
     let plan = init_plan_repo(src.path());

@@ -181,6 +181,47 @@ fn a_disabled_gate_never_fires() {
 }
 
 #[test]
+fn a_disabled_gate_refuses_an_override_rather_than_dropping_it() {
+    // An override against a gate that is not enforcing has nothing to bypass.
+    // Honoring it as a no-op would discard the reason and actor the operator
+    // supplied and leave `phase show` silently disagreeing with the request,
+    // so it is refused — the same reasoning that rejects an override on a
+    // transition the gate never guards.
+    let store = seed();
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::disabled().with_override("operator: hotfix", "alice"),
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::GateOverrideGateDisabled), "{err:?}");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("rdm config set gates.reviewed true"),
+        "remediation missing: {msg}"
+    );
+    assert!(msg.contains("not enforcing"), "cause missing: {msg}");
+}
+
+#[test]
+fn a_disabled_gate_refuses_an_override_before_validating_its_reason() {
+    // Ordering: the disabled-gate refusal is the more fundamental condition,
+    // so it is reported ahead of the empty-reason complaint. Telling an
+    // operator to write a better reason for a bypass that would never be
+    // recorded is the less actionable of the two.
+    let store = seed();
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::disabled().with_override("   ", "alice"),
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::GateOverrideGateDisabled), "{err:?}");
+}
+
+#[test]
 fn precondition_a_refuses_with_no_approved_plan() {
     let mut store = seed();
     // No plan at all.

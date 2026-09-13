@@ -256,18 +256,25 @@ pub type GateProbe = rdm_core::worktree::MemoryWorktreeProbe;
 ///
 /// Shared by both arms so the two can never drift in *when* the gate enforces,
 /// which probe it reads through, or how an operator override is attached.
+///
+/// An operator override is attached even when `enabled` is `false`, so core
+/// can *refuse* it rather than silently drop it: an override honored as a
+/// no-op would discard the reason and actor the operator supplied, and the
+/// override exists precisely so that a bypass is an audited act. See
+/// [`Error::GateOverrideGateDisabled`](rdm_core::error::Error::GateOverrideGateDisabled).
 pub fn build_reviewed_gate<'a>(
     enabled: bool,
     probe: Option<&'a GateProbe>,
     reason: Option<&'a str>,
     actor: Option<&'a str>,
 ) -> rdm_core::ops::ReviewedGate<'a> {
-    if !enabled {
-        return rdm_core::ops::ReviewedGate::disabled();
-    }
-    let gate = rdm_core::ops::ReviewedGate::enforcing(
-        probe.map(|p| p as &dyn rdm_core::worktree::WorktreeProbe),
-    );
+    let gate = if enabled {
+        rdm_core::ops::ReviewedGate::enforcing(
+            probe.map(|p| p as &dyn rdm_core::worktree::WorktreeProbe),
+        )
+    } else {
+        rdm_core::ops::ReviewedGate::disabled()
+    };
     match (reason, actor) {
         (Some(r), Some(a)) => gate.with_override(r, a),
         _ => gate,

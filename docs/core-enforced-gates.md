@@ -117,6 +117,17 @@ rdm phase update <stem> --status reviewed --override-gate "<reason>" --roadmap <
 - It requires `--status reviewed`. Passing it with any other status is
   **rejected**, not silently ignored — otherwise an operator records a bypass
   on an item that was never gated.
+- It requires the gate to be **enforcing**. Passing it while `gates.reviewed`
+  resolves to `false` (the shipped default) is likewise **rejected**
+  (`GateOverrideGateDisabled`), for the same reason: there is nothing to
+  bypass, so honoring the request would silently discard the reason and actor
+  the operator supplied and leave `rdm phase show` disagreeing with what they
+  asked for. The refusal names both remedies — drop the flag, or
+  `rdm config set gates.reviewed true`. This is the one thing a *disabled* gate
+  still does; a write with no override is unaffected. The alternative — stamping
+  a `gate_override` block on an item that was never gated — was rejected because
+  the record would then mean "a bypass happened" on a write that bypassed
+  nothing.
 - The reason, the actor (resolved exactly as a review's author is:
   `RDM_REVIEW_AUTHOR` → `$USER`/`$USERNAME`) and the date are recorded in a
   `gate_override` frontmatter block, surfaced by `rdm phase show` /

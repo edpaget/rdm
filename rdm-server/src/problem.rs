@@ -107,6 +107,7 @@ impl From<&Error> for ProblemDetail {
                 instance: None,
             },
             Error::GateOverrideEmptyReason
+            | Error::GateOverrideGateDisabled
             | Error::PlanImplementsInvalidKind(_)
             | Error::PlanSupersedesInvalidKind(_)
             | Error::PlanSupersedesSelf(_)

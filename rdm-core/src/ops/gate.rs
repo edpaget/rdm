@@ -19,7 +19,10 @@
 //!
 //! `--override-gate` waives **(a) and (b) only** — cleanliness always applies,
 //! because a dirty worktree means the reviewed code is not the committed code
-//! and no operator intent can make that untrue.
+//! and no operator intent can make that untrue. An override supplied while the
+//! gate is *not* enforcing is refused outright rather than honored as a no-op,
+//! so `phase show` can never silently disagree with what the operator asked
+//! for.
 //!
 //! The gate is opt-in behind the repo-only `gates.reviewed` config key and
 //! defaults to `false`. See `docs/core-enforced-gates.md`.
@@ -67,6 +70,11 @@ impl<'a> ReviewedGate<'a> {
     /// This is what every caller gets when `gates.reviewed` is unset, which is
     /// the default, so enabling core-enforced gates is always a deliberate
     /// act.
+    ///
+    /// The one thing a disabled gate still does is *refuse* an operator
+    /// override attached with [`ReviewedGate::with_override`]: there is
+    /// nothing to bypass, and honoring the request as a no-op would throw away
+    /// the reason and actor instead of recording them.
     #[must_use]
     pub fn disabled() -> Self {
         Self {
@@ -144,8 +152,11 @@ pub enum GateDecision {
 ///
 /// In the fixed order (a) → (b) → (c):
 ///
+/// - [`Error::GateOverrideGateDisabled`] if an override is supplied while the
+///   gate is not enforcing (checked before anything else — a bypass of a gate
+///   that is not running is refused, never honored as a silent no-op);
 /// - [`Error::GateOverrideEmptyReason`] if an override carries no reason
-///   (checked first — a malformed bypass is never silently honored);
+///   (a malformed bypass is never silently honored);
 /// - [`Error::GateNoApprovedPlan`] when no `approved` plan implements `item`;
 /// - [`Error::GateNoApprovedChangeReview`] when no approving `change/` review
 ///   names any of those plans, listing every plan checked;
@@ -162,6 +173,16 @@ pub fn check_reviewed_gate(
     gate: &ReviewedGate<'_>,
 ) -> Result<GateDecision> {
     if !gate.enabled {
+        // An override against a gate that is not enforcing is refused, not
+        // honored as a no-op. Silently accepting it would discard the reason
+        // and actor the operator supplied — `phase show` would then disagree
+        // with what they asked for — and it would undermine the one guarantee
+        // the override exists to provide: that a bypass is an *audited* act.
+        // Exactly the reasoning that already rejects an override on a
+        // transition the gate never guards.
+        if gate.over.is_some() {
+            return Err(Error::GateOverrideGateDisabled);
+        }
         return Ok(GateDecision::NotApplicable);
     }
 

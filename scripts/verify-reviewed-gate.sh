@@ -210,14 +210,16 @@ for pair in \
     'GateNoApprovedChangeReview|rdm review start --on change/' \
     'GateWorktreeDirty|does NOT bypass this check' \
     'GateWorktreeUnobservable|does NOT bypass this check' \
-    'GateOverrideEmptyReason|--override-gate requires a non-empty reason'; do
+    'GateOverrideEmptyReason|--override-gate requires a non-empty reason' \
+    'GateOverrideGateDisabled|--override-gate has nothing to bypass' \
+    'GateOverrideGateDisabled|rdm config set gates.reviewed true'; do
     variant=${pair%%|*}
     want=${pair#*|}
     grep -q "$variant" "$ERR" || fail "rdm-core/src/error.rs declares no $variant variant"
     grep -qF -e "$want" "$ERR" ||
         fail "the $variant refusal does not contain '$want' — every refusal must name the record that is missing AND the command that creates it"
 done
-ok "each of the five gate refusals names its remediation"
+ok "each of the six gate refusals names its remediation"
 
 # The two worktree refusals must state that an override will not help, or an
 # operator reads the refusal as a bug in the override.
