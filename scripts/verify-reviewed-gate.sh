@@ -4,8 +4,7 @@
 # The runtime behavior of the gate is covered by `cargo nextest run`, on every
 # surface it is wired into rather than only the CLI: `rdm-core/tests/gate.rs`
 # (the rule), `rdm-cli/tests/cli_gate.rs` (the binary),
-# `rdm-server/tests/reviewed_gate.rs` (the 409 an HTTP PATCH gets),
-# `rdm-mcp/tests/integration.rs` (the tool refusal an agent reads back), and
+# `rdm-server/tests/reviewed_gate.rs` (the 409 an HTTP PATCH gets), and
 # `rdm-git/src/worktree.rs`'s tests (the production worktree probe). A static
 # check like this one cannot see a gate that is *wired but not enforcing* — a
 # wrong config key or an error variant mapped to the wrong status code would
@@ -158,9 +157,7 @@ say "Section B — user-facing status-write surfaces use a _gated entry"
 GATED_SURFACES='rdm-cli/src/commands/phase.rs:update_phase_with_estimate_gated
 rdm-cli/src/commands/task.rs:update_task_gated
 rdm-server/src/handlers/phases.rs:update_phase_gated
-rdm-server/src/handlers/tasks.rs:update_task_gated
-rdm-mcp/src/server.rs:update_phase_gated
-rdm-mcp/src/server.rs:update_task_gated'
+rdm-server/src/handlers/tasks.rs:update_task_gated'
 
 # scan_gated <root> — print "<file>:<entry>" for each expected surface that
 # really calls its gated entry.

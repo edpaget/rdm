@@ -87,9 +87,9 @@ impl<'a> ReviewedGate<'a> {
     /// A gate that enforces all three preconditions.
     ///
     /// `probe` is the worktree port precondition (c) reads through. `None`
-    /// means the caller has no worktree context at all (the HTTP server, the
-    /// MCP server, a unit test), which skips (c) — the same documented
-    /// fail-open the "if `rdm worktree` knows one" clause already carries.
+    /// means the caller has no worktree context at all (the HTTP server, a
+    /// unit test), which skips (c) — the same documented fail-open the
+    /// "if `rdm worktree` knows one" clause already carries.
     #[must_use]
     pub fn enforcing(probe: Option<&'a dyn WorktreeProbe>) -> Self {
         Self {

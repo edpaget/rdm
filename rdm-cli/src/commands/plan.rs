@@ -58,7 +58,6 @@ pub fn run(
     store: &mut AppStore,
     repo_config: &Config,
     format: OutputFormat,
-    no_index: bool,
 ) -> Result<()> {
     match command {
         PlanCommand::Create {
@@ -80,7 +79,7 @@ pub fn run(
             // `--body` is authoritative; otherwise stdin is read to EOF, the
             // same contract `task create` carries.
             let body = resolve_body(body, no_edit)?;
-            let doc = commit_mutation(store, &project, no_index, "failed to create plan", |s| {
+            let doc = commit_mutation(store, "failed to create plan", |s| {
                 rdm_core::ops::plan::create_plan(
                     s,
                     rdm_core::ops::plan::CreatePlan {
@@ -201,7 +200,7 @@ pub fn run(
             // editor: `--body` sets, `--clear-body` clears, otherwise the body
             // is left untouched. A title-only update can't hang on an open pipe.
             let body = BodyUpdate::from_args(body, clear_body)?;
-            let doc = commit_mutation(store, &project, no_index, "failed to update plan", |s| {
+            let doc = commit_mutation(store, "failed to update plan", |s| {
                 rdm_core::ops::plan::update_plan(s, &project, &slug, title, body)
             })
             .map_err(map_body_clobber)?;
@@ -221,7 +220,7 @@ pub fn run(
                 );
             }
             let project = paths::resolve_project(project, repo_config)?;
-            commit_mutation(store, &project, no_index, "failed to delete plan", |s| {
+            commit_mutation(store, "failed to delete plan", |s| {
                 rdm_core::ops::plan::delete_plan(s, &project, &slug)
             })?;
             println!("Deleted plan '{slug}' from project '{project}'");

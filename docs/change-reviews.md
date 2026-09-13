@@ -196,8 +196,8 @@ checkout to read, asking the cwd which worktree it is, and formatting output.
 | CLI wiring: discovery + core calls + formatting | `rdm-cli/src/commands/review.rs` |
 
 Every failure mode above is a matchable `rdm_core::Error` variant rather than
-a formatted string, so the server and MCP layers map them onto their own
-status codes without re-deriving the rule (`rdm-server/src/problem.rs`).
+a formatted string, so the server layer maps them onto its own status codes
+without re-deriving the rule (`rdm-server/src/problem.rs`).
 
 Integration coverage: `rdm-cli/tests/cli_review_change.rs` (real temp git
 source repo + real temp plan repo) and § 7 of

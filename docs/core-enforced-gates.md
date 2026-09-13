@@ -61,7 +61,7 @@ the refusal lists every candidate plan it checked (the
 
 Three distinct cases, and the distinction is load-bearing:
 
-- **No probe supplied** (the HTTP server, MCP, a unit test) — (c) is skipped. A
+- **No probe supplied** (the HTTP server, a unit test) — (c) is skipped. A
   request carries no project checkout to inspect.
 - **Probe returns `Ok(None)`** — rdm manages no worktree for this item. This is
   the "if `rdm worktree` knows one" escape clause. (c) is skipped.
@@ -100,11 +100,11 @@ disabling the gate — mirroring `RDM_PLAN_REVIEW`.
 (env value + config → bool) is the whole precedence, and
 `rdm_core::config::reviewed_gate_enabled_at` is the plan-root convenience over
 it for callers that hold no merged `Config`. `rdm-cli`'s
-`paths::resolve_reviewed_gate`, `rdm-server`'s `state::reviewed_gate_enabled`
-and `rdm-mcp`'s update handlers are all one-line delegations to those. This is
-CLAUDE.md's layering contract applied to a config key: three interfaces
+`paths::resolve_reviewed_gate` and `rdm-server`'s
+`state::reviewed_gate_enabled` are both one-line delegations to those. This is
+CLAUDE.md's layering contract applied to a config key: two interfaces
 re-deriving "is the gate on?" would drift — and the first draft of this phase
-proved it, because the two server-side copies silently lacked the
+proved it, because the server-side copy silently lacked the
 `RDM_REVIEWED_GATE` override the CLI had. Any future change to the precedence
 now happens in exactly one place.
 
@@ -183,12 +183,15 @@ autonomous agent reads as instructions.
 
 ## Design record: gated sibling entries, not a required parameter
 
-A measurement of the tree (`grep -rn "update_phase(\|update_phase_with_estimate(\|update_task("`)
-found **160 matches = 5 definitions + 155 call sites across 20 files**, of
-which only **13 are production** and **142 are test**. Adding a trailing `gate`
-parameter to the three public primitives would therefore have required 155
-mechanical edits, 142 of them in test code, producing an unreviewable diff and
-a one-shot `clippy -D warnings` / `nextest` cliff across six crates.
+A measurement of the tree — `grep -rn` over the three primitives *and* their
+gated siblings, which together are the whole population a required `gate`
+parameter would have touched — finds **176 matches = 8 definitions + 168 call
+sites across 21 files**, of which only **11 are production** and **157 are
+test**. (The 8 "definitions" include `rdm-server`'s own `update_phase` /
+`update_task` handler functions, which share the names.) Adding a trailing
+`gate` parameter to the three public primitives would therefore have required
+168 mechanical edits, 157 of them in test code, producing an unreviewable diff
+and a one-shot `clippy -D warnings` / `nextest` cliff across five crates.
 
 **Rejected.** Instead the three public signatures stay byte-identical and gain
 gated siblings:
@@ -198,7 +201,7 @@ gated siblings:
 - `ops::task::update_task_gated`
 
 Each takes the same argument list plus a trailing `gate: &ReviewedGate<'_>`.
-Blast radius: **6 production call-site moves, 0 test edits** — confirmed by
+Blast radius: **4 production call-site moves, 0 test edits** — confirmed by
 `cargo build --workspace` being green after the core change and *before* any
 caller was touched.
 
@@ -256,7 +259,7 @@ than inside a behavioral phase. The allowlist holds the boundary until then.
 
 ## Coverage
 
-The gate is enforced on four surfaces, and each is covered where it can
+The gate is enforced on three surfaces, and each is covered where it can
 actually fail rather than only where its call site can be grepped:
 
 | Surface | Coverage |
@@ -264,14 +267,13 @@ actually fail rather than only where its call site can be grepped:
 | the rule itself | `rdm-core/tests/gate.rs` — every branch, the fixed order, and the fail-closed probe cases against `MemoryStore` + `MemoryWorktreeProbe` |
 | `rdm-cli` | `rdm-cli/tests/cli_gate.rs` — the full ladder end to end through the real binary, against a temp plan repo and a real `rdm worktree add` worktree |
 | `rdm-server` | `rdm-server/tests/reviewed_gate.rs` — `PATCH` to `status: reviewed` refused **409** per precondition and allowed once the records exist, for phases and tasks; plus the opt-in and other-transitions-unaffected cases |
-| `rdm-mcp` | `rdm-mcp/tests/integration.rs` — the same ladder through the real `rdm mcp` subprocess and its `rdm_phase_update` / `rdm_task_update` tools |
 | the worktree probe | `rdm-git/src/worktree.rs` tests — the per-phase-beats-roadmap candidate ordering, the task branch, dirty-path reporting, benign misses, and `status_porcelain_at` erroring outside a repo |
 | the threading | `scripts/verify-reviewed-gate.sh` — the static allowlist described above |
 
-The server and MCP rows exist because a static call-site grep cannot see a
-gate that is wired but not enforcing: a wrong config key, a wrong file, or an
-error variant falling through to the wrong HTTP status would all leave the
-grep green. They assert the refusal an operator or an agent actually receives.
+The `rdm-server` row exists because a static call-site grep cannot see a gate
+that is wired but not enforcing: a wrong config key, a wrong file, or an error
+variant falling through to the wrong HTTP status would all leave the grep
+green. It asserts the refusal an HTTP caller actually receives.
 
 ## See also
 

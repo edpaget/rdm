@@ -1154,8 +1154,7 @@ pass "rdm hook done-line rejects malformed requests, so the lander aborts rather
 say "5. --override-gate: neither the autopilot skill nor its shipped template emits it"
 
 OVERRIDE_SURFACES="$SKILL
-$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md
-$REPO_ROOT/rdm-core/src/templates/skill-autopilot-mcp.md"
+$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md"
 
 check_no_override() {
     # $1: root under which the (relative-or-absolute) files live. Prints the

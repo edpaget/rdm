@@ -133,29 +133,17 @@ fn run() -> Result<()> {
 
         Command::Phase { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::phase::run(
-                command,
-                &mut store,
-                &root,
-                &repo_config,
-                format,
-            )?;
+            commands::phase::run(command, &mut store, &root, &repo_config, format)?;
         }
 
         Command::Task { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::task::run(
-                command,
-                &mut store,
-                &root,
-                &repo_config,
-                format,
-            )?;
+            commands::task::run(command, &mut store, &root, &repo_config, format)?;
         }
 
         Command::Plan { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::plan::run(command, &mut store, &repo_config, format, cli.no_index)?;
+            commands::plan::run(command, &mut store, &repo_config, format)?;
         }
 
         Command::Promote {
