@@ -643,7 +643,13 @@ pub fn resolve_against_history(
 ///
 /// # Errors
 ///
-/// Propagates the current-body load failure (e.g.
+/// Returns [`Error::ChangeTargetHasNoDocument`] before any store lookup
+/// when `review.target` is [`ReviewTarget::Change`]: a change review's
+/// anchors live in the source repository, not in a plan-repo document, so
+/// there is no body here to derive against (see
+/// [`crate::change::derive_file_quote`]).
+///
+/// Otherwise propagates the current-body load failure (e.g.
 /// [`Error::RoadmapNotFound`], [`Error::PhaseNotFound`],
 /// [`Error::TaskNotFound`]) when no body can be found at all.
 /// [`Error::FrontmatterMissing`] can arise from either path (content with
@@ -689,7 +695,13 @@ pub fn body_for_comment(
 ///
 /// # Errors
 ///
-/// Propagates the current-body load failure (e.g.
+/// Returns [`Error::ChangeTargetHasNoDocument`] before any store lookup
+/// when `review.target` is [`ReviewTarget::Change`]: a change review's
+/// anchors live in the source repository, not in a plan-repo document, so
+/// there is no body here to validate against (see
+/// [`crate::change::derive_file_quote`]).
+///
+/// Otherwise propagates the current-body load failure (e.g.
 /// [`Error::RoadmapNotFound`], [`Error::PhaseNotFound`],
 /// [`Error::TaskNotFound`], [`Error::FrontmatterMissing`],
 /// [`Error::FrontmatterParse`]).

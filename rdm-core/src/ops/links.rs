@@ -118,6 +118,13 @@ fn resolve_phase_stem_lenient(
 /// Propagates any [`crate::ops::phase::resolve_phase_stem`] error other than
 /// `RoadmapNotFound`/`PhaseNotFound` (e.g. `Io`, `FrontmatterParse`) when
 /// `target` is a [`ItemRef::Phase`] with a numeric stem.
+///
+/// Returns [`crate::error::Error::ChangeTargetHasNoDocument`] when `target`
+/// is an [`ItemRef::Change`]: a change names source-repository commits, not
+/// a plan-repo document, so no path exists to return. This is the one case
+/// where the never-errors-on-dangling contract above does not apply — the
+/// reference is well-formed, there is simply nothing in the plan repo it
+/// could name.
 pub fn item_ref_path(
     store: &impl Store,
     project: &str,
@@ -760,13 +767,18 @@ fn check_body(
 /// # Errors
 ///
 /// Returns [`crate::error::Error::RoadmapNotFound`],
-/// [`crate::error::Error::PhaseNotFound`], or
-/// [`crate::error::Error::TaskNotFound`] if the target doesn't exist,
+/// [`crate::error::Error::PhaseNotFound`],
+/// [`crate::error::Error::TaskNotFound`], or
+/// [`crate::error::Error::PlanNotFound`] if the target doesn't exist,
 /// [`crate::error::Error::Io`] on a read failure, or
 /// [`crate::error::Error::FrontmatterMissing`]/
 /// [`crate::error::Error::FrontmatterParse`] if its frontmatter is invalid —
 /// including while resolving a numeric phase stem via
 /// [`crate::ops::phase::resolve_phase_stem`].
+///
+/// Returns [`crate::error::Error::ChangeTargetHasNoDocument`] when `target`
+/// is an [`ItemRef::Change`]: a change names source-repository commits
+/// rather than a plan-repo document, so there is no body to load.
 pub fn load_document_body(
     store: &impl Store,
     project: &str,
