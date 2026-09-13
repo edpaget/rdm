@@ -10,6 +10,9 @@ mod commands;
 #[cfg(feature = "git")]
 mod hook_log;
 mod paths;
+// Only `commands::review` reads the source repo, and that module is itself
+// `git`-gated: without the feature there is no repository to discover.
+#[cfg(feature = "git")]
 mod source_repo;
 mod table;
 

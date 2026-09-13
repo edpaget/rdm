@@ -449,20 +449,12 @@ pub fn run(
             } else {
                 None
             };
-            let gate_probe: Option<commands::GateProbe> = if gate_enabled {
-                // Degrade to `probe: None` when the cwd is not a distinct
-                // project repo: rule (c) is "if `rdm worktree` knows one", and
-                // from outside a project checkout it knows nothing. A
-                // deliberate fail-open on (c) alone — (a) and (b) still apply.
-                std::env::current_dir()
-                    .ok()
-                    .and_then(|cwd| {
-                        rdm_git::worktree::discover_distinct_project_repo(&cwd, root).ok()
-                    })
-                    .map(commands::GateProbe::new)
-            } else {
-                None
-            };
+            // `build_gate_probe` holds the one git/non-git split, so this arm
+            // needs no second code path. It degrades to `None` — precondition
+            // (c) skipped, (a) and (b) still enforced — whenever rdm cannot
+            // resolve a worktree.
+            let gate_probe: Option<commands::GateProbe> =
+                commands::build_gate_probe(gate_enabled, root);
             let gate = commands::build_reviewed_gate(
                 gate_enabled,
                 gate_probe.as_ref(),

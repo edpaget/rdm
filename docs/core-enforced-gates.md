@@ -74,6 +74,17 @@ project repo degrades to no probe, and therefore skips (c). That is a
 deliberate fail-open on (c) alone — (a) and (b) still apply — recorded here so
 it reads as a decision rather than an accident.
 
+A build without rdm-cli's optional `git` feature is the same case for the same
+reason: it cannot resolve a worktree at all, so (c) is never applicable there.
+`commands::build_gate_probe` is the single place that split is spelled out —
+`#[cfg(feature = "git")]` discovery on one side, an unconditional `None` on the
+other — so the `phase update` and `task update` arms stay feature-agnostic and
+the two builds cannot drift in *when* the gate enforces. That is the contract
+the `commands::GateProbe` alias documents, and the CI feature-matrix step
+(`cargo check -p rdm-cli --no-default-features …`) is what keeps it honest: the
+default-feature `cargo clippy`/`cargo nextest run` gate cannot see a
+`git`-only call reached from a feature-agnostic call site.
+
 ### Worktrees are per-roadmap
 
 `rdm worktree` keys a worktree to a **roadmap**, shared by all of its phases
@@ -268,7 +279,8 @@ actually fail rather than only where its call site can be grepped:
 | `rdm-cli` | `rdm-cli/tests/cli_gate.rs` — the full ladder end to end through the real binary, against a temp plan repo and a real `rdm worktree add` worktree |
 | `rdm-server` | `rdm-server/tests/reviewed_gate.rs` — `PATCH` to `status: reviewed` refused **409** per precondition and allowed once the records exist, for phases and tasks; plus the opt-in and other-transitions-unaffected cases |
 | the worktree probe | `rdm-git/src/worktree.rs` tests — the per-phase-beats-roadmap candidate ordering, the task branch, dirty-path reporting, benign misses, and `status_porcelain_at` erroring outside a repo |
-| the threading | `scripts/verify-reviewed-gate.sh` — the static allowlist described above |
+| the threading | `scripts/verify-reviewed-gate.sh` § A–C — the static allowlist described above |
+| the feature split | `scripts/verify-reviewed-gate.sh` § D — the probe is built in ONE feature-split place (`commands::build_gate_probe`), so neither update arm names `rdm_git::` and both compile with `git` off; CI's feature-matrix step is the dynamic half |
 
 The `rdm-server` row exists because a static call-site grep cannot see a gate
 that is wired but not enforcing: a wrong config key, a wrong file, or an error

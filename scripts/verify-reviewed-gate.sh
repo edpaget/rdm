@@ -21,8 +21,10 @@
 #      allowlist, with the status it writes recorded
 #   B  every user-facing status-write surface uses a `_gated` entry
 #   C  each of the gate's refusals names a remediation command
+#   D  the gate's worktree probe is built in ONE feature-split place, so the
+#      `phase update` / `task update` arms compile with `git` disabled
 #
-# Sections A and B each carry a planted-mutation self-test proving the check
+# Sections A, B and D each carry a planted-mutation self-test proving the check
 # can fail, and a restatement that the real, unmutated tree passes.
 #
 # Run after touching `rdm-core/src/ops/gate.rs`, the gated/ungated split in
@@ -231,5 +233,74 @@ ok "each of the six gate refusals names its remediation"
 grep -qF -e 'waives' "$ERR" ||
     fail "no refusal explains what --override-gate actually waives"
 ok "the override's (a)/(b)-only scope is stated in the refusals"
+
+# ---------------------------------------------------------------------------
+# Section D — the worktree probe is built in one feature-split place
+# ---------------------------------------------------------------------------
+say "Section D — the gate's probe construction stays feature-agnostic at the call sites"
+
+# `git` is an OPTIONAL feature of rdm-cli, so a build with it off is a
+# configuration the crate supports — but `cargo clippy` / `cargo nextest run`
+# only ever exercise the default feature set, so a `rdm_git::` call reached
+# from a feature-agnostic call site compiles fine in CI and breaks every
+# no-default-features consumer. `commands::build_gate_probe` is the single
+# place that split is spelled out; this section keeps it single.
+#
+# (CI's feature-matrix step is the dynamic half. This static half is what runs
+# in the harness loop and names the rule when it is broken.)
+
+MODRS="$REPO_ROOT/rdm-cli/src/commands/mod.rs"
+
+grep -q 'cfg(feature = "git")' "$MODRS" ||
+    fail "rdm-cli/src/commands/mod.rs has no git-enabled arm at all"
+awk '/fn build_gate_probe\(/ { found++ } END { exit(found == 2 ? 0 : 1) }' "$MODRS" ||
+    fail "rdm-cli/src/commands/mod.rs must declare exactly two build_gate_probe arms (git and not(git)); found $(grep -c 'fn build_gate_probe(' "$MODRS")"
+grep -B2 'fn build_gate_probe(' "$MODRS" | grep -q 'cfg(not(feature = "git"))' ||
+    fail "build_gate_probe has no not(feature = \"git\") arm — the non-git build has no probe to fall back to"
+ok "build_gate_probe carries both feature arms"
+
+# scan_direct_probe <root> — print "<file>" for each update arm that builds a
+# probe itself instead of going through the shared helper.
+scan_direct_probe() {
+    for f in rdm-cli/src/commands/phase.rs rdm-cli/src/commands/task.rs; do
+        [ -f "$1/$f" ] || continue
+        if grep -q 'discover_distinct_project_repo\|GateProbe::new' "$1/$f"; then
+            printf '%s\n' "$f"
+        fi
+    done
+}
+
+DIRECT=$(scan_direct_probe "$REPO_ROOT")
+if [ -n "$DIRECT" ]; then
+    fail "update arm(s) constructing the gate probe directly:
+$DIRECT
+
+These are compiled in BOTH the git and non-git builds, so naming rdm_git:: or
+GateProbe::new here breaks \`cargo check -p rdm-cli --no-default-features\`.
+Call commands::build_gate_probe(gate_enabled, root) instead."
+fi
+ok "neither update arm builds the probe itself"
+
+for f in rdm-cli/src/commands/phase.rs rdm-cli/src/commands/task.rs; do
+    grep -q 'build_gate_probe(' "$REPO_ROOT/$f" ||
+        fail "$f never calls build_gate_probe — the gate's worktree precondition is not wired there"
+done
+ok "both update arms route through build_gate_probe"
+
+# Self-test D1: restoring the inlined, git-only construction IS caught.
+mkdir -p "$TMP/d-scratch/rdm-cli/src/commands"
+sed 's/commands::build_gate_probe(gate_enabled, root)/std::env::current_dir().ok().and_then(|cwd| rdm_git::worktree::discover_distinct_project_repo(\&cwd, root).ok()).map(commands::GateProbe::new)/' \
+    "$REPO_ROOT/rdm-cli/src/commands/phase.rs" \
+    >"$TMP/d-scratch/rdm-cli/src/commands/phase.rs"
+cp "$REPO_ROOT/rdm-cli/src/commands/task.rs" "$TMP/d-scratch/rdm-cli/src/commands/task.rs"
+if [ "$(scan_direct_probe "$TMP/d-scratch")" != "rdm-cli/src/commands/phase.rs" ]; then
+    fail "self-test failed: an inlined git-only probe construction is NOT caught, so section D is vacuous"
+fi
+ok "self-test: an inlined git-only probe construction IS caught"
+
+# Self-test D2: and the real, unmutated tree still passes the same scan.
+[ -z "$(scan_direct_probe "$REPO_ROOT")" ] ||
+    fail "self-test failed: the real tree trips section D"
+ok "self-test: the real tree passes section D"
 
 say "All sections passed."

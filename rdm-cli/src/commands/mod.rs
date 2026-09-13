@@ -251,6 +251,44 @@ pub type GateProbe = rdm_git::worktree::GitWorktreeProbe;
 #[cfg(not(feature = "git"))]
 pub type GateProbe = rdm_core::worktree::MemoryWorktreeProbe;
 
+/// Builds the [`GateProbe`] the `reviewed` gate's worktree precondition (c)
+/// reads through, or `None` when there is nothing to probe.
+///
+/// The single place the `git`/non-`git` split is spelled out, so the `phase
+/// update` and `task update` arms stay feature-agnostic — the contract
+/// [`GateProbe`] itself documents. Without the `git` feature rdm cannot
+/// resolve a worktree at all, so precondition (c) is never applicable and the
+/// probe is always `None`; preconditions (a) and (b) are unaffected and still
+/// enforce.
+///
+/// With `git`, the probe degrades to `None` when the cwd is not a distinct
+/// project repo: rule (c) is "if `rdm worktree` knows one", and from outside a
+/// project checkout it knows nothing. A deliberate fail-open on (c) alone.
+///
+/// # Errors
+///
+/// Never returns an error: an undiscoverable project repo is reported as
+/// "no worktree to check", not as a failure.
+#[cfg(feature = "git")]
+#[must_use]
+pub fn build_gate_probe(enabled: bool, root: &Path) -> Option<GateProbe> {
+    if !enabled {
+        return None;
+    }
+    std::env::current_dir()
+        .ok()
+        .and_then(|cwd| rdm_git::worktree::discover_distinct_project_repo(&cwd, root).ok())
+        .map(GateProbe::new)
+}
+
+/// See the `git`-enabled builder above: without `git` there is no worktree to
+/// resolve, so precondition (c) is never applicable.
+#[cfg(not(feature = "git"))]
+#[must_use]
+pub fn build_gate_probe(_enabled: bool, _root: &Path) -> Option<GateProbe> {
+    None
+}
+
 /// Assembles the [`ReviewedGate`](rdm_core::ops::ReviewedGate) one `phase
 /// update` / `task update` invocation is evaluated against.
 ///

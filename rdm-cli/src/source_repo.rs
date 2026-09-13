@@ -121,23 +121,6 @@ pub(crate) fn discover_source_repo(
     }
 }
 
-/// The `not(feature = "git")` stub: a change review has no way to read the
-/// source repository, so this always fails with that as the reason.
-///
-/// # Errors
-///
-/// Always.
-#[cfg(not(feature = "git"))]
-pub(crate) fn discover_source_repo(
-    store: &AppStore,
-    project: &str,
-) -> Result<std::convert::Infallible> {
-    let _ = (store, project);
-    Err(anyhow!(
-        "this build has no git support — `change/` reviews require the `git` feature"
-    ))
-}
-
 #[cfg(all(test, feature = "git"))]
 mod tests {
     use super::*;

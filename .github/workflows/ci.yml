@@ -54,6 +54,18 @@ jobs:
       - name: Shell format check (shfmt)
         run: mise exec shfmt -- shfmt -d $(git ls-files '*.sh')
 
+      - name: Feature-matrix check (optional features off)
+        # `git` and `server` are optional features of rdm-cli, so a build with
+        # either disabled is a configuration the crate claims to support. The
+        # steps above only ever exercise the default feature set, which is how
+        # an unguarded `rdm_git::` call or a `#[cfg(feature = "git")]` helper
+        # invoked from a feature-agnostic call site reaches `main` unnoticed.
+        run: |
+          cargo check -p rdm-cli --no-default-features
+          cargo check -p rdm-cli --no-default-features --features server
+          cargo check -p rdm-cli --no-default-features --features git
+          cargo check -p rdm-server --no-default-features
+
       - name: Test
         run: cargo nextest run
 

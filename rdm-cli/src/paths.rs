@@ -100,10 +100,13 @@ fn resolve_project_inner(
 /// Resolves the review author. Priority: `--author` flag →
 /// `RDM_REVIEW_AUTHOR` env var → `$USER` / `$USERNAME`.
 ///
+/// Deliberately **not** `git`-gated: it reads only the environment, and the
+/// `reviewed` gate's `--override-gate` actor is resolved through it on every
+/// `phase update` / `task update`, in both the `git` and non-`git` builds.
+///
 /// # Errors
 ///
 /// Returns an error when none of the sources yield a non-empty value.
-#[cfg(feature = "git")]
 pub fn resolve_review_author(flag: Option<String>) -> Result<String> {
     resolve_review_author_inner(
         flag,
@@ -114,7 +117,6 @@ pub fn resolve_review_author(flag: Option<String>) -> Result<String> {
     )
 }
 
-#[cfg(feature = "git")]
 fn resolve_review_author_inner(
     flag: Option<String>,
     env_author: Option<String>,
