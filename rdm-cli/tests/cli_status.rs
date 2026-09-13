@@ -481,7 +481,7 @@ fn a_read_only_command_creates_no_gitattributes_and_leaves_status_empty() {
 }
 
 #[test]
-fn no_command_installs_a_merge_driver_and_the_stale_section_is_swept() {
+fn no_command_touches_the_merge_driver_config() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
     seed_legacy_merge_driver(dir.path());
@@ -502,14 +502,17 @@ fn no_command_installs_a_merge_driver_and_the_stale_section_is_swept() {
         .assert()
         .success();
 
+    // rdm writes nothing to .git/config: it neither installs a driver section
+    // nor removes one a previous version left. Whatever is there is the
+    // user's, untouched.
     let config = std::fs::read_to_string(&config_path).unwrap();
     assert!(
-        !config.contains("[merge \"rdm-index\"]"),
-        "the stale driver section must be swept on open, got: {config}"
+        config.contains("[merge \"rdm-index\"]"),
+        "rdm must leave an existing config section exactly as it found it, got: {config}"
     );
     assert!(
         config.contains("[core]"),
-        "the sweep must remove only that section, got: {config}"
+        "the rest of the config must be untouched too, got: {config}"
     );
 
     // The tracked `.gitattributes` is a user file and is deliberately left
@@ -530,7 +533,7 @@ fn no_command_installs_a_merge_driver_and_the_stale_section_is_swept() {
     let stdout = String::from_utf8_lossy(&out.get_output().stdout).to_string();
     assert!(
         listed_changes(&stdout).is_empty(),
-        "the sweep touches only .git/config, which is invisible to status, got: {stdout}"
+        "rdm authors nothing into the worktree, so status must be clean, got: {stdout}"
     );
 }
 

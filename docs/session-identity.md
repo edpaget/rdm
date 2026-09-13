@@ -951,5 +951,5 @@ applies to what a *write* action lands or destroys, never to what you can see.
   rung-2 continuity and rung-4 degradation (B/B2/B3), the `Done:` hook path
   (C, distinct — every other section can pass while the hook still sweeps),
   the commit-primitive call-site allowlist (D), `init --remote` / the
-  legacy-repo migration sweep / server reconciliation (E), committed-index
+  legacy repos / server reconciliation (E), committed-index
   reconciliation (F), scoped discard (G), and shared reads (H).

@@ -291,12 +291,7 @@ gone with the `rdm-index` merge driver, along with the
 solely to give its output a changeset to belong to. rdm now authors no file of
 its own into the worktree at all.
 
-The migration sweep that replaced it
-(`GitRepo::remove_rdm_index_driver_section`, which removes the stale
-`[merge "rdm-index"]` section an older rdm installed) is **not** a new
-store-bypassing writer: it touches only `.git/config`, which is untracked,
-outside the worktree, and invisible to `rdm status` and to every commit. It
-needs no baseline because it is not a plan-repo path.
+Nothing replaced it: there is no store-bypassing writer left.
 
 (`rdm.toml`'s config-set path used to share the original gap via
 `rdm-cli/src/paths.rs::save_repo_config`; that writer is gone too — `rdm config

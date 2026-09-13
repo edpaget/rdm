@@ -390,14 +390,8 @@ impl GitStore {
     /// Opening writes nothing into the worktree. The `INDEX.md` merge driver
     /// rdm used to install on every open is retired, so neither
     /// `.gitattributes` nor a `[merge "rdm-index"]` config section is ever
-    /// authored here; a plan repo opened by rdm gains no rdm-authored dirt.
-    ///
-    /// The one thing opening still touches is `.git/config`, and only to
-    /// *remove*: see
-    /// [`remove_rdm_index_driver_section`](crate::repo::GitRepo::remove_rdm_index_driver_section)
-    /// for why the stale section left behind by an older rdm must be swept
-    /// rather than ignored. The sweep is best-effort — a read-only mount or
-    /// restrictive CI checkout must still open for reads.
+    /// authored here, and nothing is written to `.git/config` either; a plan
+    /// repo opened by rdm gains no rdm-authored dirt.
     ///
     /// # Errors
     ///
@@ -408,12 +402,6 @@ impl GitStore {
             .map_err(|e| Error::Git(e.to_string()))?
             .into_sync();
         let git = GitRepo::new(root.clone(), repo);
-        // Best-effort: a repo with an unwritable .git/config (read-only
-        // mount, restrictive CI checkout) must still open for reads — the
-        // migration sweep is housekeeping, not a prerequisite for the store.
-        if let Err(e) = git.remove_rdm_index_driver_section() {
-            eprintln!("warning: could not remove the stale INDEX.md merge driver: {e}");
-        }
         Ok(Self::compose(FsStore::new(&root), git))
     }
 
@@ -450,14 +438,6 @@ impl GitStore {
         }
 
         let git = GitRepo::new(root.clone(), repo.into_sync());
-        // Best-effort even here, unlike the merge-driver install this
-        // replaces: a migration sweep is housekeeping, and failing an
-        // explicit `rdm init` because a pre-existing `.git/config` could not
-        // be rewritten would be a worse outcome than leaving the stale
-        // section in place.
-        if let Err(e) = git.remove_rdm_index_driver_section() {
-            eprintln!("warning: could not remove the stale INDEX.md merge driver: {e}");
-        }
         Ok(Self::compose(FsStore::new(&root), git))
     }
 
@@ -519,11 +499,6 @@ impl GitStore {
             .map_err(|e| Error::Git(format!("failed to open cloned repo: {e}")))?
             .into_sync();
         let git = GitRepo::new(root.clone(), repo);
-        // Best-effort, mirroring `GitStore::new`: never fail a successful
-        // clone over an unwritable .git/config.
-        if let Err(e) = git.remove_rdm_index_driver_section() {
-            eprintln!("warning: could not remove the stale INDEX.md merge driver: {e}");
-        }
         Ok(Self::compose(FsStore::new(&root), git))
     }
 
@@ -1324,107 +1299,8 @@ mod tests {
         dir
     }
 
-    /// Appends a `[merge "rdm-index"]` section with the given driver command
-    /// to a repo's local `.git/config`, exactly as an older rdm did.
-    fn install_stale_driver_section(root: &std::path::Path, driver: &str) {
-        let config_path = root.join(".git").join("config");
-        let mut file = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&config_path)
-            .unwrap();
-        use std::io::Write;
-        writeln!(
-            file,
-            "\n[merge \"rdm-index\"]\n\tname = rdm INDEX.md merge driver\n\tdriver = {driver}"
-        )
-        .unwrap();
-    }
-
     fn read_config(root: &std::path::Path) -> String {
         std::fs::read_to_string(root.join(".git").join("config")).unwrap_or_default()
-    }
-
-    #[test]
-    fn new_removes_the_stale_rdm_index_driver_section_from_a_legacy_repo() {
-        // The inversion of `new_adds_merge_driver_config_to_legacy_repo`:
-        // opening now *sweeps* the section an older rdm installed, because
-        // its command names flags `rdm index` no longer accepts and git
-        // turns a failing merge driver into a spurious, markerless
-        // conflict resolved to `ours` on every INDEX.md merge.
-        let dir = legacy_repo_without_gitattributes();
-        install_stale_driver_section(
-            dir.path(),
-            "rdm --root . index --merge-output %A --merge-path %P",
-        );
-        assert!(read_config(dir.path()).contains("[merge \"rdm-index\"]"));
-
-        let _store = GitStore::new(dir.path()).unwrap();
-
-        let config = read_config(dir.path());
-        assert!(
-            !config.contains("[merge \"rdm-index\"]"),
-            "the stale section must be swept on open, got: {config}"
-        );
-        assert!(
-            config.contains("[core]"),
-            "the sweep must remove only that section, got: {config}"
-        );
-    }
-
-    #[test]
-    fn the_sweep_recognizes_the_pre_root_driver_spelling() {
-        // Repos installed before the `--root .` fix carry the bare form.
-        let dir = legacy_repo_without_gitattributes();
-        install_stale_driver_section(dir.path(), "rdm index --merge-output %A --merge-path %P");
-
-        let _store = GitStore::new(dir.path()).unwrap();
-
-        assert!(
-            !read_config(dir.path()).contains("[merge \"rdm-index\"]"),
-            "the pre---root driver spelling must be swept too"
-        );
-    }
-
-    #[test]
-    fn new_preserves_existing_custom_merge_driver_section() {
-        // The sweep's negative branch, and the one way it could eat a user's
-        // config: a hand-customized `rdm-index` driver must survive untouched.
-        let dir = legacy_repo_without_gitattributes();
-        install_stale_driver_section(dir.path(), "custom-driver %A");
-
-        let _store = GitStore::new(dir.path()).unwrap();
-
-        let config = read_config(dir.path());
-        assert!(
-            config.contains("custom-driver %A"),
-            "a hand-customized driver must survive the sweep, got: {config}"
-        );
-        assert_eq!(
-            config.matches("[merge \"rdm-index\"]").count(),
-            1,
-            "expected the user's section to be left exactly as it was, got: {config}"
-        );
-    }
-
-    #[test]
-    fn the_sweep_preserves_a_section_with_no_driver_line() {
-        let dir = legacy_repo_without_gitattributes();
-        let config_path = dir.path().join(".git").join("config");
-        let mut file = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&config_path)
-            .unwrap();
-        use std::io::Write;
-        writeln!(file, "\n[merge \"rdm-index\"]\n\tname = someone's note").unwrap();
-        drop(file);
-
-        let _store = GitStore::new(dir.path()).unwrap();
-
-        assert!(
-            read_config(dir.path()).contains("[merge \"rdm-index\"]"),
-            "a section carrying no driver line is inert and not provably rdm's"
-        );
     }
 
     #[test]
@@ -1631,38 +1507,6 @@ mod tests {
         gix::init(dir.path()).unwrap();
         let store = GitStore::new(dir.path());
         assert!(store.is_ok());
-    }
-
-    /// A repo whose `.git/config` is unwritable (read-only mount, restrictive
-    /// CI checkout) must still open for reads — the migration sweep is
-    /// housekeeping, never a prerequisite for the store. The stale section
-    /// simply stays put, which is exactly the pre-sweep status quo.
-    #[cfg(unix)]
-    #[test]
-    fn new_succeeds_when_git_config_is_read_only() {
-        use std::os::unix::fs::PermissionsExt;
-        let dir = legacy_repo_without_gitattributes();
-        install_stale_driver_section(
-            dir.path(),
-            "rdm --root . index --merge-output %A --merge-path %P",
-        );
-        let config_path = dir.path().join(".git").join("config");
-        let mut perms = std::fs::metadata(&config_path).unwrap().permissions();
-        perms.set_mode(0o444);
-        std::fs::set_permissions(&config_path, perms).unwrap();
-
-        let store = GitStore::new(dir.path());
-
-        // Restore write permission so TempDir cleanup can't be affected.
-        let mut perms = std::fs::metadata(&config_path).unwrap().permissions();
-        perms.set_mode(0o644);
-        std::fs::set_permissions(&config_path, perms).unwrap();
-
-        assert!(
-            store.is_ok(),
-            "read-only .git/config must not prevent opening the store: {:?}",
-            store.err()
-        );
     }
 
     #[test]

@@ -485,7 +485,7 @@ ok "self-test: the real, unmutated tree passes"
 # ---------------------------------------------------------------------------
 # Section E — Store-bypassing writers still reach a commit
 # ---------------------------------------------------------------------------
-say "Section E: init --remote, the legacy-repo migration sweep, and server writes"
+say "Section E: init --remote, legacy repos, and server writes"
 
 # --- E1: `rdm init --remote` lands its config commit ------------------------
 SRC_E="$TMP/repo-e-src"
@@ -537,11 +537,10 @@ grep -qE '^  (added|modified|deleted):' "$TMP/e2.status" &&
     fail "a fresh open of a legacy repo named changed paths: $(cat "$TMP/e2.status")"
 ok "a legacy repo commits only authored paths and gains no rdm-authored dirt"
 
-# --- E2b: the stale `[merge "rdm-index"]` config section is swept -----------
-# Migration, and the one thing this phase DOES write: left in place, that
-# section names a command that now fails, and git turns every INDEX.md merge —
-# even a non-conflicting one — into a spurious conflict silently resolved to
-# `ours`. Removing it is required, not cosmetic.
+# --- E2b: rdm never writes .git/config -------------------------------------
+# The merge driver is gone and nothing replaced it: rdm neither installs a
+# `[merge "rdm-index"]` section nor removes one an older version left behind.
+# Whatever is in .git/config is the user's, byte for byte.
 cat >>"$REPO_E2/.git/config" <<'STALE'
 
 [harness-canary]
@@ -551,15 +550,14 @@ cat >>"$REPO_E2/.git/config" <<'STALE'
 	driver = rdm --root . index --merge-output %A --merge-path %P
 STALE
 git -C "$REPO_E2" config --get merge.rdm-index.driver >/dev/null ||
-    fail "the stale section was not installed, so this arm is vacuous"
+    fail "the fixture section was not installed, so this arm is vacuous"
+cp "$REPO_E2/.git/config" "$TMP/e2b.config.before"
 
 RDM_SESSION=sess-e2c "$RDM_BIN" --root "$REPO_E2" list --project demo >/dev/null 2>&1
 
-[ -z "$(git -C "$REPO_E2" config --get merge.rdm-index.driver || true)" ] ||
-    fail "the stale [merge \"rdm-index\"] section survived an rdm command"
-[ "$(git -C "$REPO_E2" config --get harness-canary.keep || true)" = "yes" ] ||
-    fail "the sweep removed more than its own section"
-ok "the stale merge-driver config section is swept, unrelated sections survive"
+cmp -s "$TMP/e2b.config.before" "$REPO_E2/.git/config" ||
+    fail "rdm modified .git/config; it must not touch it at all"
+ok "rdm leaves .git/config byte-identical — it neither installs nor sweeps"
 
 # --- E3: a store-bypassing server-shaped write is attributable -------------
 # `rdm-server`'s shipped default is staging-only: its writes are journaled to

@@ -224,14 +224,17 @@ above). What happens to an existing repo that still carries them:
   naming a driver that is not configured is inert: git falls back to its
   built-in three-way merge, with proper conflict markers and nothing on stderr.
   Delete the lines if you like; you do not have to.
-- The `[merge "rdm-index"]` section in `.git/config` is **removed
-  automatically** on the next rdm command. It cannot be left in place: its
-  driver command no longer exists, and git treats a failing merge driver as a
-  conflict whose result is your own side, unmodified and unmarked — turning
-  every merge on a driver-mapped path, even one that would have merged
-  cleanly, into a silent loss of the incoming rows.
-- A `[merge "rdm-index"]` section you customized yourself is preserved: only
-  rdm's own driver command is recognized and removed.
+- The `[merge "rdm-index"]` section in `.git/config` is **yours to remove**.
+  rdm does not touch `.git/config` at all. Remove it once, by hand:
+
+  ```bash
+  git config --remove-section merge.rdm-index
+  ```
+
+  Do it before your next merge if your `.gitattributes` still maps `INDEX.md`
+  to the driver. The driver command no longer exists, and git treats a failing
+  merge driver as a conflict resolved to your own side, unmodified and
+  unmarked — so a mapped path can lose the incoming rows silently.
 
 ## Dates
 

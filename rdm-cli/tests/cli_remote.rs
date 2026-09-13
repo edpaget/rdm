@@ -1000,22 +1000,6 @@ fn seed_legacy_index_conflict() -> (TempDir, TempDir) {
     (dir, bare_dir)
 }
 
-/// Appends the `[merge "rdm-index"]` section an older rdm installed, whose
-/// driver command names flags `rdm index` no longer accepts.
-fn install_stale_driver_section(dir: &std::path::Path) {
-    let config_path = dir.join(".git").join("config");
-    let mut file = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&config_path)
-        .unwrap();
-    use std::io::Write;
-    writeln!(
-        file,
-        "\n[merge \"rdm-index\"]\n\tname = rdm INDEX.md merge driver\n\tdriver = rdm --root . index --merge-output %A --merge-path %P"
-    )
-    .unwrap();
-}
-
 /// Runs `git merge --no-edit origin/main` with the test `rdm` binary on
 /// `PATH` (so a configured driver, if any, really resolves) and returns the
 /// exit status plus captured stderr.
@@ -1109,46 +1093,6 @@ fn a_legacy_repo_merges_index_md_via_gits_builtin_three_way() {
         converged.contains("local-roadmap") && converged.contains("clone-roadmap"),
         "the resolved index must carry both sides' roadmaps exactly as the user \
          wrote them, got: {converged}"
-    );
-
-    let _ = bare_dir;
-}
-
-/// The non-vacuity control, and the reason the migration sweep in
-/// `GitRepo::remove_rdm_index_driver_section` is load-bearing rather than
-/// cosmetic.
-///
-/// With the stale `[merge "rdm-index"]` section left in `.git/config`, its
-/// driver command now fails (`rdm index` no longer accepts
-/// `--merge-output`/`--merge-path`), and git's response is far worse than the
-/// fallback above: the merge result is the unmodified `ours` blob with NO
-/// conflict markers, so the local side wins silently and the incoming rows
-/// vanish. Measured on git 2.55.0 — and it fires on non-conflicting merges
-/// too, which is why the section must be removed rather than tolerated.
-#[test]
-fn a_stale_driver_section_resolves_silently_to_ours() {
-    let (dir, bare_dir) = seed_legacy_index_conflict();
-    let index_file = dir.path().join("projects/demo/INDEX.md");
-    let ours = std::fs::read_to_string(&index_file).unwrap();
-
-    install_stale_driver_section(dir.path());
-
-    let (status, _stderr) = merge_origin(&dir);
-
-    assert!(!status.success(), "a failing driver reports a conflict");
-    let merged = std::fs::read_to_string(&index_file).unwrap();
-    assert!(
-        !merged.contains("<<<<<<<"),
-        "the damning part: no conflict markers at all, got: {merged}"
-    );
-    assert_eq!(
-        merged, ours,
-        "the merge result is the untouched `ours` blob — the incoming side is \
-         silently dropped, which is why the sweep removes this section"
-    );
-    assert!(
-        !merged.contains("clone-roadmap"),
-        "the incoming roadmap must be absent, proving the silent loss"
     );
 
     let _ = bare_dir;
