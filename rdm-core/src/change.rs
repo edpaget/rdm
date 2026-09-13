@@ -25,7 +25,11 @@
 //!
 //! - the path is gone at the tip → [`Resolution::Unresolved`]
 //! - the quote is still present, byte-for-byte → `Original { drifted: false }`
-//! - the path survives but the quote does not (or moved) → `Original { drifted: true }`
+//! - the path survives but the quoted text is gone → `Original { drifted: true }`
+//!
+//! Presence at the tip is what is tested, not position: code that merely
+//! moved within the file still reads as resolved, because the reviewer's
+//! words are still true of it. Only an edit to the quoted text is drift.
 //!
 //! The reported byte range always indexes the **head-side** content, matching
 //! [`Resolution::Original`]'s "the body the reviewer saw" contract.
@@ -129,6 +133,12 @@ pub fn parse_hunks(unified_diff: &str) -> Vec<HunkRange> {
 /// counts them before the last byte of the span. An empty range reports the
 /// single line it sits on.
 ///
+/// Offsets are floored to the enclosing character boundary before slicing,
+/// so a span whose last byte sits inside a multi-byte character — any quote
+/// ending in an accented letter, an em-dash or a curly quote — reports its
+/// line rather than panicking. Flooring cannot change the answer: `\n` is
+/// ASCII, so it never occurs inside a multi-byte character.
+///
 /// # Examples
 ///
 /// ```
@@ -137,13 +147,29 @@ pub fn parse_hunks(unified_diff: &str) -> Vec<HunkRange> {
 /// let content = "one\ntwo\nthree\n";
 /// assert_eq!(line_range_of(content, 4..7), (2, 2));
 /// assert_eq!(line_range_of(content, 0..12), (1, 3));
+///
+/// // A span whose final byte is inside a multi-byte character.
+/// let content = "a\ncafé\n";
+/// let start = content.find("café").unwrap();
+/// assert_eq!(line_range_of(content, start..start + "café".len()), (2, 2));
 /// ```
+///
+/// # Panics
+///
+/// Never panics.
 #[must_use]
 pub fn line_range_of(content: &str, range: Range<usize>) -> (u32, u32) {
     let start = range.start.min(content.len());
     let end_inclusive = range.end.saturating_sub(1).max(start).min(content.len());
     let line_of = |offset: usize| -> u32 {
-        u32::try_from(content[..offset].matches('\n').count() + 1).unwrap_or(u32::MAX)
+        // Floor to a character boundary: `range.end - 1` lands inside a
+        // multi-byte character whenever the span ends in one, and slicing
+        // there would panic.
+        let mut at = offset.min(content.len());
+        while at > 0 && !content.is_char_boundary(at) {
+            at -= 1;
+        }
+        u32::try_from(content[..at].matches('\n').count() + 1).unwrap_or(u32::MAX)
     };
     (line_of(start), line_of(end_inclusive))
 }
@@ -568,6 +594,44 @@ mod tests {
         let content = "héllo\nwörld\n";
         let start = content.find("wörld").unwrap();
         assert_eq!(line_range_of(content, start..start + "wörld".len()), (2, 2));
+    }
+
+    #[test]
+    fn line_range_of_is_char_safe_when_the_span_ends_mid_character() {
+        // `range.end - 1` lands INSIDE the final character here, which is the
+        // shape a quote ending in an accented letter, an em-dash or a curly
+        // quote produces. Flooring to the boundary keeps it a line number
+        // instead of a panic.
+        for quote in ["café", "a—", "say ”"] {
+            let content = format!("first\nx {quote}\nlast\n");
+            let start = content.find(quote).unwrap();
+            assert_eq!(
+                line_range_of(&content, start..start + quote.len()),
+                (2, 2),
+                "quote {quote:?} must report line 2"
+            );
+        }
+    }
+
+    #[test]
+    fn derive_file_quote_anchors_a_quote_ending_in_a_multibyte_character() {
+        // The end-to-end shape of the bug: deriving an anchor for a quote
+        // whose last byte is mid-character must yield an anchor, not a panic.
+        let content = "fn a() {}\nfn b() {} // café\n";
+        let hunks = parse_hunks("@@ -1,1 +1,2 @@\n");
+        let anchor = derive_file_quote(content, "src/lib.rs", "// café", None, &hunks, "b..h")
+            .expect("a multi-byte quote inside a touched hunk must anchor");
+        let Anchor::FileQuote {
+            start_line,
+            end_line,
+            quote,
+            ..
+        } = anchor
+        else {
+            panic!("expected a file-quote anchor");
+        };
+        assert_eq!((start_line, end_line), (2, 2));
+        assert_eq!(quote, "// café");
     }
 
     // --- nearest_hunk ---
