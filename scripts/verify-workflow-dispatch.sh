@@ -5235,50 +5235,74 @@ pass "10: docs/workflow-schemas.md and CLAUDE.md both point at the canonical wri
 
 # --- 11. --override-gate IS FOR HUMANS ONLY -----------------------------------
 #
-# The sibling of scripts/verify-skill-autopilot.sh § 5, over the dispatch
+# The sibling of scripts/verify-skill-autopilot.sh § 5, over the ORCHESTRATOR
 # surfaces. `--override-gate` bypasses the core `reviewed` transition gate's
 # record preconditions; it exists for an operator making a judgment call, and an
 # orchestrator that reached for it would turn the gate into decoration.
 #
-# NOTE for phase 6: the prose orchestrator's own harness inherits this check —
-# add its surfaces to OVERRIDE_SURFACES below rather than writing a third copy.
-say "11. --override-gate: no dispatch surface emits it"
+# This check is DISCOVERY-BASED, not a hand-maintained list. It walks every
+# agent-facing surface in the repo — every workflow script and shared lib, every
+# local skill, every custom agent definition, every shipped skill/workflow
+# template, and the checked-in plugin tree — and refuses if any of them mentions
+# the flag. That shape is deliberate: a later phase that adds a NEW orchestrator
+# (a workflow, a skill, or a template) is covered the moment the file lands,
+# with no edit to this harness and no third copy of the check to write. § 11d
+# proves exactly that property against a planted, not-yet-existing orchestrator.
+#
+# Scope note: docs/ and the Rust sources are deliberately OUT of scope — they
+# must describe the flag (docs/core-enforced-gates.md documents it;
+# rdm-cli implements it). What may never mention it is anything an autonomous
+# agent reads as instructions.
+say "11. --override-gate: no orchestrator surface emits it"
 
-OVERRIDE_SURFACES="$WF
-$LIB
-$REPO_ROOT/.claude/skills/rdm-dispatch-phase/SKILL.md
-$REPO_ROOT/rdm-core/src/templates/skill-dispatch-phase-cli.md"
+# discover_agent_surfaces <root> — repo-relative paths of every agent-facing
+# instruction surface beneath <root>.
+discover_agent_surfaces() {
+    (
+        cd "$1" || exit 1
+        find .claude/workflows .claude/skills .claude/agents \
+            rdm-core/src/templates plugins \
+            -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.md' \) 2>/dev/null |
+            sed 's|^\./||' | sort
+    )
+}
 
+# check_no_override <root> — prints each discovered surface mentioning the flag.
 check_no_override() {
-    # $1: root under which the surfaces live. Prints each offending file.
-    for f in $OVERRIDE_SURFACES; do
-        rel=${f#"$REPO_ROOT"/}
-        target="$1/$rel"
-        [ -f "$target" ] || continue
-        if grep -qF -e '--override-gate' "$target"; then
+    discover_agent_surfaces "$1" | while read -r rel; do
+        [ -f "$1/$rel" ] || continue
+        if grep -qF -e '--override-gate' "$1/$rel"; then
             printf '%s\n' "$rel"
         fi
     done
 }
 
-# Non-vacuity floor: the surfaces must actually exist, or the loop above would
-# skip every one of them and pass on nothing.
-SURFACE_COUNT=0
-for f in $OVERRIDE_SURFACES; do
-    [ -f "$f" ] && SURFACE_COUNT=$((SURFACE_COUNT + 1))
+# 11a. Non-vacuity floor: discovery must actually find the surfaces, including
+# the four this phase cares about most, or the scan would pass on nothing.
+discover_agent_surfaces "$REPO_ROOT" >"$TMP/override-surfaces.txt"
+SURFACE_COUNT=$(wc -l <"$TMP/override-surfaces.txt" | tr -d ' ')
+[ "$SURFACE_COUNT" -ge 30 ] ||
+    fail "11a: discovery found only $SURFACE_COUNT agent-facing surfaces — far fewer than the repo has, so the scan would pass vacuously"
+for want in \
+    ".claude/workflows/rdm-wf-dispatch-phase.js" \
+    ".claude/workflows/lib/dispatch-phase.mjs" \
+    ".claude/skills/rdm-dispatch-phase/SKILL.md" \
+    "rdm-core/src/templates/skill-dispatch-phase-cli.md"; do
+    grep -qxF "$want" "$TMP/override-surfaces.txt" ||
+        fail "11a: discovery missed $want — the scan does not cover the dispatch surfaces"
 done
-[ "$SURFACE_COUNT" -eq 4 ] ||
-    fail "11: expected 4 dispatch surfaces to scan, found $SURFACE_COUNT — the check would pass vacuously"
+pass "11a: discovery covers $SURFACE_COUNT agent-facing surfaces, including all four dispatch ones"
 
+# 11b. The real tree is clean.
 OFFENDERS=$(check_no_override "$REPO_ROOT")
-[ -z "$OFFENDERS" ] || fail "11: dispatch surface(s) emit --override-gate, which is operator-only:
+[ -z "$OFFENDERS" ] || fail "11b: orchestrator surface(s) emit --override-gate, which is operator-only:
 $OFFENDERS
 
 An orchestrator must never bypass the reviewed gate. Return a rework/escalated
 OUTCOME instead and let a human decide."
-pass "11: no dispatch surface emits --override-gate (4 surfaces scanned)"
+pass "11b: no orchestrator surface emits --override-gate"
 
-# Self-test: plant the flag and prove the check goes red.
+# 11c. Self-test: plant the flag in an EXISTING surface and prove it goes red.
 OG_SCRATCH="$TMP/override-scratch"
 mkdir -p "$OG_SCRATCH/.claude/workflows"
 cp "$WF" "$OG_SCRATCH/.claude/workflows/rdm-wf-dispatch-phase.js"
@@ -5286,11 +5310,30 @@ printf '\n// rdm phase update <stem> --status reviewed --override-gate "dispatch
     >>"$OG_SCRATCH/.claude/workflows/rdm-wf-dispatch-phase.js"
 PLANTED=$(check_no_override "$OG_SCRATCH")
 printf '%s' "$PLANTED" | grep -q 'rdm-wf-dispatch-phase.js' ||
-    fail "11: self-test failed — a planted --override-gate is NOT caught, so section 11 proves nothing"
-pass "11: self-test — a planted --override-gate IS caught"
+    fail "11c: self-test failed — a planted --override-gate is NOT caught, so section 11 proves nothing"
+pass "11c: self-test — a planted --override-gate IS caught"
 
+# 11d. Self-test: a NEW orchestrator surface that does not exist in the real
+# tree today is covered too. This is the check that discharges the AC's second
+# harness: whatever a later phase names its prose orchestrator, its surfaces are
+# scanned the moment the files land, with no edit here.
+mkdir -p "$OG_SCRATCH/.claude/skills/rdm-orchestrate"
+printf 'Run: rdm phase update <stem> --status reviewed --override-gate "orchestrator said so"\n' \
+    >"$OG_SCRATCH/.claude/skills/rdm-orchestrate/SKILL.md"
+printf 'export const meta = {};\n// --override-gate\n' \
+    >"$OG_SCRATCH/.claude/workflows/rdm-wf-orchestrate.js"
+[ -f "$REPO_ROOT/.claude/skills/rdm-orchestrate/SKILL.md" ] &&
+    fail "11d: setup failed — rdm-orchestrate already exists, so this is no longer a not-yet-existing surface"
+PLANTED_NEW=$(check_no_override "$OG_SCRATCH")
+printf '%s' "$PLANTED_NEW" | grep -q 'rdm-orchestrate/SKILL.md' ||
+    fail "11d: self-test failed — a NEW orchestrator skill is not scanned, so a later orchestrator could smuggle the flag in"
+printf '%s' "$PLANTED_NEW" | grep -q 'rdm-wf-orchestrate.js' ||
+    fail "11d: self-test failed — a NEW orchestrator workflow is not scanned"
+pass "11d: self-test — a not-yet-existing orchestrator's surfaces are scanned automatically"
+
+# 11e. Heal: the real tree still passes (both arms stated explicitly).
 [ -z "$(check_no_override "$REPO_ROOT")" ] ||
-    fail "11: self-test failed — the real, unmutated tree does not pass"
-pass "11: self-test — the real, unmutated tree passes"
+    fail "11e: self-test failed — the real, unmutated tree does not pass"
+pass "11e: self-test — the real, unmutated tree passes"
 
 say "verify-workflow-dispatch.sh: ALL GREEN"

@@ -29,21 +29,27 @@ pub type StoreFactory =
 
 /// Whether this plan repo enforces the core `reviewed` transition gate.
 ///
-/// Read from `<plan_root>/rdm.toml`'s repo-only `gates.reviewed` key on each
-/// mutation rather than cached at boot, so an operator toggling the gate does
-/// not have to restart a long-lived server. Defaults to `false` — the gate is
-/// opt-in, and a malformed or missing config must never silently enable it.
+/// A one-line delegation to [`rdm_core::config::reviewed_gate_enabled_at`],
+/// which owns the rule: `RDM_REVIEWED_GATE` → the repo-only `gates.reviewed`
+/// key → `false`. Core is the source of truth here deliberately — the CLI
+/// resolves the same flag through the same function, so the two surfaces
+/// cannot drift apart about when the gate is enforcing.
+///
+/// It is read on each mutation rather than cached at boot, so an operator
+/// toggling the gate does not have to restart a long-lived server.
 ///
 /// The server passes no worktree probe, so the gate's cleanliness precondition
 /// is a documented skip here: an HTTP request carries no project checkout to
 /// inspect.
-#[must_use]
-pub fn reviewed_gate_enabled(plan_root: &std::path::Path) -> bool {
-    std::fs::read_to_string(plan_root.join("rdm.toml"))
-        .ok()
-        .and_then(|c| rdm_core::config::Config::from_toml(&c).ok())
-        .and_then(|c| c.gates.and_then(|g| g.reviewed))
-        .unwrap_or(false)
+///
+/// # Errors
+///
+/// Returns [`rdm_core::error::Error::InvalidConfigValue`] if
+/// `RDM_REVIEWED_GATE` is set to anything other than `"true"` or `"false"`. A
+/// missing or malformed `rdm.toml` is not an error — it resolves to `false`,
+/// because an unreadable config must never be the thing that enables a gate.
+pub fn reviewed_gate_enabled(plan_root: &std::path::Path) -> rdm_core::error::Result<bool> {
+    rdm_core::config::reviewed_gate_enabled_at(plan_root)
 }
 
 /// Shared application state for the rdm server.

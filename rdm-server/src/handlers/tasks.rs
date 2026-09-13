@@ -432,7 +432,9 @@ pub async fn update_task(
     let mut store = state.store();
     // Gated for the same reason as the phase handler: a caller-supplied status
     // can be `reviewed`. No worktree probe — see `reviewed_gate_enabled`.
-    let gate = if crate::state::reviewed_gate_enabled(&state.plan_root) {
+    let gate = if crate::state::reviewed_gate_enabled(&state.plan_root)
+        .map_err(|e| error_response(e, format))?
+    {
         rdm_core::ops::ReviewedGate::enforcing(None)
     } else {
         rdm_core::ops::ReviewedGate::disabled()

@@ -1,9 +1,17 @@
 #!/bin/sh
 # Hermetic, static gate over the `reviewed` transition gate's THREADING.
 #
-# The runtime behavior of the gate is covered by `cargo nextest run`
-# (`rdm-core/tests/gate.rs` and `rdm-cli/tests/cli_gate.rs`). What tests cannot
-# see is the shape of the call graph: `rdm-core`'s `update_phase`,
+# The runtime behavior of the gate is covered by `cargo nextest run`, on every
+# surface it is wired into rather than only the CLI: `rdm-core/tests/gate.rs`
+# (the rule), `rdm-cli/tests/cli_gate.rs` (the binary),
+# `rdm-server/tests/reviewed_gate.rs` (the 409 an HTTP PATCH gets),
+# `rdm-mcp/tests/integration.rs` (the tool refusal an agent reads back), and
+# `rdm-git/src/worktree.rs`'s tests (the production worktree probe). A static
+# check like this one cannot see a gate that is *wired but not enforcing* — a
+# wrong config key or an error variant mapped to the wrong status code would
+# leave every grep below green — which is why those exist alongside it.
+#
+# What tests in turn cannot see is the shape of the call graph: `rdm-core`'s `update_phase`,
 # `update_phase_with_estimate` and `update_task` are deliberately left
 # UNCHECKED, and the gate only bites because every user-facing status-write
 # surface routes through their `_gated` siblings instead. That boundary is a

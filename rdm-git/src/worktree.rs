@@ -1849,4 +1849,198 @@ mod tests {
         let err = discover_distinct_project_repo(root, root).unwrap_err();
         assert!(matches!(err, WorktreeError::IsPlanRepo(_)));
     }
+
+    // ---------- GitWorktreeProbe ----------
+    //
+    // The production `WorktreeProbe` behind the `reviewed` transition gate's
+    // precondition (c). Core's side is exercised against `MemoryWorktreeProbe`
+    // in `rdm-core/tests/gate.rs`; what only real git can show is the
+    // candidate-ordering rule (a per-phase worktree beats its roadmap's shared
+    // one), the task branch, and the fail-closed error mapping.
+
+    use rdm_core::worktree::WorktreeProbe as _;
+
+    /// `git worktree list` reports the resolved path, which on macOS differs
+    /// from the tempdir path by the `/private` symlink — compare canonically.
+    fn same_path(reported: &str, expected: &Path) -> bool {
+        let a = std::fs::canonicalize(reported).unwrap_or_else(|_| PathBuf::from(reported));
+        let b = std::fs::canonicalize(expected).unwrap_or_else(|_| expected.to_path_buf());
+        a == b
+    }
+
+    fn core_phase(roadmap: &str, stem: &str) -> rdm_core::link::ItemRef {
+        rdm_core::link::ItemRef::Phase {
+            roadmap: roadmap.to_string(),
+            stem: stem.to_string(),
+        }
+    }
+
+    #[test]
+    fn probe_prefers_a_per_phase_worktree_over_the_roadmap_one() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let roadmap_item = ItemRef::Roadmap {
+            roadmap: "my-roadmap".to_string(),
+        };
+        let phase_item = open_item();
+        let roadmap_wt = add(&repo, &roadmap_item, &roadmap_item.branch_name(), None).unwrap();
+        let phase_wt = add(&repo, &phase_item, &phase_item.branch_name(), None).unwrap();
+
+        let probe = GitWorktreeProbe::new(repo.clone());
+        let check = probe
+            .worktree_for(&core_phase("my-roadmap", "phase-2-open-phase"))
+            .unwrap()
+            .expect("a worktree is registered for this phase");
+        assert!(
+            same_path(&check.path, &phase_wt.path),
+            "the per-phase worktree ({}) must win over the roadmap-wide one ({}), got {}",
+            phase_wt.path.display(),
+            roadmap_wt.path.display(),
+            check.path
+        );
+        assert!(check.is_clean(), "a fresh worktree is clean: {check:?}");
+    }
+
+    #[test]
+    fn probe_falls_back_to_the_roadmap_worktree_for_a_phase() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let roadmap_item = ItemRef::Roadmap {
+            roadmap: "my-roadmap".to_string(),
+        };
+        let roadmap_wt = add(&repo, &roadmap_item, &roadmap_item.branch_name(), None).unwrap();
+
+        // Worktrees are keyed per ROADMAP and shared by sibling phases, so a
+        // phase with no dedicated worktree resolves to its roadmap's.
+        let probe = GitWorktreeProbe::new(repo.clone());
+        let check = probe
+            .worktree_for(&core_phase("my-roadmap", "phase-2-open-phase"))
+            .unwrap()
+            .expect("the roadmap worktree serves its phases");
+        assert!(
+            same_path(&check.path, &roadmap_wt.path),
+            "expected {}, got {}",
+            roadmap_wt.path.display(),
+            check.path
+        );
+    }
+
+    #[test]
+    fn probe_reports_a_dirty_worktree_with_its_paths() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let roadmap_item = ItemRef::Roadmap {
+            roadmap: "my-roadmap".to_string(),
+        };
+        let wt = add(&repo, &roadmap_item, &roadmap_item.branch_name(), None).unwrap();
+        std::fs::write(wt.path.join("scratch.txt"), "wip").unwrap();
+
+        let probe = GitWorktreeProbe::new(repo.clone());
+        let check = probe
+            .worktree_for(&core_phase("my-roadmap", "phase-2-open-phase"))
+            .unwrap()
+            .unwrap();
+        assert!(!check.is_clean(), "an untracked file counts as dirty");
+        assert!(
+            check.dirty.iter().any(|p| p == "scratch.txt"),
+            "the dirty path must be named so an operator can see whose dirt it is: {:?}",
+            check.dirty
+        );
+    }
+
+    #[test]
+    fn probe_resolves_a_task_worktree() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let task_item = ItemRef::Task {
+            slug: "fix-bug".to_string(),
+        };
+        let wt = add(&repo, &task_item, &task_item.branch_name(), None).unwrap();
+
+        let probe = GitWorktreeProbe::new(repo.clone());
+        let check = probe
+            .worktree_for(&rdm_core::link::ItemRef::Task {
+                slug: "fix-bug".to_string(),
+            })
+            .unwrap()
+            .expect("a task worktree resolves");
+        assert!(
+            same_path(&check.path, &wt.path),
+            "expected {}, got {}",
+            wt.path.display(),
+            check.path
+        );
+    }
+
+    #[test]
+    fn probe_reports_no_worktree_rather_than_failing_on_a_miss() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let probe = GitWorktreeProbe::new(repo.clone());
+        // Nothing registered at all: a benign miss, which the gate treats as
+        // "no worktree to check" rather than as a refusal.
+        assert!(
+            probe
+                .worktree_for(&core_phase("my-roadmap", "phase-2-open-phase"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            probe
+                .worktree_for(&rdm_core::link::ItemRef::Task {
+                    slug: "nope".to_string()
+                })
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn probe_names_no_worktree_for_a_plan_or_a_change() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let probe = GitWorktreeProbe::new(repo.clone());
+        // The gate is only ever evaluated against a phase or a task, and these
+        // two reference kinds name no checkout of their own.
+        assert!(
+            probe
+                .worktree_for(&rdm_core::link::ItemRef::Plan {
+                    slug: "a-plan".to_string()
+                })
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            probe
+                .worktree_for(&rdm_core::link::ItemRef::Change {
+                    head: "a".repeat(40),
+                    base: None,
+                })
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn status_porcelain_at_errors_outside_a_git_repo() {
+        if !git_available() {
+            return;
+        }
+        // Fail-closed: the gate must never read "could not inspect" as clean,
+        // so the git call has to surface an Err rather than empty output.
+        let dir = tempfile::tempdir().unwrap();
+        assert!(crate::status_porcelain_at(dir.path()).is_err());
+    }
 }

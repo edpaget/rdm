@@ -221,14 +221,10 @@ fn resolve_reviewed_gate_inner(
     env_value: Option<String>,
     config: &rdm_core::config::Config,
 ) -> Result<bool> {
-    if let Some(v) = env_value {
-        return rdm_core::config::parse_reviewed_gate_env(&v).map_err(|e| anyhow::anyhow!("{e}"));
-    }
-    Ok(config
-        .gates
-        .as_ref()
-        .and_then(|g| g.reviewed)
-        .unwrap_or(false))
+    // The precedence rule itself lives in core, so this CLI, the HTTP server
+    // and any later front end cannot drift apart about when the gate is on.
+    rdm_core::config::resolve_reviewed_gate(env_value.as_deref(), Some(config))
+        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Resolves the output format from the CLI flag, `RDM_FORMAT` env var, and config.
@@ -707,6 +703,54 @@ mod tests {
         let config = rdm_core::config::Config::default();
         let err = resolve_plan_review_inner(Some("yes".to_string()), &config).unwrap_err();
         assert!(err.to_string().contains("RDM_PLAN_REVIEW"));
+    }
+
+    // --- reviewed gate: the same five cases as its `plan_review` sibling ---
+
+    fn gate_config(reviewed: Option<bool>) -> rdm_core::config::Config {
+        rdm_core::config::Config {
+            gates: Some(rdm_core::config::GatesConfig { reviewed }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_reviewed_gate_env_true_wins_over_config() {
+        let result =
+            resolve_reviewed_gate_inner(Some("true".to_string()), &gate_config(Some(false)))
+                .unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn resolve_reviewed_gate_env_false_wins_over_config() {
+        // The direction that matters most: an operator must be able to turn a
+        // repo-enabled gate off for one invocation without editing rdm.toml.
+        let result =
+            resolve_reviewed_gate_inner(Some("false".to_string()), &gate_config(Some(true)))
+                .unwrap();
+        assert!(!result);
+    }
+
+    #[test]
+    fn resolve_reviewed_gate_config_fallback() {
+        let result = resolve_reviewed_gate_inner(None, &gate_config(Some(true))).unwrap();
+        assert!(result);
+    }
+
+    #[test]
+    fn resolve_reviewed_gate_default_false() {
+        // Opt-in: neither an absent `[gates]` table nor a present-but-empty
+        // one may enable the gate.
+        assert!(!resolve_reviewed_gate_inner(None, &rdm_core::config::Config::default()).unwrap());
+        assert!(!resolve_reviewed_gate_inner(None, &gate_config(None)).unwrap());
+    }
+
+    #[test]
+    fn resolve_reviewed_gate_env_invalid_errors() {
+        let err = resolve_reviewed_gate_inner(Some("yes".to_string()), &gate_config(Some(true)))
+            .unwrap_err();
+        assert!(err.to_string().contains("RDM_REVIEWED_GATE"));
     }
 
     #[test]

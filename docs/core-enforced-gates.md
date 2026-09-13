@@ -96,6 +96,22 @@ The env var is a loud override, not a fuzzy boolean: `"1"`, `"yes"`, `"True"`
 and `""` all error rather than silently resolving to `false` and quietly
 disabling the gate — mirroring `RDM_PLAN_REVIEW`.
 
+**That rule lives in core, once.** `rdm_core::config::resolve_reviewed_gate`
+(env value + config → bool) is the whole precedence, and
+`rdm_core::config::reviewed_gate_enabled_at` is the plan-root convenience over
+it for callers that hold no merged `Config`. `rdm-cli`'s
+`paths::resolve_reviewed_gate`, `rdm-server`'s `state::reviewed_gate_enabled`
+and `rdm-mcp`'s update handlers are all one-line delegations to those. This is
+CLAUDE.md's layering contract applied to a config key: three interfaces
+re-deriving "is the gate on?" would drift — and the first draft of this phase
+proved it, because the two server-side copies silently lacked the
+`RDM_REVIEWED_GATE` override the CLI had. Any future change to the precedence
+now happens in exactly one place.
+
+A missing or malformed `rdm.toml` resolves to `false` rather than erroring: an
+unreadable config must never be the thing that *enables* a gate. An invalid
+`RDM_REVIEWED_GATE` still errors, on every surface.
+
 Defaulting off is not timidity. It is what lets the gate ship without changing
 behavior for a single existing plan repo, and what keeps rdm's own hermetic
 harnesses (`verify-skill-autopilot.sh`, `verify-workflow-do-auto.sh` and
@@ -139,9 +155,31 @@ rdm phase update <stem> --status reviewed --override-gate "<reason>" --roadmap <
   otherwise.
 
 **The override is for humans.** No rdm skill or workflow emits it, and that is
-asserted mechanically: `scripts/verify-skill-autopilot.sh` § 5 and
-`scripts/verify-workflow-dispatch.sh` § 11 each grep their surfaces for the
-flag, behind a planted-mutation self-test.
+asserted mechanically by two harnesses, both behind planted-mutation
+self-tests:
+
+- `scripts/verify-skill-autopilot.sh` § 5 greps the autopilot surfaces (the
+  local skill plus both shipped templates).
+- `scripts/verify-workflow-dispatch.sh` § 11 greps the **orchestrator**
+  surfaces — and does so by *discovery*, not from a hand-maintained list. It
+  walks every agent-facing instruction surface in the repo (`.claude/workflows`
+  including `lib/`, `.claude/skills`, `.claude/agents`,
+  `rdm-core/src/templates`, and the checked-in `plugins/` tree) and refuses if
+  any of them mentions the flag.
+
+The discovery shape is the point. A later phase that introduces a new
+orchestrator — whatever it is named, and whether it is a workflow script, a
+skill, or a shipped template — is covered the moment its files land, with no
+edit to the harness and no third copy of the check to write. § 11d proves that
+property directly: it plants a deliberately non-existent
+`.claude/skills/rdm-orchestrate/SKILL.md` and
+`.claude/workflows/rdm-wf-orchestrate.js` in a scratch tree and asserts both are
+caught. § 11a holds the floor from the other side, failing if discovery ever
+finds implausibly few surfaces or misses any of the four dispatch ones.
+
+Docs and Rust sources are deliberately out of scope — this file documents the
+flag and `rdm-cli` implements it. What may never mention it is anything an
+autonomous agent reads as instructions.
 
 ## Design record: gated sibling entries, not a required parameter
 
@@ -215,6 +253,25 @@ than inside a behavioral phase. The allowlist holds the boundary until then.
   nothing else. The trailer's format lives in
   `rdm_core::hook::format_done_directive` (surfaced as `rdm hook done-line`)
   and `rdm-land` remains its only writer.
+
+## Coverage
+
+The gate is enforced on four surfaces, and each is covered where it can
+actually fail rather than only where its call site can be grepped:
+
+| Surface | Coverage |
+|---|---|
+| the rule itself | `rdm-core/tests/gate.rs` — every branch, the fixed order, and the fail-closed probe cases against `MemoryStore` + `MemoryWorktreeProbe` |
+| `rdm-cli` | `rdm-cli/tests/cli_gate.rs` — the full ladder end to end through the real binary, against a temp plan repo and a real `rdm worktree add` worktree |
+| `rdm-server` | `rdm-server/tests/reviewed_gate.rs` — `PATCH` to `status: reviewed` refused **409** per precondition and allowed once the records exist, for phases and tasks; plus the opt-in and other-transitions-unaffected cases |
+| `rdm-mcp` | `rdm-mcp/tests/integration.rs` — the same ladder through the real `rdm mcp` subprocess and its `rdm_phase_update` / `rdm_task_update` tools |
+| the worktree probe | `rdm-git/src/worktree.rs` tests — the per-phase-beats-roadmap candidate ordering, the task branch, dirty-path reporting, benign misses, and `status_porcelain_at` erroring outside a repo |
+| the threading | `scripts/verify-reviewed-gate.sh` — the static allowlist described above |
+
+The server and MCP rows exist because a static call-site grep cannot see a
+gate that is wired but not enforcing: a wrong config key, a wrong file, or an
+error variant falling through to the wrong HTTP status would all leave the
+grep green. They assert the refusal an operator or an agent actually receives.
 
 ## See also
 

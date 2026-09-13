@@ -1,6 +1,6 @@
 /// Plan repo configuration (`rdm.toml`) and global configuration.
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -482,6 +482,62 @@ pub fn parse_reviewed_gate_env(value: &str) -> Result<bool> {
             valid: "true or false".to_string(),
         }),
     }
+}
+
+/// The name of the repo-level config file at a plan root.
+pub const REPO_CONFIG_FILE: &str = "rdm.toml";
+
+/// Resolves whether the core-enforced `reviewed` transition gate is enforcing.
+///
+/// This is the **single rule** every interface shares. `rdm-cli`, `rdm-server`
+/// and any future front end call it rather than re-deriving the precedence,
+/// so the surfaces can never disagree about when the gate is on: an operator
+/// who sets `RDM_REVIEWED_GATE=true` gets the same answer from `rdm phase
+/// update` and from a `PATCH /phases/{id}`.
+///
+/// Precedence: `RDM_REVIEWED_GATE` (passed in as `env_value`, so the rule
+/// itself stays a pure function) → the config's `gates.reviewed` → `false`.
+///
+/// Defaulting to `false` is load-bearing: the gate is opt-in, so no existing
+/// plan repo changes behavior on upgrade.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidConfigValue`] if `env_value` is anything other than
+/// the literal `"true"` or `"false"` — a typo disables nothing silently.
+pub fn resolve_reviewed_gate(env_value: Option<&str>, config: Option<&Config>) -> Result<bool> {
+    if let Some(v) = env_value {
+        return parse_reviewed_gate_env(v);
+    }
+    Ok(config
+        .and_then(|c| c.gates.as_ref())
+        .and_then(|g| g.reviewed)
+        .unwrap_or(false))
+}
+
+/// Loads `<plan_root>/rdm.toml` and resolves the `reviewed`-gate flag through
+/// [`resolve_reviewed_gate`], reading `RDM_REVIEWED_GATE` from the process
+/// environment.
+///
+/// This is the entry point for callers that hold a plan root but no
+/// already-merged [`Config`] — the HTTP server, which re-reads the key on each
+/// mutation so an operator toggling the gate need not restart a long-lived
+/// process. A missing or malformed `rdm.toml` resolves to `false` rather than
+/// erroring: the gate is opt-in, and an unreadable config must never be the
+/// thing that turns it on.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidConfigValue`] if `RDM_REVIEWED_GATE` is set to
+/// anything other than the literal `"true"` or `"false"`.
+pub fn reviewed_gate_enabled_at(plan_root: &Path) -> Result<bool> {
+    let config = std::fs::read_to_string(plan_root.join(REPO_CONFIG_FILE))
+        .ok()
+        .and_then(|c| Config::from_toml(&c).ok());
+    resolve_reviewed_gate(
+        std::env::var("RDM_REVIEWED_GATE").ok().as_deref(),
+        config.as_ref(),
+    )
 }
 
 /// Validates that a `default_format` value (if present) is one of the known formats.
@@ -1242,5 +1298,74 @@ mechanical = "small"
         );
         assert!(REPO_ONLY_KEYS.contains(&"gates.reviewed"));
         assert!(KNOWN_KEYS.contains(&"gates.reviewed"));
+    }
+
+    // --- the shared resolution rule every interface calls ---
+
+    fn gates_config(reviewed: Option<bool>) -> Config {
+        Config {
+            gates: Some(GatesConfig { reviewed }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_reviewed_gate_env_wins_over_config_in_both_directions() {
+        let on = gates_config(Some(true));
+        let off = gates_config(Some(false));
+        assert!(!resolve_reviewed_gate(Some("false"), Some(&on)).unwrap());
+        assert!(resolve_reviewed_gate(Some("true"), Some(&off)).unwrap());
+    }
+
+    #[test]
+    fn resolve_reviewed_gate_falls_back_to_config_then_false() {
+        assert!(resolve_reviewed_gate(None, Some(&gates_config(Some(true)))).unwrap());
+        assert!(!resolve_reviewed_gate(None, Some(&gates_config(Some(false)))).unwrap());
+        assert!(!resolve_reviewed_gate(None, Some(&gates_config(None))).unwrap());
+        assert!(!resolve_reviewed_gate(None, Some(&Config::default())).unwrap());
+        // No config at all — the server's missing-`rdm.toml` case.
+        assert!(!resolve_reviewed_gate(None, None).unwrap());
+    }
+
+    #[test]
+    fn resolve_reviewed_gate_rejects_a_junk_env_value() {
+        let err = resolve_reviewed_gate(Some("yes"), Some(&gates_config(Some(true)))).unwrap_err();
+        assert!(
+            err.to_string().contains("RDM_REVIEWED_GATE"),
+            "expected the key named in: {err}"
+        );
+    }
+
+    #[test]
+    fn reviewed_gate_enabled_at_reads_the_repo_config() {
+        let dir = tempfile::tempdir().unwrap();
+        // No rdm.toml at all — opt-in means off, never an error.
+        assert!(!reviewed_gate_enabled_at(dir.path()).unwrap());
+
+        std::fs::write(
+            dir.path().join(REPO_CONFIG_FILE),
+            "[gates]\nreviewed = true\n",
+        )
+        .unwrap();
+        assert!(reviewed_gate_enabled_at(dir.path()).unwrap());
+
+        std::fs::write(
+            dir.path().join(REPO_CONFIG_FILE),
+            "[gates]\nreviewed = false\n",
+        )
+        .unwrap();
+        assert!(!reviewed_gate_enabled_at(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn reviewed_gate_enabled_at_never_enables_on_a_malformed_config() {
+        // An unreadable config must not be the thing that turns a gate on.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(REPO_CONFIG_FILE),
+            "this is not = = toml [[[",
+        )
+        .unwrap();
+        assert!(!reviewed_gate_enabled_at(dir.path()).unwrap());
     }
 }
