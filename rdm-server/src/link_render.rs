@@ -202,6 +202,9 @@ fn classify_item(store: &impl Store, project: &str, resolved: &Resolved) -> Rend
         // A plan has a status, but no rdm-server detail route yet, so it
         // renders with the bare item class until plan support lands.
         ItemRef::Plan { .. } => "rdm-link-item".to_string(),
+        // Unreachable from a parsed body link (`rdm:change/…` is rejected by
+        // `rdm_core::link::parse`), but the match must be total.
+        ItemRef::Change { .. } => "rdm-link-item".to_string(),
     };
     RenderAction::ItemLink { href, class }
 }
@@ -660,6 +663,8 @@ mod tests {
                     slug: "reviewed-task".to_string(),
                 },
                 body: None,
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();

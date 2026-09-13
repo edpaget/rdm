@@ -43,6 +43,14 @@ pub enum Error {
     /// A plan's `implements` named a reference kind that cannot be
     /// implemented (only a phase or a task can be).
     PlanImplementsInvalidKind(String),
+    /// A review's `--implements` named a plan that does not exist.
+    ReviewImplementsMissing(String),
+    /// A review's `--implements` named a reference kind other than
+    /// `plan/<slug>`.
+    ReviewImplementsInvalidKind(String),
+    /// A review's `--implements` was given on a target kind that cannot
+    /// implement a plan (everything but `change/<sha>`).
+    ReviewImplementsNotApplicable(String),
     /// The plan a new plan would supersede does not exist.
     PlanSupersedesMissing(String),
     /// A plan's `supersedes` named a reference kind that is not a plan
@@ -130,6 +138,35 @@ pub enum Error {
         occurrence: usize,
         /// How many occurrences actually exist.
         available: usize,
+    },
+    /// A `--path --quote` comment on a `change/<sha>` review quoted text
+    /// that lies outside every hunk the reviewed change touches in that
+    /// file.
+    QuoteOutsideChangedHunks {
+        /// Repo-relative path the quote was located in.
+        path: String,
+        /// 1-based first line the quote spans.
+        start_line: u32,
+        /// 1-based last line the quote spans (inclusive).
+        end_line: u32,
+        /// The nearest touched hunk's 1-based inclusive line range, or
+        /// `None` when the change touches no hunk in this file at all.
+        nearest: Option<(u32, u32)>,
+        /// The base..head range the hunks were computed from, for the
+        /// message.
+        range: String,
+    },
+    /// An operation that needs a plan-repo document was handed a
+    /// `change/<sha>` target, which names commits in the project's source
+    /// repository and has no document in the plan repo.
+    ChangeTargetHasNoDocument(String),
+    /// A `--path` named a file that does not exist at the revision it was
+    /// looked up in (it was added later, or deleted by the change).
+    ChangePathNotInRevision {
+        /// Repo-relative path that was looked up.
+        path: String,
+        /// The revision it was looked up at.
+        rev: String,
     },
     /// A slug already exists.
     DuplicateSlug(String),
@@ -334,6 +371,24 @@ impl std::fmt::Display for Error {
                     "'{label}' cannot be implemented by a plan — pass --implements phase/<roadmap>/<stem-or-number> or --implements task/<slug>"
                 )
             }
+            Error::ReviewImplementsMissing(slug) => {
+                write!(
+                    f,
+                    "plan '{slug}' not found — pass --implements rdm:plan/<slug> naming an existing plan (see `rdm plan list`)"
+                )
+            }
+            Error::ReviewImplementsInvalidKind(label) => {
+                write!(
+                    f,
+                    "'{label}' is not an implementation plan — pass --implements rdm:plan/<slug>"
+                )
+            }
+            Error::ReviewImplementsNotApplicable(label) => {
+                write!(
+                    f,
+                    "--implements records which plan a reviewed *change* implements, so it does not apply to a review of '{label}' — start the review with --on change/<sha> to use it"
+                )
+            }
             Error::PlanSupersedesMissing(slug) => {
                 write!(
                     f,
@@ -470,6 +525,34 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "--occurrence {occurrence} is out of range for quote {quote:?} — only {available} occurrence(s) found (valid: 1..={available})"
+                )
+            }
+            Error::QuoteOutsideChangedHunks {
+                path,
+                start_line,
+                end_line,
+                nearest,
+                range,
+            } => match nearest {
+                Some((hs, he)) => write!(
+                    f,
+                    "the quote lands on {path} lines {start_line}-{end_line}, which {range} does not touch — quote text inside a changed hunk (nearest: lines {hs}-{he}), or omit --path/--quote for a whole-change comment"
+                ),
+                None => write!(
+                    f,
+                    "'{path}' is not touched by {range} — comment on a file the change modifies, or omit --path/--quote for a whole-change comment"
+                ),
+            },
+            Error::ChangeTargetHasNoDocument(label) => {
+                write!(
+                    f,
+                    "'{label}' names commits in the source repository, not a document in the plan repo — its comment anchors resolve through `rdm review show`, and its code is linked with rdm:src/<path>@<sha>"
+                )
+            }
+            Error::ChangePathNotInRevision { path, rev } => {
+                write!(
+                    f,
+                    "'{path}' does not exist at {rev} — check the path (it is relative to the source repository root), or omit --path/--quote for a whole-change comment"
                 )
             }
             Error::DuplicateSlug(slug) => {

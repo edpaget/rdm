@@ -1308,7 +1308,7 @@ sharp edge:
 | --- | --- | --- |
 | worktree ref | `<roadmap>/<phase>` or `task/<slug>` | `rdm worktree add` (`ItemRef::parse`) |
 | prompt context target | free-form human-readable label | `context.target`, threaded into every find/refute prompt (byte-pinned) |
-| review ref | `roadmap/<slug>` \| `phase/<roadmap-slug>/<stem-or-number>` \| `task/<slug>` \| `plan/<slug>` | `rdm review --on` (`ReviewTarget::from_str`) |
+| review ref | `roadmap/<slug>` \| `phase/<roadmap-slug>/<stem-or-number>` \| `task/<slug>` \| `plan/<slug>` \| `change/<sha-or-rev>` | `rdm review --on` (`ReviewTarget::from_str`) |
 
 `rdm-wf-review-refute-fix.js`'s existing `worktreeRef` and `reviewTarget` are
 BOTH the first shape; `rdm review --on` rejects it. The persist `--on` ref is
@@ -1323,6 +1323,26 @@ The writer itself (`persistReviewCommands` / `buildPersistReviewPrompts` in
 per-kind branching, no prefixing, and a throw on a ref with no `/`. That is what
 lets a future target kind reuse it unchanged.
 
+**The writer's optional fourth argument, `opts`.** Every field is DEFAULT-OFF,
+so a caller that passes no `opts` gets byte-identical commands to before (pinned
+by `scripts/verify-workflow-review.sh` § 15). The consumer decides; the writer
+still branches on nothing:
+
+| `opts` field | effect |
+| --- | --- |
+| `worktreeRef` | prefix the command list with `<bin> worktree add <ref>` + a `cd` into the path it prints, so a checkout-relative target like `change/HEAD` resolves |
+| `pathAnchors` | for each survivor whose `location` yields a repo-relative path via the pure `pathFromLocation`, emit `--path "$RDM_PERSIST_PATH"` alongside `--quote` |
+| `fallbackTarget` | name a second ref in the prompt's anchoring-fallback prose, which `review start` is retried with once if the primary target is rejected |
+
+**`rdm-wf-review-refute-fix.js` defaults its code-review persist target to
+`change/HEAD`** — a code review is about the code, so the recorded artifact
+targets the change itself rather than the phase document. That decision lives in
+the DRIVER region, not the stamped block, so a future consumer can choose a
+different target without editing `lib/review.mjs`. The prefixed item ref
+(`phase/<roadmap>/<phase>` / `task/<slug>`) survives as `persistItemRef`, passed
+as `fallbackTarget`, and an explicit `persist.on` still overrides both. See
+[`change-reviews.md`](change-reviews.md) for the target itself.
+
 **Emitted commands**, in order: `rdm review start --on <target> --body <summary>
 --no-edit --format json` → one `rdm review comment` per survivor → `rdm review
 submit --verdict <v>` → a session-scoped `rdm commit`. Quotes and bodies are
@@ -1331,7 +1351,11 @@ backticks, `$`, double quotes, em-dashes and newlines ride through literally. A
 survivor carrying a `quote` gets `--quote`; one without becomes a whole-document
 comment. The prompt spells a two-step anchoring fallback — `--occurrence 1` on
 ambiguity, then drop `--quote` entirely on a second failure — so a comment is
-never skipped and the persist never aborts on an anchoring failure. `review
+never skipped and the persist never aborts on an anchoring failure. With
+`pathAnchors` on, two further rungs cover the change target: a `--path` comment
+refused for landing outside a touched hunk retries as a whole-document comment,
+and a rejected `review start --on change/HEAD` retries once with
+`fallbackTarget`. `review
 start` always carries a NON-EMPTY `--body`, or `submit_review` would raise
 `ReviewEmpty` on a clean review with no comments.
 

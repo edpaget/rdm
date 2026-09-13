@@ -189,6 +189,28 @@ pub struct PlanJson {
     /// Reviews targeting this plan, in id order. Omitted when empty.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub reviews: Vec<PlanReviewRefJson>,
+    /// `change/<sha>` reviews whose `implements` names this plan, in id
+    /// order. Omitted when empty.
+    ///
+    /// Deliberately distinct from `reviews`: that list is reviews **on**
+    /// this plan document (feedback about the plan), while this one is
+    /// reviews of the **code** written against it. Conflating them would
+    /// make `rdm plan show`'s verdict summary meaningless.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub change_reviews: Vec<PlanChangeReviewJson>,
+}
+
+impl PlanJson {
+    /// Attaches the change reviews implementing this plan.
+    ///
+    /// A builder rather than a [`plan_to_json`] parameter so every existing
+    /// caller stays untouched and a plan with no change reviews keeps the
+    /// exact bytes it had.
+    #[must_use]
+    pub fn with_change_reviews(mut self, change_reviews: Vec<PlanChangeReviewJson>) -> Self {
+        self.change_reviews = change_reviews;
+        self
+    }
 }
 
 /// Plan summary for list output (no body, no reviews).
@@ -237,6 +259,46 @@ pub struct PlanReviewRefJson {
     /// When the review was submitted; absent on drafts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub submitted: Option<DateTime<Utc>>,
+}
+
+/// A reference to a `change/<sha>` review implementing a plan, embedded in
+/// that plan's detail output.
+#[derive(Debug, Clone, Serialize)]
+pub struct PlanChangeReviewJson {
+    /// Review id.
+    pub id: String,
+    /// The reviewed change's head SHA.
+    pub head: String,
+    /// Lifecycle state.
+    pub state: ReviewState,
+    /// Verdict stamped on submit; absent on drafts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verdict: Option<Verdict>,
+    /// When the review was submitted; absent on drafts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub submitted: Option<DateTime<Utc>>,
+}
+
+/// Maps a `(id, Document<Review>)` pair into a [`PlanChangeReviewJson`].
+///
+/// Returns `None` for a review whose target is not a
+/// [`ReviewTarget::Change`] — a caller that fed it a plain document review
+/// gets nothing rather than a row with an invented head.
+#[must_use]
+pub fn plan_change_review_to_json(
+    id: &str,
+    doc: &Document<Review>,
+) -> Option<PlanChangeReviewJson> {
+    let ReviewTarget::Change { head, .. } = &doc.frontmatter.target else {
+        return None;
+    };
+    Some(PlanChangeReviewJson {
+        id: id.to_string(),
+        head: head.clone(),
+        state: doc.frontmatter.state,
+        verdict: doc.frontmatter.verdict,
+        submitted: doc.frontmatter.submitted,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +599,7 @@ pub fn plan_to_json(
                 submitted: rd.frontmatter.submitted,
             })
             .collect(),
+        change_reviews: Vec::new(),
     }
 }
 
@@ -672,6 +735,11 @@ pub struct ReviewCommentJson {
     pub reply: Option<String>,
     /// Where the anchor currently resolves (see [`ResolutionJson`]).
     pub resolution: ResolutionJson,
+    /// For a `change/<sha>` review's anchored comment: the head-pinned
+    /// `rdm:src/<path>@<head>#L<start>[-L<end>]` permalink, exactly as
+    /// [`crate::link::parse`] accepts it. Absent on every other comment.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_link: Option<String>,
 }
 
 /// Full review detail: metadata, summary body, and every comment with its
@@ -697,10 +765,37 @@ pub struct ReviewJson {
     /// Plan-repo HEAD when the review started, if recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_commit: Option<String>,
+    /// The implementation plan a reviewed change implements, as the
+    /// canonical `rdm:plan/<slug>` URI. Absent on every other review kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub implements: Option<String>,
+    /// Source-repository branch the reviewed change was on, if recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change_branch: Option<String>,
+    /// Why source-repository anchor verification was skipped, when it was
+    /// (no checkout reachable, no resolvable HEAD, a build without git).
+    /// Absent when resolution really ran — the same degrade-with-a-reason
+    /// contract as `link check`'s `path_verification_skipped`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_verification_skipped: Option<String>,
     /// The overall review summary (Markdown body).
     pub body: String,
     /// The inline comments with their resolution states.
     pub comments: Vec<ReviewCommentJson>,
+}
+
+impl ReviewJson {
+    /// Attaches the "source verification skipped" note.
+    ///
+    /// A builder rather than a [`review_to_json`] parameter so every
+    /// existing caller stays untouched and a review with nothing skipped
+    /// keeps the exact bytes it had — the same pattern
+    /// [`TaskJson::with_plans`] uses.
+    #[must_use]
+    pub fn with_source_note(mut self, note: Option<String>) -> Self {
+        self.source_verification_skipped = note;
+        self
+    }
 }
 
 /// Maps one [`ResolvedComment`] into its JSON shape.
@@ -753,6 +848,11 @@ pub fn review_to_json(
         resolution: Resolution::Unresolved,
         quote: None,
     };
+    // Permalinks are head-pinned, so they only exist for a change target.
+    let change_head = match &fm.target {
+        ReviewTarget::Change { head, .. } => Some(head.as_str()),
+        _ => None,
+    };
     ReviewJson {
         id: id.to_string(),
         author: fm.author.clone(),
@@ -762,6 +862,9 @@ pub fn review_to_json(
         created: fm.created,
         submitted: fm.submitted,
         created_commit: fm.created_commit.clone(),
+        implements: fm.implements.as_ref().map(|r| format!("rdm:{}", r.label())),
+        change_branch: fm.change_branch.clone(),
+        source_verification_skipped: None,
         body: doc.body.clone(),
         comments: fm
             .comments
@@ -776,6 +879,12 @@ pub fn review_to_json(
                 body: c.body.clone(),
                 reply: c.reply.clone(),
                 resolution: resolution_to_json(resolutions.get(i).unwrap_or(&unresolved)),
+                source_link: change_head.and_then(|head| {
+                    c.anchor
+                        .as_ref()
+                        .and_then(|a| crate::change::permalink_for(head, a))
+                        .map(|link| link.to_string())
+                }),
             })
             .collect(),
     }
@@ -889,24 +998,51 @@ pub fn outgoing_link_to_json(uri: &str, resolved: ResolvedLinkJson) -> OutgoingL
 }
 
 /// One document referencing a backlink target, in JSON.
+///
+/// `range_start`/`range_end` are present for a body link and omitted for a
+/// frontmatter reference, which carries `field` (and `via`, for a
+/// transitive one) instead — see [`crate::link::BacklinkRef`].
 #[derive(Debug, Clone, Serialize)]
 pub struct BacklinkEntryJson {
     /// The referencing document.
     #[serde(flatten)]
     pub document: DocRef,
     /// Byte offset of the link's start within that document's body.
-    pub range_start: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_start: Option<usize>,
     /// Byte offset of the link's end within that document's body.
-    pub range_end: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_end: Option<usize>,
+    /// The frontmatter field the reference lives in, for a structural
+    /// backlink.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<&'static str>,
+    /// The intermediate document a transitive reference was reached
+    /// through, as a `rdm:` URI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
 }
 
 /// Builds a [`BacklinkEntryJson`] from a [`BacklinkEntry`].
 #[must_use]
 pub fn backlink_entry_to_json(entry: &BacklinkEntry) -> BacklinkEntryJson {
+    let (range_start, range_end) = match entry.byte_range() {
+        Some(r) => (Some(r.start), Some(r.end)),
+        None => (None, None),
+    };
+    let (field, via) = match &entry.reference {
+        crate::link::BacklinkRef::Body { .. } => (None, None),
+        crate::link::BacklinkRef::Field { field, via } => (
+            Some(*field),
+            via.as_ref().map(|r| format!("rdm:{}", r.label())),
+        ),
+    };
     BacklinkEntryJson {
         document: entry.document.clone(),
-        range_start: entry.byte_range.start,
-        range_end: entry.byte_range.end,
+        range_start,
+        range_end,
+        field,
+        via,
     }
 }
 
@@ -1324,6 +1460,8 @@ mod tests {
                     body: "Tighten this.".to_string(),
                     reply: None,
                 }],
+                implements: None,
+                change_branch: None,
             },
             body: "Overall summary.".to_string(),
         }

@@ -1814,6 +1814,8 @@ mod tests {
                 author: "reviewer",
                 target,
                 body: Some("Summary."),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();
@@ -1982,6 +1984,8 @@ mod tests {
                     roadmap: "alpha".to_string(),
                 },
                 body: None,
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();
@@ -2063,6 +2067,8 @@ mod tests {
                     roadmap: "alpha".to_string(),
                 },
                 body: None,
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();

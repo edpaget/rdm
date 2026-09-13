@@ -8,7 +8,7 @@
 use std::ops::Range;
 
 use crate::error::Result;
-use crate::link::{BacklinkEntry, DocRef, ItemRef, Link, Resolved};
+use crate::link::{BacklinkEntry, BacklinkRef, DocRef, ItemRef, Link, Resolved};
 use crate::model::Project;
 use crate::store::Store;
 
@@ -49,6 +49,15 @@ pub fn resolve_item_link(store: &impl Store, project: &str, target: &ItemRef) ->
         ItemRef::Phase { roadmap, stem } => {
             let (resolved_stem, found) = resolve_phase_stem_lenient(store, project, roadmap, stem)?;
             found && store.exists(&crate::paths::phase_path(project, roadmap, &resolved_stem))
+        }
+        // A change names source-repo commits, not a plan-repo document, so
+        // there is nothing here to exist. `crate::link::parse` rejects the
+        // `change` kind outright, so this is only reachable from a caller
+        // holding a `ReviewTarget` directly.
+        ItemRef::Change { .. } => {
+            return Ok(Resolved::Broken {
+                reason: crate::error::Error::ChangeTargetHasNoDocument(target.label()).to_string(),
+            });
         }
     };
     Ok(Resolved::Item {
@@ -122,6 +131,13 @@ pub fn item_ref_path(
             let (resolved_stem, _found) =
                 resolve_phase_stem_lenient(store, project, roadmap, stem)?;
             crate::paths::phase_path(project, roadmap, &resolved_stem)
+        }
+        // No plan-repo path exists for a change target — see
+        // [`resolve_item_link`].
+        ItemRef::Change { .. } => {
+            return Err(crate::error::Error::ChangeTargetHasNoDocument(
+                target.label(),
+            ));
         }
     })
 }
@@ -312,13 +328,105 @@ pub fn backlinks(
         collect_item_links(store, project, body, &target, doc_ref, &mut entries)
     })?;
 
+    collect_implements_backlinks(store, project, &target, &mut entries)?;
+
     entries.sort_by(|a, b| {
         a.document
             .cmp(&b.document)
-            .then_with(|| a.byte_range.start.cmp(&b.byte_range.start))
+            .then_with(|| a.sort_key().cmp(&b.sort_key()))
     });
 
     Ok(entries)
+}
+
+/// Emits the **structural** backlinks to `target`: references carried in a
+/// document's frontmatter rather than written as `rdm:` links in its body.
+///
+/// Two direct sources, plus exactly one transitive hop:
+///
+/// 1. Every plan whose `implements` names `target`.
+/// 2. Every review whose `implements` names `target` (only a
+///    `change/<sha>` review carries one, and it always names a plan).
+/// 3. For a phase or task target: the change reviews implementing any plan
+///    from (1) — reached through that plan and tagged with `via`, so the
+///    chain is legible rather than looking direct.
+///
+/// **Depth is fixed at one hop and will stay that way.** Following a second
+/// level (a plan superseding a plan, say) would make backlink output depend
+/// on chain length and could revisit a document; one hop is enough to answer
+/// the question this exists for — "what code reviews cover this phase?" —
+/// and is trivially loop-free.
+///
+/// Two approved plans implementing the same phase, or a plan that supersedes
+/// another, can both surface the same review; it is emitted once per
+/// `(document, field, via)` triple and duplicates are dropped, so ordering
+/// stays deterministic.
+fn collect_implements_backlinks(
+    store: &impl Store,
+    project: &str,
+    target: &ItemRef,
+    out: &mut Vec<BacklinkEntry>,
+) -> Result<()> {
+    let push = |document: DocRef, via: Option<ItemRef>, out: &mut Vec<BacklinkEntry>| {
+        let entry = BacklinkEntry {
+            document,
+            reference: BacklinkRef::Field {
+                field: "implements",
+                via,
+            },
+        };
+        if !out.contains(&entry) {
+            out.push(entry);
+        }
+    };
+
+    // (1) plans implementing the target, and (3) their change reviews.
+    let mut plan_refs: Vec<ItemRef> = Vec::new();
+    for (slug, doc) in crate::ops::plan::list_plans(store, project)? {
+        if normalize_item_ref(store, project, &doc.frontmatter.implements)? != *target {
+            continue;
+        }
+        push(DocRef::Plan { slug: slug.clone() }, None, out);
+        plan_refs.push(ItemRef::Plan { slug });
+    }
+
+    // (2) reviews whose `implements` names the target directly.
+    let reviews = crate::ops::reviews::list_reviews(store, project)?;
+    for (id, doc) in &reviews {
+        let Some(implements) = &doc.frontmatter.implements else {
+            continue;
+        };
+        if normalize_item_ref(store, project, implements)? == *target {
+            push(
+                DocRef::Review {
+                    id: id.clone(),
+                    comment: None,
+                },
+                None,
+                out,
+            );
+        }
+    }
+
+    // (3) one hop: target → plan → change review.
+    if !plan_refs.is_empty() {
+        for (id, doc) in &reviews {
+            let Some(implements) = &doc.frontmatter.implements else {
+                continue;
+            };
+            if let Some(plan_ref) = plan_refs.iter().find(|p| *p == implements) {
+                push(
+                    DocRef::Review {
+                        id: id.clone(),
+                        comment: None,
+                    },
+                    Some(plan_ref.clone()),
+                    out,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Walks every roadmap, phase, task, plan, and review body (and review comment) in
@@ -472,7 +580,7 @@ fn collect_item_links(
             if normalized == *target {
                 out.push(BacklinkEntry {
                     document: doc_ref.clone(),
-                    byte_range: range,
+                    reference: BacklinkRef::Body { byte_range: range },
                 });
             }
         }
@@ -700,6 +808,10 @@ pub fn load_document_body(
             // body have no containing-commit fallback revision.
             Ok((DocRef::Plan { slug: slug.clone() }, doc.body, None))
         }
+        // A change has no plan-repo body to scan for outgoing links.
+        ItemRef::Change { .. } => Err(crate::error::Error::ChangeTargetHasNoDocument(
+            target.label(),
+        )),
     }
 }
 
@@ -1537,6 +1649,8 @@ mod tests {
                     body: target_body.to_string(),
                     reply: None,
                 }],
+                implements: None,
+                change_branch: None,
             },
             body: "Whole-document summary, no link here.".to_string(),
         };
@@ -1668,7 +1782,7 @@ mod tests {
         };
         let entries = backlinks(&store, "demo", &target).unwrap();
         assert_eq!(entries.len(), 2);
-        assert_ne!(entries[0].byte_range, entries[1].byte_range);
+        assert_ne!(entries[0].byte_range(), entries[1].byte_range());
     }
 
     #[test]
@@ -1717,6 +1831,8 @@ mod tests {
                     body: "See [fix](rdm:task/fix-login).".to_string(),
                     reply: None,
                 }],
+                implements: None,
+                change_branch: None,
             },
             body: String::new(),
         };
@@ -1777,6 +1893,8 @@ mod tests {
                     body: "No link in this comment.".to_string(),
                     reply: None,
                 }],
+                implements: None,
+                change_branch: None,
             },
             body: "Summary references [the fix](rdm:task/fix-login) directly.".to_string(),
         };
@@ -1954,6 +2072,276 @@ mod tests {
         assert!(
             matches!(err, crate::error::Error::ProjectNotFound(name) if name == "no-such-project")
         );
+    }
+
+    // --- structural `implements` backlinks and the one-hop rule ---
+
+    /// Seeds `demo` with a task, a plan implementing it, a change review
+    /// implementing that plan, and a second plan that supersedes the first —
+    /// the shape the one-hop and dedup rules are about.
+    fn seed_implements_chain(store: &mut MemoryStore) {
+        crate::ops::task::create_task(
+            store,
+            CreateTask {
+                project: "demo",
+                slug: "fix-login",
+                title: "Fix login",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Body."),
+            },
+        )
+        .unwrap();
+        crate::ops::plan::create_plan(
+            store,
+            crate::ops::plan::CreatePlan {
+                project: "demo",
+                slug: "plan-one",
+                title: "Plan one",
+                implements: ItemRef::Task {
+                    slug: "fix-login".to_string(),
+                },
+                supersedes: None,
+                body: Some("Plan body."),
+            },
+        )
+        .unwrap();
+    }
+
+    fn write_change_review(store: &mut MemoryStore, id: &str, implements: Option<ItemRef>) {
+        let doc = Document {
+            frontmatter: Review {
+                id: id.to_string(),
+                author: "tester".to_string(),
+                target: ReviewTarget::Change {
+                    head: "a".repeat(40),
+                    base: Some("b".repeat(40)),
+                },
+                state: ReviewState::Draft,
+                verdict: None,
+                created: chrono::Utc::now(),
+                submitted: None,
+                created_commit: None,
+                implements,
+                change_branch: None,
+                comments: Vec::new(),
+            },
+            body: "Summary.".to_string(),
+        };
+        crate::io::write_review(store, "demo", id, &doc).unwrap();
+    }
+
+    #[test]
+    fn backlinks_emit_a_plans_implements_field_as_a_structural_reference() {
+        let mut store = setup();
+        seed_implements_chain(&mut store);
+        let entries = backlinks(
+            &store,
+            "demo",
+            &ItemRef::Task {
+                slug: "fix-login".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            entries,
+            vec![BacklinkEntry {
+                document: DocRef::Plan {
+                    slug: "plan-one".to_string()
+                },
+                reference: BacklinkRef::Field {
+                    field: "implements",
+                    via: None
+                },
+            }]
+        );
+        // A frontmatter reference has no byte range, by construction.
+        assert_eq!(entries[0].byte_range(), None);
+    }
+
+    #[test]
+    fn backlinks_follow_exactly_one_hop_from_an_item_to_its_change_reviews() {
+        let mut store = setup();
+        seed_implements_chain(&mut store);
+        write_change_review(
+            &mut store,
+            "2026-07-01-1200-aaaa",
+            Some(ItemRef::Plan {
+                slug: "plan-one".to_string(),
+            }),
+        );
+        // A second-level chain: a review implementing a plan that
+        // implements... a plan. Never followed.
+        crate::ops::plan::create_plan(
+            &mut store,
+            crate::ops::plan::CreatePlan {
+                project: "demo",
+                slug: "plan-two",
+                title: "Plan two",
+                implements: ItemRef::Task {
+                    slug: "fix-login".to_string(),
+                },
+                supersedes: Some(ItemRef::Plan {
+                    slug: "plan-one".to_string(),
+                }),
+                body: Some("Plan body."),
+            },
+        )
+        .unwrap();
+
+        let entries = backlinks(
+            &store,
+            "demo",
+            &ItemRef::Task {
+                slug: "fix-login".to_string(),
+            },
+        )
+        .unwrap();
+        let review_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| matches!(e.document, DocRef::Review { .. }))
+            .collect();
+        assert_eq!(
+            review_entries.len(),
+            1,
+            "expected exactly one review entry, got {review_entries:?}"
+        );
+        assert_eq!(
+            review_entries[0].reference,
+            BacklinkRef::Field {
+                field: "implements",
+                via: Some(ItemRef::Plan {
+                    slug: "plan-one".to_string()
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn backlinks_to_a_plan_name_its_change_reviews_directly() {
+        let mut store = setup();
+        seed_implements_chain(&mut store);
+        write_change_review(
+            &mut store,
+            "2026-07-01-1200-aaaa",
+            Some(ItemRef::Plan {
+                slug: "plan-one".to_string(),
+            }),
+        );
+        let entries = backlinks(
+            &store,
+            "demo",
+            &ItemRef::Plan {
+                slug: "plan-one".to_string(),
+            },
+        )
+        .unwrap();
+        // Direct: `via` is None, because the review names the plan itself.
+        assert_eq!(
+            entries,
+            vec![BacklinkEntry {
+                document: DocRef::Review {
+                    id: "2026-07-01-1200-aaaa".to_string(),
+                    comment: None,
+                },
+                reference: BacklinkRef::Field {
+                    field: "implements",
+                    via: None
+                },
+            }]
+        );
+    }
+
+    #[test]
+    fn backlinks_never_emit_the_same_review_twice_through_two_plans() {
+        let mut store = setup();
+        seed_implements_chain(&mut store);
+        // A second plan implementing the SAME task; the review implements
+        // only the first, so it must still appear exactly once.
+        crate::ops::plan::create_plan(
+            &mut store,
+            crate::ops::plan::CreatePlan {
+                project: "demo",
+                slug: "plan-two",
+                title: "Plan two",
+                implements: ItemRef::Task {
+                    slug: "fix-login".to_string(),
+                },
+                supersedes: None,
+                body: Some("Plan body."),
+            },
+        )
+        .unwrap();
+        write_change_review(
+            &mut store,
+            "2026-07-01-1200-aaaa",
+            Some(ItemRef::Plan {
+                slug: "plan-one".to_string(),
+            }),
+        );
+        let entries = backlinks(
+            &store,
+            "demo",
+            &ItemRef::Task {
+                slug: "fix-login".to_string(),
+            },
+        )
+        .unwrap();
+        let reviews = entries
+            .iter()
+            .filter(|e| matches!(e.document, DocRef::Review { .. }))
+            .count();
+        assert_eq!(
+            reviews, 1,
+            "expected no duplicate review entries: {entries:?}"
+        );
+        // Deterministic across repeated calls.
+        let again = backlinks(
+            &store,
+            "demo",
+            &ItemRef::Task {
+                slug: "fix-login".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(entries, again);
+    }
+
+    #[test]
+    fn a_change_review_without_implements_contributes_no_backlink() {
+        let mut store = setup();
+        seed_implements_chain(&mut store);
+        write_change_review(&mut store, "2026-07-01-1200-aaaa", None);
+        let entries = backlinks(
+            &store,
+            "demo",
+            &ItemRef::Plan {
+                slug: "plan-one".to_string(),
+            },
+        )
+        .unwrap();
+        assert!(entries.is_empty(), "{entries:?}");
+    }
+
+    #[test]
+    fn a_change_target_has_no_plan_repo_document() {
+        let store = setup();
+        let target = ItemRef::Change {
+            head: "a".repeat(40),
+            base: None,
+        };
+        assert!(matches!(
+            resolve_item_link(&store, "demo", &target).unwrap(),
+            Resolved::Broken { .. }
+        ));
+        assert!(matches!(
+            item_ref_path(&store, "demo", &target).unwrap_err(),
+            crate::error::Error::ChangeTargetHasNoDocument(_)
+        ));
+        assert!(matches!(
+            load_document_body(&store, "demo", &target).unwrap_err(),
+            crate::error::Error::ChangeTargetHasNoDocument(_)
+        ));
     }
 
     // --- `link check` / `check_project` / `check_document` ---

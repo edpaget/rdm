@@ -8,6 +8,10 @@ pub mod agent_config;
 pub mod anchor;
 /// Internal Markdown AST types for structured document generation.
 pub mod ast;
+/// Cross-repository change review: hunk-restricted anchoring of a review
+/// comment to a quoted span of a source-repository file, and resolving it
+/// again against a later tip.
+pub mod change;
 /// Plan repo configuration (`rdm.toml`).
 pub mod config;
 /// Conflict classification for merge conflict paths.
@@ -51,6 +55,9 @@ pub mod root;
 pub mod search;
 /// Session identity and the per-session changeset journal.
 pub mod session;
+/// The read-only source-repository port a `change/<sha>` review's anchors
+/// resolve against, plus an in-memory double for tests.
+pub mod source;
 /// Storage abstraction layer for plan repo data.
 pub mod store;
 /// Reserved-tag primitives (e.g. the `needs-plan-review` sentinel).

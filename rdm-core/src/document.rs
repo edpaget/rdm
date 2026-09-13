@@ -471,6 +471,8 @@ Still loads.
                         reply: Some("Addressed.".to_string()),
                     },
                 ],
+                implements: None,
+                change_branch: None,
             },
             body: "Overall summary.\n".to_string(),
         };
@@ -495,6 +497,8 @@ Still loads.
                 submitted: None,
                 created_commit: None,
                 comments: vec![],
+                implements: None,
+                change_branch: None,
             },
             body: String::new(),
         };

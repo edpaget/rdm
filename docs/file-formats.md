@@ -257,6 +257,88 @@ A plan's status is **derived from reviews**, never set with a status flag:
 `superseded` is terminal: a review submitted against an already-superseded plan never
 downgrades it back to `approved` or `changes-requested`.
 
+## Review Files
+
+Located at `projects/<project>/reviews/<id>.md`. Created by `rdm review start`.
+
+Everything but the overall summary lives in the frontmatter, including the full
+comment list; the body below it is the summary.
+
+### Review targets
+
+A review's `target` is a tagged mapping keyed on `kind`:
+
+| `kind` | Fields | Reference syntax |
+|--------|--------|------------------|
+| `roadmap` | `roadmap` | `roadmap/<slug>` |
+| `phase` | `roadmap`, `stem` | `phase/<roadmap-slug>/<stem-or-number>` |
+| `task` | `slug` | `task/<slug>` |
+| `plan` | `slug` | `plan/<slug>` |
+| `change` | `head`, `base` | `change/<sha-or-rev>` |
+
+A `change` target reviews **code in the project's source repository**, not a
+plan-repo document:
+
+```yaml
+---
+id: 2026-07-01-1430-a1b2
+author: ed
+target:
+  kind: change
+  head: 1f0c9a4e1f0c9a4e1f0c9a4e1f0c9a4e1f0c9a4e   # always a full 40-char SHA
+  base: 9b2d1c0a9b2d1c0a9b2d1c0a9b2d1c0a9b2d1c0a   # the merge-base, or --base
+change_branch: roadmap/auth
+implements: rdm:plan/impl-auth-v2
+state: submitted
+verdict: request-changes
+created: 2026-07-01T14:30:00Z
+comments:
+  - id: 1
+    status: open
+    anchor:
+      anchor_type: file-quote
+      path: rdm-core/src/link.rs
+      quote: "fn parse(uri: &str)"
+      occurrence: 1
+      start_line: 142
+      end_line: 142
+    body: The error path loses the original URI.
+---
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `head` | yes | string | Full 40-character SHA of the reviewed tip. Whatever revision the operator names (`HEAD`, a branch, an abbreviated sha) is rev-parsed before it is stored |
+| `base` | no | string | The revision the change is diffed against — `--base`, else the merge-base with the project's default branch. **Provenance, not identity**: the reference grammar is `change/<head>` only |
+| `change_branch` | no | string | Source-repo branch the change was on, used to pick the tip anchor drift is measured against. Absent on a detached HEAD |
+| `implements` | no | item ref | The `rdm:plan/<slug>` this change implements. Only meaningful on a `change` target; absent on every other kind, so every pre-existing review file still loads |
+
+`rdm:change/<sha>` is **not** a valid link — `change` names a review target, not
+a linkable document. Link code with `rdm:src/<path>@<sha>` instead.
+
+### Anchors
+
+A comment's `anchor` is a tagged mapping keyed on `anchor_type`. An
+unrecognized type round-trips verbatim, so an older binary never corrupts a
+review it does not fully understand.
+
+| `anchor_type` | Fields | Used by |
+|---------------|--------|---------|
+| `text-quote` | `quote`, `prefix`, `suffix` | Every plan-repo document target |
+| `file-quote` | `path`, `quote`, `occurrence`, `start_line`, `end_line` | A `change` target |
+
+`file-quote` deliberately stores **no** surrounding context: the review file
+lives in the plan repo, and nothing from the source repository beyond the quote
+the reviewer chose is ever embedded in it. Duplicate occurrences are
+disambiguated with `occurrence` (1-based) plus the recorded line range, which
+is also what lets `rdm review show` emit a head-pinned
+`rdm:src/<path>@<head>#L<start>-L<end>` permalink with no source checkout
+present.
+
+The full model — hunk-restricted anchoring, resolved/drifted/unresolved
+detection, the `implements` inference rules, and the never-write-the-source-repo
+invariant — is recorded in [`change-reviews.md`](change-reviews.md).
+
 ## `INDEX.md`
 
 rdm no longer generates `INDEX.md` files. The `rdm index` command, and the

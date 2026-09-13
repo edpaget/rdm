@@ -434,14 +434,24 @@ enum DocSelector<'a> {
 /// scopes a roadmap review to one of the roadmap's phases, otherwise the
 /// review's own target. A `doc` on a non-roadmap review (which the ops
 /// layer rejects at write time) is ignored defensively.
-fn doc_selector<'a>(review: &'a Review, comment: &'a ReviewComment) -> DocSelector<'a> {
+fn doc_selector<'a>(review: &'a Review, comment: &'a ReviewComment) -> Option<DocSelector<'a>> {
     doc_selector_for(&review.target, comment.doc.as_ref())
 }
 
 /// [`doc_selector`] over a bare target and optional doc scope, for callers
 /// that don't yet hold a stored [`ReviewComment`] (e.g. deriving the anchor
 /// for a comment about to be added).
-fn doc_selector_for<'a>(target: &'a ReviewTarget, doc: Option<&'a CommentDoc>) -> DocSelector<'a> {
+///
+/// `None` for a [`ReviewTarget::Change`]: its anchors live in the project's
+/// *source* repository, which this module cannot reach, so there is no
+/// plan-repo document to select. Callers resolve those through
+/// [`crate::change::resolve_change_comments`] instead; returning `None`
+/// here (rather than picking some plausible plan document) is what stops a
+/// change anchor from silently resolving against unrelated content.
+fn doc_selector_for<'a>(
+    target: &'a ReviewTarget,
+    doc: Option<&'a CommentDoc>,
+) -> Option<DocSelector<'a>> {
     if let (
         Some(CommentDoc {
             kind: CommentDocKind::Phase,
@@ -450,14 +460,15 @@ fn doc_selector_for<'a>(target: &'a ReviewTarget, doc: Option<&'a CommentDoc>) -
         ReviewTarget::Roadmap { roadmap },
     ) = (doc, target)
     {
-        return DocSelector::Phase { roadmap, stem };
+        return Some(DocSelector::Phase { roadmap, stem });
     }
-    match target {
+    Some(match target {
         ReviewTarget::Roadmap { roadmap } => DocSelector::Roadmap { roadmap },
         ReviewTarget::Phase { roadmap, stem } => DocSelector::Phase { roadmap, stem },
         ReviewTarget::Task { slug } => DocSelector::Task { slug },
         ReviewTarget::Plan { slug } => DocSelector::Plan { slug },
-    }
+        ReviewTarget::Change { .. } => return None,
+    })
 }
 
 /// Store path of the selected document.
@@ -524,7 +535,11 @@ fn load_body_current(
 ///    backend, or the anchor simply not found in the historical body —
 ///    resolve against the current body and return [`Resolution::Current`].
 /// 3. Otherwise, [`Resolution::Unresolved`]. Whole-document comments
-///    (no anchor) and [`Anchor::Unknown`] are always `Unresolved`.
+///    (no anchor) and [`Anchor::Unknown`] are always `Unresolved`, as is
+///    every comment on a [`ReviewTarget::Change`] review (and every
+///    [`Anchor::FileQuote`]): those anchors point into the project's
+///    *source* repository, which a plan-repo store cannot see — resolve
+///    them with [`crate::change::resolve_change_comments`] instead.
 ///
 /// Store errors are classified rather than propagated: benign history
 /// errors ([`Error::RevisionUnknown`], [`Error::BodyAtRevisionMissing`],
@@ -547,10 +562,12 @@ pub fn resolve_against_history(
     let Some(anchor) = &comment.anchor else {
         return Resolution::Unresolved;
     };
-    if matches!(anchor, Anchor::Unknown { .. }) {
+    if matches!(anchor, Anchor::Unknown { .. } | Anchor::FileQuote { .. }) {
         return Resolution::Unresolved;
     }
-    let selector = doc_selector(review, comment);
+    let Some(selector) = doc_selector(review, comment) else {
+        return Resolution::Unresolved;
+    };
 
     if let Some(sha) = &review.created_commit {
         match load_body_at(store, project, selector, sha) {
@@ -639,7 +656,8 @@ pub fn body_for_comment(
     review: &Review,
     doc: Option<&CommentDoc>,
 ) -> Result<(String, Option<String>)> {
-    let selector = doc_selector_for(&review.target, doc);
+    let selector = doc_selector_for(&review.target, doc)
+        .ok_or_else(|| Error::ChangeTargetHasNoDocument(review.target.label()))?;
     if let Some(sha) = &review.created_commit {
         match load_body_at(store, project, selector, sha) {
             Ok(body) => return Ok((body, Some(sha.clone()))),
@@ -681,7 +699,9 @@ pub fn current_body_for_comment(
     review: &Review,
     doc: Option<&CommentDoc>,
 ) -> Result<String> {
-    load_body_current(store, project, doc_selector_for(&review.target, doc))
+    let selector = doc_selector_for(&review.target, doc)
+        .ok_or_else(|| Error::ChangeTargetHasNoDocument(review.target.label()))?;
+    load_body_current(store, project, selector)
 }
 
 /// A comment's resolved anchor paired with the literal text at the resolved
@@ -714,7 +734,12 @@ pub fn resolve_comment(
     comment: &ReviewComment,
 ) -> ResolvedComment {
     let resolution = resolve_against_history(store, project, review, comment);
-    let selector = doc_selector(review, comment);
+    let Some(selector) = doc_selector(review, comment) else {
+        return ResolvedComment {
+            resolution: Resolution::Unresolved,
+            quote: None,
+        };
+    };
     let quote = match &resolution {
         Resolution::Original { range, .. } => review.created_commit.as_ref().and_then(|sha| {
             load_body_at(store, project, selector, sha)
@@ -1050,6 +1075,8 @@ mod tests {
             created: chrono::Utc::now(),
             submitted: None,
             created_commit: created_commit.map(str::to_string),
+            implements: None,
+            change_branch: None,
             comments: Vec::new(),
         }
     }

@@ -662,9 +662,11 @@ console.log('3g OK: args.diff hoist eliminates the agent, threads identical sign
 
 // ---------------------------------------------------------------- 3h. persist
 // The opt-in `persist` step. It is OFF by default (so every case above ran
-// without it), it derives the PREFIXED `phase/<roadmap>/<stem>` review ref
-// rather than reusing the bare worktree ref, it threads the ack's id onto the
-// OUTCOME only when it ran, and it can never change the outcome/status/gate.
+// without it), it targets `change/HEAD` — the CODE, pinned to the worktree tip
+// — after cd'ing into the item's worktree, keeps the PREFIXED
+// `phase/<roadmap>/<stem>` / `task/<slug>` ref as the named review-start
+// fallback, anchors located findings with `--path`, threads the ack's id onto
+// the OUTCOME only when it ran, and can never change the outcome/status/gate.
 {
   // Default off: no persist agent, no reviewId key.
   const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
@@ -682,7 +684,10 @@ console.log('3g OK: args.diff hoist eliminates the agent, threads identical sign
   );
   assert.equal(out.reviewId, 'REVIEW-42', 'the ack reviewId lands on the OUTCOME');
   const p = a.calls.find((c) => c.label === 'persist:review').prompt;
-  assert.ok(p.includes(' review start --on phase/rm/1 '), 'the phase persist ref is phase/<roadmap>/<phase>');
+  assert.ok(p.includes(' review start --on change/HEAD '), 'the code persist target is change/HEAD');
+  assert.ok(p.includes('worktree add rm/1'), 'the persist enters the item worktree, where change/HEAD means something');
+  assert.ok(p.includes('cd "$(head -n 1 "$RDM_PERSIST_WT")"'), 'the persist cds into that worktree before review start');
+  assert.ok(p.includes('`--on phase/rm/1`'), 'the prefixed item ref remains the named review-start fallback');
   assert.ok(!/review start --on rm\/1[ \n]/.test(p), 'the BARE <roadmap>/<phase> worktree ref must never reach `rdm review --on`');
   assert.ok(!p.includes('Done:'), 'the persist prompt carries no land-time completion directive');
   // The persist step carries NO agentType — this engine is DISTRIBUTED.
@@ -693,7 +698,25 @@ console.log('3g OK: args.diff hoist eliminates the agent, threads identical sign
   const a = makeAgent({ diffResult: HOIST_DIFF, findings: CLEAN, verdicts: {} });
   const out = await run({ mode: 'code', rdmBin: RDM_BIN_ARG, task: 'my-task', persist: true }, a.agent, refPipeline, refParallel, () => {});
   assert.equal(out.reviewId, 'REVIEW-42');
-  assert.ok(a.calls.find((c) => c.label === 'persist:review').prompt.includes(' --on task/my-task '), 'the task persist ref is task/<slug>');
+  const tp = a.calls.find((c) => c.label === 'persist:review').prompt;
+  assert.ok(tp.includes(' review start --on change/HEAD '), 'the task path persists onto change/HEAD too');
+  assert.ok(tp.includes('worktree add task/my-task'), 'the task worktree ref is what it cds into');
+  assert.ok(tp.includes('`--on task/my-task`'), 'task/<slug> remains the named fallback');
+}
+{
+  // --path anchoring: a finding whose `location` names a real repo-relative
+  // path anchors with --path; a prose location falls back to whole-document.
+  const located = [
+    { id: 'l1', concern: 'correctness', severity: 'blocking', confidence: 95, what_fails: 'boom', quote: 'let x = 1;', location: 'rdm-core/src/lib.rs:42' },
+    { id: 'l2', concern: 'correctness', severity: 'blocking', confidence: 95, what_fails: 'bang', quote: 'let y = 2;', location: 'across the whole gate step' },
+  ];
+  const a = makeAgent({ diffResult: HOIST_DIFF, findings: { ...CLEAN, correctness: located }, verdicts: {} });
+  await run({ mode: 'code', rdmBin: RDM_BIN_ARG, roadmap: 'rm', phase: '1', persist: true }, a.agent, refPipeline, refParallel, () => {});
+  const p = a.calls.find((c) => c.label === 'persist:review').prompt;
+  assert.equal((p.match(/--path "\$RDM_PERSIST_PATH"/g) || []).length, 1, 'exactly one of the two findings yields a --path anchor');
+  assert.ok(p.includes('rdm-core/src/lib.rs'), 'the derived path is captured verbatim');
+  assert.ok(!p.includes('across the whole gate step'), 'a prose location never becomes a --path argument');
+  assert.ok(p.includes('outside a touched hunk'.toUpperCase()) || /OUTSIDE a touched hunk/.test(p), 'the out-of-hunk fallback rung is present');
 }
 {
   // An explicit `{ on }` overrides the derived ref on this single-unit path.
@@ -725,7 +748,7 @@ for (const legacy of [{ mode: 'plan', context: {}, persist: true }, { mode: 'cod
     'persist on a survivors-only shape throws — never silently ignored'
   );
 }
-console.log('3h OK: persist is opt-in, derives the prefixed review ref, threads reviewId only when it ran, and cannot change the outcome');
+console.log('3h OK: persist is opt-in, targets change/HEAD from the item worktree with the item ref as fallback, --path-anchors located findings, threads reviewId only when it ran, and cannot change the outcome');
 
 console.log('ALL BEHAVIOR CHECKS PASSED');
 NODE_TEST
@@ -1286,5 +1309,196 @@ if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-drop.js" >/dev/null 2>&1; then
     fail "6d(iii): a project-scoped command that dropped its project flag was NOT detected"
 fi
 pass "6d(iii): detector fires when a project-scoped builder drops its project flag"
+
+# --- 7. REAL BINARY: the emitted persist commands produce a change/ review ----
+# Sections 3h and 6b prove the writer emits the RIGHT commands. This section
+# proves those exact commands WORK: a seeded temp git source repo (two commits,
+# so `main...HEAD` is a real diff) plus a seeded temp plan repo, both driven by
+# the REAL ./target/debug/rdm, with the commands `persistReviewCommands` emits
+# executed VERBATIM through `sh`.
+#
+# The persist's own `rdm worktree add` step is not exercised here — this section
+# runs from inside a checkout that already IS the review target, which is the
+# state that step exists to produce. What is exercised is everything downstream
+# of it: `review start --on change/HEAD`, the `--path` anchored comment, the
+# whole-document comment, the submit and the commit.
+say "7. Real binary: emitted persist commands produce a change/ review whose anchors resolve"
+
+RDM_BIN="$REPO_ROOT/target/debug/rdm"
+if [ ! -x "$RDM_BIN" ]; then
+    fail "7: $RDM_BIN not found — run 'cargo build' first"
+fi
+
+SRC7="$TMP/src7"
+PLAN7="$TMP/plan7"
+mkdir -p "$SRC7" "$PLAN7"
+
+g7() { git -C "$SRC7" -c user.email=t@t.com -c user.name=t "$@" >/dev/null 2>&1; }
+g7out() { git -C "$SRC7" "$@" 2>/dev/null; }
+
+g7 init -b main
+mkdir -p "$SRC7/src"
+printf 'fn one() {}\nfn two() {}\nfn three() {}\n' >"$SRC7/src/lib.rs"
+g7 add .
+g7 commit -m base
+g7 checkout -b topic
+printf 'fn one() {}\nfn two_renamed() {}\nfn three() {}\n' >"$SRC7/src/lib.rs"
+g7 add .
+g7 commit -m rename
+SRC7_HEAD=$(g7out rev-parse HEAD)
+
+"$RDM_BIN" --root "$PLAN7" init >/dev/null
+"$RDM_BIN" --root "$PLAN7" project create demo >/dev/null
+"$RDM_BIN" --root "$PLAN7" roadmap create rm --title RM --no-edit --project demo >/dev/null
+"$RDM_BIN" --root "$PLAN7" phase create design --title Design --number 1 --no-edit --roadmap rm --project demo >/dev/null
+# Point the project at the source checkout (no CLI surface for `source` yet).
+PROJ_MD="$PLAN7/projects/demo/project.md"
+awk 'NR==1{print; print "source:"; print "  repo: \"'"$SRC7"'\""; next} {print}' "$PROJ_MD" >"$PROJ_MD.new"
+mv "$PROJ_MD.new" "$PROJ_MD"
+# An APPROVED plan implementing the phase, so `--implements` has something real
+# behind it (the emitted commands rely on inference from the worktree item).
+"$RDM_BIN" --root "$PLAN7" plan create design-plan --title Plan --implements phase/rm/phase-1-design \
+    --body "Plan body." --no-edit --project demo >/dev/null
+PLAN_REVIEW_ID=$("$RDM_BIN" --root "$PLAN7" review start --on plan/design-plan --no-edit --project demo |
+    sed -n "s/.*'\([^']*\)'.*/\1/p" | head -n 1)
+"$RDM_BIN" --root "$PLAN7" review submit "$PLAN_REVIEW_ID" --verdict approve --body "Approved." \
+    --no-edit --project demo >/dev/null
+
+# Emit the commands from the REAL writer, with the worktree prefix suppressed
+# (see the note above) and `--implements` supplied explicitly, since this
+# checkout is not on the phase's branch-name convention.
+cat >"$TMP/emit7.mjs" <<'NODE_EMIT7'
+import fs from 'node:fs';
+
+const [wfPath, rdmBin, implementsRef] = process.argv.slice(2);
+const src = fs.readFileSync(wfPath, 'utf8');
+// Evaluate ONLY the stamped shared block (pure function declarations between
+// the generator's markers) — never the driver region, which awaits agents.
+const BEGIN = 'review-refute-fix:begin';
+const END = 'review-refute-fix:end';
+const b = src.indexOf(BEGIN);
+const e = src.indexOf(END);
+if (b < 0 || e < 0) throw new Error('stamped block markers not found in ' + wfPath);
+const block = src.slice(src.indexOf('\n', b) + 1, src.lastIndexOf('\n', e));
+if (block.indexOf('function persistReviewCommands') < 0) {
+  throw new Error('persistReviewCommands is not inside the stamped block');
+}
+const fn = new Function('exportsOut', block + '\nexportsOut.persistReviewCommands = persistReviewCommands;\n');
+const out = {};
+fn(out);
+const writer = out.persistReviewCommands;
+
+const findings = [
+  {
+    id: 'f1',
+    concern: 'correctness',
+    severity: 'blocking',
+    confidence: 95,
+    what_fails: 'the renamed function is unclear',
+    quote: 'fn two_renamed() {}',
+    location: 'src/lib.rs:2',
+  },
+  {
+    id: 'f2',
+    concern: 'correctness',
+    severity: 'concern',
+    confidence: 80,
+    what_fails: 'no tests overall',
+    location: 'throughout',
+  },
+];
+const cmds = writer(
+  { mode: 'code', outcome: 'rework', survivors: findings },
+  'change/HEAD',
+  { rdmBin: rdmBin, project: 'demo' },
+  { pathAnchors: true }
+);
+// Append the explicit --implements to the `review start` line: this checkout is
+// not on the phase branch, so inference has nothing to key off.
+process.stdout.write(
+  cmds
+    .map((c) => c.replace(' review start --on change/HEAD ', ' review start --on change/HEAD --implements ' + implementsRef + ' '))
+    .join('\n') + '\n'
+);
+NODE_EMIT7
+
+if ! run_node "$TMP/emit7.mjs" "$WF" "$RDM_BIN --root $PLAN7" "rdm:plan/design-plan" >"$TMP/persist7.sh" 2>"$TMP/emit7.err"; then
+    cat "$TMP/emit7.err" >&2
+    fail "7: could not emit the persist commands from the real writer"
+fi
+# shellcheck disable=SC2016  # a literal $RDM_PERSIST_PATH is the pattern, not an expansion
+grep -q -- '--path "\$RDM_PERSIST_PATH"' "$TMP/persist7.sh" ||
+    fail "7: the emitted commands carry no --path anchor — the seed is wrong, not the product"
+
+# Source-repo immutability, measured around the whole persist.
+SRC7_HEAD_BEFORE=$(g7out rev-parse HEAD)
+SRC7_STATUS_BEFORE=$(g7out status --porcelain)
+SRC7_TREE_BEFORE=$(g7out rev-parse 'HEAD^{tree}')
+
+if ! (cd "$SRC7" && sh "$TMP/persist7.sh") >"$TMP/persist7.out" 2>&1; then
+    cat "$TMP/persist7.out" >&2
+    fail "7: the emitted persist commands did not run cleanly"
+fi
+REVIEW7=$(sed -n 's/^reviewId=//p' "$TMP/persist7.out" | head -n 1)
+[ -n "$REVIEW7" ] || fail "7: the persist emitted no reviewId"
+
+[ "$(g7out rev-parse HEAD)" = "$SRC7_HEAD_BEFORE" ] || fail "7: the persist moved the source repo's HEAD"
+[ "$(g7out status --porcelain)" = "$SRC7_STATUS_BEFORE" ] || fail "7: the persist dirtied the source repo"
+[ "$(g7out rev-parse 'HEAD^{tree}')" = "$SRC7_TREE_BEFORE" ] || fail "7: the persist changed the source repo's tree"
+pass "7: the source repository is byte-identical before and after the persist"
+
+# Read the artifact back through the real binary.
+LIST7=$("$RDM_BIN" --root "$PLAN7" review list --on "change/$SRC7_HEAD" --format json --project demo)
+printf '%s' "$LIST7" | grep -q "\"$REVIEW7\"" ||
+    fail "7: review list --on change/<sha> did not find the persisted review: $LIST7"
+
+SHOW7=$(cd "$SRC7" && "$RDM_BIN" --root "$PLAN7" review show "$REVIEW7" --format json --project demo)
+printf '%s' "$SHOW7" | grep -q '"state": "resolved"' ||
+    fail "7: no comment resolved against the source repo: $SHOW7"
+printf '%s' "$SHOW7" | grep -q "\"source_link\": \"rdm:src/src/lib.rs@$SRC7_HEAD#L2\"" ||
+    fail "7: the anchored comment carries no head-pinned permalink: $SHOW7"
+printf '%s' "$SHOW7" | grep -q '"implements": "rdm:plan/design-plan"' ||
+    fail "7: the review does not record the plan it implements: $SHOW7"
+# The unlocated finding landed as a whole-document comment, with no anchor.
+printf '%s' "$SHOW7" | grep -q '"state": "unresolved"' ||
+    fail "7: the unlocated finding did not land as a whole-document comment: $SHOW7"
+pass "7: review list/show report a resolved --path anchor, a pinned rdm:src permalink, the implemented plan, and a whole-document comment"
+
+# The emitted permalink is exactly what `rdm link resolve` accepts.
+(cd "$SRC7" && "$RDM_BIN" --root "$PLAN7" link resolve "rdm:src/src/lib.rs@$SRC7_HEAD#L2" \
+    --format json --project demo) | grep -q '"kind": "code"' ||
+    fail "7: the emitted permalink is not resolvable by rdm link resolve"
+pass "7: the emitted permalink round-trips through rdm link resolve"
+
+# --- 7b. Planted-mutation self-test: drop --path from the emitted command -----
+# Without `--path`, `rdm review comment` on a change review must refuse the
+# quote outright — so section 7's resolved-anchor assertion is not vacuous.
+say "7b. Planted mutation: stripping --path from the emitted command must break section 7"
+
+PLAN7B="$TMP/plan7b"
+mkdir -p "$PLAN7B"
+"$RDM_BIN" --root "$PLAN7B" init >/dev/null
+"$RDM_BIN" --root "$PLAN7B" project create demo >/dev/null
+"$RDM_BIN" --root "$PLAN7B" roadmap create rm --title RM --no-edit --project demo >/dev/null
+"$RDM_BIN" --root "$PLAN7B" phase create design --title Design --number 1 --no-edit --roadmap rm --project demo >/dev/null
+PROJ_MD_B="$PLAN7B/projects/demo/project.md"
+awk 'NR==1{print; print "source:"; print "  repo: \"'"$SRC7"'\""; next} {print}' "$PROJ_MD_B" >"$PROJ_MD_B.new"
+mv "$PROJ_MD_B.new" "$PROJ_MD_B"
+"$RDM_BIN" --root "$PLAN7B" plan create design-plan --title Plan --implements phase/rm/phase-1-design \
+    --body "Plan body." --no-edit --project demo >/dev/null
+PRB=$("$RDM_BIN" --root "$PLAN7B" review start --on plan/design-plan --no-edit --project demo |
+    sed -n "s/.*'\([^']*\)'.*/\1/p" | head -n 1)
+"$RDM_BIN" --root "$PLAN7B" review submit "$PRB" --verdict approve --body "Approved." --no-edit --project demo >/dev/null
+
+# shellcheck disable=SC2016  # a literal $RDM_PERSIST_PATH is the pattern, not an expansion
+sed 's| --path "\$RDM_PERSIST_PATH"||' "$TMP/persist7.sh" |
+    sed "s|--root $PLAN7 |--root $PLAN7B |g" >"$TMP/persist7b.sh"
+if cmp -s "$TMP/persist7.sh" "$TMP/persist7b.sh"; then
+    fail "7b: the --path mutation did not apply — the self-test exercises nothing"
+fi
+(cd "$SRC7" && sh "$TMP/persist7b.sh") >"$TMP/persist7b.out" 2>&1 || true
+grep -q -- '--path' "$TMP/persist7b.out" ||
+    fail "7b: dropping --path did NOT make rdm refuse the quote — section 7's anchor assertion is vacuous"
+pass "7b: dropping --path makes the quote refusal fire, naming --path"
 
 say "verify-workflow-review-outcome.sh: ALL GREEN"

@@ -1152,16 +1152,35 @@ pub(crate) enum ReviewCommand {
         #[arg(long)]
         project: Option<String>,
     },
-    /// Start a new draft review of a roadmap, phase, or task.
+    /// Start a new draft review of a roadmap, phase, task, plan, or code
+    /// change.
     ///
     /// Stamps the plan-repo HEAD as the review's `created_commit`, so quote
     /// anchors added later are derived against the version of the target the
     /// reviewer is looking at.
+    ///
+    /// With `--on change/<sha>` (or `--on change/HEAD` from inside a source
+    /// checkout) the review targets the *code* instead: the revision is
+    /// rev-parsed to a full SHA and pinned, and its base is recorded
+    /// (`--base`, else the merge-base with the project's default branch).
     Start {
         /// The item under review: `roadmap/<slug>`,
-        /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+        /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`,
+        /// `plan/<slug>`, or `change/<sha-or-rev>` (including
+        /// `change/HEAD`).
         #[arg(long)]
         on: String,
+        /// For a `change/` review: the revision the change is diffed
+        /// against. Defaults to the merge-base of the head with the
+        /// project's default branch.
+        #[arg(long)]
+        base: Option<String>,
+        /// For a `change/` review: the implementation plan this change
+        /// implements (`rdm:plan/<slug>` or `plan/<slug>`). When omitted
+        /// inside a recognized worktree, inferred from the item's single
+        /// `approved` plan.
+        #[arg(long)]
+        implements: Option<String>,
         /// Review author (defaults to $RDM_REVIEW_AUTHOR, then $USER).
         #[arg(long)]
         author: Option<String>,
@@ -1181,12 +1200,20 @@ pub(crate) enum ReviewCommand {
     /// as of the review's `created_commit` and a text-quote anchor
     /// (quote + ~32 chars of surrounding context) is derived automatically.
     /// Without `--quote`, the comment applies to the whole document.
+    ///
+    /// On a `change/` review, `--quote` additionally requires `--path`: the
+    /// quote is located in that file's content at the reviewed head and
+    /// must fall inside a hunk the change touches.
     Comment {
         /// Id of the draft review to comment on.
         review_id: String,
         /// Exact text in the target's body the comment is anchored to.
         #[arg(long)]
         quote: Option<String>,
+        /// On a `change/` review: the source-repo-relative path of the file
+        /// the quote lives in.
+        #[arg(long, requires = "quote")]
+        path: Option<String>,
         /// Which occurrence of `--quote` to anchor to (1-based), when the
         /// quoted text appears more than once. Occurrences are counted
         /// without overlap (the quote "aa" occurs twice in "aaaa", not
@@ -1230,7 +1257,9 @@ pub(crate) enum ReviewCommand {
     /// List document reviews, optionally filtered.
     List {
         /// Keep only reviews of this target: `roadmap/<slug>`,
-        /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+        /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`,
+        /// `plan/<slug>`, or `change/<sha>` (matched on the head SHA; the
+        /// recorded base is provenance and is not compared).
         #[arg(long)]
         on: Option<String>,
         /// Keep only reviews in this state (draft, submitted, addressed,

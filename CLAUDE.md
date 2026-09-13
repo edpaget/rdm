@@ -378,6 +378,8 @@ Structured feedback on a roadmap, phase, or task document, with comments anchore
 
 `--quote` must match the document text exactly; it is located in the document **as of the review's `created_commit`**, so it stays valid after later edits. An ambiguous quote fails with a 1-based occurrence list — re-run with `--occurrence <n>`. On a roadmap review, `--doc phase/<stem-or-number>` scopes a comment to one of the roadmap's phases. `rdm search <query> --type review --project rdm` matches review summaries and comment bodies.
 
+A fifth target reviews **code** rather than a document: `--on change/<sha>` (or `--on change/HEAD` from inside a source checkout) pins the reviewed commit, and comments anchor into the source repo with `--path <repo-relative path> --quote "exact text"`, restricted to hunks the change touches. Canonical: [`docs/change-reviews.md`](docs/change-reviews.md).
+
 ### Linking
 
 Bodies can carry `rdm:` links — write them as ordinary Markdown links, e.g. `[the auth roadmap](rdm:roadmap/auth)`. Three item-link forms, using the same identifiers as `Done:` lines and `review --on`:

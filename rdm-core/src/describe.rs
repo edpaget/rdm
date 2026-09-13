@@ -554,6 +554,8 @@ mod tests {
             submitted: Some(chrono::Utc::now()),
             created_commit: Some("abc123".to_string()),
             comments: vec![],
+            implements: None,
+            change_branch: None,
         };
         assert_fields_match(&sample);
     }

@@ -890,6 +890,24 @@ pub enum ReviewTarget {
         /// Plan slug.
         slug: String,
     },
+    /// A set of commits in the project's **source** repository — the code
+    /// change itself, rather than any plan-repo document.
+    ///
+    /// `head` is always a full 40-character commit SHA: the CLI rev-parses
+    /// whatever the operator typed (`HEAD`, a branch name, an abbreviated
+    /// sha) before constructing this variant, so two reviews of the same
+    /// commit are always the same target. `base` is the other end of the
+    /// reviewed range — normally the merge-base with the project's default
+    /// branch — and is recorded as provenance only: it is **not** part of
+    /// the target's identity (see [`ReviewTarget::same_item`]) and does not
+    /// appear in the `change/<head>` reference grammar.
+    Change {
+        /// Full 40-character commit SHA of the reviewed tip.
+        head: String,
+        /// The base the change is diffed against, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<String>,
+    },
 }
 
 impl ReviewTarget {
@@ -906,6 +924,37 @@ impl ReviewTarget {
             ReviewTarget::Phase { roadmap, stem } => format!("phase/{roadmap}/{stem}"),
             ReviewTarget::Task { slug } => format!("task/{slug}"),
             ReviewTarget::Plan { slug } => format!("plan/{slug}"),
+            // Deliberately head-only: `base` is provenance, not identity.
+            ReviewTarget::Change { head, .. } => format!("change/{head}"),
+        }
+    }
+
+    /// Whether `self` and `other` name the same reviewable item.
+    ///
+    /// Structural equality for every kind except
+    /// [`ReviewTarget::Change`], where only `head` is compared: a target
+    /// parsed from the `change/<head>` reference grammar carries no `base`,
+    /// while the stored target normally does, so derived [`PartialEq`]
+    /// would make `rdm review list --on change/<sha>` match nothing.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rdm_core::model::ReviewTarget;
+    ///
+    /// let stored = ReviewTarget::Change {
+    ///     head: "a".repeat(40),
+    ///     base: Some("b".repeat(40)),
+    /// };
+    /// let typed: ReviewTarget = format!("change/{}", "a".repeat(40)).parse().unwrap();
+    /// assert!(stored.same_item(&typed));
+    /// assert_ne!(stored, typed);
+    /// ```
+    #[must_use]
+    pub fn same_item(&self, other: &ReviewTarget) -> bool {
+        match (self, other) {
+            (ReviewTarget::Change { head: a, .. }, ReviewTarget::Change { head: b, .. }) => a == b,
+            (a, b) => a == b,
         }
     }
 
@@ -918,6 +967,7 @@ impl ReviewTarget {
             ReviewTarget::Phase { .. } => ReviewTargetKind::Phase,
             ReviewTarget::Task { .. } => ReviewTargetKind::Task,
             ReviewTarget::Plan { .. } => ReviewTargetKind::Plan,
+            ReviewTarget::Change { .. } => ReviewTargetKind::Change,
         }
     }
 }
@@ -940,7 +990,7 @@ impl FromStr for ReviewTarget {
             ParseError::new(
                 "item reference",
                 s,
-                "roadmap/<slug>, phase/<roadmap-slug>/<stem-or-number>, task/<slug>, or plan/<slug>",
+                "roadmap/<slug>, phase/<roadmap-slug>/<stem-or-number>, task/<slug>, plan/<slug>, or change/<sha>",
             )
         };
         let (kind, rest) = s.split_once('/').ok_or_else(invalid)?;
@@ -953,6 +1003,14 @@ impl FromStr for ReviewTarget {
             }),
             "plan" if !rest.is_empty() && !rest.contains('/') => Ok(ReviewTarget::Plan {
                 slug: rest.to_string(),
+            }),
+            // Purely syntactic, like a numeric phase stem: `<rev>` is kept
+            // verbatim and the resulting target carries no `base`. The CLI
+            // rev-parses the revision against the source repo and fills the
+            // merge-base in before anything is stored.
+            "change" if !rest.is_empty() && !rest.contains('/') => Ok(ReviewTarget::Change {
+                head: rest.to_string(),
+                base: None,
             }),
             "phase" => {
                 let (roadmap, stem) = rest.split_once('/').ok_or_else(invalid)?;
@@ -988,6 +1046,8 @@ pub enum ReviewTargetKind {
     Task,
     /// An implementation plan.
     Plan,
+    /// A set of commits in the project's source repository.
+    Change,
 }
 
 impl fmt::Display for ReviewTargetKind {
@@ -997,6 +1057,7 @@ impl fmt::Display for ReviewTargetKind {
             ReviewTargetKind::Phase => write!(f, "phase"),
             ReviewTargetKind::Task => write!(f, "task"),
             ReviewTargetKind::Plan => write!(f, "plan"),
+            ReviewTargetKind::Change => write!(f, "change"),
         }
     }
 }
@@ -1010,10 +1071,11 @@ impl FromStr for ReviewTargetKind {
             "phase" => Ok(ReviewTargetKind::Phase),
             "task" => Ok(ReviewTargetKind::Task),
             "plan" => Ok(ReviewTargetKind::Plan),
+            "change" => Ok(ReviewTargetKind::Change),
             other => Err(ParseError::new(
                 "review target kind",
                 other,
-                "roadmap, phase, task, or plan",
+                "roadmap, phase, task, plan, or change",
             )),
         }
     }
@@ -1045,8 +1107,9 @@ pub struct CommentDoc {
 
 /// Location a review comment is anchored to within the target's body.
 ///
-/// Serialized as a tagged union keyed on `anchor_type`. Only `text-quote`
-/// is modeled today; any other `anchor_type` written by a newer rdm
+/// Serialized as a tagged union keyed on `anchor_type`: `text-quote` for a
+/// plan-repo document body, `file-quote` for a file in the project's source
+/// repository (a `change/<sha>` review). Any other `anchor_type` written by a newer rdm
 /// round-trips losslessly as [`Anchor::Unknown`], so an older binary never
 /// corrupts reviews it does not fully understand. Future variants
 /// (`line-range`, `heading-path`, `ast-node`) are non-breaking structural
@@ -1064,6 +1127,37 @@ pub enum Anchor {
         prefix: String,
         /// Up to ~32 characters immediately after the quote.
         suffix: String,
+    },
+    /// A quoted span of a **source-repository** file, for a review whose
+    /// target is a [`ReviewTarget::Change`].
+    ///
+    /// Serialized as `anchor_type: file-quote`.
+    ///
+    /// Deliberately carries **no** `prefix`/`suffix` context, unlike
+    /// [`Anchor::TextQuote`]: a review file lives in the plan repo, and the
+    /// invariant that it embeds no source-repository content beyond the
+    /// quote the reviewer chose is only literally true if nothing else from
+    /// the file is copied in. Duplicate occurrences are therefore
+    /// disambiguated with `occurrence` (1-based, exactly the vocabulary
+    /// [`crate::anchor::derive_text_quote`] already uses) plus the recorded
+    /// `start_line`/`end_line`, rather than with surrounding text.
+    ///
+    /// The line range is the range the quote occupied in `path` at the
+    /// review target's `head`, recorded so
+    /// [`crate::change::permalink_for`] can emit an
+    /// `rdm:src/<path>@<head>#L<start>-L<end>` permalink with no source
+    /// checkout present.
+    FileQuote {
+        /// Repo-relative path of the file within the source repository.
+        path: String,
+        /// The exact quoted text the comment refers to.
+        quote: String,
+        /// 1-based occurrence of `quote` within the file at `head`.
+        occurrence: u32,
+        /// 1-based first line the quote spans at `head`.
+        start_line: u32,
+        /// 1-based last line the quote spans at `head` (inclusive).
+        end_line: u32,
     },
     /// An anchor whose `anchor_type` this build does not recognize.
     ///
@@ -1105,6 +1199,32 @@ impl Serialize for Anchor {
                 }
                 .serialize(serializer)
             }
+            Anchor::FileQuote {
+                path,
+                quote,
+                occurrence,
+                start_line,
+                end_line,
+            } => {
+                #[derive(Serialize)]
+                struct FileQuoteFields<'a> {
+                    anchor_type: &'static str,
+                    path: &'a str,
+                    quote: &'a str,
+                    occurrence: u32,
+                    start_line: u32,
+                    end_line: u32,
+                }
+                FileQuoteFields {
+                    anchor_type: "file-quote",
+                    path,
+                    quote,
+                    occurrence: *occurrence,
+                    start_line: *start_line,
+                    end_line: *end_line,
+                }
+                .serialize(serializer)
+            }
             // Re-emit the original mapping verbatim (it already carries its
             // own `anchor_type` key).
             Anchor::Unknown { raw, .. } => raw.serialize(serializer),
@@ -1143,6 +1263,25 @@ impl<'de> Deserialize<'de> for Anchor {
                     quote: fields.quote,
                     prefix: fields.prefix,
                     suffix: fields.suffix,
+                })
+            }
+            "file-quote" => {
+                #[derive(Deserialize)]
+                struct FileQuoteFields {
+                    path: String,
+                    quote: String,
+                    occurrence: u32,
+                    start_line: u32,
+                    end_line: u32,
+                }
+                let fields: FileQuoteFields =
+                    serde_yaml::from_value(value).map_err(D::Error::custom)?;
+                Ok(Anchor::FileQuote {
+                    path: fields.path,
+                    quote: fields.quote,
+                    occurrence: fields.occurrence,
+                    start_line: fields.start_line,
+                    end_line: fields.end_line,
                 })
             }
             _ => Ok(Anchor::Unknown {
@@ -1208,6 +1347,29 @@ pub struct Review {
     /// the reviewer saw. Optional so files from older formats still load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_commit: Option<String>,
+    /// The implementation plan this review's change implements, as a
+    /// `rdm:plan/<slug>` reference.
+    ///
+    /// Only meaningful on a [`ReviewTarget::Change`] review — it is what
+    /// links the reviewed code back to the plan it was written against, and
+    /// what `rdm plan show` and `rdm backlinks` traverse. Absent on every
+    /// other kind (and on change reviews started before the link existed),
+    /// so every pre-existing review file still loads.
+    #[serde(
+        default,
+        with = "crate::model::plan_ref::option",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub implements: Option<ReviewTarget>,
+    /// Source-repository branch the reviewed change was on when the review
+    /// started, when the checkout had one (`None` on a detached HEAD, or on
+    /// any non-`change` review).
+    ///
+    /// Used only to pick the "tip" drift is measured against: a later
+    /// commit on this branch is what turns a resolved anchor into a drifted
+    /// one. A deleted or renamed branch degrades to the repo's current HEAD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_branch: Option<String>,
     /// The inline comments attached to this review.
     pub comments: Vec<ReviewComment>,
 }
@@ -1215,6 +1377,152 @@ pub struct Review {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn change_target_round_trips_through_yaml() {
+        let target = ReviewTarget::Change {
+            head: "a".repeat(40),
+            base: Some("b".repeat(40)),
+        };
+        let yaml = serde_yaml::to_string(&target).unwrap();
+        assert!(yaml.contains("kind: change"), "{yaml}");
+        assert!(
+            yaml.contains(&format!("head: {}", "a".repeat(40))),
+            "{yaml}"
+        );
+        let parsed: ReviewTarget = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed, target);
+
+        // A base-less target simply omits the key.
+        let bare = ReviewTarget::Change {
+            head: "c".repeat(40),
+            base: None,
+        };
+        let yaml = serde_yaml::to_string(&bare).unwrap();
+        assert!(!yaml.contains("base"), "{yaml}");
+        assert_eq!(serde_yaml::from_str::<ReviewTarget>(&yaml).unwrap(), bare);
+    }
+
+    #[test]
+    fn change_target_label_and_from_str_round_trip_on_the_head() {
+        let target: ReviewTarget = "change/abc123".parse().unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Change {
+                head: "abc123".to_string(),
+                base: None,
+            }
+        );
+        assert_eq!(target.label(), "change/abc123");
+        assert_eq!(target.kind(), ReviewTargetKind::Change);
+        assert_eq!(target.to_string().parse::<ReviewTarget>().unwrap(), target);
+    }
+
+    #[test]
+    fn change_target_label_omits_the_base() {
+        let target = ReviewTarget::Change {
+            head: "abc123".to_string(),
+            base: Some("def456".to_string()),
+        };
+        assert_eq!(target.label(), "change/abc123");
+    }
+
+    #[test]
+    fn change_from_str_rejects_an_empty_or_nested_rev() {
+        for bad in ["change/", "change/a/b"] {
+            assert!(
+                bad.parse::<ReviewTarget>().is_err(),
+                "expected {bad:?} to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn same_item_compares_change_targets_on_head_only() {
+        let stored = ReviewTarget::Change {
+            head: "abc".to_string(),
+            base: Some("def".to_string()),
+        };
+        let typed = ReviewTarget::Change {
+            head: "abc".to_string(),
+            base: None,
+        };
+        // Derived equality would say no — which is exactly the trap.
+        assert_ne!(stored, typed);
+        assert!(stored.same_item(&typed));
+        assert!(typed.same_item(&stored));
+
+        let other = ReviewTarget::Change {
+            head: "zzz".to_string(),
+            base: Some("def".to_string()),
+        };
+        assert!(!stored.same_item(&other));
+    }
+
+    #[test]
+    fn same_item_is_plain_equality_for_every_other_kind() {
+        let a = ReviewTarget::Task {
+            slug: "x".to_string(),
+        };
+        let b = ReviewTarget::Task {
+            slug: "x".to_string(),
+        };
+        let c = ReviewTarget::Task {
+            slug: "y".to_string(),
+        };
+        assert!(a.same_item(&b));
+        assert!(!a.same_item(&c));
+        assert!(!a.same_item(&ReviewTarget::Roadmap {
+            roadmap: "x".to_string()
+        }));
+    }
+
+    #[test]
+    fn review_target_kind_change_round_trips() {
+        assert_eq!(ReviewTargetKind::Change.to_string(), "change");
+        assert_eq!(
+            "change".parse::<ReviewTargetKind>().unwrap(),
+            ReviewTargetKind::Change
+        );
+    }
+
+    #[test]
+    fn file_quote_anchor_round_trips_through_yaml() {
+        let anchor = Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "fn main() {}".to_string(),
+            occurrence: 2,
+            start_line: 7,
+            end_line: 9,
+        };
+        let yaml = serde_yaml::to_string(&anchor).unwrap();
+        assert!(yaml.contains("anchor_type: file-quote"), "{yaml}");
+        // AC6: no surrounding context is ever persisted.
+        assert!(!yaml.contains("prefix"), "{yaml}");
+        assert!(!yaml.contains("suffix"), "{yaml}");
+        assert_eq!(serde_yaml::from_str::<Anchor>(&yaml).unwrap(), anchor);
+    }
+
+    #[test]
+    fn a_review_without_implements_or_change_branch_still_loads() {
+        // Exactly the shape every pre-existing review file has.
+        let yaml = "id: r1
+author: a
+target:
+  kind: task
+  slug: t
+state: draft
+created: 2026-07-01T00:00:00Z
+comments: []
+";
+        let review: Review = serde_yaml::from_str(yaml).unwrap();
+        assert!(review.implements.is_none());
+        assert!(review.change_branch.is_none());
+        // …and round-trips back without gaining the keys.
+        let out = serde_yaml::to_string(&review).unwrap();
+        assert!(!out.contains("implements"), "{out}");
+        assert!(!out.contains("change_branch"), "{out}");
+    }
 
     #[test]
     fn phase_status_display_from_str_round_trip() {

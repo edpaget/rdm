@@ -19,49 +19,9 @@ use rdm_core::ops::links::LinkCheckReport;
 use rdm_core::{display, json};
 
 use crate::paths;
+#[cfg(feature = "git")]
+use crate::source_repo::repo_matches_source;
 use crate::{AppStore, LinkCommand, OutputFormat};
-
-/// Trims a trailing `/` and a trailing `.git` (in that order) so a source
-/// URL/path can be compared for equality regardless of those two common
-/// stylistic variations — e.g. `https://example.com/org/repo` and
-/// `https://example.com/org/repo.git/` normalize to the same value. Not a
-/// full URL parse: it deliberately does not reconcile scheme differences
-/// (`git@host:org/repo.git` vs `https://host/org/repo`), so those still
-/// compare unequal.
-///
-/// Feature-gated with its only caller, [`repo_matches_source`]: without the
-/// `git` feature there is no checkout to compare against, so this would
-/// otherwise be dead code under `-D warnings`.
-#[cfg(feature = "git")]
-fn normalize_repo_locator(locator: &str) -> String {
-    locator
-        .trim_end_matches('/')
-        .trim_end_matches(".git")
-        .to_string()
-}
-
-/// Whether the git repository at `repo` is actually the project's
-/// configured `source.repo`, not merely *some* git repository that happens
-/// to contain the invoking `cwd`.
-///
-/// `source.repo` may name a filesystem path or a clone URL (see
-/// [`rdm_core::model::Source`]'s doc comment): a filesystem path is compared
-/// via canonicalized-path equality; otherwise `repo`'s configured `origin`
-/// remote (if any) is compared against `source.repo`, both normalized via
-/// [`normalize_repo_locator`].
-#[cfg(feature = "git")]
-fn repo_matches_source(repo: &std::path::Path, source_repo: &str) -> bool {
-    let source_path = std::path::Path::new(source_repo);
-    if source_path.is_dir()
-        && let (Ok(a), Ok(b)) = (repo.canonicalize(), source_path.canonicalize())
-    {
-        return a == b;
-    }
-    match rdm_git::remote_url(repo, "origin") {
-        Ok(Some(origin)) => normalize_repo_locator(&origin) == normalize_repo_locator(source_repo),
-        _ => false,
-    }
-}
 
 /// Runs `rdm link` subcommands.
 ///
@@ -139,7 +99,8 @@ fn check(
 /// Distinct outcomes, never conflated:
 /// - Git not installed, `cwd` not inside any checkout, the project has no
 ///   `source` configured, or the discovered checkout doesn't match the
-///   project's configured `source.repo` (see [`repo_matches_source`]) — all
+///   project's configured `source.repo` (see
+///   [`crate::source_repo::repo_matches_source`]) — all
 ///   fall through to a "skipped" note explaining which of those applies,
 ///   rather than silently verifying against an unrelated repository.
 /// - Inside the *matching* checkout, each code link's path is checked at its
@@ -312,96 +273,4 @@ fn item_path_for(store: &AppStore, project: &str, link: &Link) -> Result<Option<
     let path = rdm_core::ops::links::item_ref_path(store, project, target)
         .context("failed to resolve item link path")?;
     Ok(Some(path.as_str().to_string()))
-}
-
-#[cfg(all(test, feature = "git"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_repo_locator_trims_trailing_slash_then_dot_git() {
-        assert_eq!(
-            normalize_repo_locator("https://example.com/org/repo.git/"),
-            "https://example.com/org/repo"
-        );
-        assert_eq!(
-            normalize_repo_locator("https://example.com/org/repo.git"),
-            "https://example.com/org/repo"
-        );
-        assert_eq!(
-            normalize_repo_locator("https://example.com/org/repo/"),
-            "https://example.com/org/repo"
-        );
-        assert_eq!(
-            normalize_repo_locator("https://example.com/org/repo"),
-            "https://example.com/org/repo"
-        );
-    }
-
-    #[test]
-    fn normalize_repo_locator_does_not_reconcile_scheme_differences() {
-        // Deliberately not a full URL parse: an SSH-style locator and an
-        // HTTPS locator for the same underlying repo still compare unequal.
-        assert_ne!(
-            normalize_repo_locator("git@example.com:org/repo.git"),
-            normalize_repo_locator("https://example.com/org/repo")
-        );
-    }
-
-    #[test]
-    fn repo_matches_source_compares_url_form_via_origin_remote() {
-        let repo = TempDirGuard::new_git_repo();
-        rdm_git::run_git_at(
-            repo.path(),
-            &[
-                "remote",
-                "add",
-                "origin",
-                "https://example.com/org/repo.git",
-            ],
-        )
-        .unwrap();
-
-        assert!(repo_matches_source(
-            repo.path(),
-            "https://example.com/org/repo"
-        ));
-        assert!(repo_matches_source(
-            repo.path(),
-            "https://example.com/org/repo.git/"
-        ));
-        assert!(!repo_matches_source(
-            repo.path(),
-            "https://example.com/org/other-repo"
-        ));
-    }
-
-    #[test]
-    fn repo_matches_source_false_when_origin_remote_unset() {
-        let repo = TempDirGuard::new_git_repo();
-        assert!(!repo_matches_source(
-            repo.path(),
-            "https://example.com/org/repo"
-        ));
-    }
-
-    /// Minimal throwaway git checkout for these unit tests — the CLI
-    /// integration tests in `cli_link.rs` cover the full `link check`
-    /// path-verification behavior end to end; these cover just the two
-    /// small pure/near-pure comparison helpers directly.
-    struct TempDirGuard(tempfile::TempDir);
-
-    impl TempDirGuard {
-        fn new_git_repo() -> Self {
-            let dir = tempfile::TempDir::new().unwrap();
-            rdm_git::run_git_at(dir.path(), &["init", "-q", "-b", "main"]).unwrap();
-            rdm_git::run_git_at(dir.path(), &["config", "user.email", "test@test.com"]).unwrap();
-            rdm_git::run_git_at(dir.path(), &["config", "user.name", "test"]).unwrap();
-            Self(dir)
-        }
-
-        fn path(&self) -> &std::path::Path {
-            self.0.path()
-        }
-    }
 }

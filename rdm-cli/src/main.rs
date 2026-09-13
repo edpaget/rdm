@@ -10,6 +10,7 @@ mod commands;
 #[cfg(feature = "git")]
 mod hook_log;
 mod paths;
+mod source_repo;
 mod table;
 
 pub(crate) use cli::*;

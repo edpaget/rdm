@@ -54,6 +54,14 @@ pub enum LinkParseError {
         /// The unrecognized first path segment.
         kind: String,
     },
+    /// The URI's first path segment named a review-target kind that is not
+    /// a linkable document (`change`).
+    NotLinkable {
+        /// The full URI that failed to parse.
+        uri: String,
+        /// The non-linkable first path segment.
+        kind: String,
+    },
     /// An `rdm:src/` URI had no path after the `src/` prefix.
     EmptyPath(String),
     /// An `rdm:roadmap/`, `rdm:phase/`, `rdm:task/`, or `rdm:plan/` URI's
@@ -95,6 +103,12 @@ impl std::fmt::Display for LinkParseError {
                     "unknown link kind '{kind}' in '{uri}' — expected roadmap, phase, task, plan, or src"
                 )
             }
+            LinkParseError::NotLinkable { uri, kind } => {
+                write!(
+                    f,
+                    "'{uri}' names a {kind}/<sha> review target, not a linkable document — link code with rdm:src/<path>@<sha>"
+                )
+            }
             LinkParseError::EmptyPath(uri) => {
                 write!(f, "'{uri}' has an empty src path")
             }
@@ -131,7 +145,9 @@ impl std::error::Error for LinkParseError {}
 /// # Errors
 ///
 /// Returns [`LinkParseError::MissingScheme`] if `uri` does not start with
-/// `rdm:`, [`LinkParseError::UnknownKind`] if the first path segment is not
+/// `rdm:`, [`LinkParseError::NotLinkable`] if the first path segment is
+/// `change` (a review target, not a document),
+/// [`LinkParseError::UnknownKind`] if the first path segment is not
 /// `roadmap`, `phase`, `task`, `plan`, or `src`, [`LinkParseError::InvalidItemRef`]
 /// if an item form's remainder does not match [`ItemRef`]'s grammar,
 /// [`LinkParseError::EmptyPath`] if a `src` form has no path,
@@ -155,6 +171,15 @@ pub fn parse(uri: &str) -> Result<Link, LinkParseError> {
             Ok(Link::Item(item_ref))
         }
         "src" => parse_code(uri, remainder),
+        // The one deliberate divergence between `ItemRef`'s *link* grammar
+        // and `ReviewTarget`'s *reference* grammar: `change/<sha>` is a
+        // valid review target but never a linkable document, because there
+        // is no plan-repo document at the other end. Code is linked with
+        // `rdm:src/<path>@<sha>` instead.
+        "change" => Err(LinkParseError::NotLinkable {
+            uri: uri.to_string(),
+            kind: "change".to_string(),
+        }),
         other => Err(LinkParseError::UnknownKind {
             uri: uri.to_string(),
             kind: other.to_string(),
@@ -346,14 +371,68 @@ pub enum DocRef {
 /// Ordered (via [`DocRef`]'s derived [`Ord`]) by document kind (roadmap <
 /// phase < task < plan < review), then by the document's own identity (slug/id,
 /// and comment index within a review), then — as a tiebreaker within the
-/// very same document — by [`Self::byte_range`]'s start, so output is
-/// deterministic across runs.
+/// very same document — body links by their byte offset, and frontmatter
+/// references after them by field name, so output is deterministic across
+/// runs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct BacklinkEntry {
     /// The document the reference was found in.
     pub document: DocRef,
-    /// The byte range of the link within that document's body.
-    pub byte_range: Range<usize>,
+    /// Where in that document the reference lives, and how it got there.
+    pub reference: BacklinkRef,
+}
+
+/// The provenance of one backlink: an `rdm:` link written in a document's
+/// markdown body, or a structural reference carried in its frontmatter.
+///
+/// Frontmatter references (a plan's `implements`, a change review's
+/// `implements`) are just as real as body links but have no byte range —
+/// modeling them as a variant rather than a synthetic `0..0` range keeps
+/// consumers from rendering a meaningless offset.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "via_kind", rename_all = "kebab-case")]
+pub enum BacklinkRef {
+    /// An `rdm:` link found in the document's markdown body.
+    Body {
+        /// The byte range of the link within that body.
+        byte_range: Range<usize>,
+    },
+    /// A reference carried in the document's frontmatter.
+    Field {
+        /// The frontmatter field name (e.g. `"implements"`).
+        field: &'static str,
+        /// The intermediate document this reference was reached *through*,
+        /// for a transitive backlink. `None` for a direct one.
+        via: Option<ItemRef>,
+    },
+}
+
+impl BacklinkEntry {
+    /// The byte range of a body link, or `None` for a frontmatter
+    /// reference.
+    #[must_use]
+    pub fn byte_range(&self) -> Option<Range<usize>> {
+        match &self.reference {
+            BacklinkRef::Body { byte_range } => Some(byte_range.clone()),
+            BacklinkRef::Field { .. } => None,
+        }
+    }
+
+    /// A stable sort key within one document: body links order by their
+    /// offset and always precede frontmatter references, which order by
+    /// field name then by the `via` document's label.
+    #[must_use]
+    pub fn sort_key(&self) -> (usize, usize, String, String) {
+        match &self.reference {
+            BacklinkRef::Body { byte_range } => (0, byte_range.start, String::new(), String::new()),
+            BacklinkRef::Field { field, via } => (
+                1,
+                0,
+                (*field).to_string(),
+                via.as_ref().map(ItemRef::label).unwrap_or_default(),
+            ),
+        }
+    }
 }
 
 /// The pulldown-cmark options this module parses markdown bodies with.
@@ -410,11 +489,13 @@ pub fn extract_links(body: &str) -> (Vec<(Range<usize>, Link)>, Vec<LinkDiagnost
 /// `task` is the `Done:`-line/`rdm hook done-line` prefix
 /// ([`crate::hook::format_done_directive`]); `plan` is the implementation-plan
 /// reference kind (`rdm:plan/<slug>`, `rdm review --on plan/<slug>`); `src` is
-/// the `rdm:src/` link prefix. All three are enforced here as the natural
+/// the `rdm:src/` link prefix; `change` is the code-change review-target kind
+/// (`rdm review --on change/<sha>`), which is deliberately *not* a link kind
+/// (see [`parse`]). All four are enforced here as the natural
 /// single home for a future consolidation of
 /// `hook::format_done_directive`'s separate ad hoc `task` check onto this
 /// list — not attempted in this phase.
-pub(crate) const RESERVED_ROADMAP_SLUGS: &[&str] = &["task", "plan", "src"];
+pub(crate) const RESERVED_ROADMAP_SLUGS: &[&str] = &["task", "plan", "src", "change"];
 
 /// Whether `slug` is reserved and therefore invalid as a roadmap slug.
 #[must_use]

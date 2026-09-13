@@ -39,6 +39,11 @@ pub fn target_detail_href(project: &str, target: &ReviewTarget) -> String {
         // at the project page so a review list containing a plan-targeted
         // review still renders an inert, well-formed link instead of a 500.
         ReviewTarget::Plan { .. } => format!("/projects/{project}"),
+        // A change names commits in the project's *source* repository, so
+        // there is no in-app document to link to at all (not merely no
+        // route yet, as with a plan). Point at the project page so a review
+        // list containing one still renders.
+        ReviewTarget::Change { .. } => format!("/projects/{project}"),
     }
 }
 
@@ -476,7 +481,9 @@ fn cross_link(
 fn stored_quote(anchor: &Anchor) -> Option<String> {
     match anchor {
         Anchor::TextQuote { quote, .. } => Some(quote.clone()),
-        Anchor::Unknown { .. } => None,
+        // A file-quote's text lives in the source repository, not in any
+        // page this server renders, so there is nothing to highlight inline.
+        Anchor::FileQuote { .. } | Anchor::Unknown { .. } => None,
     }
 }
 

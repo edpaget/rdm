@@ -116,15 +116,28 @@ pub fn run(
                 doc.body = String::new();
             }
             let reviews = reviews_on_plan(store, &project, &slug)?;
+            // Reviews *on* the plan document and `change/` reviews of the
+            // code written against it are kept as two distinct lists — see
+            // `PlanJson::change_reviews`.
+            let change_reviews =
+                rdm_core::ops::plan::change_reviews_for_plan(store, &project, &slug)
+                    .context("failed to list change reviews implementing the plan")?;
             match format {
-                OutputFormat::Human => {
-                    print!("{}", display::format_plan_detail(&slug, &doc, &reviews))
-                }
-                OutputFormat::Markdown => {
-                    print!("{}", display::format_plan_detail_md(&slug, &doc, &reviews))
-                }
+                OutputFormat::Human => print!(
+                    "{}",
+                    display::format_plan_detail(&slug, &doc, &reviews, &change_reviews)
+                ),
+                OutputFormat::Markdown => print!(
+                    "{}",
+                    display::format_plan_detail_md(&slug, &doc, &reviews, &change_reviews)
+                ),
                 OutputFormat::Json => {
-                    let j = json::plan_to_json(&slug, &doc, &reviews);
+                    let j = json::plan_to_json(&slug, &doc, &reviews).with_change_reviews(
+                        change_reviews
+                            .iter()
+                            .filter_map(|(id, rd)| json::plan_change_review_to_json(id, rd))
+                            .collect(),
+                    );
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&j).context("failed to serialize plan")?

@@ -291,6 +291,67 @@ pub fn plans_implementing(
     )
 }
 
+/// Lists the **approved** plans implementing `target`, slug-sorted.
+///
+/// [`plans_implementing`] narrowed to [`PlanStatus::Approved`] — the set
+/// `rdm review start --on change/… ` infers `--implements` from. Inference
+/// is deliberately restricted to approved plans (exactly one candidate is
+/// unambiguous); an *explicit* `--implements` is accepted whatever the
+/// named plan's status, because the operator asked for it.
+///
+/// # Errors
+///
+/// Same as [`plans_implementing`].
+pub fn approved_plans_for(
+    store: &impl Store,
+    project: &str,
+    target: &ItemRef,
+) -> Result<Vec<(String, Document<Plan>)>> {
+    Ok(plans_implementing(store, project, target)?
+        .into_iter()
+        .filter(|(_, doc)| doc.frontmatter.status == PlanStatus::Approved)
+        .collect())
+}
+
+/// Lists the `change/<sha>` reviews whose `implements` names `plan/<slug>`,
+/// in review-id order.
+///
+/// This is the plan-side view of the link a change review records: `rdm
+/// plan show` surfaces it as `change_reviews`, kept distinct from the
+/// reviews *on* the plan document itself. Kept public and documented
+/// because a later verification gate needs to query it without re-deriving
+/// the rule.
+///
+/// # Errors
+///
+/// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
+/// [`Error::Io`] if the reviews directory cannot be read, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a review
+/// file has invalid frontmatter.
+pub fn change_reviews_for_plan(
+    store: &impl Store,
+    project: &str,
+    slug: &str,
+) -> Result<Vec<(String, Document<crate::model::Review>)>> {
+    let wanted = ItemRef::Plan {
+        slug: slug.to_string(),
+    };
+    let mut out: Vec<(String, Document<crate::model::Review>)> =
+        crate::ops::reviews::list_reviews(store, project)?
+            .into_iter()
+            .filter(|(_, doc)| {
+                matches!(doc.frontmatter.target, ItemRef::Change { .. })
+                    && doc
+                        .frontmatter
+                        .implements
+                        .as_ref()
+                        .is_some_and(|r| r == &wanted)
+            })
+            .collect();
+    out.sort_by(|(a, _), (b, _)| a.cmp(b));
+    Ok(out)
+}
+
 /// Updates a plan's title and/or body, bumping its `updated` date.
 ///
 /// There is deliberately no status parameter: a plan's status is derived

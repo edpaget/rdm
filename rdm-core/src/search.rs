@@ -1284,6 +1284,8 @@ mod tests {
                     slug: "fix-login-bug".to_string(),
                 },
                 body: Some("Summary mentions zanzibar explicitly."),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();
@@ -1300,6 +1302,65 @@ mod tests {
         )
         .unwrap();
         id
+    }
+
+    /// A `change/<sha>` review with a distinctive comment body, written
+    /// directly (its target needs a source repo the ops layer never sees).
+    fn add_change_review(store: &mut MemoryStore) -> String {
+        let id = "2026-07-01-1200-cccc".to_string();
+        let doc = crate::document::Document {
+            frontmatter: crate::model::Review {
+                id: id.clone(),
+                author: "ed".to_string(),
+                target: crate::model::ReviewTarget::Change {
+                    head: "a".repeat(40),
+                    base: Some("b".repeat(40)),
+                },
+                state: crate::model::ReviewState::Draft,
+                verdict: None,
+                created: chrono::Utc::now(),
+                submitted: None,
+                created_commit: None,
+                implements: None,
+                change_branch: None,
+                comments: vec![crate::model::ReviewComment {
+                    id: 1,
+                    doc: None,
+                    status: crate::model::ReviewCommentStatus::Open,
+                    applied_commit: None,
+                    anchor: None,
+                    body: "Comment mentions wombat explicitly.".to_string(),
+                    reply: None,
+                }],
+            },
+            body: "Summary mentions aardvark explicitly.".to_string(),
+        };
+        crate::io::write_review(store, "acme", &id, &doc).unwrap();
+        id
+    }
+
+    #[test]
+    fn a_change_reviews_summary_and_comments_are_searchable() {
+        let mut store = setup_test_store();
+        let id = add_change_review(&mut store);
+        let filter = SearchFilter {
+            kind: Some(ItemKind::Review),
+            ..Default::default()
+        };
+        for query in ["aardvark", "wombat"] {
+            let results = search(&store, query, &filter).unwrap();
+            assert!(
+                results.iter().any(|r| r.identifier == id),
+                "expected the change review in results for {query:?}: {results:?}"
+            );
+        }
+        // The title names the change target like any other kind.
+        let results = search(&store, "aardvark", &filter).unwrap();
+        assert!(
+            results[0].title.starts_with("review of change/"),
+            "unexpected title: {}",
+            results[0].title
+        );
     }
 
     #[test]

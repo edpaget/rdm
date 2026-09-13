@@ -462,6 +462,8 @@ mod tests {
             submitted: None,
             created_commit: Some(created_sha.clone()),
             comments: Vec::new(),
+            implements: None,
+            change_branch: None,
         };
 
         // WEB path: the browser selected "Added since review" in the

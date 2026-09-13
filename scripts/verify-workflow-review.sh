@@ -12012,8 +12012,27 @@ const WF_OFF_BASELINE =
   const out = await run({ mode: 'code', roadmap: 'rm', phase: '1', persist: true, project: 'demo' }, h.agent, refPipeline, refParallel, () => {});
   assert.equal(out.reviewId, 'REVIEW-123', 'the ack reviewId is threaded onto the OUTCOME when the persist ran');
   const persistPrompt = h.calls.find((c) => c.label === 'persist:review').prompt;
-  assert.ok(persistPrompt.includes(' review start --on phase/rm/1 '), 'the phase persist target must be the PREFIXED phase/<roadmap>/<phase> ref');
+  // The persisted artifact targets the CODE, pinned to the worktree tip.
+  assert.ok(persistPrompt.includes(' review start --on change/HEAD '), 'the code persist target must be change/HEAD');
+  // …which only resolves from inside the item's own checkout, so the emitted
+  // commands cd there first.
+  assert.ok(/worktree add rm\/1 --project demo > "\$RDM_PERSIST_WT"/.test(persistPrompt), 'the persist must add/enter the item worktree first');
+  assert.ok(persistPrompt.includes('cd "$(head -n 1 "$RDM_PERSIST_WT")"'), 'the persist must cd into the worktree before running review start');
+  // The item ref survives as the NAMED fallback rung, not as the target.
+  assert.ok(persistPrompt.includes('`--on phase/rm/1`'), 'the item ref must remain the named review start fallback');
   assert.ok(!/review start --on rm\/1\b/.test(persistPrompt), 'the BARE <roadmap>/<phase> worktree ref must never reach `rdm review --on`');
+  // A located finding anchors with --path; an unlocated one does not.
+  const hp = makeWfHarness([
+    { id: 'c1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'boom', quote: 'let x = 1;', location: 'rdm-core/src/lib.rs:42' },
+    { id: 'c2', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'bang', quote: 'let y = 2;', location: 'throughout the gate step' },
+  ]);
+  await run({ mode: 'code', roadmap: 'rm', phase: '1', persist: true, project: 'demo' }, hp.agent, refPipeline, refParallel, () => {});
+  const pathPrompt = hp.calls.find((c) => c.label === 'persist:review').prompt;
+  assert.ok(pathPrompt.includes('--path "$RDM_PERSIST_PATH"'), 'a finding whose location names a real path must anchor with --path');
+  assert.ok(pathPrompt.includes('rdm-core/src/lib.rs'), 'the derived path must be captured verbatim');
+  assert.ok(!pathPrompt.includes('throughout the gate step'), 'a prose location must not become a --path argument');
+  const pathFlagCount = (pathPrompt.match(/--path "\$RDM_PERSIST_PATH"/g) || []).length;
+  assert.equal(pathFlagCount, 1, 'exactly one of the two findings yields a --path anchor, got ' + pathFlagCount);
   // The context target threaded into the find/refute prompts is UNCHANGED —
   // it is a human-readable label, not a review ref, and is byte-pinned elsewhere.
   const findPrompt = h.calls.find((c) => c.label.indexOf('find:') === 0).prompt;
@@ -12022,7 +12041,10 @@ const WF_OFF_BASELINE =
   const ht = makeWfHarness([finding]);
   const outT = await run({ mode: 'code', task: 'my-task', persist: true, project: 'demo' }, ht.agent, refPipeline, refParallel, () => {});
   assert.equal(outT.reviewId, 'REVIEW-123');
-  assert.ok(ht.calls.find((c) => c.label === 'persist:review').prompt.includes(' --on task/my-task '), 'the task persist target is task/<slug>');
+  const taskPrompt = ht.calls.find((c) => c.label === 'persist:review').prompt;
+  assert.ok(taskPrompt.includes(' review start --on change/HEAD '), 'the task path also persists onto change/HEAD');
+  assert.ok(taskPrompt.includes('worktree add task/my-task'), 'the task worktree ref is what the persist cds into');
+  assert.ok(taskPrompt.includes('`--on task/my-task`'), 'task/<slug> remains the named fallback');
 
   const ho = makeWfHarness([finding]);
   await run({ mode: 'code', roadmap: 'rm', phase: '1', persist: { on: 'plan/x' }, project: 'demo' }, ho.agent, refPipeline, refParallel, () => {});
@@ -12072,8 +12094,16 @@ for f in "$WF_DIR/rdm-wf-review-refute-fix.js" "$REPO_ROOT/rdm-core/src/template
     if grep -A3 -F "buildPersistReviewPrompts(" "$f" | grep -qE "^\s*(reviewTarget|worktreeRef),?\s*$"; then
         fail "15c: $f passes reviewTarget/worktreeRef to buildPersistReviewPrompts — those are the BARE worktree ref, rejected by rdm review --on"
     fi
-    grep -q "persistReviewTarget = isTask ? 'task/' + taskSlug : 'phase/' + roadmap + '/' + phaseArg" "$f" ||
-        fail "15c: $f is missing the dedicated persistReviewTarget derivation"
+    grep -q "persistItemRef = isTask ? 'task/' + taskSlug : 'phase/' + roadmap + '/' + phaseArg" "$f" ||
+        fail "15c: $f is missing the dedicated persistItemRef derivation (the named review-start fallback)"
+    grep -q "const persistReviewTarget = 'change/HEAD'" "$f" ||
+        fail "15c: $f no longer defaults the persist target to change/HEAD"
+    # The change target and the --path anchors are DRIVER decisions, so they must
+    # sit below the stamped block's end marker, not inside it.
+    driver_start=$(grep -n 'review-refute-fix:end' "$f" | head -n 1 | cut -d: -f1)
+    [ -n "$driver_start" ] || fail "15c: $f has no review-refute-fix:end marker"
+    tail -n "+$driver_start" "$f" | grep -q "pathAnchors: true" ||
+        fail "15c: $f does not opt into --path anchors from its DRIVER region"
     grep -q "const persistTarget = persistExplicitOn || persistReviewTarget" "$f" ||
         fail "15c: $f does not build the persist --on ref from persistExplicitOn || persistReviewTarget"
 done

@@ -1976,7 +1976,32 @@ function persistCapture(varName, base, value) {
   return varName + "=$(cat <<'" + tag + "'\n" + String(value) + '\n' + tag + '\n)';
 }
 
-// persistReviewCommands(result, target, cfg) — the ORDERED shell commands that
+// pathFromLocation(location) — the repo-relative source path a code-mode
+// finding's `location` names, or null.
+//
+// A code finding's `location` is conventionally `<path>:<line>` or
+// `<path>:<start>-<end>`. Strip the line suffix and accept the remainder ONLY
+// when it really looks repo-relative: it must contain a `/` or a file
+// extension, must not start with `/`, and must contain no `..` segment. A
+// free-form prose location ("the gate step", "throughout") yields null, and the
+// caller then emits a whole-change comment rather than a `--path` one.
+//
+// Pure and total: never throws, and returns null for any non-string input.
+function pathFromLocation(location) {
+  if (typeof location !== 'string') return null;
+  let s = location.trim();
+  if (s === '') return null;
+  // Drop a trailing `:<line>` or `:<start>-<end>` suffix (digits only, so a
+  // Windows-style `C:` or a prose colon is not silently eaten).
+  s = s.replace(/:\d+(?:-\d+)?$/, '');
+  if (s === '' || s.indexOf(' ') !== -1) return null;
+  if (s.charAt(0) === '/' || s.indexOf('\\') !== -1) return null;
+  if (s.split('/').indexOf('..') !== -1) return null;
+  const looksLikePath = s.indexOf('/') !== -1 || /\.[A-Za-z0-9]+$/.test(s);
+  return looksLikePath ? s : null;
+}
+
+// persistReviewCommands(result, target, cfg, opts) — the ORDERED shell commands that
 // record this review. Returned as DATA (not only embedded in a prompt) so the
 // verify harness can execute EXACTLY what the prompt tells the agent to run.
 //
@@ -1986,11 +2011,11 @@ function persistCapture(varName, base, value) {
 // project-flag allow-list. Shell plumbing (heredoc bodies, their terminators,
 // variable assignments) stays flush-left: a heredoc terminator must start its
 // line, and a flush-left line is correctly not read as a command invocation.
-function persistReviewCommands(result, target, cfg) {
+function persistReviewCommands(result, target, cfg, opts) {
   if (typeof target !== 'string' || target.trim() === '' || target.indexOf('/') === -1) {
     throw new Error(
       'review: persist target must be an already-well-formed rdm review ref — "roadmap/<slug>", ' +
-        '"phase/<roadmap-slug>/<stem-or-number>", "task/<slug>" or "plan/<slug>" (got ' +
+        '"phase/<roadmap-slug>/<stem-or-number>", "task/<slug>", "plan/<slug>" or "change/<sha-or-rev>" (got ' +
         JSON.stringify(target) +
         '). The consumer builds the ref; the writer never prefixes one.'
     );
@@ -2001,8 +2026,36 @@ function persistReviewCommands(result, target, cfg) {
   const verdict = persistVerdictFor((result || {}).outcome);
   const survivors = persistReviewSurvivors(result);
   const summary = persistReviewSummary(result);
+  const o = opts || {};
+  // Default-off: with no `opts` the emitted bytes are byte-identical to what
+  // every pre-existing caller already gets (pinned by
+  // scripts/verify-workflow-review.sh § 15).
+  const worktreeRef = typeof o.worktreeRef === 'string' && o.worktreeRef.trim() !== '' ? o.worktreeRef.trim() : '';
+  const pathAnchors = o.pathAnchors === true;
   const IND = '  ';
   const cmds = [];
+  if (worktreeRef !== '') {
+    // A `change/HEAD` target only means anything from inside the item's own
+    // checkout, so cd there FIRST. `worktree add` is idempotent and prints the
+    // path whether it created the worktree or found an existing one.
+    //
+    // The invocation is its OWN indented line with the binary as its first
+    // token (the line shape documented above, which the parameterization
+    // harness scans); the capture and the `cd` are flush-left shell plumbing
+    // around it, not command invocations.
+    cmds.push(
+      'RDM_PERSIST_WT=${TMPDIR:-/tmp}/rdm-persist-worktree.$$.txt' +
+        '\n' +
+        IND +
+        bin +
+        ' worktree add ' +
+        worktreeRef +
+        proj +
+        ' > "$RDM_PERSIST_WT"' +
+        '\n' +
+        'cd "$(head -n 1 "$RDM_PERSIST_WT")"'
+    );
+  }
   cmds.push('RDM_PERSIST_START_JSON=${TMPDIR:-/tmp}/rdm-persist-start.$$.json');
   cmds.push(
     persistCapture('RDM_PERSIST_SUMMARY', 'RDM_PERSIST_SUMMARY_EOF', summary) +
@@ -2021,10 +2074,21 @@ function persistReviewCommands(result, target, cfg) {
     const f = survivors[i] || {};
     const hasQuote = typeof f.quote === 'string' && f.quote.trim() !== '';
     let cmd = persistCapture('RDM_PERSIST_BODY', 'RDM_PERSIST_BODY_EOF', formatCommentBody(f)) + '\n';
+    const anchorPath = pathAnchors && hasQuote ? pathFromLocation(f.location) : null;
     if (hasQuote) {
       cmd += persistCapture('RDM_PERSIST_QUOTE', 'RDM_PERSIST_QUOTE_EOF', f.quote) + '\n';
+      let pathFlag = '';
+      if (anchorPath !== null) {
+        cmd += persistCapture('RDM_PERSIST_PATH', 'RDM_PERSIST_PATH_EOF', anchorPath) + '\n';
+        pathFlag = ' --path "$RDM_PERSIST_PATH"';
+      }
       cmd +=
-        IND + bin + ' review comment "$RDM_REVIEW_ID" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' + proj;
+        IND +
+        bin +
+        ' review comment "$RDM_REVIEW_ID"' +
+        pathFlag +
+        ' --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' +
+        proj;
     } else {
       cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY" --no-edit' + proj;
     }
@@ -2041,8 +2105,23 @@ function persistReviewCommands(result, target, cfg) {
 // buildPersistReviewPrompts(result, target, deps) — the prompt an agent runs,
 // the ack schema it must satisfy, and the commands themselves. The agent type is
 // NOT decided here (see the header rule above): the caller supplies it.
-function buildPersistReviewPrompts(result, target, deps) {
-  const commands = persistReviewCommands(result, target, deps);
+function buildPersistReviewPrompts(result, target, deps, opts) {
+  const commands = persistReviewCommands(result, target, deps, opts);
+  const o = opts || {};
+  const fallbackTarget =
+    typeof o.fallbackTarget === 'string' && o.fallbackTarget.trim() !== '' ? o.fallbackTarget.trim() : '';
+  const startFallbackRung =
+    fallbackTarget === ''
+      ? []
+      : [
+          '  - If `' +
+            String(target) +
+            '` itself is rejected by `review start` (no source checkout, no merge base, no approved plan to infer), re-run that SAME command ONCE with `--on ' +
+            String(target) +
+            '` replaced by `--on ' +
+            fallbackTarget +
+            '`, then continue with the remaining commands unchanged.',
+        ];
   const prompt = [
     'You are a mechanical review-persistence agent. Do not plan, implement, or review anything, and edit no source files.',
     'Run these commands IN ORDER in ONE shell session — later commands read shell variables the earlier ones set:',
@@ -2050,9 +2129,14 @@ function buildPersistReviewPrompts(result, target, deps) {
     'ANCHORING FALLBACK — never skip a comment and never abort the persist:',
     '  - If an `review comment` call fails because the quote is AMBIGUOUS (it occurs more than once), re-run that SAME command with ` --occurrence 1` appended.',
     '  - If it fails a SECOND time for ANY reason (quote not found, occurrence out of range, still ambiguous), re-run it once more with the `--quote` and `--occurrence` flags REMOVED ENTIRELY, leaving a whole-document comment, and count it in `wholeDocument`.',
+    '  - If a `--path` comment is refused because the quote lies OUTSIDE a touched hunk (or the path is not in the reviewed revision), re-run that SAME command with the `--path`, `--quote` and `--occurrence` flags REMOVED ENTIRELY, leaving a whole-document comment, and count it in `wholeDocument`.',
+  ]
+    .concat(startFallbackRung)
+    .concat([
     '  - A comment that will not anchor still gets written. A failing comment never stops the remaining comments, the submit, or the commit.',
     'Return a PERSIST_ACK object: `ok` (true only if review start, every comment, the submit and the commit all exited 0), `reviewId` (the id captured into RDM_REVIEW_ID), `anchored` (how many comments landed with a quote anchor) and `wholeDocument` (how many landed without one).',
-  ].join('\n');
+    ])
+    .join('\n');
   return { prompt: prompt, schema: PERSIST_ACK_SCHEMA, commands: commands };
 }
 
@@ -2836,6 +2920,7 @@ export {
   PERSIST_HEADER_KEYS,
   formatCommentBody,
   parseCommentHeader,
+  pathFromLocation,
   persistReviewCommands,
   buildPersistReviewPrompts,
   rankFindings,

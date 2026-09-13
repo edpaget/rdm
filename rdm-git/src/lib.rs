@@ -27,7 +27,10 @@ use std::path::{Path, PathBuf};
 
 use rdm_core::error::{Error, Result};
 
+pub use source::GitSourceRepo;
+
 mod process;
+pub mod source;
 pub mod worktree;
 
 /// Environment variable set to `"1"` on every git subprocess spawned by

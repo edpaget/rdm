@@ -1430,6 +1430,8 @@ mod tests {
                     slug: "bug-fix".to_string(),
                 },
                 body: Some("Task review summary."),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();
@@ -1506,6 +1508,8 @@ mod tests {
                     slug: "bug-fix".to_string(),
                 },
                 body: Some("See [the other task](rdm:task/feature) for context."),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();
@@ -1558,6 +1562,8 @@ mod tests {
                     slug: "bug-fix".to_string(),
                 },
                 body: Some("Summary."),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();

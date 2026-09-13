@@ -672,11 +672,14 @@ pub fn format_task_list_md(tasks: &[(String, Document<Task>)]) -> String {
 /// Builds a single plan detail document.
 ///
 /// `reviews` is the list of reviews targeting the plan, rendered as a
-/// `Reviews:` metadata line (omitted when empty).
+/// `Reviews:` metadata line (omitted when empty), plus a separate `Change
+/// reviews:` line for the code reviews implementing this plan — the two
+/// lists answer different questions and are never merged.
 fn build_plan_detail(
     slug: &str,
     doc: &Document<Plan>,
     reviews: &[(String, Document<Review>)],
+    change_reviews: &[(String, Document<Review>)],
     flavor: RenderFlavor,
 ) -> ast::Document {
     let fm = &doc.frontmatter;
@@ -686,6 +689,7 @@ fn build_plan_detail(
 
     let implements = format!("rdm:{}", fm.implements.label());
     let supersedes = fm.supersedes.as_ref().map(|r| format!("rdm:{}", r.label()));
+    let change_reviews_label = reviews_label(change_reviews);
     let reviews_label = reviews_label(reviews);
 
     match flavor {
@@ -703,6 +707,9 @@ fn build_plan_detail(
             if let Some(label) = &reviews_label {
                 items.push(meta_bullet("Reviews", label));
             }
+            if let Some(label) = &change_reviews_label {
+                items.push(meta_bullet("Change reviews", label));
+            }
             d.push(ast::Block::UnorderedList { items });
         }
         RenderFlavor::Terminal => {
@@ -717,6 +724,9 @@ fn build_plan_detail(
             if let Some(label) = &reviews_label {
                 d.paragraph(&format!("Reviews: {label}"));
             }
+            if let Some(label) = &change_reviews_label {
+                d.paragraph(&format!("Change reviews: {label}"));
+            }
         }
     }
 
@@ -728,8 +738,8 @@ fn build_plan_detail(
     d
 }
 
-/// Renders a `Reviews:` metadata value — `id (state[/verdict])`, comma-joined
-/// — or `None` when the plan has no reviews.
+/// Renders a `Reviews:`/`Change reviews:` metadata value — `id
+/// (state[/verdict])`, comma-joined — or `None` when the list is empty.
 fn reviews_label(reviews: &[(String, Document<Review>)]) -> Option<String> {
     if reviews.is_empty() {
         return None;
@@ -752,8 +762,9 @@ pub fn format_plan_detail(
     slug: &str,
     doc: &Document<Plan>,
     reviews: &[(String, Document<Review>)],
+    change_reviews: &[(String, Document<Review>)],
 ) -> String {
-    build_plan_detail(slug, doc, reviews, RenderFlavor::Terminal).to_string()
+    build_plan_detail(slug, doc, reviews, change_reviews, RenderFlavor::Terminal).to_string()
 }
 
 /// Formats a single plan detail as Markdown with heading, bullet metadata,
@@ -763,8 +774,9 @@ pub fn format_plan_detail_md(
     slug: &str,
     doc: &Document<Plan>,
     reviews: &[(String, Document<Review>)],
+    change_reviews: &[(String, Document<Review>)],
 ) -> String {
-    build_plan_detail(slug, doc, reviews, RenderFlavor::Markdown).to_string()
+    build_plan_detail(slug, doc, reviews, change_reviews, RenderFlavor::Markdown).to_string()
 }
 
 /// Builds a plan list document (table of slug, title, status, implements).
@@ -897,6 +909,7 @@ fn build_review_detail(
     id: &str,
     doc: &Document<Review>,
     resolutions: &[ResolvedComment],
+    source_note: Option<&str>,
     flavor: RenderFlavor,
 ) -> ast::Document {
     let fm = &doc.frontmatter;
@@ -922,6 +935,21 @@ fn build_review_detail(
             if let Some(sha) = &fm.created_commit {
                 items.push(meta_bullet("Created commit", sha));
             }
+            if let crate::model::ReviewTarget::Change {
+                base: Some(base), ..
+            } = &fm.target
+            {
+                items.push(meta_bullet("Base", base));
+            }
+            if let Some(branch) = &fm.change_branch {
+                items.push(meta_bullet("Branch", branch));
+            }
+            if let Some(implements) = &fm.implements {
+                items.push(meta_bullet(
+                    "Implements",
+                    &format!("rdm:{}", implements.label()),
+                ));
+            }
             d.push(ast::Block::UnorderedList { items });
         }
         RenderFlavor::Terminal => {
@@ -938,7 +966,23 @@ fn build_review_detail(
             if let Some(sha) = &fm.created_commit {
                 d.paragraph(&format!("Created commit: {sha}"));
             }
+            if let crate::model::ReviewTarget::Change {
+                base: Some(base), ..
+            } = &fm.target
+            {
+                d.paragraph(&format!("Base: {base}"));
+            }
+            if let Some(branch) = &fm.change_branch {
+                d.paragraph(&format!("Branch: {branch}"));
+            }
+            if let Some(implements) = &fm.implements {
+                d.paragraph(&format!("Implements: rdm:{}", implements.label()));
+            }
         }
+    }
+
+    if let Some(note) = source_note {
+        d.paragraph(&format!("Note: {note}"));
     }
 
     if !doc.body.is_empty() {
@@ -985,6 +1029,14 @@ fn build_review_detail(
             if !comment.body.is_empty() {
                 d.paragraph(&comment.body);
             }
+            if let crate::model::ReviewTarget::Change { head, .. } = &fm.target
+                && let Some(link) = comment
+                    .anchor
+                    .as_ref()
+                    .and_then(|a| crate::change::permalink_for(head, a))
+            {
+                d.paragraph(&format!("Source: {link}"));
+            }
             if let Some(sha) = &comment.applied_commit {
                 d.paragraph(&format!("Applied commit: {sha}"));
             }
@@ -1003,8 +1055,9 @@ pub fn format_review_detail(
     id: &str,
     doc: &Document<Review>,
     resolutions: &[ResolvedComment],
+    source_note: Option<&str>,
 ) -> String {
-    build_review_detail(id, doc, resolutions, RenderFlavor::Terminal).to_string()
+    build_review_detail(id, doc, resolutions, source_note, RenderFlavor::Terminal).to_string()
 }
 
 /// Formats a single review detail view as Markdown.
@@ -1013,8 +1066,9 @@ pub fn format_review_detail_md(
     id: &str,
     doc: &Document<Review>,
     resolutions: &[ResolvedComment],
+    source_note: Option<&str>,
 ) -> String {
-    build_review_detail(id, doc, resolutions, RenderFlavor::Markdown).to_string()
+    build_review_detail(id, doc, resolutions, source_note, RenderFlavor::Markdown).to_string()
 }
 
 /// Builds a review list document (table of id, target, state, verdict,
@@ -1165,7 +1219,18 @@ pub fn format_backlinks(target: &str, entries: &[crate::link::BacklinkEntry]) ->
     }
     let mut out = format!("{target}: {} backlink(s)\n", entries.len());
     for entry in entries {
-        out.push_str(&format!("  {}\n", format_doc_ref(&entry.document)));
+        let provenance = match &entry.reference {
+            crate::link::BacklinkRef::Body { .. } => String::new(),
+            crate::link::BacklinkRef::Field { field, via: None } => format!("  [{field}]"),
+            crate::link::BacklinkRef::Field {
+                field,
+                via: Some(via),
+            } => format!("  [{field} via rdm:{}]", via.label()),
+        };
+        out.push_str(&format!(
+            "  {}{provenance}\n",
+            format_doc_ref(&entry.document)
+        ));
     }
     out
 }
@@ -2019,6 +2084,8 @@ mod tests {
                         reply: None,
                     },
                 ],
+                implements: None,
+                change_branch: None,
             },
             body: "Overall summary.".to_string(),
         }
@@ -2048,7 +2115,7 @@ mod tests {
     #[test]
     fn review_detail_terminal_renders_labels_scope_and_resolution() {
         let doc = make_review_doc();
-        let output = format_review_detail("2026-07-01-1430-a1b2", &doc, &make_resolutions());
+        let output = format_review_detail("2026-07-01-1430-a1b2", &doc, &make_resolutions(), None);
         assert!(output.contains("Target: roadmap/alpha"), "{output}");
         assert!(output.contains("State: submitted"), "{output}");
         assert!(output.contains("Verdict: request-changes"), "{output}");
@@ -2071,7 +2138,7 @@ mod tests {
     fn review_detail_unresolved_label_when_resolution_missing() {
         let doc = make_review_doc();
         // No resolutions supplied at all: every comment renders unresolved.
-        let output = format_review_detail("id", &doc, &[]);
+        let output = format_review_detail("id", &doc, &[], None);
         assert!(
             output.contains("Comment 1 — addressed (unresolved)"),
             "{output}"
@@ -2082,7 +2149,8 @@ mod tests {
     #[test]
     fn review_detail_md_renders_bullets_headings_and_blockquote() {
         let doc = make_review_doc();
-        let output = format_review_detail_md("2026-07-01-1430-a1b2", &doc, &make_resolutions());
+        let output =
+            format_review_detail_md("2026-07-01-1430-a1b2", &doc, &make_resolutions(), None);
         assert!(output.contains("# Review 2026-07-01-1430-a1b2"), "{output}");
         assert!(output.contains("**Target:** roadmap/alpha"), "{output}");
         assert!(output.contains("**Verdict:** request-changes"), "{output}");
@@ -2196,6 +2264,8 @@ mod tests {
                 submitted: Some(DateTime::from_timestamp(1_770_000_100, 0).unwrap()),
                 created_commit: None,
                 comments: Vec::new(),
+                implements: None,
+                change_branch: None,
             },
             body: String::new(),
         }
@@ -2215,7 +2285,7 @@ mod tests {
                 slug: "design-auth-v0".to_string(),
             }),
         );
-        let md = format_plan_detail_md("design-auth", &doc, &[]);
+        let md = format_plan_detail_md("design-auth", &doc, &[], &[]);
         assert!(md.starts_with("# Design auth"), "{md}");
         assert!(md.contains("- **Slug:** design-auth"), "{md}");
         assert!(md.contains("- **Status:** approved"), "{md}");
@@ -2249,7 +2319,7 @@ mod tests {
             "2026-07-01-1430-a1b2".to_string(),
             make_plan_review_doc("2026-07-01-1430-a1b2", "design-auth"),
         )];
-        let md = format_plan_detail_md("design-auth", &doc, &reviews);
+        let md = format_plan_detail_md("design-auth", &doc, &reviews, &[]);
         assert!(!md.contains("**Supersedes:**"), "{md}");
         assert!(md.contains("- **Implements:** rdm:task/fix-login"), "{md}");
         assert!(

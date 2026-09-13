@@ -6532,6 +6532,8 @@ fn sample_review_doc(id: &str) -> Document<Review> {
                 body: "Tighten this section.".to_string(),
                 reply: None,
             }],
+            implements: None,
+            change_branch: None,
         },
         body: "Overall review summary.".to_string(),
     }
@@ -6625,6 +6627,8 @@ fn draft_task_review(store: &mut MemoryStore) -> String {
             author: "ed",
             target: task_review_target(),
             body: Some("Summary."),
+            implements: None,
+            change_branch: None,
         },
     )
     .unwrap()
@@ -6666,6 +6670,8 @@ fn create_review_stamps_draft_state_and_created_commit() {
             author: "ed",
             target: task_review_target(),
             body: Some("Looks solid overall."),
+            implements: None,
+            change_branch: None,
         },
     )
     .unwrap();
@@ -6719,6 +6725,8 @@ fn create_review_target_missing_for_roadmap_phase_and_task() {
                 roadmap: "ghost".to_string(),
             },
             body: None,
+            implements: None,
+            change_branch: None,
         },
     );
     assert!(matches!(
@@ -6736,6 +6744,8 @@ fn create_review_target_missing_for_roadmap_phase_and_task() {
                 stem: "phase-9-ghost".to_string(),
             },
             body: None,
+            implements: None,
+            change_branch: None,
         },
     );
     assert!(matches!(missing_phase, Err(Error::ReviewTargetMissing(_))));
@@ -6749,6 +6759,8 @@ fn create_review_target_missing_for_roadmap_phase_and_task() {
                 slug: "ghost".to_string(),
             },
             body: None,
+            implements: None,
+            change_branch: None,
         },
     );
     assert!(matches!(missing_task, Err(Error::ReviewTargetMissing(_))));
@@ -6764,6 +6776,8 @@ fn create_review_project_not_found() {
             author: "ed",
             target: task_review_target(),
             body: None,
+            implements: None,
+            change_branch: None,
         },
     );
     assert!(matches!(result, Err(Error::ProjectNotFound(_))));
@@ -6795,6 +6809,8 @@ fn create_review_body_defaults_to_empty() {
             author: "ed",
             target: task_review_target(),
             body: None,
+            implements: None,
+            change_branch: None,
         },
     )
     .unwrap();
@@ -6885,6 +6901,8 @@ fn add_comment_doc_valid_phase_in_roadmap_review() {
                 roadmap: "alpha".to_string(),
             },
             body: None,
+            implements: None,
+            change_branch: None,
         },
     )
     .unwrap();
@@ -6921,6 +6939,8 @@ fn add_comment_doc_out_of_scope_phase_not_in_roadmap() {
                 roadmap: "alpha".to_string(),
             },
             body: None,
+            implements: None,
+            change_branch: None,
         },
     )
     .unwrap();
@@ -6954,6 +6974,8 @@ fn add_comment_doc_rejected_on_phase_review() {
                 stem: "phase-1-core".to_string(),
             },
             body: None,
+            implements: None,
+            change_branch: None,
         },
     )
     .unwrap();
@@ -7035,6 +7057,8 @@ fn update_comment_body_anchor_doc_while_draft() {
                 roadmap: "alpha".to_string(),
             },
             body: None,
+            implements: None,
+            change_branch: None,
         },
     )
     .unwrap();
@@ -7172,6 +7196,8 @@ fn update_comment_doc_clear_and_set_validation() {
                 roadmap: "alpha".to_string(),
             },
             body: None,
+            implements: None,
+            change_branch: None,
         },
     )
     .unwrap();
@@ -7309,6 +7335,8 @@ fn submit_review_rejects_empty_review() {
             author: "ed",
             target: task_review_target(),
             body: None,
+            implements: None,
+            change_branch: None,
         },
     )
     .unwrap();
@@ -7342,6 +7370,8 @@ fn submit_review_with_only_comments_is_not_empty() {
             author: "ed",
             target: task_review_target(),
             body: None, // empty summary
+            implements: None,
+            change_branch: None,
         },
     )
     .unwrap();

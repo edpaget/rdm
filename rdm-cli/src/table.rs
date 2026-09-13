@@ -326,6 +326,8 @@ mod tests {
                         reply: None,
                     },
                 ],
+                implements: None,
+                change_branch: None,
             },
             body: String::new(),
         };

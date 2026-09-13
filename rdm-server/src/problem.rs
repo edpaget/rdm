@@ -75,7 +75,9 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("plan not found: {slug}")),
                 instance: None,
             },
-            Error::PlanImplementsMissing(_) | Error::PlanSupersedesMissing(_) => ProblemDetail {
+            Error::PlanImplementsMissing(_)
+            | Error::PlanSupersedesMissing(_)
+            | Error::ReviewImplementsMissing(_) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Not Found".to_string(),
                 status: 404,
@@ -91,7 +93,12 @@ impl From<&Error> for ProblemDetail {
             },
             Error::PlanImplementsInvalidKind(_)
             | Error::PlanSupersedesInvalidKind(_)
-            | Error::PlanSupersedesSelf(_) => ProblemDetail {
+            | Error::PlanSupersedesSelf(_)
+            | Error::ReviewImplementsInvalidKind(_)
+            | Error::ReviewImplementsNotApplicable(_)
+            | Error::ChangeTargetHasNoDocument(_)
+            | Error::ChangePathNotInRevision { .. }
+            | Error::QuoteOutsideChangedHunks { .. } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Bad Request".to_string(),
                 status: 400,

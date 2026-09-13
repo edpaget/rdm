@@ -1399,6 +1399,8 @@ mod tests {
                 author: "reviewer",
                 target,
                 body: Some("Overall **summary** text."),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();

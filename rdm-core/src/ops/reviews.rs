@@ -152,6 +152,13 @@ fn validate_target_exists(store: &impl Store, project: &str, target: &ReviewTarg
                 return Err(Error::ReviewTargetMissing(format!("plan '{slug}'")));
             }
         }
+        // A change target names commits in the project's *source*
+        // repository; the plan repo holds nothing to check. The head/base
+        // pair is resolved and proven against the real repository by the
+        // caller (the CLI's `resolve_change_target`) before `create_review`
+        // ever runs, so re-validating it here would need a source-repo
+        // dependency rdm-core deliberately does not have.
+        ReviewTarget::Change { .. } => {}
     }
     Ok(())
 }
@@ -178,9 +185,10 @@ fn validate_comment_doc(
                 Ok(())
             }
         },
-        ReviewTarget::Phase { .. } | ReviewTarget::Task { .. } | ReviewTarget::Plan { .. } => {
-            Err(Error::CommentDocNotApplicable)
-        }
+        ReviewTarget::Phase { .. }
+        | ReviewTarget::Task { .. }
+        | ReviewTarget::Plan { .. }
+        | ReviewTarget::Change { .. } => Err(Error::CommentDocNotApplicable),
     }
 }
 
@@ -201,6 +209,19 @@ pub struct CreateReview<'a> {
     /// body (fine for a draft; a review with no comments must have a
     /// non-empty summary by submit time).
     pub body: Option<&'a str>,
+    /// The implementation plan the reviewed change implements, as a
+    /// [`ReviewTarget::Plan`] reference.
+    ///
+    /// Only accepted on a [`ReviewTarget::Change`] review, and only when
+    /// the named plan exists. Restricting it to change targets keeps the
+    /// field from accumulating meanings: on a document review the target
+    /// *is* the thing under review, so "which plan does this implement"
+    /// has no answer.
+    pub implements: Option<ReviewTarget>,
+    /// Source-repository branch the reviewed change was on, when the
+    /// checkout had one. Stamped by the caller; used only to pick the tip
+    /// drift is measured against.
+    pub change_branch: Option<String>,
 }
 
 /// Creates a new draft review of an existing plan item.
@@ -217,7 +238,11 @@ pub struct CreateReview<'a> {
 ///
 /// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
 /// [`Error::ReviewTargetMissing`] if the target roadmap/phase/task doesn't
-/// exist, [`Error::ReviewIdExhausted`] if repeated id-generation attempts all
+/// exist, [`Error::ReviewImplementsNotApplicable`] if `implements` is set on
+/// anything but a change review, [`Error::ReviewImplementsInvalidKind`] if
+/// it names something other than `plan/<slug>`,
+/// [`Error::ReviewImplementsMissing`] if that plan doesn't exist,
+/// [`Error::ReviewIdExhausted`] if repeated id-generation attempts all
 /// collided, [`Error::Git`] if the store's git state cannot be read (a
 /// `head_sha` failure other than an unborn HEAD), [`Error::Io`] if file
 /// creation fails, or [`Error::FrontmatterParse`] if frontmatter
@@ -231,11 +256,24 @@ pub fn create_review(
         author,
         target,
         body,
+        implements,
+        change_branch,
     } = req;
     if !store.exists(&crate::paths::project_md_path(project)) {
         return Err(Error::ProjectNotFound(project.to_string()));
     }
     validate_target_exists(store, project, &target)?;
+    if let Some(plan_ref) = &implements {
+        if !matches!(target, ReviewTarget::Change { .. }) {
+            return Err(Error::ReviewImplementsNotApplicable(target.label()));
+        }
+        let ReviewTarget::Plan { slug } = plan_ref else {
+            return Err(Error::ReviewImplementsInvalidKind(plan_ref.label()));
+        };
+        if !store.exists(&crate::paths::plan_path(project, slug)) {
+            return Err(Error::ReviewImplementsMissing(slug.clone()));
+        }
+    }
 
     let created_commit = match store.head_sha() {
         Ok(sha) => Some(sha),
@@ -255,6 +293,8 @@ pub fn create_review(
             created: now,
             submitted: None,
             created_commit,
+            implements,
+            change_branch,
             comments: Vec::new(),
         },
         body: body.unwrap_or_default().to_string(),
@@ -711,7 +751,12 @@ pub struct ReviewFilter {
 /// Returns whether `review` satisfies every populated criterion in `filter`.
 #[must_use]
 pub fn review_matches(review: &Review, filter: &ReviewFilter) -> bool {
-    filter.target.as_ref().is_none_or(|t| &review.target == t)
+    // `same_item`, not `==`: a `change/<sha>` reference parsed from the
+    // command line carries no `base`, while the stored target normally does.
+    filter
+        .target
+        .as_ref()
+        .is_none_or(|t| review.target.same_item(t))
         && filter.target_kind.is_none_or(|k| review.target.kind() == k)
         && filter.state.is_none_or(|s| review.state == s)
         && filter.verdict.is_none_or(|v| review.verdict == Some(v))
@@ -903,6 +948,8 @@ pub fn count_open_reviews_in(reviews: &[(String, Document<Review>)]) -> OpenRevi
             // server's roadmap/task list pages, and plan list pages are out
             // of scope until rdm-server gains real plan support.
             ReviewTarget::Plan { .. } => continue,
+            // Likewise: a change review belongs to no roadmap or task page.
+            ReviewTarget::Change { .. } => continue,
         };
         let entry = map.entry(key.clone()).or_default();
         entry.open_reviews += 1;
@@ -951,6 +998,8 @@ mod tests {
                 submitted: None,
                 created_commit: None,
                 comments: vec![],
+                implements: None,
+                change_branch: None,
             },
             body: "Review summary.".to_string(),
         }
@@ -1056,6 +1105,8 @@ mod tests {
             created: chrono::Utc.with_ymd_and_hms(2026, 7, 1, 14, 30, 0).unwrap(),
             submitted: None,
             created_commit: None,
+            implements: None,
+            change_branch: None,
             comments: vec![],
         }
     }
@@ -1517,6 +1568,8 @@ mod tests {
                     slug: "fix-login".to_string(),
                 },
                 body: Some("first draft"),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();
@@ -1543,6 +1596,8 @@ mod tests {
                     slug: "fix-login".to_string(),
                 },
                 body: Some("existing summary"),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();
@@ -1572,6 +1627,8 @@ mod tests {
                     slug: "fix-login".to_string(),
                 },
                 body: Some("summary"),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();
@@ -1624,6 +1681,8 @@ mod tests {
                     slug: plan_slug.to_string(),
                 },
                 body: Some("Looks reasonable."),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();
@@ -1705,6 +1764,8 @@ mod tests {
                     slug: "impl-login".to_string(),
                 },
                 body: Some("Looks reasonable."),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();
@@ -1729,6 +1790,8 @@ mod tests {
                     slug: "no-such-plan".to_string(),
                 },
                 body: Some("summary"),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap_err();
@@ -1751,6 +1814,8 @@ mod tests {
                     slug: "impl-login".to_string(),
                 },
                 body: Some("summary"),
+                implements: None,
+                change_branch: None,
             },
         )
         .unwrap();

@@ -282,6 +282,8 @@ pub fn run(
         }
         ReviewCommand::Start {
             on,
+            base,
+            implements,
             author,
             project,
             body,
@@ -290,8 +292,31 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let author = paths::resolve_review_author(author)?;
             let body = resolve_body(body, no_edit)?;
-            let target = rdm_core::ops::reviews::parse_review_target_ref(store, &project, &on)
+            let parsed = rdm_core::ops::reviews::parse_review_target_ref(store, &project, &on)
                 .context("failed to resolve review target")?;
+            let is_change = matches!(parsed, ReviewTarget::Change { .. });
+            if !is_change {
+                if base.is_some() {
+                    bail!(
+                        "--base only applies to a change review — pass --on change/<sha> to use it"
+                    );
+                }
+                if implements.is_some() {
+                    return Err(anyhow::Error::new(
+                        rdm_core::error::Error::ReviewImplementsNotApplicable(parsed.label()),
+                    ));
+                }
+            }
+            let (target, change_branch) = if is_change {
+                resolve_change_target(store, &project, repo_config, &parsed, base.as_deref())?
+            } else {
+                (parsed, None)
+            };
+            let implements_ref = if is_change {
+                resolve_implements(store, &project, implements.as_deref())?
+            } else {
+                None
+            };
             let doc = commit_mutation(store, "failed to start review", |s| {
                 rdm_core::ops::reviews::create_review(
                     s,
@@ -300,6 +325,8 @@ pub fn run(
                         author: &author,
                         target: target.clone(),
                         body: body.as_deref(),
+                        implements: implements_ref.clone(),
+                        change_branch: change_branch.clone(),
                     },
                 )
             })?;
@@ -319,6 +346,7 @@ pub fn run(
         ReviewCommand::Comment {
             review_id,
             quote,
+            path,
             occurrence,
             doc,
             body,
@@ -351,23 +379,42 @@ pub fn run(
                     }
                 },
             };
-            let anchor = match &quote {
-                Some(q) => {
-                    let (target_body, at) = rdm_core::anchor::body_for_comment(
-                        store,
-                        &project,
-                        &review_doc.frontmatter,
-                        doc_scope.as_ref(),
-                    )
-                    .context("failed to load the document the quote anchors into")?;
-                    Some(rdm_core::anchor::derive_text_quote(
-                        &target_body,
-                        q,
-                        occurrence,
-                        at.as_deref(),
-                    )?)
+            let anchor = if let ReviewTarget::Change { head, base } = &review_doc.frontmatter.target
+            {
+                derive_change_anchor(
+                    store,
+                    &project,
+                    head,
+                    base.as_deref(),
+                    quote.as_deref(),
+                    path.as_deref(),
+                    occurrence,
+                )?
+            } else {
+                if path.is_some() {
+                    bail!(
+                        "--path only applies to a change review — review '{review_id}' targets {}, whose quotes are located in the plan-repo document itself",
+                        review_doc.frontmatter.target.label()
+                    );
                 }
-                None => None,
+                match &quote {
+                    Some(q) => {
+                        let (target_body, at) = rdm_core::anchor::body_for_comment(
+                            store,
+                            &project,
+                            &review_doc.frontmatter,
+                            doc_scope.as_ref(),
+                        )
+                        .context("failed to load the document the quote anchors into")?;
+                        Some(rdm_core::anchor::derive_text_quote(
+                            &target_body,
+                            q,
+                            occurrence,
+                            at.as_deref(),
+                        )?)
+                    }
+                    None => None,
+                }
             };
             let Some(body) = resolve_body(body, no_edit)?.filter(|b| !b.trim().is_empty()) else {
                 bail!(
@@ -484,7 +531,7 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let mut doc = rdm_core::ops::reviews::get_review(store, &project, &review_id)
                 .context("failed to load review")?;
-            let resolutions = resolve_all(store, &project, &doc);
+            let (resolutions, source_note) = resolve_all(store, &project, &doc);
             if no_body {
                 doc.body = String::new();
                 for comment in &mut doc.frontmatter.comments {
@@ -494,19 +541,28 @@ pub fn run(
             match format {
                 OutputFormat::Human => print!(
                     "{}",
-                    display::format_review_detail(&review_id, &doc, &resolutions)
+                    display::format_review_detail(
+                        &review_id,
+                        &doc,
+                        &resolutions,
+                        source_note.as_deref()
+                    )
                 ),
                 OutputFormat::Markdown => print!(
                     "{}",
-                    display::format_review_detail_md(&review_id, &doc, &resolutions)
+                    display::format_review_detail_md(
+                        &review_id,
+                        &doc,
+                        &resolutions,
+                        source_note.as_deref()
+                    )
                 ),
                 OutputFormat::Json => println!(
                     "{}",
-                    serde_json::to_string_pretty(&json::review_to_json(
-                        &review_id,
-                        &doc,
-                        &resolutions
-                    ))
+                    serde_json::to_string_pretty(
+                        &json::review_to_json(&review_id, &doc, &resolutions)
+                            .with_source_note(source_note)
+                    )
                     .context("failed to serialize review")?
                 ),
                 OutputFormat::Table => bail!(
@@ -585,11 +641,322 @@ pub fn run(
     Ok(())
 }
 
-/// Runs the shared resolution pass via
-/// [`resolve_comments`](rdm_core::anchor::resolve_comments). The same slice
-/// feeds the JSON, human, and markdown renderers.
-fn resolve_all(store: &AppStore, project: &str, doc: &Document<Review>) -> Vec<ResolvedComment> {
-    rdm_core::anchor::resolve_comments(store, project, &doc.frontmatter)
+/// Runs the shared resolution pass and returns it alongside an optional
+/// note explaining why source-repo verification was skipped.
+///
+/// Dispatches on the review's target kind: a plan-repo target resolves
+/// through [`resolve_comments`](rdm_core::anchor::resolve_comments), while a
+/// `change/<sha>` target resolves through
+/// [`rdm_core::change::resolve_change_comments`] against the discovered
+/// source repository.
+///
+/// The read path **degrades, never fails**: with no source repo reachable
+/// every change comment comes back unresolved and the note says so — the
+/// same policy `rdm link check`'s `path_verification_skipped` established.
+/// (The write path — `review comment --path` — fails loudly instead; a new
+/// anchor derived against nothing would be a lie.)
+fn resolve_all(
+    store: &AppStore,
+    project: &str,
+    doc: &Document<Review>,
+) -> (Vec<ResolvedComment>, Option<String>) {
+    if !matches!(doc.frontmatter.target, ReviewTarget::Change { .. }) {
+        return (
+            rdm_core::anchor::resolve_comments(store, project, &doc.frontmatter),
+            None,
+        );
+    }
+    let unresolved = || {
+        doc.frontmatter
+            .comments
+            .iter()
+            .map(|_| ResolvedComment {
+                resolution: rdm_core::anchor::Resolution::Unresolved,
+                quote: None,
+            })
+            .collect::<Vec<_>>()
+    };
+    #[cfg(feature = "git")]
+    {
+        use rdm_core::source::SourceRepo;
+        let source = match crate::source_repo::discover_source_repo(store, project) {
+            Ok(source) => source,
+            Err(e) => return (unresolved(), Some(e.to_string())),
+        };
+        // Drift is measured against the branch the change was on when the
+        // review started; a deleted/renamed branch (or a detached-HEAD
+        // review) degrades to the repository's current HEAD.
+        let tip = doc
+            .frontmatter
+            .change_branch
+            .as_deref()
+            .and_then(|b| source.rev_parse(b).ok().flatten())
+            .or_else(|| source.head().ok().flatten());
+        let Some(tip) = tip else {
+            return (
+                unresolved(),
+                Some(
+                    "the source repository has no resolvable HEAD — anchor resolution skipped"
+                        .to_string(),
+                ),
+            );
+        };
+        (
+            rdm_core::change::resolve_change_comments(&source, &doc.frontmatter, &tip),
+            None,
+        )
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        (
+            unresolved(),
+            Some("this build has no git support — anchor resolution skipped".to_string()),
+        )
+    }
+}
+
+/// Resolves a parsed `change/<rev>` target into a stored one: a full
+/// 40-character head SHA plus the base the change is diffed against.
+///
+/// `base` precedence: an explicit `--base` (rev-parsed), else the merge-base
+/// of the head with the project's default branch, itself resolved
+/// `project.source.default_branch` → the repo's `rdm.toml`
+/// `default_branch` → `"main"`.
+///
+/// Also returns the source checkout's current branch, stamped on the review
+/// so later drift is measured against the branch the change was on rather
+/// than whatever HEAD happens to be. `None` on a detached HEAD.
+fn resolve_change_target(
+    store: &AppStore,
+    project: &str,
+    repo_config: &Config,
+    parsed: &ReviewTarget,
+    base: Option<&str>,
+) -> Result<(ReviewTarget, Option<String>)> {
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = (store, project, repo_config, parsed, base);
+        bail!("this build has no git support — `change/` reviews require the `git` feature");
+    }
+    #[cfg(feature = "git")]
+    {
+        use rdm_core::source::SourceRepo;
+        let ReviewTarget::Change { head: rev, .. } = parsed else {
+            bail!("internal: resolve_change_target called on a non-change target");
+        };
+        let source = crate::source_repo::discover_source_repo(store, project)?;
+        let head = source
+            .rev_parse(rev)
+            .context("failed to resolve the reviewed revision")?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "'{rev}' does not name a commit in the source repository — pass --on change/<sha>, a branch name, or change/HEAD from inside the checkout"
+                )
+            })?;
+
+        let base = match base {
+            Some(explicit) => source
+                .rev_parse(explicit)
+                .context("failed to resolve --base")?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--base '{explicit}' does not name a commit in the source repository"
+                    )
+                })?,
+            None => {
+                let default_branch = default_source_branch(store, project, repo_config);
+                source
+                    .merge_base(&head, &default_branch)
+                    .context("failed to compute the change's merge base")?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "no merge base between {head} and '{default_branch}' — unrelated history, an orphan branch, or a shallow clone; pass --base <rev> to name the revision the change is diffed against"
+                        )
+                    })?
+            }
+        };
+        let branch = source.current_branch().ok().flatten();
+        Ok((
+            ReviewTarget::Change {
+                head,
+                base: Some(base),
+            },
+            branch,
+        ))
+    }
+}
+
+/// The branch a change's merge-base is computed against:
+/// `project.source.default_branch` → the plan repo's `rdm.toml`
+/// `default_branch` → `"main"`.
+fn default_source_branch(store: &AppStore, project: &str, repo_config: &Config) -> String {
+    rdm_core::io::load_project(store, project)
+        .ok()
+        .and_then(|doc| doc.frontmatter.source)
+        .and_then(|source| source.default_branch)
+        .or_else(|| repo_config.default_branch.clone())
+        .unwrap_or_else(|| "main".to_string())
+}
+
+/// Resolves `--implements` for a `change/` review: the explicit reference
+/// when given, otherwise inferred from the worktree the command is running
+/// in.
+///
+/// Inference requires the checkout to map to a plan item (via
+/// [`rdm_git::worktree::current`]) that has **exactly one** `approved`
+/// plan. Zero and many are both actionable errors naming `--implements`,
+/// with the candidates listed in the many case. A roadmap-level worktree
+/// has no single item to look plans up for, so it errors too rather than
+/// guessing across the roadmap's phases.
+fn resolve_implements(
+    store: &AppStore,
+    project: &str,
+    explicit: Option<&str>,
+) -> Result<Option<ReviewTarget>> {
+    if let Some(raw) = explicit {
+        let stripped = raw.strip_prefix("rdm:").unwrap_or(raw);
+        let parsed: ReviewTarget = stripped.parse().map_err(|_| {
+            anyhow::anyhow!("invalid --implements '{raw}' — expected rdm:plan/<slug>")
+        })?;
+        if !matches!(parsed, ReviewTarget::Plan { .. }) {
+            return Err(anyhow::Error::new(
+                rdm_core::error::Error::ReviewImplementsInvalidKind(parsed.label()),
+            ));
+        }
+        return Ok(Some(parsed));
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = (store, project);
+        bail!(
+            "--implements is required in a build without git support — pass --implements rdm:plan/<slug>"
+        );
+    }
+    #[cfg(feature = "git")]
+    {
+        let cwd = std::env::current_dir().context("failed to read the current directory")?;
+        let current = rdm_git::worktree::current(&cwd).ok().flatten();
+        let Some(current) = current else {
+            bail!(
+                "not inside a recognized phase or task worktree, so the implemented plan cannot be inferred — pass --implements rdm:plan/<slug>"
+            );
+        };
+        let item = match rdm_git::worktree::ItemRef::parse(&current.item) {
+            Ok(rdm_git::worktree::ItemRef::Phase { roadmap, stem }) => {
+                ReviewTarget::Phase { roadmap, stem }
+            }
+            Ok(rdm_git::worktree::ItemRef::Task { slug }) => ReviewTarget::Task { slug },
+            Ok(rdm_git::worktree::ItemRef::Roadmap { roadmap }) => bail!(
+                "this worktree covers the whole roadmap '{roadmap}', which has no single plan to infer — pass --implements rdm:plan/<slug>"
+            ),
+            Err(e) => bail!(
+                "could not read this worktree's plan item ({e}) — pass --implements rdm:plan/<slug>"
+            ),
+        };
+        let approved = rdm_core::ops::plan::approved_plans_for(store, project, &item)
+            .context("failed to list approved plans for this worktree's item")?;
+        match approved.as_slice() {
+            [(slug, _)] => Ok(Some(ReviewTarget::Plan { slug: slug.clone() })),
+            [] => bail!(
+                "no approved plan for {} — pass --implements rdm:plan/<slug>, or approve one (`rdm plan list --implements {}`)",
+                item.label(),
+                item.label()
+            ),
+            many => {
+                let candidates: Vec<String> = many
+                    .iter()
+                    .map(|(slug, _)| format!("rdm:plan/{slug}"))
+                    .collect();
+                bail!(
+                    "{} has {} approved plans, so the implemented plan is ambiguous — pass --implements with one of: {}",
+                    item.label(),
+                    many.len(),
+                    candidates.join(", ")
+                )
+            }
+        }
+    }
+}
+
+/// Derives a `change/` review comment's anchor from `--path`/`--quote`.
+///
+/// Requires `--path` alongside `--quote` (a change review has no single
+/// document to search), reads the file's content at the reviewed `head`,
+/// computes the hunks the change touches in it, and hands both to
+/// [`rdm_core::change::derive_file_quote`], which enforces the
+/// inside-a-touched-hunk rule.
+///
+/// Unlike the read path, this **fails loudly** when the source repository
+/// is unreachable: a stored anchor that was never checked against real
+/// content would silently mislead every later reader.
+fn derive_change_anchor(
+    store: &AppStore,
+    project: &str,
+    head: &str,
+    base: Option<&str>,
+    quote: Option<&str>,
+    path: Option<&str>,
+    occurrence: Option<usize>,
+) -> Result<Option<rdm_core::model::Anchor>> {
+    let Some(quote) = quote else {
+        if path.is_some() {
+            bail!("--path needs --quote — pass both, or neither for a whole-change comment");
+        }
+        return Ok(None);
+    };
+    let Some(path) = path else {
+        bail!(
+            "--quote on a change review needs --path <repo-relative path> naming the file the quote lives in"
+        );
+    };
+    let path = rdm_core::change::normalize_source_path(path)?;
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = (store, project, head, base, quote, occurrence);
+        bail!("this build has no git support — `change/` reviews require the `git` feature");
+    }
+    #[cfg(feature = "git")]
+    {
+        use rdm_core::source::SourceRepo;
+        let source = crate::source_repo::discover_source_repo(store, project)?;
+        let content = source
+            .file_at(head, &path)
+            .context("failed to read the quoted file at the reviewed head")?
+            .ok_or_else(|| {
+                anyhow::Error::new(rdm_core::error::Error::ChangePathNotInRevision {
+                    path: path.clone(),
+                    rev: head.to_string(),
+                })
+            })?;
+        let (hunks, range_label) = match base {
+            Some(base) => {
+                let diff = source
+                    .unified_diff(base, head, &path)
+                    .context("failed to diff the quoted file")?
+                    .unwrap_or_default();
+                (
+                    rdm_core::change::parse_hunks(&diff),
+                    format!(
+                        "{}..{}",
+                        &base[..base.len().min(12)],
+                        &head[..head.len().min(12)]
+                    ),
+                )
+            }
+            // A review with no recorded base (hand-edited frontmatter)
+            // cannot compute hunks; treat the whole file as untouched so the
+            // error names the real problem rather than anchoring blindly.
+            None => (Vec::new(), "this change".to_string()),
+        };
+        Ok(Some(rdm_core::change::derive_file_quote(
+            &content,
+            &path,
+            quote,
+            occurrence,
+            &hunks,
+            &range_label,
+        )?))
+    }
 }
 
 /// Renders a filtered review list in the requested format.
@@ -604,8 +971,8 @@ fn render_review_list(
             let arr: Vec<_> = reviews
                 .iter()
                 .map(|(id, doc)| {
-                    let resolutions = resolve_all(store, project, doc);
-                    json::review_to_json(id, doc, &resolutions)
+                    let (resolutions, source_note) = resolve_all(store, project, doc);
+                    json::review_to_json(id, doc, &resolutions).with_source_note(source_note)
                 })
                 .collect();
             println!(

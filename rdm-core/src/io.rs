@@ -577,6 +577,8 @@ mod tests {
                     body: "Tighten this.".to_string(),
                     reply: None,
                 }],
+                implements: None,
+                change_branch: None,
             },
             body: "Review summary.".to_string(),
         }
