@@ -40,6 +40,7 @@ pub mod update;
 
 pub use links::{backlinks, build_web_url, resolve_code_link, resolve_item_link, resolve_link};
 pub use phase::CreatePhase;
+pub use plan::CreatePlan;
 pub use reviews::CreateReview;
 pub use roadmap::CreateRoadmap;
 pub use task::CreateTask;

@@ -13,8 +13,8 @@ use chrono::{DateTime, Utc};
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{
-    Anchor, CommentDoc, CommentDocKind, Review, ReviewComment, ReviewCommentStatus, ReviewState,
-    ReviewTarget, ReviewTargetKind, Verdict,
+    Anchor, CommentDoc, CommentDocKind, PlanStatus, Review, ReviewComment, ReviewCommentStatus,
+    ReviewState, ReviewTarget, ReviewTargetKind, Verdict,
 };
 use crate::store::{DirEntryKind, Store, VersionedStore};
 
@@ -515,6 +515,25 @@ pub fn remove_comment(
 /// frontends without argument-level "required" enforcement still get the
 /// matchable [`Error::ReviewMissingVerdict`] from core.
 ///
+/// # Plan status derivation
+///
+/// When the review targets a [`ReviewTarget::Plan`], submitting it derives
+/// the plan's status from the verdict rather than requiring a second write:
+/// [`Verdict::Approve`] sets [`PlanStatus::Approved`],
+/// [`Verdict::RequestChanges`] sets [`PlanStatus::ChangesRequested`], and
+/// [`Verdict::Comment`] leaves the status alone. Two rules bound it, both
+/// enforced by [`crate::ops::plan::set_plan_status`]:
+///
+/// - A [`PlanStatus::Superseded`] plan is **never downgraded** — reviewing a
+///   stale plan and approving it leaves it superseded.
+/// - The derived write is **non-fatal**: a plan that no longer exists is
+///   skipped silently rather than failing the submit, the same tolerance the
+///   `Done:` hook applies. The review is the durable record of the feedback;
+///   a submit must never fail because a derived write could not land.
+///
+/// The derivation is idempotent — re-deriving the same status rewrites the
+/// same value.
+///
 /// # Errors
 ///
 /// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
@@ -541,6 +560,21 @@ pub fn submit_review(
     review_doc.frontmatter.state = ReviewState::Submitted;
     review_doc.frontmatter.submitted = Some(Utc::now());
     crate::io::write_review(store, project, review_id, &review_doc)?;
+
+    // Derive a plan's status from the verdict — see this function's
+    // "Plan status derivation" section for the two rules that bound it.
+    if let ReviewTarget::Plan { slug } = &review_doc.frontmatter.target {
+        let derived = match verdict {
+            Verdict::Approve => Some(PlanStatus::Approved),
+            Verdict::RequestChanges => Some(PlanStatus::ChangesRequested),
+            Verdict::Comment => None,
+        };
+        if let Some(status) = derived {
+            // Non-fatal: a deleted plan target never fails the submit.
+            let _ = crate::ops::plan::set_plan_status(store, project, slug, status);
+        }
+    }
+
     Ok(review_doc)
 }
 
@@ -1551,6 +1585,190 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::ReviewNotDraft(_)), "got {err:?}");
+    }
+
+    // -- AC2: plan status derived from the review verdict --
+
+    /// Seeds a plan (implementing the fixture task) and returns its slug.
+    fn seed_plan(store: &mut MemoryStore, slug: &str) -> String {
+        crate::ops::plan::create_plan(
+            store,
+            crate::ops::plan::CreatePlan {
+                project: "test",
+                slug,
+                title: "A plan",
+                implements: ReviewTarget::Task {
+                    slug: "fix-login".to_string(),
+                },
+                supersedes: None,
+                body: Some("The approach.\n"),
+            },
+        )
+        .unwrap();
+        slug.to_string()
+    }
+
+    /// Starts and submits a review on `plan/<slug>` with `verdict`, returning
+    /// the plan's resulting status.
+    fn submit_on_plan(
+        store: &mut MemoryStore,
+        plan_slug: &str,
+        verdict: Verdict,
+    ) -> crate::model::PlanStatus {
+        let doc = create_review(
+            store,
+            CreateReview {
+                project: "test",
+                author: "ed",
+                target: ReviewTarget::Plan {
+                    slug: plan_slug.to_string(),
+                },
+                body: Some("Looks reasonable."),
+            },
+        )
+        .unwrap();
+        let id = doc.frontmatter.id.clone();
+        submit_review(store, "test", &id, Some(verdict)).unwrap();
+        crate::io::load_plan(store, "test", plan_slug)
+            .unwrap()
+            .frontmatter
+            .status
+    }
+
+    #[test]
+    fn submit_approve_flips_plan_to_approved() {
+        let mut store = setup_store_with_items();
+        seed_plan(&mut store, "impl-login");
+        assert_eq!(
+            submit_on_plan(&mut store, "impl-login", Verdict::Approve),
+            PlanStatus::Approved
+        );
+    }
+
+    #[test]
+    fn submit_request_changes_flips_plan_to_changes_requested() {
+        let mut store = setup_store_with_items();
+        seed_plan(&mut store, "impl-login");
+        assert_eq!(
+            submit_on_plan(&mut store, "impl-login", Verdict::RequestChanges),
+            PlanStatus::ChangesRequested
+        );
+    }
+
+    #[test]
+    fn submit_comment_leaves_plan_status() {
+        let mut store = setup_store_with_items();
+        seed_plan(&mut store, "impl-login");
+        assert_eq!(
+            submit_on_plan(&mut store, "impl-login", Verdict::Comment),
+            PlanStatus::Draft
+        );
+    }
+
+    #[test]
+    fn submit_on_superseded_plan_does_not_downgrade() {
+        let mut store = setup_store_with_items();
+        seed_plan(&mut store, "impl-v1");
+        crate::ops::plan::create_plan(
+            &mut store,
+            crate::ops::plan::CreatePlan {
+                project: "test",
+                slug: "impl-v2",
+                title: "Second attempt",
+                implements: ReviewTarget::Task {
+                    slug: "fix-login".to_string(),
+                },
+                supersedes: Some(ReviewTarget::Plan {
+                    slug: "impl-v1".to_string(),
+                }),
+                body: None,
+            },
+        )
+        .unwrap();
+        // Reviewing the stale v1 and approving it must not resurrect it.
+        assert_eq!(
+            submit_on_plan(&mut store, "impl-v1", Verdict::Approve),
+            PlanStatus::Superseded
+        );
+    }
+
+    #[test]
+    fn submit_on_deleted_plan_still_succeeds() {
+        let mut store = setup_store_with_items();
+        seed_plan(&mut store, "impl-login");
+        let doc = create_review(
+            &mut store,
+            CreateReview {
+                project: "test",
+                author: "ed",
+                target: ReviewTarget::Plan {
+                    slug: "impl-login".to_string(),
+                },
+                body: Some("Looks reasonable."),
+            },
+        )
+        .unwrap();
+        let id = doc.frontmatter.id.clone();
+        crate::ops::plan::delete_plan(&mut store, "test", "impl-login").unwrap();
+        // The review is the durable record: a derived write that cannot land
+        // never fails the submit.
+        let submitted = submit_review(&mut store, "test", &id, Some(Verdict::Approve)).unwrap();
+        assert_eq!(submitted.frontmatter.state, ReviewState::Submitted);
+        assert_eq!(submitted.frontmatter.verdict, Some(Verdict::Approve));
+    }
+
+    #[test]
+    fn review_start_on_a_missing_plan_reports_a_missing_target() {
+        let mut store = setup_store_with_items();
+        let err = create_review(
+            &mut store,
+            CreateReview {
+                project: "test",
+                author: "ed",
+                target: ReviewTarget::Plan {
+                    slug: "no-such-plan".to_string(),
+                },
+                body: Some("summary"),
+            },
+        )
+        .unwrap_err();
+        match err {
+            Error::ReviewTargetMissing(msg) => assert!(msg.contains("plan"), "{msg}"),
+            other => panic!("expected ReviewTargetMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn comment_doc_is_not_applicable_on_a_plan_review() {
+        let mut store = setup_store_with_items();
+        seed_plan(&mut store, "impl-login");
+        let doc = create_review(
+            &mut store,
+            CreateReview {
+                project: "test",
+                author: "ed",
+                target: ReviewTarget::Plan {
+                    slug: "impl-login".to_string(),
+                },
+                body: Some("summary"),
+            },
+        )
+        .unwrap();
+        let err = add_comment(
+            &mut store,
+            AddComment {
+                project: "test",
+                review_id: &doc.frontmatter.id,
+                body: "Scoped feedback.",
+                doc: Some(CommentDoc {
+                    kind: CommentDocKind::Phase,
+                    stem: "phase-1-one".to_string(),
+                }),
+                anchor: None,
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::CommentDocNotApplicable), "{err:?}");
     }
 
     // -- count_open_reviews --
