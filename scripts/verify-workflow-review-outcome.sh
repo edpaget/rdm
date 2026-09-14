@@ -1501,4 +1501,183 @@ grep -q -- '--path' "$TMP/persist7b.out" ||
     fail "7b: dropping --path did NOT make rdm refuse the quote — section 7's anchor assertion is vacuous"
 pass "7b: dropping --path makes the quote refusal fire, naming --path"
 
+# --- 7c. REAL WORKTREE: the persist's own `worktree add` -> `cd` seam --------
+# Sections 7/7b run from a checkout that already IS the review target, so they
+# never emit or execute the `worktreeRef` branch of `persistReviewCommands` —
+# the branch EVERY real consumer takes (rdm-wf-review-refute-fix.js passes
+# `{ worktreeRef, pathAnchors: true, fallbackTarget }`). This section drives
+# that branch through a real `rdm worktree add` -> `cd`.
+#
+# Two things only a real worktree can show:
+#   (i)  `--implements` is INFERRED from the worktree's item (section 7 has to
+#        inject an explicit --implements, because its checkout is on no phase
+#        branch and inference has nothing to key off).
+#   (ii) A worktree branch with NO commits of its own makes
+#        merge-base(HEAD, main) == HEAD, so the reviewed range is EMPTY and
+#        every --path anchor is refused. `review start` still succeeds, so the
+#        review exists but can never hold an anchored comment. That is the
+#        condition the writer's documented anchoring fallback (drop
+#        --path/--quote/--occurrence, leave a whole-document comment) exists
+#        to absorb; the fallback itself is prose executed by an agent, so what
+#        is gated here is the REFUSAL that triggers it, not the agent's retry.
+say "7c. Real worktree: the persist's worktree add -> cd seam, and the empty-diff case"
+
+SRC7C="$TMP/src7c"
+PLAN7C="$TMP/plan7c"
+mkdir -p "$SRC7C" "$PLAN7C"
+
+git -C "$SRC7C" init -b main -q
+mkdir -p "$SRC7C/src"
+printf 'fn one() {}\nfn two() {}\nfn three() {}\n' >"$SRC7C/src/lib.rs"
+git -C "$SRC7C" add . >/dev/null
+git -C "$SRC7C" -c user.email=t@t.com -c user.name=t commit -q -m base
+
+"$RDM_BIN" --root "$PLAN7C" init >/dev/null
+"$RDM_BIN" --root "$PLAN7C" project create demo >/dev/null
+"$RDM_BIN" --root "$PLAN7C" roadmap create rm --title RM --no-edit --project demo >/dev/null
+"$RDM_BIN" --root "$PLAN7C" phase create design --title Design --number 1 \
+    --no-edit --roadmap rm --project demo >/dev/null
+PROJ_MD_C="$PLAN7C/projects/demo/project.md"
+awk 'NR==1{print; print "source:"; print "  repo: \"'"$SRC7C"'\""; next} {print}' \
+    "$PROJ_MD_C" >"$PROJ_MD_C.new"
+mv "$PROJ_MD_C.new" "$PROJ_MD_C"
+# Exactly one approved plan, so --implements can be INFERRED from the worktree.
+"$RDM_BIN" --root "$PLAN7C" plan create design-plan --title Plan \
+    --implements phase/rm/phase-1-design --body "Plan body." --no-edit --project demo >/dev/null
+PRC=$("$RDM_BIN" --root "$PLAN7C" review start --on plan/design-plan --no-edit --project demo |
+    sed -n "s/.*'\([^']*\)'.*/\1/p" | head -n 1)
+"$RDM_BIN" --root "$PLAN7C" review submit "$PRC" --verdict approve --body "Approved." \
+    --no-edit --project demo >/dev/null
+
+# Emit the persist commands from the REAL writer, WITH worktreeRef set — the
+# shape rdm-wf-review-refute-fix.js actually passes. No --implements rewrite
+# here: inference is part of what this section proves.
+cat >"$TMP/emit7c.mjs" <<'NODE_EMIT7C'
+import fs from 'node:fs';
+
+const [wfPath, rdmBin, worktreeRef] = process.argv.slice(2);
+const src = fs.readFileSync(wfPath, 'utf8');
+// Same extraction as section 7: evaluate ONLY the stamped shared block.
+const BEGIN = 'review-refute-fix:begin';
+const END = 'review-refute-fix:end';
+const b = src.indexOf(BEGIN);
+const e = src.indexOf(END);
+if (b < 0 || e < 0) throw new Error('stamped block markers not found in ' + wfPath);
+const block = src.slice(src.indexOf('\n', b) + 1, src.lastIndexOf('\n', e));
+if (block.indexOf('function persistReviewCommands') < 0) {
+  throw new Error('persistReviewCommands is not inside the stamped block');
+}
+const fn = new Function('exportsOut', block + '\nexportsOut.persistReviewCommands = persistReviewCommands;\n');
+const out = {};
+fn(out);
+
+const findings = [
+  {
+    id: 'f1',
+    concern: 'naming',
+    severity: 'blocking',
+    confidence: 95,
+    what_fails: 'the renamed function is unclear',
+    quote: 'fn two_renamed() {}',
+    location: 'src/lib.rs:2',
+  },
+];
+// `worktreeRef` is passed in so the mutation self-test can blank it without
+// editing this script's logic.
+const opts = { pathAnchors: true, fallbackTarget: 'phase/rm/phase-1-design' };
+if (worktreeRef) opts.worktreeRef = worktreeRef;
+process.stdout.write(
+  out
+    .persistReviewCommands(
+      { mode: 'code', outcome: 'rework', survivors: findings },
+      'change/HEAD',
+      { rdmBin: rdmBin, project: 'demo' },
+      opts
+    )
+    .join('\n') + '\n'
+);
+NODE_EMIT7C
+
+if ! run_node "$TMP/emit7c.mjs" "$WF" "$RDM_BIN --root $PLAN7C" "rm/1" >"$TMP/persist7c.sh" 2>"$TMP/emit7c.err"; then
+    cat "$TMP/emit7c.err" >&2
+    fail "7c: could not emit the worktreeRef persist commands from the real writer"
+fi
+
+# The seed is only meaningful if the emitted script really takes the branch.
+grep -q 'worktree add rm/1' "$TMP/persist7c.sh" ||
+    fail "7c: the emitted commands carry no 'worktree add' — worktreeRef was not honored"
+# shellcheck disable=SC2016  # the literal capture variable is the pattern
+grep -q 'cd "$(head -n 1 "$RDM_PERSIST_WT")"' "$TMP/persist7c.sh" ||
+    fail "7c: the emitted commands never cd into the worktree"
+grep -q -- '--implements' "$TMP/persist7c.sh" &&
+    fail "7c: the emitted commands carry an explicit --implements — inference is what this section tests"
+
+# --- 7c(i): a worktree branch WITH its own commit anchors and infers ---------
+# Create the worktree and commit on it, so base..head is a real range.
+WT7C=$(cd "$SRC7C" && "$RDM_BIN" --root "$PLAN7C" worktree add rm/1 --project demo | head -n 1)
+[ -d "$WT7C" ] || fail "7c: rdm worktree add did not produce a directory: $WT7C"
+printf 'fn one() {}\nfn two_renamed() {}\nfn three() {}\n' >"$WT7C/src/lib.rs"
+git -C "$WT7C" add . >/dev/null
+git -C "$WT7C" -c user.email=t@t.com -c user.name=t commit -q -m "rename two"
+WT7C_HEAD=$(git -C "$WT7C" rev-parse HEAD)
+
+# Run the emitted persist from the SOURCE repo: its own `worktree add` is
+# idempotent and resolves to the worktree above, then it cds there itself.
+if ! (cd "$SRC7C" && sh "$TMP/persist7c.sh") >"$TMP/persist7c.out" 2>&1; then
+    cat "$TMP/persist7c.out" >&2
+    fail "7c: the emitted worktreeRef persist commands did not run cleanly"
+fi
+REVIEW7C=$(sed -n 's/^reviewId=//p' "$TMP/persist7c.out" | head -n 1)
+[ -n "$REVIEW7C" ] || REVIEW7C=$("$RDM_BIN" --root "$PLAN7C" review list --on "change/$WT7C_HEAD" \
+    --format json --project demo | sed -n 's/.*"id": "\([^"]*\)".*/\1/p' | head -n 1)
+[ -n "$REVIEW7C" ] || fail "7c: no review was persisted against the worktree tip"
+
+SHOW7C=$(cd "$WT7C" && "$RDM_BIN" --root "$PLAN7C" review show "$REVIEW7C" --format json --project demo)
+printf '%s' "$SHOW7C" | grep -q '"state": "resolved"' ||
+    fail "7c: the --path anchor did not resolve against the worktree tip: $SHOW7C"
+printf '%s' "$SHOW7C" | grep -q "\"source_link\": \"rdm:src/src/lib.rs@$WT7C_HEAD#L2\"" ||
+    fail "7c: the permalink is not pinned to the WORKTREE's tip: $SHOW7C"
+# The payoff: nothing passed --implements, so this came from the worktree item.
+printf '%s' "$SHOW7C" | grep -q '"implements": "rdm:plan/design-plan"' ||
+    fail "7c: --implements was not inferred from the worktree's item: $SHOW7C"
+pass "7c(i): the worktree seam anchors against the worktree tip and infers --implements from its item"
+
+# --- 7c(ii): a worktree branch with NO commits of its own -------------------
+# merge-base(HEAD, main) == HEAD, so the reviewed range is empty.
+WT7D=$(cd "$SRC7C" && "$RDM_BIN" --root "$PLAN7C" worktree add rm --project demo | head -n 1)
+[ -d "$WT7D" ] || fail "7c(ii): could not create a second worktree: $WT7D"
+WT7D_HEAD=$(git -C "$WT7D" rev-parse HEAD)
+WT7D_MB=$(git -C "$WT7D" merge-base HEAD main)
+[ "$WT7D_HEAD" = "$WT7D_MB" ] ||
+    fail "7c(ii): the seed is wrong — a commitless worktree branch must have merge-base == HEAD"
+
+# `review start` SUCCEEDS: the review exists with base == head.
+ID7D=$(cd "$WT7D" && "$RDM_BIN" --root "$PLAN7C" review start --on change/HEAD \
+    --implements rdm:plan/design-plan --no-edit --project demo |
+    sed -n "s/.*'\([^']*\)'.*/\1/p" | head -n 1)
+[ -n "$ID7D" ] || fail "7c(ii): review start refused a commitless worktree — behavior changed, update this section"
+
+# ...but every --path anchor is refused, because nothing is in the range.
+ANCHOR_ERR=$(cd "$WT7D" && "$RDM_BIN" --root "$PLAN7C" review comment "$ID7D" \
+    --path src/lib.rs --quote "fn two() {}" --body "x" --no-edit --project demo 2>&1 || true)
+printf '%s' "$ANCHOR_ERR" | grep -q 'is not touched by' ||
+    fail "7c(ii): a --path anchor against an empty range was NOT refused: $ANCHOR_ERR"
+# The tell: the refusal names the same sha on both sides of the range.
+printf '%s' "$ANCHOR_ERR" | grep -q "$(printf '%.12s' "$WT7D_HEAD")\.\.$(printf '%.12s' "$WT7D_HEAD")" ||
+    fail "7c(ii): the refusal does not show base == head, so this is a different failure: $ANCHOR_ERR"
+pass "7c(ii): a commitless worktree yields an empty range — review start succeeds, every --path anchor is refused"
+
+# --- 7c(iii): planted mutation — dropping worktreeRef breaks the seam --------
+say "7c(iii). Planted mutation: without worktreeRef the persist never enters the worktree"
+if ! run_node "$TMP/emit7c.mjs" "$WF" "$RDM_BIN --root $PLAN7C" "" >"$TMP/persist7c-mut.sh" 2>/dev/null; then
+    fail "7c(iii): could not emit the commands with worktreeRef blanked"
+fi
+if cmp -s "$TMP/persist7c.sh" "$TMP/persist7c-mut.sh"; then
+    fail "7c(iii): blanking worktreeRef changed nothing — the self-test exercises nothing"
+fi
+if grep -q 'worktree add' "$TMP/persist7c-mut.sh"; then
+    fail "7c(iii): the mutated emission STILL enters a worktree — section 7c(i) is vacuous"
+fi
+pass "7c(iii): without worktreeRef the emission has no worktree add -> cd, so 7c(i) is load-bearing"
+
 say "verify-workflow-review-outcome.sh: ALL GREEN"
