@@ -65,6 +65,17 @@ pub fn file_at_argv(rev: &str, path: &str) -> Vec<String> {
 }
 
 /// The argv [`GitSourceRepo::unified_diff`] builds.
+///
+/// The pathspec carries git's `:(top)` magic prefix, which anchors it at the
+/// repository root. Without it git resolves a `git diff` pathspec relative to
+/// the **current directory**, while [`file_at_argv`]'s `git show <rev>:<path>`
+/// always resolves from the **repository root** — and `GitSourceRepo` is
+/// routinely rooted at a subdirectory of the checkout, since it is built from
+/// the invoking cwd so a linked worktree's own HEAD is what `change/HEAD`
+/// pins. With the two disagreeing, a comment anchored from a subdirectory
+/// reads its file successfully but computes an empty hunk set, and is refused
+/// as "not touched by `<base>..<head>`" for a file the change really does
+/// modify. `:(top)` is a no-op when the root already is the top level.
 #[must_use]
 pub fn unified_diff_argv(base: &str, head: &str, path: &str) -> Vec<String> {
     vec![
@@ -73,7 +84,7 @@ pub fn unified_diff_argv(base: &str, head: &str, path: &str) -> Vec<String> {
         "--no-color".to_string(),
         format!("{base}..{head}"),
         "--".to_string(),
-        path.to_string(),
+        format!(":(top){path}"),
     ]
 }
 
@@ -262,6 +273,56 @@ mod tests {
         // An untouched path is `None`, not an empty diff.
         assert_eq!(
             repo.unified_diff(&base, &head, "missing.txt").unwrap(),
+            None
+        );
+    }
+
+    /// `GitSourceRepo` is rooted at the invoking cwd (so a linked worktree's own
+    /// HEAD is what `change/HEAD` pins), which means the root is very often a
+    /// SUBDIRECTORY of the checkout rather than its top level. `git show
+    /// <rev>:<path>` resolves its path from the repository root, so `file_at`
+    /// works from anywhere; a bare `git diff -- <path>` pathspec is resolved
+    /// relative to the CWD instead. Unless the two agree, a comment anchored
+    /// from a subdirectory reads the file fine but sees an empty hunk set and
+    /// is refused as "not touched by <base>..<head>" — a confidently false
+    /// error about a file the change really does modify.
+    #[test]
+    fn unified_diff_finds_hunks_from_a_subdirectory_of_the_checkout() {
+        let dir = seed();
+        let top = dir.path();
+        // A sibling directory to stand in, committed so it exists at both revs.
+        std::fs::create_dir_all(top.join("other")).unwrap();
+        std::fs::write(top.join("other/keep.txt"), "x\n").unwrap();
+        git(top, &["add", "."]);
+        git(top, &["commit", "-m", "sibling"]);
+
+        let from_top = GitSourceRepo::new(top);
+        let base = from_top.merge_base("main", "topic").unwrap().unwrap();
+        let head = from_top.rev_parse("topic").unwrap().unwrap();
+
+        // Rooted at a subdirectory — what `discover_source_repo` hands us when
+        // the operator runs rdm from anywhere but the checkout's top level.
+        let from_sub = GitSourceRepo::new(top.join("other"));
+
+        // The control: reading the file at head already works from here.
+        assert_eq!(
+            from_sub.file_at(&head, "a.txt").unwrap().unwrap(),
+            "one\nTWO\nthree\n",
+            "file_at resolves from the repo root, so this half always worked"
+        );
+
+        let diff = from_sub
+            .unified_diff(&base, &head, "a.txt")
+            .unwrap()
+            .expect("a.txt IS modified by base..head, so the diff must not be None");
+        assert!(
+            diff.contains("@@"),
+            "expected hunk headers when diffing from a subdirectory, got: {diff}"
+        );
+
+        // And an untouched path is still None from here, not a false positive.
+        assert_eq!(
+            from_sub.unified_diff(&base, &head, "missing.txt").unwrap(),
             None
         );
     }

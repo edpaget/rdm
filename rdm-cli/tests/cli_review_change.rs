@@ -398,6 +398,94 @@ fn change_review_start_names_base_when_there_is_no_merge_base() {
 
 // --- AC2: in-hunk anchor, out-of-hunk error, drift, unresolved ---
 
+/// Every other test here runs with the cwd at the checkout's top level. That
+/// hides an asymmetry between the two git reads a `--path` comment makes:
+/// `git show <rev>:<path>` resolves from the repository root, but a bare
+/// `git diff -- <path>` pathspec resolves from the CURRENT DIRECTORY. Since
+/// `discover_source_repo` roots the source repo at the invoking cwd, running
+/// this from a subdirectory used to read the file fine, compute an EMPTY hunk
+/// set, and refuse a genuinely-modified file as untouched.
+#[test]
+fn change_comment_anchors_from_a_subdirectory_of_the_checkout() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+
+    // A sibling directory to invoke from, present at both revs.
+    let sub = src.path().join("other");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("keep.txt"), "x\n").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "sibling"]);
+
+    // Start the review from the subdirectory too — `change/HEAD` must still
+    // pin this checkout's tip.
+    let id = start_change_review(
+        plan.path(),
+        &sub,
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+
+    // The repo-relative path is the documented contract, from anywhere.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Anchored from a subdirectory.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(&sub)
+        .assert()
+        .success();
+
+    let j = review_json(plan.path(), &sub, &id);
+    assert_eq!(j["comments"][0]["resolution"]["state"], "resolved");
+    assert_eq!(j["comments"][0]["anchor"]["anchor_type"], "file-quote");
+    assert_eq!(j["comments"][0]["anchor"]["start_line"], 2);
+
+    // The out-of-hunk refusal must still be reachable from here — the fix
+    // must not turn every quote into a match.
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn three() {}",
+            "--body",
+            "Untouched.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(&sub)
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("nearest: lines 2-2"),
+        "an out-of-hunk quote must still be refused from a subdirectory: {text}"
+    );
+}
+
 #[test]
 fn change_comment_anchor_lifecycle() {
     let src = init_source_repo();
