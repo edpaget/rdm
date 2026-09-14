@@ -43,16 +43,37 @@ fn git(dir: &Path, args: &[&str]) -> std::process::Output {
     out
 }
 
+/// A temp source repo whose git root is a **subdirectory** of the `TempDir`.
+///
+/// `rdm worktree add` places a worktree at
+/// `repo_root.parent()/<name>__worktrees/<item>` — a sibling of the repo. If
+/// the repo root were the `TempDir` itself that sibling would land in the
+/// system temp directory and outlive `TempDir::drop`, leaking a populated git
+/// worktree on every run. Rooting the repo one level down keeps the sibling
+/// inside the `TempDir`, so it is removed with everything else.
+struct SourceRepo {
+    _dir: TempDir,
+    root: std::path::PathBuf,
+}
+
+impl SourceRepo {
+    fn path(&self) -> &Path {
+        &self.root
+    }
+}
+
 /// A source repo on `main` with one commit.
-fn init_source_repo() -> TempDir {
+fn init_source_repo() -> SourceRepo {
     let dir = TempDir::new().unwrap();
-    let p = dir.path();
+    let root = dir.path().join("repo");
+    std::fs::create_dir_all(&root).unwrap();
+    let p = root.as_path();
     git(p, &["init", "-b", "main"]);
     std::fs::create_dir_all(p.join("src")).unwrap();
     std::fs::write(p.join("src/lib.rs"), "fn one() {}\n").unwrap();
     git(p, &["add", "."]);
     git(p, &["commit", "-m", "base"]);
-    dir
+    SourceRepo { _dir: dir, root }
 }
 
 /// Hand-edits `project.md` to point the project at `repo` as its source —

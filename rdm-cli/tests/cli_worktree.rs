@@ -5,7 +5,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 fn rdm() -> Command {
@@ -104,18 +104,39 @@ fn init_plan_repo() -> TempDir {
     dir
 }
 
+/// A temp project repo whose git root is a **subdirectory** of the `TempDir`.
+///
+/// `rdm worktree add` places a worktree at
+/// `repo_root.parent()/<name>__worktrees/<item>` — a sibling of the repo. If
+/// the repo root were the `TempDir` itself that sibling would land in the
+/// system temp directory and outlive `TempDir::drop`, leaking a populated git
+/// worktree on every run. Rooting the repo one level down keeps the sibling
+/// inside the `TempDir`, so it is removed with everything else.
+struct SourceRepo {
+    _dir: TempDir,
+    root: PathBuf,
+}
+
+impl SourceRepo {
+    fn path(&self) -> &Path {
+        &self.root
+    }
+}
+
 /// A project (code) repo with one commit on `main`.
-fn init_project_repo() -> TempDir {
+fn init_project_repo() -> SourceRepo {
     let dir = TempDir::new().unwrap();
-    git(dir.path(), &["init", "-b", "main"]);
-    fs::write(dir.path().join("README.md"), "# project").unwrap();
-    git(dir.path(), &["add", "."]);
-    git(dir.path(), &["commit", "-m", "initial"]);
-    dir
+    let root = dir.path().join("repo");
+    fs::create_dir_all(&root).unwrap();
+    git(&root, &["init", "-b", "main"]);
+    fs::write(root.join("README.md"), "# project").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-m", "initial"]);
+    SourceRepo { _dir: dir, root }
 }
 
 /// Builds an `rdm worktree` command rooted at `plan`, running in `project`.
-fn worktree_cmd(plan: &TempDir, project: &TempDir) -> Command {
+fn worktree_cmd(plan: &TempDir, project: &SourceRepo) -> Command {
     let mut cmd = rdm();
     cmd.arg("--root")
         .arg(plan.path())
@@ -452,7 +473,7 @@ fn prune_removes_done_keeps_open() {
 /// Stands up a done-phase worktree carrying an unmerged commit on its branch,
 /// then returns `(plan, project)`. The done phase is `phase-1-foo` / branch
 /// `phase/my-roadmap/phase-1-foo`.
-fn setup_done_worktree_with_unmerged_branch() -> (TempDir, TempDir) {
+fn setup_done_worktree_with_unmerged_branch() -> (TempDir, SourceRepo) {
     let plan = init_plan_repo();
     let project = init_project_repo();
 
@@ -585,7 +606,7 @@ fn inside_plan_repo_errors() {
 /// Returns `(plan, project, wt_dir, feature_path)`; `wt_dir` must be kept
 /// alive by the caller for the duration of the test (its `Drop` cleans up
 /// the linked worktree's directory).
-fn setup_diverged_feature_worktree() -> (TempDir, TempDir, TempDir, std::path::PathBuf) {
+fn setup_diverged_feature_worktree() -> (TempDir, SourceRepo, TempDir, std::path::PathBuf) {
     let plan = init_plan_repo();
     let project = init_project_repo();
 
