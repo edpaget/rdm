@@ -411,7 +411,9 @@ fn change_comment_anchors_from_a_subdirectory_of_the_checkout() {
     let plan = init_plan_repo(src.path());
     create_plan(plan.path(), "design-plan", true);
 
-    // A sibling directory to invoke from, present at both revs.
+    // A sibling directory to invoke from. `init_source_repo` leaves HEAD on
+    // `topic`, so this commit lands only there — it just needs to exist in
+    // the working tree to `cd` into.
     let sub = src.path().join("other");
     std::fs::create_dir_all(&sub).unwrap();
     std::fs::write(sub.join("keep.txt"), "x\n").unwrap();

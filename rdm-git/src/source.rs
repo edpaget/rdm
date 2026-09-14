@@ -66,22 +66,35 @@ pub fn file_at_argv(rev: &str, path: &str) -> Vec<String> {
 
 /// The argv [`GitSourceRepo::unified_diff`] builds.
 ///
-/// The pathspec carries git's `:(top)` magic prefix, which anchors it at the
-/// repository root. Without it git resolves a `git diff` pathspec relative to
-/// the **current directory**, while [`file_at_argv`]'s `git show <rev>:<path>`
-/// always resolves from the **repository root** — and `GitSourceRepo` is
-/// routinely rooted at a subdirectory of the checkout, since it is built from
-/// the invoking cwd so a linked worktree's own HEAD is what `change/HEAD`
-/// pins. With the two disagreeing, a comment anchored from a subdirectory
-/// reads its file successfully but computes an empty hunk set, and is refused
-/// as "not touched by `<base>..<head>`" for a file the change really does
-/// modify. `:(top)` is a no-op when the root already is the top level.
+/// Two guards make this agree with [`file_at_argv`] about what `path` means,
+/// and BOTH are required.
+///
+/// `git show <rev>:<path>` always resolves from the **repository root**, but
+/// `GitSourceRepo` is routinely rooted at a subdirectory of the checkout — it
+/// is built from the invoking cwd, so a linked worktree's own HEAD is what
+/// `change/HEAD` pins. Unless the diff agrees, a comment anchored from a
+/// subdirectory reads its file successfully but computes an empty hunk set,
+/// and is refused as "not touched by `<base>..<head>`" for a file the change
+/// really does modify.
+///
+/// - `:(top)` on the pathspec anchors it at the repository root, since git
+///   otherwise resolves a `diff` pathspec relative to the current directory.
+///   It is a no-op when the root already is the top level.
+/// - `--no-relative` overrides the user's `diff.relative` config. With
+///   `diff.relative = true` set in `~/.gitconfig`, git restricts the diff to
+///   the current directory and strips the rest — which re-opens exactly the
+///   empty-hunk-set bug even with the `:(top)` pathspec, because the output
+///   is filtered after the pathspec is matched. rdm's git subprocesses do not
+///   clear `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`, so ambient user config
+///   reaches this command and the flag is what makes the result independent
+///   of it.
 #[must_use]
 pub fn unified_diff_argv(base: &str, head: &str, path: &str) -> Vec<String> {
     vec![
         "diff".to_string(),
         "--unified=0".to_string(),
         "--no-color".to_string(),
+        "--no-relative".to_string(),
         format!("{base}..{head}"),
         "--".to_string(),
         format!(":(top){path}"),
@@ -290,11 +303,18 @@ mod tests {
     fn unified_diff_finds_hunks_from_a_subdirectory_of_the_checkout() {
         let dir = seed();
         let top = dir.path();
-        // A sibling directory to stand in, committed so it exists at both revs.
+        // A sibling directory to stand in. `seed` leaves HEAD on `topic`, so
+        // this commit lands only there — it just needs to exist in the working
+        // tree for `GitSourceRepo` to be rooted at it.
         std::fs::create_dir_all(top.join("other")).unwrap();
         std::fs::write(top.join("other/keep.txt"), "x\n").unwrap();
         git(top, &["add", "."]);
         git(top, &["commit", "-m", "sibling"]);
+        // `diff.relative = true` is a real thing users set. It restricts a diff
+        // to the cwd, re-opening the empty-hunk-set bug even with the `:(top)`
+        // pathspec — so pin it here: this repo carries the hostile config, and
+        // the assertions below fail if `--no-relative` is dropped.
+        git(top, &["config", "diff.relative", "true"]);
 
         let from_top = GitSourceRepo::new(top);
         let base = from_top.merge_base("main", "topic").unwrap().unwrap();
