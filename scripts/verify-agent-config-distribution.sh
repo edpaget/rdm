@@ -1891,10 +1891,17 @@ grep -q "$FIXTURE_ROADMAP" "$TMP/codex-command.log" || fail 'Emitted Codex comma
 CODEX_FINALIZE=$(grep -F 'phase update ' "$CODEX_OUT/.agents/skills/rdm-do/SKILL.md" |
     sed -e "s/<phase>/$FIXTURE_PHASE/g" -e "s/<roadmap>/$FIXTURE_ROADMAP/g")
 [ -n "$CODEX_FINALIZE" ] || fail 'No emitted Codex finalize command to execute'
-HOME="$FIXTURE_HOME" RDM_ROOT="$FIXTURE_PLAN" RDM_BIN="$FIXTURE_BIN" \
-    RDM_SESSION=codex-distribution-fixture sh -c "$CODEX_FINALIZE" >"$TMP/codex-finalize.log"
+(
+    cd "$FIXTURE_REPO"
+    HOME="$FIXTURE_HOME" RDM_ROOT="$FIXTURE_PLAN" RDM_BIN="$FIXTURE_BIN" \
+        RDM_SESSION=codex-distribution-fixture sh -c "$CODEX_FINALIZE"
+) >"$TMP/codex-finalize.log"
 fixture_rdm phase show "$FIXTURE_PHASE" --roadmap "$FIXTURE_ROADMAP" --project "$FIXTURE_PROJECT" --format json >"$TMP/codex-finalized.json"
 grep -q '"status": "needs-review"' "$TMP/codex-finalized.json" || fail 'Codex finalize did not stop at needs-review'
+# These stamps are stored metadata, intentionally omitted by phase show's JSON projection.
+CODEX_PHASE_DOC="$FIXTURE_PLAN/projects/$FIXTURE_PROJECT/roadmaps/$FIXTURE_ROADMAP/$FIXTURE_PHASE.md"
+grep -qx "review_sha: $(fixture_git rev-parse HEAD)" "$CODEX_PHASE_DOC" || fail 'Codex finalize stamped the wrong source commit'
+grep -qx 'review_branch: feature/checkout' "$CODEX_PHASE_DOC" || fail 'Codex finalize stamped the wrong source branch'
 
 # Local skill bytes have one generator, unlike the intentionally divergent Claude lane.
 "$RDM_BIN" agent-config codex --skills --out "$TMP/codex-local" --project rdm --principles-file docs/principles.md >/dev/null 2>&1

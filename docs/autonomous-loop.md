@@ -237,7 +237,7 @@ rdm review blocked --project <proj> --format json
 ## Relation to the retired needs-review safety net
 
 Autopilot is the **active driver** — it pushes a roadmap forward phase by phase.
-Every lane that can produce a `needs-review` item now actively runs the
+Every Claude workflow lane that can produce a `needs-review` item actively runs the
 canonical review (`.claude/workflows/lib/review.mjs`) before that lane's
 finalize step returns: `rdm-wf-dispatch-phase`'s code-review stage runs it inline and
 returns a `reviewed`/`blocked` status as OUTCOME data — it persists no terminal
@@ -253,6 +253,12 @@ evidence. The autopilot lane never emits a `Done:` line — `rdm-wf-dispatch-pha
 review is an inline pipeline (not the `rdm-review` skill), and autopilot's
 advance step writes only `--status reviewed`. The `Done:` line is supplied later
 by `rdm-review` or at landing.
+
+The [Codex phase-one manual lane](codex-support.md) is an explicit exception:
+it stops at `needs-review` for independent review handoff and has no stop-hook
+reprompt or automatic review driver. The status remains supported; entering
+it captures `review_sha` and `review_branch` from the invoking checkout.
+Do not treat the absent hook as review approval or permission to land.
 
 See also [`docs/escalation-protocol.md`](./escalation-protocol.md) for the
 shared rule on what escalates, what retries, and how parked escalations are

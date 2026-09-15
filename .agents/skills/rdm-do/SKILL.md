@@ -37,7 +37,7 @@ After verification, commit only your source changes with a conventional message.
 "${RDM_BIN:-rdm}" commit -m "chore(plan): hand implementation to independent review"
 ```
 
-Use `task update <slug>` for tasks. `--commit` is valid only with terminal statuses, not `needs-review`: keep the source SHA in the handoff body and pinned code links until landing. Plan commits and source commits are different repositories; do not confuse their SHAs. `status` and `commit` take no project flag. Never use `--all` to compensate for a lost session.
+Run that status update from the implementation worktree after confirming its HEAD and branch: rdm automatically stamps internal `review_sha` and `review_branch` metadata from the current checkout. Read the status back and run `"${RDM_BIN:-rdm}" review pending --format json --project rdm` from the same checkout; confirm the item appears with the intended `branch`. The ordinary item JSON does not expose the internal review SHA, so retain the explicit source SHA and pinned links in the handoff. Use `task update <slug>` for tasks. `--commit` is the terminal completion commit, not the review revision. Plan commits and source commits are different repositories; do not confuse their SHAs. `status` and `commit` take no project flag. Never use `--all` to compensate for a lost session.
 
 Handoff must name the item, worktree, branch, source SHA, diff base, checks, and any limitations. Implementation ends at `needs-review`. An independent human or working code-review host must review the actual implementation diff before advancing to `reviewed`; self-checks and a missing review runtime are not approval. Landing is a separate, explicitly authorized operation.
 
