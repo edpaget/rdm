@@ -32,12 +32,12 @@ Implement only the selected scope, using repository testing and development poli
 After verification, commit only your source changes with a conventional message. Do not add `Done:` or merge to the default branch. Record the source SHA and test evidence in the item's full preserved body, including a `Key code` section with pinned `rdm:src/<path>@<source-sha>` links. Run link checks before committing plan changes.
 
 ```bash
-"${RDM_BIN:-rdm}" phase update <phase> --roadmap <roadmap> --status needs-review --commit <source-sha> --no-edit {proj_flag}
+"${RDM_BIN:-rdm}" phase update <phase> --roadmap <roadmap> --status needs-review --no-edit {proj_flag}
 "${RDM_BIN:-rdm}" status
 "${RDM_BIN:-rdm}" commit -m "chore(plan): hand implementation to independent review"
 ```
 
-Use `task update <slug>` for tasks. Plan commits and source commits are different repositories; do not confuse their SHAs. `status` and `commit` take no project flag. Never use `--all` to compensate for a lost session.
+Use `task update <slug>` for tasks. `--commit` is valid only with terminal statuses, not `needs-review`: keep the source SHA in the handoff body and pinned code links until landing. Plan commits and source commits are different repositories; do not confuse their SHAs. `status` and `commit` take no project flag. Never use `--all` to compensate for a lost session.
 
 Handoff must name the item, worktree, branch, source SHA, diff base, checks, and any limitations. Implementation ends at `needs-review`. An independent human or working code-review host must review the actual implementation diff before advancing to `reviewed`; self-checks and a missing review runtime are not approval. Landing is a separate, explicitly authorized operation.
 

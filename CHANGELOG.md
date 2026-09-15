@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The Codex manual implementation handoff is exercised against the real CLI, recording source provenance in code links while leaving the item at `needs-review` (the terminal-only `--commit` flag is reserved for landing).
+
 - Codex agent configuration with `AGENTS.md` and four discoverable manual skills: roadmap authoring, implementation with independent-review handoff, document revision, and explicit landing. Repository dogfooding now includes a rebuild-before-use entrypoint and setup guidance; unported workflow skills are reported rather than emitted as working support.
 
 - Foundation for a new `rdm:` link scheme in `rdm-core`: `rdm:roadmap/<slug>`, `rdm:phase/<roadmap-slug>/<stem>`, and `rdm:task/<slug>` reference plan items using the same syntax as `Done:` lines and `rdm review --on`, and `rdm:src/<path>[@<rev>][#Lstart[-Lend]]` references a location in a project's source repository. A new `source: { repo, default_branch }` block on project frontmatter records the repository `rdm:src/` links resolve against. `rdm roadmap create` now also rejects the reserved slug `src` (alongside the existing `task` reservation) with an actionable error. This phase adds only the data model and parsing — no CLI surface or link resolution yet.

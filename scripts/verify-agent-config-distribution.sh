@@ -1888,6 +1888,13 @@ CODEX_COMMAND=$(grep -F 'roadmap list ' "$CODEX_OUT/.agents/skills/rdm-roadmap/S
 HOME="$FIXTURE_HOME" RDM_ROOT="$FIXTURE_PLAN" RDM_BIN="$FIXTURE_BIN" \
     RDM_SESSION=codex-distribution-fixture sh -c "$CODEX_COMMAND" >"$TMP/codex-command.log"
 grep -q "$FIXTURE_ROADMAP" "$TMP/codex-command.log" || fail 'Emitted Codex command did not read the fixture'
+CODEX_FINALIZE=$(grep -F 'phase update ' "$CODEX_OUT/.agents/skills/rdm-do/SKILL.md" |
+    sed -e "s/<phase>/$FIXTURE_PHASE/g" -e "s/<roadmap>/$FIXTURE_ROADMAP/g")
+[ -n "$CODEX_FINALIZE" ] || fail 'No emitted Codex finalize command to execute'
+HOME="$FIXTURE_HOME" RDM_ROOT="$FIXTURE_PLAN" RDM_BIN="$FIXTURE_BIN" \
+    RDM_SESSION=codex-distribution-fixture sh -c "$CODEX_FINALIZE" >"$TMP/codex-finalize.log"
+fixture_rdm phase show "$FIXTURE_PHASE" --roadmap "$FIXTURE_ROADMAP" --project "$FIXTURE_PROJECT" --format json >"$TMP/codex-finalized.json"
+grep -q '"status": "needs-review"' "$TMP/codex-finalized.json" || fail 'Codex finalize did not stop at needs-review'
 
 # Local skill bytes have one generator, unlike the intentionally divergent Claude lane.
 "$RDM_BIN" agent-config codex --skills --out "$TMP/codex-local" --project rdm --principles-file docs/principles.md >/dev/null 2>&1
