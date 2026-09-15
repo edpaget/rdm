@@ -137,7 +137,7 @@ pub(crate) enum Command {
     },
     /// Generate agent configuration for AI coding assistants.
     AgentConfig {
-        /// Target platform (claude, agents-md, cursor, copilot, pi).
+        /// Target platform (claude, agents-md, codex, cursor, copilot, pi).
         #[arg(default_value = "agents-md")]
         platform: String,
         /// Project name to embed in generated examples.
@@ -149,7 +149,7 @@ pub(crate) enum Command {
         /// Path to a principles/conventions file to reference in generated instructions.
         #[arg(long)]
         principles_file: Option<String>,
-        /// Generate Claude Code skill files instead of an instruction file.
+        /// Generate skill files instead of instructions (Claude, Codex manual lane, or Pi).
         #[arg(long, conflicts_with = "plugin")]
         skills: bool,
         /// Write to the user-level config directory (e.g. ~/.claude/) instead of a project directory.

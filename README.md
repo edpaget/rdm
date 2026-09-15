@@ -105,11 +105,24 @@ The plugin shims resolve the `rdm` binary at runtime, using the first of these t
 
 So a normally installed `rdm` needs no configuration — the flag and env var are overrides for a non-`PATH` binary (a repo-local build, say). If none resolves, the shim stops with an actionable error rather than guessing a path.
 
-**This is the recommended distribution path for downstream consumers.**
+**This is the recommended distribution path for downstream Claude Code consumers.**
+
+### Codex: manual, review-gated lane
+
+```sh
+rdm agent-config codex --project my-project --out /path/to/source
+rdm agent-config codex --skills --project my-project --out /path/to/source
+```
+
+This writes `AGENTS.md` and four `.agents/skills` entries: `rdm-roadmap`,
+`rdm-do`, `rdm-revise`, and `rdm-land`. Implementation stops at `needs-review`
+for independent review; automated review/dispatch and Codex plugin emission
+are not yet supported. Inspect existing instruction files before overwriting
+them. See [Codex setup, support matrix, and repository dogfooding](docs/codex-support.md).
 
 ### CLI Agent Config (Fallback)
 
-For users unable to use the plugin marketplace, generate instructions and skill definitions manually:
+For Claude users unable to use the plugin marketplace, or for Pi users, generate instructions and skill definitions manually:
 
 ```bash
 # Generate CLAUDE.md instructions for a target project

@@ -14,6 +14,8 @@ pub enum Platform {
     Claude,
     /// Cross-agent standard (`AGENTS.md`)
     AgentsMd,
+    /// OpenAI Codex (`AGENTS.md` and `.agents/skills`)
+    Codex,
     /// Cursor IDE (`.cursor/rules/rdm.mdc`)
     Cursor,
     /// GitHub Copilot (`.github/copilot-instructions.md`)
@@ -28,6 +30,7 @@ impl Platform {
         match self {
             Platform::Claude => "CLAUDE.md",
             Platform::AgentsMd => "AGENTS.md",
+            Platform::Codex => "AGENTS.md",
             Platform::Cursor => ".cursor/rules/rdm.mdc",
             Platform::Copilot => ".github/copilot-instructions.md",
             Platform::Pi => ".pi/AGENTS.md",
@@ -45,6 +48,7 @@ impl Platform {
     /// |------------|------------------|
     /// | Claude     | `~/.claude/`     |
     /// | AgentsMd   | `~/.claude/`     |
+    /// | Codex      | `$CODEX_HOME` or `~/.codex/` |
     /// | Cursor     | `~/`             |
     /// | Copilot    | `~/`             |
     /// | Pi         | `~/.pi/agent`    |
@@ -53,10 +57,16 @@ impl Platform {
     ///
     /// Returns an error if the home directory cannot be determined.
     pub fn user_level_dir(&self) -> Result<PathBuf, String> {
+        if *self == Platform::Codex
+            && let Some(dir) = std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty())
+        {
+            return Ok(PathBuf::from(dir));
+        }
         let home = home_dir()?;
         let dir = match self {
             // conventional_path is "CLAUDE.md" / "AGENTS.md" — flat file, so base is ~/.claude/
             Platform::Claude | Platform::AgentsMd => home.join(".claude"),
+            Platform::Codex => home.join(".codex"),
             // conventional_path is ".cursor/rules/rdm.mdc" — includes subdirs
             Platform::Cursor => home,
             // conventional_path is ".github/copilot-instructions.md" — includes subdir
@@ -90,6 +100,7 @@ impl Platform {
     /// | Platform   | Subdir          |
     /// |------------|-----------------|
     /// | Claude     | `.claude/skills`|
+    /// | Codex      | `.agents/skills`|
     /// | Pi         | `.pi/skills`    |
     /// | others     | `None`          |
     ///
@@ -97,6 +108,7 @@ impl Platform {
     pub fn project_skills_subdir(&self) -> Option<&'static str> {
         match self {
             Platform::Claude => Some(".claude/skills"),
+            Platform::Codex => Some(".agents/skills"),
             Platform::Pi => Some(".pi/skills"),
             _ => None,
         }
@@ -107,6 +119,7 @@ impl Platform {
     /// | Platform   | Directory                |
     /// |------------|--------------------------|
     /// | Claude     | `~/.claude/skills`       |
+    /// | Codex      | `~/.agents/skills` (independent of `CODEX_HOME`) |
     /// | Pi         | `~/.pi/agent/skills`     |
     ///
     /// # Errors
@@ -117,6 +130,7 @@ impl Platform {
         let home = home_dir()?;
         match self {
             Platform::Claude => Ok(home.join(".claude").join("skills")),
+            Platform::Codex => Ok(home.join(".agents/skills")),
             Platform::Pi => Ok(home.join(".pi").join("agent").join("skills")),
             other => Err(format!("--skills is not supported for platform '{other}'")),
         }
@@ -128,6 +142,7 @@ impl fmt::Display for Platform {
         match self {
             Platform::Claude => write!(f, "claude"),
             Platform::AgentsMd => write!(f, "agents-md"),
+            Platform::Codex => write!(f, "codex"),
             Platform::Cursor => write!(f, "cursor"),
             Platform::Copilot => write!(f, "copilot"),
             Platform::Pi => write!(f, "pi"),
@@ -142,11 +157,12 @@ impl FromStr for Platform {
         match s.to_lowercase().as_str() {
             "claude" => Ok(Platform::Claude),
             "agents-md" => Ok(Platform::AgentsMd),
+            "codex" => Ok(Platform::Codex),
             "cursor" => Ok(Platform::Cursor),
             "copilot" => Ok(Platform::Copilot),
             "pi" => Ok(Platform::Pi),
             other => Err(format!(
-                "unknown platform '{other}'; expected one of: claude, agents-md, cursor, copilot, pi"
+                "unknown platform '{other}'; expected one of: claude, agents-md, codex, cursor, copilot, pi"
             )),
         }
     }
@@ -189,6 +205,9 @@ pub fn generate_agent_config(opts: &AgentConfigOptions) -> String {
     let instructions = agent_instructions(opts.project.as_deref(), opts.principles_file.as_deref());
 
     match opts.platform {
+        Platform::Codex => format!(
+            "{instructions}\n\n## Codex manual lane\n\n{CODEX_SUPPORT_NOTE}\n\nImplementation stops at `needs-review`. Do not use the generic direct-to-done shortcut above: independent review must pass before `reviewed`, and landing requires explicit authorization. Use `Done:` only for independently reviewed work being landed.\n"
+        ),
         Platform::Cursor => {
             format!(
                 "---\ndescription: Instructions for using rdm to manage project roadmaps\nglobs:\n---\n\n{instructions}"
@@ -303,6 +322,42 @@ pub fn generate_skills(opts: &SkillOptions) -> Vec<SkillFile> {
         skill_plan_review(&proj_flag, principles_note.as_deref()),
         skill_backlog(&proj_flag, principles_note.as_deref()),
     ]
+}
+
+/// Capability notice shared by Codex instructions and skill emission.
+pub const CODEX_SUPPORT_NOTE: &str = "Available: rdm-roadmap, rdm-do (manual implementation ending at needs-review), rdm-revise, rdm-land (explicit landing). Not emitted: rdm-review, rdm-plan-review, rdm-estimate, rdm-backlog, rdm-document, rdm-dispatch-phase, rdm-autopilot. These require workflow behavior not yet ported to Codex. Use ordinary CLI inspection/planning for estimates, backlog, and docs; hand plan/code review to an independent human or a working review host, and use rdm-do one item at a time instead of dispatch/autopilot. No Codex workflow runtime or plugin is installed. Select the project .agents/skills copy explicitly if user or plugin copies share a name; duplicates are not merged.";
+
+/// Generates the supported Codex manual skills, without Claude workflow dependencies.
+pub fn generate_codex_skills(opts: &SkillOptions) -> Vec<SkillFile> {
+    let project = proj_flag_str(opts.project.as_deref());
+    let principles = opts
+        .principles_file
+        .as_deref()
+        .map(skill_principles_note)
+        .unwrap_or_default();
+    [
+        (
+            "rdm-roadmap/SKILL.md",
+            include_str!("templates/codex/rdm-roadmap.md"),
+        ),
+        ("rdm-do/SKILL.md", include_str!("templates/codex/rdm-do.md")),
+        (
+            "rdm-revise/SKILL.md",
+            include_str!("templates/codex/rdm-revise.md"),
+        ),
+        (
+            "rdm-land/SKILL.md",
+            include_str!("templates/codex/rdm-land.md"),
+        ),
+    ]
+    .into_iter()
+    .map(|(relative_path, template)| SkillFile {
+        relative_path,
+        content: template
+            .replace("{proj_flag}", &project)
+            .replace("{principles}", &principles),
+    })
+    .collect()
 }
 
 /// The single canonical list of shipped engine names.
@@ -1301,6 +1356,47 @@ Read `{path}` before starting implementation work. It contains project conventio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_platform_and_skills_are_self_contained() {
+        assert_eq!("CoDeX".parse::<Platform>().unwrap(), Platform::Codex);
+        assert_eq!(Platform::Codex.to_string(), "codex");
+        assert_eq!(Platform::Codex.conventional_path(), "AGENTS.md");
+        assert_eq!(
+            Platform::Codex.project_skills_subdir(),
+            Some(".agents/skills")
+        );
+        for project in [None, Some("acme".to_string())] {
+            let skills = generate_codex_skills(&SkillOptions {
+                project,
+                principles_file: Some("docs/principles.md".to_string()),
+            });
+            assert_eq!(skills.len(), 4);
+            for skill in skills {
+                let yaml = skill.content.split("---").nth(1).unwrap();
+                let meta: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+                assert_eq!(
+                    format!("{}/SKILL.md", meta["name"].as_str().unwrap()),
+                    skill.relative_path
+                );
+                assert!(!meta["description"].as_str().unwrap().is_empty());
+                assert!(skill.content.contains("docs/principles.md"));
+                for unresolved in [
+                    "{proj_flag}",
+                    "{principles}",
+                    "Workflow(",
+                    ".claude/",
+                    "$ARGUMENTS",
+                ] {
+                    assert!(
+                        !skill.content.contains(unresolved),
+                        "{}: {unresolved}",
+                        skill.relative_path
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn platform_from_str_valid() {

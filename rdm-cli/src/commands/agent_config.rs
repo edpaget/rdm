@@ -19,14 +19,16 @@ pub fn run(
     plugin: bool,
 ) -> Result<()> {
     let platform: Platform = platform.parse().map_err(|e: String| anyhow!(e))?;
+    if plugin && platform == Platform::Codex {
+        bail!(
+            "Codex plugin emission is not implemented; use agent-config codex --skills --out <dir> for the supported manual lane."
+        );
+    }
 
     // `--plugin` is Claude-only: on any other platform the emit is rejected
     // with the plugin-specific "only supported for claude" message.
     if plugin && platform != Platform::Claude {
-        bail!(
-            "--plugin is only supported for the claude platform (plugins are a Claude Code \
-             mechanism)."
-        );
+        bail!("--plugin is only supported for the claude platform by rdm.");
     }
 
     if plugin && user {
@@ -131,15 +133,21 @@ fn write_skills(
         let dir = out.as_ref().ok_or_else(|| {
             anyhow!("--skills requires --out or --user to specify the output directory")
         })?;
-        let sub = platform
-            .project_skills_subdir()
-            .ok_or_else(|| anyhow!("--skills is only supported for the claude and pi platforms"))?;
+        let sub = platform.project_skills_subdir().ok_or_else(|| {
+            anyhow!("--skills is only supported for the claude, codex and pi platforms")
+        })?;
         (dir.join(sub), dir.clone())
     };
-    let skill_files = agent_config::generate_skills(&SkillOptions {
+    let opts = SkillOptions {
         project,
         principles_file,
-    });
+    };
+    let skill_files = if platform == Platform::Codex {
+        eprintln!("{}", agent_config::CODEX_SUPPORT_NOTE);
+        agent_config::generate_codex_skills(&opts)
+    } else {
+        agent_config::generate_skills(&opts)
+    };
     for skill in &skill_files {
         let path = skills_root.join(skill.relative_path);
         write_output(&path, skill.content.as_bytes())?;

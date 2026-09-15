@@ -1,0 +1,171 @@
+# Codex support: first dogfooding lane
+
+Phase one enables manual, review-gated work now; it does not wait for a Codex
+workflow adapter. Runtime orchestration, automated review/dispatch, recovery,
+and a full end-to-end improvement cycle remain later roadmap work.
+
+## Installation and discovery
+
+```sh
+rdm agent-config codex --project my-project --out /path/to/source
+rdm agent-config codex --skills --project my-project --out /path/to/source
+```
+
+The first command writes `AGENTS.md`; inspect existing instructions before
+emission because the generator overwrites its output files. The second writes
+four `.agents/skills/<name>/SKILL.md` files and reports the seven withheld
+skills. It installs no workflows, custom agents, or plugins and does not
+remove unrelated or previously installed skills.
+
+`--user` writes instructions to `$CODEX_HOME/AGENTS.md` (default
+`~/.codex/AGENTS.md`) but skills to `~/.agents/skills`, independently of
+`CODEX_HOME`. The existing `agents-md` platform retains its previous behavior;
+use `codex` for Codex-specific paths. Codex plugin generation by rdm is not
+implemented: use `--skills --out`, not the Claude plugin tree.
+
+Codex discovers repository skills from the current directory up to the git
+root. Start a fresh session in the emitted repository, inspect `/skills`,
+then explicitly request `$rdm-roadmap` or `$rdm-do` with a scoped task. In
+noninteractive mode, include that same explicit skill request in the prompt.
+An `AGENTS.override.md` can replace `AGENTS.md` at its level. Duplicate skill
+names in project, user, or plugin locations are not merged: inspect the
+selected path and use the repository `.agents/skills` copy for dogfooding.
+Do not uninstall other copies without permission. Restart if newly generated
+skills are not visible.
+
+Paths and discovery were checked against the official
+[skills documentation](https://learn.chatgpt.com/docs/build-skills) and
+[AGENTS.md documentation](https://learn.chatgpt.com/docs/agent-configuration/agents-md)
+on 2026-09-15. Installation/discovery is distinct from successful workflow
+execution; see the support matrix below.
+
+## Developing rdm itself
+
+The checked-in `AGENTS.md` is repository guidance, not generated downstream
+CLI documentation. The four local skills are generated from the downstream
+templates, with `--project rdm --principles-file docs/principles.md`:
+
+```sh
+sh scripts/gen-codex-skills.sh
+```
+
+Set explicit values before launching Codex, or repeat them on every shell
+tool invocation. Replace the paths and choose a unique session ID once for
+the conversation:
+
+```sh
+export RDM_ROOT=/absolute/path/to/rdm-plan-repo
+export RDM_PROJECT=rdm
+export RDM_SESSION=codex-your-unique-conversation-id
+export RDM_BIN=/absolute/path/to/rdm/scripts/rdm-dev.sh
+"$RDM_BIN" session id
+"$RDM_BIN" roadmap show codex-agent-support --project rdm
+```
+
+The wrapper uses Cargo to rebuild the checkout it lives in before every
+command. Build failures stop execution; no stale installed binary fallback
+is used. It honors Cargo's target configuration and never assumes all
+worktrees share `target/debug`. It requires an existing, readable absolute
+plan path and a stable session identity. Set these explicitly rather than
+relying on this repository's personal `.mise.toml` defaults. Cargo, the
+repository toolchain, and normal write access to build output are required.
+
+To start a phase, use `"$RDM_BIN" worktree add <roadmap> --project rdm --format
+json`, inspect its returned path and existing work, then set `RDM_BIN` to that
+worktree's `scripts/rdm-dev.sh`. Keep `RDM_ROOT` and `RDM_SESSION` unchanged.
+Use explicit working directories in tool calls. Check `session id` across two
+separate calls if the harness creates a new shell each time. `rdm status` and
+`rdm commit` take no project flag; never use `--all` to collect another
+session's changes.
+
+An external plan repo or sibling worktree may lie outside the host's writable
+roots. Request narrowly scoped normal approval when needed. An unreadable
+plan repo is not permission to create a replacement, silently switch projects,
+or disable sandboxing. Missing toolchain, authentication, or approval should
+be reported with the failed command and the action needed to continue.
+
+## Support matrix
+
+“Workflow” describes the existing Claude surface, not a Codex capability.
+Distributed Claude ships eleven skills but only two workflow engines; local
+Claude has six production engines and a separate spike. Eight local skills
+depend on workflow behavior. The manual Codex `rdm-do` is a deliberate bounded
+alternative, not a claim that its Claude finalization workflow was ported.
+
+Audit sources: distributed prose lives in
+`rdm-core/src/templates/skill-<name>-cli.md`; local Claude entrypoints are
+`.claude/skills/rdm-<name>/SKILL.md`. Codex templates live in
+`rdm-core/src/templates/codex/rdm-<name>.md` and generate the local
+`.agents/skills` copies. Claude's two shipped engines are
+`rdm-wf-dispatch-phase` and `rdm-wf-review-refute-fix`; its four additional
+local engines are `rdm-wf-plan-review`, `rdm-wf-estimate`, `rdm-wf-backlog`,
+and `rdm-wf-document`. Their local files are under `.claude/workflows`;
+shared review specifications originate in `.claude/workflows/lib/review.mjs`
+and are stamped into generated blocks, not independently rewritten for Codex.
+Claude tool names (`Workflow`, `Agent`, `Bash`, `Read`), `$ARGUMENTS`, and
+permission-mode flags are replaced by ordinary Codex shell/file tools,
+explicit user task text, and host-managed approvals in the manual templates.
+
+| Skill | Distributed Claude | Local Claude | Codex phase one |
+| --- | --- | --- | --- |
+| rdm-roadmap | Prose | Prose | Manual planning; independent review handoff |
+| rdm-do | Dispatch/review workflow | Dispatch/review workflow | Manual implementation → needs-review |
+| rdm-revise | Prose | Prose | Document revision with per-comment provenance |
+| rdm-land | Prose | Prose | Explicit reviewed landing |
+| rdm-review | Review workflow | Review workflow | Withheld; independent human/working host |
+| rdm-plan-review | Prose review recipe | Plan-review workflow | Withheld; independent human/working host |
+| rdm-estimate | Prose recipe | Estimate workflow | Withheld; inspect/estimate manually |
+| rdm-backlog | Prose recipe | Backlog workflow | Withheld; inspect and propose manually |
+| rdm-document | Prose recipe | Document workflow | Withheld; author docs manually |
+| rdm-dispatch-phase | Dispatch workflow | Dispatch workflow | Withheld; one manual rdm-do item |
+| rdm-autopilot | Dispatch orchestration | Estimate + dispatch orchestration | Withheld; one manual rdm-do item |
+
+Existing Pi generation is unchanged. Native Codex review, agent delegation,
+or external tools must not be represented as the unported canonical workflow.
+The manual implementation skill provides a precise review handoff and leaves
+status `needs-review` until independent review evidence exists. Landing is
+never implied by permission to implement.
+
+## Verification and first improvement candidate
+
+The existing distribution harness tests fresh project and user emission,
+frontmatter, forbidden host dependencies, plugin rejection, generated-local
+drift, and a real CLI command from an emitted skill against a foreign plan
+fixture. Rust tests cover platform/path and emitted-skill behavior. These
+deterministic checks do not substitute for a live Codex discovery/invocation
+smoke test; record the tested CLI version and its observed result separately.
+
+On 2026-09-15, a fresh Codex CLI 0.154.0 read-only `exec` session discovered
+the repository `rdm-do` in its skill catalog, explicitly invoked it, read the
+generated skill and `AGENTS.md`, and correctly described the `needs-review`
+handoff without mutating source or plans. The outer host required approval
+to initialize the CLI; the child session retained its read-only sandbox.
+This proves discovery and instruction-following for the manual entrypoint,
+not an automated review runtime or a completed end-to-end autonomous cycle.
+
+A second fresh CLI session explicitly used `rdm-roadmap` for inspection,
+invoked `scripts/rdm-dev.sh`, preserved the supplied session identity, and
+successfully read the real Codex roadmap and task backlog without document
+mutations. The wrapper was also invoked from the primary checkout's working
+directory and from the RDM-created linked worktree, resolving the same
+explicit plan repository and the selected worktree's development build.
+Main remains unchanged until this branch is landed. Codex app/IDE invocation
+and live duplicate-plugin selection have not been exercised here; their
+documented discovery rules are not claims of runtime parity.
+
+A bounded early dogfood candidate is the stalled `agent-orchestrated-dispatch`
+worktree mismatch: inspect the shared roadmap branch and phase-specific
+worktree before diagnosing why a reviewer saw no implementation. The
+`roadmap/phase` worktree reference appears capable of selecting an empty phase
+checkout while work exists on the shared roadmap branch; this is a diagnostic
+lead, not a proven historical cause. Do not mutate that roadmap or create a
+permanent fork of its retiring engine as part of this bootstrap phase.
+
+The read-only snapshot on 2026-09-15 found the shared
+`roadmap/agent-orchestrated-dispatch` at
+`2c55784d8658621f453ea8a567abca3570d1f2b2`, while the phase-four worktree
+`phase-agent-orchestrated-dispatch-phase-4-change-review-target` was still at
+`00a9aa045543b625c05e3f790919996e89a90afc` (the then-main base). A future
+diagnostic should pin and compare those actual heads, verify the review target
+and gate probe resolve the implementation worktree, and stop before any
+recovery mutation unless separately authorized.

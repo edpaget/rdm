@@ -22,6 +22,105 @@ fn agent_config_defaults_to_agents_md() {
 }
 
 #[test]
+fn codex_project_emits_instructions_and_supported_skills() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .args(["agent-config", "codex", "--project", "acme", "--out"])
+        .arg(dir.path())
+        .assert()
+        .success();
+    assert!(dir.path().join("AGENTS.md").is_file());
+    rdm()
+        .args([
+            "agent-config",
+            "codex",
+            "--skills",
+            "--project",
+            "acme",
+            "--out",
+        ])
+        .arg(dir.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("rdm-review"))
+        .stderr(predicate::str::contains("needs-review"));
+    let root = dir.path().join(".agents/skills");
+    let mut names: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["rdm-do", "rdm-land", "rdm-revise", "rdm-roadmap"]);
+    for name in names {
+        let content = std::fs::read_to_string(root.join(name).join("SKILL.md")).unwrap();
+        let frontmatter = content.split("---").nth(1).unwrap();
+        assert!(
+            frontmatter
+                .lines()
+                .any(|line| line.starts_with("name: rdm-"))
+        );
+        assert!(
+            frontmatter
+                .lines()
+                .any(|line| line.starts_with("description: "))
+        );
+        assert!(content.contains("--project acme"));
+        assert!(!content.contains("{proj_flag}"));
+        assert!(!content.contains(".claude/"));
+        assert!(!content.contains("Workflow("));
+    }
+    assert!(!dir.path().join(".claude").exists());
+    assert!(!dir.path().join(".codex/skills").exists());
+}
+
+#[test]
+fn codex_user_paths_separate_config_and_skills() {
+    let dir = TempDir::new().unwrap();
+    let config = dir.path().join("custom-codex-home");
+    rdm()
+        .env("HOME", dir.path())
+        .env("CODEX_HOME", &config)
+        .args(["agent-config", "codex", "--user"])
+        .assert()
+        .success();
+    assert!(config.join("AGENTS.md").is_file());
+    rdm()
+        .env("HOME", dir.path())
+        .env("CODEX_HOME", &config)
+        .args(["agent-config", "codex", "--skills", "--user"])
+        .assert()
+        .success();
+    assert!(dir.path().join(".agents/skills/rdm-do/SKILL.md").is_file());
+    assert!(!config.join("skills").exists());
+}
+
+#[test]
+fn codex_default_user_instruction_path() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", dir.path())
+        .env_remove("CODEX_HOME")
+        .args(["agent-config", "codex", "--user"])
+        .assert()
+        .success();
+    assert!(dir.path().join(".codex/AGENTS.md").is_file());
+    assert!(!dir.path().join(".claude").exists());
+}
+
+#[test]
+fn codex_plugin_rejection_names_the_supported_channel() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .args(["agent-config", "codex", "--plugin", "--out"])
+        .arg(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Codex"))
+        .stderr(predicate::str::contains("--skills --out"));
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn agent_config_claude_platform() {
     rdm()
         .arg("agent-config")
@@ -283,7 +382,7 @@ fn agent_config_skills_rejects_unsupported_platform() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "--skills is only supported for the claude and pi platforms",
+            "--skills is only supported for the claude, codex and pi platforms",
         ));
 }
 
@@ -298,7 +397,7 @@ fn agent_config_skills_rejects_cursor() {
         .arg(dir.path())
         .assert()
         .failure()
-        .stderr(predicate::str::contains("claude and pi"));
+        .stderr(predicate::str::contains("claude, codex and pi"));
 }
 
 #[test]
