@@ -40,6 +40,10 @@ emit({type:'turn.started'});
 if (mode === 'malformed') console.log('{');
 if (mode === 'error') emit({type:'error', message:'secret'});
 if (mode === 'failed') emit({type:'turn.failed', error:{message:'secret'}});
+if (mode === 'command-nonzero') emit({type:'item.completed',item:{type:'command_execution',status:'failed',exit_code:1}});
+if (mode === 'command-inconsistent') emit({type:'item.completed',item:{type:'command_execution',status:'failed',exit_code:0}});
+if (mode === 'command-interrupted') emit({type:'item.completed',item:{type:'command_execution',status:'failed',exit_code:null}});
+if (mode === 'tool-failed') emit({type:'item.completed',item:{type:'mcp_tool_call',status:'failed'}});
 if (mode === 'duplicate') emit({type:'thread.started', thread_id:'thread-two'});
 if (mode === 'flood') console.log('x'.repeat(9*1024*1024));
 writeFileSync(args[args.indexOf('-o')+1], JSON.stringify(mode === 'invalid' ? {ok:'yes'} : {ok:true, note:null}));
@@ -87,7 +91,11 @@ test('judgment subprocess disables optional external capabilities and escalation
   assert.ok(!args.includes('--ignore-rules'));
   assert.ok(!args.includes('--dangerously-bypass-approvals-and-sandbox'));
 });
-for (const mode of ['auth', 'rate', 'unknown-model', 'nonzero', 'death', 'malformed', 'error', 'failed', 'duplicate', 'truncated', 'invalid', 'flood']) {
+test('completed turn may recover from an unsuccessful exploratory shell command', async t => {
+  const opts = await fixture(t, 'command-nonzero');
+  assert.deepEqual((await runCodex(opts)).value, {ok:true});
+});
+for (const mode of ['command-inconsistent', 'command-interrupted', 'tool-failed', 'auth', 'rate', 'unknown-model', 'nonzero', 'death', 'malformed', 'error', 'failed', 'duplicate', 'truncated', 'invalid', 'flood']) {
   test(`rejects ${mode} without exposing provider diagnostics`, async t => {
     const opts = await fixture(t, mode);
     await assert.rejects(runCodex(opts), error => !/secret|sensitive/.test(error.message));

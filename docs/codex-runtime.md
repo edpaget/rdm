@@ -138,7 +138,10 @@ Item reviews read the actual phase body and validate its registered roadmap
 worktree and branch. The runtime derives dimensions from changed files/diff,
 executes canonical finder/refuter orchestration, and rechecks checkout and
 item snapshots. Missing dimension coverage, missing AC evidence, refuter errors,
-and refutation overflow are incomplete runs, never clean approvals.
+and refutation overflow are incomplete runs, never clean approvals. A normal
+nonzero shell lookup is retained in raw evidence but may be followed by a valid
+completed judgment; interrupted commands, failed tools, and failed Codex turns
+still stop execution.
 
 ### Estimates
 

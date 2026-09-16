@@ -159,8 +159,15 @@ export async function runCodex({bin = 'codex', cwd, prompt, schema, model, effor
       events = stdout.trim().split('\n').map(line => JSON.parse(line));
       if (events.some(event => !event || typeof event.type !== 'string')) throw Error();
     } catch {throw Error('Codex returned malformed or truncated JSONL');}
+    // A shell lookup/test can return nonzero and the agent can recover before
+    // completing its judgment. Preserve that event as evidence; distinguish it
+    // from interrupted commands, failed tools and failed Codex turns.
+    const recoveredCommand = event => event.type === 'item.completed' &&
+      event.item?.type === 'command_execution' && Number.isInteger(event.item.exit_code) &&
+      event.item.exit_code > 0;
     if (events.some(event => event.type === 'error' || event.type === 'turn.failed' ||
-      event.item?.status === 'failed' || event.item?.type === 'error')) throw Error('Codex stream reported failure');
+      (event.item?.status === 'failed' && !recoveredCommand(event)) ||
+      event.item?.type === 'error')) throw Error('Codex stream reported failure');
     const threads = events.filter(event => event.type === 'thread.started');
     const completions = events.filter(event => event.type === 'turn.completed');
     if (threads.length !== 1 || typeof threads[0].thread_id !== 'string' || !threads[0].thread_id ||
