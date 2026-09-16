@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
-- Reject malformed stored change-review head/base identities before source access and protect Git revision argument boundaries, preventing option injection and unintended file writes during review reads.
+- Reject malformed stored change-review head/base identities before source access and protect Git revision argument boundaries, preventing option injection and unintended file writes during review reads. Document the public revision-resolution API's matchable error for unsafe revision inputs.
 
 ### Fixed
 

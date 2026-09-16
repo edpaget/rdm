@@ -347,6 +347,10 @@ pub fn derive_file_quote(
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidChangeRevisionInput`] when the source adapter rejects
+/// an unresolved revision operand. The Git adapter rejects option-shaped `rev`,
+/// `base_override`, or `default_branch` values when that operand is used.
+///
 /// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
 /// identities (head or present base must be 40 lowercase ASCII hex characters).
 ///
