@@ -134,7 +134,9 @@ or an item reference:
 
 The head must equal checkout HEAD, base must be its ancestor, the range must
 have a nonempty diff, and the worktree must be clean including untracked files.
-Item reviews read the actual phase body and validate its registered roadmap
+Item reviews use the same guarded phase snapshot for model selection, review
+input and final validation, rejecting changes during model resolution. They
+read the actual phase body and validate its registered roadmap
 worktree and branch. The runtime derives dimensions from changed files/diff,
 executes canonical finder/refuter orchestration, and rechecks checkout and
 item snapshots. Missing dimension coverage, missing AC evidence, refuter errors,

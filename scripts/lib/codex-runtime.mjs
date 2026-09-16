@@ -85,7 +85,7 @@ async function readItem(ctx, item) {
 }
 
 /** Review a clean, pinned ancestor range and recheck all snapshots before reporting. */
-export async function reviewCode(ctx, spec, deps, models, tier) {
+export async function reviewCode(ctx, spec, deps, models, tier, initialItem) {
   const root=ctx.identity.sourceDir;
   clean(root);
   const base=revision(root,spec.base), head=revision(root,spec.head);
@@ -94,7 +94,9 @@ export async function reviewCode(ctx, spec, deps, models, tier) {
   const diff=safeGit(root,['diff','--no-ext-diff','--no-textconv',base,head,'--']);
   if (!diff) throw new Error('Review range is empty');
   const changedFiles=safeGit(root,['diff','--name-only',base,head,'--']).split('\n');
-  const item=spec.item ? await readItem(ctx,spec.item) : null;
+  const currentItem=spec.item ? await readItem(ctx,spec.item) : null;
+  if (initialItem && JSON.stringify(currentItem) !== JSON.stringify(initialItem)) throw new Error('Review target changed during model resolution');
+  const item=initialItem ?? currentItem;
   const body=item?.body ?? spec.target;
   if (typeof body !== 'string' || !body.trim()) throw new Error('Explicit target/acceptance criteria required');
   const target=`Review source ${root}, exact range ${base}..${head}. Read relevant files in this checkout.\n\n${body}\n\nDiff:\n${diff}`;
@@ -133,7 +135,7 @@ export async function runRuntime(spec) {
     const deps={agent,parallel,log:message=>ctx.record('canonical-log',{message}),pipeline:async(xs,...stages)=>parallel(xs.map(x=>async()=>{for(const s of stages)x=await s(x);return x;}))};
     let result;
     if(spec.operation==='plan-review')result=await reviewPlan(ctx,spec,deps,models);
-    if(spec.operation==='code-review')result=await reviewCode(ctx,spec,deps,models,tier ?? models['review-find'].tier);
+    if(spec.operation==='code-review')result=await reviewCode(ctx,spec,deps,models,tier ?? models['review-find'].tier,item);
     if(spec.operation==='estimate')result=await runEstimate({ctx,roadmap:spec.roadmap,apply:spec.apply===true,agent});
     if (signal.aborted) throw new Error('Codex runtime cancelled');
     return ctx.finish({operation:spec.operation,reportOnly:spec.operation!=='estimate'||spec.apply!==true,result});

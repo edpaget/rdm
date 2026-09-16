@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {execFileSync, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
-import {resolveModels, reviewPlan, reviewCode, createJudgmentAgent} from './codex-runtime.mjs';
+import {resolveModels, reviewPlan, reviewCode, createJudgmentAgent, runRuntime} from './codex-runtime.mjs';
 const host = {capabilities: {'gpt-6-astra':['medium','high']}, tiers: {small:{model:'gpt-6-astra',effort:'medium'},medium:{model:'gpt-6-astra',effort:'medium'},large:{model:'gpt-6-astra',effort:'high'}}};
 function ctx(root) {return {identity:{sourceDir:root,project:'fixture'},runDir:root,record(){},async rdm(args){return {step:args[2],tier:args[2]==='review-verify'?'large':'medium',model:'sonnet'};}};}
 function fixture(t) {const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'runtime-review-'))); t.after(()=>fs.rmSync(root,{recursive:true,force:true})); const git=(...args)=>execFileSync('git',args,{cwd:root,encoding:'utf8',env:{...process.env,GIT_AUTHOR_NAME:'Test',GIT_AUTHOR_EMAIL:'test@example.invalid',GIT_COMMITTER_NAME:'Test',GIT_COMMITTER_EMAIL:'test@example.invalid'}}).trim(); git('init','-q'); fs.writeFileSync(path.join(root,'a.js'),'export const a = 1;\n');git('add','.');git('commit','-qm','base');const base=git('rev-parse','HEAD');fs.writeFileSync(path.join(root,'a.js'),'export const a = 2;\n');git('add','.');git('commit','-qm','head');return {root,git,base,head:git('rev-parse','HEAD')};}
@@ -106,4 +106,46 @@ test('CLI invalid specs fail clearly without success output or run evidence', t 
     const result = spawnSync(process.execPath, [cli, specFile], { encoding: 'utf8', timeout: 10000 });
     assert.equal(result.status, 1); assert.match(result.stderr, /Codex runtime failed:/); assert.equal(result.stdout, ''); assert.equal(fs.existsSync(runDir), false);
   }
+});
+
+test('phase policy changes during model resolution reject the original snapshot before judgment', async t => {
+  const {root, git, base, head} = fixture(t);
+  const {c, item} = phaseContext(root, git);
+  item.model = 'small';
+  const initialItem = structuredClone(item);
+  item.model = 'large'; // Another session changes policy while models resolve.
+  let calls = 0;
+  await assert.rejects(reviewCode(c, {
+    base, head, item: {type:'phase', roadmap:'example', phase:'phase-3-runtime'},
+  }, {...deps, agent: async (...args) => { calls++; return deps.agent(...args); }}, {}, 'small', initialItem), /changed.*model resolution/);
+  assert.equal(calls, 0);
+});
+
+test('full runtime rejects a phase tier changed by a model-resolution process', async t => {
+  const {root, git, base, head} = fixture(t);
+  const {root: planRoot} = fixture(t);
+  const binary = path.join(planRoot, 'fake-rdm.mjs');
+  const changed = path.join(planRoot, 'policy-changed');
+  const branch = git('symbolic-ref', '--short', 'HEAD');
+  fs.writeFileSync(binary, `#!${process.execPath}
+import fs from 'node:fs';
+const args=process.argv.slice(2);
+if(args[0]==='phase') console.log(JSON.stringify({roadmap:'example',body:'Acceptance criteria: a is 2.',tags:[],model:fs.existsSync(${JSON.stringify(changed)})?'large':'small'}));
+else if(args[0]==='worktree') console.log(JSON.stringify([{item:'example',path:${JSON.stringify(root)},branch:${JSON.stringify(branch)}}]));
+else if(args[0]==='model') {fs.writeFileSync(${JSON.stringify(changed)},'large');console.log(JSON.stringify({step:args[2],tier:'medium',model:'sonnet'}));}
+else process.exit(1);
+`, {mode:0o700});
+  // A regression must fail locally rather than accidentally invoking real Codex.
+  fs.writeFileSync(path.join(planRoot, 'codex'), `#!${process.execPath}\nprocess.exit(99);\n`, {mode:0o700});
+  const oldPath = process.env.PATH;
+  process.env.PATH = planRoot + path.delimiter + oldPath;
+  t.after(() => { process.env.PATH = oldPath; });
+  const runDir = path.join(planRoot, 'run');
+  await assert.rejects(runRuntime({operation:'code-review',sourceDir:root,planRoot,rdmBin:binary,
+    project:'fixture',session:'parent',runDir,host,base,head,
+    item:{type:'phase',roadmap:'example',phase:'phase-3-runtime'},
+  }), /changed.*model resolution/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(runDir, 'manifest.json'))).status, 'failed');
+  const events = fs.readFileSync(path.join(runDir, 'journal.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(events.filter(e => e.type === 'agent-started').length, 0);
 });
