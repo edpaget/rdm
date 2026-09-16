@@ -1,0 +1,435 @@
+{
+  "experiment": "canonical Codex execution spike",
+  "model": "gpt-6-astra",
+  "effort": "medium",
+  "sourceHead": "775d2a4c888a6dc13cd21c61f393ff74f55456fd",
+  "codexVersion": "codex-cli 0.154.0",
+  "fixture": {
+    "base": "4f64bc0a1ce1373dec3472e699da88ab7a0f0bca",
+    "head": "11bed34d7f12a5530de3f8c086b18d5f4f2ebe6d",
+    "diff": "diff --git a/sum.mjs b/sum.mjs\nindex f643dbe..89b41c0 100644\n--- a/sum.mjs\n+++ b/sum.mjs\n@@ -1 +1 @@\n-export function add(a, b) { return a + b; }\n+export function add(a, b) { return a - b; }",
+    "diffSha256": "811b11afc5f0101f4706f317313454d8cd29d2db72e1e8c0d0eef490aadc53a6"
+  },
+  "calls": [
+    {
+      "index": 0,
+      "label": "find:code:ac",
+      "started": 1789529775621,
+      "finished": 1789529793255,
+      "threadId": "01a0a849-5e34-7411-b704-4830d7d7b1ad",
+      "usage": {
+        "input_tokens": 30777,
+        "cached_input_tokens": 14976,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 425,
+        "reasoning_output_tokens": 0
+      },
+      "elapsedMs": 17632,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    },
+    {
+      "index": 1,
+      "label": "find:code:correctness",
+      "started": 1789529775622,
+      "finished": 1789529794427,
+      "threadId": "01a0a849-5e34-7f21-b59a-1bc75a810325",
+      "usage": {
+        "input_tokens": 30657,
+        "cached_input_tokens": 14848,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 436,
+        "reasoning_output_tokens": 0
+      },
+      "elapsedMs": 18804,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    },
+    {
+      "index": 2,
+      "label": "find:code:tests",
+      "started": 1789529793255,
+      "finished": 1789529816901,
+      "threadId": "01a0a849-a31e-78e3-bba0-0176200b5520",
+      "usage": {
+        "input_tokens": 61476,
+        "cached_input_tokens": 45184,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 486,
+        "reasoning_output_tokens": 7
+      },
+      "elapsedMs": 23645,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    },
+    {
+      "index": 3,
+      "label": "refute:code:AC-1",
+      "started": 1789529816911,
+      "finished": 1789529835366,
+      "threadId": "01a0a849-ff8f-7f10-9767-09e988bf47ac",
+      "usage": {
+        "input_tokens": 45543,
+        "cached_input_tokens": 29824,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 311,
+        "reasoning_output_tokens": 0
+      },
+      "elapsedMs": 18453,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    },
+    {
+      "index": 4,
+      "label": "refute:code:F1",
+      "started": 1789529816911,
+      "finished": 1789529836241,
+      "threadId": "01a0a849-ff90-70b1-9b81-da7e8542e2d0",
+      "usage": {
+        "input_tokens": 45667,
+        "cached_input_tokens": 29824,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 455,
+        "reasoning_output_tokens": 0
+      },
+      "elapsedMs": 19328,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    },
+    {
+      "index": 5,
+      "label": "refute:code:tests-1",
+      "started": 1789529835366,
+      "finished": 1789529854634,
+      "threadId": "01a0a84a-47ab-7870-93cb-613f53713b3a",
+      "usage": {
+        "input_tokens": 45947,
+        "cached_input_tokens": 29952,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 368,
+        "reasoning_output_tokens": 0
+      },
+      "elapsedMs": 19267,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    },
+    {
+      "index": 6,
+      "label": "find:plan:coherence",
+      "started": 1789529854636,
+      "finished": 1789529889833,
+      "threadId": "01a0a84a-92ef-7d10-a773-3537de5cba35",
+      "usage": {
+        "input_tokens": 62067,
+        "cached_input_tokens": 45440,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 339,
+        "reasoning_output_tokens": 17
+      },
+      "elapsedMs": 35197,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    },
+    {
+      "index": 7,
+      "label": "find:plan:architectural-fit",
+      "started": 1789529854636,
+      "finished": 1789529873185,
+      "threadId": "01a0a84a-92ef-7322-ad53-b87a6eba8c4d",
+      "usage": {
+        "input_tokens": 77323,
+        "cached_input_tokens": 60544,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 287,
+        "reasoning_output_tokens": 33
+      },
+      "elapsedMs": 18548,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    },
+    {
+      "index": 8,
+      "label": "find:plan:restraint",
+      "started": 1789529873185,
+      "finished": 1789529894432,
+      "threadId": "01a0a84a-db4f-7d21-b605-df3d6e1d9901",
+      "usage": {
+        "input_tokens": 61667,
+        "cached_input_tokens": 30464,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 296,
+        "reasoning_output_tokens": 112
+      },
+      "elapsedMs": 21246,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    },
+    {
+      "index": 9,
+      "label": "refute:plan:COH-1",
+      "started": 1789529894432,
+      "finished": 1789529908077,
+      "threadId": "01a0a84b-2e61-77f2-92ec-e441a0ba04ed",
+      "usage": {
+        "input_tokens": 29851,
+        "cached_input_tokens": 14592,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 222,
+        "reasoning_output_tokens": 31
+      },
+      "elapsedMs": 13644,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    },
+    {
+      "index": 10,
+      "label": "estimate:rate:phase-1-a",
+      "started": 1789529918514,
+      "finished": 1789529924031,
+      "threadId": "01a0a84b-8f93-79f2-bdd4-b8105380dea8",
+      "usage": {
+        "input_tokens": 14571,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 46,
+        "reasoning_output_tokens": 0
+      },
+      "elapsedMs": 4716,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    },
+    {
+      "index": 11,
+      "label": "estimate:rate:phase-3-c",
+      "started": 1789529919314,
+      "finished": 1789529924309,
+      "threadId": "01a0a84b-8f93-7a02-b502-97994c3b465e",
+      "usage": {
+        "input_tokens": 14571,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 43,
+        "reasoning_output_tokens": 0
+      },
+      "elapsedMs": 4994,
+      "model": "gpt-6-astra",
+      "effort": "medium",
+      "outcome": "completed"
+    }
+  ],
+  "review": {
+    "code": {
+      "survivors": [
+        {
+          "id": "AC-1",
+          "concern": "ac",
+          "category": "AC compliance",
+          "location": "sum.mjs:1",
+          "severity": "blocking",
+          "confidence": 100,
+          "what_fails": "add(2,3) returns -1 instead of the required 5.",
+          "why": "The reviewed change replaces addition with subtraction.",
+          "recommendation": "Restore return a + b."
+        },
+        {
+          "id": "F1",
+          "concern": "add subtracts instead of adding",
+          "category": "correctness",
+          "location": "sum.mjs:1",
+          "severity": "blocking",
+          "confidence": 100,
+          "what_fails": "Executing add(2, 3) at the target commit returns -1, violating the acceptance criterion that it returns 5.",
+          "why": "The diff replaces a + b with a - b.",
+          "recommendation": "Restore return a + b;."
+        },
+        {
+          "id": "tests-1",
+          "concern": "The sole test cannot detect the arithmetic regression.",
+          "category": "tests",
+          "location": "sum.test.mjs:4; sum.mjs:1",
+          "severity": "blocking",
+          "confidence": 100,
+          "what_fails": "The test suite passes, but add(2, 3) returns -1 instead of the required 5.",
+          "why": "The only test asserts add(0, 0) === 0, which passes for both addition and subtraction. The reviewed commit changes the operator without adding a test covering the acceptance criterion.",
+          "recommendation": "Add a regression test asserting add(2, 3) === 5, verify it fails against this change, and restore addition so it passes."
+        }
+      ],
+      "acTable": [
+        {
+          "criterion": "add(2,3) returns 5.",
+          "status": "FAIL",
+          "evidence": "sum.mjs:1 at 11bed34 replaces a + b with a - b. Direct execution of the target commit's implementation returned add(2,3) = -1, not 5."
+        }
+      ],
+      "budget": {
+        "max": 5,
+        "produced": 3,
+        "gating": 3,
+        "graded": 3,
+        "passedThroughNonGating": 0,
+        "passedThroughBudget": 0,
+        "refuterErrors": 0,
+        "hit": false
+      },
+      "coverage": {
+        "mode": "code",
+        "total": 3,
+        "selected": [
+          "ac",
+          "correctness",
+          "tests"
+        ],
+        "ran": [
+          "ac",
+          "correctness",
+          "tests"
+        ],
+        "failed": [],
+        "retried": [],
+        "complete": true,
+        "acDimensionRan": true,
+        "acTableAbsent": false
+      }
+    },
+    "codeOutcome": "rework",
+    "plan": {
+      "kind": "implementation-plan",
+      "outcome": "reviewed",
+      "summary": "1 finding(s); top: [suggestion] No recorded intent was available for this review unit, so the intent-alignment dimension did not run.",
+      "budget": {
+        "max": 5,
+        "produced": 1,
+        "gating": 1,
+        "graded": 1,
+        "passedThroughNonGating": 0,
+        "passedThroughBudget": 0,
+        "refuterErrors": 0,
+        "hit": false
+      },
+      "coverage": {
+        "mode": "plan",
+        "total": 3,
+        "selected": [
+          "coherence",
+          "architectural-fit",
+          "restraint"
+        ],
+        "ran": [
+          "coherence",
+          "architectural-fit",
+          "restraint"
+        ],
+        "failed": [],
+        "retried": [],
+        "complete": true,
+        "acDimensionRan": null,
+        "acTableAbsent": false
+      },
+      "findings": [
+        {
+          "id": "intent-alignment-no-intent",
+          "concern": "intent-alignment",
+          "location": "target document",
+          "severity": "suggestion",
+          "confidence": 100,
+          "what_fails": "No recorded intent was available for this review unit, so the intent-alignment dimension did not run.",
+          "why": "The plan could not be checked against an operator-stated goal \u2014 divergence (every acceptance criterion passing while the goal stays unmet) and scope creep against a recorded non-goal both went unchecked for this unit.",
+          "recommendation": "Record a `## Intent` section (Goal / Non-goals / Done looks like) on the parent roadmap so this plan can be checked against it."
+        }
+      ]
+    }
+  },
+  "peakConcurrency": 2,
+  "success": true,
+  "finishedAt": "2026-09-16T03:38:57.602Z",
+  "billedCost": "not exposed by CLI",
+  "contextWindowOccupancy": "not exposed by CLI",
+  "estimate": {
+    "first": {
+      "roadmap": "estimate-fixture",
+      "estimated": [
+        {
+          "stem": "phase-1-a",
+          "difficulty": "easy",
+          "justification": "Adding one optional text field and checking serialization round trips is a small, localized change with low risk.",
+          "tier": "small"
+        },
+        {
+          "stem": "phase-3-c",
+          "difficulty": "trivial",
+          "justification": "A localized help-text correction with a rendered-output check has minimal scope and risk.",
+          "tier": "small"
+        }
+      ],
+      "skipped": [
+        "phase-2-b"
+      ],
+      "deferred": []
+    },
+    "second": {
+      "roadmap": "estimate-fixture",
+      "estimated": [],
+      "skipped": [
+        "phase-1-a",
+        "phase-2-b",
+        "phase-3-c"
+      ],
+      "deferred": []
+    },
+    "counters": {
+      "first": {
+        "agentCalls": 2,
+        "writes": 2
+      },
+      "second": {
+        "agentCalls": 0,
+        "writes": 0
+      }
+    },
+    "idempotent": true
+  },
+  "resume": {
+    "first": {
+      "value": {
+        "word": "amber-otter-29"
+      },
+      "threadId": "01a0a84b-9613-7f60-9ba0-56e9ba947b56",
+      "usage": {
+        "input_tokens": 15777,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 0
+      },
+      "elapsedMs": 4599
+    },
+    "resumed": {
+      "value": {
+        "word": "amber-otter-29"
+      },
+      "threadId": "01a0a84b-9613-7f60-9ba0-56e9ba947b56",
+      "usage": {
+        "input_tokens": 31590,
+        "cached_input_tokens": 15616,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 40,
+        "reasoning_output_tokens": 0
+      },
+      "elapsedMs": 4222
+    },
+    "sameThread": true,
+    "recalls": true
+  },
+  "scope": "Initial experimental working-tree run on the recorded baseline; subsequent single-round classification fix is covered by deterministic tests. No production entrypoint or gate write was exercised."
+}

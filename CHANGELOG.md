@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- An opt-in Codex orchestration spike exercises canonical review and estimation with read-only Codex sessions and isolated plan fixtures, with credential-free process-contract tests. Production Codex automation remains outside the supported manual lane.
+
 - Codex handoffs verify rdm's automatically captured review SHA and branch against the implementation worktree; the documentation distinguishes the manual pending-review lane from the retired automatic stop-hook safety net.
 
 - Codex agent configuration with `AGENTS.md` and four discoverable manual skills: roadmap authoring, implementation with independent-review handoff, document revision, and explicit landing. Repository dogfooding now includes a rebuild-before-use entrypoint and setup guidance; unported workflow skills are reported rather than emitted as working support.

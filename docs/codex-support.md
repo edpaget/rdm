@@ -1,8 +1,12 @@
 # Codex support: first dogfooding lane
 
 Phase one enables manual, review-gated work now; it does not wait for a Codex
-workflow adapter. Runtime orchestration, automated review/dispatch, recovery,
-and a full end-to-end improvement cycle remain later roadmap work.
+workflow adapter. Runtime orchestration, automated review/dispatch, and recovery
+remain later roadmap work.
+
+The [phase-two execution spike](codex-orchestration-spike.md) records experimental
+Codex execution of shared review and estimate logic. It does not enable the
+withheld production skills or change this support matrix.
 
 ## Installation and discovery
 
