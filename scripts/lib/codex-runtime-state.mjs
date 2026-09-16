@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { hostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
 const MAX_BUFFER = 8 * 1024 * 1024;
 
@@ -48,10 +48,51 @@ function atomicJson(dir, name, value) {
   fs.renameSync(tmp, path.join(dir, name)); syncDirectory(dir);
 }
 
+/** Run one cancellable argv process and remove its remaining process group. */
+function directRdm(bin, args, { cwd, env, timeout, signal, started }) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) { reject(new Error('RDM command cancelled')); return; }
+    const child = spawn(bin, args, { cwd, env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+    let failure;
+    let bytes = 0;
+    const output = [];
+    const errors = [];
+    const killGroup = () => {
+      if (!child.pid) return;
+      try {
+        if (process.platform === 'win32') child.kill('SIGKILL');
+        else process.kill(-child.pid, 'SIGKILL');
+      } catch (error) { if (error.code !== 'ESRCH') failure ??= new Error('Could not terminate RDM process group'); }
+    };
+    const stop = message => { failure ??= new Error(message); killGroup(); };
+    const abort = () => stop('RDM command cancelled');
+    const timer = setTimeout(() => stop('RDM command timed out'), timeout);
+    signal?.addEventListener('abort', abort, { once: true });
+    const collect = chunks => chunk => {
+      bytes += chunk.length;
+      if (bytes > MAX_BUFFER) stop('RDM command output exceeded limit');
+      else chunks.push(chunk);
+    };
+    child.stdout.on('data', collect(output)); child.stderr.on('data', collect(errors));
+    child.on('error', error => { failure ??= error; });
+    child.on('exit', killGroup);
+    child.on('close', (status, deathSignal) => {
+      clearTimeout(timer); signal?.removeEventListener('abort', abort);
+      if (signal?.aborted) failure ??= new Error('RDM command cancelled');
+      if (!failure && (status !== 0 || deathSignal)) failure = new Error(`RDM command failed (exit ${status ?? deathSignal}): ${Buffer.concat(errors).toString('utf8')}`);
+      if (failure) { failure.status = status; failure.signal = deathSignal; reject(failure); }
+      else resolve(Buffer.concat(output).toString('utf8'));
+    });
+    try { started({ pid: child.pid ?? null, processGroup: process.platform === 'win32' ? null : child.pid ?? null }); }
+    catch (error) { failure ??= error; killGroup(); }
+    if (signal?.aborted) abort();
+  });
+}
+
 /**
  * Create a fresh run. Paths, project, session, operation and unused runDir are required.
  * Each run mints its own RDM session, so commits cannot include caller-session changes.
- * rdm() accepts exact argv (including explicit format options); json parses stdout.
+ * Async rdm() accepts exact argv (including explicit format options); json parses stdout.
  * Failed mutations are uncertain, never retried, and permanently prohibit finish().
  * Existing evidence is never reopened or overwritten. Recovery requires a new run.
  */
@@ -83,6 +124,7 @@ export function createRun(spec) {
   const manifest = { version: 1, runner, runId: randomUUID(), operation, identity, status: 'running', startedAt: new Date().toISOString(), uncertainWrites: false };
   let closed = false;
   let callNumber = 0;
+  let activeCalls = 0;
   atomicJson(runDir, 'manifest.json', manifest);
   const ensureOpen = () => { if (closed) throw new Error('Run is closed/finished'); };
   const record = (type, data = {}) => {
@@ -102,8 +144,10 @@ export function createRun(spec) {
   };
   return Object.freeze({
     identity, session, runDir, record,
-    rdm(args, { json = false, mutating = false } = {}) {
+    async rdm(args, { json = false, mutating = false } = {}) {
       ensureOpen();
+      if (spec.signal?.aborted) throw new Error('Run cancelled');
+      if (activeCalls) throw new Error('A direct RDM command is already running');
       if (!Array.isArray(args) || args.length === 0 || args.some(arg => typeof arg !== 'string' || arg.includes('\0'))) throw new Error('RDM arguments must be a nonempty string array');
       if (args.some(arg => arg === '--all' || arg.startsWith('--all='))) throw new Error('RDM --all is forbidden; commits must use the runtime-owned session');
       if (args.some(arg => ['--root', '--changeset', '--session'].some(flag => arg === flag || arg.startsWith(flag + '=')))) throw new Error('RDM identity override is forbidden');
@@ -112,11 +156,14 @@ export function createRun(spec) {
       const callId = ++callNumber;
       const before = { callId, args, session, planHead: safeGit(planRoot, ['rev-parse', '--verify', 'HEAD']) };
       record(mutating ? 'write-intent' : 'read-started', before);
+      activeCalls++;
       try {
-        const stdout = execFileSync(rdmBin, args, {
-          cwd: sourceDir, encoding: 'utf8', timeout, maxBuffer: MAX_BUFFER, stdio: ['ignore', 'pipe', 'pipe'],
+        const stdout = await directRdm(rdmBin, args, {
+          cwd: sourceDir, timeout, signal: spec.signal,
+          started: data => record('rdm-started', { callId, ...data }),
           env: { ...gitEnvironment(), RDM_BIN: rdmBin, RDM_ROOT: planRoot, RDM_PROJECT: project, RDM_SESSION: session },
         });
+        if (spec.signal?.aborted) throw new Error('Run cancelled');
         const value = json ? JSON.parse(stdout) : stdout;
         record(mutating ? 'write-acknowledged' : 'read-completed', { callId, planHead: safeGit(planRoot, ['rev-parse', '--verify', 'HEAD']), stdout });
         return value;
@@ -127,13 +174,17 @@ export function createRun(spec) {
         }
         record(mutating ? 'write-uncertain' : 'read-failed', { callId, message: error.message, status: error.status ?? null, signal: error.signal ?? null });
         throw error;
-      }
+      } finally { activeCalls--; }
     },
     finish(result) {
+      if (spec.signal?.aborted) throw new Error('Cannot complete cancelled run');
+      if (activeCalls) throw new Error('Cannot complete run with active commands');
       if (manifest.uncertainWrites) throw new Error('Cannot complete run with uncertain writes');
       return finalize('completed', result);
     },
     fail(error) {
+      ensureOpen();
+      if (activeCalls) throw new Error('Cannot fail run with active commands; abort and await them first');
       if (error?.uncertainWrites === true) {
         manifest.uncertainWrites = true;
         atomicJson(runDir, 'manifest.json', manifest);

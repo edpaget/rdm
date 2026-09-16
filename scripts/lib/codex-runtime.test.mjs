@@ -7,27 +7,27 @@ import {execFileSync, spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {resolveModels, reviewPlan, reviewCode, createJudgmentAgent} from './codex-runtime.mjs';
 const host = {capabilities: {'gpt-6-astra':['medium','high']}, tiers: {small:{model:'gpt-6-astra',effort:'medium'},medium:{model:'gpt-6-astra',effort:'medium'},large:{model:'gpt-6-astra',effort:'high'}}};
-function ctx(root) {return {identity:{sourceDir:root,project:'fixture'},runDir:root,record(){},rdm(args){return {step:args[2],tier:args[2]==='review-verify'?'large':'medium',model:'sonnet'};}};}
+function ctx(root) {return {identity:{sourceDir:root,project:'fixture'},runDir:root,record(){},async rdm(args){return {step:args[2],tier:args[2]==='review-verify'?'large':'medium',model:'sonnet'};}};}
 function fixture(t) {const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'runtime-review-'))); t.after(()=>fs.rmSync(root,{recursive:true,force:true})); const git=(...args)=>execFileSync('git',args,{cwd:root,encoding:'utf8',env:{...process.env,GIT_AUTHOR_NAME:'Test',GIT_AUTHOR_EMAIL:'test@example.invalid',GIT_COMMITTER_NAME:'Test',GIT_COMMITTER_EMAIL:'test@example.invalid'}}).trim(); git('init','-q'); fs.writeFileSync(path.join(root,'a.js'),'export const a = 1;\n');git('add','.');git('commit','-qm','base');const base=git('rev-parse','HEAD');fs.writeFileSync(path.join(root,'a.js'),'export const a = 2;\n');git('add','.');git('commit','-qm','head');return {root,git,base,head:git('rev-parse','HEAD')};}
 const deps={parallel:async ts=>Promise.all(ts.map(t=>t())),pipeline:async (xs,...stages)=>Promise.all(xs.map(async x=>{for(const s of stages)x=await s(x);return x;})),log(){},agent:async (_p,o)=>o.label==='find:code:ac'?{findings:[],ac:[{criterion:'a is 2',status:'PASS',evidence:'a.js:1'}]}:{findings:[]}};
-test('core effective tiers select separate host bindings; invalid overrides fail closed',()=>{const c=ctx('/tmp');const models=resolveModels(c,host,['review-find','review-verify']);assert.equal(models['review-verify'].effort,'high');assert.equal(models['review-find'].model,'gpt-6-astra');assert.throws(()=>resolveModels(c,{...host,steps:{'review-find':{tier:'small'}}},['review-find']),/tier/);assert.throws(()=>resolveModels(c,{...host,tiers:{medium:{model:'sonnet',effort:'medium'}}},['review-find']),/model/);});
+test('core effective tiers select separate host bindings; invalid overrides fail closed',async()=>{const c=ctx('/tmp');const models=await resolveModels(c,host,['review-find','review-verify']);assert.equal(models['review-verify'].effort,'high');assert.equal(models['review-find'].model,'gpt-6-astra');await assert.rejects(()=>resolveModels(c,{...host,steps:{'review-find':{tier:'small'}}},['review-find']),/tier/);await assert.rejects(()=>resolveModels(c,{...host,tiers:{medium:{model:'sonnet',effort:'medium'}}},['review-find']),/model/);});
 test('judgment rejects mechanical and unknown roles before process execution',async()=>{const agent=createJudgmentAgent(ctx('/tmp'),{},{});await assert.rejects(agent('x',{agentType:'mechanical'}),/role/);await assert.rejects(agent('x',{agentType:'unrecognized'}),/role/);});
 test('plan reviews arbitrary content and reject drift',async t=>{const {root}=fixture(t);const file=path.join(root,'plan.md');fs.writeFileSync(file,'Implement a = 2 and test it.');const c=ctx(root);const result=await reviewPlan(c,{planFile:file},deps,{});assert.equal(result.coverage.complete,true);await assert.rejects(reviewPlan(c,{planFile:file},{...deps,agent:async()=>{fs.writeFileSync(file,'changed');return {findings:[]};}},{}),/changed/);});
 test('code review pins clean range, requires AC, and detects source drift',async t=>{const {root,git,base,head}=fixture(t);const c=ctx(root);const spec={base,head,target:'Acceptance criteria: a is 2.'};const result=await reviewCode(c,spec,deps,{},'medium');assert.equal(result.outcome,'reviewed');await assert.rejects(reviewCode(c,{...spec,head:base},deps,{},'medium'),/HEAD/);await assert.rejects(reviewCode(c,{...spec,base:'--all'},deps,{},'medium'),/revision/);await assert.rejects(reviewCode(c,spec,{...deps,agent:async()=>({findings:[],ac:[]})},{},'medium'),/incomplete/);await assert.rejects(reviewCode(c,spec,{...deps,agent:async(p,o)=>{fs.writeFileSync(path.join(root,'a.js'),'changed');return deps.agent(p,o);}},{},'medium'),/changed|clean/);});
 
-test('host bindings retain effective core floor and validate each step capability without fallback', () => {
+test('host bindings retain effective core floor and validate each step capability without fallback', async () => {
   const c = ctx('/tmp'); const calls = []; const records = [];
-  c.rdm = args => { calls.push(args); return { step: args[2], tier: 'large', model: 'opus' }; };
+  c.rdm = async args => { calls.push(args); return { step: args[2], tier: 'large', model: 'opus' }; };
   c.record = (type, data) => records.push({ type, data });
   const configured = { ...host, steps: { 'review-find': { tier: 'large', model: 'gpt-6-astra', effort: 'medium' } } };
-  const models = resolveModels(c, configured, ['review-find', 'review-verify'], 'small');
+  const models = await resolveModels(c, configured, ['review-find', 'review-verify'], 'small');
   assert.deepEqual(calls.map(args => args.slice(0, 5)), [['model', 'resolve', 'review-find', '--tier', 'small'], ['model', 'resolve', 'review-verify', '--tier', 'small']]);
   assert.equal(models['review-find'].tier, 'large'); assert.equal(models['review-find'].effort, 'medium');
   assert.equal(models['review-verify'].effort, 'high'); assert.equal(records[0].data.core.model, 'opus');
   for (const binding of [{ tier: 'small', model: 'gpt-6-astra', effort: 'medium' }, { tier: 'large', model: 'gpt-6-astra', effort: 'low' }, { tier: 'large', model: 'opus', effort: 'high' }, { tier: 'large', model: 'missing-model', effort: 'high' }]) {
-    assert.throws(() => resolveModels(c, { ...host, capabilities: { ...host.capabilities, opus: ['high'] }, steps: { 'review-find': binding } }, ['review-find']), /tier|Unsupported/);
+    await assert.rejects(() => resolveModels(c, { ...host, capabilities: { ...host.capabilities, opus: ['high'] }, steps: { 'review-find': binding } }, ['review-find']), /tier|Unsupported/);
   }
-  assert.throws(() => resolveModels(c, { ...host, tiers: {} }, ['review-find']), /Unsupported/);
+  await assert.rejects(() => resolveModels(c, { ...host, tiers: {} }, ['review-find']), /Unsupported/);
 });
 
 function phaseContext(root, git) {
@@ -35,7 +35,7 @@ function phaseContext(root, git) {
   const item = { roadmap: 'example', body: 'Acceptance criteria: a is 2.', model: 'medium', tags: [] };
   const worktree = { item: 'example', path: root, branch: git('symbolic-ref', '--short', 'HEAD') };
   const calls = [];
-  c.rdm = args => { calls.push(args); return args[0] === 'phase' ? structuredClone(item) : [structuredClone(worktree)]; };
+  c.rdm = async args => { calls.push(args); return args[0] === 'phase' ? structuredClone(item) : [structuredClone(worktree)]; };
   return { c, item, worktree, calls };
 }
 

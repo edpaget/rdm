@@ -11,11 +11,11 @@ const hash = text => createHash('sha256').update(text).digest('hex');
 const tiers = ['small','medium','large'];
 
 /** Resolve core policy first, then choose explicitly declared Codex capabilities. */
-export function resolveModels(ctx, host, steps, tier) {
+export async function resolveModels(ctx, host, steps, tier) {
   if (!host || typeof host !== 'object') throw new Error('Explicit host model configuration required');
   const result = {};
   for (const step of steps) {
-    const resolved = ctx.rdm(['model','resolve',step,...(tier ? ['--tier',tier] : []),'--format','json'],{json:true});
+    const resolved = await ctx.rdm(['model','resolve',step,...(tier ? ['--tier',tier] : []),'--format','json'],{json:true});
     if (resolved.step !== step || !tiers.includes(resolved.tier)) throw new Error('Invalid core model resolution');
     const override = host.steps?.[step];
     if (override && override.tier !== resolved.tier) throw new Error(`Step ${step} override must retain core tier ${resolved.tier}`);
@@ -75,11 +75,11 @@ function revision(root, value) {
   return safeGit(root,['rev-parse','--verify',`${value}^{commit}`]);
 }
 function clean(root) {if (safeGit(root,['status','--porcelain','--untracked-files=all'])) throw new Error('Code review requires a clean checkout');}
-function readItem(ctx, item) {
+async function readItem(ctx, item) {
   if (!item || item.type !== 'phase' || !/^[a-z0-9][a-z0-9-]*$/.test(item.roadmap) || !/^[a-z0-9][a-z0-9-]*$/.test(String(item.phase))) throw new Error('Supported item is an explicit phase and roadmap');
-  const data = ctx.rdm(['phase','show',String(item.phase),'--roadmap',item.roadmap,'--project',ctx.identity.project,'--format','json'],{json:true});
+  const data = await ctx.rdm(['phase','show',String(item.phase),'--roadmap',item.roadmap,'--project',ctx.identity.project,'--format','json'],{json:true});
   if (typeof data.body !== 'string' || !data.body.trim() || data.roadmap !== item.roadmap) throw new Error('Invalid phase identity/body');
-  const worktrees = ctx.rdm(['worktree','list','--format','json'],{json:true});
+  const worktrees = await ctx.rdm(['worktree','list','--format','json'],{json:true});
   if (!worktrees.some(w=>w.item===item.roadmap && fs.realpathSync(w.path)===ctx.identity.sourceDir && w.branch===safeGit(ctx.identity.sourceDir,['symbolic-ref','--short','HEAD']))) throw new Error('Phase worktree identity mismatch');
   return data;
 }
@@ -94,14 +94,14 @@ export async function reviewCode(ctx, spec, deps, models, tier) {
   const diff=safeGit(root,['diff','--no-ext-diff','--no-textconv',base,head,'--']);
   if (!diff) throw new Error('Review range is empty');
   const changedFiles=safeGit(root,['diff','--name-only',base,head,'--']).split('\n');
-  const item=spec.item ? readItem(ctx,spec.item) : null;
+  const item=spec.item ? await readItem(ctx,spec.item) : null;
   const body=item?.body ?? spec.target;
   if (typeof body !== 'string' || !body.trim()) throw new Error('Explicit target/acceptance criteria required');
   const target=`Review source ${root}, exact range ${base}..${head}. Read relevant files in this checkout.\n\n${body}\n\nDiff:\n${diff}`;
   ctx.record('code-snapshot',{base,head,changedFiles,targetHash:hash(target),item});
   const result=await buildReviewPipeline('code',deps)({target,signals:deriveSignals({changedFiles,diffText:diff,targetType:'phase'}),findModel:models['review-find']?.model,verifyModel:models['review-verify']?.model});
   clean(root);
-  if (safeGit(root,['rev-parse','HEAD']) !== head || (item && JSON.stringify(readItem(ctx,spec.item)) !== JSON.stringify(item))) throw new Error('Review target changed during review');
+  if (safeGit(root,['rev-parse','HEAD']) !== head || (item && JSON.stringify(await readItem(ctx,spec.item)) !== JSON.stringify(item))) throw new Error('Review target changed during review');
   requireComplete(result,true);
   return {...result,base,head,outcome:classifyOutcome({codeReviews:[result.survivors],acTable:result.acTable,tier})};
 }
@@ -112,16 +112,17 @@ export async function runRuntime(spec) {
   const concurrency=spec.concurrency ?? 3;
   if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 8) throw new Error('concurrency must be 1..8');
   if (spec.agentTimeoutMs !== undefined && (!Number.isSafeInteger(spec.agentTimeoutMs) || spec.agentTimeoutMs < 1 || spec.agentTimeoutMs > 3600000)) throw new Error('Invalid agentTimeoutMs');
-  const ctx=createRun(spec);
+  if (spec.signal !== undefined && !(spec.signal instanceof AbortSignal)) throw new Error('signal must be an AbortSignal');
   const controller = new AbortController();
   const interrupt = () => controller.abort();
-  process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt);
   const signal = spec.signal ? AbortSignal.any([spec.signal, controller.signal]) : controller.signal;
+  const ctx=createRun({...spec,signal});
+  process.on('SIGINT', interrupt); process.on('SIGTERM', interrupt);
   try {
-    const item=spec.operation==='code-review' && spec.item ? readItem(ctx,spec.item) : null;
+    const item=spec.operation==='code-review' && spec.item ? await readItem(ctx,spec.item) : null;
     const tier=item?.model ?? spec.tier;
     if (tier !== undefined && !tiers.includes(tier)) throw new Error('Invalid core tier hint');
-    const models=resolveModels(ctx,spec.host,spec.operation==='estimate'?['plan']:['review-find','review-verify'],tier);
+    const models=await resolveModels(ctx,spec.host,spec.operation==='estimate'?['plan']:['review-find','review-verify'],tier);
     const rawAgent=createJudgmentAgent(ctx,models,{...spec,signal});
     // Every canonical parallel boundary shares the configured bound. Estimate uses
     // its own Promise.all, so the agent itself also uses this FIFO semaphore.
@@ -134,6 +135,7 @@ export async function runRuntime(spec) {
     if(spec.operation==='plan-review')result=await reviewPlan(ctx,spec,deps,models);
     if(spec.operation==='code-review')result=await reviewCode(ctx,spec,deps,models,tier ?? models['review-find'].tier);
     if(spec.operation==='estimate')result=await runEstimate({ctx,roadmap:spec.roadmap,apply:spec.apply===true,agent});
+    if (signal.aborted) throw new Error('Codex runtime cancelled');
     return ctx.finish({operation:spec.operation,reportOnly:spec.operation!=='estimate'||spec.apply!==true,result});
   } catch(error) {ctx.fail(error);throw error;}
   finally {process.removeListener('SIGINT', interrupt);process.removeListener('SIGTERM', interrupt);}

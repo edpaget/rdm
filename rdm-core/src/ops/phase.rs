@@ -350,6 +350,65 @@ pub fn update_phase_with_estimate(
     Ok(doc)
 }
 
+/// Returns an opaque content token for conditional estimate application.
+///
+/// Covers the full typed frontmatter and body, excluding presentation-only
+/// navigation fields. Callers pass this token back unchanged; they must not
+/// derive it from a partial or edited document.
+///
+/// # Errors
+///
+/// Returns [`Error::FrontmatterParse`] if serializing the phase fails.
+pub fn phase_estimate_snapshot(doc: &Document<Phase>) -> Result<String> {
+    Ok(crate::store::content_digest(&doc.render()?))
+}
+
+/// Applies an estimate only to the exact, still-unestimated phase snapshot.
+///
+/// The precondition and update share one loaded document and the Store's
+/// ordinary read/write conflict tracking. Body, tags, status and other metadata
+/// changes invalidate the token. Both difficulty and model must be unset.
+/// The caller may replace the body with an audit note; other metadata is kept.
+///
+/// # Errors
+///
+/// Returns [`Error::PhaseNotFound`] if the phase does not exist,
+/// [`Error::PhaseEstimateConflict`] if the token differs or difficulty/model
+/// is already set, [`Error::BodyClobberRefused`] if a nonempty body would be
+/// replaced with an empty string, [`Error::Io`] for Store I/O failures, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] for invalid
+/// frontmatter or serialization failures. Store commit may subsequently reject
+/// a concurrent write with [`Error::StaleWrite`].
+pub fn apply_unset_phase_estimate(
+    store: &mut impl Store,
+    project: &str,
+    roadmap: &str,
+    phase_stem: &str,
+    expected_snapshot: &str,
+    difficulty: crate::model::Difficulty,
+    body: BodyUpdate,
+) -> Result<Document<Phase>> {
+    let path = crate::paths::phase_path(project, roadmap, phase_stem);
+    if !store.exists(&path) {
+        return Err(Error::PhaseNotFound(phase_stem.to_string()));
+    }
+    let mut doc = crate::io::load_phase(store, project, roadmap, phase_stem)?;
+    if phase_estimate_snapshot(&doc)? != expected_snapshot
+        || doc.frontmatter.difficulty.is_some()
+        || doc.frontmatter.model.is_some()
+    {
+        return Err(Error::PhaseEstimateConflict(phase_stem.to_string()));
+    }
+    body.apply(&mut doc.body)?;
+    apply_phase_estimate(
+        &mut doc,
+        DifficultyUpdate::Set(difficulty),
+        ModelTierUpdate::Keep,
+    );
+    crate::io::write_phase(store, project, roadmap, phase_stem, &doc)?;
+    Ok(doc)
+}
+
 /// Sets (or clears) a phase's difficulty and/or model-tier estimate.
 ///
 /// This is the dedicated entry point for difficulty-aware model selection

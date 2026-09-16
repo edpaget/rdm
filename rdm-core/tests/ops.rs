@@ -6141,6 +6141,118 @@ fn update_phase_with_estimate_writes_phase_file_exactly_once() {
     );
 }
 
+#[test]
+fn conditional_estimate_checks_entire_snapshot_and_unset_fields_before_writing() {
+    use rdm_core::ops::phase::{apply_unset_phase_estimate, phase_estimate_snapshot};
+    for change in ["body", "tags", "title", "difficulty", "model", "review_sha"] {
+        let mut store = CountingStore::new(setup_with_roadmap());
+        let original = rdm_core::ops::phase::create_phase(
+            &mut store,
+            rdm_core::ops::phase::CreatePhase {
+                project: "fbm",
+                roadmap: "two-way",
+                slug: "core",
+                title: "Core",
+                body: Some("Original body"),
+                tags: Some(vec!["keep".into()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let token = phase_estimate_snapshot(&original).unwrap();
+        let mut changed = original.clone();
+        match change {
+            "body" => changed.body = "Concurrent body".into(),
+            "tags" => changed.frontmatter.tags = Some(vec!["concurrent".into()]),
+            "title" => changed.frontmatter.title = "Concurrent title".into(),
+            "difficulty" => changed.frontmatter.difficulty = Some(Difficulty::Hard),
+            "model" => changed.frontmatter.model = Some(ModelTier::Large),
+            "review_sha" => changed.frontmatter.review_sha = Some("concurrent".into()),
+            _ => unreachable!(),
+        }
+        rdm_core::io::write_phase(&mut store, "fbm", "two-way", "phase-1-core", &changed).unwrap();
+        let changed = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+        store.writes.clear();
+        let result = apply_unset_phase_estimate(
+            &mut store,
+            "fbm",
+            "two-way",
+            "phase-1-core",
+            &token,
+            Difficulty::Easy,
+            rdm_core::ops::BodyUpdate::Set("Stale body".into()),
+        );
+        assert!(
+            matches!(result, Err(Error::PhaseEstimateConflict(_))),
+            "{change}"
+        );
+        assert!(
+            store.writes.is_empty(),
+            "{change} must be rejected before write"
+        );
+        assert_eq!(
+            rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap(),
+            changed
+        );
+        if matches!(change, "difficulty" | "model") {
+            let fresh = phase_estimate_snapshot(&changed).unwrap();
+            assert!(matches!(
+                apply_unset_phase_estimate(
+                    &mut store,
+                    "fbm",
+                    "two-way",
+                    "phase-1-core",
+                    &fresh,
+                    Difficulty::Easy,
+                    rdm_core::ops::BodyUpdate::Keep
+                ),
+                Err(Error::PhaseEstimateConflict(_))
+            ));
+            assert!(store.writes.is_empty());
+        }
+    }
+}
+
+#[test]
+fn conditional_estimate_preserves_metadata_and_writes_once() {
+    use rdm_core::ops::phase::{apply_unset_phase_estimate, phase_estimate_snapshot};
+    let mut store = CountingStore::new(setup_with_roadmap());
+    let original = rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            tags: Some(vec!["keep".into()]),
+            body: Some("Original body"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let token = phase_estimate_snapshot(&original).unwrap();
+    store.writes.clear();
+    let updated = apply_unset_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        &token,
+        Difficulty::Easy,
+        rdm_core::ops::BodyUpdate::Set("Original body\nEstimate note".into()),
+    )
+    .unwrap();
+    assert_eq!(updated.frontmatter.tags, original.frontmatter.tags);
+    assert_eq!(updated.frontmatter.status, original.frontmatter.status);
+    assert_eq!(updated.frontmatter.difficulty, Some(Difficulty::Easy));
+    assert_eq!(
+        updated.frontmatter.model,
+        Some(Difficulty::Easy.model_tier())
+    );
+    assert_eq!(updated.body, "Original body\nEstimate note");
+    assert_eq!(store.writes_matching("phase-1-core"), 1);
+}
+
 // -- Title rename on update (Phase 5) --
 
 #[test]

@@ -178,6 +178,8 @@ pub enum Error {
         /// The field name (`"body"`, `"priority"`, or `"tags"`).
         field: String,
     },
+    /// A conditional estimate targeted a changed phase or an already-set estimate.
+    PhaseEstimateConflict(String),
     /// A staged write was derived from content another process has since
     /// changed, so flushing it would silently drop that other work.
     ///
@@ -475,6 +477,10 @@ impl std::fmt::Display for Error {
             Error::ConflictingUpdate { field } => {
                 write!(f, "cannot set both '{field}' and 'clear_{field}'")
             }
+            Error::PhaseEstimateConflict(stem) => write!(
+                f,
+                "conditional estimate refused for '{stem}': phase changed or difficulty/model is already set; read the phase again before estimating"
+            ),
             Error::StaleWrite { item, path } => {
                 write!(
                     f,

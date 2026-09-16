@@ -185,7 +185,8 @@ impl From<&Error> for ProblemDetail {
             // names the item and states that nothing was written or
             // committed, so it is carried through verbatim rather than
             // re-worded here.
-            Error::StaleWrite { .. }
+            Error::PhaseEstimateConflict(_)
+            | Error::StaleWrite { .. }
             | Error::ChangesetPathOverwritten { .. }
             | Error::ChangesetDeletePathRecreated { .. } => ProblemDetail {
                 problem_type: "about:blank".to_string(),

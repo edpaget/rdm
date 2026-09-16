@@ -299,6 +299,12 @@ pub fn run(
                 OutputFormat::Json => {
                     let j =
                         json::phase_to_json(&stem, &doc, &roadmap, prev_stem, next_stem, revision);
+                    let mut j = serde_json::to_value(j)?;
+                    if !no_body && at.is_none() {
+                        j["estimate_snapshot"] = serde_json::Value::String(
+                            rdm_core::ops::phase::phase_estimate_snapshot(&doc)?,
+                        );
+                    }
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&j).context("failed to serialize phase")?
@@ -312,6 +318,7 @@ pub fn run(
         }
         PhaseCommand::Update {
             stem,
+            expected_estimate_snapshot,
             status,
             title,
             roadmap,
@@ -334,6 +341,19 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
                 .context("failed to resolve phase")?;
+            if let Some(snapshot) = expected_estimate_snapshot {
+                let difficulty =
+                    difficulty.context("conditional estimate requires --difficulty")?;
+                let body = BodyUpdate::from_args(body, false)?;
+                let doc = commit_mutation(store, "failed to conditionally estimate phase", |s| {
+                    rdm_core::ops::phase::apply_unset_phase_estimate(
+                        s, &project, &roadmap, &stem, &snapshot, difficulty, body,
+                    )
+                })
+                .map_err(map_body_clobber)?;
+                println!("Updated '{stem}' → {}", doc.frontmatter.status);
+                return Ok(());
+            }
             // `update` consults the body only when the user is explicit:
             // `--body` sets it, `--clear-body` clears it, otherwise it is left
             // untouched. Unlike `create`, this never reads stdin or opens the

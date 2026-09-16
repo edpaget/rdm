@@ -10,7 +10,7 @@ import path from 'node:path';
 
 const sourceDir = fileURLToPath(new URL('../../', import.meta.url));
 function fixture() {
-  const phases = new Map(['phase-1-a', 'phase-2-b'].map(stem => [stem, { stem, body: 'Preserve `$body`.', tags: ['keep'], difficulty: null, model: null }]));
+  const phases = new Map(['phase-1-a', 'phase-2-b'].map(stem => [stem, { stem, body: 'Preserve `$body`.', tags: ['keep'], difficulty: null, model: null, estimate_snapshot: `snapshot-${stem}` }]));
   const calls = [];
   const ctx = { identity: { sourceDir, project: 'fixture', rdmBin: '/fixture/rdm' }, session: 'owned', record: async () => {},
     rdm: async (args, options) => {
@@ -19,7 +19,11 @@ function fixture() {
       if (args[1] === 'list') return [...phases.values()].map(p => structuredClone(p));
       const p = phases.get(args[2]);
       if (args[1] === 'show') return structuredClone(p);
-      if (args[1] === 'update') { p.body = args[args.indexOf('--body') + 1]; p.difficulty = args[args.indexOf('--difficulty') + 1]; p.model = 'sonnet'; return ''; }
+      if (args[1] === 'update') {
+        assert.ok(args.includes('--expected-estimate-snapshot'), 'conditional estimate write is required');
+        if (args[args.indexOf('--expected-estimate-snapshot') + 1] !== p.estimate_snapshot || p.difficulty || p.model) throw new Error('estimate snapshot changed');
+        p.body = args[args.indexOf('--body') + 1]; p.difficulty = args[args.indexOf('--difficulty') + 1]; p.model = 'sonnet'; return '';
+      }
       throw new Error('unexpected operation');
     } };
   const agent = async prompt => ({ stem: prompt.match(/Phase stem: (\S+)/)[1], difficulty: 'moderate', justification: 'Small bounded change.' });
@@ -65,6 +69,22 @@ test('a post-write readback mismatch stops further writes and is uncertain', asy
   f.ctx.rdm = async (args, opts) => { const result = await rdm(args, opts); if (args[1] === 'update') f.phases.get(args[2]).body = 'Concurrent edit after write'; return result; };
   await assert.rejects(runEstimate({ ...f, roadmap: 'example', apply: true }), /uncertain.*readback/);
   assert.equal(f.calls.filter(c => c.options?.mutating).length, 1);
+});
+test('atomic precondition rejects edit after final read without overwriting it', async () => {
+  const f = fixture(); const rdm = f.ctx.rdm;
+  f.ctx.rdm = async (args, opts) => {
+    if (args[1] === 'update') { const p = f.phases.get(args[2]); p.body = 'Concurrent writer wins'; p.estimate_snapshot = 'changed-snapshot'; }
+    return rdm(args, opts);
+  };
+  await assert.rejects(runEstimate({ ...f, roadmap: 'example', apply: true }), /snapshot changed/);
+  assert.equal(f.phases.get('phase-1-a').body, 'Concurrent writer wins');
+  assert.equal(f.phases.get('phase-1-a').difficulty, null);
+  assert.equal(f.calls.filter(c => c.args[0] === 'commit').length, 0);
+});
+test('apply rejects older RDM output without a conditional estimate snapshot', async () => {
+  const f = fixture(); for (const phase of f.phases.values()) delete phase.estimate_snapshot;
+  await assert.rejects(runEstimate({ ...f, roadmap: 'example', apply: true }), /snapshot missing/);
+  assert.equal(f.calls.filter(c => c.options?.mutating).length, 0);
 });
 for (const interrupted of ['update', 'commit']) test(`interruption after ${interrupted} is uncertain, stops without retry or success`, async () => {
   const f = fixture(); const rdm = f.ctx.rdm;

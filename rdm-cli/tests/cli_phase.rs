@@ -58,6 +58,135 @@ fn init_with_roadmap(dir: &TempDir) {
         .success();
 }
 
+fn phase_estimate_snapshot(dir: &TempDir) -> String {
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice::<serde_json::Value>(&output).unwrap()["estimate_snapshot"]
+        .as_str()
+        .expect("phase show exposes conditional estimate snapshot")
+        .to_owned()
+}
+
+#[test]
+fn conditional_estimate_rejects_stale_snapshot_without_overwriting_concurrent_edit() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core");
+    let snapshot = phase_estimate_snapshot(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "Concurrent body",
+            "--tags",
+            "concurrent",
+            "--difficulty",
+            "hard",
+        ])
+        .assert()
+        .success();
+    let phase = dir
+        .path()
+        .join("projects/fbm/roadmaps/two-way/phase-1-core.md");
+    let before = fs::read_to_string(&phase).unwrap();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "Stale body and estimate",
+            "--difficulty",
+            "easy",
+            "--expected-estimate-snapshot",
+            &snapshot,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("conditional estimate refused"));
+    assert_eq!(fs::read_to_string(phase).unwrap(), before);
+}
+
+#[test]
+fn conditional_estimate_applies_once_and_requires_unset_estimate() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core");
+    let snapshot = phase_estimate_snapshot(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--body",
+            "Estimate body",
+            "--difficulty",
+            "easy",
+            "--expected-estimate-snapshot",
+            &snapshot,
+        ])
+        .assert()
+        .success();
+    let fresh = phase_estimate_snapshot(&dir);
+    assert_ne!(snapshot, fresh);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--difficulty",
+            "hard",
+            "--expected-estimate-snapshot",
+            &fresh,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("conditional estimate refused"));
+}
+
 #[test]
 fn phase_create_auto_number() {
     let dir = TempDir::new().unwrap();

@@ -719,6 +719,10 @@ pub(crate) enum PhaseCommand {
     Update {
         /// Phase stem or number (e.g. phase-1-core or 1).
         stem: String,
+        /// Apply difficulty/body only if this full phase snapshot still matches
+        /// and both difficulty and model remain unset. From phase show JSON.
+        #[arg(long, requires = "difficulty", conflicts_with_all = ["status", "title", "tags", "clear_difficulty", "model", "clear_model", "clear_body", "reason", "clear_reason", "commit"])]
+        expected_estimate_snapshot: Option<String>,
         /// New status (omit to preserve existing).
         #[arg(long)]
         status: Option<PhaseStatus>,

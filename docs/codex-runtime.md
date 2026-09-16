@@ -148,7 +148,11 @@ still stop execution.
 For `estimate`, replace the review fields with `roadmap` and optionally
 `apply: true`. Preview returns proposals without modifying plan documents.
 Apply validates the complete judgment batch before any writes, rechecks each
-phase, preserves tags and existing body, and writes only still-unset difficulty
+phase, then supplies its opaque `estimate_snapshot` token to the core conditional
+update. Core checks that snapshot and requires difficulty/model to remain unset
+within the mutation read/write cycle, so a concurrent committed edit between
+adapter read and update cannot be overwritten. It preserves tags and existing
+body, and writes only still-unset difficulty
 plus the canonical audit note. It reads back persisted values/core tier and
 commits only the runtime-owned session. Already estimated phases are skipped.
 An interrupted update, commit, failed readback or later drift stops execution
@@ -188,7 +192,7 @@ alone is insufficient. If the process is still the recorded runner, send
 an unrelated process whose PID was reused. If identity is ambiguous, inspect
 further rather than retrying the operation concurrently.
 
-During an active Codex call, the transport handles SIGTERM/SIGINT by cancelling
+During active Codex or direct RDM calls, the runtime handles SIGTERM/SIGINT by cancelling
 and terminating the child process group. A hard crash or SIGKILL may bypass
 that cleanup. The runner PID and model thread IDs do not prove absence of
 stray child processes: inspect process command lines and groups for the
@@ -226,7 +230,10 @@ targets with a new evidence directory.
 API. `createRun(spec)` exposes `identity`, `session`, `runDir`,
 `rdm(args, {json, mutating})`, `record(type, data)`, `finish(result)`, and
 `fail(error)`. Callers supply exact argv including `--format json` when needed.
-`json` parses stdout; `mutating` records durable intent before execution.
+`rdm` returns a Promise; await it. `json` parses stdout; `mutating` records
+durable intent before execution. Direct subprocesses support cancellation and
+timeouts, await process-group shutdown, and reject further commands or final
+success after cancellation.
 Adapters that detect uncertainty after a successful process must throw an
 error with `uncertainWrites: true`, which `fail` persists. Existing run
 evidence cannot be reused and terminal contexts reject more commands.

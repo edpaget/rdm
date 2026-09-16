@@ -64,9 +64,10 @@ export async function runEstimate({ ctx, roadmap, apply = false, agent }) {
     writeback: guarded(async (stem, difficulty, justification) => {
       if (!apply) return { ok: true };
       const current = await unchanged(stem);
+      if (typeof current.estimate_snapshot !== 'string' || !current.estimate_snapshot) throw new Error(`estimate snapshot missing: ${stem}; update the RDM binary before applying`);
       const body = `${current.body}\n\n## Estimate\n\n${difficulty} — ${justification}\n`;
       attemptedWrite = true;
-      await ctx.rdm(['phase', 'update', stem, '--difficulty', difficulty, '--body', body, '--no-edit', ...scope], { mutating: true });
+      await ctx.rdm(['phase', 'update', stem, '--difficulty', difficulty, '--body', body, '--expected-estimate-snapshot', current.estimate_snapshot, '--no-edit', ...scope], { mutating: true });
       const after = await show(stem);
       if (after.difficulty !== difficulty || after.body.trimEnd() !== body.trimEnd() || hash(after.tags ?? []) !== hash(current.tags ?? [])) throw new Error(`estimate readback failed: ${stem}`);
       return { ok: true };
