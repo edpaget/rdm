@@ -69,7 +69,7 @@ jobs:
         run: cargo build --release
 
       - name: Codex execution and runtime contracts (no credentials)
-        run: mise exec node -- node --test scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs
+        run: mise exec node -- node --test --test-concurrency=1 scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs
 
       - name: Audit dependencies
         run: cargo deny check

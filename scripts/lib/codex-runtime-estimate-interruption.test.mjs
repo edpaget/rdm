@@ -17,7 +17,7 @@ async function until(check, message, timeout = 45000) {
   throw new Error(message);
 }
 
-for (const boundary of ['update', 'commit']) test(`real runner SIGTERM after actual ${boundary}: uncertain, children reaped, explicit reconciliation and fresh rerun`, { timeout: 180000 }, async t => {
+for (const boundary of ['update', 'commit', 'missing']) test(boundary === 'missing' ? 'real scoped commit skips a concurrently removed phase: zero exit cannot report applied success' : `real runner SIGTERM after actual ${boundary}: uncertain, children reaped, explicit reconciliation and fresh rerun`, { timeout: 180000 }, async t => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-interrupt-')));
   const source = path.join(root, 'source'), plans = path.join(root, 'plans'), bin = path.join(root, 'bin');
   for (const dir of [source, plans, bin]) fs.mkdirSync(dir);
@@ -35,6 +35,7 @@ for (const boundary of ['update', 'commit']) test(`real runner SIGTERM after act
 import fs from 'node:fs'; import {execFileSync,spawn} from 'node:child_process';
 const args=process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(callsFile)},JSON.stringify({args,session:process.env.RDM_SESSION,pid:process.pid})+'\\n');
+if(process.env.FIXTURE_BOUNDARY==='missing'&&args[0]==='commit')execFileSync(${JSON.stringify(realBin)},['phase','remove','phase-1-first','--roadmap','example','--project','fixture'],{env:{...process.env,RDM_SESSION:'concurrent-remover'},stdio:['ignore','pipe','pipe']});
 const result=execFileSync(${JSON.stringify(realBin)},args,{env:process.env,encoding:'utf8',stdio:['ignore','pipe','pipe']});
 const match=process.env.FIXTURE_BOUNDARY==='commit'?args[0]==='commit':process.env.FIXTURE_BOUNDARY==='update'&&args[0]==='phase'&&args[1]==='update';
 if(match){const descendant=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,descendant:descendant.pid,session:process.env.RDM_SESSION}));setInterval(()=>{},1000);}else process.stdout.write(result);
@@ -71,6 +72,22 @@ process.stdout.write(JSON.stringify({type:'thread.started',thread_id:'fixture-'+
   let stderr = '', stdout = '', closed = false;
   child = spawn(process.execPath, [runner, specFile], { cwd: source, env: { ...env, FIXTURE_BOUNDARY: boundary }, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', data => { stdout += data; }); child.stderr.on('data', data => { stderr += data; }); child.on('close', () => { closed = true; });
+  if (boundary === 'missing') {
+    await until(() => closed, 'missing-path runner did not stop');
+    assert.notEqual(child.exitCode, 0, 'a skipped estimate cannot produce successful apply'); assert.equal(stdout, ''); assert.match(stderr, /uncertain/);
+    const manifest = JSON.parse(fs.readFileSync(path.join(spec.runDir, 'manifest.json')));
+    assert.equal(manifest.status, 'failed'); assert.equal(manifest.uncertainWrites, true);
+    const journal = fs.readFileSync(path.join(spec.runDir, 'journal.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);
+    const commitIntent = journal.find(e => e.type === 'write-intent' && e.data.args[0] === 'commit');
+    const commitAck = journal.find(e => e.type === 'write-acknowledged' && e.data.callId === commitIntent.data.callId);
+    assert.ok(commitAck, 'actual scoped commit must exit zero'); assert.match(commitAck.data.stdout, /skip|missing/i);
+    assert.ok(journal.every(e => e.type !== 'run-completed'));
+    const owned = JSON.parse(rdm(['session', 'journal', '--format', 'json'], manifest.identity.session));
+    assert.equal(owned.id, manifest.identity.session); assert.ok(owned.paths.length > 0, 'skipped path remains unresolved in the owned journal');
+    assert.equal(show('phase-3-other', 'unrelated').body.trim(), 'Unrelated pending edit.');
+    assert.doesNotMatch(exec('git', ['show', 'HEAD:projects/fixture/roadmaps/example/phase-3-other.md'], plans), /Unrelated pending edit/);
+    return;
+  }
   try { await until(() => fs.existsSync(marker) || closed || child.exitCode !== null, 'runner did not reach real side effect'); }
   catch (error) { throw new Error(`${error.message}; stderr=${stderr}; calls=${fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8') : 'none'}`, { cause: error }); }
   assert.equal(closed, false, stderr);

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { safeGit } from './codex-runtime-state.mjs';
 import { buildEstimatePipeline, buildEstimatorPrompt } from '../../.claude/workflows/lib/estimate.mjs';
 
 const ratingSchema = {
@@ -22,6 +23,7 @@ export async function runEstimate({ ctx, roadmap, apply = false, agent }) {
   const scope = ['--roadmap', roadmap, '--project', ctx.identity.project];
   const show = stem => ctx.rdm(['phase', 'show', stem, ...scope, '--format', 'json'], { json: true });
   const snapshots = new Map();
+  const intended = new Map();
   const proposed = [];
   let failure;
   let attemptedWrite = false;
@@ -70,6 +72,7 @@ export async function runEstimate({ ctx, roadmap, apply = false, agent }) {
       await ctx.rdm(['phase', 'update', stem, '--difficulty', difficulty, '--body', body, '--expected-estimate-snapshot', current.estimate_snapshot, '--no-edit', ...scope], { mutating: true });
       const after = await show(stem);
       if (after.difficulty !== difficulty || after.body.trimEnd() !== body.trimEnd() || hash(after.tags ?? []) !== hash(current.tags ?? [])) throw new Error(`estimate readback failed: ${stem}`);
+      intended.set(stem, { body: body.trimEnd(), difficulty, tags: current.tags ?? [], model: after.model });
       return { ok: true };
     }),
     showTier: guarded(async stem => {
@@ -87,8 +90,22 @@ export async function runEstimate({ ctx, roadmap, apply = false, agent }) {
   try {
     const summary = await run({ roadmap, project: ctx.identity.project, rdmBin: ctx.identity.rdmBin });
     if (failure) throw failure;
-    if (apply && proposed.length) await ctx.rdm(['commit', '-m', `chore(plan): estimate ${roadmap}`], { mutating: true });
-    const result = { ...summary, estimated: apply ? summary.estimated : [], proposed, applied: apply };
+    let planCommit;
+    if (apply && proposed.length) {
+      await ctx.rdm(['commit', '-m', `chore(plan): estimate ${roadmap}`], { mutating: true });
+      // A scoped commit may exit zero while skipping missing paths. Its human
+      // stdout is not an acknowledgement that every intended estimate landed.
+      planCommit = safeGit(ctx.identity.planRoot, ['rev-parse', '--verify', 'HEAD']);
+      for (const [stem, expected] of intended) {
+        const committed = await ctx.rdm(['phase', 'show', stem, ...scope, '--at', planCommit, '--format', 'json'], { json: true });
+        if (!committed || hash({ body: committed.body?.trimEnd(), difficulty: committed.difficulty, tags: committed.tags ?? [], model: committed.model }) !== hash(expected)) throw new Error(`committed estimate verification failed: ${stem}`);
+      }
+      const journal = await ctx.rdm(['session', 'journal', '--format', 'json'], { json: true });
+      if (journal?.id !== ctx.session || !Array.isArray(journal.paths) || journal.paths.length !== 0) throw new Error('owned estimate session journal is not settled after commit');
+      if (safeGit(ctx.identity.planRoot, ['rev-parse', '--verify', 'HEAD']) !== planCommit) throw new Error('plan HEAD changed during committed estimate verification');
+      await ctx.record('estimate-commit-verified', { planCommit, session: ctx.session, stems: [...intended.keys()] });
+    }
+    const result = { ...summary, estimated: apply ? summary.estimated : [], proposed, applied: apply, ...(planCommit ? { planCommit } : {}) };
     await ctx.record('estimate-result', result);
     return result;
   } catch (error) {

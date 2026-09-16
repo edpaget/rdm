@@ -9,25 +9,40 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const sourceDir = fileURLToPath(new URL('../../', import.meta.url));
+const fixtureRoots = [];
+test.after(() => { for (const root of fixtureRoots) rmSync(root, { recursive: true, force: true }); });
 function fixture() {
+  const planRoot = realpathSync(mkdtempSync(path.join(tmpdir(), 'estimate-unit-plan-'))); fixtureRoots.push(planRoot);
+  const git = (...args) => execFileSync('git', args, { cwd: planRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  git('init', '-q'); git('config', 'user.name', 'Fixture'); git('config', 'user.email', 'fixture@example.invalid');
+  const persist = () => { writeFileSync(path.join(planRoot, 'phases.json'), JSON.stringify(Object.fromEntries(phases))); git('add', 'phases.json'); git('commit', '-qm', 'test: persist fixture snapshot'); };
   const phases = new Map(['phase-1-a', 'phase-2-b'].map(stem => [stem, { stem, body: 'Preserve `$body`.', tags: ['keep'], difficulty: null, model: null, estimate_snapshot: `snapshot-${stem}` }]));
+  persist();
+  const journal = new Set();
   const calls = [];
-  const ctx = { identity: { sourceDir, project: 'fixture', rdmBin: '/fixture/rdm' }, session: 'owned', record: async () => {},
+  const ctx = { identity: { sourceDir, planRoot, project: 'fixture', rdmBin: '/fixture/rdm' }, session: 'owned', record: async () => {},
     rdm: async (args, options) => {
       calls.push({ args, options });
-      if (args[0] === 'commit') return 'committed';
+      if (args[0] === 'commit') { persist(); journal.clear(); return 'committed'; }
+      if (args[0] === 'session' && args[1] === 'journal') return { id: 'owned', paths: [...journal] };
       if (args[1] === 'list') return [...phases.values()].map(p => structuredClone(p));
       const p = phases.get(args[2]);
-      if (args[1] === 'show') return structuredClone(p);
+      if (args[1] === 'show') {
+        if (args.includes('--at')) {
+          const at = args[args.indexOf('--at') + 1]; assert.match(at, /^[a-f0-9]{40}$/);
+          return JSON.parse(git('show', `${at}:phases.json`))[args[2]];
+        }
+        return structuredClone(p);
+      }
       if (args[1] === 'update') {
         assert.ok(args.includes('--expected-estimate-snapshot'), 'conditional estimate write is required');
         if (args[args.indexOf('--expected-estimate-snapshot') + 1] !== p.estimate_snapshot || p.difficulty || p.model) throw new Error('estimate snapshot changed');
-        p.body = args[args.indexOf('--body') + 1]; p.difficulty = args[args.indexOf('--difficulty') + 1]; p.model = 'sonnet'; return '';
+        p.body = args[args.indexOf('--body') + 1]; p.difficulty = args[args.indexOf('--difficulty') + 1]; p.model = 'sonnet'; journal.add(args[2]); return '';
       }
       throw new Error('unexpected operation');
     } };
   const agent = async prompt => ({ stem: prompt.match(/Phase stem: (\S+)/)[1], difficulty: 'moderate', justification: 'Small bounded change.' });
-  return { ctx, calls, phases, agent };
+  return { ctx, calls, phases, agent, journal };
 }
 
 test('preview validates proposals without any writes or commits', async () => {
@@ -85,6 +100,16 @@ test('apply rejects older RDM output without a conditional estimate snapshot', a
   const f = fixture(); for (const phase of f.phases.values()) delete phase.estimate_snapshot;
   await assert.rejects(runEstimate({ ...f, roadmap: 'example', apply: true }), /snapshot missing/);
   assert.equal(f.calls.filter(c => c.options?.mutating).length, 0);
+});
+test('zero-exit commit that skips an estimate never reports applied success', async () => {
+  const f = fixture(); const rdm = f.ctx.rdm;
+  f.ctx.rdm = async (args, opts) => args[0] === 'commit' ? 'Warning: skipped missing path; nothing committed.' : rdm(args, opts);
+  await assert.rejects(runEstimate({ ...f, roadmap: 'example', apply: true }), /uncertain.*committed estimate/);
+});
+test('owned journal must settle even when committed estimates match', async () => {
+  const f = fixture(); const rdm = f.ctx.rdm;
+  f.ctx.rdm = async (args, opts) => { const value = await rdm(args, opts); if (args[0] === 'commit') f.journal.add('unsettled-target'); return value; };
+  await assert.rejects(runEstimate({ ...f, roadmap: 'example', apply: true }), /uncertain.*journal/);
 });
 for (const interrupted of ['update', 'commit']) test(`interruption after ${interrupted} is uncertain, stops without retry or success`, async () => {
   const f = fixture(); const rdm = f.ctx.rdm;

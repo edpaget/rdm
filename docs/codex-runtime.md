@@ -154,7 +154,10 @@ within the mutation read/write cycle, so a concurrent committed edit between
 adapter read and update cannot be overwritten. It preserves tags and existing
 body, and writes only still-unset difficulty
 plus the canonical audit note. It reads back persisted values/core tier and
-commits only the runtime-owned session. Already estimated phases are skipped.
+commits only the runtime-owned session. Before reporting success, it verifies
+the committed estimates and that the owned session journal has settled; a
+successful commit process that skipped a vanished path is insufficient.
+Already estimated phases are skipped.
 An interrupted update, commit, failed readback or later drift stops execution
 and requires inspection before another apply run.
 
@@ -247,9 +250,11 @@ not claims of complete workflow parity.
 Credential-free tests run with:
 
 ```sh
-node --test scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs
+node --test --test-concurrency=1 scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs
 ```
 
+Test files run sequentially to avoid competing development-binary rebuilds;
+the runtime concurrency tests still exercise parallel judgment processes.
 These tests exercise contracts and isolated fixtures. Live authenticated
 runs have separate evidence; passing fixtures alone does not establish a
 successful account/model invocation or completed independent review.
