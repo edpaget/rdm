@@ -261,6 +261,9 @@ pub struct CreateReview<'a> {
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
+///
 /// Returns [`Error::ProjectNotFound`] if the project doesn't exist,
 /// [`Error::ReviewTargetMissing`] if the target roadmap/phase/task doesn't
 /// exist, [`Error::ReviewImplementsNotApplicable`] if `implements` is set on
@@ -284,6 +287,7 @@ pub fn create_review(
         implements,
         change_branch,
     } = req;
+    target.validate_stored_identity()?;
     if !store.exists(&crate::paths::project_md_path(project)) {
         return Err(Error::ProjectNotFound(project.to_string()));
     }
@@ -353,6 +357,9 @@ pub struct AddComment<'a> {
 /// a subsequent add.
 ///
 /// # Errors
+///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
 ///
 /// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
 /// [`Error::ReviewNotDraft`] if the review has been submitted (comment
@@ -459,6 +466,9 @@ pub struct UpdateComment<'a> {
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
+///
 /// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
 /// [`Error::CommentNotFound`] if the comment id isn't in the review,
 /// [`Error::ReviewNotDraft`] if a structural change is attempted after
@@ -544,6 +554,9 @@ pub fn update_comment(store: &mut impl Store, req: UpdateComment<'_>) -> Result<
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
+///
 /// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
 /// [`Error::ReviewNotDraft`] if the review has been submitted,
 /// [`Error::CommentNotFound`] if the comment id isn't in the review,
@@ -601,6 +614,9 @@ pub fn remove_comment(
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
+///
 /// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
 /// [`Error::ReviewNotDraft`] if the review was already submitted or is
 /// terminal, [`Error::ReviewMissingVerdict`] if `verdict` is `None`,
@@ -654,6 +670,9 @@ pub fn submit_review(
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
+///
 /// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
 /// [`Error::ReviewNotDraft`] if the review has been submitted,
 /// [`Error::BodyClobberRefused`] if an empty `Set` would clobber a non-empty
@@ -697,6 +716,9 @@ pub enum ReviewTransition {
 /// or `submitted`. Terminal states reject any further transition.
 ///
 /// # Errors
+///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
 ///
 /// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
 /// [`Error::ReviewInvalidTransition`] if the state machine forbids the move,
@@ -812,6 +834,9 @@ pub fn filter_reviews(
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
+///
 /// Returns [`Error::ProjectNotFound`] if the project does not exist,
 /// [`Error::Io`] if the reviews directory cannot be read, or
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if a review
@@ -834,6 +859,9 @@ pub fn change_requests(
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
+///
 /// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
 /// [`Error::Io`] on read failure, or [`Error::FrontmatterMissing`]/
 /// [`Error::FrontmatterParse`] on a malformed review file.
@@ -848,6 +876,9 @@ pub fn get_review(store: &impl Store, project: &str, review_id: &str) -> Result<
 /// override.
 ///
 /// # Errors
+///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
 ///
 /// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
 /// [`Error::ReviewNotDraft`] if the review is not a draft and `force` is
@@ -875,6 +906,9 @@ pub fn delete_review(
 /// narrow by target, state, verdict, or author.
 ///
 /// # Errors
+///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
 ///
 /// Returns [`Error::ProjectNotFound`] if the project does not exist,
 /// [`Error::Io`] if the directory cannot be read, or
@@ -941,6 +975,9 @@ pub struct OpenReviewCounts {
 /// the web list pages — they must never disagree.
 ///
 /// # Errors
+///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
 ///
 /// Returns [`Error::ProjectNotFound`] if the project does not exist,
 /// [`Error::Io`] if the reviews directory cannot be read, or
@@ -2097,5 +2134,197 @@ mod tests {
         let via_slice = count_open_reviews_in(&list_reviews(&store, "test").unwrap());
         assert_eq!(via_store.tasks.get("fix"), via_slice.tasks.get("fix"));
         assert_eq!(via_store.tasks.get("fix").unwrap().open_reviews, 1);
+    }
+    #[test]
+    fn malformed_change_identity_is_matchable_across_all_review_consumers() {
+        for field in ["head", "base"] {
+            for value in [
+                "",
+                "abc123",
+                "HEAD",
+                "--output=elsewhere",
+                "é",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "gggggggggggggggggggggggggggggggggggggggg",
+                " aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "HEAD~1",
+            ] {
+                let mut store = setup_store();
+                crate::io::write_review(&mut store, "test", "valid", &sample_review("valid"))
+                    .unwrap();
+                let mut doc = sample_review("bad");
+                doc.frontmatter.target = ReviewTarget::Change {
+                    head: if field == "head" {
+                        value.into()
+                    } else {
+                        "a".repeat(40)
+                    },
+                    base: Some(if field == "base" {
+                        value.into()
+                    } else {
+                        "b".repeat(40)
+                    }),
+                };
+                let is_expected = |err: Error| {
+                    assert!(
+                        matches!(err, Error::InvalidStoredChangeRevision { field: f, value: v } if f == field && v == value)
+                    );
+                };
+                is_expected(crate::io::write_review(&mut store, "test", "bad", &doc).unwrap_err());
+                assert!(!store.exists(&crate::paths::review_path("test", "bad")));
+                // Structural serialization/deserialization deliberately accepts it;
+                // the trusted loading boundary must reject it consistently.
+                store
+                    .write(
+                        &crate::paths::review_path("test", "bad"),
+                        doc.render().unwrap(),
+                    )
+                    .unwrap();
+                is_expected(crate::io::load_review(&store, "test", "bad").unwrap_err());
+                is_expected(get_review(&store, "test", "bad").unwrap_err());
+                is_expected(list_reviews(&store, "test").unwrap_err());
+                is_expected(change_requests(&store, "test").unwrap_err());
+                is_expected(count_open_reviews(&store, "test").unwrap_err());
+                is_expected(
+                    crate::search::search(
+                        &store,
+                        "Review",
+                        &crate::search::SearchFilter::default(),
+                    )
+                    .unwrap_err(),
+                );
+                is_expected(
+                    add_comment(
+                        &mut store,
+                        AddComment {
+                            project: "test",
+                            review_id: "bad",
+                            body: "x",
+                            doc: None,
+                            anchor: None,
+                        },
+                    )
+                    .unwrap_err(),
+                );
+                is_expected(
+                    update_comment(
+                        &mut store,
+                        UpdateComment {
+                            project: "test",
+                            review_id: "bad",
+                            comment_id: 1,
+                            body: None,
+                            anchor: AnchorUpdate::Keep,
+                            doc: DocUpdate::Keep,
+                            status: None,
+                            applied_commit: None,
+                            reply: None,
+                        },
+                    )
+                    .unwrap_err(),
+                );
+                is_expected(remove_comment(&mut store, "test", "bad", 1).unwrap_err());
+                is_expected(
+                    submit_review(&mut store, "test", "bad", Some(Verdict::Approve)).unwrap_err(),
+                );
+                is_expected(
+                    set_summary(
+                        &mut store,
+                        "test",
+                        "bad",
+                        crate::ops::BodyUpdate::Set("x".into()),
+                    )
+                    .unwrap_err(),
+                );
+                is_expected(
+                    update_review(&mut store, "test", "bad", ReviewTransition::Dismissed)
+                        .unwrap_err(),
+                );
+                is_expected(delete_review(&mut store, "test", "bad", true).unwrap_err());
+                is_expected(
+                    create_review(
+                        &mut store,
+                        CreateReview {
+                            project: "test",
+                            author: "test",
+                            target: doc.frontmatter.target,
+                            body: None,
+                            implements: None,
+                            change_branch: None,
+                        },
+                    )
+                    .unwrap_err(),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn syntactic_change_identities_round_trip_offline_including_absent_base() {
+        let mut store = setup_store();
+        for base in [None, Some("b".repeat(40))] {
+            let mut doc = sample_review("valid");
+            doc.body.push('\n');
+            doc.frontmatter.target = ReviewTarget::Change {
+                head: "a".repeat(40),
+                base,
+            };
+            crate::io::write_review(&mut store, "test", "valid", &doc).unwrap();
+            assert_eq!(get_review(&store, "test", "valid").unwrap(), doc);
+        }
+        // Deleted non-change targets still load.
+        crate::io::write_review(&mut store, "test", "dangling", &sample_review("dangling"))
+            .unwrap();
+        assert!(get_review(&store, "test", "dangling").is_ok());
+        for rev in ["HEAD", "abc123", "topic"] {
+            let target: ReviewTarget = format!("change/{rev}").parse().unwrap();
+            assert!(matches!(target, ReviewTarget::Change { head, base: None } if head == rev));
+        }
+    }
+
+    struct NoPlanAccess;
+    impl Store for NoPlanAccess {
+        fn read(&self, _: &crate::store::RelPath) -> Result<String> {
+            panic!("unexpected read")
+        }
+        fn exists(&self, _: &crate::store::RelPath) -> bool {
+            panic!("unexpected exists")
+        }
+        fn list(&self, _: &crate::store::RelPath) -> Result<Vec<crate::store::DirEntry>> {
+            panic!("unexpected list")
+        }
+        fn write(&mut self, _: &crate::store::RelPath, _: String) -> Result<()> {
+            panic!("unexpected write")
+        }
+        fn delete(&mut self, _: &crate::store::RelPath) -> Result<()> {
+            panic!("unexpected delete")
+        }
+        fn commit(&mut self) -> Result<()> {
+            panic!("unexpected commit")
+        }
+        fn discard(&mut self) {
+            panic!("unexpected discard")
+        }
+    }
+    impl VersionedStore for NoPlanAccess {
+        fn head_sha(&self) -> Result<String> {
+            panic!("unexpected plan Git inspection")
+        }
+        fn fetch_body_at(&self, _: &crate::store::RelPath, _: &str) -> Result<String> {
+            panic!("unexpected history")
+        }
+    }
+
+    #[test]
+    fn invalid_creation_precedes_even_plan_store_inspection() {
+        for (head, base, field) in [
+            ("HEAD".into(), Some("b".repeat(40)), "head"),
+            ("a".repeat(40), Some("--all".into()), "base"),
+        ] {
+            assert!(matches!(create_review(&mut NoPlanAccess, CreateReview {
+                project: "test", author: "test", target: ReviewTarget::Change { head, base },
+                body: None, implements: None, change_branch: None,
+            }), Err(Error::InvalidStoredChangeRevision { field: f, .. }) if f == field));
+        }
     }
 }

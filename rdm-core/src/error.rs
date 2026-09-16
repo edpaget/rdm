@@ -5,6 +5,15 @@ use crate::model::ReviewState;
 pub enum Error {
     /// An I/O error occurred.
     Io(std::io::Error),
+    /// A persisted change identity is not exactly 40 lowercase ASCII hex characters.
+    InvalidStoredChangeRevision {
+        /// The invalid identity field: "head" or "base".
+        field: &'static str,
+        /// The rejected value, preserved without normalization.
+        value: String,
+    },
+    /// A source revision operand starts with a dash and could be a Git option.
+    InvalidChangeRevisionInput(String),
     /// Failed to parse YAML frontmatter.
     FrontmatterParse(serde_yaml::Error),
     /// The document is missing a frontmatter block.
@@ -372,6 +381,14 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::Io(e) => write!(f, "I/O error: {e}"),
+            Error::InvalidStoredChangeRevision { field, value } => write!(
+                f,
+                "invalid stored change {field} {value:?}: restore a full resolved commit SHA (40 lowercase ASCII hexadecimal characters)"
+            ),
+            Error::InvalidChangeRevisionInput(value) => write!(
+                f,
+                "invalid change revision {value:?}: a revision must not start with '-'"
+            ),
             Error::FrontmatterParse(e) => write!(f, "failed to parse frontmatter: {e}"),
             Error::FrontmatterMissing => {
                 write!(f, "document is missing frontmatter delimiters (---)")

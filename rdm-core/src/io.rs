@@ -149,11 +149,15 @@ pub fn load_plan(store: &impl Store, project: &str, plan_slug: &str) -> Result<D
 
 /// Loads and parses a review document from the store.
 ///
-/// Parsing never validates the review's target: a review whose target
+/// Loading validates stored change identity syntax without source access.
+/// It does not check target existence: a review whose target
 /// roadmap/phase/task has been renamed or deleted (a dangling target) still
 /// loads successfully.
 ///
 /// # Errors
+///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
 ///
 /// Returns [`Error::ReviewNotFound`] if the review file does not exist,
 /// [`Error::Io`] on read failure, or
@@ -165,7 +169,9 @@ pub fn load_review(store: &impl Store, project: &str, review_id: &str) -> Result
         return Err(Error::ReviewNotFound(review_id.to_string()));
     }
     let content = store.read(&path)?;
-    Document::parse(&content)
+    let doc: Document<Review> = Document::parse(&content)?;
+    doc.frontmatter.target.validate_stored_identity()?;
+    Ok(doc)
 }
 
 /// Loads and parses an archived roadmap document from the store.
@@ -371,6 +377,9 @@ pub fn write_plan(
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
+///
 /// Returns [`Error::Io`] if writing fails, or
 /// [`Error::FrontmatterParse`] if the frontmatter cannot be serialized.
 pub fn write_review(
@@ -379,6 +388,7 @@ pub fn write_review(
     review_id: &str,
     doc: &Document<Review>,
 ) -> Result<()> {
+    doc.frontmatter.target.validate_stored_identity()?;
     let path = crate::paths::review_path(project, review_id);
     let content = doc.render()?;
     store.write(&path, content)?;

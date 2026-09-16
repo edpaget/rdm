@@ -927,10 +927,12 @@ pub enum ReviewTarget {
     /// A set of commits in the project's **source** repository — the code
     /// change itself, rather than any plan-repo document.
     ///
-    /// `head` is always a full 40-character commit SHA: the CLI rev-parses
-    /// whatever the operator typed (`HEAD`, a branch name, an abbreviated
-    /// sha) before constructing this variant, so two reviews of the same
-    /// commit are always the same target. `base` is the other end of the
+    /// Persisted `head` and `base` are full, lowercase 40-character commit
+    /// identities. Raw serde and `FromStr` remain structural and may contain
+    /// unresolved input; they do not confer trusted persisted identity.
+    /// Creation resolves user revisions through the source adapter, and
+    /// core loading/writing validates identity syntax without source access.
+    /// `base` is the other end of the
     /// reviewed range — normally the merge-base with the project's default
     /// branch — and is recorded as provenance only: it is **not** part of
     /// the target's identity (see [`ReviewTarget::same_item`]) and does not
@@ -945,6 +947,46 @@ pub enum ReviewTarget {
 }
 
 impl ReviewTarget {
+    /// Validates the syntax of resolved identities before persistence or source use.
+    ///
+    /// Change head and each present base must be exactly 40 lowercase ASCII
+    /// hexadecimal characters. Missing base and non-change targets are accepted.
+    /// This does not prove object existence or commit type; source adapters
+    /// verify those when queried. Raw deserialization and reference parsing
+    /// deliberately do not perform this validation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::Error::InvalidStoredChangeRevision`] naming "head" or "base".
+    pub fn validate_stored_identity(&self) -> crate::error::Result<()> {
+        if let Self::Change { head, base } = self {
+            Self::validate_change_identity(head, base.as_deref())?;
+        }
+        Ok(())
+    }
+
+    /// Validates resolved change identity syntax without repository access.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::error::Error::InvalidStoredChangeRevision`] if head or a present
+    /// base is not exactly 40 lowercase ASCII hexadecimal characters.
+    pub fn validate_change_identity(head: &str, base: Option<&str>) -> crate::error::Result<()> {
+        for (field, value) in std::iter::once(("head", head)).chain(base.map(|b| ("base", b))) {
+            if value.len() != 40
+                || !value
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
+                return Err(crate::error::Error::InvalidStoredChangeRevision {
+                    field,
+                    value: value.to_string(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Renders the target in the CLI's `<kind>/<id>` reference syntax:
     /// `roadmap/<slug>`, `phase/<roadmap-slug>/<stem>`, `task/<slug>`, or
     /// `plan/<slug>`.

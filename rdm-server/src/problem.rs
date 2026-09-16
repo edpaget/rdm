@@ -117,6 +117,7 @@ impl From<&Error> for ProblemDetail {
             | Error::ReviewImplementsAmbiguous { .. }
             | Error::ChangeTargetHasNoDocument(_)
             | Error::ChangePathNotInRevision { .. }
+            | Error::InvalidChangeRevisionInput(_)
             | Error::ChangeRevisionNotFound(_)
             | Error::ChangeBaseNotFound(_)
             | Error::ChangeNoMergeBase { .. }
@@ -368,6 +369,7 @@ impl From<&Error> for ProblemDetail {
             // Internal errors: no detail leak
             Error::ReviewIdExhausted
             | Error::Io(_)
+            | Error::InvalidStoredChangeRevision { .. }
             | Error::FrontmatterParse(_)
             | Error::FrontmatterMissing
             | Error::ConfigParse(_)
@@ -470,5 +472,19 @@ mod tests {
         let pd = ProblemDetail::from(&err);
         assert_eq!(pd.status, 500);
         assert!(pd.detail.is_none(), "should not leak internal details");
+    }
+    #[test]
+    fn change_revision_errors_distinguish_stored_data_from_caller_input() {
+        let stored = ProblemDetail::from(&Error::InvalidStoredChangeRevision {
+            field: "base",
+            value: "HEAD".into(),
+        });
+        assert_eq!(stored.status, 500);
+        // Malformed persisted data follows FrontmatterParse's 500 policy:
+        // internal details stay out of HTTP responses.
+        assert!(stored.detail.is_none());
+        let caller = ProblemDetail::from(&Error::InvalidChangeRevisionInput("--all".into()));
+        assert_eq!(caller.status, 400);
+        assert!(caller.detail.unwrap().contains("must not start"));
     }
 }

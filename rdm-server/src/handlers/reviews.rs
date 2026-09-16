@@ -1682,4 +1682,39 @@ mod tests {
         assert!(detail.contains("review not found"), "got: {detail}");
         assert!(detail.contains("nope"), "got: {detail}");
     }
+    #[tokio::test]
+    async fn malformed_stored_change_identity_refuses_read_and_list() {
+        for field in ["head", "base"] {
+            let (dir, state) = setup();
+            let id = create_draft(&state, "task/fix-login", "tester").await;
+            let path = dir.path().join(format!("projects/demo/reviews/{id}.md"));
+            let mut doc = rdm_core::document::Document::<rdm_core::model::Review>::parse(
+                &std::fs::read_to_string(&path).unwrap(),
+            )
+            .unwrap();
+            doc.frontmatter.target = rdm_core::model::ReviewTarget::Change {
+                head: if field == "head" {
+                    "--output=unsafe".into()
+                } else {
+                    "a".repeat(40)
+                },
+                base: Some(if field == "base" {
+                    "HEAD".into()
+                } else {
+                    "b".repeat(40)
+                }),
+            };
+            std::fs::write(path, doc.render().unwrap()).unwrap();
+            for uri in [
+                format!("/projects/demo/reviews/{id}"),
+                "/projects/demo/reviews".into(),
+            ] {
+                let response = send(&state, get_req(&uri)).await;
+                assert_eq!(response.status(), 500);
+                let body = json_body(response).await;
+                assert_eq!(body["status"], 500);
+                assert!(body.get("detail").is_none());
+            }
+        }
+    }
 }

@@ -1501,3 +1501,229 @@ fn change_review_start_names_what_to_do_when_no_checkout_is_reachable() {
         "the no-source message must name what to set: {text}"
     );
 }
+
+// Malicious values are confined to three retained, independent fixtures.
+fn edit_review_frontmatter(plan: &Path, id: &str, edit: impl FnOnce(&mut rdm_core::model::Review)) {
+    let path = plan.join("projects/demo/reviews").join(format!("{id}.md"));
+    let content = std::fs::read_to_string(&path).unwrap();
+    let mut doc = rdm_core::document::Document::<rdm_core::model::Review>::parse(&content).unwrap();
+    edit(&mut doc.frontmatter);
+    std::fs::write(path, doc.render().unwrap()).unwrap();
+}
+
+#[test]
+fn malformed_stored_change_revisions_cannot_create_or_overwrite_external_files() {
+    for field in ["head", "base"] {
+        for preexisting in [false, true] {
+            let src = init_source_repo();
+            std::fs::write(src.path().join("a.txt"), "quoted attack fixture\n").unwrap();
+            git(src.path(), &["add", "."]);
+            git(src.path(), &["commit", "-m", "root attack fixture"]);
+            let plan = init_plan_repo(src.path());
+            let outside = TempDir::new().unwrap();
+            create_plan(plan.path(), "attack-plan", true);
+            let id = start_change_review(
+                plan.path(),
+                src.path(),
+                "change/HEAD",
+                &["--implements", "rdm:plan/attack-plan"],
+            );
+            rdm()
+                .arg("--root")
+                .arg(plan.path())
+                .args([
+                    "review",
+                    "comment",
+                    &id,
+                    "--path",
+                    "a.txt",
+                    "--quote",
+                    "quoted attack fixture",
+                    "--body",
+                    "check",
+                    "--no-edit",
+                    "--project",
+                    "demo",
+                ])
+                .current_dir(src.path())
+                .assert()
+                .success();
+            let output = outside.path().join("sentinel");
+            let actual = outside.path().join("sentinel:a.txt");
+            if preexisting {
+                std::fs::write(&actual, b"unique protected bytes").unwrap();
+            }
+            edit_review_frontmatter(plan.path(), &id, |v| {
+                let rdm_core::model::ReviewTarget::Change { head, base } = &mut v.target else {
+                    panic!()
+                };
+                let payload = format!("--output={}", output.display());
+                if field == "head" {
+                    *head = payload;
+                } else {
+                    *base = Some(payload);
+                }
+            });
+            let result = rdm()
+                .arg("--root")
+                .arg(plan.path())
+                .args(["review", "show", &id, "--project", "demo"])
+                .current_dir(src.path())
+                .output()
+                .unwrap();
+            // Inspect bytes even if the vulnerable command reports success.
+            if preexisting {
+                assert_eq!(std::fs::read(&actual).unwrap(), b"unique protected bytes");
+            } else {
+                assert!(!actual.exists(), "show created an external output file");
+            }
+            assert!(
+                !result.status.success(),
+                "{field} must fail before resolution"
+            );
+            rdm()
+                .arg("--root")
+                .arg(plan.path())
+                .args(["review", "list", "--project", "demo"])
+                .current_dir(src.path())
+                .assert()
+                .failure();
+        }
+    }
+}
+
+#[test]
+fn malformed_identities_without_comments_are_rejected_offline() {
+    for field in ["head", "base"] {
+        let src = init_source_repo();
+        let plan = init_plan_repo(src.path());
+        let outside = TempDir::new().unwrap();
+        create_plan(plan.path(), "attack-plan", true);
+        let id = start_change_review(
+            plan.path(),
+            src.path(),
+            "change/HEAD",
+            &["--implements", "rdm:plan/attack-plan"],
+        );
+        edit_review_frontmatter(plan.path(), &id, |v| {
+            let rdm_core::model::ReviewTarget::Change { head, base } = &mut v.target else {
+                panic!()
+            };
+            if field == "head" {
+                *head = "HEAD".into();
+            } else {
+                *base = Some("HEAD".into());
+            }
+        });
+        set_project_source(plan.path(), "demo", "/nonexistent/source/repo");
+        rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .args(["review", "show", &id, "--project", "demo"])
+            .current_dir(outside.path())
+            .assert()
+            .failure();
+        rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .args(["review", "list", "--project", "demo"])
+            .current_dir(outside.path())
+            .assert()
+            .failure();
+    }
+}
+
+#[test]
+fn option_shaped_drift_branch_safely_falls_back_to_head() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let outside = TempDir::new().unwrap();
+    create_plan(plan.path(), "branch-plan", true);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/branch-plan"],
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "check",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    std::fs::write(src.path().join("src/lib.rs"), "fn changed_again() {}\n").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "branch drift"]);
+    let control = review_json(plan.path(), src.path(), &id);
+    assert_eq!(control["comments"][0]["resolution"]["state"], "drifted");
+    let sentinel = outside.path().join("branch-output");
+    for preexisting in [false, true] {
+        if preexisting {
+            std::fs::write(&sentinel, b"branch protected bytes").unwrap();
+        }
+        edit_review_frontmatter(plan.path(), &id, |v| {
+            v.change_branch = Some(format!("--output={}", sentinel.display()))
+        });
+        let actual = review_json(plan.path(), src.path(), &id);
+        assert_eq!(
+            actual["comments"][0]["resolution"],
+            control["comments"][0]["resolution"]
+        );
+        if preexisting {
+            assert_eq!(std::fs::read(&sentinel).unwrap(), b"branch protected bytes");
+        } else {
+            assert!(!sentinel.exists());
+        }
+    }
+}
+
+#[test]
+fn option_shaped_configured_default_branch_is_refused() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let outside = TempDir::new().unwrap();
+    create_plan(plan.path(), "branch-plan", true);
+    let project_path = plan.path().join("projects/demo/project.md");
+    let mut project = rdm_core::document::Document::<rdm_core::model::Project>::parse(
+        &std::fs::read_to_string(&project_path).unwrap(),
+    )
+    .unwrap();
+    let sentinel = outside.path().join("default-output");
+    project.frontmatter.source.as_mut().unwrap().default_branch =
+        Some(format!("--output={}", sentinel.display()));
+    std::fs::write(project_path, project.render().unwrap()).unwrap();
+    let output = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            "change/HEAD",
+            "--implements",
+            "rdm:plan/branch-plan",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .output()
+        .unwrap();
+    assert!(!sentinel.exists());
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("must not start"));
+}

@@ -10,8 +10,9 @@
 //! [`SourceRepo`] is therefore a narrow trait of **reads only**: revision
 //! resolution, merge-base computation, file content at a revision, and a
 //! unified diff. There is no write method, and there never should be — the
-//! invariant that reviewing a change never mutates the source repository is
-//! enforced by this port's shape, not by discipline at each call site.
+//! invariant that reviewing a change never mutates the source repository
+//! requires implementations to protect subprocess argument boundaries as well
+//! as expose only read operations.
 //! `rdm-git`'s `GitSourceRepo` is the production implementation;
 //! [`MemorySourceRepo`] is the in-memory double the pure logic in
 //! [`crate::change`] is unit-tested against.
@@ -25,7 +26,11 @@ use crate::error::Result;
 /// Every method returns `Ok(None)` for a *benign* miss — an unknown
 /// revision, a path absent at that revision, two histories with no common
 /// ancestor — and reserves [`Err`] for a genuine tool failure (git missing,
-/// the path not being a repository, non-UTF-8 content). Callers turn the
+/// the path not being a repository, non-UTF-8 content) or unsafe revision input.
+/// Production adapters reject option-shaped operands before spawning and peel
+/// revisions to commits for file/diff reads; missing/noncommit objects are benign
+/// misses. Identity syntax alone does not prove that an object is a commit.
+/// Callers turn the
 /// `None` into an actionable message with the context they have; they never
 /// have to distinguish "git broke" from "not there" themselves.
 pub trait SourceRepo {
@@ -34,14 +39,18 @@ pub trait SourceRepo {
     ///
     /// # Errors
     ///
-    /// Returns an error only when the repository cannot be queried at all.
+    /// Returns an error when the repository cannot be queried at all.
+    /// Also returns [`crate::error::Error::InvalidChangeRevisionInput`]
+    /// for option-shaped input, before any subprocess.
     fn rev_parse(&self, rev: &str) -> Result<Option<String>>;
 
     /// The best common ancestor of `a` and `b`, as a full commit SHA.
     ///
     /// # Errors
     ///
-    /// Returns an error only when the repository cannot be queried at all.
+    /// Returns an error when the repository cannot be queried at all.
+    /// Also returns [`crate::error::Error::InvalidChangeRevisionInput`]
+    /// for option-shaped input, before any subprocess.
     fn merge_base(&self, a: &str, b: &str) -> Result<Option<String>>;
 
     /// The complete content of `path` as of `rev`.
@@ -53,7 +62,9 @@ pub trait SourceRepo {
     /// # Errors
     ///
     /// Returns an error when the repository cannot be queried, or when the
-    /// content is not valid UTF-8 (a binary file cannot be quoted).
+    /// content is not valid UTF-8 (a binary file cannot be quoted), or
+    /// [`crate::error::Error::InvalidChangeRevisionInput`] for option-shaped input
+    /// before any subprocess. Missing or noncommit revisions return `Ok(None)`.
     fn file_at(&self, rev: &str, path: &str) -> Result<Option<String>>;
 
     /// A zero-context unified diff of `path` between `base` and `head`.
@@ -63,21 +74,23 @@ pub trait SourceRepo {
     ///
     /// # Errors
     ///
-    /// Returns an error only when the repository cannot be queried at all.
+    /// Returns an error when the repository cannot be queried at all.
+    /// Also returns [`crate::error::Error::InvalidChangeRevisionInput`]
+    /// for option-shaped input, before any subprocess.
     fn unified_diff(&self, base: &str, head: &str, path: &str) -> Result<Option<String>>;
 
     /// The full SHA currently at `HEAD`, or `None` on an unborn HEAD.
     ///
     /// # Errors
     ///
-    /// Returns an error only when the repository cannot be queried at all.
+    /// Returns an error when the repository cannot be queried at all.
     fn head(&self) -> Result<Option<String>>;
 
     /// The currently checked-out branch name, or `None` on a detached HEAD.
     ///
     /// # Errors
     ///
-    /// Returns an error only when the repository cannot be queried at all.
+    /// Returns an error when the repository cannot be queried at all.
     fn current_branch(&self) -> Result<Option<String>>;
 }
 

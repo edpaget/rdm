@@ -3,10 +3,10 @@
 //! comment anchors against the project's source repository.
 //!
 //! Every method here spawns `git` with a **read-only** subcommand —
-//! `rev-parse`, `merge-base`, `show`, or `diff` — and that list is the whole
-//! contract: the port exposes no write, so reviewing a change can never
-//! mutate the repository being reviewed. The allow-list is asserted
-//! directly in this module's tests over the argv each method builds.
+//! `rev-parse`, `merge-base`, `show`, or `diff` — but that list is only the
+//! starting point. Revision operands are rejected if option-shaped, command-
+//! specific option boundaries prevent reinterpretation, and file/diff reads
+//! resolve operands to commits before constructing object/range expressions.
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +48,7 @@ pub fn rev_parse_argv(rev: &str) -> Vec<String> {
         "rev-parse".to_string(),
         "--verify".to_string(),
         "--quiet".to_string(),
+        "--end-of-options".to_string(),
         format!("{rev}^{{commit}}"),
     ]
 }
@@ -55,16 +56,25 @@ pub fn rev_parse_argv(rev: &str) -> Vec<String> {
 /// The argv [`GitSourceRepo::merge_base`] builds.
 #[must_use]
 pub fn merge_base_argv(a: &str, b: &str) -> Vec<String> {
-    vec!["merge-base".to_string(), a.to_string(), b.to_string()]
+    vec![
+        "merge-base".to_string(),
+        "--".to_string(),
+        a.to_string(),
+        b.to_string(),
+    ]
 }
 
-/// The argv [`GitSourceRepo::file_at`] builds.
+/// The argv [`GitSourceRepo::file_at`] builds after resolving `rev` to a commit.
 #[must_use]
 pub fn file_at_argv(rev: &str, path: &str) -> Vec<String> {
-    vec!["show".to_string(), format!("{rev}:{path}")]
+    vec![
+        "show".to_string(),
+        "--end-of-options".to_string(),
+        format!("{rev}:{path}"),
+    ]
 }
 
-/// The argv [`GitSourceRepo::unified_diff`] builds.
+/// The argv [`GitSourceRepo::unified_diff`] builds after resolving both commits.
 ///
 /// Two guards make this agree with [`file_at_argv`] about what `path` means,
 /// and BOTH are required.
@@ -95,6 +105,7 @@ pub fn unified_diff_argv(base: &str, head: &str, path: &str) -> Vec<String> {
         "--unified=0".to_string(),
         "--no-color".to_string(),
         "--no-relative".to_string(),
+        "--end-of-options".to_string(),
         format!("{base}..{head}"),
         "--".to_string(),
         format!(":(top){path}"),
@@ -118,17 +129,32 @@ fn single_line(bytes: Vec<u8>) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
+// Reject before any subprocess, including before resolving the other operand.
+fn validate_revision_input(rev: &str) -> Result<()> {
+    if rev.starts_with('-') {
+        return Err(Error::InvalidChangeRevisionInput(rev.to_string()));
+    }
+    Ok(())
+}
+
 impl SourceRepo for GitSourceRepo {
     fn rev_parse(&self, rev: &str) -> Result<Option<String>> {
+        validate_revision_input(rev)?;
         Ok(run_ok(&self.root, &rev_parse_argv(rev))?.and_then(single_line))
     }
 
     fn merge_base(&self, a: &str, b: &str) -> Result<Option<String>> {
+        validate_revision_input(a)?;
+        validate_revision_input(b)?;
         Ok(run_ok(&self.root, &merge_base_argv(a, b))?.and_then(single_line))
     }
 
     fn file_at(&self, rev: &str, path: &str) -> Result<Option<String>> {
-        let Some(bytes) = run_ok(&self.root, &file_at_argv(rev, path))? else {
+        validate_revision_input(rev)?;
+        let Some(commit) = self.rev_parse(rev)? else {
+            return Ok(None);
+        };
+        let Some(bytes) = run_ok(&self.root, &file_at_argv(&commit, path))? else {
             return Ok(None);
         };
         // A binary or otherwise non-UTF-8 blob cannot be quoted; surface it
@@ -142,7 +168,15 @@ impl SourceRepo for GitSourceRepo {
     }
 
     fn unified_diff(&self, base: &str, head: &str, path: &str) -> Result<Option<String>> {
-        let Some(bytes) = run_ok(&self.root, &unified_diff_argv(base, head, path))? else {
+        validate_revision_input(base)?;
+        validate_revision_input(head)?;
+        let Some(base) = self.rev_parse(base)? else {
+            return Ok(None);
+        };
+        let Some(head) = self.rev_parse(head)? else {
+            return Ok(None);
+        };
+        let Some(bytes) = run_ok(&self.root, &unified_diff_argv(&base, &head, path))? else {
             return Ok(None);
         };
         let text = String::from_utf8_lossy(&bytes).to_string();
@@ -393,5 +427,146 @@ mod tests {
         assert_eq!(repo.rev_parse("HEAD").unwrap().unwrap(), before_head);
         let status_after = porcelain(dir.path());
         assert_eq!(status_before, status_after);
+    }
+    #[test]
+    fn revision_boundaries_are_command_specific() {
+        assert_eq!(
+            rev_parse_argv("HEAD"),
+            [
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "--end-of-options",
+                "HEAD^{commit}"
+            ]
+        );
+        assert_eq!(
+            merge_base_argv("main", "topic"),
+            ["merge-base", "--", "main", "topic"]
+        );
+        assert_eq!(
+            file_at_argv("head", "a.txt"),
+            ["show", "--end-of-options", "head:a.txt"]
+        );
+        assert_eq!(
+            unified_diff_argv("base", "head", "a.txt"),
+            [
+                "diff",
+                "--unified=0",
+                "--no-color",
+                "--no-relative",
+                "--end-of-options",
+                "base..head",
+                "--",
+                ":(top)a.txt"
+            ]
+        );
+    }
+
+    #[test]
+    fn hostile_revision_operands_never_create_or_overwrite_files() {
+        let dir = seed();
+        let repo = GitSourceRepo::new(dir.path());
+        let outside = TempDir::new().unwrap();
+        for preexisting in [false, true] {
+            let output = outside.path().join("output");
+            // Include the names produced by the old show/range concatenation.
+            let sentinels = [
+                output.clone(),
+                outside.path().join("output:a.txt"),
+                outside.path().join("output..HEAD"),
+            ];
+            for path in &sentinels {
+                if preexisting {
+                    std::fs::write(path, b"protected sentinel").unwrap();
+                }
+            }
+            let attack = format!("--output={}", output.display());
+            for operand in [attack.as_str(), "--all", "--help", "-p", "--"] {
+                let results = [
+                    repo.rev_parse(operand),
+                    repo.merge_base(operand, "HEAD"),
+                    repo.merge_base("HEAD", operand),
+                    repo.file_at(operand, "a.txt"),
+                    repo.unified_diff(operand, "HEAD", "a.txt"),
+                    repo.unified_diff("HEAD", operand, "a.txt"),
+                ];
+                for path in &sentinels {
+                    if preexisting {
+                        assert_eq!(std::fs::read(path).unwrap(), b"protected sentinel");
+                    } else {
+                        assert!(!path.exists(), "unexpected output at {}", path.display());
+                    }
+                }
+                for result in results {
+                    assert!(
+                        matches!(result, Err(Error::InvalidChangeRevisionInput(value)) if value == operand)
+                    );
+                }
+            }
+        }
+        // Invalid operands must be rejected even if a subprocess could not run
+        // in this root, including when the invalid operand is second.
+        let missing = GitSourceRepo::new(outside.path().join("absent"));
+        assert!(matches!(
+            missing.unified_diff("HEAD", "--output=x", "a.txt"),
+            Err(Error::InvalidChangeRevisionInput(_))
+        ));
+        assert!(matches!(
+            missing.merge_base("HEAD", "--all"),
+            Err(Error::InvalidChangeRevisionInput(_))
+        ));
+    }
+
+    #[test]
+    fn object_resolution_requires_commits_and_peels_annotated_tags() {
+        let dir = seed();
+        let repo = GitSourceRepo::new(dir.path());
+        git(
+            dir.path(),
+            &["tag", "-a", "release", "-m", "release", "HEAD"],
+        );
+        let head = repo.head().unwrap().unwrap();
+        assert_eq!(repo.rev_parse("release").unwrap(), Some(head.clone()));
+        assert_eq!(
+            repo.file_at("release", "a.txt").unwrap(),
+            repo.file_at(&head, "a.txt").unwrap()
+        );
+        assert!(
+            repo.unified_diff("main", "release", "a.txt")
+                .unwrap()
+                .is_some()
+        );
+        for expression in ["HEAD^{tree}", "HEAD:a.txt"] {
+            let output = Command::new("git")
+                .args(["rev-parse", expression])
+                .current_dir(dir.path())
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_INDEX_FILE")
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let oid = String::from_utf8(output.stdout).unwrap().trim().to_string();
+            assert_eq!(oid.len(), 40);
+            for rev in [
+                oid.as_str(),
+                expression,
+                "ffffffffffffffffffffffffffffffffffffffff",
+            ] {
+                assert_eq!(repo.rev_parse(rev).unwrap(), None);
+                assert_eq!(repo.file_at(rev, "a.txt").unwrap(), None);
+                assert_eq!(repo.unified_diff(rev, "HEAD", "a.txt").unwrap(), None);
+                assert_eq!(repo.unified_diff("main", rev, "a.txt").unwrap(), None);
+            }
+            let tag = if expression.contains("tree") {
+                "tree-tag"
+            } else {
+                "blob-tag"
+            };
+            git(dir.path(), &["tag", "-a", tag, "-m", tag, &oid]);
+            assert_eq!(repo.rev_parse(tag).unwrap(), None);
+            assert_eq!(repo.file_at(tag, "a.txt").unwrap(), None);
+        }
     }
 }

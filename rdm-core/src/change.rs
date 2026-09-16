@@ -347,6 +347,9 @@ pub fn derive_file_quote(
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
+///
 /// Returns [`Error::ChangeRevisionNotFound`] when `rev` names no commit,
 /// [`Error::ChangeBaseNotFound`] when `base_override` names no commit,
 /// [`Error::ChangeNoMergeBase`] when head and `default_branch` share no
@@ -380,6 +383,7 @@ pub fn resolve_change_target(
     let head = source
         .rev_parse(rev)?
         .ok_or_else(|| Error::ChangeRevisionNotFound(rev.to_string()))?;
+    ReviewTarget::validate_change_identity(&head, None)?;
     let base =
         match base_override {
             Some(explicit) => source
@@ -392,6 +396,7 @@ pub fn resolve_change_target(
                 }
             })?,
         };
+    ReviewTarget::validate_change_identity(&head, Some(&base))?;
     // A repository that cannot name its branch is not a reason to refuse the
     // review: drift then falls back to the repository's HEAD.
     let branch = source.current_branch().ok().flatten();
@@ -424,6 +429,9 @@ pub fn resolve_change_target(
 ///
 /// # Errors
 ///
+/// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
+///
 /// Returns [`Error::ChangePathNeedsQuote`] or [`Error::ChangeQuoteNeedsPath`]
 /// when only one of the pair is given, [`Error::ChangePathNotInRevision`]
 /// when `path` is not repo-relative or does not exist at `head`, anything
@@ -438,6 +446,7 @@ pub fn derive_change_anchor(
     path: Option<&str>,
     occurrence: Option<usize>,
 ) -> Result<Option<Anchor>> {
+    ReviewTarget::validate_change_identity(head, base)?;
     let Some(quote) = quote else {
         if path.is_some() {
             return Err(Error::ChangePathNeedsQuote);
@@ -513,6 +522,9 @@ fn occurrence_count(content: &str, quote: &str) -> usize {
 ///    quote survives but the anchored one was edited away → `Original
 ///    { drifted: true }`.
 ///
+/// Malformed head or base returns unresolved without querying the source.
+/// `tip` remains unresolved caller input, guarded by the source adapter.
+///
 /// Infallible, exactly like
 /// [`crate::anchor::resolve_against_history`]: any source-repository error
 /// degrades to [`Resolution::Unresolved`] rather than failing a
@@ -532,6 +544,9 @@ pub fn resolve_change_comment(
         resolution: Resolution::Unresolved,
         quote: None,
     };
+    if review.target.validate_stored_identity().is_err() {
+        return unresolved;
+    }
     let ReviewTarget::Change { head, .. } = &review.target else {
         return unresolved;
     };
@@ -569,6 +584,8 @@ pub fn resolve_change_comment(
 
 /// Resolves every comment in `review` against the source repository, in
 /// comment order.
+///
+/// Malformed stored identities yield unresolved comments without source access.
 ///
 /// The returned slice is parallel to `review.comments`, exactly like
 /// [`crate::anchor::resolve_comments`], so the JSON, human and markdown
@@ -682,8 +699,8 @@ mod tests {
             id: "r1".to_string(),
             author: "tester".to_string(),
             target: ReviewTarget::Change {
-                head: "head1".to_string(),
-                base: Some("base1".to_string()),
+                head: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                base: Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()),
             },
             state: ReviewState::Draft,
             verdict: None,
@@ -966,7 +983,11 @@ mod tests {
     #[test]
     fn resolve_reports_resolved_when_the_tip_still_has_the_quote() {
         let source = MemorySourceRepo::new()
-            .with_file("head1", "src/lib.rs", CONTENT)
+            .with_file(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "src/lib.rs",
+                CONTENT,
+            )
             .with_file("tip", "src/lib.rs", CONTENT);
         let review = review_with(Some(anchor()));
         let resolved = resolve_change_comments(&source, &review, "tip");
@@ -983,7 +1004,11 @@ mod tests {
     #[test]
     fn resolve_reports_drifted_when_the_tip_edited_the_quoted_text() {
         let source = MemorySourceRepo::new()
-            .with_file("head1", "src/lib.rs", CONTENT)
+            .with_file(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "src/lib.rs",
+                CONTENT,
+            )
             .with_file("tip", "src/lib.rs", "alpha\nbeta\nGAMMA\nbeta\n");
         let review = review_with(Some(anchor()));
         let resolved = resolve_change_comments(&source, &review, "tip");
@@ -1001,7 +1026,11 @@ mod tests {
     #[test]
     fn resolve_reports_drifted_when_only_the_anchored_duplicate_was_edited() {
         let source = MemorySourceRepo::new()
-            .with_file("head1", "src/lib.rs", CONTENT)
+            .with_file(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "src/lib.rs",
+                CONTENT,
+            )
             .with_file("tip", "src/lib.rs", "alpha\nbeta\ngamma\nBETA\n");
         let mut review = review_with(Some(Anchor::FileQuote {
             path: "src/lib.rs".to_string(),
@@ -1028,7 +1057,11 @@ mod tests {
     #[test]
     fn resolve_reports_resolved_when_a_duplicated_quote_only_moved() {
         let source = MemorySourceRepo::new()
-            .with_file("head1", "src/lib.rs", CONTENT)
+            .with_file(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "src/lib.rs",
+                CONTENT,
+            )
             .with_file("tip", "src/lib.rs", "beta\nalpha\ngamma\nbeta\n");
         let review = review_with(Some(Anchor::FileQuote {
             path: "src/lib.rs".to_string(),
@@ -1047,7 +1080,11 @@ mod tests {
 
     #[test]
     fn resolve_reports_unresolved_when_the_path_is_gone_at_the_tip() {
-        let source = MemorySourceRepo::new().with_file("head1", "src/lib.rs", CONTENT);
+        let source = MemorySourceRepo::new().with_file(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "src/lib.rs",
+            CONTENT,
+        );
         let review = review_with(Some(anchor()));
         let resolved = resolve_change_comments(&source, &review, "tip");
         assert_eq!(resolved[0].resolution, Resolution::Unresolved);
@@ -1056,7 +1093,11 @@ mod tests {
     #[test]
     fn resolve_reports_unresolved_for_a_whole_document_comment() {
         let source = MemorySourceRepo::new()
-            .with_file("head1", "src/lib.rs", CONTENT)
+            .with_file(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "src/lib.rs",
+                CONTENT,
+            )
             .with_file("tip", "src/lib.rs", CONTENT);
         let review = review_with(None);
         assert_eq!(
@@ -1248,13 +1289,13 @@ mod tests {
     fn anchor_repo() -> MemorySourceRepo {
         MemorySourceRepo::new()
             .with_file(
-                "head1",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "src/lib.rs",
                 "fn untouched() {}\nfn touched() {}\n",
             )
             .with_diff(
-                "base1",
-                "head1",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "src/lib.rs",
                 "@@ -2 +2 @@\n-old\n+fn touched() {}\n",
             )
@@ -1264,7 +1305,15 @@ mod tests {
     fn derive_change_anchor_without_path_or_quote_is_a_whole_change_comment() {
         let source = anchor_repo();
         assert_eq!(
-            derive_change_anchor(&source, "head1", Some("base1"), None, None, None).unwrap(),
+            derive_change_anchor(
+                &source,
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+                None,
+                None,
+                None
+            )
+            .unwrap(),
             None
         );
     }
@@ -1275,8 +1324,8 @@ mod tests {
         assert!(matches!(
             derive_change_anchor(
                 &source,
-                "head1",
-                Some("base1"),
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
                 None,
                 Some("src/lib.rs"),
                 None
@@ -1286,8 +1335,8 @@ mod tests {
         assert!(matches!(
             derive_change_anchor(
                 &source,
-                "head1",
-                Some("base1"),
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
                 Some("fn touched"),
                 None,
                 None
@@ -1301,8 +1350,8 @@ mod tests {
         let source = anchor_repo();
         let anchor = derive_change_anchor(
             &source,
-            "head1",
-            Some("base1"),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             Some("fn touched"),
             Some("./src/lib.rs"),
             None,
@@ -1328,8 +1377,8 @@ mod tests {
         let source = anchor_repo();
         let err = derive_change_anchor(
             &source,
-            "head1",
-            Some("base1"),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             Some("fn untouched"),
             Some("src/lib.rs"),
             None,
@@ -1349,8 +1398,8 @@ mod tests {
         let source = anchor_repo();
         let err = derive_change_anchor(
             &source,
-            "head1",
-            Some("base1"),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             Some("anything"),
             Some("src/gone.rs"),
             None,
@@ -1366,11 +1415,15 @@ mod tests {
     fn derive_change_anchor_reports_an_untouched_path_distinctly() {
         // The file exists at head but the change does not touch it: no
         // nearest hunk, so the message must not invent one.
-        let source = MemorySourceRepo::new().with_file("head1", "src/other.rs", "fn other() {}\n");
+        let source = MemorySourceRepo::new().with_file(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "src/other.rs",
+            "fn other() {}\n",
+        );
         let err = derive_change_anchor(
             &source,
-            "head1",
-            Some("base1"),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             Some("fn other"),
             Some("src/other.rs"),
             None,
@@ -1393,7 +1446,7 @@ mod tests {
         let source = anchor_repo();
         let err = derive_change_anchor(
             &source,
-            "head1",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             None,
             Some("fn touched"),
             Some("src/lib.rs"),
@@ -1409,10 +1462,14 @@ mod tests {
     #[test]
     fn derive_change_anchor_disambiguates_with_occurrence() {
         let source = MemorySourceRepo::new()
-            .with_file("head1", "src/lib.rs", "dup\ndup\n")
+            .with_file(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "src/lib.rs",
+                "dup\ndup\n",
+            )
             .with_diff(
-                "base1",
-                "head1",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "src/lib.rs",
                 "@@ -1,2 +1,2 @@\n+dup\n+dup\n",
             );
@@ -1420,8 +1477,8 @@ mod tests {
         assert!(matches!(
             derive_change_anchor(
                 &source,
-                "head1",
-                Some("base1"),
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
                 Some("dup"),
                 Some("src/lib.rs"),
                 None
@@ -1431,8 +1488,8 @@ mod tests {
         // ...and the 2nd occurrence records the line it really sits on.
         let anchor = derive_change_anchor(
             &source,
-            "head1",
-            Some("base1"),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             Some("dup"),
             Some("src/lib.rs"),
             Some(2),
@@ -1457,8 +1514,8 @@ mod tests {
         assert!(
             derive_change_anchor(
                 &source,
-                "head1",
-                Some("base1"),
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
                 Some("fn touched"),
                 Some("../escape.rs"),
                 None
@@ -1478,8 +1535,8 @@ mod tests {
         );
         let anchor = derive_change_anchor(
             &source,
-            "head1",
-            Some("base1"),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
             Some("fn touched"),
             Some("src/lib.rs"),
             None,
@@ -1491,5 +1548,100 @@ mod tests {
             resolved[0].resolution,
             Resolution::Original { drifted: false, .. }
         ));
+    }
+    struct NoSourceAccess;
+    impl SourceRepo for NoSourceAccess {
+        fn rev_parse(&self, _: &str) -> Result<Option<String>> {
+            panic!("unexpected rev_parse")
+        }
+        fn merge_base(&self, _: &str, _: &str) -> Result<Option<String>> {
+            panic!("unexpected merge_base")
+        }
+        fn file_at(&self, _: &str, _: &str) -> Result<Option<String>> {
+            panic!("unexpected file_at")
+        }
+        fn unified_diff(&self, _: &str, _: &str, _: &str) -> Result<Option<String>> {
+            panic!("unexpected diff")
+        }
+        fn head(&self) -> Result<Option<String>> {
+            panic!("unexpected head")
+        }
+        fn current_branch(&self) -> Result<Option<String>> {
+            panic!("unexpected branch")
+        }
+    }
+
+    #[test]
+    fn malformed_direct_core_targets_never_access_source() {
+        for field in ["head", "base"] {
+            for bad in ["HEAD", "--output=fixture", "", "é"] {
+                let head = if field == "head" {
+                    bad.to_string()
+                } else {
+                    "a".repeat(40)
+                };
+                let base = if field == "base" {
+                    bad.to_string()
+                } else {
+                    "b".repeat(40)
+                };
+                for (quote, path) in [(None, None), (Some("quote"), Some("a.txt"))] {
+                    assert!(
+                        matches!(derive_change_anchor(&NoSourceAccess, &head, Some(&base), quote, path, None),
+                        Err(Error::InvalidStoredChangeRevision { field: f, .. }) if f == field)
+                    );
+                }
+                for anchor in [
+                    None,
+                    Some(Anchor::FileQuote {
+                        path: "a.txt".into(),
+                        quote: "quote".into(),
+                        occurrence: 1,
+                        start_line: 1,
+                        end_line: 1,
+                    }),
+                ] {
+                    let mut review = review_with(anchor);
+                    review.target = ReviewTarget::Change {
+                        head: head.clone(),
+                        base: Some(base.clone()),
+                    };
+                    assert_eq!(
+                        resolve_change_comment(
+                            &NoSourceAccess,
+                            &review,
+                            &review.comments[0],
+                            "topic"
+                        )
+                        .resolution,
+                        Resolution::Unresolved
+                    );
+                    assert_eq!(
+                        resolve_change_comments(&NoSourceAccess, &review, "topic")[0].resolution,
+                        Resolution::Unresolved
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn resolving_a_target_rejects_malformed_adapter_identities() {
+        let head = "a".repeat(40);
+        let source = MemorySourceRepo::new().with_rev("HEAD", "short");
+        assert!(matches!(
+            resolve_change_target(&source, "HEAD", None, "main"),
+            Err(Error::InvalidStoredChangeRevision { field: "head", .. })
+        ));
+        let source = MemorySourceRepo::new()
+            .with_rev("HEAD", &head)
+            .with_rev("main", "short")
+            .with_merge_base(&head, "main", "short");
+        for explicit in [None, Some("main")] {
+            assert!(matches!(
+                resolve_change_target(&source, "HEAD", explicit, "main"),
+                Err(Error::InvalidStoredChangeRevision { field: "base", .. })
+            ));
+        }
     }
 }

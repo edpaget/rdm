@@ -183,6 +183,9 @@ pub struct SearchResult {
 ///
 /// # Errors
 ///
+/// Returns [`crate::error::Error::InvalidStoredChangeRevision`] for malformed resolved change
+/// identities (head or present base must be 40 lowercase ASCII hex characters).
+///
 /// Returns an error if the plan repo cannot be read (e.g., missing projects
 /// directory, unreadable files, or invalid frontmatter).
 pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<Vec<SearchResult>> {
@@ -309,8 +312,8 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
         if (filter.kind.is_none() || filter.kind == Some(ItemKind::Review))
             && filter.status.is_none()
             && required_tags.is_empty()
-            && let Ok(reviews) = crate::ops::reviews::list_reviews(store, project)
         {
+            let reviews = crate::ops::reviews::list_reviews(store, project)?;
             for (id, review_doc) in &reviews {
                 let title = format!("review of {}", review_doc.frontmatter.target.label());
                 let text: String = std::iter::once(review_doc.body.as_str())

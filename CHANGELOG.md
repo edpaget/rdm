@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- Reject malformed stored change-review head/base identities before source access and protect Git revision argument boundaries, preventing option injection and unintended file writes during review reads.
+
 ### Fixed
 
 - Keep non-Git CLI builds working and bind standalone code approvals to the intended implementation plan and every acceptance criterion. Restore code-comment anchor and source-link regression coverage.
