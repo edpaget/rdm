@@ -4,10 +4,16 @@ import {mkdtemp, writeFile, rm, readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {runCodex, validateSchema, boundedParallel} from './codex-spike-process.mjs';
+import * as transport from './codex-process.mjs';
 
 const schema = {type: 'object', additionalProperties: false, required: ['ok'], properties: {
   ok: {type: 'boolean'}, note: {type: 'string'},
 }};
+test('spike compatibility entrypoint reuses the runtime transport', () => {
+  assert.equal(runCodex, transport.runCodex);
+  assert.equal(validateSchema, transport.validateSchema);
+  assert.equal(boundedParallel, transport.boundedParallel);
+});
 async function fixture(t, mode = 'ok') {
   const cwd = await mkdtemp(join(tmpdir(), 'codex-process-test-'));
   t.after(() => rm(cwd, {recursive: true, force: true}));
@@ -64,6 +70,22 @@ test('fresh subprocess uses strict nullable schema, stdin and safe argv', async 
   const strict = JSON.parse(await readFile(join(opts.cwd, 'schema.json'), 'utf8'));
   assert.deepEqual(strict.required, ['ok', 'note']);
   assert.ok(strict.properties.note.anyOf.some(s => s.type === 'null'));
+});
+test('judgment subprocess disables optional external capabilities and escalation', async t => {
+  const opts = await fixture(t);
+  await runCodex(opts);
+  const args = JSON.parse(await readFile(join(opts.cwd, 'argv.json'), 'utf8'));
+  const configs = args.flatMap((arg, i) => arg === '-c' ? [args[i + 1]] : []);
+  for (const config of ['approval_policy="never"', 'web_search="disabled"',
+    'features.apps=false', 'features.plugins=false', 'features.remote_plugin=false',
+    'features.browser_use=false', 'features.computer_use=false', 'features.hooks=false',
+    'features.multi_agent=false', 'features.multi_agent_v2=false',
+    'features.workspace_dependencies=false', 'features.image_generation=false']) {
+    assert.ok(configs.includes(config), `missing role restriction: ${config}`);
+  }
+  assert.ok(args.includes('--ignore-user-config'));
+  assert.ok(!args.includes('--ignore-rules'));
+  assert.ok(!args.includes('--dangerously-bypass-approvals-and-sandbox'));
 });
 for (const mode of ['auth', 'rate', 'unknown-model', 'nonzero', 'death', 'malformed', 'error', 'failed', 'duplicate', 'truncated', 'invalid', 'flood']) {
   test(`rejects ${mode} without exposing provider diagnostics`, async t => {

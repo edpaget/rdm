@@ -17,6 +17,88 @@ fn write_review_floor_override(dir: &TempDir) {
     .unwrap();
 }
 
+fn resolve_json(dir: &TempDir, args: &[&str]) -> serde_json::Value {
+    let assert = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["model", "resolve"])
+        .args(args)
+        .args(["--format", "json"])
+        .assert()
+        .success();
+    serde_json::from_slice(&assert.get_output().stdout).unwrap()
+}
+
+#[test]
+fn resolve_json_exposes_default_step_tier_and_model() {
+    let dir = TempDir::new().unwrap();
+    for (step, tier, model) in [
+        ("plan", "medium", "sonnet"),
+        ("implement", "medium", "sonnet"),
+        ("review-find", "medium", "sonnet"),
+        ("review-verify", "large", "opus"),
+        ("mechanical", "small", "haiku"),
+    ] {
+        assert_eq!(
+            resolve_json(&dir, &[step]),
+            serde_json::json!({"step": step, "tier": tier, "model": model})
+        );
+    }
+}
+
+#[test]
+fn resolve_json_reports_effective_review_floor() {
+    let dir = TempDir::new().unwrap();
+    assert_eq!(
+        resolve_json(&dir, &["review-find", "--tier", "small"]),
+        serde_json::json!({"step": "review-find", "tier": "medium", "model": "sonnet"})
+    );
+    write_review_floor_override(&dir);
+    assert_eq!(
+        resolve_json(&dir, &["review-find", "--tier", "small"]),
+        serde_json::json!({"step": "review-find", "tier": "large", "model": "opus"})
+    );
+}
+
+#[test]
+fn resolve_json_honors_configured_step_and_model_with_hint_precedence() {
+    let dir = TempDir::new().unwrap();
+    std::fs::write(
+        dir.path().join("rdm.toml"),
+        "[models]\nsmall = \"custom-small\"\nlarge = \"custom-large\"\n[models.steps]\nimplement = \"large\"\n",
+    )
+    .unwrap();
+    assert_eq!(
+        resolve_json(&dir, &["implement"]),
+        serde_json::json!({"step": "implement", "tier": "large", "model": "custom-large"})
+    );
+    assert_eq!(
+        resolve_json(&dir, &["implement", "--tier", "small"]),
+        serde_json::json!({"step": "implement", "tier": "small", "model": "custom-small"})
+    );
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["model", "resolve", "implement"])
+        .assert()
+        .success()
+        .stdout("custom-large\n");
+}
+
+#[test]
+fn resolve_non_json_formats_preserve_plain_model_output() {
+    let dir = TempDir::new().unwrap();
+    for format in ["human", "markdown", "table"] {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args(["model", "resolve", "review-find", "--format", format])
+            .assert()
+            .success()
+            .stdout("sonnet\n");
+    }
+}
+
 #[test]
 fn resolve_review_find_hint_small_prints_sonnet() {
     let dir = TempDir::new().unwrap();

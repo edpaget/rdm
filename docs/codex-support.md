@@ -1,12 +1,14 @@
-# Codex support: first dogfooding lane
+# Codex support: manual skills and explicit runtime
 
-Phase one enables manual, review-gated work now; it does not wait for a Codex
-workflow adapter. Runtime orchestration, automated review/dispatch, and recovery
-remain later roadmap work.
+Phase one enables manual, review-gated work. The [phase-three runtime](codex-runtime.md)
+adds explicit implementation-plan review, pinned code review, and roadmap
+estimates with durable evidence and conservative recovery. Automated skill
+dispatch remains phase-four work.
 
 The [phase-two execution spike](codex-orchestration-spike.md) records experimental
 Codex execution of shared review and estimate logic. It does not enable the
-withheld production skills or change this support matrix.
+withheld production skills. The runtime is a separate explicit entrypoint;
+the skill support matrix below remains the manual lane.
 
 ## Installation and discovery
 

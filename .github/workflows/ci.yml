@@ -68,8 +68,8 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
-      - name: Codex spike contracts (no credentials)
-        run: mise exec node -- node --test scripts/lib/codex-spike-*.test.mjs
+      - name: Codex execution and runtime contracts (no credentials)
+        run: mise exec node -- node --test scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs
 
       - name: Audit dependencies
         run: cargo deny check

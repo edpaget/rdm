@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- An explicit Codex runtime reviews real implementation plans and pinned code ranges through canonical review logic, and previews or applies roadmap estimates using isolated session-scoped plan commits. Host model bindings respect core tiers/review floors; private durable evidence and conservative recovery stop on incomplete reviews or uncertain writes. `rdm model resolve --format json` exposes the resolved step, tier and model. Automated skills and review-gate writes remain outside this runtime.
+
 - An opt-in Codex orchestration spike exercises canonical review and estimation with read-only Codex sessions and isolated plan fixtures, with credential-free process-contract tests. Production Codex automation remains outside the supported manual lane.
 
 - Codex handoffs verify rdm's automatically captured review SHA and branch against the implementation worktree; the documentation distinguishes the manual pending-review lane from the retired automatic stop-hook safety net.

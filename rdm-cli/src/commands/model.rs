@@ -22,24 +22,50 @@ const ALL_STEPS: [DispatchStep; 5] = [
 /// # Errors
 ///
 /// Returns an error if `step` or `--tier` fail to parse, or if
-/// `--format table` is requested for `model show` (unsupported).
+/// `--format table` is requested for `model show` (unsupported), or if
+/// the resolved policy cannot be serialized as JSON.
 pub fn run(command: ModelCommand, repo_config: &Config, format: OutputFormat) -> Result<()> {
     let policy = ModelPolicy::from_config(repo_config);
     match command {
-        ModelCommand::Resolve { step, tier } => run_resolve(&policy, step, tier),
+        ModelCommand::Resolve { step, tier } => run_resolve(&policy, step, tier, format),
         ModelCommand::Show => run_show(&policy, format),
     }
 }
 
 /// Note: `step` is parsed before `tier`, so if both are invalid the step error is the one surfaced.
-fn run_resolve(policy: &ModelPolicy, step: String, tier: Option<String>) -> Result<()> {
+fn run_resolve(
+    policy: &ModelPolicy,
+    step: String,
+    tier: Option<String>,
+    format: OutputFormat,
+) -> Result<()> {
     let step: DispatchStep = step.parse()?; // ParseError -> anyhow, verbatim, no .context
     let hint: Option<ModelTier> = match tier {
         Some(t) => Some(t.parse::<ModelTier>()?),
         None => None,
     };
-    println!("{}", policy.resolve(step, hint));
+    match format {
+        OutputFormat::Json => {
+            let view = ResolvedModelView {
+                step: step.to_string(),
+                tier: policy.resolve_tier(step, hint).to_string(),
+                model: policy.resolve(step, hint).to_string(),
+            };
+            println!("{}", serde_json::to_string_pretty(&view)?);
+        }
+        // Preserve the existing single-model output for all non-JSON formats.
+        OutputFormat::Human | OutputFormat::Markdown | OutputFormat::Table => {
+            println!("{}", policy.resolve(step, hint));
+        }
+    }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct ResolvedModelView {
+    step: String,
+    tier: String,
+    model: String,
 }
 
 #[derive(Serialize)]
