@@ -21,7 +21,7 @@ accepts), [`docs/autonomous-loop.md`](autonomous-loop.md).
 grep -n "label: *['\"]" .claude/workflows/*.js | grep -v spike-agent-type
 ```
 
-**46 labelled `agent()` call sites** across the six workflow scripts:
+**47 labelled `agent()` call sites** across the six workflow scripts:
 
 | file | call sites |
 |---|---|
@@ -30,8 +30,8 @@ grep -n "label: *['\"]" .claude/workflows/*.js | grep -v spike-agent-type
 | `rdm-wf-document.js` | 5 |
 | `rdm-wf-estimate.js` | 5 |
 | `rdm-wf-plan-review.js` | 13 |
-| `rdm-wf-review-refute-fix.js` | 6 |
-| **total** | **46** |
+| `rdm-wf-review-refute-fix.js` | 7 |
+| **total** | **47** |
 
 (`autopilot.js` carried 7 of the original 44 call sites; it was retired in favor of the prose
 `rdm-autopilot` skill by the `workflow-orchestration` roadmap's phase 3 — see
@@ -150,6 +150,7 @@ can supply the hoist today.
 | `clean:check` | `rdm-wf-dispatch-phase.js` | byte-copied (prompt + schema live in the stamped `dispatch-outcome` block; the binding is in the unprojected driver) | yes | n/a — it observes state the run itself just produced | **irreducible** | The terminal cleanliness assertion (see [`verify-gate.md`](verify-gate.md) § 8): it reports `git status --porcelain` from the item's worktree *after* the Act step has committed its inline fix and the post-act re-verify has run. Its whole subject is the tree this run just wrote to, so there is nothing a caller could pre-compute and nothing an earlier agent could absorb — the implementer's diff is stale by the time the act step has run. Adds one call site and no new fetch. | no |
 | `diff:signals` | `rdm-wf-dispatch-phase.js` | unprojected driver | yes | n/a — absorbed, no caller needed | **absorbable** | `runCodeGate` calls `d.implement(...)` immediately before every `d.review()` with nothing in between, so the implementer — already in the worktree it just wrote to — reports the same two `git diff` commands. One-shot handoff (`pendingDiff` read-and-cleared) preserves per-round freshness. Works on **every** path, including autopilot-nested. | no |
 | `source:resolve` / `source:revalidate` | `rdm-wf-review-refute-fix.js` | unprojected driver | yes | no | **irreducible** | Resolve the real registered source through `rdm review source`; revalidate before persistence/status. A supplied diff cannot substitute for current source identity. | **yes** |
+| `plan:resolve` / `plan:revalidate` | `rdm-wf-review-refute-fix.js` | unprojected driver | yes | no | **irreducible** | Resolve the approved implementation plan for the canonical source item and revalidate its relationship and content before persistence/status. | **yes** |
 | `source:acceptance` | `rdm-wf-review-refute-fix.js` | unprojected driver | yes | no | **irreducible** | Read the intended phase/task body and thread its acceptance text with the pinned source to every reviewer. | **yes** |
 | `gate:persist` | `rdm-wf-review-refute-fix.js` | unprojected driver | yes | — | **irreducible** | A write whose status/reason are computed mid-run from the classified outcome. | **yes** |
 | `persist:review` | `rdm-wf-review-refute-fix.js` | unprojected driver | **no — DISTRIBUTED** | — | **irreducible** | The opt-in review WRITER (`persist: { on }`): it opens an rdm review on the item, writes one comment per surviving finding, submits it with the mapped verdict, and commits. Its whole input is the classified outcome and the survivor list this run just produced, so nothing a caller could pre-compute substitutes for it. Runs only when `persist` is supplied, so it adds one call SITE and zero agents to a default run. Deliberately carries NO `agentType`: this engine is distributed, and threading it is owned by task `thread-agent-type-into-distributed-workflows` (gated by `verify-workflow-review.sh` § 2c(v)). | **yes** |

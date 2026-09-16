@@ -11985,11 +11985,16 @@ function makeWfHarness(findings) {
     const label = (opts && opts.label) || '';
     calls.push({ label, prompt });
     if (label === 'source:resolve' || label === 'source:revalidate') return { item: prompt.includes("task/my-task") ? 'task/my-task' : 'phase/rm/phase-1-x', repository: '/repo/.git', path: '/repo/shared', branch: 'roadmap/rm', base: 'b'.repeat(40), head: 'a'.repeat(40), changedFiles: ['rdm-core/src/lib.rs'], diffText: '', noCode: false };
-    if (label === 'source:acceptance') return { acceptance: 'AC1' };
+    if (label === 'source:acceptance') return { acceptance: '## Acceptance Criteria\n- works' };
+    if (label === 'plan:resolve' || label === 'plan:revalidate') {
+      const item = calls.find(c => c.label === 'source:resolve').prompt.includes('task/my-task') ? 'task/my-task' : 'phase/rm/phase-1-x';
+      if (prompt.includes(' plan list ')) return { plans: [{ slug: 'implementation' }] };
+      return { slug: 'implementation', implements: 'rdm:' + item, status: 'approved', body: 'Implement works.' };
+    }
     if (label === 'persist:review') return { ok: true, reviewId: 'REVIEW-123' };
     if (label === 'gate:persist') return { ok: true };
     const parts = label.split(':');
-    if (parts[0] === 'find') return { findings: parts[1] === 'code' && parts[2] === 'correctness' ? findings : [], ac: parts[2] === 'ac' ? [{ criterion: 'AC1', status: 'PASS', evidence: 'test' }] : undefined };
+    if (parts[0] === 'find') return { findings: parts[1] === 'code' && parts[2] === 'correctness' ? findings : [], ac: parts[2] === 'ac' ? [{ criterion: 'AC1: works', status: 'PASS', evidence: 'test' }] : undefined };
     if (parts[0] === 'refute') return { refuted: false, confidence: 95 };
     throw new Error('unexpected label ' + label);
   };
@@ -12052,7 +12057,7 @@ function makeWfHarness(findings) {
     if (label.startsWith('source:')) return makeWfHarness([]).agent(p, o);
     if (label === 'persist:review') throw new Error('boom');
     const parts = label.split(':');
-    if (parts[0] === 'find') return { findings: parts[2] === 'correctness' ? [finding] : [], ac: parts[2] === 'ac' ? [{ criterion: 'AC1', status: 'PASS', evidence: 'test' }] : undefined };
+    if (parts[0] === 'find') return { findings: parts[2] === 'correctness' ? [finding] : [], ac: parts[2] === 'ac' ? [{ criterion: 'AC1: works', status: 'PASS', evidence: 'test' }] : undefined };
     if (parts[0] === 'refute') return { refuted: false, confidence: 95 };
     throw new Error('unexpected label ' + label);
   } };

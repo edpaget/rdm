@@ -2787,3 +2787,28 @@ The returned `source` contains canonical item/repository/path/branch, full base/
 Automatic approval consumes the latest attempt's coverage, structured nonempty valid AC table, refutation overflow and grader errors. Missing selected dimensions, absent/invalid AC results, over-budget grading candidates (including concerns at small tiers), and failed grading produce `escalated` with `writesCompletion: false`; suggestions intentionally passed through remain non-gating. Existing severity thresholds, confidence floor 70 and refutation cap are unchanged. Historical incomplete attempts remain visible but a complete later attempt can approve. Legacy survivors-only calls remain reports and do not issue automatic approvals. The retiring dispatch driver's bespoke orchestration is unchanged.
 
 The workflow's source validation and a plan Store write are not a transaction across repositories. Revalidation at acquisition, persistence and status boundaries detects drift; an external concurrent git mutation between checks remains possible. No live Claude Workflow execution was performed by the Codex implementation host; real Git/CLI fixtures and injected workflow agents supply regression evidence.
+
+
+### Source-bound acceptance and implementation-plan identity
+
+The standalone code review reads the intended item's complete body and builds
+an authoritative criterion inventory before invoking finders. A single Markdown
+heading named **Acceptance Criteria** (or **Acceptance**) defines the section,
+ending at the next heading of equal or higher level. Supported criteria are
+top-level bullets (including checkboxes), numbered list items, or prose
+paragraphs separated by blank lines. Wrapped and indented nested lines remain
+part of their parent criterion. Whitespace is normalized; each entry receives
+the identity `AC<n>: <complete criterion text>`, in document order. Finder
+results must repeat these identities verbatim, exactly once each, with valid
+status and evidence. Missing, duplicate or unknown identities cannot approve.
+Missing/empty sections, duplicate criteria, tables, fenced blocks and ambiguous
+subheadings fail closed; they need explicit criteria before automatic review.
+The fetched body is never replaced with a finder-created criterion subset.
+
+Before reviewing code, the standalone driver loads the explicit implementation
+plan (or resolves exactly one approved plan implementing the canonical source
+item), verifies its approved status and exact `implements` relationship, and
+pins its slug, relationship and body. It revalidates that plan before persistence
+and gating, even when no gate was requested. Persisted reviews use only that
+validated plan reference. Legacy report-only and plan-mode calls retain their
+existing behavior.

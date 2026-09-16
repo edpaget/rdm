@@ -587,7 +587,7 @@ function INTENT_MISSING_NOTICE() {
 //| ```
 function findPrompt(mode, dim, context) {
   const target = ((context && context.target) || '(the target described in your working directory)') +
-    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') : '');
+    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') + '\nAuthoritative criterion identities (return exactly one AC row per identity, verbatim): ' + JSON.stringify(context.criteria || []) : '');
   const diffHint =
     mode === 'code'
       ? 'Inspect the implementation diff (use git log / git diff in the worktree).'
@@ -754,7 +754,7 @@ function findPrompt(mode, dim, context) {
 //|plan|   dimension and surfaces as an ordinary finding.
 function refutePrompt(mode, dim, finding, context) {
   const target = ((context && context.target) || '(the target described in your working directory)') +
-    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') : '');
+    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') + '\nAuthoritative criterion identities (return exactly one AC row per identity, verbatim): ' + JSON.stringify(context.criteria || []) : '');
   const lines = [
     'You are a READ-ONLY refuter. Do not edit any files.',
     'A prior reviewer raised this ' + dim.key + ' finding against ' + target + ':',
@@ -2255,14 +2255,49 @@ function codeReviewRounds(input) {
 // same reviewed|rework lane as every other surviving code finding.
 // Explicit automatic evidence contract. Legacy report-only callers can omit it.
 // Consume the latest attempt, not historical incompleteness carried for audit.
+// Bounded acceptance-section parser: top-level list items or prose paragraphs.
+// Nested/continued lines remain part of their parent criterion. Ambiguous
+// headings, tables and fenced blocks fail closed instead of losing criteria.
+function acceptanceCriteria(body) {
+  if (typeof body !== 'string') return [];
+  const lines = body.replace(/\r\n/g, '\n').split('\n');
+  const headers = lines.map((line, index) => ({ match: /^(#{1,6})\s+Acceptance(?: Criteria)?\s*:?\s*$/i.exec(line), index })).filter(x => x.match);
+  if (headers.length !== 1) return [];
+  const start = headers[0];
+  const section = [];
+  for (const line of lines.slice(start.index + 1)) {
+    const heading = /^(#{1,6})\s/.exec(line);
+    if (heading && heading[1].length <= start.match[1].length) break;
+    if (heading || /^\s*(?:\||```|~~~)/.test(line)) return [];
+    section.push(line);
+  }
+  const items = [];
+  let current = '';
+  let listed = false;
+  function flush() { if (current.trim()) items.push(current.trim().replace(/\s+/g, ' ')); current = ''; }
+  for (const line of section) {
+    const bullet = /^(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)(\S.*)$/.exec(line);
+    if (bullet) { flush(); listed = true; current = bullet[1]; }
+    else if (!line.trim()) { if (!listed) flush(); }
+    else if (listed && !/^\s+/.test(line)) return [];
+    else current += (current ? '\n' : '') + line.trim();
+  }
+  flush();
+  if (items.length === 0 || new Set(items).size !== items.length) return [];
+  return items.map((text, index) => 'AC' + (index + 1) + ': ' + text);
+}
+
 function reviewEvidenceComplete(evidence) {
   if (!evidence) return false;
   const coverage = evidence.coverage && (evidence.coverage.last || evidence.coverage);
   const budget = evidence.budget || {};
   const ac = evidence.acTable;
+  const criteria = evidence.criteria;
   return !!(coverage && coverage.complete === true && coverage.acDimensionRan === true &&
-    Array.isArray(ac) && ac.length > 0 && ac.every((row) => row && typeof row.criterion === 'string' &&
-      typeof row.evidence === 'string' && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)) &&
+    Array.isArray(criteria) && criteria.length > 0 && new Set(criteria).size === criteria.length &&
+    Array.isArray(ac) && ac.length === criteria.length && new Set(ac.map(row => row && row.criterion)).size === criteria.length &&
+    ac.every(row => row && criteria.includes(row.criterion)) && ac.every((row) => row && typeof row.criterion === 'string' &&
+      typeof row.evidence === 'string' && row.evidence.trim().length > 0 && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)) &&
     !(budget.passedThroughBudget > 0) && !(budget.refuterErrors > 0) &&
     !(evidence.survivors || []).some((f) => f.refuterError || f.unrefutedReason === 'budget'));
 }
@@ -2468,7 +2503,7 @@ function buildReviewPipeline(mode, deps) {
         // PARTICIPATED. A valid-but-EMPTY payload (`{ findings: [] }`, or
         // `{ ac: [], findings: [] }`) counts as participation: the dimension ran
         // and found nothing. Only null/undefined is non-participation.
-        if ((isAcDimension && (!Array.isArray(found.ac) || !found.ac.every((row) => row && typeof row.criterion === 'string' && typeof row.evidence === 'string' && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)))) ||
+        if ((isAcDimension && (!Array.isArray(found.ac) || !found.ac.every((row) => row && typeof row.criterion === 'string' && typeof row.evidence === 'string' && row.evidence.trim().length > 0 && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)))) ||
             (!isAcDimension && !Array.isArray(found.findings))) {
           rec.error = 'invalid structured output';
           throw new Error('invalid finder output for ' + dim.key);
@@ -2962,6 +2997,7 @@ export {
   summarizeFindings,
   codeReviewRounds,
   classifyOutcome,
+  acceptanceCriteria,
   reviewEvidenceComplete,
   DEFAULT_MAX_CODE_REWORK,
   buildReviewPipeline,

@@ -159,7 +159,9 @@ pub enum GateDecision {
 ///   (a malformed bypass is never silently honored);
 /// - [`Error::GateNoApprovedPlan`] when no `approved` plan implements `item`;
 /// - [`Error::GateNoApprovedChangeReview`] when no approving `change/` review
-///   names any of those plans, listing every plan checked;
+///   names any of those plans at the clean observed checkout's HEAD (a missing
+///   observed HEAD also refuses approval), listing every plan checked. When no
+///   checkout is observed, legacy callers skip only this HEAD-matching check;
 /// - [`Error::GateWorktreeDirty`] when the item's worktree has uncommitted
 ///   changes;
 /// - [`Error::GateWorktreeUnobservable`] when the worktree could not be

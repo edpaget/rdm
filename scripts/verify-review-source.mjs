@@ -2,18 +2,23 @@
 import assert from 'node:assert/strict';
 import * as review from '../.claude/workflows/lib/review.mjs';
 const complete = { complete: true, selected: ['ac', 'correctness'], ran: ['ac', 'correctness'], failed: [], acDimensionRan: true };
-const ac = [{ criterion: 'works', status: 'PASS', evidence: 'test' }];
+const ac = [{ criterion: 'AC1: works', status: 'PASS', evidence: 'test' }];
 assert.equal(review.classifyOutcome({ planFindings: [], codeReviews: [[]], evidence: { coverage: { ...complete, complete: false, failed: ['ac'], acDimensionRan: false }, acTable: null } }), 'escalated');
 for (const evidence of [
-  { coverage: complete, acTable: null },
-  { coverage: complete, acTable: [] },
-  { coverage: complete, acTable: [{ status: 'INVALID' }] },
+  { criteria: ac.map(row => row.criterion), coverage: complete, acTable: null },
+  { criteria: ac.map(row => row.criterion), coverage: complete, acTable: [] },
+  { criteria: ac.map(row => row.criterion), coverage: complete, acTable: [{ status: 'INVALID' }] },
   { coverage: { ...complete, complete: false, failed: ['correctness'] }, acTable: ac },
-  { coverage: complete, acTable: ac, budget: { passedThroughBudget: 1 } },
-  { coverage: complete, acTable: ac, survivors: [{ severity: 'concern', refuterError: true }] },
+  { criteria: ac.map(row => row.criterion), coverage: complete, acTable: ac, budget: { passedThroughBudget: 1 } },
+  { criteria: ac.map(row => row.criterion), coverage: complete, acTable: ac, survivors: [{ severity: 'concern', refuterError: true }] },
 ]) assert.equal(review.classifyOutcome({ codeReviews: [[]], evidence }), 'escalated');
-assert.equal(review.classifyOutcome({ codeReviews: [[]], evidence: { coverage: complete, acTable: ac, survivors: [{ severity: 'suggestion', unrefuted: true, unrefutedReason: 'non-gating' }] } }), 'reviewed');
-assert.equal(review.classifyOutcome({ codeReviews: [[]], evidence: { coverage: { complete: false, last: complete }, acTable: ac } }), 'reviewed');
+assert.equal(review.classifyOutcome({ codeReviews: [[]], evidence: { criteria: ac.map(row => row.criterion), coverage: complete, acTable: ac, survivors: [{ severity: 'suggestion', unrefuted: true, unrefutedReason: 'non-gating' }] } }), 'reviewed');
+assert.equal(review.classifyOutcome({ codeReviews: [[]], evidence: { criteria: ac.map(row => row.criterion), coverage: { complete: false, last: complete }, acTable: ac } }), 'reviewed');
+// Authoritative identities retain wrapped and nested continuation text.
+assert.deepEqual(review.acceptanceCriteria('## Acceptance Criteria\n- [ ] first\n  continued\n  - nested detail\n- second\n## Verification\nignored'), ['AC1: first continued - nested detail', 'AC2: second']);
+assert.deepEqual(review.acceptanceCriteria('## Acceptance Criteria\n1. first\n2. second'), ['AC1: first', 'AC2: second']);
+assert.deepEqual(review.acceptanceCriteria('## Acceptance\nFirst paragraph\ncontinues.\n\nSecond paragraph.'), ['AC1: First paragraph continues.', 'AC2: Second paragraph.']);
+for (const body of ['', 'no criteria heading', '## Acceptance Criteria\n', '## Acceptance Criteria\n| table |', '## Acceptance Criteria\n- same\n- same', '## Acceptance Criteria\n### uncertain']) assert.deepEqual(review.acceptanceCriteria(body), []);
 console.log('automatic completeness regressions passed');
 
 import fs from 'node:fs';
@@ -68,10 +73,16 @@ try {
   rdm(['plan', 'create', 'task-implementation', '--implements', 'task/repair', '--title', 'Task implementation', '--body', 'Implement repair.', '--no-edit']);
   const taskPlanReview = json(['review', 'start', '--on', 'plan/task-implementation', '--author', 'independent', '--body', 'Independently reviewed.', '--no-edit']);
   rdm(['review', 'submit', taskPlanReview.id, '--verdict', 'approve', '--no-edit']);
+  rdm(['task', 'create', 'unrelated', '--title', 'Unrelated', '--body', '## Acceptance Criteria\n- unrelated behavior', '--no-edit', '--no-plan-review']);
+  rdm(['plan', 'create', 'unrelated-implementation', '--implements', 'task/unrelated', '--title', 'Other plan', '--body', 'Other behavior.', '--no-edit']);
+  const otherReview = json(['review', 'start', '--on', 'plan/unrelated-implementation', '--author', 'independent', '--body', 'Reviewed.', '--no-edit']);
+  rdm(['review', 'submit', otherReview.id, '--verdict', 'approve', '--no-edit']);
   rdm(['commit', '-m', 'chore(plan): fixture']);
   const shared = fs.realpathSync(rdm(['worktree', 'add', 'alpha']));
   const stale = fs.realpathSync(rdm(['worktree', 'add', 'alpha/phase-1-work']));
   fs.writeFileSync(path.join(shared, 'file with spaces.txt'), 'implemented\n');
+  fs.mkdirSync(path.join(shared, 'src'));
+  fs.writeFileSync(path.join(shared, 'src/lib.rs'), 'fn implemented() {}\n');
   git(['add', '.'], shared); git(['commit', '-m', 'feat: implementation'], shared);
   const head = git(['rev-parse', 'HEAD'], shared);
   rdm(['config', 'set', 'gates.reviewed', 'true']);
@@ -83,6 +94,11 @@ try {
     let resolved;
     const agent = async (prompt, opts) => {
       calls.push({ prompt, ...opts });
+      if (opts.label.startsWith('plan:')) {
+        const command = prompt.split('\n').find(line => line.includes(' plan '));
+        const result = JSON.parse(shell(command));
+        return command.includes(' plan list ') ? { plans: result } : result;
+      }
       if (opts.label.startsWith('source:') && opts.label !== 'source:acceptance') {
         if (options.moveBeforeRevalidate && opts.label === 'source:revalidate') {
           git(['commit', '--allow-empty', '-m', 'external movement'], shared); options.moveBeforeRevalidate = false;
@@ -101,7 +117,7 @@ try {
         assert.ok(prompt.includes(head), 'finder reads pinned head');
         assert.ok(prompt.includes('Acceptance criteria:'), 'criteria threaded');
         if (options.failDimension && opts.label.startsWith('find:code:' + options.failDimension)) return null;
-        if (opts.label === 'find:code:ac') return options.invalidAc ? { ac: [{ status: 'INVALID' }] } : { ac: [{ ...ac[0], status: options.acFail ? 'FAIL' : 'PASS' }], findings: [] };
+        if (opts.label === 'find:code:ac') return options.invalidAc ? { ac: [{ status: 'INVALID' }] } : { ac: options.acRows || [{ ...ac[0], status: options.acFail ? 'FAIL' : 'PASS' }], findings: [] };
         return { findings: opts.label === 'find:code:correctness' ? (options.findings || []) : [] };
       }
       if (opts.label.startsWith('refute:')) {
@@ -114,7 +130,12 @@ try {
         assert.ok(!prompt.includes('worktree add'), 'persistence never reselects or creates checkout');
         assert.ok(!prompt.includes('--on phase/'), 'no item approval fallback');
         const start = prompt.indexOf('Run these commands IN ORDER');
-        const command = prompt.slice(prompt.indexOf('\n', start) + 1, prompt.indexOf('\nANCHORING FALLBACK'));
+        let command = prompt.slice(prompt.indexOf('\n', start) + 1, prompt.indexOf('\nANCHORING FALLBACK'));
+        if (options.missingPath) {
+          const original = command;
+          command = command.replaceAll(' --path "$RDM_PERSIST_PATH"', '');
+          assert.notEqual(command, original, 'missing-path mutation must be planted');
+        }
         const output = shell(command + '\nprintf "\\n%s\\n" "$RDM_REVIEW_ID"');
         return { ok: true, reviewId: output.split('\n').at(-1), anchored: 0, wholeDocument: 0 };
       }
@@ -151,9 +172,37 @@ try {
   assert.equal(persisted.target.base, base);
   assert.equal(persisted.implements, 'rdm:plan/implementation');
   assert.equal(json(['phase', 'show', 'phase-1-work', '--roadmap', 'alpha']).status, 'reviewed');
+  const quoted = { ...finding, id: 'quoted', location: 'src/lib.rs:1', quote: 'fn implemented() {}' };
+  const unlocated = { ...finding, id: 'unlocated', location: 'throughout the gate step' };
+  async function checkWriter(missingPath = false) {
+    const written = await execute({ persist: true, tier: 'large' }, { findings: [quoted, unlocated], missingPath });
+    assert.equal(written.result.outcome, 'rework', 'generated code writer must persist rework: ' + written.result.summary);
+    const record = json(['review', 'show', written.result.reviewId], shared);
+    const located = record.comments.find(comment => comment.anchor);
+    assert.ok(located, 'quoted finding must have a resolved code path anchor');
+    assert.equal(located.anchor.anchor_type, 'file-quote');
+    assert.equal(located.anchor.path, 'src/lib.rs');
+    assert.equal(located.resolution.state, 'resolved');
+    assert.equal(located.resolution.quote, quoted.quote);
+    assert.equal(located.source_link, 'rdm:src/src/lib.rs@' + head + '#L1');
+    const link = json(['link', 'resolve', located.source_link], shared);
+    assert.equal(link.kind, 'code'); assert.equal(link.path, 'src/lib.rs');
+    assert.equal(link.rev, head); assert.equal(link.line, 1);
+    assert.equal(record.comments.filter(comment => !comment.anchor).length, 1, 'unlocated finding stays whole-document');
+  }
+  await checkWriter();
+  await assert.rejects(() => checkWriter(true), /generated code writer must persist rework|quoted finding must have a resolved code path anchor/);
+  console.log('generated writer control passed; planted missing-path mutation failed as required');
+
   assert.equal(git(['rev-parse', 'HEAD'], stale), base, 'stale branch unchanged');
   assert.equal(git(['status', '--porcelain'], stale), '', 'stale checkout unchanged');
   assert.equal(json(['worktree', 'list']).length, 2, 'no task checkout created');
+  const unrelated = await execute({ roadmap: undefined, phase: undefined, task: 'repair', source: shared, persist: true, gate: false, diff: { diffText: 'fake', changedFiles: [] }, implements: 'plan/unrelated-implementation' });
+  assert.equal(unrelated.result.outcome, 'escalated', 'unrelated plan must not approve');
+  assert.ok(!unrelated.calls.some(c => c.label === 'persist:review' || c.label.startsWith('find:')), 'unrelated plan refused before review or persistence');
+  assert.equal((json(['plan', 'show', 'unrelated-implementation']).change_reviews || []).length, 0);
+  assert.equal((await execute({ implements: undefined })).result.outcome, 'reviewed', 'single approved intended plan resolves automatically');
+  assert.equal((await execute({ implements: 'plan/missing', persist: true })).result.outcome, 'escalated');
   const task = await execute({ roadmap: undefined, phase: undefined, task: 'repair', source: shared, expectedHead: head, persist: true, gate: true, implements: 'plan/task-implementation' });
   assert.equal(task.result.outcome, 'reviewed', JSON.stringify(task.result));
   assert.equal(json(['worktree', 'list']).length, 2);
@@ -162,6 +211,25 @@ try {
     assert.equal(result.outcome, 'escalated'); assert.equal(result.writesCompletion, false);
     assert.ok(!calls.filter((c) => c.label === 'persist:review').some((c) => c.prompt.includes('--verdict approve')));
   }
+  rdm(['phase', 'update', 'phase-1-work', '--roadmap', 'alpha', '--body', '## Acceptance Criteria\n- works\n- second behavior', '--no-edit']);
+  const missing = await execute({ persist: true });
+  assert.equal(missing.result.outcome, 'escalated', 'omitted intended criterion must not approve');
+  assert.ok(!missing.calls.some(c => c.label === 'persist:review' && c.prompt.includes('--verdict approve')));
+  for (const acRows of [
+    [ac[0], ac[0]],
+    [ac[0], { ...ac[0], criterion: 'AC2: unknown' }],
+  ]) {
+    const invalid = await execute({ persist: true }, { acRows });
+    assert.equal(invalid.result.outcome, 'escalated');
+    assert.ok(!invalid.calls.some(c => c.label === 'persist:review' && c.prompt.includes('--verdict approve')));
+  }
+  const allRows = [ac[0], { ...ac[0], criterion: 'AC2: second behavior' }];
+  assert.equal((await execute({}, { acRows: allRows })).result.outcome, 'reviewed');
+  rdm(['phase', 'update', 'phase-1-work', '--roadmap', 'alpha', '--body', '## Acceptance Criteria\nworks\n\nsecond behavior', '--no-edit']);
+  assert.equal((await execute({}, { acRows: allRows })).result.outcome, 'reviewed', 'prose criteria remain supported');
+  rdm(['phase', 'update', 'phase-1-work', '--roadmap', 'alpha', '--body', 'No criteria supplied.', '--no-edit']);
+  assert.equal((await execute({ persist: true })).result.outcome, 'escalated');
+  rdm(['phase', 'update', 'phase-1-work', '--roadmap', 'alpha', '--body', '## Acceptance Criteria\n- works', '--no-edit']);
   const overflow = await execute({ maxRefutations: 0, tier: 'small' }, { findings: [finding] });
   assert.equal(overflow.result.outcome, 'escalated', 'ungraded concern cannot approve even at small tier');
   assert.equal(overflow.result.reviewBudget.passedThroughBudget, 1);

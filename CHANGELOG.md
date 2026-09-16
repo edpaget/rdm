@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Keep non-Git CLI builds working and bind standalone code approvals to the intended implementation plan and every acceptance criterion. Restore code-comment anchor and source-link regression coverage.
+
+
 - Standalone code reviews now resolve and pin the existing shared roadmap checkout and exact commit range, including explicit task bindings. `rdm review source` refuses wrong, moved, or unexpectedly empty sources without creating worktrees; source-bound status writes validate the same identity, and the reviewed gate requires approval for the observed head. Automatic reviews cannot approve with missing dimensions, invalid acceptance evidence, unresolved refutation overflow, failed persistence, or failed status readback.
 
 ### Added

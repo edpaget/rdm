@@ -518,7 +518,7 @@ function INTENT_MISSING_NOTICE() {
 //| ```
 function findPrompt(mode, dim, context) {
   const target = ((context && context.target) || '(the target described in your working directory)') +
-    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') : '');
+    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') + '\nAuthoritative criterion identities (return exactly one AC row per identity, verbatim): ' + JSON.stringify(context.criteria || []) : '');
   const diffHint =
     mode === 'code'
       ? 'Inspect the implementation diff (use git log / git diff in the worktree).'
@@ -685,7 +685,7 @@ function findPrompt(mode, dim, context) {
 //|plan|   dimension and surfaces as an ordinary finding.
 function refutePrompt(mode, dim, finding, context) {
   const target = ((context && context.target) || '(the target described in your working directory)') +
-    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') : '');
+    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') + '\nAuthoritative criterion identities (return exactly one AC row per identity, verbatim): ' + JSON.stringify(context.criteria || []) : '');
   const lines = [
     'You are a READ-ONLY refuter. Do not edit any files.',
     'A prior reviewer raised this ' + dim.key + ' finding against ' + target + ':',
@@ -2186,14 +2186,49 @@ function codeReviewRounds(input) {
 // same reviewed|rework lane as every other surviving code finding.
 // Explicit automatic evidence contract. Legacy report-only callers can omit it.
 // Consume the latest attempt, not historical incompleteness carried for audit.
+// Bounded acceptance-section parser: top-level list items or prose paragraphs.
+// Nested/continued lines remain part of their parent criterion. Ambiguous
+// headings, tables and fenced blocks fail closed instead of losing criteria.
+function acceptanceCriteria(body) {
+  if (typeof body !== 'string') return [];
+  const lines = body.replace(/\r\n/g, '\n').split('\n');
+  const headers = lines.map((line, index) => ({ match: /^(#{1,6})\s+Acceptance(?: Criteria)?\s*:?\s*$/i.exec(line), index })).filter(x => x.match);
+  if (headers.length !== 1) return [];
+  const start = headers[0];
+  const section = [];
+  for (const line of lines.slice(start.index + 1)) {
+    const heading = /^(#{1,6})\s/.exec(line);
+    if (heading && heading[1].length <= start.match[1].length) break;
+    if (heading || /^\s*(?:\||```|~~~)/.test(line)) return [];
+    section.push(line);
+  }
+  const items = [];
+  let current = '';
+  let listed = false;
+  function flush() { if (current.trim()) items.push(current.trim().replace(/\s+/g, ' ')); current = ''; }
+  for (const line of section) {
+    const bullet = /^(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)(\S.*)$/.exec(line);
+    if (bullet) { flush(); listed = true; current = bullet[1]; }
+    else if (!line.trim()) { if (!listed) flush(); }
+    else if (listed && !/^\s+/.test(line)) return [];
+    else current += (current ? '\n' : '') + line.trim();
+  }
+  flush();
+  if (items.length === 0 || new Set(items).size !== items.length) return [];
+  return items.map((text, index) => 'AC' + (index + 1) + ': ' + text);
+}
+
 function reviewEvidenceComplete(evidence) {
   if (!evidence) return false;
   const coverage = evidence.coverage && (evidence.coverage.last || evidence.coverage);
   const budget = evidence.budget || {};
   const ac = evidence.acTable;
+  const criteria = evidence.criteria;
   return !!(coverage && coverage.complete === true && coverage.acDimensionRan === true &&
-    Array.isArray(ac) && ac.length > 0 && ac.every((row) => row && typeof row.criterion === 'string' &&
-      typeof row.evidence === 'string' && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)) &&
+    Array.isArray(criteria) && criteria.length > 0 && new Set(criteria).size === criteria.length &&
+    Array.isArray(ac) && ac.length === criteria.length && new Set(ac.map(row => row && row.criterion)).size === criteria.length &&
+    ac.every(row => row && criteria.includes(row.criterion)) && ac.every((row) => row && typeof row.criterion === 'string' &&
+      typeof row.evidence === 'string' && row.evidence.trim().length > 0 && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)) &&
     !(budget.passedThroughBudget > 0) && !(budget.refuterErrors > 0) &&
     !(evidence.survivors || []).some((f) => f.refuterError || f.unrefutedReason === 'budget'));
 }
@@ -2399,7 +2434,7 @@ function buildReviewPipeline(mode, deps) {
         // PARTICIPATED. A valid-but-EMPTY payload (`{ findings: [] }`, or
         // `{ ac: [], findings: [] }`) counts as participation: the dimension ran
         // and found nothing. Only null/undefined is non-participation.
-        if ((isAcDimension && (!Array.isArray(found.ac) || !found.ac.every((row) => row && typeof row.criterion === 'string' && typeof row.evidence === 'string' && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)))) ||
+        if ((isAcDimension && (!Array.isArray(found.ac) || !found.ac.every((row) => row && typeof row.criterion === 'string' && typeof row.evidence === 'string' && row.evidence.trim().length > 0 && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)))) ||
             (!isAcDimension && !Array.isArray(found.findings))) {
           rec.error = 'invalid structured output';
           throw new Error('invalid finder output for ' + dim.key);
@@ -2822,6 +2857,8 @@ let source = null
 let failure = ''
 let review = { survivors: [], acTable: null, budget: null, coverage: null }
 let acceptance = ''
+let criteria = []
+let implementationPlan = null
 async function acquireSource(previous) {
   const resolved = await agent([
     'You are a mechanical source agent. Run exactly this read-only command; never create a worktree.',
@@ -2832,10 +2869,35 @@ async function acquireSource(previous) {
   if (previous && ['item', 'repository', 'path', 'branch', 'base', 'head'].some((key) => previous[key] !== resolved[key])) throw new Error('source identity changed during review')
   return resolved
 }
+async function acquirePlan(previous) {
+  let ref = previous ? 'plan/' + previous.slug : rawArgs.implements
+  if (ref !== undefined && (typeof ref !== 'string' || !/^(?:rdm:)?plan\/[a-z0-9][a-z0-9-]*$/.test(ref))) throw new Error('invalid implementation plan reference')
+  if (!ref) {
+    const resolvedPlans = await agent([
+      'Run this read-only command and return its complete JSON array under the plans key:',
+      bin + ' plan list --implements ' + shellQuote(source.item) + ' --status approved' + proj + ' --format json',
+    ].join('\n'), { label: 'plan:resolve', phase: 'Review', schema: { type: 'object', required: ['plans'], properties: { plans: { type: 'array', items: { type: 'object' } } } } })
+    const candidates = resolvedPlans && resolvedPlans.plans
+    if (!Array.isArray(candidates) || candidates.length !== 1) throw new Error('expected exactly one approved implementation plan; pass implements explicitly')
+    ref = 'plan/' + candidates[0].slug
+  }
+  const slug = ref.replace(/^(?:rdm:)?plan\//, '')
+  const plan = await agent([
+    'Run this read-only command and return its complete JSON unchanged:',
+    bin + ' plan show ' + shellQuote(slug) + proj + ' --format json',
+  ].join('\n'), { label: previous ? 'plan:revalidate' : 'plan:resolve', phase: 'Review', schema: {
+    type: 'object', required: ['slug', 'implements', 'status', 'body'],
+    properties: { slug: { type: 'string' }, implements: { type: 'string' }, status: { type: 'string' }, body: { type: 'string' } },
+  } })
+  if (!plan || plan.slug !== slug || plan.implements !== 'rdm:' + source.item || plan.status !== 'approved' || typeof plan.body !== 'string') throw new Error('implementation plan does not approve the intended source item')
+  if (previous && ['slug', 'implements', 'status', 'body'].some(key => plan[key] !== previous[key])) throw new Error('implementation plan changed during review')
+  return { slug: plan.slug, implements: plan.implements, status: plan.status, body: plan.body }
+}
 try {
   // Always resolve, including callers supplying diff. The authoritative committed
   // content replaces any unverified hoisted diff; caller data never selects a checkout.
   source = await acquireSource(null)
+  implementationPlan = await acquirePlan(null)
   const context = await agent([
     'Read the intended item acceptance criteria with this command and return its complete body as acceptance:',
     isTask ? bin + ' task show ' + shellQuote(taskSlug) + proj + ' --format json' :
@@ -2843,27 +2905,30 @@ try {
   ].join('\n'), { label: 'source:acceptance', phase: 'Review', schema: { type: 'object', additionalProperties: false, required: ['acceptance'], properties: { acceptance: { type: 'string' } } } })
   if (!context || typeof context.acceptance !== 'string' || !context.acceptance.trim()) throw new Error('acceptance text unavailable')
   acceptance = context.acceptance
+  criteria = acceptanceCriteria(acceptance)
+  if (!criteria.length) throw new Error('acceptance criteria missing or ambiguous')
   const signals = source.changedFiles.length ? deriveSignals({ targetType: kind, changedFiles: source.changedFiles, diffText: source.diffText }) : undefined
-  review = await runReview({ target: source.item, source: source, acceptance: acceptance, signals: signals,
+  review = await runReview({ target: source.item, source: source, acceptance: acceptance, criteria: criteria, signals: signals,
     findModel: rawArgs.findModel, verifyModel: rawArgs.verifyModel, maxRefutations: rawArgs.maxRefutations })
   await acquireSource(source)
 } catch (error) { failure = String(error && error.message || error) }
 const survivors = review.survivors || []
 const reviewBudget = buildReviewBudget([review.budget], null)
 const reviewCoverage = buildReviewCoverage([review.coverage], null)
-const evidence = { coverage: review.coverage, budget: review.budget, acTable: review.acTable, survivors: survivors }
+const evidence = { criteria: criteria, coverage: review.coverage, budget: review.budget, acTable: review.acTable, survivors: survivors }
 let outcome = classifyOutcome({ planFindings: [], codeReviews: [survivors], tier: rawArgs.tier, acTable: review.acTable, evidence: evidence })
 if (failure) outcome = 'escalated'
 if (!failure && !reviewEvidenceComplete(evidence)) failure = 'required review evidence is incomplete'
 let reviewId = null
 const persist = rawArgs.persist
 if (persist !== undefined && persist !== false && persist !== true && (!persist || typeof persist !== 'object' || Array.isArray(persist))) throw new Error('invalid persist option')
-if (persist && source) {
+if (persist && source && implementationPlan) {
   try {
     if (persist.on && persist.on !== 'change/' + source.head) throw new Error('source-bound persistence cannot target a different artifact')
     await acquireSource(source)
-    const prompts = buildPersistReviewPrompts({ mode: 'code', outcome: outcome, survivors: survivors, evidence: { failure: failure, coverage: review.coverage, budget: review.budget, acTable: review.acTable, source: { item: source.item, path: source.path, repository: source.repository, branch: source.branch, base: source.base, head: source.head } } }, 'change/' + source.head, cfg,
-      { source: source, implements: rawArgs.implements, pathAnchors: true })
+    await acquirePlan(implementationPlan)
+    const prompts = buildPersistReviewPrompts({ mode: 'code', outcome: outcome, survivors: survivors, evidence: { failure: failure, criteria: criteria, implementationPlan: implementationPlan, coverage: review.coverage, budget: review.budget, acTable: review.acTable, source: { item: source.item, path: source.path, repository: source.repository, branch: source.branch, base: source.base, head: source.head } } }, 'change/' + source.head, cfg,
+      { source: source, implements: 'plan/' + implementationPlan.slug, pathAnchors: true })
     const ack = await agent(prompts.prompt, { label: 'persist:review', phase: 'Gate', schema: PERSIST_ACK_SCHEMA })
     if (!ack || ack.ok !== true || !ack.reviewId) throw new Error('review persistence failed')
     reviewId = ack.reviewId
@@ -2872,6 +2937,7 @@ if (persist && source) {
 if (rawArgs.gate && !failure) {
   try {
     await acquireSource(source)
+    await acquirePlan(implementationPlan)
     const target = isTask ? ' task update ' + shellQuote(taskSlug) : ' phase update ' + shellQuote(phaseArg) + ' --roadmap ' + shellQuote(roadmap)
     const binding = ' --source ' + shellQuote(source.path) + ' --base ' + shellQuote(source.base) + ' --expected-head ' + shellQuote(source.head) + ' --expected-branch ' + shellQuote(source.branch) + (source.noCode ? ' --no-code' : '')
     const update = (status) => bin + target + ' --status ' + status + binding + ' --no-edit' + proj

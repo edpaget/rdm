@@ -1132,7 +1132,6 @@ pub(crate) enum HookCommand {
     },
 }
 
-#[cfg(feature = "git")]
 #[derive(clap::Args, Debug, Clone, Default)]
 pub(crate) struct ReviewSourceArgs {
     /// Existing registered source checkout (task bindings also require --base).
@@ -1152,6 +1151,7 @@ pub(crate) struct ReviewSourceArgs {
     pub no_code: bool,
 }
 
+#[cfg(feature = "git")]
 #[derive(Subcommand)]
 pub(crate) enum ReviewCommand {
     /// Resolve a committed source range without creating or changing worktrees.
