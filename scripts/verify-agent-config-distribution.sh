@@ -1931,6 +1931,16 @@ if RDM_SESSION=codex-wrapper-fixture RDM_ROOT="$TMP/missing-plan" "$REPO_ROOT/sc
 fi
 pass 'Development wrapper rebuilds from foreign cwd, preserves cross-shell identity, and rejects missing setup'
 
+# Optional real Codex integration. No account/network dependency in the default harness.
+run_node --test "$SCRIPT_DIR/lib/codex-smoke-process.test.mjs"
+if [ -n "${RDM_CODEX_BIN:-}" ]; then
+    if [ -n "${RDM_CODEX_AUTH_FILE:-}" ]; then
+        run_node "$SCRIPT_DIR/verify-codex-coexistence.mjs" "$RDM_BIN" "$RDM_CODEX_BIN" "$RDM_CODEX_AUTH_FILE"
+    else
+        run_node "$SCRIPT_DIR/verify-codex-coexistence.mjs" "$RDM_BIN" "$RDM_CODEX_BIN"
+    fi
+fi
+
 say "8. Confirming $REPO_ROOT git status is unchanged after the whole run"
 AFTER_STATUS=$(git -C "$REPO_ROOT" status --porcelain)
 if [ "$BEFORE_STATUS" != "$AFTER_STATUS" ]; then

@@ -95,6 +95,20 @@ fn codex_user_paths_separate_config_and_skills() {
 }
 
 #[test]
+fn codex_relative_home_is_resolved_by_the_invoking_process() {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("CODEX_HOME", "codex-config")
+        .args(["agent-config", "codex", "--user"])
+        .assert()
+        .success();
+    assert!(dir.path().join("codex-config/AGENTS.md").is_file());
+    assert!(!dir.path().join(".codex/AGENTS.md").exists());
+}
+
+#[test]
 fn codex_default_user_instruction_path() {
     let dir = TempDir::new().unwrap();
     rdm()

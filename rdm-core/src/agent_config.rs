@@ -77,7 +77,12 @@ impl Platform {
         Ok(dir)
     }
 
-    /// Returns the absolute path to the user-level instruction file for this platform.
+    /// Returns the configured path to the user-level instruction file for this platform.
+    ///
+    /// Environment paths are preserved, not canonicalized. The result is absolute
+    /// when `HOME` (or Codex's `CODEX_HOME` override) is absolute. Relative values
+    /// remain relative and are resolved by filesystem callers against their working
+    /// directory at use time; prefer absolute values when changing directories.
     ///
     /// For most platforms this is `user_level_dir().join(conventional_path())`,
     /// but Pi breaks the symmetry: its project-local path is `.pi/AGENTS.md`

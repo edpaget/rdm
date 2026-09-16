@@ -19,7 +19,9 @@ remove unrelated or previously installed skills.
 
 `--user` writes instructions to `$CODEX_HOME/AGENTS.md` (default
 `~/.codex/AGENTS.md`) but skills to `~/.agents/skills`, independently of
-`CODEX_HOME`. The existing `agents-md` platform retains its previous behavior;
+`CODEX_HOME`. rdm preserves relative environment paths: a relative `CODEX_HOME`
+is resolved against the invoking process's working directory. Prefer absolute
+values when switching checkouts. The existing `agents-md` platform retains its previous behavior;
 use `codex` for Codex-specific paths. Codex plugin generation by rdm is not
 implemented: use `--skills --out`, not the Claude plugin tree.
 
@@ -30,6 +32,10 @@ noninteractive mode, include that same explicit skill request in the prompt.
 An `AGENTS.override.md` can replace `AGENTS.md` at its level. Duplicate skill
 names in project, user, or plugin locations are not merged: inspect the
 selected path and use the repository `.agents/skills` copy for dogfooding.
+For example, explicitly request `$rdm-roadmap` **from the absolute path to
+the repository's `.agents/skills/rdm-roadmap/SKILL.md`**, not just the bare
+name. Installed plugin skills may be namespaced (the fixture below exposes
+`rdm-coexistence:rdm-roadmap`); user/repository copies can still share a name.
 Do not uninstall other copies without permission. Restart if newly generated
 skills are not visible.
 
@@ -150,8 +156,47 @@ mutations. The wrapper was also invoked from the primary checkout's working
 directory and from the RDM-created linked worktree, resolving the same
 explicit plan repository and the selected worktree's development build.
 Main remains unchanged until this branch is landed. Codex app/IDE invocation
-and live duplicate-plugin selection have not been exercised here; their
-documented discovery rules are not claims of runtime parity.
+has not been exercised here; documented discovery rules are not claims of
+runtime parity.
+
+### Reproducing the coexistence check
+
+The opt-in `scripts/verify-codex-coexistence.mjs` creates an isolated temporary
+HOME and CODEX_HOME, installs a local skills-only plugin, seeds a distinguishable
+same-name user skill, and emits the real repository skill. It asks Codex's
+actual skill catalog to confirm all three enabled copies, then (when given a
+login file) starts a fresh read-only CLI session that explicitly selects the
+repository path. It verifies the selected path and plan-review gate, and checks
+the user skill, plugin source/cache, marketplace, and repository skill bytes
+were preserved. Fixtures and non-secret evidence remain in the printed temp
+directory; the private login copy is deleted even when the live check fails.
+Catchable interrupts (SIGINT/SIGTERM) and the two-minute timeout stop the child
+process and delete the copy too; deterministic tests exercise those paths with
+non-secret markers. SIGKILL or machine failure cannot guarantee cleanup: if
+that occurs, remove only `config/auth.json` inside the printed test directory
+before keeping or sharing the evidence. The temporary root is private.
+No real user/plugin installation is modified.
+
+```sh
+# Discovery/preservation only; no login copied and no live model invocation:
+node scripts/verify-codex-coexistence.mjs /absolute/path/to/rdm /absolute/path/to/codex
+# Full live check: explicitly opt in to copying this login into the temp config:
+node scripts/verify-codex-coexistence.mjs /absolute/path/to/rdm /absolute/path/to/codex /absolute/path/to/auth.json
+```
+
+This is also an optional arm of the existing distribution harness: set
+`RDM_CODEX_BIN` to the Codex executable and optionally `RDM_CODEX_AUTH_FILE`
+to the login file. Without the latter it reports live invocation as **not run**,
+not as passed. The default hermetic harness needs neither Codex nor an account.
+
+The full check passed with Codex CLI 0.154.0 on 2026-09-15: the real catalog
+contained the enabled repository, user, and installed-plugin copies; a fresh
+session read the requested repository SKILL.md, reported its independent
+plan-review gate, and left all protected bytes unchanged. The helper retains
+`catalog.json`, `events.jsonl`, `answer.json`, and `result.json` for inspection.
+This verifies the explicit-path CLI recipe, not automatic precedence or app/IDE
+selection behavior. Fixture manifests follow the official
+[plugin packaging guidance](https://learn.chatgpt.com/docs/build-plugins).
 
 A bounded early dogfood candidate is the stalled `agent-orchestrated-dispatch`
 worktree mismatch: inspect the shared roadmap branch and phase-specific
