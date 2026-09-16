@@ -2995,7 +2995,7 @@ function scriptedAgent(plan) {
     if (parts[0] === 'find') {
       const key = parts[2];
       const script = plan[key];
-      if (!script) return { findings: [] };
+      if (!script) return key === 'ac' ? { ac: [], findings: [] } : { findings: [] };
       const i = cursor[key] || 0;
       cursor[key] = i + 1;
       return i < script.length ? script[i] : script[script.length - 1];
@@ -10477,14 +10477,14 @@ ABSENT_AC_RE='does \*\*not\*\* count as an AC gap'
 for doc in $CODE_RENDERS $PLAN_RENDERS; do
     grep -qE "$FINDER_CRASH_RE" "$doc" ||
         fail "11: $doc does not state the finder-crash rule — one of the two //| Filter & consolidate spans was missed"
-    # It must state the recorded-never-gated policy and the reduced-coverage
+    # It must state the complete-coverage approval policy and the reduced-coverage
     # visibility, not merely mention a retry.
     grep -q 'non-participating' "$doc" ||
         fail "11: $doc states the retry but never names non-participation"
-    grep -q 'recorded, never gated on' "$doc" ||
-        fail "11: $doc does not state the recorded-never-gated policy"
+    grep -q 'Automatic approval requires every selected dimension' "$doc" ||
+        fail "11: $doc does not state the complete-coverage approval policy"
 done
-pass "11: all four rendered surfaces state the finder-crash rule and the recorded-never-gated policy"
+pass "11: all four rendered surfaces state the finder-crash rule and the complete-coverage approval policy"
 
 # Mode isolation, BOTH directions: the absent-AC-table sentence is code-only.
 for doc in $CODE_RENDERS; do
@@ -11984,23 +11984,23 @@ function makeWfHarness(findings) {
   const agent = async (prompt, opts) => {
     const label = (opts && opts.label) || '';
     calls.push({ label, prompt });
-    if (label === 'diff:signals') return { changedFiles: ['rdm-core/src/lib.rs'], diffText: '' };
+    if (label === 'source:resolve' || label === 'source:revalidate') return { item: prompt.includes("task/my-task") ? 'task/my-task' : 'phase/rm/phase-1-x', repository: '/repo/.git', path: '/repo/shared', branch: 'roadmap/rm', base: 'b'.repeat(40), head: 'a'.repeat(40), changedFiles: ['rdm-core/src/lib.rs'], diffText: '', noCode: false };
+    if (label === 'source:acceptance') return { acceptance: 'AC1' };
     if (label === 'persist:review') return { ok: true, reviewId: 'REVIEW-123' };
     if (label === 'gate:persist') return { ok: true };
     const parts = label.split(':');
-    if (parts[0] === 'find') return { findings: parts[1] === 'code' && parts[2] === 'correctness' ? findings : [], ac: parts[2] === 'ac' ? [] : undefined };
+    if (parts[0] === 'find') return { findings: parts[1] === 'code' && parts[2] === 'correctness' ? findings : [], ac: parts[2] === 'ac' ? [{ criterion: 'AC1', status: 'PASS', evidence: 'test' }] : undefined };
     if (parts[0] === 'refute') return { refuted: false, confidence: 95 };
     throw new Error('unexpected label ' + label);
   };
   return { agent, calls };
 }
-const WF_OFF_BASELINE =
-  "{\"roadmap\":\"rm\",\"phase\":\"1\",\"outcome\":\"rework\",\"status\":\"in-progress\",\"writesCompletion\":false,\"summary\":\"code rework unresolved: 1 finding(s); top: [blocking] boom\",\"reason\":\"\",\"reviewBudget\":{\"max\":5,\"produced\":1,\"graded\":1,\"passedThroughBudget\":0,\"rounds\":1,\"planRounds\":0,\"everHit\":false,\"hit\":null,\"plan\":null},\"reviewCoverage\":{\"total\":3,\"selected\":[\"ac\",\"correctness\",\"tests\"],\"ran\":[\"ac\",\"correctness\",\"tests\"],\"failed\":[],\"retried\":[],\"acDimensionRan\":true,\"acTableAbsent\":false,\"complete\":true,\"everIncomplete\":false,\"rounds\":1,\"planRounds\":0,\"incomplete\":null,\"last\":{\"mode\":\"code\",\"total\":3,\"selected\":[\"ac\",\"correctness\",\"tests\"],\"ran\":[\"ac\",\"correctness\",\"tests\"],\"failed\":[],\"retried\":[],\"complete\":true,\"acDimensionRan\":true,\"acTableAbsent\":false}},\"findings\":[{\"id\":\"c1\",\"concern\":\"correctness\",\"severity\":\"blocking\",\"confidence\":90,\"what_fails\":\"boom\"}]}";
+
 {
   const finding = { id: 'c1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'boom' };
   const h = makeWfHarness([finding]);
   const out = await run({ mode: 'code', roadmap: 'rm', phase: '1' }, h.agent, refPipeline, refParallel, () => {});
-  assert.equal(JSON.stringify(out), WF_OFF_BASELINE, 'a persist-OMITTED code review OUTCOME must be byte-identical to the pre-change baseline');
+  assert.equal(out.outcome, 'rework'); assert.equal(out.source.head, 'a'.repeat(40)); assert.equal(out.acTable.length, 1);
   assert.equal(Object.prototype.hasOwnProperty.call(out, 'reviewId'), false, 'no reviewId key on a persist-omitted run');
   assert.equal(h.calls.filter((c) => c.label.indexOf('persist:') === 0).length, 0, 'no persist agent dispatched');
 }
@@ -12013,14 +12013,10 @@ const WF_OFF_BASELINE =
   assert.equal(out.reviewId, 'REVIEW-123', 'the ack reviewId is threaded onto the OUTCOME when the persist ran');
   const persistPrompt = h.calls.find((c) => c.label === 'persist:review').prompt;
   // The persisted artifact targets the CODE, pinned to the worktree tip.
-  assert.ok(persistPrompt.includes(' review start --on change/HEAD '), 'the code persist target must be change/HEAD');
-  // …which only resolves from inside the item's own checkout, so the emitted
-  // commands cd there first.
-  assert.ok(/worktree add rm\/1 --project demo > "\$RDM_PERSIST_WT"/.test(persistPrompt), 'the persist must add/enter the item worktree first');
-  assert.ok(persistPrompt.includes('cd "$(head -n 1 "$RDM_PERSIST_WT")"'), 'the persist must cd into the worktree before running review start');
-  // The item ref survives as the NAMED fallback rung, not as the target.
-  assert.ok(persistPrompt.includes('`--on phase/rm/1`'), 'the item ref must remain the named review start fallback');
-  assert.ok(!/review start --on rm\/1\b/.test(persistPrompt), 'the BARE <roadmap>/<phase> worktree ref must never reach `rdm review --on`');
+  assert.ok(persistPrompt.includes(" review start --on 'change/" + 'a'.repeat(40) + "' --base '" + 'b'.repeat(40) + "'"), 'the code persist target must be change/HEAD');
+  assert.ok(persistPrompt.includes("cd '/repo/shared'"), 'persist enters validated checkout');
+  assert.ok(!persistPrompt.includes('worktree add'), 'persist never creates a checkout');
+  assert.ok(!persistPrompt.includes('`--on phase/'), 'source approval has no document fallback');
   // A located finding anchors with --path; an unlocated one does not.
   const hp = makeWfHarness([
     { id: 'c1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'boom', quote: 'let x = 1;', location: 'rdm-core/src/lib.rs:42' },
@@ -12036,34 +12032,33 @@ const WF_OFF_BASELINE =
   // The context target threaded into the find/refute prompts is UNCHANGED —
   // it is a human-readable label, not a review ref, and is byte-pinned elsewhere.
   const findPrompt = h.calls.find((c) => c.label.indexOf('find:') === 0).prompt;
-  assert.ok(findPrompt.includes('Review target: rm/1.'), 'context.target keeps the bare label — rewriting it would move pinned prompt bytes');
+  assert.ok(findPrompt.includes('Review target: phase/rm/phase-1-x'), 'context.target keeps the bare label — rewriting it would move pinned prompt bytes');
 
   const ht = makeWfHarness([finding]);
   const outT = await run({ mode: 'code', task: 'my-task', persist: true, project: 'demo' }, ht.agent, refPipeline, refParallel, () => {});
   assert.equal(outT.reviewId, 'REVIEW-123');
   const taskPrompt = ht.calls.find((c) => c.label === 'persist:review').prompt;
-  assert.ok(taskPrompt.includes(' review start --on change/HEAD '), 'the task path also persists onto change/HEAD');
-  assert.ok(taskPrompt.includes('worktree add task/my-task'), 'the task worktree ref is what the persist cds into');
-  assert.ok(taskPrompt.includes('`--on task/my-task`'), 'task/<slug> remains the named fallback');
+  assert.ok(taskPrompt.includes(" review start --on 'change/" + 'a'.repeat(40)));
+  assert.ok(!taskPrompt.includes('worktree add'));
 
   const ho = makeWfHarness([finding]);
-  await run({ mode: 'code', roadmap: 'rm', phase: '1', persist: { on: 'plan/x' }, project: 'demo' }, ho.agent, refPipeline, refParallel, () => {});
-  assert.ok(ho.calls.find((c) => c.label === 'persist:review').prompt.includes(' --on plan/x '), 'an explicit persist.on overrides the derived ref on this single-unit path');
+  const rejected = await run({ mode: 'code', roadmap: 'rm', phase: '1', persist: { on: 'plan/x' }, project: 'demo' }, ho.agent, refPipeline, refParallel, () => {});
+  assert.equal(rejected.outcome, 'escalated', 'source-bound target cannot be overridden');
 
   // A failed persist must not change outcome/status/gate, and must omit reviewId.
   const hf = { calls: [], agent: async (p, o) => {
     const label = (o && o.label) || '';
     hf.calls.push({ label });
-    if (label === 'diff:signals') return { changedFiles: ['a.rs'], diffText: '' };
+    if (label.startsWith('source:')) return makeWfHarness([]).agent(p, o);
     if (label === 'persist:review') throw new Error('boom');
     const parts = label.split(':');
-    if (parts[0] === 'find') return { findings: parts[2] === 'correctness' ? [finding] : [], ac: parts[2] === 'ac' ? [] : undefined };
+    if (parts[0] === 'find') return { findings: parts[2] === 'correctness' ? [finding] : [], ac: parts[2] === 'ac' ? [{ criterion: 'AC1', status: 'PASS', evidence: 'test' }] : undefined };
     if (parts[0] === 'refute') return { refuted: false, confidence: 95 };
     throw new Error('unexpected label ' + label);
   } };
   const outF = await run({ mode: 'code', roadmap: 'rm', phase: '1', persist: true }, hf.agent, refPipeline, refParallel, () => {});
-  assert.equal(outF.outcome, 'rework', 'a thrown persist must not change the outcome');
-  assert.equal(outF.status, 'in-progress', 'nor the status');
+  assert.equal(outF.outcome, 'escalated', 'failed persistence is not approval');
+  assert.equal(outF.status, 'blocked');
   assert.equal(Object.prototype.hasOwnProperty.call(outF, 'reviewId'), false, 'a failed persist omits reviewId entirely');
 }
 
@@ -12084,36 +12079,8 @@ else
     fail "15c: persist-off/persist-on driver assertions failed"
 fi
 
-# STATIC: buildPersistReviewPrompts must never be handed reviewTarget/worktreeRef.
-# Both are the BARE `<roadmap>/<phase>` worktree shape `rdm review --on` rejects,
-# and reviewTarget additionally feeds context.target into every find/refute prompt.
-persist_call_args() { # <file>
-    grep -n "buildPersistReviewPrompts(" "$1" | grep -v "^.*function buildPersistReviewPrompts" || true
-}
-for f in "$WF_DIR/rdm-wf-review-refute-fix.js" "$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js"; do
-    if grep -A3 -F "buildPersistReviewPrompts(" "$f" | grep -qE "^\s*(reviewTarget|worktreeRef),?\s*$"; then
-        fail "15c: $f passes reviewTarget/worktreeRef to buildPersistReviewPrompts — those are the BARE worktree ref, rejected by rdm review --on"
-    fi
-    grep -q "persistItemRef = isTask ? 'task/' + taskSlug : 'phase/' + roadmap + '/' + phaseArg" "$f" ||
-        fail "15c: $f is missing the dedicated persistItemRef derivation (the named review-start fallback)"
-    grep -q "const persistReviewTarget = 'change/HEAD'" "$f" ||
-        fail "15c: $f no longer defaults the persist target to change/HEAD"
-    # The change target and the --path anchors are DRIVER decisions, so they must
-    # sit below the stamped block's end marker, not inside it.
-    driver_start=$(grep -n 'review-refute-fix:end' "$f" | head -n 1 | cut -d: -f1)
-    [ -n "$driver_start" ] || fail "15c: $f has no review-refute-fix:end marker"
-    tail -n "+$driver_start" "$f" | grep -q "pathAnchors: true" ||
-        fail "15c: $f does not opt into --path anchors from its DRIVER region"
-    grep -q "const persistTarget = persistExplicitOn || persistReviewTarget" "$f" ||
-        fail "15c: $f does not build the persist --on ref from persistExplicitOn || persistReviewTarget"
-done
-# Self-test: swap in reviewTarget in a scratch copy; the grep must fire.
-mkdir -p "$SCRATCH/15c"
-sed "s/^      persistTarget,\$/      reviewTarget,/" \
-    "$WF_DIR/rdm-wf-review-refute-fix.js" >"$SCRATCH/15c/swapped.js"
-grep -A3 -F "buildPersistReviewPrompts(" "$SCRATCH/15c/swapped.js" | grep -qE "^\s*(reviewTarget|worktreeRef),?\s*$" ||
-    fail "15c: the reviewTarget-swap detector did NOT fire on a planted swap — it is vacuous"
-pass "15c: the persist --on ref is never reviewTarget/worktreeRef; detector catches a planted swap"
+# Exact persisted head/base, no fallback, and actual CLI semantics are exercised
+# by verify-workflow-review-outcome.sh against real source and plan fixtures.
 
 # --- 5d-persist. ROUND-CAPPING, REVIEW-DERIVED CHANNEL (real binary) ----------
 # The persist-ON half of the round machinery. § 5d above (deliberately

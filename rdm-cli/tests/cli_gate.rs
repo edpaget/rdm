@@ -356,9 +356,17 @@ fn reviewed_gate_refuses_each_precondition_then_succeeds() {
         "rung 3 must say an override will not help: {err}"
     );
 
-    // Rung 4: commit the dirt → all three hold → the write succeeds.
+    // Rung 4: committing repairs moves HEAD; the old review cannot approve it.
     git(&wt, &["add", "."]);
     git(&wt, &["commit", "-m", "scratch"]);
+    mark_reviewed(plan.path(), &wt, &[]).failure();
+    let current_review = start_review(
+        plan.path(),
+        Some(&wt),
+        "change/HEAD",
+        &["--implements", "plan/design-plan"],
+    );
+    submit_approve(plan.path(), &current_review);
     mark_reviewed(plan.path(), &wt, &[]).success();
     assert_eq!(phase_json(plan.path())["status"], "reviewed");
 }

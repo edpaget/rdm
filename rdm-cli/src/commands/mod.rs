@@ -1237,3 +1237,29 @@ mod hook_timeout_tests {
         assert_eq!(resolve_hook_timeout_secs(dir.path()), 7);
     }
 }
+
+/// Resolve explicit source arguments for thin phase/task/review adapters.
+#[cfg(feature = "git")]
+pub fn resolve_source_args(
+    args: &crate::cli::ReviewSourceArgs,
+    item: &rdm_core::link::ItemRef,
+    default_branch: &str,
+    root: Option<&Path>,
+) -> Result<(GateProbe, rdm_core::ReviewSource)> {
+    let cwd = std::env::current_dir()?;
+    let repo = match root {
+        Some(root) => rdm_git::worktree::discover_distinct_project_repo(&cwd, root)?,
+        None => cwd,
+    };
+    let request = rdm_core::ReviewSourceRequest {
+        path: args.source.clone(),
+        base: args.base.clone(),
+        expected_head: args.expected_head.clone(),
+        expected_branch: args.expected_branch.clone(),
+        default_branch: default_branch.to_string(),
+        no_code: args.no_code,
+    };
+    let probe = GateProbe::new(repo);
+    let identity = rdm_core::resolve_review_source(&probe, item, &request)?;
+    Ok((probe.with_source(item.clone(), request), identity))
+}

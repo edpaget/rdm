@@ -68,3 +68,5 @@ pub mod tree;
 /// precondition reads through, plus a fail-closed `git status --porcelain`
 /// parser and an in-memory double for tests.
 pub mod worktree;
+
+pub use worktree::{ReviewSource, ReviewSourceRequest, resolve_review_source};

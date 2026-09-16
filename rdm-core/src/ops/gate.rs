@@ -195,6 +195,8 @@ pub fn check_reviewed_gate(
         other => other,
     };
 
+    // Observe once so record selection and cleanliness inspect one checkout.
+    let observed = gate.probe.map(|probe| probe.worktree_for(item));
     let satisfied = if over.is_some() {
         // (a) and (b) waived. (c) below still runs.
         None
@@ -209,7 +211,15 @@ pub fn check_reviewed_gate(
         for (slug, _) in &approved {
             let reviews =
                 crate::ops::plan::approving_change_reviews_for_plan(store, project, slug)?;
-            if let Some((review_id, _)) = reviews.into_iter().next() {
+            if let Some((review_id, _)) = reviews.into_iter().find(|(_, doc)| match &observed {
+                Some(Ok(Some(check))) if check.is_clean() => match &doc.frontmatter.target {
+                    crate::model::ReviewTarget::Change { head, .. } => {
+                        check.head.as_ref() == Some(head)
+                    }
+                    _ => false,
+                },
+                _ => true,
+            }) {
                 hit = Some((slug.clone(), review_id));
                 break;
             }
@@ -226,8 +236,8 @@ pub fn check_reviewed_gate(
     // (c) the worktree, if rdm knows one, is clean. Never waived by an
     // override: a dirty worktree means the reviewed code is not the committed
     // code, which no operator intent can make untrue.
-    if let Some(probe) = gate.probe {
-        match probe.worktree_for(item) {
+    if let Some(observed) = observed {
+        match observed {
             // rdm manages no worktree for this item — the "if `rdm worktree`
             // knows one" escape clause. Skip (c).
             Ok(None) => {}

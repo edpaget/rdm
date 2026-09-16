@@ -6,8 +6,8 @@
   "cli-bare/rdm-document/SKILL.md": "5181af585400146eba1abffcb18c7889453b2c5deafe6b7a502dd79045eedcc8",
   "cli-bare/rdm-estimate/SKILL.md": "bf3b925867ba609afff6804d68593596a3877881f7f101f722e248cbc4064c3f",
   "cli-bare/rdm-land/SKILL.md": "6af86ca09eaec1a19d9b5cafab5ed0b6756105853704fae0318e6c5e5967c7fd",
-  "cli-bare/rdm-plan-review/SKILL.md": "384bf6f205712de09bfe582b4124bbb30ce04f1ae40b5268589a0c7808309029",
-  "cli-bare/rdm-review/SKILL.md": "23e872636f73a033b124d410ef6784517c148a29a4e4f9b6c2bd5d24ae910375",
+  "cli-bare/rdm-plan-review/SKILL.md": "436d8014b68f66f5a02a16cb9dd9ba570710602540580c1ed17b1571be073b1e",
+  "cli-bare/rdm-review/SKILL.md": "fe2c7b58e1aaf28419432e7d0ac599fb11eac6e1a857d6495453846630696acc",
   "cli-bare/rdm-revise/SKILL.md": "c7b82af990533b2c0d348d0915b060fe0852abbb314ccb174eaf16006efb0ca9",
   "cli-bare/rdm-roadmap/SKILL.md": "e3127c052f2435382b48765ccf5db9174c0d72f8ecba6a693c57bdc69b9ca5b7",
   "cli-full/rdm-autopilot/SKILL.md": "1fd597c14d9dd6b87037b811e9466a51a711a5a7ad6ade236545359a550ae9dd",
@@ -17,10 +17,10 @@
   "cli-full/rdm-document/SKILL.md": "a0476a15b94b21344ce2d664492ada08ab803add2dbc8fc6607796a86160dfde",
   "cli-full/rdm-estimate/SKILL.md": "4255f95d6ee8ff71b6cc101a20fb3cc0d1b940b1b78c6c75bed8ce67264e4b8b",
   "cli-full/rdm-land/SKILL.md": "96c98be550282d6de470051de30e74abbf2099e38e1b65264819f6918635f7f5",
-  "cli-full/rdm-plan-review/SKILL.md": "a6d767329617191fa17798aaf4b32a81324dafec41587a39ef81959c688fa9fb",
-  "cli-full/rdm-review/SKILL.md": "0dcb9f9c2eb4e1768decf6aad21192487f4d49e22eeefe1eec4c8f4956e23d49",
+  "cli-full/rdm-plan-review/SKILL.md": "30410051c2e99df4ffbf0bae7f2d5992910dd9c2dbcf00cd9f2d155d5f5a7fe1",
+  "cli-full/rdm-review/SKILL.md": "091a8c8a077043336f45724b6598aeca6b9cc201ee938dc13145b1626ed521f8",
   "cli-full/rdm-revise/SKILL.md": "3c058831841f3d147cfce34ca7d6021874609f05cee7c84a5be7ec93a78dfc97",
   "cli-full/rdm-roadmap/SKILL.md": "57f22301e9371d2a0f8abfda4153e3ed10481493a32e2e94fa7cab63a70e5bcf",
-  "workflows/rdm-wf-dispatch-phase.js": "55ebf85403c4dc337af5108f4d0d1b78a7641aaa1570d9b4e4dc6fcc9b19b341",
-  "workflows/rdm-wf-review-refute-fix.js": "5edb9b14987b21b1d3946499bf704c125dedca72a528e4f6b45316c84f65bb17"
+  "workflows/rdm-wf-dispatch-phase.js": "1ef7feaf57e99bf1581f60ea1f4f1f7385957a3b3252024e48673491490c745e",
+  "workflows/rdm-wf-review-refute-fix.js": "2c39d8d38f8dfbd2dd4cb38bc72205ceeb3d1ccf6972337490618f7bd280c9da"
 }

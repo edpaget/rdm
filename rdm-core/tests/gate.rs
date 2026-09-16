@@ -514,7 +514,9 @@ fn all_three_preconditions_holding_yields_satisfied() {
         Some(Verdict::Approve),
         ReviewState::Submitted,
     );
-    let probe = MemoryWorktreeProbe::new().with_worktree(&phase_item(), "/wt/gates", &[]);
+    let probe = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &[])
+        .with_head(&phase_item(), &"a".repeat(40));
     let d = check_reviewed_gate(
         &store,
         PROJECT,
@@ -721,7 +723,9 @@ fn rewriting_reviewed_onto_an_already_reviewed_item_re_evaluates_the_gate() {
 fn an_override_waives_a_and_b_but_never_c() {
     let store = seed();
     // No plan, no review, clean worktree → allowed, and recorded.
-    let clean = MemoryWorktreeProbe::new().with_worktree(&phase_item(), "/wt/gates", &[]);
+    let clean = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &[])
+        .with_head(&phase_item(), &"a".repeat(40));
     let d = check_reviewed_gate(
         &store,
         PROJECT,
@@ -972,4 +976,39 @@ fn a_plan_implementing_a_different_item_does_not_satisfy_the_gate() {
     )
     .unwrap();
     assert!(matches!(d, GateDecision::Satisfied { .. }));
+}
+
+#[test]
+fn gate_rejects_stale_head_and_accepts_matching_later_review() {
+    let mut store = seed();
+    let item = phase_item();
+    add_plan(&mut store, "plan", &item, PlanStatus::Approved);
+    add_change_review(
+        &mut store,
+        "old",
+        "plan",
+        Some(Verdict::Approve),
+        ReviewState::Submitted,
+    );
+    let probe = MemoryWorktreeProbe::new()
+        .with_worktree(&item, "/shared", &[])
+        .with_head(&item, &"b".repeat(40));
+    let gate = ReviewedGate::enforcing(Some(&probe));
+    assert!(check_reviewed_gate(&store, PROJECT, &item, &gate).is_err());
+    add_change_review(
+        &mut store,
+        "new",
+        "plan",
+        Some(Verdict::Approve),
+        ReviewState::Submitted,
+    );
+    let mut review = rdm_core::io::load_review(&store, PROJECT, "new").unwrap();
+    review.frontmatter.target = ReviewTarget::Change {
+        head: "b".repeat(40),
+        base: None,
+    };
+    rdm_core::io::write_review(&mut store, PROJECT, "new", &review).unwrap();
+    assert!(
+        matches!(check_reviewed_gate(&store, PROJECT, &item, &gate).unwrap(), GateDecision::Satisfied { review_id, .. } if review_id == "new")
+    );
 }

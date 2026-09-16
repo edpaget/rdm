@@ -357,6 +357,7 @@ pub fn run(
             clear_reason,
             commit,
             override_gate,
+            source,
             no_edit: _,
         } => {
             if commit.is_some() && !matches!(status, Some(s) if s.is_terminal()) {
@@ -395,6 +396,32 @@ pub fn run(
             // `update --tags x < body.md` form; compose `--body` with `--tags`.)
             let body = BodyUpdate::from_args(body, clear_body)?;
             let tags = TagsUpdate::from_args(tags, false)?;
+            let explicit_source = source.source.is_some()
+                || source.base.is_some()
+                || source.expected_head.is_some()
+                || source.expected_branch.is_some()
+                || source.no_code;
+            if explicit_source && status.is_none() {
+                anyhow::bail!("source binding requires an explicit --status");
+            }
+            #[cfg(not(feature = "git"))]
+            if explicit_source {
+                anyhow::bail!("explicit source binding requires git support");
+            }
+            #[cfg(feature = "git")]
+            let source_binding = if explicit_source {
+                Some(commands::resolve_source_args(
+                    &source,
+                    &rdm_core::link::ItemRef::Phase {
+                        roadmap: roadmap.clone(),
+                        stem: stem.clone(),
+                    },
+                    repo_config.default_branch.as_deref().unwrap_or("main"),
+                    Some(root),
+                )?)
+            } else {
+                None
+            };
             // Stamp the source-repo HEAD SHA when entering needs-review, so the
             // review can later be scoped to the branch/worktree that produced
             // it. No commit yet (unstamped) → fail open downstream.
@@ -421,6 +448,22 @@ pub fn run(
             };
             #[cfg(not(feature = "git"))]
             let review_branch = None;
+            #[cfg(feature = "git")]
+            let review_sha = source_binding
+                .as_ref()
+                .filter(|_| {
+                    review_sha.is_some()
+                        || status.map(|s| s.to_string()) == Some("needs-review".into())
+                })
+                .map(|(_, source)| source.head.clone())
+                .or(review_sha);
+            #[cfg(feature = "git")]
+            let review_branch = source_binding
+                .as_ref()
+                .filter(|_| review_sha.is_some())
+                .map(|(_, source)| source.branch.clone())
+                .or(review_branch);
+
             // Data-integrity guard: if a phase reaches needs-review with no
             // committed diff worth reviewing, it would strand in review state
             // with nothing to review. Compute a non-blocking warning here (the
@@ -455,6 +498,9 @@ pub fn run(
             // resolve a worktree.
             let gate_probe: Option<commands::GateProbe> =
                 commands::build_gate_probe(gate_enabled, root);
+            #[cfg(feature = "git")]
+            let gate_probe = source_binding.map(|(probe, _)| probe).or(gate_probe);
+
             let gate = commands::build_reviewed_gate(
                 gate_enabled,
                 gate_probe.as_ref(),

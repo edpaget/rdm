@@ -39,6 +39,10 @@ pub const WORKTREE_PATH_CAP: usize = 20;
 pub struct WorktreeCheck {
     /// Absolute path of the worktree, as the refusal should name it.
     pub path: String,
+    /// Observed full source HEAD, when available.
+    pub head: Option<String>,
+    /// Observed source branch, when available.
+    pub branch: Option<String>,
     /// Uncommitted paths, already capped at [`WORKTREE_PATH_CAP`]. Empty
     /// **and** `observable` means clean.
     pub dirty: Vec<String>,
@@ -66,6 +70,8 @@ impl WorktreeCheck {
         let had_text = porcelain.lines().any(|l| !l.trim().is_empty());
         Self {
             path: path.to_string(),
+            head: None,
+            branch: None,
             observable: !had_text || !dirty.is_empty(),
             dirty,
             truncated,
@@ -79,6 +85,100 @@ impl WorktreeCheck {
     pub fn is_clean(&self) -> bool {
         self.observable && self.dirty.is_empty()
     }
+}
+
+/// Explicit inputs for a source-bound review. Resolution never creates a checkout.
+#[derive(Debug, Clone, Default)]
+pub struct ReviewSourceRequest {
+    /// Optional registered checkout; tasks require an explicit base with this binding.
+    pub path: Option<String>,
+    /// Base revision; otherwise use the configured default branch's merge base.
+    pub base: Option<String>,
+    /// Expected full HEAD; refusal on drift.
+    pub expected_head: Option<String>,
+    /// Expected branch; refusal on drift.
+    pub expected_branch: Option<String>,
+    /// Configured source default branch.
+    pub default_branch: String,
+    /// Deliberate declaration that an empty committed diff is reviewable.
+    pub no_code: bool,
+}
+
+/// Canonical committed source identity shared by every review stage.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSource {
+    /// Canonical reviewed item.
+    pub item: String,
+    /// Canonical common git directory identifying the source repository.
+    pub repository: String,
+    /// Canonical registered source checkout.
+    pub path: String,
+    /// Observed branch.
+    pub branch: String,
+    /// Full resolved base SHA.
+    pub base: String,
+    /// Full observed HEAD SHA.
+    pub head: String,
+    /// Committed changed paths relative to the repository root.
+    pub changed_files: Vec<String>,
+    /// Exact committed diff, with external diff drivers disabled.
+    pub diff_text: String,
+    /// Explicit empty-diff declaration.
+    pub no_code: bool,
+}
+
+/// The single source-selection policy for probes and standalone reviews.
+/// Phases always use the shared roadmap checkout, never an obsolete phase branch.
+#[must_use]
+pub fn review_worktree_item(item: &ItemRef) -> Option<String> {
+    match item {
+        ItemRef::Phase { roadmap, .. } | ItemRef::Roadmap { roadmap } => Some(roadmap.clone()),
+        ItemRef::Task { slug } => Some(format!("task/{slug}")),
+        _ => None,
+    }
+}
+
+/// Resolves and validates a source identity through the read-only port.
+///
+/// # Errors
+/// Returns `Error::Git` for unavailable, mismatched, moved or unexpectedly empty source.
+pub fn resolve_review_source(
+    probe: &dyn WorktreeProbe,
+    item: &ItemRef,
+    request: &ReviewSourceRequest,
+) -> Result<ReviewSource> {
+    let fail = |message: &str| crate::error::Error::Git(format!("review source: {message}"));
+    if !matches!(item, ItemRef::Phase { .. } | ItemRef::Task { .. }) {
+        return Err(fail("requires a phase or task"));
+    }
+    if matches!(item, ItemRef::Task { .. }) && request.path.is_some() && request.base.is_none() {
+        return Err(fail("explicit task checkout requires --base"));
+    }
+    let source = probe.review_source(item, request)?;
+    if source.item != item.label() {
+        return Err(fail("returned item differs from intended item"));
+    }
+    if request
+        .expected_head
+        .as_ref()
+        .is_some_and(|h| h != &source.head)
+    {
+        return Err(fail("HEAD moved; restart review at the new commit"));
+    }
+    if request
+        .expected_branch
+        .as_ref()
+        .is_some_and(|b| b != &source.branch)
+    {
+        return Err(fail("branch changed; restart review"));
+    }
+    if source.changed_files.is_empty() && !request.no_code {
+        return Err(fail(
+            "empty committed range; declare --no-code only for intentional no-code review",
+        ));
+    }
+    Ok(source)
 }
 
 /// A read-only view of the worktrees rdm manages for plan items.
@@ -95,6 +195,20 @@ pub trait WorktreeProbe {
     ///
     /// Returns an error only when the repository cannot be queried at all.
     fn worktree_for(&self, item: &ItemRef) -> Result<Option<WorktreeCheck>>;
+
+    /// Reads a registered source checkout and its committed range.
+    ///
+    /// # Errors
+    /// Returns `Error::Git` when source inspection is unavailable or fails.
+    fn review_source(
+        &self,
+        _item: &ItemRef,
+        _request: &ReviewSourceRequest,
+    ) -> Result<ReviewSource> {
+        Err(crate::error::Error::Git(
+            "review source inspection unavailable".to_string(),
+        ))
+    }
 }
 
 /// Parses `git status --porcelain` (v1) output into the uncommitted paths it
@@ -181,11 +295,22 @@ impl MemoryWorktreeProbe {
             item.label(),
             WorktreeCheck {
                 path: path.to_string(),
+                head: None,
+                branch: None,
                 dirty: dirty.iter().map(|s| (*s).to_string()).collect(),
                 truncated: 0,
                 observable: true,
             },
         );
+        self
+    }
+
+    /// Sets the observed HEAD of a seeded worktree.
+    #[must_use]
+    pub fn with_head(mut self, item: &ItemRef, head: &str) -> Self {
+        if let Some(check) = self.known.get_mut(&item.label()) {
+            check.head = Some(head.to_string());
+        }
         self
     }
 

@@ -255,13 +255,13 @@ fn pending_scopes_to_current_branch_and_fails_open() {
         .expect("phase item present");
     assert_eq!(phase_item["kind"], "phase");
 
-    // Each emitted item carries the documented fields, but no review_sha.
+    // Each emitted item carries the documented fields and observable review SHA.
     let first = &json.as_array().unwrap()[0];
     assert!(first.get("kind").is_some());
     assert!(first.get("identifier").is_some());
     assert!(first.get("project").is_some());
     assert!(first.get("title").is_some());
-    assert!(first.get("review_sha").is_none());
+    assert!(first.get("review_sha").is_some());
 
     // Human (non-JSON) output lists the in-scope items, including the phase, and
     // omits the out-of-scope item-x.

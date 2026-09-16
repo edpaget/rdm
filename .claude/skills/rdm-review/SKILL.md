@@ -19,7 +19,7 @@ The review runs as a pipeline: **find → refute → filter → verdict → act 
 
 The specification of that pipeline — which dimensions run, how findings are graded, and what each outcome means — is **generated from the canonical review source** and is identical across every rdm surface (the interactive skill, `rdm-dispatch-phase`, and `rdm-autopilot`). It appears under "Review specification" below.
 
-The dimension-finding and per-finding-refuting mechanics (step 2 below) are now performed deterministically by the `rdm-wf-review-refute-fix` Workflow tool — this skill no longer re-derives them by hand. It stays interactive: this skill, not the workflow, presents the report to you for discussion, decides how to act on findings, and owns the gate (including the `Done:` trailer). The workflow is invoked with `gate: false` — it is a read-only find/verdict pass; this skill performs the actual status write and trailer amend itself, in step 5 (Gate).
+The dimension-finding and per-finding-refuting mechanics (step 2 below) are now performed deterministically by the `rdm-wf-review-refute-fix` Workflow tool — this skill no longer re-derives them by hand. It stays interactive: this skill, not the workflow, presents the report to you for discussion, decides how to act on findings, and owns the status gate. The workflow is invoked with `gate: false` — it is a read-only find/verdict pass; this skill performs the actual source-bound status write itself, in step 5 (Gate).
 
 ## Steps
 
@@ -33,18 +33,17 @@ The dimension-finding and per-finding-refuting mechanics (step 2 below) are now 
    - For a phase: `./target/debug/rdm phase show <phase-number> --roadmap <slug> --project rdm`
    - For a task: `./target/debug/rdm task show <slug> --project rdm`
    Extract the acceptance criteria, steps, and any other requirements from the body.
-3. **Orient on the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed, so you can discuss the result with context. You do not need to derive trigger signals by hand — the `rdm-wf-review-refute-fix` workflow invoked in step 2 derives them itself from the item's worktree diff (falling open to every dimension if the diff is unavailable).
+3. **Resolve the implementation source** with the checkout's absolute development binary:
 
-   While you are here, capture that diff so the workflow does not have to spawn a dedicated subagent for it. In the item's worktree run exactly:
-
+   ```bash
+   "$RDM_BIN" review source --on phase/<roadmap>/<stem> --project rdm --format json
+   # For a task intentionally implemented in a shared roadmap checkout:
+   "$RDM_BIN" review source --on task/<slug> --source <shared-path> --base <base-sha> --expected-head <head-sha> --project rdm --format json
    ```
-   git diff --name-only main...HEAD
-   git diff main...HEAD
-   ```
 
-   and keep `diff = { changedFiles: [<the paths from the first command, verbatim>], diffText: "<the second command's output, truncated to the first 40000 characters>" }`. Pass it as `args.diff` in step 2. It is **optional** — omit it (or omit it when either command fails) and the workflow runs its own `diff:signals` agent exactly as before. Use the three-dot `main...HEAD` base and the 40000-character truncation verbatim: the workflow feeds this straight into `deriveSignals`, so a different base or a summarized diff silently changes which review dimensions run.
+   Resolution never creates worktrees. Phases require the existing shared roadmap checkout; obsolete phase checkouts are ignored. A task defaults to its existing task checkout; an explicit registered shared checkout requires a base. The result pins `item`, `repository`, `path`, `branch`, `base`, `head`, `changedFiles`, `diffText`, and `noCode`. The default base is resolved once from the configured default branch's merge base. Empty ranges fail unless deliberately declared with `--no-code`.
 
-   Also capture the diff's head SHA (`git rev-parse HEAD`) — steps 3 and 4 cite it in pinned `rdm:src/` links.
+   Pass the resolved source path, base, expected head and branch into the workflow. A caller-supplied `diff` never bypasses resolution: authoritative committed content is reacquired. Use the returned head for pinned source links.
 
 ### 2. Review — invoke the canonical pipeline (find → refute → verdict)
 
@@ -52,19 +51,19 @@ Invoke the `rdm-wf-review-refute-fix` Workflow tool to run the dimension-finding
 
 ```
 Workflow: rdm-wf-review-refute-fix
-args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, rdmBin: "./target/debug/rdm", project: "rdm", diff: <the object captured in step 3, or omitted> }
+args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, rdmBin: "<absolute checkout binary>", project: "rdm", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>" }
 # or, for a task:
-args: { mode: "code", task: "<slug>", gate: false, rdmBin: "./target/debug/rdm", project: "rdm", diff: <the object captured in step 3, or omitted> }
+args: { mode: "code", task: "<slug>", gate: false, rdmBin: "<absolute checkout binary>", project: "rdm", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>" }
 ```
 
 `rdmBin` is optional and defaults to a plain `rdm` on `PATH` when omitted; an explicitly passed value always wins verbatim. Pass `./target/debug/rdm` here — which `.mise.toml` also exports as `RDM_BIN` — rather than relying on the default, per the development-build rule. See `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" for the canonical resolution order. `project` is optional and applies only to project-scoped subcommands.
 
-Always pass `gate: false` (or omit `gate`) — this skill owns the gate (step 5 below), never the workflow's own mechanical status-persist path, which is reserved for headless/ad hoc callers. The workflow returns the dispatch-shaped OUTCOME: `{ roadmap, phase, outcome, status, writesCompletion, summary, reason, findings }` (or `{ task, ... }`), with `outcome` ∈ `reviewed | rework | escalated` and `findings` already ranked survivors. Treat this as the one canonical review pass — do not additionally dispatch your own finder/refuter agents.
+Always pass `gate: false` (or omit `gate`) — this skill owns the gate (step 5 below), never the workflow's own mechanical status-persist path, which is reserved for headless/ad hoc callers. The workflow returns the dispatch-shaped OUTCOME: `{ roadmap, phase, outcome, status, writesCompletion, summary, reason, findings }` (or `{ task, ... }`), with `source`, `acTable`, `reviewCoverage`, `reviewBudget`, `outcome` ∈ `reviewed | rework | escalated`, and `findings` already ranked survivors. Missing required dimensions, invalid/absent AC results, unresolved refutation overflow and grading failures escalate; only a complete latest attempt can approve. Treat this as the one canonical review pass — do not additionally dispatch your own finder/refuter agents.
 
 ### 3. Report
 
 Present a single structured report from the workflow's result:
-- The AC table: each criterion with PASS / FAIL / PARTIAL and evidence, drawn from the `ac`-concern findings.
+- The AC table: each criterion with PASS / FAIL / PARTIAL and evidence, from the returned structured `acTable`.
 - Surviving `findings` grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation — cite the location as a pinned `rdm:src/<path>@<sha>#Lline` link, using the head SHA captured in step 1, when one is available so a reader can click through instead of a bare `file:line`.
 - The `outcome` (**reviewed**, **rework**, or **escalated**) and `summary`.
 
@@ -76,6 +75,8 @@ Apply **Review specification § Act**. File large findings as tasks, citing the 
 ```
 
 ### 5. Gate — transition by outcome
+
+Revalidate `review source` with the pinned path/base/expected head/branch before persistence and status writes. If the source changed, restart independent review. Persist a change review at the exact head with `--base` and `--implements`; never fall back to approving the item document. Run status commands in the resolved checkout with `--source`, `--base`, `--expected-head`, and `--expected-branch`, and verify their exit status plus readback. Source edits during Act require a fresh review of the changed head.
 
 This skill owns the `needs-review` → `reviewed` gate. Persist the status from **Review specification § Gate**, then land the plan-repo change:
 
@@ -95,16 +96,7 @@ On `escalated` **only**, record the escalation on the item itself with `--reason
 ./target/debug/rdm task update <slug> --status blocked --reason "[code] <the decision or blocker>" --no-edit --project rdm
 ```
 
-On `reviewed` **only**, add the completion trailer to the branch commit — a **separate**, source-repo operation:
-
-```bash
-git commit --amend -m "$(git log -1 --pretty=%B)
-
-$(./target/debug/rdm hook done-line --roadmap <slug> --phase <stem>)"
-# or, for a task: $(./target/debug/rdm hook done-line --task <slug>)
-```
-
-Use the exact slugs/stems from the `rdm` commands above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
+Do not amend the reviewed source commit during this gate. Completion directives belong to the separately authorized landing step; changing the head requires fresh independent evidence before another source-bound approval. Leave the item `reviewed`, not `done`.
 
 ## Review specification
 
@@ -305,8 +297,8 @@ can explain a result:
   returns nothing, that dimension is recorded as **non-participating**: it
   contributes no findings, and the reduced coverage is reported in the result
   *and named in the summary*, so a 3-of-7 review never reads as a clean
-  7-of-7. Non-participation is **recorded, never gated on** — a transient API
-  blip must not stall the run, but it must never pass as complete coverage. If
+  7-of-7. Automatic approval requires every selected dimension. A transient API
+  blip leaves approval pending until a complete retry supplies the evidence. If
   **every** dimension fails, the review throws rather than reporting a clean
   result. A dimension that did not run produces **no AC table**, which is not
   the same as a table with no FAIL/PARTIAL rows: the absent case is recorded
@@ -382,7 +374,7 @@ outcome maps to, for the item's kind:
 
 | Outcome | When | Phase status | Task status | Completion trailer |
 |---|---|---|---|---|
-| **reviewed** | clean, or clean after small fixes | `reviewed` | `reviewed` | write it |
+| **reviewed** | clean at the independently reviewed head | `reviewed` | `reviewed` | eligible at landing |
 | **rework** | a fixable defect, or an unmet acceptance criterion | `in-progress` | `in-progress` | do **not** write it |
 | **escalated** | a blocker needing a human decision | `blocked` | `blocked` | do **not** write it |
 
@@ -394,11 +386,11 @@ escalated it.
 Never set the item to `done` directly — that flip is owned by the
 merge-to-main hook.
 
-**The completion trailer.** On `reviewed` only, amend the land-time
-completion trailer into the branch commit; this completes the directive
-deliberately deferred by the finalize step, so the merge-to-main hook flips
-the item `reviewed → done` later. Never hand-type the trailer format — ask rdm
-for it, so the format string has exactly one home:
+**The completion trailer belongs to landing.** Do not amend the reviewed
+commit during this gate: an amendment changes its SHA and invalidates the
+source binding. Landing owns the completion directive; any changed head
+needs fresh review evidence before it can pass the source-bound gate.
+Obtain the directive from rdm rather than hand-typing its format:
 
 ```bash
 ./target/debug/rdm hook done-line --roadmap <slug> --phase <stem>   # prints: Done: <slug>/<stem>

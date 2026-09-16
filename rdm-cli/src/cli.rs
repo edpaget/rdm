@@ -789,6 +789,8 @@ pub(crate) enum PhaseCommand {
         /// passes it.
         #[arg(long, value_name = "REASON")]
         override_gate: Option<String>,
+        #[command(flatten)]
+        source: ReviewSourceArgs,
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,
@@ -990,6 +992,8 @@ pub(crate) enum TaskCommand {
         /// passes it.
         #[arg(long, value_name = "REASON")]
         override_gate: Option<String>,
+        #[command(flatten)]
+        source: ReviewSourceArgs,
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,
@@ -1129,8 +1133,37 @@ pub(crate) enum HookCommand {
 }
 
 #[cfg(feature = "git")]
+#[derive(clap::Args, Debug, Clone, Default)]
+pub(crate) struct ReviewSourceArgs {
+    /// Existing registered source checkout (task bindings also require --base).
+    #[arg(long)]
+    pub source: Option<String>,
+    /// Explicit committed review base.
+    #[arg(long)]
+    pub base: Option<String>,
+    /// Full expected source HEAD; refuse a moved checkout.
+    #[arg(long)]
+    pub expected_head: Option<String>,
+    /// Expected source branch.
+    #[arg(long)]
+    pub expected_branch: Option<String>,
+    /// Declare an intentional review with no committed code diff.
+    #[arg(long)]
+    pub no_code: bool,
+}
+
 #[derive(Subcommand)]
 pub(crate) enum ReviewCommand {
+    /// Resolve a committed source range without creating or changing worktrees.
+    Source {
+        /// Intended phase/<roadmap>/<stem> or task/<slug>.
+        #[arg(long)]
+        on: String,
+        #[command(flatten)]
+        source: ReviewSourceArgs,
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// List items in `needs-review` that are in scope for the current
     /// source-repo checkout.
     ///

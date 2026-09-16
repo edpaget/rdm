@@ -30,7 +30,7 @@ refuse unless all three hold:
 | | Precondition | Refusal |
 |---|---|---|
 | (a) | An `approved` implementation plan `implements` this item | `Error::GateNoApprovedPlan` |
-| (b) | A `change/` review with verdict `approve` records `implements` pointing at that plan | `Error::GateNoApprovedChangeReview` |
+| (b) | A `change/` review with verdict `approve` records `implements` pointing at that plan and matches the observed checkout HEAD | `Error::GateNoApprovedChangeReview` |
 | (c) | The item's worktree, if `rdm worktree` knows one, has a clean `git status --porcelain` | `Error::GateWorktreeDirty` |
 
 Each refusal names the missing record **and** the command that would create it.
@@ -50,12 +50,30 @@ told to write a new plan rather than chasing a change review on a dead one.
 A change review counts when `verdict == Approve` **and** `state != Draft`. A
 draft never carries a verdict. An `addressed` or `dismissed` review that *was*
 submitted with `approve` still counts — the approval happened, and closing the
-review afterwards does not un-happen it.
+review afterwards does not un-happen it. When a source checkout is
+observable, its full HEAD must equal the review's pinned head. A missing or stale
+head cannot approve. The gate searches all approving records for a matching one,
+so an older stale review does not hide a later matching review.
 
 Several approved plans can implement one item. (a) is satisfied by any of them;
 (b) must find an approving review naming the **same** plan. When it finds none,
 the refusal lists every candidate plan it checked (the
 `Error::ReviewImplementsAmbiguous` precedent).
+
+### Explicit source binding
+
+`rdm review source --on phase/<roadmap>/<stem>` resolves the existing shared
+roadmap checkout without creating one. A task can use its existing task checkout
+or explicitly bind a registered shared checkout with `--source <path> --base <rev>`.
+The same core selection policy and observed head feed status gates. Phase/task
+updates accept `--source`, `--base`, `--expected-head`, `--expected-branch`, and
+`--no-code`; explicit requests fail closed if inspection is unavailable, including
+non-git builds. Default legacy no-source behavior below remains unchanged.
+
+Source-bound needs-review writes stamp the resolved head/branch even when invoked
+from another checkout. `review pending --format json` exposes `review_sha` and
+`branch` for readback. Revalidation detects drift at workflow boundaries; git and
+the plan Store do not share an atomic transaction.
 
 ### Fail-closed probe semantics for (c)
 
@@ -88,7 +106,7 @@ default-feature `cargo clippy`/`cargo nextest run` gate cannot see a
 ### Worktrees are per-roadmap
 
 `rdm worktree` keys a worktree to a **roadmap**, shared by all of its phases
-(with a per-phase worktree preferred when one exists). A sibling phase's
+(obsolete per-phase checkouts are never preferred or used as a fallback). A sibling phase's
 uncommitted edit therefore blocks this phase's `reviewed` transition. That
 matches `docs/verify-gate.md` § 8 ("pre-existing dirt the dispatch did not
 create will now force rework"); the refusal names the dirty paths so an

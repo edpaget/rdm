@@ -2550,7 +2550,7 @@ classification rule behind them, and the measured delta live in
 | `rdm-wf-backlog` | `report` | `fetch:report` | object carrying all four signal arrays |
 | `rdm-wf-document` | `mechanicalModel` | `model:mechanical` | non-empty string |
 | `rdm-wf-document` | `roadmapMeta` | `fetch:roadmap-meta` | object with `found === true` and an array `phases` |
-| `rdm-wf-review-refute-fix` | `diff` | `diff:signals` | object with an array `changedFiles` |
+| `rdm-wf-review-refute-fix` | `diff` (untrusted compatibility input) | `source:resolve` always runs | committed content reacquired from validated source |
 
 `rdmBin` is **not** a hoist — it is an environment arg, and it is optional: an
 absent value falls back to a plain `rdm` on `PATH` (see "Environment args"
@@ -2776,3 +2776,14 @@ the item from `not-started` straight to `blocked` with no in-progress signal.
   only by this repo's **local** `.claude/skills/*/SKILL.md` dogfood copies. Their
   distributed templates are not yet Workflow shims; converting them is tracked by task
   `convert-remaining-skill-templates-to-workflow-shims`.
+
+
+## Source-bound standalone code review
+
+`rdm-wf-review-refute-fix` resolves the intended phase/task through `rdm review source` before every review, even when a caller supplies `diff`. Optional input keys are `source` (registered checkout), `base`, `expectedHead`, `expectedBranch`, `noCode`, and `implements` (`plan/<approved-plan>`). Phases use the shared roadmap checkout; tasks may bind an explicit registered shared checkout with an explicit base. Default bases are pinned merge bases with the configured default branch. Missing checkout, wrong repository/branch, moved expected head, and unexpected empty ranges refuse review. `noCode: true` is an explicit empty-diff declaration, not permission to omit acceptance review.
+
+The returned `source` contains canonical item/repository/path/branch, full base/head, committed changed files and diff, and the no-code declaration. Every finder/refuter receives this identity and acceptance text. Supplied diffs are currently reacquired rather than trusted as an optimization. Persistence revalidates and runs in that checkout, targeting `change/<full-head> --base <full-base> --implements plan/<slug>`; omitting `implements` retains core's approved-plan inference. Source-bound approval never falls back to an item-document target. Explicit `persist.on` must equal the pinned change target. Failed persistence or failed status write/readback escalates. `review pending --format json` exposes `review_sha` alongside `branch` for stamp verification.
+
+Automatic approval consumes the latest attempt's coverage, structured nonempty valid AC table, refutation overflow and grader errors. Missing selected dimensions, absent/invalid AC results, over-budget grading candidates (including concerns at small tiers), and failed grading produce `escalated` with `writesCompletion: false`; suggestions intentionally passed through remain non-gating. Existing severity thresholds, confidence floor 70 and refutation cap are unchanged. Historical incomplete attempts remain visible but a complete later attempt can approve. Legacy survivors-only calls remain reports and do not issue automatic approvals. The retiring dispatch driver's bespoke orchestration is unchanged.
+
+The workflow's source validation and a plan Store write are not a transaction across repositories. Revalidation at acquisition, persistence and status boundaries detects drift; an external concurrent git mutation between checks remains possible. No live Claude Workflow execution was performed by the Codex implementation host; real Git/CLI fixtures and injected workflow agents supply regression evidence.

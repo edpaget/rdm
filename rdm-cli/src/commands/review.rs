@@ -65,6 +65,25 @@ pub fn run(
     format: OutputFormat,
 ) -> Result<()> {
     match command {
+        ReviewCommand::Source {
+            on,
+            source,
+            project,
+        } => {
+            let project = paths::resolve_project(project, repo_config)?;
+            let target = rdm_core::ops::reviews::parse_review_target_ref(store, &project, &on)?;
+            let item = match rdm_core::link::parse(&format!("rdm:{}", target.label()))? {
+                rdm_core::link::Link::Item(item) => item,
+                _ => bail!("review source requires an item"),
+            };
+            let (_, identity) = super::resolve_source_args(
+                &source,
+                &item,
+                repo_config.default_branch.as_deref().unwrap_or("main"),
+                None,
+            )?;
+            println!("{}", serde_json::to_string_pretty(&identity)?);
+        }
         ReviewCommand::Pending { project } => {
             let project = paths::resolve_project(project, repo_config)?;
             let items = rdm_core::ops::review::pending_review_items(store, &project)
@@ -84,6 +103,7 @@ pub fn run(
                                 "project": item.project,
                                 "title": item.title,
                                 "branch": item.review_branch,
+                                "review_sha": item.review_sha,
                             })
                         })
                         .collect();

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Standalone code reviews now resolve and pin the existing shared roadmap checkout and exact commit range, including explicit task bindings. `rdm review source` refuses wrong, moved, or unexpectedly empty sources without creating worktrees; source-bound status writes validate the same identity, and the reviewed gate requires approval for the observed head. Automatic reviews cannot approve with missing dimensions, invalid acceptance evidence, unresolved refutation overflow, failed persistence, or failed status readback.
+
 ### Added
 
 - An explicit Codex runtime reviews real implementation plans and pinned code ranges through canonical review logic, and previews or applies roadmap estimates using isolated session-scoped plan commits. Host model bindings respect core tiers/review floors and a single guarded review-target snapshot; private durable evidence and conservative recovery stop on incomplete reviews or uncertain writes. `rdm model resolve --format json` exposes the resolved step, tier and model. Estimate completion verifies committed content and a settled session journal rather than trusting commit exit status alone. Conditional estimate updates reject concurrent document edits; cancellation stops direct subprocesses and prevents later writes or successful finalization. Reviewers may recover from ordinary nonzero shell lookups without masking interrupted commands or failed Codex turns. Automated skills and review-gate writes remain outside this runtime.

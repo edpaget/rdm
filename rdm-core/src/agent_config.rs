@@ -3424,7 +3424,8 @@ mod tests {
         });
         let content = &skills[2].content;
         // Small findings are fixed inline and amended; large findings are filed as tasks.
-        assert!(content.contains("git commit --amend"));
+        assert!(!content.contains("git commit --amend"));
+        assert!(content.contains("separately authorized landing"));
         assert!(content.contains("rdm task create"));
         assert!(content.contains("Small"));
         assert!(content.contains("Large"));
@@ -3445,7 +3446,8 @@ mod tests {
         assert!(content.contains("`blocked`"));
         // The completion trailer is never hand-typed: it is sourced from rdm.
         assert!(content.contains("rdm hook done-line"));
-        assert!(content.contains("git commit --amend"));
+        assert!(!content.contains("git commit --amend"));
+        assert!(content.contains("changing the head requires fresh independent evidence"));
     }
 
     #[test]

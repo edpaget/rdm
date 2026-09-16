@@ -1358,7 +1358,7 @@ const REVIEW_HELPERS = [
   'projectFlag',
   'resolveRdmBin',
   'parseProjectArg',
-  'buildDiffSignalsPrompt',
+  'buildReviewSourceCommand',
 ];
 
 // --- Shared fixture facts ----------------------------------------------------
@@ -1399,7 +1399,7 @@ function buildAllPrompts(dispatch, review, cfg) {
     dispatch.buildDiffSignalsPrompt(WORKTREE, cfg),
     dispatch.buildImplementPrompt(WORKTREE, 'phase body', 'plan doc', null, cfg),
     dispatch.buildCodeActPrompt('phase', ROADMAP, PHASE, WORKTREE, [{ id: 'f1', severity: 'suggestion' }], cfg),
-    review.buildDiffSignalsPrompt(WORKTREE, cfg),
+    '  ' + review.buildReviewSourceCommand('phase/' + ROADMAP + '/' + PHASE, { base: 'main' }, cfg),
     review.findPrompt('code', { key: 'ac', title: 'AC compliance', focus: 'f' }, { target: PHASE }),
     review.refutePrompt('code', { key: 'ac', title: 'AC compliance', focus: 'f' }, { id: 'f1', what_fails: 'x' }, { target: PHASE }),
   ];
@@ -1642,7 +1642,7 @@ assert_corrupt_emitted_is_red "C (dimension non-vacuity)" \
 # D: the same binary literal planted in the OTHER engine — one engine passing
 # must never cover for the other.
 assert_corrupt_emitted_is_red "D (review engine)" \
-    "s|resolveRdmBin(cfg \&\& cfg.rdmBin)|'./target/debug/rdm'|" \
+    "s|resolveRdmBin(config \&\& config.rdmBin)|'./target/debug/rdm'|" \
     "target/debug/rdm" "$REVIEW_WF"
 
 # --- 7f. Harness self-gate: this file may never import a canonical source --

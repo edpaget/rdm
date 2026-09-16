@@ -586,7 +586,8 @@ function INTENT_MISSING_NOTICE() {
 //|   recommendation: <concrete fix>
 //| ```
 function findPrompt(mode, dim, context) {
-  const target = (context && context.target) || '(the target described in your working directory)';
+  const target = ((context && context.target) || '(the target described in your working directory)') +
+    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') : '');
   const diffHint =
     mode === 'code'
       ? 'Inspect the implementation diff (use git log / git diff in the worktree).'
@@ -725,8 +726,8 @@ function findPrompt(mode, dim, context) {
 //|   returns nothing, that dimension is recorded as **non-participating**: it
 //|   contributes no findings, and the reduced coverage is reported in the result
 //|   *and named in the summary*, so a 3-of-7 review never reads as a clean
-//|   7-of-7. Non-participation is **recorded, never gated on** — a transient API
-//|   blip must not stall the run, but it must never pass as complete coverage. If
+//|   7-of-7. Automatic approval requires every selected dimension. A transient API
+//|   blip leaves approval pending until a complete retry supplies the evidence. If
 //|   **every** dimension fails, the review throws rather than reporting a clean
 //|   result.
 //|code| - A dimension that did not run produces **no AC table**, which is not the
@@ -752,7 +753,8 @@ function findPrompt(mode, dim, context) {
 //|plan|   of the plan's own acceptance criteria is judged by the **coherence**
 //|plan|   dimension and surfaces as an ordinary finding.
 function refutePrompt(mode, dim, finding, context) {
-  const target = (context && context.target) || '(the target described in your working directory)';
+  const target = ((context && context.target) || '(the target described in your working directory)') +
+    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') : '');
   const lines = [
     'You are a READ-ONLY refuter. Do not edit any files.',
     'A prior reviewer raised this ' + dim.key + ' finding against ' + target + ':',
@@ -870,8 +872,8 @@ function refutePrompt(mode, dim, finding, context) {
 //|   returns nothing, that dimension is recorded as **non-participating**: it
 //|   contributes no findings, and the reduced coverage is reported in the result
 //|   *and named in the summary*, so a 3-of-7 review never reads as a clean
-//|   7-of-7. Non-participation is **recorded, never gated on** — a transient API
-//|   blip must not stall the run, but it must never pass as complete coverage. If
+//|   7-of-7. Automatic approval requires every selected dimension. A transient API
+//|   blip leaves approval pending until a complete retry supplies the evidence. If
 //|   **every** dimension fails, the review throws rather than reporting a clean
 //|   result. A dimension that did not run produces **no AC table**, which is not
 //|   the same as a table with no FAIL/PARTIAL rows: the absent case is recorded
@@ -1951,7 +1953,7 @@ function persistReviewMode(result) {
 // neither comments nor a summary, which is exactly the clean `reviewed` case.
 function persistReviewSummary(result) {
   const r = result || {};
-  const base = summarizeFindings(persistReviewSurvivors(r));
+  const base = summarizeFindings(persistReviewSurvivors(r)) + (r.evidence ? '\n\nReview evidence:\n' + JSON.stringify(r.evidence, null, 2) : '');
   if (r.outcome === 'escalated') {
     return gateFor(persistReviewMode(r), 'escalated').reasonPrefix + ' escalated: ' + base;
   }
@@ -2011,6 +2013,8 @@ function pathFromLocation(location) {
 // project-flag allow-list. Shell plumbing (heredoc bodies, their terminators,
 // variable assignments) stays flush-left: a heredoc terminator must start its
 // line, and a flush-left line is correctly not read as a command invocation.
+function shellQuote(value) { return "'" + String(value).replace(/'/g, "'\"'\"'") + "'"; }
+
 function persistReviewCommands(result, target, cfg, opts) {
   if (typeof target !== 'string' || target.trim() === '' || target.indexOf('/') === -1) {
     throw new Error(
@@ -2034,7 +2038,10 @@ function persistReviewCommands(result, target, cfg, opts) {
   const pathAnchors = o.pathAnchors === true;
   const IND = '  ';
   const cmds = [];
-  if (worktreeRef !== '') {
+  if (o.source) {
+    cmds.push('cd ' + shellQuote(o.source.path));
+    cmds.push(IND + bin + ' review source --on ' + shellQuote(o.source.item) + ' --source ' + shellQuote(o.source.path) + ' --base ' + shellQuote(o.source.base) + ' --expected-head ' + shellQuote(o.source.head) + ' --expected-branch ' + shellQuote(o.source.branch) + (o.source.noCode ? ' --no-code' : '') + proj + ' >/dev/null || exit 1');
+  } else if (worktreeRef !== '') {
     // A `change/HEAD` target only means anything from inside the item's own
     // checkout, so cd there FIRST. `worktree add` is idempotent and prints the
     // path whether it created the worktree or found an existing one.
@@ -2063,7 +2070,7 @@ function persistReviewCommands(result, target, cfg, opts) {
       IND +
       bin +
       ' review start --on ' +
-      target +
+      (o.source ? shellQuote('change/' + o.source.head) + ' --base ' + shellQuote(o.source.base) + (o.implements ? ' --implements ' + shellQuote(o.implements) : '') : target) +
       ' --body "$RDM_PERSIST_SUMMARY" --no-edit --format json' +
       proj +
       ' > "$RDM_PERSIST_START_JSON"' +
@@ -2246,9 +2253,24 @@ function codeReviewRounds(input) {
 // 'rework', never 'escalated': a code-stage defect's nature still can't be
 // classified deterministically (see above), so an AC-table gap stays in the
 // same reviewed|rework lane as every other surviving code finding.
+// Explicit automatic evidence contract. Legacy report-only callers can omit it.
+// Consume the latest attempt, not historical incompleteness carried for audit.
+function reviewEvidenceComplete(evidence) {
+  if (!evidence) return false;
+  const coverage = evidence.coverage && (evidence.coverage.last || evidence.coverage);
+  const budget = evidence.budget || {};
+  const ac = evidence.acTable;
+  return !!(coverage && coverage.complete === true && coverage.acDimensionRan === true &&
+    Array.isArray(ac) && ac.length > 0 && ac.every((row) => row && typeof row.criterion === 'string' &&
+      typeof row.evidence === 'string' && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)) &&
+    !(budget.passedThroughBudget > 0) && !(budget.refuterErrors > 0) &&
+    !(evidence.survivors || []).some((f) => f.refuterError || f.unrefutedReason === 'budget'));
+}
+
 function classifyOutcome(input) {
   const i = input || {};
   const tier = i.tier;
+  if (i.evidence && !reviewEvidenceComplete(i.evidence)) return 'escalated';
   const planFindings = i.planFindings || [];
   // 1. Plan gate: a blocking plan finding escalates before any implementation.
   //    An empty/ambiguous plan is surfaced as a blocking coherence finding by
@@ -2446,6 +2468,11 @@ function buildReviewPipeline(mode, deps) {
         // PARTICIPATED. A valid-but-EMPTY payload (`{ findings: [] }`, or
         // `{ ac: [], findings: [] }`) counts as participation: the dimension ran
         // and found nothing. Only null/undefined is non-participation.
+        if ((isAcDimension && (!Array.isArray(found.ac) || !found.ac.every((row) => row && typeof row.criterion === 'string' && typeof row.evidence === 'string' && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)))) ||
+            (!isAcDimension && !Array.isArray(found.findings))) {
+          rec.error = 'invalid structured output';
+          throw new Error('invalid finder output for ' + dim.key);
+        }
         rec.ran = true;
         if (isAcDimension && found && Array.isArray(found.ac)) {
           acTable = found.ac;
@@ -2455,7 +2482,7 @@ function buildReviewPipeline(mode, deps) {
     );
 
     // Loud failure on a wholesale review failure. One dimension dropping to null
-    // is tolerated (recorded in `coverage.failed` below, never gated on); EVERY
+    // is recorded in `coverage.failed` for the automatic completeness gate; EVERY
     // dimension dropping to null means no review actually ran — e.g. an
     // `[models]` binding this runtime does not know, or a total API outage. That
     // must not be reported as a clean review. This fires BEFORE any budget
@@ -2482,12 +2509,9 @@ function buildReviewPipeline(mode, deps) {
     // read as complete coverage when a dimension did not run. Every array is in
     // `dims` selection order (see the `attempts` note above).
     //
-    // DECIDED POLICY: non-participation is RECORDED, NEVER GATED ON — a
-    // transient API blip must not stall the autonomous lane, while the record
-    // keeps the reduced coverage auditable after the fact. Coverage may only
-    // ever influence (a) this returned field, (b) the `summary` string (and
-    // therefore the derived `reason`), and (c) log lines. There is no gating
-    // branch for it in either mode, and there must never be one.
+    // Record incomplete participation without manufacturing findings. Automatic
+    // source-bound callers consume this record through reviewEvidenceComplete;
+    // report-only callers retain evidence without issuing an approval.
     //
     // `acDimensionRan` is `null` in plan mode (there is no `ac` dimension) and
     // whenever `ac` was not selected, so `acTableAbsent` is forced false there —
@@ -2581,7 +2605,9 @@ function buildReviewPipeline(mode, deps) {
           schema: VERDICT_SCHEMA,
           model: verifyModel,
         })
-          .then((verdict) => ({
+          .then((verdict) => {
+            if (!verdict || typeof verdict.refuted !== 'boolean' || typeof verdict.confidence !== 'number') throw new Error('invalid refuter verdict');
+            return ({
             // QUOTE CLEARING. An explicit `quote_ok: false` means the refuter
             // read the reviewed text and the excerpt is not in it — keep the
             // FINDING (its truth is `refuted`'s business, not the quote's) but
@@ -2593,7 +2619,7 @@ function buildReviewPipeline(mode, deps) {
             // whole-document fallback is what protects those.
             finding: verdict && verdict.quote_ok === false ? stripQuote(c.finding) : c.finding,
             verdict: verdict,
-          }))
+          }); })
           // A refuter CRASH is not proof of refutation. Keep the finding as
           // un-refuted (verdict=null ⇒ survives() retains it if confidence ≥
           // floor) instead of silently dropping it as if it were refuted.
@@ -2749,7 +2775,7 @@ function buildReviewPipeline(mode, deps) {
 //|code|
 //|code| | Outcome | When | Phase status | Task status | Completion trailer |
 //|code| |---|---|---|---|---|
-//|code| | **reviewed** | clean, or clean after small fixes | `reviewed` | `reviewed` | write it |
+//|code| | **reviewed** | clean at the independently reviewed head | `reviewed` | `reviewed` | eligible at landing |
 //|code| | **rework** | a fixable defect, or an unmet acceptance criterion | `in-progress` | `in-progress` | do **not** write it |
 //|code| | **escalated** | a blocker needing a human decision | `blocked` | `blocked` | do **not** write it |
 //|code|
@@ -2761,11 +2787,11 @@ function buildReviewPipeline(mode, deps) {
 //|code| Never set the item to `done` directly — that flip is owned by the
 //|code| merge-to-main hook.
 //|code|
-//|code| **The completion trailer.** On `reviewed` only, amend the land-time
-//|code| completion trailer into the branch commit; this completes the directive
-//|code| deliberately deferred by the finalize step, so the merge-to-main hook flips
-//|code| the item `reviewed → done` later. Never hand-type the trailer format — ask rdm
-//|code| for it, so the format string has exactly one home:
+//|code| **The completion trailer belongs to landing.** Do not amend the reviewed
+//|code| commit during this gate: an amendment changes its SHA and invalidates the
+//|code| source binding. Landing owns the completion directive; any changed head
+//|code| needs fresh review evidence before it can pass the source-bound gate.
+//|code| Obtain the directive from rdm rather than hand-typing its format:
 //|code|
 //|code| ```bash
 //|code| {rdm_bin} hook done-line --roadmap <slug> --phase <stem>   # prints: Done: <slug>/<stem>
@@ -2936,6 +2962,7 @@ export {
   summarizeFindings,
   codeReviewRounds,
   classifyOutcome,
+  reviewEvidenceComplete,
   DEFAULT_MAX_CODE_REWORK,
   buildReviewPipeline,
   stripNonPhaseUnitOfWork,

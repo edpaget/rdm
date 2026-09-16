@@ -1002,8 +1002,8 @@ pub fn discover_distinct_project_repo(cwd: &Path, plan_root: &Path) -> Result<Pa
 /// corresponds to a plan item, and whether it is clean.
 ///
 /// Worktrees are keyed per **roadmap**, shared by all of that roadmap's
-/// phases, so a phase resolves to its roadmap's worktree — with a per-phase
-/// worktree preferred when one actually exists, which is the shape
+/// phases, so a phase resolves to its roadmap's worktree — never selecting the obsolete per-phase
+/// worktree, which is the shape
 /// `rdm worktree add <roadmap>/<phase>` produces. A sibling phase's
 /// uncommitted edit therefore blocks this phase's `reviewed` transition; that
 /// is deliberate (`docs/verify-gate.md` § 8), and the refusal names the dirty
@@ -1011,48 +1011,45 @@ pub fn discover_distinct_project_repo(cwd: &Path, plan_root: &Path) -> Result<Pa
 #[derive(Debug, Clone)]
 pub struct GitWorktreeProbe {
     repo_root: PathBuf,
+    selected: Option<(rdm_core::link::ItemRef, rdm_core::ReviewSourceRequest)>,
 }
 
 impl GitWorktreeProbe {
     /// Builds a probe over the project (code) repo rooted at `repo_root`.
     #[must_use]
     pub fn new(repo_root: PathBuf) -> Self {
-        Self { repo_root }
+        Self {
+            repo_root,
+            selected: None,
+        }
     }
 
-    /// The canonical worktree item strings to look for, most specific first.
-    ///
-    /// A core [`ItemRef::Phase`](rdm_core::link::ItemRef::Phase) can be served
-    /// by either a per-phase worktree or its roadmap's shared one; the
-    /// per-phase entry wins when both exist.
+    /// Bind subsequent gate probes to the validated explicit review context.
+    #[must_use]
+    pub fn with_source(
+        mut self,
+        item: rdm_core::link::ItemRef,
+        request: rdm_core::ReviewSourceRequest,
+    ) -> Self {
+        self.selected = Some((item, request));
+        self
+    }
+
     fn candidates(item: &rdm_core::link::ItemRef) -> Vec<String> {
-        match item {
-            rdm_core::link::ItemRef::Phase { roadmap, stem } => vec![
-                ItemRef::Phase {
-                    roadmap: roadmap.clone(),
-                    stem: stem.clone(),
-                }
-                .canonical(),
-                ItemRef::Roadmap {
-                    roadmap: roadmap.clone(),
-                }
-                .canonical(),
-            ],
-            rdm_core::link::ItemRef::Task { slug } => {
-                vec![ItemRef::Task { slug: slug.clone() }.canonical()]
-            }
-            rdm_core::link::ItemRef::Roadmap { roadmap } => vec![
-                ItemRef::Roadmap {
-                    roadmap: roadmap.clone(),
-                }
-                .canonical(),
-            ],
-            // A plan or a change names no worktree of its own — the gate is
-            // only ever evaluated against a phase or a task.
-            rdm_core::link::ItemRef::Plan { .. } | rdm_core::link::ItemRef::Change { .. } => {
-                Vec::new()
-            }
+        rdm_core::worktree::review_worktree_item(item)
+            .into_iter()
+            .collect()
+    }
+
+    fn git_text(path: &Path, args: &[&str]) -> rdm_core::error::Result<String> {
+        let output =
+            run_git_at(path, args).map_err(|e| rdm_core::error::Error::Git(e.to_string()))?;
+        if !output.status.success() {
+            return Err(rdm_core::error::Error::Git(
+                String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            ));
         }
+        String::from_utf8(output.stdout).map_err(|e| rdm_core::error::Error::Git(e.to_string()))
     }
 }
 
@@ -1061,28 +1058,169 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
         &self,
         item: &rdm_core::link::ItemRef,
     ) -> rdm_core::error::Result<Option<rdm_core::worktree::WorktreeCheck>> {
+        if let Some((selected_item, request)) = &self.selected {
+            if selected_item != item {
+                return Err(rdm_core::error::Error::Git(
+                    "review source item mismatch".into(),
+                ));
+            }
+            let source = rdm_core::resolve_review_source(self, item, request)?;
+            let porcelain = crate::status_porcelain_at(Path::new(&source.path))
+                .map_err(|e| rdm_core::error::Error::Git(e.to_string()))?;
+            let mut check =
+                rdm_core::worktree::WorktreeCheck::from_porcelain(&source.path, &porcelain);
+            check.head = Some(source.head);
+            check.branch = Some(source.branch);
+            return Ok(Some(check));
+        }
         let wanted = Self::candidates(item);
         if wanted.is_empty() {
             return Ok(None);
         }
         let entries =
             list(&self.repo_root).map_err(|e| rdm_core::error::Error::Git(e.to_string()))?;
-        // Most specific candidate first, so a per-phase worktree beats the
-        // roadmap-wide one when both are registered.
+        // Shared selection policy: phase reviews use the roadmap checkout.
         for want in &wanted {
             let Some(info) = entries.iter().find(|w| &w.item == want) else {
                 continue;
             };
             let porcelain = crate::status_porcelain_at(&info.path)
                 .map_err(|e| rdm_core::error::Error::Git(e.to_string()))?;
-            return Ok(Some(rdm_core::worktree::WorktreeCheck::from_porcelain(
+            let mut check = rdm_core::worktree::WorktreeCheck::from_porcelain(
                 &info.path.display().to_string(),
                 &porcelain,
-            )));
+            );
+            check.head = Some(
+                Self::git_text(&info.path, &["rev-parse", "--verify", "HEAD"])?
+                    .trim()
+                    .to_string(),
+            );
+            check.branch = Some(
+                Self::git_text(&info.path, &["symbolic-ref", "--short", "HEAD"])?
+                    .trim()
+                    .to_string(),
+            );
+            if check.branch.as_deref() != Some(info.branch.as_str()) {
+                return Err(rdm_core::error::Error::Git(
+                    "registered source branch changed".into(),
+                ));
+            }
+            return Ok(Some(check));
         }
         // rdm manages no worktree for this item — a benign miss, which the
         // gate treats as "no worktree to check" rather than as a failure.
         Ok(None)
+    }
+
+    fn review_source(
+        &self,
+        item: &rdm_core::link::ItemRef,
+        request: &rdm_core::ReviewSourceRequest,
+    ) -> rdm_core::error::Result<rdm_core::ReviewSource> {
+        let fail = |message: &str| rdm_core::error::Error::Git(format!("review source: {message}"));
+        let entries = list(&self.repo_root).map_err(|e| fail(&e.to_string()))?;
+        let wanted = rdm_core::worktree::review_worktree_item(item)
+            .ok_or_else(|| fail("unsupported item"))?;
+        let explicit = request
+            .path
+            .as_ref()
+            .map(std::fs::canonicalize)
+            .transpose()
+            .map_err(|e| fail(&e.to_string()))?;
+        let info = entries.iter().find(|entry| match &explicit {
+            Some(path) => std::fs::canonicalize(&entry.path).ok().as_ref() == Some(path),
+            None => entry.item == wanted,
+        }).ok_or_else(|| fail("no matching registered checkout in project source repository; create the intended shared roadmap or task checkout first"))?;
+        if matches!(item, rdm_core::link::ItemRef::Phase { .. }) && info.item != wanted {
+            return Err(fail("phase requires its shared roadmap checkout"));
+        }
+        let path = std::fs::canonicalize(&info.path).map_err(|e| fail(&e.to_string()))?;
+        let branch = Self::git_text(&path, &["symbolic-ref", "--short", "HEAD"])?
+            .trim()
+            .to_string();
+        if branch != info.branch {
+            return Err(fail("registered branch differs from observed branch"));
+        }
+        let head = Self::git_text(&path, &["rev-parse", "--verify", "HEAD^{commit}"])?
+            .trim()
+            .to_string();
+        let base = match &request.base {
+            Some(base) => Self::git_text(
+                &path,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--end-of-options",
+                    &format!("{base}^{{commit}}"),
+                ],
+            )?
+            .trim()
+            .to_string(),
+            None => {
+                let default = Self::git_text(
+                    &path,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--end-of-options",
+                        &format!("{}^{{commit}}", request.default_branch),
+                    ],
+                )?
+                .trim()
+                .to_string();
+                Self::git_text(&path, &["merge-base", &default, &head])?
+                    .trim()
+                    .to_string()
+            }
+        };
+        let files = Self::git_text(
+            &path,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-relative",
+                "--name-only",
+                "-z",
+                &base,
+                &head,
+                "--",
+            ],
+        )?;
+        let diff_text = Self::git_text(
+            &path,
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-relative",
+                &base,
+                &head,
+                "--",
+            ],
+        )?;
+        let common = Self::git_text(
+            &path,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        )?;
+        let repository = std::fs::canonicalize(common.trim())
+            .map_err(|e| fail(&e.to_string()))?
+            .display()
+            .to_string();
+        Ok(rdm_core::ReviewSource {
+            item: item.label(),
+            repository,
+            path: path.display().to_string(),
+            branch,
+            base,
+            head,
+            changed_files: files
+                .split('\0')
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect(),
+            diff_text,
+            no_code: request.no_code,
+        })
     }
 }
 
@@ -1855,8 +1993,7 @@ mod tests {
     // The production `WorktreeProbe` behind the `reviewed` transition gate's
     // precondition (c). Core's side is exercised against `MemoryWorktreeProbe`
     // in `rdm-core/tests/gate.rs`; what only real git can show is the
-    // candidate-ordering rule (a per-phase worktree beats its roadmap's shared
-    // one), the task branch, and the fail-closed error mapping.
+    // shared-roadmap selection rule (an obsolete phase checkout never wins), the task branch, and the fail-closed error mapping.
 
     use rdm_core::worktree::WorktreeProbe as _;
 
@@ -1876,7 +2013,100 @@ mod tests {
     }
 
     #[test]
-    fn probe_prefers_a_per_phase_worktree_over_the_roadmap_one() {
+    fn review_source_real_shared_task_range_and_refusals() {
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let roadmap = ItemRef::Roadmap {
+            roadmap: "my-roadmap".into(),
+        };
+        let wt = add(&repo, &roadmap, &roadmap.branch_name(), None).unwrap();
+        let stale = add(&repo, &open_item(), &open_item().branch_name(), None).unwrap();
+        let initial = crate::head_commit_info_at(&wt.path).unwrap().unwrap().sha;
+        std::fs::write(wt.path.join("file with spaces.txt"), "implemented\n").unwrap();
+        run_git(&wt.path, &["add", "."]);
+        run_git(&wt.path, &["commit", "-m", "implementation"]);
+        let probe = GitWorktreeProbe::new(repo.clone());
+        let item = core_phase("my-roadmap", "phase-2-open-phase");
+        let request = rdm_core::ReviewSourceRequest {
+            base: Some(initial.clone()),
+            ..Default::default()
+        };
+        let source = rdm_core::resolve_review_source(&probe, &item, &request).unwrap();
+        assert!(same_path(&source.path, &wt.path));
+        assert_eq!(source.changed_files, ["file with spaces.txt"]);
+        run_git(&repo, &["branch", "configured-default", &initial]);
+        let default_request = rdm_core::ReviewSourceRequest {
+            default_branch: "configured-default".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            rdm_core::resolve_review_source(&probe, &item, &default_request)
+                .unwrap()
+                .base,
+            initial
+        );
+        let wrong_branch = rdm_core::ReviewSourceRequest {
+            expected_branch: Some("wrong-branch".into()),
+            ..request.clone()
+        };
+        assert!(rdm_core::resolve_review_source(&probe, &item, &wrong_branch).is_err());
+        let malformed = rdm_core::ReviewSourceRequest {
+            base: Some("--output=unexpected".into()),
+            ..request.clone()
+        };
+        assert!(rdm_core::resolve_review_source(&probe, &item, &malformed).is_err());
+
+        assert_eq!(
+            crate::head_commit_info_at(&stale.path)
+                .unwrap()
+                .unwrap()
+                .sha,
+            initial
+        );
+        let task = rdm_core::link::ItemRef::Task { slug: "fix".into() };
+        let explicit = rdm_core::ReviewSourceRequest {
+            path: Some(source.path.clone()),
+            expected_head: Some(source.head.clone()),
+            ..request.clone()
+        };
+        assert_eq!(
+            rdm_core::resolve_review_source(&probe, &task, &explicit)
+                .unwrap()
+                .head,
+            source.head
+        );
+        assert_eq!(list(&repo).unwrap().len(), 2, "no task checkout created");
+        let moved = rdm_core::ReviewSourceRequest {
+            expected_head: Some(initial),
+            ..explicit.clone()
+        };
+        assert!(rdm_core::resolve_review_source(&probe, &task, &moved).is_err());
+        let empty = rdm_core::ReviewSourceRequest {
+            base: Some(source.head.clone()),
+            ..explicit.clone()
+        };
+        assert!(rdm_core::resolve_review_source(&probe, &task, &empty).is_err());
+        assert!(
+            rdm_core::resolve_review_source(
+                &probe,
+                &task,
+                &rdm_core::ReviewSourceRequest {
+                    no_code: true,
+                    ..empty
+                }
+            )
+            .is_ok()
+        );
+        let (_other_plan, other_repo, _other_store, _other_parent) = prune_fixture();
+        let other_wt = add(&other_repo, &roadmap, &roadmap.branch_name(), None).unwrap();
+        let wrong = rdm_core::ReviewSourceRequest {
+            path: Some(other_wt.path.display().to_string()),
+            ..explicit
+        };
+        assert!(rdm_core::resolve_review_source(&probe, &task, &wrong).is_err());
+    }
+
+    #[test]
+    fn probe_prefers_shared_roadmap_over_stale_phase() {
         if !git_available() {
             return;
         }
@@ -1894,8 +2124,8 @@ mod tests {
             .unwrap()
             .expect("a worktree is registered for this phase");
         assert!(
-            same_path(&check.path, &phase_wt.path),
-            "the per-phase worktree ({}) must win over the roadmap-wide one ({}), got {}",
+            same_path(&check.path, &roadmap_wt.path),
+            "stale phase ({}) must not win over shared roadmap ({}), got {}",
             phase_wt.path.display(),
             roadmap_wt.path.display(),
             check.path

@@ -280,8 +280,8 @@ one of these, and they are told apart by markers alone:
   returns nothing, that dimension is recorded as **non-participating**: it
   contributes no findings, and the reduced coverage is reported in the result
   *and named in the summary*, so a 3-of-7 review never reads as a clean
-  7-of-7. Non-participation is **recorded, never gated on** — a transient API
-  blip must not stall the run, but it must never pass as complete coverage. If
+  7-of-7. Automatic approval requires every selected dimension. A transient API
+  blip leaves approval pending until a complete retry supplies the evidence. If
   **every** dimension fails, the review throws rather than reporting a clean
   result.
 - A finding passed through un-refuted carries `unrefuted: true` and faces the
