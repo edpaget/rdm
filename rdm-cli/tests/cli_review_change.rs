@@ -1782,8 +1782,19 @@ fn malformed_identities_without_comments_are_rejected_offline() {
     }
 }
 
+/// An option-shaped stored `change_branch` is refused by the adapter's
+/// pre-spawn guard ([`rdm_core::error::Error::InvalidChangeRevisionInput`]),
+/// and under `rdm_core::change::resolve_drift_tip` that refusal is
+/// **propagated, not swallowed**: `rdm review show` degrades to
+/// all-unresolved with a note naming the refusal, rather than silently
+/// measuring drift against a *different* revision (HEAD).
+///
+/// This is the one intentional behavior change of the drift-tip move. The
+/// security invariant is unchanged and still asserted below: no subprocess
+/// is spawned, nothing is written, and a pre-existing file at the
+/// option's target is untouched.
 #[test]
-fn option_shaped_drift_branch_safely_falls_back_to_head() {
+fn option_shaped_drift_branch_is_refused_rather_than_repointed_at_head() {
     let src = init_source_repo();
     let plan = init_plan_repo(src.path());
     let outside = TempDir::new().unwrap();
@@ -1829,8 +1840,19 @@ fn option_shaped_drift_branch_safely_falls_back_to_head() {
         });
         let actual = review_json(plan.path(), src.path(), &id);
         assert_eq!(
-            actual["comments"][0]["resolution"],
-            control["comments"][0]["resolution"]
+            actual["comments"][0]["resolution"]["state"], "unresolved",
+            "a refused drift-tip lookup must not silently re-point drift at HEAD"
+        );
+        assert_ne!(
+            actual["comments"][0]["resolution"], control["comments"][0]["resolution"],
+            "the control run resolved against the real branch; this one must not"
+        );
+        let note = actual["source_verification_skipped"]
+            .as_str()
+            .expect("the refusal is explained, not silent");
+        assert!(
+            note.contains("anchor resolution skipped"),
+            "unexpected note: {note}"
         );
         if preexisting {
             assert_eq!(std::fs::read(&sentinel).unwrap(), b"branch protected bytes");
@@ -1875,4 +1897,146 @@ fn option_shaped_configured_default_branch_is_refused() {
     assert!(!sentinel.exists());
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr).contains("must not start"));
+}
+
+// --- AC3: identity root vs. read root ---
+//
+// `rdm_git::worktree::discover_project_repo` deliberately answers with the
+// repository's MAIN working tree, which is the right answer for *identity*
+// ("is this checkout the project's source?") and the wrong one to *read*
+// through: reading it would make `change/HEAD` pin main's HEAD and stamp
+// `main` as the change branch. These two tests pin that split, and the
+// three-cell disagreement with `rdm link check` that survives it.
+
+/// A linked worktree is still the configured source *repository*, so
+/// identity matches — but the revision pinned and the branch stamped must
+/// be the linked worktree's own, never the main working tree's.
+#[test]
+fn change_review_in_a_linked_worktree_pins_that_worktrees_head_not_main() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+
+    // The worktree lives inside the test's own TempDir, never the system
+    // temp dir — see `scripts/verify-worktree-temp-hygiene.sh`.
+    let workspace = TempDir::new().unwrap();
+    let linked = workspace.path().join("linked");
+    git(
+        src.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature/x",
+            &linked.to_string_lossy(),
+            "HEAD",
+        ],
+    );
+    std::fs::write(linked.join("src/lib.rs"), "fn only_on_feature_x() {}\n").unwrap();
+    git(&linked, &["add", "."]);
+    git(&linked, &["commit", "-m", "worktree-only commit"]);
+
+    let main_head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    let linked_head = git_out(&linked, &["rev-parse", "HEAD"]);
+    assert_ne!(
+        main_head, linked_head,
+        "the fixture must put the two working trees on different commits"
+    );
+
+    let id = start_change_review(
+        plan.path(),
+        &linked,
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    let j = review_json(plan.path(), &linked, &id);
+    assert_eq!(
+        j["target"]["head"], linked_head,
+        "change/HEAD must pin the linked worktree's own tip"
+    );
+    assert_ne!(
+        j["target"]["head"], main_head,
+        "reading through the identity root would pin the MAIN working tree's HEAD"
+    );
+    assert_eq!(
+        j["change_branch"], "feature/x",
+        "the stamped branch must be the worktree's, not 'main'"
+    );
+
+    git(
+        src.path(),
+        &["worktree", "remove", "--force", &linked.to_string_lossy()],
+    );
+}
+
+/// Environment E2 of the shared decision table — cwd inside an unrelated
+/// checkout with a configured LOCAL source — is one of the three cells the
+/// two consumers deliberately answer differently: change review leaves the
+/// cwd for the configured directory, while `rdm link check` refuses to
+/// verify against either repository and says so.
+#[test]
+fn change_review_falls_back_to_the_configured_local_source_while_link_check_skips() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let other = init_unrelated_repo();
+
+    let source_head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "create",
+            "code-link",
+            "--title",
+            "Code link",
+            "--body",
+            "Code: [src](rdm:src/does-not-exist.rs).",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // Change review (`ConfiguredLocal`): reads the configured directory.
+    let id = start_change_review(
+        plan.path(),
+        other.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["target"]["head"], source_head);
+
+    // Link check (`CwdOnly`), same cwd: skips entirely, and never verifies
+    // against the unrelated checkout it is standing in.
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(other.path())
+        .args([
+            "link",
+            "check",
+            "--on",
+            "task/code-link",
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(report["missing_at_rev"], serde_json::json!([]));
+    assert!(
+        report["path_verification_skipped"]
+            .as_str()
+            .is_some_and(|s| s.contains("not the project's configured source")),
+        "link check must skip, not follow change review into the configured dir: {report}"
+    );
 }

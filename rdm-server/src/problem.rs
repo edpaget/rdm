@@ -379,6 +379,9 @@ impl From<&Error> for ProblemDetail {
             | Error::InvalidPath(_)
             | Error::InvalidConfigValue { .. }
             | Error::Git(_)
+            // The source repository has no resolvable tip: an environment
+            // problem the caller cannot fix, exactly like `Error::Git`.
+            | Error::ChangeTipUnresolvable { .. }
             | Error::RootNotDetermined
             | Error::HomeNotSet { .. }
             | Error::PathResolutionFailed { .. } => ProblemDetail {

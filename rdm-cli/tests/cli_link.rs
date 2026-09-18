@@ -803,3 +803,92 @@ fn check_inside_checkout_mismatched_origin_remote_skips_verification() {
         "expected a mismatch skip note: {json}"
     );
 }
+
+// --- AC3: link check reads through the cwd, not the checkout's identity
+// root. For a linked worktree those differ (`discover_project_repo`
+// answers with the repository's MAIN working tree), so this pins that the
+// switch changed nothing observable: every revision link check resolves is
+// a shared ref or SHA, never a per-worktree HEAD. ---
+
+#[test]
+fn check_from_a_linked_worktree_of_the_configured_source_still_verifies() {
+    let plan = init_plan_repo();
+
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "main"]);
+    std::fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "initial"]);
+    // The project's configured source is the MAIN repo path, not the
+    // worktree — identity must still match from inside the worktree.
+    set_project_source(plan.path(), "demo", &src.path().to_string_lossy());
+
+    // The worktree lives inside the test's own TempDir, never the system
+    // temp dir — see `scripts/verify-worktree-temp-hygiene.sh`.
+    let workspace = TempDir::new().unwrap();
+    let linked = workspace.path().join("linked");
+    git(
+        src.path(),
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature/y",
+            &linked.to_string_lossy(),
+            "main",
+        ],
+    );
+    std::fs::write(linked.join("only-on-branch.rs"), "fn branch_only() {}\n").unwrap();
+    git(&linked, &["add", "."]);
+    git(&linked, &["commit", "-m", "branch-only file"]);
+    let branch_sha = String::from_utf8_lossy(&git(&linked, &["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    create_task(
+        plan.path(),
+        "worktree-links",
+        "Worktree links",
+        &format!(
+            "On main: [a](rdm:src/README.md).\n\
+             Unpinned, branch-only: [b](rdm:src/only-on-branch.rs).\n\
+             Pinned at the worktree's commit: [c](rdm:src/only-on-branch.rs@{branch_sha}).\n"
+        ),
+    );
+
+    let json = json_stdout(
+        rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .current_dir(&linked)
+            .args([
+                "link",
+                "check",
+                "--on",
+                "task/worktree-links",
+                "--project",
+                "demo",
+                "--format",
+                "json",
+            ]),
+    );
+
+    // Verification actually ran from inside the linked worktree.
+    assert!(
+        json.get("path_verification_skipped").is_none()
+            || json["path_verification_skipped"].is_null(),
+        "a linked worktree of the configured source must still verify: {json}"
+    );
+    // Exactly one finding: the unpinned link, resolved against the shared
+    // `main` ref, where the branch-only file does not exist. The pinned
+    // link resolves because refs and SHAs are shared across worktrees.
+    let missing_at_rev = json["missing_at_rev"].as_array().unwrap();
+    assert_eq!(missing_at_rev.len(), 1, "expected one finding: {json}");
+    assert_eq!(missing_at_rev[0]["path"], "only-on-branch.rs");
+    assert_eq!(missing_at_rev[0]["rev"], "main");
+
+    git(
+        src.path(),
+        &["worktree", "remove", "--force", &linked.to_string_lossy()],
+    );
+}

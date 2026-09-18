@@ -3,11 +3,26 @@
 //! configured `source.repo` rather than merely *some* git repository that
 //! happens to contain the invoking cwd.
 //!
-//! [`normalize_repo_locator`] and [`repo_matches_source`] moved here from
-//! `commands/link.rs`, which now consumes them: `rdm link check`'s path
-//! verification and `rdm review --on change/…` ask the same question ("is
-//! this checkout the project's source?") and must never answer it two
-//! different ways.
+//! [`repo_matches_source`] moved here from `commands/link.rs`, which now
+//! consumes it: `rdm link check`'s path verification and `rdm review --on
+//! change/…` ask the same question ("is this checkout the project's
+//! source?") and must never disagree about repository **identity**.
+//!
+//! Their **dispositions** deliberately differ, and an audit of the two
+//! ladders confirmed it: link check is a lint that fails open, so it never
+//! verifies against a repository the operator is not standing in, while
+//! change review pins content and must either name its source or refuse.
+//! [`rdm_core::source_select`] therefore owns the shared classification and
+//! takes a [`SourceFallback`](rdm_core::source_select::SourceFallback)
+//! parameter carrying exactly that difference; see its decision table.
+//!
+//! The two roles a path can play here are kept as separate values and must
+//! never be swapped: the **identity root** (what
+//! `rdm_git::worktree::discover_project_repo` answers, used only as the
+//! left-hand side of [`repo_matches_source`]) and the **read root** (the
+//! cwd, what a `GitSourceRepo` is actually constructed on). For a linked
+//! worktree the identity root is the repository's *main* working tree, so
+//! reading through it would make `change/HEAD` pin main's HEAD.
 
 #[cfg(feature = "git")]
 use anyhow::Context;
@@ -15,33 +30,19 @@ use anyhow::{Result, anyhow};
 
 use crate::AppStore;
 
-/// Trims a trailing `/` and a trailing `.git` (in that order) so a source
-/// URL/path can be compared for equality regardless of those two common
-/// stylistic variations — e.g. `https://example.com/org/repo` and
-/// `https://example.com/org/repo.git/` normalize to the same value. Not a
-/// full URL parse: it deliberately does not reconcile scheme differences
-/// (`git@host:org/repo.git` vs `https://host/org/repo`), so those still
-/// compare unequal.
-///
-/// Feature-gated with its callers: without the `git` feature there is no
-/// checkout to compare against, so this would otherwise be dead code under
-/// `-D warnings`.
-#[cfg(feature = "git")]
-pub(crate) fn normalize_repo_locator(locator: &str) -> String {
-    locator
-        .trim_end_matches('/')
-        .trim_end_matches(".git")
-        .to_string()
-}
-
 /// Whether the git repository at `repo` is actually the project's
 /// configured `source.repo`.
 ///
+/// `repo` is the checkout's **identity root**, never a path this function's
+/// callers then read through — see the module documentation.
+///
 /// `source.repo` may name a filesystem path or a clone URL (see
 /// [`rdm_core::model::Source`]'s doc comment): a filesystem path is compared
-/// via canonicalized-path equality; otherwise `repo`'s configured `origin`
-/// remote (if any) is compared against `source.repo`, both normalized via
-/// [`normalize_repo_locator`].
+/// via canonicalized-path equality **first**, so a directory literally named
+/// `…/repo.git` still matches itself; otherwise `repo`'s configured `origin`
+/// remote (if any) is compared against `source.repo` via
+/// [`rdm_core::source_select::locators_match`], which owns the pure
+/// normalization half.
 #[cfg(feature = "git")]
 pub(crate) fn repo_matches_source(repo: &std::path::Path, source_repo: &str) -> bool {
     let source_path = std::path::Path::new(source_repo);
@@ -51,24 +52,60 @@ pub(crate) fn repo_matches_source(repo: &std::path::Path, source_repo: &str) -> 
         return a == b;
     }
     match rdm_git::remote_url(repo, "origin") {
-        Ok(Some(origin)) => normalize_repo_locator(&origin) == normalize_repo_locator(source_repo),
+        Ok(Some(origin)) => rdm_core::source_select::locators_match(&origin, source_repo),
         _ => false,
     }
 }
 
+/// Gathers the [`SourceEnvironment`] both consumers classify, from the
+/// invoking process.
+///
+/// Returns the **read root** (the cwd) alongside the environment. The
+/// checkout's identity root is consumed here and deliberately not returned:
+/// nothing downstream may read through it.
+///
+/// # Errors
+///
+/// Returns an error only when the current directory cannot be read.
+#[cfg(feature = "git")]
+pub(crate) fn gather_source_environment(
+    store: &AppStore,
+    project: &str,
+) -> Result<(
+    std::path::PathBuf,
+    Option<rdm_core::model::Source>,
+    bool,
+    bool,
+)> {
+    let cwd = std::env::current_dir().context("failed to read the current directory")?;
+    let source = rdm_core::io::load_project(store, project)
+        .ok()
+        .and_then(|doc| doc.frontmatter.source);
+    // Identity only. For a linked worktree this is the repository's MAIN
+    // working tree, which must never become the read root.
+    let identity_root = rdm_git::worktree::discover_project_repo(&cwd).ok();
+    let in_checkout = identity_root.is_some();
+    let matches = match (&identity_root, &source) {
+        (Some(identity_root), Some(src)) => repo_matches_source(identity_root, &src.repo),
+        _ => false,
+    };
+    Ok((cwd, source, in_checkout, matches))
+}
+
 /// Discovers the source repository a `change/<sha>` review reads from.
 ///
-/// Resolution order:
+/// The decision itself is [`rdm_core::source_select::select_source`] under
+/// [`SourceFallback::ConfiguredLocal`](rdm_core::source_select::SourceFallback::ConfiguredLocal);
+/// this function is the adapter that gathers the environment and turns an
+/// unavailable answer into an actionable message. See that function's
+/// seven-environment decision table for the policy, and
+/// `docs/change-reviews.md` § "Source discovery" for the prose.
 ///
-/// 1. The checkout containing the invoking cwd, when it matches the
-///    project's configured `source.repo` (or when the project configures no
-///    source at all — there is then nothing to contradict).
-/// 2. Otherwise `source.repo` itself, when it names a local directory.
-///
-/// The returned [`rdm_git::GitSourceRepo`] is rooted at the *current*
-/// checkout rather than the repository's main working tree, so `HEAD` and
-/// the current branch reflect the linked worktree the operator is actually
-/// standing in — exactly what `--on change/HEAD` has to pin.
+/// The returned [`rdm_git::GitSourceRepo`] is rooted at the **cwd** rather
+/// than the repository's main working tree, so `HEAD` and the current
+/// branch reflect the linked worktree the operator is actually standing in
+/// — exactly what `--on change/HEAD` has to pin. The classifier cannot
+/// return anything else: it is handed booleans, never the identity root.
 ///
 /// # Errors
 ///
@@ -82,40 +119,42 @@ pub(crate) fn discover_source_repo(
     store: &AppStore,
     project: &str,
 ) -> Result<rdm_git::GitSourceRepo> {
-    let source = rdm_core::io::load_project(store, project)
-        .ok()
-        .and_then(|doc| doc.frontmatter.source);
+    use rdm_core::source_select::{
+        ConfiguredSource, SourceEnvironment, SourceFallback, SourceSelection, SourceUnavailable,
+        select_source,
+    };
 
-    let cwd = std::env::current_dir().context("failed to read the current directory")?;
-    let discovered = rdm_git::worktree::discover_project_repo(&cwd).ok();
+    let (cwd, source, in_checkout, checkout_matches_configured) =
+        gather_source_environment(store, project)?;
+    let env = SourceEnvironment {
+        in_checkout,
+        checkout_matches_configured,
+        configured: source.as_ref().map(|src| ConfiguredSource {
+            locator: src.repo.as_str(),
+            is_local_dir: std::path::Path::new(&src.repo).is_dir(),
+        }),
+    };
 
-    match (&discovered, &source) {
-        // In a checkout, and either it matches the configured source or the
-        // project configures none: use the cwd so a linked worktree's own
-        // HEAD/branch are what `change/HEAD` pins.
-        (Some(repo), Some(src)) if repo_matches_source(repo, &src.repo) => {
-            Ok(rdm_git::GitSourceRepo::new(cwd))
-        }
-        (Some(_), None) => Ok(rdm_git::GitSourceRepo::new(cwd)),
-        // In a checkout that is NOT the project's source: prefer a local
-        // `source.repo` if there is one, else say exactly what is wrong.
-        (Some(_), Some(src)) => {
-            if std::path::Path::new(&src.repo).is_dir() {
-                return Ok(rdm_git::GitSourceRepo::new(&src.repo));
-            }
-            Err(anyhow!(
-                "the current directory is inside a git checkout, but not project '{project}''s configured source repo ({}) — run this from a checkout of that repository",
-                src.repo
-            ))
-        }
-        (None, Some(src)) if std::path::Path::new(&src.repo).is_dir() => {
+    match select_source(&env, SourceFallback::ConfiguredLocal) {
+        SourceSelection::ReadCwdCheckout => Ok(rdm_git::GitSourceRepo::new(cwd)),
+        SourceSelection::ReadConfiguredLocal => {
+            let src = source.as_ref().expect("a configured local source");
             Ok(rdm_git::GitSourceRepo::new(&src.repo))
         }
-        (None, Some(src)) => Err(anyhow!(
-            "not inside a git checkout, and project '{project}''s configured source repo ({}) is not a local directory — run this from a checkout of that repository",
-            src.repo
+        SourceSelection::Unavailable(SourceUnavailable::CheckoutIsNotConfiguredSource {
+            locator,
+        }) => Err(anyhow!(
+            "the current directory is inside a git checkout, but not project '{project}''s configured source repo ({locator}) — run this from a checkout of that repository"
         )),
-        (None, None) => Err(anyhow!(
+        SourceSelection::Unavailable(SourceUnavailable::ConfiguredSourceNotLocal { locator }) => {
+            Err(anyhow!(
+                "not inside a git checkout, and project '{project}''s configured source repo ({locator}) is not a local directory — run this from a checkout of that repository"
+            ))
+        }
+        // `NotInCheckout` and `NoSourceConfigured` are `CwdOnly`-only
+        // outcomes (see the decision table); under `ConfiguredLocal` only
+        // `NoCheckoutAndNoSource` reaches here.
+        SourceSelection::Unavailable(_) => Err(anyhow!(
             "not inside a git checkout, and project '{project}' configures no source repo — run this from the project's source checkout, or set `source.repo` in its project.md"
         )),
     }
@@ -127,34 +166,6 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
     use tempfile::TempDir;
-
-    #[test]
-    fn normalize_repo_locator_trims_trailing_slash_then_dot_git() {
-        assert_eq!(
-            normalize_repo_locator("https://example.com/org/repo.git/"),
-            "https://example.com/org/repo"
-        );
-        assert_eq!(
-            normalize_repo_locator("https://example.com/org/repo.git"),
-            "https://example.com/org/repo"
-        );
-        assert_eq!(
-            normalize_repo_locator("https://example.com/org/repo/"),
-            "https://example.com/org/repo"
-        );
-        assert_eq!(
-            normalize_repo_locator("https://example.com/org/repo"),
-            "https://example.com/org/repo"
-        );
-    }
-
-    #[test]
-    fn normalize_repo_locator_does_not_reconcile_scheme_differences() {
-        assert_ne!(
-            normalize_repo_locator("git@example.com:org/repo.git"),
-            normalize_repo_locator("https://example.com/org/repo")
-        );
-    }
 
     /// A `git` command in `dir` with the ambient git environment cleared —
     /// these tests must work unchanged from inside a git hook, which exports

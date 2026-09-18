@@ -20,8 +20,7 @@
 //! beyond the quote the reviewer chose.
 //!
 //! Later, [`resolve_change_comment`] compares that recorded quote against
-//! the same path at a **tip** revision (normally the review's stamped
-//! branch, else the repository's HEAD):
+//! the same path at a **tip** revision, chosen by [`resolve_drift_tip`]:
 //!
 //! - the path is gone at the tip → [`Resolution::Unresolved`]
 //! - every occurrence the quote had at `head` survives at the tip,
@@ -525,10 +524,140 @@ fn occurrence_count(content: &str, quote: &str) -> usize {
     content.match_indices(quote).count()
 }
 
+/// Where a change review's drift tip came from.
+///
+/// Recorded alongside the revision by [`resolve_drift_tip`] so a caller can
+/// explain *why* drift is being measured against what it is, rather than
+/// having to re-derive the ladder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TipOrigin {
+    /// The review's stamped `change_branch`, which still resolves.
+    StampedBranch,
+    /// The review stamped a branch, but it no longer resolves (renamed,
+    /// deleted, or never pushed) — the repository's HEAD was used instead.
+    BranchGone,
+    /// The review stamped no branch at all (it was started on a detached
+    /// HEAD) — the repository's HEAD was used.
+    NoBranchStamp,
+}
+
+/// The revision a change review's drift is measured against, plus the
+/// provenance of that choice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DriftTip {
+    /// The full SHA drift is measured against.
+    pub rev: String,
+    /// The review's stamped branch, when it stamped one — carried whether
+    /// or not it still resolves, so a caller can name it in a message.
+    pub branch: Option<String>,
+    /// Which rung of the ladder produced [`Self::rev`].
+    pub origin: TipOrigin,
+}
+
+/// Chooses the revision a change review's drift is measured against.
+///
+/// This is the single implementation of that policy. It used to live as an
+/// `.ok().flatten()` chain in `rdm-cli`; consumers (the CLI today, a server
+/// route later) must delegate here rather than re-deriving it, so every
+/// surface measures drift against the same revision.
+///
+/// The ladder, in order:
+///
+/// 1. `change_branch` is stamped and still resolves → that branch's
+///    **current** SHA, [`TipOrigin::StampedBranch`].
+/// 2. `change_branch` is stamped but no longer resolves (renamed or
+///    deleted) → the repository's `HEAD`, [`TipOrigin::BranchGone`].
+/// 3. No branch was stamped — the review was started on a detached HEAD →
+///    the repository's `HEAD`, [`TipOrigin::NoBranchStamp`].
+///
+/// Rung 1 deliberately returns the branch's *current* SHA, not the review's
+/// recorded `head`: drift is measured against where the branch is **now**,
+/// so a force-moved branch re-points the tip. That is the intent, not a
+/// bug — a later reader should not "fix" it.
+///
+/// A [`SourceRepo`] failure is **propagated, never swallowed**. This is one
+/// intentional behavior change from the CLI chain it replaces, which read
+/// `.and_then(|b| source.rev_parse(b).ok().flatten()).or_else(|| source.head().ok().flatten())`
+/// and so laundered a genuine source failure — git missing, or the
+/// adapter's option-shaped-operand guard
+/// ([`Error::InvalidChangeRevisionInput`]) firing before any subprocess —
+/// into a silent re-point of drift at a *different* revision. A source that
+/// cannot answer must not silently change what drift is measured against;
+/// the caller degrades explicitly instead.
+///
+/// # Errors
+///
+/// - [`Error::ChangeTipUnresolvable`] when no revision can be chosen at
+///   all: no branch resolves *and* `HEAD` is unborn (`Ok(None)`), or the
+///   path is not a usable repository.
+/// - Any error [`SourceRepo::rev_parse`] or [`SourceRepo::head`] returns is
+///   propagated unchanged — notably [`Error::Git`] and
+///   [`Error::InvalidChangeRevisionInput`].
+///
+/// # Examples
+///
+/// A stamped branch that still resolves wins over `HEAD`:
+///
+/// ```
+/// use rdm_core::change::{TipOrigin, resolve_drift_tip};
+/// use rdm_core::source::MemorySourceRepo;
+///
+/// let source = MemorySourceRepo::new()
+///     .with_rev("feature/x", "a".repeat(40).as_str())
+///     .with_head(&"b".repeat(40));
+/// let tip = resolve_drift_tip(&source, Some("feature/x")).unwrap();
+/// assert_eq!(tip.rev, "a".repeat(40));
+/// assert_eq!(tip.origin, TipOrigin::StampedBranch);
+/// ```
+///
+/// A branch that has since been deleted degrades to `HEAD`:
+///
+/// ```
+/// use rdm_core::change::{TipOrigin, resolve_drift_tip};
+/// use rdm_core::source::MemorySourceRepo;
+///
+/// let source = MemorySourceRepo::new().with_head(&"b".repeat(40));
+/// let tip = resolve_drift_tip(&source, Some("gone")).unwrap();
+/// assert_eq!(tip.rev, "b".repeat(40));
+/// assert_eq!(tip.origin, TipOrigin::BranchGone);
+/// assert_eq!(tip.branch.as_deref(), Some("gone"));
+/// ```
+pub fn resolve_drift_tip(
+    source: &impl SourceRepo,
+    change_branch: Option<&str>,
+) -> Result<DriftTip> {
+    let branch = change_branch.map(str::to_string);
+    if let Some(name) = change_branch {
+        // Propagate, do NOT fall back: a source that cannot answer must not
+        // silently re-point drift at a different revision.
+        if let Some(rev) = source.rev_parse(name)? {
+            return Ok(DriftTip {
+                rev,
+                branch,
+                origin: TipOrigin::StampedBranch,
+            });
+        }
+    }
+    let origin = if change_branch.is_some() {
+        TipOrigin::BranchGone
+    } else {
+        TipOrigin::NoBranchStamp
+    };
+    match source.head()? {
+        Some(rev) => Ok(DriftTip {
+            rev,
+            branch,
+            origin,
+        }),
+        None => Err(Error::ChangeTipUnresolvable { branch }),
+    }
+}
+
 /// Resolves one change-review comment against the source repository.
 ///
-/// `tip` is the revision drift is measured against — the review's stamped
-/// `change_branch` when it still resolves, otherwise the repository's HEAD.
+/// `tip` is the revision drift is measured against; [`resolve_drift_tip`]
+/// owns the policy that chooses it. This function is the pure resolution
+/// half and takes whatever revision it is handed.
 ///
 /// The ladder, per the [module documentation](self):
 ///
@@ -766,6 +895,67 @@ mod tests {
     use crate::model::{ReviewCommentStatus, ReviewState};
     use crate::source::{MemorySourceRepo, SourceObjectKind};
     use chrono::Utc;
+
+    /// AC1: the drift-tip ladder lives in core and covers every branch
+    /// state — present, gone, never stamped, unborn HEAD, and a genuine
+    /// lookup failure that must NOT be laundered into a HEAD fallback.
+    #[test]
+    fn resolve_drift_tip_covers_every_branch_state() {
+        let branch_sha = "1".repeat(40);
+        let head_sha = "2".repeat(40);
+
+        // (a) A stamped branch that still resolves wins, at the branch's
+        //     current sha — not the review's recorded head.
+        let source = MemorySourceRepo::new()
+            .with_rev("feature/x", &branch_sha)
+            .with_head(&head_sha);
+        let tip = resolve_drift_tip(&source, Some("feature/x")).unwrap();
+        assert_eq!(tip.rev, branch_sha);
+        assert_eq!(tip.branch.as_deref(), Some("feature/x"));
+        assert_eq!(tip.origin, TipOrigin::StampedBranch);
+
+        // (b) A stamped branch that was renamed or deleted degrades to HEAD,
+        //     and still names the branch so a caller can explain itself.
+        let source = MemorySourceRepo::new().with_head(&head_sha);
+        let tip = resolve_drift_tip(&source, Some("feature/gone")).unwrap();
+        assert_eq!(tip.rev, head_sha);
+        assert_eq!(tip.branch.as_deref(), Some("feature/gone"));
+        assert_eq!(tip.origin, TipOrigin::BranchGone);
+
+        // (c) No branch was ever stamped (a detached-HEAD review): HEAD,
+        //     distinguishable from (b) by origin.
+        let tip = resolve_drift_tip(&source, None).unwrap();
+        assert_eq!(tip.rev, head_sha);
+        assert_eq!(tip.branch, None);
+        assert_eq!(tip.origin, TipOrigin::NoBranchStamp);
+
+        // (d) A genuine rev-parse failure propagates. HEAD is deliberately
+        //     seeded and reachable here, so this test fails if the error is
+        //     laundered into the HEAD fallback the old CLI chain took.
+        let source = MemorySourceRepo::new()
+            .with_head(&head_sha)
+            .with_failing_rev_parse("feature/x");
+        let err = resolve_drift_tip(&source, Some("feature/x")).unwrap_err();
+        assert!(
+            matches!(err, Error::Git(_)),
+            "a source failure must propagate, not fall back to HEAD: {err:?}"
+        );
+
+        // (e) Nothing resolvable at all — a gone branch over an unborn HEAD.
+        let source = MemorySourceRepo::new();
+        let err = resolve_drift_tip(&source, Some("feature/gone")).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::ChangeTipUnresolvable { ref branch } if branch.as_deref() == Some("feature/gone")
+        ));
+        let err = resolve_drift_tip(&source, None).unwrap_err();
+        assert!(matches!(err, Error::ChangeTipUnresolvable { branch: None }));
+
+        // A failing HEAD lookup propagates rather than becoming "unresolvable".
+        let source = MemorySourceRepo::new().with_failing_head();
+        let err = resolve_drift_tip(&source, None).unwrap_err();
+        assert!(matches!(err, Error::Git(_)));
+    }
 
     fn review_with(anchor: Option<Anchor>) -> Review {
         Review {

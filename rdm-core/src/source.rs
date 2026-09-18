@@ -17,7 +17,7 @@
 //! [`MemorySourceRepo`] is the in-memory double the pure logic in
 //! [`crate::change`] is unit-tested against.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::error::Result;
 
@@ -153,6 +153,10 @@ pub struct MemorySourceRepo {
     /// `(rev, path)` → explicitly seeded object kind, for
     /// [`SourceRepo::object_kind_at`].
     object_kinds: HashMap<(String, String), SourceObjectKind>,
+    /// Revisions [`SourceRepo::rev_parse`] must fail on rather than miss.
+    failing_rev_parses: HashSet<String>,
+    /// Whether [`SourceRepo::head`] must fail rather than answer.
+    failing_head: bool,
 }
 
 impl MemorySourceRepo {
@@ -212,6 +216,30 @@ impl MemorySourceRepo {
         self
     }
 
+    /// Makes [`SourceRepo::rev_parse`] return [`Err`] for `rev`, rather
+    /// than the benign `Ok(None)` miss every other seed produces.
+    ///
+    /// Every `MemorySourceRepo` method is otherwise infallible, which makes
+    /// the *genuine tool failure* arm of the [`SourceRepo`] contract —
+    /// distinct from a miss, and the arm
+    /// [`crate::change::resolve_drift_tip`] must propagate rather than
+    /// swallow — untestable without spawning real git. This is the seam.
+    #[must_use]
+    pub fn with_failing_rev_parse(mut self, rev: &str) -> Self {
+        self.failing_rev_parses.insert(rev.to_string());
+        self
+    }
+
+    /// Makes [`SourceRepo::head`] return [`Err`] rather than answering.
+    ///
+    /// The companion to [`Self::with_failing_rev_parse`]; see its note on
+    /// why failure injection is needed at all.
+    #[must_use]
+    pub fn with_failing_head(mut self) -> Self {
+        self.failing_head = true;
+        self
+    }
+
     /// Seeds the [`SourceObjectKind`] of `path` at `rev`, for
     /// [`SourceRepo::object_kind_at`].
     ///
@@ -231,6 +259,11 @@ impl MemorySourceRepo {
 
 impl SourceRepo for MemorySourceRepo {
     fn rev_parse(&self, rev: &str) -> Result<Option<String>> {
+        if self.failing_rev_parses.contains(rev) {
+            return Err(crate::error::Error::Git(format!(
+                "seeded rev-parse failure for '{rev}'"
+            )));
+        }
         Ok(self.revs.get(rev).cloned())
     }
 
@@ -256,6 +289,11 @@ impl SourceRepo for MemorySourceRepo {
     }
 
     fn head(&self) -> Result<Option<String>> {
+        if self.failing_head {
+            return Err(crate::error::Error::Git(
+                "seeded HEAD lookup failure".to_string(),
+            ));
+        }
         Ok(self.head.clone())
     }
 

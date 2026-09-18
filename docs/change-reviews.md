@@ -81,9 +81,31 @@ range also makes the permalink derivable with no checkout present.
 
 ## Resolution: resolved / drifted / unresolved
 
-`rdm review show` resolves each anchor against a **tip** — the review's
-stamped `change_branch` when it still resolves, otherwise the repository's
-HEAD:
+`rdm review show` resolves each anchor against a **tip**, chosen by
+`rdm_core::change::resolve_drift_tip` — the single implementation of that
+policy, which every consumer delegates to rather than re-deriving:
+
+| `TipOrigin` | when | tip |
+|---|---|---|
+| `StampedBranch` | the review's stamped `change_branch` still resolves | that branch's **current** sha |
+| `BranchGone` | a branch was stamped but no longer resolves (renamed, deleted, never pushed) | the repository's `HEAD` |
+| `NoBranchStamp` | the review was started on a detached HEAD, so nothing was stamped | the repository's `HEAD` |
+
+`StampedBranch` deliberately takes the branch's *current* sha rather than
+the review's recorded `head`: drift is measured against where the branch is
+now, so a force-moved branch re-points the tip. Two failure modes are
+distinct, and neither falls back silently:
+
+- Nothing resolvable at all — no branch, and an unborn `HEAD` — is
+  `Error::ChangeTipUnresolvable`.
+- A **source-repository failure** (git missing, or the adapter's
+  option-shaped-operand guard `Error::InvalidChangeRevisionInput` firing
+  before any subprocess) is *propagated*. A source that cannot answer must
+  not silently change what drift is measured against; the caller degrades
+  explicitly (see "The degrade rule") instead of quietly measuring against
+  a different revision.
+
+The resolution states:
 
 | state | meaning |
 |---|---|
@@ -175,6 +197,65 @@ directly over the argv each method builds. `rdm-core`'s own
 `rdm_core::change` is unit-tested against, so every correctness-critical rule
 is testable with no process spawned.
 
+## Source discovery
+
+Two commands ask the same question — "is the checkout I am standing in the
+project's configured source repository?" — and they used to answer it with
+two hand-written ladders in `rdm-cli`. An audit confirmed the two genuinely
+**disagree**, in exactly three of the seven environments below (E2, E4, E6),
+and that the disagreement is intentional rather than drift:
+
+- `rdm review --on change/…` pins content. It must name a source or refuse,
+  so it may leave the cwd for a configured local directory.
+- `rdm link check` is a lint that fails open. It never verifies against a
+  repository the operator is not standing in; every other environment is a
+  documented skip, reported as `path_verification_skipped`.
+
+So `rdm_core::source_select::select_source` owns the **classification** of
+the environment, while its `SourceFallback` parameter
+(`ConfiguredLocal` / `CwdOnly`) carries exactly that difference in
+**disposition**. Collapsing the two into one ladder — the fix the original
+allegation implied — would erase link check's fail-open skip, so it was
+explicitly refused.
+
+| Environment | `ConfiguredLocal` (change review) | `CwdOnly` (link check) |
+|---|---|---|
+| E1 matching checkout | `ReadCwdCheckout` | `ReadCwdCheckout` |
+| E2 mismatching checkout + configured LOCAL source | `ReadConfiguredLocal` | `Unavailable(CheckoutIsNotConfiguredSource)` |
+| E3 mismatching checkout + configured REMOTE source | `Unavailable(CheckoutIsNotConfiguredSource)` | `Unavailable(CheckoutIsNotConfiguredSource)` |
+| E4 no checkout + configured LOCAL source | `ReadConfiguredLocal` | `Unavailable(NotInCheckout)` |
+| E5 no checkout + configured REMOTE source | `Unavailable(ConfiguredSourceNotLocal)` | `Unavailable(NotInCheckout)` |
+| E6 in a checkout, NO source configured | `ReadCwdCheckout` | `Unavailable(NoSourceConfigured)` |
+| E7 no checkout, NO source configured | `Unavailable(NoCheckoutAndNoSource)` | `Unavailable(NoCheckoutAndNoSource)` |
+
+E6 and E7 are distinct environments with distinct causes and are never
+collapsed into one row, even where two causes happen to share a message.
+The same seven row labels appear in `select_source`'s rustdoc and in its
+table-driven unit test, which pins the row count at fourteen cells and
+asserts that E2, E4 and E6 *differ* between the two consumers — so a later
+attempt to unify the ladders fails loudly instead of silently erasing the
+skip.
+
+### Identity root vs. read root
+
+The classifier is handed only booleans, never a path, and that is
+load-bearing. `rdm_git::worktree::discover_project_repo` deliberately
+answers with the repository's **main working tree**, which is the right
+answer for *identity* (is this checkout the project's source?) and the wrong
+one to *read* through: for a linked worktree, reading it would make
+`change/HEAD` pin main's HEAD and stamp `main` as the change branch instead
+of the worktree's own. The adapter therefore keeps two differently named
+values — the **identity root** (only ever the left-hand side of
+`repo_matches_source`) and the **read root** (the cwd) — and
+`SourceSelection::ReadCwdCheckout` names the cwd and nothing else.
+`rdm link check` reads through the cwd for the same reason; that is
+behavior-preserving, because every revision it resolves is a shared ref or
+SHA rather than a per-worktree HEAD.
+
+Regressions: `cli_review_change.rs::change_review_in_a_linked_worktree_pins_that_worktrees_head_not_main`,
+`::change_review_falls_back_to_the_configured_local_source_while_link_check_skips`,
+and `cli_link.rs::check_from_a_linked_worktree_of_the_configured_source_still_verifies`.
+
 ## Where the code lives
 
 Every rule below — target pinning, base derivation, anchor derivation, anchor
@@ -192,7 +273,9 @@ checkout to read, asking the cwd which worktree it is, and formatting output.
 | the default branch the merge base is taken against (`source_default_branch`) | `rdm-core/src/ops/reviews.rs` |
 | `--implements` parsing and single-approved-plan inference | `rdm-core/src/ops/plan.rs` |
 | the git implementation | `rdm-git/src/source.rs` |
-| source-repo discovery from the cwd | `rdm-cli/src/source_repo.rs` |
+| the drift-tip ladder (`resolve_drift_tip`) | `rdm-core/src/change.rs` |
+| which repository to read, as a pure decision (`select_source`) + locator identity | `rdm-core/src/source_select.rs` |
+| the environmental half of discovery: cwd, checkout lookup, `is_dir`, `origin` remote | `rdm-cli/src/source_repo.rs` |
 | CLI wiring: discovery + core calls + formatting | `rdm-cli/src/commands/review.rs` |
 
 Every failure mode above is a matchable `rdm_core::Error` variant rather than

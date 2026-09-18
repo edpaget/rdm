@@ -251,6 +251,16 @@ pub enum Error {
         /// The branch the merge base was looked for against.
         branch: String,
     },
+    /// The revision a change review's drift is measured against cannot be
+    /// determined at all: the review's stamped branch (if any) no longer
+    /// resolves and the source repository has no HEAD to fall back to — an
+    /// unborn HEAD, or a directory that is not a usable repository.
+    ///
+    /// Produced by [`crate::change::resolve_drift_tip`].
+    ChangeTipUnresolvable {
+        /// The branch the review stamped at start time, when it stamped one.
+        branch: Option<String>,
+    },
     /// A `--quote` was given on a `change/` review without the `--path`
     /// that says which file to locate it in.
     ChangeQuoteNeedsPath,
@@ -766,6 +776,16 @@ impl std::fmt::Display for Error {
                     "no merge base between {head} and '{branch}' — unrelated history, an orphan branch, or a shallow clone; pass --base <rev> to name the revision the change is diffed against"
                 )
             }
+            Error::ChangeTipUnresolvable { branch } => match branch {
+                Some(branch) => write!(
+                    f,
+                    "branch '{branch}' no longer resolves in the source repository and it has no HEAD to fall back to — restore the branch, or run this from a checkout with at least one commit"
+                ),
+                None => write!(
+                    f,
+                    "the source repository has no resolvable HEAD to measure drift against — run this from a checkout with at least one commit"
+                ),
+            },
             Error::ChangeQuoteNeedsPath => {
                 write!(
                     f,

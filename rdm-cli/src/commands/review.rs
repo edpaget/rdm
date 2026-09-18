@@ -687,6 +687,10 @@ pub fn run(
 /// when the reason is structural (a stored anchor naming a directory or
 /// submodule), `None` for an ordinary drift-to-missing.
 ///
+/// The revision drift is measured against is chosen by
+/// [`rdm_core::change::resolve_drift_tip`], which owns that policy; this
+/// function only maps its failures onto the degrade path below.
+///
 /// The read path **degrades, never fails**: with no source repo reachable at
 /// all every change comment comes back unresolved with an empty notes slice
 /// (there is no source to ask *why* an individual anchor is ineligible) and
@@ -718,29 +722,38 @@ fn resolve_all(
     };
     #[cfg(feature = "git")]
     {
-        use rdm_core::source::SourceRepo;
         let source = match crate::source_repo::discover_source_repo(store, project) {
             Ok(source) => source,
             Err(e) => return (unresolved(), Vec::new(), Some(e.to_string())),
         };
-        // Drift is measured against the branch the change was on when the
-        // review started; a deleted/renamed branch (or a detached-HEAD
-        // review) degrades to the repository's current HEAD.
-        let tip = doc
-            .frontmatter
-            .change_branch
-            .as_deref()
-            .and_then(|b| source.rev_parse(b).ok().flatten())
-            .or_else(|| source.head().ok().flatten());
-        let Some(tip) = tip else {
-            return (
-                unresolved(),
-                Vec::new(),
-                Some(
-                    "the source repository has no resolvable HEAD — anchor resolution skipped"
-                        .to_string(),
-                ),
-            );
+        // Which revision drift is measured against is core's policy, not
+        // the CLI's: `resolve_drift_tip` owns the stamped-branch /
+        // branch-gone / no-stamp ladder, and (unlike the `.ok().flatten()`
+        // chain that used to live here) propagates a genuine source
+        // failure instead of silently re-pointing drift at HEAD. Either
+        // way the read path degrades rather than failing.
+        let tip = match rdm_core::change::resolve_drift_tip(
+            &source,
+            doc.frontmatter.change_branch.as_deref(),
+        ) {
+            Ok(tip) => tip.rev,
+            Err(rdm_core::error::Error::ChangeTipUnresolvable { .. }) => {
+                return (
+                    unresolved(),
+                    Vec::new(),
+                    Some(
+                        "the source repository has no resolvable HEAD — anchor resolution skipped"
+                            .to_string(),
+                    ),
+                );
+            }
+            Err(e) => {
+                return (
+                    unresolved(),
+                    Vec::new(),
+                    Some(format!("{e} — anchor resolution skipped")),
+                );
+            }
         };
         let rdm_core::model::ReviewTarget::Change { head, .. } = &doc.frontmatter.target else {
             unreachable!("guarded by the outer matches! above");

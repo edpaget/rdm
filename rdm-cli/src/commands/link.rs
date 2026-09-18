@@ -19,8 +19,6 @@ use rdm_core::ops::links::LinkCheckReport;
 use rdm_core::{display, json};
 
 use crate::paths;
-#[cfg(feature = "git")]
-use crate::source_repo::repo_matches_source;
 use crate::{AppStore, LinkCommand, OutputFormat};
 
 /// Runs `rdm link` subcommands.
@@ -96,17 +94,33 @@ fn check(
 /// to verify a code link's path against (see
 /// [`rdm_core::ops::links::LinkCheckReport`]'s doc comment).
 ///
+/// Which repository to read is classified by
+/// [`rdm_core::source_select::select_source`] under
+/// [`SourceFallback::CwdOnly`](rdm_core::source_select::SourceFallback::CwdOnly)
+/// — the same seven-environment decision table
+/// [`crate::source_repo::discover_source_repo`] consumes, with the one
+/// parameter that says link check never verifies against a repository the
+/// operator is not standing in. See that table, and `docs/change-reviews.md`
+/// § "Source discovery", for the three cells where the two consumers
+/// deliberately differ.
+///
 /// Distinct outcomes, never conflated:
 /// - Git not installed, `cwd` not inside any checkout, the project has no
 ///   `source` configured, or the discovered checkout doesn't match the
 ///   project's configured `source.repo` (see
 ///   [`crate::source_repo::repo_matches_source`]) — all
 ///   fall through to a "skipped" note explaining which of those applies,
-///   rather than silently verifying against an unrelated repository.
+///   rather than silently verifying against an unrelated repository. This
+///   fail-open skip is deliberate and is *not* shared with change review,
+///   which must name a source or refuse.
 /// - Inside the *matching* checkout, each code link's path is checked at its
 ///   pinned revision (falling back to the project's configured default
 ///   branch, then `"main"`, when the link itself carries no resolved rev —
-///   mirroring `resolve_code_link`'s own `web_url` fallback).
+///   mirroring `resolve_code_link`'s own `web_url` fallback). The read is
+///   rooted at the **cwd**, not the checkout's identity root, so a linked
+///   worktree reads as itself; every revision involved is a shared ref or
+///   SHA, so this is behavior-preserving (pinned by
+///   `cli_link.rs::check_from_a_linked_worktree_of_the_configured_source_still_verifies`).
 /// - A single failed lookup — a spawn error, or a pinned revision this
 ///   checkout cannot resolve (e.g. a shallow clone missing the commit) — is
 ///   treated as inconclusive and fail-open, never a false "missing", and
@@ -114,49 +128,67 @@ fn check(
 fn verify_paths_at_pinned_rev(store: &AppStore, project: &str, report: &mut LinkCheckReport) {
     #[cfg(feature = "git")]
     {
-        let cwd = match std::env::current_dir() {
-            Ok(cwd) => cwd,
-            Err(_) => {
-                report.path_verification_skipped =
-                    Some("could not determine the current directory".to_string());
-                return;
-            }
+        use rdm_core::source_select::{
+            ConfiguredSource, SourceEnvironment, SourceFallback, SourceSelection,
+            SourceUnavailable, select_source,
         };
-        let repo = match rdm_git::worktree::discover_project_repo(&cwd) {
-            Ok(repo) => repo,
-            Err(_) => {
-                report.path_verification_skipped =
-                    Some("not inside a source-repo checkout".to_string());
-                return;
-            }
+
+        let (cwd, source, in_checkout, checkout_matches_configured) =
+            match crate::source_repo::gather_source_environment(store, project) {
+                Ok(gathered) => gathered,
+                Err(_) => {
+                    report.path_verification_skipped =
+                        Some("could not determine the current directory".to_string());
+                    return;
+                }
+            };
+        let env = SourceEnvironment {
+            in_checkout,
+            checkout_matches_configured,
+            configured: source.as_ref().map(|src| ConfiguredSource {
+                locator: src.repo.as_str(),
+                is_local_dir: std::path::Path::new(&src.repo).is_dir(),
+            }),
         };
-        let source = rdm_core::io::load_project(store, project)
-            .ok()
-            .and_then(|doc| doc.frontmatter.source);
-        let source = match source {
-            Some(source) => source,
-            None => {
+        match select_source(&env, SourceFallback::CwdOnly) {
+            // The only cell link check verifies in: the cwd checkout is
+            // provably the project's configured source.
+            SourceSelection::ReadCwdCheckout => {}
+            SourceSelection::Unavailable(SourceUnavailable::NoSourceConfigured) => {
                 report.path_verification_skipped = Some(
                     "project has no configured source repo — skipping path verification"
                         .to_string(),
                 );
                 return;
             }
-        };
-        if !repo_matches_source(&repo, &source.repo) {
-            report.path_verification_skipped = Some(format!(
-                "cwd is inside a git checkout, but not the project's configured source ({}) — skipping path verification",
-                source.repo
-            ));
-            return;
+            SourceSelection::Unavailable(SourceUnavailable::CheckoutIsNotConfiguredSource {
+                locator,
+            }) => {
+                report.path_verification_skipped = Some(format!(
+                    "cwd is inside a git checkout, but not the project's configured source ({locator}) — skipping path verification"
+                ));
+                return;
+            }
+            // `NotInCheckout` and `NoCheckoutAndNoSource` are distinct
+            // causes that share one message: there is no checkout to
+            // verify against either way. `ReadConfiguredLocal` and
+            // `ConfiguredSourceNotLocal` are `ConfiguredLocal`-only
+            // outcomes and never reach here.
+            SourceSelection::ReadConfiguredLocal | SourceSelection::Unavailable(_) => {
+                report.path_verification_skipped =
+                    Some("not inside a source-repo checkout".to_string());
+                return;
+            }
         }
+        // `ReadCwdCheckout` is only reachable with a configured source.
+        let source = source.expect("a matching checkout implies a configured source");
         let default_rev = source.default_branch.unwrap_or_else(|| "main".to_string());
         for link in report.code_links.clone() {
             let rev = link.rev.clone().unwrap_or_else(|| default_rev.clone());
             // `Ok(None)` (the pinned rev doesn't resolve in this checkout —
             // e.g. a shallow clone) and `Err` (a spawn failure) are both
             // inconclusive: fail open rather than report a false "missing".
-            let exists = rdm_git::path_exists_at_rev(&repo, &rev, &link.path)
+            let exists = rdm_git::path_exists_at_rev(&cwd, &rev, &link.path)
                 .unwrap_or(Some(true))
                 .unwrap_or(true);
             if !exists {

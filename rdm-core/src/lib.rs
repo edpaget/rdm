@@ -58,6 +58,9 @@ pub mod session;
 /// The read-only source-repository port a `change/<sha>` review's anchors
 /// resolve against, plus an in-memory double for tests.
 pub mod source;
+/// Which source repository a command reads from, as a pure decision shared
+/// by `rdm link check` and `rdm review --on change/…`.
+pub mod source_select;
 /// Storage abstraction layer for plan repo data.
 pub mod store;
 /// Reserved-tag primitives (e.g. the `needs-plan-review` sentinel).
