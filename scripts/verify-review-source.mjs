@@ -257,6 +257,28 @@ try {
   // The persisted artifact still carries BOTH findings exactly once.
   assert.equal(JSON.parse(rdm(['review', 'show', mixedDegraded.result.reviewId, '--format', 'json'], shared)).comments.length, 2);
 
+  // The OTHER half of the reviewed/rework asymmetry commit 305003b introduced.
+  // `rework` keeps its status write (pinned below); a `reviewed` that degraded
+  // must NOT get one. classifyPersistOutcome moved the outcome, so the driver
+  // sets `failure`, and `if (rawArgs.gate && !failure)` must therefore skip the
+  // gate entirely: no `gate:persist` agent, and the item left exactly as it was.
+  // Without this row the no-status-write half is unpinned, and a future
+  // `failure = ''` on the reviewed leg would stamp an unverified item reviewed.
+  const statusBeforeGated = json(['phase', 'show', 'phase-1-work', '--roadmap', 'alpha']).status;
+  assert.equal(statusBeforeGated, 'reviewed', 'precondition: the earlier clean gated run left the phase reviewed');
+  const reviewedDegradedGated = await execute({ persist: true, gate: true }, { findings: mixed, degradeAnchors: true });
+  assert.equal(reviewedDegradedGated.result.outcome, 'escalated', 'a fully degraded reviewed run escalates even with the gate requested');
+  assert.equal(reviewedDegradedGated.result.status, 'blocked', 'and maps to blocked');
+  assert.equal(reviewedDegradedGated.result.writesCompletion, false, 'an escalated outcome writes no completion trailer');
+  assert.match(reviewedDegradedGated.result.summary, /^code review incomplete: review persisted with unresolved anchor degradation/,
+    'the driver records the degradation as the run failure, which is what suppresses the gate');
+  assert.ok(reviewedDegradedGated.result.reason.length > 0, 'an escalated outcome carries an escalation reason');
+  assert.ok(!reviewedDegradedGated.calls.some((call) => call.label === 'gate:persist'),
+    'the status-write gate must NOT run for a degraded reviewed outcome');
+  assert.equal(json(['phase', 'show', 'phase-1-work', '--roadmap', 'alpha']).status, statusBeforeGated,
+    'and no rdm status is written — the item is left exactly as the gate found it');
+  assert.ok(reviewedDegradedGated.result.reviewId, 'the review itself is still recorded, degradation and all');
+
   // REWORK + degradation: the outcome classifier's contract is that degradation
   // only ever turns an otherwise-clean `reviewed` into `escalated`; `rework`
   // passes through UNCHANGED. The driver must therefore not treat degradation

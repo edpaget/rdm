@@ -12602,7 +12602,8 @@ import { execFileSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 const [libPath, binary, workdir, mode] = process.argv.slice(2);
-const { buildPersistReviewPrompts, persistReviewCommands } = await import(pathToFileURL(libPath).href);
+const { buildPersistReviewPrompts, persistReviewCommands, persistAccounting, degradationSummaryClause } =
+  await import(pathToFileURL(libPath).href);
 
 const planRepo = path.join(workdir, 'plans');
 const sourceRepo = path.join(workdir, 'source');
@@ -12697,13 +12698,44 @@ if (mode === 'mutant') {
   const anchored = record.comments.filter((c) => c.resolution && c.resolution.state === 'resolved');
   assert.equal(anchored.length, 1, 'the quoted finding still anchors on the document target');
   assert.equal(anchored[0].resolution.quote, 'a unique phase sentence');
+
+  // PROVENANCE. The ladder above landed the review on the DOCUMENT ref, not on
+  // the change ref the persist was asked for. The ack the prompt asks for
+  // reports that as `targetUsed`, and the accounting must turn the mismatch
+  // into `targetFellBack` — a target switch is itself unresolved degradation,
+  // so a run that silently reviewed a different artifact cannot read clean.
+  // § 15e pins this on synthetic acks; here it is pinned against the ack a REAL
+  // execution of the emitted fallback list would have to report.
+  const fellBack = persistAccounting(
+    { ok: true, reviewId: matched[1], targetUsed: DOC_TARGET, attempted: 2, commandsRun: 2,
+      anchored: 1, wholeDocumentIntended: 1, degraded: 0, degradedReasons: [] },
+    survivors,
+    { target: 'change/' + head }
+  );
+  assert.equal(fellBack.anchored, 1, 'the read-back above agrees: exactly one anchor landed');
+  assert.equal(fellBack.wholeDocumentIntended, 1, 'and the quote-less finding was intentional, not degraded');
+  assert.equal(fellBack.reconciled, true, 'the counters reconcile against the survivor list');
+  assert.equal(fellBack.targetFellBack, true, 'targetUsed differs from the requested target');
+  assert.equal(fellBack.unresolvedDegradation, true, 'so an otherwise-clean fallback still cannot report clean');
+  assert.match(degradationSummaryClause(fellBack), new RegExp('target fell back to ' + DOC_TARGET),
+    'and the summary names the ref that was actually reviewed');
+  // The control: the SAME ack against the target it claims is not a fallback.
+  const notFellBack = persistAccounting(
+    { ok: true, reviewId: matched[1], targetUsed: DOC_TARGET, attempted: 2, commandsRun: 2,
+      anchored: 1, wholeDocumentIntended: 1, degraded: 0, degradedReasons: [] },
+    survivors,
+    { target: DOC_TARGET }
+  );
+  assert.equal(notFellBack.targetFellBack, false);
+  assert.equal(notFellBack.unresolvedDegradation, false, 'a primary ladder that simply worked reads clean');
+  assert.equal(degradationSummaryClause(notFellBack), '');
   console.log('15d: the fallback ladder is flag-clean, complete, and lands one comment per finding on the document target');
 }
 NODE_PERSIST_FALLBACK
 
 mkdir -p "$TMP/fb-work"
 if run_node "$TMP/persist-fallback.mjs" "$LIB" "$PERSIST_BIN" "$TMP/fb-work" real; then
-    pass "15d: the emitted fallback ladder carries no --path/--base/--implements, persists every finding once, and resolves to the phase target"
+    pass "15d: the emitted fallback ladder carries no --path/--base/--implements, persists every finding once, resolves to the phase target, and is accounted a targetFellBack"
 else
     fail "15d: the real-binary fallback-ladder assertions failed"
 fi
@@ -12722,6 +12754,26 @@ if run_node "$TMP/persist-fallback.mjs" "$MUT_15D" "$PERSIST_BIN" "$TMP/fb-work-
     pass "15d-mut: with the guard removed the emitted ladder IS refused by the real binary — the guard is load-bearing"
 else
     fail "15d-mut: the guard-less ladder was NOT refused — the 15d guard is vacuous"
+fi
+
+# Planted mutation (b): blind the accounting to a target switch. The ladder
+# still runs and still lands every comment on the document ref, so ONLY the new
+# provenance assertions can catch it — which is exactly what makes them
+# non-vacuous. Without them a persist that silently reviewed a different
+# artifact reads as a clean primary run.
+MUT_15D_B="$TMP/lib-15d-mutant-b.mjs"
+sed "s/^  const targetFellBack = targetUsed !== null \&\& primaryTarget !== null \&\& targetUsed !== primaryTarget;$/  const targetFellBack = false;/" \
+    "$LIB" >"$MUT_15D_B"
+grep -q '^  const targetFellBack = false;$' "$MUT_15D_B" ||
+    fail "15d-mut(b): the mutation did not apply — the targetFellBack expression moved"
+if diff -q "$LIB" "$MUT_15D_B" >/dev/null 2>&1; then
+    fail "15d-mut(b): the mutation did not change the file — the sed target moved"
+fi
+mkdir -p "$TMP/fb-work-mut-b"
+if run_node "$TMP/persist-fallback.mjs" "$MUT_15D_B" "$PERSIST_BIN" "$TMP/fb-work-mut-b" real >/dev/null 2>&1; then
+    fail "15d-mut(b): section 15d still PASSED with targetFellBack pinned false — the fallback-provenance assertions are vacuous"
+else
+    pass "15d-mut(b): pinning targetFellBack to false breaks 15d — a silent target switch cannot read clean"
 fi
 
 # --- 15d-nocode. AN UNANCHORABLE QUOTE NEVER REACHES THE BINARY --------------
