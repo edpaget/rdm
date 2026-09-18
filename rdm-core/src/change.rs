@@ -1752,6 +1752,37 @@ mod tests {
     }
 
     #[test]
+    fn resolve_change_comment_reports_unresolved_when_the_tip_path_becomes_a_tree_or_gitlink() {
+        // The head-side anchor is fully valid (a blob whose quote resolves
+        // there); only the *tip*-side object kind changes, from Blob to
+        // Tree/Gitlink. This exercises the second `object_kind_at` guard —
+        // distinct from the pre-existing-bad-anchor test above, which only
+        // ever seeds a non-Blob kind at `head` and returns via the first
+        // guard.
+        let head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        for tip_kind in [SourceObjectKind::Tree, SourceObjectKind::Gitlink] {
+            let source = MemorySourceRepo::new()
+                .with_object_kind(head, "src/lib.rs", SourceObjectKind::Blob)
+                .with_file(head, "src/lib.rs", CONTENT)
+                .with_object_kind("tip", "src/lib.rs", tip_kind)
+                // Content IS seeded at `tip` and still contains the quote:
+                // if the tip-side kind guard were missing (or checked the
+                // wrong revision), resolution would fall through to this
+                // content and wrongly report Original instead of
+                // Unresolved.
+                .with_file("tip", "src/lib.rs", CONTENT);
+            let review = review_with(Some(anchor()));
+            let resolved = resolve_change_comments(&source, &review, "tip");
+            assert_eq!(
+                resolved[0].resolution,
+                Resolution::Unresolved,
+                "a path that became a {tip_kind:?} at the tip must not resolve"
+            );
+            assert!(resolved[0].quote.is_none());
+        }
+    }
+
+    #[test]
     fn change_anchor_ineligibility_names_a_directory_and_a_submodule_and_clears_for_a_blob() {
         let head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let source = MemorySourceRepo::new()
