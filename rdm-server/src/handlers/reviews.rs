@@ -155,7 +155,8 @@ impl ReviewListItem {
 #[derive(Debug, Deserialize, Default)]
 pub struct ReviewFilters {
     /// Keep only reviews of this target: `roadmap/<slug>`,
-    /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+    /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`,
+    /// `plan/<slug>`, or `change/<sha>`.
     pub on: Option<String>,
     /// Keep only reviews in this state (draft, submitted, addressed,
     /// dismissed).
@@ -234,7 +235,8 @@ pub async fn list_reviews(
 #[derive(Deserialize)]
 pub struct CreateReviewRequest {
     /// The item under review: `roadmap/<slug>`,
-    /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+    /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`,
+    /// `plan/<slug>`, or `change/<sha>`.
     target: String,
     /// Review author. Defaults to `"api"` when omitted or blank — the
     /// server process's OS user does not represent the HTTP caller, so the

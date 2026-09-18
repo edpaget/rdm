@@ -367,7 +367,8 @@ pub(crate) enum Command {
     /// List documents that reference a plan item.
     Backlinks {
         /// The referenced item: `roadmap/<slug>`,
-        /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+        /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`, or
+        /// `plan/<slug>`.
         reference: String,
         /// Project the referenced item belongs to.
         #[arg(long)]
@@ -387,7 +388,8 @@ pub(crate) enum LinkCommand {
     /// Exits nonzero when anything is broken — CI-friendly.
     Check {
         /// Scope the check to one document: `roadmap/<slug>`,
-        /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`. A
+        /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`, or
+        /// `plan/<slug>`. A
         /// roadmap scope checks only the roadmap's own body, not its
         /// phases. Omit to check the whole project.
         #[arg(long)]
@@ -399,7 +401,8 @@ pub(crate) enum LinkCommand {
     /// List one document's outgoing links, resolved.
     List {
         /// The document to list outgoing links for: `roadmap/<slug>`,
-        /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+        /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`, or
+        /// `plan/<slug>`.
         #[arg(long)]
         on: String,
         /// Project the document belongs to.

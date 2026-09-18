@@ -85,7 +85,7 @@ If `rdm commit` reports `Nothing in this session's changeset to commit.` while t
 
 ## Document reviews
 
-Reviews are structured feedback on a roadmap, phase, or task document, with inline comments anchored to quoted text. A review targets `roadmap/<slug>`, `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`, and moves `draft` → `submitted` (with a verdict: `approve`, `request-changes`, or `comment`) → `addressed` or `dismissed`.
+Reviews are structured feedback on a roadmap, phase, task, or implementation-plan document, or on a source-repo change. A review targets `roadmap/<slug>`, `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`, `plan/<slug>`, or `change/<head-sha>`, and moves `draft` → `submitted` (with a verdict: `approve`, `request-changes`, or `comment`) → `addressed` or `dismissed`.
 
 ```bash
 rdm review start --on task/<slug> --no-edit {proj_flag}          # start a draft; prints the review id
@@ -170,11 +170,12 @@ To intentionally empty an existing body on `phase update`, `task update`, or `ro
 
 ## Linking
 
-Bodies can carry `rdm:` links — write them as ordinary Markdown links, e.g. `[the auth roadmap](rdm:roadmap/auth)`. There are three item-link forms, using the same identifiers as `Done:` lines and `review --on`:
+Bodies can carry `rdm:` links — write them as ordinary Markdown links, e.g. `[the auth roadmap](rdm:roadmap/auth)`. There are four item-link forms, using the same identifiers as `Done:` lines and `review --on` (a review target additionally accepts `change/<head-sha>`, but a change is a source-repo diff, not a plan-repo document, so it is not a linkable item form — link code with `rdm:src/<path>@<sha>` instead):
 
 - `rdm:roadmap/<slug>`
 - `rdm:phase/<roadmap-slug>/<stem-or-number>`
 - `rdm:task/<slug>`
+- `rdm:plan/<slug>`
 
 And one pinned code-link form, for pointing at a specific file (and optionally a revision and line range) in the project's source repository:
 

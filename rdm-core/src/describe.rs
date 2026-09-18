@@ -327,10 +327,10 @@ impl Describe for crate::model::Review {
                 },
                 FieldInfo {
                     name: "target",
-                    type_name: "tagged mapping (kind: roadmap | phase | task)",
+                    type_name: "tagged mapping (kind: roadmap | phase | task | plan | change)",
                     required: true,
                     enum_values: &[],
-                    description: "The plan item under review. The CLI reference syntax is roadmap/<slug>, phase/<roadmap-slug>/<stem>, or task/<slug>.",
+                    description: "The plan item, or source-repo change, under review. The CLI reference syntax is roadmap/<slug>, phase/<roadmap-slug>/<stem>, task/<slug>, plan/<slug>, or change/<head-sha>.",
                 },
                 FieldInfo {
                     name: "state",
