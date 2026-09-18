@@ -1,10 +1,11 @@
 {
-  "stem": "phase-1-seed-one",
-  "phase": 1,
-  "title": "Seed One",
-  "status": "done",
+  "body": "First phase: already done.\n",
   "completed": "<DATE>",
-  "roadmap": "sample-roadmap",
+  "estimate_snapshot": "ccfd3f9863ef97c359686915851cfb428c92f466bb2205a657a7b6c709bbb3b2",
   "next_phase": "phase-2-seed-two",
-  "body": "First phase: already done.\n"
+  "phase": 1,
+  "roadmap": "sample-roadmap",
+  "status": "done",
+  "stem": "phase-1-seed-one",
+  "title": "Seed One"
 }

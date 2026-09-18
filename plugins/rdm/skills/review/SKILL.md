@@ -88,16 +88,7 @@ rdm phase update <phase> --status blocked --reason "[code] <the decision or bloc
 rdm task update <slug> --status blocked --reason "[code] <the decision or blocker>" --no-edit --project <PROJECT>
 ```
 
-On `reviewed` **only**, add the completion trailer to the branch commit — a **separate**, source-repo operation:
-
-```bash
-git commit --amend -m "$(git log -1 --pretty=%B)
-
-$(rdm hook done-line --roadmap <slug> --phase <stem>)"
-# or, for a task: $(rdm hook done-line --task <slug>)
-```
-
-Use the exact slugs/stems from the `rdm` commands above. Do NOT set the item to `done` directly — that flip is owned by the merge-to-main hook.
+Do not amend the reviewed source commit during this gate. Completion directives belong to the separately authorized landing step; changing the head requires fresh independent evidence before another source-bound approval. Leave the item `reviewed`, not `done`.
 
 ## Review specification
 
@@ -335,8 +326,8 @@ one of these, and they are told apart by markers alone:
   returns nothing, that dimension is recorded as **non-participating**: it
   contributes no findings, and the reduced coverage is reported in the result
   *and named in the summary*, so a 3-of-7 review never reads as a clean
-  7-of-7. Non-participation is **recorded, never gated on** — a transient API
-  blip must not stall the run, but it must never pass as complete coverage. If
+  7-of-7. Automatic approval requires every selected dimension. A transient API
+  blip leaves approval pending until a complete retry supplies the evidence. If
   **every** dimension fails, the review throws rather than reporting a clean
   result.
 - A dimension that did not run produces **no AC table**, which is not the
@@ -426,7 +417,7 @@ outcome maps to, for the item's kind:
 
 | Outcome | When | Phase status | Task status | Completion trailer |
 |---|---|---|---|---|
-| **reviewed** | clean, or clean after small fixes | `reviewed` | `reviewed` | write it |
+| **reviewed** | clean at the independently reviewed head | `reviewed` | `reviewed` | eligible at landing |
 | **rework** | a fixable defect, or an unmet acceptance criterion | `in-progress` | `in-progress` | do **not** write it |
 | **escalated** | a blocker needing a human decision | `blocked` | `blocked` | do **not** write it |
 
@@ -438,11 +429,11 @@ escalated it.
 Never set the item to `done` directly — that flip is owned by the
 merge-to-main hook.
 
-**The completion trailer.** On `reviewed` only, amend the land-time
-completion trailer into the branch commit; this completes the directive
-deliberately deferred by the finalize step, so the merge-to-main hook flips
-the item `reviewed → done` later. Never hand-type the trailer format — ask rdm
-for it, so the format string has exactly one home:
+**The completion trailer belongs to landing.** Do not amend the reviewed
+commit during this gate: an amendment changes its SHA and invalidates the
+source binding. Landing owns the completion directive; any changed head
+needs fresh review evidence before it can pass the source-bound gate.
+Obtain the directive from rdm rather than hand-typing its format:
 
 ```bash
 rdm hook done-line --roadmap <slug> --phase <stem>   # prints: Done: <slug>/<stem>

@@ -1,44 +1,10 @@
-// review-refute-fix — standalone workflow for direct invocation.
-//
-// dispatch-phase embeds the SAME generated block in its plan-review and
-// code-review stages rather than calling this workflow via workflow() (which
-// would exceed the one-level nesting limit) — sharing happens by stamped
-// copy, not by a cross-workflow() call. See docs/workflow-schemas.md.
-//
-// Invoke in one of THREE shapes:
-//
-//   1. { mode: 'plan', context?: { target?: string } }
-//      Legacy survivors-only path: returns { mode, survivors }. Unchanged.
-//
-//   2. { mode: 'code', context?: { target?: string } } — no `roadmap`+`phase`
-//      and no `task`. Legacy survivors-only path (an ad hoc/document-less
-//      review with no rdm item behind it): returns { mode, survivors }.
-//      Unchanged, for backward compatibility.
-//
-//   3. { mode: 'code', roadmap, phase } or { mode: 'code', task } — the full
-//      standalone code-review path. Derives real diff signals from the
-//      item's worktree (mirroring dispatch-phase's code gate, same fail-open
-//      contract), runs the ONE canonical `buildReviewPipeline('code')`, and
-//      composes the survivors through the ONE `classifyOutcome` call plus the
-//      existing `statusFor`/`writesCompletion`/`summarizeFindings`/`gateFor`
-//      helpers into the dispatch-shaped OUTCOME: { roadmap, phase, outcome,
-//      status, writesCompletion, summary, reason, findings } (or the
-//      `{ task, ... }` shape for a task). `outcome` ∈ { reviewed, rework,
-//      escalated } — `escalated` is structurally unreachable from this
-//      code-only path (there is no plan gate feeding it), same as
-//      dispatch-phase's own code gate.
-//
-//      Passing BOTH `task` and `roadmap`/`phase` is ambiguous and throws.
-//
-//      Optional `gate: true` persists the mapped rdm status via a mechanical
-//      Bash agent (`rdm phase update` / `rdm task update --status ...`,
-//      `--reason` on `escalated`) — for headless/ad hoc callers of this
-//      workflow ONLY. It is never wired into the interactive `rdm-review`
-//      skill, which performs its own gate (including the completion trailer).
-//      `gate` defaults to false/omitted: a bare review run never mutates rdm
-//      state. This workflow NEVER writes the land-time completion trailer
-//      itself, whatever `gate` is — that is a land-time concern owned by
-//      `rdm-land` / the interactive skill's own gate step.
+// Standalone review: legacy survivors-only reports, or a source-bound code
+// review for { roadmap, phase } / { task }. The latter resolves an existing
+// registered source checkout, pins its committed base/head, runs the canonical
+// independent review pipeline, and fails closed on incomplete evidence.
+// Optional persist records the exact change; optional gate verifies status
+// writes and stamp readback in the same checkout. Neither option lands code.
+// No caller-supplied diff bypasses source resolution.
 
 export const meta = {
   name: 'rdm-wf-review-refute-fix',
@@ -551,7 +517,8 @@ function INTENT_MISSING_NOTICE() {
 //|   recommendation: <concrete fix>
 //| ```
 function findPrompt(mode, dim, context) {
-  const target = (context && context.target) || '(the target described in your working directory)';
+  const target = ((context && context.target) || '(the target described in your working directory)') +
+    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') + '\nAuthoritative criterion identities (return exactly one AC row per identity, verbatim): ' + JSON.stringify(context.criteria || []) : '');
   const diffHint =
     mode === 'code'
       ? 'Inspect the implementation diff (use git log / git diff in the worktree).'
@@ -690,8 +657,8 @@ function findPrompt(mode, dim, context) {
 //|   returns nothing, that dimension is recorded as **non-participating**: it
 //|   contributes no findings, and the reduced coverage is reported in the result
 //|   *and named in the summary*, so a 3-of-7 review never reads as a clean
-//|   7-of-7. Non-participation is **recorded, never gated on** — a transient API
-//|   blip must not stall the run, but it must never pass as complete coverage. If
+//|   7-of-7. Automatic approval requires every selected dimension. A transient API
+//|   blip leaves approval pending until a complete retry supplies the evidence. If
 //|   **every** dimension fails, the review throws rather than reporting a clean
 //|   result.
 //|code| - A dimension that did not run produces **no AC table**, which is not the
@@ -717,7 +684,8 @@ function findPrompt(mode, dim, context) {
 //|plan|   of the plan's own acceptance criteria is judged by the **coherence**
 //|plan|   dimension and surfaces as an ordinary finding.
 function refutePrompt(mode, dim, finding, context) {
-  const target = (context && context.target) || '(the target described in your working directory)';
+  const target = ((context && context.target) || '(the target described in your working directory)') +
+    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') + '\nAuthoritative criterion identities (return exactly one AC row per identity, verbatim): ' + JSON.stringify(context.criteria || []) : '');
   const lines = [
     'You are a READ-ONLY refuter. Do not edit any files.',
     'A prior reviewer raised this ' + dim.key + ' finding against ' + target + ':',
@@ -835,8 +803,8 @@ function refutePrompt(mode, dim, finding, context) {
 //|   returns nothing, that dimension is recorded as **non-participating**: it
 //|   contributes no findings, and the reduced coverage is reported in the result
 //|   *and named in the summary*, so a 3-of-7 review never reads as a clean
-//|   7-of-7. Non-participation is **recorded, never gated on** — a transient API
-//|   blip must not stall the run, but it must never pass as complete coverage. If
+//|   7-of-7. Automatic approval requires every selected dimension. A transient API
+//|   blip leaves approval pending until a complete retry supplies the evidence. If
 //|   **every** dimension fails, the review throws rather than reporting a clean
 //|   result. A dimension that did not run produces **no AC table**, which is not
 //|   the same as a table with no FAIL/PARTIAL rows: the absent case is recorded
@@ -1916,7 +1884,7 @@ function persistReviewMode(result) {
 // neither comments nor a summary, which is exactly the clean `reviewed` case.
 function persistReviewSummary(result) {
   const r = result || {};
-  const base = summarizeFindings(persistReviewSurvivors(r));
+  const base = summarizeFindings(persistReviewSurvivors(r)) + (r.evidence ? '\n\nReview evidence:\n' + JSON.stringify(r.evidence, null, 2) : '');
   if (r.outcome === 'escalated') {
     return gateFor(persistReviewMode(r), 'escalated').reasonPrefix + ' escalated: ' + base;
   }
@@ -1976,6 +1944,8 @@ function pathFromLocation(location) {
 // project-flag allow-list. Shell plumbing (heredoc bodies, their terminators,
 // variable assignments) stays flush-left: a heredoc terminator must start its
 // line, and a flush-left line is correctly not read as a command invocation.
+function shellQuote(value) { return "'" + String(value).replace(/'/g, "'\"'\"'") + "'"; }
+
 function persistReviewCommands(result, target, cfg, opts) {
   if (typeof target !== 'string' || target.trim() === '' || target.indexOf('/') === -1) {
     throw new Error(
@@ -1999,7 +1969,10 @@ function persistReviewCommands(result, target, cfg, opts) {
   const pathAnchors = o.pathAnchors === true;
   const IND = '  ';
   const cmds = [];
-  if (worktreeRef !== '') {
+  if (o.source) {
+    cmds.push('cd ' + shellQuote(o.source.path));
+    cmds.push(IND + bin + ' review source --on ' + shellQuote(o.source.item) + ' --source ' + shellQuote(o.source.path) + ' --base ' + shellQuote(o.source.base) + ' --expected-head ' + shellQuote(o.source.head) + ' --expected-branch ' + shellQuote(o.source.branch) + (o.source.noCode ? ' --no-code' : '') + proj + ' >/dev/null || exit 1');
+  } else if (worktreeRef !== '') {
     // A `change/HEAD` target only means anything from inside the item's own
     // checkout, so cd there FIRST. `worktree add` is idempotent and prints the
     // path whether it created the worktree or found an existing one.
@@ -2028,7 +2001,7 @@ function persistReviewCommands(result, target, cfg, opts) {
       IND +
       bin +
       ' review start --on ' +
-      target +
+      (o.source ? shellQuote('change/' + o.source.head) + ' --base ' + shellQuote(o.source.base) + (o.implements ? ' --implements ' + shellQuote(o.implements) : '') : target) +
       ' --body "$RDM_PERSIST_SUMMARY" --no-edit --format json' +
       proj +
       ' > "$RDM_PERSIST_START_JSON"' +
@@ -2211,9 +2184,59 @@ function codeReviewRounds(input) {
 // 'rework', never 'escalated': a code-stage defect's nature still can't be
 // classified deterministically (see above), so an AC-table gap stays in the
 // same reviewed|rework lane as every other surviving code finding.
+// Explicit automatic evidence contract. Legacy report-only callers can omit it.
+// Consume the latest attempt, not historical incompleteness carried for audit.
+// Bounded acceptance-section parser: top-level list items or prose paragraphs.
+// Nested/continued lines remain part of their parent criterion. Ambiguous
+// headings, tables and fenced blocks fail closed instead of losing criteria.
+function acceptanceCriteria(body) {
+  if (typeof body !== 'string') return [];
+  const lines = body.replace(/\r\n/g, '\n').split('\n');
+  const headers = lines.map((line, index) => ({ match: /^(#{1,6})\s+Acceptance(?: Criteria)?\s*:?\s*$/i.exec(line), index })).filter(x => x.match);
+  if (headers.length !== 1) return [];
+  const start = headers[0];
+  const section = [];
+  for (const line of lines.slice(start.index + 1)) {
+    const heading = /^(#{1,6})\s/.exec(line);
+    if (heading && heading[1].length <= start.match[1].length) break;
+    if (heading || /^\s*(?:\||```|~~~)/.test(line)) return [];
+    section.push(line);
+  }
+  const items = [];
+  let current = '';
+  let listed = false;
+  function flush() { if (current.trim()) items.push(current.trim().replace(/\s+/g, ' ')); current = ''; }
+  for (const line of section) {
+    const bullet = /^(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)(\S.*)$/.exec(line);
+    if (bullet) { flush(); listed = true; current = bullet[1]; }
+    else if (!line.trim()) { if (!listed) flush(); }
+    else if (listed && !/^\s+/.test(line)) return [];
+    else current += (current ? '\n' : '') + line.trim();
+  }
+  flush();
+  if (items.length === 0 || new Set(items).size !== items.length) return [];
+  return items.map((text, index) => 'AC' + (index + 1) + ': ' + text);
+}
+
+function reviewEvidenceComplete(evidence) {
+  if (!evidence) return false;
+  const coverage = evidence.coverage && (evidence.coverage.last || evidence.coverage);
+  const budget = evidence.budget || {};
+  const ac = evidence.acTable;
+  const criteria = evidence.criteria;
+  return !!(coverage && coverage.complete === true && coverage.acDimensionRan === true &&
+    Array.isArray(criteria) && criteria.length > 0 && new Set(criteria).size === criteria.length &&
+    Array.isArray(ac) && ac.length === criteria.length && new Set(ac.map(row => row && row.criterion)).size === criteria.length &&
+    ac.every(row => row && criteria.includes(row.criterion)) && ac.every((row) => row && typeof row.criterion === 'string' &&
+      typeof row.evidence === 'string' && row.evidence.trim().length > 0 && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)) &&
+    !(budget.passedThroughBudget > 0) && !(budget.refuterErrors > 0) &&
+    !(evidence.survivors || []).some((f) => f.refuterError || f.unrefutedReason === 'budget'));
+}
+
 function classifyOutcome(input) {
   const i = input || {};
   const tier = i.tier;
+  if (i.evidence && !reviewEvidenceComplete(i.evidence)) return 'escalated';
   const planFindings = i.planFindings || [];
   // 1. Plan gate: a blocking plan finding escalates before any implementation.
   //    An empty/ambiguous plan is surfaced as a blocking coherence finding by
@@ -2411,6 +2434,11 @@ function buildReviewPipeline(mode, deps) {
         // PARTICIPATED. A valid-but-EMPTY payload (`{ findings: [] }`, or
         // `{ ac: [], findings: [] }`) counts as participation: the dimension ran
         // and found nothing. Only null/undefined is non-participation.
+        if ((isAcDimension && (!Array.isArray(found.ac) || !found.ac.every((row) => row && typeof row.criterion === 'string' && typeof row.evidence === 'string' && row.evidence.trim().length > 0 && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)))) ||
+            (!isAcDimension && !Array.isArray(found.findings))) {
+          rec.error = 'invalid structured output';
+          throw new Error('invalid finder output for ' + dim.key);
+        }
         rec.ran = true;
         if (isAcDimension && found && Array.isArray(found.ac)) {
           acTable = found.ac;
@@ -2420,7 +2448,7 @@ function buildReviewPipeline(mode, deps) {
     );
 
     // Loud failure on a wholesale review failure. One dimension dropping to null
-    // is tolerated (recorded in `coverage.failed` below, never gated on); EVERY
+    // is recorded in `coverage.failed` for the automatic completeness gate; EVERY
     // dimension dropping to null means no review actually ran — e.g. an
     // `[models]` binding this runtime does not know, or a total API outage. That
     // must not be reported as a clean review. This fires BEFORE any budget
@@ -2447,12 +2475,9 @@ function buildReviewPipeline(mode, deps) {
     // read as complete coverage when a dimension did not run. Every array is in
     // `dims` selection order (see the `attempts` note above).
     //
-    // DECIDED POLICY: non-participation is RECORDED, NEVER GATED ON — a
-    // transient API blip must not stall the autonomous lane, while the record
-    // keeps the reduced coverage auditable after the fact. Coverage may only
-    // ever influence (a) this returned field, (b) the `summary` string (and
-    // therefore the derived `reason`), and (c) log lines. There is no gating
-    // branch for it in either mode, and there must never be one.
+    // Record incomplete participation without manufacturing findings. Automatic
+    // source-bound callers consume this record through reviewEvidenceComplete;
+    // report-only callers retain evidence without issuing an approval.
     //
     // `acDimensionRan` is `null` in plan mode (there is no `ac` dimension) and
     // whenever `ac` was not selected, so `acTableAbsent` is forced false there —
@@ -2546,7 +2571,9 @@ function buildReviewPipeline(mode, deps) {
           schema: VERDICT_SCHEMA,
           model: verifyModel,
         })
-          .then((verdict) => ({
+          .then((verdict) => {
+            if (!verdict || typeof verdict.refuted !== 'boolean' || typeof verdict.confidence !== 'number') throw new Error('invalid refuter verdict');
+            return ({
             // QUOTE CLEARING. An explicit `quote_ok: false` means the refuter
             // read the reviewed text and the excerpt is not in it — keep the
             // FINDING (its truth is `refuted`'s business, not the quote's) but
@@ -2558,7 +2585,7 @@ function buildReviewPipeline(mode, deps) {
             // whole-document fallback is what protects those.
             finding: verdict && verdict.quote_ok === false ? stripQuote(c.finding) : c.finding,
             verdict: verdict,
-          }))
+          }); })
           // A refuter CRASH is not proof of refutation. Keep the finding as
           // un-refuted (verdict=null ⇒ survives() retains it if confidence ≥
           // floor) instead of silently dropping it as if it were refuted.
@@ -2791,321 +2818,151 @@ if (mode === 'plan' || !(isTask || hasPhaseIdentifiers)) {
 // signals, run the canonical code-review pipeline, classify the dispatch-
 // shaped OUTCOME, and optionally gate.
 const kind = isTask ? 'task' : 'phase'
-const worktreeRef = isTask ? 'task/' + taskSlug : roadmap + '/' + phaseArg
-const reviewTarget = isTask ? 'task/' + taskSlug : roadmap + '/' + phaseArg
-// A THIRD ref, deliberately NOT either of the two above. `rdm review --on` parses
-// ReviewTarget::from_str, whose grammar is `roadmap/<slug>` | `phase/<roadmap-slug>/
-// <stem-or-number>` | `task/<slug>` | `plan/<slug>` — it REJECTS the bare
-// `<roadmap>/<phase>` shape `rdm worktree add` takes, which is what worktreeRef and
-// reviewTarget both are. reviewTarget additionally feeds `context.target` into every
-// find/refute prompt, so rewriting it in place would move prompt bytes the verify
-// harnesses pin. Three refs, three names. A numeric phaseArg is fine here:
-// parse_review_target_ref resolves `phase/<roadmap>/1` through resolve_phase_stem.
-const persistItemRef = isTask ? 'task/' + taskSlug : 'phase/' + roadmap + '/' + phaseArg
-// A code review is about the CODE, so the persisted artifact targets the change
-// itself — `change/HEAD`, pinned to the worktree's tip by `rdm review start`
-// once the emitted commands have cd'd into it. The item ref above stays as the
-// named FALLBACK the persist prompt retries with, and an explicit `persist.on`
-// still overrides both. This lives in the DRIVER region, not the stamped shared
-// block, so a future consumer can choose a different target without editing
-// lib/review.mjs.
-const persistReviewTarget = 'change/HEAD'
-const gate = !!rawArgs.gate
-// The environment payload for every prompt on THIS path that shells out.
-// rdmBin is resolved FIRST (fail-closed), then the optional project name, so
-// validation order is deterministic and a mis-invocation throws before the
-// first agent() call — costing zero tokens.
+const item = isTask ? 'task/' + taskSlug : 'phase/' + roadmap + '/' + phaseArg
 const cfg = { rdmBin: resolveRdmBin(rawArgs.rdmBin), project: parseProjectArg(rawArgs.project) }
-const findModel = rawArgs.findModel
-const verifyModel = rawArgs.verifyModel
-// Per-unit refutation budget for this review. Unset falls back to the review
-// core's documented DEFAULT_MAX_REFUTATIONS; `0` is legal (grade nothing).
-const maxRefutations = rawArgs.maxRefutations
-
-// The opt-in PERSIST switch: record this review's survivors as a real rdm
-// review. Read from STRUCTURED keys only. Absent/false is off, so every existing
-// caller's OUTCOME is byte-unchanged. An explicit `{ on }` overrides
-// persistReviewTarget — this path has exactly one review unit, so there is no
-// fan-out ambiguity to resolve.
-let persistOn = false
-let persistExplicitOn = ''
-{
-  const pv = rawArgs.persist
-  if (pv === undefined || pv === null || pv === false) {
-    persistOn = false
-  } else if (pv === true) {
-    persistOn = true
-  } else if (typeof pv === 'object' && !Array.isArray(pv)) {
-    persistOn = true
-    if (typeof pv.on === 'string' && pv.on.trim() !== '') persistExplicitOn = pv.on.trim()
-  } else {
-    throw new Error(
-      'review-refute-fix: persist must be omitted, `true`, `{}`, or `{ on: "<rdm review ref>" }` — got ' + JSON.stringify(pv)
-    )
-  }
-}
-
-// DIFF_SIGNALS_SCHEMA — duplicated plumbing (not review logic), matching
-// rdm-wf-dispatch-phase.js's own local schema of the same shape.
-const DIFF_SIGNALS_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['changedFiles', 'diffText'],
+const bin = resolveRdmBin(cfg.rdmBin)
+const proj = projectFlag(cfg)
+const runReview = buildReviewPipeline('code')
+const identitySchema = {
+  type: 'object', additionalProperties: false,
+  required: ['item', 'repository', 'path', 'branch', 'base', 'head', 'changedFiles', 'diffText', 'noCode'],
   properties: {
-    changedFiles: { type: 'array', items: { type: 'string' } },
-    diffText: { type: 'string' },
+    item: { type: 'string' }, repository: { type: 'string' }, path: { type: 'string' }, branch: { type: 'string' },
+    base: { type: 'string' }, head: { type: 'string' }, changedFiles: { type: 'array', items: { type: 'string' } },
+    diffText: { type: 'string' }, noCode: { type: 'boolean' },
   },
 }
-
-// buildDiffSignalsPrompt(worktreeRef, cfg) — a mechanical Bash agent reads the
-// branch diff out of the item's worktree. Copied from rdm-wf-dispatch-phase.js's
-// version of the same prompt (duplicated plumbing, not review logic). Its
-// output feeds `deriveSignals` (from the stamped canonical review block
-// above), which decides which review dimensions actually run.
-//
-// Diff base: THREE-DOT (`main...HEAD`) scopes to the branch's own changes.
-//
-// `cfg` is the environment payload `{ rdmBin, project }`. `worktree add` is a
-// PROJECT-SCOPED subcommand, so it carries the project flag.
-function buildDiffSignalsPrompt(ref, cfg) {
-  return [
-    'You are a mechanical diff agent. Do not review, plan, or implement anything, and edit no files.',
-    'Find the worktree for this item and work THERE:',
-    '  ' + resolveRdmBin(cfg && cfg.rdmBin) + ' worktree add ' + ref + projectFlag(cfg),
-    '(it prints the existing path if the worktree already exists) then `cd` into that path.',
-    'Run exactly these two commands and read their output:',
-    '  git diff --name-only main...HEAD',
-    '  git diff main...HEAD',
-    'Return a DIFF_SIGNALS object: `changedFiles` — the repo-relative paths from the first command,',
-    'verbatim, one array element each; and `diffText` — the second command\'s output TRUNCATED to the',
-    'first 40000 characters (append nothing; just stop). If either command fails or the branch has no',
-    'commits of its own, return an empty `changedFiles` array and an empty `diffText`.',
-  ].join('\n')
+function buildReviewSourceCommand(target, input, config) {
+  return resolveRdmBin(config && config.rdmBin) + ' review source --on ' + shellQuote(target) +
+    (input.source ? ' --source ' + shellQuote(input.source) : '') +
+    (input.base ? ' --base ' + shellQuote(input.base) : '') +
+    (input.expectedHead ? ' --expected-head ' + shellQuote(input.expectedHead) : '') +
+    (input.expectedBranch ? ' --expected-branch ' + shellQuote(input.expectedBranch) : '') +
+    (input.noCode ? ' --no-code' : '') + projectFlag(config) + ' --format json'
+}
+function sourceCommand(source) {
+  return buildReviewSourceCommand(source ? source.item : item, source ? {
+    source: source.path, base: source.base, expectedHead: source.head,
+    expectedBranch: source.branch, noCode: source.noCode,
+  } : rawArgs, cfg)
 }
 
-// The code gate IS the canonical review — `buildReviewPipeline('code')` from
-// the stamped block, with NO independent code-review logic in this driver.
-const runReview = buildReviewPipeline('code')
-
-// HOIST (see docs/mechanical-agent-inventory.md): the caller — the rdm-review
-// shim, already a running agent with the repo in context — may run the same two
-// `git diff` commands itself and pass `{ changedFiles, diffText }` as
-// `args.diff`. OPTIONAL: absent or malformed falls through to the agent below,
-// which is left byte-unchanged and is what a direct `Workflow` invocation always
-// does. The shape guard is deliberately the same one the agent result is
-// subjected to, so both paths feed `deriveSignals` identical input.
-const hoistedDiff = rawArgs.diff
-let diff = null
-if (hoistedDiff && typeof hoistedDiff === 'object' && Array.isArray(hoistedDiff.changedFiles)) {
-  diff = hoistedDiff
-  log('review-refute-fix: diff hoisted from caller args for ' + reviewTarget)
-} else {
-  try {
-    diff = await agent(buildDiffSignalsPrompt(worktreeRef, cfg), {
-      label: 'diff:signals',
-      phase: 'Review',
-      schema: DIFF_SIGNALS_SCHEMA,
-      model: findModel,
-    })
-  } catch (e) {
-    diff = null
+function validSource(source) {
+  const sameItem = source && (source.item === item || (!isTask && /^\d+$/.test(String(phaseArg)) && source.item.startsWith('phase/' + roadmap + '/phase-' + phaseArg + '-')))
+  return sameItem && source.repository && source.path && source.branch && /^[0-9a-f]{40,64}$/.test(source.head) &&
+    /^[0-9a-f]{40,64}$/.test(source.base) && Array.isArray(source.changedFiles) && typeof source.diffText === 'string' &&
+    (source.changedFiles.length > 0 || source.noCode === true && rawArgs.noCode === true)
+}
+let source = null
+let failure = ''
+let review = { survivors: [], acTable: null, budget: null, coverage: null }
+let acceptance = ''
+let criteria = []
+let implementationPlan = null
+async function acquireSource(previous) {
+  const resolved = await agent([
+    'You are a mechanical source agent. Run exactly this read-only command; never create a worktree.',
+    sourceCommand(previous),
+    'Return the complete JSON result unchanged. A command failure is a failure, never fabricate a source.',
+  ].join('\n'), { label: previous ? 'source:revalidate' : 'source:resolve', phase: 'Review', schema: identitySchema, model: rawArgs.findModel })
+  if (!validSource(resolved)) throw new Error('source identity missing, mismatched, or unexpectedly empty')
+  if (previous && ['item', 'repository', 'path', 'branch', 'base', 'head'].some((key) => previous[key] !== resolved[key])) throw new Error('source identity changed during review')
+  return resolved
+}
+async function acquirePlan(previous) {
+  let ref = previous ? 'plan/' + previous.slug : rawArgs.implements
+  if (ref !== undefined && (typeof ref !== 'string' || !/^(?:rdm:)?plan\/[a-z0-9][a-z0-9-]*$/.test(ref))) throw new Error('invalid implementation plan reference')
+  if (!ref) {
+    const resolvedPlans = await agent([
+      'Run this read-only command and return its complete JSON array under the plans key:',
+      bin + ' plan list --implements ' + shellQuote(source.item) + ' --status approved' + proj + ' --format json',
+    ].join('\n'), { label: 'plan:resolve', phase: 'Review', schema: { type: 'object', required: ['plans'], properties: { plans: { type: 'array', items: { type: 'object' } } } } })
+    const candidates = resolvedPlans && resolvedPlans.plans
+    if (!Array.isArray(candidates) || candidates.length !== 1) throw new Error('expected exactly one approved implementation plan; pass implements explicitly')
+    ref = 'plan/' + candidates[0].slug
   }
+  const slug = ref.replace(/^(?:rdm:)?plan\//, '')
+  const plan = await agent([
+    'Run this read-only command and return its complete JSON unchanged:',
+    bin + ' plan show ' + shellQuote(slug) + proj + ' --format json',
+  ].join('\n'), { label: previous ? 'plan:revalidate' : 'plan:resolve', phase: 'Review', schema: {
+    type: 'object', required: ['slug', 'implements', 'status', 'body'],
+    properties: { slug: { type: 'string' }, implements: { type: 'string' }, status: { type: 'string' }, body: { type: 'string' } },
+  } })
+  if (!plan || plan.slug !== slug || plan.implements !== 'rdm:' + source.item || plan.status !== 'approved' || typeof plan.body !== 'string') throw new Error('implementation plan does not approve the intended source item')
+  if (previous && ['slug', 'implements', 'status', 'body'].some(key => plan[key] !== previous[key])) throw new Error('implementation plan changed during review')
+  return { slug: plan.slug, implements: plan.implements, status: plan.status, body: plan.body }
 }
-const changedFiles = diff && Array.isArray(diff.changedFiles) ? diff.changedFiles.filter(Boolean) : []
-
-let survivors
-let acTable = null
-// The refutation-budget accounting for this single review pass, projected onto
-// the dispatch-shaped OUTCOME's `reviewBudget` field via the SAME shared helper
-// dispatch-phase uses — no second projection.
-let reviewBudget = null
-// The dimension-PARTICIPATION accounting for the same pass, projected onto
-// `reviewCoverage` through the sibling shared helper. Captured in BOTH branches
-// below (fail-open and derived-signals) so a review that lost a dimension is
-// visible whichever way the signals resolved.
-let reviewCoverage = null
-if (changedFiles.length === 0) {
-  // FAIL-OPEN: omit the `signals` key ENTIRELY — never pass `{}`. See
-  // selectDimensions' three-way contract above.
-  log('review-refute-fix: diff signals unavailable for ' + reviewTarget + ' — running every code dimension (fail-open)')
-  const result = await runReview({
-    target: reviewTarget,
-    findModel: findModel,
-    verifyModel: verifyModel,
-    maxRefutations: maxRefutations,
-  })
-  survivors = result.survivors
-  acTable = result.acTable
-  reviewBudget = buildReviewBudget([result.budget], null)
-  reviewCoverage = buildReviewCoverage([result.coverage], null)
-} else {
-  const signals = deriveSignals({
-    targetType: kind,
-    changedFiles: changedFiles,
-    diffText: typeof diff.diffText === 'string' ? diff.diffText : null,
-  })
-  const result = await runReview({
-    target: reviewTarget,
-    signals: signals,
-    findModel: findModel,
-    verifyModel: verifyModel,
-    maxRefutations: maxRefutations,
-  })
-  survivors = result.survivors
-  acTable = result.acTable
-  reviewBudget = buildReviewBudget([result.budget], null)
-  reviewCoverage = buildReviewCoverage([result.coverage], null)
-}
-
-// One classifyOutcome call composes the survivors (a single review pass, no
-// rework loop — this workflow reviews an already-implemented item, it does
-// not implement/rework). `planFindings` is always [], so `escalated` is
-// structurally unreachable here — same as dispatch-phase's own code gate.
-// `acTable` threads the same AC-table gate dispatch-phase's code gate applies:
-// a surviving FAIL/PARTIAL criterion mechanically forces `rework`.
-const classifierInput = { planFindings: [], codeReviews: [survivors], tier: rawArgs.tier, acTable: acTable }
-const outcome = classifyOutcome(classifierInput)
-const status = statusFor(outcome, kind)
-const wc = writesCompletion(outcome)
-let summary
-if (outcome === 'escalated') {
-  summary = 'code review escalated: ' + summarizeFindings(survivors)
-} else if (outcome === 'rework') {
-  // An AC-only gap can force `rework` with an EMPTY survivors array (no
-  // blocking finding at all) — summarizeFindings([]) would then misleadingly
-  // read "no surviving findings". Name the real cause instead, mirroring
-  // dispatch-phase's buildOutcome/buildTaskOutcome identical note.
-  summary =
-    survivors.length === 0 && acTableHasGap(acTable)
-      ? 'code rework unresolved: unmet acceptance criteria in AC table'
-      : 'code rework unresolved: ' + summarizeFindings(survivors)
-} else {
-  summary = 'review clean: ' + summarizeFindings(survivors)
-}
-// Same visible clause dispatch-phase appends, from the same shared helper: a
-// budget-hit unit is distinguishable in the summary (and, via `reason`, in the
-// `rdm review blocked` queue). Empty when the bound was never hit.
-summary = summary + budgetSummaryClause(reviewBudget)
-// And the sibling coverage clause, immediately after the budget one so the
-// ordering is fixed for a run that hit both. Empty when every dimension ran, so
-// a healthy summary is byte-unchanged. Recorded, never gated on: it reaches
-// `summary` (and via it `reason`) and the OUTCOME field, and nothing else.
-summary = summary + coverageSummaryClause(reviewCoverage)
-// Reuse the existing `[code]` prefix already on GATE_POLICY.code.escalated —
-// no new reason-prefix table.
-const reason = outcome === 'escalated' ? gateFor('code', 'escalated').reasonPrefix + ' ' + summary : ''
-
-// --- Persist the review (opt-in) ---------------------------------------------
-// Record the survivors as a REAL rdm review so an agent's review is the same
-// artifact a human's is. Placed AFTER classifyOutcome and the summary (the
-// verdict and the review body are both derived from them) and BEFORE the
-// optional gate. Wrapped in try/catch: a failed persist is a lost audit trail,
-// never a changed `outcome`, `status`, or gate.
-//
-// NO agentType and NO mechanical-model pin here, deliberately. This engine is
-// DISTRIBUTED; threading `rdm-mechanical` into it is task
-// `thread-agent-type-into-distributed-workflows`, not this one — the count is
-// pinned by scripts/verify-workflow-review.sh § 2c.
+try {
+  // Always resolve, including callers supplying diff. The authoritative committed
+  // content replaces any unverified hoisted diff; caller data never selects a checkout.
+  source = await acquireSource(null)
+  implementationPlan = await acquirePlan(null)
+  const context = await agent([
+    'Read the intended item acceptance criteria with this command and return its complete body as acceptance:',
+    isTask ? bin + ' task show ' + shellQuote(taskSlug) + proj + ' --format json' :
+      bin + ' phase show ' + shellQuote(phaseArg) + ' --roadmap ' + shellQuote(roadmap) + proj + ' --format json',
+  ].join('\n'), { label: 'source:acceptance', phase: 'Review', schema: { type: 'object', additionalProperties: false, required: ['acceptance'], properties: { acceptance: { type: 'string' } } } })
+  if (!context || typeof context.acceptance !== 'string' || !context.acceptance.trim()) throw new Error('acceptance text unavailable')
+  acceptance = context.acceptance
+  criteria = acceptanceCriteria(acceptance)
+  if (!criteria.length) throw new Error('acceptance criteria missing or ambiguous')
+  const signals = source.changedFiles.length ? deriveSignals({ targetType: kind, changedFiles: source.changedFiles, diffText: source.diffText }) : undefined
+  review = await runReview({ target: source.item, source: source, acceptance: acceptance, criteria: criteria, signals: signals,
+    findModel: rawArgs.findModel, verifyModel: rawArgs.verifyModel, maxRefutations: rawArgs.maxRefutations })
+  await acquireSource(source)
+} catch (error) { failure = String(error && error.message || error) }
+const survivors = review.survivors || []
+const reviewBudget = buildReviewBudget([review.budget], null)
+const reviewCoverage = buildReviewCoverage([review.coverage], null)
+const evidence = { criteria: criteria, coverage: review.coverage, budget: review.budget, acTable: review.acTable, survivors: survivors }
+let outcome = classifyOutcome({ planFindings: [], codeReviews: [survivors], tier: rawArgs.tier, acTable: review.acTable, evidence: evidence })
+if (failure) outcome = 'escalated'
+if (!failure && !reviewEvidenceComplete(evidence)) failure = 'required review evidence is incomplete'
 let reviewId = null
-if (persistOn) {
-  const persistTarget = persistExplicitOn || persistReviewTarget
+const persist = rawArgs.persist
+if (persist !== undefined && persist !== false && persist !== true && (!persist || typeof persist !== 'object' || Array.isArray(persist))) throw new Error('invalid persist option')
+if (persist && source && implementationPlan) {
   try {
-    const persistPrompts = buildPersistReviewPrompts(
-      { mode: 'code', outcome: outcome, survivors: survivors },
-      persistTarget,
-      cfg,
-      // `change/HEAD` only resolves from inside the item's checkout, and a
-      // code finding's `location` names a real source path, so both opts are
-      // on for this consumer. `fallbackTarget` is the item ref the persist
-      // prompt retries `review start` with if the change target is rejected,
-      // so a persist never aborts and loses the audit trail. All three are
-      // default-off in the writer, so no other caller's emitted bytes move.
-      { worktreeRef: worktreeRef, pathAnchors: true, fallbackTarget: persistItemRef }
-    )
-    const ack = await agent(persistPrompts.prompt, {
-      label: 'persist:review',
-      phase: 'Gate',
-      schema: PERSIST_ACK_SCHEMA,
-    })
-    if (ack && ack.ok === true && typeof ack.reviewId === 'string' && ack.reviewId !== '') {
-      reviewId = ack.reviewId
-    } else {
-      log('review-refute-fix: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded')
-    }
-  } catch (e) {
-    log('review-refute-fix: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded')
-  }
+    if (persist.on && persist.on !== 'change/' + source.head) throw new Error('source-bound persistence cannot target a different artifact')
+    await acquireSource(source)
+    await acquirePlan(implementationPlan)
+    const prompts = buildPersistReviewPrompts({ mode: 'code', outcome: outcome, survivors: survivors, evidence: { failure: failure, criteria: criteria, implementationPlan: implementationPlan, coverage: review.coverage, budget: review.budget, acTable: review.acTable, source: { item: source.item, path: source.path, repository: source.repository, branch: source.branch, base: source.base, head: source.head } } }, 'change/' + source.head, cfg,
+      { source: source, implements: 'plan/' + implementationPlan.slug, pathAnchors: true })
+    const ack = await agent(prompts.prompt, { label: 'persist:review', phase: 'Gate', schema: PERSIST_ACK_SCHEMA })
+    if (!ack || ack.ok !== true || !ack.reviewId) throw new Error('review persistence failed')
+    reviewId = ack.reviewId
+  } catch (error) { failure = String(error && error.message || error); outcome = 'escalated' }
 }
-
-// Optional mechanical gate: persist the mapped rdm status for ALL THREE
-// outcomes. Headless/ad hoc callers ONLY — `args.gate` defaults to
-// false/omitted, so a bare review run never mutates rdm state. Never runs
-// `rdm commit` (mutations are left staged, matching every other workflow
-// driver) and never writes the completion trailer.
-if (gate) {
-  const reasonFlag = outcome === 'escalated' ? ' --reason "' + reason + '"' : ''
-  // Both are PROJECT-SCOPED subcommands: the flag stays TRAILING, exactly where
-  // the pre-parameterization literals put it, so only the values differ.
-  const statusCmd = isTask
-    ? resolveRdmBin(cfg && cfg.rdmBin) +
-      ' task update ' +
-      taskSlug +
-      ' --status ' +
-      status +
-      reasonFlag +
-      ' --no-edit' +
-      projectFlag(cfg)
-    : resolveRdmBin(cfg && cfg.rdmBin) +
-      ' phase update ' +
-      phaseArg +
-      ' --status ' +
-      status +
-      reasonFlag +
-      ' --no-edit --roadmap ' +
-      roadmap +
-      projectFlag(cfg)
-  await agent(
-    [
-      'You are a mechanical status agent. Do not plan, implement, or review anything.',
-      'Run exactly this command in the repo root:',
-      '  ' + statusCmd,
-      'Do not run `rdm commit` — leave the change staged only.',
-      'Return a STAMP_ACK object: { ok: true } if the command exited 0, otherwise { ok: false }.',
-    ].join('\n'),
-    {
-      label: 'gate:persist',
-      phase: 'Gate',
-      schema: { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' } } },
-    }
-  )
+if (rawArgs.gate && !failure) {
+  try {
+    await acquireSource(source)
+    await acquirePlan(implementationPlan)
+    const target = isTask ? ' task update ' + shellQuote(taskSlug) : ' phase update ' + shellQuote(phaseArg) + ' --roadmap ' + shellQuote(roadmap)
+    const binding = ' --source ' + shellQuote(source.path) + ' --base ' + shellQuote(source.base) + ' --expected-head ' + shellQuote(source.head) + ' --expected-branch ' + shellQuote(source.branch) + (source.noCode ? ' --no-code' : '')
+    const update = (status) => bin + target + ' --status ' + status + binding + ' --no-edit' + proj
+    const show = isTask ? bin + ' task show ' + shellQuote(taskSlug) : bin + ' phase show ' + shellQuote(phaseArg) + ' --roadmap ' + shellQuote(roadmap)
+    const status = statusFor(outcome, kind)
+    const ack = await agent([
+      'You are a mechanical status agent. Run in this pinned source checkout: cd ' + shellQuote(source.path),
+      update('needs-review'),
+      bin + ' review pending --format json' + proj,
+      'Verify the intended item pending entry has review_sha=' + source.head + ' and branch=' + source.branch + '. Stop on mismatch.',
+      ...(status === 'needs-review' ? [] : [update(status)]),
+      show + ' --format json' + proj,
+      'Read back the exact requested status. Return ok=true only if every command succeeded and both stamp and final status matched. Do not commit plan changes.',
+    ].join('\n'), { label: 'gate:persist', phase: 'Gate', schema: { type: 'object', additionalProperties: false, required: ['ok', 'head', 'branch', 'status'], properties: { ok: { type: 'boolean' }, head: { type: 'string' }, branch: { type: 'string' }, status: { type: 'string' } } } })
+    if (!ack || ack.ok !== true || ack.head !== source.head || ack.branch !== source.branch || ack.status !== status) throw new Error('status write/readback did not match pinned source')
+    await acquireSource(source)
+  } catch (error) { failure = String(error && error.message || error); outcome = 'escalated' }
 }
-
-const result = isTask
-  ? {
-      task: taskSlug,
-      outcome: outcome,
-      status: status,
-      writesCompletion: wc,
-      summary: summary,
-      reason: reason,
-      reviewBudget: reviewBudget,
-      reviewCoverage: reviewCoverage,
-      findings: survivors,
-    }
-  : {
-      roadmap: roadmap,
-      phase: phaseArg,
-      outcome: outcome,
-      status: status,
-      writesCompletion: wc,
-      summary: summary,
-      reason: reason,
-      reviewBudget: reviewBudget,
-      reviewCoverage: reviewCoverage,
-      findings: survivors,
-    }
-// PRESENT ONLY WHEN THE PERSIST RAN. An always-present `reviewId: null` would
-// change the OUTCOME of every persist-omitted caller.
+let summary = failure ? 'code review incomplete: ' + failure : (outcome === 'reviewed' ? 'review clean: ' : 'code rework unresolved: ') + summarizeFindings(survivors)
+if (outcome === 'rework' && acTableHasGap(review.acTable)) summary += ' [unmet acceptance criteria]'
+summary += budgetSummaryClause(reviewBudget) + coverageSummaryClause(reviewCoverage)
+const result = { ...(isTask ? { task: taskSlug } : { roadmap: roadmap, phase: phaseArg }), outcome: outcome,
+  status: statusFor(outcome, kind), writesCompletion: writesCompletion(outcome), summary: summary,
+  reason: outcome === 'escalated' ? gateFor('code', 'escalated').reasonPrefix + ' ' + summary : '',
+  source: source, acTable: review.acTable, reviewBudget: reviewBudget, reviewCoverage: reviewCoverage, findings: survivors }
 if (reviewId) result.reviewId = reviewId
-log('review-refute-fix (' + reviewTarget + '): ' + outcome + ' — ' + summary)
+log('review-refute-fix (' + item + '): ' + outcome + ' — ' + summary)
 return result
