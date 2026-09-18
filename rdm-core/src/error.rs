@@ -164,7 +164,8 @@ pub enum Error {
         open_count: usize,
     },
     /// A review target reference did not match `roadmap/<slug>`,
-    /// `phase/<roadmap-slug>/<stem-or-number>`, or `task/<slug>`.
+    /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`,
+    /// `plan/<slug>`, or `change/<head-sha>`.
     InvalidReviewTargetRef(String),
     /// A comment document reference did not match `phase/<stem-or-number>`.
     InvalidCommentDocRef(String),
@@ -669,7 +670,7 @@ impl std::fmt::Display for Error {
             Error::InvalidReviewTargetRef(reference) => {
                 write!(
                     f,
-                    "invalid review target '{reference}' — expected roadmap/<slug>, phase/<roadmap-slug>/<stem-or-number>, or task/<slug>"
+                    "invalid review target '{reference}' — expected roadmap/<slug>, phase/<roadmap-slug>/<stem-or-number>, task/<slug>, plan/<slug>, or change/<head-sha>"
                 )
             }
             Error::InvalidCommentDocRef(reference) => {
