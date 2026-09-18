@@ -117,6 +117,7 @@ impl From<&Error> for ProblemDetail {
             | Error::ReviewImplementsAmbiguous { .. }
             | Error::ChangeTargetHasNoDocument(_)
             | Error::ChangePathNotInRevision { .. }
+            | Error::ChangePathNotAFile { .. }
             | Error::InvalidChangeRevisionInput(_)
             | Error::ChangeRevisionNotFound(_)
             | Error::ChangeBaseNotFound(_)

@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A `change/<sha>` review's `--path`/`--quote` comment can no longer anchor to a directory or a submodule. `rdm review comment --path <directory-or-submodule>` now fails with an actionable error naming the path and what it actually is, and writes no anchor; a comment anchor stored before this check existed (or hand-edited) is re-checked on every read and degrades to `unresolved` with an explanation instead of resolving — `rdm review show` (human, Markdown, and JSON) prints the reason and emits no `rdm:src/...` permalink for it. The `SourceRepo` port gained `object_kind_at`, answering via git's own object typing (`git ls-tree`) rather than guessing from content, so a normal text file whose contents happen to resemble a directory listing still anchors correctly.
+
 - Keep non-Git CLI builds working and bind standalone code approvals to the intended implementation plan and every acceptance criterion. Restore code-comment anchor and source-link regression coverage.
 
 

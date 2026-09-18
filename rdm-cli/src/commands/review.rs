@@ -363,7 +363,7 @@ pub fn run(
             match format {
                 OutputFormat::Json => println!(
                     "{}",
-                    serde_json::to_string_pretty(&json::review_to_json(&id, &doc, &[]))
+                    serde_json::to_string_pretty(&json::review_to_json(&id, &doc, &[], &[]))
                         .context("failed to serialize review")?
                 ),
                 _ => println!(
@@ -560,7 +560,7 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let mut doc = rdm_core::ops::reviews::get_review(store, &project, &review_id)
                 .context("failed to load review")?;
-            let (resolutions, source_note) = resolve_all(store, &project, &doc);
+            let (resolutions, comment_notes, source_note) = resolve_all(store, &project, &doc);
             if no_body {
                 doc.body = String::new();
                 for comment in &mut doc.frontmatter.comments {
@@ -574,6 +574,7 @@ pub fn run(
                         &review_id,
                         &doc,
                         &resolutions,
+                        &comment_notes,
                         source_note.as_deref()
                     )
                 ),
@@ -583,13 +584,14 @@ pub fn run(
                         &review_id,
                         &doc,
                         &resolutions,
+                        &comment_notes,
                         source_note.as_deref()
                     )
                 ),
                 OutputFormat::Json => println!(
                     "{}",
                     serde_json::to_string_pretty(
-                        &json::review_to_json(&review_id, &doc, &resolutions)
+                        &json::review_to_json(&review_id, &doc, &resolutions, &comment_notes)
                             .with_source_note(source_note)
                     )
                     .context("failed to serialize review")?
@@ -670,28 +672,37 @@ pub fn run(
     Ok(())
 }
 
-/// Runs the shared resolution pass and returns it alongside an optional
-/// note explaining why source-repo verification was skipped.
+/// Runs the shared resolution pass and returns it alongside a per-comment
+/// ineligibility-note slice and an optional note explaining why source-repo
+/// verification was skipped entirely.
 ///
 /// Dispatches on the review's target kind: a plan-repo target resolves
-/// through [`resolve_comments`](rdm_core::anchor::resolve_comments), while a
-/// `change/<sha>` target resolves through
+/// through [`resolve_comments`](rdm_core::anchor::resolve_comments) and
+/// carries no per-comment notes (`change_anchor_ineligibility` is a
+/// change-only concept), while a `change/<sha>` target resolves through
 /// [`rdm_core::change::resolve_change_comments`] against the discovered
-/// source repository.
+/// source repository and, for every comment whose resolution came back
+/// unresolved, additionally asks
+/// [`rdm_core::change::change_anchor_ineligibility`] why — populated only
+/// when the reason is structural (a stored anchor naming a directory or
+/// submodule), `None` for an ordinary drift-to-missing.
 ///
-/// The read path **degrades, never fails**: with no source repo reachable
-/// every change comment comes back unresolved and the note says so — the
-/// same policy `rdm link check`'s `path_verification_skipped` established.
-/// (The write path — `review comment --path` — fails loudly instead; a new
-/// anchor derived against nothing would be a lie.)
+/// The read path **degrades, never fails**: with no source repo reachable at
+/// all every change comment comes back unresolved with an empty notes slice
+/// (there is no source to ask *why* an individual anchor is ineligible) and
+/// the returned source note says so — the same policy `rdm link check`'s
+/// `path_verification_skipped` established. (The write path — `review
+/// comment --path` — fails loudly instead; a new anchor derived against
+/// nothing would be a lie.)
 fn resolve_all(
     store: &AppStore,
     project: &str,
     doc: &Document<Review>,
-) -> (Vec<ResolvedComment>, Option<String>) {
+) -> (Vec<ResolvedComment>, Vec<Option<String>>, Option<String>) {
     if !matches!(doc.frontmatter.target, ReviewTarget::Change { .. }) {
         return (
             rdm_core::anchor::resolve_comments(store, project, &doc.frontmatter),
+            Vec::new(),
             None,
         );
     }
@@ -710,7 +721,7 @@ fn resolve_all(
         use rdm_core::source::SourceRepo;
         let source = match crate::source_repo::discover_source_repo(store, project) {
             Ok(source) => source,
-            Err(e) => return (unresolved(), Some(e.to_string())),
+            Err(e) => return (unresolved(), Vec::new(), Some(e.to_string())),
         };
         // Drift is measured against the branch the change was on when the
         // review started; a deleted/renamed branch (or a detached-HEAD
@@ -724,21 +735,42 @@ fn resolve_all(
         let Some(tip) = tip else {
             return (
                 unresolved(),
+                Vec::new(),
                 Some(
                     "the source repository has no resolvable HEAD — anchor resolution skipped"
                         .to_string(),
                 ),
             );
         };
-        (
-            rdm_core::change::resolve_change_comments(&source, &doc.frontmatter, &tip),
-            None,
-        )
+        let rdm_core::model::ReviewTarget::Change { head, .. } = &doc.frontmatter.target else {
+            unreachable!("guarded by the outer matches! above");
+        };
+        let resolutions =
+            rdm_core::change::resolve_change_comments(&source, &doc.frontmatter, &tip);
+        let notes =
+            doc.frontmatter
+                .comments
+                .iter()
+                .zip(&resolutions)
+                .map(|(comment, resolved)| {
+                    if !matches!(
+                        resolved.resolution,
+                        rdm_core::anchor::Resolution::Unresolved
+                    ) {
+                        return None;
+                    }
+                    comment.anchor.as_ref().and_then(|a| {
+                        rdm_core::change::change_anchor_ineligibility(&source, head, a)
+                    })
+                })
+                .collect();
+        (resolutions, notes, None)
     }
     #[cfg(not(feature = "git"))]
     {
         (
             unresolved(),
+            Vec::new(),
             Some("this build has no git support — anchor resolution skipped".to_string()),
         )
     }
@@ -875,8 +907,10 @@ fn render_review_list(
             let arr: Vec<_> = reviews
                 .iter()
                 .map(|(id, doc)| {
-                    let (resolutions, source_note) = resolve_all(store, project, doc);
-                    json::review_to_json(id, doc, &resolutions).with_source_note(source_note)
+                    let (resolutions, comment_notes, source_note) =
+                        resolve_all(store, project, doc);
+                    json::review_to_json(id, doc, &resolutions, &comment_notes)
+                        .with_source_note(source_note)
                 })
                 .collect();
             println!(

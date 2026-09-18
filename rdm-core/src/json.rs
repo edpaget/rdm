@@ -748,9 +748,21 @@ pub struct ReviewCommentJson {
     pub resolution: ResolutionJson,
     /// For a `change/<sha>` review's anchored comment: the head-pinned
     /// `rdm:src/<path>@<head>#L<start>[-L<end>]` permalink, exactly as
-    /// [`crate::link::parse`] accepts it. Absent on every other comment.
+    /// [`crate::link::parse`] accepts it. Absent on every other comment, and
+    /// on a comment whose anchor is not (or no longer) eligible to anchor at
+    /// all (see [`Self::unresolved_reason`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_link: Option<String>,
+    /// Why a `change/<sha>` review's anchor cannot resolve, when the reason
+    /// is more specific than "drifted" or "not found" — currently, a stored
+    /// [`Anchor::FileQuote`](crate::model::Anchor::FileQuote) whose path
+    /// names a directory or a submodule rather than a file at the review's
+    /// head. Absent whenever there is nothing more specific to say (Unlike
+    /// [`ReviewJson::source_verification_skipped`], this is per-comment: it
+    /// explains why *this* anchor itself is invalid, not why verification
+    /// could not run at all).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unresolved_reason: Option<String>,
 }
 
 /// Full review detail: metadata, summary body, and every comment with its
@@ -849,10 +861,19 @@ fn resolution_to_json(resolved: &ResolvedComment) -> ResolutionJson {
 /// and markdown renderers. `resolutions` is parallel to
 /// `doc.frontmatter.comments`; a comment without a corresponding entry
 /// renders as unresolved.
+///
+/// `comment_notes` is likewise parallel to `doc.frontmatter.comments`: a
+/// per-comment ineligibility explanation (from
+/// [`crate::change::change_anchor_ineligibility`]), non-empty only for a
+/// `change/<sha>` review. A shorter or empty slice — every non-change caller
+/// passes `&[]` — degrades every comment to `None`. A comment with a note
+/// emits no `source_link`: an anchor that cannot even name a valid object
+/// has no line to permalink to.
 pub fn review_to_json(
     id: &str,
     doc: &Document<Review>,
     resolutions: &[ResolvedComment],
+    comment_notes: &[Option<String>],
 ) -> ReviewJson {
     let fm = &doc.frontmatter;
     let unresolved = ResolvedComment {
@@ -881,21 +902,29 @@ pub fn review_to_json(
             .comments
             .iter()
             .enumerate()
-            .map(|(i, c)| ReviewCommentJson {
-                id: c.id,
-                doc: c.doc.clone(),
-                status: c.status,
-                applied_commit: c.applied_commit.clone(),
-                anchor: c.anchor.clone(),
-                body: c.body.clone(),
-                reply: c.reply.clone(),
-                resolution: resolution_to_json(resolutions.get(i).unwrap_or(&unresolved)),
-                source_link: change_head.and_then(|head| {
-                    c.anchor
-                        .as_ref()
-                        .and_then(|a| crate::change::permalink_for(head, a))
-                        .map(|link| link.to_string())
-                }),
+            .map(|(i, c)| {
+                let note = comment_notes.get(i).cloned().flatten();
+                ReviewCommentJson {
+                    id: c.id,
+                    doc: c.doc.clone(),
+                    status: c.status,
+                    applied_commit: c.applied_commit.clone(),
+                    anchor: c.anchor.clone(),
+                    body: c.body.clone(),
+                    reply: c.reply.clone(),
+                    resolution: resolution_to_json(resolutions.get(i).unwrap_or(&unresolved)),
+                    source_link: if note.is_some() {
+                        None
+                    } else {
+                        change_head.and_then(|head| {
+                            c.anchor
+                                .as_ref()
+                                .and_then(|a| crate::change::permalink_for(head, a))
+                                .map(|link| link.to_string())
+                        })
+                    },
+                    unresolved_reason: note,
+                }
             })
             .collect(),
     }
@@ -1490,7 +1519,7 @@ mod tests {
             },
             quote: Some("the span".to_string()),
         }];
-        let json = review_to_json("2026-07-01-1430-a1b2", &doc, &resolutions);
+        let json = review_to_json("2026-07-01-1430-a1b2", &doc, &resolutions, &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         assert_eq!(v["id"], "2026-07-01-1430-a1b2");
         assert_eq!(v["target"]["kind"], "task");
@@ -1522,7 +1551,7 @@ mod tests {
             },
             quote: Some("the span".to_string()),
         }];
-        let json = review_to_json("id", &doc, &resolutions);
+        let json = review_to_json("id", &doc, &resolutions, &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         let r = &v["comments"][0]["resolution"];
         assert_eq!(r["state"], "drifted");
@@ -1538,7 +1567,7 @@ mod tests {
             resolution: Resolution::Current { range: 3..11 },
             quote: Some("the span".to_string()),
         }];
-        let json = review_to_json("id", &doc, &resolutions);
+        let json = review_to_json("id", &doc, &resolutions, &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         let r = &v["comments"][0]["resolution"];
         assert_eq!(r["state"], "resolved");
@@ -1548,7 +1577,7 @@ mod tests {
     #[test]
     fn review_json_missing_resolution_defaults_to_unresolved() {
         let doc = make_review_doc();
-        let json = review_to_json("id", &doc, &[]);
+        let json = review_to_json("id", &doc, &[], &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         let r = &v["comments"][0]["resolution"];
         assert_eq!(r["state"], "unresolved");
@@ -1563,12 +1592,76 @@ mod tests {
         doc.frontmatter.submitted = None;
         doc.frontmatter.created_commit = None;
         doc.frontmatter.comments.clear();
-        let json = review_to_json("id", &doc, &[]);
+        let json = review_to_json("id", &doc, &[], &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         assert!(v.get("verdict").is_none());
         assert!(v.get("submitted").is_none());
         assert!(v.get("created_commit").is_none());
         assert_eq!(v["state"], "draft");
+    }
+
+    /// A comment whose `comment_notes` entry is `Some` (a stored anchor
+    /// naming a directory or submodule, per
+    /// [`crate::change::change_anchor_ineligibility`]) must surface that
+    /// reason and emit no `source_link` — even though a permalink could
+    /// otherwise be built from the anchor's path and recorded line range.
+    #[test]
+    fn review_json_suppresses_the_permalink_and_names_the_reason_when_a_note_is_present() {
+        let mut doc = make_review_doc();
+        doc.frontmatter.target = ReviewTarget::Change {
+            head: "a".repeat(40),
+            base: Some("b".repeat(40)),
+        };
+        doc.frontmatter.comments[0].anchor = Some(Anchor::FileQuote {
+            path: "sub".to_string(),
+            quote: "a.txt".to_string(),
+            occurrence: 1,
+            start_line: 1,
+            end_line: 1,
+        });
+        let resolutions = vec![ResolvedComment {
+            resolution: Resolution::Unresolved,
+            quote: None,
+        }];
+        let notes = vec![Some("'sub' is a directory, not a file".to_string())];
+        let json = review_to_json("id", &doc, &resolutions, &notes);
+        let v: serde_json::Value = serde_json::to_value(&json).unwrap();
+        let c = &v["comments"][0];
+        assert_eq!(c["unresolved_reason"], "'sub' is a directory, not a file");
+        assert!(c.get("source_link").is_none(), "{c}");
+    }
+
+    /// The pre-existing behavior this suite must not regress: with no note
+    /// (the common case — including a source repo that could not be reached
+    /// at all, which is a *verification* skip, not an anchor defect), the
+    /// permalink still renders from the anchor alone, independent of
+    /// resolution state.
+    #[test]
+    fn review_json_still_emits_the_permalink_with_no_note_even_when_unresolved() {
+        let mut doc = make_review_doc();
+        doc.frontmatter.target = ReviewTarget::Change {
+            head: "a".repeat(40),
+            base: Some("b".repeat(40)),
+        };
+        doc.frontmatter.comments[0].anchor = Some(Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "fn touched".to_string(),
+            occurrence: 1,
+            start_line: 2,
+            end_line: 2,
+        });
+        let resolutions = vec![ResolvedComment {
+            resolution: Resolution::Unresolved,
+            quote: None,
+        }];
+        let json = review_to_json("id", &doc, &resolutions, &[]);
+        let v: serde_json::Value = serde_json::to_value(&json).unwrap();
+        let c = &v["comments"][0];
+        assert!(c.get("unresolved_reason").is_none(), "{c}");
+        assert_eq!(
+            c["source_link"],
+            format!("rdm:src/src/lib.rs@{}#L2", "a".repeat(40))
+        );
     }
 
     #[test]

@@ -925,11 +925,15 @@ fn resolution_label(resolved: &ResolvedComment) -> &'static str {
 ///
 /// `resolutions` is parallel to `doc.frontmatter.comments` (the caller's
 /// single resolution pass, shared with the JSON renderer); a comment without
-/// an entry renders as unresolved.
+/// an entry renders as unresolved. `comment_notes` is likewise parallel and
+/// carries a per-comment ineligibility explanation (see
+/// [`crate::change::change_anchor_ineligibility`]) for a `change/<sha>`
+/// review; every non-change caller passes `&[]`.
 fn build_review_detail(
     id: &str,
     doc: &Document<Review>,
     resolutions: &[ResolvedComment],
+    comment_notes: &[Option<String>],
     source_note: Option<&str>,
     flavor: RenderFlavor,
 ) -> ast::Document {
@@ -1023,6 +1027,7 @@ fn build_review_detail(
         };
         for (i, comment) in fm.comments.iter().enumerate() {
             let resolved = resolutions.get(i).unwrap_or(&unresolved);
+            let note = comment_notes.get(i).and_then(Option::as_deref);
             d.push(ast::Block::BlankLine);
             let mut head = format!(
                 "Comment {} — {} ({})",
@@ -1050,7 +1055,15 @@ fn build_review_detail(
             if !comment.body.is_empty() {
                 d.paragraph(&comment.body);
             }
-            if let crate::model::ReviewTarget::Change { head, .. } = &fm.target
+            if let Some(note) = note {
+                d.paragraph(&format!("Note: {note}"));
+            }
+            // No permalink for a comment whose anchor is not (or no longer)
+            // eligible at all — a note says why. With no note, the
+            // permalink still renders from the anchor alone, independent of
+            // resolution state (it needs no reachable checkout).
+            if note.is_none()
+                && let crate::model::ReviewTarget::Change { head, .. } = &fm.target
                 && let Some(link) = comment
                     .anchor
                     .as_ref()
@@ -1076,9 +1089,18 @@ pub fn format_review_detail(
     id: &str,
     doc: &Document<Review>,
     resolutions: &[ResolvedComment],
+    comment_notes: &[Option<String>],
     source_note: Option<&str>,
 ) -> String {
-    build_review_detail(id, doc, resolutions, source_note, RenderFlavor::Terminal).to_string()
+    build_review_detail(
+        id,
+        doc,
+        resolutions,
+        comment_notes,
+        source_note,
+        RenderFlavor::Terminal,
+    )
+    .to_string()
 }
 
 /// Formats a single review detail view as Markdown.
@@ -1087,9 +1109,18 @@ pub fn format_review_detail_md(
     id: &str,
     doc: &Document<Review>,
     resolutions: &[ResolvedComment],
+    comment_notes: &[Option<String>],
     source_note: Option<&str>,
 ) -> String {
-    build_review_detail(id, doc, resolutions, source_note, RenderFlavor::Markdown).to_string()
+    build_review_detail(
+        id,
+        doc,
+        resolutions,
+        comment_notes,
+        source_note,
+        RenderFlavor::Markdown,
+    )
+    .to_string()
 }
 
 /// Builds a review list document (table of id, target, state, verdict,
@@ -2138,7 +2169,8 @@ mod tests {
     #[test]
     fn review_detail_terminal_renders_labels_scope_and_resolution() {
         let doc = make_review_doc();
-        let output = format_review_detail("2026-07-01-1430-a1b2", &doc, &make_resolutions(), None);
+        let output =
+            format_review_detail("2026-07-01-1430-a1b2", &doc, &make_resolutions(), &[], None);
         assert!(output.contains("Target: roadmap/alpha"), "{output}");
         assert!(output.contains("State: submitted"), "{output}");
         assert!(output.contains("Verdict: request-changes"), "{output}");
@@ -2161,7 +2193,7 @@ mod tests {
     fn review_detail_unresolved_label_when_resolution_missing() {
         let doc = make_review_doc();
         // No resolutions supplied at all: every comment renders unresolved.
-        let output = format_review_detail("id", &doc, &[], None);
+        let output = format_review_detail("id", &doc, &[], &[], None);
         assert!(
             output.contains("Comment 1 — addressed (unresolved)"),
             "{output}"
@@ -2173,7 +2205,7 @@ mod tests {
     fn review_detail_md_renders_bullets_headings_and_blockquote() {
         let doc = make_review_doc();
         let output =
-            format_review_detail_md("2026-07-01-1430-a1b2", &doc, &make_resolutions(), None);
+            format_review_detail_md("2026-07-01-1430-a1b2", &doc, &make_resolutions(), &[], None);
         assert!(output.contains("# Review 2026-07-01-1430-a1b2"), "{output}");
         assert!(output.contains("**Target:** roadmap/alpha"), "{output}");
         assert!(output.contains("**Verdict:** request-changes"), "{output}");
@@ -2247,6 +2279,7 @@ mod tests {
             "2026-09-01-0900-c0de",
             &doc,
             &make_change_resolutions(),
+            &[],
             None,
         );
         let head = "a".repeat(40);
@@ -2274,6 +2307,7 @@ mod tests {
             "2026-09-01-0900-c0de",
             &doc,
             &make_change_resolutions(),
+            &[],
             None,
         );
         let head = "a".repeat(40);
@@ -2290,6 +2324,37 @@ mod tests {
             output.contains(&format!("Source: rdm:src/src/lib.rs@{head}#L2-L3")),
             "{output}"
         );
+    }
+
+    /// A comment with an ineligibility note (a stored anchor naming a
+    /// directory or submodule) prints the note and no `Source:` permalink,
+    /// in both renderers.
+    #[test]
+    fn review_detail_prints_a_note_and_suppresses_the_permalink_when_present() {
+        let doc = make_change_review_doc();
+        let notes = vec![Some("'src/lib.rs' is a directory, not a file".to_string())];
+        for output in [
+            format_review_detail(
+                "2026-09-01-0900-c0de",
+                &doc,
+                &make_change_resolutions(),
+                &notes,
+                None,
+            ),
+            format_review_detail_md(
+                "2026-09-01-0900-c0de",
+                &doc,
+                &make_change_resolutions(),
+                &notes,
+                None,
+            ),
+        ] {
+            assert!(
+                output.contains("Note: 'src/lib.rs' is a directory, not a file"),
+                "{output}"
+            );
+            assert!(!output.contains("Source:"), "{output}");
+        }
     }
 
     #[test]

@@ -658,6 +658,155 @@ fn change_comment_requires_path_and_rejects_a_missing_file() {
     assert!(j["comments"][0]["anchor"].is_null());
 }
 
+// --- directory/submodule anchors are rejected, never silently anchored ---
+
+/// A source repo with `sub/{a,b,c,d,e}.txt`, whose `topic` branch edits line
+/// 3 of `sub/e.txt` — the exact repro shape from the
+/// `change-review-path-accepts-a-directory` task.
+fn init_source_repo_with_subdir() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    std::fs::create_dir_all(p.join("sub")).unwrap();
+    for name in ["a", "b", "c", "d", "e"] {
+        std::fs::write(
+            p.join("sub").join(format!("{name}.txt")),
+            "one\ntwo\nthree\nfour\n",
+        )
+        .unwrap();
+    }
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "base"]);
+    git(p, &["checkout", "-b", "topic"]);
+    std::fs::write(p.join("sub/e.txt"), "one\ntwo\nTHREE\nfour\n").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "edit sub/e.txt"]);
+    dir
+}
+
+#[test]
+fn change_comment_rejects_a_directory_path() {
+    let src = init_source_repo_with_subdir();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "sub",
+            "--quote",
+            "a.txt",
+            "--body",
+            "x",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(text.contains("sub"), "must name the offending path: {text}");
+    assert!(
+        text.contains("directory"),
+        "must say it is a directory: {text}"
+    );
+
+    // No comment, and therefore no anchor, was written.
+    let j = review_json(plan.path(), src.path(), &id);
+    assert!(
+        j["comments"].as_array().unwrap().is_empty(),
+        "a rejected directory anchor must persist nothing: {j}"
+    );
+}
+
+/// Simulates a `--path`/`--quote` anchor stored before this check existed (or
+/// a hand-edited review file): `sub` is a real directory in the source repo,
+/// so `review show` must report the comment unresolved with an explanation
+/// and emit no `source_link`, in every output format.
+#[test]
+fn change_review_reports_a_stored_tree_anchor_as_unresolved_with_no_permalink() {
+    let src = init_source_repo_with_subdir();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+
+    edit_review_frontmatter(plan.path(), &id, |v| {
+        v.comments.push(rdm_core::model::ReviewComment {
+            id: 1,
+            doc: None,
+            status: rdm_core::model::ReviewCommentStatus::Open,
+            applied_commit: None,
+            anchor: Some(rdm_core::model::Anchor::FileQuote {
+                path: "sub".to_string(),
+                quote: "a.txt".to_string(),
+                occurrence: 1,
+                start_line: 1,
+                end_line: 1,
+            }),
+            body: "This looks wrong.".to_string(),
+            reply: None,
+        });
+    });
+
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["comments"][0]["resolution"]["state"], "unresolved");
+    let reason = j["comments"][0]["unresolved_reason"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected an unresolved_reason: {j}"));
+    assert!(reason.contains("directory"), "{reason}");
+    assert!(j["comments"][0]["source_link"].is_null(), "{j}");
+
+    for extra_format in ["human", "markdown"] {
+        let out = rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .args([
+                "review",
+                "show",
+                &id,
+                "--format",
+                extra_format,
+                "--project",
+                "demo",
+            ])
+            .current_dir(src.path())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let text = String::from_utf8_lossy(&out);
+        assert!(
+            text.contains("directory"),
+            "{extra_format} output must show the reason: {text}"
+        );
+        assert!(
+            !text.contains("Source:"),
+            "{extra_format} output must not emit a permalink: {text}"
+        );
+    }
+}
+
 // --- AC3: pinned rdm:src permalink accepted by `rdm link resolve` ---
 
 #[test]

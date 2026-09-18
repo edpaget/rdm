@@ -21,6 +21,25 @@ use std::collections::HashMap;
 
 use crate::error::Result;
 
+/// What kind of Git object a tree entry names, as reported by `git cat-file
+/// -t`.
+///
+/// A `--path` anchor is only ever eligible when this is [`Self::Blob`] — a
+/// [`Self::Tree`] (directory) or [`Self::Gitlink`] (submodule) cannot be
+/// quoted, and [`SourceRepo::object_kind_at`] is how
+/// [`crate::change::derive_change_anchor`] and
+/// [`crate::change::resolve_change_comment`] tell the three apart without
+/// guessing from content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceObjectKind {
+    /// A regular file (or symlink) — the only kind an anchor may quote.
+    Blob,
+    /// A directory entry.
+    Tree,
+    /// A submodule entry (a commit object referenced by a tree).
+    Gitlink,
+}
+
 /// A read-only view of a git-like source repository.
 ///
 /// Every method returns `Ok(None)` for a *benign* miss — an unknown
@@ -92,6 +111,23 @@ pub trait SourceRepo {
     ///
     /// Returns an error when the repository cannot be queried at all.
     fn current_branch(&self) -> Result<Option<String>>;
+
+    /// The kind of Git object `path` names at `rev` — a blob, a tree
+    /// (directory), or a gitlink (submodule).
+    ///
+    /// Answers via git's own object typing rather than by inspecting
+    /// content, so a text blob whose bytes happen to resemble a directory
+    /// listing is still correctly reported as [`SourceObjectKind::Blob`].
+    /// `Ok(None)` covers both an unresolvable `rev` and a `path` absent at
+    /// it — callers that need to distinguish those already call
+    /// [`SourceRepo::rev_parse`] or [`SourceRepo::file_at`] first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the repository cannot be queried at all, or
+    /// [`crate::error::Error::InvalidChangeRevisionInput`] for option-shaped
+    /// input, before any subprocess.
+    fn object_kind_at(&self, rev: &str, path: &str) -> Result<Option<SourceObjectKind>>;
 }
 
 /// An in-memory [`SourceRepo`] for tests, with no git dependency.
@@ -114,6 +150,9 @@ pub struct MemorySourceRepo {
     head: Option<String>,
     /// What [`SourceRepo::current_branch`] returns.
     branch: Option<String>,
+    /// `(rev, path)` → explicitly seeded object kind, for
+    /// [`SourceRepo::object_kind_at`].
+    object_kinds: HashMap<(String, String), SourceObjectKind>,
 }
 
 impl MemorySourceRepo {
@@ -172,6 +211,22 @@ impl MemorySourceRepo {
         self.branch = Some(branch.to_string());
         self
     }
+
+    /// Seeds the [`SourceObjectKind`] of `path` at `rev`, for
+    /// [`SourceRepo::object_kind_at`].
+    ///
+    /// Tests that only need a directory or submodule at a path (never its
+    /// content) use this alone. A path seeded via [`Self::with_file`] does
+    /// not need this too — [`SourceRepo::object_kind_at`] infers
+    /// [`SourceObjectKind::Blob`] for any `(rev, path)` with seeded content
+    /// and no explicit kind, so the ~dozen pre-existing `with_file`-only call
+    /// sites keep compiling and passing unmodified.
+    #[must_use]
+    pub fn with_object_kind(mut self, rev: &str, path: &str, kind: SourceObjectKind) -> Self {
+        self.object_kinds
+            .insert((rev.to_string(), path.to_string()), kind);
+        self
+    }
 }
 
 impl SourceRepo for MemorySourceRepo {
@@ -206,5 +261,18 @@ impl SourceRepo for MemorySourceRepo {
 
     fn current_branch(&self) -> Result<Option<String>> {
         Ok(self.branch.clone())
+    }
+
+    fn object_kind_at(&self, rev: &str, path: &str) -> Result<Option<SourceObjectKind>> {
+        let key = (rev.to_string(), path.to_string());
+        if let Some(kind) = self.object_kinds.get(&key) {
+            return Ok(Some(*kind));
+        }
+        // Inference fallback: any pre-existing `with_file`-only seed reads as
+        // a Blob, so tests written before this method existed keep passing.
+        if self.files.contains_key(&key) {
+            return Ok(Some(SourceObjectKind::Blob));
+        }
+        Ok(None)
     }
 }

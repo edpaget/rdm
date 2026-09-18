@@ -438,7 +438,9 @@ pub fn resolve_change_target(
 ///
 /// Returns [`Error::ChangePathNeedsQuote`] or [`Error::ChangeQuoteNeedsPath`]
 /// when only one of the pair is given, [`Error::ChangePathNotInRevision`]
-/// when `path` is not repo-relative or does not exist at `head`, anything
+/// when `path` is not repo-relative or does not exist at `head`,
+/// [`Error::ChangePathNotAFile`] when `path` names a directory or a
+/// submodule at `head` rather than a regular file, anything
 /// [`derive_file_quote`] returns (quote not found, ambiguous, occurrence out
 /// of range, outside every touched hunk), or whatever error the
 /// [`SourceRepo`] reports when it cannot be queried.
@@ -461,6 +463,20 @@ pub fn derive_change_anchor(
         return Err(Error::ChangeQuoteNeedsPath);
     };
     let path = normalize_source_path(path)?;
+    // Check git's own object type before reading any content: a directory
+    // or submodule is rejected loudly here rather than being read (or, for
+    // a directory, silently returning `git show`'s tree-listing text) and
+    // anchored as if it were a file.
+    match source.object_kind_at(head, &path)? {
+        None | Some(crate::source::SourceObjectKind::Blob) => {}
+        Some(found) => {
+            return Err(Error::ChangePathNotAFile {
+                path,
+                rev: head.to_string(),
+                found,
+            });
+        }
+    }
     let content = source
         .file_at(head, &path)?
         .ok_or_else(|| Error::ChangePathNotInRevision {
@@ -563,13 +579,31 @@ pub fn resolve_change_comment(
     else {
         return unresolved;
     };
+    // A path that is not (or no longer) a plain file at head can never
+    // resolve — treated exactly like a path missing at head, so a
+    // pre-existing bad anchor (from before this check existed, or a
+    // hand-edited review file) degrades to unresolved rather than being
+    // read as though its content were quotable.
+    if !matches!(
+        source.object_kind_at(head, path),
+        Ok(Some(crate::source::SourceObjectKind::Blob))
+    ) {
+        return unresolved;
+    }
     let Ok(Some(head_content)) = source.file_at(head, path) else {
         return unresolved;
     };
     let Some(range) = head_range(&head_content, quote, *occurrence) else {
         return unresolved;
     };
-    // Path gone at the tip: the anchor has nowhere to live any more.
+    // Path gone, or turned into a directory/submodule, at the tip: the
+    // anchor has nowhere to live any more.
+    if !matches!(
+        source.object_kind_at(tip, path),
+        Ok(Some(crate::source::SourceObjectKind::Blob))
+    ) {
+        return unresolved;
+    }
     let tip_content = match source.file_at(tip, path) {
         Ok(Some(c)) => c,
         // An unreadable tip is not evidence the anchor survived, but it is
@@ -609,6 +643,41 @@ pub fn resolve_change_comments(
         .iter()
         .map(|c| resolve_change_comment(source, review, c, tip))
         .collect()
+}
+
+/// A human-readable reason an [`Anchor::FileQuote`] cannot resolve because
+/// the path it names is not (or no longer) a plain file at `head`.
+///
+/// Re-derives the object kind fresh via [`SourceRepo::object_kind_at`] rather
+/// than trusting anything cached in `anchor`, so it reflects the real reason
+/// even for an anchor written before this check existed (a hand-edited
+/// review file, or one written by a pre-fix build).
+///
+/// Returns `None` when the anchor is a [`Anchor::FileQuote`] that IS
+/// currently eligible (a blob at `head`), when it is any other anchor kind,
+/// or when the source repository cannot answer at all — an environmental
+/// failure is not evidence the anchor itself is invalid, so it gets no note
+/// here (the caller's own "source verification skipped" note already covers
+/// that case).
+#[must_use]
+pub fn change_anchor_ineligibility(
+    source: &impl SourceRepo,
+    head: &str,
+    anchor: &Anchor,
+) -> Option<String> {
+    let Anchor::FileQuote { path, .. } = anchor else {
+        return None;
+    };
+    match source.object_kind_at(head, path) {
+        Ok(Some(crate::source::SourceObjectKind::Blob)) | Err(_) => None,
+        Ok(Some(crate::source::SourceObjectKind::Tree)) => {
+            Some(format!("'{path}' is a directory, not a file"))
+        }
+        Ok(Some(crate::source::SourceObjectKind::Gitlink)) => {
+            Some(format!("'{path}' is a submodule, not a file"))
+        }
+        Ok(None) => Some(format!("'{path}' no longer exists at {}", abbreviate(head))),
+    }
 }
 
 /// The head-pinned `rdm:src/<path>@<head>#L<start>[-L<end>]` permalink for
@@ -695,7 +764,7 @@ pub fn normalize_source_path(path: &str) -> Result<String> {
 mod tests {
     use super::*;
     use crate::model::{ReviewCommentStatus, ReviewState};
-    use crate::source::MemorySourceRepo;
+    use crate::source::{MemorySourceRepo, SourceObjectKind};
     use chrono::Utc;
 
     fn review_with(anchor: Option<Anchor>) -> Review {
@@ -1528,6 +1597,185 @@ mod tests {
         );
     }
 
+    // --- object-kind eligibility (directory/submodule anchors) ---
+
+    #[test]
+    fn derive_change_anchor_rejects_a_tree_path() {
+        let source = MemorySourceRepo::new().with_object_kind(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sub",
+            SourceObjectKind::Tree,
+        );
+        let err = derive_change_anchor(
+            &source,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            Some("a.txt"),
+            Some("sub"),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::ChangePathNotAFile {
+                ref path,
+                found: SourceObjectKind::Tree,
+                ..
+            } if path == "sub"
+        ));
+        assert!(
+            err.to_string().contains("directory"),
+            "message must name it as a directory: {err}"
+        );
+    }
+
+    #[test]
+    fn derive_change_anchor_rejects_a_gitlink_path() {
+        let source = MemorySourceRepo::new().with_object_kind(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "vendor/lib",
+            SourceObjectKind::Gitlink,
+        );
+        let err = derive_change_anchor(
+            &source,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            Some("anything"),
+            Some("vendor/lib"),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::ChangePathNotAFile {
+                ref path,
+                found: SourceObjectKind::Gitlink,
+                ..
+            } if path == "vendor/lib"
+        ));
+        assert!(
+            err.to_string().contains("submodule"),
+            "message must name it as a submodule: {err}"
+        );
+    }
+
+    #[test]
+    fn derive_change_anchor_succeeds_on_an_explicit_blob_control() {
+        let source = MemorySourceRepo::new()
+            .with_object_kind(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "src/lib.rs",
+                SourceObjectKind::Blob,
+            )
+            .with_file(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "src/lib.rs",
+                "fn touched() {}\n",
+            )
+            .with_diff(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "src/lib.rs",
+                "@@ -1 +1 @@\n-old\n+fn touched() {}\n",
+            );
+        let anchor = derive_change_anchor(
+            &source,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            Some("fn touched"),
+            Some("src/lib.rs"),
+            None,
+        )
+        .unwrap();
+        assert!(anchor.is_some());
+    }
+
+    #[test]
+    fn derive_change_anchor_treats_a_tree_listing_lookalike_blob_as_valid_content() {
+        // Content that reads like `git show`'s own tree-listing text must
+        // still anchor when the real object type says Blob — proof the fix
+        // checks git's object type, never content prefixes.
+        let content = "tree abc123:sub\n\na.txt\nb.txt\n";
+        let source = MemorySourceRepo::new()
+            .with_object_kind(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "weird.txt",
+                SourceObjectKind::Blob,
+            )
+            .with_file(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "weird.txt",
+                content,
+            )
+            .with_diff(
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "weird.txt",
+                "@@ -0,0 +1,4 @@\n+tree abc123:sub\n+\n+a.txt\n+b.txt\n",
+            );
+        let anchor = derive_change_anchor(
+            &source,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+            Some("a.txt"),
+            Some("weird.txt"),
+            None,
+        )
+        .unwrap();
+        assert!(
+            anchor.is_some(),
+            "a Blob whose content resembles a tree listing must still anchor"
+        );
+    }
+
+    #[test]
+    fn resolve_change_comment_reports_unresolved_for_a_pre_existing_tree_anchor() {
+        // Simulates a stored anchor written before this check existed (or by
+        // hand): resolution must degrade it to Unresolved rather than
+        // treating `git show`'s tree-listing text as quotable.
+        let source = MemorySourceRepo::new().with_object_kind(
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "sub",
+            SourceObjectKind::Tree,
+        );
+        let review = review_with(Some(Anchor::FileQuote {
+            path: "sub".to_string(),
+            quote: "a.txt".to_string(),
+            occurrence: 1,
+            start_line: 1,
+            end_line: 1,
+        }));
+        let resolved =
+            resolve_change_comments(&source, &review, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(resolved[0].resolution, Resolution::Unresolved);
+        assert!(resolved[0].quote.is_none());
+    }
+
+    #[test]
+    fn change_anchor_ineligibility_names_a_directory_and_a_submodule_and_clears_for_a_blob() {
+        let head = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let source = MemorySourceRepo::new()
+            .with_object_kind(head, "sub", SourceObjectKind::Tree)
+            .with_object_kind(head, "vendor/lib", SourceObjectKind::Gitlink)
+            .with_object_kind(head, "src/lib.rs", SourceObjectKind::Blob);
+
+        let anchor_at = |path: &str| Anchor::FileQuote {
+            path: path.to_string(),
+            quote: "x".to_string(),
+            occurrence: 1,
+            start_line: 1,
+            end_line: 1,
+        };
+
+        let note = change_anchor_ineligibility(&source, head, &anchor_at("sub")).unwrap();
+        assert!(note.contains("directory"), "{note}");
+
+        let note = change_anchor_ineligibility(&source, head, &anchor_at("vendor/lib")).unwrap();
+        assert!(note.contains("submodule"), "{note}");
+
+        assert!(change_anchor_ineligibility(&source, head, &anchor_at("src/lib.rs")).is_none());
+    }
+
     /// The anchor a derivation produces must be the one resolution accepts:
     /// derive at head, resolve against a tip that still carries the quote.
     #[test]
@@ -1572,6 +1820,13 @@ mod tests {
         }
         fn current_branch(&self) -> Result<Option<String>> {
             panic!("unexpected branch")
+        }
+        fn object_kind_at(
+            &self,
+            _: &str,
+            _: &str,
+        ) -> Result<Option<crate::source::SourceObjectKind>> {
+            panic!("unexpected object_kind_at")
         }
     }
 

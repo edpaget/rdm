@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use rdm_core::error::{Error, Result};
-use rdm_core::source::SourceRepo;
+use rdm_core::source::{SourceObjectKind, SourceRepo};
 
 use crate::run_git_at;
 
@@ -72,6 +72,47 @@ pub fn file_at_argv(rev: &str, path: &str) -> Vec<String> {
         "--end-of-options".to_string(),
         format!("{rev}:{path}"),
     ]
+}
+
+/// The argv [`GitSourceRepo::object_kind_at`] builds after resolving `rev` to
+/// a commit.
+///
+/// `git ls-tree <tree> -- <path>` reports a tree entry's recorded mode/type
+/// directly from the tree object, with **no need for the entry's own object
+/// to exist locally** — the one property that makes this usable for a
+/// gitlink: the commit it names lives in the *submodule's* object database,
+/// essentially never the superproject's, so `git cat-file -t <rev>:<path>`
+/// (which requires actually opening that object) reliably fails on exactly
+/// the gitlink case this method exists to detect. `--full-tree` is required
+/// for the same reason [`unified_diff_argv`] needs `:(top)`/`--no-relative`:
+/// without it, `ls-tree`'s pathspec is matched relative to the invoking cwd,
+/// silently returning nothing for a path that does exist when `GitSourceRepo`
+/// is rooted at a subdirectory of the checkout.
+#[must_use]
+pub fn ls_tree_kind_argv(rev: &str, path: &str) -> Vec<String> {
+    vec![
+        "ls-tree".to_string(),
+        "--full-tree".to_string(),
+        "--end-of-options".to_string(),
+        rev.to_string(),
+        "--".to_string(),
+        path.to_string(),
+    ]
+}
+
+/// Parses one `git ls-tree` output line (`<mode> <type> <sha>\t<path>`) into
+/// its [`SourceObjectKind`], returning `None` for an empty result (the path
+/// does not exist in the tree) or an unrecognized type.
+fn parse_ls_tree_kind(bytes: &[u8]) -> Option<SourceObjectKind> {
+    let line = String::from_utf8_lossy(bytes);
+    let line = line.lines().next()?;
+    let kind = line.split_whitespace().nth(1)?;
+    match kind {
+        "blob" => Some(SourceObjectKind::Blob),
+        "tree" => Some(SourceObjectKind::Tree),
+        "commit" => Some(SourceObjectKind::Gitlink),
+        _ => None,
+    }
 }
 
 /// The argv [`GitSourceRepo::unified_diff`] builds after resolving both commits.
@@ -195,6 +236,17 @@ impl SourceRepo for GitSourceRepo {
     fn current_branch(&self) -> Result<Option<String>> {
         crate::current_branch_at(&self.root)
     }
+
+    fn object_kind_at(&self, rev: &str, path: &str) -> Result<Option<SourceObjectKind>> {
+        validate_revision_input(rev)?;
+        let Some(commit) = self.rev_parse(rev)? else {
+            return Ok(None);
+        };
+        let Some(bytes) = run_ok(&self.root, &ls_tree_kind_argv(&commit, path))? else {
+            return Ok(None);
+        };
+        Ok(parse_ls_tree_kind(&bytes))
+    }
 }
 
 #[cfg(test)]
@@ -206,7 +258,7 @@ mod tests {
     /// The complete set of git subcommands this module is permitted to run.
     /// Adding to it is a deliberate act: the port is read-only by
     /// construction, and this is where that construction is enforced.
-    const READ_ONLY_COMMANDS: &[&str] = &["rev-parse", "merge-base", "show", "diff"];
+    const READ_ONLY_COMMANDS: &[&str] = &["rev-parse", "merge-base", "show", "diff", "ls-tree"];
 
     #[test]
     fn every_built_argv_starts_with_a_read_only_subcommand() {
@@ -215,8 +267,9 @@ mod tests {
             merge_base_argv("main", "topic"),
             file_at_argv("abc123", "src/lib.rs"),
             unified_diff_argv("base", "head", "src/lib.rs"),
+            ls_tree_kind_argv("abc123", "src/lib.rs"),
         ];
-        assert_eq!(argvs.len(), 4);
+        assert_eq!(argvs.len(), 5);
         for argv in &argvs {
             let subcommand = argv.first().map(String::as_str).unwrap_or_default();
             assert!(
@@ -233,6 +286,7 @@ mod tests {
             merge_base_argv("a", "b"),
             file_at_argv("a", "p"),
             unified_diff_argv("a", "b", "p"),
+            ls_tree_kind_argv("a", "p"),
         ]
         .concat()
         .join(" ");
@@ -399,6 +453,91 @@ mod tests {
         let repo = GitSourceRepo::new(p);
         let head = repo.rev_parse("HEAD").unwrap().unwrap();
         assert!(repo.file_at(&head, "bin.dat").is_err());
+        // The binary-content rejection is a UTF-8-validation concern reached
+        // only after the object-kind check has already confirmed Blob — not
+        // folded into the kind gate itself.
+        assert_eq!(
+            repo.object_kind_at(&head, "bin.dat").unwrap(),
+            Some(SourceObjectKind::Blob)
+        );
+    }
+
+    #[test]
+    fn object_kind_at_distinguishes_blob_and_tree() {
+        let dir = seed();
+        let p = dir.path();
+        std::fs::create_dir_all(p.join("sub")).unwrap();
+        std::fs::write(p.join("sub/nested.txt"), "nested\n").unwrap();
+        git(p, &["add", "."]);
+        git(p, &["commit", "-m", "add subdirectory"]);
+        let repo = GitSourceRepo::new(p);
+        let head = repo.rev_parse("HEAD").unwrap().unwrap();
+        assert_eq!(
+            repo.object_kind_at(&head, "a.txt").unwrap(),
+            Some(SourceObjectKind::Blob)
+        );
+        assert_eq!(
+            repo.object_kind_at(&head, "sub").unwrap(),
+            Some(SourceObjectKind::Tree)
+        );
+        assert_eq!(repo.object_kind_at(&head, "nope.txt").unwrap(), None);
+    }
+
+    /// `git ls-tree`'s pathspec is matched relative to the invoking cwd by
+    /// default — exactly the same trap [`unified_diff_argv`] works around —
+    /// so `object_kind_at` must keep working when `GitSourceRepo` is rooted
+    /// at a subdirectory of the checkout rather than its top level.
+    #[test]
+    fn object_kind_at_resolves_from_a_subdirectory_of_the_checkout() {
+        let dir = seed();
+        let top = dir.path();
+        std::fs::create_dir_all(top.join("sub")).unwrap();
+        std::fs::write(top.join("sub/nested.txt"), "nested\n").unwrap();
+        std::fs::create_dir_all(top.join("other")).unwrap();
+        std::fs::write(top.join("other/keep.txt"), "x\n").unwrap();
+        git(top, &["add", "."]);
+        git(top, &["commit", "-m", "add subdirectories"]);
+        let repo = GitSourceRepo::new(top.join("other"));
+        let head = repo.rev_parse("HEAD").unwrap().unwrap();
+        assert_eq!(
+            repo.object_kind_at(&head, "a.txt").unwrap(),
+            Some(SourceObjectKind::Blob)
+        );
+        assert_eq!(
+            repo.object_kind_at(&head, "sub").unwrap(),
+            Some(SourceObjectKind::Tree)
+        );
+    }
+
+    /// A gitlink (mode 160000) is a tree entry recording another
+    /// repository's commit — built by hand via `update-index --cacheinfo` so
+    /// this needs no real submodule content or network access, and the
+    /// referenced commit is never fetched into this repository's object
+    /// database (exactly the real-world shape: a submodule's commits live in
+    /// its own separate repository). `git ls-tree` must still resolve the
+    /// entry's recorded type (`commit`) straight from the tree object,
+    /// without dereferencing into the submodule to look it up.
+    #[test]
+    fn object_kind_at_reports_a_gitlink() {
+        let dir = seed();
+        let p = dir.path();
+        let fake_submodule_sha = "a".repeat(40);
+        git(
+            p,
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{fake_submodule_sha},vendor/lib"),
+            ],
+        );
+        git(p, &["commit", "-m", "add gitlink"]);
+        let repo = GitSourceRepo::new(p);
+        let head = repo.rev_parse("HEAD").unwrap().unwrap();
+        assert_eq!(
+            repo.object_kind_at(&head, "vendor/lib").unwrap(),
+            Some(SourceObjectKind::Gitlink)
+        );
     }
 
     #[test]
@@ -461,6 +600,17 @@ mod tests {
                 ":(top)a.txt"
             ]
         );
+        assert_eq!(
+            ls_tree_kind_argv("head", "a.txt"),
+            [
+                "ls-tree",
+                "--full-tree",
+                "--end-of-options",
+                "head",
+                "--",
+                "a.txt"
+            ]
+        );
     }
 
     #[test]
@@ -503,6 +653,10 @@ mod tests {
                         matches!(result, Err(Error::InvalidChangeRevisionInput(value)) if value == operand)
                     );
                 }
+                assert!(matches!(
+                    repo.object_kind_at(operand, "a.txt"),
+                    Err(Error::InvalidChangeRevisionInput(value)) if value == operand
+                ));
             }
         }
         // Invalid operands must be rejected even if a subprocess could not run

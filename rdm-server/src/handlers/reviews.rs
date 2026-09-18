@@ -87,7 +87,10 @@ fn review_resource(
     resolutions: &[ResolvedComment],
 ) -> HalResource<ReviewJson> {
     HalResource::new(
-        rdm_core::json::review_to_json(id, doc, resolutions),
+        // rdm-server has no `change/<sha>` review support yet (phase
+        // `change-review-contract-coverage` owns wiring it up), so there are
+        // never any per-comment ineligibility notes to thread here.
+        rdm_core::json::review_to_json(id, doc, resolutions, &[]),
         format!("/projects/{project}/reviews/{id}"),
     )
     .with_link("project", HalLink::new(format!("/projects/{project}")))

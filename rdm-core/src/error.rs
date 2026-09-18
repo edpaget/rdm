@@ -227,6 +227,16 @@ pub enum Error {
         /// The revision it was looked up at.
         rev: String,
     },
+    /// A `--path` named a directory or a submodule rather than a regular
+    /// file — a comment can only anchor to a blob.
+    ChangePathNotAFile {
+        /// Repo-relative path that was looked up.
+        path: String,
+        /// The revision it was looked up at.
+        rev: String,
+        /// The object kind it actually named.
+        found: crate::source::SourceObjectKind,
+    },
     /// The revision a `change/<rev>` review names does not resolve in the
     /// project's source repository.
     ChangeRevisionNotFound(String),
@@ -725,6 +735,17 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "'{path}' does not exist at {rev} — check the path (it is relative to the source repository root), or omit --path/--quote for a whole-change comment"
+                )
+            }
+            Error::ChangePathNotAFile { path, rev, found } => {
+                let noun = match found {
+                    crate::source::SourceObjectKind::Tree => "a directory",
+                    crate::source::SourceObjectKind::Gitlink => "a submodule",
+                    crate::source::SourceObjectKind::Blob => "not a file",
+                };
+                write!(
+                    f,
+                    "'{path}' is {noun} at {rev} — anchor a comment to a file, or omit --path/--quote for a whole-change comment"
                 )
             }
             Error::ChangeRevisionNotFound(rev) => {
