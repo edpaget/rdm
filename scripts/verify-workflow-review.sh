@@ -12962,6 +12962,70 @@ else
     fail "15d-nocode-mut: the bare --quote was NOT refused — the 15d-nocode guard is vacuous"
 fi
 
+# --- 15d-path. pathFromLocation DIRECT UNIT TESTS ----------------------------
+# pathFromLocation is pure and synchronous, so it needs no binary/git rig —
+# import it directly from $LIB, exactly as section 6 does. This exercises
+# every accept/reject guard the function's own doc comment (review.mjs
+# pathFromLocation, above the "throughout the gate step" fixture at line
+# ~12859) enumerates, superseding rather than duplicating that indirect
+# fixture (which only proves a bare-prose location degrades a persisted
+# comment — it never calls pathFromLocation directly, nor covers the other
+# guards below).
+say "15d-path. pathFromLocation: every accept/reject guard, exercised directly"
+cat >"$TMP/path-from-location-test.mjs" <<'NODE_PATH_FROM_LOCATION'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const [libPath] = process.argv.slice(2);
+const { pathFromLocation } = await import(pathToFileURL(libPath).href);
+
+// --- Rejections ---------------------------------------------------------
+assert.equal(pathFromLocation(undefined), null, 'non-string input');
+assert.equal(pathFromLocation(42), null, 'non-string input (number)');
+assert.equal(pathFromLocation(''), null, 'empty string');
+assert.equal(pathFromLocation('   '), null, 'whitespace-only string');
+// A bare prose location with no `/` and no extension — already indirectly
+// covered by the persist-fallback fixture at review.mjs ~line 12859
+// ("throughout the gate step"); this is the direct regression that subsumes it.
+assert.equal(pathFromLocation('throughout the gate step'), null, 'bare prose, no slash or extension');
+assert.equal(pathFromLocation('src/lib rs'), null, 'embedded space');
+assert.equal(pathFromLocation('/src/lib.rs'), null, 'leading slash');
+assert.equal(pathFromLocation('src\\lib.rs'), null, 'backslash (Windows-style separator)');
+assert.equal(pathFromLocation('src/../lib.rs'), null, '.. path segment');
+assert.equal(pathFromLocation('..'), null, 'bare .. with no slash or extension');
+
+// --- Trailing :<line> / :<start>-<end> suffix stripped before other checks --
+assert.equal(pathFromLocation('src/lib.rs:42'), 'src/lib.rs', 'single-line suffix stripped');
+assert.equal(pathFromLocation('src/lib.rs:10-20'), 'src/lib.rs', 'range suffix stripped');
+
+// --- Acceptances: the two shapes the doc comment names -----------------
+assert.equal(
+  pathFromLocation('rdm-core/src/lib.rs'),
+  'rdm-core/src/lib.rs',
+  'a slash-bearing remainder returns unchanged'
+);
+assert.equal(pathFromLocation('Cargo.toml'), 'Cargo.toml', 'a no-slash extension-bearing remainder returns unchanged');
+
+// --- Regex guard: only a DIGITS-only trailing colon suffix is stripped ------
+// 'Cargo.toml:notes' has no `/` and, left un-stripped, does not end in a
+// file extension (it ends in "notes"), so it is rejected. A future loosening
+// of the `:\d+(?:-\d+)?$` regex to eat any trailing colon suffix would strip
+// it down to 'Cargo.toml' and wrongly accept it — this assertion catches that.
+assert.equal(
+  pathFromLocation('Cargo.toml:notes'),
+  null,
+  'a non-numeric trailing colon suffix must not be stripped as a line marker'
+);
+
+console.log('pathFromLocation: every accept/reject guard exercised directly');
+NODE_PATH_FROM_LOCATION
+
+if run_node "$TMP/path-from-location-test.mjs" "$LIB"; then
+    pass "15d-path: pathFromLocation's accept/reject guards all hold"
+else
+    fail "15d-path: a pathFromLocation accept/reject assertion failed"
+fi
+
 # --- 15d-errors. ONE BOUNDED RUNG PER CORE ERROR, against the REAL binary ----
 # Every rung the prompt's anchoring ladder documents is pinned to the real
 # stderr that triggers it, and each is asserted to succeed after AT MOST ONE

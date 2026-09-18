@@ -988,8 +988,11 @@ impl ReviewTarget {
     }
 
     /// Renders the target in the CLI's `<kind>/<id>` reference syntax:
-    /// `roadmap/<slug>`, `phase/<roadmap-slug>/<stem>`, `task/<slug>`, or
-    /// `plan/<slug>`.
+    /// `roadmap/<slug>`, `phase/<roadmap-slug>/<stem>`, `task/<slug>`,
+    /// `plan/<slug>`, or `change/<head>`.
+    ///
+    /// The `change` form is deliberately head-only: `base` is provenance,
+    /// not identity, so it is never rendered even when `self` carries one.
     ///
     /// This is the same syntax `rdm review start --on` and `rdm review list
     /// --on` accept, so labels round-trip as command arguments.
@@ -1052,8 +1055,8 @@ impl FromStr for ReviewTarget {
     type Err = ParseError;
 
     /// Parses the shared item-reference syntax: `roadmap/<slug>`,
-    /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`, or
-    /// `plan/<slug>`.
+    /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`,
+    /// `plan/<slug>`, or `change/<sha>`.
     ///
     /// This is purely syntactic — it does not touch the store, so a
     /// numeric phase identifier (`phase/x/2`) is kept verbatim in `stem`,
@@ -1061,6 +1064,10 @@ impl FromStr for ReviewTarget {
     /// content (via
     /// [`resolve_phase_stem`](crate::ops::phase::resolve_phase_stem)) is
     /// the caller's job.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] when `s` matches none of the accepted forms.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         let invalid = || {
             ParseError::new(

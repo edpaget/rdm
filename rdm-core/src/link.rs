@@ -17,9 +17,17 @@ use pulldown_cmark::{Event, Options, Parser, Tag};
 use serde::Serialize;
 
 /// A plan item reference (`roadmap/<slug>`, `phase/<roadmap-slug>/<stem>`,
-/// `task/<slug>`, or `plan/<slug>`) — syntactically and semantically identical to a
-/// [`crate::model::ReviewTarget`], so the two share one type rather than
-/// duplicating the grammar.
+/// `task/<slug>`, or `plan/<slug>`) — sharing its *shape* (the same enum and
+/// variants) with [`crate::model::ReviewTarget`] rather than duplicating the
+/// grammar in a second type.
+///
+/// The two are not fully identical, though: `ReviewTarget` additionally
+/// accepts `change/<sha>`, a valid review target that names a
+/// source-repository diff rather than a plan-repo document. [`parse`]
+/// enforces that boundary at the grammar level, not the type level — it
+/// explicitly refuses to treat a `change` reference as linkable
+/// ([`LinkParseError::NotLinkable`]; see `parse`'s own doc comment and its
+/// `"change"` match arm for why).
 pub type ItemRef = crate::model::ReviewTarget;
 
 /// A parsed `rdm:` link destination.

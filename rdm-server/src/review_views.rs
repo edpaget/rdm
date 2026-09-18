@@ -510,4 +510,49 @@ mod tests {
         );
         assert_eq!(href, "/projects/rdm");
     }
+
+    /// The `change/<head>` review-target kind, like `Plan` above, has no
+    /// rdm-server detail route — there is no in-app document at all, since a
+    /// change names commits in the project's *source* repository. Mirrors
+    /// `target_detail_href_handles_plan_target` for the arm that
+    /// conspicuously lacked its own test despite sitting right next to one.
+    #[test]
+    fn target_detail_href_handles_change_target() {
+        let href = target_detail_href(
+            "rdm",
+            &ReviewTarget::Change {
+                head: "a".repeat(40),
+                base: Some("b".repeat(40)),
+            },
+        );
+        assert_eq!(href, "/projects/rdm");
+    }
+
+    /// A file-quote anchor's text lives in the source repository, not on
+    /// any page this server renders — `stored_quote` has nothing to
+    /// highlight inline and returns `None`.
+    #[test]
+    fn stored_quote_returns_none_for_a_file_quote_anchor() {
+        let anchor = Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "fn x() {}".to_string(),
+            occurrence: 1,
+            start_line: 1,
+            end_line: 1,
+        };
+        assert_eq!(stored_quote(&anchor), None);
+    }
+
+    /// The `Some` baseline the `None` file-quote case above is contrasted
+    /// against: a text-quote anchor's quote lives in the anchor itself, so
+    /// `stored_quote` returns it verbatim.
+    #[test]
+    fn stored_quote_returns_the_quote_for_a_text_quote_anchor() {
+        let anchor = Anchor::TextQuote {
+            quote: "exact text".to_string(),
+            prefix: String::new(),
+            suffix: String::new(),
+        };
+        assert_eq!(stored_quote(&anchor), Some("exact text".to_string()));
+    }
 }

@@ -53,6 +53,8 @@ pub fn source_default_branch(
 ///   everywhere else (via
 ///   [`resolve_phase_stem`](crate::ops::phase::resolve_phase_stem))
 /// - `task/<slug>`
+/// - `plan/<slug>`
+/// - `change/<head-sha>`
 ///
 /// Existence of the target itself is *not* checked here — that stays with
 /// [`create_review`] — but resolving a phase *number* requires listing the

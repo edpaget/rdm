@@ -2522,6 +2522,67 @@ mod tests {
     }
 
     #[test]
+    fn plan_detail_md_renders_change_reviews_and_implements() {
+        let doc = make_plan_doc(
+            "design-auth",
+            "Design auth",
+            PlanStatus::Approved,
+            ItemRef::Phase {
+                roadmap: "auth".to_string(),
+                stem: "phase-1-design".to_string(),
+            },
+            None,
+        );
+        let change_reviews = vec![(
+            "2026-09-01-0900-c0de".to_string(),
+            make_plan_review_doc("2026-09-01-0900-c0de", "design-auth"),
+        )];
+        let md = format_plan_detail_md("design-auth", &doc, &[], &change_reviews);
+        // Implements still renders correctly alongside a populated
+        // change_reviews list — the two bullets coexist, they are not
+        // mutually exclusive.
+        assert!(
+            md.contains("- **Implements:** rdm:phase/auth/phase-1-design"),
+            "{md}"
+        );
+        assert!(
+            md.contains("- **Change reviews:** 2026-09-01-0900-c0de (submitted/approve)"),
+            "{md}"
+        );
+    }
+
+    #[test]
+    fn plan_detail_renders_change_reviews_terminal() {
+        let doc = make_plan_doc(
+            "design-auth",
+            "Design auth",
+            PlanStatus::Draft,
+            ItemRef::Task {
+                slug: "fix-login".to_string(),
+            },
+            None,
+        );
+        // Empty change_reviews: the line is omitted entirely.
+        let empty = format_plan_detail("design-auth", &doc, &[], &[]);
+        assert!(!empty.contains("Change reviews:"), "{empty}");
+
+        // Non-empty change_reviews: the line renders alongside Implements.
+        let change_reviews = vec![(
+            "2026-09-01-0900-c0de".to_string(),
+            make_plan_review_doc("2026-09-01-0900-c0de", "design-auth"),
+        )];
+        let non_empty = format_plan_detail("design-auth", &doc, &[], &change_reviews);
+        assert!(
+            non_empty.contains("Implements: rdm:task/fix-login"),
+            "{non_empty}"
+        );
+        assert!(
+            non_empty.contains("Change reviews: 2026-09-01-0900-c0de (submitted/approve)"),
+            "{non_empty}"
+        );
+    }
+
+    #[test]
     fn plan_list_md_renders_a_table_under_a_heading() {
         let plans = vec![
             (
