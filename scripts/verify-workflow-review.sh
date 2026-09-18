@@ -5416,6 +5416,154 @@ const INTENT_RM_BODY = [
 }
 console.log('AC4 OK: a phase inherits its parent roadmap intent (driver ctx, real finder prompt, and the standalone fetch)');
 
+// ---- (9) ANCHOR-DEGRADATION ACCOUNTING IN THE PLAN LANE ---------------------
+// The plan lane wires the same persistAccounting the code lane does, but
+// DELIBERATELY does not compose it into the verdict (GATE_POLICY.plan still
+// clears needs-plan-review on `reviewed`). BOTH halves of that claim are
+// asserted here: the accounting is really computed and surfaced — on the unit
+// result, in the unit summary and in a dedicated log line — AND the plan gate
+// is provably unmoved by it. Without this the whole plan-lane wiring was
+// untested: the one real-binary persist section (§ 5d-persist) stubs its ack to
+// a bare `{ ok, reviewId }` and asserts nothing about `reviewPersistence`, and
+// makeHarness above acks every non-fetch agent with a bare `{ ok: true }`.
+//
+// A LOCAL harness, not makeHarness: with `persist` on, the fetch prompt is the
+// marker-delimited multi-block variant (a `task show` block plus a
+// `review list --on <target>` block), which makeHarness's plain-JSON wrapper
+// does not produce.
+{
+  const quotedSurvivor = { id: 'q1', concern: 'coherence', severity: 'suggestion', confidence: 80, what_fails: 'x', quote: 'exact text' };
+  const unquotedSurvivor = { id: 'u1', concern: 'coherence', severity: 'suggestion', confidence: 80, what_fails: 'y' };
+  const survivors = [quotedSurvivor, unquotedSurvivor];
+  const SLUG = 'fix-bug';
+  const TARGET = 'task/' + SLUG;
+  const planAck = (over) => ({
+    ok: true,
+    reviewId: 'rev-plan-1',
+    targetUsed: TARGET,
+    attempted: 2,
+    commandsRun: 2,
+    anchored: 1,
+    wholeDocumentIntended: 1,
+    degraded: 0,
+    degradedReasons: [],
+    ...over,
+  });
+  // The marker-delimited transcript the persist-ON fetch prompt asks for: the
+  // `task show` block, then the prior-review `review list` block (empty — every
+  // case below is a fresh round 1).
+  const transcript = () =>
+    '===CMD: task show ' + SLUG + '===\n' +
+    JSON.stringify({ slug: SLUG, body: 'A plan body long enough to be reviewed.', tags: ['needs-plan-review'] }) + '\n' +
+    '===CMD: review list --on ' + TARGET + '===\n' + '[]' + '\n';
+  const persistHarness = (persistAck) => {
+    const calls = [];
+    const logs = [];
+    const agent = async (prompt, opts) => {
+      const label = (opts && opts.label) || '';
+      calls.push({ label, prompt });
+      if (label.indexOf('fetch:wontfix') === 0) return { texts: [] };
+      if (label.indexOf('fetch:') === 0) return { transcript: transcript() };
+      if (label.indexOf('persist:review:') === 0) return persistAck();
+      return { ok: true };
+    };
+    const parallel = (thunks) => Promise.all(thunks.map((t) => t()));
+    const runPlanReview = async () => ({ survivors, acTable: null, budget: null, coverage: null });
+    return { deps: { agent, parallel, runPlanReview, log: (l) => logs.push(String(l)) }, calls, logs };
+  };
+
+  // (9a) CLEAN: the accounting is computed and reconciles; the summary gains
+  //      nothing, and the gate behaves exactly as it does with no persist.
+  {
+    const h = persistHarness(() => planAck());
+    const res = await runPlanReviewDriver({ task: SLUG, persist: {} }, h.deps);
+    const unit = res.units[0];
+    assert.ok(unit, '9a: the task unit was reviewed (fetch not failed closed): ' + res.summary);
+    assert.ok(unit.reviewPersistence, '9a: the unit result carries reviewPersistence whenever the persist ran');
+    assert.equal(unit.reviewPersistence.expectedTotal, 2, '9a: the expected shape derives from the survivor list');
+    assert.equal(unit.reviewPersistence.expectedAnchorable, 1, '9a: only the quoted survivor asked for an anchor');
+    assert.equal(unit.reviewPersistence.anchored, 1, '9a: the ack self-report is read');
+    assert.equal(unit.reviewPersistence.wholeDocumentIntended, 1, '9a: an unquoted survivor is INTENDED, never degraded');
+    assert.equal(unit.reviewPersistence.reconciled, true, '9a: the per-finding counters reconcile');
+    assert.equal(unit.reviewPersistence.unresolvedDegradation, false, '9a: a clean persist reports no degradation');
+    assert.equal(unit.reviewPersistence.targetUsed, TARGET, '9a: the accepted target is reported');
+    assert.equal(unit.reviewId, 'rev-plan-1', '9a: the persisted review id is still reported');
+    assert.ok(!unit.summary.includes('[anchors:'), '9a: a clean persist adds NO degradation clause to the summary');
+    assert.ok(!h.logs.some((l) => l.includes('PERSIST DEGRADED')), '9a: and emits no PERSIST DEGRADED log line');
+    assert.equal(unit.outcome, 'reviewed', '9a: suggestion-only survivors leave the plan verdict clean');
+    assert.equal(unit.tagCleared, true, '9a: and the plan gate clears needs-plan-review');
+  }
+
+  // (9b) DEGRADED: the attempted anchor did not land. The accounting, the
+  //      summary clause and the dedicated log line all say so — and the plan
+  //      verdict and gate are IDENTICAL to (9a). That contrast is the point:
+  //      the code lane escalates here, this lane deliberately does not.
+  {
+    const h = persistHarness(() =>
+      planAck({ anchored: 0, degraded: 1, degradedReasons: [{ findingId: 'q1', reason: 'quote-not-found' }] })
+    );
+    const res = await runPlanReviewDriver({ task: SLUG, persist: {} }, h.deps);
+    const unit = res.units[0];
+    assert.equal(unit.reviewPersistence.degraded, 1, '9b: the failed anchor is counted');
+    assert.equal(unit.reviewPersistence.unresolvedDegradation, true, '9b: and flagged unresolved');
+    assert.match(
+      unit.summary,
+      /\[anchors: 0 landed, 1 intentionally whole-document, 1 degraded \(quote-not-found\)/,
+      '9b: the degradation clause reaches the unit summary with its reason vocabulary'
+    );
+    const degradedLogs = h.logs.filter((l) => l.includes('plan-review: PERSIST DEGRADED for ' + TARGET));
+    assert.equal(degradedLogs.length, 1, '9b: exactly one dedicated PERSIST DEGRADED log line');
+    assert.ok(degradedLogs[0].includes('1 anchor(s) failed'), '9b: naming how many anchors failed');
+    assert.ok(!h.logs.some((l) => l.includes('PERSIST FAILED')), '9b: a DEGRADED persist is not reported as a FAILED one');
+    // THE DELIBERATE PART — unchanged verdict, unchanged gate.
+    assert.equal(unit.outcome, 'reviewed', '9b: degradation does NOT change the plan verdict');
+    assert.equal(unit.tagCleared, true, '9b: and does NOT block the needs-plan-review clear');
+    assert.equal(unit.gateBlocked, false, '9b: the gate is not blocked by anchor degradation');
+    assert.strictEqual(unit.status, null, '9b: the plan gate still persists no rdm status');
+  }
+
+  // (9c) RETRIED: commandsRun exceeds the per-finding attempted count. Nothing
+  //      reconciles against commandsRun, so this is a CLEAN result carrying a
+  //      neutral note — the same per-finding-vs-per-invocation rule the code
+  //      lane is held to.
+  {
+    const h = persistHarness(() => planAck({ commandsRun: 3 }));
+    const res = await runPlanReviewDriver({ task: SLUG, persist: {} }, h.deps);
+    const unit = res.units[0];
+    assert.equal(unit.reviewPersistence.unresolvedDegradation, false, '9c: a legitimate retry is not degradation');
+    assert.match(unit.summary, /\[anchors: 1 retried\]/, '9c: and reads as a neutral note, never a failure');
+    assert.equal(unit.tagCleared, true, '9c: the gate is unaffected');
+  }
+
+  // (9d) MALFORMED ACK: fail-safe. An ack missing the counters cannot buy a
+  //      clean reading — but, per this lane's design, still cannot change the
+  //      plan verdict either. This is exactly the ack shape § 5d-persist stubs.
+  {
+    const h = persistHarness(() => ({ ok: true, reviewId: 'rev-plan-2' }));
+    const res = await runPlanReviewDriver({ task: SLUG, persist: {} }, h.deps);
+    const unit = res.units[0];
+    assert.equal(unit.reviewPersistence.unresolvedDegradation, true, '9d: absent accounting data is never read as clean');
+    assert.ok(h.logs.some((l) => l.includes('PERSIST DEGRADED')), '9d: and is surfaced in the log');
+    assert.equal(unit.outcome, 'reviewed', '9d: still without changing the plan verdict');
+    assert.equal(unit.tagCleared, true, '9d: or the gate');
+  }
+
+  // (9e) NO PERSIST: the accounting path is absent entirely and the summary is
+  //      byte-unchanged — the key is never present as `reviewPersistence: null`.
+  {
+    const h = persistHarness(() => planAck());
+    const res = await runPlanReviewDriver({ task: SLUG, fetched: { body: 'A plan body.', tags: ['needs-plan-review'] } }, h.deps);
+    const unit = res.units[0];
+    assert.ok(
+      !Object.prototype.hasOwnProperty.call(unit, 'reviewPersistence'),
+      '9e: a persist-omitted run carries no reviewPersistence key at all'
+    );
+    assert.ok(!unit.summary.includes('[anchors:'), '9e: and no degradation clause');
+    assert.equal(h.calls.filter((c) => c.label.indexOf('persist:review:') === 0).length, 0, '9e: and no persist agent runs');
+  }
+}
+console.log('plan-lane anchor-degradation accounting is computed, surfaced, and provably does not move the plan gate');
+
 console.log('plan-review driver execution assertions passed');
 NODE_DRIVER_TEST
 if run_node "$TMP/plan-driver-test.mjs" "$PLAN_LIB"; then

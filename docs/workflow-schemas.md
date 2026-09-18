@@ -1475,7 +1475,14 @@ anything that reads as a failure.
 
 Both surviving consumers read it. `rdm-wf-review-refute-fix.js` composes it into
 the OUTCOME (and attaches it as `result.reviewPersistence`), so a code review
-whose anchors all failed escalates instead of reporting clean.
+whose anchors all failed escalates instead of reporting clean. That composition
+runs through `classifyPersistOutcome` and nowhere else: the driver marks the run
+a failure — which skips its optional status-write gate — **only when the
+classification actually moved**. A `rework` whose anchors also degraded
+therefore keeps its own outcome, its `code rework unresolved: …` summary AND its
+`in-progress` status write (the write the dispatching loop needs in order to
+re-drive the item), with the degradation still exposed through
+`result.reviewPersistence` and the summary clause.
 `lib/plan-review.mjs` EXPOSES it — on the per-unit result, in the unit summary
 and in a dedicated `plan-review: PERSIST DEGRADED` log line — but deliberately
 does not gate on it: `GATE_POLICY.plan` still clears `needs-plan-review` on

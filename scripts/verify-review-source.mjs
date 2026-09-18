@@ -257,6 +257,24 @@ try {
   // The persisted artifact still carries BOTH findings exactly once.
   assert.equal(JSON.parse(rdm(['review', 'show', mixedDegraded.result.reviewId, '--format', 'json'], shared)).comments.length, 2);
 
+  // REWORK + degradation: the outcome classifier's contract is that degradation
+  // only ever turns an otherwise-clean `reviewed` into `escalated`; `rework`
+  // passes through UNCHANGED. The driver must therefore not treat degradation
+  // as a run failure here — a `rework` whose anchors also degraded still needs
+  // its status-write gate to fire, because that in-progress write is how the
+  // dispatching loop detects and re-drives a reworked item. Regression guard
+  // for the earlier unconditional `failure =` on unresolvedDegradation, which
+  // silently skipped the gate for every legitimate rework.
+  const reworkDegraded = await execute({ persist: true, tier: 'large', gate: true }, { findings: [quoted, unlocated], degradeAnchors: true });
+  assert.equal(reworkDegraded.result.outcome, 'rework', 'degradation never rewrites a rework outcome: ' + reworkDegraded.result.summary);
+  assert.equal(reworkDegraded.result.status, 'in-progress', 'and the rework status mapping is untouched');
+  assert.equal(reworkDegraded.result.reviewPersistence.unresolvedDegradation, true, 'the degradation is still detected');
+  assert.match(reworkDegraded.result.summary, /^code rework unresolved: /, 'the rework summary is preserved, not replaced by a failure line');
+  assert.match(reworkDegraded.result.summary, /anchors: 0 landed, .* degraded/, 'with the degradation exposed as a clause');
+  assert.equal(reworkDegraded.result.reason, '', 'a rework carries no escalation reason');
+  assert.ok(reworkDegraded.calls.some((call) => call.label === 'gate:persist'), 'the status-write gate STILL runs for a degraded rework');
+  assert.equal(json(['phase', 'show', 'phase-1-work', '--roadmap', 'alpha']).status, 'in-progress', 'and the item is actually stamped in-progress');
+
   // A legitimate retry is NOT degradation: commandsRun exceeds the per-finding
   // attempted count and the verdict is unmoved.
   const retried = await execute({ persist: true }, { findings: mixed, retryOnce: true });

@@ -3362,8 +3362,18 @@ if (persist && source && implementationPlan) {
     // anchored everything. The accounting is derived from the survivor list the
     // writer was handed, so an under-reporting ack cannot buy a clean result.
     reviewPersistence = persistAccounting(ack, survivors, { source: source, target: 'change/' + source.head, emptyRange: source.noCode === true, preDegraded: prompts.preDegraded })
-    outcome = classifyPersistOutcome(outcome, reviewPersistence)
-    if (reviewPersistence.unresolvedDegradation) failure = 'review persisted with unresolved anchor degradation'
+    // Degradation composes through classifyPersistOutcome and NOWHERE else:
+    // it can only ever turn an otherwise-clean `reviewed` into `escalated`, and
+    // `rework`/`escalated` pass through unchanged. `failure` is therefore set
+    // ONLY when the classification actually moved — a `rework` whose anchors
+    // also degraded keeps its own outcome AND its status-write gate (the loop
+    // that re-drives a reworked item depends on that write), with the
+    // degradation still exposed via result.reviewPersistence and the summary
+    // clause. Setting `failure` unconditionally here would silently skip the
+    // gate for every legitimate rework.
+    const classified = classifyPersistOutcome(outcome, reviewPersistence)
+    if (classified !== outcome) failure = 'review persisted with unresolved anchor degradation'
+    outcome = classified
   } catch (error) { failure = String(error && error.message || error); outcome = 'escalated' }
 }
 if (rawArgs.gate && !failure) {
