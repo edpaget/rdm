@@ -1790,16 +1790,88 @@ function persistVerdictFor(outcome) {
   return PERSIST_VERDICT[outcome];
 }
 
+// isChangeTarget(ref) — is this persist target a `change/<rev>` review, the one
+// target kind that accepts the change-only flags (`--path`, `--base`,
+// `--implements`)? Pure and total; false for anything that is not a string.
+//
+// The real binary refuses all three against a plan-repo document target
+// (rdm-cli/src/commands/review.rs: "--path only applies to a change review",
+// "--base only applies to a change review", Error::ReviewImplementsNotApplicable),
+// so a ladder that carries them at a `phase/`/`task/`/`roadmap/`/`plan/` target
+// cannot run at all. The writer uses this to make that combination
+// UNREPRESENTABLE rather than a rule the agent has to remember.
+function isChangeTarget(ref) {
+  return typeof ref === 'string' && /^change\//.test(ref.trim());
+}
+
+// The CLOSED vocabulary of reasons an attempted anchor did not land. Each one
+// maps to exactly one rdm-core error surface and exactly one bounded rung of
+// the prompt's anchoring ladder (see buildPersistReviewPrompts):
+//
+//   quote-not-found          Error::QuoteNotFound
+//   ambiguous                Error::QuoteAmbiguous, still failing after --occurrence 1
+//   occurrence-out-of-range  Error::QuoteOccurrenceOutOfRange
+//   outside-hunk             Error::QuoteOutsideChangedHunks
+//   path-missing             Error::ChangePathNotInRevision
+//   path-not-a-file          Error::ChangePathNotAFile
+//   path-not-applicable      the CLI's "--path only applies to a change review"
+//   start-fallback           `review start` was refused and the fallback ladder ran
+//   other                    anything else — NEVER retried with flags stripped
+const PERSIST_DEGRADED_REASONS = [
+  'quote-not-found',
+  'ambiguous',
+  'occurrence-out-of-range',
+  'outside-hunk',
+  'path-missing',
+  'path-not-a-file',
+  'path-not-applicable',
+  'start-fallback',
+  'other',
+];
+
 // JSON Schema the persist agent's acknowledgement must satisfy.
+//
+// THE FOUR COUNTERS ARE DENOMINATED IN FINDINGS, NEVER IN COMMANDS.
+// `attempted` counts each DISTINCT finding at most once, however many
+// `review comment` invocations that finding required, and `anchored` /
+// `wholeDocumentIntended` / `degraded` are DISJOINT per-finding dispositions
+// that must sum to the survivor count:
+//
+//   anchored              the finding ended up WITH an anchor (including one
+//                         that only landed on the second attempt)
+//   wholeDocumentIntended the finding carried no `quote` at all — an ordinary
+//                         whole-document comment, never a failure
+//   degraded              an anchor was ATTEMPTED for the finding and did not land
+//
+// `commandsRun` is the ONLY per-invocation number. It is purely informational
+// and is consulted by NO reconciliation predicate in persistAccounting, so a
+// review whose anchor landed on a legitimate retry is a CLEAN result rather
+// than a downgraded one.
 const PERSIST_ACK_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['ok'],
+  required: ['ok', 'attempted', 'anchored', 'wholeDocumentIntended', 'degraded', 'targetUsed'],
   properties: {
     ok: { type: 'boolean' },
     reviewId: { type: 'string' },
+    targetUsed: { type: 'string' },
+    attempted: { type: 'integer', minimum: 0 },
+    commandsRun: { type: 'integer', minimum: 0 },
     anchored: { type: 'integer', minimum: 0 },
-    wholeDocument: { type: 'integer', minimum: 0 },
+    wholeDocumentIntended: { type: 'integer', minimum: 0 },
+    degraded: { type: 'integer', minimum: 0 },
+    degradedReasons: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['findingId', 'reason'],
+        properties: {
+          findingId: { type: 'string' },
+          reason: { type: 'string', enum: PERSIST_DEGRADED_REASONS },
+        },
+      },
+    },
   },
 };
 
@@ -2005,8 +2077,39 @@ function persistReviewCommands(result, target, cfg, opts) {
   // Default-off: with no `opts` the emitted bytes are byte-identical to what
   // every pre-existing caller already gets (pinned by
   // scripts/verify-workflow-review.sh § 15).
+  // CHANGE-ONLY FLAGS ARE UNREPRESENTABLE ON A DOCUMENT TARGET. `--path`,
+  // `--base` and `--implements` are each refused outright by the real binary
+  // against a roadmap/phase/task/plan review, so a command ladder carrying them
+  // at such a target cannot run. Throwing here is what makes "the fallback
+  // ladder drops the change-only flags" a STRUCTURAL property of the writer
+  // rather than prose the persisting agent has to remember.
+  if (!isChangeTarget(target)) {
+    if (o.pathAnchors === true) {
+      throw new Error(
+        'review: opts.pathAnchors is a change-review option — target ' +
+          JSON.stringify(target) +
+          ' is a plan-repo document, whose quotes are located in the document itself (--path only applies to a change review)'
+      );
+    }
+    if (o.source) {
+      throw new Error(
+        'review: opts.source pins a change identity (--base/--expected-head) — it cannot accompany the plan-repo document target ' +
+          JSON.stringify(target)
+      );
+    }
+    if (o.implements) {
+      throw new Error(
+        'review: opts.implements records which plan a reviewed CHANGE implements — it cannot accompany the plan-repo document target ' +
+          JSON.stringify(target)
+      );
+    }
+  }
   const worktreeRef = typeof o.worktreeRef === 'string' && o.worktreeRef.trim() !== '' ? o.worktreeRef.trim() : '';
-  const pathAnchors = o.pathAnchors === true;
+  // An EMPTY COMMITTED RANGE has no hunks, so every `--path` comment is
+  // guaranteed to fail QuoteOutsideChangedHunks. Suppress the flag rather than
+  // emit commands that cannot succeed; buildPersistReviewPrompts reports the
+  // condition as `emptyRange` so persistAccounting can flag it.
+  const pathAnchors = o.pathAnchors === true && !(o.source && o.source.noCode === true);
   const IND = '  ';
   const cmds = [];
   if (o.source) {
@@ -2088,35 +2191,264 @@ function buildPersistReviewPrompts(result, target, deps, opts) {
   const o = opts || {};
   const fallbackTarget =
     typeof o.fallbackTarget === 'string' && o.fallbackTarget.trim() !== '' ? o.fallbackTarget.trim() : '';
+  // GUARD THE FALLBACK REF ITSELF. A change-shaped fallback would re-pin a
+  // change identity the fallback exists to escape; a fallback equal to the
+  // primary would emit a second identical ladder that fails the same way; a ref
+  // with no `/` is not a review ref at all.
+  if (fallbackTarget !== '') {
+    if (isChangeTarget(fallbackTarget)) {
+      throw new Error(
+        'review: persist fallbackTarget must be a plan-repo document ref — "roadmap/<slug>", ' +
+          '"phase/<roadmap-slug>/<stem-or-number>", "task/<slug>" or "plan/<slug>" — never another change review (got ' +
+          JSON.stringify(fallbackTarget) +
+          ')'
+      );
+    }
+    if (fallbackTarget === String(target).trim()) {
+      throw new Error(
+        'review: persist fallbackTarget must differ from the primary target (both are ' +
+          JSON.stringify(fallbackTarget) +
+          '); an identical ladder would fail the same way'
+      );
+    }
+    if (fallbackTarget.indexOf('/') === -1) {
+      throw new Error(
+        'review: persist fallbackTarget must be an already-well-formed rdm review ref — "roadmap/<slug>", ' +
+          '"phase/<roadmap-slug>/<stem-or-number>", "task/<slug>" or "plan/<slug>" (got ' +
+          JSON.stringify(fallbackTarget) +
+          '). The consumer builds the ref; the writer never prefixes one.'
+      );
+    }
+  }
+  // A COMPLETE SECOND COMMAND LIST, not prose. Re-entering the writer with
+  // `pathAnchors: false` and neither `source` nor `implements` means the
+  // emitted `review start` / `review comment` lines STRUCTURALLY cannot carry
+  // `--path`, `--base` or `--implements` — the three flags a document target
+  // refuses. `worktreeRef` is inherited (it only decides which checkout the
+  // commands run in); `source` deliberately is NOT, because it pins a change
+  // identity onto what is now a document review.
+  const fallbackCommands =
+    fallbackTarget === ''
+      ? []
+      : persistReviewCommands(result, fallbackTarget, deps, { worktreeRef: o.worktreeRef, pathAnchors: false });
+  // An intentional no-code review has an EMPTY committed range: no hunks, so no
+  // `--path` anchor can ever land. Reported as data so a consumer's
+  // persistAccounting can refuse to read a quoted-survivor run against it as clean.
+  const emptyRange = !!(o.source && o.source.noCode === true);
   const startFallbackRung =
     fallbackTarget === ''
       ? []
       : [
           '  - If `' +
             String(target) +
-            '` itself is rejected by `review start` (no source checkout, no merge base, no approved plan to infer), re-run that SAME command ONCE with `--on ' +
-            String(target) +
-            '` replaced by `--on ' +
-            fallbackTarget +
-            '`, then continue with the remaining commands unchanged.',
+            '` itself is rejected by `review start` (no source checkout, no merge base, no approved plan to infer), ABANDON this command list entirely and run the FALLBACK COMMAND LADDER below verbatim instead. Report the fallback ref as `targetUsed`, and count every finding whose anchor is lost that way under `degraded` with reason `start-fallback`.',
         ];
+  const fallbackLadder =
+    fallbackTarget === ''
+      ? []
+      : [
+          'FALLBACK COMMAND LADDER (only if `review start --on ' +
+            String(target) +
+            '` is refused) — run these IN ORDER in ONE shell session INSTEAD of the list above. They target the plan-repo document `' +
+            fallbackTarget +
+            '`, so they carry no `--path`, no `--base` and no `--implements`:',
+          fallbackCommands.join('\n'),
+        ];
+  const emptyRangeNote = emptyRange
+    ? [
+        'EMPTY COMMITTED RANGE: this review was declared `--no-code`, so there are no changed hunks and no `--path` anchor can land. A finding that carries a quote is therefore an attempted anchor that cannot succeed — write it whole-document and count it under `degraded` with reason `outside-hunk`.',
+      ]
+    : [];
   const prompt = [
     'You are a mechanical review-persistence agent. Do not plan, implement, or review anything, and edit no source files.',
     'Run these commands IN ORDER in ONE shell session — later commands read shell variables the earlier ones set:',
     commands.join('\n'),
-    'ANCHORING FALLBACK — never skip a comment and never abort the persist:',
-    '  - If an `review comment` call fails because the quote is AMBIGUOUS (it occurs more than once), re-run that SAME command with ` --occurrence 1` appended.',
-    '  - If it fails a SECOND time for ANY reason (quote not found, occurrence out of range, still ambiguous), re-run it once more with the `--quote` and `--occurrence` flags REMOVED ENTIRELY, leaving a whole-document comment, and count it in `wholeDocument`.',
-    '  - If a `--path` comment is refused because the quote lies OUTSIDE a touched hunk (or the path is not in the reviewed revision), re-run that SAME command with the `--path`, `--quote` and `--occurrence` flags REMOVED ENTIRELY, leaving a whole-document comment, and count it in `wholeDocument`.',
+    'ANCHORING FALLBACK — never skip a comment and never abort the persist. AT MOST TWO ATTEMPTS PER FINDING, then a whole-document write; never a third:',
+    '  - If a `review comment` call fails because the quote is AMBIGUOUS (it occurs more than once), re-run that SAME command with ` --occurrence 1` appended. If that lands, the finding is `anchored` and contributes NO `degradedReasons` entry; only if THAT also fails is it `degraded` with reason `ambiguous`.',
+    '  - If it fails because the quote is NOT FOUND in the document, re-run it once more with the `--quote` and `--occurrence` flags REMOVED ENTIRELY, leaving a whole-document comment; reason `quote-not-found`.',
+    '  - If it fails because the OCCURRENCE IS OUT OF RANGE, re-run it once more with the `--quote` and `--occurrence` flags REMOVED ENTIRELY; reason `occurrence-out-of-range`.',
+    '  - If a `--path` comment is refused because the quote lies OUTSIDE a touched hunk, re-run that SAME command with the `--path`, `--quote` and `--occurrence` flags REMOVED ENTIRELY; reason `outside-hunk`.',
+    '  - If it is refused because the PATH IS NOT IN THE REVIEWED REVISION, re-run with those same three flags REMOVED ENTIRELY; reason `path-missing`.',
+    '  - If it is refused because the path IS NOT A FILE at the reviewed revision (a directory or a submodule), re-run with those same three flags REMOVED ENTIRELY; reason `path-not-a-file`.',
+    '  - If it is refused with `--path only applies to a change review`, the target is a plan-repo document rather than a change: re-run that SAME command with ONLY `--path` removed (keep `--quote`); reason `path-not-applicable`.',
+    '  - NEVER BLANKET-FALLBACK. A `review comment` failure whose stderr matches NONE of the rungs above must NOT be retried with flags stripped: report `ok: false` with a `degradedReasons` entry of reason `other` and stop, so a Git or source-identity failure (a `review source:` error, a source-repo discovery failure, an invalid stored change revision, a moved HEAD) surfaces instead of being laundered into a whole-document comment.',
   ]
     .concat(startFallbackRung)
     .concat([
     '  - A comment that will not anchor still gets written. A failing comment never stops the remaining comments, the submit, or the commit.',
-    'Return a PERSIST_ACK object: `ok` (true only if review start, every comment, the submit and the commit all exited 0), `reviewId` (the id captured into RDM_REVIEW_ID), `anchored` (how many comments landed with a quote anchor) and `wholeDocument` (how many landed without one).',
+    'ONCE AND ONLY ONCE: each finding ends up as EXACTLY ONE persisted comment. A retry REPLACES the failed attempt — never leave two comments for one finding. If a retry also fails, the finding is still written once, whole-document.',
+    'COUNTING — `attempted` is PER FINDING, `commandsRun` is PER INVOCATION: a retry does not add a finding. Increment `attempted` once per DISTINCT finding, however many `review comment` invocations that finding required; increment `commandsRun` once per `review comment` invocation. A finding whose anchor landed on the SECOND attempt is `anchored`, contributes 1 to `attempted` and 2 to `commandsRun`, and adds NO `degradedReasons` entry. A finding that never carried a `quote` at all was never an attempted anchor: it is `wholeDocumentIntended`, NOT `degraded`.',
+    ])
+    .concat(emptyRangeNote)
+    .concat(fallbackLadder)
+    .concat([
+    'Return a PERSIST_ACK object: `ok` (true only if review start, every comment, the submit and the commit all exited 0), `reviewId` (the id captured into RDM_REVIEW_ID), `targetUsed` (the ref `review start` ACTUALLY accepted — the primary ref, or the fallback ref if the fallback ladder ran), `attempted` (how many DISTINCT findings you tried to persist, at most one per finding), `commandsRun` (total `review comment` invocations including retries; informational only), `anchored` (how many findings ended up WITH an anchor), `wholeDocumentIntended` (how many findings carried no quote at all), `degraded` (how many findings had an anchor ATTEMPTED that did not land), and `degradedReasons` (one `{findingId, reason}` entry per degraded finding, reason one of ' +
+      PERSIST_DEGRADED_REASONS.join(', ') +
+      ').',
     ])
     .join('\n');
-  return { prompt: prompt, schema: PERSIST_ACK_SCHEMA, commands: commands };
+  return {
+    prompt: prompt,
+    schema: PERSIST_ACK_SCHEMA,
+    commands: commands,
+    fallbackCommands: fallbackCommands,
+    fallbackTarget: fallbackTarget,
+    emptyRange: emptyRange,
+  };
 }
+
+// persistHasQuote(finding) — the SINGLE definition of "this finding asked for an
+// anchor". The writer emits `--quote` under exactly this predicate, so the
+// expected shape persistAccounting reconciles against is derived from the same
+// rule rather than a parallel one that could drift.
+function persistHasQuote(finding) {
+  return !!finding && typeof finding.quote === 'string' && finding.quote.trim() !== '';
+}
+
+// persistAccounting(ack, survivors, opts) — pure, total, FAIL-SAFE. Recomputes
+// the EXPECTED shape from the survivor list the writer was handed and reads the
+// agent's self-report against it.
+//
+// The point is that a review whose anchors all failed must not be indistinguishable
+// from a clean one. `unresolvedDegradation` is therefore true whenever ANY of:
+//
+//   - the agent reported `degraded > 0`;
+//   - the PER-FINDING counters do not reconcile (the three disjoint
+//     dispositions do not sum to the survivor count, `attempted` is not the
+//     survivor count, or `anchored` exceeds the number of quoted survivors);
+//   - every anchorable finding failed (`expectedAnchorable > 0 && anchored === 0`)
+//     — derived independently, so it catches an ack that under-reports `degraded`;
+//   - `review start` fell back to a different target;
+//   - the committed range was empty while quoted survivors existed;
+//   - the ack is missing or malformed.
+//
+// `commandsRun` is NEVER consulted: a finding that anchored on a legitimate
+// retry is a clean result. Absent data yields `unresolvedDegradation: true`,
+// never a clean reading.
+function persistAccounting(ack, survivors, opts) {
+  const o = opts || {};
+  const list = Array.isArray(survivors) ? survivors.filter(Boolean) : [];
+  const expectedTotal = list.length;
+  const expectedAnchorable = list.filter(persistHasQuote).length;
+  const a = ack && typeof ack === 'object' && !Array.isArray(ack) ? ack : null;
+  const count = (v) => (typeof v === 'number' && isFinite(v) && v >= 0 && Math.floor(v) === v ? v : null);
+  const attempted = a ? count(a.attempted) : null;
+  const commandsRun = a ? count(a.commandsRun) : null;
+  const anchored = a ? count(a.anchored) : null;
+  const wholeDocumentIntended = a ? count(a.wholeDocumentIntended) : null;
+  const degraded = a ? count(a.degraded) : null;
+  const degradedReasons =
+    a && Array.isArray(a.degradedReasons)
+      ? a.degradedReasons
+          .filter((r) => r && typeof r === 'object')
+          .map((r) => ({
+            findingId: String(r.findingId === undefined || r.findingId === null ? '' : r.findingId),
+            reason: PERSIST_DEGRADED_REASONS.indexOf(String(r.reason)) === -1 ? 'other' : String(r.reason),
+          }))
+      : [];
+  const targetUsed = a && typeof a.targetUsed === 'string' && a.targetUsed.trim() !== '' ? a.targetUsed.trim() : null;
+  const primaryTarget = typeof o.target === 'string' && o.target.trim() !== '' ? o.target.trim() : null;
+  const targetFellBack = targetUsed !== null && primaryTarget !== null && targetUsed !== primaryTarget;
+  const emptyRange = o.emptyRange === true || !!(o.source && o.source.noCode === true);
+  const malformed =
+    a === null || attempted === null || anchored === null || wholeDocumentIntended === null || degraded === null;
+  const reconciled =
+    !malformed &&
+    anchored + wholeDocumentIntended + degraded === expectedTotal &&
+    attempted === expectedTotal &&
+    anchored <= expectedAnchorable;
+  const unresolvedDegradation =
+    malformed ||
+    !reconciled ||
+    degraded > 0 ||
+    (expectedAnchorable > 0 && anchored === 0) ||
+    targetFellBack === true ||
+    (emptyRange === true && expectedAnchorable > 0);
+  return {
+    attempted: attempted,
+    commandsRun: commandsRun,
+    anchored: anchored,
+    wholeDocumentIntended: wholeDocumentIntended,
+    degraded: degraded,
+    degradedReasons: degradedReasons,
+    targetUsed: targetUsed,
+    targetFellBack: targetFellBack,
+    expectedAnchorable: expectedAnchorable,
+    expectedTotal: expectedTotal,
+    reconciled: reconciled,
+    emptyRange: emptyRange,
+    unresolvedDegradation: unresolvedDegradation,
+  };
+}
+
+// classifyPersistOutcome(outcome, accounting, opts) — compose unresolved anchor
+// degradation onto an already-classified outcome. Degradation can only ever
+// make a result LESS clean: `reviewed` becomes `escalated`, and `rework` /
+// `escalated` pass through unchanged. `opts.adjudicatedDegradation` is the
+// explicit human adjudication escape hatch.
+//
+// THROWS on an outcome outside the vocabulary rather than defaulting, matching
+// persistVerdictFor's no-silent-default rule.
+function classifyPersistOutcome(outcome, accounting, opts) {
+  if (OUTCOMES.indexOf(outcome) === -1) {
+    throw new Error(
+      'review: cannot classify an unrecognized outcome "' + String(outcome) + '" (expected one of ' + OUTCOMES.join(', ') + ')'
+    );
+  }
+  const o = opts || {};
+  if (o.adjudicatedDegradation === true) return outcome;
+  if (!accounting || accounting.unresolvedDegradation !== true) return outcome;
+  return outcome === 'reviewed' ? 'escalated' : outcome;
+}
+
+// degradationSummaryClause(accounting) — the visible marker that makes a review
+// whose anchors degraded distinguishable in a run summary, the exact sibling of
+// budgetSummaryClause / coverageSummaryClause. Empty string when nothing
+// degraded and nothing was retried, so a healthy run's summary is byte-unchanged.
+//
+// A clean run that merely RETRIED gets a neutral ` [anchors: N retried]` note —
+// never anything that reads as a failure, because a legitimate retry is not
+// degradation.
+//
+// Deliberately short and free of quotes, `$` and backticks — the same
+// constraint its two siblings document, because the string is interpolated into
+// mechanical Bash prompts.
+function degradationSummaryClause(accounting) {
+  const a = accounting;
+  if (!a) return '';
+  const num = (v) => (typeof v === 'number' ? String(v) : 'unreported');
+  if (a.unresolvedDegradation !== true) {
+    const extra =
+      typeof a.commandsRun === 'number' && typeof a.attempted === 'number' ? a.commandsRun - a.attempted : 0;
+    return extra > 0 ? ' [anchors: ' + extra + ' retried]' : '';
+  }
+  const counts = {};
+  const order = [];
+  const reasons = Array.isArray(a.degradedReasons) ? a.degradedReasons : [];
+  for (let i = 0; i < reasons.length; i++) {
+    const r = reasons[i] && reasons[i].reason ? String(reasons[i].reason) : 'other';
+    if (counts[r] === undefined) {
+      counts[r] = 0;
+      order.push(r);
+    }
+    counts[r] += 1;
+  }
+  const reasonText = order.map((r) => (counts[r] > 1 ? r + ' x' + counts[r] : r)).join(', ');
+  let clause =
+    ' [anchors: ' +
+    num(a.anchored) +
+    ' landed, ' +
+    num(a.wholeDocumentIntended) +
+    ' intentionally whole-document, ' +
+    num(a.degraded) +
+    ' degraded' +
+    (reasonText === '' ? '' : ' (' + reasonText + ')');
+  if (a.reconciled === false) clause += '; counters do not reconcile against ' + a.expectedTotal + ' findings';
+  if (a.targetFellBack === true) clause += '; target fell back to ' + (a.targetUsed || 'an unreported ref');
+  if (a.emptyRange === true && a.expectedAnchorable > 0) clause += '; empty committed range';
+  return clause + ']';
+}
+
 
 // --- Plan-standalone consolidation helpers -----------------------------------
 // Three pure, post-pipeline consolidation/gate helpers the standalone
@@ -5038,6 +5370,7 @@ async function runPlanReviewDriver(args, deps) {
     // and leaves `outcome`, the gate and the tag exactly as they were. A review
     // that failed to record is a lost audit trail, never a changed verdict.
     let reviewId = null
+    let reviewPersistence = null
     if (persistOn && kind !== 'implementation-plan') {
       const persistTarget = persistTargetFor(u, persist, units.length)
       try {
@@ -5053,10 +5386,27 @@ async function runPlanReviewDriver(args, deps) {
           schema: PERSIST_ACK_SCHEMA,
           model: _mechanicalModel,
         })
+        // DELIBERATE: plan mode's GATE IS UNCHANGED by anchor degradation.
+        // GATE_POLICY.plan still clears needs-plan-review on `reviewed`,
+        // because a plan verdict is about the PLAN, not about how well the
+        // findings anchored in the document. Degradation is therefore EXPOSED
+        // — on the unit result, in its summary clause and in a dedicated log
+        // line — never silently converted into a plan verdict. The code lane
+        // composes it into the outcome (classifyPersistOutcome); this lane
+        // deliberately does not.
+        reviewPersistence = persistAccounting(ack, r.survivors, { target: persistTarget })
         if (ack && ack.ok === true && typeof ack.reviewId === 'string' && ack.reviewId !== '') {
           reviewId = ack.reviewId
         } else {
           _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (ack: ' + JSON.stringify(ack) + ')')
+        }
+        if (reviewPersistence.unresolvedDegradation === true) {
+          _log(
+            'plan-review: PERSIST DEGRADED for ' + persistTarget + ' — ' +
+              (typeof reviewPersistence.degraded === 'number' ? reviewPersistence.degraded : 'an unreported number of') +
+              ' anchor(s) failed of ' + reviewPersistence.expectedAnchorable + ' attempted; the record carries unresolved anchor degradation' +
+              degradationSummaryClause(reviewPersistence)
+          )
         }
       } catch (e) {
         _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (' + String((e && e.message) || e) + ')')
@@ -5185,13 +5535,18 @@ async function runPlanReviewDriver(args, deps) {
       findings: r.survivors,
     }
     // Clause concatenation order is FIXED and asserted:
-    //   summarizeFindings → coverage clause (inside r.summary) → gate clause.
+    //   summarizeFindings → coverage clause (inside r.summary) → gate clause
+    //   → anchor-degradation clause.
     // The two gate clauses are mutually exclusive by construction (a deferred
-    // unit is never blocked), so at most one is ever appended.
-    reportedUnit.summary = r.summary + gateFailureClause(reportedUnit) + gateDeferredClause(reportedUnit)
+    // unit is never blocked), so at most one of those is ever appended. The
+    // degradation clause is empty unless the persist ran AND something
+    // degraded (or retried), so a persist-omitted run's summary is unchanged.
+    reportedUnit.summary =
+      r.summary + gateFailureClause(reportedUnit) + gateDeferredClause(reportedUnit) + degradationSummaryClause(reviewPersistence)
     // PRESENT ONLY WHEN THE PERSIST RAN. Never `reviewId: null` — an
     // always-present key would change the OUTCOME of every persist-omitted run.
     if (reviewId) reportedUnit.reviewId = reviewId
+    if (reviewPersistence) reportedUnit.reviewPersistence = reviewPersistence
     reported.push(reportedUnit)
     _log(
       'plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + reportedUnit.summary + formatUnitBudget(r.budget)

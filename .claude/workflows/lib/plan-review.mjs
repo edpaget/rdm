@@ -39,6 +39,8 @@ import {
   buildReviewCoverage,
   coverageSummaryClause,
   buildPersistReviewPrompts,
+  persistAccounting,
+  degradationSummaryClause,
   parseCommentHeader,
   PERSIST_ACK_SCHEMA,
 } from './review.mjs';
@@ -2351,6 +2353,7 @@ async function runPlanReviewDriver(args, deps) {
     // and leaves `outcome`, the gate and the tag exactly as they were. A review
     // that failed to record is a lost audit trail, never a changed verdict.
     let reviewId = null
+    let reviewPersistence = null
     if (persistOn && kind !== 'implementation-plan') {
       const persistTarget = persistTargetFor(u, persist, units.length)
       try {
@@ -2366,10 +2369,27 @@ async function runPlanReviewDriver(args, deps) {
           schema: PERSIST_ACK_SCHEMA,
           model: _mechanicalModel,
         })
+        // DELIBERATE: plan mode's GATE IS UNCHANGED by anchor degradation.
+        // GATE_POLICY.plan still clears needs-plan-review on `reviewed`,
+        // because a plan verdict is about the PLAN, not about how well the
+        // findings anchored in the document. Degradation is therefore EXPOSED
+        // — on the unit result, in its summary clause and in a dedicated log
+        // line — never silently converted into a plan verdict. The code lane
+        // composes it into the outcome (classifyPersistOutcome); this lane
+        // deliberately does not.
+        reviewPersistence = persistAccounting(ack, r.survivors, { target: persistTarget })
         if (ack && ack.ok === true && typeof ack.reviewId === 'string' && ack.reviewId !== '') {
           reviewId = ack.reviewId
         } else {
           _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (ack: ' + JSON.stringify(ack) + ')')
+        }
+        if (reviewPersistence.unresolvedDegradation === true) {
+          _log(
+            'plan-review: PERSIST DEGRADED for ' + persistTarget + ' — ' +
+              (typeof reviewPersistence.degraded === 'number' ? reviewPersistence.degraded : 'an unreported number of') +
+              ' anchor(s) failed of ' + reviewPersistence.expectedAnchorable + ' attempted; the record carries unresolved anchor degradation' +
+              degradationSummaryClause(reviewPersistence)
+          )
         }
       } catch (e) {
         _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (' + String((e && e.message) || e) + ')')
@@ -2498,13 +2518,18 @@ async function runPlanReviewDriver(args, deps) {
       findings: r.survivors,
     }
     // Clause concatenation order is FIXED and asserted:
-    //   summarizeFindings → coverage clause (inside r.summary) → gate clause.
+    //   summarizeFindings → coverage clause (inside r.summary) → gate clause
+    //   → anchor-degradation clause.
     // The two gate clauses are mutually exclusive by construction (a deferred
-    // unit is never blocked), so at most one is ever appended.
-    reportedUnit.summary = r.summary + gateFailureClause(reportedUnit) + gateDeferredClause(reportedUnit)
+    // unit is never blocked), so at most one of those is ever appended. The
+    // degradation clause is empty unless the persist ran AND something
+    // degraded (or retried), so a persist-omitted run's summary is unchanged.
+    reportedUnit.summary =
+      r.summary + gateFailureClause(reportedUnit) + gateDeferredClause(reportedUnit) + degradationSummaryClause(reviewPersistence)
     // PRESENT ONLY WHEN THE PERSIST RAN. Never `reviewId: null` — an
     // always-present key would change the OUTCOME of every persist-omitted run.
     if (reviewId) reportedUnit.reviewId = reviewId
+    if (reviewPersistence) reportedUnit.reviewPersistence = reviewPersistence
     reported.push(reportedUnit)
     _log(
       'plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + reportedUnit.summary + formatUnitBudget(r.budget)

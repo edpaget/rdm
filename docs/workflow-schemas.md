@@ -1331,17 +1331,33 @@ still branches on nothing:
 | `opts` field | effect |
 | --- | --- |
 | `worktreeRef` | prefix the command list with `<bin> worktree add <ref>` + a `cd` into the path it prints, so a checkout-relative target like `change/HEAD` resolves |
-| `pathAnchors` | for each survivor whose `location` yields a repo-relative path via the pure `pathFromLocation`, emit `--path "$RDM_PERSIST_PATH"` alongside `--quote` |
-| `fallbackTarget` | name a second ref in the prompt's anchoring-fallback prose, which `review start` is retried with once if the primary target is rejected |
+| `pathAnchors` | for each survivor whose `location` yields a repo-relative path via the pure `pathFromLocation`, emit `--path "$RDM_PERSIST_PATH"` alongside `--quote`. Suppressed outright when `source.noCode` is set (no hunks exist, so every such comment would fail), and REFUSED with a throw on a non-change target. |
+| `fallbackTarget` | emit a SECOND, COMPLETE command list (`fallbackCommands`) for a plan-repo document ref, built by re-entering the writer with `pathAnchors: false` and neither `source` nor `implements`, so it structurally cannot carry `--path`, `--base` or `--implements`. The prompt embeds it verbatim under a `FALLBACK COMMAND LADDER` heading and the agent runs it INSTEAD of the primary list when `review start` refuses the primary ref. `worktreeRef` is inherited; `source` is not. A change-shaped fallback, one equal to the primary target, or one with no `/` throws at build time. |
 
 **`rdm-wf-review-refute-fix.js` defaults its code-review persist target to
 `change/HEAD`** — a code review is about the code, so the recorded artifact
 targets the change itself rather than the phase document. That decision lives in
 the DRIVER region, not the stamped block, so a future consumer can choose a
-different target without editing `lib/review.mjs`. The prefixed item ref
-(`phase/<roadmap>/<phase>` / `task/<slug>`) survives as `persistItemRef`, passed
-as `fallbackTarget`, and an explicit `persist.on` still overrides both. See
-[`change-reviews.md`](change-reviews.md) for the target itself.
+different target without editing `lib/review.mjs`. An explicit `persist.on` still overrides it,
+but only to the same change: the driver refuses a `persist.on` that names a
+different artifact (`source-bound persistence cannot target a different
+artifact`). See [`change-reviews.md`](change-reviews.md) for the target itself.
+
+**Recorded evidence (phase 11).** The filed task
+`change-review-persist-fallback-keeps-path` reported that the start-fallback
+kept `--path` and therefore broke every anchored comment on the fallback path.
+Its DIAGNOSIS was real at the writer level and is fixed structurally above. Its
+stated EFFECT does not reproduce in the shipped driver: NO consumer under
+`.claude/workflows/` passes the option at all (the only occurrences are the
+writer's own return key, gated by `scripts/verify-workflow-review.sh` § 15f(c)),
+so the rung was unreachable from every shipped caller; the item-ref JS symbol
+this section used to describe was deleted with the phase-8 source-binding
+rewrite and no longer exists anywhere in the repo (§ 15f(a) keeps it that way);
+and the source binding above makes a target switch forbidden POLICY rather than
+merely unimplemented. `fallbackTarget` was therefore NOT wired into
+the source-bound driver — doing so would contradict that rule — and
+`scripts/verify-workflow-review.sh` § 15d executes the emitted fallback list
+directly against the real binary so the path is covered without one.
 
 **Emitted commands**, in order: `rdm review start --on <target> --body <summary>
 --no-edit --format json` → one `rdm review comment` per survivor → `rdm review
@@ -1351,13 +1367,37 @@ backticks, `$`, double quotes, em-dashes and newlines ride through literally. A
 survivor carrying a `quote` gets `--quote`; one without becomes a whole-document
 comment. The prompt spells a two-step anchoring fallback — `--occurrence 1` on
 ambiguity, then drop `--quote` entirely on a second failure — so a comment is
-never skipped and the persist never aborts on an anchoring failure. With
-`pathAnchors` on, two further rungs cover the change target: a `--path` comment
-refused for landing outside a touched hunk retries as a whole-document comment,
-and a rejected `review start --on change/HEAD` retries once with
-`fallbackTarget`. `review
+never skipped and the persist never aborts on an anchoring failure. `review
 start` always carries a NON-EMPTY `--body`, or `submit_review` would raise
 `ReviewEmpty` on a clean review with no comments.
+
+**The anchoring ladder is BOUNDED and per-error.** Each rung names the real
+rdm-core refusal it recovers from and the `degradedReasons` reason it records,
+and the bound is explicit: AT MOST TWO ATTEMPTS PER FINDING, then a
+whole-document write, never a third.
+
+| refusal | rung | reason |
+| --- | --- | --- |
+| `quote ... occurs N times` (`QuoteAmbiguous`) | retry with `--occurrence 1` | `ambiguous`, and ONLY if that retry also fails |
+| `quote ... not found` (`QuoteNotFound`) | drop `--quote`/`--occurrence` | `quote-not-found` |
+| `--occurrence N is out of range` (`QuoteOccurrenceOutOfRange`) | drop `--quote`/`--occurrence` | `occurrence-out-of-range` |
+| `is not touched by <base>..<head>` (`QuoteOutsideChangedHunks`) | drop `--path`/`--quote`/`--occurrence` | `outside-hunk` |
+| `does not exist at <head>` (`ChangePathNotInRevision`) | drop the same three | `path-missing` |
+| `is a directory at <head>` (`ChangePathNotAFile`) | drop the same three | `path-not-a-file` |
+| `--path only applies to a change review` | drop ONLY `--path` | `path-not-applicable` |
+| `review start` refused the primary ref | run the fallback command ladder | `start-fallback` |
+| anything else | **NEVER blanket-fallback** — report `ok: false`, reason `other`, and stop | `other` |
+
+That last row is load-bearing: a Git or source-identity failure (a
+`review source:` error, a source-repo discovery failure, an invalid stored
+change revision, a moved HEAD) must SURFACE rather than be laundered into a
+whole-document comment by a blanket flag-strip.
+
+**An empty committed range suppresses `--path` outright.** With
+`opts.source.noCode === true` there are no hunks, so every `--path` comment is
+guaranteed to fail. The writer emits none and reports `emptyRange: true` in its
+return, which the accounting below turns into unresolved degradation whenever a
+quoted survivor exists.
 
 **Verdict mapping** (`PERSIST_VERDICT` / `persistVerdictFor`, which THROWS on an
 unrecognized outcome rather than defaulting to `comment`):
@@ -1367,6 +1407,55 @@ unrecognized outcome rather than defaulting to `comment`):
 | `reviewed` | `approve` |
 | `rework` | `request-changes` |
 | `escalated` | `request-changes`, with the mode's `[code]`/`[plan]` escalation prefix on the review body |
+
+**PERSIST_ACK: what the agent reports back.** The counters are DENOMINATED IN
+FINDINGS, with exactly one exception, and the distinction is the whole point of
+the schema:
+
+| field | required | denomination | meaning |
+| --- | --- | --- | --- |
+| `ok` | yes | — | every command exited 0 |
+| `reviewId` | no | — | the id captured into `RDM_REVIEW_ID` |
+| `targetUsed` | yes | — | the ref `review start` ACTUALLY accepted: the primary ref, or the fallback ref when the ladder fired |
+| `attempted` | yes | **per finding** | DISTINCT findings persisted, counted at most ONCE per finding however many `review comment` invocations it took |
+| `commandsRun` | no | **per invocation** | total `review comment` invocations including retries. INFORMATIONAL ONLY — it reconciles against nothing and is consulted by no predicate |
+| `anchored` | yes | per finding | findings that ended up WITH an anchor, including one that landed on the second attempt |
+| `wholeDocumentIntended` | yes | per finding | findings that carried no `quote` at all — an ordinary whole-document comment, NEVER a failure |
+| `degraded` | yes | per finding | findings whose anchor was ATTEMPTED and did not land |
+| `degradedReasons` | no | per degraded finding | `{ findingId, reason }`, reason drawn from the closed vocabulary in the ladder table above |
+
+A retry does not add a finding. A finding that anchored on attempt 2 is
+`anchored`, contributes 1 to `attempted` and 2 to `commandsRun`, and records NO
+`degradedReasons` entry. The three dispositions are disjoint and must sum to the
+survivor count.
+
+**`persistAccounting(ack, survivors, opts)`** recomputes the expected shape from
+the survivor list the writer was handed and reads the ack against it, returning
+`unresolvedDegradation: true` whenever `degraded > 0`, the per-finding counters
+do not reconcile, every anchorable finding failed (`expectedAnchorable > 0 &&
+anchored === 0` — derived, so an under-reporting ack cannot buy a clean result),
+`targetUsed` differs from the primary target, the committed range was empty
+while quoted survivors existed, or the ack is missing or malformed. It is
+FAIL-SAFE by construction: absent data never reads clean.
+
+**`classifyPersistOutcome(outcome, accounting, opts)`** composes that onto the
+already-classified outcome. Degradation can only make a result LESS clean:
+`reviewed` becomes `escalated`, `rework` and `escalated` pass through, and
+`opts.adjudicatedDegradation` is the explicit adjudication escape hatch. An
+outcome outside the vocabulary THROWS, matching `persistVerdictFor`.
+`degradationSummaryClause(accounting)` renders it into the human-readable
+summary alongside `budgetSummaryClause` / `coverageSummaryClause`, and a clean
+run that merely retried gets a neutral ` [anchors: N retried]` note rather than
+anything that reads as a failure.
+
+Both surviving consumers read it. `rdm-wf-review-refute-fix.js` composes it into
+the OUTCOME (and attaches it as `result.reviewPersistence`), so a code review
+whose anchors all failed escalates instead of reporting clean.
+`lib/plan-review.mjs` EXPOSES it — on the per-unit result, in the unit summary
+and in a dedicated `plan-review: PERSIST DEGRADED` log line — but deliberately
+does not gate on it: `GATE_POLICY.plan` still clears `needs-plan-review` on
+`reviewed`, because a plan verdict is about the plan, not about how well its
+findings anchored.
 
 The OUTCOME gains a `reviewId` key **only when the persist step actually ran** —
 never `reviewId: null`. A failed persist logs loudly and changes nothing else.

@@ -129,15 +129,43 @@ try {
         if (options.persistFailure) return { ok: false };
         assert.ok(!prompt.includes('worktree add'), 'persistence never reselects or creates checkout');
         assert.ok(!prompt.includes('--on phase/'), 'no item approval fallback');
+        assert.ok(!prompt.includes('FALLBACK COMMAND LADDER'), 'a source-bound persist emits no document fallback ladder');
         const start = prompt.indexOf('Run these commands IN ORDER');
-        let command = prompt.slice(prompt.indexOf('\n', start) + 1, prompt.indexOf('\nANCHORING FALLBACK'));
+        const emitted = prompt.slice(prompt.indexOf('\n', start) + 1, prompt.indexOf('\nANCHORING FALLBACK'));
+        let command = emitted;
+        // Counted from the EMITTED list, before any planted mutation: this is
+        // how many findings ASKED for an anchor, which is what the accounting
+        // reconciles against.
+        const asked = (emitted.match(/--quote "\$RDM_PERSIST_QUOTE"/g) || []).length;
+        const comments = (emitted.match(/ review comment /g) || []).length;
         if (options.missingPath) {
-          const original = command;
           command = command.replaceAll(' --path "$RDM_PERSIST_PATH"', '');
-          assert.notEqual(command, original, 'missing-path mutation must be planted');
+          assert.notEqual(command, emitted, 'missing-path mutation must be planted');
+        }
+        if (options.degradeAnchors) {
+          // The documented whole-document rung, applied by the agent: drop the
+          // path AND the quote, so the finding is persisted once, unanchored.
+          command = command.replaceAll(' --path "$RDM_PERSIST_PATH"', '').replaceAll(' --quote "$RDM_PERSIST_QUOTE"', '');
+          assert.notEqual(command, emitted, 'degrade-anchors mutation must be planted');
         }
         const output = shell(command + '\nprintf "\\n%s\\n" "$RDM_REVIEW_ID"');
-        return { ok: true, reviewId: output.split('\n').at(-1), anchored: 0, wholeDocument: 0 };
+        const reviewId = output.split('\n').at(-1);
+        const record = JSON.parse(rdm(['review', 'show', reviewId, '--format', 'json'], shared));
+        const anchored = record.comments.filter((comment) => comment.anchor).length;
+        const degraded = options.lyingAck ? 0 : Math.max(0, asked - anchored);
+        return {
+          ok: true,
+          reviewId,
+          targetUsed: 'change/' + head,
+          attempted: comments,
+          // A legitimate retry inflates ONLY commandsRun; nothing reconciles
+          // against it, so this must not perturb the verdict.
+          commandsRun: comments + (options.retryOnce ? 1 : 0),
+          anchored: options.lyingAck ? asked : anchored,
+          wholeDocumentIntended: comments - asked,
+          degraded,
+          degradedReasons: Array.from({ length: degraded }, (_, i) => ({ findingId: 'degraded-' + i, reason: 'outside-hunk' })),
+        };
       }
       if (opts.label === 'gate:persist') {
         if (options.gateFailure) return { ok: false, head, branch: resolved.branch, status: 'needs-review' };
@@ -174,8 +202,8 @@ try {
   assert.equal(json(['phase', 'show', 'phase-1-work', '--roadmap', 'alpha']).status, 'reviewed');
   const quoted = { ...finding, id: 'quoted', location: 'src/lib.rs:1', quote: 'fn implemented() {}' };
   const unlocated = { ...finding, id: 'unlocated', location: 'throughout the gate step' };
-  async function checkWriter(missingPath = false) {
-    const written = await execute({ persist: true, tier: 'large' }, { findings: [quoted, unlocated], missingPath });
+  async function checkWriter(missingPath = false, extra = {}) {
+    const written = await execute({ persist: true, tier: 'large' }, { findings: [quoted, unlocated], missingPath, ...extra });
     assert.equal(written.result.outcome, 'rework', 'generated code writer must persist rework: ' + written.result.summary);
     const record = json(['review', 'show', written.result.reviewId], shared);
     const located = record.comments.find(comment => comment.anchor);
@@ -193,6 +221,66 @@ try {
   await checkWriter();
   await assert.rejects(() => checkWriter(true), /generated code writer must persist rework|quoted finding must have a resolved code path anchor/);
   console.log('generated writer control passed; planted missing-path mutation failed as required');
+
+  // --- Anchor-degradation accounting, end to end through the real driver ----
+  // A mixed review: one finding that ASKED for an anchor, one that never did.
+  // Both non-gating, so the review is otherwise clean and the only thing that
+  // can move the outcome is how the anchors landed.
+  const quotedSuggestion = { ...quoted, id: 'quoted-suggestion', severity: 'suggestion' };
+  const unlocatedSuggestion = { ...unlocated, id: 'unlocated-suggestion', severity: 'suggestion' };
+  const mixed = [quotedSuggestion, unlocatedSuggestion];
+  const mixedClean = await execute({ persist: true }, { findings: mixed });
+  assert.equal(mixedClean.result.outcome, 'reviewed', 'a clean mixed review still reports reviewed: ' + mixedClean.result.summary);
+  const cleanAccounting = mixedClean.result.reviewPersistence;
+  assert.ok(cleanAccounting, 'the OUTCOME carries reviewPersistence whenever the persist ran');
+  assert.equal(cleanAccounting.expectedTotal, 2);
+  assert.equal(cleanAccounting.expectedAnchorable, 1, 'only the quoted finding asked for an anchor');
+  assert.equal(cleanAccounting.anchored, 1);
+  assert.equal(cleanAccounting.wholeDocumentIntended, 1, 'a finding that never carried a quote is INTENDED, not degraded');
+  assert.equal(cleanAccounting.degraded, 0);
+  assert.equal(cleanAccounting.reconciled, true);
+  assert.equal(cleanAccounting.unresolvedDegradation, false);
+  assert.equal(cleanAccounting.targetFellBack, false);
+  assert.ok(!mixedClean.result.summary.includes('degraded'), 'a clean run names no degradation');
+
+  // Same review, every attempted anchor lost: it must NOT be indistinguishable
+  // from the clean run above.
+  const mixedDegraded = await execute({ persist: true }, { findings: mixed, degradeAnchors: true });
+  assert.equal(mixedDegraded.result.outcome, 'escalated', 'a 100-percent degraded review cannot report reviewed');
+  assert.equal(mixedDegraded.result.status, 'blocked');
+  assert.equal(mixedDegraded.result.writesCompletion, false);
+  assert.equal(mixedDegraded.result.reviewPersistence.degraded, 1);
+  assert.equal(mixedDegraded.result.reviewPersistence.anchored, 0);
+  assert.equal(mixedDegraded.result.reviewPersistence.wholeDocumentIntended, 1, 'the intentional whole-document finding is still counted apart from the failed anchor');
+  assert.equal(mixedDegraded.result.reviewPersistence.unresolvedDegradation, true);
+  assert.match(mixedDegraded.result.summary, /anchors: 0 landed, 1 intentionally whole-document, 1 degraded/);
+  // The persisted artifact still carries BOTH findings exactly once.
+  assert.equal(JSON.parse(rdm(['review', 'show', mixedDegraded.result.reviewId, '--format', 'json'], shared)).comments.length, 2);
+
+  // A legitimate retry is NOT degradation: commandsRun exceeds the per-finding
+  // attempted count and the verdict is unmoved.
+  const retried = await execute({ persist: true }, { findings: mixed, retryOnce: true });
+  assert.equal(retried.result.outcome, 'reviewed', 'an anchor that landed on a retry keeps the review clean');
+  assert.equal(retried.result.reviewPersistence.attempted, 2, 'attempted is denominated in FINDINGS');
+  assert.equal(retried.result.reviewPersistence.commandsRun, 3, 'commandsRun is denominated in INVOCATIONS');
+  assert.equal(retried.result.reviewPersistence.unresolvedDegradation, false);
+  assert.match(retried.result.summary, /\[anchors: 1 retried\]/);
+
+  // An EMPTY committed range carrying a quoted finding: no hunk can ever hold
+  // the anchor, so the run must not read clean.
+  const emptyRange = await execute({ base: head, noCode: true, persist: true }, { findings: [quotedSuggestion] });
+  assert.equal(emptyRange.result.outcome, 'escalated', 'a quoted finding against an empty committed range cannot report reviewed');
+
+  // The INVERSE of the missing-path mutation: an ack that CLAIMS a clean
+  // anchoring while the script it ran dropped every --path. The accounting
+  // believes the self-report, so the read-back is what must catch it — proving
+  // the anchor assertions are not satisfied by the ack alone.
+  await assert.rejects(
+    () => checkWriter(true, { lyingAck: true }),
+    /generated code writer must persist rework|quoted finding must have a resolved code path anchor/,
+    'a lying ack must not buy a clean anchored review'
+  );
+  console.log('anchor-degradation accounting regressions passed');
 
   assert.equal(git(['rev-parse', 'HEAD'], stale), base, 'stale branch unchanged');
   assert.equal(git(['status', '--porcelain'], stale), '', 'stale checkout unchanged');

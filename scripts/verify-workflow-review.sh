@@ -11406,6 +11406,11 @@ const {
   persistReviewCommands,
   buildPersistReviewPrompts,
   buildReviewPipeline,
+  isChangeTarget,
+  PERSIST_DEGRADED_REASONS,
+  persistAccounting,
+  classifyPersistOutcome,
+  degradationSummaryClause,
 } = lib;
 
 // ---------------------------------------------------------------- schema shape
@@ -11664,6 +11669,144 @@ assert.throws(() => persistVerdictFor('constructor'), /unrecognized outcome/, 'a
   assert.ok(!built.prompt.includes('Done:'), 'the persist prompt must contain no land-time completion directive');
   assert.ok(!built.prompt.includes('Date.now(') && !built.prompt.includes('Math.random('), 'no forbidden nondeterministic global');
   assert.ok(!built.prompt.includes('agentType'), 'the agent type is a per-consumer parameter, never baked into the prompt');
+  assert.ok(built.prompt.includes('AT MOST TWO ATTEMPTS PER FINDING'), 'the ladder states its bound');
+  assert.ok(built.prompt.includes('NEVER BLANKET-FALLBACK'), 'the ladder forbids stripping flags on an unrecognized failure');
+  assert.ok(built.prompt.includes('ONCE AND ONLY ONCE'), 'the prompt states the one-comment-per-finding rule');
+  assert.ok(
+    built.prompt.includes('`attempted` is PER FINDING, `commandsRun` is PER INVOCATION'),
+    'the prompt states the counter denomination explicitly'
+  );
+  assert.ok(
+    built.prompt.includes('was never an attempted anchor: it is `wholeDocumentIntended`, NOT `degraded`'),
+    'the prompt states that a quote-less finding is not degraded'
+  );
+  assert.ok(
+    built.prompt.includes('landed on the SECOND attempt is `anchored`'),
+    'the prompt states that a successful retry is anchored, not degraded'
+  );
+  for (const reason of PERSIST_DEGRADED_REASONS) {
+    assert.ok(built.prompt.includes(reason), 'the prompt names the `' + reason + '` degraded reason');
+  }
+  assert.deepEqual(built.fallbackCommands, [], 'no fallbackTarget means no fallback ladder');
+  assert.equal(built.fallbackTarget, '');
+  assert.equal(built.emptyRange, false);
+  assert.ok(!built.prompt.includes('FALLBACK COMMAND LADDER'), 'no fallbackTarget means no ladder heading');
+}
+
+// ------------------------------- change-only flags on a DOCUMENT target throw
+// The real binary refuses --path, --base and --implements against a plan-repo
+// document (pinned as behavior by section 15d-errors). The writer therefore
+// makes the combination unrepresentable rather than emitting a ladder that
+// cannot run.
+{
+  const cfg = { rdmBin: '/fake/bin/rdm', project: 'demo' };
+  const result = { mode: 'code', outcome: 'rework', survivors: [] };
+  assert.equal(isChangeTarget('change/abc'), true);
+  assert.equal(isChangeTarget('  change/abc  '), true);
+  for (const notChange of ['task/t', 'phase/rm/1', 'roadmap/rm', 'plan/p', 'changeling/x', '', null, 42, {}]) {
+    assert.equal(isChangeTarget(notChange), false, JSON.stringify(notChange) + ' is not a change target');
+  }
+  const source = { path: '/tmp/x', item: 'phase/rm/phase-1-a', base: 'b', head: 'h', branch: 'br' };
+  for (const ref of ['task/t', 'phase/rm/phase-1-a', 'roadmap/rm', 'plan/p']) {
+    assert.throws(() => persistReviewCommands(result, ref, cfg, { pathAnchors: true }), /pathAnchors is a change-review option/, ref);
+    assert.throws(() => persistReviewCommands(result, ref, cfg, { source }), /opts\.source pins a change identity/, ref);
+    assert.throws(() => persistReviewCommands(result, ref, cfg, { implements: 'plan/p' }), /opts\.implements records which plan/, ref);
+  }
+  // And they are all still legal on a change target.
+  const ok = persistReviewCommands(result, 'change/abc', cfg, { pathAnchors: true, source, implements: 'plan/p' });
+  assert.ok(Array.isArray(ok) && ok.length > 0, 'a change target still accepts every change-only option');
+  // A worktreeRef alone is target-agnostic and stays legal on a document target.
+  assert.ok(
+    persistReviewCommands(result, 'task/t', cfg, { worktreeRef: 'rm' }).some((c) => c.includes(' worktree add rm')),
+    'worktreeRef is not a change-only option'
+  );
+}
+
+// ------------------------------------ an EMPTY committed range suppresses --path
+{
+  const cfg = { rdmBin: '/fake/bin/rdm', project: 'demo' };
+  const quoted = { id: 'q1', concern: 'correctness', severity: 'concern', confidence: 90, what_fails: 'x', quote: 'fn a() {}', location: 'src/lib.rs:1' };
+  const result = { mode: 'code', outcome: 'rework', survivors: [quoted] };
+  const live = { path: '/tmp/x', item: 'phase/rm/phase-1-a', base: 'b', head: 'h', branch: 'br' };
+  const empty = { ...live, noCode: true };
+  assert.ok(
+    persistReviewCommands(result, 'change/h', cfg, { source: live, pathAnchors: true }).join('\n').includes('--path "$RDM_PERSIST_PATH"'),
+    'a live range still emits --path'
+  );
+  const emptyCmds = persistReviewCommands(result, 'change/h', cfg, { source: empty, pathAnchors: true }).join('\n');
+  assert.ok(!emptyCmds.includes('--path'), 'an empty committed range has no hunks, so --path is suppressed rather than emitted doomed');
+  assert.ok(emptyCmds.includes('--no-code'), 'the no-code declaration still rides through to review source');
+  const built = buildPersistReviewPrompts(result, 'change/h', cfg, { source: empty, pathAnchors: true });
+  assert.equal(built.emptyRange, true, 'the empty range is reported as DATA');
+  assert.ok(built.prompt.includes('EMPTY COMMITTED RANGE'), 'and named in the prompt');
+}
+
+// ---------------------------------------- the FALLBACK COMMAND LADDER is REAL
+// Not prose telling the agent to "continue unchanged": a second, complete,
+// structurally flag-clean command list.
+{
+  const cfg = { rdmBin: '/fake/bin/rdm', project: 'demo' };
+  const quoted = { id: 'q1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'x', quote: 'fn a() {}', location: 'src/lib.rs:1' };
+  const plain = { id: 'w1', concern: 'correctness', severity: 'concern', confidence: 80, what_fails: 'y' };
+  const result = { mode: 'code', outcome: 'rework', survivors: [quoted, plain] };
+  const built = buildPersistReviewPrompts(result, 'change/deadbeef', cfg, {
+    worktreeRef: 'rm',
+    pathAnchors: true,
+    fallbackTarget: 'phase/rm/phase-1-a',
+  });
+  assert.ok(built.commands.join('\n').includes('--path "$RDM_PERSIST_PATH"'), 'the PRIMARY ladder keeps its path anchors');
+  const fb = built.fallbackCommands.join('\n');
+  assert.ok(built.fallbackCommands.length > 0, 'a fallbackTarget yields a COMPLETE second command list');
+  assert.equal(built.fallbackTarget, 'phase/rm/phase-1-a');
+  for (const flag of ['--path', '--base', '--implements']) {
+    assert.ok(!fb.includes(flag), 'the fallback ladder must not carry the change-only flag ' + flag);
+  }
+  assert.ok(fb.includes(' review start --on phase/rm/phase-1-a '), 'the fallback ladder targets the fallback ref');
+  assert.equal((fb.match(/ review comment /g) || []).length, 2, 'the fallback ladder persists EVERY finding, once each');
+  assert.ok(fb.includes(' review submit "$RDM_REVIEW_ID" --verdict request-changes '), 'the fallback ladder submits too');
+  assert.ok(fb.includes(' worktree add rm'), 'worktreeRef is inherited by the fallback ladder');
+  assert.ok(built.prompt.includes('FALLBACK COMMAND LADDER'), 'the ladder is emitted verbatim in the prompt');
+  assert.ok(built.prompt.includes(fb), 'the prompt embeds exactly the fallback commands it returns');
+  assert.ok(built.prompt.includes('start-fallback'), 'and names the reason the fallback contributes');
+  // Guards on the fallback ref itself.
+  assert.throws(
+    () => buildPersistReviewPrompts(result, 'change/deadbeef', cfg, { fallbackTarget: 'change/cafe' }),
+    /never another change review/,
+    'a change-shaped fallback would re-pin the identity the fallback exists to escape'
+  );
+  assert.throws(
+    () => buildPersistReviewPrompts(result, 'task/t', cfg, { fallbackTarget: 'task/t' }),
+    /must differ from the primary target/,
+    'an identical fallback would fail the same way'
+  );
+  assert.throws(
+    () => buildPersistReviewPrompts(result, 'task/t', cfg, { fallbackTarget: 'nope' }),
+    /already-well-formed rdm review ref/,
+    'a ref with no slash is not a review ref'
+  );
+  // Punctuation rides through BOTH lists identically.
+  const sharp = { id: 's1', concern: 'correctness', severity: 'concern', confidence: 70, what_fails: 'z', quote: 'a "b" $c `d` — e\nf', location: 'src/lib.rs:2' };
+  const both = buildPersistReviewPrompts({ mode: 'code', outcome: 'rework', survivors: [sharp] }, 'change/deadbeef', cfg, {
+    pathAnchors: true,
+    fallbackTarget: 'task/t',
+  });
+  for (const list of [both.commands, both.fallbackCommands]) {
+    assert.ok(list.join('\n').includes('a "b" $c `d` — e\nf'), 'the quote text rides through literally in BOTH lists');
+  }
+}
+
+// -------------------------------------------------- the PERSIST_ACK schema shape
+{
+  assert.equal(PERSIST_ACK_SCHEMA.additionalProperties, false);
+  assert.ok(!PERSIST_ACK_SCHEMA.properties.wholeDocument, 'the conflated `wholeDocument` counter is GONE');
+  for (const k of ['ok', 'reviewId', 'targetUsed', 'attempted', 'commandsRun', 'anchored', 'wholeDocumentIntended', 'degraded', 'degradedReasons']) {
+    assert.ok(PERSIST_ACK_SCHEMA.properties[k], 'the ack schema carries `' + k + '`');
+  }
+  for (const k of ['ok', 'attempted', 'anchored', 'wholeDocumentIntended', 'degraded', 'targetUsed']) {
+    assert.ok(PERSIST_ACK_SCHEMA.required.includes(k), '`' + k + '` is required');
+  }
+  assert.ok(!PERSIST_ACK_SCHEMA.required.includes('commandsRun'), '`commandsRun` is informational and therefore OPTIONAL');
+  assert.deepEqual(PERSIST_ACK_SCHEMA.properties.degradedReasons.items.properties.reason.enum, PERSIST_DEGRADED_REASONS);
 }
 
 // ------------------------------- plan-review's ref derivation and persist parsing
@@ -12291,5 +12434,671 @@ if round_persist_run "$MUT_B" "$TMP/round-seed-mut-b" >/dev/null 2>&1; then
 else
     pass "5d-persist-mut(b): pinning priorRoundFromReviews to 0 breaks the round-3 escalation"
 fi
+
+# --- 15d. THE FALLBACK COMMAND LADDER against the REAL binary ----------------
+# The fallback used to be PROSE ("continue with the remaining commands
+# unchanged"), which left `--path` — a change-only flag — pointed at a plan-repo
+# document that refuses it. It is now a SECOND, COMPLETE command list built by
+# re-entering the writer with the change-only options off. This section executes
+# that list verbatim against the real binary, and its self-test proves the
+# writer's structural guard is what prevents the refused ladder.
+say "15d. Fallback command ladder: flag-clean, complete, and executable against the real binary"
+PERSIST_BIN="$REPO_ROOT/target/debug/rdm"
+[ -x "$PERSIST_BIN" ] || fail "15d: $PERSIST_BIN not found — run \`cargo build\` first (this section drives the REAL binary)"
+
+cat >"$TMP/persist-fallback.mjs" <<'NODE_PERSIST_FALLBACK'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+
+const [libPath, binary, workdir, mode] = process.argv.slice(2);
+const { buildPersistReviewPrompts, persistReviewCommands } = await import(pathToFileURL(libPath).href);
+
+const planRepo = path.join(workdir, 'plans');
+const sourceRepo = path.join(workdir, 'source');
+const env = {
+  ...process.env,
+  RDM_ROOT: planRepo,
+  RDM_PROJECT: 'pv',
+  RDM_SESSION: 'verify-persist-fallback',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_AUTHOR_NAME: 'T',
+  GIT_AUTHOR_EMAIL: 't@example.invalid',
+  GIT_COMMITTER_NAME: 'T',
+  GIT_COMMITTER_EMAIL: 't@example.invalid',
+};
+const run = (bin, args, cwd = sourceRepo) =>
+  execFileSync(bin, args, { cwd, env, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+const rdm = (args, cwd = sourceRepo) => run(binary, args, cwd);
+const git = (args, cwd = sourceRepo) => run('git', args, cwd);
+
+fs.mkdirSync(sourceRepo, { recursive: true });
+git(['init', '-b', 'main']);
+git(['commit', '--allow-empty', '-m', 'initial']);
+rdm(['init', '--default-project', 'pv']);
+rdm(['roadmap', 'create', 'persist-rm', '--title', 'RM', '--body', 'Roadmap body.', '--no-edit']);
+rdm(['phase', 'create', 'target', '--roadmap', 'persist-rm', '--number', '1', '--title', 'Target',
+  '--body', 'Phase body with a unique phase sentence.', '--no-edit']);
+rdm(['commit', '-m', 'chore(plan): seed']);
+const shared = fs.realpathSync(rdm(['worktree', 'add', 'persist-rm']));
+fs.mkdirSync(path.join(shared, 'src'), { recursive: true });
+fs.writeFileSync(path.join(shared, 'src/lib.rs'), 'fn implemented() {}\n');
+git(['add', '.'], shared);
+git(['commit', '-m', 'feat: work'], shared);
+const head = git(['rev-parse', 'HEAD'], shared);
+
+const cfg = { rdmBin: binary, project: 'pv' };
+const DOC_TARGET = 'phase/persist-rm/phase-1-target';
+// The quoted survivor's quote lives in the PHASE body (so the document ladder
+// can anchor it) while its `location` names a source path (so the CHANGE ladder
+// emits --path). One finding exercises both halves.
+const survivors = [
+  { id: 'q1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'x', why: 'y',
+    recommendation: 'z', quote: 'a unique phase sentence', location: 'src/lib.rs:1' },
+  { id: 'w1', concern: 'correctness', severity: 'concern', confidence: 80, what_fails: 'y' },
+];
+const result = { mode: 'code', outcome: 'rework', survivors };
+
+if (mode === 'mutant') {
+  // THE GUARD REMOVED. Emitting the change-only --path at a document target is
+  // now representable; prove the real binary refuses the resulting ladder, so
+  // the guard in the unmutated writer is load-bearing rather than decorative.
+  const cmds = persistReviewCommands(result, DOC_TARGET, cfg, { pathAnchors: true });
+  const text = cmds.join('\n');
+  assert.ok(text.includes('--path "$RDM_PERSIST_PATH"'), 'the mutant must actually emit the change-only --path');
+  const script = path.join(workdir, 'mutant.sh');
+  fs.writeFileSync(script, text + '\n');
+  const out = execFileSync('/bin/sh', ['-c', 'sh "$1" 2>&1', 'sh', script], { cwd: sourceRepo, env, encoding: 'utf8' });
+  assert.match(out, /--path only applies to a change review/, 'the real binary must REFUSE a --path comment on a document target');
+  console.log('15d mutant: the guard-less ladder is refused by the real binary');
+} else {
+  // The primary (change) ladder keeps every change-only affordance.
+  const built = buildPersistReviewPrompts(result, 'change/' + head, cfg, {
+    worktreeRef: 'persist-rm',
+    pathAnchors: true,
+    fallbackTarget: DOC_TARGET,
+  });
+  const primary = built.commands.join('\n');
+  assert.ok(primary.includes(' worktree add persist-rm'), 'the primary ladder enters the item checkout');
+  assert.ok(primary.includes('cd "$(head -n 1 "$RDM_PERSIST_WT")"'), 'and cds into the path it printed');
+  assert.ok(primary.includes('--path "$RDM_PERSIST_PATH"'), 'and anchors by path');
+  assert.ok(built.prompt.includes('Report the fallback ref as `targetUsed`'),
+    'the prompt tells the agent to report which ref review start actually accepted');
+
+  // The FALLBACK ladder, executed verbatim.
+  const fbText = built.fallbackCommands.join('\n');
+  for (const flag of ['--path', '--base', '--implements']) {
+    assert.ok(!fbText.includes(flag), 'the fallback ladder must carry no ' + flag);
+  }
+  assert.ok(fbText.includes(' worktree add persist-rm'), 'worktreeRef is inherited');
+  assert.ok(fbText.includes(' review start --on ' + DOC_TARGET + ' '), 'the fallback ladder targets the document ref');
+  assert.ok(fbText.includes('chore(plan): record code review of ' + DOC_TARGET),
+    'the fallback commit names the ref review start actually accepted');
+  const script = path.join(workdir, 'fallback.sh');
+  fs.writeFileSync(script, fbText + '\n');
+  const out = run('/bin/sh', [script]);
+  const matched = /reviewId=(\S+)/.exec(out);
+  assert.ok(matched, 'the fallback ladder reported no reviewId: ' + out);
+  const record = JSON.parse(rdm(['review', 'show', matched[1], '--format', 'json']));
+  assert.equal(record.target.kind, 'phase', 'the fallback review landed on the DOCUMENT target');
+  assert.equal(record.comments.length, survivors.length, 'each finding persists EXACTLY once — no duplicates, none skipped');
+  assert.equal(record.verdict, 'request-changes');
+  const anchored = record.comments.filter((c) => c.resolution && c.resolution.state === 'resolved');
+  assert.equal(anchored.length, 1, 'the quoted finding still anchors on the document target');
+  assert.equal(anchored[0].resolution.quote, 'a unique phase sentence');
+  console.log('15d: the fallback ladder is flag-clean, complete, and lands one comment per finding on the document target');
+}
+NODE_PERSIST_FALLBACK
+
+mkdir -p "$TMP/fb-work"
+if run_node "$TMP/persist-fallback.mjs" "$LIB" "$PERSIST_BIN" "$TMP/fb-work" real; then
+    pass "15d: the emitted fallback ladder carries no --path/--base/--implements, persists every finding once, and resolves to the phase target"
+else
+    fail "15d: the real-binary fallback-ladder assertions failed"
+fi
+
+# Planted mutation: remove the writer's structural guard (isChangeTarget always
+# true) so a document target can be handed the change-only --path again.
+MUT_15D="$TMP/lib-15d-mutant.mjs"
+sed "s/^  return typeof ref === 'string' \&\& \/\^change\\\\\/\/.test(ref.trim());$/  return true;/" "$LIB" >"$MUT_15D"
+grep -A1 '^function isChangeTarget(ref) {$' "$MUT_15D" | grep -q '^  return true;$' ||
+    fail "15d-mut: the mutation did not apply — isChangeTarget's body moved"
+if diff -q "$LIB" "$MUT_15D" >/dev/null 2>&1; then
+    fail "15d-mut: the mutation did not change the file — the sed target moved"
+fi
+mkdir -p "$TMP/fb-work-mut"
+if run_node "$TMP/persist-fallback.mjs" "$MUT_15D" "$PERSIST_BIN" "$TMP/fb-work-mut" mutant; then
+    pass "15d-mut: with the guard removed the emitted ladder IS refused by the real binary — the guard is load-bearing"
+else
+    fail "15d-mut: the guard-less ladder was NOT refused — the 15d guard is vacuous"
+fi
+
+# --- 15d-errors. ONE BOUNDED RUNG PER CORE ERROR, against the REAL binary ----
+# Every rung the prompt's anchoring ladder documents is pinned to the real
+# stderr that triggers it, and each is asserted to succeed after AT MOST ONE
+# retry. A control leg proves the ordinary anchored path is unchanged.
+say "15d-errors. Each documented anchoring rung is pinned to the real error it recovers from"
+cat >"$TMP/persist-errors.mjs" <<'NODE_PERSIST_ERRORS'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+
+const [libPath, binary, workdir] = process.argv.slice(2);
+const { persistAccounting, buildPersistReviewPrompts } = await import(pathToFileURL(libPath).href);
+
+const planRepo = path.join(workdir, 'plans');
+const sourceRepo = path.join(workdir, 'source');
+const env = {
+  ...process.env,
+  RDM_ROOT: planRepo,
+  RDM_PROJECT: 'pv',
+  RDM_SESSION: 'verify-persist-errors',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_AUTHOR_NAME: 'T',
+  GIT_AUTHOR_EMAIL: 't@example.invalid',
+  GIT_COMMITTER_NAME: 'T',
+  GIT_COMMITTER_EMAIL: 't@example.invalid',
+};
+const run = (bin, args, cwd = sourceRepo) =>
+  execFileSync(bin, args, { cwd, env, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+const rdm = (args, cwd = sourceRepo) => run(binary, args, cwd);
+const git = (args, cwd = sourceRepo) => run('git', args, cwd);
+// refuse(args) — run a command that MUST fail, and return its stderr.
+const refuse = (args, cwd = sourceRepo) => {
+  let stderr = null;
+  try {
+    rdm(args, cwd);
+  } catch (e) {
+    stderr = String((e && e.stderr) || '') + String((e && e.stdout) || '');
+  }
+  assert.ok(stderr !== null, 'expected a refusal from: rdm ' + args.join(' '));
+  return stderr;
+};
+
+fs.mkdirSync(sourceRepo, { recursive: true });
+git(['init', '-b', 'main']);
+git(['commit', '--allow-empty', '-m', 'initial']);
+rdm(['init', '--default-project', 'pv']);
+rdm(['roadmap', 'create', 'rm', '--title', 'RM', '--body', 'Roadmap body.', '--no-edit']);
+rdm(['phase', 'create', 'target', '--roadmap', 'rm', '--number', '1', '--title', 'T',
+  '--body', 'Phase body sentence.', '--no-edit']);
+rdm(['task', 'create', 't1', '--title', 'T1', '--body', 'Task body sentence.', '--no-edit']);
+rdm(['plan', 'create', 'impl', '--implements', 'phase/rm/phase-1-target', '--title', 'P', '--body', 'Implement.', '--no-edit']);
+const planReview = JSON.parse(rdm(['review', 'start', '--on', 'plan/impl', '--author', 'indep', '--body', 'Reviewed.', '--no-edit', '--format', 'json']));
+rdm(['review', 'submit', planReview.id, '--verdict', 'approve', '--no-edit']);
+rdm(['commit', '-m', 'chore(plan): seed']);
+
+const shared = fs.realpathSync(rdm(['worktree', 'add', 'rm']));
+fs.mkdirSync(path.join(shared, 'src'), { recursive: true });
+fs.writeFileSync(path.join(shared, 'untouched.txt'), 'Stable text line.\n');
+fs.writeFileSync(path.join(shared, 'src/lib.rs'), 'fn implemented() {}\n');
+git(['add', '.'], shared);
+git(['commit', '-m', 'base'], shared);
+const base = git(['rev-parse', 'HEAD'], shared);
+fs.writeFileSync(path.join(shared, 'src/lib.rs'), 'fn implemented() {}\nfn added() {}\n// repeated\n// repeated\n');
+git(['add', '.'], shared);
+git(['commit', '-m', 'work'], shared);
+const head = git(['rev-parse', 'HEAD'], shared);
+const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], shared);
+
+// --- The change-only flags against a DOCUMENT target -------------------------
+const docReview = JSON.parse(rdm(['review', 'start', '--on', 'task/t1', '--body', 'Doc review.', '--no-edit', '--format', 'json']));
+assert.match(
+  refuse(['review', 'comment', docReview.id, '--path', 'src/lib.rs', '--quote', 'Task body sentence.', '--body', 'x', '--no-edit']),
+  /--path only applies to a change review/,
+  'path-not-applicable: the rung is keyed on a real message'
+);
+// The documented rung: drop ONLY --path. One retry, and it lands.
+rdm(['review', 'comment', docReview.id, '--quote', 'Task body sentence.', '--body', 'x', '--no-edit']);
+assert.match(
+  refuse(['review', 'start', '--on', 'task/t1', '--base', base, '--body', 'x', '--no-edit']),
+  /--base only applies to a change review/,
+  '--base is likewise change-only'
+);
+assert.match(
+  refuse(['review', 'start', '--on', 'task/t1', '--implements', 'plan/impl', '--body', 'x', '--no-edit']),
+  /--implements records which plan a reviewed \*change\* implements/,
+  '--implements is likewise change-only'
+);
+
+// --- One leg per rung on a REAL change review --------------------------------
+// EVERY change-review command runs INSIDE the pinned checkout: a change/<sha>
+// target resolves its source repo and branch from the invoking cwd, and a
+// review recorded from the wrong checkout resolves against the wrong branch.
+const changeReview = JSON.parse(rdm(['review', 'start', '--on', 'change/' + head, '--base', base,
+  '--implements', 'plan/impl', '--body', 'Change review.', '--no-edit', '--format', 'json'], shared));
+const id = changeReview.id;
+
+// CONTROL: the ordinary in-hunk anchored comment is UNCHANGED and still resolves.
+rdm(['review', 'comment', id, '--path', 'src/lib.rs', '--quote', 'fn added() {}', '--body', 'control', '--no-edit'], shared);
+
+// outside-hunk: a file that exists at head but the change never touched.
+assert.match(
+  refuse(['review', 'comment', id, '--path', 'untouched.txt', '--quote', 'Stable text line.', '--body', 'oh', '--no-edit'], shared),
+  /is not touched by .* — comment on a file the change modifies/,
+  'outside-hunk is keyed on a real message'
+);
+rdm(['review', 'comment', id, '--body', 'oh', '--no-edit'], shared); // the documented drop-all rung, ONE retry
+
+// ambiguous → --occurrence 1 lands on the SECOND attempt (an `anchored` finding).
+assert.match(
+  refuse(['review', 'comment', id, '--path', 'src/lib.rs', '--quote', '// repeated', '--body', 'amb', '--no-edit'], shared),
+  /occurs 2 times in the current document — pass --occurrence/,
+  'ambiguous is keyed on a real message'
+);
+rdm(['review', 'comment', id, '--path', 'src/lib.rs', '--quote', '// repeated', '--occurrence', '1', '--body', 'amb', '--no-edit'], shared);
+
+// occurrence-out-of-range → drop --quote/--occurrence.
+assert.match(
+  refuse(['review', 'comment', id, '--path', 'src/lib.rs', '--quote', '// repeated', '--occurrence', '9', '--body', 'oor', '--no-edit'], shared),
+  /--occurrence 9 is out of range for quote/,
+  'occurrence-out-of-range is keyed on a real message'
+);
+rdm(['review', 'comment', id, '--body', 'oor', '--no-edit'], shared);
+
+// quote-not-found → drop --quote/--occurrence.
+assert.match(
+  refuse(['review', 'comment', id, '--path', 'src/lib.rs', '--quote', 'ABSENT TEXT', '--body', 'nf', '--no-edit'], shared),
+  /not found in the current document/,
+  'quote-not-found is keyed on a real message'
+);
+rdm(['review', 'comment', id, '--body', 'nf', '--no-edit'], shared);
+
+// path-missing → ChangePathNotInRevision.
+assert.match(
+  refuse(['review', 'comment', id, '--path', 'src/nope.rs', '--quote', 'fn added() {}', '--body', 'pm', '--no-edit'], shared),
+  /does not exist at [0-9a-f]{40}/,
+  'path-missing is keyed on a real message'
+);
+rdm(['review', 'comment', id, '--body', 'pm', '--no-edit'], shared);
+
+// path-not-a-file → ChangePathNotAFile.
+assert.match(
+  refuse(['review', 'comment', id, '--path', 'src', '--quote', 'fn added() {}', '--body', 'pd', '--no-edit'], shared),
+  /is a directory at [0-9a-f]{40}/,
+  'path-not-a-file is keyed on a real message'
+);
+rdm(['review', 'comment', id, '--body', 'pd', '--no-edit'], shared);
+
+rdm(['review', 'submit', id, '--verdict', 'request-changes', '--no-edit'], shared);
+rdm(['commit', '-m', 'chore(plan): record'], shared);
+// Read back from INSIDE the pinned source checkout: a change review's
+// anchors resolve against the source repo, not the plan repo's cwd.
+const record = JSON.parse(rdm(['review', 'show', id, '--format', 'json'], shared));
+const control = record.comments.find((c) => c.body.includes('control'));
+assert.ok(control && control.anchor, 'the control comment must carry an anchor');
+assert.equal(control.anchor.anchor_type, 'file-quote', 'the ordinary anchored path is unchanged');
+assert.equal(control.resolution.state, 'resolved');
+assert.ok(control.source_link, 'and still carries a source_link');
+const anchoredCount = record.comments.filter((c) => c.anchor).length;
+assert.equal(anchoredCount, 2, 'exactly the control and the --occurrence 1 retry anchored');
+
+// base == head: core already refuses the empty committed range. The half this
+// phase owns is that declaring --no-code must not then read as a clean anchored
+// review — see the emptyRange handling below.
+assert.match(
+  refuse(['review', 'source', '--on', 'phase/rm/phase-1-target', '--source', shared, '--base', head,
+    '--expected-head', head, '--expected-branch', branch]),
+  /empty committed range; declare --no-code only for intentional no-code review/,
+  'base == head is refused by core'
+);
+const noCodeSource = { path: shared, item: 'phase/rm/phase-1-target', base: head, head, branch, noCode: true };
+const quoted = { id: 'q1', concern: 'correctness', severity: 'concern', confidence: 90, what_fails: 'x',
+  quote: 'fn added() {}', location: 'src/lib.rs:1' };
+const noCodeBuilt = buildPersistReviewPrompts({ mode: 'code', outcome: 'reviewed', survivors: [quoted] },
+  'change/' + head, { rdmBin: binary, project: 'pv' }, { source: noCodeSource, pathAnchors: true });
+assert.equal(noCodeBuilt.emptyRange, true);
+assert.ok(!noCodeBuilt.commands.join('\n').includes('--path'), 'no hunks means no doomed --path commands');
+assert.equal(
+  persistAccounting(
+    { ok: true, targetUsed: 'change/' + head, attempted: 1, anchored: 1, wholeDocumentIntended: 0, degraded: 0 },
+    [quoted],
+    { target: 'change/' + head, emptyRange: true }
+  ).unresolvedDegradation,
+  true,
+  'a quoted survivor against an EMPTY committed range can never be a clean anchored review'
+);
+
+// The successful-retry accounting, read off the leg that actually retried once:
+// the ambiguous finding took two invocations and still counts as ONE anchored
+// finding with no degraded reason.
+const retryAck = { ok: true, targetUsed: 'change/' + head, attempted: 1, commandsRun: 2, anchored: 1,
+  wholeDocumentIntended: 0, degraded: 0, degradedReasons: [] };
+const retryAccounting = persistAccounting(retryAck, [quoted], { target: 'change/' + head });
+assert.equal(retryAccounting.attempted, 1, 'a retry does not add a finding');
+assert.equal(retryAccounting.commandsRun, 2, 'but it does add an invocation');
+assert.deepEqual(retryAccounting.degradedReasons, [], 'a finding that landed on attempt 2 contributes no degraded reason');
+assert.equal(retryAccounting.unresolvedDegradation, false, 'and the review stays clean');
+
+console.log('15d-errors: every documented rung is pinned to a real error and recovers in at most one retry');
+NODE_PERSIST_ERRORS
+
+mkdir -p "$TMP/err-work"
+if run_node "$TMP/persist-errors.mjs" "$LIB" "$PERSIST_BIN" "$TMP/err-work"; then
+    pass "15d-errors: path-not-applicable / outside-hunk / ambiguous / occurrence-out-of-range / quote-not-found / path-missing / path-not-a-file / base==head each have a bounded outcome, and the ordinary anchored path still resolves"
+else
+    fail "15d-errors: the per-error rung assertions failed"
+fi
+
+# --- 15e. DEGRADATION ACCOUNTING, end to end ---------------------------------
+# persistAccounting / classifyPersistOutcome / degradationSummaryClause, driven
+# over the whole matrix — including the SUCCESSFUL-RETRY case, which is the one
+# a command-denominated `attempted` would misclassify as degradation.
+say "15e. Degradation accounting: the matrix, the retry carve-out, and the read-back provenance"
+cat >"$TMP/persist-accounting.mjs" <<'NODE_PERSIST_ACCOUNTING'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+
+const [libPath, binary, workdir] = process.argv.slice(2);
+const { persistAccounting, classifyPersistOutcome, degradationSummaryClause, persistReviewCommands, parseCommentHeader } =
+  await import(pathToFileURL(libPath).href);
+
+const q = (id) => ({ id, concern: 'correctness', severity: 'concern', confidence: 90, what_fails: id, quote: 'Q ' + id });
+const noQ = (id) => ({ id, concern: 'correctness', severity: 'concern', confidence: 90, what_fails: id });
+const ack = (o) => ({ ok: true, reviewId: 'r', targetUsed: 'task/t', ...o });
+const acct = (a, s, o) => persistAccounting(a, s, { target: 'task/t', ...(o || {}) });
+
+// --- 2 anchored + 1 intentionally unanchored: CLEAN --------------------------
+{
+  const s = [q('a'), q('b'), noQ('c')];
+  const r = acct(ack({ attempted: 3, commandsRun: 3, anchored: 2, wholeDocumentIntended: 1, degraded: 0 }), s);
+  assert.equal(r.expectedTotal, 3);
+  assert.equal(r.expectedAnchorable, 2);
+  assert.equal(r.wholeDocumentIntended, 1, 'a quote-less finding is INTENDED, never degraded');
+  assert.equal(r.degraded, 0);
+  assert.equal(r.reconciled, true);
+  assert.equal(r.unresolvedDegradation, false);
+  assert.equal(degradationSummaryClause(r), '', 'a clean run adds no clause');
+  assert.equal(classifyPersistOutcome('reviewed', r), 'reviewed');
+}
+
+// --- THE SUCCESSFUL-RETRY CASE ----------------------------------------------
+// 3 quoted survivors, 4 invocations (one finding landed on attempt 2). Under a
+// command-denominated `attempted` this reads as degradation; under the
+// per-finding definition it is a clean review.
+{
+  const s = [q('a'), q('b'), q('c')];
+  const r = acct(ack({ attempted: 3, commandsRun: 4, anchored: 3, wholeDocumentIntended: 0, degraded: 0, degradedReasons: [] }), s);
+  assert.equal(r.attempted, 3, '`attempted` is denominated in FINDINGS');
+  assert.equal(r.commandsRun, 4, '`commandsRun` is denominated in INVOCATIONS');
+  assert.equal(r.reconciled, true);
+  assert.equal(r.unresolvedDegradation, false, 'a legitimate retry is NOT degradation');
+  assert.equal(classifyPersistOutcome('reviewed', r), 'reviewed', 'and it must not be downgraded');
+  assert.equal(degradationSummaryClause(r), ' [anchors: 1 retried]', 'a retry gets a NEUTRAL note, not a failure clause');
+  // commandsRun influences NOTHING, at any magnitude.
+  const noisy = acct(ack({ attempted: 3, commandsRun: 9, anchored: 3, wholeDocumentIntended: 0, degraded: 0 }), s);
+  assert.equal(noisy.unresolvedDegradation, false, 'commandsRun never enters a reconciliation predicate');
+  assert.equal(classifyPersistOutcome('reviewed', noisy), 'reviewed');
+  // And omitting it entirely must not set degradation — it is optional.
+  const absent = acct(ack({ attempted: 3, anchored: 3, wholeDocumentIntended: 0, degraded: 0 }), s);
+  assert.equal(absent.commandsRun, null);
+  assert.equal(absent.unresolvedDegradation, false, 'an omitted commandsRun is not degradation');
+  assert.equal(degradationSummaryClause(absent), '');
+}
+
+// --- 100 percent degraded, even when the ack under-reports -------------------
+{
+  const s = [q('a'), q('b'), q('c')];
+  const honest = acct(ack({ attempted: 3, commandsRun: 6, anchored: 0, wholeDocumentIntended: 0, degraded: 3,
+    degradedReasons: [{ findingId: 'a', reason: 'outside-hunk' }, { findingId: 'b', reason: 'outside-hunk' }, { findingId: 'c', reason: 'quote-not-found' }] }), s);
+  assert.equal(honest.unresolvedDegradation, true);
+  assert.equal(classifyPersistOutcome('reviewed', honest), 'escalated', 'a fully degraded review cannot report reviewed');
+  assert.match(degradationSummaryClause(honest), /\[anchors: 0 landed, 0 intentionally whole-document, 3 degraded \(outside-hunk x2, quote-not-found\)\]/);
+  // The LIE: degraded: 0 while every anchorable finding is unanchored. The
+  // derived rule catches it independently of the self-report.
+  const lying = acct(ack({ attempted: 3, anchored: 0, wholeDocumentIntended: 3, degraded: 0 }), s);
+  assert.equal(lying.reconciled, true, 'the lying counters do sum');
+  assert.equal(lying.unresolvedDegradation, true, 'but zero anchors against three quoted survivors is still degradation');
+  assert.equal(classifyPersistOutcome('reviewed', lying), 'escalated');
+}
+
+// --- Non-reconciling counters ------------------------------------------------
+{
+  const s = [q('a'), q('b'), noQ('c')];
+  for (const bad of [
+    { attempted: 5, anchored: 2, wholeDocumentIntended: 1, degraded: 0 }, // attempted is not the finding count
+    { attempted: 3, anchored: 3, wholeDocumentIntended: 1, degraded: 0 }, // anchored exceeds the anchorable
+    { attempted: 3, anchored: 1, wholeDocumentIntended: 0, degraded: 0 }, // the dispositions do not sum
+  ]) {
+    const r = acct(ack(bad), s);
+    assert.equal(r.reconciled, false, JSON.stringify(bad));
+    assert.equal(r.unresolvedDegradation, true, JSON.stringify(bad));
+    assert.match(degradationSummaryClause(r), /counters do not reconcile against 3 findings/);
+  }
+}
+
+// --- Missing / malformed acks FAIL SAFE --------------------------------------
+{
+  const s = [q('a')];
+  for (const bad of [null, undefined, 'nope', 42, [], {}, { ok: true }, ack({ attempted: 'x', anchored: 1, wholeDocumentIntended: 0, degraded: 0 })]) {
+    assert.equal(acct(bad, s).unresolvedDegradation, true, 'absent data must never read clean: ' + JSON.stringify(bad));
+  }
+  assert.equal(degradationSummaryClause(null), '', 'a null accounting adds no clause at all');
+}
+
+// --- Provenance: a fallback target, and an empty committed range -------------
+{
+  const s = [q('a')];
+  const fell = acct(ack({ targetUsed: 'phase/rm/phase-1-a', attempted: 1, anchored: 1, wholeDocumentIntended: 0, degraded: 0 }), s, { target: 'change/abc' });
+  assert.equal(fell.targetFellBack, true);
+  assert.equal(fell.unresolvedDegradation, true, 'a target switch is itself unresolved degradation');
+  assert.match(degradationSummaryClause(fell), /target fell back to phase\/rm\/phase-1-a/);
+  const empty = acct(ack({ attempted: 1, anchored: 1, wholeDocumentIntended: 0, degraded: 0 }), s, { emptyRange: true });
+  assert.equal(empty.unresolvedDegradation, true, 'a quoted survivor against an empty range cannot read clean');
+  assert.match(degradationSummaryClause(empty), /empty committed range/);
+  // The same empty range with NOTHING quoted is clean.
+  const emptyClean = acct(ack({ attempted: 1, anchored: 0, wholeDocumentIntended: 1, degraded: 0 }), [noQ('a')], { emptyRange: true });
+  assert.equal(emptyClean.unresolvedDegradation, false);
+}
+
+// --- Zero survivors ----------------------------------------------------------
+{
+  const r = acct(ack({ attempted: 0, commandsRun: 0, anchored: 0, wholeDocumentIntended: 0, degraded: 0 }), []);
+  assert.equal(r.expectedAnchorable, 0);
+  assert.equal(r.unresolvedDegradation, false, 'a clean review with no findings must not trip the 100-percent rule');
+  assert.equal(classifyPersistOutcome('reviewed', r), 'reviewed');
+}
+
+// --- classifyPersistOutcome's own contract -----------------------------------
+{
+  const degraded = acct(ack({ attempted: 1, anchored: 0, wholeDocumentIntended: 0, degraded: 1 }), [q('a')]);
+  assert.equal(classifyPersistOutcome('reviewed', degraded), 'escalated');
+  assert.equal(classifyPersistOutcome('reviewed', degraded, { adjudicatedDegradation: true }), 'reviewed', 'explicit adjudication is the escape hatch');
+  assert.equal(classifyPersistOutcome('rework', degraded), 'rework', 'degradation never makes a result CLEANER');
+  assert.equal(classifyPersistOutcome('escalated', degraded), 'escalated');
+  assert.equal(classifyPersistOutcome('reviewed', null), 'reviewed', 'no accounting means no composition');
+  for (const bogus of ['blocked', '', null, undefined, 7]) {
+    assert.throws(() => classifyPersistOutcome(bogus, degraded), /unrecognized outcome/, JSON.stringify(bogus));
+  }
+}
+
+// --- The clause is SHELL-SAFE ------------------------------------------------
+{
+  const r = acct(ack({ targetUsed: 'phase/rm/phase-1-a', attempted: 2, anchored: 0, wholeDocumentIntended: 0, degraded: 2,
+    degradedReasons: [{ findingId: 'a', reason: 'outside-hunk' }, { findingId: 'b', reason: 'other' }] }), [q('a'), q('b')], { target: 'change/abc' });
+  const clause = degradationSummaryClause(r);
+  for (const ch of ['"', "'", '$', '`', '\\']) {
+    assert.ok(!clause.includes(ch), 'the clause must be free of ' + ch + ' — it rides into mechanical Bash prompts');
+  }
+}
+
+// --- A REAL mixed review: intentional vs failed, distinguished on read-back ---
+{
+  const planRepo = path.join(workdir, 'plans');
+  const env = {
+    ...process.env,
+    RDM_ROOT: planRepo,
+    RDM_PROJECT: 'pv',
+    RDM_SESSION: 'verify-persist-accounting',
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_AUTHOR_NAME: 'T',
+    GIT_AUTHOR_EMAIL: 't@example.invalid',
+    GIT_COMMITTER_NAME: 'T',
+    GIT_COMMITTER_EMAIL: 't@example.invalid',
+  };
+  fs.mkdirSync(workdir, { recursive: true });
+  const rdm = (args) => execFileSync(binary, args, { cwd: workdir, env, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+  rdm(['init', '--default-project', 'pv']);
+  rdm(['task', 'create', 'mixed', '--title', 'Mixed', '--body', 'A present sentence.', '--no-edit']);
+  rdm(['commit', '-m', 'chore(plan): seed']);
+  const stale = { id: 'stale', concern: 'correctness', severity: 'concern', confidence: 90, what_fails: 'x',
+    quote: 'A SENTENCE THAT IS NOT IN THE DOCUMENT' };
+  const intended = { id: 'intended', concern: 'correctness', severity: 'concern', confidence: 80, what_fails: 'y' };
+  const survivors = [stale, intended];
+  const cmds = persistReviewCommands({ mode: 'code', outcome: 'rework', survivors }, 'task/mixed', { rdmBin: binary, project: 'pv' });
+  // The documented rung, applied: the stale quote is dropped and the finding is
+  // written ONCE, whole-document.
+  const script = path.join(workdir, 'mixed.sh');
+  fs.writeFileSync(script, cmds.join('\n').replace(' --quote "$RDM_PERSIST_QUOTE"', '') + '\n');
+  const out = execFileSync('/bin/sh', [script], { cwd: workdir, env, encoding: 'utf8' });
+  const reviewId = /reviewId=(\S+)/.exec(out)[1];
+  const record = JSON.parse(rdm(['review', 'show', reviewId, '--format', 'json']));
+  assert.equal(record.comments.length, 2, 'each finding is persisted EXACTLY once');
+  assert.equal(record.comments.filter((c) => c.anchor).length, 0, 'both landed whole-document');
+  const ids = record.comments.map((c) => parseCommentHeader(c.body).findingId).sort();
+  assert.deepEqual(ids, ['intended', 'stale'], 'the header provenance still tells the two apart on the artifact');
+  // The ack the documented ladder produces, and what the accounting makes of it.
+  const r = persistAccounting(
+    ack({ reviewId, targetUsed: 'task/mixed', attempted: 2, commandsRun: 3, anchored: 0, wholeDocumentIntended: 1,
+      degraded: 1, degradedReasons: [{ findingId: 'stale', reason: 'quote-not-found' }] }),
+    survivors,
+    { target: 'task/mixed' }
+  );
+  assert.equal(r.wholeDocumentIntended, 1, 'the quote-less finding is intentional');
+  assert.equal(r.degraded, 1, 'the stale-quote finding is a FAILED anchor');
+  assert.deepEqual(r.degradedReasons, [{ findingId: 'stale', reason: 'quote-not-found' }]);
+  assert.equal(r.unresolvedDegradation, true);
+  assert.match(degradationSummaryClause(r), /0 landed, 1 intentionally whole-document, 1 degraded \(quote-not-found\)/);
+}
+
+console.log('15e: the degradation accounting matrix, the retry carve-out and the read-back provenance all hold');
+NODE_PERSIST_ACCOUNTING
+
+mkdir -p "$TMP/acct-work"
+if run_node "$TMP/persist-accounting.mjs" "$LIB" "$PERSIST_BIN" "$TMP/acct-work"; then
+    pass "15e: intentional and failed unanchored findings are disjoint, a successful retry stays clean, and a 100-percent degraded run cannot report reviewed"
+else
+    fail "15e: the degradation accounting assertions failed"
+fi
+
+# Planted mutation (a): unresolvedDegradation pinned false — nothing degrades.
+MUT_15E_A="$TMP/lib-15e-mut-a.mjs"
+sed 's/^    unresolvedDegradation: unresolvedDegradation,$/    unresolvedDegradation: false,/' "$LIB" >"$MUT_15E_A"
+if diff -q "$LIB" "$MUT_15E_A" >/dev/null 2>&1; then
+    fail "15e-mut(a): the mutation did not apply — persistAccounting's return shape moved"
+fi
+mkdir -p "$TMP/acct-work-a"
+if run_node "$TMP/persist-accounting.mjs" "$MUT_15E_A" "$PERSIST_BIN" "$TMP/acct-work-a" >/dev/null 2>&1; then
+    fail "15e-mut(a): section 15e still PASSED with unresolvedDegradation pinned false — the degradation contract is not covered"
+else
+    pass "15e-mut(a): pinning unresolvedDegradation to false breaks 15e"
+fi
+
+# Planted mutation (b): re-add commandsRun to the reconciliation — the exact
+# command-vs-finding conflation the per-finding `attempted` definition fixes.
+MUT_15E_B="$TMP/lib-15e-mut-b.mjs"
+sed 's/^    anchored <= expectedAnchorable;$/    anchored <= expectedAnchorable \&\&\n    commandsRun === expectedTotal;/' "$LIB" >"$MUT_15E_B"
+grep -q '^    commandsRun === expectedTotal;$' "$MUT_15E_B" ||
+    fail "15e-mut(b): the mutation did not apply — the reconciliation expression moved"
+mkdir -p "$TMP/acct-work-b"
+if run_node "$TMP/persist-accounting.mjs" "$MUT_15E_B" "$PERSIST_BIN" "$TMP/acct-work-b" >/dev/null 2>&1; then
+    fail "15e-mut(b): section 15e still PASSED with commandsRun back in the reconciliation — the successful-retry carve-out is not covered"
+else
+    pass "15e-mut(b): reconciling against commandsRun misclassifies the successful retry, and 15e catches it"
+fi
+
+# --- 15f. THE RECORDED EVIDENCE, AND THE NO-THIRD-CONSUMER RULE --------------
+# Phase 11 refuted the filed claim's stated EFFECT while confirming its
+# DIAGNOSIS. These are the mechanical halves of that record: the symbol the doc
+# used to describe is gone, a target switch is forbidden POLICY rather than
+# merely unimplemented, no shipped consumer passes `fallbackTarget` (so the
+# fallback path is exercised directly by § 15d, never vacuously through a
+# driver that cannot produce it), and every consumer that persists a review
+# also reads the accounting.
+say "15f. Recorded fallback-claim evidence, the fallback anti-vacuity guard, and the no-third-consumer rule"
+
+# (a) The stale JS symbol the doc described is gone repo-wide.
+# The needle is SPLICED so this guard does not match itself — a literal here
+# would make the assertion permanently red.
+STALE_SYMBOL="persist"'ItemRef'
+if git -C "$REPO_ROOT" grep -qn "$STALE_SYMBOL" -- . 2>/dev/null; then
+    git -C "$REPO_ROOT" grep -n "$STALE_SYMBOL" -- . >&2 || true
+    fail "15f: $STALE_SYMBOL still appears in the repo — the symbol no longer exists, so every mention is stale"
+fi
+pass "15f(a): $STALE_SYMBOL appears nowhere — the stale doc sentence is gone with it"
+
+# (b) A target switch is forbidden policy in the source-bound driver.
+grep -q 'source-bound persistence cannot target a different artifact' "$WF_DIR/rdm-wf-review-refute-fix.js" ||
+    fail "15f: the source-bound driver no longer refuses a different persist target — the recorded evidence is stale"
+pass "15f(b): the source-bound driver still refuses a persist target other than its own change"
+
+# (c) No shipped consumer passes fallbackTarget, so § 15d must execute the
+#     emitted fallback list DIRECTLY. Assert both halves together: the guard can
+#     never be satisfied vacuously.
+# Only real OPTION-PASSING sites count: the writer's own `fallbackTarget:
+# fallbackTarget,` return key and prose comments are not callers.
+grep -rn 'fallbackTarget:' "$WF_DIR" 2>/dev/null |
+    grep -v 'fallbackTarget: fallbackTarget,' |
+    grep -v ':[[:space:]]*//' >"$TMP/fallback-callers" || true
+if [ -s "$TMP/fallback-callers" ]; then
+    # A future consumer is allowed — but only if the harness still drives the
+    # emitted list end to end, which it does unconditionally in § 15d.
+    cat "$TMP/fallback-callers"
+    pass "15f(c): a consumer now passes fallbackTarget — § 15d still executes the emitted fallback list against the real binary"
+else
+    grep -q "fallbackTarget: DOC_TARGET" "$TMP/persist-fallback.mjs" ||
+        fail "15f: no consumer passes fallbackTarget AND § 15d does not build one — the fallback path would be untested"
+    pass "15f(c): no shipped consumer passes fallbackTarget, and § 15d executes the emitted fallback list directly"
+fi
+
+# (d) NO THIRD CONSUMER may call the writer without reading the accounting.
+# Real CALL sites only: neither the stamped definition nor a doc comment that
+# names the symbol counts as a consumer.
+real_calls() { # <file> <symbol>
+    grep -n "$2(" "$1" 2>/dev/null |
+        grep -v "function $2(" |
+        grep -cv ':[[:space:]]*//' || true
+}
+persist_calls() { real_calls "$1" buildPersistReviewPrompts; }
+accounting_calls() { real_calls "$1" persistAccounting; }
+CONSUMERS=0
+for f in "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs; do
+    [ -f "$f" ] || continue
+    calls=$(persist_calls "$f")
+    [ "$calls" -gt 0 ] || continue
+    CONSUMERS=$((CONSUMERS + 1))
+    reads=$(accounting_calls "$f")
+    [ "$reads" -gt 0 ] ||
+        fail "15f: $(basename "$f") calls buildPersistReviewPrompts but never persistAccounting — a persisted review whose anchors degraded would read as clean"
+done
+[ "$CONSUMERS" -ge 2 ] ||
+    fail "15f: expected at least the two known persist consumers, found $CONSUMERS — the grep is vacuous"
+pass "15f(d): every persist consumer ($CONSUMERS of them) reads the degradation accounting"
+
+# And dispatch-phase carries the stamped WRITER while calling it nowhere.
+[ "$(persist_calls "$WF_DIR/rdm-wf-dispatch-phase.js")" -eq 0 ] ||
+    fail "15f: rdm-wf-dispatch-phase.js now CALLS buildPersistReviewPrompts — it must read the accounting like every other consumer"
+grep -q 'function buildPersistReviewPrompts(' "$WF_DIR/rdm-wf-dispatch-phase.js" ||
+    fail "15f: rdm-wf-dispatch-phase.js lost the stamped writer — the stamped block drifted"
+pass "15f(d'): rdm-wf-dispatch-phase.js carries the stamped writer but calls no persist step"
+
+# (e) The evidence is discoverable from the code's own documentation.
+grep -q 'Recorded evidence' "$REPO_ROOT/docs/workflow-schemas.md" ||
+    fail "15f: docs/workflow-schemas.md does not carry the recorded fallback-claim evidence note"
+for k in targetUsed commandsRun wholeDocumentIntended degradedReasons; do
+    grep -q "$k" "$REPO_ROOT/docs/workflow-schemas.md" ||
+        fail "15f: docs/workflow-schemas.md does not document the '$k' PERSIST_ACK field"
+done
+pass "15f(e): the new ack fields and the recorded evidence are documented"
 
 say "verify-workflow-review.sh: ALL GREEN"
