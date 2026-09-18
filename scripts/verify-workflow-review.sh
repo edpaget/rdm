@@ -12576,6 +12576,192 @@ else
     fail "15d-mut: the guard-less ladder was NOT refused — the 15d guard is vacuous"
 fi
 
+# --- 15d-nocode. AN UNANCHORABLE QUOTE NEVER REACHES THE BINARY --------------
+# `rdm review comment` on a change/<sha> review refuses `--quote` without
+# `--path` outright (Error::ChangeQuoteNeedsPath). That text matches NO rung of
+# the anchoring ladder, so under the ladder's own never-blanket-fallback rule an
+# agent meeting it reports ok:false and ABORTS the whole persist — no review, no
+# comments. So the writer never emits that pair: a quote with no usable path is
+# downgraded to a whole-document comment at BUILD time and pre-counted as
+# degraded. This section runs the emitted lists against the real binary (the gap
+# the previous review found: the old assertions only inspected command TEXT).
+say "15d-nocode. A quote with no usable --path is dropped at build time, not refused at run time"
+cat >"$TMP/persist-unanchorable.mjs" <<'NODE_PERSIST_UNANCHORABLE'
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
+
+const [libPath, binary, workdir, mode] = process.argv.slice(2);
+const { buildPersistReviewPrompts, persistAccounting } = await import(pathToFileURL(libPath).href);
+
+const planRepo = path.join(workdir, 'plans');
+const sourceRepo = path.join(workdir, 'source');
+const env = {
+  ...process.env,
+  RDM_ROOT: planRepo,
+  RDM_PROJECT: 'pv',
+  RDM_SESSION: 'verify-persist-unanchorable',
+  GIT_CONFIG_GLOBAL: '/dev/null',
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_AUTHOR_NAME: 'T',
+  GIT_AUTHOR_EMAIL: 't@example.invalid',
+  GIT_COMMITTER_NAME: 'T',
+  GIT_COMMITTER_EMAIL: 't@example.invalid',
+};
+const run = (bin, args, cwd = sourceRepo) =>
+  execFileSync(bin, args, { cwd, env, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }).trim();
+const rdm = (args, cwd = sourceRepo) => run(binary, args, cwd);
+const git = (args, cwd = sourceRepo) => run('git', args, cwd);
+// Run an emitted command list exactly as the prompt tells the agent to, with
+// stderr FOLDED IN: a `review comment` that the binary refuses does not stop
+// `sh`, so the refusal is only visible in the combined output.
+const runLadder = (name, commands, cwd) => {
+  const script = path.join(workdir, name + '.sh');
+  fs.writeFileSync(script, commands.join('\n') + '\n');
+  const out = execFileSync('/bin/sh', ['-c', 'sh "$1" 2>&1', 'sh', script], { cwd, env, encoding: 'utf8' });
+  const matched = /reviewId=(\S+)/.exec(out);
+  return { out, reviewId: matched ? matched[1] : '' };
+};
+
+fs.mkdirSync(sourceRepo, { recursive: true });
+git(['init', '-b', 'main']);
+git(['commit', '--allow-empty', '-m', 'initial']);
+rdm(['init', '--default-project', 'pv']);
+rdm(['roadmap', 'create', 'rm', '--title', 'RM', '--body', 'Roadmap body.', '--no-edit']);
+rdm(['phase', 'create', 'target', '--roadmap', 'rm', '--number', '1', '--title', 'T',
+  '--body', 'Phase body sentence.', '--no-edit']);
+rdm(['plan', 'create', 'impl', '--implements', 'phase/rm/phase-1-target', '--title', 'P', '--body', 'Implement.', '--no-edit']);
+const planReview = JSON.parse(rdm(['review', 'start', '--on', 'plan/impl', '--author', 'indep', '--body', 'Reviewed.', '--no-edit', '--format', 'json']));
+rdm(['review', 'submit', planReview.id, '--verdict', 'approve', '--no-edit']);
+rdm(['commit', '-m', 'chore(plan): seed']);
+
+const shared = fs.realpathSync(rdm(['worktree', 'add', 'rm']));
+fs.mkdirSync(path.join(shared, 'src'), { recursive: true });
+fs.writeFileSync(path.join(shared, 'src/lib.rs'), 'fn implemented() {}\n');
+git(['add', '.'], shared);
+git(['commit', '-m', 'base'], shared);
+const base = git(['rev-parse', 'HEAD'], shared);
+fs.writeFileSync(path.join(shared, 'src/lib.rs'), 'fn implemented() {}\nfn added() {}\n');
+git(['add', '.'], shared);
+git(['commit', '-m', 'work'], shared);
+const head = git(['rev-parse', 'HEAD'], shared);
+const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], shared);
+
+const cfg = { rdmBin: binary, project: 'pv' };
+const quoted = { id: 'q1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'x',
+  why: 'y', recommendation: 'z', quote: 'fn added() {}', location: 'src/lib.rs:2' };
+const unquoted = { id: 'w1', concern: 'correctness', severity: 'concern', confidence: 80, what_fails: 'y' };
+// A quote whose `location` is free-form prose: pathFromLocation yields NOTHING,
+// so no `--path` can accompany it even though the committed range is live.
+const prose = { id: 'p1', concern: 'restraint', severity: 'concern', confidence: 80, what_fails: 'z',
+  quote: 'fn added() {}', location: 'throughout the gate step' };
+
+const noCodeSource = { path: shared, item: 'phase/rm/phase-1-target', base: head, head, branch, noCode: true };
+const liveSource = { path: shared, item: 'phase/rm/phase-1-target', base, head, branch, noCode: false };
+const opts = (source) => ({ source, pathAnchors: true, implements: 'plan/impl' });
+
+// --- Leg 1: an EMPTY committed range (--no-code) -----------------------------
+const noCodeSurvivors = [quoted, unquoted];
+const noCode = buildPersistReviewPrompts({ mode: 'code', outcome: 'rework', survivors: noCodeSurvivors },
+  'change/' + head, cfg, opts(noCodeSource));
+const noCodeText = noCode.commands.join('\n');
+assert.equal(noCode.emptyRange, true, 'the writer must see the empty committed range');
+
+if (mode === 'mutant') {
+  // THE SUPPRESSION REMOVED: `--quote` rides alone on a change target again.
+  assert.ok(noCodeText.includes('--quote'), 'the mutant must actually emit the bare --quote');
+  assert.ok(!noCodeText.includes('--path'), 'and still no --path — that is exactly the refused pair');
+  const ran = runLadder('nocode-mutant', noCode.commands, shared);
+  assert.match(ran.out, /--quote on a change review needs --path/,
+    'the real binary must REFUSE a --quote comment with no --path on a change target');
+  assert.ok(ran.reviewId, 'the mutant run still starts a review: ' + ran.out);
+  const record = JSON.parse(rdm(['review', 'show', ran.reviewId, '--format', 'json'], shared));
+  assert.ok(record.comments.length < noCodeSurvivors.length,
+    'and the refused finding is LOST — that is the defect the suppression prevents');
+  console.log('15d-nocode mutant: the bare --quote is refused and its finding is lost');
+} else {
+  for (const flag of ['--path', '--quote']) {
+    assert.ok(!noCodeText.includes(flag), 'an empty committed range must emit no ' + flag);
+  }
+  assert.deepEqual(noCode.preDegraded, [{ findingId: 'q1', reason: 'outside-hunk' }],
+    'the quoted finding is reported as degraded BEFORE any command runs');
+  assert.ok(noCode.prompt.includes('ALREADY DEGRADED BY THE COMMAND LIST'),
+    'and the agent is told not to retry it');
+  const ran = runLadder('nocode', noCode.commands, shared);
+  assert.doesNotMatch(ran.out, /error:/, 'the emitted ladder must not hit a single refusal: ' + ran.out);
+  assert.ok(ran.reviewId, 'the no-code ladder reported no reviewId: ' + ran.out);
+  const record = JSON.parse(rdm(['review', 'show', ran.reviewId, '--format', 'json'], shared));
+  assert.equal(record.comments.length, noCodeSurvivors.length,
+    'every finding is still recorded exactly once — the persist degrades, it does not abort');
+  assert.equal(record.comments.filter((c) => c.anchor).length, 0, 'and nothing anchored, because nothing could');
+
+  // The accounting cannot read this as clean — and an ack that under-reports
+  // it cannot buy a clean result either, because preDegraded is the WRITER's.
+  const honest = persistAccounting(
+    { ok: true, reviewId: ran.reviewId, targetUsed: 'change/' + head, attempted: 2, commandsRun: 2, anchored: 0,
+      wholeDocumentIntended: 1, degraded: 1, degradedReasons: [{ findingId: 'q1', reason: 'outside-hunk' }] },
+    noCodeSurvivors,
+    { target: 'change/' + head, source: noCodeSource, preDegraded: noCode.preDegraded }
+  );
+  assert.equal(honest.unresolvedDegradation, true, 'a degraded no-code review is never clean');
+  assert.equal(honest.preDegraded, 1);
+  const lying = persistAccounting(
+    { ok: true, reviewId: ran.reviewId, targetUsed: 'change/' + head, attempted: 2, commandsRun: 2, anchored: 0,
+      wholeDocumentIntended: 2, degraded: 0, degradedReasons: [] },
+    noCodeSurvivors,
+    { target: 'change/' + head, source: noCodeSource, preDegraded: noCode.preDegraded }
+  );
+  assert.equal(lying.unresolvedDegradation, true,
+    'an ack that reports the pre-dropped anchor as intentional still cannot read as clean');
+  assert.deepEqual(lying.degradedReasons, [{ findingId: 'q1', reason: 'outside-hunk' }],
+    'the writer-side reason is merged into the record even when the ack omits it');
+
+  // --- Leg 2: a LIVE range with an underivable path ---------------------------
+  const liveSurvivors = [quoted, prose];
+  const live = buildPersistReviewPrompts({ mode: 'code', outcome: 'rework', survivors: liveSurvivors },
+    'change/' + head, cfg, opts(liveSource));
+  const liveText = live.commands.join('\n');
+  assert.equal((liveText.match(/--path "\$RDM_PERSIST_PATH"/g) || []).length, 1,
+    'only the finding with a derivable path gets one');
+  assert.equal((liveText.match(/--quote "\$RDM_PERSIST_QUOTE"/g) || []).length, 1,
+    'and the prose-located quote is dropped rather than emitted without a path');
+  assert.deepEqual(live.preDegraded, [{ findingId: 'p1', reason: 'path-missing' }]);
+  const ranLive = runLadder('live', live.commands, shared);
+  assert.doesNotMatch(ranLive.out, /error:/, 'the live ladder must not hit a refusal either: ' + ranLive.out);
+  const liveRecord = JSON.parse(rdm(['review', 'show', ranLive.reviewId, '--format', 'json'], shared));
+  assert.equal(liveRecord.comments.length, liveSurvivors.length, 'both findings recorded');
+  assert.equal(liveRecord.comments.filter((c) => c.anchor).length, 1, 'exactly the anchorable one anchored');
+  console.log('15d-nocode: an unanchorable quote is dropped at build time, counted, and never aborts the persist');
+}
+
+NODE_PERSIST_UNANCHORABLE
+
+mkdir -p "$TMP/ua-work"
+if run_node "$TMP/persist-unanchorable.mjs" "$LIB" "$PERSIST_BIN" "$TMP/ua-work" real; then
+    pass "15d-nocode: an empty committed range and an underivable path each degrade at build time — every finding is still recorded exactly once"
+else
+    fail "15d-nocode: the real-binary unanchorable-quote assertions failed"
+fi
+
+# Planted mutation: restore the pre-fix behaviour — emit `--quote` on a change
+# target even with no `--path` — and prove the real binary refuses it and the
+# finding is lost.
+MUT_15DN="$TMP/lib-15dnocode-mutant.mjs"
+sed "s|^  return { quote: false, path: null, reason: emptyRange ? 'outside-hunk' : 'path-missing' };$|  return { quote: true, path: null, reason: null };|" "$LIB" >"$MUT_15DN"
+grep -q "^  return { quote: true, path: null, reason: null };$" "$MUT_15DN" ||
+    fail "15d-nocode-mut: the mutation did not apply — persistAnchorFor's downgrade line moved"
+if diff -q "$LIB" "$MUT_15DN" >/dev/null 2>&1; then
+    fail "15d-nocode-mut: the mutation did not change the file — the sed target moved"
+fi
+mkdir -p "$TMP/ua-work-mut"
+if run_node "$TMP/persist-unanchorable.mjs" "$MUT_15DN" "$PERSIST_BIN" "$TMP/ua-work-mut" mutant; then
+    pass "15d-nocode-mut: without the build-time downgrade the real binary refuses the comment and the finding is lost — the downgrade is load-bearing"
+else
+    fail "15d-nocode-mut: the bare --quote was NOT refused — the 15d-nocode guard is vacuous"
+fi
+
 # --- 15d-errors. ONE BOUNDED RUNG PER CORE ERROR, against the REAL binary ----
 # Every rung the prompt's anchoring ladder documents is pinned to the real
 # stderr that triggers it, and each is asserted to succeed after AT MOST ONE
@@ -12754,7 +12940,13 @@ const quoted = { id: 'q1', concern: 'correctness', severity: 'concern', confiden
 const noCodeBuilt = buildPersistReviewPrompts({ mode: 'code', outcome: 'reviewed', survivors: [quoted] },
   'change/' + head, { rdmBin: binary, project: 'pv' }, { source: noCodeSource, pathAnchors: true });
 assert.equal(noCodeBuilt.emptyRange, true);
+// Neither flag: `--quote` without `--path` is refused outright on a change
+// target (Error::ChangeQuoteNeedsPath), which matches no rung of the ladder —
+// see § 15d-nocode, which executes this list against the real binary.
 assert.ok(!noCodeBuilt.commands.join('\n').includes('--path'), 'no hunks means no doomed --path commands');
+assert.ok(!noCodeBuilt.commands.join('\n').includes('--quote'), 'and no bare --quote, which the binary refuses on a change target');
+assert.deepEqual(noCodeBuilt.preDegraded, [{ findingId: 'q1', reason: 'outside-hunk' }],
+  'the dropped anchor is reported as degraded at build time');
 assert.equal(
   persistAccounting(
     { ok: true, targetUsed: 'change/' + head, attempted: 1, anchored: 1, wholeDocumentIntended: 0, degraded: 0 },
@@ -12898,6 +13090,32 @@ const acct = (a, s, o) => persistAccounting(a, s, { target: 'task/t', ...(o || {
   // The same empty range with NOTHING quoted is clean.
   const emptyClean = acct(ack({ attempted: 1, anchored: 0, wholeDocumentIntended: 1, degraded: 0 }), [noQ('a')], { emptyRange: true });
   assert.equal(emptyClean.unresolvedDegradation, false);
+}
+
+// --- Provenance: anchors the WRITER dropped before any command ran -----------
+// `opts.preDegraded` comes from buildPersistReviewPrompts, not from the agent,
+// so it is authoritative: an ack that reports those findings as intentional
+// whole-document comments still cannot buy a clean result, and the writer-side
+// reason is merged into degradedReasons for the summary.
+{
+  const s = [q('a'), noQ('b')];
+  const pre = [{ findingId: 'a', reason: 'outside-hunk' }];
+  const lying = acct(ack({ attempted: 2, commandsRun: 2, anchored: 0, wholeDocumentIntended: 2, degraded: 0, degradedReasons: [] }), s, { preDegraded: pre });
+  assert.equal(lying.preDegraded, 1);
+  assert.equal(lying.unresolvedDegradation, true, 'a build-time downgrade is degradation whatever the ack says');
+  assert.deepEqual(lying.degradedReasons, pre, 'and its reason is merged in so the summary can name it');
+  assert.match(degradationSummaryClause(lying), /1 unanchorable before any command ran/);
+  assert.equal(classifyPersistOutcome('reviewed', lying), 'escalated');
+  // No duplicate when the ack ALREADY reported the same finding.
+  const honest = acct(ack({ attempted: 2, commandsRun: 2, anchored: 0, wholeDocumentIntended: 1, degraded: 1,
+    degradedReasons: [{ findingId: 'a', reason: 'outside-hunk' }] }), s, { preDegraded: pre });
+  assert.deepEqual(honest.degradedReasons, pre, 'a reason reported by both sides is recorded once');
+  // An empty / absent preDegraded changes nothing.
+  const clean = [q('a'), noQ('b')];
+  const okAck = ack({ attempted: 2, commandsRun: 2, anchored: 1, wholeDocumentIntended: 1, degraded: 0 });
+  assert.equal(acct(okAck, clean, { preDegraded: [] }).unresolvedDegradation, false);
+  assert.equal(acct(okAck, clean, { preDegraded: 'nonsense' }).unresolvedDegradation, false);
+  assert.equal(acct(okAck, clean).preDegraded, 0);
 }
 
 // --- Zero survivors ----------------------------------------------------------

@@ -1331,7 +1331,7 @@ still branches on nothing:
 | `opts` field | effect |
 | --- | --- |
 | `worktreeRef` | prefix the command list with `<bin> worktree add <ref>` + a `cd` into the path it prints, so a checkout-relative target like `change/HEAD` resolves |
-| `pathAnchors` | for each survivor whose `location` yields a repo-relative path via the pure `pathFromLocation`, emit `--path "$RDM_PERSIST_PATH"` alongside `--quote`. Suppressed outright when `source.noCode` is set (no hunks exist, so every such comment would fail), and REFUSED with a throw on a non-change target. |
+| `pathAnchors` | for each survivor whose `location` yields a repo-relative path via the pure `pathFromLocation`, emit `--path "$RDM_PERSIST_PATH"` alongside `--quote`. Suppressed outright when `source.noCode` is set (no hunks exist, so every such comment would fail), and REFUSED with a throw on a non-change target. Against a change target `--quote` is emitted ONLY when a `--path` accompanies it — see the unanchorable-quote rule below. |
 | `fallbackTarget` | emit a SECOND, COMPLETE command list (`fallbackCommands`) for a plan-repo document ref, built by re-entering the writer with `pathAnchors: false` and neither `source` nor `implements`, so it structurally cannot carry `--path`, `--base` or `--implements`. The prompt embeds it verbatim under a `FALLBACK COMMAND LADDER` heading and the agent runs it INSTEAD of the primary list when `review start` refuses the primary ref. `worktreeRef` is inherited; `source` is not. A change-shaped fallback, one equal to the primary target, or one with no `/` throws at build time. |
 
 **`rdm-wf-review-refute-fix.js` defaults its code-review persist target to
@@ -1393,11 +1393,35 @@ That last row is load-bearing: a Git or source-identity failure (a
 change revision, a moved HEAD) must SURFACE rather than be laundered into a
 whole-document comment by a blanket flag-strip.
 
-**An empty committed range suppresses `--path` outright.** With
-`opts.source.noCode === true` there are no hunks, so every `--path` comment is
-guaranteed to fail. The writer emits none and reports `emptyRange: true` in its
-return, which the accounting below turns into unresolved degradation whenever a
-quoted survivor exists.
+**An unanchorable quote is DOWNGRADED at build time, never emitted.**
+`rdm review comment` on a `change/<sha>` review refuses `--quote` without
+`--path` outright (`rdm_core::change::derive_change_anchor` ->
+`Error::ChangeQuoteNeedsPath`, "--quote on a change review needs --path
+<repo-relative path> naming the file the quote lives in"). That text matches NO
+rung of the ladder above, so under the ladder's own never-blanket-fallback rule
+an agent meeting it would report `ok: false` and abort the ENTIRE persist — no
+review started, no comments recorded at all. So the writer never emits that
+pair. `persistAnchorFor(finding, target, opts)` is the single decision: against
+a change target a `--quote` rides only alongside a `--path`, and a quote with no
+usable path is written whole-document instead. Two cases reach it:
+
+- **An empty committed range** (`opts.source.noCode === true`): no hunks exist,
+  so no `--path` can land. Both flags are suppressed and `emptyRange: true` is
+  reported in the return. Reason `outside-hunk`.
+- **No derivable path**: `pathFromLocation` yields nothing from a free-form
+  `location` such as `throughout the gate step`. Reason `path-missing`.
+
+`buildPersistReviewPrompts` reports these as `preDegraded`, an array of
+`{ findingId, reason }` computed by the pure `persistPreDegradedAnchors` from
+the SAME decision the writer emitted. The prompt names them under an
+`ALREADY DEGRADED BY THE COMMAND LIST` heading and tells the agent not to retry
+them (there is nothing to retry — the emitted command carries no `--quote`), and
+the consumers thread the array into `persistAccounting` as `opts.preDegraded`.
+Because it comes from the WRITER rather than the agent, an ack that reports
+those findings as ordinary intentional whole-document comments still cannot buy
+a clean result, and the writer-side reason is merged into `degradedReasons` so
+the summary can name it. A plan-repo document target is unaffected: there a bare
+`--quote` is the normal, correct anchor and `preDegraded` is empty.
 
 **Verdict mapping** (`PERSIST_VERDICT` / `persistVerdictFor`, which THROWS on an
 unrecognized outcome rather than defaulting to `comment`):
@@ -1435,8 +1459,9 @@ the survivor list the writer was handed and reads the ack against it, returning
 do not reconcile, every anchorable finding failed (`expectedAnchorable > 0 &&
 anchored === 0` — derived, so an under-reporting ack cannot buy a clean result),
 `targetUsed` differs from the primary target, the committed range was empty
-while quoted survivors existed, or the ack is missing or malformed. It is
-FAIL-SAFE by construction: absent data never reads clean.
+while quoted survivors existed, `opts.preDegraded` is non-empty (the writer
+itself downgraded an anchor — independent of the ack), or the ack is missing or
+malformed. It is FAIL-SAFE by construction: absent data never reads clean.
 
 **`classifyPersistOutcome(outcome, accounting, opts)`** composes that onto the
 already-classified outcome. Degradation can only make a result LESS clean:

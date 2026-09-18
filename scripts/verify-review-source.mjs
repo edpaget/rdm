@@ -268,8 +268,20 @@ try {
 
   // An EMPTY committed range carrying a quoted finding: no hunk can ever hold
   // the anchor, so the run must not read clean.
+  // It must escalate for the RIGHT reason: the review is still RECORDED, with
+  // the unanchorable quote dropped at build time and counted. `--quote` without
+  // `--path` is refused outright on a change target, so before the writer
+  // downgraded it the whole persist aborted and this leg passed on a total
+  // failure rather than on graceful degradation.
   const emptyRange = await execute({ base: head, noCode: true, persist: true }, { findings: [quotedSuggestion] });
   assert.equal(emptyRange.result.outcome, 'escalated', 'a quoted finding against an empty committed range cannot report reviewed');
+  assert.ok(emptyRange.result.reviewId, 'the review is still recorded — the persist degrades, it does not abort');
+  assert.equal(emptyRange.result.reviewPersistence.preDegraded, 1, 'the unanchorable quote is counted at build time');
+  assert.equal(emptyRange.result.reviewPersistence.unresolvedDegradation, true);
+  assert.match(emptyRange.result.summary, /unanchorable before any command ran/);
+  const emptyRecord = JSON.parse(rdm(['review', 'show', emptyRange.result.reviewId, '--format', 'json'], shared));
+  assert.equal(emptyRecord.comments.length, 1, 'the finding is persisted exactly once, whole-document');
+  assert.equal(emptyRecord.comments.filter((c) => c.anchor).length, 0, 'and nothing anchored, because nothing could');
 
   // The INVERSE of the missing-path mutation: an ack that CLAIMS a clean
   // anchoring while the script it ran dropped every --path. The accounting

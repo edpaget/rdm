@@ -2377,7 +2377,14 @@ async function runPlanReviewDriver(args, deps) {
         // line — never silently converted into a plan verdict. The code lane
         // composes it into the outcome (classifyPersistOutcome); this lane
         // deliberately does not.
-        reviewPersistence = persistAccounting(ack, r.survivors, { target: persistTarget })
+        // `preDegraded` is whatever the WRITER downgraded at build time. A
+        // plan target is a plan-repo document, where a bare `--quote` is the
+        // normal anchor, so this is expected to be empty here — it is threaded
+        // anyway so the two lanes read the same accounting from the same data.
+        reviewPersistence = persistAccounting(ack, r.survivors, {
+          target: persistTarget,
+          preDegraded: persistPrompts.preDegraded,
+        })
         if (ack && ack.ok === true && typeof ack.reviewId === 'string' && ack.reviewId !== '') {
           reviewId = ack.reviewId
         } else {

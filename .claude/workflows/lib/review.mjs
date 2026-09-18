@@ -2075,6 +2075,58 @@ function pathFromLocation(location) {
   return looksLikePath ? s : null;
 }
 
+// persistAnchorFor(finding, target, opts) — the SINGLE decision of how one
+// finding gets anchored, shared by the command writer and by the prompt
+// builder's pre-degradation report so the two can never disagree.
+//
+// THE RULE A CHANGE TARGET IMPOSES. `rdm review comment` on a `change/<sha>`
+// review refuses `--quote` without `--path` outright
+// (rdm_core::change::derive_change_anchor -> Error::ChangeQuoteNeedsPath:
+// "--quote on a change review needs --path <repo-relative path> naming the file
+// the quote lives in"). That text matches NO rung of the anchoring-fallback
+// ladder, so under the ladder's own never-blanket-fallback rule an agent that
+// met it would report `ok: false` and abort the whole persist — no review, no
+// comments at all. So the writer never emits that pair: on a change target a
+// quote rides ONLY alongside a path, and a quote with no derivable path is
+// DOWNGRADED here, at build time, to a whole-document comment that is
+// pre-counted as degraded. A plan-repo document target is unaffected — there a
+// bare `--quote` is the normal, correct anchor.
+//
+// Returns `{ quote, path, reason }`: `quote` is whether `--quote` is emitted,
+// `path` the `--path` value (or null), and `reason` a PERSIST_DEGRADED_REASONS
+// entry when an anchor the finding ASKED for was dropped at build time.
+function persistAnchorFor(finding, target, opts) {
+  const o = opts || {};
+  if (!persistHasQuote(finding)) return { quote: false, path: null, reason: null };
+  // An EMPTY COMMITTED RANGE has no hunks, so no `--path` anchor can ever land.
+  const emptyRange = !!(o.source && o.source.noCode === true);
+  const path = o.pathAnchors === true && !emptyRange ? pathFromLocation(finding.location) : null;
+  if (!isChangeTarget(target)) return { quote: true, path: path, reason: null };
+  if (path !== null) return { quote: true, path: path, reason: null };
+  // `outside-hunk` when the range is empty (every hunk is missing, which is
+  // what the emptyRange prose already calls it); `path-missing` when no usable
+  // repo-relative path could be derived from the finding's `location` at all.
+  return { quote: false, path: null, reason: emptyRange ? 'outside-hunk' : 'path-missing' };
+}
+
+// persistPreDegradedAnchors(result, target, opts) — the build-time degradation
+// report: one `{ findingId, reason }` entry per survivor whose requested anchor
+// persistAnchorFor dropped before a single command ran. Pure and derived from
+// the same decision the writer emits, so the prompt, the returned data and the
+// accounting all describe the same set.
+function persistPreDegradedAnchors(result, target, opts) {
+  const out = [];
+  const survivors = persistReviewSurvivors(result);
+  for (let i = 0; i < survivors.length; i++) {
+    const f = survivors[i] || {};
+    const decision = persistAnchorFor(f, target, opts);
+    if (decision.reason !== null) {
+      out.push({ findingId: String(f.id === undefined || f.id === null ? '' : f.id), reason: decision.reason });
+    }
+  }
+  return out;
+}
+
 // persistReviewCommands(result, target, cfg, opts) — the ORDERED shell commands that
 // record this review. Returned as DATA (not only embedded in a prompt) so the
 // verify harness can execute EXACTLY what the prompt tells the agent to run.
@@ -2134,11 +2186,6 @@ function persistReviewCommands(result, target, cfg, opts) {
     }
   }
   const worktreeRef = typeof o.worktreeRef === 'string' && o.worktreeRef.trim() !== '' ? o.worktreeRef.trim() : '';
-  // An EMPTY COMMITTED RANGE has no hunks, so every `--path` comment is
-  // guaranteed to fail QuoteOutsideChangedHunks. Suppress the flag rather than
-  // emit commands that cannot succeed; buildPersistReviewPrompts reports the
-  // condition as `emptyRange` so persistAccounting can flag it.
-  const pathAnchors = o.pathAnchors === true && !(o.source && o.source.noCode === true);
   const IND = '  ';
   const cmds = [];
   if (o.source) {
@@ -2182,10 +2229,12 @@ function persistReviewCommands(result, target, cfg, opts) {
   );
   for (let i = 0; i < survivors.length; i++) {
     const f = survivors[i] || {};
-    const hasQuote = typeof f.quote === 'string' && f.quote.trim() !== '';
     let cmd = persistCapture('RDM_PERSIST_BODY', 'RDM_PERSIST_BODY_EOF', formatCommentBody(f)) + '\n';
-    const anchorPath = pathAnchors && hasQuote ? pathFromLocation(f.location) : null;
-    if (hasQuote) {
+    // ONE decision, shared with the pre-degradation report — see
+    // persistAnchorFor. `--quote` never rides alone on a change target.
+    const anchor = persistAnchorFor(f, target, o);
+    const anchorPath = anchor.path;
+    if (anchor.quote) {
       cmd += persistCapture('RDM_PERSIST_QUOTE', 'RDM_PERSIST_QUOTE_EOF', f.quote) + '\n';
       let pathFlag = '';
       if (anchorPath !== null) {
@@ -2283,9 +2332,26 @@ function buildPersistReviewPrompts(result, target, deps, opts) {
             '`, so they carry no `--path`, no `--base` and no `--implements`:',
           fallbackCommands.join('\n'),
         ];
+  // BUILD-TIME DEGRADATION. Whatever the writer already downgraded to a
+  // whole-document comment (a quote with no usable `--path` on a change
+  // target — see persistAnchorFor) is reported here as data AND told to the
+  // agent, so it is counted rather than silently read as a clean whole-document
+  // write. There is nothing for the agent to retry: the emitted command for
+  // such a finding carries no `--quote` at all.
+  const preDegraded = persistPreDegradedAnchors(result, target, o);
+  const preDegradedNote =
+    preDegraded.length === 0
+      ? []
+      : [
+          'ALREADY DEGRADED BY THE COMMAND LIST — do NOT retry these, and do NOT try to re-add a `--quote` to them. ' +
+            preDegraded.length +
+            ' finding(s) asked for a source anchor that cannot be expressed against this target, so the commands above already write them whole-document. Count each under `degraded` with the reason given, and report exactly these `degradedReasons` entries for them: ' +
+            preDegraded.map((d) => d.findingId + ' -> ' + d.reason).join('; ') +
+            '.',
+        ];
   const emptyRangeNote = emptyRange
     ? [
-        'EMPTY COMMITTED RANGE: this review was declared `--no-code`, so there are no changed hunks and no `--path` anchor can land. A finding that carries a quote is therefore an attempted anchor that cannot succeed — write it whole-document and count it under `degraded` with reason `outside-hunk`.',
+        'EMPTY COMMITTED RANGE: this review was declared `--no-code`, so there are no changed hunks and no `--path` anchor can land. A finding that carries a quote is therefore an attempted anchor that cannot succeed; the command list above has already dropped its `--quote` and writes it whole-document, counted under `degraded` with reason `outside-hunk`.',
       ]
     : [];
   const prompt = [
@@ -2309,6 +2375,7 @@ function buildPersistReviewPrompts(result, target, deps, opts) {
     'COUNTING — `attempted` is PER FINDING, `commandsRun` is PER INVOCATION: a retry does not add a finding. Increment `attempted` once per DISTINCT finding, however many `review comment` invocations that finding required; increment `commandsRun` once per `review comment` invocation. A finding whose anchor landed on the SECOND attempt is `anchored`, contributes 1 to `attempted` and 2 to `commandsRun`, and adds NO `degradedReasons` entry. A finding that never carried a `quote` at all was never an attempted anchor: it is `wholeDocumentIntended`, NOT `degraded`.',
     ])
     .concat(emptyRangeNote)
+    .concat(preDegradedNote)
     .concat(fallbackLadder)
     .concat([
     'Return a PERSIST_ACK object: `ok` (true only if review start, every comment, the submit and the commit all exited 0), `reviewId` (the id captured into RDM_REVIEW_ID), `targetUsed` (the ref `review start` ACTUALLY accepted — the primary ref, or the fallback ref if the fallback ladder ran), `attempted` (how many DISTINCT findings you tried to persist, at most one per finding), `commandsRun` (total `review comment` invocations including retries; informational only), `anchored` (how many findings ended up WITH an anchor), `wholeDocumentIntended` (how many findings carried no quote at all), `degraded` (how many findings had an anchor ATTEMPTED that did not land), and `degradedReasons` (one `{findingId, reason}` entry per degraded finding, reason one of ' +
@@ -2323,6 +2390,7 @@ function buildPersistReviewPrompts(result, target, deps, opts) {
     fallbackCommands: fallbackCommands,
     fallbackTarget: fallbackTarget,
     emptyRange: emptyRange,
+    preDegraded: preDegraded,
   };
 }
 
@@ -2349,6 +2417,9 @@ function persistHasQuote(finding) {
 //     — derived independently, so it catches an ack that under-reports `degraded`;
 //   - `review start` fell back to a different target;
 //   - the committed range was empty while quoted survivors existed;
+//   - the WRITER itself downgraded an anchor at build time (`opts.preDegraded`,
+//     from buildPersistReviewPrompts) — independent of the ack, so an agent
+//     that forgets to report those still cannot buy a clean result;
 //   - the ack is missing or malformed.
 //
 // `commandsRun` is NEVER consulted: a finding that anchored on a legitimate
@@ -2379,6 +2450,25 @@ function persistAccounting(ack, survivors, opts) {
   const primaryTarget = typeof o.target === 'string' && o.target.trim() !== '' ? o.target.trim() : null;
   const targetFellBack = targetUsed !== null && primaryTarget !== null && targetUsed !== primaryTarget;
   const emptyRange = o.emptyRange === true || !!(o.source && o.source.noCode === true);
+  // Build-time downgrades the writer already applied. Merged into
+  // `degradedReasons` (never duplicated) so the summary names them even when
+  // the ack omitted them entirely.
+  const preList = Array.isArray(o.preDegraded)
+    ? o.preDegraded
+        .filter((d) => d && typeof d === 'object')
+        .map((d) => ({
+          findingId: String(d.findingId === undefined || d.findingId === null ? '' : d.findingId),
+          reason: PERSIST_DEGRADED_REASONS.indexOf(String(d.reason)) === -1 ? 'other' : String(d.reason),
+        }))
+    : [];
+  const seen = {};
+  for (let i = 0; i < degradedReasons.length; i++) seen[degradedReasons[i].findingId] = true;
+  for (let i = 0; i < preList.length; i++) {
+    if (seen[preList[i].findingId] !== true) {
+      degradedReasons.push(preList[i]);
+      seen[preList[i].findingId] = true;
+    }
+  }
   const malformed =
     a === null || attempted === null || anchored === null || wholeDocumentIntended === null || degraded === null;
   const reconciled =
@@ -2392,6 +2482,7 @@ function persistAccounting(ack, survivors, opts) {
     degraded > 0 ||
     (expectedAnchorable > 0 && anchored === 0) ||
     targetFellBack === true ||
+    preList.length > 0 ||
     (emptyRange === true && expectedAnchorable > 0);
   return {
     attempted: attempted,
@@ -2406,6 +2497,7 @@ function persistAccounting(ack, survivors, opts) {
     expectedTotal: expectedTotal,
     reconciled: reconciled,
     emptyRange: emptyRange,
+    preDegraded: preList.length,
     unresolvedDegradation: unresolvedDegradation,
   };
 }
@@ -2475,6 +2567,7 @@ function degradationSummaryClause(accounting) {
   if (a.reconciled === false) clause += '; counters do not reconcile against ' + a.expectedTotal + ' findings';
   if (a.targetFellBack === true) clause += '; target fell back to ' + (a.targetUsed || 'an unreported ref');
   if (a.emptyRange === true && a.expectedAnchorable > 0) clause += '; empty committed range';
+  if (typeof a.preDegraded === 'number' && a.preDegraded > 0) clause += '; ' + a.preDegraded + ' unanchorable before any command ran';
   return clause + ']';
 }
 
@@ -3316,6 +3409,8 @@ export {
   pathFromLocation,
   PERSIST_DEGRADED_REASONS,
   isChangeTarget,
+  persistAnchorFor,
+  persistPreDegradedAnchors,
   persistReviewCommands,
   buildPersistReviewPrompts,
   persistHasQuote,
