@@ -1636,10 +1636,24 @@ mod tests {
                 matches!(err, Error::InvalidReviewTargetRef(_)),
                 "{bad:?} should be invalid, got {err:?}"
             );
-            assert!(
-                err.to_string().contains("roadmap/<slug>"),
-                "error must show accepted forms: {err}"
-            );
+            let message = err.to_string();
+            // The full accepted-forms enumeration, including `plan/<slug>`
+            // and `change/<head-sha>` (added by commit 8b3c1a2) — asserting
+            // only the pre-existing `roadmap/<slug>` substring would stay
+            // green even if those two forms were dropped from the Display
+            // text again, since that substring predates the fix.
+            for form in [
+                "roadmap/<slug>",
+                "phase/<roadmap-slug>/<stem-or-number>",
+                "task/<slug>",
+                "plan/<slug>",
+                "change/<head-sha>",
+            ] {
+                assert!(
+                    message.contains(form),
+                    "error must show accepted form {form:?}: {message}"
+                );
+            }
         }
     }
 

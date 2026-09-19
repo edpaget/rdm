@@ -320,11 +320,25 @@ pub fn resolve_link(
 /// [`crate::error::Error::FrontmatterParse`] if any scanned document has
 /// invalid frontmatter — including while normalizing a numeric phase stem
 /// found in a link (see [`normalize_item_ref`]).
+///
+/// Returns [`crate::error::Error::ChangeTargetHasNoDocument`] when `target`
+/// is an [`ItemRef::Change`]: a change names source-repository commits, not
+/// a plan-repo document, so it can never be the destination of an `rdm:`
+/// item link or an `implements` field — the scan would always report zero
+/// backlinks, which silently misrepresents "nothing references this" as
+/// indistinguishable from "this kind of target can't be referenced at
+/// all". Matches the actionable rejection [`load_document_body`] already
+/// gives `link check`/`link list` for the same target kind.
 pub fn backlinks(
     store: &impl Store,
     project: &str,
     target: &ItemRef,
 ) -> Result<Vec<BacklinkEntry>> {
+    if let ItemRef::Change { .. } = target {
+        return Err(crate::error::Error::ChangeTargetHasNoDocument(
+            target.label(),
+        ));
+    }
     // Normalize the caller's target the same way `resolve_item_link` would,
     // so a caller passing a bare-number phase stem matches links written
     // with the canonical stem, and vice versa — see `normalize_item_ref`.
@@ -2083,6 +2097,34 @@ mod tests {
         let err = backlinks(&store, "no-such-project", &target).unwrap_err();
         assert!(
             matches!(err, crate::error::Error::ProjectNotFound(name) if name == "no-such-project")
+        );
+    }
+
+    #[test]
+    fn backlinks_rejects_a_change_target() {
+        // A change/<sha> target names source-repository commits, not a
+        // plan-repo document — `crate::link::parse` already refuses to
+        // build a linkable `Link::Item` for one (`NotLinkable`), and the
+        // sibling `link check`/`link list` commands reject it the same
+        // actionable way via `load_document_body`. Before this test,
+        // `backlinks` silently accepted a change target and always
+        // returned an empty result (no body link, `implements` field, or
+        // review can ever name a change), which is a stale-enumeration
+        // mismatch of the same class this phase exists to close — see
+        // `ChangeTargetHasNoDocument`.
+        let store = setup();
+        let target = ItemRef::Change {
+            head: "a".repeat(40),
+            base: None,
+        };
+        let err = backlinks(&store, "demo", &target).unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::ChangeTargetHasNoDocument(_)),
+            "expected ChangeTargetHasNoDocument, got {err:?}"
+        );
+        assert!(
+            err.to_string()
+                .contains("names commits in the source repository")
         );
     }
 
