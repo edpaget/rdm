@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Reject malformed stored change-review head/base identities before source access and protect Git revision argument boundaries, preventing option injection and unintended file writes during review reads. Document the public revision-resolution API's matchable error for unsafe revision inputs.
 
+- The review-persist workflow no longer lets a review target containing shell metacharacters (`$(...)`, backticks) execute arbitrary commands when the agent runs the emitted `rdm review start`/`rdm commit` lines — the target is now shell-quoted like every other untrusted value the writer emits.
+
 ### Fixed
 
 - `rdm backlinks`'s and `rdm link check`/`rdm link list`'s `--help` text, `rdm describe`'s `review.target` field, and the shipped Claude Code instructions template now list `plan/<slug>` alongside `roadmap/<slug>`, `phase/<roadmap-slug>/<stem-or-number>`, and `task/<slug>` as an accepted/linkable form (and, where the surface documents a review target rather than a link, `change/<head-sha>` too) — these had not been updated when `plan/<slug>` and `change/<head-sha>` were added as reference kinds.

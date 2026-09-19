@@ -1363,9 +1363,12 @@ directly against the real binary so the path is covered without one.
 --no-edit --format json` → one `rdm review comment` per survivor → `rdm review
 submit --verdict <v>` → a session-scoped `rdm commit`. Quotes and bodies are
 captured through QUOTED HEREDOCS, never interpolated into a command line, so
-backticks, `$`, double quotes, em-dashes and newlines ride through literally. A
-survivor carrying a `quote` gets `--quote`; one without becomes a whole-document
-comment. The prompt spells a two-step anchoring fallback — `--occurrence 1` on
+backticks, `$`, double quotes, em-dashes and newlines ride through literally.
+`target` itself is shell-quoted (via the same `shellQuote` helper as every
+other untrusted value) at both its occurrences — the `--on` argument and the
+`commit -m` message — so a target containing `$(...)` or a backtick cannot
+execute a command when the emitted lines run. A survivor carrying a `quote`
+gets `--quote`; one without becomes a whole-document comment. The prompt spells a two-step anchoring fallback — `--occurrence 1` on
 ambiguity, then drop `--quote` entirely on a second failure — so a comment is
 never skipped and the persist never aborts on an anchoring failure. `review
 start` always carries a NON-EMPTY `--body`, or `submit_review` would raise

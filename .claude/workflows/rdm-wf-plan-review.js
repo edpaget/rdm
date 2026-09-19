@@ -2191,7 +2191,7 @@ function persistReviewCommands(result, target, cfg, opts) {
       IND +
       bin +
       ' review start --on ' +
-      (o.source ? shellQuote('change/' + o.source.head) + ' --base ' + shellQuote(o.source.base) + (o.implements ? ' --implements ' + shellQuote(o.implements) : '') : target) +
+      (o.source ? shellQuote('change/' + o.source.head) + ' --base ' + shellQuote(o.source.base) + (o.implements ? ' --implements ' + shellQuote(o.implements) : '') : shellQuote(target)) +
       ' --body "$RDM_PERSIST_SUMMARY" --no-edit --format json' +
       proj +
       ' > "$RDM_PERSIST_START_JSON"' +
@@ -2227,7 +2227,7 @@ function persistReviewCommands(result, target, cfg, opts) {
   cmds.push(IND + bin + ' review submit "$RDM_REVIEW_ID" --verdict ' + verdict + ' --no-edit' + proj);
   // Session-scoped by the changeset model, so a concurrent dispatch's staged
   // work is never swept in. NEVER `--all`, and never `rdm discard`.
-  cmds.push(IND + bin + ' commit -m "chore(plan): record ' + mode + ' review of ' + target + '"');
+  cmds.push(IND + bin + ' commit -m ' + shellQuote('chore(plan): record ' + mode + ' review of ' + target));
   cmds.push('printf \'reviewId=%s\\n\' "$RDM_REVIEW_ID"');
   return cmds;
 }

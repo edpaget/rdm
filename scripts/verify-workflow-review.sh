@@ -11756,7 +11756,7 @@ assert.throws(() => persistVerdictFor('constructor'), /unrecognized outcome/, 'a
   // Every legal ref grammar passes straight through, unprefixed and unbranched.
   for (const ref of ['task/t', 'phase/rm/phase-1-x', 'phase/rm/1', 'roadmap/rm', 'plan/p', 'change/abc123']) {
     const cmds = persistReviewCommands(result, ref, cfg);
-    assert.ok(cmds.some((c) => c.includes(' review start --on ' + ref + ' ')), 'ref ' + ref + ' must be emitted verbatim');
+    assert.ok(cmds.some((c) => c.includes(" review start --on '" + ref + "' ")), 'ref ' + ref + ' must be emitted shell-quoted');
   }
 }
 
@@ -11767,14 +11767,14 @@ assert.throws(() => persistVerdictFor('constructor'), /unrecognized outcome/, 'a
   const whole = { id: 'w1', concern: 'restraint', severity: 'concern', confidence: 80, what_fails: 'y' };
   const cmds = persistReviewCommands({ mode: 'plan', outcome: 'rework', survivors: [anchored, whole] }, 'task/t', cfg);
   const joined = cmds.join('\n');
-  assert.ok(joined.includes(' review start --on task/t '), 'start first');
+  assert.ok(joined.includes(" review start --on 'task/t' "), 'start first');
   assert.equal((joined.match(/ review comment /g) || []).length, 2, 'one comment per survivor');
   assert.ok(joined.includes(' review comment "$RDM_REVIEW_ID" --quote "$RDM_PERSIST_QUOTE"'), 'a quoted survivor gets --quote');
   assert.ok(joined.includes(' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY" --no-edit'), 'an un-quoted survivor gets NO --quote and NO --occurrence');
   assert.ok(!joined.includes('--occurrence'), 'the happy path never pre-emits --occurrence');
   assert.ok(!joined.includes('--doc '), 'the writer never emits --doc (a roadmap fan-out persists one review per unit)');
   assert.ok(joined.includes(' review submit "$RDM_REVIEW_ID" --verdict request-changes '), 'submit carries the mapped verdict');
-  assert.ok(joined.includes(' commit -m "chore(plan): record plan review of task/t"'), 'a session-scoped commit lands the review');
+  assert.ok(joined.includes(" commit -m 'chore(plan): record plan review of task/t'"), 'a session-scoped commit lands the review');
   assert.ok(!joined.includes('commit --all') && !joined.includes(' discard'), 'never --all, never discard');
   // Ordering.
   assert.ok(joined.indexOf('review start') < joined.indexOf('review comment'), 'start precedes comments');
@@ -11909,7 +11909,7 @@ assert.throws(() => persistVerdictFor('constructor'), /unrecognized outcome/, 'a
   for (const flag of ['--path', '--base', '--implements']) {
     assert.ok(!fb.includes(flag), 'the fallback ladder must not carry the change-only flag ' + flag);
   }
-  assert.ok(fb.includes(' review start --on phase/rm/phase-1-a '), 'the fallback ladder targets the fallback ref');
+  assert.ok(fb.includes(" review start --on 'phase/rm/phase-1-a' "), 'the fallback ladder targets the fallback ref');
   assert.equal((fb.match(/ review comment /g) || []).length, 2, 'the fallback ladder persists EVERY finding, once each');
   assert.ok(fb.includes(' review submit "$RDM_REVIEW_ID" --verdict request-changes '), 'the fallback ladder submits too');
   assert.ok(fb.includes(' worktree add rm'), 'worktreeRef is inherited by the fallback ladder');
@@ -12683,8 +12683,8 @@ if (mode === 'mutant') {
     assert.ok(!fbText.includes(flag), 'the fallback ladder must carry no ' + flag);
   }
   assert.ok(fbText.includes(' worktree add persist-rm'), 'worktreeRef is inherited');
-  assert.ok(fbText.includes(' review start --on ' + DOC_TARGET + ' '), 'the fallback ladder targets the document ref');
-  assert.ok(fbText.includes('chore(plan): record code review of ' + DOC_TARGET),
+  assert.ok(fbText.includes(" review start --on '" + DOC_TARGET + "' "), 'the fallback ladder targets the document ref');
+  assert.ok(fbText.includes("commit -m 'chore(plan): record code review of " + DOC_TARGET + "'"),
     'the fallback commit names the ref review start actually accepted');
   const script = path.join(workdir, 'fallback.sh');
   fs.writeFileSync(script, fbText + '\n');
@@ -13582,5 +13582,93 @@ for k in targetUsed commandsRun wholeDocumentIntended degradedReasons; do
         fail "15f: docs/workflow-schemas.md does not document the '$k' PERSIST_ACK field"
 done
 pass "15f(e): the new ack fields and the recorded evidence are documented"
+
+# --- 15g. Persist writer: target is shell-injection-safe -----------------------
+# Every other untrusted value persistReviewCommands emits goes through
+# shellQuote; `target` used to be the one exception (bare in the `--on`
+# ternary's else-branch, and embedded inside a double-quoted `commit -m "..."`
+# literal where bash expands $(...) and backticks). This section proves the
+# fix by actually running the emitted commands through a real shell against a
+# crafted target carrying three independent injection vectors, then proves the
+# check itself is not vacuous by reverting the fix and showing the same attack
+# fires against the mutant.
+say "15g. Persist writer: target is shell-injection-safe (real shell execution against a crafted ref)"
+
+PERSIST_INJ_DIR="$TMP/inject-15g"
+mkdir -p "$PERSIST_INJ_DIR"
+MARK1="$PERSIST_INJ_DIR/marker-cmdsub"
+MARK2="$PERSIST_INJ_DIR/marker-backtick"
+MARK3="$PERSIST_INJ_DIR/marker-semicolon"
+
+cat >"$TMP/persist-inject.mjs" <<'NODE_PERSIST_INJECT'
+import { pathToFileURL } from 'node:url';
+import { writeFileSync } from 'node:fs';
+
+const [libPath, m1, m2, m3, outScript] = process.argv.slice(2);
+const lib = await import(pathToFileURL(libPath).href);
+const { persistReviewCommands } = lib;
+
+// A `<kind>/<rest>` ref carrying three distinct shell metacharacter vectors at
+// once: $(...) command substitution and backtick substitution (both live even
+// inside a double-quoted string, so they cover the commit-message occurrence
+// too), plus a bare `;` statement separator (only exploitable where the value
+// used to ride completely unquoted, i.e. the --on occurrence).
+const target = 'task/pwn$(touch ' + m1 + ')`touch ' + m2 + '`;touch ' + m3;
+
+const cmds = persistReviewCommands(
+  { mode: 'plan', outcome: 'reviewed', survivors: [] },
+  target,
+  { rdmBin: '/usr/bin/true' }
+);
+writeFileSync(outScript, cmds.join('\n') + '\n');
+NODE_PERSIST_INJECT
+
+run_node "$TMP/persist-inject.mjs" "$LIB" "$MARK1" "$MARK2" "$MARK3" "$PERSIST_INJ_DIR/attack.sh" ||
+    fail "15g: building the injection script failed"
+
+set +e
+(cd "$PERSIST_INJ_DIR" && sh ./attack.sh) >"$PERSIST_INJ_DIR/attack.out" 2>&1
+ATTACK_STATUS=$?
+set -e
+
+[ -e "$MARK1" ] && fail "15g: \$(...) command substitution in target executed (marker fired) — target is not shell-safe"
+[ -e "$MARK2" ] && fail "15g: backtick command substitution in target executed (marker fired) — target is not shell-safe"
+[ -e "$MARK3" ] && fail "15g: statement-separator injection in target executed (marker fired) — target is not shell-safe"
+[ "$ATTACK_STATUS" -eq 0 ] ||
+    fail "15g: the emitted command script exited nonzero ($ATTACK_STATUS), not a clean run: $(cat "$PERSIST_INJ_DIR/attack.out")"
+pass "15g: a crafted target carrying \$(...) / backtick / statement-separator injection vectors triggers no side effect and the script exits 0"
+
+# Planted-mutation self-test: revert BOTH fixed occurrences back to their
+# pre-fix shape and prove the SAME attack now fires against the mutant — so
+# the check above is not vacuous.
+MUT15G_DIR="$TMP/mut-15g/.claude/workflows/lib"
+mkdir -p "$MUT15G_DIR"
+MUT15G_LIB="$MUT15G_DIR/review.mjs"
+cp "$LIB" "$MUT15G_LIB"
+perl -pi -e "s/: shellQuote\(target\)\) \+/: target) +/" "$MUT15G_LIB"
+perl -pi -e "s/cmds\.push\(IND \+ bin \+ ' commit -m ' \+ shellQuote\('chore\(plan\): record ' \+ mode \+ ' review of ' \+ target\)\);/cmds.push(IND + bin + ' commit -m \"chore(plan): record ' + mode + ' review of ' + target + '\"');/" "$MUT15G_LIB"
+grep -q ": target) +" "$MUT15G_LIB" ||
+    fail "15g-mut: the --on revert did not apply — the mutation setup is broken"
+grep -q 'commit -m "chore(plan): record ' "$MUT15G_LIB" ||
+    fail "15g-mut: the commit-message revert did not apply — the mutation setup is broken"
+
+PERSIST_MUTINJ_DIR="$TMP/inject-15g-mut"
+mkdir -p "$PERSIST_MUTINJ_DIR"
+MMARK1="$PERSIST_MUTINJ_DIR/marker-cmdsub"
+MMARK2="$PERSIST_MUTINJ_DIR/marker-backtick"
+MMARK3="$PERSIST_MUTINJ_DIR/marker-semicolon"
+
+run_node "$TMP/persist-inject.mjs" "$MUT15G_LIB" "$MMARK1" "$MMARK2" "$MMARK3" "$PERSIST_MUTINJ_DIR/attack.sh" ||
+    fail "15g-mut: building the injection script against the mutant failed"
+
+set +e
+(cd "$PERSIST_MUTINJ_DIR" && sh ./attack.sh) >"$PERSIST_MUTINJ_DIR/attack.out" 2>&1
+set -e
+
+if [ -e "$MMARK1" ] || [ -e "$MMARK2" ] || [ -e "$MMARK3" ]; then
+    pass "15g-mut: reverting the fix makes the same crafted target fire a marker — the § 15g check is not vacuous"
+else
+    fail "15g-mut: the reverted (pre-fix) writer did NOT let any marker fire — § 15g would not have caught the original vulnerability"
+fi
 
 say "verify-workflow-review.sh: ALL GREEN"
