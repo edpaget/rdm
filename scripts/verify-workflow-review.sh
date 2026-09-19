@@ -11863,11 +11863,6 @@ assert.throws(() => persistVerdictFor('constructor'), /unrecognized outcome/, 'a
   // And they are all still legal on a change target.
   const ok = persistReviewCommands(result, 'change/abc', cfg, { pathAnchors: true, source, implements: 'plan/p' });
   assert.ok(Array.isArray(ok) && ok.length > 0, 'a change target still accepts every change-only option');
-  // A worktreeRef alone is target-agnostic and stays legal on a document target.
-  assert.ok(
-    persistReviewCommands(result, 'task/t', cfg, { worktreeRef: 'rm' }).some((c) => c.includes(' worktree add rm')),
-    'worktreeRef is not a change-only option'
-  );
 }
 
 // ------------------------------------ an EMPTY committed range suppresses --path
@@ -11898,7 +11893,6 @@ assert.throws(() => persistVerdictFor('constructor'), /unrecognized outcome/, 'a
   const plain = { id: 'w1', concern: 'correctness', severity: 'concern', confidence: 80, what_fails: 'y' };
   const result = { mode: 'code', outcome: 'rework', survivors: [quoted, plain] };
   const built = buildPersistReviewPrompts(result, 'change/deadbeef', cfg, {
-    worktreeRef: 'rm',
     pathAnchors: true,
     fallbackTarget: 'phase/rm/phase-1-a',
   });
@@ -11912,7 +11906,6 @@ assert.throws(() => persistVerdictFor('constructor'), /unrecognized outcome/, 'a
   assert.ok(fb.includes(" review start --on 'phase/rm/phase-1-a' "), 'the fallback ladder targets the fallback ref');
   assert.equal((fb.match(/ review comment /g) || []).length, 2, 'the fallback ladder persists EVERY finding, once each');
   assert.ok(fb.includes(' review submit "$RDM_REVIEW_ID" --verdict request-changes '), 'the fallback ladder submits too');
-  assert.ok(fb.includes(' worktree add rm'), 'worktreeRef is inherited by the fallback ladder');
   assert.ok(built.prompt.includes('FALLBACK COMMAND LADDER'), 'the ladder is emitted verbatim in the prompt');
   assert.ok(built.prompt.includes(fb), 'the prompt embeds exactly the fallback commands it returns');
   assert.ok(built.prompt.includes('start-fallback'), 'and names the reason the fallback contributes');
@@ -12666,13 +12659,10 @@ if (mode === 'mutant') {
 } else {
   // The primary (change) ladder keeps every change-only affordance.
   const built = buildPersistReviewPrompts(result, 'change/' + head, cfg, {
-    worktreeRef: 'persist-rm',
     pathAnchors: true,
     fallbackTarget: DOC_TARGET,
   });
   const primary = built.commands.join('\n');
-  assert.ok(primary.includes(' worktree add persist-rm'), 'the primary ladder enters the item checkout');
-  assert.ok(primary.includes('cd "$(head -n 1 "$RDM_PERSIST_WT")"'), 'and cds into the path it printed');
   assert.ok(primary.includes('--path "$RDM_PERSIST_PATH"'), 'and anchors by path');
   assert.ok(built.prompt.includes('Report the fallback ref as `targetUsed`'),
     'the prompt tells the agent to report which ref review start actually accepted');
@@ -12682,7 +12672,6 @@ if (mode === 'mutant') {
   for (const flag of ['--path', '--base', '--implements']) {
     assert.ok(!fbText.includes(flag), 'the fallback ladder must carry no ' + flag);
   }
-  assert.ok(fbText.includes(' worktree add persist-rm'), 'worktreeRef is inherited');
   assert.ok(fbText.includes(" review start --on '" + DOC_TARGET + "' "), 'the fallback ladder targets the document ref');
   assert.ok(fbText.includes("commit -m 'chore(plan): record code review of " + DOC_TARGET + "'"),
     'the fallback commit names the ref review start actually accepted');

@@ -2116,33 +2116,11 @@ function persistReviewCommands(result, target, cfg, opts) {
       );
     }
   }
-  const worktreeRef = typeof o.worktreeRef === 'string' && o.worktreeRef.trim() !== '' ? o.worktreeRef.trim() : '';
   const IND = '  ';
   const cmds = [];
   if (o.source) {
     cmds.push('cd ' + shellQuote(o.source.path));
     cmds.push(IND + bin + ' review source --on ' + shellQuote(o.source.item) + ' --source ' + shellQuote(o.source.path) + ' --base ' + shellQuote(o.source.base) + ' --expected-head ' + shellQuote(o.source.head) + ' --expected-branch ' + shellQuote(o.source.branch) + (o.source.noCode ? ' --no-code' : '') + proj + ' >/dev/null || exit 1');
-  } else if (worktreeRef !== '') {
-    // A `change/HEAD` target only means anything from inside the item's own
-    // checkout, so cd there FIRST. `worktree add` is idempotent and prints the
-    // path whether it created the worktree or found an existing one.
-    //
-    // The invocation is its OWN indented line with the binary as its first
-    // token (the line shape documented above, which the parameterization
-    // harness scans); the capture and the `cd` are flush-left shell plumbing
-    // around it, not command invocations.
-    cmds.push(
-      'RDM_PERSIST_WT=${TMPDIR:-/tmp}/rdm-persist-worktree.$$.txt' +
-        '\n' +
-        IND +
-        bin +
-        ' worktree add ' +
-        worktreeRef +
-        proj +
-        ' > "$RDM_PERSIST_WT"' +
-        '\n' +
-        'cd "$(head -n 1 "$RDM_PERSIST_WT")"'
-    );
   }
   cmds.push('RDM_PERSIST_START_JSON=${TMPDIR:-/tmp}/rdm-persist-start.$$.json');
   cmds.push(
@@ -2233,13 +2211,10 @@ function buildPersistReviewPrompts(result, target, deps, opts) {
   // `pathAnchors: false` and neither `source` nor `implements` means the
   // emitted `review start` / `review comment` lines STRUCTURALLY cannot carry
   // `--path`, `--base` or `--implements` — the three flags a document target
-  // refuses. `worktreeRef` is inherited (it only decides which checkout the
-  // commands run in); `source` deliberately is NOT, because it pins a change
+  // refuses. `source` is deliberately NOT inherited, because it pins a change
   // identity onto what is now a document review.
   const fallbackCommands =
-    fallbackTarget === ''
-      ? []
-      : persistReviewCommands(result, fallbackTarget, deps, { worktreeRef: o.worktreeRef, pathAnchors: false });
+    fallbackTarget === '' ? [] : persistReviewCommands(result, fallbackTarget, deps, { pathAnchors: false });
   // An intentional no-code review has an EMPTY committed range: no hunks, so no
   // `--path` anchor can ever land. Reported as data so a consumer's
   // persistAccounting can refuse to read a quoted-survivor run against it as clean.

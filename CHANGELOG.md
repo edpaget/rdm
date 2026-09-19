@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The review-persist workflow no longer lets a review target containing shell metacharacters (`$(...)`, backticks) execute arbitrary commands when the agent runs the emitted `rdm review start`/`rdm commit` lines — the target is now shell-quoted like every other untrusted value the writer emits.
 
+- Removed the unused, unguarded, unquoted `worktreeRef`-based checkout entry from the review-persist writer (`persistReviewCommands`); no caller ever supplied it, and it was missing the failure guard and shell-quoting the sibling `source` entry has. The only supported checkout-entry path for a persisted review is the existing guarded, quoted `opts.source` branch.
+
 ### Fixed
 
 - `rdm backlinks`'s and `rdm link check`/`rdm link list`'s `--help` text, `rdm describe`'s `review.target` field, and the shipped Claude Code instructions template now list `plan/<slug>` alongside `roadmap/<slug>`, `phase/<roadmap-slug>/<stem-or-number>`, and `task/<slug>` as an accepted/linkable form (and, where the surface documents a review target rather than a link, `change/<head-sha>` too) — these had not been updated when `plan/<slug>` and `change/<head-sha>` were added as reference kinds.

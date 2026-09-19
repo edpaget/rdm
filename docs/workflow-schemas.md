@@ -1330,9 +1330,8 @@ still branches on nothing:
 
 | `opts` field | effect |
 | --- | --- |
-| `worktreeRef` | prefix the command list with `<bin> worktree add <ref>` + a `cd` into the path it prints, so a checkout-relative target like `change/HEAD` resolves |
 | `pathAnchors` | for each survivor whose `location` yields a repo-relative path via the pure `pathFromLocation`, emit `--path "$RDM_PERSIST_PATH"` alongside `--quote`. Suppressed outright when `source.noCode` is set (no hunks exist, so every such comment would fail), and REFUSED with a throw on a non-change target. Against a change target `--quote` is emitted ONLY when a `--path` accompanies it — see the unanchorable-quote rule below. |
-| `fallbackTarget` | emit a SECOND, COMPLETE command list (`fallbackCommands`) for a plan-repo document ref, built by re-entering the writer with `pathAnchors: false` and neither `source` nor `implements`, so it structurally cannot carry `--path`, `--base` or `--implements`. The prompt embeds it verbatim under a `FALLBACK COMMAND LADDER` heading and the agent runs it INSTEAD of the primary list when `review start` refuses the primary ref. `worktreeRef` is inherited; `source` is not. A change-shaped fallback, one equal to the primary target, or one with no `/` throws at build time. |
+| `fallbackTarget` | emit a SECOND, COMPLETE command list (`fallbackCommands`) for a plan-repo document ref, built by re-entering the writer with `pathAnchors: false` and neither `source` nor `implements`, so it structurally cannot carry `--path`, `--base` or `--implements`. The prompt embeds it verbatim under a `FALLBACK COMMAND LADDER` heading and the agent runs it INSTEAD of the primary list when `review start` refuses the primary ref. `source` is deliberately not inherited. A change-shaped fallback, one equal to the primary target, or one with no `/` throws at build time. |
 
 **`rdm-wf-review-refute-fix.js` defaults its code-review persist target to
 `change/HEAD`** — a code review is about the code, so the recorded artifact
