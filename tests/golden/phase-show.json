@@ -1,7 +1,7 @@
 {
   "body": "First phase: already done.\n",
   "completed": "<DATE>",
-  "estimate_snapshot": "ccfd3f9863ef97c359686915851cfb428c92f466bb2205a657a7b6c709bbb3b2",
+  "estimate_snapshot": "<SNAPSHOT>",
   "next_phase": "phase-2-seed-two",
   "phase": 1,
   "roadmap": "sample-roadmap",

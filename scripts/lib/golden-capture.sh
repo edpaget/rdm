@@ -36,7 +36,7 @@
 #       leaves nothing worth redacting.
 #
 #   golden_redact <dir>
-#       Applies the five-rule redaction below to every *.json file directly
+#       Applies the six-rule redaction below to every *.json file directly
 #       under <dir>, in place. Requires FIXTURE_ROOT to still be set (i.e.
 #       called after golden_capture_all and before fixture_teardown) so it
 #       can compute the raw and OS-canonicalized forms of the fixture's temp
@@ -75,6 +75,17 @@
 #   (e) The review `id` field itself (`YYYY-MM-DD-HHMM-hex`, volatile by day
 #       AND by run) -> `<REVIEW-ID>`. Scoped to the review-id shape so the
 #       small stable per-comment integer `id` field is never touched.
+#   (f) The `estimate_snapshot` opaque token (64 lowercase hex) ->
+#       `<SNAPSHOT>`. It is `content_digest(doc.render())`, so it hashes the
+#       phase's WHOLE frontmatter+body INCLUDING the `created:` NaiveDate
+#       that rule (b) redacts at the surface. Redacting the date but not the
+#       digest over it left the golden reproducible within one day and
+#       guaranteed to drift the next, which is exactly how it broke: the
+#       committed value changed with no shape or behavior change at all.
+#       Scoped to the field name, so nothing else hex-shaped is touched, and
+#       the field's presence and 64-hex shape are still asserted (see
+#       scripts/verify-golden-json.sh section 2b) — only the day-volatile
+#       value is dropped.
 
 # GOLDEN_NAMES — the 23 captured golden filenames (without the .json
 # extension), in capture order. Single source of truth for both
@@ -348,6 +359,11 @@ golden_redact() {
         # (e) the review id field (YYYY-MM-DD-HHMM-hex), scoped so the
         # numeric per-comment "id" field is never touched.
         sed -E -i.bak 's/"id": "[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}-[0-9a-f]+"/"id": "<REVIEW-ID>"/g' "$f"
+
+        # (f) the estimate_snapshot opaque token — a sha256 over the phase's
+        # whole rendered document, so it is volatile with every field rule
+        # (b)-(e) already redact, the `created:` date above all.
+        sed -E -i.bak 's/"estimate_snapshot": "[0-9a-f]{64}"/"estimate_snapshot": "<SNAPSHOT>"/g' "$f"
 
         rm -f "$f.bak"
     done

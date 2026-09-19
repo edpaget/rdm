@@ -67,8 +67,8 @@ follow-up task instead of captured as a fake-JSON golden:
 ## Redaction
 
 `golden_redact` (in `scripts/lib/golden-capture.sh`) applies exactly these
-five rules to every captured file, so two same-day captures — on the same
-machine or different ones — are byte-identical:
+six rules to every captured file, so two captures — on the same machine or
+different ones, on the same day or months apart — are byte-identical:
 
 1. **Absolute temp paths** — the fixture's temp root, in both its raw
    `mktemp` form and its OS-canonicalized form (macOS resolves
@@ -86,13 +86,24 @@ machine or different ones — are byte-identical:
 5. **The review `id` field itself** (`YYYY-MM-DD-HHMM-hex`, volatile by both
    day and run) → `<REVIEW-ID>`. Scoped to the review-id shape so the small,
    stable per-comment integer `id` field is never touched.
+6. **The `estimate_snapshot` opaque token** (64 lowercase hex) →
+   `<SNAPSHOT>`. It is `content_digest(doc.render())` — a sha256 over the
+   phase's *entire* frontmatter and body, including the `created:` date that
+   rule 2 redacts at the surface. Redacting the date but not the digest taken
+   over it made the golden reproducible within a single day and guaranteed to
+   drift the next, which is how it actually broke: `phase-show.json`'s
+   `estimate_snapshot` changed with no shape change and no behavior change.
+   The rule is scoped to the field name, and
+   `scripts/verify-golden-json.sh` section 2b still asserts the field is
+   present and was 64-hex before redaction — only the day-volatile *value* is
+   dropped, not the contract that the field exists.
 
 This extends the volatile-field set `scripts/lib/rdm-plan-fixture.sh`
-documents (temp paths, dates, commit SHAs) with two categories this phase
-found load-bearing but undocumented there: review IDs and review RFC3339
-datetimes. If `scripts/lib/golden-capture.sh`'s header comment and this
-README ever appear to disagree, trust the header comment — it is
-authoritative.
+documents (temp paths, dates, commit SHAs) with three categories found
+load-bearing but undocumented there: review IDs, review RFC3339 datetimes,
+and digests taken *over* already-redacted volatile content. If
+`scripts/lib/golden-capture.sh`'s header comment and this README ever appear
+to disagree, trust the header comment — it is authoritative.
 
 ## Re-blessing after an intentional shape change
 

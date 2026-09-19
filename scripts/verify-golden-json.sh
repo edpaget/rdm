@@ -13,6 +13,14 @@
 #      that today's run happens to match already-committed goldens. A
 #      follow-up grep proves neither capture leaks a raw, un-redacted temp
 #      path.
+#   2b. Digest volatility: `estimate_snapshot` is a sha256 over the phase's
+#      whole rendered document, INCLUDING the `created:` date rule (b)
+#      redacts — freezing it made the goldens reproducible for one day and
+#      guaranteed to drift the next, a class step 2's same-day double
+#      capture is blind to. Asserts the pre-redaction capture really carried
+#      a 64-hex value, that the field survives as `<SNAPSHOT>`, and that no
+#      bare 64-hex digest survives anywhere; with its own planted-digest
+#      self-test.
 #   3. Planted-mutation self-test (house style): a scratch COPY of the
 #      committed tests/golden/ tree gets one field mutated with sed; the
 #      diff step against that mutated copy must fail and its output must
@@ -116,7 +124,12 @@ say "2. AC3: same-day double-capture reproducibility"
 # ---------------------------------------------------------------------------
 
 CAPTURE_B="$TMP/capture-b"
+CAPTURE_B_RAW="$TMP/capture-b-raw"
 golden_capture_all "$CAPTURE_B" || fail "golden_capture_all (capture B) failed"
+# Snapshot the capture BEFORE redaction, so section 2b can prove each
+# redaction rule fired against real output rather than passing vacuously on
+# output that never contained the volatile value in the first place.
+cp -R "$CAPTURE_B" "$CAPTURE_B_RAW" || fail "could not snapshot capture B before redaction"
 golden_redact "$CAPTURE_B" || fail "golden_redact (capture B) failed"
 fixture_teardown
 
@@ -135,6 +148,68 @@ if grep -rlE '/tmp\.[A-Za-z0-9]+' "$CAPTURE_A" "$CAPTURE_B" >"$TMP/leaked-tmpdir
     fi
 fi
 ok "no raw temp-dir path leaked past redaction in either capture"
+
+# ---------------------------------------------------------------------------
+say "2b. Digests taken OVER date-bearing content are redacted, not frozen"
+# ---------------------------------------------------------------------------
+
+# Rules (b)-(e) redact volatile values where they appear as fields. A digest
+# computed over a whole document containing those same values is volatile too,
+# but invisibly so: `estimate_snapshot` is content_digest(doc.render()), taken
+# over frontmatter that includes the fixture's `created:` date. Redacting the
+# date at the surface while freezing a sha256 over it made the golden set
+# reproducible for exactly one day and guaranteed to drift the next — which is
+# how it actually broke, with no shape change and no behavior change. Section
+# 2's double-capture cannot see this class: both captures are same-day.
+#
+# _unredacted_digests <dir> — print every file under <dir> still carrying a
+# bare 64-hex value; empty output means none. Always exits 0 (grep's "no
+# match" 1 would otherwise abort this `set -e` script at the assignment
+# below, silently skipping the very check it is meant to perform).
+_unredacted_digests() {
+    grep -rlE '"[0-9a-f]{64}"' "$1" 2>/dev/null || true
+}
+
+# The rule had real input: the PRE-redaction capture really did carry a
+# 64-hex estimate_snapshot, so the post-redaction assertions below are not
+# passing merely because the field never appeared.
+grep -qE '"estimate_snapshot": "[0-9a-f]{64}"' "$CAPTURE_B_RAW/phase-show.json" ||
+    fail "2b setup: the un-redacted capture carries no 64-hex estimate_snapshot — did the field move, change shape, or leave phase-show?"
+ok "the un-redacted capture really does carry a day-volatile 64-hex estimate_snapshot"
+
+# The field is still part of the frozen contract — redaction drops the
+# volatile value, never the key.
+for d in "$CAPTURE_A" "$CAPTURE_B" "$GOLDEN_DIR"; do
+    grep -q '"estimate_snapshot": "<SNAPSHOT>"' "$d/phase-show.json" ||
+        fail "phase-show.json in $d does not carry a redacted \"estimate_snapshot\": \"<SNAPSHOT>\" — the field must stay in the contract, only its value is dropped"
+done
+ok "estimate_snapshot survives redaction as <SNAPSHOT> in both captures and the committed goldens"
+
+# No digest-shaped value may survive anywhere: every 64-hex value rdm emits
+# today is a content digest over date-bearing content.
+for d in "$CAPTURE_A" "$CAPTURE_B" "$GOLDEN_DIR"; do
+    leaked=$(_unredacted_digests "$d")
+    if [ -n "$leaked" ]; then
+        echo "$leaked" >&2
+        fail "a bare 64-hex digest survived redaction in $d (files above) — a digest over date-bearing content drifts across days; add a redaction rule for its field"
+    fi
+done
+ok "no bare 64-hex digest survives redaction in either capture or the committed goldens"
+
+# Self-test: the detector above must actually fire on a planted digest, and
+# must stay quiet on the same tree once healed.
+PLANTED="$TMP/planted-digest"
+mkdir -p "$PLANTED"
+cp "$GOLDEN_DIR/phase-show.json" "$PLANTED/phase-show.json"
+sed -i.bak 's/"estimate_snapshot": "<SNAPSHOT>"/"estimate_snapshot": "ccfd3f9863ef97c359686915851cfb428c92f466bb2205a657a7b6c709bbb3b2"/' "$PLANTED/phase-show.json"
+rm -f "$PLANTED/phase-show.json.bak"
+[ -n "$(_unredacted_digests "$PLANTED")" ] ||
+    fail "2b self-test: the digest detector did NOT fire on a planted 64-hex estimate_snapshot — the check above is vacuous"
+sed -i.bak -E 's/"estimate_snapshot": "[0-9a-f]{64}"/"estimate_snapshot": "<SNAPSHOT>"/' "$PLANTED/phase-show.json"
+rm -f "$PLANTED/phase-show.json.bak"
+[ -z "$(_unredacted_digests "$PLANTED")" ] ||
+    fail "2b self-test: the healed copy still trips the digest detector"
+ok "2b self-test: the digest detector fires on a planted digest and heals with the redaction rule applied"
 
 # ---------------------------------------------------------------------------
 say "3. Planted-mutation self-test: the drift detector actually fires"
