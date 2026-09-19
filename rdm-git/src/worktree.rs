@@ -1060,9 +1060,15 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
     ) -> rdm_core::error::Result<Option<rdm_core::worktree::WorktreeCheck>> {
         if let Some((selected_item, request)) = &self.selected {
             if selected_item != item {
-                return Err(rdm_core::error::Error::Git(
-                    "review source item mismatch".into(),
-                ));
+                // A caller bug, not a repository failure: this probe was
+                // bound to one item and asked about another. Reported
+                // through its own variant so a caller can tell the two
+                // apart (`Error::Git` means "the repository cannot be
+                // queried").
+                return Err(rdm_core::error::Error::ReviewSourceItemMismatch {
+                    expected: selected_item.label(),
+                    found: item.label(),
+                });
             }
             let source = rdm_core::resolve_review_source(self, item, request)?;
             let porcelain = crate::status_porcelain_at(Path::new(&source.path))
@@ -1101,9 +1107,14 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
                     .to_string(),
             );
             if check.branch.as_deref() != Some(info.branch.as_str()) {
-                return Err(rdm_core::error::Error::Git(
-                    "registered source branch changed".into(),
-                ));
+                // The checkout moved off its registered branch since
+                // registration — an operator-fixable state, not an
+                // unqueryable repository.
+                return Err(rdm_core::error::Error::ReviewSourceBranchChanged {
+                    path: info.path.display().to_string(),
+                    expected: info.branch.clone(),
+                    found: check.branch.clone().unwrap_or_default(),
+                });
             }
             return Ok(Some(check));
         }
@@ -1995,6 +2006,84 @@ mod tests {
             roadmap: roadmap.to_string(),
             stem: stem.to_string(),
         }
+    }
+
+    /// AC3: the probe's two caller-visible refusals get their own matchable
+    /// variants; `Error::Git` narrows back to "the repository cannot be
+    /// queried". Both directions are asserted, so the split cannot be
+    /// vacuous.
+    #[test]
+    fn probe_reports_mismatches_distinctly_from_a_query_failure() {
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let roadmap = ItemRef::Roadmap {
+            roadmap: "my-roadmap".into(),
+        };
+        let wt = add(&repo, &roadmap, &roadmap.branch_name(), None).unwrap();
+        let initial = crate::head_commit_info_at(&wt.path).unwrap().unwrap().sha;
+        std::fs::write(wt.path.join("impl.txt"), "implemented\n").unwrap();
+        run_git(&wt.path, &["add", "."]);
+        run_git(&wt.path, &["commit", "-m", "implementation"]);
+
+        let item_a = core_phase("my-roadmap", "phase-2-open-phase");
+        let item_b = rdm_core::link::ItemRef::Task {
+            slug: "somewhere-else".into(),
+        };
+        let request = rdm_core::ReviewSourceRequest {
+            base: Some(initial),
+            ..Default::default()
+        };
+
+        // (1) A bound probe asked about a different item.
+        let bound = GitWorktreeProbe::new(repo.clone()).with_source(item_a.clone(), request);
+        let err = bound.worktree_for(&item_b).unwrap_err();
+        let rdm_core::error::Error::ReviewSourceItemMismatch {
+            ref expected,
+            ref found,
+        } = err
+        else {
+            panic!("expected ReviewSourceItemMismatch, got {err:?}");
+        };
+        assert_eq!(expected, &item_a.label());
+        assert_eq!(found, &item_b.label());
+        assert!(
+            !matches!(err, rdm_core::error::Error::Git(_)),
+            "a mismatch must not be laundered through Error::Git"
+        );
+        // The bound item itself still answers.
+        assert!(bound.worktree_for(&item_a).unwrap().is_some());
+
+        // (2) A registered checkout switched off its registered branch.
+        run_git(&wt.path, &["switch", "-c", "some-other-branch"]);
+        let probe = GitWorktreeProbe::new(repo.clone());
+        let err = probe.worktree_for(&item_a).unwrap_err();
+        let rdm_core::error::Error::ReviewSourceBranchChanged {
+            ref expected,
+            ref found,
+            ..
+        } = err
+        else {
+            panic!("expected ReviewSourceBranchChanged, got {err:?}");
+        };
+        assert_eq!(expected, &roadmap.branch_name());
+        assert_eq!(found, "some-other-branch");
+        assert!(
+            !matches!(err, rdm_core::error::Error::Git(_)),
+            "a moved branch must not be laundered through Error::Git"
+        );
+        assert!(
+            err.to_string().contains("git switch"),
+            "the refusal must name the remedy: {err}"
+        );
+
+        // (3) A genuine query failure is still Error::Git.
+        let broken = GitWorktreeProbe::new(repo.join("definitely-not-a-repo"));
+        assert!(
+            matches!(
+                broken.worktree_for(&item_a),
+                Err(rdm_core::error::Error::Git(_))
+            ),
+            "an unqueryable repository must still be Error::Git"
+        );
     }
 
     #[test]

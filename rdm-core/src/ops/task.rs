@@ -261,10 +261,17 @@ pub fn update_task(
 /// # Errors
 ///
 /// Everything [`update_task`] returns, plus — only when `status` is
-/// `Some(`[`TaskStatus::Reviewed`]`)` and the gate is enforcing —
+/// `Some(`[`TaskStatus::Reviewed`]`)` and the gate is **enforcing** —
 /// [`Error::GateNoApprovedPlan`], [`Error::GateNoApprovedChangeReview`],
-/// [`Error::GateWorktreeDirty`], [`Error::GateWorktreeUnobservable`], and
+/// [`Error::GateStaleChangeReview`], [`Error::GateWorktreeDirty`],
+/// [`Error::GateWorktreeUnobservable`] and
 /// [`Error::GateOverrideEmptyReason`].
+///
+/// Independently of that, [`Error::GateOverrideGateDisabled`] is returned
+/// whenever an override is supplied while the gate is **not** enforcing —
+/// a bypass of a gate that is not running is refused, never honored as a
+/// silent no-op. See
+/// [`crate::ops::gate::check_reviewed_gate`].
 #[allow(clippy::too_many_arguments)]
 pub fn update_task_gated(
     store: &mut impl Store,

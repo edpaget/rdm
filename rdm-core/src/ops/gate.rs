@@ -13,7 +13,8 @@
 //!
 //! 1. **(a)** an `approved` implementation plan implements the item;
 //! 2. **(b)** an approving `change/` review's `implements` names that same
-//!    plan;
+//!    plan, and — whenever a checkout was observed at all, dirty or clean —
+//!    was recorded at that checkout's HEAD;
 //! 3. **(c)** the item's worktree, if [`rdm worktree`](crate::worktree) knows
 //!    one, is clean.
 //!
@@ -159,13 +160,25 @@ pub enum GateDecision {
 ///   (a malformed bypass is never silently honored);
 /// - [`Error::GateNoApprovedPlan`] when no `approved` plan implements `item`;
 /// - [`Error::GateNoApprovedChangeReview`] when no approving `change/` review
-///   names any of those plans at the clean observed checkout's HEAD (a missing
-///   observed HEAD also refuses approval), listing every plan checked. When no
-///   checkout is observed, legacy callers skip only this HEAD-matching check;
+///   names any of those plans at all, listing every plan checked;
+/// - [`Error::GateStaleChangeReview`] when such a review *does* exist but was
+///   recorded at a different HEAD than the observed checkout, or the observed
+///   checkout's HEAD could not be read (which matches no approval). The
+///   HEAD-matching rule applies to **every observed checkout**, dirty or
+///   clean, and is skipped only when nothing was observed: no probe was
+///   supplied, the probe errored, or rdm manages no worktree for the item.
+///   Decoupling it from cleanliness moves only which refusal is reported,
+///   never which writes are accepted — every observed-but-not-clean checkout
+///   already fails (c);
 /// - [`Error::GateWorktreeDirty`] when the item's worktree has uncommitted
 ///   changes;
 /// - [`Error::GateWorktreeUnobservable`] when the worktree could not be
-///   inspected at all (fail-closed);
+///   inspected at all (fail-closed). Every probe error becomes this,
+///   including [`Error::ReviewSourceItemMismatch`] and
+///   [`Error::ReviewSourceBranchChanged`], whose text now names the real
+///   condition in the `cause`. A probe `Err` short-circuits (b)'s HEAD
+///   comparison — nothing was observed — so it can never surface as a stale
+///   refusal;
 /// - anything [`crate::ops::plan::approved_plans_for`] or
 ///   [`crate::ops::plan::approving_change_reviews_for_plan`] returns.
 pub fn check_reviewed_gate(
@@ -208,25 +221,70 @@ pub fn check_reviewed_gate(
         if approved.is_empty() {
             return Err(Error::GateNoApprovedPlan(item.label()));
         }
-        // (b) an approving `change/` review's `implements` names one of them.
+        // (b) an approving `change/` review's `implements` names one of them,
+        // recorded at the HEAD the observed checkout is actually at.
+        //
+        // The HEAD match is deliberately NOT gated on `check.is_clean()`. It
+        // applies to every *observed* checkout and is skipped only for the
+        // three genuinely-unobserved shapes: no probe at all, a probe error,
+        // and a benign miss (rdm manages no worktree for this item).
+        //
+        // Decoupling it from cleanliness cannot loosen the gate. Every
+        // observed-but-not-clean checkout already fails (c) below — dirty →
+        // `GateWorktreeDirty`, unreadable status → `GateWorktreeUnobservable`
+        // — so tightening (b) for those checkouts changes only *which*
+        // refusal is reported, never whether the write is allowed. What it
+        // buys is the documented (a) → (b) → (c) order actually holding: a
+        // dirty worktree whose approval is stale now surfaces the stale
+        // refusal rather than a cleanliness complaint that hides it.
         let mut hit: Option<(String, String)> = None;
+        // Approving candidates rejected *only* by the HEAD match, so a
+        // failure can say "stale" instead of "absent". Deterministic:
+        // `change_reviews_for_plan` yields id-sorted reviews and `approved`
+        // is slug-sorted, so the first entry is stable — no clock, no
+        // randomness.
+        let mut rejected: Vec<(String, String)> = Vec::new();
         for (slug, _) in &approved {
             let reviews =
                 crate::ops::plan::approving_change_reviews_for_plan(store, project, slug)?;
-            if let Some((review_id, _)) = reviews.into_iter().find(|(_, doc)| match &observed {
-                Some(Ok(Some(check))) if check.is_clean() => match &doc.frontmatter.target {
-                    crate::model::ReviewTarget::Change { head, .. } => {
-                        check.head.as_ref() == Some(head)
-                    }
-                    _ => false,
-                },
-                _ => true,
-            }) {
-                hit = Some((slug.clone(), review_id));
+            for (review_id, doc) in reviews {
+                let accepted = match &observed {
+                    Some(Ok(Some(check))) => match &doc.frontmatter.target {
+                        crate::model::ReviewTarget::Change { head, .. } => {
+                            if check.head.as_ref() == Some(head) {
+                                true
+                            } else {
+                                rejected.push((review_id.clone(), head.clone()));
+                                false
+                            }
+                        }
+                        _ => false,
+                    },
+                    // No probe, a probe error, or rdm manages no worktree:
+                    // nothing was observed, so nothing can be compared.
+                    _ => true,
+                };
+                if accepted {
+                    hit = Some((slug.clone(), review_id));
+                    break;
+                }
+            }
+            if hit.is_some() {
                 break;
             }
         }
         let Some((plan, review_id)) = hit else {
+            if let Some((review_id, reviewed_head)) = rejected.into_iter().next() {
+                return Err(Error::GateStaleChangeReview {
+                    item: item.label(),
+                    review_id,
+                    reviewed_head,
+                    observed_head: match &observed {
+                        Some(Ok(Some(check))) => check.head.clone(),
+                        _ => None,
+                    },
+                });
+            }
             return Err(Error::GateNoApprovedChangeReview {
                 item: item.label(),
                 plans: approved.into_iter().map(|(slug, _)| slug).collect(),

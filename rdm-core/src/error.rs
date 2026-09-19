@@ -102,6 +102,24 @@ pub enum Error {
         /// What went wrong when probing the worktree.
         cause: String,
     },
+    /// The `reviewed` transition gate refused: an approving `change/` review
+    /// implementing the item's plan exists, but it was recorded against a
+    /// different HEAD than the observed checkout (or the checkout's HEAD
+    /// could not be read at all), so it cannot approve the code being
+    /// marked reviewed. Distinct from
+    /// [`Error::GateNoApprovedChangeReview`], which would tell the operator
+    /// to create a review that already exists.
+    GateStaleChangeReview {
+        /// Label of the item being transitioned.
+        item: String,
+        /// Id of the approving review whose head did not match.
+        review_id: String,
+        /// The head that review was recorded at.
+        reviewed_head: String,
+        /// The observed checkout's HEAD, or `None` when it could not be
+        /// read.
+        observed_head: Option<String>,
+    },
     /// `--override-gate` was passed an empty or whitespace-only reason.
     GateOverrideEmptyReason,
     /// `--override-gate` was passed while the `reviewed` transition gate is
@@ -110,6 +128,28 @@ pub enum Error {
     /// an audited act, and honoring it as a no-op would discard the reason and
     /// actor the operator supplied without telling them.
     GateOverrideGateDisabled,
+    /// A [`crate::worktree::WorktreeProbe`] bound to one item (via a review
+    /// source selection) was asked about a different item. A caller bug, not
+    /// a repository failure — deliberately distinct from [`Error::Git`], so
+    /// a caller can tell a mismatch from "the repository cannot be queried".
+    ReviewSourceItemMismatch {
+        /// Label of the item the probe is bound to.
+        expected: String,
+        /// Label of the item it was asked about.
+        found: String,
+    },
+    /// A registered source checkout has been switched off the branch it was
+    /// registered on, so it no longer holds the work the probe was asked
+    /// about. Distinct from [`Error::Git`] for the same reason as
+    /// [`Error::ReviewSourceItemMismatch`].
+    ReviewSourceBranchChanged {
+        /// Absolute path of the registered checkout.
+        path: String,
+        /// The branch it was registered on.
+        expected: String,
+        /// The branch it is on now, as observed.
+        found: String,
+    },
     /// The plan a new plan would supersede does not exist.
     PlanSupersedesMissing(String),
     /// A plan's `supersedes` named a reference kind that is not a plan
@@ -227,6 +267,15 @@ pub enum Error {
         path: String,
         /// The revision it was looked up at.
         rev: String,
+    },
+    /// A `--path` contained a character the `rdm:src/<path>@<rev>#L<n>`
+    /// permalink grammar reserves (`@` or `#`), so the permalink derived
+    /// from the resulting anchor would not parse back to the same path.
+    ChangePathNotLinkable {
+        /// The normalized repo-relative path that was rejected.
+        path: String,
+        /// The first reserved character found in it.
+        delimiter: char,
     },
     /// A `--path` named a directory or a submodule rather than a regular
     /// file — a comment can only anchor to a blob.
@@ -566,6 +615,42 @@ impl std::fmt::Display for Error {
                      project checkout), then retry. `--override-gate` does NOT bypass this check."
                 )
             }
+            Error::GateStaleChangeReview {
+                item,
+                review_id,
+                reviewed_head,
+                observed_head,
+            } => {
+                let short = |rev: &str| {
+                    let mut at = rev.len().min(12);
+                    while at > 0 && !rev.is_char_boundary(at) {
+                        at -= 1;
+                    }
+                    rev[..at].to_string()
+                };
+                match observed_head {
+                    Some(observed) => write!(
+                        f,
+                        "refusing to mark {item} reviewed: the approving change review {review_id} \
+                         was recorded at HEAD {} but the checkout is at HEAD {} — re-review the \
+                         current HEAD with `rdm review start --on change/HEAD --implements \
+                         plan/<slug>` then `rdm review submit <id> --verdict approve` (or bypass \
+                         the record checks with `--override-gate \"<reason>\"`)",
+                        short(reviewed_head),
+                        short(observed),
+                    ),
+                    None => write!(
+                        f,
+                        "refusing to mark {item} reviewed: the approving change review {review_id} \
+                         was recorded at HEAD {}, but the checkout's own HEAD could not be \
+                         observed, so no approval can be matched to it — re-review the current \
+                         HEAD with `rdm review start --on change/HEAD --implements plan/<slug>` \
+                         then `rdm review submit <id> --verdict approve` (or bypass the record \
+                         checks with `--override-gate \"<reason>\"`)",
+                        short(reviewed_head),
+                    ),
+                }
+            }
             Error::GateOverrideGateDisabled => {
                 write!(
                     f,
@@ -573,6 +658,22 @@ impl std::fmt::Display for Error {
                      enforcing in this plan repo, so the write needs no override and the reason and \
                      actor would not be recorded — drop the flag, or enable the gate first with \
                      `rdm config set gates.reviewed true`"
+                )
+            }
+            Error::ReviewSourceItemMismatch { expected, found } => {
+                write!(
+                    f,
+                    "this worktree probe is bound to {expected}, but was asked about {found} —                      re-bind the probe to the item being inspected (one probe answers for one                      review source)"
+                )
+            }
+            Error::ReviewSourceBranchChanged {
+                path,
+                expected,
+                found,
+            } => {
+                write!(
+                    f,
+                    "the registered checkout {path} was registered on branch '{expected}' but is                      now on '{found}' — run `git switch {expected}` in it, or re-register the                      checkout with `rdm worktree add`"
                 )
             }
             Error::GateOverrideEmptyReason => {
@@ -746,6 +847,12 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "'{path}' does not exist at {rev} — check the path (it is relative to the source repository root), or omit --path/--quote for a whole-change comment"
+                )
+            }
+            Error::ChangePathNotLinkable { path, delimiter } => {
+                write!(
+                    f,
+                    "source path '{path}' contains '{delimiter}', which the rdm:src/<path>@<rev>#L<n> permalink grammar reserves — the anchor could not be linked back to the file; rename the file, or omit --path/--quote for a whole-change comment"
                 )
             }
             Error::ChangePathNotAFile { path, rev, found } => {

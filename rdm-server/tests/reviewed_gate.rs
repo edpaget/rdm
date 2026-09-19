@@ -378,3 +378,63 @@ fn reviewed_gate_enabled_reads_the_repo_only_key() {
     std::fs::write(dir.path().join("rdm.toml"), "not = = toml [[[").unwrap();
     assert!(!rdm_server::state::reviewed_gate_enabled(dir.path()).unwrap());
 }
+
+// ---------------------------------------------------------------------------
+// The newer refusals map to the same 409 bucket, never the opaque 500
+// ---------------------------------------------------------------------------
+
+/// The HTTP surface passes no worktree probe, so a stale-approval refusal is
+/// not reachable through a `PATCH` — but the problem-detail mapping is what
+/// decides its status code, and an unmapped variant would silently land in
+/// the 500 bucket. Asserted directly against the conversion.
+#[test]
+fn a_stale_change_review_refusal_is_a_409_with_a_detail() {
+    let err = rdm_core::error::Error::GateStaleChangeReview {
+        item: "phase/auth/phase-1-design".to_string(),
+        review_id: "2026-09-13-reviewer-1".to_string(),
+        reviewed_head: "a".repeat(40),
+        observed_head: Some("b".repeat(40)),
+    };
+    let p = rdm_server::problem::ProblemDetail::from(&err);
+    assert_eq!(p.status, 409, "a stale approval is conflict-shaped");
+    assert_eq!(p.title, "Conflict");
+    let d = p.detail.expect("a refusal must carry a detail");
+    assert!(d.contains("2026-09-13-reviewer-1"), "names the review: {d}");
+    assert!(
+        d.contains("rdm review start --on change/HEAD"),
+        "names the remedy: {d}"
+    );
+}
+
+/// AC3's two probe refusals are likewise conflict-shaped, not opaque 500s.
+#[test]
+fn the_probe_mismatch_refusals_are_409s_with_details() {
+    for err in [
+        rdm_core::error::Error::ReviewSourceItemMismatch {
+            expected: "phase/auth/phase-1-design".to_string(),
+            found: "task/solo".to_string(),
+        },
+        rdm_core::error::Error::ReviewSourceBranchChanged {
+            path: "/wt/auth".to_string(),
+            expected: "roadmap/auth".to_string(),
+            found: "scratch".to_string(),
+        },
+    ] {
+        let p = rdm_server::problem::ProblemDetail::from(&err);
+        assert_eq!(p.status, 409, "{err:?} must be conflict-shaped");
+        assert!(p.detail.is_some(), "{err:?} must carry a detail");
+    }
+}
+
+/// AC1's path refusal is caller-fixable input, so it belongs in the 400
+/// bucket rather than either the 409 or the opaque 500 one.
+#[test]
+fn an_unlinkable_source_path_is_a_400() {
+    let p =
+        rdm_server::problem::ProblemDetail::from(&rdm_core::error::Error::ChangePathNotLinkable {
+            path: "web/app/@modal/page.tsx".to_string(),
+            delimiter: '@',
+        });
+    assert_eq!(p.status, 400);
+    assert!(p.detail.is_some_and(|d| d.contains('@')));
+}

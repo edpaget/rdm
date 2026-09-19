@@ -23,23 +23,43 @@
 //! the same path at a **tip** revision, chosen by [`resolve_drift_tip`]:
 //!
 //! - the path is gone at the tip → [`Resolution::Unresolved`]
-//! - every occurrence the quote had at `head` survives at the tip,
-//!   byte-for-byte → `Original { drifted: false }`
-//! - the path survives but the tip holds fewer occurrences of the quoted
-//!   text than `head` did → `Original { drifted: true }`
+//! - the tip holds at least as many occurrences of the quote as `head`
+//!   did, **and** one of those occurrences still sits between the same
+//!   neighboring lines the anchored one sat between at `head` → `Original
+//!   { drifted: false }`
+//! - otherwise → `Original { drifted: true }`
 //!
-//! Occurrence *count* at the tip is what is tested, not position: code that
-//! merely moved within the file still reads as resolved, because the
-//! reviewer's words are still true of it. Only an edit to the quoted text is
-//! drift.
+//! The test is occurrence *identity*, not a bare substring search and not a
+//! bare count. Two clauses, in that order:
 //!
-//! Counting rather than a bare substring search is what keeps a duplicated
-//! quote honest. When a file holds the same text twice and the author edits
-//! exactly the occurrence the reviewer anchored to, the surviving *other*
-//! copy would satisfy a `contains` check, and the comment would read "still
-//! true" although the line it named is gone. Requiring the tip to retain at
-//! least as many occurrences as `head` had reports that as drift, while a
-//! pure relocation — which preserves the count — still resolves.
+//! 1. **Count.** When a file holds the same text twice and the author edits
+//!    exactly the occurrence the reviewer anchored to, the surviving
+//!    *other* copy would satisfy a `contains` check, and the comment would
+//!    read "still true" although the line it named is gone. Requiring the
+//!    tip to retain at least as many occurrences as `head` had reports that
+//!    as drift.
+//! 2. **Line window.** A count alone is still fooled by a single commit
+//!    that edits the anchored occurrence away *and* introduces a fresh copy
+//!    of the same text elsewhere: the count is unchanged, yet the anchor is
+//!    genuinely drifted. So the tip must also hold an occurrence whose
+//!    immediately neighboring lines are the ones the anchored occurrence
+//!    sat between at `head`.
+//!
+//! The window is deliberately neighbor-line-based rather than positional,
+//! so a pure relocation — a block that moves *with* its neighbors — still
+//! resolves: the reviewer's words are still true of it. Neighbors that do
+//! not exist head-side (the quote is at the start or end of the file) are
+//! not compared, and a quote whose line-extended span is the whole file
+//! degenerates to the count clause alone rather than reporting permanent
+//! drift. The anchored occurrence's *own* line is not compared byte for
+//! byte either: it already carries the quote, and an edit beside the quote
+//! on the same line — a trailing comment, say — leaves the reviewer's words
+//! true of it.
+//!
+//! Because clause 1 is retained unchanged as the first term of the
+//! disjunction, the window clause can only ever *add* drift detections; no
+//! anchor that reports drifted under a pure count can start reporting
+//! resolved.
 //!
 //! The reported byte range always indexes the **head-side** content, matching
 //! [`Resolution::Original`]'s "the body the reviewer saw" contract.
@@ -438,7 +458,9 @@ pub fn resolve_change_target(
 /// Returns [`Error::ChangePathNeedsQuote`] or [`Error::ChangeQuoteNeedsPath`]
 /// when only one of the pair is given, [`Error::ChangePathNotInRevision`]
 /// when `path` is not repo-relative or does not exist at `head`,
-/// [`Error::ChangePathNotAFile`] when `path` names a directory or a
+/// [`Error::ChangePathNotLinkable`] when `path` contains `@` or `#`
+/// (reserved by the `rdm:src/` permalink grammar — see
+/// [`normalize_source_path`]), [`Error::ChangePathNotAFile`] when `path` names a directory or a
 /// submodule at `head` rather than a regular file, anything
 /// [`derive_file_quote`] returns (quote not found, ambiguous, occurrence out
 /// of range, outside every touched hunk), or whatever error the
@@ -522,6 +544,109 @@ fn head_range(content: &str, quote: &str, occurrence: u32) -> Option<Range<usize
 /// into and [`derive_file_quote`] disambiguates with `--occurrence`.
 fn occurrence_count(content: &str, quote: &str) -> usize {
     content.match_indices(quote).count()
+}
+
+/// The line-extended neighborhood a byte range occupies in `content`:
+/// `(the whole line before it, the line-extended span itself, the whole
+/// line after it)`.
+///
+/// The middle element runs from the start of the line holding
+/// `range.start` through the end of the line holding the span's last byte,
+/// newline excluded. The neighbors are `None` at the start or end of the
+/// file, which is what lets [`occurrence_survives`] recognize a window it
+/// cannot discriminate on.
+///
+/// Every offset is floored to a character boundary before slicing, exactly
+/// like [`line_range_of`], so a quote ending mid-multi-byte-character
+/// cannot panic here.
+fn line_window<'a>(
+    content: &'a str,
+    range: &Range<usize>,
+) -> (Option<&'a str>, &'a str, Option<&'a str>) {
+    let floor = |mut at: usize| {
+        at = at.min(content.len());
+        while at > 0 && !content.is_char_boundary(at) {
+            at -= 1;
+        }
+        at
+    };
+    let start = floor(range.start);
+    // The span's last byte, floored; an empty range reports the line it
+    // sits on, matching `line_range_of`.
+    let last = floor(range.end.saturating_sub(1).max(start));
+
+    // Start of the line holding `start`.
+    let line_start = content[..start].rfind('\n').map_or(0, |i| i + 1);
+    // End of the line holding `last`, newline excluded.
+    let line_end = content[last..]
+        .find('\n')
+        .map_or(content.len(), |i| last + i);
+
+    let before = if line_start == 0 {
+        None
+    } else {
+        let prev_end = line_start - 1; // the '\n' that ends the previous line
+        let prev_start = content[..prev_end].rfind('\n').map_or(0, |i| i + 1);
+        Some(&content[prev_start..prev_end])
+    };
+    let after = if line_end >= content.len() {
+        None
+    } else {
+        let next_start = line_end + 1; // skip the '\n'
+        if next_start >= content.len() {
+            // The file ends with a newline: there is no following line.
+            None
+        } else {
+            let next_end = content[next_start..]
+                .find('\n')
+                .map_or(content.len(), |i| next_start + i);
+            Some(&content[next_start..next_end])
+        }
+    };
+    (before, &content[line_start..line_end], after)
+}
+
+/// Whether the *specific* occurrence anchored at `head_range` still exists
+/// at the tip, judged by the line window it sat in rather than by how many
+/// copies of `quote` the file holds.
+///
+/// Walks every non-overlapping occurrence of `quote` in `tip_content` —
+/// the same population [`occurrence_count`] counts, so the two halves of
+/// the drift disjunction can never disagree about what an occurrence is —
+/// and returns `true` as soon as one of them sits between the same
+/// neighboring lines, with the same line-extended span, the anchored
+/// occurrence occupied at `head`.
+///
+/// Neighbor lines that do not exist head-side (the quote is at the start or
+/// end of the file) are not compared, so a block that moves *with* its
+/// neighbors still matches. When the head window has no neighbor on either
+/// side — the quote's line-extended span is the whole file — the window
+/// rule cannot discriminate at all, so this falls back to the count
+/// comparison rather than reporting permanent drift.
+///
+/// What is deliberately **not** compared is the anchored occurrence's own
+/// line, byte for byte. The occurrence already carries the quote by
+/// construction; requiring the rest of its line to be untouched would call
+/// a trailing comment appended beside the quote "drift", which contradicts
+/// the contract that only losing the anchored occurrence is drift
+/// (`a_derived_anchor_round_trips_through_resolution` pins it). The
+/// neighbors are the identity signal; the line itself is the subject.
+fn occurrence_survives(
+    head_content: &str,
+    tip_content: &str,
+    quote: &str,
+    head_range: &Range<usize>,
+) -> bool {
+    let (before, _, after) = line_window(head_content, head_range);
+    if before.is_none() && after.is_none() {
+        // Degenerate window: nothing to compare against, so defer to the
+        // count clause the caller already evaluated.
+        return occurrence_count(tip_content, quote) >= occurrence_count(head_content, quote);
+    }
+    tip_content.match_indices(quote).any(|(start, _)| {
+        let (tb, _, ta) = line_window(tip_content, &(start..start + quote.len()));
+        before.is_none_or(|b| tb == Some(b)) && after.is_none_or(|a| ta == Some(a))
+    })
 }
 
 /// Where a change review's drift tip came from.
@@ -665,11 +790,16 @@ pub fn resolve_drift_tip(
 ///    the file missing at `head` → [`Resolution::Unresolved`].
 /// 2. The quote located at `head` but the path gone at `tip` →
 ///    [`Resolution::Unresolved`].
-/// 3. `tip` holds at least as many byte-for-byte occurrences of the quote as
-///    `head` did → `Original { drifted: false }`.
-/// 4. Otherwise — including the case where an unrelated duplicate of the
-///    quote survives but the anchored one was edited away → `Original
-///    { drifted: true }`.
+/// 3. `tip` holds at least as many byte-for-byte occurrences of the quote
+///    as `head` did **and** some tip occurrence sits between the same
+///    neighboring lines the anchored one sat between at `head` →
+///    `Original { drifted: false }`.
+/// 4. Otherwise → `Original { drifted: true }`. That covers both the case
+///    where an unrelated duplicate of the quote survives but the anchored
+///    one was edited away (the count shrank), and the case where the
+///    anchored occurrence was edited away while a fresh copy of the same
+///    text appeared elsewhere (the count is unchanged, and only the window
+///    sees it).
 ///
 /// Malformed head or base returns unresolved without querying the source.
 /// `tip` remains unresolved caller input, guarded by the source adapter.
@@ -739,10 +869,15 @@ pub fn resolve_change_comment(
         // also not evidence it was deleted — degrade, never guess.
         Ok(None) | Err(_) => return unresolved,
     };
-    // Count, don't `contains`: a surviving *duplicate* of the quote elsewhere
-    // in the file must not mask an edit to the occurrence that was anchored.
-    // A pure relocation preserves the count and still resolves.
-    let drifted = occurrence_count(&tip_content, quote) < occurrence_count(&head_content, quote);
+    // Occurrence *identity*, not a bare count. The count clause comes first
+    // and is retained verbatim, so nothing that reports drift today can
+    // start reporting resolved — the window clause can only ADD drift
+    // detections. It catches the case a count cannot see: one commit that
+    // edits the anchored occurrence away and introduces a fresh copy of the
+    // same text elsewhere leaves the count unchanged, yet the line the
+    // reviewer named is gone.
+    let drifted = occurrence_count(&tip_content, quote) < occurrence_count(&head_content, quote)
+        || !occurrence_survives(&head_content, &tip_content, quote, &range);
     ResolvedComment {
         resolution: Resolution::Original { range, drifted },
         quote: Some(quote.clone()),
@@ -861,11 +996,32 @@ pub fn permalink_for(head: &str, anchor: &Anchor) -> Option<Link> {
     })
 }
 
-/// Normalizes a user-supplied `--path` into a repo-relative path.
+/// Normalizes a user-supplied `--path` into a repo-relative, *linkable*
+/// path.
 ///
 /// Strips a leading `./`, and rejects an absolute path, a `..` segment, or
 /// a backslash separator — the stored path has to be repo-relative for the
 /// emitted `rdm:src/` permalink to parse.
+///
+/// It additionally rejects the two characters the
+/// `rdm:src/<path>@<rev>#L<n>` grammar reserves for itself, `@` and `#`.
+/// [`crate::link::parse`] ends the
+/// path at the *first* of either character, while [`permalink_for`]
+/// interpolates the stored path verbatim, so a path carrying one of them
+/// renders a permalink that parses back as a shorter path plus a nonsense
+/// revision. Refusal at intake is the only defensible fix: nothing in the
+/// grammar escapes them. Other punctuation the grammar does **not** reserve
+/// (`?`, `%`, spaces, multi-byte characters) is deliberately still
+/// accepted, so the rule stays minimal and explicable.
+///
+/// # Round-trip invariant
+///
+/// Every path this function returns re-parses identically through
+/// [`Link::Code`] → `to_string()` → [`crate::link::parse`]. The guarantee is
+/// forward-looking: an anchor *already stored* with a reserved character
+/// (written before this check existed, or hand-edited into a review file)
+/// is not retracted — [`permalink_for`] still renders it rather than
+/// panicking or silently truncating at render time.
 ///
 /// # Errors
 ///
@@ -873,6 +1029,9 @@ pub fn permalink_for(head: &str, anchor: &Anchor) -> Option<Link> {
 /// `"the source repository root"` when the path is not repo-relative; the
 /// caller has no better error to map it onto and the message names exactly
 /// what to fix.
+///
+/// Returns [`Error::ChangePathNotLinkable`], naming the offending
+/// character, when the normalized path contains `@` or `#`.
 pub fn normalize_source_path(path: &str) -> Result<String> {
     let trimmed = path.trim();
     let stripped = trimmed.strip_prefix("./").unwrap_or(trimmed);
@@ -884,6 +1043,14 @@ pub fn normalize_source_path(path: &str) -> Result<String> {
         return Err(Error::ChangePathNotInRevision {
             path: path.to_string(),
             rev: "the source repository root".to_string(),
+        });
+    }
+    // Checked against the NORMALIZED value, so `./a@b` is reported with the
+    // same offending character as `a@b`.
+    if let Some(delimiter) = stripped.chars().find(|c| matches!(c, '@' | '#')) {
+        return Err(Error::ChangePathNotLinkable {
+            path: stripped.to_string(),
+            delimiter,
         });
     }
     Ok(stripped.to_string())
@@ -1341,6 +1508,119 @@ mod tests {
         assert!(!drifted, "a pure relocation preserves the count");
     }
 
+    /// AC2: the case a bare occurrence count cannot see. One commit edits
+    /// the anchored occurrence away AND introduces a fresh copy of the same
+    /// text elsewhere, so the count is unchanged (1 → 1) while the line the
+    /// reviewer named is gone. The count-only implementation reports
+    /// `drifted: false`; the window rule reports drift.
+    #[test]
+    fn resolve_reports_drifted_when_the_anchored_occurrence_moved_and_a_fresh_copy_appeared() {
+        const HEAD: &str = "alpha\nbeta\nTARGET\ngamma\n";
+        let source = MemorySourceRepo::new()
+            .with_file(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "src/lib.rs",
+                HEAD,
+            )
+            .with_file(
+                "tip",
+                "src/lib.rs",
+                "alpha\nbeta\nEDITED\ngamma\ndelta\nTARGET\nepsilon\n",
+            );
+        let review = review_with(Some(Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "TARGET".to_string(),
+            occurrence: 1,
+            start_line: 3,
+            end_line: 3,
+        }));
+        let Resolution::Original { drifted, range } =
+            resolve_change_comments(&source, &review, "tip")[0]
+                .resolution
+                .clone()
+        else {
+            panic!("expected an Original resolution");
+        };
+        assert_eq!(
+            occurrence_count(
+                "alpha\nbeta\nEDITED\ngamma\ndelta\nTARGET\nepsilon\n",
+                "TARGET"
+            ),
+            occurrence_count(HEAD, "TARGET"),
+            "the fixture is only meaningful while the count is unchanged"
+        );
+        assert!(
+            drifted,
+            "an anchored occurrence edited away is drift even when a fresh copy appears elsewhere"
+        );
+        // The reported range still indexes the head-side content.
+        assert_eq!(&HEAD[range], "TARGET");
+    }
+
+    /// AC2 edge case: a quote whose line-extended span is the whole file
+    /// has no neighbor to compare against, so the window rule degenerates
+    /// and the count clause decides — never permanent drift.
+    #[test]
+    fn a_single_line_file_falls_back_to_the_count_comparison() {
+        let source = MemorySourceRepo::new()
+            .with_file(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "src/lib.rs",
+                "only",
+            )
+            .with_file("tip", "src/lib.rs", "only");
+        let review = review_with(Some(Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "only".to_string(),
+            occurrence: 1,
+            start_line: 1,
+            end_line: 1,
+        }));
+        let Resolution::Original { drifted, .. } =
+            resolve_change_comments(&source, &review, "tip")[0].resolution
+        else {
+            panic!("expected an Original resolution");
+        };
+        assert!(
+            !drifted,
+            "an unchanged single-line file must not read as drift"
+        );
+    }
+
+    /// AC2 edge case: overlapping self-similar quotes. The window walker
+    /// must enumerate the same non-overlapping population
+    /// `occurrence_count` counts, or the two halves of the disjunction
+    /// disagree.
+    #[test]
+    fn the_window_walker_uses_the_same_non_overlapping_population_as_the_count() {
+        assert_eq!(occurrence_count("aaaa", "aa"), 2);
+        let head = "x\naaaa\ny\n";
+        let range = head.find("aa").unwrap()..head.find("aa").unwrap() + 2;
+        assert!(occurrence_survives(head, head, "aa", &range));
+        // The identical line moved between different neighbors is drift.
+        assert!(!occurrence_survives(head, "p\naaaa\nq\n", "aa", &range));
+    }
+
+    /// AC2 edge case: content with no trailing newline, CRLF line endings,
+    /// and a quote ending inside a multi-byte character must all slice on
+    /// character boundaries rather than panicking.
+    #[test]
+    fn the_line_window_is_char_safe_and_line_ending_agnostic() {
+        for content in ["a\nb\ncafé", "a\r\ncafé\r\nb\r\n", "café", "\n\n", ""] {
+            for start in 0..=content.len() {
+                for end in start..=content.len() {
+                    let _ = line_window(content, &(start..end));
+                }
+            }
+        }
+        let content = "a\ncafé\nb\n";
+        let start = content.find("café").unwrap();
+        let (before, span, after) = line_window(content, &(start..start + "café".len()));
+        assert_eq!(before, Some("a"));
+        assert_eq!(span, "café");
+        assert_eq!(after, Some("b"));
+    }
+
     #[test]
     fn resolve_reports_unresolved_when_the_path_is_gone_at_the_tip() {
         let source = MemorySourceRepo::new().with_file(
@@ -1439,6 +1719,102 @@ mod tests {
                 normalize_source_path(bad).is_err(),
                 "expected {bad:?} to be rejected"
             );
+        }
+    }
+
+    /// AC1: the `rdm:src/<path>@<rev>#L<n>` grammar reserves `@` and `#`,
+    /// and nothing escapes them, so a path carrying either is refused at
+    /// intake rather than being stored as an anchor whose permalink parses
+    /// back to a different file.
+    #[test]
+    fn normalize_source_path_rejects_permalink_delimiters() {
+        for (bad, want) in [
+            ("src/a@b.rs", '@'),
+            ("src/a#L3.rs", '#'),
+            ("a@", '@'),
+            ("#x", '#'),
+            // Checked against the NORMALIZED value: the `./` prefix is
+            // stripped first, so the reported path and character are the
+            // ones a reader can act on.
+            ("./web/app/@modal/page.tsx", '@'),
+        ] {
+            let err = normalize_source_path(bad).unwrap_err();
+            let Error::ChangePathNotLinkable { delimiter, .. } = err else {
+                panic!("expected ChangePathNotLinkable for {bad:?}, got {err:?}");
+            };
+            assert_eq!(delimiter, want, "wrong delimiter reported for {bad:?}");
+            let msg = normalize_source_path(bad).unwrap_err().to_string();
+            assert!(msg.contains(want), "message must name the character: {msg}");
+            assert!(
+                msg.contains("rdm:src/<path>@<rev>#L<n>"),
+                "message must name the grammar: {msg}"
+            );
+        }
+        let msg = normalize_source_path("./web/app/@modal/page.tsx")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            msg.contains("'web/app/@modal/page.tsx'"),
+            "the normalized path, not the raw input, is what the message names: {msg}"
+        );
+    }
+
+    /// AC1: characters the grammar does NOT reserve stay accepted — the
+    /// rule is minimal, not a general punctuation ban.
+    #[test]
+    fn normalize_source_path_accepts_unreserved_punctuation() {
+        for good in [
+            "src/a?b.rs",
+            "src/a%20b.rs",
+            "dir with space/x.rs",
+            "src/café.rs",
+        ] {
+            assert!(
+                normalize_source_path(good).is_ok(),
+                "expected {good:?} to be accepted"
+            );
+        }
+    }
+
+    /// AC1: the invariant the refusal buys — every path
+    /// `normalize_source_path` accepts survives `Link::Code` →
+    /// `to_string()` → `link::parse` byte for byte.
+    #[test]
+    fn source_paths_round_trip_through_the_code_link_grammar() {
+        let head = "abc123";
+        for path in [
+            "src/lib.rs",
+            "a/b/c-d_e.rs",
+            "dir with space/x.rs",
+            "src/café.rs",
+            "src/a?b.rs",
+        ] {
+            let normalized = normalize_source_path(path).unwrap();
+            for (start_line, end_line) in [(7u32, 7u32), (4, 9)] {
+                let anchor = Anchor::FileQuote {
+                    path: normalized.clone(),
+                    quote: "q".to_string(),
+                    occurrence: 1,
+                    start_line,
+                    end_line,
+                };
+                let link = permalink_for(head, &anchor).unwrap();
+                let parsed = crate::link::parse(&link.to_string()).unwrap();
+                let Link::Code {
+                    path: got_path,
+                    rev: got_rev,
+                    lines,
+                } = parsed
+                else {
+                    panic!("expected a code link for {path:?}");
+                };
+                assert_eq!(got_path, normalized, "path did not round-trip: {path:?}");
+                assert_eq!(got_rev.as_deref(), Some(head));
+                assert_eq!(
+                    lines,
+                    Some((start_line, (end_line > start_line).then_some(end_line)))
+                );
+            }
         }
     }
 

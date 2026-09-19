@@ -388,11 +388,12 @@ fn precondition_c_refuses_a_dirty_worktree_and_names_the_paths() {
         Some(Verdict::Approve),
         ReviewState::Submitted,
     );
-    let probe = MemoryWorktreeProbe::new().with_worktree(
-        &phase_item(),
-        "/wt/gates",
-        &["src/leftover.rs", "notes.md"],
-    );
+    // The recorded head must match the observed one, or (b)'s HEAD rule —
+    // which applies to every observed checkout, dirty or clean — would
+    // refuse before (c) ever runs and this test would stop isolating (c).
+    let probe = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &["src/leftover.rs", "notes.md"])
+        .with_head(&phase_item(), &"a".repeat(40));
     let err = check_reviewed_gate(
         &store,
         PROJECT,
@@ -1010,5 +1011,372 @@ fn gate_rejects_stale_head_and_accepts_matching_later_review() {
     rdm_core::io::write_review(&mut store, PROJECT, "new", &review).unwrap();
     assert!(
         matches!(check_reviewed_gate(&store, PROJECT, &item, &gate).unwrap(), GateDecision::Satisfied { review_id, .. } if review_id == "new")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AC5 — a dismissed approval is not gate evidence
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_dismissed_approving_change_review_does_not_satisfy_precondition_b() {
+    // Dismissal closes a review *without it being acted on*, which retracts
+    // the approval as gate evidence. It is filtered out at the plan-helper
+    // layer, so it is never even a stale candidate.
+    let mut store = seed();
+    add_plan(&mut store, "plan-one", &phase_item(), PlanStatus::Approved);
+    add_change_review(
+        &mut store,
+        "2026-09-13-1000-aaaa",
+        "plan-one",
+        Some(Verdict::Approve),
+        ReviewState::Dismissed,
+    );
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(None),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::GateNoApprovedChangeReview { .. }),
+        "a dismissed approval must read as absent, got {err:?}"
+    );
+    assert!(
+        !matches!(err, Error::GateStaleChangeReview { .. }),
+        "a dismissed approval is excluded before the head comparison, got {err:?}"
+    );
+
+    // And the boundary: `addressed` deliberately still counts, so the rule
+    // is a dismissal rule, not a terminal-state rule.
+    add_change_review(
+        &mut store,
+        "2026-09-13-1001-bbbb",
+        "plan-one",
+        Some(Verdict::Approve),
+        ReviewState::Addressed,
+    );
+    let d = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(None),
+    )
+    .unwrap();
+    assert!(
+        matches!(d, GateDecision::Satisfied { ref review_id, .. } if review_id == "2026-09-13-1001-bbbb")
+    );
+}
+
+#[test]
+fn a_dismissed_request_changes_review_stays_excluded_too() {
+    let mut store = seed();
+    add_plan(&mut store, "plan-one", &phase_item(), PlanStatus::Approved);
+    add_change_review(
+        &mut store,
+        "2026-09-13-1000-aaaa",
+        "plan-one",
+        Some(Verdict::RequestChanges),
+        ReviewState::Dismissed,
+    );
+    // A draft carrying a hand-written verdict is likewise excluded.
+    add_change_review(
+        &mut store,
+        "2026-09-13-1001-bbbb",
+        "plan-one",
+        Some(Verdict::Approve),
+        ReviewState::Draft,
+    );
+    assert!(matches!(
+        check_reviewed_gate(
+            &store,
+            PROJECT,
+            &phase_item(),
+            &ReviewedGate::enforcing(None)
+        ),
+        Err(Error::GateNoApprovedChangeReview { .. })
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// AC6 — a stale approval is named as stale, on dirty and clean checkouts alike
+// ---------------------------------------------------------------------------
+
+/// A store with one approved plan and one approving change review recorded
+/// at `add_change_review`'s default head (40 × 'a').
+fn seed_with_approval() -> MemoryStore {
+    let mut store = seed();
+    add_plan(&mut store, "plan-one", &phase_item(), PlanStatus::Approved);
+    add_change_review(
+        &mut store,
+        "2026-09-13-1000-aaaa",
+        "plan-one",
+        Some(Verdict::Approve),
+        ReviewState::Submitted,
+    );
+    store
+}
+
+#[test]
+fn a_stale_approving_change_review_is_refused_as_stale_not_absent() {
+    let store = seed_with_approval();
+    let probe = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &[])
+        .with_head(&phase_item(), &"b".repeat(40));
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(Some(&probe)),
+    )
+    .unwrap_err();
+    let Error::GateStaleChangeReview {
+        ref review_id,
+        ref reviewed_head,
+        ref observed_head,
+        ..
+    } = err
+    else {
+        panic!("expected GateStaleChangeReview, got {err:?}");
+    };
+    assert_eq!(review_id, "2026-09-13-1000-aaaa");
+    assert_eq!(reviewed_head, &"a".repeat(40));
+    assert_eq!(observed_head.as_deref(), Some("b".repeat(40).as_str()));
+    assert!(
+        !matches!(err, Error::GateNoApprovedChangeReview { .. }),
+        "an existing approval must never be reported as absent"
+    );
+    let msg = err.to_string();
+    assert!(msg.contains("aaaaaaaaaaaa"), "reviewed head missing: {msg}");
+    assert!(msg.contains("bbbbbbbbbbbb"), "observed head missing: {msg}");
+    assert!(
+        msg.contains("rdm review start --on change/HEAD"),
+        "the re-review remedy is missing: {msg}"
+    );
+    assert!(
+        msg.contains("--override-gate"),
+        "the bypass remedy is missing: {msg}"
+    );
+}
+
+#[test]
+fn a_dirty_worktree_with_a_stale_review_still_reports_the_stale_refusal() {
+    // The (a) → (b) → (c) order the module documents only actually holds if
+    // the HEAD match is decoupled from cleanliness. With the old
+    // `if check.is_clean()` guard this returned GateWorktreeDirty, hiding
+    // the real cause.
+    let store = seed_with_approval();
+    let probe = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &["oops.rs"])
+        .with_head(&phase_item(), &"b".repeat(40));
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(Some(&probe)),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::GateStaleChangeReview { .. }),
+        "got {err:?}"
+    );
+    assert!(
+        !matches!(err, Error::GateWorktreeDirty { .. }),
+        "the cleanliness complaint must not hide the stale approval: {err:?}"
+    );
+}
+
+#[test]
+fn an_observed_checkout_with_no_readable_head_cannot_match_an_approval() {
+    let store = seed_with_approval();
+    for dirty in [&[][..], &["oops.rs"][..]] {
+        let probe = MemoryWorktreeProbe::new().with_worktree(&phase_item(), "/wt/gates", dirty);
+        let err = check_reviewed_gate(
+            &store,
+            PROJECT,
+            &phase_item(),
+            &ReviewedGate::enforcing(Some(&probe)),
+        )
+        .unwrap_err();
+        let Error::GateStaleChangeReview {
+            ref observed_head, ..
+        } = err
+        else {
+            panic!("expected GateStaleChangeReview for dirty={dirty:?}, got {err:?}");
+        };
+        assert_eq!(observed_head, &None);
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not be observed"),
+            "the message must say the HEAD could not be read: {msg}"
+        );
+        assert!(
+            msg.contains("rdm review start --on change/HEAD"),
+            "the re-review remedy is missing: {msg}"
+        );
+    }
+}
+
+#[test]
+fn the_decoupling_never_swallows_precondition_c() {
+    let store = seed_with_approval();
+    // Matching head, clean → satisfied.
+    let clean = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &[])
+        .with_head(&phase_item(), &"a".repeat(40));
+    assert!(matches!(
+        check_reviewed_gate(
+            &store,
+            PROJECT,
+            &phase_item(),
+            &ReviewedGate::enforcing(Some(&clean))
+        )
+        .unwrap(),
+        GateDecision::Satisfied { .. }
+    ));
+    // Matching head, DIRTY → still the cleanliness refusal.
+    let dirty = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &["oops.rs"])
+        .with_head(&phase_item(), &"a".repeat(40));
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(Some(&dirty)),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::GateWorktreeDirty { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn an_override_never_produces_a_stale_refusal() {
+    // (b) is waived entirely, so a stale approval is unreachable — including
+    // on a dirty checkout, where (c) still refuses.
+    let store = seed_with_approval();
+    let clean = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &[])
+        .with_head(&phase_item(), &"b".repeat(40));
+    assert!(matches!(
+        check_reviewed_gate(
+            &store,
+            PROJECT,
+            &phase_item(),
+            &ReviewedGate::enforcing(Some(&clean)).with_override("hotfix", "alice"),
+        )
+        .unwrap(),
+        GateDecision::Overridden(_)
+    ));
+    let dirty = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &["oops.rs"])
+        .with_head(&phase_item(), &"b".repeat(40));
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(Some(&dirty)).with_override("hotfix", "alice"),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::GateWorktreeDirty { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn a_probe_error_never_surfaces_as_a_stale_refusal() {
+    // A probe `Err` observes nothing, so (b) compares no heads and (c)
+    // reports the fail-closed unobservable refusal — AC3 and AC6 do not
+    // interact.
+    let store = seed_with_approval();
+    let probe = MemoryWorktreeProbe::new().with_error(&phase_item());
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(Some(&probe)),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::GateWorktreeUnobservable { .. }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn a_fresh_approval_wins_over_a_stale_one_across_plans() {
+    let mut store = seed();
+    add_plan(&mut store, "plan-a", &phase_item(), PlanStatus::Approved);
+    add_plan(&mut store, "plan-b", &phase_item(), PlanStatus::Approved);
+    // Stale under plan-a.
+    add_change_review(
+        &mut store,
+        "2026-09-13-1000-aaaa",
+        "plan-a",
+        Some(Verdict::Approve),
+        ReviewState::Submitted,
+    );
+    // Fresh under plan-b.
+    add_change_review(
+        &mut store,
+        "2026-09-13-1001-bbbb",
+        "plan-b",
+        Some(Verdict::Approve),
+        ReviewState::Submitted,
+    );
+    let mut fresh = rdm_core::io::load_review(&store, PROJECT, "2026-09-13-1001-bbbb").unwrap();
+    fresh.frontmatter.target = ReviewTarget::Change {
+        head: "b".repeat(40),
+        base: None,
+    };
+    rdm_core::io::write_review(&mut store, PROJECT, "2026-09-13-1001-bbbb", &fresh).unwrap();
+
+    let probe = MemoryWorktreeProbe::new()
+        .with_worktree(&phase_item(), "/wt/gates", &[])
+        .with_head(&phase_item(), &"b".repeat(40));
+    let d = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &phase_item(),
+        &ReviewedGate::enforcing(Some(&probe)),
+    )
+    .unwrap();
+    assert!(
+        matches!(d, GateDecision::Satisfied { ref review_id, .. } if review_id == "2026-09-13-1001-bbbb"),
+        "the fresh approval must win and raise no stale error: {d:?}"
+    );
+}
+
+#[test]
+fn a_task_stale_approval_reports_the_same_refusal() {
+    let mut store = seed();
+    let item = task_item("solo");
+    add_plan(&mut store, "plan-task", &item, PlanStatus::Approved);
+    add_change_review(
+        &mut store,
+        "2026-09-13-1000-aaaa",
+        "plan-task",
+        Some(Verdict::Approve),
+        ReviewState::Submitted,
+    );
+    let probe = MemoryWorktreeProbe::new()
+        .with_worktree(&item, "/wt/solo", &[])
+        .with_head(&item, &"c".repeat(40));
+    let err = check_reviewed_gate(
+        &store,
+        PROJECT,
+        &item,
+        &ReviewedGate::enforcing(Some(&probe)),
+    )
+    .unwrap_err();
+    let Error::GateStaleChangeReview { ref item, .. } = err else {
+        panic!("expected GateStaleChangeReview, got {err:?}");
+    };
+    assert!(
+        item.contains("solo"),
+        "the refusal must name the item: {err}"
     );
 }

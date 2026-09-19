@@ -23,9 +23,12 @@
 #   C  each of the gate's refusals names a remediation command
 #   D  the gate's worktree probe is built in ONE feature-split place, so the
 #      `phase update` / `task update` arms compile with `git` disabled
+#   E  every gated update wrapper's `# Errors` block enumerates every `Gate*`
+#      variant `rdm-core/src/error.rs` declares, and none of them states a
+#      hard-coded variant COUNT instead
 #
-# Sections A, B and D each carry a planted-mutation self-test proving the check
-# can fail, and a restatement that the real, unmutated tree passes.
+# Sections A, B, D and E each carry a planted-mutation self-test proving the
+# check can fail, and a restatement that the real, unmutated tree passes.
 #
 # Run after touching `rdm-core/src/ops/gate.rs`, the gated/ungated split in
 # `rdm-core/src/ops/{phase,task}.rs`, or any caller of those primitives.
@@ -215,6 +218,8 @@ for pair in \
     'GateNoApprovedPlan|rdm plan create' \
     'GateNoApprovedPlan|rdm review submit' \
     'GateNoApprovedChangeReview|rdm review start --on change/' \
+    'GateStaleChangeReview|rdm review start --on change/' \
+    'GateStaleChangeReview|--override-gate' \
     'GateWorktreeDirty|does NOT bypass this check' \
     'GateWorktreeUnobservable|does NOT bypass this check' \
     'GateOverrideEmptyReason|--override-gate requires a non-empty reason' \
@@ -226,7 +231,7 @@ for pair in \
     grep -qF -e "$want" "$ERR" ||
         fail "the $variant refusal does not contain '$want' — every refusal must name the record that is missing AND the command that creates it"
 done
-ok "each of the six gate refusals names its remediation"
+ok "each of the seven gate refusals names its remediation"
 
 # The two worktree refusals must state that an override will not help, or an
 # operator reads the refusal as a bug in the override.
@@ -302,5 +307,171 @@ ok "self-test: an inlined git-only probe construction IS caught"
 [ -z "$(scan_direct_probe "$REPO_ROOT")" ] ||
     fail "self-test failed: the real tree trips section D"
 ok "self-test: the real tree passes section D"
+
+# ---------------------------------------------------------------------------
+# Section E — every gated wrapper documents every gate refusal
+# ---------------------------------------------------------------------------
+say "Section E — the gated wrappers' \`# Errors\` blocks enumerate every Gate* variant"
+
+# `rdm-core` has `#![warn(missing_docs)]`, so every gated wrapper HAS an
+# `# Errors` block — but nothing makes it keep up with `error.rs`. The
+# omission this section exists for was real: two wrappers left
+# `GateOverrideGateDisabled` out entirely, and the third documented its
+# refusals by intra-doc pointer plus a hard-coded count ("the five gate
+# variants listed on [`update_phase_gated`]") that a later commit made false.
+# A count-bearing pointer carries no literal `Error::Gate` text at all, so a
+# grep for the variants alone would have reported that wrapper green.
+#
+# Wrappers are discovered BY SIGNATURE, never by name, and the discovered
+# count is pinned: a fourth `pub fn *_gated` must turn this section red rather
+# than be silently skipped.
+
+# gated_wrappers <root> — print "<file>:<fn name>" per gated wrapper.
+gated_wrappers() {
+    for f in "$1"/rdm-core/src/ops/*.rs; do
+        [ -f "$f" ] || continue
+        rel=${f#"$1"/}
+        sed -n 's/^pub fn \([a-z_]*_gated\)(.*/\1/p' "$f" |
+            while read -r name; do printf '%s:%s\n' "$rel" "$name"; done
+    done
+}
+
+# errors_block <file> <fn name> — print the `# Errors` section of that
+# function's doc comment (the `///` run immediately above its `pub fn` line).
+errors_block() {
+    awk -v want="$2" '
+        /^\/\/\// { buf = buf $0 "\n"; next }
+        /^#\[/    { next }
+        {
+            if ($0 ~ "^pub fn " want "\\(") { print buf; exit }
+            buf = ""
+        }
+    ' "$1" | awk '/^\/\/\/ # Errors/ { on = 1; next } on { print }'
+}
+
+# Every `Gate*` variant declared in error.rs, one per line.
+GATE_VARIANTS=$(sed -n 's/^    \(Gate[A-Za-z]*\)[ ,{].*/\1/p' "$ERR" | sort -u)
+[ -n "$GATE_VARIANTS" ] || fail "no Gate* variants found in $ERR — the scan is broken"
+
+# check_section_e <root> — print one diagnostic line per problem found.
+# Always exits 0: the findings are the output, not the status.
+check_section_e() {
+    root=$1
+    found=$(gated_wrappers "$root")
+    count=$(printf '%s' "$found" | grep -c . || true)
+    if [ "$count" -ne 3 ]; then
+        printf 'WRAPPER-COUNT %s (expected 3)\n' "$count"
+    fi
+    printf '%s\n' "$found" | while IFS=: read -r rel name; do
+        if [ -z "$name" ]; then
+            continue
+        fi
+        block=$(errors_block "$root/$rel" "$name")
+        if [ -z "$block" ]; then
+            printf 'NO-ERRORS-BLOCK %s::%s\n' "$rel" "$name"
+            continue
+        fi
+        for variant in $GATE_VARIANTS; do
+            if ! printf '%s\n' "$block" | grep -q "Error::$variant"; then
+                printf 'MISSING %s::%s %s\n' "$rel" "$name" "$variant"
+            fi
+        done
+        # A pointered or prose variant COUNT is what let "the five gate
+        # variants" go stale; the enumeration must stand on its own.
+        if printf '%s\n' "$block" |
+            grep -Eq '(three|four|five|six|seven|eight|[0-9]+) gate variants'; then
+            printf 'HARD-CODED-COUNT %s::%s\n' "$rel" "$name"
+        fi
+    done
+    return 0
+}
+
+PROBLEMS=$(check_section_e "$REPO_ROOT")
+if [ -n "$PROBLEMS" ]; then
+    fail "gated wrappers with an incomplete or stale \`# Errors\` block:
+$PROBLEMS
+
+Every \`pub fn *_gated\` must enumerate EVERY Gate* variant declared in
+rdm-core/src/error.rs, by name, in its own \`# Errors\` block — no intra-doc
+pointer, and never a hard-coded count of how many there are.
+A WRAPPER-COUNT line means a gated wrapper was added or removed: extend this
+section (and the three wrappers' docs) rather than loosening the assertion."
+fi
+ok "all 3 gated wrappers enumerate every Gate* variant, with no hard-coded counts"
+
+# Self-test E1/E2/E3: the check fails for each way a block can go stale —
+# a deleted variant in the plain wrapper, a deleted variant in the PREVIOUSLY
+# POINTERED wrapper (the sub-case a two-wrapper scope would pass vacuously),
+# and a reinstated hard-coded count.
+mkdir -p "$TMP/e-scratch/rdm-core/src/ops"
+cp "$REPO_ROOT"/rdm-core/src/ops/*.rs "$TMP/e-scratch/rdm-core/src/ops/"
+[ -z "$(check_section_e "$TMP/e-scratch")" ] ||
+    fail "self-test setup failed: an unmutated copy already trips section E"
+
+mutate_e() {
+    cp "$REPO_ROOT"/rdm-core/src/ops/*.rs "$TMP/e-scratch/rdm-core/src/ops/"
+    "$@"
+}
+
+drop_variant_from() {
+    # $1 = file, $2 = fn name, $3 = variant: blank out the variant's mention
+    # inside that function's `# Errors` block only.
+    python3 - "$1" "$2" "$3" <<'PYE'
+import re, sys
+path, name, variant = sys.argv[1], sys.argv[2], sys.argv[3]
+src = open(path).read()
+idx = src.index("\npub fn %s(" % name)
+head = src[:idx]
+start = head.rindex("/// # Errors")
+block = head[start:]
+block = block.replace("[`Error::%s`]" % variant, "[`Error::Placeholder`]", 1)
+open(path, "w").write(head[:start] + block + src[idx:])
+PYE
+}
+
+mutate_e drop_variant_from \
+    "$TMP/e-scratch/rdm-core/src/ops/phase.rs" update_phase_gated GateOverrideGateDisabled
+printf '%s\n' "$(check_section_e "$TMP/e-scratch")" |
+    grep -q 'MISSING rdm-core/src/ops/phase.rs::update_phase_gated GateOverrideGateDisabled' ||
+    fail "self-test failed: a variant deleted from update_phase_gated's block is NOT caught"
+ok "self-test: a variant missing from update_phase_gated IS caught"
+
+mutate_e drop_variant_from \
+    "$TMP/e-scratch/rdm-core/src/ops/phase.rs" update_phase_with_estimate_gated GateStaleChangeReview
+printf '%s\n' "$(check_section_e "$TMP/e-scratch")" |
+    grep -q 'MISSING rdm-core/src/ops/phase.rs::update_phase_with_estimate_gated GateStaleChangeReview' ||
+    fail "self-test failed: a variant deleted from update_phase_with_estimate_gated's block is NOT caught — the previously pointered wrapper is out of scope again"
+ok "self-test: a variant missing from update_phase_with_estimate_gated IS caught"
+
+# shellcheck disable=SC2016  # the backticks are literal rustdoc, not a subshell
+mutate_e sed -i.bak \
+    's|/// Everything \[`update_phase_with_estimate`\] returns, plus — only when `status` is|/// Everything [`update_phase_with_estimate`] returns, plus the five gate variants listed on [`update_phase_gated`], and — only when `status` is|' \
+    "$TMP/e-scratch/rdm-core/src/ops/phase.rs"
+rm -f "$TMP/e-scratch/rdm-core/src/ops/phase.rs.bak"
+printf '%s\n' "$(check_section_e "$TMP/e-scratch")" |
+    grep -q 'HARD-CODED-COUNT rdm-core/src/ops/phase.rs::update_phase_with_estimate_gated' ||
+    fail "self-test failed: a reinstated hard-coded variant count is NOT caught"
+ok "self-test: a reinstated hard-coded variant count IS caught"
+
+# Self-test E4: a FOURTH gated wrapper reddens the count check rather than
+# being silently skipped.
+mutate_e true
+cat >>"$TMP/e-scratch/rdm-core/src/ops/task.rs" <<'EOS'
+
+/// A fourth gated wrapper, planted by the harness self-test.
+///
+/// # Errors
+///
+/// Nothing documented on purpose.
+pub fn update_something_else_gated() {}
+EOS
+printf '%s\n' "$(check_section_e "$TMP/e-scratch")" | grep -q 'WRAPPER-COUNT 4' ||
+    fail "self-test failed: a fourth gated wrapper does not trip the count assertion, so section E can be silently outgrown"
+ok "self-test: a fourth gated wrapper trips the count assertion"
+
+# Self-test E5: and the real, unmutated tree still passes the same check.
+[ -z "$(check_section_e "$REPO_ROOT")" ] ||
+    fail "self-test failed: the real tree trips section E"
+ok "self-test: the real tree passes section E"
 
 say "All sections passed."

@@ -1271,7 +1271,9 @@ pub(crate) enum ReviewCommand {
         #[arg(long)]
         quote: Option<String>,
         /// On a `change/` review: the source-repo-relative path of the file
-        /// the quote lives in.
+        /// the quote lives in. A path containing `@` or `#` is refused —
+        /// the `rdm:src/<path>@<rev>#L<n>` permalink grammar reserves both,
+        /// so the derived link would not resolve back to the file.
         #[arg(long, requires = "quote")]
         path: Option<String>,
         /// Which occurrence of `--quote` to anchor to (1-based), when the

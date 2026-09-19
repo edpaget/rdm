@@ -710,6 +710,70 @@ fn change_comment_requires_path_and_rejects_a_missing_file() {
     assert!(j["comments"][0]["anchor"].is_null());
 }
 
+/// AC1 end-to-end: a `--path` carrying one of the `rdm:src/` permalink
+/// grammar's own delimiters is refused at the binary boundary, naming the
+/// character, and writes no comment — so no anchor can be stored whose
+/// permalink parses back to a different file.
+#[test]
+fn change_comment_rejects_a_path_carrying_a_permalink_delimiter() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+
+    for (path, delimiter) in [("src/a@b.rs", "@"), ("src/a#L3.rs", "#")] {
+        let out = rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .args([
+                "review",
+                "comment",
+                &id,
+                "--path",
+                path,
+                "--quote",
+                "fn two_renamed() {}",
+                "--body",
+                "x",
+                "--no-edit",
+                "--project",
+                "demo",
+            ])
+            .current_dir(src.path())
+            .assert()
+            .failure()
+            .get_output()
+            .stderr
+            .clone();
+        let err = String::from_utf8_lossy(&out).to_string();
+        assert!(
+            err.contains(delimiter),
+            "the refusal must name the offending character: {err}"
+        );
+        assert!(
+            err.contains("rdm:src/<path>@<rev>#L<n>"),
+            "the refusal must name the grammar that reserves it: {err}"
+        );
+        assert!(
+            !err.contains("does not exist at"),
+            "the refusal must not assert the false cause: {err}"
+        );
+    }
+
+    // Nothing was written.
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(
+        j["comments"].as_array().map_or(0, Vec::len),
+        0,
+        "a refused --path must leave the review untouched"
+    );
+}
+
 // --- directory/submodule anchors are rejected, never silently anchored ---
 
 /// A source repo with `sub/{a,b,c,d,e}.txt`, whose `topic` branch edits line

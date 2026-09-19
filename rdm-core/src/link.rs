@@ -198,7 +198,11 @@ pub fn parse(uri: &str) -> Result<Link, LinkParseError> {
 /// Parses the `<path>[@<rev>][#fragment]` remainder of an `rdm:src/` URI.
 fn parse_code(uri: &str, rest: &str) -> Result<Link, LinkParseError> {
     // Path is everything up to the first of `@` or `#`; whichever comes
-    // first ends it.
+    // first ends it. Nothing in the grammar escapes either character, so
+    // the intake guard is what keeps this lossless:
+    // `rdm_core::change::normalize_source_path` refuses a `--path`
+    // carrying one, which is the only writer of the anchors
+    // `change::permalink_for` renders into this form.
     let split_at = rest.find(['@', '#']).unwrap_or(rest.len());
     let path = &rest[..split_at];
     let after_path = &rest[split_at..];

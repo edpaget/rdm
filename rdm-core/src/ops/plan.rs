@@ -414,13 +414,23 @@ pub fn change_reviews_for_plan(
 /// `plan/<slug>`, in review-id order.
 ///
 /// [`change_reviews_for_plan`] narrowed to reviews carrying
-/// [`Verdict::Approve`](crate::model::Verdict::Approve) that have actually
-/// been submitted. A draft never carries a verdict, so the state filter only
-/// matters as belt-and-braces; an `addressed` or `dismissed` review that *was*
-/// submitted with `approve` still counts, because the approval happened.
+/// [`Verdict::Approve`](crate::model::Verdict::Approve) whose state is
+/// `submitted` or `addressed`.
+///
+/// The state filter is an **allowlist**, not a `!= draft` denylist, for two
+/// reasons. A `dismissed` review is closed *without having been acted on*,
+/// which retracts its approval as gate evidence — an approval someone
+/// deliberately threw away must not keep satisfying the gate — while
+/// `addressed` means the approval stood and its comments were worked, so it
+/// still counts. And an allowlist fails closed: a future
+/// [`ReviewState`](crate::model::ReviewState) variant is excluded until
+/// someone decides it should count, rather than silently counting.
 ///
 /// This is the record precondition (b) of the `reviewed` transition gate —
-/// see [`crate::ops::gate::check_reviewed_gate`].
+/// see [`crate::ops::gate::check_reviewed_gate`] — and its only caller. A
+/// *plan's* own status is derived independently, at submit time, from the
+/// verdict of the review targeting it ([`set_plan_status`]), so tightening
+/// this filter does not move any plan status.
 ///
 /// # Errors
 ///
@@ -434,7 +444,10 @@ pub fn approving_change_reviews_for_plan(
         .into_iter()
         .filter(|(_, doc)| {
             doc.frontmatter.verdict == Some(crate::model::Verdict::Approve)
-                && doc.frontmatter.state != crate::model::ReviewState::Draft
+                && matches!(
+                    doc.frontmatter.state,
+                    crate::model::ReviewState::Submitted | crate::model::ReviewState::Addressed
+                )
         })
         .collect())
 }

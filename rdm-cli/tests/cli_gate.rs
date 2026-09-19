@@ -339,10 +339,28 @@ fn reviewed_gate_refuses_each_precondition_then_succeeds() {
         "rung 3 must say an override will not help: {err}"
     );
 
-    // Rung 4: committing repairs moves HEAD; the old review cannot approve it.
+    // Rung 4: committing repairs moves HEAD; the old review cannot approve
+    // it — and the refusal names the staleness rather than reporting the
+    // approval as absent.
     git(&wt, &["add", "."]);
     git(&wt, &["commit", "-m", "scratch"]);
-    mark_reviewed(plan.path(), &wt, &[]).failure();
+    let err = stderr_of(mark_reviewed(plan.path(), &wt, &[]).failure());
+    assert!(
+        err.contains("was recorded at HEAD"),
+        "rung 4 must name the head mismatch: {err}"
+    );
+    assert!(
+        err.contains(&change_id),
+        "rung 4 must name the stale review: {err}"
+    );
+    assert!(
+        err.contains("rdm review start --on change/HEAD"),
+        "rung 4 remediation: {err}"
+    );
+    assert!(
+        !err.contains("no approving change review"),
+        "rung 4 must not report an existing approval as absent: {err}"
+    );
     let current_review = start_review(
         plan.path(),
         Some(&wt),
@@ -352,6 +370,70 @@ fn reviewed_gate_refuses_each_precondition_then_succeeds() {
     submit_approve(plan.path(), &current_review);
     mark_reviewed(plan.path(), &wt, &[]).success();
     assert_eq!(phase_json(plan.path())["status"], "reviewed");
+}
+
+/// AC5 at the binary boundary: an approval that was *dismissed* no longer
+/// satisfies precondition (b), and the refusal reads as "absent" (the
+/// review was withdrawn as evidence), not as "stale".
+#[test]
+fn a_dismissed_approval_no_longer_lets_reviewed_through() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let wt = add_worktree(plan.path(), src.path());
+    create_approved_plan(plan.path(), "design-plan", "phase/auth/phase-1-design");
+    let change_id = start_review(
+        plan.path(),
+        Some(&wt),
+        "change/HEAD",
+        &["--implements", "plan/design-plan"],
+    );
+    submit_approve(plan.path(), &change_id);
+    // While it stands, the write is allowed.
+    mark_reviewed(plan.path(), &wt, &[]).success();
+    assert_eq!(phase_json(plan.path())["status"], "reviewed");
+
+    // Dismiss it and go back to needs-review: the same write is now refused.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &change_id,
+            "--state",
+            "dismissed",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-design",
+            "--status",
+            "needs-review",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .current_dir(&wt)
+        .assert()
+        .success();
+    let err = stderr_of(mark_reviewed(plan.path(), &wt, &[]).failure());
+    assert!(
+        err.contains("no approving change review"),
+        "a dismissed approval must read as absent: {err}"
+    );
+    assert!(
+        !err.contains("was recorded at HEAD"),
+        "a dismissed approval is never a stale candidate: {err}"
+    );
 }
 
 #[test]

@@ -249,11 +249,17 @@ pub fn update_phase(
 /// # Errors
 ///
 /// Everything [`update_phase`] returns, plus — only when `status` is
-/// `Some(`[`PhaseStatus::Reviewed`]`)` and the gate is enforcing —
+/// `Some(`[`PhaseStatus::Reviewed`]`)` and the gate is **enforcing** —
 /// [`Error::GateNoApprovedPlan`], [`Error::GateNoApprovedChangeReview`],
-/// [`Error::GateWorktreeDirty`], [`Error::GateWorktreeUnobservable`], and
-/// [`Error::GateOverrideEmptyReason`]. See
-/// [`check_reviewed_gate`](crate::ops::gate::check_reviewed_gate).
+/// [`Error::GateStaleChangeReview`], [`Error::GateWorktreeDirty`],
+/// [`Error::GateWorktreeUnobservable`] and
+/// [`Error::GateOverrideEmptyReason`].
+///
+/// Independently of that, [`Error::GateOverrideGateDisabled`] is returned
+/// whenever an override is supplied while the gate is **not** enforcing —
+/// a bypass of a gate that is not running is refused, never honored as a
+/// silent no-op. See
+/// [`crate::ops::gate::check_reviewed_gate`].
 #[allow(clippy::too_many_arguments)]
 pub fn update_phase_gated(
     store: &mut impl Store,
@@ -490,8 +496,18 @@ pub fn update_phase_with_estimate(
 ///
 /// # Errors
 ///
-/// Everything [`update_phase_with_estimate`] returns, plus the five gate
-/// variants listed on [`update_phase_gated`].
+/// Everything [`update_phase_with_estimate`] returns, plus — only when `status` is
+/// `Some(`[`PhaseStatus::Reviewed`]`)` and the gate is **enforcing** —
+/// [`Error::GateNoApprovedPlan`], [`Error::GateNoApprovedChangeReview`],
+/// [`Error::GateStaleChangeReview`], [`Error::GateWorktreeDirty`],
+/// [`Error::GateWorktreeUnobservable`] and
+/// [`Error::GateOverrideEmptyReason`].
+///
+/// Independently of that, [`Error::GateOverrideGateDisabled`] is returned
+/// whenever an override is supplied while the gate is **not** enforcing —
+/// a bypass of a gate that is not running is refused, never honored as a
+/// silent no-op. See
+/// [`crate::ops::gate::check_reviewed_gate`].
 #[allow(clippy::too_many_arguments)]
 pub fn update_phase_with_estimate_gated(
     store: &mut impl Store,

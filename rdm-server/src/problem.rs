@@ -98,8 +98,13 @@ impl From<&Error> for ProblemDetail {
             // detail names the record that would fix it.
             Error::GateNoApprovedPlan(_)
             | Error::GateNoApprovedChangeReview { .. }
+            | Error::GateStaleChangeReview { .. }
             | Error::GateWorktreeDirty { .. }
-            | Error::GateWorktreeUnobservable { .. } => ProblemDetail {
+            | Error::GateWorktreeUnobservable { .. }
+            // Conflict-shaped for the same reason: the request is
+            // well-formed, but the repository/probe state contradicts it.
+            | Error::ReviewSourceItemMismatch { .. }
+            | Error::ReviewSourceBranchChanged { .. } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Conflict".to_string(),
                 status: 409,
@@ -117,6 +122,7 @@ impl From<&Error> for ProblemDetail {
             | Error::ReviewImplementsAmbiguous { .. }
             | Error::ChangeTargetHasNoDocument(_)
             | Error::ChangePathNotInRevision { .. }
+            | Error::ChangePathNotLinkable { .. }
             | Error::ChangePathNotAFile { .. }
             | Error::InvalidChangeRevisionInput(_)
             | Error::ChangeRevisionNotFound(_)

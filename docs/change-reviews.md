@@ -62,6 +62,17 @@ a "nearest hunk" that does not exist reads nonsensically.
 Duplicate occurrences reuse the existing `--occurrence <n>` vocabulary, not a
 second one.
 
+A `--path` containing `@` or `#` is **refused**. Those are the two characters
+the `rdm:src/<path>@<rev>#L<n>` permalink grammar reserves for itself, and
+nothing escapes them, so an anchor stored on such a path would render a
+permalink that parses back as a shorter path plus a nonsense revision. The
+refusal names the offending character. The rule is deliberately minimal:
+characters the grammar does not reserve (`?`, `%`, spaces, multi-byte names)
+are still accepted. The guarantee it buys is forward-looking — every path the
+validator accepts round-trips through `Link::Code` → `to_string()` →
+`link::parse` — and it does not retract anchors stored before the check
+existed, which still render rather than failing.
+
 The stored anchor is:
 
 ```yaml
@@ -109,17 +120,37 @@ The resolution states:
 
 | state | meaning |
 |---|---|
-| `resolved` | the path exists at the tip and every occurrence the quote had at `head` survives byte-for-byte |
-| `drifted` | the path exists at the tip but holds fewer occurrences of the quoted text than `head` did |
+| `resolved` | the path exists at the tip, it holds at least as many occurrences of the quote as `head` did, **and** one of them still sits between the same neighbouring lines the anchored occurrence sat between at `head` |
+| `drifted` | the path exists at the tip but one of those two conditions fails |
 | `unresolved` | the path is gone at the tip (or the comment has no anchor) |
 
-The test is *occurrence count*, not position: code that merely moved within
-the file keeps its count and still reads as resolved, because the reviewer's
-words are still true of it. Counting rather than a plain substring search is
-what keeps a duplicated quote honest — when a file holds the same text twice
-and the author edits exactly the occurrence the reviewer anchored to, the
-surviving other copy would satisfy a `contains` check and the comment would
-read "still true" although the line it named is gone.
+The test is *occurrence identity* — neither a plain substring search nor a
+bare count. It is a two-clause disjunction, evaluated in this order:
+
+1. **Count.** When a file holds the same text twice and the author edits
+   exactly the occurrence the reviewer anchored to, the surviving other copy
+   would satisfy a `contains` check and the comment would read "still true"
+   although the line it named is gone. Requiring the tip to retain at least
+   as many occurrences as `head` had reports that as drift.
+2. **Line window.** A count alone is still fooled by a single commit that
+   edits the anchored occurrence away *and* adds a fresh copy of the same
+   text elsewhere: the count is unchanged, yet the anchor is genuinely
+   drifted. So the tip must also hold an occurrence whose immediately
+   neighbouring lines are the ones the anchored occurrence sat between at
+   `head`.
+
+The window is neighbour-based rather than positional, so code that merely
+*moved with its neighbours* still reads as resolved — the reviewer's words
+are still true of it. Neighbours that do not exist head-side (the quote is at
+the start or end of the file) are not compared, and a quote whose
+line-extended span is the whole file degenerates to the count clause alone
+rather than reporting permanent drift. The anchored occurrence's own line is
+not compared byte for byte either: it already carries the quote, so an edit
+*beside* the quote on the same line — a trailing comment, say — is not drift.
+
+Because clause 1 is the first term and is unchanged, clause 2 can only ever
+*add* drift detections: no anchor that a pure count reports as drifted can
+start reporting resolved.
 
 The reported byte range always indexes the **head-side** content, matching
 `Resolution::Original`'s "the body the reviewer saw" contract.

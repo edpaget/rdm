@@ -187,13 +187,22 @@ pub trait WorktreeProbe {
     ///
     /// `Ok(None)` is a *benign* miss — rdm manages no worktree for this item,
     /// which is the "if `rdm worktree` knows one" escape clause the gate's
-    /// worktree precondition carries. [`Err`] is reserved for a genuine tool
-    /// failure (git missing, the repo unreadable); the gate treats it as a
-    /// refusal, never as a clean worktree.
+    /// worktree precondition carries. [`Err`] never means "no worktree"; the
+    /// gate treats every error as a refusal, never as a clean worktree.
     ///
     /// # Errors
     ///
-    /// Returns an error only when the repository cannot be queried at all.
+    /// Returns [`crate::error::Error::Git`] when the repository cannot be
+    /// queried at all (git missing, the repo unreadable, a failing
+    /// `git status`) — that variant is reserved for exactly that condition.
+    ///
+    /// Returns [`crate::error::Error::ReviewSourceItemMismatch`] when the
+    /// probe is bound to one item and asked about another (a caller bug),
+    /// and [`crate::error::Error::ReviewSourceBranchChanged`] when the
+    /// registered checkout has been switched off the branch it was
+    /// registered on. Both are caller- or operator-visible conditions, not
+    /// query failures, which is why they are matchable apart from
+    /// [`crate::error::Error::Git`].
     fn worktree_for(&self, item: &ItemRef) -> Result<Option<WorktreeCheck>>;
 
     /// Reads a registered source checkout and its committed range.

@@ -30,7 +30,7 @@ refuse unless all three hold:
 | | Precondition | Refusal |
 |---|---|---|
 | (a) | An `approved` implementation plan `implements` this item | `Error::GateNoApprovedPlan` |
-| (b) | A `change/` review with verdict `approve` records `implements` pointing at that plan and matches the observed checkout HEAD | `Error::GateNoApprovedChangeReview` |
+| (b) | A `submitted` or `addressed` `change/` review with verdict `approve` records `implements` pointing at that plan, and matches the observed checkout's HEAD | `Error::GateNoApprovedChangeReview` (none exists) / `Error::GateStaleChangeReview` (one exists at a different HEAD) |
 | (c) | The item's worktree, if `rdm worktree` knows one, has a clean `git status --porcelain` | `Error::GateWorktreeDirty` |
 
 Each refusal names the missing record **and** the command that would create it.
@@ -47,13 +47,39 @@ told to write a new plan rather than chasing a change review on a dead one.
 
 ### What counts for (b)
 
-A change review counts when `verdict == Approve` **and** `state != Draft`. A
-draft never carries a verdict. An `addressed` or `dismissed` review that *was*
-submitted with `approve` still counts — the approval happened, and closing the
-review afterwards does not un-happen it. When a source checkout is
-observable, its full HEAD must equal the review's pinned head. A missing or stale
-head cannot approve. The gate searches all approving records for a matching one,
-so an older stale review does not hide a later matching review.
+A change review counts when `verdict == Approve` **and** its state is
+`submitted` or `addressed` — an allowlist, not a `!= draft` denylist. A draft
+never carries a verdict. `addressed` still counts: the approval stood and its
+comments were worked. `dismissed` does **not**: dismissal closes a review
+without it being acted on, which retracts the approval as gate evidence. The
+allowlist form also fails closed, so a future `ReviewState` variant is
+excluded until someone decides it should count. (This is a tightening. An
+item already marked `reviewed` on the strength of a dismissed approval keeps
+that status — the gate is write-time only — but the next `reviewed` write can
+now refuse.)
+
+**HEAD freshness applies to every observed checkout, dirty or clean.** When
+the probe observes a checkout at all, the approving review's recorded head
+must equal that checkout's HEAD; a checkout whose HEAD cannot be read matches
+nothing. The comparison is skipped only when *nothing* was observed: no probe
+was supplied, the probe errored, or rdm manages no worktree for the item.
+
+Decoupling that check from cleanliness moves only **which** refusal is
+reported, never which writes are accepted: every observed-but-not-clean
+checkout already fails (c). What it buys is that the documented (a) → (b) →
+(c) order actually holds — a dirty worktree whose approval is stale now
+surfaces the stale refusal instead of a cleanliness complaint that hides the
+real cause.
+
+An approving review that fails *only* the HEAD match is reported as
+`Error::GateStaleChangeReview`, naming both abbreviated SHAs, the review id
+and the re-review command — not as `GateNoApprovedChangeReview`, whose
+message would tell the operator to create a review that already exists. A
+dismissed approval is filtered out before the HEAD comparison, so it is never
+a stale candidate; it reads as absent. The gate searches all approving
+records for a matching one, so an older stale review does not hide a later
+matching review, and the stale candidate reported is deterministic (reviews
+are id-sorted).
 
 Several approved plans can implement one item. (a) is satisfied by any of them;
 (b) must find an approving review naming the **same** plan. When it finds none,
@@ -85,7 +111,14 @@ Three distinct cases, and the distinction is load-bearing:
   the "if `rdm worktree` knows one" escape clause. (c) is skipped.
 - **Probe returns `Err`, or returns output rdm cannot parse** —
   `Error::GateWorktreeUnobservable`. **An unobservable worktree is never a
-  clean one.**
+  clean one.** Every probe error becomes this, including the probe's two
+  caller-visible refusals (`Error::ReviewSourceItemMismatch` when a bound
+  probe is asked about a different item, `Error::ReviewSourceBranchChanged`
+  when a registered checkout moved off its branch); they are matchable apart
+  from `Error::Git` — which now means only "the repository cannot be queried"
+  — and their text lands in the refusal's `cause`. Because a probe `Err`
+  observes nothing, it short-circuits (b)'s HEAD comparison and can never
+  surface as a stale refusal.
 
 Running `rdm phase update --status reviewed` from a cwd that is not a distinct
 project repo degrades to no probe, and therefore skips (c). That is a
@@ -266,6 +299,17 @@ so a new one cannot hide), that every user-facing status-write surface uses a
 `_gated` entry, and that each refusal names a remediation — each half behind a
 planted-mutation self-test, and the two interlocking so a downgraded `_gated`
 call trips both.
+
+Its Section E holds the documentation half of the same boundary. All **three**
+gated wrappers — `update_phase_gated`, `update_phase_with_estimate_gated` and
+`update_task_gated` — must enumerate every `Gate*` variant `rdm-core/src/error.rs`
+declares, by name, in their own `# Errors` block. No block may delegate by
+intra-doc pointer with a hard-coded count ("plus the five gate variants listed
+on …"), which is exactly how one of them went stale: it carried no literal
+`Error::Gate` text, so a variant grep reported it green while the count it
+stated had become false. Wrappers are discovered by signature
+(`pub fn [a-z_]*_gated(`) and the discovered count is pinned at three, so a
+fourth wrapper reddens the section instead of being silently skipped.
 
 **Follow-up (deferred):** rename the ungated primitives to `*_unchecked` once
 the 142 test call sites can be swept as a standalone mechanical commit rather
