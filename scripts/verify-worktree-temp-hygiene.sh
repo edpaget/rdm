@@ -48,8 +48,19 @@ fail() {
 ok() { printf '\033[1;32m[ OK ]\033[0m %s\n' "$*"; }
 
 # The suites that create real worktrees. Keep in sync with the fixtures listed
-# in the header.
+# in the header. Deliberately both whole crates rather than a list of test
+# binaries: section 1 is a leak COUNT, and its sensitivity is exactly the
+# number of worktree-creating fixtures it runs, so a net that has to be edited
+# whenever a fixture is added is a net that silently stops catching things.
 SUITES="-p rdm-git -p rdm-cli"
+
+# Section 1b's planted mutation lives in rdm-git/tests/worktree.rs, an
+# integration-test target of rdm-git that nothing else depends on, so only
+# rdm-git's own suites can leak because of it. Scoping the mutant run keeps the
+# self-test measuring the same thing while sparing a relink of rdm-cli's ~37
+# test binaries (which the mutation and the restore would otherwise force
+# twice).
+MUTANT_SUITES="-p rdm-git"
 
 # Counts `*__worktrees` directories directly inside $1.
 count_leaks() {
@@ -63,9 +74,10 @@ count_leaks() {
 # the fixtures' TempDirs AND any leaked sibling land in our scratch dir.
 leak_delta_for_a_run() {
     scratch=$1
+    suites=$2
     mkdir -p "$scratch"
     # shellcheck disable=SC2086
-    TMPDIR="$scratch" cargo nextest run $SUITES >"$TMP/nextest.log" 2>&1 || {
+    TMPDIR="$scratch" cargo nextest run $suites >"$TMP/nextest.log" 2>&1 || {
         sed -n '$p' "$TMP/nextest.log" >&2
         fail "the worktree test suites did not pass — fix them before judging leakage"
     }
@@ -79,7 +91,7 @@ cd "$REPO_ROOT"
 # ---------------------------------------------------------------------------
 say "1. a full run of the worktree suites leaves no worktree in TMPDIR"
 
-LEAKED=$(leak_delta_for_a_run "$TMP/scratch-clean")
+LEAKED=$(leak_delta_for_a_run "$TMP/scratch-clean" "$SUITES")
 if [ "$LEAKED" -ne 0 ]; then
     find "$TMP/scratch-clean" -maxdepth 2 -name '*__worktrees' | head -5 >&2
     fail "1: $LEAKED leaked '*__worktrees' director(ies) in TMPDIR after the run.
@@ -129,19 +141,26 @@ open(p, "w").write(s.replace(old, new))
 PY
 python3 "$TMP/mutate.py" "$REPO_ROOT/$FIXTURE" || fail "1b: could not plant the mutation"
 
-MUT_LEAKED=$(leak_delta_for_a_run "$TMP/scratch-mutant")
+MUT_LEAKED=$(leak_delta_for_a_run "$TMP/scratch-mutant" "$MUTANT_SUITES")
 restore_fixture
 
 if [ "$MUT_LEAKED" -eq 0 ]; then
     fail "1b: the planted TempDir-rooted fixture leaked NOTHING, so section 1 is
 vacuous — it would stay green through a real regression. Check that the suites
-in \$SUITES actually exercise $FIXTURE's init_project_repo."
+in \$MUTANT_SUITES actually exercise $FIXTURE's init_project_repo."
 fi
 ok "1b: the planted regression leaked $MUT_LEAKED director(ies) — section 1 is load-bearing"
 
-# Restated on the real tree, so a passing run is never the mutant's.
-LEAKED_AGAIN=$(leak_delta_for_a_run "$TMP/scratch-restored")
-[ "$LEAKED_AGAIN" -eq 0 ] || fail "1b: the restored tree still leaks $LEAKED_AGAIN — restore failed"
-ok "1b: restored tree leaks nothing again"
+# Section 1 ran BEFORE the mutation was planted, so its green is already the
+# real tree's and can never be the mutant's — the ordering, not a restatement,
+# is what guarantees that. What still has to be proved is that the restore put
+# the fixture back exactly, so the mutation cannot survive into the rest of the
+# CI run; `cmp` proves that directly, where a third full suite run (plus the
+# rebuild the restore forces) would only prove it by inference.
+cmp -s "$TMP/fixture.bak" "$REPO_ROOT/$FIXTURE" ||
+    fail "1b: $FIXTURE was NOT restored byte-for-byte after the planted mutation —
+the mutant fixture is still on disk. Restore it from git before running anything
+else: git checkout -- $FIXTURE"
+ok "1b: the planted mutation was restored byte-for-byte"
 
 printf '\n\033[1;32mAll worktree temp-hygiene checks passed.\033[0m\n'

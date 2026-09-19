@@ -92,6 +92,56 @@ owned by phases 9–13; phase 13's two tasks
 membership differs, and the discrepancy is recorded in the ledger rather than
 resolved by padding or trimming to fit the number.
 
+## The verification gate's own ceiling
+
+The closeout's CI-authoritative matrix (AC4) runs the project's one declared
+verification command — the `dispatch.verify` chain — and that command is also
+what `rdm-wf-dispatch-phase`'s phase-time gate runs, through a Bash-executing
+agent. The agent's Bash tool caps a single call at **600 seconds**. Measured in
+this worktree, warm, on a clean tree:
+
+| Head | Declared command | Margin under 600s |
+|---|---|---|
+| `032814b` (before) | 685 s / 678 s (two runs) | none — over the cap |
+| after the repair below | 562 s | 38 s |
+
+At `032814b` the command could not complete inside one call at all: the gate's
+run was cut off mid-`node --test`, before `cargo deny check` started, and a
+truncated run is reported as a non-zero exit. The command itself was green —
+a full foreground run at `032814b` exited 0 — so the gate was failing on
+duration, not on a check.
+
+Two harnesses this branch added accounted for 221 s, 47 % of the whole
+`scripts/verify-*.sh` glob, almost all of it repeated work rather than
+coverage:
+
+- `verify-git-config-isolation.sh` (143 s) ran the implicated suites four
+  times and then re-ran the *entire* `verify-worktree-temp-hygiene.sh` — its
+  planted-mutation self-test included — to measure one number under a hostile
+  git config. It also let nextest build every test target in the workspace to
+  execute tests from two crates, and rebuilt all of it for the mutation.
+- `verify-worktree-temp-hygiene.sh` (78 s) ran the full `rdm-git` + `rdm-cli`
+  suites three times, and rebuilt `rdm-cli`'s ~37 test binaries twice for a
+  mutation confined to one `rdm-git` integration-test target.
+
+The repair removes the repetition without removing an assertion: the package
+scope is narrowed to what `$FILTER` already selects, the mutant run is scoped
+to the crate its mutation lives in, the hostile-environment leak count is read
+off the hostile run section 1 already performs (with a non-vacuity floor
+requiring those fixtures to have actually run), and each harness's trailing
+post-restore suite re-run is replaced by a `cmp` proof that the restore was
+byte-exact — the "a passing run is never the mutant's" guarantee comes from
+section 1 running *before* the mutation, not from restating it afterwards. The
+two harnesses now cost 59 s warm.
+
+**This is a reprieve, not a fix.** 562 s leaves 6 % of headroom against a hard
+600 s ceiling, and `docs/verify-gate.md` § 4 deliberately makes this command
+the home for slow, once-per-phase verification — so it will grow again. The
+structural problem (a gate whose declared command has no headroom under the
+cap its own runner imposes) is filed as
+[`verify-gate-command-exceeds-bash-timeout`](rdm:task/verify-gate-command-exceeds-bash-timeout)
+and is a dependency of any future phase that adds to the glob.
+
 ## What this document is not
 
 It is not an approval. Phase 4 stays `blocked` until its own gate is satisfied,

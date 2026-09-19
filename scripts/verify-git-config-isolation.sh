@@ -29,9 +29,14 @@
 #   1b planted-mutation self-test: stripping the GIT_CONFIG_GLOBAL/SYSTEM
 #      isolation lines from BOTH git_test_support.rs copies makes the hostile
 #      run diverge from the clean one
-#   2  a trailing re-run of scripts/verify-worktree-temp-hygiene.sh, so the
-#      temp-hygiene guarantees from `c647ab0` are confirmed leak-free under a
-#      hostile environment too, not only a clean one
+#   2  the temp-hygiene guarantee from `c647ab0` — no `*__worktrees` directory
+#      escapes into TMPDIR — re-measured under the hostile environment, read
+#      off section 1's OWN hostile run rather than by re-running
+#      scripts/verify-worktree-temp-hygiene.sh. Section 1 already executes
+#      every worktree-creating suite with TMPDIR redirected at a scratch
+#      directory this script owns, so the leak count is a `find` over a
+#      directory that already exists; spawning the other harness again would
+#      re-plant its self-test and re-run its suites to measure the same number.
 #
 # This script never opens the invoking developer's real `~/.gitconfig` or
 # `/etc/gitconfig` — `HOME` and `GIT_CONFIG_SYSTEM` are both redirected at a
@@ -83,6 +88,14 @@ cd "$REPO_ROOT"
 # diff.relative/worktree-hygiene scope.
 FILTER='(package(rdm-git) and not test(/^tests::/)) or (package(rdm-cli) and (binary(cli_worktree) or binary(cli_gate) or binary(cli_verify) or binary(cli_review_change)))'
 
+# Every run below is additionally scoped with `-p rdm-git -p rdm-cli`. `-E`
+# selects which tests RUN; it does not narrow what nextest BUILDS, so without
+# the package scope these runs compile every test target in the workspace
+# (rdm-server, rdm-tui, rdm-core...) in order to execute tests from two crates
+# — and the planted mutation in 1b makes that whole set rebuild. $FILTER names
+# no package outside these two, so the scope changes nothing about which tests
+# run, only how much is built to run them.
+
 # Builds a fresh scratch HOME containing a hostile ~/.gitconfig, plus a
 # separate hostile file for GIT_CONFIG_SYSTEM. Both are deliberately never
 # the real ~/.gitconfig or /etc/gitconfig.
@@ -128,35 +141,13 @@ EOF
 EOF
 }
 
-# A milder hostile environment for section 2 below: `build_hostile_env`
-# minus `commit.gpgsign` AND `init.defaultBranch` (which several unrelated
-# `rdm bootstrap` fixtures assume is left at "main" when they don't pass
-# `-b main` explicitly). Section 2 re-runs
-# `verify-worktree-temp-hygiene.sh`'s own unscoped `-p rdm-git -p rdm-cli`
-# suites (every fixture in both crates, not just the ones this phase
-# isolates) purely to confirm the worktree-leak count stays zero under a
-# hostile config — a filesystem check unrelated to either setting. Reusing
-# the full hostile env there would fail the ~30 OTHER, unrelated `cli_*.rs`
-# fixtures this phase deliberately leaves untouched (see AC4), which would
-# only prove those files are out of scope, not that leak counting is broken.
-build_benign_hostile_env() {
-    scratch=$1
-    mkdir -p "$scratch/home"
-    cat >"$scratch/home/.gitconfig" <<'EOF'
-[user]
-	name = Hostile Developer
-	email = hostile@example.com
-[diff]
-	relative = true
-[advice]
-	detachedHead = true
-[core]
-	pager = false
-EOF
-    cat >"$scratch/system-gitconfig" <<'EOF'
-[diff]
-	relative = true
-EOF
+# Counts `*__worktrees` directories directly inside $1 — the same measure
+# scripts/verify-worktree-temp-hygiene.sh makes, applied to the scratch TMPDIR
+# a run below already used. `rdm_git::worktree::add` places a worktree as a
+# SIBLING of the repo root, so a fixture rooted at its own TempDir puts that
+# sibling in TMPDIR, where TempDir::drop never reaches it.
+count_leaks() {
+    find "$1" -maxdepth 1 -name '*__worktrees' 2>/dev/null | wc -l | tr -d ' '
 }
 
 # Runs the implicated suites (with $1/$2/$3 as HOME/GIT_CONFIG_SYSTEM/
@@ -173,10 +164,10 @@ run_suites() {
     set +e
     if [ -n "$home_override" ]; then
         HOME="$home_override" GIT_CONFIG_SYSTEM="$system_override" GNUPGHOME="$gnupg_override" \
-            TMPDIR="$scratch" cargo nextest run -E "$FILTER" \
+            TMPDIR="$scratch" cargo nextest run -p rdm-git -p rdm-cli -E "$FILTER" \
             >"$scratch/run.log" 2>&1
     else
-        TMPDIR="$scratch" cargo nextest run -E "$FILTER" \
+        TMPDIR="$scratch" cargo nextest run -p rdm-git -p rdm-cli -E "$FILTER" \
             >"$scratch/run.log" 2>&1
     fi
     status=$?
@@ -280,23 +271,60 @@ fi
 restore_support
 ok "1b: stripping the isolation made the hostile run diverge — section 1 is load-bearing"
 
-# Restated on the real tree, so a passing run is never the mutant's.
-run_suites "" "" "" "$TMP/clean-again" "$TMP/clean-again.summary" ||
-    fail "1b: the restored tree failed under a clean environment — restore failed"
-diff -q "$TMP/clean.summary" "$TMP/clean-again.summary" >/dev/null 2>&1 ||
-    fail "1b: the restored tree's results differ from the first clean run — restore failed"
-ok "1b: restored tree passes identically again"
+# Section 1 ran BEFORE either mutation was planted, so its green is already the
+# real tree's and can never be the mutant's — the ordering, not a restatement,
+# is what guarantees that. What still has to be proved is that the restore put
+# both helpers back exactly, so no mutant source survives into the rest of the
+# CI run. `cmp` proves that directly, where a fourth full suite run (plus the
+# rebuild the restore forces) would only prove it by inference.
+if ! cmp -s "$TMP/rdm-git-support.bak" "$REPO_ROOT/$RDM_GIT_SUPPORT" ||
+    ! cmp -s "$TMP/cli-support.bak" "$REPO_ROOT/$CLI_SUPPORT"; then
+    fail "1b: the git_test_support helpers were NOT restored byte-for-byte after the
+planted mutation — mutant source is still on disk. Restore it from git before
+running anything else:
+  git checkout -- $RDM_GIT_SUPPORT $CLI_SUPPORT"
+fi
+ok "1b: both planted mutations were restored byte-for-byte"
 
 # ---------------------------------------------------------------------------
-# 2 — worktree temp-hygiene, re-run under the hostile environment too
+# 2 — worktree temp-hygiene under the hostile environment too
 # ---------------------------------------------------------------------------
-say "2. scripts/verify-worktree-temp-hygiene.sh, re-run under a hostile environment"
+say "2. no worktree escaped TMPDIR during the hostile run either"
 
-build_benign_hostile_env "$TMP/hygiene-hostile-fixture"
-HOME="$TMP/hygiene-hostile-fixture/home" \
-    GIT_CONFIG_SYSTEM="$TMP/hygiene-hostile-fixture/system-gitconfig" \
-    sh "$SCRIPT_DIR/verify-worktree-temp-hygiene.sh" ||
-    fail "2: verify-worktree-temp-hygiene.sh failed under a hostile environment"
-ok "2: worktree temp-hygiene holds under a hostile environment too"
+# Read off the runs section 1 already made. $TMP/clean and $TMP/hostile were
+# each the TMPDIR of a full pass over the worktree-creating suites, so the two
+# counts answer "does a hostile git config change where worktrees land?"
+# without executing a single additional test.
+CLEAN_LEAKS=$(count_leaks "$TMP/clean")
+HOSTILE_LEAKS=$(count_leaks "$TMP/hostile")
+
+# Non-vacuity floor. A zero leak count proves nothing if the runs never built a
+# worktree in the first place, and this section — unlike
+# scripts/verify-worktree-temp-hygiene.sh's 1b, which plants a TempDir-rooted
+# fixture and requires the count to go positive — has no mutation of its own.
+# What it can require is that $FILTER actually selected the fixtures 1b proves
+# are capable of leaking, so a filter edit that quietly drops them fails here
+# instead of reporting a clean zero.
+WORKTREE_TESTS=$(grep -c 'worktree' "$TMP/clean.summary" || true)
+if [ "$WORKTREE_TESTS" -lt 1 ]; then
+    fail "2: the clean run executed no worktree test at all, so its zero leak count is
+vacuous — \$FILTER no longer selects rdm-git's worktree suites. See
+scripts/verify-worktree-temp-hygiene.sh, whose 1b is what establishes that
+those fixtures can leak."
+fi
+
+if [ "$CLEAN_LEAKS" -ne 0 ]; then
+    find "$TMP/clean" -maxdepth 1 -name '*__worktrees' | head -5 >&2
+    fail "2: the CLEAN run leaked $CLEAN_LEAKS '*__worktrees' director(ies) into TMPDIR.
+That is scripts/verify-worktree-temp-hygiene.sh's subject, not a config-isolation
+failure — fix the fixture rooting there first."
+fi
+if [ "$HOSTILE_LEAKS" -ne 0 ]; then
+    find "$TMP/hostile" -maxdepth 1 -name '*__worktrees' | head -5 >&2
+    fail "2: the HOSTILE run leaked $HOSTILE_LEAKS '*__worktrees' director(ies) into
+TMPDIR while the clean run leaked none — a worktree path is being resolved from
+the ambient git config."
+fi
+ok "2: neither the clean nor the hostile run leaked a worktree into TMPDIR ($WORKTREE_TESTS worktree tests ran)"
 
 printf '\n\033[1;32mAll git-config isolation checks passed.\033[0m\n'
