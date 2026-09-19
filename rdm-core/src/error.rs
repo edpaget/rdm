@@ -663,7 +663,9 @@ impl std::fmt::Display for Error {
             Error::ReviewSourceItemMismatch { expected, found } => {
                 write!(
                     f,
-                    "this worktree probe is bound to {expected}, but was asked about {found} —                      re-bind the probe to the item being inspected (one probe answers for one                      review source)"
+                    "this worktree probe is bound to {expected}, but was asked about {found} — \
+                     re-bind the probe to the item being inspected (one probe answers for one \
+                     review source)"
                 )
             }
             Error::ReviewSourceBranchChanged {
@@ -673,7 +675,9 @@ impl std::fmt::Display for Error {
             } => {
                 write!(
                     f,
-                    "the registered checkout {path} was registered on branch '{expected}' but is                      now on '{found}' — run `git switch {expected}` in it, or re-register the                      checkout with `rdm worktree add`"
+                    "the registered checkout {path} was registered on branch '{expected}' but is \
+                     now on '{found}' — run `git switch {expected}` in it, or re-register the \
+                     checkout with `rdm worktree add`"
                 )
             }
             Error::GateOverrideEmptyReason => {
@@ -1095,5 +1099,115 @@ mod tests {
             rendered.contains("projects/demo/tasks/fix-bug.md"),
             "the raw path is the fallback locator: {rendered}"
         );
+    }
+
+    /// Wrapping a long `write!` literal across source lines without a `\`
+    /// continuation bakes the source indentation into the message, so the
+    /// rendered text carries a mid-sentence run of raw spaces. `cargo fmt`
+    /// never touches string-literal contents and every other assertion on
+    /// these messages is a `contains` over an intact substring, so nothing
+    /// else in the suite notices. Every gate refusal and every review-source
+    /// mismatch is operator-facing (CLI stderr, and the server's 409
+    /// problem-detail body), so the rendering is gated here for all of them
+    /// at once rather than per message.
+    #[test]
+    fn operator_facing_gate_and_review_source_messages_render_without_space_runs() {
+        let rendered: Vec<(&str, String)> = vec![
+            (
+                "GateNoApprovedPlan",
+                Error::GateNoApprovedPlan("task/fix-bug".to_string()).to_string(),
+            ),
+            (
+                "GateNoApprovedChangeReview",
+                Error::GateNoApprovedChangeReview {
+                    item: "task/fix-bug".to_string(),
+                    plans: vec!["plan/fix-bug".to_string()],
+                }
+                .to_string(),
+            ),
+            (
+                "GateWorktreeDirty",
+                Error::GateWorktreeDirty {
+                    path: "/wt/gates".to_string(),
+                    paths: vec!["oops.rs".to_string()],
+                    truncated: 2,
+                }
+                .to_string(),
+            ),
+            (
+                "GateWorktreeUnobservable",
+                Error::GateWorktreeUnobservable {
+                    item: "task/fix-bug".to_string(),
+                    cause: "no such repository".to_string(),
+                }
+                .to_string(),
+            ),
+            (
+                "GateStaleChangeReview (observed head)",
+                Error::GateStaleChangeReview {
+                    item: "task/fix-bug".to_string(),
+                    review_id: "r1".to_string(),
+                    reviewed_head: "a".repeat(40),
+                    observed_head: Some("b".repeat(40)),
+                }
+                .to_string(),
+            ),
+            (
+                "GateStaleChangeReview (unobserved head)",
+                Error::GateStaleChangeReview {
+                    item: "task/fix-bug".to_string(),
+                    review_id: "r1".to_string(),
+                    reviewed_head: "a".repeat(40),
+                    observed_head: None,
+                }
+                .to_string(),
+            ),
+            (
+                "GateOverrideEmptyReason",
+                Error::GateOverrideEmptyReason.to_string(),
+            ),
+            (
+                "GateOverrideGateDisabled",
+                Error::GateOverrideGateDisabled.to_string(),
+            ),
+            (
+                "ReviewSourceItemMismatch",
+                Error::ReviewSourceItemMismatch {
+                    expected: "task/foo".to_string(),
+                    found: "task/bar".to_string(),
+                }
+                .to_string(),
+            ),
+            (
+                "ReviewSourceBranchChanged",
+                Error::ReviewSourceBranchChanged {
+                    path: "/wt/foo".to_string(),
+                    expected: "roadmap/foo".to_string(),
+                    found: "main".to_string(),
+                }
+                .to_string(),
+            ),
+            (
+                "ChangePathNotLinkable",
+                Error::ChangePathNotLinkable {
+                    path: "src/a@b.rs".to_string(),
+                    delimiter: '@',
+                }
+                .to_string(),
+            ),
+        ];
+
+        for (name, message) in &rendered {
+            assert!(
+                !message.contains("  "),
+                "{name} renders a run of consecutive spaces — rejoin the write! literal or use a \\ \
+                 line continuation: {message:?}"
+            );
+            assert!(
+                !message.contains('\n'),
+                "{name} renders an embedded newline, which breaks single-line CLI stderr and the \
+                 server's problem-detail body: {message:?}"
+            );
+        }
     }
 }
