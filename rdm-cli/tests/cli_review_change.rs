@@ -11,31 +11,14 @@ use serde_json::Value;
 use std::path::Path;
 use tempfile::TempDir;
 
+#[path = "git_test_support.rs"]
+mod git_test_support;
+use git_test_support::git;
+
 fn rdm() -> Command {
     let mut cmd = Command::cargo_bin("rdm").unwrap();
     cmd.env("XDG_CONFIG_HOME", "/dev/null/nonexistent");
     cmd
-}
-
-fn git(dir: &Path, args: &[&str]) -> std::process::Output {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test.com")
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    out
 }
 
 fn git_out(dir: &Path, args: &[&str]) -> String {
@@ -486,6 +469,59 @@ fn change_comment_anchors_from_a_subdirectory_of_the_checkout() {
         text.contains("nearest: lines 2-2"),
         "an out-of-hunk quote must still be refused from a subdirectory: {text}"
     );
+}
+
+/// `diff.relative = true` in a real `~/.gitconfig` is the exact hostile
+/// setting `2c55784` fixed (`--no-relative` in `unified_diff_argv`) — this
+/// proves a `change/<sha>` review comment anchors identically for the CLI
+/// end-to-end when that setting reaches `rdm`'s own git subprocess through
+/// the GLOBAL config layer, not just when it is absent. The scratch config
+/// lives entirely inside this test's own `TempDir` (`write_global_config`)
+/// and is wired in via `GIT_CONFIG_GLOBAL` on the `rdm` command itself —
+/// never a real global config.
+#[test]
+fn change_comment_anchors_under_a_hostile_ambient_git_config() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+
+    let global_dir = TempDir::new().unwrap();
+    let hostile =
+        git_test_support::write_global_config(global_dir.path(), "[diff]\n\trelative = true\n");
+
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Anchored under a hostile global git config.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .env("GIT_CONFIG_GLOBAL", hostile.to_str().unwrap())
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["comments"][0]["resolution"]["state"], "resolved");
+    assert_eq!(j["comments"][0]["anchor"]["anchor_type"], "file-quote");
+    assert_eq!(j["comments"][0]["anchor"]["start_line"], 2);
 }
 
 #[test]

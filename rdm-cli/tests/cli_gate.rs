@@ -13,6 +13,10 @@ use serde_json::Value;
 use std::path::Path;
 use tempfile::TempDir;
 
+#[path = "git_test_support.rs"]
+mod git_test_support;
+use git_test_support::git;
+
 fn rdm() -> Command {
     let mut cmd = Command::cargo_bin("rdm").unwrap();
     cmd.env("XDG_CONFIG_HOME", "/dev/null/nonexistent");
@@ -20,27 +24,6 @@ fn rdm() -> Command {
         .env_remove("RDM_ROOT")
         .env_remove("RDM_REVIEWED_GATE");
     cmd
-}
-
-fn git(dir: &Path, args: &[&str]) -> std::process::Output {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test.com")
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    out
 }
 
 /// A temp source repo whose git root is a **subdirectory** of the `TempDir`.

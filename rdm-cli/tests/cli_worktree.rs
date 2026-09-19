@@ -8,6 +8,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
+#[path = "git_test_support.rs"]
+mod git_test_support;
+use git_test_support::git;
+
 fn rdm() -> Command {
     let mut cmd = Command::cargo_bin("rdm").unwrap();
     cmd.env("XDG_CONFIG_HOME", "/dev/null/nonexistent");
@@ -16,26 +20,6 @@ fn rdm() -> Command {
     // neither set, so tests that rely on them pass locally but fail in CI.
     cmd.env_remove("RDM_PROJECT").env_remove("RDM_ROOT");
     cmd
-}
-
-fn git(dir: &Path, args: &[&str]) {
-    let out = std::process::Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test.com")
-        .output()
-        .unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
 }
 
 /// A plan repo with a project, one roadmap and one phase, plus a task.
@@ -372,11 +356,7 @@ fn remove_delete_branch() {
         .success();
 
     // Branch is gone.
-    let out = std::process::Command::new("git")
-        .args(["branch", "--list", "task/fix-bug"])
-        .current_dir(project.path())
-        .output()
-        .unwrap();
+    let out = git_test_support::git(project.path(), &["branch", "--list", "task/fix-bug"]);
     assert!(out.stdout.is_empty(), "branch should be deleted");
 }
 
@@ -531,14 +511,10 @@ fn prune_reports_branch_kept_for_unmerged() {
         .stdout(predicate::str::contains("phase-1-foo").not());
 
     // ...but the branch survives.
-    let out = std::process::Command::new("git")
-        .args(["branch", "--list", "phase/my-roadmap/phase-1-foo"])
-        .current_dir(project.path())
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-        .unwrap();
+    let out = git_test_support::git(
+        project.path(),
+        &["branch", "--list", "phase/my-roadmap/phase-1-foo"],
+    );
     assert!(
         !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
         "unmerged branch should be retained"

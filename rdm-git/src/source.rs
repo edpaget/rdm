@@ -252,7 +252,7 @@ impl SourceRepo for GitSourceRepo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::Command;
+    use crate::git_test_support;
     use tempfile::TempDir;
 
     /// The complete set of git subcommands this module is permitted to run.
@@ -298,28 +298,10 @@ mod tests {
         }
     }
 
-    /// A `git` command in `dir` with an identity configured and the ambient
-    /// git environment cleared — these tests must work unchanged when run
-    /// from inside a git hook, which exports `GIT_DIR`/`GIT_WORK_TREE`/
-    /// `GIT_INDEX_FILE` pointing at the invoking repository.
+    /// A `git` command in `dir`, isolated from the developer's real
+    /// global/system git config — see `git_test_support`'s module doc.
     fn git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@test.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@test.com")
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        git_test_support::git(dir, args);
     }
 
     fn seed() -> TempDir {
@@ -400,9 +382,29 @@ mod tests {
         git(top, &["commit", "-m", "sibling"]);
         // `diff.relative = true` is a real thing users set. It restricts a diff
         // to the cwd, re-opening the empty-hunk-set bug even with the `:(top)`
-        // pathspec — so pin it here: this repo carries the hostile config, and
-        // the assertions below fail if `--no-relative` is dropped.
+        // pathspec — so pin it here in the repo's LOCAL config, and the
+        // assertions below fail if `--no-relative` is dropped.
         git(top, &["config", "diff.relative", "true"]);
+
+        // Pin the same setting again, but sourced from the GLOBAL config
+        // layer instead — the layer the `2c55784` bug report actually named
+        // ("a real config users set" in `~/.gitconfig`). Never touches a real
+        // `~/.gitconfig`: the scratch file lives in its own `TempDir`.
+        let global_dir = TempDir::new().unwrap();
+        let hostile_global =
+            git_test_support::write_global_config(global_dir.path(), "[diff]\n\trelative = true\n");
+        // Confirm the scratch file is genuinely read as the GLOBAL layer
+        // through `GIT_CONFIG_GLOBAL`, not silently ignored.
+        let read_back = git_test_support::git_with_global(
+            top,
+            &["config", "--global", "--get", "diff.relative"],
+            &hostile_global,
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&read_back.stdout).trim(),
+            "true",
+            "the hostile file must be read as the GLOBAL config layer"
+        );
 
         let from_top = GitSourceRepo::new(top);
         let base = from_top.merge_base("main", "topic").unwrap().unwrap();
@@ -419,8 +421,29 @@ mod tests {
             "file_at resolves from the repo root, so this half always worked"
         );
 
-        let diff = from_sub
-            .unified_diff(&base, &head, "a.txt")
+        // Exercise the production diff path itself with the hostile setting
+        // reaching it through `GIT_CONFIG_GLOBAL`, on top of the LOCAL config
+        // already pinned above — proving the guard survives both layers at
+        // once, not just whichever one happened to be set.
+        //
+        // SAFETY: cargo-nextest isolates each test into its own OS process
+        // (the same invariant `process.rs`'s `spawn_and_parse_env` relies on),
+        // so mutating the process-wide `GIT_CONFIG_GLOBAL` here cannot race
+        // with any other test.
+        let previous_global = std::env::var_os("GIT_CONFIG_GLOBAL");
+        unsafe {
+            std::env::set_var("GIT_CONFIG_GLOBAL", &hostile_global);
+        }
+        let diff_result = from_sub.unified_diff(&base, &head, "a.txt");
+        let missing_result = from_sub.unified_diff(&base, &head, "missing.txt");
+        unsafe {
+            match &previous_global {
+                Some(v) => std::env::set_var("GIT_CONFIG_GLOBAL", v),
+                None => std::env::remove_var("GIT_CONFIG_GLOBAL"),
+            }
+        }
+
+        let diff = diff_result
             .unwrap()
             .expect("a.txt IS modified by base..head, so the diff must not be None");
         assert!(
@@ -429,10 +452,7 @@ mod tests {
         );
 
         // And an untouched path is still None from here, not a false positive.
-        assert_eq!(
-            from_sub.unified_diff(&base, &head, "missing.txt").unwrap(),
-            None
-        );
+        assert_eq!(missing_result.unwrap(), None);
     }
 
     #[test]
@@ -545,17 +565,7 @@ mod tests {
         let dir = seed();
         let repo = GitSourceRepo::new(dir.path());
         let before_head = repo.rev_parse("HEAD").unwrap().unwrap();
-        let porcelain = |dir: &Path| {
-            Command::new("git")
-                .args(["status", "--porcelain"])
-                .current_dir(dir)
-                .env_remove("GIT_DIR")
-                .env_remove("GIT_WORK_TREE")
-                .env_remove("GIT_INDEX_FILE")
-                .output()
-                .unwrap()
-                .stdout
-        };
+        let porcelain = |dir: &Path| git_test_support::git(dir, &["status", "--porcelain"]).stdout;
         let status_before = porcelain(dir.path());
 
         let base = repo.merge_base("main", "topic").unwrap().unwrap();
@@ -692,15 +702,7 @@ mod tests {
                 .is_some()
         );
         for expression in ["HEAD^{tree}", "HEAD:a.txt"] {
-            let output = Command::new("git")
-                .args(["rev-parse", expression])
-                .current_dir(dir.path())
-                .env_remove("GIT_DIR")
-                .env_remove("GIT_WORK_TREE")
-                .env_remove("GIT_INDEX_FILE")
-                .output()
-                .unwrap();
-            assert!(output.status.success());
+            let output = git_test_support::git(dir.path(), &["rev-parse", expression]);
             let oid = String::from_utf8(output.stdout).unwrap().trim().to_string();
             assert_eq!(oid.len(), 40);
             for rev in [

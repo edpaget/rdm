@@ -1,31 +1,16 @@
 //! Integration tests for `rdm_git::worktree` against real temp git repos.
 
 use std::path::Path;
-use std::process::Command;
 
 use rdm_git::worktree::{self, ItemRef, RemoveOptions};
 use tempfile::TempDir;
 
+#[path = "../src/git_test_support.rs"]
+mod git_test_support;
+
 /// Run a git command in `dir` with isolated identity/env, asserting success.
 fn git(dir: &Path, args: &[&str]) -> std::process::Output {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test.com")
-        .output()
-        .expect("failed to run git");
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    out
+    git_test_support::git(dir, args)
 }
 
 /// A temp project repo whose git root is a **subdirectory** of the `TempDir`.

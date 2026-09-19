@@ -29,6 +29,8 @@ use rdm_core::error::{Error, Result};
 
 pub use source::GitSourceRepo;
 
+#[cfg(test)]
+mod git_test_support;
 mod process;
 pub mod source;
 pub mod worktree;

@@ -1227,6 +1227,7 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git_test_support;
 
     #[test]
     fn parse_phase_item() {
@@ -1577,23 +1578,7 @@ mod tests {
     }
 
     fn run_git(dir: &Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@t.com")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@t.com")
-            .output()
-            .unwrap();
-        assert!(
-            out.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
+        git_test_support::git(dir, args);
     }
 
     /// Builds a plan store with `my-roadmap` carrying a done phase (number 1,
@@ -1927,14 +1912,7 @@ mod tests {
         assert!(list(&repo).unwrap().is_empty());
 
         // The branch survives — it was not deleted.
-        let out = std::process::Command::new("git")
-            .args(["branch", "--list", &done.branch_name()])
-            .current_dir(&repo)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_INDEX_FILE")
-            .output()
-            .unwrap();
+        let out = git_test_support::git(&repo, &["branch", "--list", &done.branch_name()]);
         assert!(
             !String::from_utf8_lossy(&out.stdout).trim().is_empty(),
             "unmerged branch should be retained"
@@ -1970,13 +1948,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // A real git repo so `git rev-parse --show-toplevel` succeeds. Clear the
         // GIT_* env vars (as `run_git_at` does) so `git init` targets the tempdir
-        // even when this test runs inside a git hook, which exports GIT_DIR etc.
+        // even when this test runs inside a git hook, which exports GIT_DIR etc,
+        // and isolate global/system config (see `git_test_support`'s module
+        // doc) so a hostile `init.defaultBranch` can't change what gets
+        // created. Kept as a tolerant probe (unlike `git_test_support::git`,
+        // which panics on failure) so this test still skips gracefully on a
+        // machine with no `git` binary at all, rather than assuming it exists.
         let initialized = std::process::Command::new("git")
             .args(["init"])
             .current_dir(dir.path())
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_INDEX_FILE")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
