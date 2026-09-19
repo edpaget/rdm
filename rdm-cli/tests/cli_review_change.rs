@@ -472,26 +472,42 @@ fn change_comment_anchors_from_a_subdirectory_of_the_checkout() {
 }
 
 /// `diff.relative = true` in a real `~/.gitconfig` is the exact hostile
-/// setting `2c55784` fixed (`--no-relative` in `unified_diff_argv`) — this
-/// proves a `change/<sha>` review comment anchors identically for the CLI
-/// end-to-end when that setting reaches `rdm`'s own git subprocess through
-/// the GLOBAL config layer, not just when it is absent. The scratch config
-/// lives entirely inside this test's own `TempDir` (`write_global_config`)
-/// and is wired in via `GIT_CONFIG_GLOBAL` on the `rdm` command itself —
-/// never a real global config.
+/// setting `2c55784` fixed (`--no-relative` in `unified_diff_argv`) — but
+/// that bug only reproduces when the repo is rooted at a SUBdirectory of the
+/// checkout (see `unified_diff_argv`'s own doc comment). This test combines
+/// both conditions at once, matching the unit-test upgrade in
+/// `rdm-git/src/source.rs`
+/// (`unified_diff_finds_hunks_from_a_subdirectory_of_the_checkout`): the
+/// `rdm` command runs from a sibling subdirectory of the checkout AND the
+/// hostile setting reaches its git subprocess through the GLOBAL config
+/// layer. The scratch config lives entirely inside this test's own
+/// `TempDir` (`write_global_config`) and is wired in via `GIT_CONFIG_GLOBAL`
+/// on the `rdm` command itself — never a real global config.
 #[test]
 fn change_comment_anchors_under_a_hostile_ambient_git_config() {
     let src = init_source_repo();
     let plan = init_plan_repo(src.path());
     create_plan(plan.path(), "design-plan", true);
 
+    // A sibling directory to invoke from, exactly as
+    // `change_comment_anchors_from_a_subdirectory_of_the_checkout` does.
+    // `init_source_repo` leaves HEAD on `topic`, so this commit lands only
+    // there — it just needs to exist in the working tree to `cd` into.
+    let sub = src.path().join("other");
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::write(sub.join("keep.txt"), "x\n").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "sibling"]);
+
     let global_dir = TempDir::new().unwrap();
     let hostile =
         git_test_support::write_global_config(global_dir.path(), "[diff]\n\trelative = true\n");
 
+    // Start the review from the subdirectory too — `change/HEAD` must still
+    // pin this checkout's tip.
     let id = start_change_review(
         plan.path(),
-        src.path(),
+        &sub,
         "change/HEAD",
         &["--implements", "rdm:plan/design-plan"],
     );
@@ -514,11 +530,11 @@ fn change_comment_anchors_under_a_hostile_ambient_git_config() {
             "demo",
         ])
         .env("GIT_CONFIG_GLOBAL", hostile.to_str().unwrap())
-        .current_dir(src.path())
+        .current_dir(&sub)
         .assert()
         .success();
 
-    let j = review_json(plan.path(), src.path(), &id);
+    let j = review_json(plan.path(), &sub, &id);
     assert_eq!(j["comments"][0]["resolution"]["state"], "resolved");
     assert_eq!(j["comments"][0]["anchor"]["anchor_type"], "file-quote");
     assert_eq!(j["comments"][0]["anchor"]["start_line"], 2);
