@@ -180,7 +180,9 @@ same `path` as its working directory and this same `base`/`head` on the terminal
 
 Then resolve the two dispatch models from the item's tier. Read `model` from `phase show <phase>
 --roadmap <slug><proj-flag> --format json` (task form: `task show <slug><proj-flag> --format
-json`) and call it `T`.
+json`) and call it `T`. **Record that same response's `body` and `tags`** as `item.body` /
+`item.tags` — step 6 hands them to the plan-review engine as its `fetched` argument, and this is
+the read they come from. Do not issue a second one.
 
 ```bash
 # T non-empty (phase mode with a recorded tier):
@@ -191,14 +193,42 @@ json`) and call it `T`.
 <rdmBin> model resolve implement
 ```
 
-Record the two resulting ids as `models.plan` / `models.implement`. The plan-review Workflow
-invoked later in this procedure resolves its own review models internally via its own bootstrap;
-the code-review Workflow call's own `findModel`/`verifyModel` gap is out of scope for this phase
-(tracked by `task/thread-code-review-judgment-models`) — neither is touched by this step.
+Record the two resulting ids as `models.plan` / `models.implement`.
 
-**Self-check before proceeding:** state the pinned `path`, `branch`, `head`, and the two resolved
-`models.plan` / `models.implement` you just read. If the command failed, escalate — never invent a
-checkout, and never let a subagent choose one.
+Then read the remaining inputs step 6 hands the plan-review engine, so that engine spawns no
+subagent to re-read what this session is already holding:
+
+```bash
+<rdmBin> roadmap show <slug><proj-flag> --format json    # record `body` as roadmapBody — SKIP in task mode
+<rdmBin> model resolve mechanical                        # untiered: a lane role, not a tier-derived dispatch model
+<rdmBin> model resolve review-find
+<rdmBin> model resolve review-verify
+<rdmBin> task list --tag plan-review --status wont-fix<proj-flag> --format json   # record each result's `title`
+```
+
+Record the three ids as `models.mechanical` / `models.reviewFind` / `models.reviewVerify`, the
+roadmap body as `roadmapBody`, and the wont-fix titles as `wontFixedTitles`. Three notes on why
+these are the commands:
+
+- The three `model resolve` calls take **no `--tier`**. They are review-lane roles, not dispatch
+  models, and the engine's own bootstrap resolves them untiered too — resolving them here is
+  precisely what stops that `model:mechanical` bootstrap agent from ever firing.
+- The roadmap body is read in phase mode only, and step 5 already needs it (it hands the planner
+  the roadmap's `## Intent` verbatim), so this makes an existing dependency explicit rather than
+  adding a read.
+- Use `task list`, **not** `rdm search`, for the wont-fix corpus: `search` truncates at its default
+  `--limit 20` while the real corpus is larger, and its JSON carries no `body` field at all.
+
+The code-review Workflow call's own `findModel`/`verifyModel` gap is out of scope for this phase
+(tracked by `task/thread-code-review-judgment-models`) and is not touched by this step.
+
+**Self-check before proceeding:** state the pinned `path`, `branch`, `head`, the two resolved
+`models.plan` / `models.implement` and the three resolved `models.mechanical` / `models.reviewFind`
+/ `models.reviewVerify`, and confirm you captured the item's `body` and `tags`, the roadmap `body`
+(phase mode) and the wont-fix titles. If the worktree or identity command failed, escalate — never
+invent a checkout, and never let a subagent choose one. A failed **hoist** read is different and
+not fatal: say which one failed and omit just that argument in step 6, which falls back to the
+engine's own fetch.
 
 ### 4. Stamp `in-progress`
 
@@ -242,6 +272,12 @@ plan yourself instead of dispatching, you have inline-collapsed — stop and dis
 Workflow({ scriptPath: '.claude/workflows/rdm-wf-plan-review.js', args: {
   roadmap: '<slug>', phase: '<phase>',            // or task: '<slug>'
   persist: { on: 'plan/<plan-slug>' },
+  fetched: { body: '<item.body verbatim>', tags: [<item.tags>] },
+  roadmapBody: '<roadmapBody verbatim>',          // OMIT in task mode
+  mechanicalModel: '<models.mechanical>',
+  findModel: '<models.reviewFind>',
+  verifyModel: '<models.reviewVerify>',
+  wontFixedTexts: [<wontFixedTitles>],
   rdmBin: '<rdmBin>', project: '<project>',
 } })
 ```
@@ -249,6 +285,26 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-plan-review.js', args: {
 (one unit, so the explicit `persist.on` is honored and the review lands on the plan document rather
 than on the phase). **You MUST make this call yourself.** It is the one step a subagent physically
 cannot perform.
+
+Everything after `persist` is a **hoist**: data step 3 already read, passed so the engine does not
+spawn a mechanical subagent to read it again. Each one is independent — supplying one and omitting
+another is legal, and each suppresses exactly its own agent. Their rules differ, so read them
+individually:
+
+- `fetched` — the item's own body and tags, verbatim from step 3's `show --format json`. **Omit the
+  key entirely if the body could not be read.** A partial or reshaped payload is rejected by the
+  engine's shape guard and falls back to the fetch agent, which is correct but wasteful. Do not
+  invent a `phases` member here; a phase target has none.
+- `roadmapBody` — the **parent roadmap's** body, verbatim and unedited. Do not extract the `##
+  Intent` section yourself: the engine runs the one canonical extractor over the raw body, which is
+  what keeps the hoisted and fetched paths from ever disagreeing. **Omit it in task mode** — a task
+  has no parent roadmap. Omitting it is safe: the engine fetches instead, and a failed fetch
+  degrades to no intent-alignment dimension, never to a block.
+- the model trio — **all three or none.** The engine's guard is all-or-nothing, so two out of three
+  saves nothing and still spawns the bootstrap.
+- `wontFixedTexts` — the wont-fix titles from step 3. An empty array is a legal, meaningful value
+  (nothing to suppress) and is **not** the same as omitting the key. Omit it only if the `task
+  list` call itself failed.
 
 ### 7. Wait for the plan approval — ONE origin-blind read
 

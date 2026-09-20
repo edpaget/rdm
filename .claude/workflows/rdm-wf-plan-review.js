@@ -3300,6 +3300,16 @@ function parsePlanArgs(rawArgs) {
   // NOT done here — that belongs to task fix-plan-review-gate-tag-clobber.
   const fetched = a.fetched && typeof a.fetched === 'object' ? a.fetched : null
   const wontFixedTexts = Array.isArray(a.wontFixedTexts) ? a.wontFixedTexts : null
+  // The PARENT ROADMAP's body, verbatim, for a standalone `phase` target — the
+  // hoist for the `fetch:roadmap-intent` read. A DIFFERENT document from
+  // `fetched` above (that one is the phase's own body+tags), hence a separate,
+  // independent key rather than a member of that payload: see
+  // hoistedRoadmapBodyOk. Read from a STRUCTURED key only, never out of the
+  // `$ARGUMENTS` flag string, exactly like `fetched`. The RAW body is taken and
+  // the engine runs its own extractIntent over it, so there is exactly one
+  // implementation of the extraction and the hoisted and fetched paths cannot
+  // disagree about what an `## Intent` section is.
+  const roadmapBody = typeof a.roadmapBody === 'string' && a.roadmapBody.trim() !== '' ? a.roadmapBody : null
   const mechanicalModel =
     typeof a.mechanicalModel === 'string' && a.mechanicalModel.trim() !== '' ? a.mechanicalModel.trim() : null
   // The judgment-site siblings of mechanicalModel above: the resolved
@@ -3344,6 +3354,7 @@ function parsePlanArgs(rawArgs) {
     planText: planText,
     fetched: fetched,
     wontFixedTexts: wontFixedTexts,
+    roadmapBody: roadmapBody,
     mechanicalModel: mechanicalModel,
     findModel: findModel,
     verifyModel: verifyModel,
@@ -3515,6 +3526,28 @@ function hoistedFetchedOk(fetched, kind) {
     if (!phasesOk) return false
   }
   return true
+}
+
+// hoistedRoadmapBodyOk(roadmapBody) — the shape guard for the OTHER hoistable
+// read on a standalone `phase` target: the PARENT ROADMAP's body, whose
+// `## Intent` section the intent-alignment dimension needs. It guards the
+// `fetch:roadmap-intent` block far below — see that block's own comment for
+// the fail-soft rule this guard preserves. Shape only, exactly like
+// hoistedFetchedOk above: a non-empty string, with no judgment about the
+// CONTENT. Whether the body actually carries an `## Intent` section is
+// extractIntent's business, and a body without one is a legal outcome, not a
+// rejected hoist.
+//
+// DELIBERATELY INDEPENDENT of hoistedFetchedOk: these are two different
+// documents, read by two different agents, and each hoist suppresses exactly
+// its own. There is no combined completeness guard — supplying one without the
+// other is legal and leaves the other path byte-unchanged. Coupling them would
+// change the existing `fetched` hoist's behavior, and the two paths do not even
+// degrade the same way: `fetched` is fail-CLOSED (`built.fetchFailed`) while
+// the read below is fail-SOFT, so an all-or-nothing guard over both would let a
+// missing roadmap body reject an otherwise-complete hoist.
+function hoistedRoadmapBodyOk(roadmapBody) {
+  return typeof roadmapBody === 'string' && String(roadmapBody).trim() !== ''
 }
 
 // RESERVED_FETCH_TOKENS — a small, CLOSED, evidence-grounded list, not a
@@ -5308,6 +5341,11 @@ async function runPlanReviewDriver(args, deps) {
   // buildReviewUnits — see buildRoadmapIntentFetchPrompt on why this must NOT
   // be added there). Exactly ONE extra mechanical read, and only here.
   //
+  // HOIST: a caller that already holds the parent roadmap's body passes it as
+  // `args.roadmapBody` and the read is skipped outright. That hoist is
+  // independent of `fetched` — two documents, two agents — see
+  // hoistedRoadmapBodyOk.
+  //
   // FAIL-SOFT, never fail-closed: a thrown agent, a null/empty transcript, or
   // unparseable JSON all degrade to `{ hasIntent: false, intent: null }`. The
   // dimension then simply does not run and its absence is reported as a
@@ -5316,19 +5354,28 @@ async function runPlanReviewDriver(args, deps) {
   let roadmapIntent = { hasIntent: false, intent: null }
   if (kind === 'phase') {
     try {
-      const rawIntent = await _agent(buildRoadmapIntentFetchPrompt(parsed.roadmap), {
-        label: 'fetch:roadmap-intent',
-        phase: 'Read',
-        agentType: 'rdm-mechanical',
-        schema: RAW_STDOUT_SCHEMA,
-        model: _mechanicalModel,
-      })
-      const parsedIntentStdout = parseJsonStdout(rawIntent && rawIntent.transcript)
-      const intentBody =
-        parsedIntentStdout.ok && parsedIntentStdout.value && typeof parsedIntentStdout.value.body === 'string'
-          ? parsedIntentStdout.value.body
-          : ''
-      roadmapIntent = extractIntent(intentBody)
+      // Both paths sit INSIDE this try on purpose: the catch below then covers
+      // the hoist too, so a throw out of extractIntent degrades exactly as a
+      // thrown agent does, and the fail-soft guarantee holds by construction
+      // rather than by a second copy of the recovery.
+      if (hoistedRoadmapBodyOk(parsed.roadmapBody)) {
+        roadmapIntent = extractIntent(String(parsed.roadmapBody))
+        _log('plan-review: roadmap intent hoisted from caller args (no fetch agent)')
+      } else {
+        const rawIntent = await _agent(buildRoadmapIntentFetchPrompt(parsed.roadmap), {
+          label: 'fetch:roadmap-intent',
+          phase: 'Read',
+          agentType: 'rdm-mechanical',
+          schema: RAW_STDOUT_SCHEMA,
+          model: _mechanicalModel,
+        })
+        const parsedIntentStdout = parseJsonStdout(rawIntent && rawIntent.transcript)
+        const intentBody =
+          parsedIntentStdout.ok && parsedIntentStdout.value && typeof parsedIntentStdout.value.body === 'string'
+            ? parsedIntentStdout.value.body
+            : ''
+        roadmapIntent = extractIntent(intentBody)
+      }
     } catch (e) {
       roadmapIntent = { hasIntent: false, intent: null }
     }
