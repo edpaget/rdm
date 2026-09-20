@@ -39,7 +39,7 @@ claude plugin marketplace add edpaget/rdm
 claude plugin install rdm@rdm
 ```
 
-This installs 11 skills (`rdm:roadmap`, `rdm:do`, `rdm:dispatch-phase`, …) and 2 workflow engines, namespaced so they cannot collide with your own. The skills invoke the `rdm` binary you installed above via `PATH`; see [Claude Code Plugin Marketplace](#claude-code-plugin-marketplace-recommended) for overriding that and for the fallback path.
+This installs 11 skills (`rdm:roadmap`, `rdm:do`, `rdm:dispatch-phase`, …) and 1 workflow engine, namespaced so they cannot collide with your own. The skills invoke the `rdm` binary you installed above via `PATH`; see [Claude Code Plugin Marketplace](#claude-code-plugin-marketplace-recommended) for overriding that and for the fallback path.
 
 For other assistants, or if you cannot use the plugin marketplace, ask your assistant to run `rdm --help` and initialize the tool.
 
@@ -95,7 +95,7 @@ claude plugin marketplace add edpaget/rdm
 claude plugin install rdm@rdm
 ```
 
-This installs 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, `rdm:do`, etc.) and 2 workflow engines, with automatic namespace prefixing and workflow discovery.
+This installs 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, `rdm:do`, etc.) and 1 workflow engine, with automatic namespace prefixing and workflow discovery.
 
 The plugin shims resolve the `rdm` binary at runtime, using the first of these that resolves:
 
@@ -139,15 +139,15 @@ The raw skills emission (`--skills --out <dir>`) is a fallback for environments 
 
 rdm ships with Claude Code skills covering the full lifecycle: planning (`rdm-roadmap`), reviewing a plan before implementation begins (`rdm-plan-review`), implementation and task work (`rdm-do`), review (`rdm-review`), acting on document reviews that request changes (`rdm-revise`) — which works a submitted review comment by comment, applying edits through rdm and landing each with `rdm commit`, recording per-comment commit provenance until the review is `addressed` — documentation generation (`rdm-document`), autonomous roadmap execution (`rdm-autopilot`) — which drives one roadmap to `reviewed` unattended (see [`docs/autonomous-loop.md`](docs/autonomous-loop.md)) — and landing (`rdm-land`), which integrates a reviewed item into `main` with linear history and then prunes its worktree (see [`docs/landing.md`](docs/landing.md)). There is also backlog grooming (`rdm-backlog`), a propose-only pass that reads `rdm backlog report` and emits a batched, human-reviewable plan of consolidate/merge/retire/archive actions — each paired with the exact `rdm` command that would carry it out — without mutating the plan repo. The same skill set is emitted for Pi under `.pi/skills/`.
 
-For Claude Code, `--skills --out <dir>` also writes a `.claude/workflows/` directory alongside `.claude/skills/`, containing the Claude Code Workflow-tool scripts (`rdm-wf-dispatch-phase.js`, `rdm-wf-review-refute-fix.js`) that back the autonomous `rdm-autopilot`/`rdm-dispatch-phase` lane. Both scripts are project- and binary-agnostic: they name no rdm executable and no rdm project of their own, taking an optional `rdmBin` runtime argument (the exact executable to invoke — an explicit value is used verbatim, and omitting it falls back to a plain `rdm` on `PATH`) and an optional `project` applied only to project-scoped subcommands — the emitted skill shims supply both from the `--project` you passed at emission time. This is Claude-only (Pi has no Workflow-tool runtime) and only applies with `--out` (not `--user`, since the scripts are project-scoped).
+For Claude Code, `--skills --out <dir>` also writes a `.claude/workflows/` directory alongside `.claude/skills/`, containing the Claude Code Workflow-tool script (`rdm-wf-review-refute-fix.js`) the autonomous `rdm-autopilot`/`rdm-dispatch-phase` lane calls for its reviews. The script is project- and binary-agnostic: it names no rdm executable and no rdm project of its own, taking an optional `rdmBin` runtime argument (the exact executable to invoke — an explicit value is used verbatim, and omitting it falls back to a plain `rdm` on `PATH`) and an optional `project` applied only to project-scoped subcommands — the emitted skill shims supply both from the `--project` you passed at emission time. This is Claude-only (Pi has no Workflow-tool runtime) and only applies with `--out` (not `--user`, since the scripts are project-scoped).
 
 #### Plan-review Stop hook (retired)
 
-`rdm agent-config claude/pi --hooks` — the Claude Code Stop hook / Pi `agent_end` extension that reprompted the agent while any item carried the `needs-plan-review` sentinel tag — has been retired now that plan review runs in-flow on the ephemeral implementation-plan lane (`rdm-wf-dispatch-phase`, `rdm-do`). The `--hooks` flag no longer exists.
+`rdm agent-config claude/pi --hooks` — the Claude Code Stop hook / Pi `agent_end` extension that reprompted the agent while any item carried the `needs-plan-review` sentinel tag — has been retired now that plan review runs in-flow on the implementation-plan lane (`rdm-dispatch-phase`, `rdm-do`). The `--hooks` flag no longer exists.
 
 That in-flow review is a **distinct mechanism** from the `needs-plan-review` tag stamped onto persisted roadmaps/phases/tasks by `roadmap create` / `phase create` / `task create` when `plan_review` is enabled — it reviews an ephemeral plan draft, not the persisted item, and never touches the tag. With the Stop hook gone, clearing `needs-plan-review` on items created via `rdm-roadmap`, ad hoc `create` commands, or `rdm-do` side-task filing is **manual-only**: run the `rdm-plan-review` skill against the item (`--roadmap <slug>`, `--task <slug>`, or `<roadmap> <phase>`), or periodically sweep with `rdm search "" --tag needs-plan-review`. Active enforcement is tracked as a follow-up (see `wire-active-plan-review-tag-gate` in the plan repo).
 
-An earlier auto-review Stop hook / Pi extension pair, which reprompted whenever an item was left in `needs-review` after implementation, was retired for the same reason: the `rdm-do`, `rdm-wf-dispatch-phase`, and `autopilot` finalize paths now actively run the canonical code review on every finalize, so nothing is left unreviewed for a passive net to catch. See [docs/autonomous-loop.md](docs/autonomous-loop.md).
+An earlier auto-review Stop hook / Pi extension pair, which reprompted whenever an item was left in `needs-review` after implementation, was retired for the same reason: the `rdm-do`, `rdm-dispatch-phase`, and `rdm-autopilot` finalize paths now actively run the canonical code review on every finalize, so nothing is left unreviewed for a passive net to catch. See [docs/autonomous-loop.md](docs/autonomous-loop.md).
 
 #### Headless / unattended runs
 

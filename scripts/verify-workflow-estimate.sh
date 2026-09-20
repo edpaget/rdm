@@ -54,7 +54,7 @@
 #                   hand-fabricated fakes of sections 1/1b.
 #   9. PARAM      — estimate names NO particular rdm executable and NO particular
 #                   rdm project: both are RUNTIME args (`rdmBin`, `project`),
-#                   the same contract dispatch-phase landed. Per-file literal
+#                   the same contract the shipped review engine carries. Per-file literal
 #                   zeroing with planted mutants (9a), a driven prompt capture
 #                   checking every emitted `rdm <subcommand>` against the
 #                   project-agnostic allow-list expressed AS DATA (9b), the
@@ -1007,9 +1007,9 @@ pass "HOIST-SHIM: detector fires on a typo'd arg key in the shim (mechanicalMode
 # --- 9. PARAMETERIZATION ------------------------------------------------------
 # estimate names NO particular rdm executable and NO particular rdm project:
 # both arrive as RUNTIME args (`rdmBin`, `project`) and are threaded into every
-# prompt that shells out. This mirrors scripts/verify-workflow-dispatch.sh § 9,
-# which gates the SAME contract for dispatch-phase — the helpers here are copies
-# in shape, not a second contract. Four sub-gates:
+# prompt that shells out. This mirrors scripts/verify-agent-config-distribution.sh
+# § 7c, which gates the SAME contract for the shipped review engine — the helpers
+# here are copies in shape, not a second contract. Four sub-gates:
 #
 #   9a — per-file literal zeroing across BOTH copies (lib + workflow), asserted
 #        PER FILE so a half-applied edit cannot pass.
@@ -1086,8 +1086,8 @@ async function refParallel(thunks) {
 const FAKE_BIN = '/fake/bin/rdm';
 
 // The PROJECT-AGNOSTIC ALLOW-LIST, expressed as DATA — the SAME array
-// verify-workflow-dispatch.sh § 9b uses (dispatch-phase's landed contract, not
-// re-derived here). These subcommands reject `--project` outright, so they must
+// verify-agent-config-distribution.sh § 7c uses (the lane's landed contract,
+// not re-derived here). These subcommands reject `--project` outright, so they must
 // carry NO project flag; everything else is project-scoped and MUST carry it
 // whenever a project was configured.
 const PROJECT_AGNOSTIC = ['model resolve', 'commit', 'status', 'discard'];
@@ -1117,7 +1117,7 @@ function makeCapture() {
 // Tokenize `<bin> <subcommand>` occurrences out of a prompt. The binary token is
 // whatever non-space run precedes the subcommand, so a re-hardcoded path is
 // caught by comparison rather than by being silently skipped. Same regex as
-// verify-workflow-dispatch.sh § 9b.
+// verify-agent-config-distribution.sh § 7c.
 const INVOCATION = /(^|[\s`])((?:[^\s`]*\/)?rdm)\s+([a-z][a-z-]*(?:\s+[a-z][a-z-]*)?)/g;
 
 // Only COMMAND-BEARING lines are tokenized. Every command these prompts emit is
@@ -1217,8 +1217,7 @@ const { parseEstimateArgs, projectFlag, resolveRdmBin, parseProjectArg } = await
 
 // (1a) An ABSENT-ish value DEFAULTS to a plain `rdm` on PATH. A plugin-installed
 // consumer has no repo-local build path to pass; this repo's own stale-global
-// hazard is handled by RDM_BIN in .mise.toml (gated by
-// verify-workflow-dispatch.sh § 9c-dogfood), not by refusing to resolve.
+// hazard is handled by RDM_BIN in .mise.toml, not by refusing to resolve.
 for (const absent of [undefined, null, '', '   ', '\t']) {
   assert.equal(resolveRdmBin(absent), 'rdm', 'an absent rdmBin (' + JSON.stringify(absent) + ') must default to "rdm"');
   assert.equal(

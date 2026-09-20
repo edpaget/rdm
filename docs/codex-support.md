@@ -108,8 +108,10 @@ Audit sources: distributed prose lives in
 `rdm-core/src/templates/skill-<name>-cli.md`; local Claude entrypoints are
 `.claude/skills/rdm-<name>/SKILL.md`. Codex templates live in
 `rdm-core/src/templates/codex/rdm-<name>.md` and generate the local
-`.agents/skills` copies. Claude's two shipped engines are
-`rdm-wf-dispatch-phase` and `rdm-wf-review-refute-fix`; its four additional
+`.agents/skills` copies. Claude's one shipped engine is
+`rdm-wf-review-refute-fix` (`rdm-wf-dispatch-phase` was a second until
+`agent-orchestrated-dispatch` phase 7 retired it in favour of the prose
+`rdm-dispatch-phase` orchestrator); its four additional
 local engines are `rdm-wf-plan-review`, `rdm-wf-estimate`, `rdm-wf-backlog`,
 and `rdm-wf-document`. Their local files are under `.claude/workflows`;
 shared review specifications originate in `.claude/workflows/lib/review.mjs`
@@ -129,8 +131,8 @@ explicit user task text, and host-managed approvals in the manual templates.
 | rdm-estimate | Prose recipe | Estimate workflow | Withheld; inspect/estimate manually |
 | rdm-backlog | Prose recipe | Backlog workflow | Withheld; inspect and propose manually |
 | rdm-document | Prose recipe | Document workflow | Withheld; author docs manually |
-| rdm-dispatch-phase | Dispatch workflow | Dispatch workflow | Withheld; one manual rdm-do item |
-| rdm-autopilot | Dispatch orchestration | Estimate + dispatch orchestration | Withheld; one manual rdm-do item |
+| rdm-dispatch-phase | Prose orchestrator (two Workflow calls) | Prose orchestrator (two Workflow calls) | Withheld; one manual rdm-do item. The procedure is prose, but its plan-review and code-review stages are two `Workflow` calls Codex has no runtime for. |
+| rdm-autopilot | Prose loop over the orchestrator | Estimate workflow + prose orchestrator | Withheld; one manual rdm-do item |
 
 Existing Pi generation is unchanged. Native Codex review, agent delegation,
 or external tools must not be represented as the unported canonical workflow.

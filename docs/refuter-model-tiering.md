@@ -340,9 +340,10 @@ exist.
   Sonnet 2/2 kept). That item is `mined-wf_909dbdd4-a29-a7caffc6c9f254a77`,
   **mined**, and its false premise is one of *commit attribution*, not a missing
   file: the location it cites (`.claude/workflows/rdm-wf-dispatch-phase.js:1503-1510`)
-  exists, but its claim about which commit introduced it is false — `git show
-  --stat 31be47a` touches exactly one file, `scripts/verify-workflow-dispatch.sh`,
-  and no `.js` at all. Refuting it therefore required inspecting a commit's
+  existed at the time the corpus was mined, but its claim about which commit introduced it is
+  false — `git show --stat 31be47a` touches exactly one file,
+  `scripts/verify-workflow-dispatch.sh`, and no `.js` at all. (Both paths were deleted by
+  `agent-orchestrated-dispatch` phase 7; this frozen corpus entry is unchanged by design.) Refuting it therefore required inspecting a commit's
   contents, not checking that a path exists. The result is about the *prompt*,
   not the tiers: a refuter told to "start from the stance that this is not a real
   issue" appears to treat an unverified premise as inconclusive rather than as
@@ -397,16 +398,18 @@ transcript:
 
 So plan-review's finders and refuters inherit the ambient session model.
 
-The sibling consumer does the opposite. `.claude/workflows/rdm-wf-dispatch-phase.js`
-builds
+The sibling consumer did the opposite. `.claude/workflows/rdm-wf-dispatch-phase.js`
+built
 `const reviewModels = { findModel: models.review_find, verifyModel: models.review_verify }`
-and threads it into the same pipeline. Two consumers of one pipeline therefore
-disagree about whether its judgment agents carry a model.
+and threaded it into the same pipeline. Two consumers of one pipeline therefore
+disagreed about whether its judgment agents carry a model. *(That engine was retired in
+`agent-orchestrated-dispatch` phase 7; the finding and its resolution below are recorded as
+they stood, and `lib/plan-review.mjs` now threads the model ids at both call sites.)*
 
 The consequence is not neutral, and it is not a saving. `rdm model resolve
 review-find` returns **`sonnet`**; `review-verify` returns **`opus`**. Under
-`rdm-wf-dispatch-phase`, a plan-mode finder runs on Sonnet. Under `rdm-wf-plan-review.js`, the
-same finder inherits the opus-class session model. The omission makes
+`rdm-wf-dispatch-phase`, a plan-mode finder ran on Sonnet. Under `rdm-wf-plan-review.js`, the
+same finder inherited the opus-class session model. The omission made
 plan-review's finders **more** expensive than the configured policy, not less.
 
 ### Why the counter-argument does not cover this case
@@ -421,7 +424,7 @@ lane".** Its body reads, verbatim:
 > step, backlog's analyzers, document's synthesis step) are left unpinned.
 
 That sentence is scoped by its own commit. The same commit's `rdm-wf-dispatch-phase`
-half demonstrably *keeps* `review_find` / `review_verify` threaded, so "judgment
+half demonstrably *kept* `review_find` / `review_verify` threaded, so "judgment
 agents are left unpinned" cannot mean "judgment sites must carry no model" — it
 means "this commit did not pin them to the **mechanical** tier". Reading it as a
 general prohibition contradicts the commit's own diff.

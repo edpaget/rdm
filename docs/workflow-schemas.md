@@ -5,30 +5,35 @@ scripts** under `.claude/workflows/`, a sibling of `.claude/skills/` and
 `.claude/hooks/`. This document defines the conventions those scripts follow and
 the canonical schema contracts they exchange.
 
-> **Scope:** mostly dogfood-only, with one emitted exception. The two workflow
-> scripts — `rdm-wf-dispatch-phase.js`, `rdm-wf-review-refute-fix.js` — ARE now
+> **Scope:** mostly dogfood-only, with one emitted exception. ONE workflow
+> script — `rdm-wf-review-refute-fix.js` — IS
 > emitted by `rdm agent-config claude --skills --out <dir>`, byte-identical to
-> this repo's own `.claude/workflows/` copies, under `<dir>/.claude/workflows/`
-> (Claude-only, `--out`-only — see `CHANGELOG.md`). Those two emitted engines are
-> **project- and binary-agnostic**: they name no particular rdm executable and no
+> this repo's own `.claude/workflows/` copy, under `<dir>/.claude/workflows/`
+> (Claude-only, `--out`-only — see `CHANGELOG.md`). That emitted engine is
+> **project- and binary-agnostic**: it names no particular rdm executable and no
 > particular rdm project, because both arrive as runtime arguments (see
 > § "Environment args: `rdmBin` and `project`"). Byte-identity with this repo's
-> copies is a CONSEQUENCE of that design, not a limitation of it, and
+> copy is a CONSEQUENCE of that design, not a limitation of it, and
 > `scripts/verify-agent-config-distribution.sh` § 7 gates the claim by emitting
 > into a hermetic non-rdm, non-Rust fixture repo and then executing the emitted
-> engines' pipeline logic — and one of the rdm commands they build — there. The
+> engine's pipeline logic — and the rdm command ladders it builds — there.
+> `rdm-wf-dispatch-phase.js` was a second emitted engine until
+> `agent-orchestrated-dispatch` phase 7 retired it (see
+> `docs/workflow-vs-prose-boundary.md` § "Retirement record"); every reference to
+> it below is historical. The
 > unshipped set is now exactly: `lib/*.mjs` (no regeneration script travels
 > downstream to consume it) and the generator scripts
 > (`scripts/gen-workflow-review.sh` and friends). rdm's shipped autonomous skills
 > (`rdm-core/src/templates/skill-{autopilot,dispatch-phase}-cli.md`, and the
 > `--auto` section of `skill-do-cli.md`) are the user-facing autonomous
-> lane: `skill-autopilot-cli.md` is now a **prose** skill that itself
-> drives the roadmap loop, invoking `rdm-wf-dispatch-phase` (and, locally, `rdm-wf-estimate`)
-> as ordinary `Workflow` calls rather than being a thin shim over a workflow
+> lane: `skill-autopilot-cli.md` is a **prose** skill that itself
+> drives the roadmap loop, entering the prose `rdm-dispatch-phase` orchestrator with
+> `Skill` and (locally) invoking `rdm-wf-estimate`
+> as an ordinary `Workflow` call rather than being a thin shim over a workflow
 > script of its own — see `docs/workflow-vs-prose-boundary.md` for why autopilot
 > was retired from `.claude/workflows/` in favor of prose. `skill-dispatch-phase-cli.md`
-> remains a thin shim that invokes `rdm-wf-dispatch-phase.js` via the `Workflow` tool,
-> instead of re-narrating the orchestration in prose. Distributing the
+> is likewise prose: the per-phase procedure itself, whose plan-review and
+> code-review stages are `Workflow` calls. Distributing the
 > still-unshipped pieces (`lib/`, a downstream regeneration story) remains a
 > follow-up roadmap.
 
@@ -43,22 +48,22 @@ the canonical schema contracts they exchange.
 **Engine filenames carry the `rdm-wf-` prefix; `lib/*.mjs` filenames do not.**
 An engine's filename and its `meta.name` are the entry a user sees in the
 skill/slash-command listing, right next to the `rdm-*` skill front door that
-drives it — so `rdm-dispatch-phase` (the skill) and `rdm-wf-dispatch-phase`
-(the engine it invokes) are now distinguishable at a glance. A `lib/*.mjs` is a
+drives it — so `rdm-review` (the skill) and `rdm-wf-review-refute-fix`
+(the engine it invokes) are distinguishable at a glance. A `lib/*.mjs` is a
 shared source module, never a listing entry, so its name is deliberately
 unprefixed and frozen. `spike-agent-type.js` is an exempt spike artifact and
 keeps its bare name.
 
 ### Determinism: no `Date.now()`/`Math.random()`
 
-Every `.claude/workflows/*.js` script — all nine of them, including the four
+Every `.claude/workflows/*.js` script — all six of them, including the four
 local-only ones that never leave this repo (`rdm-wf-backlog.js`,
 `rdm-wf-document.js`, `rdm-wf-estimate.js`, `rdm-wf-plan-review.js`) — is
 grepped for `Date.now(` / `Math.random(` by its own harness and must come
 back clean. The reason is determinism of the pipeline GENERALLY, not any one
 downstream consumer of it: `verify-workflow-backlog.sh` states the rule
 plainly ("the pipeline must be deterministic"), and
-`verify-workflow-dispatch.sh` asserts byte-identical output on identical
+`verify-workflow-review.sh` asserts byte-identical output on identical
 input as its own reproducibility contract. Resume-cache validity (see
 [`docs/autonomous-loop.md`](autonomous-loop.md) § "Recovering a crashed
 run") is ONE consequence of that determinism, not the sole or primary
@@ -204,7 +209,7 @@ Three consequences the dispatch path depends on:
    the dangerous one: `[models]` tier bindings are user-configurable, so a binding
    this runtime does not recognise would make every dispatched agent yield `null`
    and the pipeline would proceed into a null plan / silently-clean review. Both
-   `rdm-wf-dispatch-phase.js` (plan/implement) and `lib/review.mjs` (finders)
+   the retired `rdm-wf-dispatch-phase.js` (plan/implement) and `lib/review.mjs` (finders)
    therefore guard explicitly against a `null` agent result whenever an explicit
    model was supplied, and fail loudly instead. Note a `null` finder result would
    otherwise be laundered into `[]` by the refute stage's `(found && …) || []`,
@@ -217,7 +222,7 @@ was an OVERSIGHT, not policy, and has been fixed by
 used to call `runPlanReview({ target })` at both call sites with no model keys,
 so `buildReviewPipeline` saw no `ctx.findModel`/`ctx.verifyModel` and its
 finders and refuters inherited the ambient session model (see the "key
-omitted" row above), while the sibling `rdm-wf-dispatch-phase.js` threaded
+omitted" row above), while the then-sibling `rdm-wf-dispatch-phase.js` threaded
 `{ findModel: models.review_find, verifyModel: models.review_verify }`. The
 counter-argument that judgment sites are deliberately unpinned did not cover
 this case: `f4e89d7` and `scripts/verify-workflow-review.sh` §5b-mechanical both
@@ -238,8 +243,9 @@ when a tier is actually persisted: `resolve_tier` gives the caller hint top
 precedence, and `ReviewVerify.default_tier()` is `Large`, so passing a hint to
 `review-find`/`review-verify` can only ever *downgrade* the reviewer
 (`resolve review-verify` → opus, but `--tier medium` → sonnet). Review sizing is
-core's to own. `scripts/verify-workflow-dispatch.sh` gates both rules (AC-MODEL,
-AC-TIER) with planted-mutation self-tests.
+core's to own. Both rules are gated by `rdm-cli`'s `model resolve` tests; the
+retired `scripts/verify-workflow-dispatch.sh` also gated them (AC-MODEL, AC-TIER)
+over the engine's JS, with planted-mutation self-tests.
 
 **Prior art.** This is a well-known sandbox posture, not a rough edge. Temporal's
 TypeScript SDK runs workflow code in a deterministic V8 isolate that throws the
@@ -333,7 +339,7 @@ throwing — both invisible to a caller who only checks that the key did not thr
 | Artifact | Purpose |
 |---|---|
 | `.claude/agents/rdm-mechanical.md` | The custom agent definition. Minimal system prompt, `tools: Bash, StructuredOutput`. Deliberately carries **no `model:` key** — every mechanical call site already passes `model: models.mechanical` / `_mechanicalModel`, and `scripts/verify-workflow-review.sh` §5b-mechanical asserts that pinning. |
-| `.claude/workflows/spike-agent-type.js` | Sequential probe. Crosses `agentType` (absent / `'rdm-mechanical'` / unknown id / `undefined`) with `effort` (absent / `'low'` / `undefined` / invalid), one identical trivial prompt per case, each returning a small schema'd probe object. Excluded from the inventory gate by `scripts/verify-workflow-dispatch.sh` §7 and from `docs/mechanical-agent-inventory.md`'s mechanical-label derivation; **not** excluded from the dir-wide hygiene greps, so it complies with them. |
+| `.claude/workflows/spike-agent-type.js` | Sequential probe. Crosses `agentType` (absent / `'rdm-mechanical'` / unknown id / `undefined`) with `effort` (absent / `'low'` / `undefined` / invalid), one identical trivial prompt per case, each returning a small schema'd probe object. Excluded from `docs/mechanical-agent-inventory.md`'s mechanical-label derivation (and, historically, from the retired `scripts/verify-workflow-dispatch.sh` §7 inventory gate); **not** excluded from the dir-wide hygiene greps, so it complies with them. |
 
 <a id="the-workflow-run"></a>
 
@@ -749,8 +755,8 @@ The consequence was material at the time this section was written.
 `rdm-core/src/agent_config.rs` exposed exactly `generate_skills` and
 `generate_workflows`; there was **no** emission surface for `.claude/agents/`,
 and adding one was out of scope for this phase by decision. Had
-`agentType: 'mechanical'` been threaded into `rdm-wf-dispatch-phase.js`
-and `rdm-wf-review-refute-fix.js` and re-synced into
+`agentType: 'mechanical'` been threaded into the then-shipped engines
+(`rdm-wf-dispatch-phase.js`, `rdm-wf-review-refute-fix.js`) and re-synced into
 `rdm-core/src/templates/workflows/`, every downstream repo running
 `rdm agent-config claude --skills --out <dir>` would have received workflows
 that **hard-fail on first dispatch** — not a "known-degraded surface", a broken
@@ -1573,7 +1579,7 @@ byte-unchanged.
 **Both** of `buildReviewBudget`'s parameters take the gate's FULL per-round
 array. Passing only a last-round object silently drops an early round that hit
 its bound and was then resolved by a later revision/rework — precisely what
-`everHit` promises to keep visible — so `rdm-wf-dispatch-phase` threads
+`everHit` promises to keep visible — so a dispatch threads
 `planGate.budgetRounds`, not `planGate.budget`. (`planBudget` still accepts a
 single object, for a caller that predates the plan gate returning an array.) The
 two arrays are merged in **temporal** order, plan rounds first, because the plan
@@ -1744,11 +1750,11 @@ budget, since they were already never refuted.
 
 | | |
 | --- | --- |
-| arg name | `maxRefutations` (on `rdm-wf-dispatch-phase`, `rdm-wf-plan-review`, and `rdm-wf-review-refute-fix` args; reaches `runReview` as `context.maxRefutations`) |
+| arg name | `maxRefutations` (on `rdm-wf-plan-review` and `rdm-wf-review-refute-fix` args, and historically on `rdm-wf-dispatch-phase`'s; reaches `runReview` as `context.maxRefutations`) |
 | default | `DEFAULT_MAX_REFUTATIONS` = 5 |
 | `0` | LEGAL and meaningful — grade nothing, pass every gating finding through as `unrefutedReason: 'budget'`. Never conflated with "unset" by a falsy check. |
 | uncapped | no sentinel exists; express an effectively-uncapped run as a large N |
-| validation | `resolveRefutationBudget(value)`, mirroring `parseBudget`'s contract — a number or integer-ONLY string; `'5abc'` is rejected, not coerced. `rdm-wf-dispatch-phase`/`rdm-wf-plan-review` validate at PARSE time, before any `agent()` call. |
+| validation | `resolveRefutationBudget(value)`, mirroring `parseBudget`'s contract — a number or integer-ONLY string; `'5abc'` is rejected, not coerced. `rdm-wf-plan-review` validates at PARSE time, before any `agent()` call. |
 | ranking | `rankBudgetCandidates`: severity → confidence descending → id → source order. The source-order tiebreak is what makes the cut total when two dimensions emit the same finding id. |
 
 **Why 5.** Measured, not guessed: `docs/token-baseline.json` §
@@ -1777,11 +1783,11 @@ used) and injected by the verify harness to drive the pipeline with fakes.
 
 **Every consumer of `runReview`/`d.review(...)` must destructure
 `{ survivors, acTable, budget }`** rather than treat the resolved value as a bare
-array. In `lib/dispatch-phase.mjs` this means **both** `runCodeGate` (which
-tracks a per-round `acRounds` array alongside `rounds` and checks
+array. In the retired `lib/dispatch-phase.mjs` this meant **both** `runCodeGate`
+(which tracked a per-round `acRounds` array alongside `rounds` and checked
 `acTableHasGap` in its rework-loop continuation) and `runPlanGate` (which
-discards `acTable` — always `null` in `plan` mode — and uses `survivors` as
-its `findings`) needed updating; `lib/plan-review.mjs`'s `reviewUnit` and its
+discarded `acTable` — always `null` in `plan` mode — and used `survivors` as
+its `findings`); `lib/plan-review.mjs`'s `reviewUnit` and its
 `--implementation-plan` branch, and `rdm-wf-review-refute-fix.js`'s legacy and
 standalone driver paths, do the same.
 
@@ -2004,10 +2010,11 @@ conditional signals route through; branch order is load-bearing):
    diff". Note `diffText: ''` is a *string*, not `null`: an empty-but-present
    diff takes this branch.
 
-**Who feeds it.** `rdm-wf-dispatch-phase`'s code gate runs a mechanical `diff:signals`
-agent inside the item's worktree (`git diff --name-only main...HEAD` plus a
-truncated `git diff main...HEAD`) and threads the result through `deriveSignals`
-into `buildReviewPipeline('code')` — recomputed on **every** rework round, so a
+**Who feeds it.** The code gate derives the diff inside the item's worktree
+(`rdm review source` for the standalone `rdm-wf-review-refute-fix` path; historically a
+mechanical `diff:signals` agent running `git diff --name-only main...HEAD` plus a
+truncated `git diff main...HEAD` in the retired dispatch engine) and threads the result
+through `deriveSignals` into `buildReviewPipeline('code')` — recomputed on **every** rework round, so a
 round-2 fix that newly adds an exported symbol turns `api-docs` on for that
 round. The three-dot base scopes to the branch's own changes; for a phase in
 a shared per-roadmap worktree that is over-inclusive (earlier phases' files ride
@@ -2049,7 +2056,7 @@ entirely: an AC-table `FAIL` forces `rework` even when zero findings survived.
 throw on an unknown outcome or item kind rather than returning `undefined`. The
 land-time completion trailer is expressed here **only** as the boolean
 `writesCompletion` — never as the literal string — because the stamped block is
-copied into workflow scripts, where `verify-workflow-dispatch.sh` AC-1 forbids
+copied into workflow scripts, where `verify-workflow-review.sh`'s hygiene grep forbids
 that literal. The trailer's format string lives in `rdm-core`
 (`rdm_core::hook::format_done_directive`, surfaced as `rdm hook done-line`), and
 is written only by non-stamped code: the interactive skill's gate step and
@@ -2105,8 +2112,8 @@ shipped ones in § 1c/1d.
 The gate itself is likewise mode-dispatched data rather than a fork:
 `GATE_POLICY[mode][outcome]` yields `{ status, writesCompletion,
 clearsPlanReviewTag, reasonPrefix }`, and `STATUS_MAPPING` *is*
-`GATE_POLICY.code`, so `statusFor`/`writesCompletion` are unchanged for
-`rdm-wf-dispatch-phase`/`autopilot`. The plan rows carry an explicit `status: null` — a
+`GATE_POLICY.code`, so `statusFor`/`writesCompletion` are unchanged for the
+code lane (`rdm-dispatch-phase`/`rdm-autopilot`). The plan rows carry an explicit `status: null` — a
 plan review never persists an rdm status; it clears `needs-plan-review` on
 `reviewed` and leaves it on `rework`/`escalated`.
 
@@ -2166,19 +2173,32 @@ BOTH modes — which CI runs.
 
 ## dispatch-phase contracts
 
-`rdm-wf-dispatch-phase` (`.claude/workflows/rdm-wf-dispatch-phase.js`) is the keystone per-phase
-unit of autonomous execution: a deterministic 4-stage pipeline
-`Plan → PlanReview → Implement → CodeReview`. Its plan-review and code-review
-stages call `buildReviewPipeline('plan')` / `buildReviewPipeline('code')` inline
-(from the stamped review block — never via a nested `workflow()` call). Its pure
-decision core lives once in `lib/dispatch-phase.mjs` and is copied byte-identical
-into the workflow script (gated by `scripts/verify-workflow-dispatch.sh`).
+The keystone per-phase unit of autonomous execution is the **prose**
+`rdm-dispatch-phase` orchestrator (`.claude/skills/rdm-dispatch-phase/SKILL.md`),
+which runs the same procedure — `Plan → PlanReview → Implement → CodeReview` — in
+the driving session and reaches the review pipeline through two `Workflow` calls
+(`rdm-wf-plan-review` on the `plan/<slug>` document, `rdm-wf-review-refute-fix` on
+`change/<sha>`).
+
+> **These contracts predate that.** They were authored for the
+> `rdm-wf-dispatch-phase` Workflow engine, which `agent-orchestrated-dispatch`
+> phase 6 replaced and phase 7 **deleted** along with `lib/dispatch-phase.mjs`, the
+> shipped template, the plugin-tree copy and the emission registration (see
+> `docs/workflow-vs-prose-boundary.md` § "Retirement record"). The DATA SHAPES below
+> are still live — the prose orchestrator produces the same `OUTCOME`, reads the
+> same `PHASE_META`/`TASK_META` from the same `rdm … show --format json` commands,
+> and `rdm-wf-review-refute-fix.js`'s `mode: 'code'` path composes the same
+> `classifyOutcome` verdict. What is **historical** is every mention of the engine,
+> its JS decision core, its args payload and its own harness
+> (`scripts/verify-workflow-dispatch.sh`): read those as a record of how the shape
+> came to be, not as a description of a file you can run.
 
 ### `PHASE_META`
 
-What the Stage-0 mechanical fetch agent returns from `rdm phase show … --format
-json` (the Workflow runtime has no `process`/`child_process`, so it cannot shell
-out itself — a Bash-capable agent does).
+What the Stage-0 mechanical fetch returns from `rdm phase show … --format
+json`. *(Under the retired engine this had to be a Bash-capable sub-agent, because
+the Workflow runtime has no `process`/`child_process`; the prose orchestrator runs
+the command itself.)*
 
 | field    | type              | notes                                             |
 | -------- | ----------------- | ------------------------------------------------- |
@@ -2216,13 +2236,16 @@ plan-review `coherence` dimension and escalates before any implementation.
 | `cross_phase_deps` | array of string (required)              | what this phase consumes from / provides to siblings |
 | `summary`          | string (required)                       | one-paragraph plan summary               |
 
-### `OUTCOME` (dispatch-phase)
+### `OUTCOME` (dispatch)
 
-The top-level return of `rdm-wf-dispatch-phase`. Distinct from the review pipeline's
-`OUTCOME` array above — this is the phase-level verdict consumed by the Phase 3
-autopilot and Phase 4 `rdm-do --auto`. Since `agent-orchestrated-dispatch` phase 6 the
-prose `rdm-dispatch-phase` orchestrator produces this same shape as its in-session
-result (plus `planId` and `reviewIds`), so the consumers below read it unchanged; the
+The per-phase verdict. Distinct from the review pipeline's
+`OUTCOME` array above — this is the phase-level verdict consumed by `rdm-autopilot`
+and by `rdm-do --auto`. Since `agent-orchestrated-dispatch` phase 6 the
+prose `rdm-dispatch-phase` orchestrator produces this shape as its in-session
+result (plus `planId` and `reviewIds`), and `rdm-wf-review-refute-fix.js`'s
+`mode: 'code'` path with `{ roadmap, phase }` or `{ task }` composes the same
+`classifyOutcome` verdict into the same shape for headless callers. It was
+originally the top-level return of the retired `rdm-wf-dispatch-phase` engine; the
 two harnesses that used to gate the `rdm-do --auto` → engine wiring
 (`verify-workflow-do-auto.sh` and `-task.sh`) were deleted with that wiring.
 
@@ -2260,7 +2283,7 @@ from the canonical `statusFor` / `writesCompletion` in `lib/review.mjs`, so
 consumers (autopilot's advance/park, `rdm-do --auto`, `rdm-land`) read the policy
 off the OUTCOME instead of restating the mapping. `writesCompletion` is a
 **boolean, never the trailer literal** — the stamped block may not contain that
-string (`verify-workflow-dispatch.sh` AC-1). `rdm-land` reads
+string (`verify-workflow-review.sh`'s hygiene grep). `rdm-land` reads
 `writesCompletion: true` and synthesizes the real trailer at land time via
 `rdm hook done-line`, amending it **before** the rebase, so an autonomously
 produced branch never needs a manual rebase to gain it.
@@ -2386,14 +2409,13 @@ absent (Act was never invoked, or it threw). This never runs when the loop
 exited still-blocking or AC-table-gapped — large/unresolved defects stay
 owned by the rework/status machinery, per "never fix large changes inline".
 
-**The code-review stage is the canonical review.** `rdm-wf-dispatch-phase` builds it
-from the stamped `buildReviewPipeline('code')` — there is no independent
-code-review logic in the driver — and feeds it `deriveSignals` output from the
+**The code-review stage is the canonical review.** It is
+`rdm-wf-review-refute-fix.js`'s stamped `buildReviewPipeline('code')` — there is no
+independent code-review logic anywhere — fed `deriveSignals` output derived from the
 real branch diff (see `deriveSignals(input)` above for the signals-absent
-fail-open contract). `verify-workflow-dispatch.sh` pins both halves: exactly one
-`buildReviewPipeline('code')` binding site and one declaration each of
-`findPrompt`/`refutePrompt`, plus the `deriveSignals(` / `signals:` /
-`diff:signals` wiring.
+fail-open contract). `verify-workflow-review-outcome.sh` pins both halves over that
+engine's driver region: exactly one `buildReviewPipeline('code')` binding site and
+one `classifyOutcome(` call, plus the diff-signals wiring.
 
 ### Environment args: `rdmBin` and `project`
 
@@ -2428,7 +2450,7 @@ Every other subcommand this lane emits is project-scoped and takes the flag:
 `phase list/show/update`, `task list/show/create/update`, `worktree add`,
 `next`, `search`. A blanket append would produce commands that fail at runtime
 while still satisfying a naive whole-file grep, which is why
-`scripts/verify-workflow-dispatch.sh` § 9b drives the real workflow under a
+`scripts/verify-agent-config-distribution.sh` § 7c drives the real emitted engine under a
 capturing fake agent, tokenizes every emitted `rdm <subcommand>` occurrence, and
 checks each against the allow-list expressed **as data** — flag present iff the
 subcommand is not on the list, and zero `--project` occurrences at all when no
@@ -2450,33 +2472,33 @@ That hazard is real, and it is **dogfood-scoped**: inside the rdm repo a bare
 `rdm` is a stale installed build, which the project's development-build rule
 forbids. The compensating control therefore lives where the hazard does —
 `RDM_BIN = "{{config_root}}/target/debug/rdm"` in this repo's `.mise.toml`,
-beside `RDM_ROOT`/`RDM_PROJECT`. `verify-workflow-dispatch.sh` § 9c-dogfood gates
-that entry (with planted-mutation self-tests for a deleted line and for a
-downgrade to the bare `rdm` default), so the control cannot silently rot.
+beside `RDM_ROOT`/`RDM_PROJECT`. *(The retired `verify-workflow-dispatch.sh`
+§ 9c-dogfood gated that entry with planted-mutation self-tests; the entry itself is
+unchanged, and the project's development-build rule in `CLAUDE.md` is what states
+it now.)*
 
 Two rules survive the reversal unchanged:
 
 - **An existence preflight is still forbidden.** The default must be a plain
   fallback, never a probe. `which -a rdm` resolves to the stale global, so a
   probe passes while running exactly the wrong binary — it would hide the
-  dogfood hazard rather than close it. `verify-workflow-dispatch.sh` § 9c greps
-  (over non-comment lines) across every `resolveRdmBin`-bearing copy to prove no
-  copy was implemented that way, with a planted-probe self-test.
+  dogfood hazard rather than close it. *(The retired
+  `verify-workflow-dispatch.sh` § 9c greped every `resolveRdmBin`-bearing copy to
+  prove no copy was implemented that way, with a planted-probe self-test.)*
 - **An explicitly passed value still wins verbatim**, and the sentinel
   `rdmBin: 'rdm'` remains valid — it requests `PATH` resolution deliberately
-  rather than falling into the default branch. A trailing-space assertion in
-  § 9c keeps the two paths discriminable.
+  rather than falling into the default branch.
 
 The wrong-type throw is deliberate: degrading a `rdmBin: 42` typo to `PATH` would
 reintroduce exactly the silent-wrong-binary failure the absent-value default does
-not need. Validation still runs inside `parseDispatchArgs`, which the driver
-executes as its very first statement, so a mis-typed payload costs zero tokens
-(the same discipline as `parseBudget`).
+not need. Validation still runs in the surviving engines' own arg parsers, which
+each execute as their driver's very first statement, so a mis-typed payload costs
+zero tokens (the same discipline as `parseBudget`).
 
 **Where `$RDM_BIN` is actually read.** Not here. The Workflow runtime has no
 filesystem and no environment access, so no workflow JS reads `process.env` —
-`verify-workflow-dispatch.sh` § 9c-inventory asserts this across every
-`resolveRdmBin`-bearing file, with a planted `process.env.RDM_BIN` self-test.
+*(The retired `verify-workflow-dispatch.sh` § 9c-inventory asserted this across every
+`resolveRdmBin`-bearing file, with a planted `process.env.RDM_BIN` self-test.)*
 Resolution happens in the **calling skill**, a live agent with Bash, which passes
 the result down as an argument; the JS-side change is only the absent-value
 default. The three-step order is `--rdm-bin` → `RDM_BIN` → a plain `rdm` on
@@ -2500,13 +2522,17 @@ changed is the consequence of omitting it: an un-threaded caller now **degrades*
 to a `PATH`-resolved `rdm` rather than hard-breaking on first dispatch. In this
 repo that degradation is the wrong-binary hazard above, which is why the per-shim
 greps are worth keeping — they now guard a silent-wrong-binary failure rather
-than a loud one. The verified callers of the `rdm-wf-dispatch-phase` Workflow are
+than a loud one. The verified `rdmBin`-threading shims are
 `.claude/skills/rdm-dispatch-phase`, `.claude/skills/rdm-do` (both `--auto`
 flows), `.claude/skills/rdm-autopilot`, and the shipped
 `skill-dispatch-phase-cli.md` / `skill-do-cli.md` /
 `skill-autopilot-cli.md` templates. All of them name `rdmBin`, asserted
 per-shim by `verify-skill-autopilot.sh` and `verify-agent-config-distribution.sh`
-§ 6d, each with a planted-removal self-test.
+§ 6d, each with a planted-removal self-test. *(Until
+`agent-orchestrated-dispatch` phase 7 they threaded it into the
+`rdm-wf-dispatch-phase` Workflow payload; the prose orchestrator uses the same
+resolved value for its own Bash commands and for its two review-Workflow
+payloads.)*
 
 The `rdm-autopilot` shims were originally in that list only because of the
 fail-closed rule on the one `rdm-wf-dispatch-phase` call payload. Their own
@@ -2696,8 +2722,8 @@ is observable in the run transcript.
 
 ### `phaseMeta` / `taskMeta` are all-or-nothing
 
-`hoistedMetaComplete(meta, isTask)` (in `.claude/workflows/lib/dispatch-phase.mjs`)
-accepts a payload only when the `body` is a non-empty string, all five model
+`hoistedMetaComplete(meta, isTask)` (in the retired `.claude/workflows/lib/dispatch-phase.mjs`)
+accepted a payload only when the `body` is a non-empty string, all five model
 ids (`plan`, `implement`, `review_find`, `review_verify`, `mechanical`) are
 non-empty strings, and — in **phase** mode — the `model` difficulty tier is a
 non-empty string. A partial payload is rejected outright, because the fetch agent
@@ -2719,10 +2745,10 @@ one-directional tightening the gate exists to uphold. `PHASE_META_SCHEMA` lists
 `model` in its own `required` array, so the fallback agent path always supplies it;
 the hoist path is simply held to the same bar. `TASK_META` carries no tier at all
 and the driver hard-codes a task to `medium`, so task mode imposes no such
-requirement. `scripts/verify-workflow-dispatch.sh` §6a covers both directions: four
-negative cases (absent / empty / blank / non-string tier) fall back to the agent,
-and a positive pair proves a hoisted `large` and a hoisted `medium` produce
-*different* outcomes from one identical concern seed.
+requirement. *(The retired `scripts/verify-workflow-dispatch.sh` §6a covered both
+directions: four negative cases — absent / empty / blank / non-string tier — falling
+back to the agent, and a positive pair proving a hoisted `large` and a hoisted
+`medium` produce different outcomes from one identical concern seed.)*
 
 ### `rdm-wf-plan-review`'s `mechanicalModel` / `findModel` / `verifyModel` are all-or-nothing
 

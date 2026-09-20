@@ -21,17 +21,24 @@ accepts), [`docs/autonomous-loop.md`](autonomous-loop.md).
 grep -n "label: *['\"]" .claude/workflows/*.js | grep -v spike-agent-type
 ```
 
-**47 labelled `agent()` call sites** across the six workflow scripts:
+**33 labelled `agent()` call sites** across the five workflow scripts:
 
 | file | call sites |
 |---|---|
 | `rdm-wf-backlog.js` | 3 |
-| `rdm-wf-dispatch-phase.js` | 14 |
 | `rdm-wf-document.js` | 5 |
 | `rdm-wf-estimate.js` | 5 |
 | `rdm-wf-plan-review.js` | 13 |
 | `rdm-wf-review-refute-fix.js` | 7 |
-| **total** | **47** |
+| **total** | **33** |
+
+(`rdm-wf-dispatch-phase.js` carried 14 of the 47 sites the census originally counted. It was
+retired by `agent-orchestrated-dispatch` phase 7 — see
+[`docs/workflow-vs-prose-boundary.md`](workflow-vs-prose-boundary.md) § "Retirement record" —
+and every `dispatch-phase` row and figure below, including the classification table and the
+`measure-hoist-delta.mjs` numbers, is therefore a **dated record** of the census as taken, not
+a description of a file you can run. The instrument itself, `scripts/measure-hoist-delta.mjs`,
+was deleted with the engine it measured.)
 
 (`autopilot.js` carried 7 of the original 44 call sites; it was retired in favor of the prose
 `rdm-autopilot` skill by the `workflow-orchestration` roadmap's phase 3 — see
@@ -42,7 +49,7 @@ are not live-checked the way the totals above are.)
 
 Adding `.claude/workflows/lib/*.mjs` to the glob raises the count to **54**. That is *not* twelve
 extra call sites: the libs hold the single-source originals of blocks that are stamped or
-byte-copied into the `.js` consumers, so the same site is counted twice. **The six `.js`
+byte-copied into the `.js` consumers, so the same site is counted twice. **The five `.js`
 files are the authoritative surface** — they are what the Workflow runtime executes.
 
 Of the 42, **24 are mechanical** and **18 are judgment** agents. (Three of the eighteen are the
@@ -78,8 +85,8 @@ Where a call site lives determines how it is edited. Three routes exist:
 
 | route | blocks | how to edit |
 |---|---|---|
-| **stamped** | `rdm-wf-review-refute-fix` (in `rdm-wf-dispatch-phase.js`, `rdm-wf-plan-review.js`, `rdm-wf-review-refute-fix.js`), `estimate-core` (in `rdm-wf-estimate.js`) | edit the lib (`lib/review.mjs` / `lib/estimate.mjs`), re-run `scripts/gen-workflow-review.sh` / `gen-workflow-estimate.sh`; `--check` gates drift |
-| **byte-copied** | `dispatch-outcome` (`lib/dispatch-phase.mjs`), `plan-review-driver` (`lib/plan-review.mjs`) | edit the lib **first**, then copy the block verbatim into the consumer; `verify-workflow-dispatch.sh` §2 / `verify-workflow-review.sh` §5b-drift gate byte-equality |
+| **stamped** | `rdm-wf-review-refute-fix` (in `rdm-wf-plan-review.js`, `rdm-wf-review-refute-fix.js`), `estimate-core` (in `rdm-wf-estimate.js`) | edit the lib (`lib/review.mjs` / `lib/estimate.mjs`), re-run `scripts/gen-workflow-review.sh` / `gen-workflow-estimate.sh`; `--check` gates drift |
+| **byte-copied** | `plan-review-driver` (`lib/plan-review.mjs`) | edit the lib **first**, then copy the block verbatim into the consumer; `verify-workflow-review.sh` §5b-drift gates byte-equality |
 | **unprojected** | everything below a `:end` marker (the driver regions), plus `document-core`/`backlog-groom` consumers | edit in place |
 
 **Every mechanical call site sits in an unprojected DRIVER region**, *except* plan-review's
@@ -88,10 +95,10 @@ Where a call site lives determines how it is edited. Three routes exist:
 block. No mechanical site sits inside a generator-**stamped** block, so no generator had to
 learn anything new for this phase.
 
-Independently: `rdm-wf-dispatch-phase.js` and `rdm-wf-review-refute-fix.js` carry
-hand-maintained **byte-identical copies** under `rdm-core/src/templates/workflows/`, embedded
-by `rdm-core/src/agent_config.rs` via `include_str!`. **No generator writes those copies** —
-they are re-synced by `cp`, and `scripts/verify-agent-config-distribution.sh` plus
+Independently: `rdm-wf-review-refute-fix.js` carries a
+hand-maintained **byte-identical copy** under `rdm-core/src/templates/workflows/`, embedded
+by `rdm-core/src/agent_config.rs` via `include_str!`. **No generator writes that copy** —
+it is re-synced by `cp`, and `scripts/verify-agent-config-distribution.sh` plus
 `scripts/verify-workflow-review-outcome.sh` hard-fail on any divergence.
 
 ## Caller surfaces: which shims can actually hoist today
@@ -477,14 +484,20 @@ would be needed to confirm the projected figure directly, and is not run here.
 The `model` and `diff` classes go to **zero on the shim-driven paths**. `diff` goes to zero
 everywhere for dispatch-phase, because absorption needs no caller.
 
-### Direct measurement of the shipped code
+### Direct measurement of the shipped code *(historical)*
+
+> **The instrument and its subject are both gone.** `scripts/measure-hoist-delta.mjs` executed
+> the `rdm-wf-dispatch-phase` driver, so `agent-orchestrated-dispatch` phase 7 deleted it
+> together with that engine. The figures below stand as the measurement that was taken, and
+> the `--check` that once kept them honest no longer runs. Do not re-derive or re-baseline them
+> against the current tree — there is no dispatch driver left to execute.
 
 The replay delta above applies this phase's elimination rules to observed counts *by hand*,
-which makes it only as trustworthy as the rules. `scripts/measure-hoist-delta.mjs` closes that
+which makes it only as trustworthy as the rules. `scripts/measure-hoist-delta.mjs` closed that
 gap by **executing the real, post-change driver** under a recording fake `agent` — twice per
 mode, once with the args a pre-change caller passed and once with the args the post-change shim
-passes — and counting the mechanical subagents each run actually spawns. Agent counts are
-therefore observed from the shipped code rather than asserted, and are then priced using
+passes — and counting the mechanical subagents each run actually spawned. Agent counts were
+therefore observed from the shipped code rather than asserted, and were then priced using
 `docs/token-baseline.json`'s own measured per-class figures.
 
 ```
@@ -492,17 +505,19 @@ node scripts/measure-hoist-delta.mjs
 node scripts/measure-hoist-delta.mjs --check docs/mechanical-agent-inventory.md
 ```
 
-Over one dispatch pair it reports **6 of 6 mechanical subagents (100%) no longer spawned** —
+Over one dispatch pair it reported **6 of 6 mechanical subagents (100%) no longer spawned** —
 `fetch:phase-meta`/`fetch:task-meta`, `stamp:in-progress` and `diff:signals` in both phase and
 task mode. Priced against the baseline that is **1,536,932 tokens eliminated**, or **297,882 on
 the fresh (ex-cache-read) column**, which is the decision-relevant one: cache reads dominate the
 raw totals and are the cheapest token there is, so the script reports both and neither alone.
 
-Those two figures, and the six labels above, are written here **verbatim** rather than rounded
-because `--check` greps this document for them: it recomputes the delta from the shipped code and
-fails if the numbers here no longer match, so this section cannot rot into a stale
-hand-transcription. `scripts/verify-workflow-dispatch.sh` section 8 runs that `--check` (with a
-planted-mutation self-test), so CI enforces it.
+Those two figures, and the six labels above, were written here **verbatim** rather than rounded
+because `--check` greped this document for them: it recomputed the delta from the shipped code and
+failed if the numbers here no longer matched, so the section could not rot into a stale
+hand-transcription. `scripts/verify-workflow-dispatch.sh` section 8 ran that `--check` (with a
+planted-mutation self-test). Both the harness and the instrument were deleted with the engine in
+`agent-orchestrated-dispatch` phase 7, so the figures are now a frozen record rather than a
+checked one.
 
 Its limits are stated in the script's own header and are worth repeating: a fake agent returns
 canned values instantly, so this measures **agent count exactly** and token cost only as
@@ -663,7 +678,7 @@ routes' threaded-site count 16 → **17**. What did NOT move: the § Measured de
 the new site is on `rdm-wf-plan-review.js`, not on the dispatch-phase path those figures measure —
 the same intent gate's dispatch-phase half deliberately folds its roadmap read into the EXISTING
 Stage-0 fetch agent rather than adding a second call site, precisely so
-`scripts/measure-hoist-delta.mjs --check` stays byte-identical.
+`scripts/measure-hoist-delta.mjs --check` stayed byte-identical.
 
 **Two more call sites were added by the review-persistence phase** of the
 `agent-orchestrated-dispatch` roadmap: `persist:review` on `rdm-wf-review-refute-fix.js` and

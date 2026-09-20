@@ -37,9 +37,9 @@ retired it in favor of this prose skill — see
 [`docs/workflow-vs-prose-boundary.md`](./workflow-vs-prose-boundary.md) for why.
 The mechanics that twin made explicit still hold for this prose driver:
 
-- **It drives off *persisted* status.** `rdm-wf-dispatch-phase` persists no *terminal*
+- **It drives off *persisted* status.** The per-phase unit persists no *terminal*
   phase status — it does stamp the phase (or task) `in-progress`, best-effort,
-  right after Stage 0 and before it starts working the item (a `--plan-only`
+  before it starts working the item (a `--plan-only`
   run skips that stamp, since it never implements) — and `rdm next` returns
   only `not-started`/`in-progress` phases, so the loop writes the terminal
   status itself: `reviewed` → `rdm phase update --status reviewed` (advance),
@@ -60,8 +60,9 @@ The mechanics that twin made explicit still hold for this prose driver:
 Since `agent-orchestrated-dispatch` phase 6 the per-phase unit is **not** a Workflow. It is
 `.claude/skills/rdm-dispatch-phase/SKILL.md`, a prose procedure the driving session loads with
 `Skill` and executes in its own turn. `rdm-do` (both modes) is a shim onto it, and
-`rdm-autopilot` step 4 enters it the same way. The `rdm-wf-dispatch-phase` engine still exists
-in the tree — the roadmap's retirement phase removes it — but no lane calls it.
+`rdm-autopilot` step 4 enters it the same way. The `rdm-wf-dispatch-phase` engine it replaced
+was retired outright by phase 7 of the same roadmap — see
+[`docs/workflow-vs-prose-boundary.md`](./workflow-vs-prose-boundary.md) § "Retirement record".
 
 **Why `Skill`, never `Agent`.** An `Agent`-spawned subagent has no `Workflow` tool at all: it is
 absent from both its loaded and its deferred tool lists, so the call cannot be formed, and the
@@ -243,12 +244,16 @@ The loop stops when **any** of these holds:
 
 ## Recovering a crashed run
 
-The Workflow tool can relaunch a dead or crashed run instead of starting
+The per-phase unit is prose now, so a crashed *dispatch* is re-entered by
+re-running the `rdm-dispatch-phase` skill against the same item; the phase's
+persisted status and its plan/review documents are what carry state across the
+gap. For the Workflow calls the orchestrator makes (plan review, code review),
+the Workflow tool can relaunch a dead or crashed run instead of starting
 over: pass the prior run's id back in as `resumeFromRunId`, alongside the
 same `scriptPath`:
 
 ```
-Workflow({ scriptPath: '.claude/workflows/rdm-wf-dispatch-phase.js', resumeFromRunId: '<prior runId>' })
+Workflow({ scriptPath: '.claude/workflows/rdm-wf-review-refute-fix.js', resumeFromRunId: '<prior runId>' })
 ```
 
 Any `agent()` call whose `(prompt, opts)` are byte-unchanged from the crashed
@@ -282,14 +287,14 @@ scripts never call `Date.now()`/`Math.random()` — is explained in
 [`docs/workflow-schemas.md`](workflow-schemas.md) § "The
 `.claude/workflows/` convention".)
 
-**Cross-session resume and persisted plans are out of scope here.**
-`approvedPlanText` is a plain JS local inside `rdm-wf-dispatch-phase.js`,
-never written to the plan repo, so it survives only in the run journal and
-the `plan:author` transcripts for the life of one session. Because
-`resumeFromRunId` is same-session only, a fresh dispatch tomorrow still
-re-authors the plan and re-runs the whole plan-review fan-out regardless.
-The designed home for a persisted plan is a field on the `Run` artifact in
-`autopilot-run-accounting/phase-3-run-artifact` — not built here.
+**Cross-session resume is out of scope here.** *(Historical: while the
+per-phase unit was `rdm-wf-dispatch-phase.js`, the authored plan lived in an
+`approvedPlanText` JS local that was never written to the plan repo, so it
+survived only in that run's journal for the life of one session.)* The prose
+orchestrator persists the plan as a real `plan/<slug>` document instead, so a
+fresh dispatch tomorrow reads the approved plan back rather than re-authoring
+it; what `resumeFromRunId` cannot carry across sessions is the review fan-out's
+cached `agent()` results.
 
 ## Run modes
 
@@ -324,7 +329,7 @@ rdm review blocked --project <proj> --format json
 Autopilot is the **active driver** — it pushes a roadmap forward phase by phase.
 Every Claude workflow lane that can produce a `needs-review` item actively runs the
 canonical review (`.claude/workflows/lib/review.mjs`) before that lane's
-finalize step returns: `rdm-wf-dispatch-phase`'s code-review stage runs it inline and
+finalize step returns: the prose orchestrator's code-review stage runs it inline and
 returns a `reviewed`/`blocked` status as OUTCOME data — it persists no terminal
 status itself (see ["History: the retired workflow twin"](#history-the-retired-workflow-twin)
 above) — and autopilot's own advance/park steps persist that status directly
@@ -334,7 +339,7 @@ human confirm gate. With nothing left unreviewed, the once-passive needs-review
 Stop hook (Claude Code) and Pi `agent_end` extension — which only re-prompted
 when an item was *left* in `needs-review` — have been retired as redundant; see
 [`CLAUDE.md`](../CLAUDE.md)'s "Hook reconciliation" note for the harness
-evidence. The autopilot lane never emits a `Done:` line — `rdm-wf-dispatch-phase`'s
+evidence. The autopilot lane never emits a `Done:` line — the orchestrator's
 review is an inline pipeline (not the `rdm-review` skill), and autopilot's
 advance step writes only `--status reviewed`. The `Done:` line is supplied later
 by `rdm-review` or at landing.

@@ -436,14 +436,13 @@ fn agent_config_skills_generates_ten_files() {
         .arg(dir.path())
         .assert()
         .success()
-        // 11 skill files + 2 workflow files ("rdm-wf-dispatch-phase.js",
-        // "rdm-wf-review-refute-fix.js") + 1 agent definition
-        // ("rdm-mechanical.md") emitted for Claude + --out. This is a
-        // deliberate, accounted-for change from the prior 11 (skills only) —
-        // see agent_config_workflows_written_under_out,
+        // 11 skill files + 1 workflow file ("rdm-wf-review-refute-fix.js")
+        // + 1 agent definition ("rdm-mechanical.md") emitted for Claude +
+        // --out. This is a deliberate, accounted-for change from the prior 11
+        // (skills only) — see agent_config_workflows_written_under_out,
         // agent_config_workflows_are_byte_identical_to_source, and
         // agent_config_agents_written_under_out below.
-        .stdout(predicate::str::contains("Wrote").count(14));
+        .stdout(predicate::str::contains("Wrote").count(13));
 
     let skills_dir = dir.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -472,8 +471,9 @@ fn agent_config_workflows_written_under_out() {
         .success();
 
     let workflows_dir = dir.path().join(".claude/workflows");
-    assert!(workflows_dir.join("rdm-wf-dispatch-phase.js").exists());
     assert!(workflows_dir.join("rdm-wf-review-refute-fix.js").exists());
+    // The retired dispatch engine is emitted by nothing.
+    assert!(!workflows_dir.join("rdm-wf-dispatch-phase.js").exists());
 }
 
 #[test]
@@ -496,11 +496,22 @@ fn agent_config_workflows_are_byte_identical_to_source() {
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap();
-    for name in &["rdm-wf-dispatch-phase.js", "rdm-wf-review-refute-fix.js"] {
-        let emitted = std::fs::read(dir.path().join(".claude/workflows").join(name)).unwrap();
-        let source = std::fs::read(repo_root.join(".claude/workflows").join(name)).unwrap();
-        assert_eq!(emitted, source, "{name} drifted from the emitted template");
+    // Every emitted engine, discovered from the emission rather than from a
+    // hardcoded name list, with a floor so the loop cannot pass vacuously.
+    let mut checked = 0usize;
+    for entry in std::fs::read_dir(dir.path().join(".claude/workflows")).unwrap() {
+        let name = entry.unwrap().file_name();
+        let emitted = std::fs::read(dir.path().join(".claude/workflows").join(&name)).unwrap();
+        let source = std::fs::read(repo_root.join(".claude/workflows").join(&name)).unwrap();
+        assert_eq!(
+            emitted,
+            source,
+            "{} drifted from the emitted template",
+            name.to_string_lossy()
+        );
+        checked += 1;
     }
+    assert!(checked >= 1, "no emitted workflow script was compared");
 }
 
 #[test]
@@ -1090,7 +1101,7 @@ fn agent_config_plugin_writes_manifest_skills_and_workflows() {
         .arg("distro-check")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(14));
+        .stdout(predicate::str::contains("Wrote").count(13));
 
     let manifest_path = dir.path().join(".claude-plugin/plugin.json");
     assert!(
@@ -1123,8 +1134,9 @@ fn agent_config_plugin_writes_manifest_skills_and_workflows() {
     }
 
     let workflows_dir = dir.path().join("workflows");
-    assert!(workflows_dir.join("rdm-wf-dispatch-phase.js").exists());
     assert!(workflows_dir.join("rdm-wf-review-refute-fix.js").exists());
+    // The retired dispatch engine is emitted by nothing.
+    assert!(!workflows_dir.join("rdm-wf-dispatch-phase.js").exists());
 
     // Plugin skill directory names never carry the raw `rdm-` prefix.
     assert!(!skills_dir.join("rdm-roadmap").exists());

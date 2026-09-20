@@ -78,18 +78,17 @@
 #
 #   3b. AC-MODEL (every agent() call in the five mechanical deps carries an
 #      explicit model:) — MOOT. There are no agent() calls left in the loop
-#      itself; the only remaining Workflow calls (`rdm-wf-estimate`, `rdm-wf-dispatch-phase`)
-#      are unchanged callers already covered by their own harnesses.
+#      itself; the only remaining Workflow call (`rdm-wf-estimate`) is an
+#      unchanged caller already covered by its own harness.
 #
 #   4. MODULE PARSE (autopilot.js loads under module semantics) — MOOT. There
 #      is no JS file to parse.
 #
-#   5. SIBLING GATE (verify-workflow-dispatch.sh stays green) — PORTABLE,
-#      unchanged in spirit: the prose loop nests exactly the `rdm-wf-dispatch-phase`
-#      and `rdm-wf-estimate` Workflows and no others, so both of their harnesses
-#      staying green is still the right regression signal. Re-run in section 3
-#      below (now naming both siblings, since `rdm-wf-estimate` is a genuinely new
-#      call path per SKILL.md step 3).
+#   5. SIBLING GATE — PORTABLE, unchanged in spirit: the prose loop nests
+#      exactly ONE Workflow, `rdm-wf-estimate` (the per-phase unit is the prose
+#      `rdm-dispatch-phase` orchestrator, entered with `Skill`), so that
+#      harness staying green is the right regression signal. Re-run in section 3
+#      below.
 #
 #   6. LAND-TIME COMPLETION TRAILER — PORTABLE, workflow-agnostic; this section
 #      never touched autopilot.js/mjs at all (rdm-land / `rdm hook done-line`
@@ -135,12 +134,13 @@
 #                             status (+ blocked_reason) it promises, confirmed
 #                             by a read-back.
 #   3. SIBLING GATE         — verify-workflow-estimate.sh (the one Workflow this
-#                             skill still nests) stays green. The dispatch
-#                             engine's own harness is no longer gated from here:
-#                             this loop does not call that engine any more, and
-#                             CI runs verify-workflow-dispatch.sh directly out
-#                             of the scripts/verify-*.sh glob until the
-#                             roadmap's retirement phase removes both.
+#                             skill still nests) stays green. The retired
+#                             dispatch engine's harness is gone with the engine
+#                             (agent-orchestrated-dispatch phase 7); the review
+#                             pipeline the prose orchestrator calls is gated by
+#                             scripts/verify-workflow-review.sh, which CI runs
+#                             directly out of the scripts/verify-*.sh glob
+#                             rather than nesting redundantly here.
 #   4. LAND-TIME TRAILER    — copied verbatim from the old harness's section 6:
 #                             a trailer-less autopilot-shaped branch commit
 #                             gains its completion trailer from `rdm hook
@@ -418,9 +418,9 @@ pass "rdm hook done-line rejects malformed requests, so the lander aborts rather
 # for it would turn the gate into decoration — so assert, mechanically, that
 # neither the local autopilot skill nor the shipped template can ever emit it.
 #
-# Phase 6's orchestrator harness inherits this same check;
-# scripts/verify-workflow-dispatch.sh carries the sibling grep over the
-# dispatch-phase surfaces.
+# The `rdm-dispatch-phase` orchestrator's own surfaces are swept by the same
+# rule; the retired dispatch engine's harness that used to carry the sibling
+# grep went with the engine (agent-orchestrated-dispatch phase 7).
 say "5. --override-gate: neither the autopilot skill nor its shipped template emits it"
 
 OVERRIDE_SURFACES="$SKILL

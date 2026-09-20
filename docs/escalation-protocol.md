@@ -45,7 +45,7 @@ The dispatch flow is bounded so it never loops indefinitely. Exhausting a budget
 is itself an escalation (kind: *exhausted budget*).
 
 There are **four** distinct budgets. Two are *in-run* (inside a single
-`rdm-wf-dispatch-phase` run) and two are *roadmap-level* (autopilot's own).
+`rdm-dispatch-phase` dispatch) and two are *roadmap-level* (autopilot's own).
 
 ### 1. Plan-revise budget = 2 — in-run, per dispatch
 
@@ -84,7 +84,7 @@ the first blocking review. It is never confused with "unset".
 document is never reviewed as an empty plan and never replaces the last good one.
 
 **Per-run overrides.** Both in-run budgets are overridable per run via the
-`rdm-wf-dispatch-phase` workflow args `maxPlanRevise` and `maxCodeRework` (non-negative
+the orchestrator's `maxPlanRevise` and `maxCodeRework` budgets (non-negative
 integers; anything else is rejected at parse time, before any agent runs). They
 are threaded from autopilot's `--max-plan-revise` / `--max-code-rework`. An
 absurdly large override is accepted by validation but bounded in practice by the
@@ -115,7 +115,7 @@ rates rather than silently inherited.
 ### Which lane these numbers describe
 
 **2 / independent / per-run-overridable describes the workflow lane**
-(`.claude/workflows/`: `rdm-wf-dispatch-phase.js` and its lib; autopilot itself is now
+(`.claude/workflows/`: the review engines; autopilot itself is now
 the prose `rdm-autopilot` skill, not a workflow file). The shipped prose skill
 templates under `rdm-core/src/templates/`
 (`skill-dispatch-phase-cli.md`, which hardcodes "at most one

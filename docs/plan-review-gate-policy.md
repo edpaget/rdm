@@ -332,8 +332,9 @@ prompt now states this explicitly.
    shipped templates `rdm-core/src/templates/skill-plan-review-cli.md`, and
    `plugins/rdm/skills/plan-review/SKILL.md` — and only the first of those is driven by
    `rdm-wf-plan-review.js`. That workflow is **local-only**:
-   `rdm-core/src/templates/workflows/` ships `rdm-wf-dispatch-phase.js` and
-   `rdm-wf-review-refute-fix.js`, and nothing else. The shipped and plugin skills run the
+   `rdm-core/src/templates/workflows/` ships `rdm-wf-review-refute-fix.js` and nothing else
+   (it also shipped `rdm-wf-dispatch-phase.js` until `agent-orchestrated-dispatch` phase 7
+   retired that engine). The shipped and plugin skills run the
    gate themselves, in hand-authored prose that shells out to `rdm … update --tags …`
    directly; they have no driver to pass `gateMode` to and no returned unit to read
    `gateBlocked` off.

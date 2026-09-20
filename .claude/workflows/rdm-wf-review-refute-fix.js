@@ -3106,10 +3106,10 @@ function buildReviewPipeline(mode, deps) {
 // review-refute-fix names NO particular rdm executable and NO particular rdm
 // project. Both arrive as RUNTIME args and are threaded into every prompt that
 // shells out, via the `cfg` object each such prompt builder takes as its
-// trailing parameter. This is dispatch-phase's contract, reused — NOT a second
-// one: the three helpers below are copied in shape from
-// .claude/workflows/lib/dispatch-phase.mjs (only the thrown-message prefix
-// differs), and the runtime cannot import, so a per-consumer copy is expected.
+// trailing parameter. This is the autonomous lane's one environment-arg
+// contract, not a second one: the three helpers below were copied in shape from
+// the retired dispatch engine's own copies (only the thrown-message prefix
+// differed), and the runtime cannot import, so a per-consumer copy is expected.
 // Canonical write-up (rationale, table, why an emit-time placeholder is not
 // workable): docs/workflow-schemas.md § "Environment args: `rdmBin` and
 // `project`" — not restated here.
@@ -3170,8 +3170,8 @@ function parseProjectArg(value) {
 
 // --- Driver -------------------------------------------------------------------
 // Coerce a stringified `args` payload. The Workflow tool contract forbids it,
-// but LLM callers deliver one anyway (see parseDispatchArgs's identical
-// comment in rdm-wf-dispatch-phase.js) — without this, `rawArgs.roadmap`/
+// but LLM callers deliver one anyway (the retired dispatch engine's
+// parseDispatchArgs carried the identical guard) — without this, `rawArgs.roadmap`/
 // `rawArgs.phase`/`rawArgs.task` all read as undefined and the driver falls
 // silently into the legacy `{ mode, survivors }` branch below, discarding the
 // AC table/outcome/status with no error or warning.

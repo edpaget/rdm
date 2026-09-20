@@ -47,9 +47,16 @@ The `claude plugin details` command shows Skills / Agents / Hooks / MCP servers 
 rdm's raw-skills distribution includes both skills and workflow engines:
 
 - **Emitted raw-distribution skills (11 total):** rdm-autopilot, rdm-backlog, rdm-dispatch-phase, rdm-do, rdm-document, rdm-estimate, rdm-land, rdm-plan-review, rdm-review, rdm-revise, rdm-roadmap
-- **Emitted workflow engines (2 total):** rdm-wf-dispatch-phase, rdm-wf-review-refute-fix
+- **Emitted workflow engines (1 total):** rdm-wf-review-refute-fix
 
-Note: `rdm-dispatch-phase` appears in **both** lists — it is a thin skill shim that invokes the `rdm-wf-dispatch-phase` workflow engine.
+> **Naming-decision examples below are historical.** This section's worked example is the
+> `rdm-dispatch-phase` skill vs. the `rdm-wf-dispatch-phase` engine, which was the sharpest
+> instance of the collision (one name, two listing entries). `agent-orchestrated-dispatch`
+> phase 7 retired that engine — `rdm-dispatch-phase` is now the prose procedure itself, not a
+> shim over it — so the pair no longer exists. **The naming transform and every decision
+> below are unchanged**; only the example is retrospective. The same collision shape still
+> applies to the surviving pair (`rdm-review` the skill vs. `rdm-wf-review-refute-fix` the
+> engine) and to any engine added later.
 
 ### The Collision Scenario
 
@@ -146,7 +153,7 @@ Workflow engines (e.g., `rdm-wf-dispatch-phase.js`) accept these arguments:
 - **`rdmBin` (OPTIONAL):** Path to the rdm binary. An absent key defaults to a plain `rdm` on `PATH`; an explicit string is used verbatim, and the sentinel `"rdm"` requests PATH resolution deliberately. A present-but-non-string value still throws, since degrading a typo to PATH would reintroduce the silent-wrong-binary hazard. The engine never probes the filesystem. Canonical contract: [`docs/workflow-schemas.md`](workflow-schemas.md) § "Environment args: `rdmBin` and `project`".
 - **`project` (OPTIONAL):** The rdm project name. If absent, rdm uses `RDM_PROJECT` environment variable or the `default_project` configured in `rdm.toml`.
 
-This reverses an earlier fail-closed stance recorded in this document. That stance guarded a real hazard — inside the rdm source repo a bare `rdm` is a stale installed build the development-build rule forbids — but the hazard is dogfood-scoped, and a plugin consumer has no repo-local build path to pass. The compensating control now lives where the hazard does: `RDM_BIN` in this repo's `.mise.toml` pins the local development build and the calling skill resolves it, gated by `scripts/verify-workflow-dispatch.sh` § 9c-dogfood.
+This reverses an earlier fail-closed stance recorded in this document. That stance guarded a real hazard — inside the rdm source repo a bare `rdm` is a stale installed build the development-build rule forbids — but the hazard is dogfood-scoped, and a plugin consumer has no repo-local build path to pass. The compensating control now lives where the hazard does: `RDM_BIN` in this repo's `.mise.toml` pins the local development build and the calling skill resolves it. *(That entry was gated by `scripts/verify-workflow-dispatch.sh` § 9c-dogfood until `agent-orchestrated-dispatch` phase 7 retired that harness with its engine; the project's development-build rule in `CLAUDE.md` states it now.)*
 
 ### Resolution Strategy for Plugin-Installed Shims
 
@@ -201,8 +208,7 @@ The following layout decisions were established in the roadmap's "Central constr
     review/
     revise/
   workflows/
-    rdm-wf-dispatch-phase.js # Workflow engines (directory names: rdm-wf- prefix kept per Decision 2)
-    rdm-wf-review-refute-fix.js
+    rdm-wf-review-refute-fix.js # Workflow engines (filenames: rdm-wf- prefix kept per Decision 2)
 ```
 
 ### Manifest Configuration
@@ -422,7 +428,7 @@ Installing plugin "rdm@rdm"...✔ Successfully installed plugin: rdm@rdm (scope:
 [ok] 11 skills installed: autopilot backlog dispatch-phase do document estimate land plan-review review revise roadmap 
 
 ==> 5c. Installed workflow scripts, asserted ON THE FILESYSTEM (never via plugin details — see gap 2)
-[ok] 2 workflow scripts installed byte-identical: rdm-wf-dispatch-phase.js rdm-wf-review-refute-fix.js 
+[ok] 1 workflow script installed byte-identical: rdm-wf-review-refute-fix.js 
 
 ==> 5d. Corroboration only: claude plugin details rdm
     rdm 0.18.1
@@ -485,7 +491,7 @@ rdm is distributed via three surfaces, each with a distinct purpose and audience
 The **authoritative source** for all distributed artifacts — the skills, workflow engines, and templates that all other surfaces derive from. When you modify a skill or workflow, you edit the template in this tree:
 
 - **Skills:** `rdm-core/src/templates/skill-*.md` (11 skills: autopilot, backlog, dispatch-phase, do, document, estimate, land, plan-review, review, revise, roadmap)
-- **Workflows:** `rdm-core/src/templates/workflows/rdm-wf-*.js` (2 engines: rdm-wf-dispatch-phase.js, rdm-wf-review-refute-fix.js)
+- **Workflows:** `rdm-core/src/templates/workflows/rdm-wf-*.js` (1 engine: rdm-wf-review-refute-fix.js)
 - **Generators:** `rdm-cli`'s `agent-config` command emits these templates verbatim (with substitutions for `{rdm_bin}`, `{project}`, etc.) to create downstream artifacts.
 
 Invocation: the emitted skills invoke bare `rdm` (e.g., `./target/debug/rdm phase list …`).
@@ -494,9 +500,9 @@ Invocation: the emitted skills invoke bare `rdm` (e.g., `./target/debug/rdm phas
 
 What **downstream consumers install** via `claude plugin marketplace add` and `claude plugin install`. Built by `rdm agent-config claude --plugin --out <dir>`, emitted to `plugins/rdm/` in this repo for release. Consumers never see the templates — they only see the installed plugin.
 
-**Layout:** 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, etc., with the `rdm-` prefix dropped per the naming decision) and 2 workflow engines (`rdm:rdm-wf-dispatch-phase`, `rdm:rdm-wf-review-refute-fix`, with the `rdm-wf-` prefix kept for disambiguation).
+**Layout:** 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, etc., with the `rdm-` prefix dropped per the naming decision) and 1 workflow engine (`rdm:rdm-wf-review-refute-fix`, with the `rdm-wf-` prefix kept for disambiguation).
 
-**Invocation:** skills resolve as `rdm:<name>` (e.g., `rdm:roadmap`), and they invoke workflows via `Workflow({ name: "rdm:rdm-wf-dispatch-phase", … })`.
+**Invocation:** skills resolve as `rdm:<name>` (e.g., `rdm:roadmap`), and they invoke workflows via `Workflow({ name: "rdm:rdm-wf-review-refute-fix", … })`.
 
 **rdmBin Resolution:** the emitted plugin shims must resolve the rdm binary at runtime using these strategies, in order of precedence: `--rdm-bin` flag, `RDM_BIN` environment variable, or `rdm` on PATH. See § "Decision 4: Runtime Arguments Delivery" for details.
 
@@ -520,7 +526,6 @@ These are hand-edited to accommodate repo-local paths, hoisted arguments, and wo
 - `.claude/workflows/rdm-wf-estimate.js` — stamped from `.claude/workflows/lib/estimate.mjs` by `scripts/gen-workflow-estimate.sh`
 
 **Generated with hand-copied driver blocks:** Some workflow files contain large stamped blocks (generated by a script) plus a smaller trailing hand-copied driver section. These must never be hand-edited in the generated portions, but the driver blocks are hand-maintained:
-- `.claude/workflows/rdm-wf-dispatch-phase.js` — lines 61–1787 are generated by `scripts/gen-workflow-review.sh` (stamped from `.claude/workflows/lib/review.mjs`), and lines 1792+ contain the hand-copied `dispatch-outcome` driver block verified byte-identical by `scripts/verify-workflow-dispatch.sh` against `.claude/workflows/lib/dispatch-phase.mjs`
 - `.claude/workflows/rdm-wf-review-refute-fix.js` — lines 52–1778 are generated by `scripts/gen-workflow-review.sh` (stamped from `.claude/workflows/lib/review.mjs`); the trailing driver code is structurally gated by `scripts/verify-workflow-review-outcome.sh`, not byte-checked against a single lib module
 - `.claude/workflows/rdm-wf-plan-review.js` — large stamped block (generated by `scripts/gen-workflow-review.sh` from `.claude/workflows/lib/review.mjs`) followed by a hand-copied `plan-review-driver` block verified byte-identical by `scripts/verify-workflow-review.sh` against `.claude/workflows/lib/plan-review.mjs`
 

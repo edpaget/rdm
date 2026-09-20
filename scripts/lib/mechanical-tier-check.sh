@@ -3,8 +3,8 @@
 # (fetch/exec) agent() calls are pinned to the resolved mechanical/small
 # tier rather than inheriting a judgment stage's model or the session model.
 #
-# Sourced by scripts/verify-workflow-{dispatch,backlog,document,estimate,review}.sh.
-# Generalizes dispatch-phase's original AC-MODEL awk extractor
+# Sourced by scripts/verify-workflow-{backlog,document,estimate,review}.sh.
+# Generalizes the retired dispatch engine's original AC-MODEL awk extractor
 # (agent_option_blocks) plus a new assert_label_model primitive for asserting
 # a SPECIFIC label's block carries a SPECIFIC model: expression. Every caller
 # follows the same planted-mutation self-test convention: repoint (or strip)

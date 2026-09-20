@@ -105,7 +105,8 @@ done
 [ "$GATE_BEGIN" -lt "$GATE_END" ] || fail "review-gate-spec markers are inverted"
 
 # The stamped region of the SOURCE must not name the land-time completion
-# trailer: it is copied verbatim into rdm-wf-dispatch-phase.js, whose AC-1 forbids it.
+# trailer: it is copied verbatim into every stamped workflow consumer, none of
+# which may write a land-time completion directive.
 awk -v b=">>> review-refute-fix:begin" -v e=">>> review-refute-fix:end" '
     index($0, b) { inb = 1; next }
     index($0, e) { inb = 0 }
@@ -141,7 +142,6 @@ cp "$LIB" "$SCRATCH/.claude/workflows/lib/review.mjs"
 cp "$WF_DIR/rdm-wf-review-refute-fix.js" "$SCRATCH/.claude/workflows/rdm-wf-review-refute-fix.js"
 # gen-workflow-review.sh lists every consumer; the scratch tree must carry them
 # all or the scratch --check fails on a missing consumer rather than on drift.
-cp "$WF_DIR/rdm-wf-dispatch-phase.js" "$SCRATCH/.claude/workflows/rdm-wf-dispatch-phase.js"
 cp "$WF_DIR/rdm-wf-plan-review.js" "$SCRATCH/.claude/workflows/rdm-wf-plan-review.js"
 sh "$SCRATCH/scripts/gen-workflow-review.sh" --check >/dev/null 2>&1 ||
     fail "scratch --check should pass on a clean copy"
@@ -319,7 +319,7 @@ pass "1d-gate-policy: the rendered plan spec states the evidence-carrying/deferr
 # ...and states it WITHOUT the local driver's internals. `gateMode`/`gateAction`/
 # `gateBlocked`/`gateDeferred` are `rdm-wf-plan-review.js` surface, and that
 # workflow is never shipped (`rdm-core/src/templates/workflows/` holds only
-# dispatch-phase and review-refute-fix). A consumer of the distributed skill has
+# review-refute-fix). A consumer of the distributed skill has
 # nothing to pass `gateMode` TO and no object to read `gateBlocked` OFF, so
 # stamping those names into the shared spec would emit an uninstructable
 # instruction into every downstream tree. This grep is the regression detector.
@@ -698,23 +698,23 @@ pass "no forbidden globals present; detector catches a planted one"
 # three plus a planted-mutation self-test for each.
 say "2d. Engine naming: rdm-wf-* filenames, meta.name parity, frozen lib filenames"
 
-EXPECTED_ENGINES="rdm-wf-backlog.js rdm-wf-dispatch-phase.js rdm-wf-document.js rdm-wf-estimate.js rdm-wf-plan-review.js rdm-wf-review-refute-fix.js spike-agent-type.js"
+EXPECTED_ENGINES="rdm-wf-backlog.js rdm-wf-document.js rdm-wf-estimate.js rdm-wf-plan-review.js rdm-wf-review-refute-fix.js spike-agent-type.js"
 ACTUAL_ENGINES=$(find "$WF_DIR" -maxdepth 1 -name '*.js' -exec basename {} \; | sort | tr '\n' ' ')
 # shellcheck disable=SC2086  # deliberately word-split name list
 EXPECTED_ENGINES_SORTED=$(printf '%s\n' $EXPECTED_ENGINES | sort | tr '\n' ' ')
 [ "$ACTUAL_ENGINES" = "$EXPECTED_ENGINES_SORTED" ] || fail "2d: .claude/workflows/*.js is not the expected engine set (spike-agent-type.js is an exempt spike artifact and keeps its bare name).
   expected: $EXPECTED_ENGINES_SORTED
   actual:   $ACTUAL_ENGINES"
-pass "2d: all six engines carry the rdm-wf- prefix (plus the exempt spike artifact)"
+pass "2d: all five engines carry the rdm-wf- prefix (plus the exempt spike artifact)"
 
-EXPECTED_LIBS="backlog.mjs dispatch-phase.mjs document.mjs estimate.mjs plan-review.mjs review.mjs"
+EXPECTED_LIBS="backlog.mjs document.mjs estimate.mjs plan-review.mjs review.mjs"
 ACTUAL_LIBS=$(find "$WF_DIR/lib" -maxdepth 1 -name '*.mjs' -exec basename {} \; | sort | tr '\n' ' ')
 # shellcheck disable=SC2086  # deliberately word-split name list
 EXPECTED_LIBS_SORTED=$(printf '%s\n' $EXPECTED_LIBS | sort | tr '\n' ' ')
 [ "$ACTUAL_LIBS" = "$EXPECTED_LIBS_SORTED" ] || fail "2d: .claude/workflows/lib/*.mjs filenames changed — libs are shared SOURCE modules, never listing entries, and their names are frozen by decision.
   expected: $EXPECTED_LIBS_SORTED
   actual:   $ACTUAL_LIBS"
-pass "2d: all six lib/*.mjs filenames are unchanged"
+pass "2d: all five lib/*.mjs filenames are unchanged"
 
 # meta.name must equal the filename stem, or the listing shows one name while
 # the file carries another.
@@ -810,12 +810,19 @@ sh "$REPO_ROOT/scripts/observe-workflow-listing.sh" --self-test-only >/dev/null 
   Run it directly to see which half broke."
 pass "2d: the rendered-listing observer's assertions still discriminate (hermetic self-test)"
 
-# The two SHIPPED copies must stay byte-identical to their local counterparts.
-for shipped in rdm-wf-dispatch-phase.js rdm-wf-review-refute-fix.js; do
-    diff -q "$WF_DIR/$shipped" "$REPO_ROOT/rdm-core/src/templates/workflows/$shipped" >/dev/null ||
+# Every SHIPPED copy must stay byte-identical to its local counterpart. The set
+# is discovered from the template directory itself, with a floor so the loop
+# cannot pass vacuously on an emptied tree.
+SHIPPED_SEEN=0
+for shipped_path in "$REPO_ROOT"/rdm-core/src/templates/workflows/*.js; do
+    shipped=$(basename "$shipped_path")
+    diff -q "$WF_DIR/$shipped" "$shipped_path" >/dev/null ||
         fail "2d: $shipped drifted between .claude/workflows and rdm-core/src/templates/workflows"
+    SHIPPED_SEEN=$((SHIPPED_SEEN + 1))
 done
-pass "2d: both shipped template copies are byte-identical to their local engines"
+[ "$SHIPPED_SEEN" -ge 1 ] ||
+    fail "2d: rdm-core/src/templates/workflows/ holds no engine at all — the byte-identity check would be vacuous"
+pass "2d: all $SHIPPED_SEEN shipped template copies are byte-identical to their local engines"
 
 # The engine names rendered by the `find-refute-verdict:local-code-override`
 # block must reach ONLY the local dogfood rdm-review skill. The two SHIPPED
@@ -906,8 +913,7 @@ pass "2e self-test: a planted bare engine reference correctly turns the sweep re
 
 # --- 2a. PROJECT-AGNOSTIC SIGNAL DERIVATION (region-scoped) ------------------
 # `deriveSignals` must carry NO repo-specific literal and NO language-specific
-# keyword clause. The grep is deliberately REGION-scoped: rdm-wf-dispatch-phase.js's
-# hand-written side-task prose and the DIMENSIONS `//|` prose both mention
+# keyword clause. The grep is deliberately REGION-scoped: the DIMENSIONS `//|` prose mentions
 # `rdm-core/src/...` legitimately, and a whole-file grep would flag them.
 say "2a. deriveSignals is project-agnostic and language-neutral (region-scoped grep)"
 
@@ -923,9 +929,8 @@ extract_signals_region() {
 
 AGNOSTIC_SIGNAL_TOKENS='rdm-cli|rdm-server|rdm-core/src/|\\bpub\\b'
 SIGNAL_REGION_FILES="$LIB"
-for f in "$WF_DIR"/rdm-wf-review-refute-fix.js "$WF_DIR"/rdm-wf-dispatch-phase.js "$WF_DIR"/rdm-wf-plan-review.js \
-    "$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js" \
-    "$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-dispatch-phase.js"; do
+for f in "$WF_DIR"/rdm-wf-review-refute-fix.js "$WF_DIR"/rdm-wf-plan-review.js \
+    "$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js"; do
     SIGNAL_REGION_FILES="$SIGNAL_REGION_FILES $f"
 done
 for f in $SIGNAL_REGION_FILES; do
@@ -4075,7 +4080,7 @@ pass "AC-MECHANICAL-TIER: detector fires when fetch:roadmap's schema is repointe
 # Fixes the oversight named in §5b-mechanical above: lib/plan-review.mjs (and
 # its byte-identical rdm-wf-plan-review.js copy) now thread the configured
 # review-find/review-verify model ids into both runPlanReview({...}) call
-# sites, mirroring dispatch-phase.js's existing reviewModels threading. The
+# sites, mirroring the reviewModels threading the retired dispatch engine used. The
 # refuter-TIER decision (keep-opus) in docs/refuter-model-tiering.md is
 # untouched by this — this section gates BINDING PRESENCE only.
 say "5b-models. Judgment-site model threading: findModel/verifyModel reach runPlanReview() and the bootstrap resolves review-find/review-verify"
@@ -4131,7 +4136,7 @@ pass "5b-models: detector fires when a call site's findModel is stripped"
 # The plan-review DRIVER (parsePlanArgs + the fetch/act/gate orchestration in
 # runPlanReviewDriver) is the single source of truth in lib/plan-review.mjs and
 # is copied BYTE-IDENTICAL into rdm-wf-plan-review.js's `plan-review-driver` block. Like
-# dispatch-phase's dispatch-outcome block, this copy is NOT stamped by the
+# the retired dispatch engine's dispatch-outcome block, this copy is NOT stamped by the
 # generator — gate it for byte-equality here so a drifted copy cannot ship.
 say "5b-drift. plan-review-driver block is byte-identical between the lib and the workflow"
 [ -f "$PLAN_LIB" ] || fail "lib/plan-review.mjs not found: $PLAN_LIB"
@@ -4716,8 +4721,8 @@ const blockingCoherence = [{ id: 'c', concern: 'coherence', severity: 'blocking'
 }
 
 // ---- (5) REFUTATION BUDGET threading through the plan-review driver ----------
-// The code-mode analogue (dispatch-phase's gates + the OUTCOME's reviewBudget)
-// is covered in verify-workflow-dispatch.sh; this is the plan-mode driver's own
+// The code-mode analogue (the OUTCOME's reviewBudget) is covered by
+// scripts/verify-workflow-review-outcome.sh; this is the plan-mode driver's own
 // wiring around the already-tested pipeline core: parsePlanArgs resolves the
 // budget, reviewUnit and the implementation-plan branch thread it into every
 // runPlanReview context, carry the reported `budget` on their result, and
@@ -10688,15 +10693,18 @@ pass "11b: a one-span deletion leaves --check green but is caught by the four-su
 say "12. intent-alignment: presence, no-intent policy, phase inheritance, and agnostic prose"
 
 # (a) PRESENCE across every projection route.
-for f in "$WF_DIR/rdm-wf-plan-review.js" "$WF_DIR/rdm-wf-review-refute-fix.js" "$WF_DIR/rdm-wf-dispatch-phase.js"; do
+for f in "$WF_DIR/rdm-wf-plan-review.js" "$WF_DIR/rdm-wf-review-refute-fix.js"; do
     grep -qF 'intent-alignment' "$f" ||
         fail "12: $(basename "$f") does not carry the intent-alignment dimension — re-run scripts/gen-workflow-review.sh"
 done
-for f in "$REPO_ROOT"/rdm-core/src/templates/workflows/rdm-wf-dispatch-phase.js \
-    "$REPO_ROOT"/rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js; do
+INTENT_TWINS=0
+for f in "$REPO_ROOT"/rdm-core/src/templates/workflows/*.js; do
     grep -qF 'intent-alignment' "$f" ||
         fail "12: the crate-embedded twin $(basename "$f") is stale — re-copy it from .claude/workflows/"
+    INTENT_TWINS=$((INTENT_TWINS + 1))
 done
+[ "$INTENT_TWINS" -ge 1 ] ||
+    fail "12: no crate-embedded twin was checked — the staleness check would be vacuous"
 for doc in $PLAN_RENDERS; do
     grep -qF 'intent-alignment' "$doc" ||
         fail "12: plan render $doc is missing the intent-alignment bullet — re-run gen-skill-review.sh --mode plan"
@@ -13516,13 +13524,6 @@ done
     fail "15f: expected at least the two known persist consumers, found $CONSUMERS — the grep is vacuous"
 pass "15f(d): every persist consumer ($CONSUMERS of them) reads the degradation accounting"
 
-# And dispatch-phase carries the stamped WRITER while calling it nowhere.
-[ "$(persist_calls "$WF_DIR/rdm-wf-dispatch-phase.js")" -eq 0 ] ||
-    fail "15f: rdm-wf-dispatch-phase.js now CALLS buildPersistReviewPrompts — it must read the accounting like every other consumer"
-grep -q 'function buildPersistReviewPrompts(' "$WF_DIR/rdm-wf-dispatch-phase.js" ||
-    fail "15f: rdm-wf-dispatch-phase.js lost the stamped writer — the stamped block drifted"
-pass "15f(d'): rdm-wf-dispatch-phase.js carries the stamped writer but calls no persist step"
-
 # (e) The evidence is discoverable from the code's own documentation.
 grep -q 'Recorded evidence' "$REPO_ROOT/docs/workflow-schemas.md" ||
     fail "15f: docs/workflow-schemas.md does not carry the recorded fallback-claim evidence note"
@@ -13722,17 +13723,14 @@ else
     fail "15h: the emitted persist ladder failed the temp-file hygiene assertions"
 fi
 
-# The SHIPPED bytes, not only the lib. Every stamped consumer plus the two
-# plugin engines must carry the same three literals and neither of the two
+# The SHIPPED bytes, not only the lib. Every stamped consumer plus the plugin
+# engine must carry the same three literals and neither of the two
 # forbidden ones — these are the files a downstream agent actually executes.
 for stamped in \
     "$WF_DIR/rdm-wf-review-refute-fix.js" \
-    "$WF_DIR/rdm-wf-dispatch-phase.js" \
     "$WF_DIR/rdm-wf-plan-review.js" \
     "$TEMPLATES/workflows/rdm-wf-review-refute-fix.js" \
-    "$TEMPLATES/workflows/rdm-wf-dispatch-phase.js" \
-    "$REPO_ROOT/plugins/rdm/workflows/rdm-wf-review-refute-fix.js" \
-    "$REPO_ROOT/plugins/rdm/workflows/rdm-wf-dispatch-phase.js"; do
+    "$REPO_ROOT/plugins/rdm/workflows/rdm-wf-review-refute-fix.js"; do
     [ -f "$stamped" ] || fail "15h: stamped consumer not found: $stamped"
     # -F throughout, and the patterns are single-quoted on purpose: `$` and
     # `${…}` are the literal SHELL TEXT being searched for inside the emitted
@@ -13749,7 +13747,7 @@ for stamped in \
     grep -qF 'rdm-persist-start.$$.json' "$stamped" &&
         fail "15h: $stamped still carries the predictable \$\$-named scratch path"
 done
-pass "15h: all seven stamped copies carry the mktemp form and none carries the \$\$-named path"
+pass "15h: all four stamped copies carry the mktemp form and none carries the \$\$-named path"
 
 # --- 15h-mut. PLANTED-MUTATION SELF-TEST -------------------------------------
 # Restore the pre-fix `$$` line in a scratch copy of the lib, re-stamp the
@@ -13762,7 +13760,7 @@ MUT15H="$TMP/mut-15h"
 mkdir -p "$MUT15H/scripts" "$MUT15H/.claude/workflows/lib"
 cp "$GEN" "$MUT15H/scripts/gen-workflow-review.sh"
 cp "$LIB" "$MUT15H/.claude/workflows/lib/review.mjs"
-for consumer in rdm-wf-review-refute-fix.js rdm-wf-dispatch-phase.js rdm-wf-plan-review.js; do
+for consumer in rdm-wf-review-refute-fix.js rdm-wf-plan-review.js; do
     cp "$WF_DIR/$consumer" "$MUT15H/.claude/workflows/$consumer"
 done
 

@@ -8,6 +8,15 @@ This is the committed "before" reading. Phases 3-7 of this roadmap must diff the
 token-saving claims against this snapshot, using the comparison unit named in
 [Confounds](#confounds) below — not raw per-run totals.
 
+> **Frozen corpus.** Every figure here was measured on the lane as it stood on the measurement
+> date, when `autopilot` and `dispatch-phase` were both Workflow scripts. `autopilot.js` was
+> retired to prose by `prose-autopilot-orchestration` phase 3, and `rdm-wf-dispatch-phase.js` by
+> `agent-orchestrated-dispatch` phase 7 (see
+> [`docs/workflow-vs-prose-boundary.md`](workflow-vs-prose-boundary.md) § "Retirement record").
+> The `dispatch-phase` rows below are therefore a **dated record**, not a description of a lane
+> you can re-measure, and the command above will no longer resolve those two workflow names.
+> Nothing here is re-baselined: a frozen baseline that moved would be worthless as a baseline.
+
 ## Methodology
 
 The instrument locates every `workflows/wf_*.json` session-sidecar file under

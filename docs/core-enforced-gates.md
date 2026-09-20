@@ -15,12 +15,12 @@ anyway. If rdm *refuses the terminal write* unless the review records exist, a
 model that skipped a gate cannot complete the phase without forging a review,
 and the trail shows exactly what happened.
 
-The same move pulls three invariants `.claude/workflows/lib/dispatch-phase.mjs`
-enforces fail-closed in JS — the verify gate, the worktree-clean assertion, and
+The same move pulled three invariants `.claude/workflows/lib/dispatch-phase.mjs`
+enforced fail-closed in JS — the verify gate, the worktree-clean assertion, and
 "no `Done:` from the engine" — into nextest-covered Rust that every host
-inherits, rather than only the Claude lane. Until the engine is retired the two
-enforcements coexist; `parseWorktreeStatus` in that JS file remains the
-reference semantics `rdm_core::worktree::parse_porcelain` matches.
+inherits, rather than only the Claude lane. Since `agent-orchestrated-dispatch`
+phase 7 retired that engine, the Rust enforcement is the *only* one left: core
+now owns those semantics outright rather than mirroring a JS reference.
 
 ## The three preconditions
 
@@ -240,12 +240,16 @@ self-tests:
 
 - `scripts/verify-skill-autopilot.sh` § 5 greps the autopilot surfaces (the
   local skill plus both shipped templates).
-- `scripts/verify-workflow-dispatch.sh` § 11 greps the **orchestrator**
-  surfaces — and does so by *discovery*, not from a hand-maintained list. It
-  walks every agent-facing instruction surface in the repo (`.claude/workflows`
-  including `lib/`, `.claude/skills`, `.claude/agents`,
-  `rdm-core/src/templates`, and the checked-in `plugins/` tree) and refuses if
-  any of them mentions the flag.
+- *(Historical, retired with the dispatch engine in `agent-orchestrated-dispatch`
+  phase 7.)* `scripts/verify-workflow-dispatch.sh` § 11 also greped the
+  **orchestrator** surfaces by *discovery* — walking every agent-facing
+  instruction surface in the repo and refusing if any mentioned the flag. That
+  was a static grep over prose and templates, the class
+  `task/retire-static-grep-harnesses` owns; the enforcement that survives is
+  core's own refusal to honour an override that lacks a reason, plus
+  `rdm-core/tests/gate.rs`'s `an_override_waives_a_and_b_but_never_c` /
+  `an_empty_override_reason_is_refused` /
+  `an_override_is_recorded_then_cleared_on_leaving_reviewed`.
 
 The discovery shape is the point. A later phase that introduces a new
 orchestrator — whatever it is named, and whether it is a workflow script, a

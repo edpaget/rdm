@@ -110,8 +110,9 @@ pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 # 11-entry PLUGIN_SKILL_NAMES table). A floor, so the inventory check cannot
 # pass vacuously on an empty tree.
 EXPECTED_SKILL_COUNT=11
-# The number of Workflow engines the plugin surface ships (Decision 2).
-MIN_WORKFLOW_COUNT=2
+# The number of Workflow engines the plugin surface ships (Decision 2). One
+# since agent-orchestrated-dispatch phase 7 retired `rdm-wf-dispatch-phase`.
+MIN_WORKFLOW_COUNT=1
 # Fixed placeholder substituted for the manifest `version` value on BOTH sides
 # of the drift diff. Not a version, and never compared against one.
 VERSION_PLACEHOLDER="0.0.0-NORMALIZED"
@@ -527,7 +528,7 @@ say "7f. Self-test: a mutated and a deleted workflow both turn the workflow-iden
 ST_WF="$TMP/st-workflow"
 rm -rf "$ST_WF"
 cp -R "$PLUGIN_DIR" "$ST_WF"
-printf '\n// planted-corruption byte\n' >>"$ST_WF/workflows/rdm-wf-dispatch-phase.js"
+printf '\n// planted-corruption byte\n' >>"$ST_WF/workflows/rdm-wf-review-refute-fix.js"
 if check_workflow_identity "$ST_WF" "$FRESH" >/dev/null 2>&1; then
     fail "self-test 7f: a mutated workflow byte was NOT detected — the byte-identity gate is vacuous"
 fi
@@ -629,11 +630,18 @@ rm -rf "$ST_FLOOR"
 mkdir -p "$ST_FLOOR/wf-checked/workflows" "$ST_FLOOR/wf-fresh/workflows"
 FLOOR_WF=$(file_names "$FRESH/workflows" | awk '{print $1}')
 [ -n "$FLOOR_WF" ] || fail "self-test 7l setup failed — no emitted workflow to copy"
+# Both sides EMPTY: the name sets match (so equality passes) and only the count
+# floor can go red. An empty set is the smallest matched set that is still below
+# the floor, whatever the floor's current value is.
+if check_workflow_identity "$ST_FLOOR/wf-checked" "$ST_FLOOR/wf-fresh" >/dev/null 2>&1; then
+    fail "self-test 7l: a matched-but-undersized workflow set (0 < $MIN_WORKFLOW_COUNT) was NOT detected — the workflow floor is vacuous"
+fi
+# …and the same matched set AT the floor must pass, so the check above is
+# discriminating on size rather than always red.
 cp "$FRESH/workflows/$FLOOR_WF" "$ST_FLOOR/wf-checked/workflows/"
 cp "$FRESH/workflows/$FLOOR_WF" "$ST_FLOOR/wf-fresh/workflows/"
-if check_workflow_identity "$ST_FLOOR/wf-checked" "$ST_FLOOR/wf-fresh" >/dev/null 2>&1; then
-    fail "self-test 7l: a matched-but-undersized workflow set (1 < $MIN_WORKFLOW_COUNT) was NOT detected — the workflow floor is vacuous"
-fi
+check_workflow_identity "$ST_FLOOR/wf-checked" "$ST_FLOOR/wf-fresh" >/dev/null 2>&1 ||
+    fail "self-test 7l: a matched workflow set AT the floor was rejected — the floor check is red for a reason other than size"
 printf '  - a matched workflow name set below the floor correctly turns the gate red\n'
 mkdir -p "$ST_FLOOR/sk-checked/skills" "$ST_FLOOR/sk-fresh/skills"
 for name in land revise; do

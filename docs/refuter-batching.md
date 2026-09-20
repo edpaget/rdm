@@ -38,7 +38,7 @@ node scripts/run-refuter-agreement.mjs --batch-power
 ```
 
 **The grouping key must carry the review-unit identity.**
-`buildReviewPipeline` is invoked **once per review unit** (one dispatch-phase
+`buildReviewPipeline` is invoked **once per review unit** (one orchestrator
 code-review stage, one plan-review phase unit) — never once per workflow run. A
 real batched dispatch is therefore exactly *one review unit's gating findings for
 one dimension*, and the key is:
@@ -292,7 +292,7 @@ no-ship decision.
   `batched-refuters-break-corpus-mining` — a **pre-condition on shipping**, not a
   bug today.
 - **The agent-label vocabulary would change** from `refute:<mode>:<findingId>` to
-  `refute:<mode>:<dimKey>`. `verify-workflow-dispatch.sh`'s `JUDGMENT_LABELS`
+  `refute:<mode>:<dimKey>`. The retired `verify-workflow-dispatch.sh`'s `JUDGMENT_LABELS`
   prefix list still matches, but any downstream analysis keyed on the id suffix
   does not.
 - **Phase 5 interaction.** `phase-5-collapse-always-on-finders` collapses plan

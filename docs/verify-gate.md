@@ -1,7 +1,7 @@
 # The phase-time verify gate (`dispatch.verify`)
 
-`rdm-wf-dispatch-phase` runs **one** project-supplied command once per implementation
-attempt — plus once more when the review's Act step changed code (§ 8) — and interprets its
+The prose `rdm-dispatch-phase` orchestrator runs **one** project-supplied command once per
+implementation attempt — plus once more when the review's Act step changed code (§ 8) — and interprets its
 exit code. A non-zero exit sends the item back through the existing rework budget instead of
 reporting it `reviewed`.
 
@@ -13,9 +13,12 @@ commit-time one.
 
 - **One command string.** Not a list, not a matrix, not a DAG.
 - **Project-supplied data.** rdm's resolution and execution path names no language,
-  package manager, or test tool. That property is enforced by construction and
-  grep-asserted (with an occurrence floor and planted-mutation self-tests) by
-  `scripts/verify-workflow-dispatch.sh` § 3-verify.
+  package manager, or test tool. That property is enforced by construction, and the
+  resolution/execution path itself is exercised against the real binary by
+  `rdm verify resolve|run` plus `rdm-cli/tests/cli_verify.rs`. *(Historical: the retired
+  `rdm-wf-dispatch-phase` engine's `scripts/verify-workflow-dispatch.sh` § 3-verify also
+  grep-asserted it over that engine's JS; both went with the engine in
+  `agent-orchestrated-dispatch` phase 7.)*
 - **Run once per implementation attempt**, in the item's worktree, after the
   implementer returns and before the code review's verdict is composed — **plus once
   more** when the review's Act step changed code, so a fix that lands after the check
@@ -235,9 +238,13 @@ outcome must never be read as "nothing changed".
   a missing or non-string `porcelain`, a thrown probe, or text that parses to no path all
   read as *not clean*. An unobservable worktree is never a clean one.
 - An **absent** `d.clean` dep is a **skip**, not a failure — the same precedent the absent
-  `d.verify` dep sets. Non-vacuity is bought statically:
-  `scripts/verify-workflow-dispatch.sh` § 3-clean asserts the shipped driver actually binds
-  the probe, with planted-mutation self-tests behind each assertion.
+  `d.verify` dep sets. Since `agent-orchestrated-dispatch` phase 7 the runner is prose, so the
+  binding is not a JS dep to grep: the enforcement that matters is core precondition (c)
+  (`precondition_c_refuses_a_dirty_worktree_and_names_the_paths` and
+  `an_unobservable_worktree_refuses_rather_than_reading_as_clean` in `rdm-core/tests/gate.rs`),
+  which refuses the terminal write on a dirty or unobservable worktree whatever the runner
+  did. *(Historical: `scripts/verify-workflow-dispatch.sh` § 3-clean asserted the retired
+  engine bound the probe.)*
 - A rename entry (`R  old -> new`) reports the **destination**; paths are never split on
   whitespace; a trailing newline never produces a phantom path; and a wholesale-dirty tree
   is capped at 20 reported paths with an `…and N more` tail so the OUTCOME summary (and

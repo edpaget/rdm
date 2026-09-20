@@ -67,9 +67,8 @@ pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 PLUGIN_SKILLS="roadmap do review document estimate dispatch-phase autopilot land revise plan-review backlog"
 # Plugin-mode workflow file names (Decision 2: `rdm-wf-` prefix kept —
 # identical to the raw-skills surface).
-DISPATCH_WF="rdm-wf-dispatch-phase.js"
 REVIEW_WF="rdm-wf-review-refute-fix.js"
-PLUGIN_WORKFLOWS="$DISPATCH_WF $REVIEW_WF"
+PLUGIN_WORKFLOWS="$REVIEW_WF"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
@@ -225,9 +224,9 @@ say "1b. Emitting 'agent-config claude --plugin --out <tmp>'"
 pass "emitted into $TMP/plugin"
 
 # --- 2. structural / layout -----------------------------------------------
-say "2. Structural: manifest valid, 11 skills + 2 workflows at conventional paths, .claude-plugin/ holds only the manifest"
+say "2. Structural: manifest valid, 11 skills + 1 workflow at conventional paths, .claude-plugin/ holds only the manifest"
 if check_layout "$TMP/plugin"; then
-    pass "layout: manifest valid, all 11 skills + 2 workflows present, .claude-plugin/ clean"
+    pass "layout: manifest valid, all 11 skills + 1 workflow present, .claude-plugin/ clean"
 else
     fail "layout check failed (see lines above)"
 fi
@@ -251,9 +250,8 @@ fi
     fail "expected >= 5 total rdm:<engine> references across the emitted skills, found $REF_COUNT — check is not vacuous only if this floor holds"
 # Retargeted by agent-orchestrated-dispatch phase 6: the per-phase driver is now
 # the prose `rdm-dispatch-phase` orchestrator, and the engine these two skills
-# actually name is the CODE-REVIEW one. The dispatch engine is referenced by no
-# emitted skill any more (its file still ships until the roadmap's retirement
-# phase removes it).
+# actually name is the CODE-REVIEW one — the only engine still shipped, since
+# phase 7 retired the dispatch engine outright.
 REF_ENGINE="rdm:${REVIEW_WF%.js}"
 grep -qF "$REF_ENGINE" "$TMP/plugin/skills/dispatch-phase/SKILL.md" ||
     fail "skills/dispatch-phase/SKILL.md must reference $REF_ENGINE"

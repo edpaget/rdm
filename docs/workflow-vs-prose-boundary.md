@@ -59,7 +59,8 @@ and it is why the loop moves to prose while everything it drives stays a workflo
 
 ## Dispositions
 
-Moving the drive loop to prose left the other seven scripts in place as workflows, but
+Moving the drive loop to prose left the other seven scripts in place as workflows (six
+today — `agent-orchestrated-dispatch` phase 7 retired `rdm-wf-dispatch-phase`), but
 it was not a pure surface swap, and the table should not be read as claiming one.
 `autopilot.js` made exactly **one** nested `workflow()` call — a dispatch of the
 phase engine, then named `dispatch-phase` — and reached the estimate fan-out through a stamped `estimate-core` copy of its own,
@@ -71,13 +72,15 @@ phase engine at all: it enters the prose `rdm-dispatch-phase` orchestrator with 
 session, so `rdm-wf-estimate` is the one Workflow the drive loop itself still invokes.
 
 Criterion 4 (determinism) is not tabulated because it held by construction for all eight
-while `autopilot.js` still existed, and continues to hold for the seven live scripts
+while `autopilot.js` still existed, and continues to hold for the six live scripts
 today: the `Date.now(` / `Math.random(` bans are already grepped by the verify harnesses,
 so no script can violate it and stay green.
 
-**Distribution is a separate axis from disposition.** Only `rdm-wf-dispatch-phase.js` and
-`rdm-wf-review-refute-fix.js` are emitted downstream by `generate_workflows` (`autopilot.js` was
-too, until phase 3 retired it in favor of the prose `rdm-autopilot` skill); `rdm-wf-plan-review.js`,
+**Distribution is a separate axis from disposition.** Only `rdm-wf-review-refute-fix.js` is
+emitted downstream by `generate_workflows` (`autopilot.js` was
+too, until phase 3 retired it in favor of the prose `rdm-autopilot` skill, and
+`rdm-wf-dispatch-phase.js` was until `agent-orchestrated-dispatch` phase 7 retired it — see the
+retirement record below); `rdm-wf-plan-review.js`,
 `rdm-wf-estimate.js`, `rdm-wf-backlog.js`, `rdm-wf-document.js`, and
 `spike-agent-type.js` are local-only, and every one of the local-only five references
 `agentType: 'rdm-mechanical'`, which a downstream tree has no definition for and which
@@ -99,8 +102,8 @@ The per-phase driver moved to prose in that phase — `.claude/skills/rdm-dispat
 is now the orchestrator, loaded into the main session with `Skill`, and it invokes **two**
 Workflows: `rdm-wf-plan-review` on the `plan/<slug>` document and `rdm-wf-review-refute-fix`
 on `change/<sha>`. Only the second of those is emitted downstream (`SHIPPED_WORKFLOWS` in
-`rdm-core/src/agent_config.rs` emits `rdm-wf-dispatch-phase.js` and
-`rdm-wf-review-refute-fix.js`, nothing else), so a distributed skill naming
+`rdm-core/src/agent_config.rs` emits `rdm-wf-review-refute-fix.js`, nothing else), so a
+distributed skill naming
 `rdm-wf-plan-review.js` would reference a file absent from its own tree and fail
 `scripts/verify-agent-config-distribution.sh`'s shim-reference check. This is the identical
 hazard as the `rdm-wf-estimate` case above, and it takes the identical answer: the
@@ -129,13 +132,59 @@ narrowed `scripts/verify-skill-autopilot.sh` to its real-binary sections plus th
 | Script | Fan-out | Shape | Mid-run gate | Disposition |
 |---|---|---|---|---|
 | `autopilot.js` | only its estimate pre-pass — and that was a stamped `estimate-core` copy (single-sourced in `lib/estimate.mjs`), not a call to `rdm-wf-estimate.js` | policy: advance/park, retry budgets, stop conditions, operator summary; sequential `while` loop, ~5 iterations | no | **MOVED to prose** (`rdm-autopilot` skill) — failed criteria 1 and 2, and was the anti-criterion exactly *(historical row — retired to prose in phase 3 of `prose-autopilot-orchestration`; the file no longer exists)* |
-| `rdm-wf-dispatch-phase.js` | two review stages — plan (4 dimensions) then code (up to 7, narrowed by diff signals) — each fanning `parallel()` over its findings | mechanism: fixed 4-stage plan → plan-review → implement → code-review | no | **STAY** — real fan-out over a fixed procedure *(superseded: `agent-orchestrated-dispatch` phase 6 replaced this engine with the prose `rdm-dispatch-phase` orchestrator and no lane calls it any more; phase 7 of that roadmap deletes the file and revises this row)* |
+| `rdm-wf-dispatch-phase.js` | two review stages — plan (4 dimensions) then code (up to 7, narrowed by diff signals) — each fanning `parallel()` over its findings | mechanism: fixed 4-stage plan → plan-review → implement → code-review | no | **retired (`agent-orchestrated-dispatch` phase 7)** — phase 6 replaced this engine with the prose `rdm-dispatch-phase` orchestrator and no lane called it any more; phase 7 deleted the file, `lib/dispatch-phase.mjs`, the shipped template, the plugin-tree copy and the emission registration. Retirement rests on the operator's design principle — Workflows are for extremely deterministic *mechanism* (the review-refute cycle); agent *judgment* above the review gate lives in prose — and on the replacement's **functional acceptance, not measured superiority**: no cost, speed, context-ceiling or performance-parity claim was produced or is implied. *(historical row — the file no longer exists)* |
 | `rdm-wf-review-refute-fix.js` | same review core: dimensions → findings | mechanism: find → refute → filter → verdict | no | **STAY** — the canonical review pipeline, already single-sourced in `lib/review.mjs` |
 | `rdm-wf-plan-review.js` | the review core **plus** an outer `parallel()` over phase units | mechanism | no | **STAY** — two nested levels of genuine fan-out |
 | `rdm-wf-estimate.js` | `parallel()` rate over unestimated phases | mechanism | no | **STAY** — the pre-pass fan-out, which the prose loop now depends on *newly* (in the local dogfood skill only — the distributed template drops the pre-pass, see "Decided (phase 4)" above), as a real `workflow()` call rather than autopilot's former stamped copy |
 | `rdm-wf-backlog.js` | `parallel()` over ≤4 signal categories | mechanism; propose-only, zero mutation | no — the handoff to a human is terminal | **STAY** |
 | `rdm-wf-document.js` | `parallel()` git-gather over completed phases | mechanism; zero rdm mutation | no — approval is terminal | **STAY** |
 | `spike-agent-type.js` | none (its cases are dispatched sequentially on purpose) | neither — it is a spike artifact that exercises the Workflow runtime itself, not a lane | n/a | **STAY, exempt** — kept as the executable record of the spike; it would not be authored as a lane workflow today |
+
+## Retirement record: `rdm-wf-dispatch-phase` (`agent-orchestrated-dispatch` phase 7)
+
+The engine was retired on the **functional acceptance** of its prose replacement. No
+comparative benchmark, token baseline, context-ceiling estimate or performance-parity verdict
+was produced, and none is implied here: nothing in this record claims the prose orchestrator
+is cheaper, faster, or better-scaling than the engine it replaces. What it rests on is the
+operator's design principle (2026-09-19) that Workflows are for extremely deterministic
+mechanism while judgment above the review gate lives in prose, plus the two independent
+approvals below.
+
+**Phase 6's approval — and the gap in it.** Phase 6 (`phase-6-prose-phase-orchestrator`,
+status `reviewed`) carries **no persisted review**: `rdm review list --on
+phase/agent-orchestrated-dispatch/phase-6-prose-phase-orchestrator --project rdm` returns
+nothing. Its code review lived only inside Workflow run **`wf_6197ebcd-598`**, the
+`rdm-wf-dispatch-phase` dispatch that drove it, whose verdict that engine returned as OUTCOME
+data and never wrote to any document. That missing trail is not incidental to this
+retirement — it is one of the reasons for it: an engine that decides a phase is reviewed and
+leaves no reviewable record behind is precisely the judgment-above-the-gate work that belongs
+in a lane which persists its reviews. No review id is invented here to fill the gap.
+
+**This phase's own trail — the replacement's dogfooded acceptance.** Phase 7 is the first
+phase driven end to end by phase 6's prose orchestrator, and that drive is what accepts it.
+Unlike phase 6, it persisted every step:
+
+- Plan document: **`plan/phase-7-parity-and-retirement`** (status `approved`, implements
+  `rdm:phase/agent-orchestrated-dispatch/phase-7-parity-and-retirement`).
+- Approving plan review: **`2026-09-20-1412-7da6`** (author `edward`, `submitted` /
+  `approve`), transcribing plan-review run **`wf_f4ea10da-078`**'s clean verdict after the
+  engine misrouted it — see `task/plan-review-engine-ignores-rdmbin`.
+- Change review: recorded by the orchestrator on this phase's head; its id is in the phase's
+  review set (`rdm review list --on phase/agent-orchestrated-dispatch/phase-7-parity-and-retirement
+  --project rdm`).
+
+Read either approval back with `rdm review show <id> --project rdm`, and the plan with
+`rdm plan show phase-7-parity-and-retirement --project rdm --format json`.
+
+**Accepted loss.** Deleting `scripts/verify-workflow-dispatch.sh` gave up its
+static-invariant net (greps over prose and templates) along with the engine it tested. Every
+*behavioral* protection it carried survives elsewhere — wrong-checkout selection and gate
+override in `rdm-core/tests/gate.rs` + `rdm-cli/tests/cli_gate.rs` + `scripts/verify-reviewed-gate.sh`,
+required review coverage in `scripts/verify-workflow-review.sh` §3c, anchor accounting in
+`scripts/verify-review-revision-loop.sh`, the verification gate in `rdm-cli/tests/cli_verify.rs`,
+and the no-completion-trailer-before-land rule in `scripts/verify-skill-autopilot.sh`. The
+grep-only half was dropped deliberately; that class is owned by
+`task/retire-static-grep-harnesses`, which this phase does not close.
 
 ## Non-goals
 

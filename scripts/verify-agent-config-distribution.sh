@@ -13,10 +13,10 @@
 #      this repo's own dogfood project ("rdm"), and asserts the whole run never touches
 #      this repo's working tree (`git status --porcelain` before/after).
 #   2. STRUCTURAL: asserts all 11 skills land at their conventional paths
-#      with minimally-valid frontmatter, both workflow scripts land under
+#      with minimally-valid frontmatter, the workflow script lands under
 #      `.claude/workflows/`, and the `rdm-mechanical` agent definition lands
 #      under `.claude/agents/` with minimally-valid frontmatter.
-#   3. BYTE-IDENTITY: asserts the 2 emitted workflow scripts AND the 1 emitted
+#   3. BYTE-IDENTITY: asserts the 1 emitted workflow script AND the 1 emitted
 #      agent definition are byte-for-byte identical to this repo's own
 #      `.claude/workflows/*.js` and `.claude/agents/*.md` — the surfaces
 #      `generate_workflows`/`generate_agents` promise to emit verbatim (see
@@ -32,8 +32,8 @@
 #      floor over real references (see the section itself for why).
 #   3b. CLEANUP (nothing superseded present): re-emitting into a tree that
 #      holds only current files is idempotent and non-destructive —
-#      re-emission prints no `Removed` line, the two current engine scripts
-#      are rewritten (not removed — still byte-identical to source), and an
+#      re-emission prints no `Removed` line, the current engine script
+#      is rewritten (not removed — still byte-identical to source), and an
 #      unrelated user-authored file planted in the same output directory
 #      survives byte-for-byte. The complementary "a stale file IS removed"
 #      case is section 5j, which seeds real pre-rename bodies.
@@ -43,22 +43,24 @@
 #      This is checked with an explicit occurrence floor (so the check
 #      cannot pass vacuously on zero matches) and per-file exact-reference
 #      assertions for the 2 skills known to carry a reference
-#      (rdm-dispatch-phase and rdm-do -> the dispatch engine, $DISPATCH_WF).
+#      (rdm-dispatch-phase and rdm-do -> the code-review engine, $REVIEW_WF).
 #      This section
 #      also asserts, name-generically and across EVERY emitted skill (not
 #      just rdm-autopilot), that no skill's prose instructs invoking a
 #      Workflow whose name does not resolve to a file in the same emitted
 #      `.claude/workflows/` tree. rdm-autopilot is the prose `rdm-autopilot`
-#      skill (workflow-orchestration roadmap, phase 3) and composes only
-#      `rdm-wf-dispatch-phase` downstream; the `rdm-wf-estimate` pre-pass it also runs
+#      skill (workflow-orchestration roadmap, phase 3) and composes only the
+#      prose `rdm-dispatch-phase` orchestrator downstream; the `rdm-wf-estimate`
+#      pre-pass it also runs
 #      locally is intentionally dropped from the distributed template (see
 #      docs/workflow-vs-prose-boundary.md), so no emitted skill's prose may
 #      instruct invoking a Workflow named `rdm-wf-estimate` either — the same
 #      hazard that got `autopilot.js` itself retired from this surface.
 #   5j. SUPERSEDED CLEANUP END-TO-END: seeds an output directory with the
-#      real PRE-RENAME bodies of the two renamed engines plus the retired
-#      `autopilot.js` orphan (recovered from git history), re-emits into it,
-#      and asserts all three are removed while a same-shaped
+#      real PRE-RENAME bodies of the two once-renamed engines plus the retired
+#      `autopilot.js` and `$RETIRED_WF` orphans (recovered from git history),
+#      re-emits into it,
+#      and asserts all four are removed while a same-shaped
 #      `not-superseded.js` and a user-authored `custom-local.js` both
 #      survive. Carries a non-vacuity precondition (all five present before
 #      the emit) and a planted-corruption self-test (re-plant one superseded
@@ -87,7 +89,7 @@
 #      Python/TypeScript source repo with a real feature branch, a docs-only
 #      and a CHANGELOG-only negative control, its own `rdm init`-seeded plan
 #      repo under project `acme-web`, and its own rdm executable path), emit
-#      the lane into it, EXTRACT importable modules from the EMITTED scripts
+#      the lane into it, EXTRACT an importable module from the EMITTED script
 #      (copy + neutralized top-level `return` + an explicit appended export
 #      block, imported as `.mjs`; an inverse transform proves the copy is
 #      byte-identical to the emitted file, and the untransformed file provably
@@ -96,9 +98,9 @@
 #      seven code dimensions (against a two-dimension docs-only control), every
 #      built rdm command names the fixture's binary and honors the
 #      project-agnostic allow-list with zero `./target/debug/rdm` or
-#      `--project rdm`, and three of those built commands are really RUN
-#      against the fixture plan repo (exit 0 + the expected JSON shape + an
-#      `in-progress` read-back, with a dropped-`--roadmap` negative control).
+#      `--project rdm`, and two built persist LADDERS are really RUN against
+#      the fixture plan repo (exit 0 + a submitted review read back with its
+#      anchored comment, with a dropped-`--verdict` negative control).
 #      Four planted corruptions in the EMITTED bytes prove none of it is
 #      vacuous, and a composed-pattern self-gate forbids the harness from ever
 #      importing one of this repo's non-emitted canonical source modules.
@@ -137,11 +139,14 @@ pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 
 SKILLS="rdm-roadmap rdm-do rdm-document rdm-review rdm-estimate rdm-dispatch-phase rdm-autopilot rdm-land rdm-revise rdm-backlog rdm-plan-review"
 # The engine filenames are named ONCE here; every other site in this script
-# routes through these two variables. The self-check right below fails loudly
+# routes through these variables. The self-check right below fails loudly
 # if a future edit re-hardcodes either literal a second time.
-DISPATCH_WF="rdm-wf-dispatch-phase.js"
 REVIEW_WF="rdm-wf-review-refute-fix.js"
-WORKFLOWS="$DISPATCH_WF $REVIEW_WF"
+WORKFLOWS="$REVIEW_WF"
+# The RETIRED dispatch engine (agent-orchestrated-dispatch phase 7). Not in
+# $WORKFLOWS — nothing emits it any more — but named here because section 5j
+# seeds it as a superseded-cleanup input and asserts the re-emit removes it.
+RETIRED_WF="rdm-wf-dispatch-phase.js"
 # The single shipped agent definition (`generate_agents()`'s sole entry).
 AGENTS="rdm-mechanical.md"
 
@@ -153,12 +158,12 @@ trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 # preference: a re-hardcoded literal is exactly how a future half-rename slips
 # through. Each engine filename may appear EXACTLY ONCE in this file — in its
 # variable assignment above.
-for engine_literal in $WORKFLOWS; do
+for engine_literal in $WORKFLOWS $RETIRED_WF; do
     # The variable assignment itself is the one permitted occurrence; the
     # `$WORKFLOWS` expansion above reaches it without adding a second literal.
     occurrences=$(grep -c -- "$engine_literal" "$0" || true)
     [ "$occurrences" -eq 1 ] ||
-        fail "0: '$engine_literal' appears $occurrences time(s) in $0 — it must be named in exactly one place (\$DISPATCH_WF / \$REVIEW_WF); route the new site through the variable"
+        fail "0: '$engine_literal' appears $occurrences time(s) in $0 — it must be named in exactly one place (\$REVIEW_WF / \$RETIRED_WF); route the new site through the variable"
 done
 pass "0: each engine filename is named exactly once in this script"
 
@@ -421,7 +426,7 @@ rm -rf "$SCRATCH_AGENT_UNRESOLVED"
 cp -R "$TMP/cli" "$SCRATCH_AGENT_UNRESOLVED"
 # shellcheck disable=SC2016
 printf "\nawait agent(P, { agentType: 'does-not-exist' })\n" \
-    >>"$SCRATCH_AGENT_UNRESOLVED/.claude/workflows/$DISPATCH_WF"
+    >>"$SCRATCH_AGENT_UNRESOLVED/.claude/workflows/$REVIEW_WF"
 if resolve_agent_refs "$SCRATCH_AGENT_UNRESOLVED" >/dev/null 2>&1; then
     fail "self-test 3c-i: a planted unresolvable agentType 'does-not-exist' was NOT detected — the resolution check is vacuous"
 fi
@@ -433,7 +438,7 @@ rm -rf "$SCRATCH_AGENT_RESOLVED"
 cp -R "$TMP/cli" "$SCRATCH_AGENT_RESOLVED"
 # shellcheck disable=SC2016
 printf "\nawait agent(P, { agentType: 'rdm-mechanical' })\n" \
-    >>"$SCRATCH_AGENT_RESOLVED/.claude/workflows/$DISPATCH_WF"
+    >>"$SCRATCH_AGENT_RESOLVED/.claude/workflows/$REVIEW_WF"
 if ! resolve_agent_refs "$SCRATCH_AGENT_RESOLVED" >/dev/null 2>&1; then
     fail "self-test 3c-ii: a planted RESOLVABLE agentType 'rdm-mechanical' incorrectly turned the resolution check red — it is failing on any injected literal, not on unresolvability"
 fi
@@ -460,7 +465,6 @@ UNRELATED_FILE="$CLI_WORKFLOWS_DIR/notes.txt"
 UNRELATED_CONTENT="these are my own notes, rdm did not write this file"
 printf '%s\n' "$UNRELATED_CONTENT" >"$UNRELATED_FILE"
 
-BEFORE_DP_SUM=$(shasum -a 256 "$CLI_WORKFLOWS_DIR/$DISPATCH_WF" | awk '{print $1}')
 BEFORE_RRF_SUM=$(shasum -a 256 "$CLI_WORKFLOWS_DIR/$REVIEW_WF" | awk '{print $1}')
 BEFORE_UNRELATED_SUM=$(shasum -a 256 "$UNRELATED_FILE" | awk '{print $1}')
 
@@ -474,13 +478,10 @@ pass "3b: re-emission printed no 'Removed' line (no superseded file present)"
 if ! check_workflows_byte_identical "$TMP/cli"; then
     fail "3b: re-emitted workflow scripts drifted from $REPO_ROOT/.claude/workflows (see drift lines above) — rewrite-not-remove is violated"
 fi
-AFTER_DP_SUM=$(shasum -a 256 "$CLI_WORKFLOWS_DIR/$DISPATCH_WF" | awk '{print $1}')
 AFTER_RRF_SUM=$(shasum -a 256 "$CLI_WORKFLOWS_DIR/$REVIEW_WF" | awk '{print $1}')
-[ "$BEFORE_DP_SUM" = "$AFTER_DP_SUM" ] ||
-    fail "3b: $DISPATCH_WF checksum changed across re-emission ($BEFORE_DP_SUM -> $AFTER_DP_SUM)"
 [ "$BEFORE_RRF_SUM" = "$AFTER_RRF_SUM" ] ||
     fail "3b: $REVIEW_WF checksum changed across re-emission ($BEFORE_RRF_SUM -> $AFTER_RRF_SUM)"
-pass "3b: both conventionally-named workflow files were rewritten, not removed, and stayed byte-identical to source"
+pass "3b: the conventionally-named workflow file was rewritten, not removed, and stayed byte-identical to source"
 
 [ -f "$UNRELATED_FILE" ] || fail "3b: planted unrelated file $UNRELATED_FILE was removed — unrelated-file guarantee is violated"
 AFTER_UNRELATED_SUM=$(shasum -a 256 "$UNRELATED_FILE" | awk '{print $1}')
@@ -544,11 +545,11 @@ SCRATCH_WF="$TMP/scratch-corrupt-workflow"
 rm -rf "$SCRATCH_WF"
 cp -R "$TMP/cli" "$SCRATCH_WF"
 printf '\n// planted corruption for verify-agent-config-distribution.sh self-test\n' \
-    >>"$SCRATCH_WF/.claude/workflows/$DISPATCH_WF"
+    >>"$SCRATCH_WF/.claude/workflows/$REVIEW_WF"
 if check_workflows_byte_identical "$SCRATCH_WF" >/dev/null 2>&1; then
-    fail "self-test A: planted corruption in $DISPATCH_WF was NOT detected — byte-identical gate is vacuous"
+    fail "self-test A: planted corruption in $REVIEW_WF was NOT detected — byte-identical gate is vacuous"
 fi
-pass "self-test A: planted corruption in $DISPATCH_WF correctly turned the byte-identical gate red"
+pass "self-test A: planted corruption in $REVIEW_WF correctly turned the byte-identical gate red"
 
 say "5b. Self-test: planted shim reference typo'd to a nonexistent filename"
 SCRATCH_SHIM="$TMP/scratch-corrupt-shim"
@@ -648,9 +649,9 @@ pass "5g: all 11 rdm-* skill directory names are unchanged"
 say "5h. Single-sourcing: generate_workflows(), the generators, and the non-lists"
 AGENT_CONFIG_RS="$REPO_ROOT/rdm-core/src/agent_config.rs"
 INCLUDE_COUNT=$(grep -c 'include_str!("templates/workflows/' "$AGENT_CONFIG_RS" || true)
-[ "$INCLUDE_COUNT" -eq 2 ] ||
-    fail "5h: expected exactly 2 templates/workflows include_str! sites in agent_config.rs (one per SHIPPED engine), found $INCLUDE_COUNT — the four local-only engines must stay unshipped"
-pass "5h: exactly 2 shipped-engine include_str! sites in generate_workflows()"
+[ "$INCLUDE_COUNT" -eq 1 ] ||
+    fail "5h: expected exactly 1 templates/workflows include_str! site in agent_config.rs (one per SHIPPED engine), found $INCLUDE_COUNT — the four local-only engines must stay unshipped, and the retired dispatch engine must stay retired"
+pass "5h: exactly 1 shipped-engine include_str! site in generate_workflows()"
 
 for gen in gen-workflow-review.sh gen-workflow-estimate.sh; do
     set_count=$(grep -c '^set -- ' "$REPO_ROOT/scripts/$gen" || true)
@@ -709,37 +710,41 @@ recover_pre_removal_body() {
 for stale_pair in "dispatch-phase.js" "review-refute-fix.js"; do
     recover_pre_removal_body "rdm-core/src/templates/workflows/$stale_pair" "$STALE_WF/$stale_pair"
 done
-# The retired orphan: no successor, recovered the same way.
+# The retired orphans: no successor, recovered the same way. `autopilot.js` was
+# retired by prose-autopilot-orchestration phase 3; $RETIRED_WF (the POST-rename
+# dispatch engine name, the one a recent downstream `--skills` tree actually
+# carries) by agent-orchestrated-dispatch phase 7.
 recover_pre_removal_body rdm-core/src/templates/workflows/autopilot.js "$STALE_WF/autopilot.js"
+recover_pre_removal_body "rdm-core/src/templates/workflows/$RETIRED_WF" "$STALE_WF/$RETIRED_WF"
 # Two survivors: one name the table does not carry, one purely user-authored.
 printf 'export const meta = { name: "not-superseded" };\n' >"$STALE_WF/not-superseded.js"
 printf 'my own local engine, rdm did not write this\n' >"$STALE_WF/custom-local.js"
 
 # Non-vacuity: every seeded file must be present BEFORE the emit, so a
 # post-emit absence can never be trivially true.
-for seeded in dispatch-phase.js review-refute-fix.js autopilot.js not-superseded.js custom-local.js; do
+for seeded in dispatch-phase.js review-refute-fix.js autopilot.js "$RETIRED_WF" not-superseded.js custom-local.js; do
     [ -f "$STALE_WF/$seeded" ] || fail "5j: seed failed — $seeded is not present before the emit"
 done
-pass "5j: all five seeded files present before the emit (non-vacuity precondition)"
+pass "5j: all six seeded files present before the emit (non-vacuity precondition)"
 
 "$RDM_BIN" agent-config claude --skills --project distro-check --out "$STALE" >"$TMP/stale-emit.log"
 
 assert_stale_cleaned() {
-    for removed in dispatch-phase.js review-refute-fix.js autopilot.js; do
+    for removed in dispatch-phase.js review-refute-fix.js autopilot.js "$RETIRED_WF"; do
         [ ! -e "$STALE_WF/$removed" ] || return 1
     done
     return 0
 }
 assert_stale_cleaned ||
     fail "5j: a superseded file survived the re-emit — cleanup did not fire:\n$(ls -1 "$STALE_WF")\n$(cat "$TMP/stale-emit.log")"
-pass "5j: all three superseded files (2 renamed + 1 retired orphan) were removed"
+pass "5j: all four superseded files (1 renamed + 3 retired orphans, including the post-rename dispatch engine name) were removed"
 
-for kept in "$DISPATCH_WF" "$REVIEW_WF"; do
+for kept in $WORKFLOWS; do
     [ -f "$STALE_WF/$kept" ] || fail "5j: $kept was not emitted into the cleaned tree"
     diff -q "$REPO_ROOT/.claude/workflows/$kept" "$STALE_WF/$kept" >/dev/null ||
         fail "5j: $kept is not byte-identical to source after the cleanup emit"
 done
-pass "5j: both rdm-wf-* engines exist and are byte-identical to source"
+pass "5j: the shipped rdm-wf-* engine exists and is byte-identical to source"
 
 [ -f "$STALE_WF/not-superseded.js" ] ||
     fail "5j: not-superseded.js was removed — the cleanup is over-broad (it must only touch names the table carries)"
@@ -957,10 +962,10 @@ pass "6f: the check detects a mangled command ($HOIST_FAILURE)"
 # prove the emitted lane WORKS somewhere that is neither this repo nor Rust —
 # byte-identity is necessary, not sufficient. Sections 7a-7f close that: they
 # stand up a hermetic non-rdm, non-Rust consumer repo, emit into it, then
-# EXECUTE the emitted engines' pure pipeline logic and one of the rdm commands
-# they build against that fixture's own binary and project.
+# EXECUTE the emitted engine's pure pipeline logic and the rdm command ladders
+# it builds against that fixture's own binary and project.
 #
-# NOT a duplicate of scripts/verify-workflow-dispatch.sh § 9 or
+# NOT a duplicate of scripts/verify-workflow-review.sh or
 # scripts/verify-workflow-review-outcome.sh § 6: those gate this repo's LOCAL
 # .claude/workflows/ copies. These sections assert the same properties on the
 # DOWNSTREAM EMITTED artifact, which is the only surface a consumer ever sees.
@@ -1217,7 +1222,7 @@ import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-const [stage, fixtureRoot, fixtureBin, project, dispatchEngine, reviewEngine] = process.argv.slice(2);
+const [stage, fixtureRoot, fixtureBin, project, reviewEngine] = process.argv.slice(2);
 
 const SRC_REPO = path.join(fixtureRoot, 'repo');
 const EMITTED_DIR = path.join(SRC_REPO, '.claude', 'workflows');
@@ -1357,20 +1362,6 @@ async function assertRawImportRejects(engine) {
   assert.match(err.message, /return/i, 'expected the SyntaxError to name the illegal top-level return, got: ' + err.message);
 }
 
-const DISPATCH_HELPERS = [
-  'deriveSignals',
-  'selectDimensions',
-  'projectFlag',
-  'resolveRdmBin',
-  'parseProjectArg',
-  'parseDispatchArgs',
-  'buildFetchPrompt',
-  'buildTaskFetchPrompt',
-  'buildStampInProgressPrompt',
-  'buildDiffSignalsPrompt',
-  'buildImplementPrompt',
-  'buildCodeActPrompt',
-];
 const REVIEW_HELPERS = [
   'deriveSignals',
   'selectDimensions',
@@ -1380,13 +1371,16 @@ const REVIEW_HELPERS = [
   'resolveRdmBin',
   'parseProjectArg',
   'buildReviewSourceCommand',
+  'persistReviewCommands',
 ];
 
 // --- Shared fixture facts ----------------------------------------------------
 const ROADMAP = 'checkout-revamp';
 const PHASE = 'phase-1-checkout-form';
 const TASK = 'tidy-cli';
-const WORKTREE = 'roadmap-' + ROADMAP;
+// The exact phase body the fixture seed writes — an anchored `review comment`
+// quote must match the document verbatim or the ladder's comment step fails.
+const PHASE_QUOTE = 'Build the acme checkout form.';
 const CFG = { rdmBin: fixtureBin, project: project };
 
 function fixtureGit(args) {
@@ -1396,33 +1390,40 @@ function fixtureGit(args) {
   });
 }
 
-// Run EXACTLY the two commands buildDiffSignalsPrompt instructs, on a real
-// branch of the fixture repo. The arrays are never hand-authored.
-function realDiff(dispatch, branch) {
-  const prompt = dispatch.buildDiffSignalsPrompt(WORKTREE, CFG);
-  const gitCmds = prompt
-    .split('\n')
-    .filter((l) => /^ {2}git diff /.test(l))
-    .map((l) => l.trim());
-  assert.deepEqual(gitCmds, ['git diff --name-only main...HEAD', 'git diff main...HEAD'], 'the emitted diff prompt no longer instructs the two expected git commands');
+// Compute a REAL diff off a real branch of the fixture repo and hand it to the
+// emitted `deriveSignals`. The arrays are never hand-authored — they are git's
+// own output. The two commands are named here rather than sliced out of an
+// emitted prompt because the surviving engine acquires its diff through
+// `rdm review source` (a command this same driver builds and runs in the `exec`
+// stage), not by instructing an agent to run `git diff`; the retired dispatch
+// engine's `buildDiffSignalsPrompt` was the prompt this used to read them from.
+const DIFF_CMDS = ['git diff --name-only main...HEAD', 'git diff main...HEAD'];
+function realDiff(branch) {
   fixtureGit(['checkout', '-q', branch]);
-  const changedFiles = fixtureGit(gitCmds[0].split(' ').slice(1)).split('\n').filter(Boolean);
-  const diffText = fixtureGit(gitCmds[1].split(' ').slice(1));
+  const changedFiles = fixtureGit(DIFF_CMDS[0].split(' ').slice(1)).split('\n').filter(Boolean);
+  const diffText = fixtureGit(DIFF_CMDS[1].split(' ').slice(1));
   return { changedFiles, diffText };
 }
 
-function buildAllPrompts(dispatch, review, cfg) {
+const PHASE_TARGET = 'phase/' + ROADMAP + '/' + PHASE;
+const TASK_TARGET = 'task/' + TASK;
+const DIM = { key: 'ac', title: 'AC compliance', focus: 'f' };
+const CLEAN_RESULT = { mode: 'code', outcome: 'reviewed', survivors: [] };
+const REWORK_RESULT = {
+  mode: 'code',
+  outcome: 'rework',
+  survivors: [{ id: 'f1', severity: 'blocking', confidence: 90, what_fails: 'x', quote: PHASE_QUOTE }],
+};
+
+function buildAllPrompts(review, cfg) {
   return [
-    dispatch.buildFetchPrompt(ROADMAP, PHASE, cfg),
-    dispatch.buildTaskFetchPrompt(TASK, cfg),
-    dispatch.buildStampInProgressPrompt(false, ROADMAP, PHASE, cfg),
-    dispatch.buildStampInProgressPrompt(true, '', TASK, cfg),
-    dispatch.buildDiffSignalsPrompt(WORKTREE, cfg),
-    dispatch.buildImplementPrompt(WORKTREE, 'phase body', 'plan doc', null, cfg),
-    dispatch.buildCodeActPrompt('phase', ROADMAP, PHASE, WORKTREE, [{ id: 'f1', severity: 'suggestion' }], cfg),
-    '  ' + review.buildReviewSourceCommand('phase/' + ROADMAP + '/' + PHASE, { base: 'main' }, cfg),
-    review.findPrompt('code', { key: 'ac', title: 'AC compliance', focus: 'f' }, { target: PHASE }),
-    review.refutePrompt('code', { key: 'ac', title: 'AC compliance', focus: 'f' }, { id: 'f1', what_fails: 'x' }, { target: PHASE }),
+    '  ' + review.buildReviewSourceCommand(PHASE_TARGET, { base: 'main' }, cfg),
+    '  ' + review.buildReviewSourceCommand(TASK_TARGET, { base: 'main', noCode: true }, cfg),
+    review.findPrompt('code', DIM, { target: PHASE }),
+    review.refutePrompt('code', DIM, { id: 'f1', what_fails: 'x' }, { target: PHASE }),
+    review.persistReviewCommands(CLEAN_RESULT, PHASE_TARGET, cfg).join('\n'),
+    review.persistReviewCommands(REWORK_RESULT, PHASE_TARGET, cfg).join('\n'),
+    review.persistReviewCommands(CLEAN_RESULT, TASK_TARGET, cfg).join('\n'),
   ];
 }
 
@@ -1474,56 +1475,53 @@ function runCommand(cmd) {
 }
 
 // --- Stages ------------------------------------------------------------------
-const dispatch = (await extract(dispatchEngine, DISPATCH_HELPERS)).mod;
 const review = (await extract(reviewEngine, REVIEW_HELPERS)).mod;
 
 if (stage === 'extract') {
-  await assertRawImportRejects(dispatchEngine);
   await assertRawImportRejects(reviewEngine);
-  assert.ok(IMPORTED.length >= 4, 'expected at least four module imports, all from the fixture scratch dir');
-  console.log('downstream extract: both emitted engines transformed, provenance-checked and imported');
+  assert.ok(IMPORTED.length >= 2, 'expected at least two module imports, all from the fixture scratch dir');
+  console.log('downstream extract: the emitted engine transformed, provenance-checked and imported');
 }
 
 if (stage === 'logic') {
   // --- Signals derived from the fixture's OWN diffs -------------------------
-  const positive = realDiff(dispatch, 'feature/checkout');
+  const positive = realDiff('feature/checkout');
   fs.writeFileSync(path.join(fixtureRoot, 'signals-input.json'), JSON.stringify(positive, null, 2));
   assert.ok(positive.changedFiles.length >= 3, 'the positive fixture diff must touch several files');
   for (const rustToken of [/(^|[^A-Za-z])fn /, /(^|[^A-Za-z])pub /, /unsafe/, /\.rs\b/]) {
     assert.ok(!rustToken.test(positive.diffText), 'the fixture diff smuggled a Rust token (' + rustToken + ') — the language-neutrality claim would not be exercised');
   }
 
-  const signals = dispatch.deriveSignals({ targetType: 'phase', changedFiles: positive.changedFiles, diffText: positive.diffText });
+  const signals = review.deriveSignals({ targetType: 'phase', changedFiles: positive.changedFiles, diffText: positive.diffText });
   for (const key of ['changesLogic', 'missingTests', 'multiModule', 'publicApiChanged', 'userFacing', 'securitySurface']) {
     assert.equal(typeof signals[key], 'boolean', 'signal ' + key + ' must be present and boolean');
     assert.equal(signals[key], true, 'signal ' + key + ' must fire on the fixture feature branch (a Python/TypeScript diff)');
   }
-  const dims = dispatch.selectDimensions('code', signals).map((d) => d.key);
+  const dims = review.selectDimensions('code', signals).map((d) => d.key);
   assert.deepEqual(dims, ['ac', 'correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'], 'every CONDITIONAL code dimension must fire on the fixture diff, got: ' + dims.join(','));
 
   // Negative control: docs-only.
-  const docs = realDiff(dispatch, 'feature/docs-only');
-  const docsSignals = dispatch.deriveSignals({ targetType: 'phase', changedFiles: docs.changedFiles, diffText: docs.diffText });
+  const docs = realDiff('feature/docs-only');
+  const docsSignals = review.deriveSignals({ targetType: 'phase', changedFiles: docs.changedFiles, diffText: docs.diffText });
   for (const key of ['changesLogic', 'publicApiChanged', 'userFacing', 'securitySurface']) {
     assert.equal(docsSignals[key], false, 'docs-only control: ' + key + ' must be false');
   }
-  assert.deepEqual(dispatch.selectDimensions('code', docsSignals).map((d) => d.key), ['ac', 'correctness'], 'docs-only control must select only the always-on pair');
+  assert.deepEqual(review.selectDimensions('code', docsSignals).map((d) => d.key), ['ac', 'correctness'], 'docs-only control must select only the always-on pair');
 
   // CHANGELOG-only control: changelogTouched CONFIRMS userFacing, never triggers it.
-  const cl = realDiff(dispatch, 'feature/changelog-only');
+  const cl = realDiff('feature/changelog-only');
   assert.deepEqual(cl.changedFiles, ['CHANGELOG.md'], 'the changelog-only control must touch exactly CHANGELOG.md');
-  assert.equal(dispatch.deriveSignals({ targetType: 'phase', changedFiles: cl.changedFiles, diffText: cl.diffText }).userFacing, false, 'a CHANGELOG-only diff must not set userFacing');
+  assert.equal(review.deriveSignals({ targetType: 'phase', changedFiles: cl.changedFiles, diffText: cl.diffText }).userFacing, false, 'a CHANGELOG-only diff must not set userFacing');
   fixtureGit(['checkout', '-q', 'feature/checkout']);
 
   // Fail-open contract, on the EMITTED artifact.
-  assert.equal(dispatch.selectDimensions('code', null).length, 7, 'omitted signals must fail open to every code dimension');
-  assert.deepEqual(dispatch.selectDimensions('code', {}).map((d) => d.key), ['ac', 'correctness'], 'an explicit empty signals object means "computed, nothing triggered"');
-  assert.deepEqual(review.selectDimensions('code', signals).map((d) => d.key), dims, 'both emitted engines must select the same dimensions for the same signals');
+  assert.equal(review.selectDimensions('code', null).length, 7, 'omitted signals must fail open to every code dimension');
+  assert.deepEqual(review.selectDimensions('code', {}).map((d) => d.key), ['ac', 'correctness'], 'an explicit empty signals object means "computed, nothing triggered"');
 
   // --- Every built command names the FIXTURE binary and project -------------
-  const prompts = buildAllPrompts(dispatch, review, CFG);
+  const prompts = buildAllPrompts(review, CFG);
   const occ = scan(prompts);
-  assert.ok(occ.length >= 12, 'expected >= 12 rdm invocations across the built prompts, found ' + occ.length + ' — the tokenizer must not pass vacuously');
+  assert.ok(occ.length >= 8, 'expected >= 8 rdm invocations across the built prompts, found ' + occ.length + ' — the tokenizer must not pass vacuously');
   const seen = new Set();
   for (const o of occ) {
     assert.equal(o.bin, fixtureBin, 'a built command used "' + o.bin + '" instead of the fixture binary: ' + o.line);
@@ -1534,7 +1532,7 @@ if (stage === 'logic') {
       assert.ok(o.line.includes(' --project ' + project), 'project-scoped `' + o.two + '` must carry " --project ' + project + '": ' + o.line);
     }
   }
-  for (const need of ['phase show', 'phase update', 'task show', 'task update', 'task create', 'worktree add', 'model resolve']) {
+  for (const need of ['review source', 'review start', 'review comment', 'review submit']) {
     assert.ok(seen.has(need), 'expected at least one built `rdm ' + need + '` command, saw: ' + [...seen].join(', '));
   }
   const joined = prompts.join('\n');
@@ -1544,22 +1542,21 @@ if (stage === 'logic') {
   assert.ok(!/(^|[\s`])rdm\s/.test(joined), 'a built prompt names a bare `rdm` binary token instead of the fixture binary');
 
   // Run B: no project configured -> not a single --project anywhere.
-  const noProject = buildAllPrompts(dispatch, review, { rdmBin: fixtureBin });
+  const noProject = buildAllPrompts(review, { rdmBin: fixtureBin });
   assert.ok(!noProject.join('\n').includes('--project'), 'with no project configured, no built command may carry a --project flag');
 
   // Environment-arg guards, on the EMITTED artifact. `rdmBin` DEFAULTS to a
   // plain `rdm` on PATH when absent — the shipped contract a plugin-installed
   // consumer relies on, since it has no repo-local build path to pass — while a
   // present-but-wrong-TYPE value still throws rather than silently degrading.
-  assert.equal(dispatch.parseDispatchArgs({ roadmap: 'r', phase: 'p' }).rdmBin, 'rdm', 'the emitted engine must default an absent rdmBin to "rdm"');
-  assert.throws(() => dispatch.parseDispatchArgs({ roadmap: 'r', phase: 'p', rdmBin: 42 }), /rdmBin/, 'the emitted engine must still reject a non-string rdmBin');
+  assert.equal(review.resolveRdmBin(undefined), 'rdm', 'the emitted engine must default an absent rdmBin to "rdm"');
+  assert.throws(() => review.resolveRdmBin(42), /rdmBin/, 'the emitted engine must still reject a non-string rdmBin');
   for (const bad of ['a b', 'a;rm -rf /', '$(x)']) {
-    assert.throws(() => dispatch.parseProjectArg(bad), /project/, 'parseProjectArg must reject "' + bad + '"');
-    assert.throws(() => review.parseProjectArg(bad), /project/, 'the review engine must reject "' + bad + '" too');
+    assert.throws(() => review.parseProjectArg(bad), /project/, 'parseProjectArg must reject "' + bad + '"');
   }
-  assert.equal(dispatch.projectFlag({ project: project }), ' --project ' + project);
-  assert.equal(dispatch.projectFlag({}), '');
-  assert.equal(dispatch.resolveRdmBin(fixtureBin), fixtureBin);
+  assert.equal(review.projectFlag({ project: project }), ' --project ' + project);
+  assert.equal(review.projectFlag({}), '');
+  assert.equal(review.resolveRdmBin(fixtureBin), fixtureBin);
 
   console.log('downstream logic: ' + occ.length + ' built rdm invocations, all naming ' + fixtureBin + '; conditional dimensions fired');
 }
@@ -1567,57 +1564,78 @@ if (stage === 'logic') {
 if (stage === 'exec') {
   assert.equal(process.env.RDM_ROOT, undefined, 'the harness must not carry an ambient RDM_ROOT — the real dogfood plan repo must be unreachable here');
 
-  const fetchPrompt = dispatch.buildFetchPrompt(ROADMAP, PHASE, CFG);
-  const showCmd = extractCommand(fetchPrompt, ' phase show ');
-  const shown = runCommand(showCmd);
-  assert.equal(shown.status, 0, 'the built `phase show` command failed (' + shown.status + '): ' + showCmd + '\n' + shown.stderr);
-  const phaseJson = JSON.parse(shown.stdout);
-  assert.equal(phaseJson.stem, PHASE, 'unexpected `stem` in the built command output shape');
-  assert.ok(typeof phaseJson.body === 'string' && phaseJson.body.length > 0, 'the built command returned an empty body');
-  assert.ok(typeof phaseJson.status === 'string' && phaseJson.status.length > 0, 'the built command output has no status field');
+  // The emitted engine's persist ladder, run AS A LADDER against the fixture
+  // plan repo: `review start` -> `review comment` (anchored on a quote that
+  // really occurs in the fixture phase body) -> `review submit` -> `rdm commit`,
+  // in ONE shell session, exactly as the emitted prompt instructs. Nothing is
+  // retyped: the script is the joined `persistReviewCommands` output.
+  function runLadder(result, target) {
+    const cmds = review.persistReviewCommands(result, target, CFG);
+    const script = cmds.join('\n');
+    for (const need of [' review start --on ', ' review submit ', ' commit -m ']) {
+      assert.ok(script.includes(need), 'the emitted ladder for ' + target + ' does not carry a `' + need.trim() + '` step');
+    }
+    return { script, run: runCommand('set -eu\n' + script) };
+  }
 
-  const stampCmd = extractCommand(dispatch.buildStampInProgressPrompt(false, ROADMAP, PHASE, CFG), ' phase update ');
-  const stamped = runCommand(stampCmd);
-  assert.equal(stamped.status, 0, 'the built `phase update` command failed (' + stamped.status + '): ' + stampCmd + '\n' + stamped.stderr);
-  const reread = JSON.parse(runCommand(showCmd).stdout);
-  assert.equal(reread.status, 'in-progress', 'the built `phase update` did not persist — read back ' + reread.status);
+  const anchored = runLadder(REWORK_RESULT, PHASE_TARGET);
+  assert.ok(anchored.script.includes(' review comment '), 'the rework ladder must carry an anchored `review comment` step');
+  assert.equal(
+    anchored.run.status,
+    0,
+    'the built persist ladder failed (' + anchored.run.status + '):\n' + anchored.script + '\n' + anchored.run.stderr
+  );
+  const idLine = anchored.run.stdout.split('\n').filter((l) => l.startsWith('reviewId='));
+  assert.equal(idLine.length, 1, 'the ladder must report exactly one reviewId line, got: ' + JSON.stringify(anchored.run.stdout));
+  const reviewId = idLine[0].slice('reviewId='.length).trim();
+  assert.match(reviewId, /^[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}-[0-9a-f]{4}$/, 'unexpected review id shape: ' + reviewId);
 
-  const taskShowCmd = extractCommand(dispatch.buildTaskFetchPrompt(TASK, CFG), ' task show ');
-  const taskShown = runCommand(taskShowCmd);
-  assert.equal(taskShown.status, 0, 'the built `task show` command failed (' + taskShown.status + '): ' + taskShowCmd + '\n' + taskShown.stderr);
-  const taskJson = JSON.parse(taskShown.stdout);
-  assert.equal(taskJson.slug, TASK, 'unexpected `slug` in the built task command output shape');
-  assert.ok(typeof taskJson.body === 'string' && taskJson.body.length > 0, 'the built task command returned an empty body');
+  // Read the persisted review back with the fixture binary — the ladder really
+  // created, commented on, and submitted a review in the fixture plan repo.
+  const shown = runCommand(fixtureBin + ' review show ' + reviewId + ' --project ' + project + ' --format json');
+  assert.equal(shown.status, 0, 'reading the persisted review back failed: ' + shown.stderr);
+  const reviewJson = JSON.parse(shown.stdout);
+  assert.equal(reviewJson.state, 'submitted', 'the persisted review is not submitted, it is ' + reviewJson.state);
+  assert.equal(reviewJson.verdict, 'request-changes', 'a rework outcome must persist a request-changes verdict, got ' + reviewJson.verdict);
+  assert.equal(reviewJson.comments.length, 1, 'expected exactly one persisted comment, got ' + reviewJson.comments.length);
+  assert.equal(reviewJson.comments[0].anchor.quote, PHASE_QUOTE, 'the persisted comment lost its anchor quote');
+  assert.equal(reviewJson.comments[0].resolution.state, 'resolved', 'the anchored comment did not locate its quote in the fixture phase body');
+
+  // The clean (no-survivor) shape runs too, on a DIFFERENT target, so the
+  // survivor-free branch of the ladder is exercised as well.
+  const clean = runLadder(CLEAN_RESULT, TASK_TARGET);
+  assert.ok(!clean.script.includes(' review comment '), 'a no-survivor ladder must carry no `review comment` step');
+  assert.equal(clean.run.status, 0, 'the no-survivor ladder failed:\n' + clean.script + '\n' + clean.run.stderr);
 
   // Negative control: "exit 0" only discriminates if a malformed command fails.
-  const broken = stampCmd.replace(' --roadmap ' + ROADMAP, '');
-  assert.notEqual(broken, stampCmd, 'the negative control did not actually mutate the command');
-  assert.notEqual(runCommand(broken).status, 0, 'a `phase update` with --roadmap dropped still exited 0 — "exit 0" is not a discriminating assertion');
+  const broken = anchored.script.replace(' --verdict request-changes', '');
+  assert.notEqual(broken, anchored.script, 'the negative control did not actually mutate the ladder');
+  assert.notEqual(runCommand('set -eu\n' + broken).status, 0, 'a `review submit` with --verdict dropped still exited 0 — "exit 0" is not a discriminating assertion');
 
-  console.log('downstream exec: 3 built commands executed against the fixture plan repo, all exit 0 with the expected shape');
+  console.log('downstream exec: 2 built persist ladders executed against the fixture plan repo, both exit 0, with the submitted review read back');
 }
 NODE_DOWNSTREAM
 
-if run_node "$TMP/downstream.mjs" extract "$FIXTURE" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$DISPATCH_WF" "$REVIEW_WF"; then
-    pass "7b: both EMITTED engines transformed into importable modules (inverse transform reproduces them byte-for-byte; the untransformed file provably does not import)"
+if run_node "$TMP/downstream.mjs" extract "$FIXTURE" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$REVIEW_WF"; then
+    pass "7b: the EMITTED engine transformed into an importable module (inverse transform reproduces it byte-for-byte; the untransformed file provably does not import)"
 else
-    fail "7b: extracting importable modules from the EMITTED engines failed"
+    fail "7b: extracting an importable module from the EMITTED engine failed"
 fi
 
 # --- 7c. Executed pure logic on the fixture's own diffs --------------------
 say "7c. Executed pure logic: conditional dimensions fire on the fixture's real diffs; every built command names the fixture binary and project"
-if run_node "$TMP/downstream.mjs" logic "$FIXTURE" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$DISPATCH_WF" "$REVIEW_WF"; then
+if run_node "$TMP/downstream.mjs" logic "$FIXTURE" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$REVIEW_WF"; then
     pass "7c: deriveSignals/selectDimensions fired on real Python/TypeScript diffs; zero rdm-specific literals in any built command"
 else
     fail "7c: downstream pure-logic assertions failed"
 fi
 
 # --- 7d. Real execution against the fixture plan repo ----------------------
-say "7d. Real execution: commands BUILT by the emitted engines run against the fixture plan repo"
-if run_node "$TMP/downstream.mjs" exec "$FIXTURE" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$DISPATCH_WF" "$REVIEW_WF"; then
-    pass "7d: built phase show / phase update / task show commands executed and exit 0 with the expected output shape"
+say "7d. Real execution: command ladders BUILT by the emitted engine run against the fixture plan repo"
+if run_node "$TMP/downstream.mjs" exec "$FIXTURE" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$REVIEW_WF"; then
+    pass "7d: the built persist ladders executed, exit 0, and the submitted review reads back with its anchored comment"
 else
-    fail "7d: executing commands built by the emitted engines against the fixture plan repo failed"
+    fail "7d: executing commands built by the emitted engine against the fixture plan repo failed"
 fi
 
 # --- 7e. Planted-corruption self-tests on the EMITTED bytes ----------------
@@ -1640,29 +1658,29 @@ assert_corrupt_emitted_is_red() {
     mv "$_target.new" "$_target"
     grep -q -- "$_needle" "$_target" ||
         fail "7e/$_label: the planted mutation did NOT apply to $_target — the self-test would be vacuous"
-    if run_node "$TMP/downstream.mjs" logic "$_dir" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$DISPATCH_WF" "$REVIEW_WF" >/dev/null 2>&1; then
+    if run_node "$TMP/downstream.mjs" logic "$_dir" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$REVIEW_WF" >/dev/null 2>&1; then
         fail "7e/$_label: the corrupted EMITTED bytes did NOT turn the downstream driver red — the gate is vacuous"
     fi
     rm -rf "$_dir"
     pass "7e/$_label: the planted corruption correctly turned the downstream driver red"
 }
 
-# A: the rdm dev-build binary path re-hardcoded into buildFetchPrompt.
+# A: the rdm dev-build binary path re-hardcoded into the persist writer.
 assert_corrupt_emitted_is_red "A (binary literal)" \
-    "s|const bin = resolveRdmBin(cfg \&\& cfg.rdmBin)|const bin = './target/debug/rdm'|" \
-    "target/debug/rdm" "$DISPATCH_WF"
-# B: this repo's own project flag re-hardcoded in place of projectFlag(cfg).
+    "s|const bin = persistRdmBin(cfg \&\& cfg.rdmBin)|const bin = './target/debug/rdm'|" \
+    "target/debug/rdm" "$REVIEW_WF"
+# B: this repo's own project flag re-hardcoded in place of persistProjectFlag(cfg).
 assert_corrupt_emitted_is_red "B (project literal)" \
-    "s|const proj = projectFlag(cfg)|const proj = ' --project rdm'|" \
-    "project rdm" "$DISPATCH_WF"
+    "s|const proj = persistProjectFlag(cfg)|const proj = ' --project rdm'|" \
+    "project rdm" "$REVIEW_WF"
 # C: the export vocabulary emptied — the api-docs dimension must stop firing,
 # proving the conditional-dimension assertion is not vacuous.
 assert_corrupt_emitted_is_red "C (dimension non-vacuity)" \
     "s|^const EXPORT_CONTENT_PATTERNS = \[|const EXPORT_CONTENT_PATTERNS = []; const EXPORT_CONTENT_PATTERNS_UNUSED = [|" \
-    "EXPORT_CONTENT_PATTERNS_UNUSED" "$DISPATCH_WF"
-# D: the same binary literal planted in the OTHER engine — one engine passing
-# must never cover for the other.
-assert_corrupt_emitted_is_red "D (review engine)" \
+    "EXPORT_CONTENT_PATTERNS_UNUSED" "$REVIEW_WF"
+# D: the binary literal planted in the review-source command builder — a
+# different call site from A, so one passing cannot cover for the other.
+assert_corrupt_emitted_is_red "D (review source builder)" \
     "s|resolveRdmBin(config \&\& config.rdmBin)|'./target/debug/rdm'|" \
     "target/debug/rdm" "$REVIEW_WF"
 

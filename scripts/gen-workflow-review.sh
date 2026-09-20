@@ -36,7 +36,6 @@ fi
 # here — they are kept in sync automatically. Engine scripts carry the `rdm-wf-`
 # prefix that distinguishes them from the `rdm-*` skill front doors.
 set -- "$REPO_ROOT/.claude/workflows/rdm-wf-review-refute-fix.js" \
-    "$REPO_ROOT/.claude/workflows/rdm-wf-dispatch-phase.js" \
     "$REPO_ROOT/.claude/workflows/rdm-wf-plan-review.js"
 
 if [ ! -f "$SOURCE" ]; then

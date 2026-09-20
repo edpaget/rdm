@@ -17,10 +17,9 @@
 //! unit-tested against.
 //!
 //! [`parse_porcelain`] is the pure `git status --porcelain` reader both
-//! implementations share. It is deliberately **fail-closed**, mirroring
-//! `parseWorktreeStatus` in `.claude/workflows/lib/dispatch-phase.mjs` — the
-//! JS enforcement this gate moves into Rust — so the two can never disagree
-//! about what "clean" means.
+//! implementations share, and core owns its semantics outright: it is
+//! deliberately **fail-closed**, so output it cannot parse reads as
+//! *unobservable* rather than as clean.
 
 use std::collections::HashMap;
 
@@ -29,8 +28,7 @@ use crate::link::ItemRef;
 
 /// How many uncommitted paths a refusal names before it truncates.
 ///
-/// Matches `WORKTREE_PATH_CAP` in `.claude/workflows/lib/dispatch-phase.mjs`:
-/// enough to identify what is dirty, few enough that a forgotten `target/`
+/// Enough to identify what is dirty, few enough that a forgotten `target/`
 /// does not bury the message.
 pub const WORKTREE_PATH_CAP: usize = 20;
 
@@ -52,9 +50,7 @@ pub struct WorktreeCheck {
     ///
     /// `false` is the fail-closed branch: `git status` produced text that
     /// yielded no parsable path, so rdm cannot tell whether the worktree is
-    /// clean. The gate reports that as *unobservable*, never as clean —
-    /// matching `parseWorktreeStatus`'s `{ ran: false, clean: false }` in
-    /// `.claude/workflows/lib/dispatch-phase.mjs`.
+    /// clean. The gate reports that as *unobservable*, never as clean.
     pub observable: bool,
 }
 
@@ -226,8 +222,7 @@ pub trait WorktreeProbe {
 /// Returns `(paths, truncated)` where `truncated` is how many further paths
 /// the cap dropped. An empty return means genuinely clean.
 ///
-/// Behavior, matching `parseWorktreeStatus` in
-/// `.claude/workflows/lib/dispatch-phase.mjs` exactly:
+/// Behavior:
 ///
 /// - Porcelain v1 lines are `XY <path>`: two status characters and one space.
 ///   The path is taken by *offset*, never by splitting on whitespace, so a

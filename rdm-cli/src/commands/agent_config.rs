@@ -439,6 +439,12 @@ mod tests {
         assert!(!dir.path().join("skills/rdm-roadmap").exists());
         assert!(
             dir.path()
+                .join("workflows/rdm-wf-review-refute-fix.js")
+                .exists()
+        );
+        // The retired dispatch engine is emitted by nothing.
+        assert!(
+            !dir.path()
                 .join("workflows/rdm-wf-dispatch-phase.js")
                 .exists()
         );
