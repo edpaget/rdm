@@ -1836,6 +1836,47 @@ mod tests {
         );
     }
 
+    /// The orchestrator's plan-approval wait is a single origin-blind
+    /// `rdm plan show` read (see `.claude/skills/rdm-dispatch-phase/SKILL.md`):
+    /// a human's approve review and a review-workflow-persisted one must be the
+    /// same write, so nothing downstream can branch on who authored it.
+    #[test]
+    fn submit_approve_flips_plan_to_approved_whoever_authored_it() {
+        for author in ["ed", "rdm-wf-plan-review", "someone-else"] {
+            let mut store = setup_store_with_items();
+            seed_plan(&mut store, "impl-login");
+            let doc = create_review(
+                &mut store,
+                CreateReview {
+                    project: "test",
+                    author,
+                    target: ReviewTarget::Plan {
+                        slug: "impl-login".to_string(),
+                    },
+                    body: Some("Looks reasonable."),
+                    implements: None,
+                    change_branch: None,
+                },
+            )
+            .unwrap();
+            submit_review(
+                &mut store,
+                "test",
+                &doc.frontmatter.id,
+                Some(Verdict::Approve),
+            )
+            .unwrap();
+            assert_eq!(
+                crate::io::load_plan(&store, "test", "impl-login")
+                    .unwrap()
+                    .frontmatter
+                    .status,
+                PlanStatus::Approved,
+                "author {author} should flip the plan the same way"
+            );
+        }
+    }
+
     #[test]
     fn submit_request_changes_flips_plan_to_changes_requested() {
         let mut store = setup_store_with_items();

@@ -249,10 +249,16 @@ else
 fi
 [ "$REF_COUNT" -ge 5 ] ||
     fail "expected >= 5 total rdm:<engine> references across the emitted skills, found $REF_COUNT — check is not vacuous only if this floor holds"
-grep -qF "rdm:rdm-wf-dispatch-phase" "$TMP/plugin/skills/dispatch-phase/SKILL.md" ||
-    fail "skills/dispatch-phase/SKILL.md must reference rdm:rdm-wf-dispatch-phase"
-grep -qF "rdm:rdm-wf-dispatch-phase" "$TMP/plugin/skills/do/SKILL.md" ||
-    fail "skills/do/SKILL.md must reference rdm:rdm-wf-dispatch-phase"
+# Retargeted by agent-orchestrated-dispatch phase 6: the per-phase driver is now
+# the prose `rdm-dispatch-phase` orchestrator, and the engine these two skills
+# actually name is the CODE-REVIEW one. The dispatch engine is referenced by no
+# emitted skill any more (its file still ships until the roadmap's retirement
+# phase removes it).
+REF_ENGINE="rdm:${REVIEW_WF%.js}"
+grep -qF "$REF_ENGINE" "$TMP/plugin/skills/dispatch-phase/SKILL.md" ||
+    fail "skills/dispatch-phase/SKILL.md must reference $REF_ENGINE"
+grep -qF "$REF_ENGINE" "$TMP/plugin/skills/do/SKILL.md" ||
+    fail "skills/do/SKILL.md must reference $REF_ENGINE"
 pass "dispatch-phase/do carry their expected exact references"
 
 # --- 5. scope negatives -----------------------------------------------------
@@ -333,7 +339,7 @@ say "6b. Self-test: rewriting a skill's workflow reference to a nonexistent name
 SCRATCH_REF="$TMP/scratch-bad-ref"
 rm -rf "$SCRATCH_REF"
 cp -R "$TMP/plugin" "$SCRATCH_REF"
-sed 's/rdm:rdm-wf-dispatch-phase/rdm:rdm-wf-typo-does-not-exist/' \
+sed "s/$REF_ENGINE/rdm:rdm-wf-typo-does-not-exist/" \
     "$SCRATCH_REF/skills/dispatch-phase/SKILL.md" >"$SCRATCH_REF/skills/dispatch-phase/SKILL.md.new"
 mv "$SCRATCH_REF/skills/dispatch-phase/SKILL.md.new" "$SCRATCH_REF/skills/dispatch-phase/SKILL.md"
 if check_workflow_refs_resolve "$SCRATCH_REF" >/dev/null 2>&1; then

@@ -2220,10 +2220,11 @@ plan-review `coherence` dimension and escalates before any implementation.
 
 The top-level return of `rdm-wf-dispatch-phase`. Distinct from the review pipeline's
 `OUTCOME` array above — this is the phase-level verdict consumed by the Phase 3
-autopilot and Phase 4 `rdm-do --auto`. The `rdm-do --auto` wiring into this
-contract is regression-tested by `scripts/verify-workflow-do-auto.sh` (SKILL.md
-static invariants, the OUTCOME→status contract against the real binary, and a
-prose-only self-test of the distributed template).
+autopilot and Phase 4 `rdm-do --auto`. Since `agent-orchestrated-dispatch` phase 6 the
+prose `rdm-dispatch-phase` orchestrator produces this same shape as its in-session
+result (plus `planId` and `reviewIds`), so the consumers below read it unchanged; the
+two harnesses that used to gate the `rdm-do --auto` → engine wiring
+(`verify-workflow-do-auto.sh` and `-task.sh`) were deleted with that wiring.
 
 | field     | type                                      | notes                                          |
 | --------- | ----------------------------------------- | ---------------------------------------------- |
@@ -2252,7 +2253,7 @@ prose-only self-test of the distributed template).
 | `reviewCoverage` | object \| `null`                   | `buildReviewCoverage(...)` — which review dimensions PARTICIPATED: the reported round's `total`/`selected`/`ran`/`failed`/`retried`/`acDimensionRan`/`acTableAbsent`, plus `complete`, `everIncomplete`, `rounds`, `planRounds`, `incomplete`, `last`. `null` when no review reported one — including the `fetchError` short-circuit, which never ran a review and must not read as full coverage. |
 | `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
 
-The `rdm-do --auto --task` wiring into this task-mode contract is regression-tested by `scripts/verify-workflow-do-auto-task.sh` (SKILL.md static invariants, the OUTCOME→status contract against the real binary, and a prose-only self-test of the distributed template).
+The task-mode shape is unchanged by the phase-6 migration: the prose orchestrator returns `task` in place of `roadmap`/`phase` exactly as the engine did.
 
 **`status` / `writesCompletion` carry the gate policy as data.** They are derived
 from the canonical `statusFor` / `writesCompletion` in `lib/review.mjs`, so
@@ -2503,10 +2504,9 @@ than a loud one. The verified callers of the `rdm-wf-dispatch-phase` Workflow ar
 `.claude/skills/rdm-dispatch-phase`, `.claude/skills/rdm-do` (both `--auto`
 flows), `.claude/skills/rdm-autopilot`, and the shipped
 `skill-dispatch-phase-cli.md` / `skill-do-cli.md` /
-`skill-autopilot-cli.md` templates. All of them pass `rdmBin`, asserted
-per-shim by `verify-workflow-do-auto.sh`, `verify-workflow-do-auto-task.sh`,
-`verify-skill-autopilot.sh`, and `verify-agent-config-distribution.sh` § 6d, each
-with a planted-removal self-test.
+`skill-autopilot-cli.md` templates. All of them name `rdmBin`, asserted
+per-shim by `verify-skill-autopilot.sh` and `verify-agent-config-distribution.sh`
+§ 6d, each with a planted-removal self-test.
 
 The `rdm-autopilot` shims were originally in that list only because of the
 fail-closed rule on the one `rdm-wf-dispatch-phase` call payload. Their own

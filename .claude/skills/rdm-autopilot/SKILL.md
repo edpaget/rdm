@@ -4,9 +4,12 @@ description: Drive one named rdm roadmap from not-started to reviewed autonomous
 allowed-tools:
   - Bash
   - Workflow
+  - Skill
 ---
 
-Drive **one** rdm roadmap from `not-started` to `reviewed` with no per-phase human approval. This skill drives the loop **itself**, in prose — it is no longer a thin shim over a `.claude/workflows/autopilot.js` Workflow. The two Workflow-tool calls it makes are `rdm-wf-estimate` (the difficulty pre-pass, a real parallel fan-out) and `rdm-wf-dispatch-phase` (one phase's plan → plan-review → implement → code-review pipeline). Every other step — fetching `rdm next`, persisting an advance or a park, reading a write back to confirm it landed, resolving the mechanical model — is a plain Bash command this skill runs directly in its own context, because it is already a live agent with Bash access and the repo in context. That subagent elimination is the concrete point of this migration: those same steps used to cost a dedicated mechanical `agent()` subagent inside the headless workflow, which cannot run Bash itself; a prose skill already can, so that cost disappears entirely. See `docs/workflow-vs-prose-boundary.md` for why the drive loop specifically (a low-iteration sequential policy driver) moved while `rdm-wf-dispatch-phase` and `rdm-wf-estimate` stayed workflows (real fan-out over a fixed mechanism).
+Drive **one** rdm roadmap from `not-started` to `reviewed` with no per-phase human approval. This skill drives the loop **itself**, in prose — it is no longer a thin shim over a `.claude/workflows/autopilot.js` Workflow. The one Workflow-tool call it makes is `rdm-wf-estimate` (the difficulty pre-pass, a real parallel fan-out); each per-phase unit is entered with `Skill` into this same session as the `rdm-dispatch-phase` prose orchestrator, which replaced the `rdm-wf-dispatch-phase` engine (see step 4). Every other step — fetching `rdm next`, persisting an advance or a park, reading a write back to confirm it landed, resolving the mechanical model — is a plain Bash command this skill runs directly in its own context, because it is already a live agent with Bash access and the repo in context. That subagent elimination is the concrete point of this migration: those same steps used to cost a dedicated mechanical `agent()` subagent inside the headless workflow, which cannot run Bash itself; a prose skill already can, so that cost disappears entirely. See `docs/workflow-vs-prose-boundary.md` for why the drive loop specifically (a low-iteration sequential policy driver) moved while `rdm-wf-estimate` stayed a workflow (real fan-out over a fixed mechanism), and why the per-phase driver has since followed it into prose.
+
+**Why `Skill` and not `Agent` for the per-phase unit:** an `Agent`-spawned subagent has no `Workflow` tool at all (phase 1's reachability finding, `docs/workflow-schemas.md` § "Orchestrator / Workflow-reachability spike"), so the orchestrator's plan-review and code-review calls can only be made by the session that holds it. `Skill` loads the procedure into this turn; `Agent` would silently strand both calls.
 
 Decisions and blockers are **batched, not raised mid-run**: a phase that cannot be advanced is parked `blocked` and the run keeps making progress on the rest, so the user answers the whole queue at once at the end rather than being interrupted per phase.
 
@@ -21,7 +24,7 @@ Every Bash command and Workflow payload below is written against two placeholder
 1. **Single roadmap.** The loop never roams to another roadmap — choosing which roadmap to advance stays a human decision. Every `rdm next` / `rdm phase update` / `rdm phase show` command below is scoped with the **same fixed** `--roadmap <slug>` throughout this run; nothing ever substitutes a different one.
 2. **`main` is never touched.** Autopilot leaves every reviewed phase on the `roadmap/<slug>` branch; landing to `main` is the separate **`rdm-land`** skill. There is no `--land` flag here, and no Bash command in this loop ever runs `git checkout`/`merge`/`rebase` against `main`.
 3. **No `Done:` trailer.** This skill never emits a `Done:` line: its advance step only persists the status the OUTCOME carries, directly via `rdm phase update --status <status> --no-edit` (a status-only write — it never stages or writes a commit message). **`rdm-land` is the land-time writer** — it reads the OUTCOME's `writesCompletion: true` and synthesizes the trailer from the item's identifiers via `rdm hook done-line`, amending it onto the branch tip before the rebase.
-4. **`--permission-mode auto` for unattended runs.** Launch with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so this skill's own Bash commands and the `rdm-wf-estimate`/`rdm-wf-dispatch-phase` Workflow calls don't block on a permission prompt. It is now this skill's own calls that must not stall, not a dispatched workflow's.
+4. **`--permission-mode auto` for unattended runs.** Launch with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so this skill's own Bash commands, the `rdm-wf-estimate` Workflow call, and the `rdm-dispatch-phase` orchestrator's own calls don't block on a permission prompt. It is now this skill's own calls that must not stall, not a dispatched workflow's.
 
 This skill is **non-interactive**.
 
@@ -34,7 +37,7 @@ This skill is **non-interactive**.
 - `project` — the optional project name following `--project`. Omitted → the `<proj-flag>` placeholder used everywhere below renders as nothing (no `--project` flag at all, never an empty value).
 - `maxPhases` — the positive integer following `--max-phases`, when present (omit otherwise — unbounded by phase count).
 - `planOnly` — `true` when `--plan-only` is present (omit otherwise).
-- `maxPlanRevise` — the non-negative integer following `--max-plan-revise`, when present (omit otherwise — `rdm-wf-dispatch-phase` applies its own default of 2). `0` is legal and distinct from unset: it means "terminate on the first blocking plan review, no revise round at all".
+- `maxPlanRevise` — the non-negative integer following `--max-plan-revise`, when present (omit otherwise — `rdm-dispatch-phase` applies its own default of 2). `0` is legal and distinct from unset: it means "terminate on the first blocking plan review, no revise round at all".
 - `maxCodeRework` — the non-negative integer following `--max-code-rework`, when present (omit otherwise — same default of 2, same `0`-is-legal rule).
 - `globalBudget` — **not** a user-facing flag. It never was: the previous shim's own "Parse `$ARGUMENTS`" step listed only `roadmap`/`maxPhases`/`planOnly`/`maxPlanRevise`/`maxCodeRework`, before `--rdm-bin`/`--project` were added by this phase to close the loop's own binary/project literals. It stays an internal constant, `DEFAULT_GLOBAL_BUDGET = 50`, hardcoded in this loop (see step 3).
 
@@ -69,9 +72,25 @@ Loop:
    - Go to step 5 for any stop.
 4. **Work the phase**, stem `S`, tier `T` (`next.model`, defaulting to `medium` when unset):
    - Under `--plan-only`, if `S` is already in `planOnlySeen`, stop with `stopReason: plan-only-exhausted` and go to step 5 — a plan-only pass never advances or persists a terminal status, so `rdm next` will keep returning the same stem forever; this in-memory check is what detects the repeat (there is no rdm-side marker to lean on).
-   - Otherwise, before invoking the Workflow, fetch phase-meta **yourself**, directly via Bash — this mirrors `buildFetchPrompt` and, when it succeeds, skips `rdm-wf-dispatch-phase`'s own Stage-0 fetch agent entirely for this dispatch (that agent is the one call in the whole lane with no `model:` key, since it runs at whatever tier resolves the other five). Run `<rdmBin> phase show --roadmap <slug> S<proj-flag> --format json` and read `stem`, `model` (the difficulty tier, call it `T`), and `body` from its JSON. If the command fails or `body` is empty or missing, abandon this whole procedure and invoke the Workflow below with **no** `phaseMeta` key at all — never forward a partial object; `hoistedMetaComplete` rejects anything short of complete, so a partial payload only wastes the read. Then run `<rdmBin> roadmap show <slug><proj-flag> --format json` and keep that JSON's `body` field VERBATIM as `roadmapBody` — the parent roadmap's `## Intent` section lives there, and it is the plan gate's ONLY intent source on this path, so omitting it silently disables the `intent-alignment` dimension for every phase you dispatch. This one field is the single exception to the all-or-nothing rule above: `PHASE_META_SCHEMA` marks it optional, so if that command fails or has no body, omit `roadmapBody` and carry on rather than abandoning the hoist.
-   - Otherwise, resolve the five per-step model ids per `buildFetchPrompt`'s exact rule: when `T` is a non-empty string, run `<rdmBin> model resolve plan --tier T` and `<rdmBin> model resolve implement --tier T`; when `T` is empty or missing, run those same two with no `--tier` at all. Always run `<rdmBin> model resolve review-find`, `<rdmBin> model resolve review-verify`, and `<rdmBin> model resolve mechanical`, all three with no `--tier`, regardless of `T` — none of these five model-resolve calls ever takes a project flag. If any of the five commands fails or prints nothing, abandon this whole procedure and invoke the Workflow below with no `phaseMeta` key. Then run `<rdmBin> config get dispatch.verify --raw` and keep a non-empty printed line verbatim as `verify` (`--raw` prints the bare value with no `(source: ...)` annotation, and nothing at all when the key is unset); if it prints nothing or fails, abandon this whole procedure and invoke the Workflow below with no `phaseMeta` key — only the workflow's own Stage-0 agent knows how to discover a verification command from CI config, `docs/principles.md`, or `CLAUDE.md`/`AGENTS.md`. Otherwise assemble `phaseMeta = { roadmap: <slug>, phase: S, stem, model: T, body, roadmapBody, verify, models: { plan, implement, review_find, review_verify, mechanical } }` from exactly the values just gathered — field-for-field what `PHASE_META_SCHEMA` requires, plus the optional `roadmapBody` (drop that one key entirely if the roadmap read failed; never drop the hoist over it).
-   - Invoke the **`rdm-wf-dispatch-phase` Workflow** via the Workflow tool with exactly `{ roadmap: <slug>, phase: S, planOnly, rdmBin, project, phaseMeta }` — omit the `phaseMeta` key entirely when the sub-step above didn't complete — plus `maxPlanRevise` and/or `maxCodeRework` **only when this run's `$ARGUMENTS` set them**. Apart from the new `phaseMeta` key, this is the exact payload shape `rdm-wf-dispatch-phase` was invoked with before this change, preserved byte-for-shape apart from the two environment args `rdmBin`/`project` added by `parameterize-dispatch-phase-and-contract`; `rdmBin`/`project` are the same resolved values from step 1, passed as bare keys (never re-literalized here). `rdmBin` is optional — the workflow defaults it to a plain `rdm` on `PATH` — but always pass the value step 1 resolved, so this loop's Bash commands and the workflow's own commands agree on one executable.
+   - Otherwise, **enter the `rdm-dispatch-phase` orchestrator in this same session** with the `Skill` tool:
+
+     ```
+     Skill({ skill: 'rdm-dispatch-phase',
+             args: '<slug> S' + flags })
+     ```
+
+     where `flags` forwards, as ARGUMENTS text and only when this run's `$ARGUMENTS` set them:
+     `--plan-only`, `--max-plan-revise N`, `--max-code-rework N`, `--rdm-bin <rdmBin>`,
+     `--project <project>`. **Never** enter it with `Agent` — see the reachability note above. There
+     is no `phaseMeta`/`taskMeta`/`alreadyInProgress`/`dispatch.verify` hoist to assemble any more:
+     those existed to spare a headless Workflow a Stage-0 subagent, and the orchestrator runs in this
+     same session with Bash, so it reads what it needs itself. The orchestrator stamps the phase
+     `in-progress` (skipped under `--plan-only`), pins the checkout identity, plans, reviews the plan,
+     implements, verifies, code-reviews, triages every comment, and performs the gated terminal
+     status write, then returns the OUTCOME below.
+   - The retired `rdm-wf-dispatch-phase` Workflow is **not** called here any more. Its script is still
+     present in the tree (`.claude/workflows/rdm-wf-dispatch-phase.js`) because the roadmap's
+     retirement phase removes it, not this one — do not read its presence as "still in use".
    - Read the returned OUTCOME object's `outcome`, `status`, and `reason` fields.
    - **Interpret the outcome** (mirrors `interpretOutcome`):
      - `outcome: "reviewed"`, **not** plan-only → **advance**: run `<rdmBin> phase update S --status <OUTCOME.status || reviewed> --no-edit --roadmap <slug><proj-flag>`, then read it back with `<rdmBin> phase show S --roadmap <slug><proj-flag> --format json` and confirm `status` matches. Retry the write+read-back up to **2** times total (`DEFAULT_MAX_ADVANCE_ATTEMPTS`). On success: append `S` to `completed`, log `"phase S reviewed — advancing"`, continue the loop from step 1. On repeated failure: park `S` (below) with reason `"[code] advance to reviewed failed repeatedly"` — never report a false completion.
@@ -99,7 +118,7 @@ reviewed work is left on the roadmap/<slug> branch; main is never touched.
 ```
 
 - The stop-reason line is either `stop reason: <reason>` (a known-good reason) or, for anything else, the loud `*** ABNORMAL TERMINATION (stop reason: <reason>) — the roadmap was NOT driven to exhaustion; do not read this as a completed run.` The **known-good allowlist** is exactly: `nothing`, `blocked-on-dependencies`, `budget`, `plan-only-exhausted`, `mechanical-model-unresolved`. Anything else — including a hypothetical future reason, or literally `unparseable` — gets the abnormal banner, never the plain line. Treat this as an allowlist, not a denylist keyed on one literal, so an unrecognized future reason is fail-safe flagged rather than silently trusted.
-- `phases completed` lists stems in the order they completed (advance or noop-vetted), comma-joined, or `none`.
+- `phases completed` lists stems in the order they completed (advance or noop-vetted), comma-joined, or `none`. Log each unit's `planId` and `reviewIds` alongside its stem as you go — they are pass-through fields the orchestrator returns, and they are the entry points into the persisted trail for whoever reads this summary. They add no branch: no decision in this loop reads them.
 - `escalations awaiting review` renders each entry as `<stem> [<stage>]: <reason>`, where `<stage>` is parsed from the reason's leading `[tag]` (defaulting to `code` if unparseable), followed by the `rdm review blocked` pointer line.
 - If **any** escalation is tagged `[fetch]`, add the loud note: `note: [fetch]-tagged entries above are summary-only — no phase is known to park against, so they will NOT appear in the` `rdm review blocked` `queue; act on them directly from this summary.` (Only a fetch-stage escalation, from step 4.3 above, is ever fetch-tagged — `[plan]`/`[code]` escalations always have a real stem and are genuinely queued.)
 - The closing line is always present, regardless of outcome.
@@ -108,7 +127,7 @@ reviewed work is left on the roadmap/<slug> branch; main is never touched.
 
 Every input `parseAutopilotArgs` accepted, with its disposition here:
 
-- **`roadmap` / `maxPhases` / `planOnly` / `maxPlanRevise` / `maxCodeRework`** — **kept**, identical parsing rules and defaults (2 each inside `rdm-wf-dispatch-phase` when omitted; `0` is legal and distinct from unset).
+- **`roadmap` / `maxPhases` / `planOnly` / `maxPlanRevise` / `maxCodeRework`** — **kept**, identical parsing rules and defaults (2 each inside the `rdm-dispatch-phase` orchestrator when omitted; `0` is legal and distinct from unset).
 - **`globalBudget`** — **kept**, internal-only, `DEFAULT_GLOBAL_BUDGET = 50`, never a flag — the previous shim never exposed one either.
 - **`mechanicalModel` hoist** — **kept, repurposed**. It no longer feeds this loop's own fetch/advance/park (those are direct Bash now, no subagent to hand a model id to); it is needed only to forward into the `rdm-wf-estimate` Workflow call.
 - **`phaseList` hoist** — **kept, repurposed**, for the same reason: it now feeds the `rdm-wf-estimate` Workflow call directly instead of an inline JS pre-pass.
@@ -118,11 +137,10 @@ Every input `parseAutopilotArgs` accepted, with its disposition here:
 
 ## Recovering a crashed dispatch
 
-This skill's drive loop is itself prose, driven by plain Bash — it has no Workflow run of its own to resume. But the two Workflow-tool calls it makes (step 3's `rdm-wf-estimate` pre-pass, step 4's `rdm-wf-dispatch-phase` per-phase pipeline) are each a real `Workflow` run, and either can crash mid-flight. If one does, relaunch that same call with `resumeFromRunId` instead of re-invoking it fresh:
+This skill's drive loop is itself prose, driven by plain Bash — it has no Workflow run of its own to resume, and neither does step 4: the per-phase unit is now a `Skill` loaded into this same session, so a stall there is recovered by re-entering it (the orchestrator's own step 2 resumes from `plan list --implements <item>` + `review requests`, without discarding recorded work). The one Workflow-tool call left is step 3's `rdm-wf-estimate` pre-pass, and it is a real `Workflow` run that can crash mid-flight. If it does, relaunch that same call with `resumeFromRunId` instead of re-invoking it fresh:
 
 ```
 Workflow({ scriptPath: '.claude/workflows/rdm-wf-estimate.js', resumeFromRunId: '<prior runId>' })      # step 3
-Workflow({ scriptPath: '.claude/workflows/rdm-wf-dispatch-phase.js', resumeFromRunId: '<prior runId>' }) # step 4
 ```
 
 Any `agent()` call inside that run whose `(prompt, opts)` are byte-unchanged from the crashed attempt replays its cached result instead of re-dispatching. Four caveats apply every time:
@@ -137,7 +155,7 @@ See [`docs/autonomous-loop.md`](docs/autonomous-loop.md) § "Recovering a crashe
 ## Relation to the other lanes
 
 - **`rdm-land`** owns landing reviewed work to `main` (rebase + `merge --ff-only`); this skill never does. Run it after a run reaches `reviewed` if you want the work on `main`.
-- This skill is the **active driver**: every dispatched phase actively runs review (`rdm-wf-dispatch-phase`'s code review is the canonical review pipeline stamped from `.claude/workflows/lib/review.mjs`) before advancing, so nothing is left parked in `needs-review`.
+- This skill is the **active driver**: every dispatched phase actively runs review (the orchestrator's code review is the canonical pipeline, invoked through the `rdm-wf-review-refute-fix` Workflow and stamped from `.claude/workflows/lib/review.mjs`) and triages every comment on the persisted review before advancing, so nothing is left parked in `needs-review` and nothing is left unresolved.
 - No `Done:` line is ever written here — this skill's advance step only persists the status the OUTCOME carries, directly via Bash. **`rdm-land` is the land-time writer**: it reads the OUTCOME's `writesCompletion: true` and synthesizes the trailer from the item's identifiers via `rdm hook done-line`, amending it onto the branch tip before the rebase. No pre-step is required.
 
 See [`docs/autonomous-loop.md`](docs/autonomous-loop.md), [`docs/workflow-schemas.md`](docs/workflow-schemas.md), and [`docs/workflow-vs-prose-boundary.md`](docs/workflow-vs-prose-boundary.md) for the full contract and the reasoning behind this migration.

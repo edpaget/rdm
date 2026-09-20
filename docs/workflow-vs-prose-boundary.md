@@ -63,10 +63,12 @@ Moving the drive loop to prose left the other seven scripts in place as workflow
 it was not a pure surface swap, and the table should not be read as claiming one.
 `autopilot.js` made exactly **one** nested `workflow()` call — a dispatch of the
 phase engine, then named `dispatch-phase` — and reached the estimate fan-out through a stamped `estimate-core` copy of its own,
-not by invoking `rdm-wf-estimate`. The prose orchestrator calls `rdm-wf-dispatch-phase` as autopilot
-did **and additionally calls `rdm-wf-estimate` as a workflow**, which was a new call path
+not by invoking `rdm-wf-estimate`. The prose `rdm-autopilot` skill called `rdm-wf-dispatch-phase` as
+autopilot did **and additionally calls `rdm-wf-estimate` as a workflow**, which was a new call path
 rather than a preserved one, and which dropped `gen-workflow-estimate.sh`'s stamped
-consumers from three to one.
+consumers from three to one. Since `agent-orchestrated-dispatch` phase 6 it no longer calls the
+phase engine at all: it enters the prose `rdm-dispatch-phase` orchestrator with `Skill`, into its own
+session, so `rdm-wf-estimate` is the one Workflow the drive loop itself still invokes.
 
 Criterion 4 (determinism) is not tabulated because it held by construction for all eight
 while `autopilot.js` still existed, and continues to hold for the seven live scripts
@@ -92,10 +94,42 @@ prose would duplicate `estimate.mjs`'s filtering/rating/writeback logic outside 
 single-sourced home and risk silent drift. The local dogfood `rdm-autopilot` skill is
 unaffected and still invokes the real `rdm-wf-estimate` Workflow.
 
+**Decided (`agent-orchestrated-dispatch` phase 6): omit the plan-review call downstream.**
+The per-phase driver moved to prose in that phase — `.claude/skills/rdm-dispatch-phase/SKILL.md`
+is now the orchestrator, loaded into the main session with `Skill`, and it invokes **two**
+Workflows: `rdm-wf-plan-review` on the `plan/<slug>` document and `rdm-wf-review-refute-fix`
+on `change/<sha>`. Only the second of those is emitted downstream (`SHIPPED_WORKFLOWS` in
+`rdm-core/src/agent_config.rs` emits `rdm-wf-dispatch-phase.js` and
+`rdm-wf-review-refute-fix.js`, nothing else), so a distributed skill naming
+`rdm-wf-plan-review.js` would reference a file absent from its own tree and fail
+`scripts/verify-agent-config-distribution.sh`'s shim-reference check. This is the identical
+hazard as the `rdm-wf-estimate` case above, and it takes the identical answer: the
+distributed `skill-dispatch-phase-cli.md` **omits the plan-review invocation** and waits on a
+human-submitted `rdm review submit --verdict approve` on the plan at that step, while this
+repo's local `.claude/skills/` copy makes the real Workflow call. The two are the *same read*
+— rdm flips plan status on any `review submit` against a `plan/<slug>` target — so the
+distributed procedure is not a degraded variant of the gate, only a different author of the
+approving review. Shipping the plan-review engine downstream stays `ship-plan-review-workflow`'s
+job.
+
+**How the prose orchestrator is validated.** By dogfooding, and improved iteratively from what
+a real drive surfaces (operator, 2026-09-20). No harness greps its prose: a test asserting that
+particular strings are present in a static file is not evidence that the procedure behaves, so
+`scripts/verify-skill-dispatch.sh` is deliberately not written, and there is **no
+live-smoke-run gate** anywhere in this lane. What does gate it is real-binary machinery —
+`scripts/verify-agent-config-distribution.sh` and `scripts/verify-plugin-install.sh` over the
+emitted templates, `scripts/verify-workflow-review.sh` over the review engines, and
+`cargo nextest run` over the plan, review and gate surfaces the prose drives. The same phase
+deleted `scripts/verify-workflow-do-auto.sh` and `scripts/verify-workflow-do-auto-task.sh`
+(their subject, the `--auto` → engine wiring inside `rdm-do`'s prose, no longer exists) and
+narrowed `scripts/verify-skill-autopilot.sh` to its real-binary sections plus the one
+`Skill`-entry contract nothing else covers. The wider sweep of that harness class is owned by
+`task/retire-static-grep-harnesses`.
+
 | Script | Fan-out | Shape | Mid-run gate | Disposition |
 |---|---|---|---|---|
 | `autopilot.js` | only its estimate pre-pass — and that was a stamped `estimate-core` copy (single-sourced in `lib/estimate.mjs`), not a call to `rdm-wf-estimate.js` | policy: advance/park, retry budgets, stop conditions, operator summary; sequential `while` loop, ~5 iterations | no | **MOVED to prose** (`rdm-autopilot` skill) — failed criteria 1 and 2, and was the anti-criterion exactly *(historical row — retired to prose in phase 3 of `prose-autopilot-orchestration`; the file no longer exists)* |
-| `rdm-wf-dispatch-phase.js` | two review stages — plan (4 dimensions) then code (up to 7, narrowed by diff signals) — each fanning `parallel()` over its findings | mechanism: fixed 4-stage plan → plan-review → implement → code-review | no | **STAY** — real fan-out over a fixed procedure |
+| `rdm-wf-dispatch-phase.js` | two review stages — plan (4 dimensions) then code (up to 7, narrowed by diff signals) — each fanning `parallel()` over its findings | mechanism: fixed 4-stage plan → plan-review → implement → code-review | no | **STAY** — real fan-out over a fixed procedure *(superseded: `agent-orchestrated-dispatch` phase 6 replaced this engine with the prose `rdm-dispatch-phase` orchestrator and no lane calls it any more; phase 7 of that roadmap deletes the file and revises this row)* |
 | `rdm-wf-review-refute-fix.js` | same review core: dimensions → findings | mechanism: find → refute → filter → verdict | no | **STAY** — the canonical review pipeline, already single-sourced in `lib/review.mjs` |
 | `rdm-wf-plan-review.js` | the review core **plus** an outer `parallel()` over phase units | mechanism | no | **STAY** — two nested levels of genuine fan-out |
 | `rdm-wf-estimate.js` | `parallel()` rate over unestimated phases | mechanism | no | **STAY** — the pre-pass fan-out, which the prose loop now depends on *newly* (in the local dogfood skill only — the distributed template drops the pre-pass, see "Decided (phase 4)" above), as a real `workflow()` call rather than autopilot's former stamped copy |

@@ -491,6 +491,25 @@ pub(crate) enum ProjectCommand {
         /// Project slug.
         name: String,
     },
+    /// Configure a project's source code repository.
+    ///
+    /// This is the only supported way to set `Project::source` — the
+    /// repository `rdm:src/` links and `change/<ref>` reviews resolve
+    /// against. Editing the plan repo by hand is not a substitute.
+    Update {
+        /// Project slug.
+        name: String,
+        /// Repository locator (a clone URL or a filesystem path).
+        #[arg(long, conflicts_with = "clear_source")]
+        source_repo: Option<String>,
+        /// Branch `rdm:src/` links resolve against when no `@<rev>` is given.
+        /// Requires a configured or simultaneously supplied `--source-repo`.
+        #[arg(long, conflicts_with = "clear_source")]
+        source_branch: Option<String>,
+        /// Remove the configured source repository entirely.
+        #[arg(long, conflicts_with_all = ["source_repo", "source_branch"])]
+        clear_source: bool,
+    },
     /// List all projects.
     List,
 }

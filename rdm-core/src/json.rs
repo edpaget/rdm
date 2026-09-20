@@ -388,6 +388,10 @@ pub struct ProjectJson {
     pub title: String,
     /// Markdown body content.
     pub body: String,
+    /// The code repository this project's `rdm:src/` links and `change/<ref>`
+    /// reviews resolve against, when one is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::model::Source>,
 }
 
 // ---------------------------------------------------------------------------
@@ -645,6 +649,7 @@ pub fn project_to_json(doc: &Document<Project>) -> ProjectJson {
         name: fm.name.clone(),
         title: fm.title.clone(),
         body: doc.body.clone(),
+        source: fm.source.clone(),
     }
 }
 

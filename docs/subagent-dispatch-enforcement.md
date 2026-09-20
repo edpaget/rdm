@@ -75,14 +75,29 @@ none conflicts with another.
   (`rdm-core/src/templates/skill-autopilot-cli.md`): a new `### Mandatory
   dispatch — no inline work` section inside `## Loop`, after the
   bounded-state paragraph and before step 1; a "Self-check before proceeding"
-  bullet appended to step 2's dispatch bullet list.
+  bullet appended to step 2's dispatch bullet list. Since
+  `agent-orchestrated-dispatch` phase 6 the per-phase landing point is step 4's
+  `Skill({ skill: 'rdm-dispatch-phase', … })` entry rather than a
+  `Workflow` invocation of the retired engine; the enforcement it carries is the
+  imperative that the entry is `Skill` and **never** `Agent` (an `Agent`
+  subagent has no `Workflow` tool, so the orchestrator's review calls would be
+  unreachable), which `scripts/verify-skill-autopilot.sh` § 1 gates with two
+  planted-mutation self-tests.
 - `.claude/skills/rdm-dispatch-phase/SKILL.md` and its CLI template
-  (`rdm-core/src/templates/skill-dispatch-phase-cli.md`): a new `##
-  Mandatory dispatch — no inline work` section between `## Dispatch contract`
-  and `## Steps`; "Self-check before proceeding" paragraphs at the end of
-  steps 4, 5, and 6, and a one-sentence self-check appended to step 7's
-  fail-fixable rework bullet; a mandatory-isolation lead-in prepended to `##
-  Context isolation`.
+  (`rdm-core/src/templates/skill-dispatch-phase-cli.md`): **re-landed by
+  `agent-orchestrated-dispatch` phase 6**, which rewrote both files from a thin
+  Workflow shim into the main-session prose orchestrator. The techniques now
+  land as: a `### Delegation boundary — fixed, not a preference` table plus the
+  `MUST NOT` inline-collapse paragraph (techniques 1, 2, 6) directly under
+  `## How this skill must be entered`; "**Declare**" pre-action statements and
+  "**Self-check before proceeding**" paragraphs on the planner and implementer
+  dispatch steps (techniques 3, 4, 5); the numbered
+  declare → classify/act → resolve → verify checklist in the triage step
+  (technique 7); and a second named failure mode, **forging the terminal
+  write**, on the gated `--status reviewed` step. The intervening
+  `## Mandatory dispatch — no inline work` section that the shim-era rewrite
+  had already dropped is not restored under that name — its content is the
+  delegation-boundary section above.
 - The CLI templates under `rdm-core/src/templates/` were also
   brought into sync with phase 1's synchronous-dispatch wording
   (`dispatched synchronously`, `never resume ... by message`, the

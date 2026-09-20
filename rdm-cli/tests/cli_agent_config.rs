@@ -681,7 +681,7 @@ fn agent_config_skills_include_principles() {
 }
 
 #[test]
-fn agent_config_do_skill_references_implementation_plan_review() {
+fn agent_config_do_skill_routes_plan_approval_through_a_plan_review() {
     let dir = TempDir::new().unwrap();
     rdm()
         .arg("agent-config")
@@ -692,10 +692,14 @@ fn agent_config_do_skill_references_implementation_plan_review() {
         .assert()
         .success();
 
+    // The emitted shim must not drop the plan gate. Since the prose orchestrator
+    // landed, the plan under review is a persisted `plan/<slug>` document that an
+    // approve review releases — not the ephemeral `--implementation-plan` target
+    // the old inline flow reviewed.
     let content =
         std::fs::read_to_string(dir.path().join(".claude/skills/rdm-do/SKILL.md")).unwrap();
-    assert!(content.contains("rdm-plan-review"));
-    assert!(content.contains("--implementation-plan"));
+    assert!(content.contains("review start --on plan/"));
+    assert!(content.contains("--verdict approve"));
 }
 
 #[test]

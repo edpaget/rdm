@@ -142,6 +142,31 @@ is a configuration failure rather than a code failure.
 - **Multi-line values are refused.** The value is interpolated into a Bash-agent prompt; a
   multi-line command belongs in a script that the one declared command invokes.
 
+### The plan-recorded-command fallback (the prose orchestrator)
+
+`rdm verify run` exits **2** when nothing resolves (`resolved: false`). That is **unresolved,
+not a failure**, and the two readings that conflate it are both wrong: treating 2 as a failure
+turns a project with a perfectly good verification command into perpetual rework, and treating
+it as success skips verification entirely.
+
+The prose `rdm-dispatch-phase` orchestrator therefore routes exit 2, and only exit 2, to a
+second source. Its planner subagent discovers the project's verification command (order:
+`.github/workflows/`, `docs/principles.md`, then `CLAUDE.md`/`AGENTS.md`) and records it in the
+plan body under a fixed `## Verification command` heading, as a single line — **in the plan,
+never in config**, which keeps § 3's non-goal intact: `rdm config set dispatch.verify` stays an
+operator act. On exit 2 the orchestrator reads that line out of the **approved** plan, refuses a
+multi-line value exactly as `rdm verify run` does, and executes it through Bash with the working
+directory pinned to the run's checkout, recording `{ command, exitCode, tail }` with the tail
+bounded to the same last **4000** characters so both routes report the same shape.
+
+The two terminal cases stay distinct:
+
+- a **non-zero exit** from either route is a blocking rework finding, bounded by the existing
+  `maxCodeRework` budget — no new OUTCOME value (§ 5);
+- **neither source supplying a command** is an unresolved **escalation**: the item parks
+  `blocked` with `[code] no verification command resolved from dispatch.verify or
+  plan/<slug>`. An unverified pass is never reported as a pass.
+
 ## 7. Surfacing it to the implementer
 
 The resolved command is rendered into **both** the first-pass and the rework implementer

@@ -55,6 +55,79 @@ The mechanics that twin made explicit still hold for this prose driver:
   step writes only `--status reviewed`; it never emits a `Done:` line, lands, or
   touches `main` — that is left to `rdm-review` and `rdm-land`.
 
+## The per-phase unit: the prose orchestrator
+
+Since `agent-orchestrated-dispatch` phase 6 the per-phase unit is **not** a Workflow. It is
+`.claude/skills/rdm-dispatch-phase/SKILL.md`, a prose procedure the driving session loads with
+`Skill` and executes in its own turn. `rdm-do` (both modes) is a shim onto it, and
+`rdm-autopilot` step 4 enters it the same way. The `rdm-wf-dispatch-phase` engine still exists
+in the tree — the roadmap's retirement phase removes it — but no lane calls it.
+
+**Why `Skill`, never `Agent`.** An `Agent`-spawned subagent has no `Workflow` tool at all: it is
+absent from both its loaded and its deferred tool lists, so the call cannot be formed, and the
+same-named Skill route inside a subagent returns only a shim carrying an unsatisfiable
+`Invoke: Workflow(...)` directive (`docs/workflow-schemas.md` § "Orchestrator /
+Workflow-reachability spike"). The orchestrator makes two Workflow calls, so it can only run in a
+session that already holds the tool.
+
+**What is delegated, and what is not.** Only the **planner** and the **implementer** are
+dispatched to `Agent` subagents — neither makes a Workflow call, and isolating their contexts is
+the whole remaining reason to delegate. Everything else stays in the loaded session: both
+Workflow calls, verification, triage, every gate read and every status write. Collapsing the
+planner or implementer inline ("inline-collapse") destroys the independent check the lane is
+built on; delegating a Workflow call or a status write is simply impossible or unsafe.
+
+**The sequence.**
+
+```
+Skill(rdm-dispatch-phase)
+  1  resume check: plan list --implements <item> + review requests
+  2  worktree add (idempotent) → review source --on <item>   ← identity pinned ONCE
+  3  phase/task update --status in-progress                  (skipped under --plan-only)
+  4  Agent: planner → plan create --implements [--supersedes] + '## Verification command'
+  5  Workflow: rdm-wf-plan-review  persist → plan/<slug>      (local copy only; see below)
+  6  poll plan show --format json → approved | changes-requested | draft | superseded
+  7  Agent: implementer in the pinned worktree → commit
+  8  verify run (exit 2 → the plan-recorded command, run in the pinned checkout)
+  9  Workflow: rdm-wf-review-refute-fix persist → change/<head>, gate:false
+ 10  triage every comment: addressed(--applied-commit) | wont-fix, each with a reply
+ 11  re-review at the post-triage HEAD (a source fix moved it)
+ 12  phase/task update --status reviewed, source-bound, through the core gate
+ 13  return OUTCOME + planId + reviewIds
+```
+
+**The persisted trail is the archeology.** A Workflow journal lives outside the plan repo and
+disappears. What survives is `plan/<slug>`, the review that approved it, the `change/<sha>`
+review, and one `addressed`/`wont-fix` resolution with a reasoned reply per comment — written
+with the same commands a human uses, which is what makes a human's review and an engine's review
+interchangeable.
+
+**Triage routing** is decided by the comment's own anchor, not by who wrote it. A comment
+carrying a `path` is a SOURCE comment: an implementer subagent fixes it in the pinned worktree
+and its commit SHA becomes the `--applied-commit`, with a pinned
+`rdm:src/<path>@<sha>#L<n>` permalink in the reply. A comment on a plan-repo document goes
+through `rdm-revise`, which is the only route that keeps plan-repo `--applied-commit` semantics —
+and the only reason SOURCE comments may not go there: that skill edits plan-repo bodies and
+cannot carry source-commit provenance. A finding marked `unrefutedReason: budget` was never
+graded, so its reply says so explicitly on either branch.
+
+**Refusal as escalation.** The terminal write is source-bound
+(`--source`/`--base`/`--expected-head`/`--expected-branch`) and goes through the core
+`gates.reviewed` gate, which is enabled for rdm's own plan repo. A refusal is captured verbatim,
+parked as `blocked` with that text in the reason, and returned as `outcome: 'escalated'`. The
+operator override is never used; the procedure does not even spell the flag.
+
+**Downstream divergence.** The distributed `skill-dispatch-phase-cli.md` omits step 5's
+Workflow call — `rdm-wf-plan-review.js` is not emitted downstream, so naming it would reference a
+missing file — and waits on a human-submitted approve review on the plan instead. It is the same
+single `plan show` read either way. See `docs/workflow-vs-prose-boundary.md`
+§ "Decided (`agent-orchestrated-dispatch` phase 6)".
+
+**How it was accepted.** By dogfooding, and improved iteratively from what a real drive surfaces
+(operator, 2026-09-20). There is no smoke-run gate and no harness greps the prose; the real-binary
+gates around it (`verify-agent-config-distribution.sh`, `verify-plugin-install.sh`,
+`verify-workflow-review.sh`, `cargo nextest run`) are what protect the lane.
+
 ## End-to-end flow
 
 ```

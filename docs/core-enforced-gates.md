@@ -176,9 +176,27 @@ unreadable config must never be the thing that *enables* a gate. An invalid
 
 Defaulting off is not timidity. It is what lets the gate ship without changing
 behavior for a single existing plan repo, and what keeps rdm's own hermetic
-harnesses (`verify-skill-autopilot.sh`, `verify-workflow-do-auto.sh` and
-`-task.sh`) green with comment-only edits: their seeded repos set no
-`gates.reviewed` key, so the gate is `NotApplicable` there.
+harnesses green with comment-only edits: their seeded repos set no
+`gates.reviewed` key, so the gate is `NotApplicable` there. (The two
+`verify-workflow-do-auto*` harnesses that used to be named here were deleted by
+`agent-orchestrated-dispatch` phase 6 along with the `--auto` → engine wiring
+they asserted; `verify-skill-autopilot.sh` still seeds its own keyless repo.)
+
+**Enabled for rdm's own plan data (dogfooding, `agent-orchestrated-dispatch`
+phase 6).** `gates.reviewed = true` is set in rdm's plan repo, so every
+`--status reviewed` write on rdm's own phases and tasks — including the prose
+orchestrator's terminal write — goes through the three preconditions for real.
+Two consequences worth stating plainly:
+
+- The hermetic harnesses are unaffected. Each seeds its own plan repo with no
+  `gates.reviewed` key, and resolution is per plan root, so they keep seeing
+  `NotApplicable`. Nothing about turning it on here leaks into a fixture.
+- The orchestrator surfaces a refusal **verbatim** and parks the item
+  `blocked` with that text in its reason. It never overrides: the override
+  below is an operator act, and the procedure deliberately does not even spell
+  the flag (`.claude/skills/rdm-dispatch-phase/SKILL.md` § "The terminal write").
+  A refusal is information — each message already names the missing record and
+  the command that would create it — not an obstacle to route around.
 
 ## The operator override
 

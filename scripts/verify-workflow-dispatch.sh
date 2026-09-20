@@ -2868,55 +2868,22 @@ if assert_fetch_intent_prompt "$TMP/intent-prompt-task-mutant"; then
 fi
 pass "AC-PLAN-INTENT-PROMPT detector fires on a roadmap read smuggled into the task prompt"
 
-# AC-PLAN-INTENT-HOIST: `roadmapBody` is OPTIONAL in PHASE_META_SCHEMA and absent
-# from hoistedMetaComplete's key list, so a hoisted phaseMeta is accepted without
-# it — and a hoisted dispatch skips Stage 0, the only in-workflow reader of the
-# roadmap body. The three CLI shims that hoist must therefore fetch and forward
-# it themselves; otherwise `intent-alignment` is inert on the primary autonomous
-# path while the gate still reports green. This gates the PROSE of all three
-# shims and their shipped templates; scripts/verify-workflow-dispatch.sh's
-# section 6 gates the resulting BEHAVIOR, and scripts/verify-skill-autopilot.sh
-# gates the autopilot loop's own copy.
-for shim in \
-    "$REPO_ROOT/.claude/skills/rdm-autopilot/SKILL.md" \
-    "$REPO_ROOT/.claude/skills/rdm-do/SKILL.md" \
-    "$REPO_ROOT/.claude/skills/rdm-dispatch-phase/SKILL.md" \
-    "$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md" \
-    "$REPO_ROOT/rdm-core/src/templates/skill-do-cli.md" \
-    "$REPO_ROOT/rdm-core/src/templates/skill-dispatch-phase-cli.md"; do
-    [ -f "$shim" ] || fail "AC-PLAN-INTENT-HOIST: hoisting shim not found: $shim"
-    grep -q 'roadmap show' "$shim" ||
-        fail "AC-PLAN-INTENT-HOIST: $shim hoists phaseMeta but never reads the roadmap body — intent-alignment would be inert on this path"
-    grep -qF 'roadmapBody' "$shim" ||
-        fail "AC-PLAN-INTENT-HOIST: $shim never names roadmapBody — the roadmap body it reads would never reach the plan gate"
-    # The field must be IN the assembled phaseMeta object, not merely mentioned.
-    # The literal also pins `verify` (the phase-time verification command the
-    # hoist must forward, see docs/verify-gate.md): a hoist that omits it is
-    # rejected by hoistedMetaComplete and silently costs a Stage-0 agent.
-    grep -qF 'body, roadmapBody, verify, models:' "$shim" ||
-        fail "AC-PLAN-INTENT-HOIST: $shim must carry roadmapBody and verify inside the assembled phaseMeta object literal"
-    # `--raw` is load-bearing, not cosmetic: a bare `config get` prints
-    # `<value>  (source: repo config)`, and every one of these shims tells the
-    # agent to keep the printed value VERBATIM. Without --raw the annotation
-    # rides along into the hoisted `verify` field.
-    grep -qF 'config get dispatch.verify --raw' "$shim" ||
-        fail "AC-PLAN-INTENT-HOIST: $shim hoists a meta payload but never reads dispatch.verify --raw — hoistedMetaComplete would reject it, or the hoisted value would carry a (source: ...) annotation"
-done
-pass "AC-PLAN-INTENT-HOIST: all three hoisting shims and their shipped CLI templates fetch the roadmap body and the verify command, and forward both"
-
-# Self-test: strip the field from one shim's phaseMeta literal and confirm detection.
-sed 's/body, roadmapBody, verify, models:/body, models:/' "$REPO_ROOT/.claude/skills/rdm-do/SKILL.md" >"$TMP/hoist-shim-mutant.md"
-if grep -qF 'body, roadmapBody, verify, models:' "$TMP/hoist-shim-mutant.md"; then
-    fail "AC-PLAN-INTENT-HOIST detector broken — roadmapBody stripped from the phaseMeta literal was not detected"
-fi
-pass "AC-PLAN-INTENT-HOIST detector fires when roadmapBody is stripped from a shim's phaseMeta literal"
-
-# Self-test: drop --raw from one shim's declared-key read and confirm detection.
-sed 's/config get dispatch.verify --raw/config get dispatch.verify/' "$REPO_ROOT/.claude/skills/rdm-do/SKILL.md" >"$TMP/hoist-shim-raw-mutant.md"
-if grep -qF 'config get dispatch.verify --raw' "$TMP/hoist-shim-raw-mutant.md"; then
-    fail "AC-PLAN-INTENT-HOIST detector broken — a --raw-less declared-key read was not produced"
-fi
-pass "AC-PLAN-INTENT-HOIST detector fires when a shim drops --raw from its declared-key read"
+# AC-PLAN-INTENT-HOIST: RETIRED (agent-orchestrated-dispatch phase 6).
+#
+# This block asserted that the three CLI shims' PROSE hoisted `roadmapBody` and
+# `verify` into a `phaseMeta` payload before invoking this engine. Phase 6
+# replaced the per-phase driver with the `rdm-dispatch-phase` prose orchestrator,
+# entered with `Skill` into the main session: nothing hoists a `phaseMeta`
+# payload for this engine any more, so every needle here (`roadmap show`,
+# `roadmapBody`, `body, roadmapBody, verify, models:`,
+# `config get dispatch.verify --raw`) lost its subject. It is deleted rather
+# than rewritten, per the operator's verification principle — a check that only
+# asks whether strings are present in static prose is not evidence.
+#
+# The half with a surviving subject is kept: AC-PLAN-INTENT-PROMPT above gates
+# this engine's own Stage-0 fetch prompt, which is real JS and still the only
+# in-workflow reader of the roadmap body. The orchestrator reads the roadmap
+# body itself, in-session, with Bash.
 
 # AC-STAMP: dispatch-phase stamps the phase/task in-progress, best-effort, right
 # after Stage 0 (metadata + model resolution) and before the plan gate.

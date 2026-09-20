@@ -2966,31 +2966,49 @@ mod tests {
         });
         let content = &skills[5].content;
         assert!(content.contains("name: rdm-dispatch-phase"));
-        // It is a thin shim invoking the Workflow tool, not a prose 8-step loop.
-        assert!(content.contains("thin shim"));
-        assert!(content.contains("Workflow"));
-        assert!(content.contains(".claude/workflows/rdm-wf-dispatch-phase.js"));
+        // It is the main-session prose orchestrator, not a shim over the retired
+        // per-phase engine: it must be entered with Skill (an Agent subagent has
+        // no Workflow tool) and must never name the engine it replaced.
+        assert!(content.contains("Skill"));
+        assert!(!content.contains("thin shim"));
+        assert!(!content.contains("rdm-wf-dispatch-phase"));
+        // It makes the code-review Workflow call itself, in the session that
+        // loaded it, and names the engine file so the reference resolves.
+        assert!(content.contains(".claude/workflows/rdm-wf-review-refute-fix.js"));
+        // Only the planner and the implementer are delegated.
+        assert!(content.contains("Agent"));
+        assert!(content.contains("Planner"));
+        assert!(content.contains("Implementer"));
         // Task mode alongside phase mode.
         assert!(content.contains("--task"));
-        assert!(content.contains("model tier"));
         // Structured OUTCOME with the three documented values plus the
-        // status/writesCompletion/reason fields the canonical review stamps.
+        // status/writesCompletion/reason fields, and the two new identifiers.
         assert!(content.contains("reviewed | rework | escalated"));
         assert!(content.contains("\"status\""));
         assert!(content.contains("\"writesCompletion\""));
         assert!(content.contains("\"reason\""));
-        // A *separate*, independent plan-review stage gates the plan before
-        // code is written, bounded to at most one revise round.
-        assert!(content.contains("separate, independent plan-review"));
-        assert!(content.contains("at most one revise round"));
-        // Delegates code review to the canonical review pipeline (rdm-review's
-        // source), which owns the Done: line via writesCompletion.
-        assert!(content.contains("rdm-review"));
+        assert!(content.contains("\"planId\""));
+        assert!(content.contains("\"reviewIds\""));
+        // The plan gate: a persisted plan document, released by an approve
+        // review, read origin-blind.
+        assert!(content.contains("plan create"));
+        assert!(content.contains("review start --on plan/"));
+        assert!(content.contains("--verdict approve"));
+        assert!(content.contains("plan show"));
+        // Triage resolves every comment with provenance, and the terminal write
+        // is source-bound through the gate.
+        assert!(content.contains("--applied-commit"));
+        assert!(content.contains("wont-fix"));
+        assert!(content.contains("--status reviewed"));
+        assert!(content.contains("--expected-head"));
+        // Verification, with the plan-recorded fallback.
+        assert!(content.contains("verify run"));
+        assert!(content.contains("## Verification command"));
+        // rdm-land still owns the completion trailer; the orchestrator never
+        // writes a Done: line.
         assert!(content.contains("rdm-land"));
-        // Escalation parks the phase as blocked; it never writes a Done: line.
         assert!(!content.contains("Done: <roadmap-slug>/<phase-stem>"));
-        // Escalation follows the shared protocol and records a stage-tagged reason.
-        assert!(content.contains("docs/escalation-protocol.md"));
+        // Escalation records a stage-tagged reason.
         assert!(content.contains("[plan]"));
         assert!(content.contains("[code]"));
         // The --permission-mode auto safety guardrail survives the rewrite.
@@ -2998,9 +3016,9 @@ mod tests {
         assert!(content.contains("git stash -u"));
         assert!(content.contains("git reset --hard"));
         assert!(content.contains("git clean -fdx"));
-        // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
-        assert!(!content.contains("Mandatory dispatch"));
-        assert!(!content.contains("inline-collapse"));
+        // The gate override is operator-only, and the prose deliberately does
+        // not spell the flag (see docs/core-enforced-gates.md).
+        assert!(!content.contains("--override-gate"));
     }
 
     #[test]
@@ -3196,14 +3214,12 @@ mod tests {
             principles_file: None,
         });
         let content = &skills[1].content;
-        // Phase flow commands.
+        // Target discovery, which the shim still owns before it hands off.
         assert!(content.contains("rdm phase list"));
         assert!(content.contains("rdm phase show"));
-        assert!(content.contains("rdm phase update"));
-        // Task flow commands.
         assert!(content.contains("rdm task list"));
         assert!(content.contains("rdm task show"));
-        assert!(content.contains("rdm task update"));
+        // Side-work filing.
         assert!(content.contains("rdm task create"));
     }
 
@@ -3243,14 +3259,22 @@ mod tests {
     }
 
     #[test]
-    fn skill_do_has_write_edit_tools() {
+    fn skill_do_delegates_editing_to_the_orchestrator() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
         });
-        let content = &skills[1].content;
-        assert!(content.contains("Write"));
-        assert!(content.contains("Edit"));
+        let frontmatter = skills[1]
+            .content
+            .split("---")
+            .nth(1)
+            .expect("missing frontmatter");
+        // The shim no longer edits anything itself: the orchestrator it enters
+        // owns the worktree, and the implementer subagent owns the diff. Write
+        // and Edit would be unused authority on this surface.
+        assert!(!frontmatter.contains("Write"));
+        assert!(!frontmatter.contains("Edit"));
+        assert!(frontmatter.contains("Skill"));
     }
 
     #[test]
@@ -3265,68 +3289,70 @@ mod tests {
     }
 
     #[test]
-    fn skill_do_uses_plan_mode_workflow() {
+    fn skill_do_enters_the_orchestrator_with_skill() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
         });
         let content = &skills[1].content;
-        assert!(content.contains("Enter plan mode"));
-        assert!(content.contains("implementation plan"));
+        assert!(content.contains("Skill({ skill: 'rdm-dispatch-phase'"));
+        // And says why it must be Skill rather than Agent: an Agent subagent has
+        // no Workflow tool, so the orchestrator's review call would be
+        // unreachable there.
+        assert!(content.contains("Workflow` tool"));
+        assert!(content.contains("never with `Agent`"));
     }
 
     #[test]
-    fn skill_do_runs_implementation_plan_review() {
+    fn skill_do_routes_plan_approval_through_a_plan_review() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
         });
         let content = &skills[1].content;
-        assert!(content.contains("rdm-plan-review"));
-        assert!(content.contains("--implementation-plan"));
+        // The plan under review is a persisted plan document released by an
+        // approve review — not the ephemeral --implementation-plan target the
+        // old inline flow reviewed.
+        assert!(content.contains("review start --on plan/"));
+        assert!(content.contains("--verdict approve"));
+        assert!(!content.contains("--implementation-plan"));
     }
 
     #[test]
-    fn skill_do_implementation_plan_review_precedes_approval_gate() {
+    fn skill_do_shows_the_target_before_handing_off() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
         });
         let content = &skills[1].content;
-        let plan_pos = content
-            .find("Enter plan mode")
-            .expect("missing Enter plan mode step");
-        let review_pos = content
-            .find("rdm-plan-review")
-            .expect("missing rdm-plan-review reference");
-        let approval_pos = content
-            .find("Wait for user approval")
-            .expect("missing Wait for user approval step");
+        let show_pos = content
+            .find("rdm phase show")
+            .expect("missing the target-show step");
+        let handoff_pos = content
+            .find("Skill({ skill: 'rdm-dispatch-phase'")
+            .expect("missing the orchestrator hand-off");
         assert!(
-            plan_pos < review_pos,
-            "implementation-plan review step should come after drafting the plan"
-        );
-        assert!(
-            review_pos < approval_pos,
-            "implementation-plan review step should come before the approval gate"
+            show_pos < handoff_pos,
+            "the user must see the target before the run starts"
         );
     }
 
     #[test]
-    fn skill_do_auto_mode_folds_blocking_findings() {
+    fn skill_do_distinguishes_auto_from_interactive() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
         });
         let content = &skills[1].content;
         assert!(content.contains("--auto"));
-        assert!(content.contains("blocking"));
-        assert!(content.contains("fold every surviving"));
-        assert!(content.contains("plan-review"));
+        // The one behavioral switch it forwards, and both of its effects.
+        assert!(content.contains("--interactive"));
+        assert!(content.contains("confirmation"));
+        assert!(content.contains("without pausing"));
     }
 
     #[test]
-    fn skill_do_has_agent_tool() {
+    fn skill_do_does_not_claim_the_agent_tool() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
@@ -3336,7 +3362,9 @@ mod tests {
             .split("---")
             .nth(1)
             .expect("missing frontmatter");
-        assert!(frontmatter.contains("Agent"));
+        // Dispatching subagents is the orchestrator's job, and this shim must
+        // not be able to dispatch the orchestrator itself with Agent.
+        assert!(!frontmatter.contains("Agent"));
     }
 
     #[test]
@@ -3589,85 +3617,53 @@ mod tests {
     }
 
     #[test]
-    fn skill_do_finalize_runs_canonical_review() {
+    fn skill_do_defers_review_and_the_terminal_write_to_the_orchestrator() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
         });
         let content = &skills[1].content;
-        // Finalize still stamps the transient needs-review marker via the update
-        // command...
-        assert!(content.contains("--status needs-review"));
-        // ...but it no longer PARKS there: it actively invokes the canonical
-        // review (the `rdm-review` skill, the projection of the one review
-        // source) as part of finalizing.
-        assert!(content.contains("Immediately invoke the `rdm-review` skill"));
-        // The review runs in BOTH lanes — interactive and --auto — not just one.
-        assert!(content.contains("This runs in **both** modes"));
-        assert!(
-            content
-                .contains("`--auto` (which skips only the human confirmation, never the review)")
-        );
+        // The shim no longer stamps needs-review, composes a Key code list, or
+        // invokes the review skill itself: the orchestrator reviews the change,
+        // triages every comment, and performs the gated terminal write.
+        assert!(!content.contains("--status needs-review"));
+        assert!(!content.contains("## Key code"));
+        assert!(content.contains("gated `--status reviewed`"));
+        // It returns the orchestrator's OUTCOME rather than re-deriving a status.
+        assert!(content.contains("OUTCOME verbatim"));
+        assert!(content.contains("planId"));
+        assert!(content.contains("reviewIds"));
         // The completion trailer is sourced from rdm, never hand-typed...
         assert!(content.contains("rdm hook done-line"));
         assert!(content.contains("Never hand-type the completion trailer"));
         // ...so the raw format string never appears in the shipped skill.
         assert!(!content.contains("<roadmap-slug>/<phase-stem>"));
-        // The stale "park it and let a hook pick it up later" framing is gone.
-        assert!(!content.contains("deferred two-stage"));
-        assert!(!content.contains("the sentinel that signals a review is pending"));
     }
 
     #[test]
-    fn skill_do_uses_worktree_and_run_modes() {
+    fn skill_do_delegates_the_worktree_to_the_orchestrator() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
         });
-        let content = &skills[1].content;
-        // Work happens in one worktree per roadmap, created via the roadmap-scoped
-        // worktree command (not a per-phase ref)...
-        assert!(content.contains("worktree add <slug>"));
-        // ...detecting the current worktree's roadmap via `worktree current`...
-        assert!(content.contains("worktree current"));
-        // ...and following the Match/None/Mismatch in-place flow.
-        assert!(content.contains("**Match**"));
-        assert!(content.contains("**None**"));
-        assert!(content.contains("**Mismatch**"));
-        assert!(content.contains("work in place"));
-        // EnterWorktree is a one-time convenience, NOT a correctness dependency:
-        // non-Claude hosts have a working cd/launch entry path.
-        assert!(content.contains("EnterWorktree"));
-        assert!(content.contains("not** a correctness dependency"));
-        assert!(content.contains("cd`/launch"));
-        // Tasks keep their own per-task worktree.
-        assert!(content.contains("worktree add task/<slug>"));
-        // The Mismatch branch pins the relaunch entry path and the reason
-        // EnterWorktree cannot be used from inside another worktree — so a
-        // regression that dropped/inverted this caveat would fail, not pass.
-        assert!(content.contains("relaunch"));
-        assert!(content.contains(".claude/worktrees/"));
-        // ...and the skill supports a non-interactive run mode...
-        assert!(content.contains("--auto"));
-        // ...with unattended-permission guidance for Claude Code.
-        assert!(content.contains("--permission-mode auto"));
-        // `ExitWorktree` is pre-approved in the frontmatter allowed-tools list...
-        assert!(content.contains("  - ExitWorktree"));
-        // ...and the Mismatch branch prefers the in-session
-        // ExitWorktree -> worktree add -> EnterWorktree path over relaunching.
-        assert!(content.contains("call `ExitWorktree({action: \"keep\"})`"));
-        // The safety rule is explicit: always "keep", never "remove" — a
-        // regression that flipped this would delete an unlanded worktree
-        // and its branch out from under in-flight work.
-        assert!(content.contains("**Always pass `action: \"keep\"`, never `\"remove\"`.**"));
-        assert!(!content.contains("action: \"remove\""));
-        // The no-op caveat: ExitWorktree only unwinds a session that entered
-        // via EnterWorktree — entry by plain cd/launch is a documented no-op.
-        assert!(content.contains("is a documented no-op"));
-        // Finalize never auto-exits the worktree — the session stays in
-        // place for the next phase / for `rdm-land` to clean up from inside.
-        assert!(content.contains("**Finalize does not exit the worktree.**"));
-        assert!(content.contains("no automatic `ExitWorktree` call at finalize time"));
+        let do_skill = &skills[1].content;
+        let dispatch = &skills[5].content;
+        // The shim never enters a worktree: the orchestrator resolves the
+        // checkout and hands its path to the subagents that work in it, so the
+        // whole EnterWorktree/ExitWorktree session dance is gone from this
+        // surface rather than merely unused.
+        assert!(!do_skill.contains("EnterWorktree"));
+        assert!(!do_skill.contains("ExitWorktree"));
+        assert!(do_skill.contains("The orchestrator owns everything from that point"));
+        // ...and the orchestrator is where the worktree contract now lives: one
+        // per roadmap, roadmap-scoped (not per-phase), with tasks keeping their
+        // own.
+        assert!(dispatch.contains("worktree add <slug>"));
+        assert!(dispatch.contains("worktree add task/<slug>"));
+        assert!(dispatch.contains("One worktree per roadmap"));
+        // The shim still documents both run modes and the unattended guidance.
+        assert!(do_skill.contains("--auto"));
+        assert!(do_skill.contains("--permission-mode auto"));
     }
 
     #[test]
@@ -4120,12 +4116,16 @@ mod tests {
                 .map(|s| s.content.clone())
                 .collect::<Vec<_>>()
                 .join("\n");
-            let raw_dispatch = count_of(&rdm_tokens(&raw_joined), "rdm-wf-dispatch-phase");
-            assert!(raw_dispatch > 0, "the check would be vacuous");
+            // Anchored on the CODE-REVIEW engine, not the dispatch one: since the
+            // prose orchestrator replaced the per-phase engine, no emitted skill
+            // mentions `rdm-wf-dispatch-phase` at all, which would make a
+            // non-vacuity check on it vacuous in the opposite direction.
+            let raw_review = count_of(&rdm_tokens(&raw_joined), "rdm-wf-review-refute-fix");
+            assert!(raw_review > 0, "the check would be vacuous");
             assert_eq!(
-                joined.matches("rdm:rdm-wf-dispatch-phase").count(),
-                raw_dispatch,
-                "expected all {raw_dispatch} raw engine mentions to be namespaced"
+                joined.matches("rdm:rdm-wf-review-refute-fix").count(),
+                raw_review,
+                "expected all {raw_review} raw engine mentions to be namespaced"
             );
 
             // Every namespaced reference the rewrite emits names a real
@@ -4229,13 +4229,19 @@ mod tests {
             .into_iter()
             .find(|f| f.relative_path == "skills/autopilot/SKILL.md")
             .expect("the autopilot shim is emitted");
+        // The autopilot loop no longer dispatches the per-phase engine — it enters
+        // the prose orchestrator with `Skill` — but it still names the review
+        // engine that orchestrator invokes, and that mention must be namespaced.
+        // This is the regression the per-skill loop above exists for: autopilot
+        // carries no `.claude/workflows/` path literal, so a path-only rewrite
+        // would leave the mention bare.
         assert!(
             autopilot
                 .content
-                .matches("rdm:rdm-wf-dispatch-phase")
+                .matches("rdm:rdm-wf-review-refute-fix")
                 .count()
                 > 0,
-            "autopilot must namespace the engine it dispatches"
+            "autopilot must namespace the engine its per-phase unit invokes"
         );
 
         // Engines this distribution does NOT ship stay bare — namespacing
@@ -4427,11 +4433,16 @@ mod tests {
     fn plugin_skill_bodies_preserve_non_skill_rdm_identifiers() {
         // CLI surface counts.
         let expected: [(&str, usize); 5] = [
-            // Bumped 20 -> 22 when the `resumeFromRunId` recovery sections
-            // began naming the real dispatch-phase file. Deliberate, as the
-            // assertion message below instructs.
-            ("rdm-wf-dispatch-phase", 22),
-            ("rdm-wf-estimate", 2),
+            // 22 -> 0: the prose orchestrator replaced the per-phase engine, so
+            // no emitted skill names it any more. Kept in the table at 0 so a
+            // reference creeping back downstream — where the file DOES still
+            // ship until the engine is retired — is a deliberate decision rather
+            // than an unnoticed one.
+            ("rdm-wf-dispatch-phase", 0),
+            // 2 -> 3: the dispatch-phase orchestrator cites the estimate
+            // pre-pass as the precedent for omitting the plan-review engine
+            // downstream. Still never namespaced — rdm does not ship it.
+            ("rdm-wf-estimate", 3),
             ("rdm-mechanical", 1),
             ("rdm-next", 1),
             ("rdm-side", 1),
@@ -4511,7 +4522,11 @@ mod tests {
             );
             renamed_total += raw_old;
         }
-        let expected = 48;
+        // 48 -> 50: the prose orchestrator made `rdm-dispatch-phase` a name the
+        // rdm-do shim and the autopilot loop each state explicitly (as the
+        // `Skill({ skill: ... })` entry they invoke), where they previously named
+        // the engine file instead.
+        let expected = 50;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"

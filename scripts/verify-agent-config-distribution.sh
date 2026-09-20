@@ -497,13 +497,22 @@ if check_shim_refs_resolve "$skills_dir" "$workflows_dir"; then
 else
     fail "cli: $SHIM_REF_UNRESOLVED unresolved shim reference(s) (see lines above)"
 fi
-[ "$SHIM_REF_COUNT" -ge 3 ] ||
-    fail "cli: expected >= 3 total shim references (dispatch-phase skill x1, do skill x2), found $SHIM_REF_COUNT — check is not vacuous only if this floor holds"
+# Floor recomputed from the freshly emitted tree by agent-orchestrated-dispatch
+# phase 6, which replaced the per-phase engine with the prose orchestrator: the
+# emitted rdm-dispatch-phase skill names the code-review engine once, and the
+# emitted rdm-do shim names it once when pointing at the orchestrator's review.
+# 2, never 0 — a floor of 0 would make the whole section vacuous.
+[ "$SHIM_REF_COUNT" -ge 2 ] ||
+    fail "cli: expected >= 2 total shim references (dispatch-phase skill x1, do skill x1), found $SHIM_REF_COUNT — check is not vacuous only if this floor holds"
 
-grep -qF ".claude/workflows/$DISPATCH_WF" "$skills_dir/rdm-dispatch-phase/SKILL.md" ||
-    fail "cli: rdm-dispatch-phase/SKILL.md must reference .claude/workflows/$DISPATCH_WF"
-grep -qF ".claude/workflows/$DISPATCH_WF" "$skills_dir/rdm-do/SKILL.md" ||
-    fail "cli: rdm-do/SKILL.md must reference .claude/workflows/$DISPATCH_WF"
+# The engine these two skills actually name is the CODE-REVIEW engine: the
+# orchestrator invokes it directly, and the dispatch engine is no longer called
+# by any emitted skill. The plan-review engine is deliberately NOT named by any
+# emitted skill — it is not in $WORKFLOWS, so a reference would not resolve.
+grep -qF ".claude/workflows/$REVIEW_WF" "$skills_dir/rdm-dispatch-phase/SKILL.md" ||
+    fail "cli: rdm-dispatch-phase/SKILL.md must reference .claude/workflows/$REVIEW_WF"
+grep -qF ".claude/workflows/$REVIEW_WF" "$skills_dir/rdm-do/SKILL.md" ||
+    fail "cli: rdm-do/SKILL.md must reference .claude/workflows/$REVIEW_WF"
 pass "cli: rdm-dispatch-phase/rdm-do carry their expected exact references"
 
 # Every emitted skill's prose (not just rdm-autopilot's) must never
@@ -520,8 +529,14 @@ if check_workflow_invocations_resolve "$skills_dir" "$workflows_dir"; then
 else
     fail "cli: $INVOCATION_UNRESOLVED unresolved Workflow-invocation instruction(s) (see lines above)"
 fi
-[ "$INVOCATION_COUNT" -ge 5 ] ||
-    fail "cli: expected >= 5 total Workflow-invocation instructions across all skills, found $INVOCATION_COUNT — check is not vacuous only if this floor holds"
+# Floor recomputed by agent-orchestrated-dispatch phase 6: the emitted
+# rdm-dispatch-phase orchestrator instructs invoking the code-review engine
+# once, and the emitted rdm-do shim names that same invocation once. The
+# dispatch engine is invoked by no emitted skill any more, and the plan-review
+# engine is deliberately never named downstream (see
+# docs/workflow-vs-prose-boundary.md). 2, never 0.
+[ "$INVOCATION_COUNT" -ge 2 ] ||
+    fail "cli: expected >= 2 total Workflow-invocation instructions across all skills, found $INVOCATION_COUNT — check is not vacuous only if this floor holds"
 
 # --- 5. planted-mutation self-tests: prove neither gate above is vacuous ---
 say "5a. Self-test: planted byte corruption in an emitted workflow script"
@@ -539,7 +554,7 @@ say "5b. Self-test: planted shim reference typo'd to a nonexistent filename"
 SCRATCH_SHIM="$TMP/scratch-corrupt-shim"
 rm -rf "$SCRATCH_SHIM"
 cp -R "$TMP/cli" "$SCRATCH_SHIM"
-sed "s|\.claude/workflows/$DISPATCH_WF|.claude/workflows/typo-$DISPATCH_WF|" \
+sed "s|\.claude/workflows/$REVIEW_WF|.claude/workflows/typo-$REVIEW_WF|" \
     "$SCRATCH_SHIM/.claude/skills/rdm-dispatch-phase/SKILL.md" >"$SCRATCH_SHIM/.claude/skills/rdm-dispatch-phase/SKILL.md.new"
 mv "$SCRATCH_SHIM/.claude/skills/rdm-dispatch-phase/SKILL.md.new" "$SCRATCH_SHIM/.claude/skills/rdm-dispatch-phase/SKILL.md"
 if check_shim_refs_resolve "$SCRATCH_SHIM/.claude/skills" "$SCRATCH_SHIM/.claude/workflows" >/dev/null 2>&1; then
@@ -803,10 +818,20 @@ fi
 # estimate,review-outcome}.sh). Converting those ten templates is tracked by task
 # convert-remaining-skill-templates-to-workflow-shims — extending this check to
 # them would fail immediately and pressure an out-of-scope conversion.
-say "6d. Hoist args: the three real Workflow shims gather and pass their optional args"
+say "6d. Load-bearing command strings: the three real shims name what they actually run"
 
-# assert_shim_hoists <emitted-root> <variant> — each of the three shims must
-# name the arg keys it passes AND the command/tool it gathers them with.
+# assert_shim_hoists <emitted-root> <variant> — each of the three shims must name
+# the commands/tool entries its own contract depends on.
+#
+# Retargeted by agent-orchestrated-dispatch phase 6. The old needles here
+# (`phaseMeta`, `taskMeta`, `alreadyInProgress`, `rdm model resolve mechanical`)
+# were args hoisted INTO the retired per-phase engine; nothing hoists them any
+# more, so they had no subject left. What replaces them is the orchestrator's own
+# load-bearing surface: the plan it creates and reads, the plan-review record it
+# waits on, the review queue it triages, the resolution it writes, the gated
+# terminal status, and the verification gate — plus, for rdm-do and rdm-autopilot,
+# the `Skill` entry that is the ONLY correct way to reach the orchestrator (an
+# Agent subagent has no Workflow tool, so its review call would be unreachable).
 assert_shim_hoists() {
     root=$1
     variant=$2
@@ -828,62 +853,58 @@ assert_shim_hoists() {
     dp="$root/.claude/skills/rdm-dispatch-phase/SKILL.md"
     do_="$root/.claude/skills/rdm-do/SKILL.md"
 
-    # rdm-autopilot: next. No mechanicalModel/phaseList hoist any longer — the
-    # distributed template's `rdm-wf-estimate` pre-pass is intentionally
-    # dropped downstream (see docs/workflow-vs-prose-boundary.md), so there is
-    # nothing left to feed it.
+    # rdm-autopilot: the `next` cursor it drives the loop from, and the Skill
+    # entry into the per-phase orchestrator.
     _need "$ap" 'next' || return 1
     if [ "$variant" = cli ]; then
         _need "$ap" 'rdm next --roadmap <slug> --format json' || return 1
+        # `next` must be documented as one-shot, or a caller could cache it and
+        # re-dispatch the same phase forever.
+        _need "$ap" 'one-shot, on the first loop iteration only' || return 1
+        # shellcheck disable=SC2016  # a literal Skill({...}) argument, not shell
+        _need "$ap" "skill: 'rdm-dispatch-phase'" || return 1
     fi
-    # `next` must be documented as one-shot, or a caller could cache it and
-    # re-dispatch the same phase forever.
-    _need "$ap" 'one-shot, on the first loop iteration only' || return 1
-    # dispatch-phase's `rdmBin` arg now DEFAULTS to a plain `rdm` on PATH, so an
-    # emitted shim that omits it degrades to whatever rdm the downstream consumer
-    # has on PATH rather than hard-breaking. The check is kept for exactly that
-    # reason: a shim that names the arg lets a consumer pin a specific build.
-    # Asserted for ALL THREE shims — it is not a model-derived hoist, so it
-    # sits outside the cli-only guards.
+    # `rdmBin` DEFAULTS to a plain `rdm` on PATH, so an emitted shim that omits it
+    # degrades to whatever rdm the downstream consumer has on PATH rather than
+    # hard-breaking. The check is kept for exactly that reason: a shim that names
+    # the arg lets a consumer pin a specific build. Asserted for ALL THREE shims.
     _need "$ap" 'rdmBin' || return 1
 
-    # rdm-dispatch-phase: alreadyInProgress + rdmBin; phaseMeta/taskMeta.
-    _need "$dp" 'alreadyInProgress' || return 1
+    # rdm-dispatch-phase: the orchestrator's own load-bearing commands.
     _need "$dp" 'rdmBin' || return 1
     if [ "$variant" = cli ]; then
-        _need "$dp" 'phaseMeta' || return 1
-        _need "$dp" 'taskMeta' || return 1
-        _need "$dp" 'phase show <phase> --roadmap <slug>' || return 1
-        _need "$dp" 'rdm model resolve mechanical' || return 1
-        _need "$dp" '--status in-progress' || return 1
+        _need "$dp" 'plan create' || return 1
+        _need "$dp" 'plan show' || return 1
+        _need "$dp" 'review start --on plan/' || return 1
+        _need "$dp" 'review requests' || return 1
+        _need "$dp" 'review update' || return 1
+        _need "$dp" '--status reviewed' || return 1
+        _need "$dp" 'verify run' || return 1
     fi
 
-    # rdm-do --auto: same contract.
-    _need "$do_" 'alreadyInProgress' || return 1
+    # rdm-do: the shim onto the orchestrator.
     _need "$do_" 'rdmBin' || return 1
     if [ "$variant" = cli ]; then
-        _need "$do_" 'phaseMeta' || return 1
-        _need "$do_" 'taskMeta' || return 1
-        _need "$do_" 'rdm model resolve mechanical' || return 1
+        # shellcheck disable=SC2016  # a literal Skill({...}) argument, not shell
+        _need "$do_" "skill: 'rdm-dispatch-phase'" || return 1
     fi
 
     return 0
 }
 
 if assert_shim_hoists "$TMP/cli" cli; then
-    pass "cli: all $HOIST_REF_COUNT hoist-arg reference(s) present across the three real shims"
+    pass "cli: all $HOIST_REF_COUNT load-bearing command reference(s) present across the three real shims"
 else
     fail "$HOIST_FAILURE"
 fi
-# Occurrence floor, so the check can never pass vacuously: CLI asserts
-# >= 16 references (raised from 13 by the project-agnostic-lane roadmap,
-# which added one `rdmBin` needle to each of the three shims; recomputed
-# after the `rdm-wf-estimate` pre-pass — and its mechanicalModel/phaseList
-# hoist — was dropped from the distributed rdm-autopilot template). A drop
-# below the floor means a shim silently stopped gathering.
-[ "$HOIST_REF_COUNT" -ge 16 ] ||
-    fail "cli: expected >= 16 hoist-arg references across the three real shims, found $HOIST_REF_COUNT"
-pass "hoist-arg occurrence floor holds"
+# Occurrence floor, so the check can never pass vacuously. Recomputed from the
+# freshly emitted tree after the phase-6 retarget: autopilot 5 (next, the next
+# command, the one-shot note, the Skill entry, rdmBin), dispatch-phase 8 (rdmBin
+# plus the seven orchestrator commands), rdm-do 2 (rdmBin, the Skill entry) = 15.
+# A drop below the floor means a shim silently stopped naming what it runs.
+[ "$HOIST_REF_COUNT" -ge 15 ] ||
+    fail "cli: expected >= 15 load-bearing command references across the three real shims, found $HOIST_REF_COUNT"
+pass "load-bearing command occurrence floor holds"
 
 # Negative: the five NON-shim skills must NOT have been dragged into this — if a
 # future edit turns them into shims, that is a deliberate change belonging to
@@ -898,14 +919,14 @@ done
 pass "the five non-shim skills are still non-shims — their hoists correctly stay on the local dogfood copies"
 
 # --- 6e. Self-test: a typo'd arg key in a real shim must be caught ----------
-say "6e. Self-test: planted typo in a shim's hoist-arg key"
+say "6e. Self-test: planted typo in a shim's load-bearing command"
 cp -R "$TMP/cli" "$TMP/cli-hoist-typo"
-sed 's/phaseMeta/phaseMata/g' "$TMP/cli/.claude/skills/rdm-dispatch-phase/SKILL.md" \
+sed 's/plan create/plan creat/g' "$TMP/cli/.claude/skills/rdm-dispatch-phase/SKILL.md" \
     >"$TMP/cli-hoist-typo/.claude/skills/rdm-dispatch-phase/SKILL.md"
 if assert_shim_hoists "$TMP/cli-hoist-typo" cli; then
-    fail "6e: hoist-arg check did not detect a typo'd 'phaseMeta' key — the check is vacuous"
+    fail "6e: the check did not detect a typo'd 'plan create' command — the check is vacuous"
 fi
-pass "6e: hoist-arg check detects a typo'd arg key ($HOIST_FAILURE)"
+pass "6e: the check detects a typo'd command ($HOIST_FAILURE)"
 
 # Self-test: mangling the rdmBin key in each of the three emitted shims
 # in turn must be caught — one shim carrying it cannot cover for another.
@@ -915,20 +936,20 @@ for shim in rdm-dispatch-phase rdm-do rdm-autopilot; do
     sed 's/rdmBin/rdmBn/g' "$TMP/cli/.claude/skills/$shim/SKILL.md" \
         >"$TMP/cli-rdmbin-typo/.claude/skills/$shim/SKILL.md"
     if assert_shim_hoists "$TMP/cli-rdmbin-typo" cli; then
-        fail "6e: hoist-arg check did not detect a mangled 'rdmBin' key in $shim — the check is vacuous"
+        fail "6e: the check did not detect a mangled 'rdmBin' key in $shim — the check is vacuous"
     fi
 done
-pass "6e: hoist-arg check detects a mangled rdmBin key in each of the three shims independently"
+pass "6e: the check detects a mangled rdmBin key in each of the three shims independently"
 
-say "6f. Self-test: a shim that stops gathering must be caught"
+say "6f. Self-test: a shim that stops naming its own command must be caught"
 cp -R "$TMP/cli" "$TMP/cli-hoist-drop"
 sed 's/rdm next --roadmap <slug> --format json/rdm next --roadmap <slug> --format jso/g' \
     "$TMP/cli/.claude/skills/rdm-autopilot/SKILL.md" \
     >"$TMP/cli-hoist-drop/.claude/skills/rdm-autopilot/SKILL.md"
 if assert_shim_hoists "$TMP/cli-hoist-drop" cli; then
-    fail "6f: hoist-arg check did not detect a mangled gathering command — the check is vacuous"
+    fail "6f: the check did not detect a mangled command — the check is vacuous"
 fi
-pass "6f: hoist-arg check detects a mangled gathering command ($HOIST_FAILURE)"
+pass "6f: the check detects a mangled command ($HOIST_FAILURE)"
 
 # --- 7. DOWNSTREAM EXECUTION: the emitted lane, exercised in a foreign repo -
 #
@@ -1176,15 +1197,15 @@ if check_shim_refs_resolve "$FIXTURE_REPO/.claude/skills" "$FIXTURE_REPO/.claude
 else
     fail "7b: $SHIM_REF_UNRESOLVED unresolved shim reference(s) in the fixture emission"
 fi
-[ "$SHIM_REF_COUNT" -ge 3 ] ||
-    fail "7b: expected >= 3 shim references in the fixture emission, found $SHIM_REF_COUNT"
+[ "$SHIM_REF_COUNT" -ge 2 ] ||
+    fail "7b: expected >= 2 shim references in the fixture emission, found $SHIM_REF_COUNT"
 if check_workflow_invocations_resolve "$FIXTURE_REPO/.claude/skills" "$FIXTURE_REPO/.claude/workflows"; then
     pass "7b: all $INVOCATION_COUNT fixture Workflow-invocation instruction(s) resolve"
 else
     fail "7b: $INVOCATION_UNRESOLVED unresolved Workflow-invocation instruction(s) in the fixture emission"
 fi
-[ "$INVOCATION_COUNT" -ge 5 ] ||
-    fail "7b: expected >= 5 Workflow-invocation instructions in the fixture emission, found $INVOCATION_COUNT"
+[ "$INVOCATION_COUNT" -ge 2 ] ||
+    fail "7b: expected >= 2 Workflow-invocation instructions in the fixture emission, found $INVOCATION_COUNT"
 
 # The downstream-execution driver. ONE Node program, three stages, so a
 # planted-corruption self-test (7e) can re-run the exact same assertions
