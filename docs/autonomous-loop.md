@@ -78,11 +78,11 @@ Workflow calls, verification, triage, every gate read and every status write. Co
 planner or implementer inline ("inline-collapse") destroys the independent check the lane is
 built on; delegating a Workflow call or a status write is simply impossible or unsafe.
 
-**Model sizing.** Step 3 of the sequence below resolves `models.plan` / `models.implement` from
-the item's `model` tier (`<rdmBin> model resolve plan --tier <T>` / `implement --tier <T>`, no
-`--tier` when the item carries none or is a task) and threads both into the planner and
-implementer `Agent` dispatches — the two most expensive judgment sites the sizing policy
-(`docs/refuter-model-tiering.md`, `review_floor`, the `rdm-autopilot` estimate pre-pass) exists
+**Model sizing.** The worktree/identity step of the sequence below resolves `models.plan` /
+`models.implement` from the item's `model` tier (`<rdmBin> model resolve plan --tier <T>` /
+`implement --tier <T>`, no `--tier` when the item carries none or is a task) and threads both into
+the planner and implementer `Agent` dispatches — the two most expensive judgment sites the sizing
+policy (`docs/refuter-model-tiering.md`, `review_floor`, the `rdm-autopilot` estimate pre-pass) exists
 to size. The plan-review Workflow call (`rdm-wf-plan-review`) resolves its own
 `mechanical`/`review-find`/`review-verify` models internally via its own bootstrap and is
 unaffected by this step. The code-review Workflow call (`rdm-wf-review-refute-fix`) does not
@@ -96,8 +96,8 @@ out of scope here.
 Skill(rdm-dispatch-phase)
   1  resume check: the item's review set (see below), never the global queue
   2  worktree add (idempotent) → review source --on <item>   ← identity pinned ONCE
-  3  phase/task update --status in-progress                  (skipped under --plan-only)
-  4  resolve models.plan / models.implement from the item's tier
+  3  resolve models.plan / models.implement from the item's tier
+  4  phase/task update --status in-progress                  (skipped under --plan-only)
   5  Agent: planner → plan create --implements [--supersedes] + '## Verification command'
   6  Workflow: rdm-wf-plan-review  persist → plan/<slug>      (local copy only; see below)
   7  poll plan show --format json → approved | changes-requested | draft | superseded

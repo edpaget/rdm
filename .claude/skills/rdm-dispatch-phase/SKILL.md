@@ -184,8 +184,8 @@ json`) and call it `T`.
 
 ```bash
 # T non-empty (phase mode with a recorded tier):
-<rdmBin> model resolve plan --tier T
-<rdmBin> model resolve implement --tier T
+<rdmBin> model resolve plan --tier <T>
+<rdmBin> model resolve implement --tier <T>
 # T empty/missing, or task mode (a task carries no tier at all):
 <rdmBin> model resolve plan
 <rdmBin> model resolve implement

@@ -159,16 +159,16 @@ Then resolve the two dispatch models from the item's tier. Read `model` from `rd
 
 ```bash
 # T non-empty (phase mode with a recorded tier):
-rdm model resolve plan --tier T
-rdm model resolve implement --tier T
+rdm model resolve plan --tier <T>
+rdm model resolve implement --tier <T>
 # T empty/missing, or task mode (a task carries no tier at all):
 rdm model resolve plan
 rdm model resolve implement
 ```
 
-Record the two resulting ids as `models.plan` / `models.implement`. The plan-review Workflow's own
-internal bootstrap resolves its own review models; the code-review Workflow call's own
-`findModel`/`verifyModel` gap is untouched by this step.
+Record the two resulting ids as `models.plan` / `models.implement`. The code-review Workflow
+call's own `findModel`/`verifyModel` gap is out of scope for this phase (tracked by
+`task/thread-code-review-judgment-models`).
 
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, and the two resolved
 `models.plan` / `models.implement` you just read. A failed command is an escalation — never invent
