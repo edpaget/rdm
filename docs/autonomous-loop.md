@@ -143,8 +143,8 @@ graded, so its reply says so explicitly on either branch.
 parked as `blocked` with that text in the reason, and returned as `outcome: 'escalated'`. The
 operator override is never used; the procedure does not even spell the flag.
 
-**Downstream divergence.** The distributed `skill-dispatch-phase-cli.md` omits step 5's
-Workflow call — `rdm-wf-plan-review.js` is not emitted downstream, so naming it would reference a
+**Downstream divergence.** The distributed `skill-dispatch-phase-cli.md` omits the
+`rdm-wf-plan-review` Workflow call — `rdm-wf-plan-review.js` is not emitted downstream, so naming it would reference a
 missing file — and waits on a human-submitted approve review on the plan instead. It is the same
 single `plan show` read either way. See `docs/workflow-vs-prose-boundary.md`
 § "Decided (`agent-orchestrated-dispatch` phase 6)".
