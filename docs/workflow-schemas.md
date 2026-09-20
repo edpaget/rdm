@@ -2591,6 +2591,11 @@ above and is unaffected.
 
 ## Verify gate
 
+> **Historical, like "dispatch-phase contracts" above:** every `rdm-wf-dispatch-phase`
+> mention in this section refers to the engine `agent-orchestrated-dispatch` phase 7
+> deleted. The gate itself is live — the prose `rdm-dispatch-phase` orchestrator runs
+> the same command and produces the same `VERIFY_RESULT`.
+
 `rdm-wf-dispatch-phase` runs the project's single declared verification command once per
 implementation attempt. Canonical write-up — what the command is, how it is resolved, the
 not-a-task-runner non-goal, and the commit-time vs phase-time split — lives in
@@ -2633,6 +2638,12 @@ dispatch-phase OUTCOME contract below (`statusFor`/`writesCompletion`) rather
 than defining its own, and its own advance/park Bash steps are what persist the
 terminal status per "The core fix" below — dispatch-phase itself never does.
 
+> **Historical, like "dispatch-phase contracts" above:** every `rdm-wf-dispatch-phase`
+> mention in this section and its subsections ("The core fix", "`planOnly`") refers to
+> the engine `agent-orchestrated-dispatch` phase 7 deleted. The advance-off-persisted-status
+> rule and the plan-only early return are live — the prose `rdm-dispatch-phase`
+> orchestrator carries both.
+
 ### The core fix: the loop advances off PERSISTED status
 
 `rdm-wf-dispatch-phase` persists **no terminal** phase status — it does stamp the
@@ -2671,6 +2682,14 @@ toolchain (bare `node`, else `mise exec node --`) and fails hard if node is trul
 absent, matching the sibling harnesses' tool-guard convention.
 
 ## Optional caller-supplied args (mechanical-agent hoists)
+
+> **Historical, like "dispatch-phase contracts" above:** every `rdm-wf-dispatch-phase`
+> row and mention in this section and its subsections — the hoist table, "absorbs its
+> diff", "Which caller surfaces supply them today" — refers to the engine
+> `agent-orchestrated-dispatch` phase 7 deleted; the prose `rdm-dispatch-phase`
+> orchestrator runs in the driving session with Bash and hoists nothing. The rows for
+> the surviving workflows (`rdm-wf-estimate`, `rdm-wf-plan-review`, `rdm-wf-backlog`,
+> `rdm-wf-document`, `rdm-wf-review-refute-fix`) are live.
 
 A Workflow script cannot run a shell command itself, which is why the lane spawns
 **mechanical** subagents — agents that run one `rdm`/`git` command and return its

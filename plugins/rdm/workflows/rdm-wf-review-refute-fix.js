@@ -881,8 +881,8 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 //
 // The completion policy is expressed ONLY as the boolean `writesCompletion`,
 // never as the literal trailer string: this block is stamped verbatim into
-// workflow scripts, and scripts/verify-workflow-dispatch.sh forbids that literal
-// anywhere inside a stamped region. The literal lives in the skill-only
+// workflow scripts, and scripts/verify-workflow-review.sh forbids that literal
+// anywhere inside the stamped region. The literal lives in the skill-only
 // `review-gate-spec` region below the stamped block, and the format string
 // itself lives in rdm-core (surfaced as `rdm hook done-line`).
 const GATE_POLICY = {
@@ -3137,8 +3137,10 @@ function projectFlag(cfg) {
 // DEFAULTS to a plain `rdm` on PATH, because a plugin-installed consumer has no
 // repo-local build path to pass. The stale-global-build hazard the earlier
 // fail-closed stance guarded is real but DOGFOOD-SCOPED to this repo, where
-// `RDM_BIN` in `.mise.toml` (gated by verify-workflow-dispatch.sh § 9c-dogfood)
-// is the compensating control the calling skill resolves. A present-but-wrong-
+// `RDM_BIN` in `.mise.toml` is the compensating control the calling skill
+// resolves (no harness gates it: verify-workflow-dispatch.sh § 9c-dogfood was
+// retired with the dispatch engine in agent-orchestrated-dispatch phase 7, and
+// CLAUDE.md's development-build rule states it now). A present-but-wrong-
 // TYPE value still throws rather than silently degrading to PATH. No existence
 // preflight — a plain fallback only. See docs/workflow-schemas.md § "Environment
 // args: `rdmBin` and `project`" for the full contract and resolution order.

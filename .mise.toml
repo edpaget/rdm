@@ -19,5 +19,7 @@ RDM_PROJECT = "rdm"
 # Dogfood-only compensating control for `rdmBin` defaulting to a plain `rdm` on
 # PATH: inside this repo that default would be a stale global build, which the
 # development-build rule forbids. Skills resolve $RDM_BIN before invoking a
-# workflow. Gated by scripts/verify-workflow-dispatch.sh § 9c-dogfood.
+# workflow. No harness gates this variable: the one that did
+# (scripts/verify-workflow-dispatch.sh § 9c-dogfood) was retired with the
+# rdm-wf-dispatch-phase engine in agent-orchestrated-dispatch phase 7.
 RDM_BIN = "{{config_root}}/target/debug/rdm"

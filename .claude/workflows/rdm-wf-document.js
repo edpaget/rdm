@@ -48,7 +48,8 @@ export const meta = {
 //
 // The Workflow tool contract forbids stringified args, but LLM callers (the
 // rdm-document skill shim, or a hand-run invocation) may still deliver a JSON
-// string; coerce once, mirroring parseDispatchArgs in lib/dispatch-phase.mjs.
+// string; coerce once, mirroring parseDispatchArgs in the since-deleted
+// lib/dispatch-phase.mjs.
 function parseDocumentArgs(args) {
   let documentArgs = args || {};
   if (typeof documentArgs === 'string') {

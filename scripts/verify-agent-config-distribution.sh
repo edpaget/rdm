@@ -65,6 +65,11 @@
 #      survive. Carries a non-vacuity precondition (all five present before
 #      the emit) and a planted-corruption self-test (re-plant one superseded
 #      file, confirm the removal assertion turns red).
+#   5k. THE PLUGIN-MODE SIBLING of 5j: the same seed/re-emit/assert shape run
+#      through `--plugin` against the plugin tree's own `workflows/` directory,
+#      because the cleanup pass once ran on the `--skills` adapter only.
+#      Same non-vacuity precondition, survivor check and planted-corruption
+#      self-test.
 #   5. PLANTED-MUTATION SELF-TESTS: corrupts a scratch copy of the emission
 #      (one byte appended to a workflow script; one shim reference
 #      rewritten to a typo'd filename; an "invoke the autopilot workflow"
@@ -765,6 +770,65 @@ if assert_stale_cleaned; then
 fi
 rm -f "$STALE_WF/dispatch-phase.js"
 pass "5j self-test: a re-planted superseded file correctly turns the removal assertion red"
+
+# --- 5k. PLUGIN-MODE SIBLING of 5j: `--plugin` prunes too -------------------
+# The cleanup pass used to run only on the `--skills` adapter, so re-emitting a
+# plugin tree rewrote its files and left a retired engine behind as a live
+# `rdm:<name>` entrypoint — the asymmetry that forced a hand `git rm` of an
+# orphaned $RETIRED_WF out of this repo's own plugins/rdm/. Both adapters now
+# share one reporting helper over one core table, so this section is 5j's shape
+# against the plugin tree's OWN workflows/ directory (a plugin-root sibling of
+# skills/, not under .claude/).
+say "5k. Superseded cleanup end-to-end in PLUGIN mode: a stale plugin tree is cleaned, a custom file is not"
+PSTALE="$TMP/stale-plugin"
+PSTALE_WF="$PSTALE/workflows"
+mkdir -p "$PSTALE_WF"
+# Same provenance rule as 5j: a real pre-removal body from history, since the
+# cleanup is fingerprint-gated and only a body this repo genuinely shipped
+# hashes to a SUPERSEDED_WORKFLOWS entry.
+recover_pre_removal_body "rdm-core/src/templates/workflows/$RETIRED_WF" "$PSTALE_WF/$RETIRED_WF"
+printf 'my own local engine, rdm did not write this\n' >"$PSTALE_WF/custom-local.js"
+
+[ -f "$PSTALE_WF/$RETIRED_WF" ] ||
+    fail "5k: seed failed — the retired engine is not present before the plugin emit"
+[ -f "$PSTALE_WF/custom-local.js" ] ||
+    fail "5k: seed failed — custom-local.js is not present before the plugin emit"
+pass "5k: both seeded files present before the plugin emit (non-vacuity precondition)"
+
+"$RDM_BIN" agent-config claude --plugin --project distro-check --out "$PSTALE" >"$TMP/stale-plugin-emit.log"
+
+assert_plugin_stale_cleaned() {
+    [ ! -e "$PSTALE_WF/$RETIRED_WF" ]
+}
+assert_plugin_stale_cleaned ||
+    fail "5k: the retired engine survived a --plugin re-emit — plugin-mode cleanup did not fire:\n$(ls -1 "$PSTALE_WF")\n$(cat "$TMP/stale-plugin-emit.log")"
+pass "5k: the retired engine was removed from the re-emitted plugin tree"
+
+[ -f "$PSTALE_WF/custom-local.js" ] ||
+    fail "5k: custom-local.js was removed — a user-authored file must never be touched, in plugin mode either"
+pass "5k: custom-local.js survived (plugin-mode cleanup discriminates, it does not sweep)"
+
+for kept in $WORKFLOWS; do
+    [ -f "$PSTALE_WF/$kept" ] || fail "5k: $kept was not emitted into the cleaned plugin tree"
+    diff -q "$REPO_ROOT/.claude/workflows/$kept" "$PSTALE_WF/$kept" >/dev/null ||
+        fail "5k: $kept is not byte-identical to source after the plugin cleanup emit"
+done
+[ -f "$PSTALE/.claude-plugin/plugin.json" ] ||
+    fail "5k: the plugin manifest was not emitted — the primary emit must be unaffected by cleanup"
+pass "5k: the shipped engine and the manifest still landed (cleanup did not disturb the emit)"
+
+grep -q '^Removed ' "$TMP/stale-plugin-emit.log" ||
+    fail "5k: the plugin emit removed a file but printed no 'Removed ' report line"
+pass "5k: the plugin emit reported its removal"
+
+# Planted-corruption self-test: re-plant the orphan and confirm the SAME
+# assertion helper turns red, proving 5k's removal check is not vacuous.
+printf 'replanted\n' >"$PSTALE_WF/$RETIRED_WF"
+if assert_plugin_stale_cleaned; then
+    fail "5k self-test: a re-planted retired engine did NOT turn the removal assertion red — the assertion is vacuous"
+fi
+rm -f "$PSTALE_WF/$RETIRED_WF"
+pass "5k self-test: a re-planted superseded file correctly turns the plugin removal assertion red"
 
 # --- 6. negative checks: platform/scope boundaries + plan-repo independence -
 say "6a. Negative: Pi emission never writes .claude/workflows, .claude/agents, or prints a cleanup report"

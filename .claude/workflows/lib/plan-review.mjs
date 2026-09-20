@@ -8,14 +8,16 @@
 //! BYTE-IDENTICAL into `.claude/workflows/rdm-wf-plan-review.js`. Unlike the
 //! review-refute-fix block — which is stamped by `scripts/gen-workflow-review.sh`
 //! — this block is NOT run through the generator (it is unique to the one
-//! plan-review consumer); instead `scripts/verify-workflow-review.sh` gates the
-//! two copies for byte-equality, exactly as `scripts/verify-workflow-dispatch.sh`
-//! gates the sibling `dispatch-outcome` block.
+//! plan-review consumer); instead `scripts/verify-workflow-review.sh` § 5b-drift
+//! gates the two copies for byte-equality. (The pattern was established by the
+//! `dispatch-outcome` block and its own harness, both deleted by
+//! `agent-orchestrated-dispatch` phase 7; the byte-equality gate above is the
+//! surviving instance.)
 //!
 //! Every side effect the driver reaches is injected through `deps` (agent /
 //! parallel / log / runPlanReview), so this block names NO ambient runtime global
-//! and the module imports cleanly in Node — the lib/dispatch-phase.mjs precedent,
-//! which is what makes the driver testable at all. The verify harness imports this
+//! and the module imports cleanly in Node — a pattern first set by the since-deleted
+//! `lib/dispatch-phase.mjs`, and what makes the driver testable at all. The verify harness imports this
 //! module and drives `parsePlanArgs` + `runPlanReviewDriver` against a fake
 //! agent/parallel harness with ZERO LLM calls.
 //!
@@ -65,7 +67,7 @@ import {
 // hoistedModelsComplete(mechanicalModel, findModel, verifyModel) — the
 // ALL-OR-NOTHING guard on the runtime entry's caller-supplied model-hoist
 // trio (rdm-wf-plan-review.js's args.mechanicalModel/findModel/verifyModel).
-// Mirrors hoistedMetaComplete in lib/dispatch-phase.mjs: a partial hoist
+// Mirrors hoistedMetaComplete in the since-deleted lib/dispatch-phase.mjs: a partial hoist
 // (e.g. mechanicalModel + findModel but no verifyModel) still needs a
 // model-resolving agent for the missing id, so accepting anything short of
 // all three would save nothing while risking an empty string reaching a
@@ -982,10 +984,11 @@ function buildGateEvidence(unit, result, cachedTags, remainingTags) {
 // the delimited quoted region) and keeps the rendering deterministic.
 const UNGRADED_SEVERITIES = ['blocking', 'concern', 'suggestion']
 // NOTE the field name: `why`, not `label`. `label:` is the agent() call-site
-// convention that docs/mechanical-agent-inventory.md's live grep counts, and
-// verify-workflow-dispatch.sh §7 fails when the doc's total drifts from it — a
-// plain data table using `label:` would inflate that count with three call
-// sites that do not exist.
+// convention that docs/mechanical-agent-inventory.md's live grep counts. No
+// harness enforces that total any more (verify-workflow-dispatch.sh §7 did, and
+// was retired with the dispatch engine in agent-orchestrated-dispatch phase 7),
+// but the convention still holds: a plain data table using `label:` would
+// inflate the count with three call sites that do not exist.
 const UNGRADED_REASONS = [
   { key: 'non-gating', why: 'non-gating, never eligible for refutation' },
   { key: 'budget', why: 'passed over for the per-unit refutation budget' },

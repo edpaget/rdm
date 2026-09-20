@@ -418,9 +418,15 @@ pass "rdm hook done-line rejects malformed requests, so the lander aborts rather
 # for it would turn the gate into decoration — so assert, mechanically, that
 # neither the local autopilot skill nor the shipped template can ever emit it.
 #
-# The `rdm-dispatch-phase` orchestrator's own surfaces are swept by the same
-# rule; the retired dispatch engine's harness that used to carry the sibling
-# grep went with the engine (agent-orchestrated-dispatch phase 7).
+# SCOPE: `OVERRIDE_SURFACES` below covers exactly two files — the local
+# `rdm-autopilot` SKILL.md and its shipped template `skill-autopilot-cli.md`.
+# The `rdm-dispatch-phase` orchestrator's own surfaces (its SKILL.md, its
+# template, the plugin copy) are deliberately NOT grep-swept: the discovery-based
+# sweep that used to do it went with the retired dispatch engine's harness
+# (agent-orchestrated-dispatch phase 7) and was not ported, because a
+# string-presence assertion over prose is not a verification this roadmap keeps.
+# The gate's refusal semantics are proven behaviorally instead, against the real
+# binary, in `rdm-core/tests/gate.rs` and `rdm-cli/tests/cli_gate.rs`.
 say "5. --override-gate: neither the autopilot skill nor its shipped template emits it"
 
 OVERRIDE_SURFACES="$SKILL

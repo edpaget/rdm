@@ -169,9 +169,13 @@ Unlike phase 6, it persisted every step:
 - Approving plan review: **`2026-09-20-1412-7da6`** (author `edward`, `submitted` /
   `approve`), transcribing plan-review run **`wf_f4ea10da-078`**'s clean verdict after the
   engine misrouted it — see `task/plan-review-engine-ignores-rdmbin`.
-- Change review: recorded by the orchestrator on this phase's head; its id is in the phase's
-  review set (`rdm review list --on phase/agent-orchestrated-dispatch/phase-7-parity-and-retirement
-  --project rdm`).
+- Change review: **`2026-09-20-1631-c691`**, on
+  `change/512767e0d268f3de9722dff831039cb76a4a83e9` (branch
+  `roadmap/agent-orchestrated-dispatch`), recorded by the orchestrator on this phase's head.
+  Look it up with `rdm plan show phase-7-parity-and-retirement --project rdm --format json` →
+  `change_reviews[]`. **Not** with `rdm review list --on phase/…`: `ReviewTarget::same_item`
+  matches only same-kind targets, so a `change/<sha>` review never surfaces under a `phase/`
+  filter.
 
 Read either approval back with `rdm review show <id> --project rdm`, and the plan with
 `rdm plan show phase-7-parity-and-retirement --project rdm --format json`.
@@ -180,8 +184,9 @@ Read either approval back with `rdm review show <id> --project rdm`, and the pla
 static-invariant net (greps over prose and templates) along with the engine it tested. Every
 *behavioral* protection it carried survives elsewhere — wrong-checkout selection and gate
 override in `rdm-core/tests/gate.rs` + `rdm-cli/tests/cli_gate.rs` + `scripts/verify-reviewed-gate.sh`,
-required review coverage in `scripts/verify-workflow-review.sh` §3c, anchor accounting in
-`scripts/verify-review-revision-loop.sh`, the verification gate in `rdm-cli/tests/cli_verify.rs`,
+required review coverage in `scripts/verify-workflow-review.sh` §3c, persist-side anchor
+accounting in `scripts/verify-workflow-review-outcome.sh` (and `scripts/verify-workflow-review.sh`
+§ 9a), the verification gate in `rdm-cli/tests/cli_verify.rs`,
 and the no-completion-trailer-before-land rule in `scripts/verify-skill-autopilot.sh`. The
 grep-only half was dropped deliberately; that class is owned by
 `task/retire-static-grep-harnesses`, which this phase does not close.

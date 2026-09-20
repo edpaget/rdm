@@ -10,7 +10,7 @@
 //! Unlike the review-refute-fix block — which is stamped by
 //! `scripts/gen-workflow-review.sh` — this block is NOT run through a generator
 //! (it is unique to the one `document` consumer, mirroring the `dispatch-outcome`
-//! block's precedent in `lib/dispatch-phase.mjs`); instead
+//! block's precedent in the since-deleted `lib/dispatch-phase.mjs`); instead
 //! `scripts/verify-workflow-document.sh` gates the two copies for byte-equality.
 //!
 //! Everything the block needs is self-contained (no imports, pure array/string
@@ -32,7 +32,8 @@
 //
 // The Workflow tool contract forbids stringified args, but LLM callers (the
 // rdm-document skill shim, or a hand-run invocation) may still deliver a JSON
-// string; coerce once, mirroring parseDispatchArgs in lib/dispatch-phase.mjs.
+// string; coerce once, mirroring parseDispatchArgs in the since-deleted
+// lib/dispatch-phase.mjs.
 function parseDocumentArgs(args) {
   let documentArgs = args || {};
   if (typeof documentArgs === 'string') {

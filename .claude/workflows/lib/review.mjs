@@ -5,10 +5,13 @@
 //! consumes it, so an improvement to review lands once and is usable everywhere:
 //!
 //!   * the autonomous workflow lane — `.claude/workflows/rdm-wf-review-refute-fix.js`
-//!     and `.claude/workflows/rdm-wf-dispatch-phase.js` — receives the marked block
+//!     and `.claude/workflows/rdm-wf-plan-review.js` — receives the marked block
 //!     below VERBATIM, stamped by `scripts/gen-workflow-review.sh` (the Claude
 //!     Code Workflow runtime cannot `import`/`require`; see
-//!     docs/workflow-schemas.md § "Import spike");
+//!     docs/workflow-schemas.md § "Import spike"). (A third consumer,
+//!     `rdm-wf-dispatch-phase.js`, was retired by `agent-orchestrated-dispatch`
+//!     phase 7; the prose `rdm-dispatch-phase` skill reaches this pipeline through
+//!     the two surviving engines instead.)
 //!   * the interactive skill lane — `rdm-core/src/templates/skill-review-*.md`
 //!     — receives the literate `//|` prose rendered to markdown by
 //!     `scripts/gen-skill-review.sh`.
@@ -950,8 +953,8 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 //
 // The completion policy is expressed ONLY as the boolean `writesCompletion`,
 // never as the literal trailer string: this block is stamped verbatim into
-// workflow scripts, and scripts/verify-workflow-dispatch.sh forbids that literal
-// anywhere inside a stamped region. The literal lives in the skill-only
+// workflow scripts, and scripts/verify-workflow-review.sh forbids that literal
+// anywhere inside the stamped region. The literal lives in the skill-only
 // `review-gate-spec` region below the stamped block, and the format string
 // itself lives in rdm-core (surfaced as `rdm hook done-line`).
 const GATE_POLICY = {

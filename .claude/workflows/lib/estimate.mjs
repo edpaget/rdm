@@ -51,10 +51,12 @@
 // estimate names NO particular rdm executable and NO particular rdm project.
 // Both arrive as RUNTIME args and are threaded into every prompt that shells
 // out, via the `cfg` object each such prompt builder takes as its trailing
-// parameter. This is dispatch-phase's contract, reused — NOT a second one: the
-// three helpers below are copied in shape from
-// .claude/workflows/lib/dispatch-phase.mjs (only the thrown-message prefix
-// differs), and the runtime cannot import, so a per-consumer copy is expected.
+// parameter. This is the contract the retired dispatch-phase engine established,
+// reused — NOT a second one: the three helpers below were copied in shape from
+// its `lib/dispatch-phase.mjs` (only the thrown-message prefix differs), a file
+// `agent-orchestrated-dispatch` phase 7 deleted; the runtime cannot import, so a
+// per-consumer copy is expected and this one is now the surviving statement of
+// the shape.
 // Canonical write-up (rationale, table, why an emit-time placeholder is not
 // workable): docs/workflow-schemas.md § "Environment args: `rdmBin` and
 // `project`" — not restated here.
@@ -75,8 +77,10 @@ function projectFlag(cfg) {
 // DEFAULTS to a plain `rdm` on PATH, because a plugin-installed consumer has no
 // repo-local build path to pass. The stale-global-build hazard the earlier
 // fail-closed stance guarded is real but DOGFOOD-SCOPED to this repo, where
-// `RDM_BIN` in `.mise.toml` (gated by verify-workflow-dispatch.sh § 9c-dogfood)
-// is the compensating control the calling skill resolves. A present-but-wrong-
+// `RDM_BIN` in `.mise.toml` is the compensating control the calling skill
+// resolves (no harness gates it: verify-workflow-dispatch.sh § 9c-dogfood was
+// retired with the dispatch engine in agent-orchestrated-dispatch phase 7, and
+// CLAUDE.md's development-build rule states it now). A present-but-wrong-
 // TYPE value still throws rather than silently degrading to PATH. No existence
 // preflight — a plain fallback only. See docs/workflow-schemas.md § "Environment
 // args: `rdmBin` and `project`" for the full contract and resolution order.

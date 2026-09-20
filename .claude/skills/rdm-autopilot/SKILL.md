@@ -88,9 +88,8 @@ Loop:
      `in-progress` (skipped under `--plan-only`), pins the checkout identity, plans, reviews the plan,
      implements, verifies, code-reviews, triages every comment, and performs the gated terminal
      status write, then returns the OUTCOME below.
-   - The retired `rdm-wf-dispatch-phase` Workflow is **not** called here any more. Its script is still
-     present in the tree (`.claude/workflows/rdm-wf-dispatch-phase.js`) because the roadmap's
-     retirement phase removes it, not this one — do not read its presence as "still in use".
+   - The retired `rdm-wf-dispatch-phase` Workflow is **not** called here any more. Its script was
+     deleted in phase 7 of the `agent-orchestrated-dispatch` roadmap and no longer exists in the tree.
    - Read the returned OUTCOME object's `outcome`, `status`, and `reason` fields.
    - **Interpret the outcome** (mirrors `interpretOutcome`):
      - `outcome: "reviewed"`, **not** plan-only → **advance**: run `<rdmBin> phase update S --status <OUTCOME.status || reviewed> --no-edit --roadmap <slug><proj-flag>`, then read it back with `<rdmBin> phase show S --roadmap <slug><proj-flag> --format json` and confirm `status` matches. Retry the write+read-back up to **2** times total (`DEFAULT_MAX_ADVANCE_ATTEMPTS`). On success: append `S` to `completed`, log `"phase S reviewed — advancing"`, continue the loop from step 1. On repeated failure: park `S` (below) with reason `"[code] advance to reviewed failed repeatedly"` — never report a false completion.

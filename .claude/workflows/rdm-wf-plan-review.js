@@ -921,8 +921,8 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 //
 // The completion policy is expressed ONLY as the boolean `writesCompletion`,
 // never as the literal trailer string: this block is stamped verbatim into
-// workflow scripts, and scripts/verify-workflow-dispatch.sh forbids that literal
-// anywhere inside a stamped region. The literal lives in the skill-only
+// workflow scripts, and scripts/verify-workflow-review.sh forbids that literal
+// anywhere inside the stamped region. The literal lives in the skill-only
 // `review-gate-spec` region below the stamped block, and the format string
 // itself lives in rdm-core (surfaced as `rdm hook done-line`).
 const GATE_POLICY = {
@@ -3172,7 +3172,7 @@ function buildReviewPipeline(mode, deps) {
 // hoistedModelsComplete(mechanicalModel, findModel, verifyModel) — the
 // ALL-OR-NOTHING guard on the runtime entry's caller-supplied model-hoist
 // trio (rdm-wf-plan-review.js's args.mechanicalModel/findModel/verifyModel).
-// Mirrors hoistedMetaComplete in lib/dispatch-phase.mjs: a partial hoist
+// Mirrors hoistedMetaComplete in the since-deleted lib/dispatch-phase.mjs: a partial hoist
 // (e.g. mechanicalModel + findModel but no verifyModel) still needs a
 // model-resolving agent for the missing id, so accepting anything short of
 // all three would save nothing while risking an empty string reaching a
@@ -4089,10 +4089,11 @@ function buildGateEvidence(unit, result, cachedTags, remainingTags) {
 // the delimited quoted region) and keeps the rendering deterministic.
 const UNGRADED_SEVERITIES = ['blocking', 'concern', 'suggestion']
 // NOTE the field name: `why`, not `label`. `label:` is the agent() call-site
-// convention that docs/mechanical-agent-inventory.md's live grep counts, and
-// verify-workflow-dispatch.sh §7 fails when the doc's total drifts from it — a
-// plain data table using `label:` would inflate that count with three call
-// sites that do not exist.
+// convention that docs/mechanical-agent-inventory.md's live grep counts. No
+// harness enforces that total any more (verify-workflow-dispatch.sh §7 did, and
+// was retired with the dispatch engine in agent-orchestrated-dispatch phase 7),
+// but the convention still holds: a plain data table using `label:` would
+// inflate the count with three call sites that do not exist.
 const UNGRADED_REASONS = [
   { key: 'non-gating', why: 'non-gating, never eligible for refutation' },
   { key: 'budget', why: 'passed over for the per-unit refutation budget' },

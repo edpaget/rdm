@@ -41,7 +41,12 @@ pub fn run(
     }
 
     if plugin {
-        write_plugin(project, principles_file, &out)?;
+        write_plugin(
+            project,
+            principles_file,
+            &out,
+            agent_config::SUPERSEDED_WORKFLOWS,
+        )?;
     } else if skills {
         write_skills(
             platform,
@@ -166,33 +171,48 @@ fn write_skills(
             let path = agents_dir.join(agent.relative_path);
             write_output(&path, agent.content.as_bytes())?;
         }
-        // Clean up files superseded by an earlier emission of this same
-        // lane. Reported, never fatal: a removal failure must not abort an
-        // otherwise-successful emit (see the decision function's contract).
-        for outcome in agent_config::resolve_superseded_workflows(&workflows_dir, superseded_table)
-        {
-            match outcome {
-                agent_config::SupersededOutcome::Removed { path } => {
-                    println!("Removed {}", path.display());
-                }
-                agent_config::SupersededOutcome::SkippedModified { path } => {
-                    println!(
-                        "Skipped {} (content modified since emission; left in place)",
-                        path.display()
-                    );
-                }
-                agent_config::SupersededOutcome::Failed { path, error } => {
-                    println!("Failed to remove {}: {error}", path.display());
-                }
-                agent_config::SupersededOutcome::InvalidName { name } => {
-                    println!(
-                        "Skipped {name} (invalid superseded-workflow table entry name; not a bare filename)"
-                    );
-                }
+        report_superseded_cleanup(&workflows_dir, superseded_table);
+    }
+    Ok(())
+}
+
+/// Runs superseded-workflow cleanup over `workflows_dir` and reports one line
+/// per outcome on stdout.
+///
+/// Shared by both emission adapters ([`write_skills`] and [`write_plugin`]) so
+/// the two implement the *same* retirement semantics over the same core
+/// decision table — an engine retired from the table is pruned from a re-emitted
+/// raw-skills tree and a re-emitted plugin tree alike.
+///
+/// Reported, never fatal: a removal failure must not abort an
+/// otherwise-successful emit, per
+/// [`agent_config::resolve_superseded_workflows`]'s contract. That is why this
+/// returns `()` rather than a `Result`.
+fn report_superseded_cleanup(
+    workflows_dir: &Path,
+    superseded_table: &[agent_config::SupersededWorkflow],
+) {
+    for outcome in agent_config::resolve_superseded_workflows(workflows_dir, superseded_table) {
+        match outcome {
+            agent_config::SupersededOutcome::Removed { path } => {
+                println!("Removed {}", path.display());
+            }
+            agent_config::SupersededOutcome::SkippedModified { path } => {
+                println!(
+                    "Skipped {} (content modified since emission; left in place)",
+                    path.display()
+                );
+            }
+            agent_config::SupersededOutcome::Failed { path, error } => {
+                println!("Failed to remove {}: {error}", path.display());
+            }
+            agent_config::SupersededOutcome::InvalidName { name } => {
+                println!(
+                    "Skipped {name} (invalid superseded-workflow table entry name; not a bare filename)"
+                );
             }
         }
     }
-    Ok(())
 }
 
 /// Writes the Claude Code plugin tree (manifest + `skills/` + `workflows/`) to `--out <dir>`.
@@ -200,17 +220,35 @@ fn write_skills(
 /// `--user` is rejected earlier in [`run`], so the only destination this
 /// function resolves is `out`. Modeled on [`write_skills`], but simpler: the
 /// plugin bytes are already fully computed by
-/// [`agent_config::generate_plugin_files`], so this is a single write loop
-/// with no platform branching, no workflow-directory special-casing, and no
-/// superseded-file cleanup pass.
+/// [`agent_config::generate_plugin_files`], so the write itself is a single
+/// loop with no platform branching and no workflow-directory special-casing.
+///
+/// It does, however, run the **same** superseded-workflow cleanup pass over the
+/// emitted tree's `workflows/` directory that [`write_skills`] runs over
+/// `.claude/workflows/`, through the shared [`report_superseded_cleanup`]
+/// helper. Both adapters sit over one core decision table
+/// ([`agent_config::SUPERSEDED_WORKFLOWS`]), so an engine retired from that
+/// table is pruned from a re-emitted plugin tree exactly as it is from a
+/// re-emitted raw-skills tree — re-emitting is enough, and a stale
+/// `workflows/<retired>.js` never has to be deleted by hand. Cleanup is
+/// reported and never fatal, per
+/// [`agent_config::resolve_superseded_workflows`]'s contract.
 ///
 /// # Errors
 ///
 /// Returns an error if `--out` was not supplied, or a file write fails.
+/// A superseded-workflow removal failure is never surfaced as an error here —
+/// it is reported on stdout and otherwise ignored.
+///
+/// `superseded_table` is threaded through (rather than reading
+/// [`agent_config::SUPERSEDED_WORKFLOWS`] directly) for the same reason it is
+/// in [`write_skills`]: so tests can inject a synthetic table. `run` always
+/// passes the shipped production table.
 fn write_plugin(
     project: Option<String>,
     principles_file: Option<String>,
     out: &Option<PathBuf>,
+    superseded_table: &[agent_config::SupersededWorkflow],
 ) -> Result<()> {
     let dir = out
         .as_ref()
@@ -223,6 +261,10 @@ fn write_plugin(
         let path = dir.join(&file.relative_path);
         write_output(&path, file.content.as_bytes())?;
     }
+    // Same retirement semantics as write_skills, over the plugin tree's own
+    // workflows directory (a plugin-root sibling of skills/, not under
+    // .claude/).
+    report_superseded_cleanup(&dir.join("workflows"), superseded_table);
     Ok(())
 }
 
@@ -416,7 +458,7 @@ mod tests {
 
     #[test]
     fn write_plugin_requires_out() {
-        let err = write_plugin(None, None, &None).unwrap_err();
+        let err = write_plugin(None, None, &None, &[]).unwrap_err();
         assert!(
             err.to_string().contains("--plugin requires --out"),
             "unexpected error: {err}"
@@ -427,7 +469,7 @@ mod tests {
     fn write_plugin_writes_manifest_skills_and_workflows() {
         let dir = tempfile::tempdir().unwrap();
         let out = Some(dir.path().to_path_buf());
-        write_plugin(Some("distro-check".to_string()), None, &out).unwrap();
+        write_plugin(Some("distro-check".to_string()), None, &out, &[]).unwrap();
 
         let manifest_path = dir.path().join(".claude-plugin/plugin.json");
         assert!(manifest_path.exists());
@@ -448,6 +490,70 @@ mod tests {
                 .join("workflows/rdm-wf-dispatch-phase.js")
                 .exists()
         );
+    }
+
+    /// `--plugin` re-emission prunes a superseded engine from the plugin tree's
+    /// `workflows/` directory, exactly as `--skills` does from
+    /// `.claude/workflows/` — the asymmetry that forced a hand `git rm` of an
+    /// orphaned `rdm-wf-dispatch-phase.js` out of `plugins/rdm/`. A file the
+    /// consumer wrote themselves (no fingerprint match, and not in the table)
+    /// must survive.
+    #[test]
+    fn write_plugin_prunes_superseded_workflows_and_spares_unrelated_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = Some(dir.path().to_path_buf());
+        let workflows_dir = dir.path().join("workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+
+        // Same bytes/digest pair the write_skills failure test uses.
+        let stale_content = b"stale-old-content-for-cli-failed-cleanup-test\n";
+        let stale_path = workflows_dir.join("stale-old.js");
+        std::fs::write(&stale_path, stale_content).unwrap();
+        const STALE_DIGEST: &str =
+            "817fb92cc9636eafeca8496fbceee4c9523cda22174939637ee7067b01370298";
+
+        // Two files cleanup must not touch: one named in the table but with
+        // content the fingerprints do not cover (a consumer edit), and one the
+        // table never mentions at all.
+        let modified_path = workflows_dir.join("stale-modified.js");
+        std::fs::write(&modified_path, b"consumer edited this\n").unwrap();
+        let unrelated_path = workflows_dir.join("custom-local.js");
+        std::fs::write(&unrelated_path, b"// a consumer's own engine\n").unwrap();
+
+        let table = [
+            agent_config::SupersededWorkflow {
+                name: "stale-old.js",
+                fingerprints: &[STALE_DIGEST],
+                successor: None,
+            },
+            agent_config::SupersededWorkflow {
+                name: "stale-modified.js",
+                fingerprints: &[STALE_DIGEST],
+                successor: None,
+            },
+        ];
+
+        write_plugin(Some("distro-check".to_string()), None, &out, &table).unwrap();
+
+        assert!(
+            !stale_path.exists(),
+            "a fingerprint-matching superseded engine must be pruned from the plugin tree"
+        );
+        assert!(
+            modified_path.exists(),
+            "a table-named file whose content was modified must be left in place"
+        );
+        assert!(
+            unrelated_path.exists(),
+            "a file the superseded table never names must be left in place"
+        );
+        // The emit itself still landed.
+        assert!(
+            dir.path()
+                .join("workflows/rdm-wf-review-refute-fix.js")
+                .exists()
+        );
+        assert!(dir.path().join(".claude-plugin/plugin.json").exists());
     }
 
     #[test]

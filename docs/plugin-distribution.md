@@ -99,10 +99,14 @@ This choice:
 
 **Decision:** Keep the `rdm-wf-` prefix on workflow engine names when emitted in plugin mode.
 
-**Plugin-mode names (2 engines):**
+**Plugin-mode names (1 shipped engine):**
 
-- `/rdm:rdm-wf-dispatch-phase`
 - `/rdm:rdm-wf-review-refute-fix`
+
+The decision was recorded when two engines shipped; the second,
+`/rdm:rdm-wf-dispatch-phase`, was retired by `agent-orchestrated-dispatch` phase 7 and is
+named below only as the historical worked example (see the banner under "Why This
+Constraint Exists"). The transform is unchanged.
 
 **Rationale:**
 
@@ -142,7 +146,7 @@ Workflow({
 
 Official precedent: `claude-security` plugin uses `Workflow({ name: "claude-security:<engine-name>", args: {…} })` throughout its skill shims.
 
-**Consequence for shipped skill-body prose:** the four distributed skill templates that describe a `Workflow` invocation (`skill-{autopilot,dispatch-phase}-cli.md`) never spell it out as literal JS — no `Workflow({ scriptPath: … })` code block, and no bare occurrence of the word `scriptPath` — even where they describe the primary dispatch call, not just the crash-recovery path. This is not stylistic caution; it is load-bearing. `generate_plugin_skills` runs the *same* template body (raw skill content, unmodified except for `rewrite_workflow_refs`'s path/stem rewrite) through the plugin transform, and `rdm-core/src/agent_config.rs`'s `plugin_skill_bodies_use_namespaced_workflow_refs` test asserts **zero** literal `scriptPath` occurrences survive in the transformed plugin body — a raw-mode `scriptPath` key would leak untransformed into the plugin skill, where the correct invocation form is `name: "rdm:<engine>"` (Decision 3), not a path. Each template instead names the real file explicitly in prose (e.g. "the `rdm-wf-dispatch-phase` Workflow call … (`.claude/workflows/rdm-wf-dispatch-phase.js`)"), which `rewrite_workflow_refs` correctly rewrites to `rdm:rdm-wf-dispatch-phase` for the plugin variant. The two hand-maintained local copies (`.claude/skills/rdm-autopilot/SKILL.md`, `.claude/skills/rdm-dispatch-phase/SKILL.md`) are outside this pipeline — they never ship to the plugin transform — so they may and do use literal `Workflow({ scriptPath: '.claude/workflows/rdm-wf-dispatch-phase.js', resumeFromRunId })` code blocks.
+**Consequence for shipped skill-body prose:** the four distributed skill templates that describe a `Workflow` invocation (`skill-{autopilot,dispatch-phase}-cli.md`) never spell it out as literal JS — no `Workflow({ scriptPath: … })` code block, and no bare occurrence of the word `scriptPath` — even where they describe the primary dispatch call, not just the crash-recovery path. This is not stylistic caution; it is load-bearing. `generate_plugin_skills` runs the *same* template body (raw skill content, unmodified except for `rewrite_workflow_refs`'s path/stem rewrite) through the plugin transform, and `rdm-core/src/agent_config.rs`'s `plugin_skill_bodies_use_namespaced_workflow_refs` test asserts **zero** literal `scriptPath` occurrences survive in the transformed plugin body — a raw-mode `scriptPath` key would leak untransformed into the plugin skill, where the correct invocation form is `name: "rdm:<engine>"` (Decision 3), not a path. Each template instead names the real file explicitly in prose (e.g. "the `rdm-wf-dispatch-phase` Workflow call … (`.claude/workflows/rdm-wf-dispatch-phase.js`)"), which `rewrite_workflow_refs` correctly rewrites to `rdm:rdm-wf-dispatch-phase` for the plugin variant. The two hand-maintained local copies (`.claude/skills/rdm-autopilot/SKILL.md`, `.claude/skills/rdm-dispatch-phase/SKILL.md`) are outside this pipeline — they never ship to the plugin transform — so they may use a literal `Workflow({ scriptPath: … })` code block. (They used to, naming the `rdm-wf-dispatch-phase` engine; `agent-orchestrated-dispatch` phase 7 retired that engine, so no local copy carries such a block today. The permission stands for any future one.)
 
 ## Decision 4: Runtime Arguments Delivery
 
@@ -314,7 +318,7 @@ Two details are load-bearing:
 
 Emission is deterministic — two runs are byte-identical — and needs no plan repo.
 
-This adds a **third** in-repo copy of the two Workflow engine scripts, alongside `.claude/workflows/` and `rdm-core/src/templates/workflows/`. After regenerating, re-run `scripts/verify-agent-config-distribution.sh` and `scripts/verify-workflow-review.sh` as well as the two harnesses below.
+This adds a **third** in-repo copy of the shipped Workflow engine script (`rdm-wf-review-refute-fix.js`), alongside `.claude/workflows/` and `rdm-core/src/templates/workflows/`. After regenerating, re-run `scripts/verify-agent-config-distribution.sh` and `scripts/verify-workflow-review.sh` as well as the two harnesses below.
 
 ### Why the Drift Gate is Version-Normalized
 

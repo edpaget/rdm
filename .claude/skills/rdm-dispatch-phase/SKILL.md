@@ -26,8 +26,8 @@ the same commands the orchestrator does.
 never invokes it. The operator's principle: a Workflow is for extremely deterministic mechanism —
 the find → refute → filter review cycle — and the agent exercises judgment above the review gate.
 Planning, implementing, verifying, triaging and deciding are judgment; they run here, in prose. The
-engine file stays in the tree until the roadmap's retirement phase removes it; nothing in this lane
-calls it.
+engine file was retired in phase 7 of the `agent-orchestrated-dispatch` roadmap and no longer exists
+in the tree.
 
 ## How this skill must be entered
 
