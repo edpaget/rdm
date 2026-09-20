@@ -94,7 +94,9 @@ time, off `writesCompletion: true`.
 ## Run state
 
 Keep these for the whole run: `identity` (the pinned checkout: `repository`, `path`, `branch`,
-`base`, `head`), `planId` plus any superseded predecessors, `reviewIds` (**additive** — a rework pass
+`base`, `head`), `models` (`{ plan, implement }`, the two model ids resolved in step 3 from the
+item's `model` tier, carried into the planner/implementer dispatches and never re-resolved
+mid-run), `planId` plus any superseded predecessors, `reviewIds` (**additive** — a rework pass
 keeps resolving comments on the ids it already has and never starts a fresh review to redo a pass),
 `planReviseCount` / `codeReworkCount`, and `verification` (`{ command, exitCode, tail }`).
 
@@ -151,8 +153,26 @@ Record `repository`, `path`, `branch`, `base`, `head` as `identity`. One worktre
 phase of a roadmap is implemented in place in the same checkout, so `worktree add` on a later phase
 returns the existing path. **You MUST NOT** create a phase-specific branch or fork off `main`.
 
-**Self-check before proceeding:** state the pinned `path`, `branch` and `head` you just read. A
-failed command is an escalation — never invent a checkout, and never let a subagent choose one.
+Then resolve the two dispatch models from the item's tier. Read `model` from `rdm phase show
+<phase> --roadmap <slug> {proj_flag} --format json` (task form: `rdm task show <slug> {proj_flag}
+--format json`) and call it `T`.
+
+```bash
+# T non-empty (phase mode with a recorded tier):
+rdm model resolve plan --tier T
+rdm model resolve implement --tier T
+# T empty/missing, or task mode (a task carries no tier at all):
+rdm model resolve plan
+rdm model resolve implement
+```
+
+Record the two resulting ids as `models.plan` / `models.implement`. The plan-review Workflow's own
+internal bootstrap resolves its own review models; the code-review Workflow call's own
+`findModel`/`verifyModel` gap is untouched by this step.
+
+**Self-check before proceeding:** state the pinned `path`, `branch`, `head`, and the two resolved
+`models.plan` / `models.implement` you just read. A failed command is an escalation — never invent
+a checkout, and never let a subagent choose one.
 
 ### 4. Stamp `in-progress`
 
@@ -167,9 +187,10 @@ never happened.
 
 ### 5. Dispatch the planner subagent
 
-**Declare** that you are dispatching the planner, then dispatch **one** `Agent` subagent with the
-item body (`rdm phase show`/`rdm task show`), the parent roadmap's `## Intent` section verbatim, and
-the pinned `identity.path` as its working directory. Require it to write the plan through the CLI:
+**Declare** that you are dispatching the planner on `model: <models.plan>`, then dispatch **one**
+`Agent` subagent with `model: <models.plan>`, the item body (`rdm phase show`/`rdm task show`), the
+parent roadmap's `## Intent` section verbatim, and the pinned `identity.path` as its working
+directory. Require it to write the plan through the CLI:
 
 ```bash
 rdm plan create <plan-slug> --title "<title>" --implements <item> --body "<plan>" --no-edit {proj_flag}
@@ -229,9 +250,10 @@ change review.
 
 ### 8. Dispatch the implementer subagent
 
-**Declare** it, then dispatch **one** `Agent` subagent with the approved plan body verbatim, the item
-body, and `identity.path` as its working directory. Require it to commit in that worktree and return
-the commit SHA. Follow the `--permission-mode auto` rules below. **You MUST NOT** implement inline.
+**Declare** it, then dispatch **one** `Agent` subagent with `model: <models.implement>`, the approved
+plan body verbatim, the item body, and `identity.path` as its working directory. Require it to
+commit in that worktree and return the commit SHA. Follow the `--permission-mode auto` rules below.
+**You MUST NOT** implement inline.
 
 **Self-check before proceeding:** confirm the implementer returned, then re-run `rdm review source
 --on <item>` and restate the pinned `path`/`branch`/`base` — any change to `repository`, `path`,
@@ -304,10 +326,10 @@ Per comment, run this numbered checklist:
 1. **Declare** the decision, the route, and the reply text you intend to record.
 2. **Classify and act:**
    - **SOURCE comment** (carries a `path` — a file-quote anchor into the diff): dispatch an
-     implementer `Agent` subagent in `identity.path` with the comment body and its `source_link`
-     permalink; require a commit and its SHA. **You MUST NOT route a source comment to
-     `rdm-revise`**: that skill edits plan-repo document bodies and its `--applied-commit` is a
-     plan-repo SHA, so it cannot carry source-commit provenance.
+     implementer `Agent` subagent with `model: <models.implement>` in `identity.path` with the
+     comment body and its `source_link` permalink; require a commit and its SHA. **You MUST NOT
+     route a source comment to `rdm-revise`**: that skill edits plan-repo document bodies and its
+     `--applied-commit` is a plan-repo SHA, so it cannot carry source-commit provenance.
    - **PLAN-DOCUMENT comment** (on a plan-repo document target): run the `rdm-revise` loop, keeping
      its plan-repo `--applied-commit` semantics intact.
    - **`wont-fix`**: a reasoned `--reply` is mandatory, not optional.

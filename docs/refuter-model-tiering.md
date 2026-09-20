@@ -468,6 +468,14 @@ tier while leaving its refuters on `review-verify` → `opus`. That is a
 policy-alignment change with its own cost and risk profile, which is exactly why
 it belongs in its own unit of work rather than in this decision.
 
+The planner and implementer models are a separate judgment site from the ones this document
+analyzes: `.claude/skills/rdm-dispatch-phase/SKILL.md`'s "Ensure the worktree exists, then pin
+the checkout identity" step resolves `models.plan`/`models.implement` from the item's `model`
+tier and threads them into the two `Agent` dispatches (`agent-orchestrated-dispatch` phase 22).
+The code-review engine's own model gap — `rdm-wf-review-refute-fix.js` does not self-resolve
+`findModel`/`verifyModel` the way `rdm-wf-plan-review.js` does — remains open and is tracked
+separately by `task/thread-code-review-judgment-models`; phase 22 does not touch it.
+
 ## DECISION
 
 <!-- DECISION-BEGIN -->

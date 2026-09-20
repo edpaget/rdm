@@ -111,6 +111,9 @@ Its format lives in `rdm_core::hook::format_done_directive` (surfaced as `rdm ho
 Keep these in your own context for the whole run and carry them into every later step:
 
 - `identity` — the pinned checkout: `repository`, `path`, `branch`, `base`, `head`.
+- `models` — `{ plan, implement }`, the two model ids resolved in step 3 ("Ensure the worktree
+  exists, then pin the checkout identity") from the item's `model` tier. Carried into the
+  planner/implementer dispatches; never re-resolved mid-run.
 - `planId` — `plan/<slug>`, and the chain of superseded predecessors on a re-plan.
 - `reviewIds` — **additive**. A rework pass keeps resolving comments on the review ids it already
   has and appends any new one; it never starts a fresh review to "redo" a pass.
@@ -175,8 +178,27 @@ phase-specific branch or fork off `main`.
 Record `repository`, `path`, `branch`, `base`, `head` as `identity`. Every later step uses this
 same `path` as its working directory and this same `base`/`head` on the terminal write.
 
-**Self-check before proceeding:** state the pinned `path`, `branch` and `head` you just read. If the
-command failed, escalate — never invent a checkout, and never let a subagent choose one.
+Then resolve the two dispatch models from the item's tier. Read `model` from `phase show <phase>
+--roadmap <slug><proj-flag> --format json` (task form: `task show <slug><proj-flag> --format
+json`) and call it `T`.
+
+```bash
+# T non-empty (phase mode with a recorded tier):
+<rdmBin> model resolve plan --tier T
+<rdmBin> model resolve implement --tier T
+# T empty/missing, or task mode (a task carries no tier at all):
+<rdmBin> model resolve plan
+<rdmBin> model resolve implement
+```
+
+Record the two resulting ids as `models.plan` / `models.implement`. The plan-review Workflow
+invoked later in this procedure resolves its own review models internally via its own bootstrap;
+the code-review Workflow call's own `findModel`/`verifyModel` gap is out of scope for this phase
+(tracked by `task/thread-code-review-judgment-models`) — neither is touched by this step.
+
+**Self-check before proceeding:** state the pinned `path`, `branch`, `head`, and the two resolved
+`models.plan` / `models.implement` you just read. If the command failed, escalate — never invent a
+checkout, and never let a subagent choose one.
 
 ### 4. Stamp `in-progress`
 
@@ -190,7 +212,8 @@ command failed, escalate — never invent a checkout, and never let a subagent c
 
 ### 5. Dispatch the planner subagent
 
-**Declare** that you are dispatching the planner, then dispatch **one** `Agent` subagent with:
+**Declare** that you are dispatching the planner on `model: <models.plan>`, then dispatch **one**
+`Agent` subagent with `model: <models.plan>` and:
 
 - the item body (`phase show`/`task show`) and the parent roadmap's `## Intent` section verbatim;
 - the pinned `identity.path` as its working directory;
@@ -275,9 +298,10 @@ change review. A plan-only pass that stamps or writes status misreports work tha
 
 ### 9. Dispatch the implementer subagent
 
-**Declare** it, then dispatch **one** `Agent` subagent with the approved plan body verbatim, the item
-body, and `identity.path` as its working directory. Require it to commit in that worktree and return
-the commit SHA. Follow the `--permission-mode auto` rules below. **You MUST NOT** implement inline.
+**Declare** it, then dispatch **one** `Agent` subagent with `model: <models.implement>`, the approved
+plan body verbatim, the item body, and `identity.path` as its working directory. Require it to
+commit in that worktree and return the commit SHA. Follow the `--permission-mode auto` rules below.
+**You MUST NOT** implement inline.
 
 **Self-check before proceeding:** confirm the implementer returned, then re-run `review source --on
 <item>` and restate the pinned `path`/`branch`/`base` — any change to `repository`, `path`, `branch`
@@ -351,8 +375,9 @@ Per comment, run this numbered checklist:
 1. **Declare** the decision, the route, and the reply text you intend to record.
 2. **Classify and act:**
    - **SOURCE comment** (carries a `path` — a file-quote anchor into the diff): dispatch an
-     implementer `Agent` subagent in `identity.path` with the comment body and its `source_link`
-     permalink; require a commit and its SHA. **You MUST NOT route a source comment to
+     implementer `Agent` subagent with `model: <models.implement>` in `identity.path` with the
+     comment body and its `source_link` permalink; require a commit and its SHA. **You MUST NOT
+     route a source comment to
      `rdm-revise`**: that skill edits plan-repo document bodies and its `--applied-commit` is a
      plan-repo SHA, so it cannot carry source-commit provenance. (This split is the answer to
      `task/plan-dispatch-plan-change-rework-routing`.)
