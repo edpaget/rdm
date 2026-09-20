@@ -9104,29 +9104,23 @@ pass "7f: the shim's tags-contract prose matches the omission-tolerant fix, not 
 # gate, at any tier. This section gates that skip end to end: the pipeline
 # dispatches no refuter for it, the pass-through is MARKED so a downstream act
 # step can tell reported-only from verified, the confidence floor still applies
-# to it, a refuter CRASH is still not marked as a deliberate skip, and both act
-# prompts stop asserting "these survived refutation" once the payload is mixed.
-say '8. Non-gating refutation skip: no refuter for a suggestion, marked pass-through, honest act prompts'
-
-DISPATCH_LIB="$REPO_ROOT/.claude/workflows/lib/dispatch-phase.mjs"
-[ -f "$DISPATCH_LIB" ] || fail "8: dispatch lib not found: $DISPATCH_LIB"
+# to it, a refuter CRASH is still not marked as a deliberate skip, and the plan
+# act prompt stops asserting "these survived refutation" once the payload is
+# mixed. The CODE act step is prose in the `rdm-dispatch-phase` orchestrator
+# since `agent-orchestrated-dispatch` phase 7 retired the dispatch engine, so
+# there is no code act prompt string left to pin here; the review.mjs-side
+# marking that prose consumes is what this section gates.
+say '8. Non-gating refutation skip: no refuter for a suggestion, marked pass-through, honest plan act prompt'
 
 cat >"$TMP/nongating-test.mjs" <<'NODE_NONGATING_TEST'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 
-const [libPath, dispatchPath, planPath] = process.argv.slice(2);
+const [libPath, planPath] = process.argv.slice(2);
 const mod = await import(pathToFileURL(libPath).href);
-const dispatchMod = await import(pathToFileURL(dispatchPath).href);
 const planMod = await import(pathToFileURL(planPath).href);
 
 const { buildReviewPipeline, NON_GATING_SEVERITIES, needsRefutation, UNREFUTED_DISPOSITION } = mod;
-const { buildCodeActPrompt, CODE_ACT_SCHEMA } = dispatchMod;
-// buildCodeActPrompt takes a trailing environment cfg ({ rdmBin, project })
-// since the project-agnostic-lane parameterization. With THIS repo's dogfood
-// values the rendered prompt is byte-identical to the pre-parameterization
-// text, which is what CODE_ACT_BASELINE below pins.
-const DOGFOOD_CFG = { rdmBin: './target/debug/rdm', project: 'rdm' };
 const { buildActPrompt } = planMod;
 
 // Same reference runtime as section 3: order-preserving, with the documented
@@ -9195,7 +9189,7 @@ const GATING_AND_NOT = [
 
 for (const [mode, dimKey] of [['code', 'correctness'], ['plan', 'coherence']]) {
   const spy = makeSpyAgent({ [dimKey]: GATING_AND_NOT }, {});
-  const { survivors } = await buildReviewPipeline(mode, deps(spy))(CTX);
+  const { survivors, budget } = await buildReviewPipeline(mode, deps(spy))(CTX);
   const refuteCalls = spy.calls.filter((c) => c.label.startsWith('refute:'));
 
   assert.equal(refuteCalls.length, 2, mode + ': exactly one refuter per GATING finding');
@@ -9220,8 +9214,22 @@ for (const [mode, dimKey] of [['code', 'correctness'], ['plan', 'coherence']]) {
 
   const byId = Object.fromEntries(survivors.map((f) => [f.id, f]));
   assert.equal(byId.s1.unrefuted, true, mode + ': the passed-through finding is marked `unrefuted: true`');
+  assert.equal(
+    byId.s1.unrefutedReason,
+    'non-gating',
+    mode + ": the pass-through reason is 'non-gating', distinguishable from a budget cut"
+  );
   assert.equal(byId.b1.unrefuted, undefined, mode + ': a refuter-graded blocking finding is NOT marked unrefuted');
   assert.equal(byId.c1.unrefuted, undefined, mode + ': a refuter-graded concern finding is NOT marked unrefuted');
+
+  // …and a non-gating pass-through CONSUMES NO BUDGET: only the two gating
+  // findings are counted as candidates for grading, and both suggestions land in
+  // the non-gating bucket rather than the budget one.
+  assert.equal(budget.gating, 2, mode + ': only the two gating findings are budget candidates');
+  assert.equal(budget.graded, 2, mode + ': the budget graded exactly the two gating findings');
+  assert.equal(budget.passedThroughNonGating, 2, mode + ': both suggestions are accounted as non-gating pass-throughs');
+  assert.equal(budget.passedThroughBudget, 0, mode + ': a non-gating pass-through never consumes budget');
+  assert.equal(budget.hit, false, mode + ': a suggestion-heavy round does not hit the bound');
 }
 
 // A refuter CRASH on a gating finding still keeps the finding (a crash is not
@@ -9239,7 +9247,7 @@ for (const [mode, dimKey] of [['code', 'correctness'], ['plan', 'coherence']]) {
 }
 
 // ============================================================================
-// The disposition rule, single-sourced, and both act prompts consuming it.
+// The disposition rule, single-sourced, and the plan act prompt consuming it.
 // ============================================================================
 assert.ok(
   UNREFUTED_DISPOSITION.includes('reported, not verified'),
@@ -9259,17 +9267,8 @@ assert.ok(
 const VERIFIED_ONLY = [{ id: 'f1', severity: 'concern', confidence: 90, what_fails: 'x' }];
 const MIXED = VERIFIED_ONLY.concat([{ id: 'f2', severity: 'suggestion', confidence: 90, what_fails: 'y', unrefuted: true }]);
 
-// af-2: the LEADING claim is conditional. With a mixed payload neither prompt may
+// af-2: the LEADING claim is conditional. With a mixed payload the prompt may not
 // keep asserting that everything in it survived refutation.
-const codeMixed = buildCodeActPrompt('phase', 'rm', 'phase-1-x', 'wt/rm', MIXED, DOGFOOD_CFG);
-assert.ok(codeMixed.includes(UNREFUTED_DISPOSITION), 'code act prompt carries the disposition rule verbatim');
-assert.ok(
-  !codeMixed.includes('These findings survived refutation'),
-  'code act prompt drops the unconditional "survived refutation" lead on a mixed payload'
-);
-assert.ok(!codeMixed.includes('ALREADY-VERIFIED'), 'code act prompt drops the ALREADY-VERIFIED lead on a mixed payload');
-assert.ok(codeMixed.includes('skipped'), 'code act prompt tells the agent how to record a skip');
-
 const planMixed = buildActPrompt('phase', 'rm', 'phase-1-x', MIXED);
 assert.ok(planMixed.includes(UNREFUTED_DISPOSITION), 'plan act prompt carries the disposition rule verbatim');
 assert.ok(
@@ -9281,97 +9280,20 @@ assert.ok(
   'plan act prompt drops the already-verified lead on a mixed payload'
 );
 
-// ... and with NO un-refuted survivor both prompts are byte-identical to the
-// pre-change ones, so this change cannot silently perturb the existing lane.
-const CODE_ACT_BASELINE = 'You are acting on ALREADY-VERIFIED code-review findings for rm/phase-1-x (worktree: wt/rm).\nThese findings survived refutation and are non-gating (the reviewed outcome is already decided).\n[\n  {\n    "id": "f1",\n    "severity": "concern",\n    "confidence": 90,\n    "what_fails": "x"\n  }\n]\nFor EACH finding, decide SMALL vs LARGE:\n- SMALL — localized, low-risk, no new acceptance criterion (a typo, a missing doc comment, a tightened error message, an extra test). Fix it directly in the worktree at wt/rm, re-run the verification command, then COMMIT it: `git add` only the files you changed, and `git commit` with a conventional-commit subject plus a message BODY carrying one `Review-Finding: <id>` line per finding that commit closes. Report the resulting short sha as `commit` on that finding\'s `handled` entry, so the finding and the commit that closed it are both recoverable. One commit per fix is preferred; one commit closing several findings is fine as long as it names every id.\n- LARGE — new modules, cross-cutting changes, or anything that would warrant its own acceptance criterion. Do NOT edit code for these: file it with `./target/debug/rdm task create <slug> --title "Code review finding: <desc>" --body "<details>" --tags code-review --no-edit --project rdm`.\nWhen you are done, `git status --porcelain` in wt/rm MUST be empty: everything you changed is committed, and nothing you did not change was swept into your commit. The pipeline re-checks this and sends the item back as rework if it is dirty. Never `git stash`, `git reset --hard`, `git checkout --`, or `git clean` the tree to make it look clean — that destroys exactly the work this check exists to protect. Never amend an existing commit, and never write a land-time completion directive into any commit message: landing is a separate step that synthesizes that trailer itself.\nReturn JSON matching the CODE_ACT schema: a `handled` array with ONE entry per finding you were given — id, action (fixed-inline|filed-as-task), `commit` (the short sha) when you fixed one inline, and taskSlug when you filed a task.';
+// ... and with NO un-refuted survivor the plan act prompt is byte-identical to
+// the pre-change one, so this change cannot silently perturb the existing lane.
 const PLAN_ACT_BASELINE = 'You are the plan-review orchestrator applying already-verified findings. The findings below already\nsurvived independent refutation — do not re-review; act on them.\nFindings (ranked, most-severe first):\n[\n  {\n    "id": "f1",\n    "severity": "concern",\n    "confidence": 90,\n    "what_fails": "x"\n  }\n]\nFor each finding, decide small vs large:\n- SMALL (a localized wording/typo/missing-detail fix to the plan document itself): apply it by reading the\n  current body and writing the ENTIRE modified body back — `--body` is whole-document-authoritative, there\n  is no patch mechanism. Use the matching command:\n    ./target/debug/rdm phase update phase-1-x --roadmap rm --body "<full updated body>" --no-edit --project rdm\n- LARGE (a structural concern: a missing prerequisite, scope too big for one phase, a conflicting design\n  decision): do NOT edit the plan document — file it as a task, with `--no-plan-review` so this finding\n  does not itself get re-stamped `needs-plan-review`:\n    ./target/debug/rdm task create <slug> --title "Plan review finding: <desc>" --body "<details>" --tags plan-review --no-plan-review --no-edit --project rdm\nAfter applying any changes, run: ./target/debug/rdm commit -m "chore(plan): address plan review findings on rm/phase-1-x"\nIf there is nothing small to fix and nothing large to file, make no changes.\nReturn a STAMP_ACK object: { ok: true } if you completed without error (including the no-op case), else { ok: false }.';
-assert.equal(
-  buildCodeActPrompt('phase', 'rm', 'phase-1-x', 'wt/rm', VERIFIED_ONLY, DOGFOOD_CFG),
-  CODE_ACT_BASELINE,
-  'an all-verified code act prompt is byte-identical to the pre-change baseline'
-);
 assert.equal(
   buildActPrompt('phase', 'rm', 'phase-1-x', VERIFIED_ONLY),
   PLAN_ACT_BASELINE,
   'an all-verified plan act prompt is byte-identical to the pre-change baseline'
 );
 
-// The schema must be able to RECORD the disposition rule's "skip the rest and
-// say why" branch, or the act step has to misreport a skip as something else.
-const action = CODE_ACT_SCHEMA.properties.handled.items.properties.action;
-assert.ok(action.enum.includes('skipped'), 'CODE_ACT action enum accepts `skipped`');
-assert.ok(action.enum.includes('fixed-inline') && action.enum.includes('filed-as-task'), 'the existing actions survive');
-assert.equal(
-  CODE_ACT_SCHEMA.properties.handled.items.properties.reason.type,
-  'string',
-  'CODE_ACT carries an optional `reason` for a skip'
-);
-assert.ok(
-  !CODE_ACT_SCHEMA.properties.handled.items.required.includes('reason'),
-  '`reason` is optional — a fixed-inline entry must not be forced to carry one'
-);
-
-// --- The Act step COMMITS its own inline fix (dispatch-dev-discipline phase 2)
-// The act prompt is the surface that decides whether a review's remediation
-// actually ships: the pipeline's terminal cleanliness assertion turns a dirty
-// worktree into `rework`, but only this prompt tells the fixer to commit. Pin
-// the instruction, the attribution trailer, and the cleanliness requirement
-// here, alongside the byte-pin above, so a rewrite that drops them is caught.
-{
-  const commitProp = CODE_ACT_SCHEMA.properties.handled.items.properties.commit;
-  assert.equal(commitProp.type, 'string', 'CODE_ACT carries a `commit` string for the sha that closed a finding');
-  assert.ok(
-    !CODE_ACT_SCHEMA.properties.handled.items.required.includes('commit'),
-    '`commit` is optional — a filed-as-task or skipped entry must not be forced to carry one'
-  );
-  // The enum is NOT widened: `verify-workflow-review.sh` § 8b pins this exact
-  // vocabulary against prose rendered into six skill files, so adding a value
-  // here would require a skill-template sweep.
-  assert.deepEqual(
-    action.enum,
-    ['fixed-inline', 'filed-as-task', 'skipped'],
-    'the CODE_ACT action enum is UNCHANGED — widening it would invalidate the rendered skill prose'
-  );
-
-  const VERIFY_SENTINEL = 'ACT-VERIFY-CMD-SENTINEL';
-  const committing = buildCodeActPrompt('phase', 'rm', 'phase-1-x', 'wt/rm', VERIFIED_ONLY, DOGFOOD_CFG, VERIFY_SENTINEL);
-  assert.ok(committing.includes('git commit'), 'the act prompt instructs the fixer to COMMIT its inline fix');
-  assert.ok(committing.includes('Review-Finding: <id>'), 'the act prompt asks for the finding-id attribution trailer');
-  assert.ok(
-    committing.includes('git status --porcelain') && committing.includes('MUST be empty'),
-    'the act prompt requires an empty porcelain status on exit'
-  );
-  assert.ok(committing.includes(VERIFY_SENTINEL), 'the act prompt names the resolved verification command so the fixer re-runs it');
-  assert.ok(
-    !committing.includes('Do not create a separate landing commit'),
-    'the false premise that the fix folds into a later land-time commit is GONE'
-  );
-  // No land-time completion directive may be produced by the fixer, and the
-  // prompt must say so WITHOUT the literal token (it is stamped into workflow
-  // scripts, where verify-workflow-dispatch.sh § 3 forbids that literal).
-  assert.ok(
-    committing.includes('land-time completion directive'),
-    'the act prompt forbids writing a land-time completion directive into a commit message'
-  );
-  // An absent verifyCommand renders no tooling line, so the byte-pinned
-  // baseline above stays a legal call.
-  assert.ok(!CODE_ACT_BASELINE.includes(VERIFY_SENTINEL), 'an absent verification command renders no tooling line');
-}
-// The rendered skills state the act step's reporting vocabulary in prose. Pin
-// that prose to the SCHEMA's enum rather than to a literal, so widening the enum
-// without sweeping the prose (exactly what happened when `skipped` was added)
-// fails here instead of shipping a skill that contradicts the schema.
-assert.equal(
-  action.enum.join(' / '),
-  'fixed-inline / filed-as-task / skipped',
-  'the CODE_ACT action enum must match the vocabulary section 8b greps for in every rendered skill'
-);
-
 console.log('8: non-gating refutation skip assertions passed');
 NODE_NONGATING_TEST
 
-if run_node "$TMP/nongating-test.mjs" "$LIB" "$DISPATCH_LIB" "$PLAN_LIB"; then
-    pass "8: suggestion is passed through un-refuted and marked; gating severities keep their refuter; act prompts stay honest"
+if run_node "$TMP/nongating-test.mjs" "$LIB" "$PLAN_LIB"; then
+    pass "8: suggestion is passed through un-refuted, marked, and budget-free; gating severities keep their refuter; the plan act prompt stays honest"
 else
     fail "8: non-gating refutation skip assertions failed"
 fi
@@ -9419,17 +9341,18 @@ done
 pass "8b: all four rendered review docs state the marker + disposition rule and drop every retired absolute"
 
 # --- 8c. PLANTED-MUTATION SELF-TESTS (non-vacuity, both directions) -----------
-# Four independent mutations, each of which MUST flip one of the section-8
+# Three independent mutations, each of which MUST flip one of the section-8
 # assertions. Without these, a refactor that quietly re-broadened the skip (or
-# dropped the marker, the disposition rule, or the conditional act-prompt lead)
-# would sail through a green harness.
+# dropped the marker or the disposition rule) would sail through a green
+# harness. Every mutation targets lib/review.mjs or lib/plan-review.mjs — the
+# fourth, which forced an unconditional "survived refutation" lead on the retired
+# dispatch engine's own code act prompt, went with that engine.
 say "8c. Non-gating skip mutation self-tests (prove section 8 is not vacuous)"
 NGMUT="$TMP/ng-mut/.claude/workflows/lib"
 mkdir -p "$NGMUT"
 
 reset_ngmut() {
     cp "$LIB" "$NGMUT/review.mjs"
-    cp "$DISPATCH_LIB" "$NGMUT/dispatch-phase.mjs"
     cp "$PLAN_LIB" "$NGMUT/plan-review.mjs"
 }
 
@@ -9524,8 +9447,8 @@ NODE_NG_MARKER
 run_node "$TMP/ng-mut-marker.mjs" "$NGMUT/review.mjs" ||
     fail "8c(b): dropping the marker did not flip the marker assertion"
 
-# (c) Strip the disposition sentence: both act prompts lose the rule that makes
-#     an un-refuted finding safe to hand to an acting agent.
+# (c) Strip the disposition sentence: the plan act prompt loses the rule that
+#     makes an un-refuted finding safe to hand to an acting agent.
 reset_ngmut
 sed 's/were \*\*reported, not verified\*\*/were MUTANT/' "$LIB" >"$NGMUT/review.mjs"
 grep -q 'were MUTANT' "$NGMUT/review.mjs" || fail "8c(c): mutation setup did not strip the disposition wording"
@@ -9533,47 +9456,19 @@ grep -q 'were MUTANT' "$NGMUT/review.mjs" || fail "8c(c): mutation setup did not
 cat >"$TMP/ng-mut-disposition.mjs" <<'NODE_NG_DISP'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
-const dispatchMod = await import(pathToFileURL(process.argv[2]).href);
-const planMod = await import(pathToFileURL(process.argv[3]).href);
+const planMod = await import(pathToFileURL(process.argv[2]).href);
 const MIXED = [{ id: 'f2', severity: 'suggestion', confidence: 90, unrefuted: true }];
-const codePrompt = dispatchMod.buildCodeActPrompt('phase', 'rm', 'p1', 'wt', MIXED, { rdmBin: './target/debug/rdm', project: 'rdm' });
 const planPrompt = planMod.buildActPrompt('phase', 'rm', 'p1', MIXED);
-assert.throws(
-  () => assert.ok(codePrompt.includes('reported, not verified')),
-  'stripping the disposition wording must FAIL the code act-prompt check — else the check is vacuous'
-);
 assert.throws(
   () => assert.ok(planPrompt.includes('reported, not verified')),
   'stripping the disposition wording must FAIL the plan act-prompt check — else the check is vacuous'
 );
 console.log('8c(c) disposition mutation self-test passed');
 NODE_NG_DISP
-run_node "$TMP/ng-mut-disposition.mjs" "$NGMUT/dispatch-phase.mjs" "$NGMUT/plan-review.mjs" ||
-    fail "8c(c): stripping the disposition rule did not flip the act-prompt assertions"
+run_node "$TMP/ng-mut-disposition.mjs" "$NGMUT/plan-review.mjs" ||
+    fail "8c(c): stripping the disposition rule did not flip the act-prompt assertion"
 
-# (d) Restore the UNCONDITIONAL "survived refutation" lead on the code act
-#     prompt: the mixed payload would again be described as fully verified.
-reset_ngmut
-sed 's/const hasUnrefuted = list.some((f) => f \&\& f.unrefuted);/const hasUnrefuted = false; \/\/ MUTANT/' \
-    "$DISPATCH_LIB" >"$NGMUT/dispatch-phase.mjs"
-grep -q 'MUTANT' "$NGMUT/dispatch-phase.mjs" || fail "8c(d): mutation setup did not force the unconditional lead"
-
-cat >"$TMP/ng-mut-lead.mjs" <<'NODE_NG_LEAD'
-import assert from 'node:assert/strict';
-import { pathToFileURL } from 'node:url';
-const dispatchMod = await import(pathToFileURL(process.argv[2]).href);
-const MIXED = [{ id: 'f2', severity: 'suggestion', confidence: 90, unrefuted: true }];
-const prompt = dispatchMod.buildCodeActPrompt('phase', 'rm', 'p1', 'wt', MIXED, { rdmBin: './target/debug/rdm', project: 'rdm' });
-assert.throws(
-  () => assert.ok(!prompt.includes('These findings survived refutation')),
-  'an unconditional "survived refutation" lead must FAIL the mixed-payload check — else the check is vacuous'
-);
-console.log('8c(d) act-prompt lead mutation self-test passed');
-NODE_NG_LEAD
-run_node "$TMP/ng-mut-lead.mjs" "$NGMUT/dispatch-phase.mjs" ||
-    fail "8c(d): forcing the unconditional lead did not flip the mixed-payload assertion"
-
-pass "8c: all four mutations flip their assertion — section 8 is non-vacuous"
+pass "8c: all three mutations flip their assertion — section 8 is non-vacuous"
 
 # --- 9. REFUTATION BUDGET (bound-review-fan-out phase 4) ---------------------
 # The pipeline grades at most DEFAULT_MAX_REFUTATIONS gating findings per review
@@ -9604,9 +9499,8 @@ cat >"$TMP/budget-test.mjs" <<'NODE_BUDGET_TEST'
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
 
-const [libPath, dispatchPath] = process.argv.slice(2);
+const [libPath] = process.argv.slice(2);
 const mod = await import(pathToFileURL(libPath).href);
-const dispatchMod = await import(pathToFileURL(dispatchPath).href);
 
 const {
   buildReviewPipeline,
@@ -9615,9 +9509,50 @@ const {
   rankBudgetCandidates,
   survives,
   classifyOutcome,
+  hasBlocking,
+  acTableHasGap,
   CONFIDENCE_FLOOR,
 } = mod;
-const { runCodeGate } = dispatchMod;
+
+// A harness-local REFERENCE code-gate driver, in the same spirit as the
+// reference `pipeline`/`parallel` fakes below: implement, review, rework while
+// the round still gates, and invoke the optional act step ONLY once the final
+// round is clean and has survivors. It is built out of review.mjs's own
+// `hasBlocking`/`acTableHasGap` gating predicates, so the assertions it carries
+// are assertions about review.mjs's gating semantics — specifically that a
+// blocking budget-skipped survivor keeps gating, and therefore that any gate
+// driver keyed on those predicates can never mistake it for a mere observation.
+// It replaces the retired dispatch engine's `runCodeGate`, which used to host
+// this check (agent-orchestrated-dispatch phase 7).
+async function refCodeGate(config, deps) {
+  const c = config || {};
+  const d = deps || {};
+  const maxRework = c.maxRework != null ? c.maxRework : 0;
+  const tier = c.tier;
+  await d.implement(null);
+  let reviewResult = (await d.review()) || {};
+  let findings = reviewResult.survivors || [];
+  let acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
+  const budgetRounds = [reviewResult.budget || null];
+  for (let i = 0; i < maxRework; i++) {
+    if (!hasBlocking(findings, tier) && !acTableHasGap(acTable)) break;
+    await d.implement({ findings: findings, acTable: acTable });
+    reviewResult = (await d.review()) || {};
+    findings = reviewResult.survivors || [];
+    acTable = reviewResult.acTable != null ? reviewResult.acTable : null;
+    budgetRounds.push(reviewResult.budget || null);
+  }
+  let actResult = null;
+  if (
+    typeof d.act === 'function' &&
+    findings.length > 0 &&
+    !hasBlocking(findings, tier) &&
+    !acTableHasGap(acTable)
+  ) {
+    actResult = await d.act(findings);
+  }
+  return { findings: findings, budgetRounds: budgetRounds, actResult: actResult };
+}
 
 // The SAME reference runtime sections 3 and 8 use.
 async function refParallel(thunks) {
@@ -10114,13 +10049,20 @@ assert.equal(survives({ confidence: 70 }, null), true, 'survives keeps an ungrad
   }
 }
 {
-  // The act step must never mistake a gating budget-skipped survivor for a mere
-  // observation: runCodeGate invokes `d.act` only on a CLEAN final round.
+  // An act step must never mistake a gating budget-skipped survivor for a mere
+  // observation. review.mjs's own `hasBlocking` still gates on it even though no
+  // refuter ever graded it, so the reference gate driver — which invokes `d.act`
+  // only on a CLEAN final round — never reaches the act step.
   let actCalls = 0;
   const blockingBudgetSkipped = [
     { id: 'zz', severity: 'blocking', confidence: 90, unrefuted: true, unrefutedReason: 'budget' },
   ];
-  const gate = await runCodeGate(
+  assert.equal(
+    hasBlocking(blockingBudgetSkipped, 'medium'),
+    true,
+    'a blocking budget-skipped survivor still gates — being ungraded is not being non-gating'
+  );
+  const gate = await refCodeGate(
     { maxRework: 0, tier: 'medium' },
     {
       implement: async () => null,
@@ -10132,14 +10074,33 @@ assert.equal(survives({ confidence: 70 }, null), true, 'survives keeps an ungrad
     }
   );
   assert.equal(actCalls, 0, 'd.act is NOT invoked when the only survivor is a blocking budget-skipped finding');
-  assert.equal(gate.budgetRounds.length, 1, 'runCodeGate records one budget per review round');
-  assert.equal(gate.budgetRounds[0].hit, true, 'the round-level budget is carried out of runCodeGate');
+  assert.equal(gate.budgetRounds.length, 1, 'the gate records one budget per review round');
+  assert.equal(gate.budgetRounds[0].hit, true, 'the round-level budget is carried out of the gate');
+  // …and the inverse, so the zero-act-call assertion above is not vacuous: a
+  // non-gating survivor DOES reach the act step through the same driver.
+  let cleanActCalls = 0;
+  await refCodeGate(
+    { maxRework: 0, tier: 'medium' },
+    {
+      implement: async () => null,
+      review: async () => ({
+        survivors: [{ id: 'zz', severity: 'suggestion', confidence: 90, unrefuted: true, unrefutedReason: 'non-gating' }],
+        acTable: null,
+        budget: { max: 5, produced: 1, gating: 0, graded: 0, passedThroughNonGating: 1, passedThroughBudget: 0, refuterErrors: 0, hit: false },
+      }),
+      act: async () => {
+        cleanActCalls++;
+        return { handled: [] };
+      },
+    }
+  );
+  assert.equal(cleanActCalls, 1, 'a clean round with a non-gating survivor DOES reach the act step');
 }
 
 console.log('9: refutation budget assertions passed');
 NODE_BUDGET_TEST
 
-if run_node "$TMP/budget-test.mjs" "$LIB" "$DISPATCH_LIB"; then
+if run_node "$TMP/budget-test.mjs" "$LIB"; then
     pass "9: the bound is chosen from evidence, ranked totally, boundaried correctly, four-state legible, deterministic, and monotone"
 else
     fail "9: refutation budget assertions failed"
@@ -10178,13 +10139,12 @@ mkdir -p "$BMUT"
 
 reset_bmut() {
     cp "$LIB" "$BMUT/review.mjs"
-    cp "$DISPATCH_LIB" "$BMUT/dispatch-phase.mjs"
 }
 
 # The CONTROL: section 9 must PASS against the real, unmutated file. Without this
 # the seven negatives below could all "pass" simply because the section is broken.
 reset_bmut
-if run_node "$TMP/budget-test.mjs" "$BMUT/review.mjs" "$BMUT/dispatch-phase.mjs" >/dev/null 2>&1; then
+if run_node "$TMP/budget-test.mjs" "$BMUT/review.mjs" >/dev/null 2>&1; then
     pass "9c(control): section 9 passes against an unmutated copy — the self-tests below are discriminating"
 else
     fail "9c(control): section 9 FAILED against an unmutated copy — the mutation self-tests would be meaningless"
@@ -10196,7 +10156,7 @@ mutate_and_expect_fail() {
     reset_bmut
     shift 2
     "$@" || fail "9c($label): mutation setup failed"
-    if run_node "$TMP/budget-test.mjs" "$BMUT/review.mjs" "$BMUT/dispatch-phase.mjs" >/dev/null 2>&1; then
+    if run_node "$TMP/budget-test.mjs" "$BMUT/review.mjs" >/dev/null 2>&1; then
         fail "9c($label): $desc did NOT flip a section-9 assertion — the check is vacuous"
     fi
     pass "9c($label): $desc flips a section-9 assertion"
