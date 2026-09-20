@@ -1219,7 +1219,7 @@ pub fn generate_plugin_workflows() -> Vec<PluginFile> {
 ///     project: None,
 ///     principles_file: None,
 /// });
-/// assert_eq!(files.len(), 14);
+/// assert_eq!(files.len(), 13);
 /// assert_eq!(files[0].relative_path, ".claude-plugin/plugin.json");
 /// ```
 pub fn generate_plugin_files(opts: &SkillOptions) -> Vec<PluginFile> {
