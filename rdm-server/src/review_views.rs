@@ -144,7 +144,8 @@ pub fn page_reviews(
     let mut selected: Vec<(String, Document<Review>)> = all
         .into_iter()
         .filter(|(_, doc)| {
-            doc.frontmatter.state != ReviewState::Draft && review_applies(page, &doc.frontmatter)
+            doc.frontmatter.state != ReviewState::Draft
+                && review_applies(store, project, page, &doc.frontmatter)
         })
         .collect();
     selected.sort_by_key(|(_, doc)| doc.frontmatter.created);
@@ -153,7 +154,12 @@ pub fn page_reviews(
     let mut highlights = Vec::new();
     for (id, doc) in &selected {
         let review = &doc.frontmatter;
-        let resolutions = rdm_core::anchor::resolve_comments(store, project, review);
+        // Target-dispatched, exactly like the JSON endpoints': a change
+        // review's anchors live in the source repository, so resolving them
+        // against the plan store would report every one of them unresolved and
+        // render a wrong badge. Both surfaces read one implementation
+        // (`rdm_core::change::resolve_change_review`) so they cannot disagree.
+        let resolutions = resolve_for_page(store, project, review);
         let mut comments = Vec::new();
         for (comment, resolved) in review.comments.iter().zip(&resolutions) {
             if !comment_shown(page, review, comment) {
@@ -369,8 +375,66 @@ fn draft_doc_label(phases: &[(String, Document<Phase>)], doc: Option<&CommentDoc
     }
 }
 
+/// One resolution pass for the reviews rendered on a detail page.
+///
+/// The HTML half of [`crate::handlers::reviews`]'s `resolve_for_response`:
+/// plan-repo reviews resolve against the plan store, change reviews against the
+/// project's configured local `source.repo`. Only the resolutions are used here
+/// — the badges are all this page renders — but they come from the same core
+/// pass the JSON reports, so a comment cannot show `drifted` in one surface and
+/// `unresolved` in the other.
+fn resolve_for_page(
+    store: &impl rdm_core::store::VersionedStore,
+    project: &str,
+    review: &Review,
+) -> Vec<rdm_core::anchor::ResolvedComment> {
+    if matches!(review.target, ReviewTarget::Change { .. }) {
+        let (resolutions, _notes, _source_note) =
+            crate::source_repo::resolve_change_review_for_project(store, project, review);
+        return resolutions;
+    }
+    rdm_core::anchor::resolve_comments(store, project, review)
+}
+
+/// The phase or task a change review's `implements: rdm:plan/<slug>` plan
+/// itself implements, when it can be resolved.
+///
+/// A change review names commits in the source repository, so it has no
+/// document of its own in the plan repo — but it always records the *plan* it
+/// implements, and that plan records the phase or task it was written for. That
+/// two-hop walk is what gives a change review a page to render on: the page of
+/// the item whose implementation it reviewed.
+///
+/// `None` when the review records no plan, when the plan is gone, or when the
+/// plan implements something other than a phase or a task.
+fn implemented_item(
+    store: &impl rdm_core::store::VersionedStore,
+    project: &str,
+    review: &Review,
+) -> Option<ReviewTarget> {
+    let ReviewTarget::Plan { slug } = review.implements.as_ref()? else {
+        return None;
+    };
+    let plan = rdm_core::io::load_plan(store, project, slug).ok()?;
+    match plan.frontmatter.implements {
+        item @ (ReviewTarget::Phase { .. } | ReviewTarget::Task { .. }) => Some(item),
+        _ => None,
+    }
+}
+
 /// Whether a review belongs on the given page at all.
-fn review_applies(page: &PageDoc<'_>, review: &Review) -> bool {
+///
+/// The `Change` arms are the one place this needs the store: a change review
+/// reaches the page of the item its `implements` plan implements (see
+/// [`implemented_item`]). Without them no HTML page would render a change
+/// review at all, and its resolution states would be unobservable outside the
+/// JSON API.
+fn review_applies(
+    store: &impl rdm_core::store::VersionedStore,
+    project: &str,
+    page: &PageDoc<'_>,
+    review: &Review,
+) -> bool {
     match (page, &review.target) {
         (PageDoc::Roadmap { roadmap, .. }, ReviewTarget::Roadmap { roadmap: r }) => r == roadmap,
         (
@@ -386,6 +450,15 @@ fn review_applies(page: &PageDoc<'_>, review: &Review) -> bool {
             r == roadmap && review.comments.iter().any(|c| doc_scoped_to_stem(c, stem))
         }
         (PageDoc::Task { slug }, ReviewTarget::Task { slug: s }) => s == slug,
+        // A change review reaches the page of the item its plan implements.
+        (PageDoc::Phase { roadmap, stem }, ReviewTarget::Change { .. }) => matches!(
+            implemented_item(store, project, review),
+            Some(ReviewTarget::Phase { roadmap: r, stem: t }) if r == *roadmap && t == *stem
+        ),
+        (PageDoc::Task { slug }, ReviewTarget::Change { .. }) => matches!(
+            implemented_item(store, project, review),
+            Some(ReviewTarget::Task { slug: s }) if s == *slug
+        ),
         _ => false,
     }
 }

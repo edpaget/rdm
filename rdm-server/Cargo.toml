@@ -19,6 +19,7 @@ path = "src/main.rs"
 rdm-core = { path = "../rdm-core" }
 rdm-store-fs = { path = "../rdm-store-fs" }
 rdm-store-git = { path = "../rdm-store-git", optional = true }
+rdm-git = { path = "../rdm-git", optional = true }
 anyhow = { workspace = true }
 axum = { workspace = true }
 tokio = { workspace = true }
@@ -34,7 +35,7 @@ chrono = { workspace = true }
 pulldown-cmark = { workspace = true }
 
 [features]
-git = ["dep:rdm-store-git"]
+git = ["dep:rdm-store-git", "dep:rdm-git"]
 
 [dev-dependencies]
 tower = { workspace = true }
@@ -42,3 +43,4 @@ tempfile = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 rdm-store-git = { path = "../rdm-store-git" }
+rdm-git = { path = "../rdm-git" }

@@ -2870,6 +2870,7 @@ dependencies = [
  "percent-encoding",
  "pulldown-cmark",
  "rdm-core",
+ "rdm-git",
  "rdm-store-fs",
  "rdm-store-git",
  "reqwest",

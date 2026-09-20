@@ -31,6 +31,8 @@ pub mod review_views;
 pub mod router;
 /// Selection→anchor derivation for the web select-to-anchor flow.
 pub mod selection;
+/// Source-repository discovery for change-review anchor resolution.
+pub mod source_repo;
 /// Shared application state.
 pub mod state;
 /// Askama template structs for HTML pages.

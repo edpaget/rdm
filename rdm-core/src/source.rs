@@ -40,11 +40,40 @@ pub enum SourceObjectKind {
     Gitlink,
 }
 
+/// The outcome of a [`SourceRepo::object_kind_at`] lookup, as a **tri-state**.
+///
+/// The three outcomes are genuinely different situations and callers act
+/// differently on each, so none of them is folded into another:
+///
+/// - [`Self::RevMissing`] — the revision itself is not in this checkout (an
+///   unfetched branch, a commit that only exists on another machine). Nothing
+///   about the path is known, and the remedy is environmental.
+/// - [`Self::PathMissing`] — the revision resolves, but names no entry at
+///   `path`. The remedy is to fix the path.
+/// - [`Self::Kind`] — the entry exists, and this is what kind it is.
+///
+/// Before this existed, the first two both returned `Ok(None)` and every
+/// caller reported the *path* as missing, so a checkout lacking the reviewed
+/// commit claimed each anchored file "no longer exists" — a confidently false
+/// statement about a file that is present in every checkout that has the
+/// commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceObjectLookup {
+    /// The revision does not resolve in this repository at all.
+    RevMissing,
+    /// The revision resolves, but holds no entry at the path.
+    PathMissing,
+    /// The path names an entry of this kind at the revision.
+    Kind(SourceObjectKind),
+}
+
 /// A read-only view of a git-like source repository.
 ///
-/// Every method returns `Ok(None)` for a *benign* miss — an unknown
-/// revision, a path absent at that revision, two histories with no common
-/// ancestor — and reserves [`Err`] for a genuine tool failure (git missing,
+/// Every method distinguishes a *benign* miss — an unknown revision, a path
+/// absent at that revision, two histories with no common ancestor — from a
+/// genuine failure: the miss is `Ok(None)` (or, for
+/// [`Self::object_kind_at`], whichever [`SourceObjectLookup`] miss occurred),
+/// and [`Err`] is reserved for a genuine tool failure (git missing,
 /// the path not being a repository, non-UTF-8 content) or unsafe revision input.
 /// Production adapters reject option-shaped operands before spawning and peel
 /// revisions to commits for file/diff reads; missing/noncommit objects are benign
@@ -113,21 +142,42 @@ pub trait SourceRepo {
     fn current_branch(&self) -> Result<Option<String>>;
 
     /// The kind of Git object `path` names at `rev` — a blob, a tree
-    /// (directory), or a gitlink (submodule).
+    /// (directory), or a gitlink (submodule) — or which of the two *misses*
+    /// occurred.
     ///
     /// Answers via git's own object typing rather than by inspecting
     /// content, so a text blob whose bytes happen to resemble a directory
     /// listing is still correctly reported as [`SourceObjectKind::Blob`].
-    /// `Ok(None)` covers both an unresolvable `rev` and a `path` absent at
-    /// it — callers that need to distinguish those already call
-    /// [`SourceRepo::rev_parse`] or [`SourceRepo::file_at`] first.
+    ///
+    /// The result is a [`SourceObjectLookup`] tri-state precisely because an
+    /// unresolvable `rev` and a `path` absent at a resolvable one demand
+    /// different messages and different remedies: the first is an
+    /// environmental skip (fetch the branch, or point `source.repo` at the
+    /// right checkout), the second is a genuine statement about the path. An
+    /// implementation must never report the one as the other.
+    ///
+    /// An entry whose recorded type is unrecognizable is reported as
+    /// [`SourceObjectLookup::PathMissing`], deliberately: git records only
+    /// `blob`/`tree`/`commit`, so nothing can produce it, and folding it into
+    /// the ineligible-anchor arm is the fail-safe choice.
     ///
     /// # Errors
     ///
     /// Returns an error when the repository cannot be queried at all, or
     /// [`crate::error::Error::InvalidChangeRevisionInput`] for option-shaped
     /// input, before any subprocess.
-    fn object_kind_at(&self, rev: &str, path: &str) -> Result<Option<SourceObjectKind>>;
+    fn object_kind_at(&self, rev: &str, path: &str) -> Result<SourceObjectLookup>;
+
+    /// The human-readable place this repository was read from, for an
+    /// operator-facing message.
+    ///
+    /// `None` when the implementation has no filesystem identity to name (an
+    /// in-memory double). Core needs this so
+    /// [`crate::error::Error::ChangeHeadNotInSource`] can name the checkout
+    /// it consulted without the CLI re-composing the message.
+    fn location(&self) -> Option<String> {
+        None
+    }
 }
 
 /// An in-memory [`SourceRepo`] for tests, with no git dependency.
@@ -157,6 +207,12 @@ pub struct MemorySourceRepo {
     failing_rev_parses: HashSet<String>,
     /// Whether [`SourceRepo::head`] must fail rather than answer.
     failing_head: bool,
+    /// What [`SourceRepo::location`] reports.
+    location: Option<String>,
+    /// Revisions [`SourceRepo::object_kind_at`] must report as
+    /// [`SourceObjectLookup::RevMissing`] even though content is seeded for
+    /// them — see [`Self::with_missing_rev`].
+    missing_revs: HashSet<String>,
 }
 
 impl MemorySourceRepo {
@@ -240,6 +296,38 @@ impl MemorySourceRepo {
         self
     }
 
+    /// Seeds what [`SourceRepo::location`] reports.
+    ///
+    /// Defaults to `None` (an in-memory repository has no filesystem
+    /// identity), so a test that wants to see
+    /// [`crate::error::Error::ChangeHeadNotInSource`]'s *named*-location
+    /// rendering opts in explicitly and a test that wants the degraded
+    /// rendering simply leaves it alone.
+    #[must_use]
+    pub fn with_location(mut self, location: &str) -> Self {
+        self.location = Some(location.to_string());
+        self
+    }
+
+    /// Makes [`SourceRepo::object_kind_at`] report `rev` as
+    /// [`SourceObjectLookup::RevMissing`], the way a real checkout that does
+    /// not contain the commit does.
+    ///
+    /// A rev with no [`Self::with_rev`] seed is already `RevMissing`; this
+    /// exists for the harder shape the tri-state branches need — a review
+    /// whose head has seeded *content* (so a test can assert that the content
+    /// is deliberately not reached) while the lookup reports the commit as
+    /// absent. Without it, "the checkout does not have this commit" and
+    /// "nothing is seeded at all" are indistinguishable.
+    ///
+    /// [`SourceRepo::rev_parse`] misses on it too, so the double stays
+    /// coherent: a repository cannot resolve a commit it does not have.
+    #[must_use]
+    pub fn with_missing_rev(mut self, rev: &str) -> Self {
+        self.missing_revs.insert(rev.to_string());
+        self
+    }
+
     /// Seeds the [`SourceObjectKind`] of `path` at `rev`, for
     /// [`SourceRepo::object_kind_at`].
     ///
@@ -263,6 +351,10 @@ impl SourceRepo for MemorySourceRepo {
             return Err(crate::error::Error::Git(format!(
                 "seeded rev-parse failure for '{rev}'"
             )));
+        }
+        // A rev seeded as absent misses here too — see `with_missing_rev`.
+        if self.missing_revs.contains(rev) {
+            return Ok(None);
         }
         Ok(self.revs.get(rev).cloned())
     }
@@ -301,16 +393,42 @@ impl SourceRepo for MemorySourceRepo {
         Ok(self.branch.clone())
     }
 
-    fn object_kind_at(&self, rev: &str, path: &str) -> Result<Option<SourceObjectKind>> {
+    fn object_kind_at(&self, rev: &str, path: &str) -> Result<SourceObjectLookup> {
+        // An explicitly missing rev answers before anything else, so a test
+        // can hold a fully-seeded review and still express "this checkout
+        // does not contain the reviewed commit".
+        if self.missing_revs.contains(rev) {
+            return Ok(SourceObjectLookup::RevMissing);
+        }
         let key = (rev.to_string(), path.to_string());
         if let Some(kind) = self.object_kinds.get(&key) {
-            return Ok(Some(*kind));
+            return Ok(SourceObjectLookup::Kind(*kind));
         }
         // Inference fallback: any pre-existing `with_file`-only seed reads as
         // a Blob, so tests written before this method existed keep passing.
         if self.files.contains_key(&key) {
-            return Ok(Some(SourceObjectKind::Blob));
+            return Ok(SourceObjectLookup::Kind(SourceObjectKind::Blob));
         }
-        Ok(None)
+        // Otherwise: a rev this repository knows anything about at all holds
+        // nothing at this path; a rev it has never heard of is absent. "Knows
+        // anything about" deliberately includes a rev that only appears as a
+        // `with_file`/`with_object_kind` key, so the ~dozen seeds that name a
+        // revision only through its content keep reporting a missing PATH
+        // (the pre-tri-state meaning of their `Ok(None)`) rather than
+        // silently becoming missing COMMITS.
+        let rev_known = self.revs.contains_key(rev)
+            || self.files.keys().any(|(r, _)| r == rev)
+            || self.object_kinds.keys().any(|(r, _)| r == rev)
+            || self.diffs.keys().any(|(b, h, _)| b == rev || h == rev)
+            || self.head.as_deref() == Some(rev);
+        if rev_known {
+            Ok(SourceObjectLookup::PathMissing)
+        } else {
+            Ok(SourceObjectLookup::RevMissing)
+        }
+    }
+
+    fn location(&self) -> Option<String> {
+        self.location.clone()
     }
 }

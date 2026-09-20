@@ -108,6 +108,17 @@ FILTER='(package(rdm-git) and not test(/^tests::/)) or (package(rdm-cli) and (bi
 #                                    identity via GIT_AUTHOR_*/GIT_COMMITTER_*
 #                                    env vars) resolves identity from config
 #   diff.relative         = true  — the `2c55784` regression's own trigger
+#   diff.external         = <script> — defect 1's trigger (phase 20): an
+#                                    external diff driver REPLACES git's diff
+#                                    machinery, so without `--no-ext-diff` the
+#                                    configured script is executed and its
+#                                    output (here: nothing) becomes the diff,
+#                                    making `unified_diff_argv` report a
+#                                    genuinely-modified file as untouched. The
+#                                    script touches a marker file, so an
+#                                    execution is observable, and exits 0 so the
+#                                    failure mode is a silently empty diff
+#                                    rather than a loud `external diff died`
 #   init.defaultBranch    = weird — a nonstandard default, in case anything
 #                                    relies on "main" without asking for it
 #   advice.detachedHead   = true  — noisy advice text some git subcommands
@@ -120,12 +131,25 @@ build_hostile_env() {
     scratch=$1
     mkdir -p "$scratch/home" "$scratch/gnupghome"
     chmod 700 "$scratch/gnupghome"
-    cat >"$scratch/home/.gitconfig" <<'EOF'
+    # The external diff driver the hostile config points at. Every production
+    # `git diff` argv rdm builds was audited before this was added:
+    # `rdm-git/src/source.rs` (phase 20) and `rdm-git/src/worktree.rs` carry
+    # `--no-ext-diff`, and `rdm-store-git/src/merge.rs` is `--name-only`, which
+    # never invokes a driver — so section 1 stays green rather than going red on
+    # an unrelated call site.
+    cat >"$scratch/hostile-diff-driver.sh" <<'EOF'
+#!/bin/sh
+: > "$(dirname "$0")/external-diff-ran"
+exit 0
+EOF
+    chmod 755 "$scratch/hostile-diff-driver.sh"
+    cat >"$scratch/home/.gitconfig" <<EOF
 [user]
 	name = Hostile Developer
 	email = hostile@example.com
 [diff]
 	relative = true
+	external = $scratch/hostile-diff-driver.sh
 [init]
 	defaultBranch = weird
 [advice]

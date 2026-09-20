@@ -128,6 +128,8 @@ impl From<&Error> for ProblemDetail {
             | Error::ChangeRevisionNotFound(_)
             | Error::ChangeBaseNotFound(_)
             | Error::ChangeNoMergeBase { .. }
+            | Error::ChangeHeadNotInSource { .. }
+            | Error::ChangeEmptyReviewedRange { .. }
             | Error::ChangeQuoteNeedsPath
             | Error::ChangePathNeedsQuote
             | Error::QuoteOutsideChangedHunks { .. } => ProblemDetail {

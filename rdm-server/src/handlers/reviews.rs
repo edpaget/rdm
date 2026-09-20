@@ -78,19 +78,61 @@ fn target_link(project: &str, target: &ReviewTarget) -> HalLink {
     HalLink::new(crate::review_views::target_detail_href(project, target))
 }
 
+/// One resolution pass for a review of any target kind, shared by every
+/// endpoint that returns a review detail.
+///
+/// Dispatches on the target kind, and nothing more: a plan-repo review
+/// resolves through [`rdm_core::anchor::resolve_comments`] against the plan
+/// store, while a `change/<sha>` review resolves through
+/// [`rdm_core::change::resolve_change_review`] against the project's
+/// configured local `source.repo` (see [`crate::source_repo`] for why a server
+/// will read only that).
+///
+/// Returning the per-comment notes and the source note — not just the
+/// resolutions — is what keeps this surface honest. Before it existed, every
+/// change-review comment came back `unresolved` with `unresolved_reason` and
+/// `source_verification_skipped` both absent, indistinguishable from anchors
+/// that genuinely no longer resolve, while `rdm review show --format json`
+/// reported real states for the same file.
+fn resolve_for_response(
+    store: &impl rdm_core::store::VersionedStore,
+    project: &str,
+    doc: &Document<Review>,
+) -> (Vec<ResolvedComment>, Vec<Option<String>>, Option<String>) {
+    if matches!(doc.frontmatter.target, ReviewTarget::Change { .. }) {
+        return crate::source_repo::resolve_change_review_for_project(
+            store,
+            project,
+            &doc.frontmatter,
+        );
+    }
+    (
+        rdm_core::anchor::resolve_comments(store, project, &doc.frontmatter),
+        Vec::new(),
+        None,
+    )
+}
+
 /// Wraps a full review detail (metadata, summary, comments with resolution)
 /// as a HAL resource with `self`, `project`, and `target` links.
+///
+/// `comment_notes` must be parallel to `doc.frontmatter.comments`:
+/// [`rdm_core::json::review_to_json`] degrades a shorter slice to `None` for
+/// every comment, so passing the wrong length makes the per-comment reasons
+/// silently vanish. `source_note` carries the one
+/// `source_verification_skipped` explanation. Both come from
+/// [`resolve_for_response`], alongside the resolutions they describe.
 fn review_resource(
     project: &str,
     id: &str,
     doc: &Document<Review>,
     resolutions: &[ResolvedComment],
+    comment_notes: &[Option<String>],
+    source_note: Option<String>,
 ) -> HalResource<ReviewJson> {
     HalResource::new(
-        // rdm-server has no `change/<sha>` review support yet (phase
-        // `change-review-contract-coverage` owns wiring it up), so there are
-        // never any per-comment ineligibility notes to thread here.
-        rdm_core::json::review_to_json(id, doc, resolutions, &[]),
+        rdm_core::json::review_to_json(id, doc, resolutions, comment_notes)
+            .with_source_note(source_note),
         format!("/projects/{project}/reviews/{id}"),
     )
     .with_link("project", HalLink::new(format!("/projects/{project}")))
@@ -283,9 +325,19 @@ pub async fn create_review(
     let id = doc.frontmatter.id.clone();
     let location = format!("/projects/{project}/reviews/{id}");
     // A freshly created review has no comments, so the resolution slice is
-    // empty by construction.
+    // empty by construction — but a change review still reports whether this
+    // server could reach a source repository at all, so the note is never
+    // silently absent on the create response either.
+    let (resolutions, comment_notes, source_note) = resolve_for_response(&store, &project, &doc);
     Ok(hal_created_response(
-        review_resource(&project, &id, &doc, &[]),
+        review_resource(
+            &project,
+            &id,
+            &doc,
+            &resolutions,
+            &comment_notes,
+            source_note,
+        ),
         &location,
     ))
 }
@@ -301,12 +353,14 @@ pub async fn get_review(
     let store = state.store();
     let doc =
         rdm_core::ops::reviews::get_review(&store, &project, &review_id).map_err(core_error)?;
-    let resolutions = rdm_core::anchor::resolve_comments(&store, &project, &doc.frontmatter);
+    let (resolutions, comment_notes, source_note) = resolve_for_response(&store, &project, &doc);
     Ok(hal_response(review_resource(
         &project,
         &review_id,
         &doc,
         &resolutions,
+        &comment_notes,
+        source_note,
     )))
 }
 
@@ -362,9 +416,16 @@ pub async fn add_comment(
         .map(|c| c.id)
         .unwrap_or_default();
     let location = format!("/projects/{project}/reviews/{review_id}/comments/{comment_id}");
-    let resolutions = rdm_core::anchor::resolve_comments(&store, &project, &doc.frontmatter);
+    let (resolutions, comment_notes, source_note) = resolve_for_response(&store, &project, &doc);
     Ok(hal_created_response(
-        review_resource(&project, &review_id, &doc, &resolutions),
+        review_resource(
+            &project,
+            &review_id,
+            &doc,
+            &resolutions,
+            &comment_notes,
+            source_note,
+        ),
         &location,
     ))
 }
@@ -459,12 +520,14 @@ pub async fn update_comment(
     // touches a commit primitive itself.
     state.post_mutate();
 
-    let resolutions = rdm_core::anchor::resolve_comments(&store, &project, &doc.frontmatter);
+    let (resolutions, comment_notes, source_note) = resolve_for_response(&store, &project, &doc);
     Ok(hal_response(review_resource(
         &project,
         &review_id,
         &doc,
         &resolutions,
+        &comment_notes,
+        source_note,
     )))
 }
 
@@ -525,12 +588,14 @@ pub async fn submit_review(
     state.post_mutate();
     let doc = doc.map_err(core_error)?;
 
-    let resolutions = rdm_core::anchor::resolve_comments(&store, &project, &doc.frontmatter);
+    let (resolutions, comment_notes, source_note) = resolve_for_response(&store, &project, &doc);
     Ok(hal_response(review_resource(
         &project,
         &review_id,
         &doc,
         &resolutions,
+        &comment_notes,
+        source_note,
     )))
 }
 
@@ -569,12 +634,14 @@ pub async fn update_review(
     // touches a commit primitive itself.
     state.post_mutate();
 
-    let resolutions = rdm_core::anchor::resolve_comments(&store, &project, &doc.frontmatter);
+    let (resolutions, comment_notes, source_note) = resolve_for_response(&store, &project, &doc);
     Ok(hal_response(review_resource(
         &project,
         &review_id,
         &doc,
         &resolutions,
+        &comment_notes,
+        source_note,
     )))
 }
 

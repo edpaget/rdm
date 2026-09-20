@@ -676,20 +676,19 @@ pub fn run(
 /// ineligibility-note slice and an optional note explaining why source-repo
 /// verification was skipped entirely.
 ///
-/// Dispatches on the review's target kind: a plan-repo target resolves
-/// through [`resolve_comments`](rdm_core::anchor::resolve_comments) and
-/// carries no per-comment notes (`change_anchor_ineligibility` is a
-/// change-only concept), while a `change/<sha>` target resolves through
-/// [`rdm_core::change::resolve_change_comments`] against the discovered
-/// source repository and, for every comment whose resolution came back
-/// unresolved, additionally asks
-/// [`rdm_core::change::change_anchor_ineligibility`] why — populated only
-/// when the reason is structural (a stored anchor naming a directory or
-/// submodule), `None` for an ordinary drift-to-missing.
+/// Dispatches on the review's target kind, and nothing more: a plan-repo
+/// target resolves through
+/// [`resolve_comments`](rdm_core::anchor::resolve_comments) and carries no
+/// per-comment notes (`change_anchor_ineligibility` is a change-only concept),
+/// while a `change/<sha>` target discovers the source checkout and hands the
+/// whole degrade ladder to [`rdm_core::change::resolve_change_review`].
 ///
-/// The revision drift is measured against is chosen by
-/// [`rdm_core::change::resolve_drift_tip`], which owns that policy; this
-/// function only maps its failures onto the degrade path below.
+/// **The ladder itself lives in core**, not here. It used to be ~90 lines of
+/// policy and note strings in this function, which is precisely why
+/// `rdm-server` could not reproduce it and reported every change-review
+/// comment `unresolved` with no explanation. What stays in the CLI is the one
+/// thing core cannot do: asking the invoking environment *which* checkout to
+/// read.
 ///
 /// The read path **degrades, never fails**: with no source repo reachable at
 /// all every change comment comes back unresolved with an empty notes slice
@@ -710,83 +709,43 @@ fn resolve_all(
             None,
         );
     }
-    let unresolved = || {
-        doc.frontmatter
-            .comments
-            .iter()
-            .map(|_| ResolvedComment {
-                resolution: rdm_core::anchor::Resolution::Unresolved,
-                quote: None,
-            })
-            .collect::<Vec<_>>()
-    };
     #[cfg(feature = "git")]
     {
-        let source = match crate::source_repo::discover_source_repo(store, project) {
-            Ok(source) => source,
-            Err(e) => return (unresolved(), Vec::new(), Some(e.to_string())),
-        };
-        // Which revision drift is measured against is core's policy, not
-        // the CLI's: `resolve_drift_tip` owns the stamped-branch /
-        // branch-gone / no-stamp ladder, and (unlike the `.ok().flatten()`
-        // chain that used to live here) propagates a genuine source
-        // failure instead of silently re-pointing drift at HEAD. Either
-        // way the read path degrades rather than failing.
-        let tip = match rdm_core::change::resolve_drift_tip(
-            &source,
-            doc.frontmatter.change_branch.as_deref(),
-        ) {
-            Ok(tip) => tip.rev,
-            Err(rdm_core::error::Error::ChangeTipUnresolvable { .. }) => {
-                return (
-                    unresolved(),
-                    Vec::new(),
-                    Some(
-                        "the source repository has no resolvable HEAD — anchor resolution skipped"
-                            .to_string(),
-                    ),
-                );
-            }
-            Err(e) => {
-                return (
-                    unresolved(),
-                    Vec::new(),
-                    Some(format!("{e} — anchor resolution skipped")),
-                );
-            }
-        };
-        let rdm_core::model::ReviewTarget::Change { head, .. } = &doc.frontmatter.target else {
-            unreachable!("guarded by the outer matches! above");
-        };
-        let resolutions =
-            rdm_core::change::resolve_change_comments(&source, &doc.frontmatter, &tip);
-        let notes =
-            doc.frontmatter
-                .comments
-                .iter()
-                .zip(&resolutions)
-                .map(|(comment, resolved)| {
-                    if !matches!(
-                        resolved.resolution,
-                        rdm_core::anchor::Resolution::Unresolved
-                    ) {
-                        return None;
-                    }
-                    comment.anchor.as_ref().and_then(|a| {
-                        rdm_core::change::change_anchor_ineligibility(&source, head, a)
-                    })
-                })
-                .collect();
-        (resolutions, notes, None)
+        match crate::source_repo::discover_source_repo(store, project) {
+            Ok(source) => rdm_core::change::resolve_change_review(&source, &doc.frontmatter),
+            Err(e) => (
+                unresolved_comments(&doc.frontmatter),
+                Vec::new(),
+                Some(e.to_string()),
+            ),
+        }
     }
     #[cfg(not(feature = "git"))]
     {
         (
-            unresolved(),
+            unresolved_comments(&doc.frontmatter),
             Vec::new(),
             Some("this build has no git support — anchor resolution skipped".to_string()),
         )
     }
+}
+
+/// One unresolved [`ResolvedComment`] per comment, for the arms that never reach
+/// a source repository at all.
+///
+/// Kept beside [`resolve_all`] rather than pushed into core: core's
+/// [`resolve_change_review`](rdm_core::change::resolve_change_review) builds its
+/// own, and this exists only for the two rungs core is never reached from —
+/// discovery failing, and a build without the `git` feature.
+fn unresolved_comments(review: &Review) -> Vec<ResolvedComment> {
+    review
+        .comments
+        .iter()
+        .map(|_| ResolvedComment {
+            resolution: rdm_core::anchor::Resolution::Unresolved,
+            quote: None,
+        })
+        .collect()
 }
 
 /// Discovers the source checkout and hands the parsed `change/<rev>` target

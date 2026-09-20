@@ -78,7 +78,7 @@ use crate::anchor::{QuoteOccurrence, Resolution, ResolvedComment};
 use crate::error::{Error, Result};
 use crate::link::Link;
 use crate::model::{Anchor, Review, ReviewComment, ReviewTarget};
-use crate::source::SourceRepo;
+use crate::source::{SourceObjectKind, SourceObjectLookup, SourceRepo};
 
 /// A contiguous run of head-side lines a change touches, 1-based and
 /// inclusive on both ends.
@@ -379,6 +379,23 @@ pub fn derive_file_quote(
 /// ancestor, or whatever error the [`SourceRepo`] itself reports when it
 /// cannot be queried.
 ///
+/// Returns [`Error::ChangeEmptyReviewedRange`] when the base this function
+/// *derived* resolves to the same commit as the head, so the reviewed range
+/// holds no commits at all. The commonest way to reach it is standing on the
+/// default branch itself, where `merge_base(HEAD, <default>) == HEAD`.
+///
+/// # Why the empty-range guard is scoped to a derived base
+///
+/// An **explicit** `--base` equal to the head is a supported shape and is
+/// deliberately exempt: it is how a reviewer records an intentionally
+/// code-free review (`--no-code`), and how a reviewer names the root commit of
+/// an orphan branch that has no merge base at all. Refusing it
+/// unconditionally would retract a documented capability rather than close a
+/// defect. A derived base carries no such intent — nobody asked for an empty
+/// range, the environment produced one — so that is the only arm that
+/// refuses. The comparison is over the two *resolved* 40-hex SHAs, never the
+/// raw operands, so a tag and a sha spelling the same commit are caught.
+///
 /// # Examples
 ///
 /// ```
@@ -420,6 +437,17 @@ pub fn resolve_change_target(
             })?,
         };
     ReviewTarget::validate_change_identity(&head, Some(&base))?;
+    // An empty reviewed range holds no commits, so every `--path` anchor in
+    // such a review is refused later as "not touched by <base>..<head>" and
+    // the review says nothing about any code. Refuse it here, where the remedy
+    // can still be named — but only when WE derived the base; see the
+    // doc comment for why an explicit `--base <head>` stays supported.
+    if base_override.is_none() && base == head {
+        return Err(Error::ChangeEmptyReviewedRange {
+            head,
+            branch: default_branch.to_string(),
+        });
+    }
     // A repository that cannot name its branch is not a reason to refuse the
     // review: drift then falls back to the repository's HEAD.
     let branch = source.current_branch().ok().flatten();
@@ -458,6 +486,9 @@ pub fn resolve_change_target(
 /// Returns [`Error::ChangePathNeedsQuote`] or [`Error::ChangeQuoteNeedsPath`]
 /// when only one of the pair is given, [`Error::ChangePathNotInRevision`]
 /// when `path` is not repo-relative or does not exist at `head`,
+/// [`Error::ChangeHeadNotInSource`] when the source repository does not
+/// contain `head` at all (never reported as a missing path — the remedy is to
+/// fetch the commit or repoint `source.repo`),
 /// [`Error::ChangePathNotLinkable`] when `path` contains `@` or `#`
 /// (reserved by the `rdm:src/` permalink grammar — see
 /// [`normalize_source_path`]), [`Error::ChangePathNotAFile`] when `path` names a directory or a
@@ -488,9 +519,22 @@ pub fn derive_change_anchor(
     // or submodule is rejected loudly here rather than being read (or, for
     // a directory, silently returning `git show`'s tree-listing text) and
     // anchored as if it were a file.
+    //
+    // A head this checkout does not have is reported as exactly that. Falling
+    // through to the `file_at` read below would report it as a missing PATH,
+    // which is false about every path in the commit.
     match source.object_kind_at(head, &path)? {
-        None | Some(crate::source::SourceObjectKind::Blob) => {}
-        Some(found) => {
+        SourceObjectLookup::RevMissing => {
+            return Err(Error::ChangeHeadNotInSource {
+                head: head.to_string(),
+                location: source.location(),
+            });
+        }
+        // Not a lookup failure in itself: the path really is absent at a
+        // resolvable head, which the `file_at` read below reports as
+        // `ChangePathNotInRevision` with the path-shaped remedy.
+        SourceObjectLookup::PathMissing | SourceObjectLookup::Kind(SourceObjectKind::Blob) => {}
+        SourceObjectLookup::Kind(found) => {
             return Err(Error::ChangePathNotAFile {
                 path,
                 rev: head.to_string(),
@@ -845,7 +889,7 @@ pub fn resolve_change_comment(
     // read as though its content were quotable.
     if !matches!(
         source.object_kind_at(head, path),
-        Ok(Some(crate::source::SourceObjectKind::Blob))
+        Ok(SourceObjectLookup::Kind(SourceObjectKind::Blob))
     ) {
         return unresolved;
     }
@@ -859,7 +903,7 @@ pub fn resolve_change_comment(
     // anchor has nowhere to live any more.
     if !matches!(
         source.object_kind_at(tip, path),
-        Ok(Some(crate::source::SourceObjectKind::Blob))
+        Ok(SourceObjectLookup::Kind(SourceObjectKind::Blob))
     ) {
         return unresolved;
     }
@@ -923,6 +967,14 @@ pub fn resolve_change_comments(
 /// failure is not evidence the anchor itself is invalid, so it gets no note
 /// here (the caller's own "source verification skipped" note already covers
 /// that case).
+///
+/// A [`SourceObjectLookup::RevMissing`] head is in that same environmental
+/// class and likewise gets **no** note. It is the widening of the `Err(_)`
+/// carve-out above, and it is load-bearing: a checkout that simply lacks the
+/// reviewed commit knows nothing about any anchor, so a per-anchor note there
+/// would dress an environmental skip up as a verdict about the reviewer's
+/// quote. The skip is carried once, by the caller's
+/// `source_verification_skipped` note (see [`resolve_change_review`]).
 #[must_use]
 pub fn change_anchor_ineligibility(
     source: &impl SourceRepo,
@@ -933,15 +985,206 @@ pub fn change_anchor_ineligibility(
         return None;
     };
     match source.object_kind_at(head, path) {
-        Ok(Some(crate::source::SourceObjectKind::Blob)) | Err(_) => None,
-        Ok(Some(crate::source::SourceObjectKind::Tree)) => {
+        Ok(SourceObjectLookup::Kind(SourceObjectKind::Blob)) | Err(_) => None,
+        // Environmental, not a property of the anchor — see the doc comment.
+        Ok(SourceObjectLookup::RevMissing) => None,
+        Ok(SourceObjectLookup::Kind(SourceObjectKind::Tree)) => {
             Some(format!("'{path}' is a directory, not a file"))
         }
-        Ok(Some(crate::source::SourceObjectKind::Gitlink)) => {
+        Ok(SourceObjectLookup::Kind(SourceObjectKind::Gitlink)) => {
             Some(format!("'{path}' is a submodule, not a file"))
         }
-        Ok(None) => Some(format!("'{path}' no longer exists at {}", abbreviate(head))),
+        Ok(SourceObjectLookup::PathMissing) => {
+            Some(format!("'{path}' no longer exists at {}", abbreviate(head)))
+        }
     }
+}
+
+/// Resolves every comment of a `change/<sha>` review against `source`,
+/// together with the per-comment ineligibility notes and the one
+/// "source verification skipped" note.
+///
+/// This is the whole **degrade ladder** for a change review's read path, in
+/// one place, so every surface that reads a review — `rdm review show`, the
+/// REST API, the HTML detail page — reports the same states and the same
+/// explanations. It lived in `rdm-cli` until now, which is exactly why
+/// `rdm-server` reported every change-review comment `unresolved` with no note
+/// at all: it could not reach the policy.
+///
+/// The three returned values are what the renderers consume:
+///
+/// 1. resolutions, parallel to `review.comments` (as
+///    [`crate::anchor::resolve_comments`] is for a plan-repo review);
+/// 2. per-comment notes, parallel to the same slice, saying why *this* anchor
+///    is structurally ineligible (a path that is a directory, a submodule, or
+///    absent at the head) — `None` for an ordinary drift-to-missing;
+/// 3. one optional note saying why source verification could not run at all.
+///
+/// **The read path degrades, it never fails.** The rungs, in order:
+///
+/// - the target is not a change review → everything unresolved, no notes, no
+///   source note. A caller-dispatch guard, not a policy: a plan-repo review
+///   belongs to [`crate::anchor::resolve_comments`].
+/// - the source repository does not contain the reviewed head → every comment
+///   unresolved, **notes empty**, and the source note carries
+///   [`Error::ChangeHeadNotInSource`]'s text. Nothing about any anchor is
+///   knowable there, so no per-comment note is invented: the skip is stated
+///   once, environmentally. (This is the read half of the same rule
+///   [`change_anchor_ineligibility`] implements by mapping
+///   [`SourceObjectLookup::RevMissing`] to `None`.)
+/// - the tip drift is measured against cannot be resolved → unresolved with a
+///   source note naming the cause.
+/// - otherwise → the real resolution pass, with a per-comment note for every
+///   comment that came back unresolved *and* has a structurally ineligible
+///   anchor.
+///
+/// The head-presence rung deliberately runs **before** the tip ladder, so a
+/// review whose head is present but whose stamped `change_branch` was deleted
+/// still takes [`resolve_drift_tip`]'s documented `BranchGone` fallback to
+/// `HEAD` and resolves normally.
+///
+/// # Errors
+///
+/// None — infallible by contract, like [`crate::anchor::resolve_comments`]. A
+/// source repository that cannot answer becomes a note, never a failed
+/// `rdm review show`.
+///
+/// # Panics
+///
+/// Never panics.
+///
+/// # Examples
+///
+/// A checkout that does not contain the reviewed commit reports every comment
+/// unresolved, with the skip stated once and no per-comment note:
+///
+/// ```
+/// use rdm_core::change::resolve_change_review;
+/// use rdm_core::model::{Anchor, Review, ReviewComment, ReviewCommentStatus, ReviewState, ReviewTarget};
+/// use rdm_core::source::MemorySourceRepo;
+///
+/// let head = "a".repeat(40);
+/// let review = Review {
+///     id: "r1".to_string(),
+///     author: "tester".to_string(),
+///     target: ReviewTarget::Change { head: head.clone(), base: Some("b".repeat(40)) },
+///     state: ReviewState::Submitted,
+///     verdict: None,
+///     created: chrono::Utc::now(),
+///     submitted: None,
+///     created_commit: None,
+///     implements: None,
+///     change_branch: None,
+///     comments: vec![ReviewComment {
+///         id: 1,
+///         doc: None,
+///         status: ReviewCommentStatus::Open,
+///         applied_commit: None,
+///         anchor: Some(Anchor::FileQuote {
+///             path: "src/lib.rs".to_string(),
+///             quote: "fn main".to_string(),
+///             occurrence: 1,
+///             start_line: 1,
+///             end_line: 1,
+///         }),
+///         body: "a finding".to_string(),
+///         reply: None,
+///     }],
+/// };
+///
+/// // An empty repository knows nothing about the reviewed head.
+/// let (resolutions, notes, source_note) =
+///     resolve_change_review(&MemorySourceRepo::new(), &review);
+/// assert_eq!(resolutions.len(), 1);
+/// assert!(notes.is_empty(), "no per-comment note dresses up an environmental skip");
+/// assert!(source_note.unwrap().contains("does not contain the reviewed commit"));
+/// ```
+#[must_use]
+pub fn resolve_change_review(
+    source: &impl SourceRepo,
+    review: &Review,
+) -> (Vec<ResolvedComment>, Vec<Option<String>>, Option<String>) {
+    let unresolved = || {
+        review
+            .comments
+            .iter()
+            .map(|_| ResolvedComment {
+                resolution: Resolution::Unresolved,
+                quote: None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let ReviewTarget::Change { head, .. } = &review.target else {
+        return (unresolved(), Vec::new(), None);
+    };
+    // Rung 1 — is the reviewed commit even here? Asked before the tip ladder
+    // so a present head with a deleted stamped branch keeps its documented
+    // BranchGone fallback.
+    match source.rev_parse(head) {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return (
+                unresolved(),
+                Vec::new(),
+                Some(
+                    Error::ChangeHeadNotInSource {
+                        head: head.clone(),
+                        location: source.location(),
+                    }
+                    .to_string(),
+                ),
+            );
+        }
+        Err(e) => {
+            return (
+                unresolved(),
+                Vec::new(),
+                Some(format!("{e} — anchor resolution skipped")),
+            );
+        }
+    }
+    // Rung 2 — which revision drift is measured against. `resolve_drift_tip`
+    // owns that policy (stamped branch / branch gone / no stamp) and
+    // propagates a genuine source failure rather than silently re-pointing
+    // drift at HEAD.
+    let tip = match resolve_drift_tip(source, review.change_branch.as_deref()) {
+        Ok(tip) => tip.rev,
+        Err(Error::ChangeTipUnresolvable { .. }) => {
+            return (
+                unresolved(),
+                Vec::new(),
+                Some(
+                    "the source repository has no resolvable HEAD — anchor resolution skipped"
+                        .to_string(),
+                ),
+            );
+        }
+        Err(e) => {
+            return (
+                unresolved(),
+                Vec::new(),
+                Some(format!("{e} — anchor resolution skipped")),
+            );
+        }
+    };
+    // Rung 3 — the real pass, plus a reason for each comment that came back
+    // unresolved because its own anchor cannot name a quotable object.
+    let resolutions = resolve_change_comments(source, review, &tip);
+    let notes = review
+        .comments
+        .iter()
+        .zip(&resolutions)
+        .map(|(comment, resolved)| {
+            if !matches!(resolved.resolution, Resolution::Unresolved) {
+                return None;
+            }
+            comment
+                .anchor
+                .as_ref()
+                .and_then(|a| change_anchor_ineligibility(source, head, a))
+        })
+        .collect();
+    (resolutions, notes, None)
 }
 
 /// The head-pinned `rdm:src/<path>@<head>#L<start>[-L<end>]` permalink for
@@ -1922,6 +2165,72 @@ mod tests {
         );
     }
 
+    /// Defect 4's second half. A DERIVED base equal to the head means the
+    /// reviewed range holds no commits, and the commonest way to reach it is
+    /// standing on the default branch itself.
+    #[test]
+    fn resolve_change_target_refuses_a_derived_empty_reviewed_range() {
+        let head = "a".repeat(40);
+        let source = MemorySourceRepo::new()
+            .with_rev("HEAD", &head)
+            // merge_base(HEAD, main) == HEAD: HEAD is ON main.
+            .with_merge_base(&head, "main", &head);
+        let err = resolve_change_target(&source, "HEAD", None, "main").unwrap_err();
+        assert!(
+            matches!(&err, Error::ChangeEmptyReviewedRange { head: h, branch } if *h == head && branch == "main"),
+            "{err:?}"
+        );
+        let rendered = err.to_string();
+        assert!(rendered.contains("empty reviewed range"), "{rendered}");
+        assert!(
+            rendered.contains("--base"),
+            "the refusal must name the escape hatch: {rendered}"
+        );
+    }
+
+    /// The other half of the same rule, and the reason the guard is scoped:
+    /// an EXPLICIT `--base` equal to the head is a supported shape (the
+    /// `--no-code` review, and the root commit of an orphan branch), which
+    /// `scripts/verify-review-source.mjs` and `cli_review_change.rs` both
+    /// depend on. An unconditional refusal would retract it.
+    #[test]
+    fn resolve_change_target_allows_an_explicit_base_equal_to_the_head() {
+        let head = "a".repeat(40);
+        let source = MemorySourceRepo::new()
+            .with_rev("HEAD", &head)
+            .with_merge_base(&head, "main", &head);
+        let (target, _) = resolve_change_target(&source, "HEAD", Some(&head), "main").unwrap();
+        assert_eq!(
+            target,
+            ReviewTarget::Change {
+                head: head.clone(),
+                base: Some(head)
+            }
+        );
+    }
+
+    /// The guard must fire on identity, not on spelling: a tag and a sha that
+    /// name the same commit are the same empty range. And a genuinely
+    /// non-empty derived range is untouched.
+    #[test]
+    fn the_empty_range_guard_compares_resolved_shas_and_leaves_real_ranges_alone() {
+        let head = "a".repeat(40);
+        let base = "b".repeat(40);
+        // Spelled differently, resolving identically: `merge-base` answers with
+        // the full sha, and the guard compares that, never the operand.
+        let same = MemorySourceRepo::new()
+            .with_rev("v1.0", &head)
+            .with_merge_base(&head, "main", &head);
+        assert!(matches!(
+            resolve_change_target(&same, "v1.0", None, "main"),
+            Err(Error::ChangeEmptyReviewedRange { .. })
+        ));
+        let real = MemorySourceRepo::new()
+            .with_rev("HEAD", &head)
+            .with_merge_base(&head, "main", &base);
+        assert!(resolve_change_target(&real, "HEAD", None, "main").is_ok());
+    }
+
     // ---- derive_change_anchor --------------------------------------------
 
     /// A two-line file at `head` whose second line the change touched.
@@ -2398,6 +2707,310 @@ mod tests {
             Resolution::Original { drifted: false, .. }
         ));
     }
+    /// Defect 5, read path. `RevMissing` is an ENVIRONMENTAL skip and must
+    /// produce no per-anchor note; `PathMissing` is a statement about the
+    /// path and must keep producing one. Conflating them is what made a
+    /// checkout lacking the reviewed commit claim every anchored file "no
+    /// longer exists".
+    #[test]
+    fn change_anchor_ineligibility_separates_a_missing_commit_from_a_missing_path() {
+        let head = "a".repeat(40);
+        let anchor = Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "fn touched".to_string(),
+            occurrence: 1,
+            start_line: 2,
+            end_line: 2,
+        };
+
+        // (a) The commit is not in this checkout: no note at all.
+        let missing_commit = MemorySourceRepo::new()
+            .with_file(&head, "src/lib.rs", "fn touched() {}\n")
+            .with_missing_rev(&head);
+        assert_eq!(
+            change_anchor_ineligibility(&missing_commit, &head, &anchor),
+            None,
+            "an unreachable commit is carried by the SOURCE note, never by a per-anchor verdict"
+        );
+
+        // (b) The commit is here, the path is not: the existing note.
+        let missing_path = MemorySourceRepo::new().with_rev(&head, &head);
+        let note = change_anchor_ineligibility(&missing_path, &head, &anchor).unwrap();
+        assert!(note.contains("no longer exists at"), "{note}");
+    }
+
+    /// Defect 5, write path. The two misses must produce DIFFERENT errors: a
+    /// missing head names the commit and an environmental remedy, a missing
+    /// path names the path.
+    #[test]
+    fn derive_change_anchor_reports_a_missing_head_as_a_missing_commit() {
+        let head = "a".repeat(40);
+        let base = "b".repeat(40);
+        let missing_commit = MemorySourceRepo::new()
+            .with_file(&head, "src/lib.rs", "fn touched() {}\n")
+            .with_missing_rev(&head)
+            .with_location("/srv/other-checkout");
+        let err = derive_change_anchor(
+            &missing_commit,
+            &head,
+            Some(&base),
+            Some("fn touched"),
+            Some("src/lib.rs"),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::ChangeHeadNotInSource { head: h, location } if *h == head
+                && location.as_deref() == Some("/srv/other-checkout")),
+            "{err:?}"
+        );
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("does not contain the reviewed commit"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("/srv/other-checkout"), "{rendered}");
+        assert!(rendered.contains("source.repo"), "{rendered}");
+
+        // A repository with no filesystem identity degrades the clause rather
+        // than rendering `at None`.
+        let anonymous = MemorySourceRepo::new().with_missing_rev(&head);
+        let rendered = derive_change_anchor(
+            &anonymous,
+            &head,
+            Some(&base),
+            Some("fn touched"),
+            Some("src/lib.rs"),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(!rendered.contains("None"), "{rendered}");
+        assert!(
+            rendered.contains("does not contain the reviewed commit"),
+            "{rendered}"
+        );
+
+        // And a resolvable head holding nothing at the path still reports the
+        // PATH, not the commit.
+        let missing_path = MemorySourceRepo::new().with_rev(&head, &head);
+        assert!(matches!(
+            derive_change_anchor(
+                &missing_path,
+                &head,
+                Some(&base),
+                Some("fn touched"),
+                Some("src/lib.rs"),
+                None,
+            ),
+            Err(Error::ChangePathNotInRevision { .. })
+        ));
+    }
+
+    // ---- resolve_change_review (the whole degrade ladder) -----------------
+
+    /// Rung 0: a plan-repo review is not this function's business. It reports
+    /// everything unresolved with no notes so the caller's dispatch is a
+    /// guard, not a silent policy.
+    #[test]
+    fn resolve_change_review_passes_a_non_change_review_through_unresolved() {
+        let mut review = review_with(None);
+        review.target = ReviewTarget::Task {
+            slug: "fix-login".to_string(),
+        };
+        let (resolutions, notes, source_note) =
+            resolve_change_review(&MemorySourceRepo::new(), &review);
+        assert_eq!(resolutions.len(), 1);
+        assert!(matches!(resolutions[0].resolution, Resolution::Unresolved));
+        assert!(notes.is_empty());
+        assert_eq!(source_note, None);
+    }
+
+    /// Rung 1 (defect 5's read half, end to end): an unreachable head sets the
+    /// SOURCE note and leaves the per-comment notes EMPTY, so nothing renders
+    /// an `unresolved_reason` for an environmental skip.
+    #[test]
+    fn resolve_change_review_reports_a_missing_head_once_as_a_source_note() {
+        let head = "a".repeat(40);
+        let review = review_with(Some(Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "fn touched".to_string(),
+            occurrence: 1,
+            start_line: 2,
+            end_line: 2,
+        }));
+        let source = MemorySourceRepo::new().with_location("/srv/other-checkout");
+        let (resolutions, notes, source_note) = resolve_change_review(&source, &review);
+        assert_eq!(resolutions.len(), 1);
+        assert!(matches!(resolutions[0].resolution, Resolution::Unresolved));
+        assert!(
+            notes.is_empty(),
+            "an environmental skip gets no per-comment note: {notes:?}"
+        );
+        let note = source_note.expect("the skip must be stated");
+        assert!(note.contains(&head), "{note}");
+        assert!(note.contains("/srv/other-checkout"), "{note}");
+        assert!(note.contains("source.repo"), "{note}");
+    }
+
+    /// Rung 2: no resolvable tip at all. Still a note, never a failure.
+    #[test]
+    fn resolve_change_review_reports_an_unresolvable_tip_as_a_source_note() {
+        let head = "a".repeat(40);
+        let review = review_with(None);
+        // Head resolves; nothing else does, so `resolve_drift_tip` has no HEAD
+        // to fall back to.
+        let source = MemorySourceRepo::new().with_rev(&head, &head);
+        let (_, notes, source_note) = resolve_change_review(&source, &review);
+        assert!(notes.is_empty());
+        assert!(
+            source_note.unwrap().contains("no resolvable HEAD"),
+            "the tip rung must name its own cause"
+        );
+    }
+
+    /// Rung 2, the failure arm: a genuine source error is reported, never
+    /// laundered into a HEAD fallback.
+    #[test]
+    fn resolve_change_review_reports_a_source_failure_rather_than_guessing_a_tip() {
+        let head = "a".repeat(40);
+        let mut review = review_with(None);
+        review.change_branch = Some("feature/x".to_string());
+        let source = MemorySourceRepo::new()
+            .with_rev(&head, &head)
+            .with_head(&head)
+            .with_failing_rev_parse("feature/x");
+        let (_, notes, source_note) = resolve_change_review(&source, &review);
+        assert!(notes.is_empty());
+        assert!(
+            source_note.unwrap().contains("anchor resolution skipped"),
+            "a propagated failure still degrades WITH a note"
+        );
+    }
+
+    /// The head-presence rung must not swallow the documented `BranchGone`
+    /// fallback: a review whose head IS present but whose stamped branch was
+    /// deleted resolves normally against `HEAD`.
+    #[test]
+    fn resolve_change_review_keeps_the_branch_gone_fallback() {
+        let head = "a".repeat(40);
+        let mut review = review_with(Some(Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "fn touched".to_string(),
+            occurrence: 1,
+            start_line: 2,
+            end_line: 2,
+        }));
+        review.change_branch = Some("feature/deleted".to_string());
+        let source = MemorySourceRepo::new()
+            .with_rev(&head, &head)
+            .with_head(&head)
+            .with_file(&head, "src/lib.rs", "fn untouched() {}\nfn touched() {}\n");
+        let (resolutions, notes, source_note) = resolve_change_review(&source, &review);
+        assert_eq!(source_note, None, "the branch being gone is not a skip");
+        assert!(matches!(
+            resolutions[0].resolution,
+            Resolution::Original { drifted: false, .. }
+        ));
+        assert_eq!(notes, vec![None]);
+    }
+
+    /// Rung 3, the happy path: real states, no notes anywhere.
+    #[test]
+    fn resolve_change_review_resolves_and_reports_drift_with_no_notes() {
+        let head = "a".repeat(40);
+        let tip = "c".repeat(40);
+        let anchor = |quote: &str| {
+            Some(Anchor::FileQuote {
+                path: "src/lib.rs".to_string(),
+                quote: quote.to_string(),
+                occurrence: 1,
+                start_line: 2,
+                end_line: 2,
+            })
+        };
+        let mut review = review_with(anchor("fn touched"));
+        review.change_branch = Some("topic".to_string());
+        review.comments.push(ReviewComment {
+            id: 2,
+            doc: None,
+            status: ReviewCommentStatus::Open,
+            applied_commit: None,
+            anchor: anchor("fn gone"),
+            body: "second".to_string(),
+            reply: None,
+        });
+        let source = MemorySourceRepo::new()
+            .with_rev(&head, &head)
+            .with_rev("topic", &tip)
+            // `fn touched`'s neighbouring lines (1 and 3) survive at the tip,
+            // so its anchor resolves; `fn gone` is deleted outright, so its
+            // occurrence count drops and it drifts. Kept two lines apart on
+            // purpose: a quote whose own NEIGHBOUR was edited drifts too, which
+            // would make the first assertion measure the wrong thing.
+            .with_file(
+                &head,
+                "src/lib.rs",
+                "fn untouched() {}\nfn touched() {}\nfn stable() {}\nfn gone() {}\nfn tail() {}\n",
+            )
+            .with_file(
+                &tip,
+                "src/lib.rs",
+                "fn untouched() {}\nfn touched() {}\nfn stable() {}\nfn tail() {}\n",
+            );
+        let (resolutions, notes, source_note) = resolve_change_review(&source, &review);
+        assert_eq!(source_note, None);
+        assert!(matches!(
+            resolutions[0].resolution,
+            Resolution::Original { drifted: false, .. }
+        ));
+        assert!(matches!(
+            resolutions[1].resolution,
+            Resolution::Original { drifted: true, .. }
+        ));
+        assert_eq!(
+            notes,
+            vec![None, None],
+            "drift is not an ineligible anchor, so neither comment gets a note"
+        );
+    }
+
+    /// Rung 3's note channel: a comment that came back unresolved because its
+    /// own path names a directory DOES get a per-comment note, and the notes
+    /// slice stays parallel to `comments` so nothing silently vanishes.
+    #[test]
+    fn resolve_change_review_notes_a_structurally_ineligible_anchor_in_place() {
+        let head = "a".repeat(40);
+        let mut review = review_with(Some(Anchor::FileQuote {
+            path: "src".to_string(),
+            quote: "anything".to_string(),
+            occurrence: 1,
+            start_line: 1,
+            end_line: 1,
+        }));
+        review.comments.push(ReviewComment {
+            id: 2,
+            doc: None,
+            status: ReviewCommentStatus::Open,
+            applied_commit: None,
+            anchor: None,
+            body: "whole change".to_string(),
+            reply: None,
+        });
+        let source = MemorySourceRepo::new()
+            .with_rev(&head, &head)
+            .with_head(&head)
+            .with_object_kind(&head, "src", SourceObjectKind::Tree);
+        let (resolutions, notes, source_note) = resolve_change_review(&source, &review);
+        assert_eq!(source_note, None);
+        assert_eq!(notes.len(), resolutions.len(), "notes stay parallel");
+        assert!(notes[0].as_deref().unwrap().contains("directory"));
+        assert_eq!(
+            notes[1], None,
+            "a whole-change comment has no anchor to be ineligible"
+        );
+    }
+
     struct NoSourceAccess;
     impl SourceRepo for NoSourceAccess {
         fn rev_parse(&self, _: &str) -> Result<Option<String>> {
@@ -2418,11 +3031,7 @@ mod tests {
         fn current_branch(&self) -> Result<Option<String>> {
             panic!("unexpected branch")
         }
-        fn object_kind_at(
-            &self,
-            _: &str,
-            _: &str,
-        ) -> Result<Option<crate::source::SourceObjectKind>> {
+        fn object_kind_at(&self, _: &str, _: &str) -> Result<SourceObjectLookup> {
             panic!("unexpected object_kind_at")
         }
     }

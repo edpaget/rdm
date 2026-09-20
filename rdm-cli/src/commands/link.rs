@@ -133,18 +133,23 @@ fn verify_paths_at_pinned_rev(store: &AppStore, project: &str, report: &mut Link
             SourceUnavailable, select_source,
         };
 
-        let (cwd, source, in_checkout, checkout_matches_configured) =
-            match crate::source_repo::gather_source_environment(store, project) {
-                Ok(gathered) => gathered,
-                Err(_) => {
-                    report.path_verification_skipped =
-                        Some("could not determine the current directory".to_string());
-                    return;
-                }
-            };
+        let gathered = match crate::source_repo::gather_source_environment(store, project) {
+            Ok(gathered) => gathered,
+            Err(_) => {
+                report.path_verification_skipped =
+                    Some("could not determine the current directory".to_string());
+                return;
+            }
+        };
+        let cwd = gathered.read_root;
+        let source = gathered.source;
         let env = SourceEnvironment {
-            in_checkout,
-            checkout_matches_configured,
+            in_checkout: gathered.in_checkout,
+            checkout_matches_configured: gathered.checkout_matches_configured,
+            // Classified but never acted on under `CwdOnly`: link check
+            // already refuses the whole unconfigured arm, so E6a and E6b share
+            // one disposition. Threaded for completeness, not for a decision.
+            checkout_is_plan_repo: gathered.checkout_is_plan_repo,
             configured: source.as_ref().map(|src| ConfiguredSource {
                 locator: src.repo.as_str(),
                 is_local_dir: std::path::Path::new(&src.repo).is_dir(),

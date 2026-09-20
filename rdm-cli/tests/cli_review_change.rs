@@ -324,11 +324,17 @@ fn change_review_start_names_base_when_there_is_no_merge_base() {
     let src = init_source_repo();
     let plan = init_plan_repo(src.path());
     create_plan(plan.path(), "design-plan", true);
-    // An orphan branch shares no history with `main`.
+    // An orphan branch shares no history with `main`. TWO commits, so the
+    // `--base <root>` escape hatch below names a genuine ancestor rather than
+    // HEAD itself — this test is about the missing merge base, not about the
+    // separate empty-reviewed-range rule.
     git(src.path(), &["checkout", "--orphan", "island"]);
     std::fs::write(src.path().join("other.txt"), "hello\n").unwrap();
     git(src.path(), &["add", "other.txt"]);
-    git(src.path(), &["commit", "-m", "orphan"]);
+    git(src.path(), &["commit", "-m", "orphan root"]);
+    std::fs::write(src.path().join("other.txt"), "hello again\n").unwrap();
+    git(src.path(), &["add", "other.txt"]);
+    git(src.path(), &["commit", "-m", "orphan tip"]);
 
     let out = rdm()
         .arg("--root")
@@ -1689,8 +1695,9 @@ fn change_review_refuses_an_unrelated_checkout_when_the_source_is_not_local() {
     );
 }
 
-/// No `source.repo` at all: there is nothing to contradict the cwd, so the
-/// checkout the operator is standing in is the one that gets read.
+/// No `source.repo` at all, and the cwd checkout is not the plan repo (E6a):
+/// there is nothing to contradict the cwd, so the checkout the operator is
+/// standing in is the one that gets read.
 #[test]
 fn change_review_uses_the_cwd_checkout_when_the_project_configures_no_source() {
     let src = init_source_repo();
@@ -1698,6 +1705,14 @@ fn change_review_uses_the_cwd_checkout_when_the_project_configures_no_source() {
     create_plan(plan.path(), "design-plan", true);
     clear_project_source(plan.path(), "demo");
     let other = init_unrelated_repo();
+    // A topic branch off `main`, so the DERIVED merge base is a real ancestor
+    // rather than HEAD itself. Standing on the default branch would make the
+    // reviewed range empty, which `resolve_change_target` now refuses — a
+    // different rule from the one under test here.
+    git(other.path(), &["checkout", "-b", "work"]);
+    std::fs::write(other.path().join("README.md"), "still not the source\n").unwrap();
+    git(other.path(), &["add", "."]);
+    git(other.path(), &["commit", "-m", "work"]);
     let other_head = git_out(other.path(), &["rev-parse", "HEAD"]);
 
     let id = start_change_review(
@@ -1708,7 +1723,7 @@ fn change_review_uses_the_cwd_checkout_when_the_project_configures_no_source() {
     );
     let j = review_json(plan.path(), other.path(), &id);
     assert_eq!(j["target"]["head"], other_head);
-    assert_eq!(j["change_branch"], "main");
+    assert_eq!(j["change_branch"], "work");
 }
 
 /// Outside any checkout: the two no-cwd-repo branches each name what to do,
@@ -2154,5 +2169,463 @@ fn change_review_falls_back_to_the_configured_local_source_while_link_check_skip
             .as_str()
             .is_some_and(|s| s.contains("not the project's configured source")),
         "link check must skip, not follow change review into the configured dir: {report}"
+    );
+}
+
+// --- Phase 20: source-read and persist defects ---
+
+/// Defect 1 (AC1). With an external diff driver and a `.gitattributes`
+/// `textconv` filter both configured in the source repo, `rdm review comment
+/// --path --quote` must anchor correctly and NEITHER script may run.
+///
+/// Without `--no-ext-diff`/`--no-textconv`, git executes the configured program
+/// and its output replaces the unified diff, so `derive_change_anchor` computes
+/// an empty hunk set and refuses a genuinely-modified file as untouched — while
+/// having run an operator-supplied script during a read rdm documents as
+/// read-only.
+#[test]
+fn change_comment_anchors_with_a_hostile_external_diff_driver_and_textconv_filter() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+
+    // Markers live outside the source repo so writing them cannot itself dirty
+    // the checkout under review.
+    let scratch = TempDir::new().unwrap();
+    let ext_marker = scratch.path().join("external-diff-ran");
+    let textconv_marker = scratch.path().join("textconv-ran");
+    let ext_script = scratch.path().join("ext-diff.sh");
+    let textconv_script = scratch.path().join("textconv.sh");
+    write_marker_script(&ext_script, &ext_marker, false);
+    write_marker_script(&textconv_script, &textconv_marker, true);
+
+    git(
+        src.path(),
+        &["config", "diff.external", ext_script.to_str().unwrap()],
+    );
+    git(
+        src.path(),
+        &[
+            "config",
+            "diff.hostile.textconv",
+            textconv_script.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(
+        src.path().join(".gitattributes"),
+        "src/lib.rs diff=hostile\n",
+    )
+    .unwrap();
+    git(src.path(), &["add", ".gitattributes"]);
+    git(src.path(), &["commit", "-m", "hostile diff attributes"]);
+
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Anchored despite a hostile diff driver.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["comments"][0]["resolution"]["state"], "resolved");
+    assert_eq!(
+        j["comments"][0]["anchor"]["start_line"], 2,
+        "the recorded line range must come from the real hunk"
+    );
+    assert!(
+        !ext_marker.exists(),
+        "the configured external diff driver EXECUTED during an rdm read"
+    );
+    assert!(
+        !textconv_marker.exists(),
+        "the configured textconv filter EXECUTED during an rdm read"
+    );
+}
+
+/// Writes an executable shell script that touches `marker`. `passthrough` makes
+/// it `cat` its first argument too, which is what a `textconv` filter has to do
+/// to look like a real one.
+fn write_marker_script(path: &Path, marker: &Path, passthrough: bool) {
+    let body = if passthrough {
+        format!("#!/bin/sh\n: > '{}'\ncat \"$1\"\n", marker.display())
+    } else {
+        format!("#!/bin/sh\n: > '{}'\nexit 0\n", marker.display())
+    };
+    std::fs::write(path, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+/// Defect 3 (AC2). A filename holding a glob metacharacter must not anchor into
+/// a DIFFERENT file's hunks. `:(top)a?b.txt` matched the modified sibling
+/// `axb.txt` and returned its hunks, so this command used to SUCCEED, storing an
+/// anchor whose `start_line`/`end_line` and `rdm:src/` permalink described a
+/// file the reviewed range never touched.
+#[test]
+fn change_comment_refuses_a_glob_path_that_the_change_never_touched() {
+    let src = init_source_repo();
+    let p = src.path();
+    // `a?b.txt` exists at both ends of the range and is never modified;
+    // `axb.txt` is what the change actually edits.
+    std::fs::write(p.join("a?b.txt"), "fn glob_named() {}\n").unwrap();
+    assert!(
+        p.join("a?b.txt").exists(),
+        "this filesystem rejected '?' in a filename — the glob fixture cannot be built"
+    );
+    std::fs::write(p.join("axb.txt"), "fn sibling() {}\n").unwrap();
+    git(p, &["add", "-A"]);
+    git(p, &["commit", "-m", "add both names"]);
+    // Rebase the review range so the base already holds both files: only
+    // `axb.txt` changes between base and head.
+    let base = git_out(p, &["rev-parse", "HEAD"]);
+    std::fs::write(p.join("axb.txt"), "fn sibling_renamed() {}\n").unwrap();
+    git(p, &["add", "-A"]);
+    git(p, &["commit", "-m", "edit axb only"]);
+
+    let plan = init_plan_repo(p);
+    create_plan(plan.path(), "design-plan", true);
+    let id = start_change_review(
+        plan.path(),
+        p,
+        "change/HEAD",
+        &["--base", &base, "--implements", "rdm:plan/design-plan"],
+    );
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "a?b.txt",
+            "--quote",
+            "fn glob_named() {}",
+            "--body",
+            "Should never anchor.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(p)
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("is not touched by"),
+        "the untouched-path refusal must name the real problem: {text}"
+    );
+    assert!(
+        !text.contains("axb.txt"),
+        "the message must not be derived from the sibling file at all: {text}"
+    );
+    // The control: the file that really changed still anchors, so the literal
+    // pathspec did not simply break anchoring.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "axb.txt",
+            "--quote",
+            "fn sibling_renamed() {}",
+            "--body",
+            "The file that really changed.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(p)
+        .assert()
+        .success();
+    let j = review_json(plan.path(), p, &id);
+    assert_eq!(
+        j["comments"].as_array().map(Vec::len),
+        Some(1),
+        "the refused comment must not have been recorded"
+    );
+    assert_eq!(j["comments"][0]["anchor"]["path"], "axb.txt");
+}
+
+/// Defect 4, first half (AC4). Standing INSIDE the plan repo with the project
+/// configuring no `source.repo`, `change/HEAD` used to pin the plan repo's own
+/// HEAD and silently mint a review of the plan data. The refusal must name both
+/// ways out.
+#[test]
+fn change_review_start_refuses_the_plan_repo_as_a_source() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    clear_project_source(plan.path(), "demo");
+    // Make the plan repo a real checkout with a commit, so the cwd genuinely
+    // resolves to a repository (the E6 arm) rather than to no checkout at all.
+    git(plan.path(), &["init", "-b", "main"]);
+    git(plan.path(), &["add", "-A"]);
+    git(plan.path(), &["commit", "-m", "plan repo"]);
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            "change/HEAD",
+            "--implements",
+            "rdm:plan/design-plan",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(plan.path())
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("the plan repo"),
+        "the refusal must say what the current directory is: {text}"
+    );
+    assert!(
+        text.contains("source.repo"),
+        "the refusal must name the remedy: {text}"
+    );
+
+    // And nothing was recorded.
+    let listed = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "list", "--format", "json", "--project", "demo"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let reviews: Value = serde_json::from_slice(&listed).unwrap();
+    assert!(
+        reviews
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["target"]["kind"] != "change"),
+        "no change review may have been minted: {reviews}"
+    );
+}
+
+/// Defect 4, second half (AC4). A DERIVED reviewed range with no commits in it
+/// is refused; the same command with an explicit `--base` naming a real
+/// ancestor still works, which is what proves the guard is scoped to a derived
+/// base rather than to `base == head`.
+#[test]
+fn change_review_start_refuses_a_derived_empty_reviewed_range() {
+    let src = init_source_repo();
+    let p = src.path();
+    // Stand ON the default branch, where merge_base(HEAD, main) == HEAD.
+    git(p, &["checkout", "main"]);
+    let plan = init_plan_repo(p);
+    create_plan(plan.path(), "design-plan", true);
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            "change/HEAD",
+            "--implements",
+            "rdm:plan/design-plan",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(p)
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("empty reviewed range"),
+        "a derived empty range must be refused as such: {text}"
+    );
+    assert!(
+        text.contains("--base"),
+        "the refusal must name the escape hatch: {text}"
+    );
+
+    // An explicit `--base` naming a real ancestor is unaffected.
+    let root = git_out(p, &["rev-list", "--max-parents=0", "HEAD"]);
+    git(p, &["checkout", "topic"]);
+    start_change_review(
+        plan.path(),
+        p,
+        "change/HEAD",
+        &["--base", &root, "--implements", "rdm:plan/design-plan"],
+    );
+}
+
+/// A second source repository with its OWN independent history: its own `git
+/// init`, its own single commit, no objects in common with the real source. A
+/// checkout like this is what an operator has when they forgot to fetch, or
+/// pointed `source.repo` at the wrong clone.
+fn init_independent_repo() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    std::fs::create_dir_all(p.join("src")).unwrap();
+    // The SAME path exists here, so a false "path no longer exists" cannot be
+    // excused by the path genuinely being absent.
+    std::fs::write(p.join("src/lib.rs"), "fn unrelated() {}\n").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "independent history"]);
+    dir
+}
+
+/// Defect 5, read path (AC5). Against a checkout that does not contain the
+/// reviewed commit, every comment is `unresolved` with the skip stated ONCE in
+/// `source_verification_skipped` and NO per-comment `unresolved_reason` — an
+/// environmental miss is never dressed up as a verdict about the reviewer's
+/// quote.
+#[test]
+fn change_review_show_reports_a_missing_reviewed_commit_as_a_skip() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Anchored against the real source.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    // Repoint the project at a checkout with independent history.
+    let other = init_independent_repo();
+    set_project_source(plan.path(), "demo", &other.path().to_string_lossy());
+
+    let j = review_json(plan.path(), other.path(), &id);
+    let note = j["source_verification_skipped"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the skip must be reported: {j}"));
+    assert!(
+        note.contains(&head),
+        "the note must name the reviewed commit: {note}"
+    );
+    assert!(
+        note.contains("source.repo") || note.contains("fetch"),
+        "the note must name a remedy: {note}"
+    );
+    for comment in j["comments"].as_array().unwrap() {
+        assert_eq!(comment["resolution"]["state"], "unresolved", "{comment}");
+        assert!(
+            comment["unresolved_reason"].is_null(),
+            "an environmental skip must set no per-comment reason: {comment}"
+        );
+    }
+}
+
+/// Defect 5, write path (AC5). `review comment --path` against a checkout
+/// lacking the reviewed head reports the missing COMMIT, not a missing path.
+#[test]
+fn change_comment_reports_a_missing_head_not_a_missing_path() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+
+    let other = init_independent_repo();
+    set_project_source(plan.path(), "demo", &other.path().to_string_lossy());
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Should report the commit, not the path.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(other.path())
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("does not contain the reviewed commit") && text.contains(&head),
+        "the missing head must be reported as a missing commit: {text}"
+    );
+    assert!(
+        !text.contains("does not exist at"),
+        "the path must not be blamed for a missing commit: {text}"
     );
 }

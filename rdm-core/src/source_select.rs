@@ -52,6 +52,15 @@ pub struct SourceEnvironment<'a> {
     /// to read through. Meaningless, and ignored, when
     /// [`Self::configured`] is `None`.
     pub checkout_matches_configured: bool,
+    /// Whether the checkout the cwd sits in **is the plan repo itself**.
+    ///
+    /// Computed by the adapter by comparing canonicalized *identity* roots
+    /// (the discovered repository root of the cwd against the discovered
+    /// repository root of the plan store), never by string-matching paths.
+    /// Meaningless, and ignored, when [`Self::configured`] is `Some`: an
+    /// operator who explicitly configures `source.repo` at the plan repo has
+    /// named that choice and keeps working.
+    pub checkout_is_plan_repo: bool,
     /// The project's configured source, when it configures one.
     pub configured: Option<ConfiguredSource<'a>>,
 }
@@ -94,6 +103,15 @@ pub enum SourceUnavailable {
     },
     /// Neither a checkout nor a configured source: nothing to read at all.
     NoCheckoutAndNoSource,
+    /// The cwd is inside a checkout, the project configures no source, and
+    /// that checkout is the **plan repo itself** — so reading it would mint a
+    /// review of the plan repo's own history instead of the project's code.
+    ///
+    /// Carries no payload: this module is handed only booleans and does no
+    /// I/O, so it cannot name the plan root. The adapter that computed
+    /// [`SourceEnvironment::checkout_is_plan_repo`] already holds the store
+    /// and composes the operator-facing message.
+    CheckoutIsPlanRepo,
 }
 
 /// Which repository to read.
@@ -120,7 +138,7 @@ pub enum SourceSelection {
 ///
 /// # The decision table
 ///
-/// Seven environments, two consumers, fourteen cells. E6 and E7 are
+/// Eight environments, two consumers, sixteen cells. E6a, E6b and E7 are
 /// distinct environments with distinct causes and are never collapsed.
 ///
 /// | Environment | `ConfiguredLocal` (change review) | `CwdOnly` (link check) |
@@ -130,16 +148,25 @@ pub enum SourceSelection {
 /// | E3 mismatching checkout + configured REMOTE source | `Unavailable(CheckoutIsNotConfiguredSource)` | `Unavailable(CheckoutIsNotConfiguredSource)` |
 /// | E4 no checkout + configured LOCAL source | `ReadConfiguredLocal` | `Unavailable(NotInCheckout)` |
 /// | E5 no checkout + configured REMOTE source | `Unavailable(ConfiguredSourceNotLocal)` | `Unavailable(NotInCheckout)` |
-/// | E6 in a checkout, NO source configured | `ReadCwdCheckout` | `Unavailable(NoSourceConfigured)` |
+/// | E6a in a checkout that is NOT the plan repo, NO source configured | `ReadCwdCheckout` | `Unavailable(NoSourceConfigured)` |
+/// | E6b in the PLAN REPO itself, NO source configured | `Unavailable(CheckoutIsPlanRepo)` | `Unavailable(NoSourceConfigured)` |
 /// | E7 no checkout, NO source configured | `Unavailable(NoCheckoutAndNoSource)` | `Unavailable(NoCheckoutAndNoSource)` |
 ///
-/// The three cells where the consumers differ — **E2, E4 and E6** — are the
+/// The three cells where the consumers differ — **E2, E4 and E6a** — are the
 /// audited, intentional disagreement: change review may leave the cwd for a
 /// configured local directory and treats an unconfigured checkout as
 /// uncontradicted, while link check refuses to verify against anything but
 /// the checkout it can prove is the source. The unit test asserts those
 /// three differ, so a later attempt to "unify" the ladders fails loudly
 /// instead of silently erasing link check's skip.
+///
+/// **E6b** is the one environment where `ConfiguredLocal` refuses a checkout
+/// it is standing in. Reading the plan repo as a source repository is never
+/// what the operator meant: it pins the plan repo's own `HEAD`, derives a
+/// merge base of `HEAD` against the plan repo's own default branch (so the
+/// reviewed range is empty), and records a review of the plan data as though
+/// it were the project's code. `CwdOnly` needs no split — it already refuses
+/// the whole unconfigured arm.
 ///
 /// # Examples
 ///
@@ -149,10 +176,12 @@ pub enum SourceSelection {
 ///     select_source,
 /// };
 ///
-/// // E6: in a checkout with nothing configured to contradict it.
+/// // E6a: in a checkout (not the plan repo) with nothing configured to
+/// // contradict it.
 /// let env = SourceEnvironment {
 ///     in_checkout: true,
 ///     checkout_matches_configured: false,
+///     checkout_is_plan_repo: false,
 ///     configured: None,
 /// };
 /// assert_eq!(
@@ -168,6 +197,7 @@ pub enum SourceSelection {
 /// let env = SourceEnvironment {
 ///     in_checkout: true,
 ///     checkout_matches_configured: true,
+///     checkout_is_plan_repo: false,
 ///     configured: Some(ConfiguredSource { locator: "/srv/repo", is_local_dir: true }),
 /// };
 /// assert_eq!(
@@ -190,8 +220,14 @@ pub fn select_source(env: &SourceEnvironment<'_>, fallback: SourceFallback) -> S
                 })
             }
         }
-        // E6 — in a checkout, nothing configured to contradict it.
+        // E6a / E6b — in a checkout, nothing configured to contradict it.
         (true, None) => match fallback {
+            // E6b: the checkout IS the plan repo. Reading it would review the
+            // plan data instead of the project's code, so refuse rather than
+            // mint a meaningless review; E6a is unchanged.
+            SourceFallback::ConfiguredLocal if env.checkout_is_plan_repo => {
+                SourceSelection::Unavailable(SourceUnavailable::CheckoutIsPlanRepo)
+            }
             SourceFallback::ConfiguredLocal => SourceSelection::ReadCwdCheckout,
             SourceFallback::CwdOnly => {
                 SourceSelection::Unavailable(SourceUnavailable::NoSourceConfigured)
@@ -248,7 +284,7 @@ pub fn locators_match(a: &str, b: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// The full decision table: SEVEN environments x two consumers = 14
+    /// The full decision table: EIGHT environments x two consumers = 16
     /// cells, every one asserted. The length assertion pins the row count
     /// so a dropped or merged environment fails loudly rather than leaving
     /// a cell untested.
@@ -279,6 +315,7 @@ mod tests {
                 SourceEnvironment {
                     in_checkout: true,
                     checkout_matches_configured: true,
+                    checkout_is_plan_repo: false,
                     configured: local,
                 },
                 SourceSelection::ReadCwdCheckout,
@@ -289,6 +326,7 @@ mod tests {
                 SourceEnvironment {
                     in_checkout: true,
                     checkout_matches_configured: false,
+                    checkout_is_plan_repo: false,
                     configured: local,
                 },
                 SourceSelection::ReadConfiguredLocal,
@@ -299,6 +337,7 @@ mod tests {
                 SourceEnvironment {
                     in_checkout: true,
                     checkout_matches_configured: false,
+                    checkout_is_plan_repo: false,
                     configured: remote,
                 },
                 not_source("https://example.com/org/repo.git"),
@@ -309,6 +348,7 @@ mod tests {
                 SourceEnvironment {
                     in_checkout: false,
                     checkout_matches_configured: false,
+                    checkout_is_plan_repo: false,
                     configured: local,
                 },
                 SourceSelection::ReadConfiguredLocal,
@@ -319,6 +359,7 @@ mod tests {
                 SourceEnvironment {
                     in_checkout: false,
                     checkout_matches_configured: false,
+                    checkout_is_plan_repo: false,
                     configured: remote,
                 },
                 SourceSelection::Unavailable(SourceUnavailable::ConfiguredSourceNotLocal {
@@ -327,13 +368,27 @@ mod tests {
                 SourceSelection::Unavailable(SourceUnavailable::NotInCheckout),
             ),
             (
-                "E6 in a checkout, NO source configured",
+                "E6a in a checkout that is NOT the plan repo, NO source configured",
                 SourceEnvironment {
                     in_checkout: true,
                     checkout_matches_configured: false,
+                    checkout_is_plan_repo: false,
                     configured: None,
                 },
                 SourceSelection::ReadCwdCheckout,
+                SourceSelection::Unavailable(SourceUnavailable::NoSourceConfigured),
+            ),
+            (
+                "E6b in the PLAN REPO itself, NO source configured",
+                SourceEnvironment {
+                    in_checkout: true,
+                    checkout_matches_configured: false,
+                    checkout_is_plan_repo: true,
+                    configured: None,
+                },
+                SourceSelection::Unavailable(SourceUnavailable::CheckoutIsPlanRepo),
+                // link check already refuses the whole unconfigured arm, so it
+                // needs no plan-repo-specific cell.
                 SourceSelection::Unavailable(SourceUnavailable::NoSourceConfigured),
             ),
             (
@@ -341,6 +396,7 @@ mod tests {
                 SourceEnvironment {
                     in_checkout: false,
                     checkout_matches_configured: false,
+                    checkout_is_plan_repo: false,
                     configured: None,
                 },
                 SourceSelection::Unavailable(SourceUnavailable::NoCheckoutAndNoSource),
@@ -350,8 +406,8 @@ mod tests {
 
         assert_eq!(
             cases.len() * 2,
-            14,
-            "the decision table is SEVEN environments x two consumers"
+            16,
+            "the decision table is EIGHT environments x two consumers"
         );
 
         for (label, env, change_review, link_check) in &cases {
@@ -373,7 +429,7 @@ mod tests {
         for label in [
             "E2 mismatching checkout + configured LOCAL source",
             "E4 no checkout + configured LOCAL source",
-            "E6 in a checkout, NO source configured",
+            "E6a in a checkout that is NOT the plan repo, NO source configured",
         ] {
             let (_, _env, change_review, link_check) =
                 cases.iter().find(|(l, ..)| *l == label).unwrap();
@@ -382,6 +438,25 @@ mod tests {
                 "{label} is one of the three cells the consumers deliberately differ on"
             );
         }
+
+        // E6b is the one cell where `ConfiguredLocal` refuses a checkout it is
+        // standing in, and it must NOT be reachable when a source IS
+        // configured: an operator who points `source.repo` at the plan repo
+        // has named that choice (E1/E2), and the flag is ignored there.
+        let configured_at_the_plan_repo = SourceEnvironment {
+            in_checkout: true,
+            checkout_matches_configured: true,
+            checkout_is_plan_repo: true,
+            configured: local,
+        };
+        assert_eq!(
+            select_source(
+                &configured_at_the_plan_repo,
+                SourceFallback::ConfiguredLocal
+            ),
+            SourceSelection::ReadCwdCheckout,
+            "an explicitly configured plan-repo source stays E1 — the plan-repo guard is scoped to configured: None"
+        );
     }
 
     /// A matching checkout never depends on the fallback, and a checkout
@@ -393,6 +468,7 @@ mod tests {
         let env = SourceEnvironment {
             in_checkout: true,
             checkout_matches_configured: true,
+            checkout_is_plan_repo: false,
             configured: None,
         };
         assert_eq!(

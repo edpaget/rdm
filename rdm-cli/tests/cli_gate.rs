@@ -263,7 +263,14 @@ fn stderr_of(a: assert_cmd::assert::Assert) -> String {
     String::from_utf8_lossy(&a.get_output().stderr).to_string()
 }
 
-/// Adds an rdm worktree for the `auth` roadmap and returns its path.
+/// Adds an rdm worktree for the `auth` roadmap, commits one change on its
+/// branch, and returns its path.
+///
+/// The commit is load-bearing, not decoration: a freshly created worktree
+/// branch points at `main`'s tip, so the merge base of its `HEAD` and `main` IS
+/// that `HEAD` and `change/HEAD` names an EMPTY reviewed range —
+/// `resolve_change_target` refuses one outright. Every test here reviews a
+/// worktree where work has happened, so the fixture makes that true.
 fn add_worktree(plan: &Path, source: &Path) -> std::path::PathBuf {
     let out = rdm()
         .arg("--root")
@@ -275,7 +282,11 @@ fn add_worktree(plan: &Path, source: &Path) -> std::path::PathBuf {
         .get_output()
         .stdout
         .clone();
-    std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string())
+    let path = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+    std::fs::write(path.join("src/lib.rs"), "fn one() {}\nfn two() {}\n").unwrap();
+    git(&path, &["add", "src/lib.rs"]);
+    git(&path, &["commit", "-m", "the work under review"]);
+    path
 }
 
 // ---------------------------------------------------------------------------

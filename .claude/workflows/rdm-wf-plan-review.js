@@ -2162,7 +2162,22 @@ function persistReviewCommands(result, target, cfg, opts) {
     cmds.push('cd ' + shellQuote(o.source.path));
     cmds.push(IND + bin + ' review source --on ' + shellQuote(o.source.item) + ' --source ' + shellQuote(o.source.path) + ' --base ' + shellQuote(o.source.base) + ' --expected-head ' + shellQuote(o.source.head) + ' --expected-branch ' + shellQuote(o.source.branch) + (o.source.noCode ? ' --no-code' : '') + proj + ' >/dev/null || exit 1');
   }
-  cmds.push('RDM_PERSIST_START_JSON=${TMPDIR:-/tmp}/rdm-persist-start.$$.json');
+  // SCRATCH FILE VIA mktemp, NEVER A PREDICTABLE NAME. This used to be a fixed
+  // basename suffixed with the shell's PID under TMPDIR — a guessable path in a
+  // world-writable directory that is then written with `>`, and `>` follows a
+  // symlink, so a symlink planted at that path before the agent runs turns this
+  // line into an arbitrary-file overwrite running as the agent's user. `mktemp`
+  // creates the file itself with O_EXCL and mode 600, so there is no window and
+  // no name to guess; `|| exit 1` means a failure to create it stops the ladder
+  // instead of letting `review start` write to an unset path. (The pre-fix form
+  // is deliberately not spelled out here: scripts/verify-workflow-review.sh
+  // § 15h greps the emitted bytes for it.)
+  //
+  // The variable NAME and this line's POSITION are load-bearing:
+  // scripts/verify-workflow-review.sh slices the runnable script out of the
+  // agent prompt with `prompt.indexOf('RDM_PERSIST_START_JSON=')`. The mktemp
+  // template stays quoted for a TMPDIR containing a space.
+  cmds.push('RDM_PERSIST_START_JSON=$(mktemp "${TMPDIR:-/tmp}/rdm-persist-start.XXXXXX") || exit 1');
   cmds.push(
     persistCapture('RDM_PERSIST_SUMMARY', 'RDM_PERSIST_SUMMARY_EOF', summary) +
       '\n' +
@@ -2174,7 +2189,14 @@ function persistReviewCommands(result, target, cfg, opts) {
       proj +
       ' > "$RDM_PERSIST_START_JSON"' +
       '\n' +
-      'RDM_REVIEW_ID=$(sed -n \'s/.*"id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$RDM_PERSIST_START_JSON" | head -n 1)'
+      'RDM_REVIEW_ID=$(sed -n \'s/.*"id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$RDM_PERSIST_START_JSON" | head -n 1)' +
+      // Inside the SAME cmds entry as the read, so the removal can never be
+      // reordered away from it. An explicit `rm -f` rather than a
+      // `trap … EXIT`: the ladder is documented as "run these IN ORDER in ONE
+      // shell session", but the harness executes the sliced block through
+      // `/bin/sh -eu -c`, and an `rm` is what a read-back can observe directly.
+      '\n' +
+      'rm -f "$RDM_PERSIST_START_JSON"'
   );
   for (let i = 0; i < survivors.length; i++) {
     const f = survivors[i] || {};

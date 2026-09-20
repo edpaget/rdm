@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 
 use rdm_core::error::{Error, Result};
-use rdm_core::source::{SourceObjectKind, SourceRepo};
+use rdm_core::source::{SourceObjectKind, SourceObjectLookup, SourceRepo};
 
 use crate::run_git_at;
 
@@ -103,6 +103,11 @@ pub fn ls_tree_kind_argv(rev: &str, path: &str) -> Vec<String> {
 /// Parses one `git ls-tree` output line (`<mode> <type> <sha>\t<path>`) into
 /// its [`SourceObjectKind`], returning `None` for an empty result (the path
 /// does not exist in the tree) or an unrecognized type.
+///
+/// Both `None` cases are folded into [`SourceObjectLookup::PathMissing`] by
+/// [`GitSourceRepo::object_kind_at`]: git emits only `blob`/`tree`/`commit`,
+/// so an unrecognized type is unreachable, and treating it as an ineligible
+/// path is the fail-safe reading.
 fn parse_ls_tree_kind(bytes: &[u8]) -> Option<SourceObjectKind> {
     let line = String::from_utf8_lossy(bytes);
     let line = line.lines().next()?;
@@ -117,8 +122,12 @@ fn parse_ls_tree_kind(bytes: &[u8]) -> Option<SourceObjectKind> {
 
 /// The argv [`GitSourceRepo::unified_diff`] builds after resolving both commits.
 ///
-/// Two guards make this agree with [`file_at_argv`] about what `path` means,
-/// and BOTH are required.
+/// FOUR guards make this agree with [`file_at_argv`] about what `path` means,
+/// and every one of them is required. The first two defend against the
+/// invoking *directory*, the last two against the invoking *configuration* —
+/// and in both pairs a missing guard produces the same confidently false
+/// answer about a file the change really does modify, or about which file was
+/// read at all.
 ///
 /// `git show <rev>:<path>` always resolves from the **repository root**, but
 /// `GitSourceRepo` is routinely rooted at a subdirectory of the checkout — it
@@ -139,17 +148,45 @@ fn parse_ls_tree_kind(bytes: &[u8]) -> Option<SourceObjectKind> {
 ///   clear `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`, so ambient user config
 ///   reaches this command and the flag is what makes the result independent
 ///   of it.
+/// - `--no-ext-diff` overrides `diff.external` (and any `diff.<driver>.command`
+///   selected through a `.gitattributes` `diff=<driver>` attribute). An
+///   external diff driver replaces git's own diff machinery entirely: it is
+///   *executed*, and whatever it writes is the output. A driver that prints
+///   nothing in git's unified format — a `difftool`-style wrapper, a
+///   graphical differ, a linting script — makes [`parse_hunks`-shaped
+///   output](rdm_core::change::parse_hunks) come back empty, so a genuinely
+///   modified file is refused as "not touched by `<base>..<head>`"; a driver
+///   that exits non-zero fails the diff outright. Executing an
+///   operator-configured script during a read rdm documents as read-only is
+///   the security half of the same flag.
+/// - `--no-textconv` overrides a `.gitattributes` `diff=<driver>` filter whose
+///   `diff.<driver>.textconv` program rewrites the blob before diffing. Same
+///   two failures — a script rdm executes on the operator's behalf, and hunk
+///   line numbers that index the *converted* text rather than the file
+///   [`file_at_argv`] reads, so an anchor's `start_line`/`end_line` and its
+///   `rdm:src/` permalink would point at lines that do not exist in the file.
+///
+/// The pathspec is additionally `literal`, not merely `top`: `git show
+/// <rev>:<path>` (the content read) treats its path literally, while a diff
+/// pathspec is a glob by default, so `a?b.txt` matched — and returned the
+/// hunks of — a sibling `axb.txt`. That is the same class of bug the `:(top)`
+/// and `--no-relative` entries above guard, one axis over: the two reads
+/// disagreeing about WHICH file is under discussion. `--literal-pathspecs` is
+/// deliberately NOT used for this, because it disables *all* pathspec magic
+/// including `:(top)`, reopening the subdirectory empty-hunk-set bug.
 #[must_use]
 pub fn unified_diff_argv(base: &str, head: &str, path: &str) -> Vec<String> {
     vec![
         "diff".to_string(),
         "--unified=0".to_string(),
         "--no-color".to_string(),
+        "--no-ext-diff".to_string(),
+        "--no-textconv".to_string(),
         "--no-relative".to_string(),
         "--end-of-options".to_string(),
         format!("{base}..{head}"),
         "--".to_string(),
-        format!(":(top){path}"),
+        format!(":(top,literal){path}"),
     ]
 }
 
@@ -237,15 +274,23 @@ impl SourceRepo for GitSourceRepo {
         crate::current_branch_at(&self.root)
     }
 
-    fn object_kind_at(&self, rev: &str, path: &str) -> Result<Option<SourceObjectKind>> {
+    fn object_kind_at(&self, rev: &str, path: &str) -> Result<SourceObjectLookup> {
         validate_revision_input(rev)?;
+        // The two misses are reported apart: a rev this checkout cannot
+        // resolve is an environmental skip, while a resolvable rev holding
+        // nothing at the path is a statement about the path.
         let Some(commit) = self.rev_parse(rev)? else {
-            return Ok(None);
+            return Ok(SourceObjectLookup::RevMissing);
         };
         let Some(bytes) = run_ok(&self.root, &ls_tree_kind_argv(&commit, path))? else {
-            return Ok(None);
+            return Ok(SourceObjectLookup::PathMissing);
         };
-        Ok(parse_ls_tree_kind(&bytes))
+        Ok(parse_ls_tree_kind(&bytes)
+            .map_or(SourceObjectLookup::PathMissing, SourceObjectLookup::Kind))
+    }
+
+    fn location(&self) -> Option<String> {
+        Some(self.root.display().to_string())
     }
 }
 
@@ -270,13 +315,34 @@ mod tests {
             ls_tree_kind_argv("abc123", "src/lib.rs"),
         ];
         assert_eq!(argvs.len(), 5);
+        let mut diff_argvs = 0;
         for argv in &argvs {
             let subcommand = argv.first().map(String::as_str).unwrap_or_default();
             assert!(
                 READ_ONLY_COMMANDS.contains(&subcommand),
                 "git subcommand {subcommand:?} is not in the read-only allow-list"
             );
+            // `diff` is the one read-only subcommand that can EXECUTE an
+            // operator-configured program: `diff.external` replaces git's diff
+            // machinery outright, and a `.gitattributes` `textconv` filter
+            // rewrites the blob before diffing. Both also make a modified file
+            // read as untouched. Asserted over the argv LIST rather than over
+            // `unified_diff_argv` alone, so a second diff builder added later
+            // is covered by construction rather than by remembering to.
+            if subcommand == "diff" {
+                diff_argvs += 1;
+                for flag in ["--no-ext-diff", "--no-textconv"] {
+                    assert!(
+                        argv.iter().any(|a| a == flag),
+                        "a `diff` argv must carry {flag}: {argv:?}"
+                    );
+                }
+            }
         }
+        assert!(
+            diff_argvs >= 1,
+            "the clause above is vacuous unless at least one built argv is a diff"
+        );
     }
 
     #[test]
@@ -478,7 +544,7 @@ mod tests {
         // folded into the kind gate itself.
         assert_eq!(
             repo.object_kind_at(&head, "bin.dat").unwrap(),
-            Some(SourceObjectKind::Blob)
+            SourceObjectLookup::Kind(SourceObjectKind::Blob)
         );
     }
 
@@ -494,13 +560,18 @@ mod tests {
         let head = repo.rev_parse("HEAD").unwrap().unwrap();
         assert_eq!(
             repo.object_kind_at(&head, "a.txt").unwrap(),
-            Some(SourceObjectKind::Blob)
+            SourceObjectLookup::Kind(SourceObjectKind::Blob)
         );
         assert_eq!(
             repo.object_kind_at(&head, "sub").unwrap(),
-            Some(SourceObjectKind::Tree)
+            SourceObjectLookup::Kind(SourceObjectKind::Tree)
         );
-        assert_eq!(repo.object_kind_at(&head, "nope.txt").unwrap(), None);
+        // A resolvable head holding nothing at the path is a missing PATH,
+        // never a missing commit — the tri-state distinction defect 5 closes.
+        assert_eq!(
+            repo.object_kind_at(&head, "nope.txt").unwrap(),
+            SourceObjectLookup::PathMissing
+        );
     }
 
     /// `git ls-tree`'s pathspec is matched relative to the invoking cwd by
@@ -521,11 +592,11 @@ mod tests {
         let head = repo.rev_parse("HEAD").unwrap().unwrap();
         assert_eq!(
             repo.object_kind_at(&head, "a.txt").unwrap(),
-            Some(SourceObjectKind::Blob)
+            SourceObjectLookup::Kind(SourceObjectKind::Blob)
         );
         assert_eq!(
             repo.object_kind_at(&head, "sub").unwrap(),
-            Some(SourceObjectKind::Tree)
+            SourceObjectLookup::Kind(SourceObjectKind::Tree)
         );
     }
 
@@ -556,8 +627,180 @@ mod tests {
         let head = repo.rev_parse("HEAD").unwrap().unwrap();
         assert_eq!(
             repo.object_kind_at(&head, "vendor/lib").unwrap(),
-            Some(SourceObjectKind::Gitlink)
+            SourceObjectLookup::Kind(SourceObjectKind::Gitlink)
         );
+    }
+
+    /// Defect 2 (AC2), at the adapter level. A diff pathspec is a GLOB by
+    /// default, so `a?b.txt` matched the sibling `axb.txt` and returned ITS
+    /// hunks — an anchor whose recorded line range and `rdm:src/` permalink
+    /// pointed at a file the reviewed range never touched. `git show
+    /// <rev>:<path>`, the content read, has always been literal, so the two
+    /// reads disagreed about which file was under discussion.
+    #[test]
+    fn unified_diff_pathspec_is_literal_not_a_glob() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path();
+        git(p, &["init", "-b", "main"]);
+        // The glob-shaped name is committed once and NEVER modified; only its
+        // would-be match is.
+        std::fs::write(p.join("a?b.txt"), "glob-shaped name\n").unwrap();
+        std::fs::write(p.join("axb.txt"), "one\ntwo\nthree\n").unwrap();
+        // A filesystem that rejects `?` in a name would make this test pass
+        // vacuously, so prove the file exists before relying on it.
+        assert!(
+            p.join("a?b.txt").exists(),
+            "this filesystem rejected '?' in a filename — the glob fixture cannot be built"
+        );
+        git(p, &["add", "-A"]);
+        git(p, &["commit", "-m", "base"]);
+        let repo = GitSourceRepo::new(p);
+        let base = repo.rev_parse("HEAD").unwrap().unwrap();
+        std::fs::write(p.join("axb.txt"), "one\nTWO\nthree\n").unwrap();
+        git(p, &["add", "-A"]);
+        git(p, &["commit", "-m", "edit axb only"]);
+        let head = repo.rev_parse("HEAD").unwrap().unwrap();
+
+        // The control: the file that really changed still produces hunks.
+        let real = repo.unified_diff(&base, &head, "axb.txt").unwrap().unwrap();
+        assert!(real.contains("@@"), "expected hunks for axb.txt: {real}");
+
+        // The fix: the untouched glob-shaped name returns NONE of them.
+        assert_eq!(
+            repo.unified_diff(&base, &head, "a?b.txt").unwrap(),
+            None,
+            "a glob metacharacter in a filename must not anchor into a sibling file's hunks"
+        );
+    }
+
+    /// Defect 1 (AC1), at the adapter level, covering the layer a FLAG cannot
+    /// reach: `GIT_EXTERNAL_DIFF` is read straight from the environment, so
+    /// only `git_command`'s `env_remove` closes it. With the driver live, git
+    /// would execute the script (firing the marker) and emit no unified diff,
+    /// which `derive_change_anchor` reports as "path not touched".
+    #[test]
+    fn a_configured_external_diff_driver_neither_runs_nor_suppresses_the_diff() {
+        let dir = seed();
+        let p = dir.path();
+        let repo = GitSourceRepo::new(p);
+        let base = repo.merge_base("main", "topic").unwrap().unwrap();
+        let head = repo.rev_parse("topic").unwrap().unwrap();
+
+        let scratch = TempDir::new().unwrap();
+        let marker = scratch.path().join("external-diff-ran");
+        let driver = scratch.path().join("driver.sh");
+        std::fs::write(
+            &driver,
+            format!("#!/bin/sh\n: > '{}'\nexit 0\n", marker.display()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&driver, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        // (a) Configured in the repo's own config, where `--no-ext-diff` is
+        //     what overrides it.
+        git(p, &["config", "diff.external", driver.to_str().unwrap()]);
+        // (b) And via a `.gitattributes` textconv filter, which
+        //     `--no-textconv` overrides. Committed so it applies to the diff.
+        let textconv_marker = scratch.path().join("textconv-ran");
+        let textconv = scratch.path().join("textconv.sh");
+        std::fs::write(
+            &textconv,
+            format!(
+                "#!/bin/sh\n: > '{}'\ncat \"$1\"\n",
+                textconv_marker.display()
+            ),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&textconv, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        git(
+            p,
+            &[
+                "config",
+                "diff.hostile.textconv",
+                textconv.to_str().unwrap(),
+            ],
+        );
+        std::fs::write(p.join(".gitattributes"), "a.txt diff=hostile\n").unwrap();
+        git(p, &["add", ".gitattributes"]);
+        git(p, &["commit", "-m", "hostile attributes"]);
+
+        // (c) And through the ENVIRONMENT, the layer no flag can reach.
+        //
+        // SAFETY: cargo-nextest isolates each test into its own OS process (the
+        // same invariant `process.rs`'s `spawn_and_parse_env` relies on), so
+        // mutating the process-wide variable here cannot race with any other
+        // test. It is restored before the assertions.
+        let previous = std::env::var_os("GIT_EXTERNAL_DIFF");
+        unsafe {
+            std::env::set_var("GIT_EXTERNAL_DIFF", &driver);
+        }
+        let result = repo.unified_diff(&base, &head, "a.txt");
+        unsafe {
+            match &previous {
+                Some(v) => std::env::set_var("GIT_EXTERNAL_DIFF", v),
+                None => std::env::remove_var("GIT_EXTERNAL_DIFF"),
+            }
+        }
+
+        let diff = result
+            .unwrap()
+            .expect("a.txt IS modified by base..head, so a configured driver must not hide it");
+        assert!(
+            diff.contains("@@"),
+            "expected real hunk headers, got: {diff}"
+        );
+        assert!(
+            !marker.exists(),
+            "the configured external diff driver EXECUTED — rdm's read is not read-only"
+        );
+        assert!(
+            !textconv_marker.exists(),
+            "the configured textconv filter EXECUTED — rdm's read is not read-only"
+        );
+    }
+
+    /// Defect 5, at the adapter level: a revision this checkout cannot resolve
+    /// and a path absent at a resolvable revision are DIFFERENT answers. Both
+    /// used to be `Ok(None)`, so every caller reported the path as missing.
+    #[test]
+    fn object_kind_at_distinguishes_a_missing_rev_from_a_missing_path() {
+        let dir = seed();
+        let repo = GitSourceRepo::new(dir.path());
+        let head = repo.rev_parse("HEAD").unwrap().unwrap();
+        let absent = "0".repeat(40);
+        assert_eq!(repo.rev_parse(&absent).unwrap(), None, "fixture sanity");
+
+        assert_eq!(
+            repo.object_kind_at(&absent, "a.txt").unwrap(),
+            SourceObjectLookup::RevMissing,
+            "a commit this checkout does not have is a missing COMMIT"
+        );
+        assert_eq!(
+            repo.object_kind_at(&head, "nope.txt").unwrap(),
+            SourceObjectLookup::PathMissing,
+            "a resolvable commit holding nothing at the path is a missing PATH"
+        );
+        assert_eq!(
+            repo.object_kind_at(&head, "a.txt").unwrap(),
+            SourceObjectLookup::Kind(SourceObjectKind::Blob)
+        );
+    }
+
+    /// `location()` is what lets core name the checkout it consulted in
+    /// `ChangeHeadNotInSource` without the CLI re-composing the message.
+    #[test]
+    fn location_names_the_root_the_repository_was_read_from() {
+        let dir = TempDir::new().unwrap();
+        let repo = GitSourceRepo::new(dir.path());
+        assert_eq!(repo.location(), Some(dir.path().display().to_string()));
     }
 
     #[test]
@@ -603,11 +846,13 @@ mod tests {
                 "diff",
                 "--unified=0",
                 "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
                 "--no-relative",
                 "--end-of-options",
                 "base..head",
                 "--",
-                ":(top)a.txt"
+                ":(top,literal)a.txt"
             ]
         );
         assert_eq!(

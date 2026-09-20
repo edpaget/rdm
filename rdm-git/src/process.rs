@@ -20,6 +20,19 @@ use crate::RDM_GIT_SUBPROCESS_ENV;
 /// variables are removed so the command operates on the intended repository
 /// rather than one inherited from the caller's environment.
 ///
+/// `GIT_EXTERNAL_DIFF` and `GIT_CONFIG_PARAMETERS` are removed for a related
+/// but distinct reason: they are the two configuration layers a command-line
+/// flag cannot reach. `rdm-git`'s diff reads pass `--no-ext-diff`
+/// `--no-textconv`, which override `diff.external` and a `textconv` filter
+/// wherever they were *configured* — but `GIT_EXTERNAL_DIFF` is an
+/// environment variable git consults directly, and
+/// `GIT_CONFIG_PARAMETERS` is the serialized `-c key=value` list an outer
+/// `git` (a hook, an alias, a wrapper script) smuggles into every child,
+/// which can reintroduce `diff.external` underneath the flag. Removing both
+/// makes rdm's git reads independent of the invoking process's environment,
+/// not merely of the on-disk config files. Nothing in this workspace passes
+/// `git -c`, so nothing relies on `GIT_CONFIG_PARAMETERS` being inherited.
+///
 /// Every rdm-invoked git subprocess is non-interactive by construction; this
 /// must never depend on the caller's terminal state, `core.editor`,
 /// `GIT_EDITOR`/`VISUAL`/`EDITOR`, or credential-helper configuration. Without
@@ -51,6 +64,8 @@ pub(crate) fn git_command(cwd: Option<&Path>, args: &[&str]) -> std::io::Result<
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_EXTERNAL_DIFF")
+        .env_remove("GIT_CONFIG_PARAMETERS")
         .env("GIT_EDITOR", "true")
         .env("GIT_SEQUENCE_EDITOR", "true")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -126,6 +141,44 @@ mod tests {
         assert_eq!(
             env.get(RDM_GIT_SUBPROCESS_ENV).map(String::as_str),
             Some("1")
+        );
+    }
+
+    /// `--no-ext-diff` / `--no-textconv` override the two config *files*.
+    /// `GIT_EXTERNAL_DIFF` is consulted straight from the environment and
+    /// `GIT_CONFIG_PARAMETERS` re-injects arbitrary `-c` settings into every
+    /// child, so neither is reachable by a flag — only by scrubbing the
+    /// child's environment, which is what this pins.
+    #[test]
+    fn git_command_scrubs_the_config_layers_a_flag_cannot_reach() {
+        let previous_driver = std::env::var_os("GIT_EXTERNAL_DIFF");
+        let previous_params = std::env::var_os("GIT_CONFIG_PARAMETERS");
+        // SAFETY: cargo-nextest isolates each test into its own OS process
+        // (the same invariant `spawn_and_parse_env` relies on for `PATH`), so
+        // mutating these process-wide variables cannot race with any other
+        // test.
+        unsafe {
+            std::env::set_var("GIT_EXTERNAL_DIFF", "/bin/false");
+            std::env::set_var("GIT_CONFIG_PARAMETERS", "'diff.external=/bin/false'");
+        }
+        let env = spawn_and_parse_env();
+        unsafe {
+            match &previous_driver {
+                Some(v) => std::env::set_var("GIT_EXTERNAL_DIFF", v),
+                None => std::env::remove_var("GIT_EXTERNAL_DIFF"),
+            }
+            match &previous_params {
+                Some(v) => std::env::set_var("GIT_CONFIG_PARAMETERS", v),
+                None => std::env::remove_var("GIT_CONFIG_PARAMETERS"),
+            }
+        }
+        assert!(
+            !env.contains_key("GIT_EXTERNAL_DIFF"),
+            "GIT_EXTERNAL_DIFF reached the child — an ambient external diff driver would run"
+        );
+        assert!(
+            !env.contains_key("GIT_CONFIG_PARAMETERS"),
+            "GIT_CONFIG_PARAMETERS reached the child — an outer `git -c` could reintroduce diff.external"
         );
     }
 

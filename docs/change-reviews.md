@@ -124,6 +124,24 @@ The resolution states:
 | `drifted` | the path exists at the tip but one of those two conditions fails |
 | `unresolved` | the path is gone at the tip (or the comment has no anchor) |
 
+A path lookup at the review's `head` has **three** possible outcomes, not two,
+and they are reported apart:
+
+| lookup | reported as |
+|---|---|
+| the reviewed commit is not in this checkout | a **source note** (`source_verification_skipped`); no per-comment reason |
+| the commit is here but the path is not | a per-comment `unresolved_reason`: "`<path>` no longer exists at `<head>`" |
+| the path names a directory or a submodule | a per-comment `unresolved_reason` naming which |
+
+The first row is the third cause of a skip, alongside "no checkout reachable"
+and "no resolvable HEAD". It exists because reporting an unreachable commit as
+a missing *path* was a confidently false statement: the file is present in
+every checkout that has the commit, and the remedy is environmental (fetch the
+branch, or point `source.repo` at the right checkout) rather than anything
+about the path. `rdm_core::change::change_anchor_ineligibility` therefore maps
+that case to `None`, widening the same carve-out it already made for a
+source-repository failure.
+
 The test is *occurrence identity* — neither a plain substring search nor a
 bare count. It is a two-clause disjunction, evaluated in this order:
 
@@ -174,15 +192,34 @@ grammar `rdm link resolve` accepts. A single-line span emits `#L7`, not
 The **read** path degrades, the **write** path does not.
 
 With no source repository reachable (running from an unrelated cwd,
-`source.repo` unset or gone, a build without the `git` feature),
-`rdm review show` still prints the review: every change comment comes back
-`unresolved` and a `source_verification_skipped` note says why — the
-precedent `rdm link check`'s `path_verification_skipped` established.
-Permalinks still render, because they need no checkout.
+`source.repo` unset or gone, a checkout that does not contain the reviewed
+commit, a build without the `git` feature), `rdm review show` still prints the
+review: every change comment comes back `unresolved` and a
+`source_verification_skipped` note says why — the precedent `rdm link check`'s
+`path_verification_skipped` established. Permalinks still render, because they
+need no checkout.
 
-`rdm review comment --path` fails loudly in the same situation. An anchor
+**A skip never sets a per-comment `unresolved_reason`.** The two channels answer
+different questions: the source note says verification could not run, while
+`unresolved_reason` says *this* anchor is itself invalid (its path is a
+directory, a submodule, or absent at a head the checkout does have). Putting an
+environmental cause in the per-comment channel would dress a skip up as a
+verdict about the reviewer's quote, so the one is never used for the other, and
+a comment is never `unresolved` with **both** channels empty.
+
+The rule holds on **every** read surface, not just the CLI. `GET
+/projects/<p>/reviews/<id>` and the HTML review section both resolve through the
+same `rdm_core::change::resolve_change_review` pass, against the project's
+configured local `source.repo`; when that does not resolve they set
+`source_verification_skipped` to a note naming the server and the cause. They
+previously reported every change-review comment `unresolved` with both channels
+null — indistinguishable from anchors that genuinely no longer resolve, and
+contradicting what `rdm review show --format json` said about the same file.
+
+`rdm review comment --path` fails loudly in the same situations. An anchor
 that was never checked against real content would silently mislead every
-later reader.
+later reader — and a checkout lacking the reviewed commit is reported as
+exactly that (`Error::ChangeHeadNotInSource`), never as a missing path.
 
 ## `implements`: linking the change to its plan
 
@@ -233,7 +270,7 @@ is testable with no process spawned.
 Two commands ask the same question — "is the checkout I am standing in the
 project's configured source repository?" — and they used to answer it with
 two hand-written ladders in `rdm-cli`. An audit confirmed the two genuinely
-**disagree**, in exactly three of the seven environments below (E2, E4, E6),
+**disagree**, in exactly three of the eight environments below (E2, E4, E6a),
 and that the disagreement is intentional rather than drift:
 
 - `rdm review --on change/…` pins content. It must name a source or refuse,
@@ -256,16 +293,44 @@ explicitly refused.
 | E3 mismatching checkout + configured REMOTE source | `Unavailable(CheckoutIsNotConfiguredSource)` | `Unavailable(CheckoutIsNotConfiguredSource)` |
 | E4 no checkout + configured LOCAL source | `ReadConfiguredLocal` | `Unavailable(NotInCheckout)` |
 | E5 no checkout + configured REMOTE source | `Unavailable(ConfiguredSourceNotLocal)` | `Unavailable(NotInCheckout)` |
-| E6 in a checkout, NO source configured | `ReadCwdCheckout` | `Unavailable(NoSourceConfigured)` |
+| E6a in a checkout that is NOT the plan repo, NO source configured | `ReadCwdCheckout` | `Unavailable(NoSourceConfigured)` |
+| E6b in the PLAN REPO itself, NO source configured | `Unavailable(CheckoutIsPlanRepo)` | `Unavailable(NoSourceConfigured)` |
 | E7 no checkout, NO source configured | `Unavailable(NoCheckoutAndNoSource)` | `Unavailable(NoCheckoutAndNoSource)` |
 
-E6 and E7 are distinct environments with distinct causes and are never
+E6a, E6b and E7 are distinct environments with distinct causes and are never
 collapsed into one row, even where two causes happen to share a message.
-The same seven row labels appear in `select_source`'s rustdoc and in its
-table-driven unit test, which pins the row count at fourteen cells and
-asserts that E2, E4 and E6 *differ* between the two consumers — so a later
+The same eight row labels appear in `select_source`'s rustdoc and in its
+table-driven unit test, which pins the row count at sixteen cells and
+asserts that E2, E4 and E6a *differ* between the two consumers — so a later
 attempt to unify the ladders fails loudly instead of silently erasing the
 skip.
+
+**E6b** is the one environment where change review refuses a checkout it is
+standing in. Standing in the plan repo with no `source.repo` configured used to
+read the *plan repo* as the source: `change/HEAD` pinned the plan repo's own
+HEAD, the merge base of that HEAD against the plan repo's own default branch was
+that same HEAD, and rdm silently recorded a review of plan data as though it
+were the project's code. The refusal names both ways out:
+
+```
+the current directory is the plan repo, not a source checkout — run this from
+the project's source checkout, or set `source.repo` in its project.md
+```
+
+The guard is deliberately scoped to `configured: None`. An operator who
+explicitly points a project's `source.repo` *at* the plan repo has named that
+choice, and E1/E2 keep working unchanged. Identity is compared through
+`discover_project_repo` on **both** sides, canonicalized — never by matching the
+raw `RDM_ROOT` string — so a plan root nested inside its git repository, a
+symlinked root, and a plan repo opened through a linked worktree all compare
+correctly.
+
+A related refusal lives one step later, in `resolve_change_target`: a **derived**
+base that resolves to the same commit as the head is an empty reviewed range,
+refused as `Error::ChangeEmptyReviewedRange`. Only a derived base — an explicit
+`--base <head>` is a supported shape (an intentionally code-free review, and the
+root commit of an orphan branch that has no merge base at all), so the guard
+never fires on one.
 
 ### Identity root vs. read root
 
@@ -306,14 +371,27 @@ checkout to read, asking the cwd which worktree it is, and formatting output.
 | the git implementation | `rdm-git/src/source.rs` |
 | the drift-tip ladder (`resolve_drift_tip`) | `rdm-core/src/change.rs` |
 | which repository to read, as a pure decision (`select_source`) + locator identity | `rdm-core/src/source_select.rs` |
-| the environmental half of discovery: cwd, checkout lookup, `is_dir`, `origin` remote | `rdm-cli/src/source_repo.rs` |
+| the environmental half of discovery: cwd, checkout lookup, `is_dir`, `origin` remote, plan-repo identity | `rdm-cli/src/source_repo.rs` |
+| the whole read-path degrade ladder and its note strings (`resolve_change_review`) | `rdm-core/src/change.rs` |
 | CLI wiring: discovery + core calls + formatting | `rdm-cli/src/commands/review.rs` |
+| the server's discovery: **configured-local only**, structurally cwd-blind | `rdm-server/src/source_repo.rs` |
+| the REST + HTML read surfaces, both routed through `resolve_change_review` | `rdm-server/src/handlers/reviews.rs`, `rdm-server/src/review_views.rs` |
 
 Every failure mode above is a matchable `rdm_core::Error` variant rather than
 a formatted string, so the server layer maps them onto its own status codes
 without re-deriving the rule (`rdm-server/src/problem.rs`).
 
+The degrade ladder lives in core rather than in `rdm-cli` for a concrete
+reason: while it was ~90 lines of CLI-side policy, `rdm-server` could not reach
+it, and so reported every change-review comment `unresolved` with no note.
+Anything that is *policy about how to degrade* belongs beside the rules it
+degrades; only checkout discovery differs between the surfaces, and each keeps
+its own (the CLI reads the cwd, the server reads only a configured local
+directory).
+
 Integration coverage: `rdm-cli/tests/cli_review_change.rs` (real temp git
-source repo + real temp plan repo) and § 7 of
+source repo + real temp plan repo), `rdm-server/tests/change_reviews.rs` (the
+REST and HTML surfaces against a real temp source repo, including the
+never-`unresolved`-with-a-null-note invariant) and § 7 of
 `scripts/verify-workflow-review-outcome.sh` (the workflow lane's persist path
 executed verbatim against the real binary).

@@ -13660,4 +13660,202 @@ else
     fail "15g-mut: the reverted (pre-fix) writer did NOT let any marker fire — § 15g would not have caught the original vulnerability"
 fi
 
+# --- 15h. TEMP-FILE HYGIENE ---------------------------------------------------
+# The persist ladder writes `rdm review start --format json` to a scratch file
+# and sed's the review id back out of it. That file used to be
+# `${TMPDIR:-/tmp}/rdm-persist-start.$$.json` — a name anyone can predict, in a
+# world-writable directory, written with `>`, which FOLLOWS A SYMLINK. A symlink
+# planted at that path before the agent runs turns the redirect into an
+# arbitrary-file overwrite running as the agent's user. `mktemp` creates the file
+# itself with O_EXCL and mode 600, so there is nothing to guess and no window;
+# the `rm -f` keeps a review summary from being left behind in a shared
+# directory.
+#
+# Gated over the EMITTED bytes of every stamped consumer, not only the lib: the
+# shipped templates and `plugins/rdm/` are what downstream agents actually run.
+say "15h. Temp-file hygiene: mktemp + removal in the emitted persist ladder, in every stamped copy"
+
+cat >"$TMP/persist-hygiene.mjs" <<'NODE_PERSIST_HYGIENE'
+import assert from 'node:assert/strict';
+import { pathToFileURL } from 'node:url';
+
+const [libPath] = process.argv.slice(2);
+const { persistReviewCommands } = await import(pathToFileURL(libPath).href);
+
+// Two shapes, because the ladder differs between them: a plain document target
+// and a change target (which prepends a `cd` and a `review source` line).
+const shapes = [
+  ['document target', 'task/persist-target', {}],
+  [
+    'change target',
+    'change/' + 'a'.repeat(40),
+    {
+      pathAnchors: true,
+      source: {
+        path: '/tmp/some checkout',
+        item: 'task/persist-target',
+        base: 'b'.repeat(40),
+        head: 'a'.repeat(40),
+        branch: 'topic',
+      },
+      implements: 'rdm:plan/p',
+    },
+  ],
+];
+
+for (const [label, target, opts] of shapes) {
+  const ladder = persistReviewCommands(
+    {
+      mode: 'code',
+      outcome: 'rework',
+      survivors: [
+        { id: 'f1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'x', quote: 'q', location: 'src/lib.rs:1' },
+      ],
+    },
+    target,
+    { rdmBin: '/usr/bin/true', project: 'demo' },
+    opts
+  ).join('\n');
+
+  assert.ok(
+    /RDM_PERSIST_START_JSON=\$\(mktemp "\$\{TMPDIR:-\/tmp\}\/rdm-persist-start\.XXXXXX"\) \|\| exit 1/.test(ladder),
+    label + ': the scratch file must be created with a quoted mktemp template and `|| exit 1`'
+  );
+  assert.ok(
+    ladder.includes('rm -f "$RDM_PERSIST_START_JSON"'),
+    label + ': the scratch file must be removed after the id is read'
+  );
+  assert.ok(
+    !ladder.includes('$$'),
+    label + ': no $$-named path may appear anywhere in the ladder'
+  );
+  // No redirect whose target is a literal /tmp-rooted path. The mktemp
+  // TEMPLATE mentions ${TMPDIR:-/tmp}, which is an argument, not a redirect
+  // target — so the check looks for `>` followed by such a path specifically.
+  const badRedirect = /(^|[^>])>\s*"?(\$\{TMPDIR:-\/tmp\}|\/tmp)\//m.exec(ladder);
+  assert.equal(
+    badRedirect,
+    null,
+    label + ': no redirect may target a /tmp-rooted path directly: ' + (badRedirect && badRedirect[0])
+  );
+  // …and the removal must live in the SAME command entry as the read, so the two
+  // can never be reordered apart.
+  const entries = persistReviewCommands(
+    { mode: 'code', outcome: 'reviewed', survivors: [] },
+    target,
+    { rdmBin: '/usr/bin/true', project: 'demo' },
+    opts
+  );
+  const withRead = entries.filter((c) => c.includes('RDM_REVIEW_ID=$('));
+  assert.equal(withRead.length, 1, label + ': exactly one entry extracts the review id');
+  assert.ok(
+    withRead[0].includes('rm -f "$RDM_PERSIST_START_JSON"'),
+    label + ': the removal must be in the same entry as the id extraction'
+  );
+}
+console.log('persist temp-file hygiene assertions passed');
+NODE_PERSIST_HYGIENE
+
+if run_node "$TMP/persist-hygiene.mjs" "$LIB"; then
+    pass "15h: lib/review.mjs emits a mktemp-created, explicitly-removed scratch file with no \$\$ and no /tmp redirect"
+else
+    fail "15h: the emitted persist ladder failed the temp-file hygiene assertions"
+fi
+
+# The SHIPPED bytes, not only the lib. Every stamped consumer plus the two
+# plugin engines must carry the same three literals and neither of the two
+# forbidden ones — these are the files a downstream agent actually executes.
+for stamped in \
+    "$WF_DIR/rdm-wf-review-refute-fix.js" \
+    "$WF_DIR/rdm-wf-dispatch-phase.js" \
+    "$WF_DIR/rdm-wf-plan-review.js" \
+    "$TEMPLATES/workflows/rdm-wf-review-refute-fix.js" \
+    "$TEMPLATES/workflows/rdm-wf-dispatch-phase.js" \
+    "$REPO_ROOT/plugins/rdm/workflows/rdm-wf-review-refute-fix.js" \
+    "$REPO_ROOT/plugins/rdm/workflows/rdm-wf-dispatch-phase.js"; do
+    [ -f "$stamped" ] || fail "15h: stamped consumer not found: $stamped"
+    # -F throughout, and the patterns are single-quoted on purpose: `$` and
+    # `${…}` are the literal SHELL TEXT being searched for inside the emitted
+    # JavaScript, never something to expand here. -F rather than a BRE because
+    # the mktemp template's `${TMPDIR:-/tmp}` contains `[`-class-looking and
+    # brace metacharacters that a regex would silently fail to match, leaving
+    # the check vacuous.
+    # shellcheck disable=SC2016
+    grep -qF 'mktemp "${TMPDIR:-/tmp}/rdm-persist-start.XXXXXX"' "$stamped" ||
+        fail "15h: $stamped does not create its scratch file with mktemp"
+    # shellcheck disable=SC2016
+    grep -qF 'rm -f "$RDM_PERSIST_START_JSON"' "$stamped" ||
+        fail "15h: $stamped never removes its scratch file"
+    grep -qF 'rdm-persist-start.$$.json' "$stamped" &&
+        fail "15h: $stamped still carries the predictable \$\$-named scratch path"
+done
+pass "15h: all seven stamped copies carry the mktemp form and none carries the \$\$-named path"
+
+# --- 15h-mut. PLANTED-MUTATION SELF-TEST -------------------------------------
+# Restore the pre-fix `$$` line in a scratch copy of the lib, re-stamp the
+# consumers from it, and require § 15h's checks to FAIL — then heal. Exactly the
+# shape § 1b uses for the drift detector: without this, a future rewrite of the
+# hygiene assertions could pass while asserting nothing.
+say "15h-mut. Temp-file hygiene fires on the restored \$\$ path (self-test)"
+
+MUT15H="$TMP/mut-15h"
+mkdir -p "$MUT15H/scripts" "$MUT15H/.claude/workflows/lib"
+cp "$GEN" "$MUT15H/scripts/gen-workflow-review.sh"
+cp "$LIB" "$MUT15H/.claude/workflows/lib/review.mjs"
+for consumer in rdm-wf-review-refute-fix.js rdm-wf-dispatch-phase.js rdm-wf-plan-review.js; do
+    cp "$WF_DIR/$consumer" "$MUT15H/.claude/workflows/$consumer"
+done
+
+# Revert BOTH halves of the fix in the scratch lib, in Node rather than perl:
+# the mktemp line is full of `/`, `"`, `{` and `$`, which a one-liner regex has
+# to escape into unreadability (and got wrong). Fixed-string replacement over the
+# whole file is exact, and the script FAILS if either edit does not apply, so a
+# future reshaping of the source cannot leave this self-test silently mutating
+# nothing.
+run_node - "$MUT15H/.claude/workflows/lib/review.mjs" <<'NODE_PLANT_15H'
+import fs from 'node:fs';
+const p = process.argv[2];
+let s = fs.readFileSync(p, 'utf8');
+const edits = [
+  // (1) back to the predictable PID-named path, redirected into.
+  [
+    "cmds.push('RDM_PERSIST_START_JSON=$(mktemp \"${TMPDIR:-/tmp}/rdm-persist-start.XXXXXX\") || exit 1');",
+    "cmds.push('RDM_PERSIST_START_JSON=${TMPDIR:-/tmp}/rdm-persist-start.$$.json');",
+  ],
+  // (2) and drop the removal, the other half of the fix.
+  ["      '\\n' +\n      'rm -f \"$RDM_PERSIST_START_JSON\"'\n", ''],
+];
+for (const [from, to] of edits) {
+  if (!s.includes(from)) {
+    console.error('15h-mut: planted mutation could not be applied — source shape changed:\n' + from);
+    process.exit(1);
+  }
+  s = s.split(from).join(to);
+}
+fs.writeFileSync(p, s);
+NODE_PLANT_15H
+grep -qF 'rdm-persist-start.$$.json' "$MUT15H/.claude/workflows/lib/review.mjs" ||
+    fail "15h-mut: the \$\$ revert did not apply — the mutation setup is broken"
+# shellcheck disable=SC2016  # the literal shell text in the emitted ladder
+grep -qF 'rm -f "$RDM_PERSIST_START_JSON"' "$MUT15H/.claude/workflows/lib/review.mjs" &&
+    fail "15h-mut: the rm -f revert did not apply — the mutation setup is broken"
+
+if run_node "$TMP/persist-hygiene.mjs" "$MUT15H/.claude/workflows/lib/review.mjs" >/dev/null 2>&1; then
+    fail "15h-mut: the reverted (pre-fix) writer PASSED the hygiene assertions — § 15h is vacuous"
+fi
+pass "15h-mut: restoring the \$\$ path and dropping the rm makes § 15h fail"
+
+# And the stamped-bytes half of § 15h must fail on a re-stamped mutant too, so
+# the seven-copy grep is not vacuous either.
+sh "$MUT15H/scripts/gen-workflow-review.sh" >/dev/null 2>&1 ||
+    fail "15h-mut: re-stamping the scratch tree failed"
+# shellcheck disable=SC2016  # the literal shell text in the emitted ladder
+if grep -qF 'mktemp "${TMPDIR:-/tmp}/rdm-persist-start.XXXXXX"' \
+    "$MUT15H/.claude/workflows/rdm-wf-review-refute-fix.js"; then
+    fail "15h-mut: the re-stamped mutant still carries the mktemp form — the stamping is not reaching it"
+fi
+grep -qF 'rdm-persist-start.$$.json' "$MUT15H/.claude/workflows/rdm-wf-review-refute-fix.js" ||
+    fail "15h-mut: the re-stamped mutant does not carry the \$\$ path — the grep half of § 15h is vacuous"
+pass "15h-mut: the re-stamped mutant carries the \$\$ path and not the mktemp form — the stamped-bytes grep is load-bearing"
+
 say "verify-workflow-review.sh: ALL GREEN"

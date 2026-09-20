@@ -293,6 +293,34 @@ pub enum Error {
     /// The revision `--base` names does not resolve in the project's source
     /// repository.
     ChangeBaseNotFound(String),
+    /// The source repository being read does not contain the commit a
+    /// `change/<sha>` review names as its head, so nothing about the reviewed
+    /// content can be verified there.
+    ///
+    /// Distinct from [`Self::ChangePathNotInRevision`] on purpose: the remedy
+    /// is environmental (fetch the branch, or point `source.repo` at the right
+    /// checkout), and reporting it as a missing *path* was a confidently false
+    /// statement about a file the commit does contain.
+    ChangeHeadNotInSource {
+        /// The reviewed head, as a full SHA.
+        head: String,
+        /// Where the repository was read from, when the implementation can
+        /// name it (see [`crate::source::SourceRepo::location`]).
+        location: Option<String>,
+    },
+    /// A `change/` review's derived reviewed range is empty: the merge base of
+    /// its head and the project's default branch IS that head, so the range
+    /// contains no commits and there is nothing to review.
+    ///
+    /// Raised only for a *derived* base. An explicit `--base` equal to the
+    /// head is a supported shape (a deliberately code-free review), so the
+    /// guard never fires on one.
+    ChangeEmptyReviewedRange {
+        /// The reviewed head, as a full SHA.
+        head: String,
+        /// The branch the merge base was derived against.
+        branch: String,
+    },
     /// A `change/` review's head and the project's default branch share no
     /// common ancestor, so the reviewed range cannot be derived.
     ChangeNoMergeBase {
@@ -882,6 +910,22 @@ impl std::fmt::Display for Error {
                     "--base '{rev}' does not name a commit in the source repository"
                 )
             }
+            Error::ChangeHeadNotInSource { head, location } => match location {
+                Some(location) => write!(
+                    f,
+                    "the source repository at {location} does not contain the reviewed commit {head} — anchor resolution skipped (fetch the branch, or point the project's `source.repo` at the right checkout)"
+                ),
+                None => write!(
+                    f,
+                    "the source repository does not contain the reviewed commit {head} — anchor resolution skipped (fetch the branch, or point the project's `source.repo` at the right checkout)"
+                ),
+            },
+            Error::ChangeEmptyReviewedRange { head, branch } => {
+                write!(
+                    f,
+                    "an empty reviewed range is never a reviewable change — the merge base of {head} and '{branch}' IS {head}, so nothing is under review; review a commit that changes something, or pass --base <rev> naming the revision the change is diffed against"
+                )
+            }
             Error::ChangeNoMergeBase { head, branch } => {
                 write!(
                     f,
@@ -1192,6 +1236,30 @@ mod tests {
                 Error::ChangePathNotLinkable {
                     path: "src/a@b.rs".to_string(),
                     delimiter: '@',
+                }
+                .to_string(),
+            ),
+            (
+                "ChangeHeadNotInSource (named location)",
+                Error::ChangeHeadNotInSource {
+                    head: "a".repeat(40),
+                    location: Some("/srv/source".to_string()),
+                }
+                .to_string(),
+            ),
+            (
+                "ChangeHeadNotInSource (no location)",
+                Error::ChangeHeadNotInSource {
+                    head: "a".repeat(40),
+                    location: None,
+                }
+                .to_string(),
+            ),
+            (
+                "ChangeEmptyReviewedRange",
+                Error::ChangeEmptyReviewedRange {
+                    head: "a".repeat(40),
+                    branch: "main".to_string(),
                 }
                 .to_string(),
             ),
