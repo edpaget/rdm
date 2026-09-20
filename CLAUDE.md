@@ -237,7 +237,7 @@ The review pipeline is a deterministic **Claude Code Workflow-tool** script unde
 `.claude/agents/` is the custom-agent registry `agent()`'s `opts.agentType` resolves against. It
 holds one definition, `rdm-mechanical.md`. The **four local-only workflows** (`rdm-wf-document.js`,
 `rdm-wf-backlog.js`, `rdm-wf-estimate.js`, `rdm-wf-plan-review.js`) thread it at their mechanical call sites; the
-two distributed workflows and every judgment site must not. `scripts/verify-workflow-review.sh`
+distributed workflow and every judgment site must not. `scripts/verify-workflow-review.sh`
 §2c asserts both directions with planted-mutation self-tests. Resolution is confirmed on the
 Workflow path and the trim measured at **8907 tokens/agent (−23 %)** — roughly half the 19894
 the `claude -p` 2×2 predicts, so quote 8907 for these sites.

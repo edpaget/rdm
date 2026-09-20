@@ -433,10 +433,12 @@ Workflow script cannot shell out to build the payload itself) does not imply "ca
 context: autopilot is no longer a headless `.claude/workflows/autopilot.js` Workflow that reaches
 `rdm-wf-dispatch-phase` through a nested, JS-mediated `agent()` call (that file was retired by the
 `prose-autopilot-orchestration` roadmap); it is the prose `.claude/skills/rdm-autopilot/SKILL.md`
-skill, which is already a live agent with Bash access and invokes `rdm-wf-dispatch-phase` directly
-via the `Workflow` tool. On the CLI surface it now runs the same `phase show` + five
-`model resolve` calls `buildFetchPrompt` would have delegated to a Stage-0 agent, and forwards the
-result as `phaseMeta` — eliminating that Opus-tier call per dispatched phase **on the success
+skill, which is already a live agent with Bash access and, at the time of this correction, invoked
+`rdm-wf-dispatch-phase` directly via the `Workflow` tool (that engine was itself retired by
+`agent-orchestrated-dispatch` phase 7 — the loop now enters the prose `rdm-dispatch-phase`
+orchestrator with the `Skill` tool instead). On the CLI surface it now runs the same
+`phase show` + five `model resolve` calls `buildFetchPrompt` would have delegated to a Stage-0
+agent, and forwards the result as `phaseMeta` — eliminating that Opus-tier call per dispatched phase **on the success
 path**, the same way `fetch:next`/`estimate:list`/`model:mechanical` above already do. This is
 deliberately not unconditional: `hoistedMetaComplete` is all-or-nothing, and a cold direct
 `Workflow` invocation must keep resolving models via the unsized bootstrap fetch (nothing about

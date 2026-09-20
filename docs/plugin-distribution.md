@@ -152,7 +152,7 @@ Official precedent: `claude-security` plugin uses `Workflow({ name: "claude-secu
 
 **Decision:** Shims must resolve `rdmBin` and optional `project` arguments for the engines.
 
-Workflow engines (e.g., `rdm-wf-dispatch-phase.js`) accept these arguments:
+Workflow engines (e.g., `rdm-wf-review-refute-fix.js`) accept these arguments:
 
 - **`rdmBin` (OPTIONAL):** Path to the rdm binary. An absent key defaults to a plain `rdm` on `PATH`; an explicit string is used verbatim, and the sentinel `"rdm"` requests PATH resolution deliberately. A present-but-non-string value still throws, since degrading a typo to PATH would reintroduce the silent-wrong-binary hazard. The engine never probes the filesystem. Canonical contract: [`docs/workflow-schemas.md`](workflow-schemas.md) § "Environment args: `rdmBin` and `project`".
 - **`project` (OPTIONAL):** The rdm project name. If absent, rdm uses `RDM_PROJECT` environment variable or the `default_project` configured in `rdm.toml`.
@@ -186,7 +186,7 @@ If rdm cannot resolve the project, it emits a clear error message directing the 
 ### Notes on Implementation
 
 - The skill shim (e.g., `rdm-dispatch-phase`) is generated in Phase 2 and must contain the `rdmBin` resolution logic at the point where it invokes the Workflow tool.
-- This does not change the Workflow engines themselves (e.g., `rdm-wf-dispatch-phase.js`). They treat `rdmBin` identically in the plugin and raw-skills distributions: absent means a plain `rdm` on `PATH`, and only a non-string value is refused.
+- This does not change the Workflow engines themselves (e.g., `rdm-wf-review-refute-fix.js`). They treat `rdmBin` identically in the plugin and raw-skills distributions: absent means a plain `rdm` on `PATH`, and only a non-string value is refused.
 - Error messages must be tested as part of Phase 3's integration tests (the harness that validates plugin installation and command execution).
 
 ## Fixed Plugin Layout
@@ -269,9 +269,9 @@ This gate will run as part of Phase 3's harness (`rdm-cli plugin --check` or equ
 
 All path examples in rdm's documentation use the **source-tree path**, not the plugin-mode name transform:
 
-- Workflow engine file: `.claude/workflows/rdm-wf-dispatch-phase.js` (not `rdm-wf-dispatch-phase.js` alone)
+- Workflow engine file: `.claude/workflows/rdm-wf-review-refute-fix.js` (not `rdm-wf-review-refute-fix.js` alone)
 - Skill file: `.claude/skills/rdm-dispatch-phase/SKILL.md` (not `dispatch-phase/SKILL.md`)
-- In plugin context, these are invoked as: `/rdm:rdm-wf-dispatch-phase` and `rdm:dispatch-phase` (with namespacing applied by the platform)
+- In plugin context, these are invoked as: `/rdm:rdm-wf-review-refute-fix` and `rdm:dispatch-phase` (with namespacing applied by the platform)
 
 This convention keeps documentation independent of the distribution channel. A consumer of the raw-skills output or the plugin sees the same workflow engine name in logs and error messages (the platform-supplied namespace prefix).
 

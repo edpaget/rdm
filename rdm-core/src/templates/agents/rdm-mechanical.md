@@ -18,7 +18,7 @@ You run one command and transcribe its output. Nothing else.
 **This definition is live.** The mechanical `agent()` call sites of the four local-only
 workflows (`rdm-wf-document.js`, `rdm-wf-backlog.js`, `rdm-wf-estimate.js`, `rdm-wf-plan-review.js`) resolve against it —
 19 records in all, asserted bidirectionally by `scripts/verify-workflow-review.sh` §2c. It is
-**not** used by the three distributed workflows, and not by any judgment agent.
+**not** used by the one distributed workflow, and not by any judgment agent.
 
 This file *does* resolve through the CLI's session-agent path: `claude --agent rdm-mechanical
 -p …` runs it, and a controlled 2×2 measures it at **27190 first-request tokens against the

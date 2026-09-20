@@ -169,15 +169,18 @@ Unlike phase 6, it persisted every step:
 - Approving plan review: **`2026-09-20-1412-7da6`** (author `edward`, `submitted` /
   `approve`), transcribing plan-review run **`wf_f4ea10da-078`**'s clean verdict after the
   engine misrouted it — see `task/plan-review-engine-ignores-rdmbin`.
-- Change review: **`2026-09-20-1631-c691`**, on
-  `change/512767e0d268f3de9722dff831039cb76a4a83e9` (branch
-  `roadmap/agent-orchestrated-dispatch`), recorded by the orchestrator on this phase's head.
-  Look it up with `rdm plan show phase-7-parity-and-retirement --project rdm --format json` →
-  `change_reviews[]`. **Not** with `rdm review list --on phase/…`: `ReviewTarget::same_item`
+- Change reviews: the whole set the orchestrator recorded on this phase, one per head it
+  reviewed as the triage loop iterated — read it from `rdm plan show
+  phase-7-parity-and-retirement --project rdm --format json` → `change_reviews[]` rather than
+  from any single sha quoted here, which goes stale the moment the branch moves. The first was
+  **`2026-09-20-1631-c691`** on `change/512767e0d268f3de9722dff831039cb76a4a83e9` (branch
+  `roadmap/agent-orchestrated-dispatch`); each later one is on a subsequent head of the same
+  branch, and the terminal `--status reviewed` write is what the final, approving one gates.
+  **Not** `rdm review list --on phase/…`: `ReviewTarget::same_item`
   matches only same-kind targets, so a `change/<sha>` review never surfaces under a `phase/`
   filter.
 
-Read either approval back with `rdm review show <id> --project rdm`, and the plan with
+Read any of these back with `rdm review show <id> --project rdm`, and the plan with
 `rdm plan show phase-7-parity-and-retirement --project rdm --format json`.
 
 **Accepted loss.** Deleting `scripts/verify-workflow-dispatch.sh` gave up its

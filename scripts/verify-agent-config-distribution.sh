@@ -318,7 +318,7 @@ say "1. Emitting 'agent-config claude --skills'"
 pass "emitted into $TMP/cli"
 
 # --- 2. structural: skills + workflows + agents land at conventional paths -
-say "2. Structural: all 11 skills + 2 workflow scripts + 1 agent definition present with valid frontmatter"
+say "2. Structural: all 11 skills + 1 workflow script + 1 agent definition present with valid frontmatter"
 for skill in $SKILLS; do
     md="$TMP/cli/.claude/skills/$skill/SKILL.md"
     [ -f "$md" ] || fail "cli: missing $md"
@@ -332,7 +332,7 @@ for agent in $AGENTS; do
     [ -f "$agent_md" ] || fail "cli: missing .claude/agents/$agent"
     assert_valid_frontmatter "$agent_md"
 done
-pass "cli: 11 skills (valid frontmatter) + 2 workflow scripts + 1 agent definition (valid frontmatter) present"
+pass "cli: 11 skills (valid frontmatter) + 1 workflow script + 1 agent definition (valid frontmatter) present"
 
 # --- 2b. every render placeholder is substituted in the emitted skills ------
 say "2b. Substitution: no emitted skill ships a literal render placeholder"
@@ -371,8 +371,8 @@ fi
 # its tree). Modeled on `scripts/verify-workflow-review.sh` §2c(iv)'s
 # resolution shape.
 #
-# The emitted reference set is empty today: none of the two distributed
-# workflow scripts threads `agentType` yet (that is a deliberate follow-up,
+# The emitted reference set is empty today: the one distributed workflow
+# script does not thread `agentType` yet (that is a deliberate follow-up,
 # not this phase's scope — see `docs/mechanical-agent-inventory.md`). An
 # occurrence floor over real references (mirroring the shim-reference `>= 4`
 # floor a few sections up) would therefore fail on a correct implementation,
@@ -525,8 +525,10 @@ pass "cli: rdm-dispatch-phase/rdm-do carry their expected exact references"
 # instruct invoking a Workflow whose name does not resolve to a file in
 # this same emitted tree -- that call would target a file this
 # generator does not emit and would fail at the exact point the skill's
-# contract depends on. rdm-autopilot composes only `rdm-wf-dispatch-phase`
-# downstream; its `rdm-wf-estimate` pre-pass is intentionally dropped from the
+# contract depends on. Downstream, rdm-autopilot enters the prose
+# `rdm-dispatch-phase` orchestrator with the `Skill` tool and the only engine
+# reached from there is `rdm-wf-review-refute-fix`; the
+# `rdm-wf-estimate` pre-pass is intentionally dropped from the
 # distributed template (see docs/workflow-vs-prose-boundary.md), so it
 # must never instruct invoking `rdm-wf-estimate` either -- the same hazard that
 # got `autopilot.js` itself retired from this surface.

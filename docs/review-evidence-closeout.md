@@ -96,9 +96,12 @@ resolved by padding or trimming to fit the number.
 
 The closeout's CI-authoritative matrix (AC4) runs the project's one declared
 verification command — the `dispatch.verify` chain — and that command is also
-what `rdm-wf-dispatch-phase`'s phase-time gate runs, through a Bash-executing
-agent. The agent's Bash tool caps a single call at **600 seconds**. Measured in
-this worktree, warm, on a clean tree:
+what the dispatch lane's phase-time gate runs, through a Bash-executing
+agent — `rdm-wf-dispatch-phase`'s gate as of phase 15, and the prose
+`rdm-dispatch-phase` orchestrator's since `agent-orchestrated-dispatch`
+phase 7 retired that engine. The agent's Bash tool caps a single call at
+**600 seconds**, either way. Measured in this worktree, warm, on a clean
+tree:
 
 | Head | Declared command | Margin under 600s |
 |---|---|---|

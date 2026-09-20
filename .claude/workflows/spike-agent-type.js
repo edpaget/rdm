@@ -132,6 +132,10 @@ const PROMPT = [
 //   TIER_SCHEMA         .claude/workflows/rdm-wf-estimate.js       (estimate:tier)
 //   ESTIMATE_SCHEMA     .claude/workflows/rdm-wf-estimate.js       (estimate:rate)
 //   DIFF_SIGNALS_SCHEMA .claude/workflows/rdm-wf-dispatch-phase.js (diff:signals)
+// The last of those five call sites no longer exists: `agent-orchestrated-dispatch`
+// phase 7 retired `rdm-wf-dispatch-phase.js`, so DIFF_SIGNALS_SCHEMA below is a
+// historical copy of the shape as it stood when this spike ran, with nothing left
+// upstream to diverge from.
 const STAMP_ACK_SCHEMA = {
   type: 'object',
   additionalProperties: false,

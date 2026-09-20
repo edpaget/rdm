@@ -99,8 +99,8 @@ be reported with the failed command and the action needed to continue.
 ## Support matrix
 
 “Workflow” describes the existing Claude surface, not a Codex capability.
-Distributed Claude ships eleven skills but only two workflow engines; local
-Claude has six production engines and a separate spike. Eight local skills
+Distributed Claude ships eleven skills but only one workflow engine; local
+Claude has five production engines and a separate spike. Eight local skills
 depend on workflow behavior. The manual Codex `rdm-do` is a deliberate bounded
 alternative, not a claim that its Claude finalization workflow was ported.
 
@@ -131,7 +131,7 @@ explicit user task text, and host-managed approvals in the manual templates.
 | rdm-estimate | Prose recipe | Estimate workflow | Withheld; inspect/estimate manually |
 | rdm-backlog | Prose recipe | Backlog workflow | Withheld; inspect and propose manually |
 | rdm-document | Prose recipe | Document workflow | Withheld; author docs manually |
-| rdm-dispatch-phase | Prose orchestrator (two Workflow calls) | Prose orchestrator (two Workflow calls) | Withheld; one manual rdm-do item. The procedure is prose, but its plan-review and code-review stages are two `Workflow` calls Codex has no runtime for. |
+| rdm-dispatch-phase | Prose orchestrator (one Workflow call; the plan gate is a human approve review, since `rdm-wf-plan-review` is not shipped) | Prose orchestrator (two Workflow calls) | Withheld; one manual rdm-do item. The procedure is prose, but its code-review stage — and, locally, its plan-review stage too — are `Workflow` calls Codex has no runtime for. |
 | rdm-autopilot | Prose loop over the orchestrator | Estimate workflow + prose orchestrator | Withheld; one manual rdm-do item |
 
 Existing Pi generation is unchanged. Native Codex review, agent delegation,
