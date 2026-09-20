@@ -405,9 +405,15 @@ pub enum Error {
     /// field — for example `--body` together with `--clear-body`. The two are
     /// contradictory; pass exactly one.
     ConflictingUpdate {
-        /// The field name (`"body"`, `"priority"`, or `"tags"`).
+        /// The field name (`"body"`, `"priority"`, `"tags"`, or `"source"`).
         field: String,
     },
+    /// A project source update named no change to make: neither a repository
+    /// locator, nor a default branch, nor a request to clear the source.
+    ProjectSourceUpdateEmpty(String),
+    /// A project source update supplied only a default branch, and the project
+    /// has no configured source repository for that branch to belong to.
+    ProjectSourceRepoMissing(String),
     /// A conditional estimate targeted a changed phase or an already-set estimate.
     PhaseEstimateConflict(String),
     /// A staged write was derived from content another process has since
@@ -1017,6 +1023,14 @@ impl std::fmt::Display for Error {
             Error::ConflictingUpdate { field } => {
                 write!(f, "cannot set both '{field}' and 'clear_{field}'")
             }
+            Error::ProjectSourceUpdateEmpty(name) => write!(
+                f,
+                "nothing to update for project '{name}'; pass --source-repo <locator>, --source-branch <branch>, or --clear-source"
+            ),
+            Error::ProjectSourceRepoMissing(name) => write!(
+                f,
+                "project '{name}' has no source repository configured; pass --source-repo <locator> alongside --source-branch"
+            ),
             Error::PhaseEstimateConflict(stem) => write!(
                 f,
                 "conditional estimate refused for '{stem}': phase changed or difficulty/model is already set; read the phase again before estimating"

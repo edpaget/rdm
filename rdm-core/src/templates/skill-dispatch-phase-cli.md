@@ -107,16 +107,34 @@ stop, not a guess: say so and return without invoking anything.
 
 ### 2. Resume before planning — never discard work a prior pass recorded
 
+Read **the item's own review set** (defined once here; step 11 uses this same recipe, for both its
+work list and its completion check):
+
 ```bash
+# (a) the item's plans — the hub every other record hangs off
 rdm plan list --implements <item> {proj_flag} --format json
-rdm review requests {proj_flag} --format json
+# (b) reviews of the item document itself
+rdm review list --on <item> --state submitted --verdict request-changes {proj_flag} --format json
+# (c) per plan slug from (a): its plan reviews (`reviews[]`) and the change
+#     reviews implementing it (`change_reviews[]`)
+rdm plan show <plan-slug> {proj_flag} --no-body --format json
 ```
 
-- An `approved` plan for `<item>` **and** an open review on it → **resume at triage (step 11)** with
-  those ids. Do not re-plan, do not create a second review, and do not re-ask a confirmation for a
-  decision already recorded as a reply on a comment.
-- An `approved` plan and no open review → resume at step 8 (implement), or step 10 (code review) if
-  the implementation is already committed.
+**You MUST NOT** substitute `rdm review requests` for this. `review requests` is shorthand for
+`review list --state submitted --verdict request-changes` with **no target filter at all** — it has
+no `--on` flag and returns every pending review in the whole project, including reviews on other
+roadmaps, other tasks and other sessions' items. `review list --on <target>` is the same queue
+*scoped*, and (a)+(c) are what enumerate this item's targets — the item document, its `plan/<slug>`
+documents, and the `change/<sha>` heads recorded against them. Anything the item's review set does
+not contain belongs to another item and is **not yours to triage**: acting on it would dispatch a fix
+into this item's worktree for a change that lives somewhere else, record an `--applied-commit` from
+the wrong branch, and race any concurrent dispatch run reading the same global queue.
+
+- An `approved` plan for `<item>` **and** an open review **in that set** → **resume at triage (step
+  11)** with those ids. Do not re-plan, do not create a second review, and do not re-ask a
+  confirmation for a decision already recorded as a reply on a comment.
+- An `approved` plan and no open review in that set → resume at step 8 (implement), or step 10 (code
+  review) if the implementation is already committed.
 - Nothing → continue to step 3.
 
 ### 3. Ensure the worktree exists, then pin the checkout identity
@@ -260,8 +278,15 @@ Read the returned object and obey it:
 
 ### 11. Triage — ONE procedure, whatever the review's origin
 
-Build the work list from `rdm review requests {proj_flag} --format json` **plus** the ids the review
-returned, deduped by id. Then, per review, read it **once**:
+Build the work list from **the item's review set** (step 2's recipe (a)+(b)+(c), re-read now)
+**plus** the ids the review returned, deduped by id. Every id on the list must trace back to
+`<item>` — its own document, one of its `plan/<slug>` documents, or a `change/<sha>` recorded in one
+of their `change_reviews[]`. **You MUST NOT** build this list from `rdm review requests`: that queue
+is project-wide and unfiltered, so a literal read of it hands you another item's comments and you
+would "fix" them in this item's worktree, under this item's pinned identity, with an
+`--applied-commit` that belongs to the wrong change. If an id's target does not resolve to `<item>`,
+**drop it** — the failure mode is "triaging another item's review". Then, per review, read it
+**once**:
 
 ```bash
 rdm review show <id> {proj_flag} --format json
@@ -317,8 +342,11 @@ rdm commit -m "chore(plan): triage review <id>"
 
 Then confirm, from the records and not from memory: every comment terminal with a non-empty reply,
 each `addressed` one carrying an `applied_commit`, the review `addressed`, `rdm link check` exit 0,
-and `rdm review requests {proj_flag} --format json` holding **no** entry for `<item>`. A non-empty
-queue is a **refusal to proceed** to the terminal write, not a warning.
+and **the item's review set** (step 2's recipe, re-read) holding **no** submitted request-changes
+review — i.e. every `rdm review list --on <target> --state submitted --verdict request-changes` over
+the item's own targets comes back empty. A non-empty result is a **refusal to proceed** to the
+terminal write, not a warning. Another item's pending review in the project-wide `rdm review
+requests` queue is **not** a reason to block this write.
 
 Bounded by `--max-code-rework`; on exhaustion park `blocked` with `[code] rework budget exhausted;
 unresolved comments on review <id>` so the review id is in the reason.
@@ -407,5 +435,5 @@ it dispatches MUST follow these rules:
   verification command, a gate refusal, or a changed checkout identity.
 - **Park, don't interrupt.** Record the escalation by setting the item `blocked` with a stage-tagged
   reason (`[plan]` or `[code]`) naming the open review ids and the plan, so a later session
-  reconstructs the pending work from `rdm review requests` + `rdm plan list --implements <item>`
-  alone. The user reviews the whole queue at once with `rdm review blocked {proj_flag}`.
+  reconstructs the pending work from the item's review set (step 2's recipe) alone. The user reviews
+  the whole cross-item queue at once with `rdm review blocked {proj_flag}`.

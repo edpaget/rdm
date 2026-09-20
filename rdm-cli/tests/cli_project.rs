@@ -169,6 +169,83 @@ fn project_update_branch_only_keeps_the_configured_repo() {
 }
 
 #[test]
+fn project_update_repo_only_keeps_the_configured_branch() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "create", "acme"])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "project",
+            "update",
+            "acme",
+            "--source-repo",
+            "/src/acme",
+            "--source-branch",
+            "main",
+        ])
+        .assert()
+        .success();
+
+    // Mirror of `project_update_branch_only_keeps_the_configured_repo`: the
+    // half the caller did not name survives, in this direction too.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "update", "acme", "--source-repo", "/src/moved"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/src/moved"))
+        .stdout(predicate::str::contains("branch: main"));
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "show", "acme", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"repo\": \"/src/moved\""))
+        .stdout(predicate::str::contains("\"default_branch\": \"main\""));
+}
+
+#[test]
+fn project_update_reports_the_new_source_as_json() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "create", "acme"])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "project",
+            "update",
+            "acme",
+            "--source-repo",
+            "/src/acme",
+            "--source-branch",
+            "trunk",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"repo\": \"/src/acme\""))
+        .stdout(predicate::str::contains("\"default_branch\": \"trunk\""));
+}
+
+#[test]
 fn project_update_branch_without_repo_is_actionable() {
     let dir = TempDir::new().unwrap();
     init_repo(&dir);
@@ -244,6 +321,32 @@ fn project_update_clear_source_conflicts_with_repo() {
             "--clear-source",
             "--source-repo",
             "/src/acme",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn project_update_clear_source_conflicts_with_branch() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["project", "create", "acme"])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "project",
+            "update",
+            "acme",
+            "--clear-source",
+            "--source-branch",
+            "main",
         ])
         .assert()
         .failure();

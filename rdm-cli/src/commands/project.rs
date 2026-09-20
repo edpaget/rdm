@@ -19,36 +19,17 @@ pub fn run(command: ProjectCommand, store: &mut AppStore, format: OutputFormat) 
             source_branch,
             clear_source,
         } => {
-            if !clear_source && source_repo.is_none() && source_branch.is_none() {
-                bail!(
-                    "nothing to update for project '{name}'; pass --source-repo <locator>, --source-branch <branch>, or --clear-source"
-                );
-            }
-            let existing = rdm_core::io::load_project(store, &name)
-                .with_context(|| format!("failed to load project '{name}'"))?
-                .frontmatter
-                .source;
-            let source = if clear_source {
-                None
-            } else {
-                let repo = match (source_repo, existing.as_ref()) {
-                    (Some(repo), _) => repo,
-                    (None, Some(current)) => current.repo.clone(),
-                    (None, None) => bail!(
-                        "project '{name}' has no source repository configured; pass --source-repo <locator> alongside --source-branch"
-                    ),
-                };
-                let default_branch = match source_branch {
-                    Some(branch) => Some(branch),
-                    None => existing.as_ref().and_then(|c| c.default_branch.clone()),
-                };
-                Some(rdm_core::model::Source {
-                    repo,
-                    default_branch,
-                })
-            };
+            // Argument parsing only: the merge against whatever the project
+            // already has, and both refusals, live in rdm-core so every
+            // interface gets the same semantics.
+            let update = rdm_core::ops::project::SourceUpdate::from_args(
+                &name,
+                source_repo,
+                source_branch,
+                clear_source,
+            )?;
             let doc = commit_mutation(store, "failed to update project", |s| {
-                rdm_core::ops::project::update_project_source(s, &name, source.clone())
+                rdm_core::ops::project::update_project_source(s, &name, update.clone())
             })?;
             match format {
                 OutputFormat::Json => {

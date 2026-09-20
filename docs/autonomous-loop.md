@@ -81,7 +81,7 @@ built on; delegating a Workflow call or a status write is simply impossible or u
 
 ```
 Skill(rdm-dispatch-phase)
-  1  resume check: plan list --implements <item> + review requests
+  1  resume check: the item's review set (see below), never the global queue
   2  worktree add (idempotent) → review source --on <item>   ← identity pinned ONCE
   3  phase/task update --status in-progress                  (skipped under --plan-only)
   4  Agent: planner → plan create --implements [--supersedes] + '## Verification command'
@@ -101,6 +101,18 @@ disappears. What survives is `plan/<slug>`, the review that approved it, the `ch
 review, and one `addressed`/`wont-fix` resolution with a reasoned reply per comment — written
 with the same commands a human uses, which is what makes a human's review and an engine's review
 interchangeable.
+
+**The item's review set** is what both the resume check and the triage work list read, and it is
+scoped to the item by construction: `plan list --implements <item>` gives the item's plans, `review
+list --on <item> --state submitted --verdict request-changes` gives reviews of the item document,
+and `plan show <plan-slug> --format json` gives each plan's own `reviews[]` plus the
+`change_reviews[]` recorded against it. `rdm review requests` is deliberately *not* used for this:
+it is shorthand for `review list --state submitted --verdict request-changes` with no target filter
+and no `--on` flag, so it returns every pending review in the project. Triaging off that queue would
+dispatch a fix for another roadmap's comment into *this* item's pinned worktree and record an
+`--applied-commit` from the wrong branch, and two concurrent dispatch runs would race each other for
+the same entries. The completion check is scoped the same way, so another item's open review can
+never block this item's terminal write.
 
 **Triage routing** is decided by the comment's own anchor, not by who wrote it. A comment
 carrying a `path` is a SOURCE comment: an implementer subagent fixes it in the pinned worktree

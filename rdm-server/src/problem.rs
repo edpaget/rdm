@@ -375,6 +375,18 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("cannot set both '{field}' and 'clear_{field}'")),
                 instance: None,
             },
+            // Both are malformed source-update requests: the caller named no
+            // change at all, or named a default branch with no repository for
+            // it to belong to.
+            Error::ProjectSourceUpdateEmpty(_) | Error::ProjectSourceRepoMissing(_) => {
+                ProblemDetail {
+                    problem_type: "about:blank".to_string(),
+                    title: "Unprocessable Content".to_string(),
+                    status: 422,
+                    detail: Some(err.to_string()),
+                    instance: None,
+                }
+            }
             // Internal errors: no detail leak
             Error::ReviewIdExhausted
             | Error::Io(_)
