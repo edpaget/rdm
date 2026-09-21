@@ -2672,7 +2672,16 @@ function acceptanceCriteria(body) {
     const bullet = /^(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)(\S.*)$/.exec(line);
     if (bullet) { flush(); listed = true; current = bullet[1]; }
     else if (!line.trim()) { if (!listed) flush(); }
-    else if (listed && !/^\s+/.test(line)) return [];
+    // An unindented, non-bullet line AFTER the list has started ENDS the list;
+    // it does not invalidate it. This used to `return []`, discarding every
+    // criterion already parsed, which turned ordinary trailing prose into
+    // `acceptance criteria missing or ambiguous` and escalated the whole review
+    // before a single dimension ran. The case that forced this: a phase whose
+    // criteria are followed by an operator's "**Deliberately NOT acceptance
+    // criteria**" block — prose added precisely to keep the AC gate honest,
+    // which instead disabled it. Stopping here keeps the real criteria and
+    // ignores the trailing prose, which is what the prose is for.
+    else if (listed && !/^\s+/.test(line)) break;
     else current += (current ? '\n' : '') + line.trim();
   }
   flush();
