@@ -314,7 +314,9 @@ routinely lands on stderr, and reading one stream would miss it.
 or a bare `<roadmap>`) and the kind-prefixed `phase/<roadmap>/<stem>`, `roadmap/<slug>`,
 or `task/<slug>` grammar that `--on`/`--implements` use — a phase always resolves to its
 roadmap's shared worktree, never a per-phase one. An item with no worktree is an
-actionable error naming the `rdm worktree add` that would create one.
+actionable error naming the `rdm worktree add` that would create one. `--on`'s other two
+kinds, `plan/<slug>` and `change/<sha>`, name no worktree and are refused up front with a
+message naming the grammar `--item` accepts, rather than being misread as a phase.
 
 It reuses § 6's failure semantics verbatim rather than restating them: the **last** 4000
 characters of merged output, and a multi-line value refused up front.

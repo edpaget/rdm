@@ -1471,7 +1471,8 @@ pub(crate) enum VerifyCommand {
         /// `<roadmap>`) as well as the kind-prefixed `phase/<roadmap>/<stem>`,
         /// `roadmap/<slug>`, or `task/<slug>` grammar `--on`/`--implements`
         /// use — a phase always resolves to its roadmap's shared worktree.
-        /// Omit to run in the current directory.
+        /// `plan/<slug>` and `change/<sha>` name no worktree and are
+        /// refused. Omit to run in the current directory.
         #[arg(long)]
         item: Option<String>,
         /// Project the item belongs to.

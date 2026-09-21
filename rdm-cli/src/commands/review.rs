@@ -819,18 +819,21 @@ fn resolve_implements(
                 "not inside a recognized phase or task worktree, so the implemented plan cannot be inferred — pass --implements rdm:plan/<slug>"
             );
         };
-        let item = match rdm_git::worktree::ItemRef::parse(&current.item) {
-            Ok(rdm_git::worktree::ItemRef::Phase { roadmap, stem }) => {
-                ReviewTarget::Phase { roadmap, stem }
-            }
-            Ok(rdm_git::worktree::ItemRef::Task { slug }) => ReviewTarget::Task { slug },
-            Ok(rdm_git::worktree::ItemRef::Roadmap { roadmap }) => bail!(
-                "this worktree covers the whole roadmap '{roadmap}', which has no single plan to infer — pass --implements rdm:plan/<slug>"
-            ),
-            Err(e) => bail!(
+        let parsed = rdm_git::worktree::ItemRef::parse(&current.item).map_err(|e| {
+            anyhow::anyhow!(
                 "could not read this worktree's plan item ({e}) — pass --implements rdm:plan/<slug>"
-            ),
-        };
+            )
+        })?;
+        if let rdm_git::worktree::ItemRef::Roadmap { roadmap } = &parsed {
+            bail!(
+                "this worktree covers the whole roadmap '{roadmap}', which has no single plan to infer — pass --implements rdm:plan/<slug>"
+            );
+        }
+        // `Phase`/`Task` only past the `Roadmap` guard above, so this is
+        // exactly the conversion `rdm-cli`'s `verify run --item` also needs
+        // — shared via `ItemRef::as_review_target` rather than re-matched
+        // here.
+        let item = parsed.as_review_target();
         Ok(Some(rdm_core::ops::plan::infer_implemented_plan(
             store, project, &item,
         )?))

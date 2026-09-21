@@ -167,6 +167,29 @@ impl ItemRef {
         }
     }
 
+    /// Converts to the kind-prefixed core reference type
+    /// (`rdm_core::link::ItemRef`, an alias for `rdm_core::model::ReviewTarget`)
+    /// that core policy functions such as
+    /// [`rdm_core::worktree::review_worktree_item`] operate on.
+    ///
+    /// This is the one conversion between the two "item reference" grammars
+    /// documented on the enum above; callers that need it (e.g. `rdm-cli`'s
+    /// `verify run --item` and `--implements` inference) should use this
+    /// rather than hand-rolling the same three-arm match.
+    #[must_use]
+    pub fn as_review_target(&self) -> rdm_core::link::ItemRef {
+        match self {
+            ItemRef::Phase { roadmap, stem } => rdm_core::link::ItemRef::Phase {
+                roadmap: roadmap.clone(),
+                stem: stem.clone(),
+            },
+            ItemRef::Task { slug } => rdm_core::link::ItemRef::Task { slug: slug.clone() },
+            ItemRef::Roadmap { roadmap } => rdm_core::link::ItemRef::Roadmap {
+                roadmap: roadmap.clone(),
+            },
+        }
+    }
+
     /// Returns the git branch name for this item.
     ///
     /// Phases map to `phase/<roadmap>/<stem>`; tasks to `task/<slug>`; whole
@@ -973,6 +996,34 @@ pub fn resolve_target(store: &impl rdm_core::store::Store, project: &str, raw: &
         return raw.to_string();
     }
     item.canonical()
+}
+
+/// Resolves the single registered worktree at `repo_root` that serves `item`,
+/// using the same roadmap-collapse policy
+/// [`GitWorktreeProbe`](crate::GitWorktreeProbe) and its `review_source`
+/// already share:
+/// [`rdm_core::worktree::review_worktree_item`] computes the key (a phase
+/// collapses to its roadmap's shared worktree; a task keys `task/<slug>`),
+/// then this looks it up against [`list`]. Centralizing the "compute the key,
+/// then match it against the registered entries" composition here keeps it
+/// to one implementation, so a caller such as `rdm verify run --item` never
+/// has to re-derive it.
+///
+/// Returns `Ok(None)` both when `item` names no worktree at all (never true
+/// for a [`Phase`](ItemRef::Phase)/[`Task`](ItemRef::Task)/[`Roadmap`](ItemRef::Roadmap),
+/// which always yield a key) and when no registered entry matches that key —
+/// callers that need to distinguish those report the same "no worktree"
+/// outcome for both.
+///
+/// # Errors
+///
+/// Returns any error from listing the registered worktrees at `repo_root`.
+pub fn registered_worktree_for(repo_root: &Path, item: &ItemRef) -> Result<Option<WorktreeInfo>> {
+    let Some(key) = rdm_core::worktree::review_worktree_item(&item.as_review_target()) else {
+        return Ok(None);
+    };
+    let entries = list(repo_root)?;
+    Ok(entries.into_iter().find(|w| w.item == key))
 }
 
 /// Discovers the project (code) repo from `cwd` and refuses if it is the plan

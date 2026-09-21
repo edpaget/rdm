@@ -529,3 +529,138 @@ fn verify_run_never_suggests_a_per_phase_worktree_for_a_phase_item() {
                 .and(predicate::str::contains("rdm worktree add auth/phase-1-design").not()),
         );
 }
+
+#[test]
+fn verify_run_refuses_a_plan_or_change_item_naming_the_accepted_grammar() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    set_verify(plan.path(), "true");
+
+    // `plan/<slug>` names no worktree — it must be refused up front, never
+    // silently reinterpreted as a phase of a roadmap literally named `plan`
+    // (the garbled `no rdm worktree found for 'phase '...' not found` shape
+    // the code review reproduced).
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["verify", "run", "--item", "plan/foo", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("names no worktree")
+                .and(predicate::str::contains("rdm phase list").not())
+                .and(predicate::str::contains("task/<slug>")),
+        );
+
+    // `change/<sha>` — the canonical `--on change/HEAD` shape the dispatch
+    // skill's own review triage uses — must be refused the same way.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "verify",
+            "run",
+            "--item",
+            "change/HEAD",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("names no worktree")
+                .and(predicate::str::contains("rdm phase list").not()),
+        );
+}
+
+#[test]
+fn verify_run_resolves_a_task_item_to_its_task_worktree() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix bug",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "task/fix-bug", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+
+    set_verify(plan.path(), "printf ran > sentinel.txt");
+    let (code, _) = verify(
+        plan.path(),
+        src.path(),
+        &[
+            "run",
+            "--item",
+            "task/fix-bug",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        wt.join("sentinel.txt").exists(),
+        "a task item must resolve to its own task worktree"
+    );
+}
+
+#[test]
+fn verify_run_never_suggests_a_per_phase_worktree_for_a_task_item_miss() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix bug",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    set_verify(plan.path(), "true");
+    // No worktree registered for the task at all.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "verify",
+            "run",
+            "--item",
+            "task/fix-bug",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("rdm worktree add task/fix-bug"));
+}

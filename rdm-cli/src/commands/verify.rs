@@ -165,16 +165,39 @@ fn tail_of(text: &str) -> String {
 /// (`<roadmap>`, `<roadmap>/<stem>`, `task/<slug>`) that
 /// `rdm_git::worktree::ItemRef::parse` accepts.
 ///
-/// `plan/<slug>` and `change/<sha>` name no worktree, and anything that
-/// fails to parse as a `rdm_core::model::ReviewTarget` at all, is returned
-/// unchanged — it falls through to `ItemRef::parse`'s own, already
-/// actionable, refusal.
-fn normalize_item_grammar(raw: &str) -> String {
+/// `plan/<slug>` and `change/<sha>` name no worktree and are refused here,
+/// up front, naming the grammar `--item` actually accepts. They must **not**
+/// be handed to `ItemRef::parse` unchanged: it has no `plan`/`change` case,
+/// so any two-segment string it does not recognize as `task/<slug>` becomes
+/// `ItemRef::Phase` — `plan/foo` would silently become phase `foo` of a
+/// roadmap literally named `plan`, resolving (or failing to) as that phase
+/// instead of being refused as the non-worktree reference it is. Anything
+/// that fails to parse as a `rdm_core::model::ReviewTarget` at all —
+/// including the unprefixed `<roadmap>/<stem>` form, which has no kind
+/// keyword — is returned unchanged, to fall through to `ItemRef::parse`'s
+/// own resolution.
+///
+/// # Errors
+///
+/// Returns an error naming the accepted `--item` grammar when `raw` parses
+/// as `plan/<slug>` or `change/<sha>`.
+fn normalize_item_grammar(raw: &str) -> Result<String> {
     match raw.parse::<rdm_core::model::ReviewTarget>() {
-        Ok(rdm_core::model::ReviewTarget::Roadmap { roadmap }) => roadmap,
-        Ok(rdm_core::model::ReviewTarget::Phase { roadmap, stem }) => format!("{roadmap}/{stem}"),
-        Ok(rdm_core::model::ReviewTarget::Task { slug }) => format!("task/{slug}"),
-        _ => raw.to_string(),
+        Ok(rdm_core::model::ReviewTarget::Roadmap { roadmap }) => Ok(roadmap),
+        Ok(rdm_core::model::ReviewTarget::Phase { roadmap, stem }) => {
+            Ok(format!("{roadmap}/{stem}"))
+        }
+        Ok(rdm_core::model::ReviewTarget::Task { slug }) => Ok(format!("task/{slug}")),
+        Ok(
+            rdm_core::model::ReviewTarget::Plan { .. }
+            | rdm_core::model::ReviewTarget::Change { .. },
+        ) => {
+            bail!(
+                "'{raw}' names no worktree — --item accepts <roadmap>, <roadmap>/<phase>, \
+                 task/<slug>, roadmap/<slug>, or phase/<roadmap>/<stem>"
+            )
+        }
+        Err(_) => Ok(raw.to_string()),
     }
 }
 
@@ -183,41 +206,40 @@ fn normalize_item_grammar(raw: &str) -> String {
 /// Accepts both the unprefixed `rdm worktree add` grammar (`<roadmap>`,
 /// `<roadmap>/<phase>`, `task/<slug>`) and the kind-prefixed
 /// `roadmap/<slug>` / `phase/<roadmap>/<stem>` / `task/<slug>` grammar that
-/// `--on`/`--implements` use, via [`normalize_item_grammar`].
+/// `--on`/`--implements` use, via [`normalize_item_grammar`], which also
+/// refuses `plan/<slug>` and `change/<sha>` up front (neither names a
+/// worktree).
 ///
 /// A phase always resolves to its roadmap's shared worktree — never an
 /// obsolete per-phase checkout — by routing through
-/// [`rdm_core::worktree::review_worktree_item`], the single existing
-/// "phase → roadmap" collapse policy `GitWorktreeProbe::candidates` already
-/// uses for the `reviewed` gate.
+/// [`rdm_git::worktree::registered_worktree_for`], the single existing
+/// "which registered worktree serves this item?" policy
+/// `GitWorktreeProbe::candidates`/`review_source` already share for the
+/// `reviewed` gate.
+///
+/// # Errors
+///
+/// Returns an error when `raw` names no worktree grammar (`plan/<slug>`,
+/// `change/<sha>`), when it does not resolve to a known plan item, or when
+/// no worktree is registered for the resolved item.
 fn item_worktree(root: &Path, project: &str, raw: &str) -> Result<std::path::PathBuf> {
     use rdm_git::worktree;
     let store = commands::make_store(root)?;
-    let normalized = normalize_item_grammar(raw);
+    let normalized = normalize_item_grammar(raw)?;
     let item = worktree::resolve_item(&store, project, &normalized)
         .map_err(|e| anyhow::anyhow!("{e}"))
         .with_context(|| format!("cannot resolve item '{raw}'"))?;
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let repo =
         worktree::discover_distinct_project_repo(&cwd, root).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let entries = worktree::list(&repo).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let review_target = match &item {
-        worktree::ItemRef::Phase { roadmap, stem } => rdm_core::model::ReviewTarget::Phase {
-            roadmap: roadmap.clone(),
-            stem: stem.clone(),
-        },
-        worktree::ItemRef::Task { slug } => {
-            rdm_core::model::ReviewTarget::Task { slug: slug.clone() }
-        }
-        worktree::ItemRef::Roadmap { roadmap } => rdm_core::model::ReviewTarget::Roadmap {
-            roadmap: roadmap.clone(),
-        },
-    };
-    let key = rdm_core::worktree::review_worktree_item(&review_target)
+    // The single existing "which registered worktree serves this item?"
+    // policy (`rdm_core::worktree::review_worktree_item` composed with
+    // `worktree::list`), shared with `GitWorktreeProbe`/`review_source`
+    // rather than re-derived here.
+    let key = rdm_core::worktree::review_worktree_item(&item.as_review_target())
         .expect("Phase/Task/Roadmap targets always yield a worktree key");
-    entries
-        .into_iter()
-        .find(|w| w.item == key)
+    worktree::registered_worktree_for(&repo, &item)
+        .map_err(|e| anyhow::anyhow!("{e}"))?
         .map(|w| w.path)
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -288,6 +310,51 @@ mod tests {
     fn tail_passes_short_output_through_unchanged() {
         assert_eq!(tail_of("hello\n"), "hello\n");
         assert_eq!(tail_of(""), "");
+    }
+
+    #[test]
+    fn normalize_item_grammar_rewrites_the_three_worktree_kinds() {
+        assert_eq!(normalize_item_grammar("roadmap/auth").unwrap(), "auth");
+        assert_eq!(
+            normalize_item_grammar("phase/auth/phase-1-design").unwrap(),
+            "auth/phase-1-design"
+        );
+        assert_eq!(
+            normalize_item_grammar("task/fix-bug").unwrap(),
+            "task/fix-bug"
+        );
+    }
+
+    #[test]
+    fn normalize_item_grammar_passes_through_the_unprefixed_form_unchanged() {
+        // No kind keyword before the first `/` — not a `ReviewTarget` at
+        // all — so it must fall through unchanged to `ItemRef::parse`.
+        assert_eq!(
+            normalize_item_grammar("auth/phase-1-design").unwrap(),
+            "auth/phase-1-design"
+        );
+        assert_eq!(normalize_item_grammar("auth").unwrap(), "auth");
+    }
+
+    #[test]
+    fn normalize_item_grammar_refuses_plan_and_change_naming_the_grammar() {
+        let err = normalize_item_grammar("plan/foo").unwrap_err().to_string();
+        assert!(
+            err.contains("names no worktree"),
+            "must say the reference names no worktree: {err}"
+        );
+        assert!(
+            err.contains("<roadmap>") && err.contains("task/<slug>"),
+            "must name the accepted grammar: {err}"
+        );
+
+        let err = normalize_item_grammar("change/HEAD")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("names no worktree"),
+            "must say the reference names no worktree: {err}"
+        );
     }
 
     #[test]
