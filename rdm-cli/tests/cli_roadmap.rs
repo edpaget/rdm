@@ -1277,6 +1277,86 @@ fn roadmap_show_at_revision_missing_path_errors() {
 }
 
 #[test]
+fn roadmap_update_append_body_keeps_the_existing_body() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "appendy",
+            "--title",
+            "Appendy",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "update",
+            "appendy",
+            "--project",
+            "fbm",
+            "--body",
+            "existing content",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "update",
+            "appendy",
+            "--project",
+            "fbm",
+            "--append-body",
+            "## Note\n\nappended",
+        ])
+        .assert()
+        .success();
+
+    let content =
+        fs::read_to_string(dir.path().join("projects/fbm/roadmaps/appendy/roadmap.md")).unwrap();
+    assert!(
+        content.contains("existing content\n\n## Note\n\nappended"),
+        "the prior body survives and the note lands after exactly one blank line, got: {content}"
+    );
+
+    // And the clap-level exclusions hold on this subcommand too. They are
+    // hand-repeated per subcommand, which is exactly where a copy-paste omission
+    // hides.
+    for conflicting in [vec!["--body", "x"], vec!["--clear-body"]] {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args([
+                "roadmap",
+                "update",
+                "appendy",
+                "--project",
+                "fbm",
+                "--append-body",
+                "y",
+            ])
+            .args(&conflicting)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("cannot be used with"));
+    }
+}
+
+#[test]
 fn roadmap_update_body_flag_beats_stdin() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);

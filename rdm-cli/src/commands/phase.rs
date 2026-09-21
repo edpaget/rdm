@@ -379,7 +379,14 @@ pub fn run(
             if let Some(snapshot) = expected_estimate_snapshot {
                 let difficulty =
                     difficulty.context("conditional estimate requires --difficulty")?;
-                let body = BodyUpdate::from_args(body, false)?;
+                // `--append-body` composes with the precondition, deliberately:
+                // the snapshot is checked against the stored body BEFORE this
+                // update is applied, so a guarded append is exactly as safe as a
+                // guarded whole-body write — and it is what lets a caller add an
+                // audit note under a precondition without reading the existing
+                // body out and carrying it back. `--clear-body` stays excluded
+                // by clap.
+                let body = BodyUpdate::from_args_with_append(body, false, append_body)?;
                 let doc = commit_mutation(store, "failed to conditionally estimate phase", |s| {
                     rdm_core::ops::phase::apply_unset_phase_estimate(
                         s, &project, &roadmap, &stem, &snapshot, difficulty, body,

@@ -51,8 +51,16 @@ assert.equal(raw, fs.readFileSync(path.join(root, 'rdm-core/src/templates/workfl
 // named. None of those agents exists: the engine now dispatches finders and
 // refuters only, takes the pinned identity as caller arguments, and RETURNS the
 // persist and gate ladders as command text instead of running them. Deleted and
-// named, never re-pointed at the returned strings — the persist ladder's
-// behavior against the real binary is covered by verify-workflow-review.sh
-// §15b/§15d, which executes exactly the bytes `persistReviewCommands` emits.
+// named, never re-pointed at the returned strings. What replaces it, for the
+// CHANGE-target (path-anchored) ladder this section used to exercise, is
+// `scripts/lib/review-driver.test.mjs` under `cargo nextest run`: it drives the
+// real engine with `persist: true` against a real `rdm worktree add` checkout,
+// runs the returned `persistScript` in a shell, and reads the review back
+// through the binary — asserting a quoted finding lands a resolved `--path`
+// file-quote anchor and that each survivor is persisted exactly once. (An
+// earlier version of this note pointed at verify-workflow-review.sh §15b/§15d
+// instead. That was wrong: §15b calls `persistReviewCommands` with no `opts`, so
+// it never emits a `--path` anchor, a `cd`, or the `review source` prefix, and
+// §15d is a pure unit test of `pathFromLocation`.)
 
 console.log('legacy-shape, structural and completeness regressions passed');

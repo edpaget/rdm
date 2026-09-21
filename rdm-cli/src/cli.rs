@@ -760,7 +760,15 @@ pub(crate) enum PhaseCommand {
         stem: String,
         /// Apply difficulty/body only if this full phase snapshot still matches
         /// and both difficulty and model remain unset. From phase show JSON.
-        #[arg(long, requires = "difficulty", conflicts_with_all = ["status", "title", "tags", "clear_difficulty", "model", "clear_model", "clear_body", "append_body", "reason", "clear_reason", "commit"])]
+        ///
+        /// `--append-body` composes with this, deliberately: the snapshot is
+        /// checked against the stored body BEFORE the append is applied, so a
+        /// guarded append is exactly as safe as a guarded whole-body write — and
+        /// it is the only way to add an audit note under a precondition without
+        /// reading the whole body out and handing it back. `--clear-body` does
+        /// not compose, since a conditional estimate that erases the body it was
+        /// conditioned on has no coherent meaning.
+        #[arg(long, requires = "difficulty", conflicts_with_all = ["status", "title", "tags", "clear_difficulty", "model", "clear_model", "clear_body", "reason", "clear_reason", "commit"])]
         expected_estimate_snapshot: Option<String>,
         /// New status (omit to preserve existing).
         #[arg(long)]
