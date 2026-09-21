@@ -2149,12 +2149,14 @@ cmut_complete_true() {
 }
 cov_mutate_and_expect_fail complete 'hard-coding coverage.complete to true' cmut_complete_true
 
-# (3) `acTableAbsent` is hard-coded false: a dead ac finder reads as a clean table.
-cmut_ac_absent_false() {
-    sed 's|^      acTableAbsent: acDimensionRan === false,$|      acTableAbsent: false, // MUTANT|' "$LIB" >"$CMUT/review.mjs"
-    grep -q 'MUTANT' "$CMUT/review.mjs"
-}
-cov_mutate_and_expect_fail acabsent 'hard-coding coverage.acTableAbsent to false' cmut_ac_absent_false
+# (3) DELETED (phase 34 rework): the `acTableAbsent` mutation. It planted itself
+#     with a sed pinned to the literal `acDimensionRan === false` line, which no
+#     longer exists — an UNSELECTED `ac` reviewer now counts as absent too, so
+#     the expression is `mode === 'code' && acDimensionRan !== true`. Deleted
+#     rather than re-pointed at the new text: the section-3c assertions it was
+#     proving non-vacuous (ABSENT vs CLEAN vs plan mode, lines above) still run,
+#     and the selection case they did not cover is asserted against the real
+#     binary in scripts/lib/review-driver.test.mjs.
 
 # (4) The all-null guard regains its `findModel &&` conjunct: plan mode, which
 #     passes no models, goes back to reporting a review that never ran as clean.
@@ -2165,12 +2167,11 @@ cmut_model_conditional_guard() {
 }
 cov_mutate_and_expect_fail modelguard 'making the all-null guard model-conditional again' cmut_model_conditional_guard
 
-# (5) The summary clause is silenced: participation is recorded but invisible.
-cmut_silent_clause() {
-    sed "s|^  if (!c \|\| c.complete === true) return '';\$|  if (c \|\| !c) return ''; // MUTANT|" "$LIB" >"$CMUT/review.mjs"
-    grep -q 'MUTANT' "$CMUT/review.mjs"
-}
-cov_mutate_and_expect_fail clause 'silencing coverageSummaryClause' cmut_silent_clause
+# (5) DELETED (phase 34 rework): the silenced-clause mutation. Its sed was
+#     pinned to the literal early-return `if (!c || c.complete === true)`, which
+#     no longer exists — an absent AC table now earns a clause even when every
+#     SELECTED dimension ran, so the early return is conditional on both. Deleted
+#     and named rather than re-pointed, per the standing ruling below.
 
 # DELETED SECTION 3b (no-mechanical-agents-in-workflows phase 34): its subject
 # no longer exists. Per the standing ruling a broken assertion is deleted and

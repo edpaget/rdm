@@ -1288,9 +1288,16 @@ function buildReviewCoverage(coverageRounds, planCoverage) {
 //
 // Accepts either a buildReviewCoverage projection or a single raw per-round
 // coverage object; both carry the fields read here.
+// A MISSING AC TABLE is reported even when coverage is otherwise complete. In
+// code mode the outcome refuses to approve without one, so a run that has no AC
+// table is never healthy however many of the selected dimensions ran — and a
+// caller who narrowed the reviewer set away from `ac` would otherwise get a park
+// whose summary said nothing about why.
 function coverageSummaryClause(reviewCoverage) {
   const c = reviewCoverage;
-  if (!c || c.complete === true) return '';
+  if (!c) return '';
+  const acAbsent = c.acTableAbsent === true;
+  if (c.complete === true && !acAbsent) return '';
   const ran = Array.isArray(c.ran) ? c.ran : [];
   const failed = Array.isArray(c.failed) ? c.failed : [];
   const total = c.total != null ? c.total : ran.length + failed.length;
@@ -1299,9 +1306,9 @@ function coverageSummaryClause(reviewCoverage) {
     ran.length +
     '/' +
     total +
-    ' dimensions ran; failed: ' +
-    failed.join(',') +
-    (c.acTableAbsent === true ? '; NO AC TABLE' : '') +
+    ' dimensions ran' +
+    (failed.length ? '; failed: ' + failed.join(',') : '') +
+    (acAbsent ? '; NO AC TABLE' : '') +
     ']'
   );
 }
@@ -2197,8 +2204,17 @@ function buildReviewPipeline(mode, deps) {
     // report-only callers retain evidence without issuing an approval.
     //
     // `acDimensionRan` is `null` in plan mode (there is no `ac` dimension) and
-    // whenever `ac` was not selected, so `acTableAbsent` is forced false there —
-    // otherwise every plan review's summary would gain a spurious clause.
+    // whenever `ac` was not selected.
+    //
+    // `acTableAbsent` is `acDimensionRan !== true` in CODE MODE ONLY, and forced
+    // false in plan mode — otherwise every plan review's summary would gain a
+    // spurious clause. The code-mode form is deliberately "not true", not "is
+    // false": this channel exists to tell ABSENT from CLEAN, and in code mode a
+    // caller-supplied reviewer set that omits `ac` leaves no AC table just as
+    // surely as an `ac` reviewer that crashed. The earlier `=== false` form was
+    // written when `ac` was always selected; under caller selection it reported
+    // full coverage for a review that had no acceptance-criteria evidence at all,
+    // and the outcome then escalated with nothing naming the cause.
     const acAttempt = mode === 'code' ? attempts.filter((a) => a.dimension === 'ac')[0] : null;
     const acDimensionRan = acAttempt ? acAttempt.ran : null;
     const coverage = {
@@ -2210,7 +2226,7 @@ function buildReviewPipeline(mode, deps) {
       retried: attempts.filter((a) => a.retried).map((a) => a.dimension),
       complete: attempts.every((a) => a.ran),
       acDimensionRan: acDimensionRan,
-      acTableAbsent: acDimensionRan === false,
+      acTableAbsent: mode === 'code' && acDimensionRan !== true,
     };
 
     // Flatten per-dimension → ONE unit-wide candidate list. A finder whose whole
@@ -2629,7 +2645,17 @@ const evidence = { coverage: review.coverage, budget: review.budget, acTable: re
 // afterwards: there is no persistence ack left to fold in.
 let outcome = classifyOutcome({ planFindings: [], codeReviews: [survivors], tier: rawArgs.tier, acTable: review.acTable, evidence: evidence })
 if (failure) outcome = 'escalated'
-if (!failure && !reviewEvidenceComplete(evidence)) failure = 'required review evidence is incomplete'
+// NAME the gap rather than reporting the bare predicate. The commonest way to
+// reach this line is a caller-supplied `reviewers` set with no `ac` in it: the
+// outcome cannot approve without an acceptance-criteria table, and a message
+// that did not say so left the caller with a park and no cause. Nothing here
+// REFUSES a thin set — coverage stays visible rather than enforced — it just
+// stops being silent about what the thinness cost.
+if (!failure && !reviewEvidenceComplete(evidence)) {
+  failure = reviewCoverage && reviewCoverage.acTableAbsent === true
+    ? 'required review evidence is incomplete: the ac reviewer did not run, so there is no acceptance-criteria table to approve against — include ac in reviewers, or omit the key to run them all'
+    : 'required review evidence is incomplete'
+}
 
 // --- What the ORCHESTRATOR runs -------------------------------------------
 // Ready-to-run Bash, returned as data. The engine builds it and stops; the
@@ -2652,11 +2678,18 @@ if (rawArgs.gate && source && !failure) {
   const status = statusFor(outcome, kind)
   const target = isTask ? ' task update ' + shellQuote(taskSlug) : ' phase update ' + shellQuote(phaseArg) + ' --roadmap ' + shellQuote(roadmap)
   const binding = ' --source ' + shellQuote(source.path) + ' --base ' + shellQuote(source.base) + ' --expected-head ' + shellQuote(source.head) + ' --expected-branch ' + shellQuote(source.branch) + (source.noCode ? ' --no-code' : '')
-  const update = (s) => '  ' + bin + target + ' --status ' + s + binding + ' --no-edit' + proj
-  gateCommands = ['cd ' + shellQuote(source.path), update('needs-review')]
+  // EVERY line that can fail carries `|| exit 1`, and the read-back is last.
+  // Without it the ladder's exit status is the read's, so a REFUSED status write
+  // — this repo runs with `gates.reviewed` on, and the source binding can refuse
+  // a checkout that moved — left the session exiting 0 and the caller reporting
+  // success. The agent path this replaced verified explicitly; moving the work to
+  // the orchestrator must not lose the verification. The status the final
+  // read-back has to show is `result.status`.
+  const update = (s) => '  ' + bin + target + ' --status ' + s + binding + ' --no-edit' + proj + ' || exit 1'
+  gateCommands = ['cd ' + shellQuote(source.path) + ' || exit 1', update('needs-review')]
   if (status !== 'needs-review') gateCommands.push(update(status))
   gateCommands.push(
-    '  ' + (isTask ? bin + ' task show ' + shellQuote(taskSlug) : bin + ' phase show ' + shellQuote(phaseArg) + ' --roadmap ' + shellQuote(roadmap)) + ' --format json' + proj
+    '  ' + (isTask ? bin + ' task show ' + shellQuote(taskSlug) : bin + ' phase show ' + shellQuote(phaseArg) + ' --roadmap ' + shellQuote(roadmap)) + ' --format json' + proj + ' || exit 1'
   )
 }
 

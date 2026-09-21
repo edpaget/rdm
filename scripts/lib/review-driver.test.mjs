@@ -32,7 +32,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 // --------------------------------------------------------------- environment
@@ -90,6 +90,21 @@ function sh(script, cwd) {
     env: SHELL_ENV,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
+}
+
+/**
+ * The same script in a PLAIN shell — no `-e`, no `pipefail`. A caller pasting a
+ * returned ladder into an existing session gets exactly this, so the ladder has
+ * to carry its own failure handling. Returns the exit status rather than
+ * throwing, because the status is the thing under test.
+ */
+function shPlainStatus(script, cwd) {
+  return spawnSync('/bin/bash', ['-c', script], {
+    encoding: 'utf8',
+    cwd: cwd || PLAN_ROOT,
+    env: SHELL_ENV,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).status;
 }
 
 /** Invoke the binary directly — used only to seed and to read state back. */
@@ -284,24 +299,50 @@ test('a task target writes through `task update`, not `phase update`', async () 
   assert.equal(taskJson(TASK).status, 'reviewed', 'the emitted ladder drove the real task to reviewed');
 });
 
-test('the ladder binds the write to the pinned source identity, so a moved checkout is refused', async () => {
+test('a refused write fails the ladder, even in a plain shell with no set -e', async () => {
   const { result } = await drive({ ...COMMON, roadmap: ROADMAP, phase: 'phase-1-clean', ...ROADMAP_PIN });
 
-  // The binding is what makes the write refusable. Move the branch on, and the
-  // same ladder must now fail rather than stamping a status against a checkout
-  // that is no longer the one that was reviewed.
+  // The source binding is what makes the write refusable. Move the branch on,
+  // and the same ladder must now fail rather than stamping a status against a
+  // checkout that is no longer the one that was reviewed.
   fs.writeFileSync(path.join(ROADMAP_PIN.source, 'moved-on.txt'), 'later\n');
   git(['add', 'moved-on.txt'], ROADMAP_PIN.source);
   git(['commit', '--quiet', '-m', 'feat: moved on'], ROADMAP_PIN.source);
 
-  assert.throws(
-    () => sh(result.gateScript),
-    /./,
-    'the ladder carries --expected-head, so a checkout that moved after the review cannot be stamped'
+  // A plain shell, because that is what a caller pasting the ladder into an
+  // existing session has. The ladder's last line is a read-back, so without
+  // per-line failure handling the session would report the READ's success and
+  // the refused write would vanish.
+  assert.notEqual(
+    shPlainStatus(result.gateScript),
+    0,
+    'a refused status write must fail the ladder, not be masked by the trailing read-back'
   );
 
   // Restore the pin so later tests see the head they were seeded with.
   git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], ROADMAP_PIN.source);
+});
+
+test('a reviewer set with no `ac` escalates with a message naming what is missing', async () => {
+  const { result } = await drive({
+    ...COMMON,
+    roadmap: ROADMAP,
+    phase: 'phase-1-clean',
+    ...ROADMAP_PIN,
+    reviewers: ['correctness', 'tests'],
+  });
+
+  // Nothing REFUSES a thin set — the run happens, and the outcome is the honest
+  // consequence of reviewing a diff with no acceptance-criteria evidence.
+  assert.equal(result.outcome, 'escalated');
+  assert.equal(result.gateCommands, undefined, 'an escalated, evidence-incomplete run emits no ladder');
+  assert.match(result.summary, /ac/, 'the summary names the reviewer whose absence caused the park');
+  assert.match(result.summary, /NO AC TABLE/, 'and the coverage channel says the table is ABSENT, not clean');
+  assert.equal(
+    result.reviewCoverage.acTableAbsent,
+    true,
+    'an UNSELECTED ac reviewer counts as absent, exactly like one that failed'
+  );
 });
 
 test('an unresolvable source produces no commands at all and escalates', async () => {

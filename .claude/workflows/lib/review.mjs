@@ -1360,9 +1360,16 @@ function buildReviewCoverage(coverageRounds, planCoverage) {
 //
 // Accepts either a buildReviewCoverage projection or a single raw per-round
 // coverage object; both carry the fields read here.
+// A MISSING AC TABLE is reported even when coverage is otherwise complete. In
+// code mode the outcome refuses to approve without one, so a run that has no AC
+// table is never healthy however many of the selected dimensions ran — and a
+// caller who narrowed the reviewer set away from `ac` would otherwise get a park
+// whose summary said nothing about why.
 function coverageSummaryClause(reviewCoverage) {
   const c = reviewCoverage;
-  if (!c || c.complete === true) return '';
+  if (!c) return '';
+  const acAbsent = c.acTableAbsent === true;
+  if (c.complete === true && !acAbsent) return '';
   const ran = Array.isArray(c.ran) ? c.ran : [];
   const failed = Array.isArray(c.failed) ? c.failed : [];
   const total = c.total != null ? c.total : ran.length + failed.length;
@@ -1371,9 +1378,9 @@ function coverageSummaryClause(reviewCoverage) {
     ran.length +
     '/' +
     total +
-    ' dimensions ran; failed: ' +
-    failed.join(',') +
-    (c.acTableAbsent === true ? '; NO AC TABLE' : '') +
+    ' dimensions ran' +
+    (failed.length ? '; failed: ' + failed.join(',') : '') +
+    (acAbsent ? '; NO AC TABLE' : '') +
     ']'
   );
 }
@@ -2269,8 +2276,17 @@ function buildReviewPipeline(mode, deps) {
     // report-only callers retain evidence without issuing an approval.
     //
     // `acDimensionRan` is `null` in plan mode (there is no `ac` dimension) and
-    // whenever `ac` was not selected, so `acTableAbsent` is forced false there —
-    // otherwise every plan review's summary would gain a spurious clause.
+    // whenever `ac` was not selected.
+    //
+    // `acTableAbsent` is `acDimensionRan !== true` in CODE MODE ONLY, and forced
+    // false in plan mode — otherwise every plan review's summary would gain a
+    // spurious clause. The code-mode form is deliberately "not true", not "is
+    // false": this channel exists to tell ABSENT from CLEAN, and in code mode a
+    // caller-supplied reviewer set that omits `ac` leaves no AC table just as
+    // surely as an `ac` reviewer that crashed. The earlier `=== false` form was
+    // written when `ac` was always selected; under caller selection it reported
+    // full coverage for a review that had no acceptance-criteria evidence at all,
+    // and the outcome then escalated with nothing naming the cause.
     const acAttempt = mode === 'code' ? attempts.filter((a) => a.dimension === 'ac')[0] : null;
     const acDimensionRan = acAttempt ? acAttempt.ran : null;
     const coverage = {
@@ -2282,7 +2298,7 @@ function buildReviewPipeline(mode, deps) {
       retried: attempts.filter((a) => a.retried).map((a) => a.dimension),
       complete: attempts.every((a) => a.ran),
       acDimensionRan: acDimensionRan,
-      acTableAbsent: acDimensionRan === false,
+      acTableAbsent: mode === 'code' && acDimensionRan !== true,
     };
 
     // Flatten per-dimension → ONE unit-wide candidate list. A finder whose whole
