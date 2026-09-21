@@ -407,14 +407,24 @@ const REFUTER_LAUNDERING_GUARD =
   'A finding may not be refuted on the grounds that it is documented, known, or already accepted as scope, when it contradicts the target\'s stated goal or recorded intent — a recorded deferral is evidence the defect is REAL, not evidence it is not. Refute only for genuine technical uncertainty: you cannot verify, from the actual code or plan, that the finding holds up. The default-to-refuted stance for uncertain findings is unchanged.';
 
 // reviewTargetBlock(context) — what a finder or refuter is told about WHAT it is
-// reviewing. NEVER a document: `context.target` is an identifier (an item ref, a
-// plan slug, a short label), and `context.sourceCommand` — when present — is the
-// read-only command the agent runs ITSELF to resolve the change under review.
+// reviewing. `context.target` is an identifier (an item ref, a plan slug, a path,
+// a short label), and the `*Command` keys — when present — are the read-only
+// commands the agent runs ITSELF to resolve the change and the documents under
+// review.
 //
-// This is the whole read contract. The orchestrator passes identifiers; the
-// judgment agent fetches what it needs into its own context, where the document
-// is read once and never re-emitted, so it cannot be lost or garbled in transit.
-// A diff is never an argument here and never an agent payload.
+// That is the read contract EVERY WORKFLOW CONSUMER HONOURS: the orchestrator
+// passes identifiers; the judgment agent fetches what it needs into its own
+// context, where the document is read once and never re-emitted, so it cannot be
+// lost or garbled in transit. No workflow passes a diff or a body here.
+//
+// ONE IN-REPO CONSUMER IS DELIBERATELY OUTSIDE IT. `scripts/lib/codex-runtime.mjs`'s
+// `reviewCode` composes `target` from the item body plus the literal
+// `git diff base..head`, because its host runtime pins what was reviewed by
+// hashing the exact prompt input and re-checking it afterwards — a guarantee it
+// cannot make about bytes an agent fetched for itself. This block therefore
+// interpolates `target` verbatim and asserts nothing about its size or shape; it
+// is the caller's contract, not this function's, and the invariant above is
+// stated as what the workflow lane does rather than as something enforced here.
 function reviewTargetBlock(context) {
   const c = context || {};
   const base = (c.target || '(the target described in your working directory)');
@@ -428,7 +438,7 @@ function reviewTargetBlock(context) {
   }
   if (c.itemCommand) {
     lines.push(
-      "READ THE TARGET ITEM YOURSELF — its acceptance criteria are in its `body`, and nothing has transcribed them for you:",
+      'READ THE DOCUMENT UNDER REVIEW YOURSELF — nothing has transcribed it for you, and for an rdm item its acceptance criteria are in its `body`:',
       '  ' + c.itemCommand
     );
   }
@@ -1765,9 +1775,21 @@ function persistReviewCommands(result, target, cfg, opts) {
     }
   }
   const IND = '  ';
+  // EVERY LINE THAT CAN FAIL CARRIES `|| exit 1`, AND THE ONLY UNGUARDED LINE IS
+  // THE TRAILING `printf`. This is the gate ladder's rule (see the code engine's
+  // `gateCommands`), and it applies here for the same reason and more sharply: a
+  // persist ladder is pasted into a PLAIN shell — no `set -e` — by a caller whose
+  // skills make the exit status the entire success signal ("if `review start`
+  // itself is refused, stop and escalate"; "a nonzero exit anywhere else is a
+  // park"). Without per-line handling the status is the `printf`'s, so a refused
+  // `review start` printed its error, left `RDM_REVIEW_ID` empty, ran the whole
+  // comment loop against that empty id, and still exited 0 — the caller recording
+  // a successful review that does not exist. The empty-id check below is the
+  // second half: `review start` can also "succeed" into output this ladder cannot
+  // read an id out of, and an empty id must never reach the comment loop.
   const cmds = [];
   if (o.source) {
-    cmds.push('cd ' + shellQuote(o.source.path));
+    cmds.push('cd ' + shellQuote(o.source.path) + ' || exit 1');
     cmds.push(IND + bin + ' review source --on ' + shellQuote(o.source.item) + ' --source ' + shellQuote(o.source.path) + ' --base ' + shellQuote(o.source.base) + ' --expected-head ' + shellQuote(o.source.head) + ' --expected-branch ' + shellQuote(o.source.branch) + (o.source.noCode ? ' --no-code' : '') + proj + ' >/dev/null || exit 1');
   }
   // SCRATCH FILE VIA mktemp, NEVER A PREDICTABLE NAME. This used to be a fixed
@@ -1796,6 +1818,9 @@ function persistReviewCommands(result, target, cfg, opts) {
       ' --body "$RDM_PERSIST_SUMMARY" --no-edit --format json' +
       proj +
       ' > "$RDM_PERSIST_START_JSON"' +
+      // The scratch file is removed on the failure path too, so guarding this
+      // line does not trade a masked refusal for a leaked temp file.
+      ' || { rm -f "$RDM_PERSIST_START_JSON"; exit 1; }' +
       '\n' +
       'RDM_REVIEW_ID=$(sed -n \'s/.*"id"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$RDM_PERSIST_START_JSON" | head -n 1)' +
       // Inside the SAME cmds entry as the read, so the removal can never be
@@ -1804,7 +1829,11 @@ function persistReviewCommands(result, target, cfg, opts) {
       // shell session", but the harness executes the sliced block through
       // `/bin/sh -eu -c`, and an `rm` is what a read-back can observe directly.
       '\n' +
-      'rm -f "$RDM_PERSIST_START_JSON"'
+      'rm -f "$RDM_PERSIST_START_JSON"' +
+      // An unreadable id stops the ladder HERE rather than letting every
+      // `review comment` below run against `""`.
+      '\n' +
+      '[ -n "$RDM_REVIEW_ID" ] || exit 1'
   );
   for (let i = 0; i < survivors.length; i++) {
     const f = survivors[i] || {};
@@ -1826,16 +1855,17 @@ function persistReviewCommands(result, target, cfg, opts) {
         ' review comment "$RDM_REVIEW_ID"' +
         pathFlag +
         ' --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' +
-        proj;
+        proj +
+        ' || exit 1';
     } else {
-      cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY" --no-edit' + proj;
+      cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' || exit 1';
     }
     cmds.push(cmd);
   }
-  cmds.push(IND + bin + ' review submit "$RDM_REVIEW_ID" --verdict ' + verdict + ' --no-edit' + proj);
+  cmds.push(IND + bin + ' review submit "$RDM_REVIEW_ID" --verdict ' + verdict + ' --no-edit' + proj + ' || exit 1');
   // Session-scoped by the changeset model, so a concurrent dispatch's staged
   // work is never swept in. NEVER `--all`, and never `rdm discard`.
-  cmds.push(IND + bin + ' commit -m ' + shellQuote('chore(plan): record ' + mode + ' review of ' + target));
+  cmds.push(IND + bin + ' commit -m ' + shellQuote('chore(plan): record ' + mode + ' review of ' + target) + ' || exit 1');
   cmds.push('printf \'reviewId=%s\\n\' "$RDM_REVIEW_ID"');
   return cmds;
 }

@@ -214,6 +214,13 @@ function buildEstimatorPrompt(phaseBody) {
 // command line, so backticks, `$` and punctuation ride through literally.
 // `--model` is deliberately absent: the tier derives from the difficulty in
 // rdm-core, and the last command is what reads it back.
+//
+// EVERY LINE CARRIES `|| exit 1`, the emitted-ladder rule this lane applies
+// everywhere (see review.mjs's persistReviewCommands and the code engine's
+// gateCommands). The ladder's last command is a READ, and a caller pastes it
+// into a plain shell with no `set -e` — so without per-line handling a refused
+// `phase update` was followed by a successful `phase show` and the ladder exited
+// 0, reporting a difficulty and an audit note that were never persisted.
 function buildEstimateWritebackCommands(stem, difficulty, justification, slug, cfg) {
   const bin = resolveRdmBin(cfg && cfg.rdmBin);
   const proj = projectFlag(cfg);
@@ -222,8 +229,8 @@ function buildEstimateWritebackCommands(stem, difficulty, justification, slug, c
   return [
     "RDM_ESTIMATE_NOTE=$(cat <<'RDM_ESTIMATE_EOF'\n" + note + '\nRDM_ESTIMATE_EOF\n)',
     '  ' + bin + ' phase update ' + stem + ' --difficulty ' + difficulty +
-      ' --append-body "$RDM_ESTIMATE_NOTE" --no-edit --roadmap ' + slug + proj,
-    '  ' + show,
+      ' --append-body "$RDM_ESTIMATE_NOTE" --no-edit --roadmap ' + slug + proj + ' || exit 1',
+    '  ' + show + ' || exit 1',
   ];
 }
 

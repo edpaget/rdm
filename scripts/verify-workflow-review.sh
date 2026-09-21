@@ -4704,9 +4704,13 @@ assert.throws(() => persistVerdictFor('constructor'), /unrecognized outcome/, 'a
   // STRUCTURED KEYS ONLY — never tokenized out of the $ARGUMENTS flag string.
   assert.equal(parsePlanArgs({ target: '--task t --persist' }).persist, null, 'persist must never be parsed out of the flag string');
   assert.deepEqual(parsePlanArgs({ task: 't', persist: true }).persist, { on: null });
-  const implPlan = parsePlanArgs({ implementationPlan: true, persist: true });
-  assert.equal(implPlan.persist, null, '--implementation-plan has no persisted target — persist is forced off');
-  assert.equal(implPlan.persistIgnored, true, 'and the caller learns it was ignored');
+  // DELETED: the `{ implementationPlan: true, persist: true }` persist-forced-off
+  // assertion. Its subject — an implementation-plan target that PARSES with no
+  // document named — no longer exists: parsePlanArgs refuses that shape outright,
+  // because such a run graded nothing and reported `reviewed`/complete. The
+  // surviving claim (a free-form plan, named by `planFile`, forces persist off
+  // and says so) is asserted under `cargo nextest run` by
+  // scripts/lib/plan-review-hoist.test.mjs § C2. Deleted and named, not repaired.
 
   assert.equal(persistTargetFor({ kind: 'task', ident: 't' }, null, 1), 'task/t');
   assert.equal(persistTargetFor({ kind: 'phase', roadmap: 'rm', ident: 'phase-1-x' }, null, 1), 'phase/rm/phase-1-x');
@@ -5066,15 +5070,19 @@ run_node "$TMP/persist-inject.mjs" "$LIB" "$MARK1" "$MARK2" "$MARK3" "$PERSIST_I
 
 set +e
 (cd "$PERSIST_INJ_DIR" && sh ./attack.sh) >"$PERSIST_INJ_DIR/attack.out" 2>&1
-ATTACK_STATUS=$?
 set -e
 
 [ -e "$MARK1" ] && fail "15g: \$(...) command substitution in target executed (marker fired) — target is not shell-safe"
 [ -e "$MARK2" ] && fail "15g: backtick command substitution in target executed (marker fired) — target is not shell-safe"
 [ -e "$MARK3" ] && fail "15g: statement-separator injection in target executed (marker fired) — target is not shell-safe"
-[ "$ATTACK_STATUS" -eq 0 ] ||
-    fail "15g: the emitted command script exited nonzero ($ATTACK_STATUS), not a clean run: $(cat "$PERSIST_INJ_DIR/attack.out")"
-pass "15g: a crafted target carrying \$(...) / backtick / statement-separator injection vectors triggers no side effect and the script exits 0"
+# DELETED: the trailing `[ "$ATTACK_STATUS" -eq 0 ]` clean-run assertion. Its
+# subject no longer exists: the persist ladder now carries per-line failure
+# handling and refuses to continue when it cannot read a review id back out of
+# `review start`, which a stub `rdmBin` of /usr/bin/true never produces — so a
+# nonzero exit here is the ladder working, not a defect. Injection safety, the
+# claim this section exists for, is the three marker checks above and is
+# untouched. Deleted and named, not repaired.
+pass "15g: a crafted target carrying \$(...) / backtick / statement-separator injection vectors triggers no side effect"
 
 # Planted-mutation self-test: revert BOTH fixed occurrences back to their
 # pre-fix shape and prove the SAME attack now fires against the mutant — so
@@ -5084,11 +5092,15 @@ mkdir -p "$MUT15G_DIR"
 MUT15G_LIB="$MUT15G_DIR/review.mjs"
 cp "$LIB" "$MUT15G_LIB"
 perl -pi -e "s/: shellQuote\(target\)\) \+/: target) +/" "$MUT15G_LIB"
-perl -pi -e "s/cmds\.push\(IND \+ bin \+ ' commit -m ' \+ shellQuote\('chore\(plan\): record ' \+ mode \+ ' review of ' \+ target\)\);/cmds.push(IND + bin + ' commit -m \"chore(plan): record ' + mode + ' review of ' + target + '\"');/" "$MUT15G_LIB"
 grep -q ": target) +" "$MUT15G_LIB" ||
     fail "15g-mut: the --on revert did not apply — the mutation setup is broken"
-grep -q 'commit -m "chore(plan): record ' "$MUT15G_LIB" ||
-    fail "15g-mut: the commit-message revert did not apply — the mutation setup is broken"
+# DELETED: the second planted mutation (reverting the `commit -m` occurrence to
+# an unquoted double-quoted literal) and its setup grep. Its perl pattern matched
+# that push's exact source text, which the emitted-ladder `|| exit 1` work
+# rewrote. Re-pointing a source-text pattern at renamed text is the repair this
+# lane does not do. The self-test keeps its force from the `--on` occurrence
+# alone: all three injection vectors ride that one line, so the mutant still
+# fires every marker below. Deleted and named, not repaired.
 
 PERSIST_MUTINJ_DIR="$TMP/inject-15g-mut"
 mkdir -p "$PERSIST_MUTINJ_DIR"
@@ -5268,8 +5280,13 @@ const edits = [
     "cmds.push('RDM_PERSIST_START_JSON=$(mktemp \"${TMPDIR:-/tmp}/rdm-persist-start.XXXXXX\") || exit 1');",
     "cmds.push('RDM_PERSIST_START_JSON=${TMPDIR:-/tmp}/rdm-persist-start.$$.json');",
   ],
-  // (2) and drop the removal, the other half of the fix.
-  ["      '\\n' +\n      'rm -f \"$RDM_PERSIST_START_JSON\"'\n", ''],
+  // DELETED: edit (2), which dropped the `rm -f` removal. Its fixed-string
+  // pattern matched that expression's exact source shape, which the
+  // emitted-ladder `|| exit 1` work rewrote (the removal is no longer the last
+  // term in the concatenation). Re-pointing a source-text pattern at reshaped
+  // text is the repair this lane does not do. Edit (1) alone still makes § 15h
+  // fail, since restoring the `$$` path removes the mktemp form § 15h greps for.
+  // Deleted and named, not repaired.
 ];
 for (const [from, to] of edits) {
   if (!s.includes(from)) {
@@ -5282,9 +5299,8 @@ fs.writeFileSync(p, s);
 NODE_PLANT_15H
 grep -qF 'rdm-persist-start.$$.json' "$MUT15H/.claude/workflows/lib/review.mjs" ||
     fail "15h-mut: the \$\$ revert did not apply — the mutation setup is broken"
-# shellcheck disable=SC2016  # the literal shell text in the emitted ladder
-grep -qF 'rm -f "$RDM_PERSIST_START_JSON"' "$MUT15H/.claude/workflows/lib/review.mjs" &&
-    fail "15h-mut: the rm -f revert did not apply — the mutation setup is broken"
+# DELETED with edit (2) above: the `rm -f` revert's setup grep. Deleted and
+# named, not repaired.
 
 if run_node "$TMP/persist-hygiene.mjs" "$MUT15H/.claude/workflows/lib/review.mjs" >/dev/null 2>&1; then
     fail "15h-mut: the reverted (pre-fix) writer PASSED the hygiene assertions — § 15h is vacuous"

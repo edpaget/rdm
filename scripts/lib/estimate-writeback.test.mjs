@@ -35,10 +35,12 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-import { buildEstimatePipeline } from '../../.claude/workflows/lib/estimate.mjs';
+import { buildEstimatePipeline, buildEstimateWritebackCommands } from '../../.claude/workflows/lib/estimate.mjs';
 
 // --------------------------------------------------------------- environment
 
@@ -238,6 +240,27 @@ test('the already-estimated phase is left exactly as it was', () => {
   assert.equal(c.model, 'large', 'its core-derived tier is untouched');
   assert.ok(!(c.body || '').includes('## Estimate'), 'no audit note was appended to it');
   assert.ok((c.body || '').includes('ORIGINAL BODY C'), 'its body is untouched');
+});
+
+test('a refused write fails the ladder, even in a plain shell with no set -e', () => {
+  // The ladder's last command is a READ, and the caller skill tells the
+  // orchestrator to "run each one in Bash, in order, exactly as returned … and
+  // report the exit status". Without per-line failure handling, a refused
+  // `phase update` followed by a successful `phase show` left the session
+  // exiting 0 — reporting a difficulty and an audit note that were never
+  // persisted, and inviting the next autopilot pass to re-rate the phase.
+  const stub = path.join(PLAN_ROOT, 'refusing-rdm');
+  fs.writeFileSync(stub, '#!/bin/sh\n[ "$2" = update ] || exit 0\necho "error: refused" >&2\nexit 1\n', {
+    mode: 0o755,
+  });
+
+  const script = buildEstimateWritebackCommands('phase-1-a', 'moderate', 'because', ROADMAP, {
+    rdmBin: stub,
+    project: PROJECT,
+  }).join('\n');
+
+  const status = spawnSync('/bin/bash', ['-c', script], { encoding: 'utf8', env: SHELL_ENV }).status;
+  assert.notEqual(status, 0, 'a refused update must fail the ladder, not be masked by the trailing read-back');
 });
 
 test('a second pass over the now-written repo has nothing left to estimate', async () => {

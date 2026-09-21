@@ -44,6 +44,7 @@ import {
   coverageSummaryClause,
   persistReviewCommands,
   parseCommentHeader,
+  shellQuote,
 } from './review.mjs';
 
 // >>> plan-review-driver:begin <<<
@@ -57,7 +58,7 @@ import {
 // No Date.now / Math.random — pure array/string ops plus injected async deps.
 //
 // `buildReviewPipeline`, `filterPlanReviewTag`,
-// `classifyPlanOutcome`, `gateFor`, `summarizeFindings`,
+// `classifyPlanOutcome`, `gateFor`, `summarizeFindings`, `shellQuote`,
 // `resolveRefutationBudget` and `resolveReviewers` are NOT declared here: they belong to the canonical
 // review source (lib/review.mjs) and reach this block from the stamped review
 // block that precedes it in the workflow consumer (and from the import above in
@@ -75,16 +76,18 @@ import {
 // 'task' | 'phase' | 'roadmap' | 'implementation-plan'.
 //
 // EVERY VALUE HERE IS AN IDENTIFIER OR A SHORT LIST. `planSlug` names the
-// `plan/<slug>` document under review; `phases` names which phase stems a
-// roadmap sweep covers; `tags` carries the item's current tag list so the gate
-// can write back a filtered one. No document body is an argument any more —
-// `planText` is gone with the transport negotiation it belonged to, because a
-// judgment agent fetches the plan itself from the command its prompt names.
+// `plan/<slug>` document under review; `planFile` names a FREE-FORM plan by
+// absolute path; `phases` names which phase stems a roadmap sweep covers; `tags`
+// carries the item's current tag list so the gate can write back a filtered one.
+// No document body is an argument any more — `planText` is gone with the
+// transport negotiation it belonged to, because a judgment agent fetches the
+// plan itself from the command its prompt names.
 //
-// Throws an actionable error when no target can be resolved, when `planSlug` is
-// given on a non-implementation-plan target, or when an explicit `persist.on`
-// disagrees with `plan/<planSlug>`. Those are argument-SHAPE throws: each reads
-// only the arguments it was handed.
+// Throws an actionable error when no target can be resolved, when an
+// implementation-plan target names NO document at all, when `planSlug` /
+// `planFile` are given on a non-implementation-plan target or together, or when
+// an explicit `persist.on` disagrees with `plan/<planSlug>`. Those are
+// argument-SHAPE throws: each reads only the arguments it was handed.
 function parsePlanArgs(rawArgs) {
   let a = rawArgs || {}
   if (typeof a === 'string') {
@@ -139,13 +142,23 @@ function parsePlanArgs(rawArgs) {
   if (typeof a.phase === 'string' && a.phase) phase = a.phase
   if (a.implementationPlan) implementationPlan = true
 
-  // The SLUG of the persisted plan document under review — the ONE identifier
-  // key that survives the retired planText/planSlug transport negotiation. Read
-  // from a STRUCTURED OBJECT KEY ONLY, deliberately never parsed out of the
-  // `$ARGUMENTS` flag string, exactly like `persist` below: a positional target
-  // slug must never be able to turn a plan-repo write on. Empty string when
-  // absent, which is the free-form review-what-is-in-context case.
+  // THE TWO WAYS TO NAME AN IMPLEMENTATION PLAN, both IDENTIFIERS, never a body.
+  //
+  // `planSlug` names a persisted `plan/<slug>` rdm document. `planFile` names a
+  // FREE-FORM plan — a loose file on disk with no rdm document behind it, which
+  // is the case `--implementation-plan` was originally built for and which
+  // `scripts/lib/codex-runtime.mjs` is the live consumer of. A path is an
+  // identifier exactly like a slug is: the reviewer runs the `cat` its prompt
+  // names and reads the plan in its own context. That is the phase's rule, not
+  // an exception to it — what the rule bans is a DOCUMENT crossing the argument
+  // boundary, and `planText` did exactly that, which is why it is gone.
+  //
+  // Both are read from a STRUCTURED OBJECT KEY ONLY, deliberately never parsed
+  // out of the `$ARGUMENTS` flag string, exactly like `persist` below: a
+  // positional target slug must never be able to turn a plan-repo write on, nor
+  // name a file to read.
   const planSlug = typeof a.planSlug === 'string' && a.planSlug.trim() !== '' ? a.planSlug.trim() : ''
+  const planFile = typeof a.planFile === 'string' && a.planFile.trim() !== '' ? a.planFile.trim() : ''
 
   // Precedence is fixed and total: implementation-plan wins over everything
   // (it is report-only and has no persisted item), then an explicit task, then
@@ -239,32 +252,67 @@ function parsePlanArgs(rawArgs) {
   // wrongly is caught HERE, at parse time, before any agent() call — the
   // resolveRefutationBudget precedent. Each throw names both halves of the
   // disagreement so the caller can see which one to change.
+  if (planSlug && kind !== 'implementation-plan') {
+    throw new Error(
+      'plan-review: planSlug ' +
+        planSlug +
+        ' requires --implementation-plan, but the target resolved to kind ' +
+        kind +
+        ' — a slug on a roadmap/phase/task target would be silently ignored'
+    )
+  }
+  if (planFile && kind !== 'implementation-plan') {
+    throw new Error(
+      'plan-review: planFile ' +
+        planFile +
+        ' requires --implementation-plan, but the target resolved to kind ' +
+        kind +
+        ' — a file on a roadmap/phase/task target would be silently ignored'
+    )
+  }
+  if (planSlug && planFile) {
+    throw new Error(
+      'plan-review: planSlug ' +
+        planSlug +
+        ' and planFile ' +
+        planFile +
+        ' both name the plan under review — pass exactly one, so the graded document is never in doubt'
+    )
+  }
+  // A REVIEW THAT CAN GRADE NOTHING NEVER RUNS. An implementation-plan target
+  // naming neither a slug nor a file has no document any reviewer can reach, and
+  // before this throw existed such a run dispatched every reviewer against the
+  // literal string "(the implementation plan provided in context)" with nothing
+  // in context, then returned `outcome: reviewed`, `coverage.complete: true` — a
+  // clean, complete-looking approval of an empty document. Coverage cannot see
+  // this (every reviewer DID run), so the refusal belongs here, at parse time,
+  // before any agent burns a token. It is the no-target throw above applied to
+  // the one target kind that could resolve without naming anything.
+  if (kind === 'implementation-plan' && !planSlug && !planFile) {
+    throw new Error(
+      'plan-review: --implementation-plan names no document — pass planSlug ' +
+        '"<slug>" for a persisted plan/<slug>, or planFile "/abs/path/to/plan.md" for a free-form one. ' +
+        'Reviewing with neither would grade an empty document and report it clean.'
+    )
+  }
   if (planSlug) {
-    if (kind !== 'implementation-plan') {
-      throw new Error(
-        'plan-review: planSlug ' +
-          planSlug +
-          ' requires --implementation-plan, but the target resolved to kind ' +
-          kind +
-          ' — a slug on a roadmap/phase/task target would be silently ignored'
-      )
-    }
-    // The dual-supply throw that used to live here is gone with `planText`.
-    // There is no second way to supply the plan, so there is no disagreement
-    // left to catch: `planSlug` names the document, the reviewer reads it, and
-    // the verdict is recorded on that same ref.
+    // The dual-supply throw `planText` used to need is above, now between the
+    // two IDENTIFIERS rather than between an identifier and a body: whichever
+    // one is given, the reviewer reads the document itself, so there is no
+    // transcription to disagree with — only which document to read.
     if (persist && typeof persist.on === 'string' && persist.on !== 'plan/' + planSlug) {
       throw new Error(
         'plan-review: persist.on ' + persist.on + ' disagrees with planSlug ' + planSlug + " (expected 'plan/" + planSlug + "')"
       )
     }
   }
-  // A free-form `--implementation-plan` with no `planSlug` genuinely has nothing
-  // to hang a review off, so persist is forced off. `planSlug` is what tells the
-  // two apart: a plan named by slug IS a first-class persisted rdm document
-  // (`plan/<slug>`), and its verdict is recorded there like any other target's.
-  // Surfaced as a flag so the driver can log it rather than silently dropping a
-  // caller's request.
+  // A free-form `--implementation-plan` (a `planFile`, no `planSlug`) genuinely
+  // has nothing to hang a review off — a loose file is not an rdm document and
+  // no `review --on` ref names it — so persist is forced off. `planSlug` is what
+  // tells the two apart: a plan named by slug IS a first-class persisted rdm
+  // document (`plan/<slug>`), and its verdict is recorded there like any other
+  // target's. Surfaced as a flag so the driver can log it rather than silently
+  // dropping a caller's request.
   const persistIgnored = !!(persist && kind === 'implementation-plan' && !planSlug)
   if (persistIgnored) persist = null
 
@@ -274,6 +322,7 @@ function parsePlanArgs(rawArgs) {
     phase: phase,
     task: task,
     planSlug: planSlug,
+    planFile: planFile,
     phases: phases,
     tags: tags,
     priorReviews: priorReviews,
@@ -338,27 +387,31 @@ function persistTargetFor(unit, persist, unitCount) {
 // for a caller too close to the plan is simply how the gate works.
 
 // planGateCommands(kind, roadmap, ident, remainingTags) — the ONE place the
-// gate's two commands are built. Both buildTagWritePrompt (what the mechanical
-// agent is told to run) and buildGateAction (what the caller gets back to run
-// itself) consume it, so a prompt and a returned action can never print
-// divergent commands. Pure string assembly; no side effects.
+// gate's two commands are built, consumed by buildGateAction (what the caller
+// gets back to run itself). Pure string assembly; no side effects.
 //
 // The COMPLETE remaining list (already filtered by filterPlanReviewTag) is
 // written back, since `--tags` replaces the whole list; an empty list writes
 // `--tags ""`.
+//
+// BOTH LINES CARRY `|| exit 1`, the emitted-ladder rule this lane applies
+// everywhere (see review.mjs's persistReviewCommands and the code engine's
+// gateCommands). A caller pastes these into a plain shell with no `set -e`, and
+// a refused `update` followed by a successful `commit` would otherwise exit 0
+// and report a tag cleared that is still set.
 function planGateCommands(kind, roadmap, ident, remainingTags) {
   const tags = Array.isArray(remainingTags) ? remainingTags : []
   const tagsFlag = tags.length === 0 ? '--tags ""' : '--tags "' + tags.join(',') + '"'
   const label = kind === 'phase' ? roadmap + '/' + ident : ident
   let updateCmd
   if (kind === 'task') {
-    updateCmd = './target/debug/rdm task update ' + ident + ' ' + tagsFlag + ' --no-edit --project rdm'
+    updateCmd = './target/debug/rdm task update ' + ident + ' ' + tagsFlag + ' --no-edit --project rdm || exit 1'
   } else if (kind === 'phase') {
-    updateCmd = './target/debug/rdm phase update ' + ident + ' --roadmap ' + roadmap + ' ' + tagsFlag + ' --no-edit --project rdm'
+    updateCmd = './target/debug/rdm phase update ' + ident + ' --roadmap ' + roadmap + ' ' + tagsFlag + ' --no-edit --project rdm || exit 1'
   } else {
-    updateCmd = './target/debug/rdm roadmap update ' + ident + ' ' + tagsFlag + ' --no-edit --project rdm'
+    updateCmd = './target/debug/rdm roadmap update ' + ident + ' ' + tagsFlag + ' --no-edit --project rdm || exit 1'
   }
-  const commitCmd = './target/debug/rdm commit -m "chore(plan): clear needs-plan-review on ' + label + '"'
+  const commitCmd = './target/debug/rdm commit -m "chore(plan): clear needs-plan-review on ' + label + '" || exit 1'
   return { updateCmd: updateCmd, commitCmd: commitCmd, tagsFlag: tagsFlag, label: label }
 }
 
@@ -964,20 +1017,26 @@ async function runPlanReviewDriver(args, deps) {
 
   // ------------------------------------------------------------------ implementation-plan
   // THE GRADED DOCUMENT IS THE PLAN ITSELF, read by the reviewers from the
-  // `plan show <planSlug>` command their prompt names. No ITEM document is
-  // reachable from this branch at all, so a finding about a phase body — one the
-  // plan does not inherit — is impossible by construction rather than by
-  // instruction. The persist ref is DERIVED from the same `planSlug`, so the
-  // graded document and the recorded verdict cannot name different documents.
+  // command their prompt names — `plan show <planSlug>` for a persisted plan,
+  // `cat <planFile>` for a free-form one. Exactly one of the two is set: parse
+  // time refuses both and refuses neither, so there is always a document and it
+  // is never ambiguous which. No ITEM document is reachable from this branch at
+  // all, so a finding about a phase body — one the plan does not inherit — is
+  // impossible by construction rather than by instruction. The persist ref is
+  // DERIVED from the same `planSlug`, so the graded document and the recorded
+  // verdict cannot name different documents.
   //
   // No act step and no gate: a plan document carries no tags, so there is no
   // `needs-plan-review` to clear.
   if (kind === 'implementation-plan') {
     const slug = parsed.planSlug
-    const planTarget = slug ? 'plan/' + slug : '(the implementation plan provided in context)'
+    const file = parsed.planFile
+    const planTarget = slug ? 'plan/' + slug : 'the implementation plan at ' + file
     const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
       target: planTarget,
-      itemCommand: slug ? './target/debug/rdm plan show ' + slug + ' --project rdm --format json' : null,
+      itemCommand: slug
+        ? './target/debug/rdm plan show ' + slug + ' --project rdm --format json'
+        : 'cat -- ' + shellQuote(file),
       roadmapCommand: parsed.roadmap
         ? './target/debug/rdm roadmap show ' + parsed.roadmap + ' --project rdm --format json'
         : null,
@@ -1000,10 +1059,13 @@ async function runPlanReviewDriver(args, deps) {
       coverage: coverage || null,
       findings: survivors,
     }
-    // PRESENT ONLY WHEN THEY EXIST, so a free-form (no-slug) run's returned
-    // shape stays minimal and the documented "no gateAction / gate keys at all"
-    // contract for this kind still holds.
+    // PRESENT ONLY WHEN THEY EXIST, so a free-form run's returned shape stays
+    // minimal and the documented "no gateAction / gate keys at all" contract for
+    // this kind still holds. Exactly one of the two is ever set, and it names
+    // the document the reviewers were told to read — so a caller reading the
+    // result can always say WHAT was graded.
     if (slug) planResult.planSlug = slug
+    if (file) planResult.planFile = file
     if (slug && persistOn) {
       const ladder = planPersistCommands('plan/' + slug, outcome, survivors)
       if (ladder) {

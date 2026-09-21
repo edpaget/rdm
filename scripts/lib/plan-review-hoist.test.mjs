@@ -301,15 +301,77 @@ test('C1: the implementation-plan branch grades the PLAN by slug and reads no it
   assert.deepEqual(labels, [], 'no mechanical agent may fire on this branch');
 });
 
-test('C2: a planSlug returns the ladder persisting to plan/<slug>; without one persist is ignored', async () => {
+test('C2: a planSlug returns the ladder persisting to plan/<slug>; a free-form file cannot be persisted', async () => {
   const withSlug = await driveLib({ implementationPlan: true, planSlug: 'p', persist: { on: 'plan/p' } });
   assert.equal(withSlug.result.planSlug, 'p');
   assert.ok(withSlug.result.persistScript.includes("review start --on 'plan/p'"));
 
-  const free = await driveLib({ implementationPlan: true, persist: { on: 'plan/p' } });
+  const free = await driveLib({ implementationPlan: true, planFile: '/tmp/loose-plan.md', persist: { on: 'plan/p' } });
   assert.equal(Object.prototype.hasOwnProperty.call(free.result, 'planSlug'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(free.result, 'persistCommands'), false);
   assert.ok(free.logs.some((m) => m.includes('persist ignored')), free.logs.join(' | '));
+});
+
+test('C2b: a free-form plan is graded from its PATH — the reviewers are told to read the file', async () => {
+  const { contexts, labels, result } = await driveLib({
+    implementationPlan: true,
+    planFile: "/tmp/plans/an odd'name.md",
+  });
+  assert.equal(contexts.length, 1);
+  assert.equal(contexts[0].target, "the implementation plan at /tmp/plans/an odd'name.md");
+  // The path is an IDENTIFIER and the reviewer fetches the document itself — the
+  // same contract a planSlug gets, which is why a free-form plan needs no body
+  // to cross the argument boundary. Quoted, so a path is never shell-expanded.
+  assert.equal(contexts[0].itemCommand, "cat -- '/tmp/plans/an odd'\"'\"'name.md'");
+  assert.equal(result.planFile, "/tmp/plans/an odd'name.md");
+  assert.deepEqual(labels, [], 'no mechanical agent may fire on this branch either');
+});
+
+test('C2c: the free-form path really reaches every reviewer prompt, through the REAL pipeline', async () => {
+  const { calls } = await driveReal({ implementationPlan: true, planFile: '/tmp/free-form-plan.md' });
+  assert.ok(calls.length > 0, 'the run dispatched reviewers');
+  for (const c of calls) {
+    assert.ok(
+      c.prompt.includes("cat -- '/tmp/free-form-plan.md'"),
+      'every reviewer must be told how to read the plan — ' + c.label
+    );
+  }
+});
+
+test('C2d: an implementation-plan naming NO document is refused before any agent runs', async () => {
+  // The defect this closes: with neither key the run dispatched every reviewer
+  // against a document none of them could reach, and then reported `reviewed`
+  // with `coverage.complete: true`. Coverage cannot see it — every reviewer DID
+  // run — so the refusal has to live at parse time.
+  assert.throws(() => parsePlanArgs({ implementationPlan: true }), /names no document/);
+  assert.throws(() => parsePlanArgs('--implementation-plan'), /names no document/);
+
+  const calls = [];
+  await assert.rejects(
+    () =>
+      runPlanReviewDriver(
+        { implementationPlan: true },
+        {
+          agent: makeAgent(calls),
+          parallel: referenceParallel,
+          log: () => {},
+          runPlanReview: async () => ({ survivors: [] }),
+        }
+      ),
+    /names no document/
+  );
+  assert.deepEqual(calls, [], 'the refusal fires before a single token is spent');
+});
+
+test('C2e: the two ways of naming a plan are mutually exclusive, and neither leaks onto another target', () => {
+  assert.throws(
+    () => parsePlanArgs({ implementationPlan: true, planSlug: 'p', planFile: '/tmp/p.md' }),
+    /both name the plan under review/
+  );
+  assert.throws(() => parsePlanArgs({ roadmap: 'r', planFile: '/tmp/p.md' }), /requires --implementation-plan/);
+  // A positional target string must never be able to name a file to read.
+  assert.equal(parsePlanArgs({ target: '--implementation-plan', planFile: '/tmp/p.md' }).planFile, '/tmp/p.md');
+  assert.throws(() => parsePlanArgs('--implementation-plan --planFile /tmp/p.md'), /names no document/);
 });
 
 test('C3: the implementation-plan branch is report-only — no gate keys at all', async () => {

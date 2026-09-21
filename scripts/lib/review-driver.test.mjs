@@ -72,6 +72,9 @@ const SHELL_ENV = {
   HOME: PLAN_ROOT,
   XDG_CONFIG_HOME: `${PLAN_ROOT}/nonexistent-config`,
   RDM_ROOT: PLAN_ROOT,
+  // The persist ladder runs `rdm review start`, which refuses rather than guess
+  // an author; the hermetic environment above has no git identity to fall back on.
+  RDM_REVIEW_AUTHOR: 'review-verify',
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_CONFIG_SYSTEM: '/dev/null',
   GIT_AUTHOR_NAME: 'Review Verify',
@@ -216,6 +219,20 @@ for (const [slug, number] of [
   ]);
 }
 rdm(['task', 'create', TASK, '--title', 'Standalone', '--body', '## Acceptance criteria\n\n- AC1: it works', '--no-edit', '--project', PROJECT]);
+// A real implementation plan. `rdm review start --on change/<sha>` records which
+// plan the reviewed change implements, and a ROADMAP-wide worktree covers more
+// than one phase, so the binary refuses to infer it — the engine's optional
+// `implements` argument is the documented way to name it, and only a plan that
+// really exists satisfies the write.
+const PLAN = 'rev-verify-plan';
+rdm([
+  'plan', 'create', PLAN,
+  '--title', 'Review Verify Plan',
+  '--implements', 'phase/' + ROADMAP + '/phase-2-dirty',
+  '--body', 'the approved plan',
+  '--no-edit',
+  '--project', PROJECT,
+]);
 
 // A real source repo, and the two registered checkouts the pinned identity has
 // to name. `rdm worktree add`, run from inside the source repo, is what
@@ -321,6 +338,59 @@ test('a refused write fails the ladder, even in a plain shell with no set -e', a
 
   // Restore the pin so later tests see the head they were seeded with.
   git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], ROADMAP_PIN.source);
+});
+
+test('the persist ladder records a real review, with a real `--path` code anchor', async () => {
+  const { result } = await drive(
+    { ...COMMON, gate: false, persist: true, implements: 'plan/' + PLAN, roadmap: ROADMAP, phase: 'phase-2-dirty', ...ROADMAP_PIN },
+    {
+      id: 'anchored-bug',
+      concern: 'correctness',
+      severity: 'blocking',
+      confidence: 95,
+      what_fails: 'it drops a write',
+      location: 'roadmap-work.txt:1',
+      quote: 'shipped',
+    }
+  );
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder prints the id it created: ' + out);
+
+  const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
+  assert.equal(review.state, 'submitted');
+  assert.equal(review.verdict, 'request-changes', 'a rework outcome persists as request-changes');
+  assert.equal(review.target.kind, 'change', 'the reviewed artifact is the pinned change, not the phase document');
+  assert.equal(review.comments.length, 1, 'each survivor is persisted exactly once');
+  const anchor = review.comments[0].anchor;
+  assert.equal(anchor.anchor_type, 'file-quote', 'a change review anchors into the source file, not the document');
+  assert.equal(anchor.path, 'roadmap-work.txt', 'the quoted finding landed a real --path anchor');
+  assert.equal(anchor.quote, 'shipped');
+  assert.match(review.comments[0].body, /anchored-bug/);
+});
+
+test('a refused `review start` fails the persist ladder, even in a plain shell with no set -e', async () => {
+  const { result } = await drive({ ...COMMON, gate: false, persist: true, task: TASK, ...TASK_PIN });
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+
+  // Refuse `review start` and NOTHING ELSE — the ladder's opening `review
+  // source` line already carried `|| exit 1`, so a stub that refused everything
+  // would stop there and prove nothing about the rest. The ladder's last line is
+  // a `printf`, so without per-line failure handling the shell reports THAT
+  // command's status: the caller, whose skills make the exit status the whole
+  // success signal, saw 0, recorded an empty `reviewId=`, and believed a review
+  // existed that had never been created.
+  const stub = path.join(PLAN_ROOT, 'refusing-rdm');
+  fs.writeFileSync(stub, '#!/bin/sh\n[ "$2" = start ] || exit 0\necho "error: refused" >&2\nexit 1\n', { mode: 0o755 });
+  const refusing = result.persistScript.split(RDM).join(stub);
+
+  assert.notEqual(
+    shPlainStatus(refusing),
+    0,
+    'a refused review start must fail the ladder, not be masked by the trailing printf'
+  );
 });
 
 test('a reviewer set with no `ac` escalates with a message naming what is missing', async () => {

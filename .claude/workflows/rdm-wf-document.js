@@ -306,11 +306,17 @@ function buildSynthesisPrompt(roadmapMeta, records) {
 // QUOTED heredoc so nothing in the draft is interpreted — and the caller runs it.
 // The Workflow runtime has no filesystem of its own, and dispatching an agent to
 // hold one was the mechanical-write pattern this phase removed.
+//
+// BOTH LINES CARRY `|| exit 1`, the emitted-ladder rule this lane applies
+// everywhere (see review.mjs's persistReviewCommands and the code engine's
+// gateCommands). A caller pastes this into a plain shell with no `set -e`, where
+// an unwritable path would otherwise leave the whole draft unwritten and the
+// ladder exiting 0.
 function buildWriteCommands(outPath, draftText) {
   const marker = 'RDM_DOCUMENT_DRAFT_EOF'
   return [
-    '  mkdir -p "$(dirname "' + outPath + '")"',
-    'cat > "' + outPath + '" <<\'' + marker + "'\n" + draftText + '\n' + marker,
+    '  mkdir -p "$(dirname "' + outPath + '")" || exit 1',
+    'cat > "' + outPath + '" <<\'' + marker + "' || exit 1\n" + draftText + '\n' + marker,
   ]
 }
 

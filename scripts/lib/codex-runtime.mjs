@@ -63,7 +63,10 @@ export async function reviewPlan(ctx, spec, deps, models) {
   const planText = fs.readFileSync(spec.planFile,'utf8');
   if (!planText.trim()) throw new Error('Implementation plan is empty');
   ctx.record('plan-snapshot',{path:spec.planFile,sha256:hash(planText),planText});
-  const result = await runPlanReviewDriver({implementationPlan:true,planText,gateMode:'return',
+  // The PATH, not the text. An identifier crosses the engine boundary and each
+  // reviewer reads the file itself from the `cat` its prompt names; the snapshot
+  // hash above and the re-read below still pin the exact bytes that were graded.
+  const result = await runPlanReviewDriver({implementationPlan:true,planFile:spec.planFile,
     findModel:models['review-find']?.model,verifyModel:models['review-verify']?.model},
     {...deps,runPlanReview:buildReviewPipeline('plan',deps)});
   if (fs.readFileSync(spec.planFile,'utf8') !== planText) throw new Error('Implementation plan changed during review');
