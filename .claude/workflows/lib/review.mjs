@@ -2543,9 +2543,12 @@ function buildReviewPipeline(mode, deps) {
 //|code|   missing doc comment, a tightened error message, an extra test). Fix it
 //|code|   inline, run the relevant tests, then fold it into the implementation commit.
 //|plan| - **Small** — a localized wording, typo, or missing-detail fix to the plan
-//|plan|   document itself. Apply it directly: the body is whole-document-authoritative,
+//|plan|   document itself. Apply it directly: `--body` is whole-document-authoritative,
 //|plan|   so read the current body, apply the change, and write the **entire** modified
-//|plan|   body back — there is no patch/diff mechanism.
+//|plan|   body back. A pure **append** — a new trailing section, with nothing above it
+//|plan|   changed — uses `--append-body` instead, the one patch-shaped write there is:
+//|plan|   rdm itself adds the text, so no existing body crosses your own output, where
+//|plan|   a dropped line would be written back unrefused.
 //|code| - **Large** — new modules, cross-cutting changes, or anything that warrants
 //|code|   its own acceptance criterion. Do **NOT** fix inline: file it as a task.
 //|plan| - **Large** — a structural concern: a missing prerequisite, scope too big for

@@ -195,27 +195,29 @@ one.
 
 Record the two resulting ids as `models.plan` / `models.implement`.
 
-Then read the remaining inputs step 6 hands the plan-review engine, so that engine spawns no
-subagent to re-read what this session is already holding:
+Then read what this session — and only this session — can supply. **The plan-review engine reads
+nothing:** every reviewer fetches the document it needs from the command its prompt names. What is
+left to gather is the two judgment-site model ids, which are yours to resolve, and the wont-fix
+corpus, which no document records.
 
 ```bash
-<rdmBin> roadmap show <slug><proj-flag> --format json    # record `body` as roadmapBody — SKIP in task mode
-<rdmBin> model resolve mechanical                        # untiered: a lane role, not a tier-derived dispatch model
+<rdmBin> roadmap show <slug><proj-flag> --format json    # for STEP 5's planner — SKIP in task mode
 <rdmBin> model resolve review-find
 <rdmBin> model resolve review-verify
 <rdmBin> task list --tag plan-review --status wont-fix<proj-flag> --format json   # record each result's `title`
 ```
 
-Record the three ids as `models.mechanical` / `models.reviewFind` / `models.reviewVerify`, the
-roadmap body as `roadmapBody`, and the wont-fix titles as `wontFixedTitles`. Three notes on why
-these are the commands:
+Record the two ids as `models.reviewFind` / `models.reviewVerify` and the wont-fix titles as
+`wontFixedTitles`. Three notes on why these are the commands:
 
-- The three `model resolve` calls take **no `--tier`**. They are review-lane roles, not dispatch
-  models, and the engine's own bootstrap resolves them untiered too — resolving them here is
-  precisely what stops that `model:mechanical` bootstrap agent from ever firing.
-- The roadmap body is read in phase mode only, and step 5 already needs it (it hands the planner
-  the roadmap's `## Intent` verbatim), so this makes an existing dependency explicit rather than
-  adding a read.
+- The two `model resolve` calls take **no `--tier`**. They are review-lane roles, not dispatch
+  models. There is no mechanical model left to resolve and no bootstrap agent to pre-empt: each id
+  is independently optional, and an omitted one simply makes that judgment agent inherit the
+  session model.
+- The roadmap read is **step 5's**, not step 6's. The planner is handed the roadmap's `## Intent`
+  verbatim; the plan-review engine is not, because its `intent-alignment` reviewer reads that
+  section out of the roadmap itself, given only the roadmap's slug. It is listed here because this
+  is where the session gathers its reads, not because the engine wants it.
 - Use `task list`, **not** `rdm search`, for the wont-fix corpus: `search` truncates at its default
   `--limit 20` while the real corpus is larger, and its JSON carries no `body` field at all.
 
@@ -223,23 +225,23 @@ The code-review Workflow call's own `findModel`/`verifyModel` gap is out of scop
 (tracked by `task/thread-code-review-judgment-models`) and is not touched by this step.
 
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, the two resolved
-`models.plan` / `models.implement` and the three resolved `models.mechanical` / `models.reviewFind`
-/ `models.reviewVerify`, and confirm you captured the item's `body`, the roadmap `body`
-(phase mode) and the wont-fix titles. If the worktree or identity command failed, escalate — never
-invent a checkout, and never let a subagent choose one. A failed **hoist** read is different and
-not fatal, but say which one failed and state the consequence, because it differs per argument and
-only one of them still has an engine-side fallback: step 6 reviews the **implementation plan**, and
-that branch returns before the engine's fetch block, so no `fetch:*` agent is reachable to re-read
-anything you omit.
+`models.plan` / `models.implement` and the two resolved `models.reviewFind` / `models.reviewVerify`,
+and confirm you captured the item's `body`, the roadmap `body` (phase mode) and the wont-fix titles.
+If the worktree or identity command failed, escalate — never invent a checkout, and never let a
+subagent choose one. A failed **read** is different and not fatal, but say which one failed and
+state the consequence, because it differs per value and **no engine-side fallback exists for any of
+them**: the engine dispatches finder and refuter agents only, so nothing is reachable to re-read
+what you omit.
 
 - the item's `body` is **not** a step-6 argument at all — it feeds the planner (step 5) and the
   implementer (step 9). If it could not be read, escalate rather than dispatching a planner with no
   phase text.
-- `roadmapBody` — omitting it loses the recorded `## Intent`, so the engine simply runs no
-  intent-alignment dimension. Non-blocking, and the same outcome a roadmap that records no intent
-  produces. There is no fallback fetch on this path.
-- the model trio — omitting **all three** is the one real fallback: the engine spawns its own
-  `model:mechanical` bootstrap to resolve them. Two of three is not legal (see step 6).
+- the roadmap `body` is likewise **not** a step-6 argument — it feeds step 5's planner. If it could
+  not be read, the planner loses the recorded `## Intent`; the `intent-alignment` reviewer is
+  unaffected, since it reads that section itself from the `roadmap` slug you pass in step 6.
+- `findModel` / `verifyModel` — each independently optional. An omitted id makes that judgment agent
+  inherit the session model. Nothing else changes, and one resolved id plus one omitted one is
+  perfectly legal.
 - `wontFixedTexts` — omitting it suppresses nothing, and there is no wont-fix search on this path,
   so an already-dismissed finding can resurface and force a revise round. Pass `[]` only when the
   corpus really is empty.
@@ -278,9 +280,9 @@ anything you omit.
 
 **Self-check before proceeding:** confirm the planner subagent returned and that `plan show
 <plan-slug> --format json` reports a real plan whose `implements` is `rdm:<item>`. No new command
-beyond that confirmation — step 6 no longer needs the plan body handed to it at all: it resolves the
-body itself, by slug, with one mechanical read of its own. If you drafted the plan yourself instead
-of dispatching, you have inline-collapsed — stop and dispatch.
+beyond that confirmation — step 6 never needs the plan body handed to it: it passes the slug, and
+each reviewer runs `plan show` itself. If you drafted the plan yourself instead of dispatching, you
+have inline-collapsed — stop and dispatch.
 
 ### 6. Invoke the plan review — in THIS session
 

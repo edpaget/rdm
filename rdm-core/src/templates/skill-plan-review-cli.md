@@ -53,7 +53,7 @@ Apply **Review specification § Act**. The dispatched reviewers never apply fixe
 
 Skip this step's fix-application half entirely in `--implementation-plan` mode — there is no persisted rdm item to write to or file against.
 
-Small fixes are written back as a whole body (`--body` is whole-document-authoritative — there is no patch/diff mechanism):
+A small fix edits text that is already there, so it is written back as a whole body (`--body` is whole-document-authoritative). A pure **append** — adding a new trailing section and changing nothing above it — uses `--append-body` instead, which makes rdm itself add the text so no existing body has to be read out and handed back:
 ```bash
 rdm phase update <phase-number> --roadmap <slug> --body "<full updated body>" --no-edit {proj_flag}
 # or: rdm task update <slug> --body "<full updated body>" --no-edit {proj_flag}
@@ -139,7 +139,7 @@ Human-in-the-loop only. Skip this step entirely in `--implementation-plan` mode 
 - Be objective, and cite evidence (a location and a quote or paraphrase) for every finding.
 - The dispatched sub-agents only review and report — they never edit. The orchestrator (this skill) applies small fixes and files large ones, and only after refutation or under the un-refuted disposition rule.
 - Never guess intent when the target document is ambiguous or missing — report it as a finding instead.
-- `--body` is whole-document-authoritative: always read-modify-write the entire body, never assume a patch/diff mechanism exists.
+- `--body` is whole-document-authoritative: to change text that is already there, read-modify-write the entire body. To **add** a trailing section and change nothing above it, use `--append-body` instead — it is the only patch-shaped write that exists, it is mutually exclusive with `--body`, and it is the required form for a pure append, because a re-supplied body that lost a line is not refused (only a fully empty `--body` is).
 - `--tags` replaces the whole list: always read the current tags, filter out `needs-plan-review`, and set the complete remaining list (or `--tags ""` when it was the only tag).
 - A surviving `blocking` finding yields `rework` or `escalated`; concerns and suggestions alone never hold the gate closed.
 
@@ -450,9 +450,12 @@ provenances, and they are handled differently:
 Never fix or file a finding that carries neither provenance.
 
 - **Small** — a localized wording, typo, or missing-detail fix to the plan
-  document itself. Apply it directly: the body is whole-document-authoritative,
+  document itself. Apply it directly: `--body` is whole-document-authoritative,
   so read the current body, apply the change, and write the **entire** modified
-  body back — there is no patch/diff mechanism.
+  body back. A pure **append** — a new trailing section, with nothing above it
+  changed — uses `--append-body` instead, the one patch-shaped write there is:
+  rdm itself adds the text, so no existing body crosses your own output, where
+  a dropped line would be written back unrefused.
 - **Large** — a structural concern: a missing prerequisite, scope too big for
   one phase, or a conflicting design decision. Do **NOT** edit the plan
   document for these: file it as a task.
