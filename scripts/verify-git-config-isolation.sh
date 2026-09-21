@@ -178,6 +178,15 @@ count_leaks() {
 # GNUPGHOME overrides, or empty to leave them unset) into scratch dir $4,
 # writing a normalized, order-independent PASS/FAIL summary to $5. Returns
 # nextest's own exit status.
+#
+# `CARGO_TERM_COLOR` is pinned to `never` for the same reason this harness
+# pins HOME and GIT_CONFIG_SYSTEM: the summary below is parsed out of
+# nextest's own output, so an ambient setting that changes that output
+# changes the measurement. CI sets `CARGO_TERM_COLOR: always`, which makes
+# cargo emit ANSI escapes even into a redirected file, and every per-test
+# line then reads `\033[32;1m        PASS\033[0m [ ...` — matching no
+# anchored `^\s*PASS\s+\[` pattern. The zero-result guard in section 1
+# caught it rather than passing vacuously, but the run was still red.
 run_suites() {
     home_override=$1
     system_override=$2
@@ -188,10 +197,12 @@ run_suites() {
     set +e
     if [ -n "$home_override" ]; then
         HOME="$home_override" GIT_CONFIG_SYSTEM="$system_override" GNUPGHOME="$gnupg_override" \
-            TMPDIR="$scratch" cargo nextest run -p rdm-git -p rdm-cli -E "$FILTER" \
+            TMPDIR="$scratch" CARGO_TERM_COLOR=never \
+            cargo nextest run -p rdm-git -p rdm-cli -E "$FILTER" \
             >"$scratch/run.log" 2>&1
     else
-        TMPDIR="$scratch" cargo nextest run -p rdm-git -p rdm-cli -E "$FILTER" \
+        TMPDIR="$scratch" CARGO_TERM_COLOR=never \
+            cargo nextest run -p rdm-git -p rdm-cli -E "$FILTER" \
             >"$scratch/run.log" 2>&1
     fi
     status=$?
