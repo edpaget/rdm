@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { runPlanReviewDriver, hoistedRoadmapBodyOk } from '../../.claude/workflows/lib/plan-review.mjs';
+import { runPlanReviewDriver, hoistedRoadmapBodyOk, parsePlanArgs } from '../../.claude/workflows/lib/plan-review.mjs';
 
 const checkout = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -69,13 +69,16 @@ const ROADMAP_TRANSCRIPT = [
 
 // ---------------------------------------------------------------- harness
 
-// makeAgent(overrides) — a recording fake agent. Every call pushes its label;
-// the canned returns are the real parse contract of each site (a raw JSON
-// stdout transcript for the show fetches, a `texts` array for wont-fix).
-function makeAgent(labels, overrides = {}) {
-  return async function agent(_prompt, opts) {
+// makeAgent(overrides) — a recording fake agent. Every call pushes its label,
+// and (when a `calls` sink is supplied) its PROMPT alongside that label, so a
+// test can decide what a mechanical site was actually told rather than only
+// that it fired. The canned returns are the real parse contract of each site (a
+// raw JSON stdout transcript for the show fetches, a `texts` array for wont-fix).
+function makeAgent(labels, overrides = {}, calls = null) {
+  return async function agent(prompt, opts) {
     const label = (opts && opts.label) || '?';
     labels.push(label);
+    if (calls) calls.push({ label, prompt: String(prompt) });
     if (Object.prototype.hasOwnProperty.call(overrides, label)) {
       const canned = overrides[label];
       return typeof canned === 'function' ? canned() : canned;
@@ -108,22 +111,23 @@ const referenceParallel = async (tasks) =>
 // this test is about. `gateMode: 'return'` keeps the gate from writing.
 async function driveLib(args, opts = {}) {
   const labels = [];
+  const calls = [];
   const contexts = [];
   const logs = [];
   const result = await runPlanReviewDriver(args, {
-    agent: makeAgent(labels, opts.agentOverrides || {}),
+    agent: makeAgent(labels, opts.agentOverrides || {}, calls),
     parallel: referenceParallel,
     log: (m) => logs.push(String(m)),
     runPlanReview: async (ctx) => {
       contexts.push(ctx);
-      return { survivors: [], acTable: null, budget: null, coverage: null };
+      return { survivors: opts.survivors ? opts.survivors.slice() : [], acTable: null, budget: null, coverage: null };
     },
     mechanicalModel: 'model-mech',
     findModel: 'model-find',
     verifyModel: 'model-verify',
     gateMode: 'return',
   });
-  return { result, labels, contexts, logs };
+  return { result, labels, calls, contexts, logs };
 }
 
 const count = (labels, label) => labels.filter((l) => l === label).length;
@@ -431,4 +435,194 @@ test('B4: an empty bootstrap result keeps the pre-existing fail-closed abort', a
 test('B5: the lib and the shipped artifact are both present where this test expects them', () => {
   assert.ok(fs.existsSync(new URL('.claude/workflows/lib/plan-review.mjs', `file://${checkout}`)));
   assert.ok(fs.existsSync(WORKFLOW_PATH));
+});
+
+// ================================================================ Suite C
+//
+// The dispatch's plan review grades the IMPLEMENTATION PLAN, not the item
+// document. Every assertion below is decided by driving the real
+// runPlanReviewDriver — nothing here greps source text.
+
+// A plan body sharing no distinctive wording with PHASE_BODY, so "the phase body
+// did not reach the engine" is decidable by substring.
+const PLAN_TEXT = [
+  '# Plan — thread the implementation plan through the review',
+  '',
+  '## Steps',
+  '',
+  '1. Rewrite the branch to grade planText.',
+  '2. Persist the verdict to the plan document.',
+  '',
+  '## Acceptance criteria',
+  '',
+  '- [ ] The graded text is the plan.',
+].join('\n');
+
+const PERSIST_ACK = { ok: true, reviewId: '2026-09-20-1200-abcd', attempted: 1, anchored: 1, degraded: 0 };
+
+// The full dispatch payload, minus whatever a given test wants to vary.
+function planArgs(extra = {}) {
+  return Object.assign(
+    {
+      implementationPlan: true,
+      planSlug: 'p',
+      planText: PLAN_TEXT,
+      persist: { on: 'plan/p' },
+      roadmapBody: ROADMAP_BODY_WITH_INTENT,
+      wontFixedTexts: [],
+    },
+    extra
+  );
+}
+
+test('C1: the graded target is the PLAN, and no item document is fetched at all', async () => {
+  const { contexts, labels } = await driveLib(planArgs(), {
+    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
+  });
+  assert.equal(contexts.length, 1);
+  assert.equal(contexts[0].target, PLAN_TEXT);
+  assert.equal(
+    contexts[0].target.includes('Do the thing.'),
+    false,
+    'the phase body leaked into the graded text'
+  );
+  const fetches = labels.filter((l) => l.startsWith('fetch:'));
+  assert.deepEqual(fetches, [], `a mechanical fetch ran; labels: ${labels.join(',')}`);
+});
+
+test('C2: targetType is implementation-plan and the roadmap intent is threaded as a VALUE', async () => {
+  const withIntent = await driveLib(planArgs(), {
+    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
+  });
+  assert.equal(withIntent.contexts[0].signals.targetType, 'implementation-plan');
+  assert.equal(withIntent.contexts[0].signals.hasIntent, true);
+  assert.equal(withIntent.contexts[0].intent, EXPECTED_INTENT);
+
+  // Fail-soft: no roadmapBody at all (task mode, or a failed hoist read).
+  const args = planArgs();
+  delete args.roadmapBody;
+  const without = await driveLib(args, { agentOverrides: { 'persist:review:plan:p': PERSIST_ACK } });
+  assert.equal(without.contexts[0].signals.targetType, 'implementation-plan');
+  assert.equal(without.contexts[0].signals.hasIntent, false);
+  assert.equal(without.contexts[0].intent, null);
+  assert.equal(without.result.kind, 'implementation-plan');
+  assert.notEqual(without.result.fetchError, true);
+
+  // And a body carrying no `## Intent` degrades the same way, without throwing.
+  const noSection = await driveLib(planArgs({ roadmapBody: ROADMAP_BODY_WITHOUT_INTENT }), {
+    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
+  });
+  assert.equal(noSection.contexts[0].signals.hasIntent, false);
+  assert.equal(noSection.contexts[0].intent, null);
+});
+
+test('C3: a planSlug persists the verdict to plan/<slug>; without one, persistIgnored still holds', async () => {
+  const { result, labels, calls } = await driveLib(planArgs(), {
+    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
+  });
+  assert.equal(count(labels, 'persist:review:plan:p'), 1, `labels: ${labels.join(',')}`);
+  const persistCall = calls.find((c) => c.label === 'persist:review:plan:p');
+  assert.ok(persistCall.prompt.includes('plan/p'), 'the persist prompt does not name the plan document');
+  assert.equal(result.reviewId, PERSIST_ACK.reviewId);
+  assert.equal(result.planSlug, 'p');
+  assert.ok(result.reviewPersistence, 'the accounting is reported');
+
+  // Free-form pasted plan text, no slug: nothing to write to.
+  const free = await driveLib({ implementationPlan: true, planText: PLAN_TEXT, persist: { on: 'plan/p' } });
+  assert.equal(
+    free.labels.some((l) => l.startsWith('persist:review:')),
+    false,
+    `labels: ${free.labels.join(',')}`
+  );
+  assert.ok(
+    free.logs.some((m) => m.includes('persist ignored')),
+    `the ignore was not logged; logs: ${free.logs.join(' | ')}`
+  );
+  assert.equal(Object.prototype.hasOwnProperty.call(free.result, 'planSlug'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(free.result, 'reviewId'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(free.result, 'reviewPersistence'), false);
+});
+
+test('C4: no act step and no gate write fires, and the report-only shape is kept', async () => {
+  const { result, labels } = await driveLib(planArgs(), {
+    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
+  });
+  for (const l of labels) {
+    assert.equal(l.startsWith('act:'), false, `an act step ran: ${l}`);
+    assert.equal(l.startsWith('gate:clear-tag:'), false, `a gate write ran: ${l}`);
+  }
+  for (const key of ['gateAction', 'gateBlocked', 'gateDeferred', 'units']) {
+    assert.equal(Object.prototype.hasOwnProperty.call(result, key), false, `result carries ${key}`);
+  }
+  assert.equal(result.kind, 'implementation-plan');
+  assert.equal(typeof result.summary, 'string');
+});
+
+test('C5: caller-supplied wont-fix texts suppress a matching finding on this path', async () => {
+  const DISMISSED = 'the plan omits regenerating the checked-in plugin tree entirely';
+  const finding = {
+    id: 'af-2',
+    concern: 'architectural-fit',
+    severity: 'blocking',
+    confidence: 'high',
+    what_fails: DISMISSED,
+  };
+
+  const suppressed = await driveLib(planArgs({ wontFixedTexts: [DISMISSED] }), {
+    survivors: [finding],
+    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
+  });
+  assert.deepEqual(suppressed.result.findings, [], 'an already-dismissed finding resurfaced');
+
+  const omitted = await driveLib(
+    (() => {
+      const a = planArgs();
+      delete a.wontFixedTexts;
+      return a;
+    })(),
+    { survivors: [finding], agentOverrides: { 'persist:review:plan:p': PERSIST_ACK } }
+  );
+  assert.equal(omitted.result.findings.length, 1, 'omitting the key must not suppress anything');
+  assert.equal(
+    omitted.labels.some((l) => l === 'fetch:wontfix'),
+    false,
+    'no fetch:wontfix agent is reachable in this mode'
+  );
+});
+
+test('C6 (standalone regression): a phase target still grades the item body and still gates', async () => {
+  const { result, contexts } = await driveLib({
+    roadmap: 'r',
+    phase: 'phase-1-x',
+    fetched: FETCHED_PHASE,
+    roadmapBody: ROADMAP_BODY_WITH_INTENT,
+    wontFixedTexts: [],
+  });
+  assert.equal(result.kind, 'phase');
+  assert.equal(contexts[0].signals.targetType, 'phase');
+  assert.ok(contexts[0].target.includes('Do the thing.'), 'the phase body is still the graded text');
+  assert.equal(contexts[0].target.includes('## Acceptance criteria'), false, 'no plan text leaked in');
+  assert.ok(result.gateAction, 'the gate action is still produced');
+  assert.equal(result.gateAction.clearsPlanReviewTag, true);
+});
+
+test('C7: illegal planSlug / persist.on combinations throw before any agent runs', () => {
+  assert.throws(
+    () => parsePlanArgs({ roadmap: 'r', phase: 'phase-1-x', planSlug: 'p', planText: PLAN_TEXT }),
+    /planSlug p requires --implementation-plan/
+  );
+  assert.throws(
+    () => parsePlanArgs({ implementationPlan: true, planSlug: 'p' }),
+    /was given with no planText/
+  );
+  assert.throws(
+    () => parsePlanArgs({ implementationPlan: true, planSlug: 'p', planText: PLAN_TEXT, persist: { on: 'plan/other' } }),
+    /disagrees with planSlug p/
+  );
+  // The legal combinations still parse.
+  const ok = parsePlanArgs({ implementationPlan: true, planSlug: 'p', planText: PLAN_TEXT, persist: { on: 'plan/p' } });
+  assert.equal(ok.planSlug, 'p');
+  assert.equal(ok.persistIgnored, false);
+  const derived = parsePlanArgs({ implementationPlan: true, planSlug: 'p', planText: PLAN_TEXT, persist: true });
+  assert.equal(derived.persistIgnored, false, 'an unqualified persist:true is honored and the ref is derived');
 });

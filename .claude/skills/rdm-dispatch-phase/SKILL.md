@@ -180,9 +180,9 @@ same `path` as its working directory and this same `base`/`head` on the terminal
 
 Then resolve the two dispatch models from the item's tier. Read `model` from `phase show <phase>
 --roadmap <slug><proj-flag> --format json` (task form: `task show <slug><proj-flag> --format
-json`) and call it `T`. **Record that same response's `body` and `tags`** as `item.body` /
-`item.tags` — step 6 hands them to the plan-review engine as its `fetched` argument, and this is
-the read they come from. Do not issue a second one.
+json`) and call it `T`. **Record that same response's `body`** as `item.body` — steps 5 and 9 hand
+it to the planner and the implementer, and this is the read it comes from. Do not issue a second
+one.
 
 ```bash
 # T non-empty (phase mode with a recorded tier):
@@ -224,7 +224,7 @@ The code-review Workflow call's own `findModel`/`verifyModel` gap is out of scop
 
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, the two resolved
 `models.plan` / `models.implement` and the three resolved `models.mechanical` / `models.reviewFind`
-/ `models.reviewVerify`, and confirm you captured the item's `body` and `tags`, the roadmap `body`
+/ `models.reviewVerify`, and confirm you captured the item's `body`, the roadmap `body`
 (phase mode) and the wont-fix titles. If the worktree or identity command failed, escalate — never
 invent a checkout, and never let a subagent choose one. A failed **hoist** read is different and
 not fatal: say which one failed and omit just that argument in step 6, which falls back to the
@@ -263,16 +263,19 @@ engine's own fetch.
   dispatch.verify` is an operator act, not something a dispatch writes.
 
 **Self-check before proceeding:** confirm the planner subagent returned and that `plan show
-<plan-slug> --format json` reports a real plan whose `implements` is `rdm:<item>`. If you drafted the
-plan yourself instead of dispatching, you have inline-collapsed — stop and dispatch.
+<plan-slug> --format json` reports a real plan whose `implements` is `rdm:<item>`, and **record that
+same response's `body` as `planBody`** — step 6 hands it to the plan-review engine as the document
+under review, and this is the read it comes from. No new command. If you drafted the plan yourself
+instead of dispatching, you have inline-collapsed — stop and dispatch.
 
 ### 6. Invoke the plan review — in THIS session
 
 ```
 Workflow({ scriptPath: '.claude/workflows/rdm-wf-plan-review.js', args: {
-  roadmap: '<slug>', phase: '<phase>',            // or task: '<slug>'
+  implementationPlan: true,
+  planSlug: '<plan-slug>',
+  planText: '<planBody verbatim>',
   persist: { on: 'plan/<plan-slug>' },
-  fetched: { body: '<item.body verbatim>', tags: [<item.tags>] },
   roadmapBody: '<roadmapBody verbatim>',          // OMIT in task mode
   mechanicalModel: '<models.mechanical>',
   findModel: '<models.reviewFind>',
@@ -282,29 +285,29 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-plan-review.js', args: {
 } })
 ```
 
-(one unit, so the explicit `persist.on` is honored and the review lands on the plan document rather
-than on the phase). **You MUST make this call yourself.** It is the one step a subagent physically
-cannot perform.
+The plan document is what is **graded** here, not merely what the verdict is recorded on. The item's
+own document is never handed to the engine, so a finding about an inaccuracy in the phase body — one
+the plan does not inherit — cannot arise and cannot force a revise round. **You MUST make this call
+yourself.** It is the one step a subagent physically cannot perform.
 
-Everything after `persist` is a **hoist**: data step 3 already read, passed so the engine does not
-spawn a mechanical subagent to read it again. Each one is independent — supplying one and omitting
-another is legal, and each suppresses exactly its own agent. Their rules differ, so read them
-individually:
-
-- `fetched` — the item's own body and tags, verbatim from step 3's `show --format json`. **Omit the
-  key entirely if the body could not be read.** A partial or reshaped payload is rejected by the
-  engine's shape guard and falls back to the fetch agent, which is correct but wasteful. Do not
-  invent a `phases` member here; a phase target has none.
+- `planSlug` / `planText` are **not** hoists — they are the document under review. Pass the plan
+  body verbatim from step 5's `plan show --format json`. A `planSlug` with no `planText`, a
+  `planSlug` on a non-implementation-plan target, and a `persist.on` that is not
+  `plan/<plan-slug>` each throw before any agent runs.
 - `roadmapBody` — the **parent roadmap's** body, verbatim and unedited. Do not extract the `##
   Intent` section yourself: the engine runs the one canonical extractor over the raw body, which is
   what keeps the hoisted and fetched paths from ever disagreeing. **Omit it in task mode** — a task
-  has no parent roadmap. Omitting it is safe: the engine fetches instead, and a failed fetch
-  degrades to no intent-alignment dimension, never to a block.
+  has no parent roadmap. Omitting it is safe: the engine degrades to no intent-alignment dimension,
+  never to a block.
 - the model trio — **all three or none.** The engine's guard is all-or-nothing, so two out of three
   saves nothing and still spawns the bootstrap.
 - `wontFixedTexts` — the wont-fix titles from step 3. An empty array is a legal, meaningful value
   (nothing to suppress) and is **not** the same as omitting the key. Omit it only if the `task
   list` call itself failed.
+
+Because the engine no longer reviews the item document, this call does **not** clear a
+`needs-plan-review` tag on the phase. That tag asserts the *item* was plan-reviewed and is cleared
+by the standalone `rdm-plan-review` surface or a manual sweep, not here.
 
 ### 7. Wait for the plan approval — ONE origin-blind read
 

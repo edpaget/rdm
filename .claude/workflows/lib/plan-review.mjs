@@ -154,6 +154,13 @@ function parsePlanArgs(rawArgs) {
   if (a.implementationPlan) implementationPlan = true
 
   const planText = typeof a.planText === 'string' ? a.planText : typeof a.plan === 'string' ? a.plan : ''
+  // The SLUG of the persisted plan document `planText` was read from, when there
+  // is one. Read from a STRUCTURED OBJECT KEY ONLY — deliberately never parsed
+  // out of the `$ARGUMENTS` flag string, exactly like `fetched`, `gateMode` and
+  // `persist` below: a positional target slug must never be able to turn a
+  // plan-repo write on. Empty string when absent, which is the free-form
+  // pasted-plan case.
+  const planSlug = typeof a.planSlug === 'string' && a.planSlug.trim() !== '' ? a.planSlug.trim() : ''
 
   // Precedence is fixed and total: implementation-plan wins over everything
   // (it is report-only and has no persisted item), then an explicit task, then
@@ -225,11 +232,41 @@ function parsePlanArgs(rawArgs) {
   // slug must never be able to turn writing into the plan repo on. Default OFF,
   // so every existing caller and harness is byte-unchanged.
   let persist = resolvePersistArg(a.persist)
-  // `--implementation-plan` has no persisted item to hang a review off, so there
-  // is nothing to write to: persist is forced off and the in-context round note
-  // is kept. Surfaced as a flag so the driver can log it rather than silently
-  // dropping a caller's request.
-  const persistIgnored = !!(persist && kind === 'implementation-plan')
+  // `planSlug` names a REAL persisted rdm document, so every way of using it
+  // wrongly is caught HERE, at parse time, before any agent() call — the
+  // resolveRefutationBudget/resolvePlanGateMode precedent. Each throw names both
+  // halves of the disagreement so the caller can see which one to change.
+  if (planSlug) {
+    if (kind !== 'implementation-plan') {
+      throw new Error(
+        'plan-review: planSlug ' +
+          planSlug +
+          ' requires --implementation-plan, but the target resolved to kind ' +
+          kind +
+          ' — a slug on a roadmap/phase/task target would be silently ignored'
+      )
+    }
+    if (planText.trim() === '') {
+      throw new Error(
+        'plan-review: planSlug ' +
+          planSlug +
+          ' was given with no planText — pass the plan body verbatim, or a verdict would be recorded about an empty document'
+      )
+    }
+    if (persist && typeof persist.on === 'string' && persist.on !== 'plan/' + planSlug) {
+      throw new Error(
+        'plan-review: persist.on ' + persist.on + ' disagrees with planSlug ' + planSlug + " (expected 'plan/" + planSlug + "')"
+      )
+    }
+  }
+  // A free-form `--implementation-plan` — plan text pasted into the args with no
+  // `planSlug` — genuinely has nothing to hang a review off, so persist is
+  // forced off and the in-context round note is kept. `planSlug` is what tells
+  // the two apart: a plan named by slug IS a first-class persisted rdm document
+  // (`plan/<slug>`), and its verdict is recorded there like any other target's.
+  // Surfaced as a flag so the driver can log it rather than silently dropping a
+  // caller's request.
+  const persistIgnored = !!(persist && kind === 'implementation-plan' && !planSlug)
   if (persistIgnored) persist = null
 
   return {
@@ -238,6 +275,7 @@ function parsePlanArgs(rawArgs) {
     phase: phase,
     task: task,
     planText: planText,
+    planSlug: planSlug,
     fetched: fetched,
     wontFixedTexts: wontFixedTexts,
     roadmapBody: roadmapBody,
@@ -2045,21 +2083,127 @@ async function runPlanReviewDriver(args, deps) {
     }
   }
 
+  // persistReview(persistTarget, outcome, survivors, label) — THE ONE WRITER
+  // that records a plan-mode verdict as a REAL rdm review, so an agent's review
+  // is the same artifact a human's is. TWO callers: the per-unit loop far below
+  // (roadmap/phase/task targets) and the implementation-plan branch immediately
+  // after this one (a plan named by `planSlug`). Extracted verbatim from the
+  // unit loop rather than duplicated, so the two lanes cannot drift apart.
+  //
+  // The agent type is supplied HERE, by this local-only consumer — the writer in
+  // review.mjs carries no agentType literal, because it is stamped verbatim into
+  // a DISTRIBUTED engine that must not thread one.
+  //
+  // FAIL-SOFT: a thrown agent, an `ok: false` ack, or a missing id logs loudly
+  // and returns nulls, leaving the caller's `outcome`, gate and tags exactly as
+  // they were. A review that failed to record is a lost audit trail, never a
+  // changed verdict.
+  async function persistReview(persistTarget, outcome, survivors, label) {
+    let reviewId = null
+    let reviewPersistence = null
+    try {
+      const persistPrompts = buildPersistReviewPrompts(
+        { mode: 'plan', outcome: outcome, survivors: survivors },
+        persistTarget,
+        { rdmBin: './target/debug/rdm', project: 'rdm' }
+      )
+      const ack = await _agent(persistPrompts.prompt, {
+        label: label,
+        phase: 'Act',
+        agentType: 'rdm-mechanical',
+        schema: PERSIST_ACK_SCHEMA,
+        model: _mechanicalModel,
+      })
+      // DELIBERATE: plan mode's GATE IS UNCHANGED by anchor degradation.
+      // GATE_POLICY.plan still clears needs-plan-review on `reviewed`,
+      // because a plan verdict is about the PLAN, not about how well the
+      // findings anchored in the document. Degradation is therefore EXPOSED
+      // — on the unit result, in its summary clause and in a dedicated log
+      // line — never silently converted into a plan verdict. The code lane
+      // composes it into the outcome (classifyPersistOutcome); this lane
+      // deliberately does not.
+      // `preDegraded` is whatever the WRITER downgraded at build time. A
+      // plan target is a plan-repo document, where a bare `--quote` is the
+      // normal anchor, so this is expected to be empty here — it is threaded
+      // anyway so the two lanes read the same accounting from the same data.
+      reviewPersistence = persistAccounting(ack, survivors, {
+        target: persistTarget,
+        preDegraded: persistPrompts.preDegraded,
+      })
+      if (ack && ack.ok === true && typeof ack.reviewId === 'string' && ack.reviewId !== '') {
+        reviewId = ack.reviewId
+      } else {
+        _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (ack: ' + JSON.stringify(ack) + ')')
+      }
+      if (reviewPersistence.unresolvedDegradation === true) {
+        _log(
+          'plan-review: PERSIST DEGRADED for ' + persistTarget + ' — ' +
+            (typeof reviewPersistence.degraded === 'number' ? reviewPersistence.degraded : 'an unreported number of') +
+            ' anchor(s) failed of ' + reviewPersistence.expectedAnchorable + ' attempted; the record carries unresolved anchor degradation' +
+            degradationSummaryClause(reviewPersistence)
+        )
+      }
+    } catch (e) {
+      _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (' + String((e && e.message) || e) + ')')
+    }
+    return { reviewId: reviewId, reviewPersistence: reviewPersistence }
+  }
+
   // ------------------------------------------------------------------ implementation-plan
-  // Report-only: no persisted rdm item, so no act and no gate.
-  // `signals: { targetType: 'implementation-plan', hasIntent: false }` scopes
-  // unit-of-work out at selection time (targetType !== 'phase') and
-  // intent-alignment out too; stripNonPhaseUnitOfWork below is the
-  // defense-in-depth backstop, not the primary mechanism. This is the ONE
-  // caller with genuinely nothing to thread — an implementation plan has no
-  // persisted rdm item and no roadmap in hand — so no `intent` key is passed,
-  // and buildReviewPipeline reports the absence as a non-blocking suggestion.
+  // THE GRADED DOCUMENT IS THE PLAN ITSELF — `planText` — never an rdm item
+  // document. This branch returns before the fetch block, so no item is read at
+  // all on this path and no mechanical fetch agent (fetch:phase,
+  // fetch:roadmap-intent, fetch:wontfix) is reachable: everything the review
+  // needs must arrive as a caller-supplied value. A finding about a phase body
+  // is therefore impossible by construction, not by instruction.
+  //
+  // SIGNALS SITE: a full, honest `{ targetType: 'implementation-plan',
+  // hasIntent }`. `unit-of-work` de-selects at source (targetType !== 'phase'),
+  // which is CORRECT against a plan rather than a coverage regression —
+  // independent deliverability is a property of the PHASE, settled when it was
+  // created and estimated, and not something a review of the plan can act on.
+  // stripNonPhaseUnitOfWork below stays as the defense-in-depth backstop, not
+  // the primary mechanism.
+  //
+  // The recorded `## Intent` is threaded as a VALUE (`intent:`) and never as a
+  // signal; `hasIntent` is the derived boolean ABOUT that value, exactly as
+  // reviewUnit passes it for every other unit. It is extracted CALLER-SIDE by
+  // the one canonical extractor over the hoisted roadmap body, so
+  // intent-alignment runs here without any agent being added.
+  //
+  // Act and gate are still skipped: a plan document carries no tags, so there is
+  // no needs-plan-review to clear. Persist is NOT skipped when the caller named
+  // the plan by slug — see parsePlanArgs' persistIgnored note.
   if (kind === 'implementation-plan') {
     const planText = parsed.planText || '(the implementation plan provided in context)'
+    // FAIL-SOFT, matching the fetch:roadmap-intent contract below exactly: a
+    // missing/rejected body, a body with no `## Intent`, and a throw out of
+    // extractIntent all degrade to `{ hasIntent: false, intent: null }`. The
+    // dimension then simply does not run and its absence is reported as a
+    // non-blocking suggestion. Failing closed here would block a plan on an
+    // input the plan cannot produce.
+    let planIntent = { hasIntent: false, intent: null }
+    try {
+      if (hoistedRoadmapBodyOk(parsed.roadmapBody)) {
+        planIntent = extractIntent(String(parsed.roadmapBody))
+      }
+    } catch (e) {
+      planIntent = { hasIntent: false, intent: null }
+    }
     // See reviewUnit's identical notes: acTable is always null in plan mode, and
     // `budget` describes the pipeline, not the post-strip survivor set.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: 'implementation-plan', hasIntent: false } })
-    const survivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, intent: planIntent.intent, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: 'implementation-plan', hasIntent: planIntent.hasIntent === true } })
+    const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
+    // Wont-fix suppression from the CALLER-SUPPLIED list only — no fetch:wontfix
+    // agent is reachable here. Without it an already-dismissed finding would
+    // resurface and force a revise round, the exact failure class this path
+    // exists to close. A caller that supplies nothing is byte-unchanged.
+    const survivors = parsed.wontFixedTexts
+      ? suppressWontFixed(strippedSurvivors, parsed.wontFixedTexts)
+      : strippedSurvivors
+    // classifyPlanOutcome, NOT classifyRoundOutcome: the round cap stays out of
+    // this mode, where the bound is the orchestrator's own --max-plan-revise
+    // budget, which already parks `blocked` on exhaustion.
     const outcome = classifyPlanOutcome(survivors)
     // Same summary treatment as reviewUnit: reduced coverage is named in the
     // human-visible string, empty on a complete run.
@@ -2072,7 +2216,23 @@ async function runPlanReviewDriver(args, deps) {
         planSummary +
         formatUnitBudget(budget)
     )
-    return {
+    // The persist ref is DERIVED from `planSlug`, never taken from `persist.on`
+    // — an explicit ref naming a different document has already thrown in
+    // parsePlanArgs — so the graded document and the recorded verdict cannot
+    // disagree.
+    let planReviewId = null
+    let planReviewPersistence = null
+    if (parsed.planSlug && persistOn) {
+      const p = await persistReview(
+        'plan/' + parsed.planSlug,
+        outcome,
+        survivors,
+        'persist:review:plan:' + parsed.planSlug
+      )
+      planReviewId = p.reviewId
+      planReviewPersistence = p.reviewPersistence
+    }
+    const planResult = {
       kind: 'implementation-plan',
       outcome: outcome,
       summary: planSummary,
@@ -2080,6 +2240,13 @@ async function runPlanReviewDriver(args, deps) {
       coverage: coverage || null,
       findings: survivors,
     }
+    // PRESENT ONLY WHEN THEY EXIST, so a free-form (no-slug) run's returned
+    // shape is byte-unchanged and the documented "no gateAction / gateBlocked /
+    // gateDeferred keys at all" contract for this kind still holds.
+    if (parsed.planSlug) planResult.planSlug = parsed.planSlug
+    if (planReviewId) planResult.reviewId = planReviewId
+    if (planReviewPersistence) planResult.reviewPersistence = planReviewPersistence
+    return planResult
   }
 
   // ------------------------------------------------------------------ persisted targets
@@ -2394,63 +2561,22 @@ async function runPlanReviewDriver(args, deps) {
 
     // --- Persist the review (opt-in; skipped for implementation-plan) ---
     // Record this unit's surviving findings as a REAL rdm review on the unit's
-    // own target, so an agent's review is the same artifact a human's is. The
-    // agent type is supplied HERE, by this local-only consumer — the writer in
-    // review.mjs carries no agentType literal, because it is stamped verbatim
-    // into a DISTRIBUTED engine that must not thread one.
-    //
-    // FAIL-SOFT: a thrown agent, an `ok: false` ack, or a missing id logs loudly
-    // and leaves `outcome`, the gate and the tag exactly as they were. A review
-    // that failed to record is a lost audit trail, never a changed verdict.
+    // own target, so an agent's review is the same artifact a human's is.
+    // Written through persistReview above — the ONE writer, shared with the
+    // implementation-plan branch — so behavior here is unchanged and the two
+    // lanes cannot drift.
     let reviewId = null
     let reviewPersistence = null
     if (persistOn && kind !== 'implementation-plan') {
       const persistTarget = persistTargetFor(u, persist, units.length)
-      try {
-        const persistPrompts = buildPersistReviewPrompts(
-          { mode: 'plan', outcome: r.outcome, survivors: r.survivors },
-          persistTarget,
-          { rdmBin: './target/debug/rdm', project: 'rdm' }
-        )
-        const ack = await _agent(persistPrompts.prompt, {
-          label: 'persist:review:' + u.kind + ':' + u.ident,
-          phase: 'Act',
-          agentType: 'rdm-mechanical',
-          schema: PERSIST_ACK_SCHEMA,
-          model: _mechanicalModel,
-        })
-        // DELIBERATE: plan mode's GATE IS UNCHANGED by anchor degradation.
-        // GATE_POLICY.plan still clears needs-plan-review on `reviewed`,
-        // because a plan verdict is about the PLAN, not about how well the
-        // findings anchored in the document. Degradation is therefore EXPOSED
-        // — on the unit result, in its summary clause and in a dedicated log
-        // line — never silently converted into a plan verdict. The code lane
-        // composes it into the outcome (classifyPersistOutcome); this lane
-        // deliberately does not.
-        // `preDegraded` is whatever the WRITER downgraded at build time. A
-        // plan target is a plan-repo document, where a bare `--quote` is the
-        // normal anchor, so this is expected to be empty here — it is threaded
-        // anyway so the two lanes read the same accounting from the same data.
-        reviewPersistence = persistAccounting(ack, r.survivors, {
-          target: persistTarget,
-          preDegraded: persistPrompts.preDegraded,
-        })
-        if (ack && ack.ok === true && typeof ack.reviewId === 'string' && ack.reviewId !== '') {
-          reviewId = ack.reviewId
-        } else {
-          _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (ack: ' + JSON.stringify(ack) + ')')
-        }
-        if (reviewPersistence.unresolvedDegradation === true) {
-          _log(
-            'plan-review: PERSIST DEGRADED for ' + persistTarget + ' — ' +
-              (typeof reviewPersistence.degraded === 'number' ? reviewPersistence.degraded : 'an unreported number of') +
-              ' anchor(s) failed of ' + reviewPersistence.expectedAnchorable + ' attempted; the record carries unresolved anchor degradation' +
-              degradationSummaryClause(reviewPersistence)
-          )
-        }
-      } catch (e) {
-        _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (' + String((e && e.message) || e) + ')')
-      }
+      const p = await persistReview(
+        persistTarget,
+        r.outcome,
+        r.survivors,
+        'persist:review:' + u.kind + ':' + u.ident
+      )
+      reviewId = p.reviewId
+      reviewPersistence = p.reviewPersistence
     }
 
     // --- Gate (skipped for implementation-plan) ---
