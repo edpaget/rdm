@@ -62,10 +62,19 @@ TMP=$(mktemp -d)
 # to pair fixture_setup with fixture_teardown.
 trap 'rm -rf "$TMP"; fixture_teardown' EXIT INT HUP TERM
 
-# file_mtime <path> — portable mtime-in-seconds (BSD stat on macOS, GNU
-# stat elsewhere).
+# file_mtime <path> — portable mtime-in-seconds (GNU stat on Linux, BSD stat
+# on macOS).
+#
+# GNU is probed FIRST, and the order is load-bearing. `-f` is not simply
+# "unsupported" on GNU stat, it is a DIFFERENT valid flag ("display
+# filesystem status"), so a BSD-first probe exits 0 on Linux and the
+# fallback never runs: every snapshot line then carried the filesystem's
+# free block and inode counts instead of the file's mtime, and AC3's
+# sentinel diff fired on any unrelated write to the same filesystem rather
+# than on the sentinel being touched. GNU's `-c` really is rejected by BSD
+# stat ("illegal option -- c"), so probing it first is unambiguous on both.
 file_mtime() {
-    stat -f '%m' "$1" 2>/dev/null || stat -c '%Y' "$1"
+    stat -c '%Y' "$1" 2>/dev/null || stat -f '%m' "$1"
 }
 
 # snapshot_dir <dir> — a deterministic recursive listing of every regular
