@@ -10,6 +10,11 @@ fn rdm() -> Command {
 }
 
 /// Initialize a plan repo with an initial git commit.
+///
+/// The branch is pinned to `main` rather than left to the ambient
+/// `init.defaultBranch`: `rdm init` inherits whatever the invoking
+/// environment defaults to (`master` on a stock CI runner), while these
+/// tests — and rdm's own `default_branch` — name `main` explicitly.
 fn init_repo(dir: &TempDir) {
     rdm()
         .arg("--root")
@@ -17,12 +22,27 @@ fn init_repo(dir: &TempDir) {
         .arg("init")
         .assert()
         .success();
+    pin_branch_to_main(dir.path());
     rdm()
         .arg("--root")
         .arg(dir.path())
         .args(["commit", "-m", "seed: init plan repo"])
         .assert()
         .success();
+}
+
+/// Points a freshly-initialized, still-unborn `HEAD` at `refs/heads/main`.
+///
+/// Call immediately after `rdm init`, before the first commit — at that
+/// point the branch has no commits, so this is a rename rather than a
+/// history move.
+fn pin_branch_to_main(root: &std::path::Path) {
+    let status = git_cmd()
+        .args(["symbolic-ref", "HEAD", "refs/heads/main"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    assert!(status.success(), "failed to pin the fixture branch to main");
 }
 
 /// Runs a git command with GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE cleared

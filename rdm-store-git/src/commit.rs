@@ -644,6 +644,13 @@ impl GitRepo {
 
     /// Points HEAD at `new` only if it still points at `expected`.
     ///
+    /// The reflog committer is [`Self::commit_signature`], the same signature
+    /// the commit object carries. `gix`'s `edit_reference` would instead
+    /// resolve it from git config alone and fail the whole ref edit when no
+    /// `user.name`/`user.email` is set, so rdm's own fallback identity is
+    /// threaded in explicitly — a plan repo must be committable in an
+    /// environment with no ambient git identity (a CI runner, a container).
+    ///
     /// Returns `Ok(false)` when HEAD moved under us (the caller rebuilds and
     /// retries once), `Ok(true)` on success.
     fn compare_and_swap_head(
@@ -675,7 +682,10 @@ impl GitRepo {
                 .map_err(|e| Error::Git(format!("invalid ref name HEAD: {e}")))?,
             deref: true,
         };
-        match repo.edit_reference(edit) {
+        let sig = self.commit_signature(repo);
+        let mut time_buf = gix::date::parse::TimeBuf::default();
+        let sig_ref = sig.to_ref(&mut time_buf);
+        match repo.edit_references_as(Some(edit), Some(sig_ref)) {
             Ok(_) => Ok(true),
             Err(e) => {
                 // Distinguish "HEAD moved" from a genuine failure by looking

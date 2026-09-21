@@ -22,6 +22,23 @@ fn git_cmd() -> std::process::Command {
     cmd
 }
 
+/// Points a freshly-initialized, still-unborn `HEAD` at `refs/heads/main`.
+///
+/// Call immediately after `rdm init`, before the first commit — at that point
+/// the branch has no commits, so this is a rename rather than a history move.
+/// `rdm init` inherits the ambient `init.defaultBranch`, which is `master` on
+/// a stock CI runner, while `bootstrap`'s fast-forward path and rdm's own
+/// `default_branch` both name `main`.
+fn pin_branch_to_main(root: &std::path::Path) {
+    let status = git_cmd()
+        .args(["-C"])
+        .arg(root)
+        .args(["symbolic-ref", "HEAD", "refs/heads/main"])
+        .status()
+        .unwrap();
+    assert!(status.success(), "failed to pin the fixture branch to main");
+}
+
 /// Creates a source plan repo and a bare clone of it.
 /// Returns (source_dir, bare_dir) — use `bare_dir.path()` as the `--plan-repo` url.
 fn make_plan_repo_with_bare() -> (TempDir, TempDir) {
@@ -32,6 +49,7 @@ fn make_plan_repo_with_bare() -> (TempDir, TempDir) {
         .arg("init")
         .assert()
         .success();
+    pin_branch_to_main(source.path());
     rdm()
         .arg("--root")
         .arg(source.path())
@@ -950,5 +968,57 @@ fn bootstrap_doctor_ignores_print_root_and_format_flags() {
     assert!(
         serde_json::from_str::<serde_json::Value>(&combined).is_err(),
         "doctor output should not be JSON, got: {combined}"
+    );
+}
+
+/// `bootstrap --init` must work with no ambient git identity at all — a CI
+/// runner, a fresh container. The repo it commits into came from `git clone`,
+/// so unlike an `rdm init` repo it carries no local `[user]` fallback in
+/// `.git/config`; the identity has to come from rdm itself. `gix`'s plain
+/// `edit_reference` resolves the reflog committer from git config alone and
+/// fails the whole HEAD update with "the reflog could not be created or
+/// updated" when nothing is set, which is exactly how this reached CI.
+#[test]
+fn bootstrap_init_commits_with_no_ambient_git_identity() {
+    let bare = make_empty_bare_repo();
+    let target_parent = TempDir::new().unwrap();
+    let target = target_parent.path().join("plan");
+
+    let mut cmd = rdm();
+    // Cut off every source of a git identity: both config files and the
+    // environment overrides that would otherwise supply one.
+    cmd.env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
+        .env_remove("GIT_AUTHOR_NAME")
+        .env_remove("GIT_AUTHOR_EMAIL")
+        .env_remove("GIT_COMMITTER_NAME")
+        .env_remove("GIT_COMMITTER_EMAIL");
+    let output = cmd
+        .arg("bootstrap")
+        .arg("--plan-repo")
+        .arg(bare.path())
+        .arg("--path")
+        .arg(&target)
+        .arg("--init")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "bootstrap --init failed without an ambient git identity: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(target.join("rdm.toml").exists());
+
+    // The reflog is the half that used to fail, so assert it actually moved
+    // and carries rdm's own fallback identity.
+    let entries = std::fs::read_to_string(target.join(".git/logs/HEAD")).unwrap();
+    assert!(
+        entries.contains("rdm: initialize plan repo via bootstrap --init"),
+        "HEAD reflog missing the bootstrap commit entry: {entries}"
+    );
+    assert!(
+        entries.contains("rdm@localhost"),
+        "reflog entry not attributed to rdm's fallback identity: {entries}"
     );
 }

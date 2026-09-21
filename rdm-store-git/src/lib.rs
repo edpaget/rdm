@@ -1290,6 +1290,15 @@ mod tests {
     fn legacy_repo_without_gitattributes() -> TempDir {
         let dir = TempDir::new().unwrap();
         let mut store = GitStore::init(dir.path()).unwrap();
+        // `GitStore::init` inherits the ambient `init.defaultBranch`, which is
+        // `master` on a stock CI runner, but the clone below asks for `main`.
+        // HEAD is still unborn here, so this renames the branch rather than
+        // moving any history.
+        std::fs::write(
+            dir.path().join(".git").join("HEAD"),
+            "ref: refs/heads/main\n",
+        )
+        .unwrap();
         store
             .write(&RelPath::new("seed.md").unwrap(), "seed".to_string())
             .unwrap();
