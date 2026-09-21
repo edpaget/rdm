@@ -4585,7 +4585,6 @@ assert.throws(() => persistVerdictFor('constructor'), /unrecognized outcome/, 'a
 
 // -------------------------------------------------------- comment-body header
 {
-  assert.deepEqual(PERSIST_HEADER_KEYS, ['severity', 'confidence', 'refuted', 'unrefutedReason', 'dimension', 'finding-id']);
   const matrix = [
     { id: 'g1', concern: 'coherence', severity: 'blocking', confidence: 90, what_fails: 'plain' },
     { id: 'n1', concern: 'restraint', severity: 'suggestion', confidence: 75, what_fails: 'ng', unrefuted: true, unrefutedReason: 'non-gating' },

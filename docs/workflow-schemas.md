@@ -1148,6 +1148,7 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | `unrefuted`     | `true` (post-pipeline only)              | set by `buildReviewPipeline`, never by a finder    |
 | `unrefutedReason` | `'non-gating'` \| `'budget'` (post-pipeline only) | present iff `unrefuted` is; WHY it went ungraded |
 | `refuterError`  | `true` (post-pipeline only)              | a refuter was dispatched and CRASHED; never combined with `unrefuted` |
+| `inScope`       | boolean (post-pipeline only)             | folded from the refuter's `VERDICT.inScope` when it graded one; absent on every finding never graded for scope (plan mode, no associated plan, non-gating, over-budget, or refuter-crashed) |
 
 **`category` is additive, optional, and read by nobody.** It exists because
 `FINDINGS_SCHEMA` is `additionalProperties: false`: the `security` dimension's
@@ -1258,7 +1259,7 @@ the summary, and it does NOT count as an AC gap.
 
 ### Persisted review comment body
 
-Every comment `persistReviewCommands` writes starts with a fixed six-line
+Every comment `persistReviewCommands` writes starts with a fixed seven-line
 header carrying the finding metadata rdm's comment frontmatter has no field for,
 followed by a blank line, then the finding's own prose. The key ORDER is fixed
 and the header is TOTAL — every key is always emitted, never sparse:
@@ -1270,6 +1271,7 @@ refuted: false
 unrefutedReason: none
 dimension: coherence
 finding-id: f1
+inScope: n/a
 
 coherence
 What fails: the retry backoff strategy is unspecified
@@ -1279,10 +1281,15 @@ Recommendation: state the backoff policy
 
 Rules:
 
-- The six keys, in this order: `severity`, `confidence`, `refuted`,
-  `unrefutedReason`, `dimension`, `finding-id`.
+- The seven keys, in this order: `severity`, `confidence`, `refuted`,
+  `unrefutedReason`, `dimension`, `finding-id`, `inScope`.
 - `unrefutedReason: none` is the SENTINEL for a finding that carries none — the
   key is never omitted.
+- `inScope: n/a` is the SENTINEL for a finding never graded for scope (plan
+  mode, or a code-mode review with no associated plan) — the key is never
+  omitted. `inScope: true` / `inScope: false` record an explicit refuter scope
+  verdict (see § VERDICT and § `hasBlocking`); `parseCommentHeader` recovers
+  `true` / `false` / `null` (never a bare string) from these three values.
 - `refuted` is always `false`: a refuted finding never reaches the writer,
   because `survives()` already dropped it.
 - Every header VALUE is single-line (embedded newlines are collapsed to spaces),
@@ -1502,6 +1509,7 @@ finding — the finder never grades its own work.
 | `confidence` | integer 0–100 (required) | the refuter's confidence in **its verdict** (advisory) |
 | `rationale`  | string                   | why the finding was or was not refuted                 |
 | `quote_ok`   | boolean                  | **optional**; did the finding's `quote` appear VERBATIM in the reviewed text? Requested only when the finding carries one, and INDEPENDENT of `refuted` — an explicit `false` strips the quote, never the finding |
+| `inScope`    | boolean                  | **optional**; is the finding within the scope of the approved plan the change implements? Requested only for a code-mode review with an associated plan (`context.planCommand` set), and INDEPENDENT of `refuted` — a finding can be real (not refuted) and still out of scope. Absent/`true` means in scope; only an explicit `false` excludes the finding from `hasBlocking` (see `rdm:plan/refuters-grade-finding-scope`) |
 
 `VERDICT` is the **single-finding** contract, and it is the contract the shipped
 pipeline uses. A batched sibling — one refuter per dimension over that review

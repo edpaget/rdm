@@ -740,6 +740,25 @@ function refutePrompt(mode, dim, finding, context) {
       'This finding carries a `quote` — an excerpt the finder claims was copied verbatim out of the reviewed text. Confirm it appears EXACTLY, byte for byte, in that text. Set `quote_ok: false` if it does not (paraphrased, reflowed, drawn from somewhere else, or simply absent), otherwise `quote_ok: true`. `quote_ok` is INDEPENDENT of `refuted`: a real finding can carry a bad quote, and a refuted one can carry a perfect quote.'
     );
   }
+  // SCOPE GRADING — appended ONLY for a code-mode review associated with an
+  // approved plan (`context.planCommand` set). The conditional is load-bearing
+  // for the same reason the quote clause above is: a 56-item adjudicated finding
+  // corpus records a promptSha256 per item, regenerated through THIS function by
+  // a gate that fails on any drift, and no corpus item's regenerated context
+  // carries `planCommand` (every one is `{ target: item.target }`). An
+  // unconditional clause would move every one of those bytes and demand a
+  // corpus re-baseline for which no supported command exists. See
+  // docs/refuter-model-tiering.md § Maintenance gap and
+  // rdm:plan/refuters-grade-finding-scope.
+  const ctxForScope = context || {};
+  if (mode === 'code' && typeof ctxForScope.planCommand === 'string' && ctxForScope.planCommand.trim() !== '') {
+    lines.push(
+      'The change under review implements an approved plan, which you already have (see the plan-read instruction above). Grade whether this finding is IN SCOPE of that plan — a second, independent question from whether it is refuted:',
+      '1. Is the defect in code or behaviour the plan actually CHANGED — not merely touched, left in place, or moved? A defect in newly written code is in scope even if the plan never enumerated it (a plan cannot anticipate every defect in its own diff). A defect in a pre-existing pattern the plan did not change is out of scope, even if the plan happens to touch nearby code.',
+      '2. Does an ADEQUATE FIX stay within what the plan changed? A real, in-scope-by-locus defect whose only adequate remedy would add new surface outside the plan (a new flag, a new public API, a new mechanism) is still out of scope — the finding is real, but building that remedy is not this dispatch\'s job.',
+      'Set `inScope: false` only when either half fails; omit it (or set `true`) when the finding is in scope. Being out of scope does NOT mean the finding is wrong — a deferred defect is still real, so never conflate `inScope: false` with `refuted: true`.'
+    );
+  }
   lines.push(
     'Return JSON matching the VERDICT schema: refuted (boolean — true if the finding does not hold up), confidence (0-100 in your verdict), and rationale.'
   );
@@ -1071,6 +1090,12 @@ const VERDICT_SCHEMA = {
     // and independent of `refuted` (see refutePrompt's conditional clause). Only
     // an explicit `false` strips the quote; absent means "not checked".
     quote_ok: { type: 'boolean' },
+    // Is the finding within the scope of the approved plan the change
+    // implements? OPTIONAL and independent of `refuted` (see refutePrompt's
+    // scope-grading conditional clause). Only requested for a code-mode review
+    // with an associated plan; absent/true means in scope, and only an explicit
+    // `false` marks a finding out of scope (see `hasBlocking`).
+    inScope: { type: 'boolean' },
   },
 };
 
@@ -1444,10 +1469,17 @@ function resolveReviewers(mode, reviewers) {
 // hasBlocking(findings, tier) — is there a blocking finding, tier-scaled?
 // For the `large` tier a surviving `concern` is treated as blocking too (a
 // one-directional tightening — the gate can only get stricter, never looser).
+// `inScope === false` (an explicit refuter scope verdict, see refutePrompt's
+// scope-grading conditional and VERDICT_SCHEMA) excludes a finding from ever
+// gating, at either tier — it is still a real, surviving finding (Act still
+// reports and files it), only its gating power is denied. A finding with
+// `inScope` omitted or `true` — every plan-mode finding, every code-mode
+// finding with no associated plan, and anything not graded for scope — gates
+// exactly as before this field existed.
 function hasBlocking(findings, tier) {
   const list = Array.isArray(findings) ? findings : [];
   const blockers = tier === 'large' ? ['blocking', 'concern'] : ['blocking'];
-  return list.some((f) => f && blockers.indexOf(f.severity) !== -1);
+  return list.some((f) => f && blockers.indexOf(f.severity) !== -1 && f.inScope !== false);
 }
 
 // acTableHasGap(acTable) — does a structured AC table (the `ac` dimension's
@@ -1566,13 +1598,14 @@ const PERSIST_DEGRADED_REASONS = [
 // skills carry (retry without the anchor, or park); it is not a gate.
 
 // The comment-body header convention: the finding metadata rdm's comment
-// frontmatter has no field for, carried on the first six lines of the body in a
-// fixed `key: value` order. TOTAL, never sparse — every key is always emitted,
-// with the literal `none` sentinel for an absent `unrefutedReason` — and every
+// frontmatter has no field for, carried on the first seven lines of the body in
+// a fixed `key: value` order. TOTAL, never sparse — every key is always
+// emitted, with the literal `none` sentinel for an absent `unrefutedReason` and
+// the literal `n/a` sentinel for a finding never graded for scope — and every
 // value is single-line, so the inverse parser can be line-based. Extending core
 // comment frontmatter instead is recorded as a follow-up task, not done here.
 // Documented in docs/workflow-schemas.md § "Persisted review comment body".
-const PERSIST_HEADER_KEYS = ['severity', 'confidence', 'refuted', 'unrefutedReason', 'dimension', 'finding-id'];
+const PERSIST_HEADER_KEYS = ['severity', 'confidence', 'refuted', 'unrefutedReason', 'dimension', 'finding-id', 'inScope'];
 
 // persistHeaderValue(v) — collapse to a single line. A header value that spanned
 // lines would desynchronize the line-based parser for every key after it.
@@ -1582,7 +1615,16 @@ function persistHeaderValue(v) {
     .trim();
 }
 
-// formatCommentBody(finding) — the six header lines, a blank line, then the
+// persistScopeValue(f) — the `inScope` header value: `true`/`false` when the
+// finding carries an explicit boolean, `n/a` (the sentinel) when it was never
+// graded for scope — mirroring `unrefutedReason`'s `none` sentinel.
+function persistScopeValue(f) {
+  if (f.inScope === true) return 'true';
+  if (f.inScope === false) return 'false';
+  return 'n/a';
+}
+
+// formatCommentBody(finding) — the seven header lines, a blank line, then the
 // finding's own prose. `refuted` is always `false`: a refuted finding never
 // reaches the writer, because `survives()` dropped it.
 function formatCommentBody(finding) {
@@ -1594,6 +1636,7 @@ function formatCommentBody(finding) {
     'unrefutedReason: ' + persistHeaderValue(f.unrefutedReason || 'none'),
     'dimension: ' + persistHeaderValue(f.concern || ''),
     'finding-id: ' + persistHeaderValue(f.id || ''),
+    'inScope: ' + persistHeaderValue(persistScopeValue(f)),
     '',
     persistHeaderValue(f.concern || ''),
     'What fails: ' + String(f.what_fails === undefined || f.what_fails === null ? '' : f.what_fails),
@@ -1641,6 +1684,9 @@ function parseCommentHeader(body) {
     unrefutedReason: values.unrefutedReason,
     dimension: values.dimension,
     findingId: values['finding-id'],
+    // `n/a` (never graded for scope) parses back to `null`, not `false` — a
+    // header consumer must not read "never graded" as "graded out of scope".
+    inScope: values.inScope === 'true' ? true : values.inScope === 'false' ? false : null,
     whatFails: whatFails,
     rest: rest.replace(/^\n+/, ''),
   };
@@ -2408,7 +2454,6 @@ function buildReviewPipeline(mode, deps) {
         })
           .then((verdict) => {
             if (!verdict || typeof verdict.refuted !== 'boolean' || typeof verdict.confidence !== 'number') throw new Error('invalid refuter verdict');
-            return ({
             // QUOTE CLEARING. An explicit `quote_ok: false` means the refuter
             // read the reviewed text and the excerpt is not in it — keep the
             // FINDING (its truth is `refuted`'s business, not the quote's) but
@@ -2418,9 +2463,17 @@ function buildReviewPipeline(mode, deps) {
             // non-gating, over-budget, or refuter-crashed finding keeps an
             // UNVERIFIED quote by design, and the writer's runtime
             // whole-document fallback is what protects those.
-            finding: verdict && verdict.quote_ok === false ? stripQuote(c.finding) : c.finding,
-            verdict: verdict,
-          }); })
+            const quoteCleared = verdict.quote_ok === false ? stripQuote(c.finding) : c.finding;
+            // SCOPE FOLDING. Only an explicit boolean `inScope` verdict touches
+            // the finding — a finding never graded for scope (plan mode, no
+            // associated plan) carries no `inScope` key at all, matching
+            // `quote_ok`'s "only graded findings get their key touched" rule.
+            const scoped = typeof verdict.inScope === 'boolean' ? { ...quoteCleared, inScope: verdict.inScope } : quoteCleared;
+            return {
+              finding: scoped,
+              verdict: verdict,
+            };
+          })
           // A refuter CRASH is not proof of refutation. Keep the finding as
           // un-refuted (verdict=null ⇒ survives() retains it if confidence ≥
           // floor) instead of silently dropping it as if it were refuted.
@@ -2536,6 +2589,14 @@ function buildReviewPipeline(mode, deps) {
 //|   dispatched for it and CRASHED. That is not proof of refutation and not a
 //|   deliberate skip, so it is never marked `unrefuted`; treat it as still
 //|   ungraded and say so.
+//|code| - A finding that was **graded, not refuted, but marked `inScope: false`** is a
+//|code|   FOURTH case: a *confirmed* defect (a refuter looked and did not refute it) in
+//|code|   behaviour the approved plan did not change, or whose only adequate fix reaches
+//|code|   outside what the plan changed. Confirmed-but-deferred is STRONGER than the
+//|code|   unrefuted observation above — it survived refutation, so "skip it and state
+//|code|   why" is never an available disposition for it. Always **file** it as future
+//|code|   work; never skip it and never fix it inline in this dispatch. Being out of
+//|code|   scope is not a verdict on whether the finding is real.
 //|
 //| Never fix or file a finding that carries neither provenance.
 //|

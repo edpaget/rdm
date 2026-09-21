@@ -409,6 +409,14 @@ provenances, and they are handled differently:
   dispatched for it and CRASHED. That is not proof of refutation and not a
   deliberate skip, so it is never marked `unrefuted`; treat it as still
   ungraded and say so.
+- A finding that was **graded, not refuted, but marked `inScope: false`** is a
+  FOURTH case: a *confirmed* defect (a refuter looked and did not refute it) in
+  behaviour the approved plan did not change, or whose only adequate fix reaches
+  outside what the plan changed. Confirmed-but-deferred is STRONGER than the
+  unrefuted observation above — it survived refutation, so "skip it and state
+  why" is never an available disposition for it. Always **file** it as future
+  work; never skip it and never fix it inline in this dispatch. Being out of
+  scope is not a verdict on whether the finding is real.
 
 Never fix or file a finding that carries neither provenance.
 

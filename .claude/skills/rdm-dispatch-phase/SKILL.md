@@ -517,6 +517,13 @@ Per comment, run this numbered checklist:
    - **Ungraded finding** — the comment's header carries `unrefutedReason: budget`, meaning it was
      never refuted because the per-unit refutation budget ran out: its reply MUST say so explicitly
      and give your own reasoning for the decision taken, on either branch.
+   - **Out-of-scope finding** — the comment's header carries `inScope: false`, meaning a refuter
+     confirmed the finding but graded it outside the approved plan's scope (behaviour the plan did
+     not change, or whose only adequate fix reaches outside what the plan changed). This does not
+     gate and MUST NOT be routed as though it were an ordinary defect requiring a fix in this
+     dispatch. Route it `wont-fix` with a `--reply` that states it is deferred as future work —
+     optionally filing a task for it — never a silent drop. This is a confirmed defect, not an
+     unverified observation, so the reply must not read as a dismissal of the finding itself.
    - **Degraded anchor** — a comment that *carries* an anchor which no longer resolves is read as
      whole-document feedback and its reply MUST state that the anchor did not resolve; read the
      reviewed-side body with `--at <created_commit>` before deciding. A comment authored
