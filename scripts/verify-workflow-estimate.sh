@@ -3,9 +3,9 @@
 #
 # estimate (`.claude/workflows/rdm-wf-estimate.js`) rates an rdm roadmap's UNESTIMATED
 # phases: it lists the phases, filters to those whose difficulty is unset,
-# rates each in a parallel() fan-out, writes back the difficulty AND appends a
-# `## Estimate <difficulty> — <justification>` audit note to the phase body, and
-# reads the core-derived model tier back from `rdm phase show` for the summary.
+# rates each in a parallel() fan-out, and hands back ONE writeback command per
+# phase, which sets the difficulty and nothing else. Estimation writes NOTHING
+# to the phase body — no audit note, no body read, no body write.
 # It NEVER passes `--model` and NEVER reimplements the difficulty->tier mapping —
 # rdm-core (Difficulty::model_tier) owns that. Its pure estimate core lives once
 # in `.claude/workflows/lib/estimate.mjs` (the `estimate-core` marker region) and
@@ -19,8 +19,8 @@
 # that:
 #
 #   1. BEHAVIOR   — the pure helpers, driven in Node (zero LLM calls): arg
-#                   parsing, phase selection, the estimator/writeback/list/tier
-#                   prompt contents (note + --difficulty + --body, NO --model),
+#                   parsing, phase selection, the estimator/writeback/list
+#                   command contents (--difficulty only: NO --model, NO body),
 #                   the summary text, and determinism. These are the assertions
 #                   re-homed from verify-workflow-autopilot.sh when the estimate
 #                   core moved out of the autopilot-loop block.
@@ -58,8 +58,8 @@
 #                   zeroing with planted mutants (9a), a driven prompt capture
 #                   checking every emitted `rdm <subcommand>` against the
 #                   project-agnostic allow-list expressed AS DATA (9b), the
-#                   fail-closed `rdmBin` rule (9c), and self-tests proving 9b is
-#                   not vacuous (9d).
+#                   fail-closed `rdmBin` rule (9c). (9d, the planted-mutation
+#                   self-tests for 9b, is DELETED — see its record below.)
 #
 # Node is used only as a host to unit-test the pure module and drive the pipeline
 # with fakes; it is stdlib-only (node:assert), with no package.json /
@@ -140,7 +140,7 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 
 # --- 1. BEHAVIOR -------------------------------------------------------------
-say "1. Behavior: arg parsing, selection, prompt contents (note + --difficulty + --body, no --model), summary"
+say "1. Behavior: arg parsing, selection, prompt contents (--difficulty only, no --model, no body), summary"
 
 cat >"$TMP/behavior.mjs" <<'NODE_TEST'
 import assert from 'node:assert/strict';
@@ -213,31 +213,26 @@ assert.ok(ratePrompt.includes('trivial, easy, moderate, hard'), 'estimator lists
 assert.ok(/justification/i.test(ratePrompt), 'estimator asks for a justification');
 assert.ok(ratePrompt.includes('"justification"'), 'estimator return schema includes the justification field');
 
-// --- buildEstimateWritebackCommands: note + --difficulty, NO --model
+// --- buildEstimateWritebackCommands: --difficulty only, NO --model, NO body
 // (DELETED, phase 34 commit 4: the buildEstimateWritebackPrompt and
 // buildEstimateTierPrompt assertions. Neither prompt exists — the writeback is
-// command TEXT the caller runs, and the tier is what its last command reads
-// back. These assert that text instead.)
-// (DELETED, phase 34 rework: the `--body` assertion. The ladder no longer
-// performs a whole-document write at all — it appends the note through
-// `--append-body`, so the phase body never leaves rdm-core. What the ladder DOES
-// when run verbatim is decided by scripts/lib/estimate-writeback.test.mjs
-// against the real binary, not by this string.)
-const wbCmds = buildEstimateWritebackCommands('phase-1-x', 'hard', 'risky cross-cutting change', 'rm', CFG);
+// command TEXT the caller runs.)
+// (DELETED, phase 34 rework: the `--body` assertion. The ladder performs no
+// whole-document write at all.)
+// (DELETED, phase 34 final round: the `## Estimate` note, the
+// "<difficulty> — <justification>" note-text, the quoted-heredoc and the
+// trailing-read-back assertions. Estimation writes NOTHING to the item body, so
+// there is no note, no heredoc and no ladder — and the tier is derived in
+// rdm-core from the difficulty rather than read back. Deleted and named, never
+// repaired or re-pointed.)
+const wbCmds = buildEstimateWritebackCommands('phase-1-x', 'hard', 'rm', CFG);
 const wb = wbCmds.join('\n');
+assert.equal(wbCmds.length, 1, 'ONE command per phase — the writeback is a single `phase update`');
 assert.ok(wb.includes('--difficulty hard'), 'writeback passes --difficulty');
-assert.ok(wb.includes('## Estimate'), 'writeback appends a ## Estimate section');
-assert.ok(wb.includes('hard — risky cross-cutting change'), 'the note carries "<difficulty> — <justification>"');
 const wbUpdateLine = wbCmds.find((l) => l.includes('phase update phase-1-x'));
 assert.ok(wbUpdateLine, 'writeback contains a phase update command line');
 assert.ok(!wbUpdateLine.includes('--model'), 'the phase update command NEVER passes --model (tier derives in rdm-core)');
-assert.ok(wb.includes("<<'RDM_ESTIMATE_EOF'"), 'the note is captured through a QUOTED heredoc');
 assert.ok(wb.includes('--roadmap rm'), 'writeback scopes to the roadmap');
-// The tier is READ BACK, never computed: the last command re-reads the phase.
-assert.ok(
-  wbCmds[wbCmds.length - 1].includes('phase show phase-1-x --roadmap rm --project demo --format json'),
-  'the last command reads the phase back so the caller can see the core-derived tier'
-);
 
 // --- no prompt builder leaks a land/merge/main-mutation/completion directive -
 const FORBIDDEN = ['Done:', '--land', '--commit', 'git merge', 'git push', 'checkout main'];
@@ -247,7 +242,7 @@ function hasForbidden(s) {
 const allPrompts = [
   estimateListCommand('rm', CFG),
   buildEstimatorPrompt('a phase body'),
-  buildEstimateWritebackCommands('phase-1-x', 'hard', 'why', 'rm', CFG).join('\n'),
+  buildEstimateWritebackCommands('phase-1-x', 'hard', 'rm', CFG).join('\n'),
 ];
 for (const p of allPrompts) {
   assert.ok(!hasForbidden(p), 'no estimate prompt leaks a land/merge/commit/Done directive:\n' + p);
@@ -277,7 +272,7 @@ console.log('all estimate behavior assertions passed');
 NODE_TEST
 
 if run_node "$TMP/behavior.mjs" "$LIB"; then
-    pass "pure helpers verified (args, selection, prompts, note/no-model, summary, determinism)"
+    pass "pure helpers verified (args, selection, prompts, no-body/no-model writeback, summary, determinism)"
 else
     fail "estimate behavior assertions failed"
 fi
@@ -518,7 +513,7 @@ console.log('ALL HERMETIC-SEED ASSERTIONS PASSED');
 NODE_TEST
 
 if run_node "$TMP/real.mjs" "$LIB" "$RDM_BIN" "$PLAN" "$PROJ" "$ROADMAP"; then
-    pass "real rdm JSON round-trips through selectUnestimated / buildEstimatePipeline; tier derives in core; note lands"
+    pass "real rdm JSON round-trips through selectUnestimated / buildEstimatePipeline; tier derives in core"
 else
     fail "hermetic real-binary estimate assertions failed"
 fi
@@ -889,34 +884,21 @@ if assert_no_existence_preflight "$TMP/preflight-mutant.js"; then
 fi
 pass "9c: the existence-preflight detector fires on planted code while ignoring the rationale prose"
 
-# --- 9d. Planted-mutation self-tests for 9b -----------------------------------
-say "9d. Planted-mutation self-tests: the allow-list assertion is not vacuous"
-
-# (i) a builder RE-HARDCODES this repo's dev binary path. (Anchor moved from the
-# deleted `phase list` builder to `phase show`, which the writeback commands
-# emit — it is the same assertion over the artifact that replaced the one it
-# used to read.)
-sed "s|const show = bin + ' phase show |const show = './target/debug/rdm' + ' phase show |" "$WF" >"$TMP/pz-mut-bin.js"
-if cmp -s "$WF" "$TMP/pz-mut-bin.js"; then
-    fail "9d(i): the re-hardcoded-binary mutation did not apply — the self-test is not exercising anything"
-fi
-if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-bin.js" >/dev/null 2>&1; then
-    fail "9d(i): a re-hardcoded rdm binary was NOT detected — the binary assertion is vacuous"
-fi
-pass "9d(i): detector fires when a builder re-hardcodes the rdm binary"
-
-# DELETED (no-mechanical-agents-in-workflows phase 34, commit 4): mutation (ii).
-# Its subject was `rdm model resolve mechanical` gaining a project flag; this
-# engine no longer emits that command at all, so there is nothing to mutate.
-
-# (ii) a project-scoped builder DROPS its flag.
-sed "s|+ ' --roadmap ' + slug + proj + ' --format json'|+ ' --roadmap ' + slug + ' --format json'|g" "$WF" >"$TMP/pz-mut-drop.js"
-if cmp -s "$WF" "$TMP/pz-mut-drop.js"; then
-    fail "9d(ii): the dropped-flag mutation did not apply"
-fi
-if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-drop.js" >/dev/null 2>&1; then
-    fail "9d(ii): a project-scoped command that dropped its project flag was NOT detected"
-fi
-pass "9d(ii): detector fires when a project-scoped builder drops '+ proj'"
+# DELETED SECTION "9d." (no-mechanical-agents-in-workflows phase 34, final
+# round): both planted-mutation self-tests for 9b.
+#
+#   9d(i)  re-hardcoded the rdm binary by rewriting `const show = bin + ' phase
+#          show `, and 9d(ii) dropped the project flag by rewriting
+#          `+ ' --roadmap ' + slug + proj + ' --format json'`. BOTH anchors were
+#          text inside buildEstimateWritebackCommands' `show` read-back line,
+#          which no longer exists: estimation writes nothing to the item body,
+#          so the writeback is ONE `phase update --difficulty` command with no
+#          heredoc, no note and no trailing read. Neither sed applies any more,
+#          so both mutations silently became no-ops and the section failed on its
+#          own "the mutation did not apply" guard.
+#
+# Deleted rather than re-anchored, per the standing ruling: a broken
+# `verify-*.sh` assertion is deleted and named, never repaired. 9b and 9c
+# themselves are untouched and still run.
 
 say "verify-workflow-estimate.sh: ALL GREEN"

@@ -2,7 +2,7 @@
 //!
 //! This module is the **one source of truth** for the estimate core:
 //! **list phases → filter to the unestimated → parallel-rate each → write back
-//! the difficulty (and an audit note) → read the core-derived tier back**. Two
+//! the difficulty**. Two
 //! surfaces consume the SAME marked block, so a change to the estimate loop
 //! lands once and behaves identically everywhere:
 //!
@@ -22,7 +22,9 @@
 //! **Tier resolution stays in `rdm-core`.** This block never reimplements the
 //! difficulty→tier mapping (`Difficulty::model_tier`, rdm-core/src/model.rs is
 //! authoritative): the writeback sets `--difficulty` only and NEVER `--model`,
-//! and the summary reads the core-derived tier back from `rdm phase show`.
+//! and rdm-core derives the tier from it. Estimation writes NOTHING to the item
+//! body — no audit note, no body read, no body write — so one command per phase
+//! is the whole writeback.
 //!
 //! Everything the block needs is self-contained (no imports, pure array/string
 //! ops, no Date.now / Math.random) and it names NO ambient Workflow global
@@ -43,8 +45,8 @@
 // global (agent/parallel/workflow/log): every side effect is reached through the
 // injected `deps` object, so the module imports cleanly in Node. It NEVER
 // reimplements the difficulty->tier mapping — rdm-core owns that
-// (Difficulty::model_tier); the writeback sets --difficulty only, and the tier
-// is read back from `rdm phase show`.
+// (Difficulty::model_tier); the writeback sets --difficulty only, and rdm-core
+// derives the tier from it. The writeback touches NO body.
 
 // --- Environment args: `rdmBin` and `project` --------------------------------
 //
@@ -196,41 +198,29 @@ function buildEstimatorPrompt(phaseBody) {
   ].join('\n');
 }
 
-// buildEstimateWritebackCommands(stem, difficulty, justification, slug, cfg) —
-// the ORDERED shell commands that persist one phase's difficulty AND append its
-// `## Estimate` audit note, then read the phase back so the caller can see the
-// core-derived tier. Returned as DATA; nothing here runs them.
+// buildEstimateWritebackCommands(stem, difficulty, slug, cfg) — the shell
+// command that persists one phase's difficulty. Returned as DATA; nothing here
+// runs it.
 //
-// RUNNABLE AS EMITTED — paste the list into one shell session and it does what
-// it says, with nothing for the caller to substitute first. That is the whole
-// contract of a returned command ladder, and it is why `--append-body` exists:
-// `--body` is whole-document-authoritative, so persisting the note through it
-// would mean the CALLER reading the current body and handing it back, which is
-// both a document crossing a model boundary and a clobber waiting for a dropped
-// line. `--append-body` adds the note in rdm-core without anyone re-transmitting
-// what is already there, so the emitted text can never destroy a body.
+// ONE COMMAND PER PHASE, and it sets the difficulty and nothing else.
+// ESTIMATION WRITES NOTHING TO THE ITEM BODY (operator directive, 2026-09-21):
+// there is no `## Estimate` audit note, no body read, no body write, no heredoc
+// and no placeholder. The rating's justification is REPORTED in the summary and
+// never persisted, so no document is held, carried or re-supplied by this lane
+// and the emitted text cannot destroy a body it never had.
 //
-// The note is captured through a QUOTED heredoc, never interpolated into a
-// command line, so backticks, `$` and punctuation ride through literally.
-// `--model` is deliberately absent: the tier derives from the difficulty in
-// rdm-core, and the last command is what reads it back.
+// `--model` is deliberately absent: rdm-core derives the tier from the
+// difficulty (Difficulty::model_tier).
 //
-// EVERY LINE CARRIES `|| exit 1`, the emitted-ladder rule this lane applies
-// everywhere (see review.mjs's persistReviewCommands and the code engine's
-// gateCommands). The ladder's last command is a READ, and a caller pastes it
-// into a plain shell with no `set -e` — so without per-line handling a refused
-// `phase update` was followed by a successful `phase show` and the ladder exited
-// 0, reporting a difficulty and an audit note that were never persisted.
-function buildEstimateWritebackCommands(stem, difficulty, justification, slug, cfg) {
+// It carries `|| exit 1`, the emitted-ladder rule this lane applies everywhere
+// (see review.mjs's persistReviewCommands and the code engine's gateCommands),
+// so a caller pasting several phases' writebacks into one plain shell with no
+// `set -e` stops at a refused write rather than running on past it.
+function buildEstimateWritebackCommands(stem, difficulty, slug, cfg) {
   const bin = resolveRdmBin(cfg && cfg.rdmBin);
-  const proj = projectFlag(cfg);
-  const show = bin + ' phase show ' + stem + ' --roadmap ' + slug + proj + ' --format json';
-  const note = '## Estimate\n\n' + difficulty + ' — ' + justification;
   return [
-    "RDM_ESTIMATE_NOTE=$(cat <<'RDM_ESTIMATE_EOF'\n" + note + '\nRDM_ESTIMATE_EOF\n)',
     '  ' + bin + ' phase update ' + stem + ' --difficulty ' + difficulty +
-      ' --append-body "$RDM_ESTIMATE_NOTE" --no-edit --roadmap ' + slug + proj + ' || exit 1',
-    '  ' + show + ' || exit 1',
+      ' --no-edit --roadmap ' + slug + projectFlag(cfg) + ' || exit 1',
   ];
 }
 
@@ -241,8 +231,8 @@ function buildEstimateWritebackCommands(stem, difficulty, justification, slug, c
 // number) -> parallel-rate each -> build each one's writeback command text ->
 // return a DETERMINISTIC summary object. THE ONLY AGENT IT DISPATCHES IS THE
 // RATER, which is judgment; the list read and the writeback belong to the
-// orchestrator, and the resulting tier is what `rdm phase show` reports once the
-// returned commands have run. A phase whose
+// orchestrator, and the resulting tier is derived in rdm-core from the
+// difficulty the writeback sets. A phase whose
 // difficulty is already set is filtered out by selectUnestimated, so it is never
 // rated or written (which is what makes a re-run idempotent). A rater result
 // that is null or omits stem/difficulty is skipped with a log line rather than
@@ -309,10 +299,10 @@ function buildEstimatePipeline(deps) {
       for (const r of ratedArr) {
         const justification = typeof r.justification === 'string' ? r.justification : '';
         // The writeback is COMMAND TEXT, not a dispatch. There is no ack to read
-        // and therefore no `tier` here: the tier is whatever `rdm phase show`
-        // reports after the caller has run these commands, which is the last one
-        // in the list.
-        const commands = buildEstimateWritebackCommands(r.stem, r.difficulty, justification, roadmap, cfg);
+        // and therefore no `tier` here: rdm-core derives the tier from the
+        // difficulty this command sets. The justification is reported below and
+        // written nowhere.
+        const commands = buildEstimateWritebackCommands(r.stem, r.difficulty, roadmap, cfg);
         estimated.push({
           stem: r.stem,
           difficulty: r.difficulty,

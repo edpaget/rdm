@@ -18,17 +18,11 @@ Estimate the difficulty of one or more rdm phases. `$ARGUMENTS` is either a road
 4. **For each selected phase**, in order:
    1. Read the body: `rdm phase show <stem-or-number> --roadmap <slug> --project <PROJECT>`.
    2. Rate its difficulty as one of `trivial`, `easy`, `moderate`, or `hard`, based on the scope, risk, and breadth of the work the body describes. Write a one-line justification for the rating.
-   3. Record the justification by appending a short `## Estimate` note to the phase body, in the same update that sets the difficulty. Use `--append-body`, never `--body`: `--body` replaces the whole document, so writing the note that way means reading the body out, carrying it through your own output, and handing it back — one dropped line and the phase body is gone. `--append-body` adds the note without any of that, so nothing already in the body is ever at risk. `update` does **not** read stdin, so capture the note in a shell variable with a quoted heredoc (which keeps backticks, `$`, and punctuation literal):
+   3. Persist the rating with a single command:
       ```bash
-      note=$(cat <<'EOF'
-      ## Estimate
-
-      <difficulty> — <one-line justification>
-      EOF
-      )
-      rdm phase update <stem-or-number> --difficulty <difficulty> --append-body "$note" --no-edit --roadmap <slug> --project <PROJECT>
+      rdm phase update <stem-or-number> --difficulty <difficulty> --no-edit --roadmap <slug> --project <PROJECT>
       ```
-      Do **not** pass `--model`: the model tier is derived automatically from the difficulty (`trivial`/`easy` → small, `moderate` → medium, `hard` → large).
+      That is the entire write. **Estimation writes nothing to the phase body** — no `## Estimate` note, no appended section, nothing. The justification is reported in step 5 and persisted nowhere, so no body is ever read, carried, or rewritten. Do **not** pass `--model` either: the model tier is derived automatically from the difficulty (`trivial`/`easy` → small, `moderate` → medium, `hard` → large).
 5. **Report** what was estimated: list each phase with its assigned difficulty, the derived model tier, and the one-line justification. Note any phases that were skipped because they already had a difficulty.
 
 ## Guidelines

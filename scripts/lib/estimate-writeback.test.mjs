@@ -10,19 +10,16 @@
 //
 // So this file runs them. It seeds a real plan repo with the real `rdm` binary,
 // feeds the binary's own `phase list --format json` into the real pipeline, and
-// then executes what it gets back VERBATIM — `writebackScript`, byte for byte,
-// with no substitution of any kind, which is what a returned command ladder
-// means everywhere else in this lane. It then asserts on plan state read back
-// through the binary: the difficulty landed, rdm-core derived the tier from it,
-// and the `## Estimate` audit note is in the body alongside the text that was
-// there before.
+// then runs what it gets back: ONE `phase update --difficulty` command per rated
+// phase. It then asserts on plan state read back through the binary — the
+// difficulty landed and rdm-core derived the tier from it.
 //
-// Running it verbatim is the assertion, not a convenience. An earlier revision
-// emitted a `--body` whole-document write with a placeholder standing in for the
-// current body; run as emitted, that replaced the phase's real body with the
-// placeholder text and exited 0. The ladder now appends through `--append-body`
-// and holds no body at all, so there is nothing left to splice — and this file
-// exercises the invited usage rather than a careful one.
+// (DELETED, no-mechanical-agents-in-workflows phase 34, final round: the
+// body-survival and verbatim-ladder assertions, and the refused-ladder test.
+// Their subject was the `## Estimate` audit note and the multi-command ladder
+// that carried it. Estimation now writes NOTHING to the item body, so there is
+// no body for a writeback to preserve or destroy and no trailing read to mask a
+// refused write. Deleted and named, never weakened.)
 //
 // Nothing here asserts on prompt or command TEXT. The commands are run; the
 // claims are about the plan repo afterwards. A wrong binary path fails to
@@ -35,12 +32,9 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
-import { buildEstimatePipeline, buildEstimateWritebackCommands } from '../../.claude/workflows/lib/estimate.mjs';
+import { buildEstimatePipeline } from '../../.claude/workflows/lib/estimate.mjs';
 
 // --------------------------------------------------------------- environment
 
@@ -114,9 +108,8 @@ function listPhases() {
  * Run the pipeline over the binary's real phase list. Only the difficulty
  * RATING is faked — it is the one judgment call in the loop, and the value it
  * returns is what the writeback has to carry through to disk. The justification
- * deliberately carries a backtick, a `$`, an em-dash and a double quote: the
- * returned command text captures the note through a quoted heredoc, and that
- * only holds if those ride through literally.
+ * is reported by the pipeline and persisted nowhere, so nothing it contains can
+ * reach a command line.
  */
 async function runPipeline() {
   const rated = [];
@@ -141,19 +134,12 @@ async function runPipeline() {
 }
 
 /**
- * Execute one phase's returned writeback ladder EXACTLY as emitted — the whole
- * `writebackScript`, in one shell session, with nothing substituted, edited or
- * reordered. This is the usage the returned data invites; anything the ladder
- * cannot do unaided it must not claim to do.
- *
- * Returns the JSON printed by the LAST command in the ladder, which is the
- * read-back the engine tells its caller is how the resulting tier is observed.
- * It is re-run on its own only to get that JSON unmixed from the update's human
- * status line — the verbatim run above it is what does the work.
+ * Run one phase's returned writeback — the whole `writebackScript`, in a shell,
+ * with nothing substituted or edited. It is one command, and it sets the
+ * difficulty and nothing else.
  */
-function runWritebackVerbatim(entry) {
+function runWriteback(entry) {
   sh(entry.writebackScript);
-  return JSON.parse(sh(entry.writebackCommands[entry.writebackCommands.length - 1]));
 }
 
 // --------------------------------------------------------------- seed
@@ -183,7 +169,7 @@ rdm(['phase', 'update', 'phase-3-c', '--difficulty', 'hard', '--no-edit', '--roa
 
 // --------------------------------------------------------------- tests
 
-test('the returned writeback commands land the difficulty, the core-derived tier and the audit note', async () => {
+test('the returned writeback command lands the difficulty and the core-derived tier', async () => {
   const { summary, rated } = await runPipeline();
 
   assert.deepEqual(
@@ -199,38 +185,16 @@ test('the returned writeback commands land the difficulty, the core-derived tier
   assert.deepEqual(summary.skipped, ['phase-3-c'], 'the pre-estimated phase is never rated');
 
   for (const e of summary.estimated) {
-    const readBack = runWritebackVerbatim(e);
+    assert.equal(e.writebackCommands.length, 1, `${e.stem}: one command per phase`);
+    runWriteback(e);
 
-    assert.equal(readBack.difficulty, 'moderate', `${e.stem}: the rated difficulty was persisted`);
-    assert.equal(
-      readBack.model,
-      'medium',
-      `${e.stem}: rdm-core derived the tier from the difficulty — the commands pass no --model`
-    );
-
-    const body = readBack.body || '';
-    const original = `ORIGINAL BODY ${e.stem.slice(-1).toUpperCase()}`;
-    assert.ok(
-      body.includes(original),
-      `${e.stem}: the pre-existing body survived the ladder run verbatim — the exact loss the ` +
-        'placeholder-in-a---body-heredoc revision caused, silently and with exit 0'
-    );
-    assert.ok(body.includes('## Estimate'), `${e.stem}: the audit note landed`);
-    assert.ok(
-      body.includes(`moderate — ${e.justification}`),
-      `${e.stem}: the note carries "<difficulty> — <justification>" with its backtick, $ and quote intact`
-    );
-    assert.ok(
-      body.indexOf(original) < body.indexOf('## Estimate'),
-      `${e.stem}: the note is appended after the existing body, not prepended over it`
-    );
-  }
-
-  // The read-back the commands perform agrees with an independent read.
-  for (const e of summary.estimated) {
     const shown = showJson(e.stem);
-    assert.equal(shown.difficulty, 'moderate');
-    assert.equal(shown.model, 'medium');
+    assert.equal(shown.difficulty, 'moderate', `${e.stem}: the rated difficulty was persisted`);
+    assert.equal(
+      shown.model,
+      'medium',
+      `${e.stem}: rdm-core derived the tier from the difficulty — the command passes no --model`
+    );
   }
 });
 
@@ -238,29 +202,7 @@ test('the already-estimated phase is left exactly as it was', () => {
   const c = showJson('phase-3-c');
   assert.equal(c.difficulty, 'hard', 'its difficulty is untouched');
   assert.equal(c.model, 'large', 'its core-derived tier is untouched');
-  assert.ok(!(c.body || '').includes('## Estimate'), 'no audit note was appended to it');
   assert.ok((c.body || '').includes('ORIGINAL BODY C'), 'its body is untouched');
-});
-
-test('a refused write fails the ladder, even in a plain shell with no set -e', () => {
-  // The ladder's last command is a READ, and the caller skill tells the
-  // orchestrator to "run each one in Bash, in order, exactly as returned … and
-  // report the exit status". Without per-line failure handling, a refused
-  // `phase update` followed by a successful `phase show` left the session
-  // exiting 0 — reporting a difficulty and an audit note that were never
-  // persisted, and inviting the next autopilot pass to re-rate the phase.
-  const stub = path.join(PLAN_ROOT, 'refusing-rdm');
-  fs.writeFileSync(stub, '#!/bin/sh\n[ "$2" = update ] || exit 0\necho "error: refused" >&2\nexit 1\n', {
-    mode: 0o755,
-  });
-
-  const script = buildEstimateWritebackCommands('phase-1-a', 'moderate', 'because', ROADMAP, {
-    rdmBin: stub,
-    project: PROJECT,
-  }).join('\n');
-
-  const status = spawnSync('/bin/bash', ['-c', script], { encoding: 'utf8', env: SHELL_ENV }).status;
-  assert.notEqual(status, 0, 'a refused update must fail the ladder, not be masked by the trailing read-back');
 });
 
 test('a second pass over the now-written repo has nothing left to estimate', async () => {
