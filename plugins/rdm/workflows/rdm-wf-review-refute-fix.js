@@ -3314,7 +3314,16 @@ async function acquirePlan(previous) {
     properties: { slug: { type: 'string' }, implements: { type: 'string' }, status: { type: 'string' }, body: { type: 'string' } },
   } })
   if (!plan || plan.slug !== slug || plan.implements !== 'rdm:' + source.item || plan.status !== 'approved' || typeof plan.body !== 'string') throw new Error('implementation plan does not approve the intended source item')
-  if (previous && ['slug', 'implements', 'status', 'body'].some(key => plan[key] !== previous[key])) throw new Error('implementation plan changed during review')
+  // NO mid-review stability comparison on the plan, and no revalidate call feeding one.
+  // The former guard byte-compared `body` across two agent-transcribed reads. A Workflow
+  // script has no Bash of its own, so every read crosses a lossy, model-mediated transport
+  // and a 32 kB body cannot round-trip with byte fidelity. It aborted two consecutive real
+  // reviews on nothing but a normalized trailing newline — after the expensive source and
+  // acceptance agents had already run — while reporting a cause ("implementation plan
+  // changed during review") that had not occurred. Operator decision (2026-09-20): the race
+  // it guarded is not hittable in practice and would not matter if it were. The plan repo is
+  // git-backed, so a plan document's identity is its commit SHA, never a transcribed body —
+  // see task/pin-plan-identity-by-commit-sha-in-review-engines.
   return { slug: plan.slug, implements: plan.implements, status: plan.status, body: plan.body }
 }
 try {
@@ -3351,7 +3360,6 @@ if (persist && source && implementationPlan) {
   try {
     if (persist.on && persist.on !== 'change/' + source.head) throw new Error('source-bound persistence cannot target a different artifact')
     await acquireSource(source)
-    await acquirePlan(implementationPlan)
     const prompts = buildPersistReviewPrompts({ mode: 'code', outcome: outcome, survivors: survivors, evidence: { failure: failure, criteria: criteria, implementationPlan: implementationPlan, coverage: review.coverage, budget: review.budget, acTable: review.acTable, source: { item: source.item, path: source.path, repository: source.repository, branch: source.branch, base: source.base, head: source.head } } }, 'change/' + source.head, cfg,
       { source: source, implements: 'plan/' + implementationPlan.slug, pathAnchors: true })
     const ack = await agent(prompts.prompt, { label: 'persist:review', phase: 'Gate', schema: PERSIST_ACK_SCHEMA })
@@ -3378,7 +3386,6 @@ if (persist && source && implementationPlan) {
 if (rawArgs.gate && !failure) {
   try {
     await acquireSource(source)
-    await acquirePlan(implementationPlan)
     const target = isTask ? ' task update ' + shellQuote(taskSlug) : ' phase update ' + shellQuote(phaseArg) + ' --roadmap ' + shellQuote(roadmap)
     const binding = ' --source ' + shellQuote(source.path) + ' --base ' + shellQuote(source.base) + ' --expected-head ' + shellQuote(source.head) + ' --expected-branch ' + shellQuote(source.branch) + (source.noCode ? ' --no-code' : '')
     const update = (status) => bin + target + ' --status ' + status + binding + ' --no-edit' + proj
