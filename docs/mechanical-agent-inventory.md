@@ -90,7 +90,7 @@ prompt. **Deleted** means the thing it did stopped being done at all.
 | `gate:persist` | review-refute-fix | **moved to the orchestrator** — returned as `gateCommands` / `gateScript` |
 | `gate:clear-tag:*` | plan-review | **moved to the orchestrator** — returned as `gateAction.commands` |
 | `act:*` | plan-review | **moved to the orchestrator** — applying a small plan fix and filing a large finding as a task is judgment plus a write, which is what the orchestrator is |
-| `act:round-note:*` | plan-review | **moved to the orchestrator** — the engine renders the note and returns it as `roundNote`; appending it to a body is a read-modify-write |
+| `act:round-note:*` | plan-review | **moved to the orchestrator** — the engine renders the note and returns it as `roundNote`, which the orchestrator appends. It was a read-modify-write when this was written; `--append-body` has since removed that, and turning `roundNote` into a returned command ladder like the estimate writeback's is an open follow-up, not a claim made here |
 
 ### The three batch engines
 
@@ -98,7 +98,7 @@ prompt. **Deleted** means the thing it did stopped being done at all.
 |---|---|---|
 | `model:mechanical` | estimate, document, backlog | **deleted** — with no mechanical agent left, there is no mechanical model to resolve |
 | `estimate:list` | estimate | **moved to the orchestrator** — it runs `rdm phase list --format json` and passes `phaseList`; the engine refuses to run without it and returns the command to use |
-| `estimate:write:<stem>` | estimate | **moved to the orchestrator** — the engine returns each phase's `writebackCommands` (read the body, write it back with the `## Estimate` note and the difficulty, read it back) |
+| `estimate:write:<stem>` | estimate | **moved to the orchestrator** — the engine returns each phase's `writebackCommands` (set the difficulty, add the `## Estimate` note with `--append-body`, read the phase back). Runnable exactly as emitted: `--append-body` (added in the same change) is what lets the note land without the body being read out and handed back, so no document crosses a model boundary and the ladder cannot destroy what it never held |
 | `estimate:tier:<stem>` | estimate | **deleted** — the tier is whatever `rdm phase show` reports once that writeback has landed, which is the last line of the returned commands |
 | `fetch:roadmap-meta` | document | **moved to the orchestrator** — it runs `rdm roadmap show --format json` and passes `roadmapMeta`; the engine refuses to run without it and returns the command |
 | `gather:<stem>` | document | **kept, reclassified** — it reads a phase document and its commit's history and JUDGES what the change did. That is not transcription, so it lost its `agentType` and its mechanical-model pin rather than being moved |

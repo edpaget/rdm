@@ -22,6 +22,15 @@ pub enum BodyUpdate {
     /// Clear the body (set it to empty), confirming the clobber of any
     /// existing content.
     Clear,
+    /// Append this fragment to the end of the existing body, separated from it
+    /// by exactly one blank line.
+    ///
+    /// Unlike [`Set`](BodyUpdate::Set), the caller never has to read the
+    /// current body, carry it, and hand it back — so an append can neither
+    /// clobber content the caller never saw nor lose a line in transit. An
+    /// empty (or whitespace-only) fragment appends nothing and leaves the body
+    /// untouched; appending to an empty body yields just the fragment.
+    Append(String),
 }
 
 impl BodyUpdate {
@@ -34,13 +43,38 @@ impl BodyUpdate {
     ///
     /// Returns [`Error::ConflictingUpdate`] if both `body` and `clear` are set.
     pub fn from_args(body: Option<String>, clear: bool) -> Result<Self> {
-        match (body, clear) {
-            (Some(_), true) => Err(Error::ConflictingUpdate {
+        Self::from_args_with_append(body, clear, None)
+    }
+
+    /// Builds a [`BodyUpdate`] from all three mutually exclusive body inputs:
+    /// the whole-document `body`, the `clear` flag, and an `append` fragment.
+    ///
+    /// `Some(a)` for `append` → [`Append`](BodyUpdate::Append); otherwise this
+    /// behaves exactly like [`from_args`](BodyUpdate::from_args).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConflictingUpdate`] if more than one of `body`,
+    /// `clear`, and `append` is supplied — they are three different answers to
+    /// the same question, and guessing which one was meant would silently
+    /// discard one of them.
+    pub fn from_args_with_append(
+        body: Option<String>,
+        clear: bool,
+        append: Option<String>,
+    ) -> Result<Self> {
+        let supplied =
+            usize::from(body.is_some()) + usize::from(clear) + usize::from(append.is_some());
+        if supplied > 1 {
+            return Err(Error::ConflictingUpdate {
                 field: "body".to_string(),
-            }),
-            (Some(b), false) => Ok(BodyUpdate::Set(b)),
-            (None, true) => Ok(BodyUpdate::Clear),
-            (None, false) => Ok(BodyUpdate::Keep),
+            });
+        }
+        match (body, clear, append) {
+            (_, _, Some(a)) => Ok(BodyUpdate::Append(a)),
+            (Some(b), _, None) => Ok(BodyUpdate::Set(b)),
+            (None, true, None) => Ok(BodyUpdate::Clear),
+            (None, false, None) => Ok(BodyUpdate::Keep),
         }
     }
 
@@ -51,6 +85,8 @@ impl BodyUpdate {
     /// Returns [`Error::BodyClobberRefused`] when [`Set`](BodyUpdate::Set) would
     /// replace a non-empty body with an empty string (use
     /// [`Clear`](BodyUpdate::Clear) to confirm that).
+    /// [`Append`](BodyUpdate::Append) never returns an error — it only ever
+    /// adds.
     pub(crate) fn apply(self, body: &mut String) -> Result<()> {
         match self {
             BodyUpdate::Keep => {}
@@ -60,6 +96,18 @@ impl BodyUpdate {
                     return Err(Error::BodyClobberRefused);
                 }
                 *body = new;
+            }
+            BodyUpdate::Append(fragment) => {
+                let fragment = fragment.trim_end_matches('\n');
+                if fragment.trim().is_empty() {
+                    return Ok(());
+                }
+                let existing = body.trim_end_matches('\n');
+                if existing.is_empty() {
+                    *body = format!("{fragment}\n");
+                } else {
+                    *body = format!("{existing}\n\n{fragment}\n");
+                }
             }
         }
         Ok(())
@@ -397,6 +445,69 @@ mod tests {
             BodyUpdate::from_args(None, true).unwrap(),
             BodyUpdate::Clear
         );
+    }
+
+    /// The whole point of `Append`: the caller supplies only the fragment, and
+    /// everything already in the body survives verbatim.
+    #[test]
+    fn append_adds_to_the_existing_body_without_rewriting_it() {
+        let mut body =
+            "# Phase\n\nThe original text, with `backticks` and — punctuation.\n".to_string();
+        BodyUpdate::Append("## Estimate\n\nhard — cross-cutting".to_string())
+            .apply(&mut body)
+            .unwrap();
+        assert_eq!(
+            body,
+            "# Phase\n\nThe original text, with `backticks` and — punctuation.\n\n\
+             ## Estimate\n\nhard — cross-cutting\n"
+        );
+
+        // A second append stacks, still without touching what is already there.
+        BodyUpdate::Append("## Estimate\n\neasy — reconsidered".to_string())
+            .apply(&mut body)
+            .unwrap();
+        assert!(body.contains("hard — cross-cutting"));
+        assert!(body.ends_with("## Estimate\n\neasy — reconsidered\n"));
+    }
+
+    #[test]
+    fn append_to_an_empty_body_is_just_the_fragment() {
+        let mut body = String::new();
+        BodyUpdate::Append("first words".to_string())
+            .apply(&mut body)
+            .unwrap();
+        assert_eq!(body, "first words\n");
+    }
+
+    /// An empty fragment adds nothing and — unlike `Set("")` — is not a
+    /// clobber, so it cannot fail.
+    #[test]
+    fn append_of_nothing_leaves_the_body_untouched() {
+        let mut body = "kept\n".to_string();
+        BodyUpdate::Append(String::new()).apply(&mut body).unwrap();
+        assert_eq!(body, "kept\n");
+        BodyUpdate::Append("   \n\n".to_string())
+            .apply(&mut body)
+            .unwrap();
+        assert_eq!(body, "kept\n");
+    }
+
+    #[test]
+    fn append_maps_from_args_and_conflicts_with_the_other_two() {
+        assert_eq!(
+            BodyUpdate::from_args_with_append(None, false, Some("note".to_string())).unwrap(),
+            BodyUpdate::Append("note".to_string())
+        );
+        // Unchanged behavior when no append is supplied.
+        assert_eq!(
+            BodyUpdate::from_args_with_append(None, false, None).unwrap(),
+            BodyUpdate::Keep
+        );
+        for (body, clear) in [(Some("whole".to_string()), false), (None, true)] {
+            let err = BodyUpdate::from_args_with_append(body, clear, Some("note".to_string()))
+                .unwrap_err();
+            assert!(matches!(err, Error::ConflictingUpdate { field } if field == "body"));
+        }
     }
 
     #[test]

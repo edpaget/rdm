@@ -203,25 +203,28 @@ function buildEstimatorPrompt(phaseBody) {
 // `## Estimate` audit note, then read the phase back so the caller can see the
 // core-derived tier. Returned as DATA; nothing here runs them.
 //
+// RUNNABLE AS EMITTED — paste the list into one shell session and it does what
+// it says, with nothing for the caller to substitute first. That is the whole
+// contract of a returned command ladder, and it is why `--append-body` exists:
+// `--body` is whole-document-authoritative, so persisting the note through it
+// would mean the CALLER reading the current body and handing it back, which is
+// both a document crossing a model boundary and a clobber waiting for a dropped
+// line. `--append-body` adds the note in rdm-core without anyone re-transmitting
+// what is already there, so the emitted text can never destroy a body.
+//
 // The note is captured through a QUOTED heredoc, never interpolated into a
-// command line, so backticks, `$` and punctuation ride through literally. The
-// CURRENT body is read by the caller between step 1 and step 2 — `--body` is
-// whole-document-authoritative and there is no patch mechanism — which is why
-// step 2 names the placeholder rather than pretending the engine holds the body.
+// command line, so backticks, `$` and punctuation ride through literally.
 // `--model` is deliberately absent: the tier derives from the difficulty in
-// rdm-core, and step 3 is what reads it back.
+// rdm-core, and the last command is what reads it back.
 function buildEstimateWritebackCommands(stem, difficulty, justification, slug, cfg) {
   const bin = resolveRdmBin(cfg && cfg.rdmBin);
   const proj = projectFlag(cfg);
   const show = bin + ' phase show ' + stem + ' --roadmap ' + slug + proj + ' --format json';
   const note = '## Estimate\n\n' + difficulty + ' — ' + justification;
   return [
-    '  ' + show,
-    "RDM_ESTIMATE_BODY=$(cat <<'RDM_ESTIMATE_EOF'\n<the `body` field from the command above>\n\n" +
-      note +
-      '\nRDM_ESTIMATE_EOF\n)',
+    "RDM_ESTIMATE_NOTE=$(cat <<'RDM_ESTIMATE_EOF'\n" + note + '\nRDM_ESTIMATE_EOF\n)',
     '  ' + bin + ' phase update ' + stem + ' --difficulty ' + difficulty +
-      ' --body "$RDM_ESTIMATE_BODY" --no-edit --roadmap ' + slug + proj,
+      ' --append-body "$RDM_ESTIMATE_NOTE" --no-edit --roadmap ' + slug + proj,
     '  ' + show,
   ];
 }

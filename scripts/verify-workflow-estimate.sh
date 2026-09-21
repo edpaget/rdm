@@ -213,15 +213,19 @@ assert.ok(ratePrompt.includes('trivial, easy, moderate, hard'), 'estimator lists
 assert.ok(/justification/i.test(ratePrompt), 'estimator asks for a justification');
 assert.ok(ratePrompt.includes('"justification"'), 'estimator return schema includes the justification field');
 
-// --- buildEstimateWritebackCommands: note + --difficulty + --body, NO --model
+// --- buildEstimateWritebackCommands: note + --difficulty, NO --model
 // (DELETED, phase 34 commit 4: the buildEstimateWritebackPrompt and
 // buildEstimateTierPrompt assertions. Neither prompt exists — the writeback is
 // command TEXT the caller runs, and the tier is what its last command reads
 // back. These assert that text instead.)
+// (DELETED, phase 34 rework: the `--body` assertion. The ladder no longer
+// performs a whole-document write at all — it appends the note through
+// `--append-body`, so the phase body never leaves rdm-core. What the ladder DOES
+// when run verbatim is decided by scripts/lib/estimate-writeback.test.mjs
+// against the real binary, not by this string.)
 const wbCmds = buildEstimateWritebackCommands('phase-1-x', 'hard', 'risky cross-cutting change', 'rm', CFG);
 const wb = wbCmds.join('\n');
 assert.ok(wb.includes('--difficulty hard'), 'writeback passes --difficulty');
-assert.ok(wb.includes('--body'), 'writeback passes --body (the audit note rides in the body)');
 assert.ok(wb.includes('## Estimate'), 'writeback appends a ## Estimate section');
 assert.ok(wb.includes('hard — risky cross-cutting change'), 'the note carries "<difficulty> — <justification>"');
 const wbUpdateLine = wbCmds.find((l) => l.includes('phase update phase-1-x'));

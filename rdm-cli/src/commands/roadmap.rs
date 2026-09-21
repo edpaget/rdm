@@ -114,17 +114,19 @@ pub fn run(
             tags,
             body,
             clear_body,
+            append_body,
             no_edit: _,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let title = TitleUpdate::from_args(title);
             // `update` consults the body only when the user is explicit:
-            // `--body` sets it, `--clear-body` clears it, otherwise it is left
-            // untouched. Unlike `create`, this never reads stdin or opens the
-            // editor, so a tags-only/status-only update can't hang on an open
-            // pipe or clobber the body from stray stdin bytes. (Retires the old
-            // `update --tags x < body.md` form; compose `--body` with `--tags`.)
-            let body = BodyUpdate::from_args(body, clear_body)?;
+            // `--body` sets it, `--clear-body` clears it, `--append-body` adds
+            // to it, otherwise it is left untouched. Unlike `create`, this never
+            // reads stdin or opens the editor, so a tags-only/status-only update
+            // can't hang on an open pipe or clobber the body from stray stdin
+            // bytes. (Retires the old `update --tags x < body.md` form; compose
+            // `--body` with `--tags`.)
+            let body = BodyUpdate::from_args_with_append(body, clear_body, append_body)?;
             let priority = PriorityUpdate::from_args(priority, clear_priority)?;
             let tags = TagsUpdate::from_args(tags, false)?;
             commit_mutation(store, "failed to update roadmap", |s| {

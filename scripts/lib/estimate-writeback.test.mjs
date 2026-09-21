@@ -10,12 +10,19 @@
 //
 // So this file runs them. It seeds a real plan repo with the real `rdm` binary,
 // feeds the binary's own `phase list --format json` into the real pipeline, and
-// then executes the commands it gets back through a shell — performing exactly
-// the one substitution the command text asks the orchestrator for (splicing the
-// current body into the heredoc). It then asserts on plan state read back
+// then executes what it gets back VERBATIM — `writebackScript`, byte for byte,
+// with no substitution of any kind, which is what a returned command ladder
+// means everywhere else in this lane. It then asserts on plan state read back
 // through the binary: the difficulty landed, rdm-core derived the tier from it,
 // and the `## Estimate` audit note is in the body alongside the text that was
 // there before.
+//
+// Running it verbatim is the assertion, not a convenience. An earlier revision
+// emitted a `--body` whole-document write with a placeholder standing in for the
+// current body; run as emitted, that replaced the phase's real body with the
+// placeholder text and exited 0. The ladder now appends through `--append-body`
+// and holds no body at all, so there is nothing left to splice — and this file
+// exercises the invited usage rather than a careful one.
 //
 // Nothing here asserts on prompt or command TEXT. The commands are run; the
 // claims are about the plan repo afterwards. A wrong binary path fails to
@@ -68,9 +75,6 @@ const SHELL_ENV = {
   XDG_CONFIG_HOME: `${PLAN_ROOT}/nonexistent-config`,
   RDM_ROOT: PLAN_ROOT,
 };
-
-// The one hole the returned command text asks its caller to fill.
-const BODY_PLACEHOLDER = '<the `body` field from the command above>';
 
 // --------------------------------------------------------------- harness
 
@@ -135,19 +139,19 @@ async function runPipeline() {
 }
 
 /**
- * Execute one phase's returned writeback commands in order, doing the single
- * thing their text asks the caller to do: read the current body from the first
- * command's JSON and splice it into the heredoc. Returns the JSON printed by
- * the LAST returned command — the read-back the engine tells its caller is how
- * the resulting tier is observed.
+ * Execute one phase's returned writeback ladder EXACTLY as emitted — the whole
+ * `writebackScript`, in one shell session, with nothing substituted, edited or
+ * reordered. This is the usage the returned data invites; anything the ladder
+ * cannot do unaided it must not claim to do.
+ *
+ * Returns the JSON printed by the LAST command in the ladder, which is the
+ * read-back the engine tells its caller is how the resulting tier is observed.
+ * It is re-run on its own only to get that JSON unmixed from the update's human
+ * status line — the verbatim run above it is what does the work.
  */
-function runWriteback(commands) {
-  const [readCurrent, heredoc, update, readBack] = commands;
-  const current = JSON.parse(sh(readCurrent));
-  sh([heredoc.replace(BODY_PLACEHOLDER, current.body || ''), update].join('\n'));
-  // The update prints a human status line before nothing else; the read-back
-  // command is run on its own so its JSON is unmixed.
-  return JSON.parse(sh(readBack));
+function runWritebackVerbatim(entry) {
+  sh(entry.writebackScript);
+  return JSON.parse(sh(entry.writebackCommands[entry.writebackCommands.length - 1]));
 }
 
 // --------------------------------------------------------------- seed
@@ -193,7 +197,7 @@ test('the returned writeback commands land the difficulty, the core-derived tier
   assert.deepEqual(summary.skipped, ['phase-3-c'], 'the pre-estimated phase is never rated');
 
   for (const e of summary.estimated) {
-    const readBack = runWriteback(e.writebackCommands);
+    const readBack = runWritebackVerbatim(e);
 
     assert.equal(readBack.difficulty, 'moderate', `${e.stem}: the rated difficulty was persisted`);
     assert.equal(
@@ -204,7 +208,11 @@ test('the returned writeback commands land the difficulty, the core-derived tier
 
     const body = readBack.body || '';
     const original = `ORIGINAL BODY ${e.stem.slice(-1).toUpperCase()}`;
-    assert.ok(body.includes(original), `${e.stem}: the pre-existing body survived the whole-document write`);
+    assert.ok(
+      body.includes(original),
+      `${e.stem}: the pre-existing body survived the ladder run verbatim — the exact loss the ` +
+        'placeholder-in-a---body-heredoc revision caused, silently and with exit 0'
+    );
     assert.ok(body.includes('## Estimate'), `${e.stem}: the audit note landed`);
     assert.ok(
       body.includes(`moderate — ${e.justification}`),
