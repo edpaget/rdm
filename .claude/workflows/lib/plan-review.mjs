@@ -22,7 +22,7 @@
 //! agent/parallel harness with ZERO LLM calls.
 //!
 //! The review CORE the driver consumes — `buildReviewPipeline`,
-//! `stripNonPhaseUnitOfWork`, `filterPlanReviewTag`, `classifyPlanOutcome`,
+//! `filterPlanReviewTag`, `classifyPlanOutcome`,
 //! `gateFor`, and `summarizeFindings` — lives in `lib/review.mjs`, the canonical
 //! review source. In the `.js` consumer those names arrive via the stamped review
 //! block (positioned BEFORE this block). In Node they arrive via the import below,
@@ -31,8 +31,6 @@
 import {
   UNREFUTED_DISPOSITION,
   buildReviewPipeline,
-  extractIntent,
-  stripNonPhaseUnitOfWork,
   filterPlanReviewTag,
   classifyPlanOutcome,
   gateFor,
@@ -57,7 +55,7 @@ import {
 // run time). scripts/verify-workflow-review.sh gates the two copies for drift.
 // No Date.now / Math.random — pure array/string ops plus injected async deps.
 //
-// `buildReviewPipeline`, `stripNonPhaseUnitOfWork`, `filterPlanReviewTag`,
+// `buildReviewPipeline`, `filterPlanReviewTag`,
 // `classifyPlanOutcome`, `gateFor`, `summarizeFindings`, and
 // `resolveRefutationBudget` are NOT declared here: they belong to the canonical
 // review source (lib/review.mjs) and reach this block from the stamped review
@@ -209,16 +207,18 @@ function parsePlanArgs(rawArgs) {
   // NOT done here — that belongs to task fix-plan-review-gate-tag-clobber.
   const fetched = a.fetched && typeof a.fetched === 'object' ? a.fetched : null
   const wontFixedTexts = Array.isArray(a.wontFixedTexts) ? a.wontFixedTexts : null
-  // The PARENT ROADMAP's body, verbatim, for a standalone `phase` target — the
-  // hoist for the `fetch:roadmap-intent` read. A DIFFERENT document from
-  // `fetched` above (that one is the phase's own body+tags), hence a separate,
-  // independent key rather than a member of that payload: see
-  // hoistedRoadmapBodyOk. Read from a STRUCTURED key only, never out of the
-  // `$ARGUMENTS` flag string, exactly like `fetched`. The RAW body is taken and
-  // the engine runs its own extractIntent over it, so there is exactly one
-  // implementation of the extraction and the hoisted and fetched paths cannot
-  // disagree about what an `## Intent` section is.
-  const roadmapBody = typeof a.roadmapBody === 'string' && a.roadmapBody.trim() !== '' ? a.roadmapBody : null
+  // The CALLER-SELECTED REVIEWER SET, applied to every review unit in this run.
+  // Read from a STRUCTURED key only, exactly like `fetched` below — a positional
+  // target slug must never be able to change which reviewers run. Absent (null)
+  // means run every plan reviewer; see the review core's `resolveReviewers`.
+  // An unrecognised name is dropped silently there and shows in coverage.
+  //
+  // ONE list for the whole run, deliberately. A roadmap sweep applies it to the
+  // roadmap-body unit and to every phase unit alike: a caller that wants
+  // `unit-of-work` graded on the phases accepts it running against the body too,
+  // and that choice is visible in each unit's `coverage.selected`. A second
+  // per-kind key would be a second mechanism for the caller to keep in sync.
+  const reviewers = Array.isArray(a.reviewers) ? a.reviewers.filter((r) => typeof r === 'string') : null
   const mechanicalModel =
     typeof a.mechanicalModel === 'string' && a.mechanicalModel.trim() !== '' ? a.mechanicalModel.trim() : null
   // The judgment-site siblings of mechanicalModel above: the resolved
@@ -303,7 +303,7 @@ function parsePlanArgs(rawArgs) {
     planSlug: planSlug,
     fetched: fetched,
     wontFixedTexts: wontFixedTexts,
-    roadmapBody: roadmapBody,
+    reviewers: reviewers,
     mechanicalModel: mechanicalModel,
     findModel: findModel,
     verifyModel: verifyModel,
@@ -475,28 +475,6 @@ function hoistedFetchedOk(fetched, kind) {
     if (!phasesOk) return false
   }
   return true
-}
-
-// hoistedRoadmapBodyOk(roadmapBody) — the shape guard for the OTHER hoistable
-// read on a standalone `phase` target: the PARENT ROADMAP's body, whose
-// `## Intent` section the intent-alignment dimension needs. It guards the
-// `fetch:roadmap-intent` block far below — see that block's own comment for
-// the fail-soft rule this guard preserves. Shape only, exactly like
-// hoistedFetchedOk above: a non-empty string, with no judgment about the
-// CONTENT. Whether the body actually carries an `## Intent` section is
-// extractIntent's business, and a body without one is a legal outcome, not a
-// rejected hoist.
-//
-// DELIBERATELY INDEPENDENT of hoistedFetchedOk: these are two different
-// documents, read by two different agents, and each hoist suppresses exactly
-// its own. There is no combined completeness guard — supplying one without the
-// other is legal and leaves the other path byte-unchanged. Coupling them would
-// change the existing `fetched` hoist's behavior, and the two paths do not even
-// degrade the same way: `fetched` is fail-CLOSED (`built.fetchFailed`) while
-// the read below is fail-SOFT, so an all-or-nothing guard over both would let a
-// missing roadmap body reject an otherwise-complete hoist.
-function hoistedRoadmapBodyOk(roadmapBody) {
-  return typeof roadmapBody === 'string' && String(roadmapBody).trim() !== ''
 }
 
 // RESERVED_FETCH_TOKENS — a small, CLOSED, evidence-grounded list, not a
@@ -991,34 +969,6 @@ function buildRoadmapFetchPrompt(slug, opts) {
 // fetch-status sentence for buildRoadmapFetchPrompt is very unlikely to also
 // fabricate a matching length/first-line pair for THIS prompt (see
 // roadmapBodyVerified's caller for how the two are compared).
-// buildRoadmapIntentFetchPrompt(slug) — the STANDALONE-PHASE path's only extra
-// mechanical read. A phase inherits its parent roadmap's recorded `## Intent`
-// (the roadmap-level decision), and on a `--roadmap` target the roadmap body is
-// already fetched, so inheritance there is free. A `--phase` target has no
-// roadmap body in hand, so this one call reads it.
-//
-// Deliberately NOT added to the roadmap fan-out path: `buildRoadmapFetchPrompt`
-// above is held to exactly ONE mechanical agent invocation per roadmap target,
-// and re-reading the same body would contradict that rule and re-inflate the
-// recorded fetch-agent baseline.
-//
-// Shaped exactly like buildPhaseFetchPrompt/buildTaskFetchPrompt: transcribe raw
-// stdout verbatim, never compose. Any failure — a thrown agent, an empty
-// transcript, unparseable JSON — degrades to no intent at the call site, never
-// to an error and never to a blocking finding: a gate must never block on an
-// input the thing it blocks cannot produce.
-function buildRoadmapIntentFetchPrompt(slug) {
-  return [
-    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
-    'Run exactly this command in the repo root:',
-    '  ./target/debug/rdm roadmap show ' + slug + ' --project rdm --format json',
-    'Return a RAW_STDOUT object: `transcript` — the ENTIRE raw stdout of that command, character for',
-    'character, exactly as printed. Do not summarize, reformat, extract fields, rename anything, or',
-    'comment on it — copy it verbatim.',
-    'If the command fails or prints nothing, return an empty string for `transcript`.',
-  ].join('\n')
-}
-
 function buildRoadmapBodyCheckPrompt(slug) {
   return [
     'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
@@ -1891,7 +1841,7 @@ function formatSkippedPhasesClause(skippedPhases) {
   )
 }
 
-// buildReviewUnits(parsed, fetched, roadmapIntent) — pure: turn a parsed target
+// buildReviewUnits(parsed, fetched) — pure: turn a parsed target
 // plus the fetched artifact JSON into the list of independent review units. A `phase`/`task`
 // target is a single unit; a `roadmap` target is the roadmap body plus one unit
 // per NON-TERMINAL phase (see isTerminalPhaseStatus above — a phase whose
@@ -1902,16 +1852,10 @@ function formatSkippedPhasesClause(skippedPhases) {
 // present on every return path (an empty array where nothing was — or could
 // have been — skipped) for shape consistency.
 //
-// RECORDED INTENT (the inheritance decision, implemented in ONE place). Every
-// unit carries `intent` (the verbatim `## Intent` section, or null) and
-// `hasIntent`. On a `roadmap` target the roadmap body is already fetched, so
-// extractIntent runs ONCE over it and the result is set on the roadmap unit AND
-// on every phase unit built from `rm.phases` — phases INHERIT their parent
-// roadmap's intent, at no extra agent cost. A `task` unit never has one. A
-// standalone `phase` unit takes it from the optional third argument, which the
-// driver fills from its `fetch:roadmap-intent` read; it defaults to
-// `{ hasIntent: false, intent: null }` so every pre-existing caller keeps
-// working unchanged and simply gets no intent.
+// RECORDED INTENT is NOT threaded here any more. The `intent-alignment`
+// reviewer reads the parent roadmap's `## Intent` section itself when the caller
+// selects it, so no unit carries a transcribed copy and there is nothing for
+// this function to inherit, extract, or lose.
 //
 // Defense-in-depth: a `fetched.phases` stem-collision/duplication guard runs
 // here too, using ONLY the `stem` field the documented hoist contract already
@@ -1921,11 +1865,8 @@ function formatSkippedPhasesClause(skippedPhases) {
 // hoist (whose content validation is out of this phase's scope — see
 // docs/mechanical-agent-inventory.md). A trip returns the SAME fail-closed
 // shape as an empty body, so the rest of the driver needs no new branch.
-function buildReviewUnits(parsed, fetched, roadmapIntent) {
+function buildReviewUnits(parsed, fetched) {
   const kind = parsed.kind
-  const inheritedIntent = roadmapIntent && roadmapIntent.hasIntent === true
-    ? { hasIntent: true, intent: roadmapIntent.intent }
-    : { hasIntent: false, intent: null }
   if (kind === 'roadmap') {
     const rm = fetched
     if (!rm || !rm.body || String(rm.body).trim() === '') return { units: [], fetchFailed: true, skippedPhases: [] }
@@ -1935,20 +1876,14 @@ function buildReviewUnits(parsed, fetched, roadmapIntent) {
     if (phaseStems.indexOf(parsed.roadmap) !== -1 || new Set(phaseStems).size !== phaseStems.length) {
       return { units: [], fetchFailed: true, skippedPhases: [] }
     }
-    // ONE extractIntent call for the whole fan-out; every phase unit below
-    // inherits this same value.
-    const inherited = extractIntent(String(rm.body))
     const units = []
     units.push({
       kind: 'roadmap',
-      targetType: 'roadmap',
       ident: parsed.roadmap,
       roadmap: parsed.roadmap,
       tags: Array.isArray(rm.tags) ? rm.tags : [],
       body: String(rm.body),
       target: 'roadmap ' + parsed.roadmap + ' (body)\n\n' + String(rm.body),
-      intent: inherited.intent,
-      hasIntent: inherited.hasIntent,
     })
     const phases = Array.isArray(rm.phases) ? rm.phases : []
     const skippedPhases = []
@@ -1960,14 +1895,11 @@ function buildReviewUnits(parsed, fetched, roadmapIntent) {
       }
       units.push({
         kind: 'phase',
-        targetType: 'phase',
         ident: p.stem,
         roadmap: parsed.roadmap,
         tags: Array.isArray(p.tags) ? p.tags : [],
         body: String(p.body || ''),
         target: 'phase ' + parsed.roadmap + '/' + p.stem + '\n\n' + String(p.body || ''),
-        intent: inherited.intent,
-        hasIntent: inherited.hasIntent,
       })
     }
     return { units: units, fetchFailed: false, skippedPhases: skippedPhases }
@@ -1984,16 +1916,11 @@ function buildReviewUnits(parsed, fetched, roadmapIntent) {
     units: [
       {
         kind: kind,
-        targetType: kind,
         ident: ident,
         roadmap: parsed.roadmap,
         tags: Array.isArray(meta.tags) ? meta.tags : [],
         body: String(meta.body),
         target: kind + ' ' + label + '\n\n' + String(meta.body),
-        // A task has no parent roadmap, so it never inherits intent; a
-        // standalone phase takes it from the driver's fetch:roadmap-intent read.
-        intent: kind === 'task' ? null : inheritedIntent.intent,
-        hasIntent: kind === 'task' ? false : inheritedIntent.hasIntent,
       },
     ],
     fetchFailed: false,
@@ -2113,12 +2040,9 @@ async function runPlanReviewDriver(args, deps) {
   // value has already thrown inside parsePlanArgs, before any agent ran.
   let _gateMode = d.gateMode === 'return' ? 'return' : 'apply'
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
-  // the review core, with NO independent review logic in this driver. Each call
-  // site below threads a minimal `{ targetType }` signals object (see the header
-  // note), which is enough for selectDimensions' plan-mode `when` predicate
-  // (unit-of-work: `targetType === 'phase'`) to scope selection at the source;
-  // stripNonPhaseUnitOfWork remains applied per unit as a defense-in-depth
-  // backstop, not the primary scoping mechanism.
+  // the review core, with NO independent review logic in this driver. Which
+  // reviewers run is the CALLER's choice, threaded through as `reviewers`; the
+  // driver never inspects a target to decide.
   const runPlanReview = d.runPlanReview || buildReviewPipeline('plan')
 
   const parsed = parsePlanArgs(args)
@@ -2129,6 +2053,9 @@ async function runPlanReviewDriver(args, deps) {
   if (parsed.gateMode === 'return') _gateMode = 'return'
   // Already validated by parsePlanArgs via the review core's single validator.
   const maxRefutations = parsed.maxRefutations
+  // The caller-selected reviewer set for every unit in this run. `null` (the
+  // default) runs every plan reviewer — see the review core's resolveReviewers.
+  const reviewers = parsed.reviewers
   // The PERSIST switch, resolved once. `persistOn` is the single boolean every
   // branch below consults; `persist` carries the optional explicit target.
   const persist = parsed.persist
@@ -2137,10 +2064,9 @@ async function runPlanReviewDriver(args, deps) {
     _log('plan-review: --implementation-plan has no persisted target — persist ignored')
   }
 
-  // reviewUnit — run find → refute → filter for ONE review unit, then strip
-  // non-phase unit-of-work survivors, drop anything already resolved
-  // wont-fix, read the unit's prior round off its own body, and classify with
-  // the round cap. Returns a per-unit result the act + gate steps consume
+  // reviewUnit — run find → refute → filter for ONE review unit, then drop
+  // anything already resolved wont-fix, read the unit's prior round off its own
+  // body, and classify with the round cap. Returns a per-unit result the act + gate steps consume
   // independently. `wontFixedTexts` is the SAME list for every unit in a run
   // (one search covers the whole run, not one per unit).
   async function reviewUnit(unit, wontFixedTexts, persistOn) {
@@ -2152,11 +2078,10 @@ async function runPlanReviewDriver(args, deps) {
     // both are carried through to the reported result.
     //
     // IMPORTANT: `budget` describes the PIPELINE, not this unit's final reported
-    // findings — stripNonPhaseUnitOfWork and suppressWontFixed run AFTER it and
-    // may drop a survivor that consumed budget.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, intent: unit.intent, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: unit.targetType, hasIntent: unit.hasIntent === true } })
-    const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
-    const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
+    // findings — suppressWontFixed runs AFTER it and may drop a survivor that
+    // consumed budget.
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, reviewers: reviewers, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
+    const survivors = suppressWontFixed(rawSurvivors, wontFixedTexts)
     // THE CHANNEL SWITCH. Both branches produce the SAME `{ round, findings }`
     // shape; everything below this line is identical on either channel.
     const prior = persistOn
@@ -2252,7 +2177,7 @@ async function runPlanReviewDriver(args, deps) {
   // ------------------------------------------------------------------ implementation-plan
   // THE GRADED DOCUMENT IS THE PLAN ITSELF — `planText` — never an rdm item
   // document. This branch returns before the shared fetch block below, so no
-  // *item* document is ever read here and fetch:phase / fetch:roadmap-intent /
+  // *item* document is ever read here and fetch:phase /
   // fetch:wontfix stay unreachable from this branch: everything those reads
   // would supply must still arrive as a caller-supplied value. The reachable
   // agents on this branch are fetch:plan and fetch:plan-body-check, gated on
@@ -2267,20 +2192,6 @@ async function runPlanReviewDriver(args, deps) {
   // cannot be silently substituted content for the real one. A finding about a
   // phase body is therefore still impossible by construction, not by
   // instruction.
-  //
-  // SIGNALS SITE: a full, honest `{ targetType: 'implementation-plan',
-  // hasIntent }`. `unit-of-work` de-selects at source (targetType !== 'phase'),
-  // which is CORRECT against a plan rather than a coverage regression —
-  // independent deliverability is a property of the PHASE, settled when it was
-  // created and estimated, and not something a review of the plan can act on.
-  // stripNonPhaseUnitOfWork below stays as the defense-in-depth backstop, not
-  // the primary mechanism.
-  //
-  // The recorded `## Intent` is threaded as a VALUE (`intent:`) and never as a
-  // signal; `hasIntent` is the derived boolean ABOUT that value, exactly as
-  // reviewUnit passes it for every other unit. It is extracted CALLER-SIDE by
-  // the one canonical extractor over the hoisted roadmap body, so
-  // intent-alignment runs here without any agent being added.
   //
   // Act and gate are still skipped: a plan document carries no tags, so there is
   // no needs-plan-review to clear. Persist is NOT skipped when the caller named
@@ -2374,31 +2285,16 @@ async function runPlanReviewDriver(args, deps) {
         planText = '(the implementation plan provided in context)'
       }
     }
-    // FAIL-SOFT, matching the fetch:roadmap-intent contract below exactly: a
-    // missing/rejected body, a body with no `## Intent`, and a throw out of
-    // extractIntent all degrade to `{ hasIntent: false, intent: null }`. The
-    // dimension then simply does not run and its absence is reported as a
-    // non-blocking suggestion. Failing closed here would block a plan on an
-    // input the plan cannot produce.
-    let planIntent = { hasIntent: false, intent: null }
-    try {
-      if (hoistedRoadmapBodyOk(parsed.roadmapBody)) {
-        planIntent = extractIntent(String(parsed.roadmapBody))
-      }
-    } catch (e) {
-      planIntent = { hasIntent: false, intent: null }
-    }
     // See reviewUnit's identical notes: acTable is always null in plan mode, and
     // `budget` describes the pipeline, not the post-strip survivor set.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, intent: planIntent.intent, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: 'implementation-plan', hasIntent: planIntent.hasIntent === true } })
-    const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, reviewers: reviewers, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
     // Wont-fix suppression from the CALLER-SUPPLIED list only — no fetch:wontfix
     // agent is reachable here. Without it an already-dismissed finding would
     // resurface and force a revise round, the exact failure class this path
     // exists to close. A caller that supplies nothing is byte-unchanged.
     const survivors = parsed.wontFixedTexts
-      ? suppressWontFixed(strippedSurvivors, parsed.wontFixedTexts)
-      : strippedSurvivors
+      ? suppressWontFixed(rawSurvivors, parsed.wontFixedTexts)
+      : rawSurvivors
     // classifyPlanOutcome, NOT classifyRoundOutcome: the round cap stays out of
     // this mode, where the bound is the orchestrator's own --max-plan-revise
     // budget, which already parks `blocked` on exhaustion.
@@ -2586,61 +2482,12 @@ async function runPlanReviewDriver(args, deps) {
     fetched = candidate
   }
 
-  // RECORDED INTENT for a STANDALONE PHASE target. A phase inherits its parent
-  // roadmap's `## Intent`, but this path has no roadmap body in hand (the
-  // roadmap fan-out above already has one, and reuses it inside
-  // buildReviewUnits — see buildRoadmapIntentFetchPrompt on why this must NOT
-  // be added there). Exactly ONE extra mechanical read, and only here.
-  //
-  // HOIST: a caller that already holds the parent roadmap's body passes it as
-  // `args.roadmapBody` and the read is skipped outright. That hoist is
-  // independent of `fetched` — two documents, two agents — see
-  // hoistedRoadmapBodyOk.
-  //
-  // FAIL-SOFT, never fail-closed: a thrown agent, a null/empty transcript, or
-  // unparseable JSON all degrade to `{ hasIntent: false, intent: null }`. The
-  // dimension then simply does not run and its absence is reported as a
-  // non-blocking suggestion. Failing closed here would block a plan on an input
-  // the plan cannot produce.
-  let roadmapIntent = { hasIntent: false, intent: null }
-  if (kind === 'phase') {
-    try {
-      // Both paths sit INSIDE this try on purpose: the catch below then covers
-      // the hoist too, so a throw out of extractIntent degrades exactly as a
-      // thrown agent does, and the fail-soft guarantee holds by construction
-      // rather than by a second copy of the recovery.
-      if (hoistedRoadmapBodyOk(parsed.roadmapBody)) {
-        roadmapIntent = extractIntent(String(parsed.roadmapBody))
-        _log('plan-review: roadmap intent hoisted from caller args (no fetch agent)')
-      } else {
-        const rawIntent = await _agent(buildRoadmapIntentFetchPrompt(parsed.roadmap), {
-          label: 'fetch:roadmap-intent',
-          phase: 'Read',
-          agentType: 'rdm-mechanical',
-          schema: RAW_STDOUT_SCHEMA,
-          model: _mechanicalModel,
-        })
-        const parsedIntentStdout = parseJsonStdout(rawIntent && rawIntent.transcript)
-        const intentBody =
-          parsedIntentStdout.ok && parsedIntentStdout.value && typeof parsedIntentStdout.value.body === 'string'
-            ? parsedIntentStdout.value.body
-            : ''
-        roadmapIntent = extractIntent(intentBody)
-      }
-    } catch (e) {
-      roadmapIntent = { hasIntent: false, intent: null }
-    }
-    if (!roadmapIntent.hasIntent) {
-      _log('plan-review: no recorded ## Intent for roadmap ' + parsed.roadmap + ' — intent-alignment will not run')
-    }
-  }
-
   // Cache the real tags NOW — before buildReviewUnits, reviewUnit, or the
   // review pipeline touch `fetched` at all. See snapshotOriginalTags' own doc
   // comment for what this does and does not guarantee.
   const originalTags = snapshotOriginalTags(kind, parsed, fetched)
 
-  const built = buildReviewUnits(parsed, fetched, roadmapIntent)
+  const built = buildReviewUnits(parsed, fetched)
   const units = built.units
   // The phases the roadmap-wide sweep excluded as terminal (done/wont-fix) —
   // always an array, empty on the phase/task branch and on either fail-closed
@@ -2982,7 +2829,6 @@ export {
   hoistedModelsComplete,
   computeMissingModels,
   hoistedFetchedOk,
-  hoistedRoadmapBodyOk,
   fetchTranscriptionOk,
   RESERVED_FETCH_TOKENS,
   buildReviewUnits,
@@ -2994,7 +2840,6 @@ export {
   buildPlanBodyCheckPrompt,
   buildRoadmapFetchPrompt,
   buildRoadmapBodyCheckPrompt,
-  buildRoadmapIntentFetchPrompt,
   roadmapBodyVerified,
   buildTagWritePrompt,
   planGateCommands,

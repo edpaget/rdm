@@ -1155,7 +1155,7 @@ prose asks a finder for a threat-category slug (`command-injection`,
 without a declared field the runtime would **reject** that output and silently
 discard every security finding. It is deliberately NOT folded into `concern`,
 which is the DIMENSION identity three consumers match on
-(`stripNonPhaseUnitOfWork`, `classifyPlanOutcome`, and `buildReviewPipeline`'s
+(`classifyPlanOutcome` and `buildReviewPipeline`'s
 `concern: f.concern || dim.key` backfill). The reference agent's
 `(file, line, category)` **dedupe key is NOT implemented** in this pipeline — the
 field is a carrier, not a half-built dedupe, and no consumer reads it today.
@@ -1618,7 +1618,7 @@ mapping" below) checks `acTable` directly via `acTableHasGap`, independent of
 The third field, **`budget`**, records what the per-unit refutation budget did:
 `{ max, produced, gating, graded, passedThroughNonGating, passedThroughBudget,
 refuterErrors, hit }`. It describes the **pipeline**, not any consumer-side
-post-filtering — plan-review's `stripNonPhaseUnitOfWork` / `suppressWontFixed`
+post-filtering — plan-review's `suppressWontFixed`
 run afterwards and may drop a survivor that consumed budget. Consumers project
 it onto their own shape with the two shared helpers in the same stamped block:
 `buildReviewBudget(budgetRounds, planBudget)` yields the `reviewBudget` field
@@ -1644,7 +1644,7 @@ The fourth field, **`coverage`**, records which dimensions actually PARTICIPATED
 acTableAbsent }`. Every array is in `dims` **selection** order — written into an
 index-keyed `attempts` record inside each finder thunk, never accumulated in
 agent-completion order — so the field is as deterministic as the rest of the
-`OUTCOME`. `total` is the number of dimensions `selectDimensions` returned for
+`OUTCOME`. `total` is the number of reviewers `resolveReviewers` returned for
 this run (which, with no `signals`, is the fail-open full set), so it must never
 be compared against a hard-coded dimension count. A dimension lands in `failed`
 only when its finder resolved `null`/`undefined` on BOTH attempts (see **Failure
@@ -1764,7 +1764,7 @@ ascending as a stable tiebreaker.
 Returns an async `runReview(context)` that composes
 `parallel(finders)` → **barrier** → budget cut → `parallel(refuters)`:
 
-0. **Select** — the deterministic pre-step `selectDimensions(mode, signals)`
+0. **Select** — the deterministic pre-step `resolveReviewers(mode, reviewers)`
    decides which dimensions actually run (see below).
 1. **Find** — one finder `agent()` per selected dimension, in parallel, as a
    `parallel()` fan-out of per-dimension thunks. In `code` mode, the `ac`
@@ -1941,147 +1941,53 @@ A short form of this rationale lives in the `//|code|` spec prose in
 `.claude/workflows/lib/review.mjs`, so it renders into the shipped code-review
 skill templates and travels with the lane rather than staying tribal knowledge.
 
-`unit-of-work` likewise stays a separate triggered dimension in either scenario:
-it is scoped to phase units CONSUMER-SIDE by `stripNonPhaseUnitOfWork` in
-`rdm-wf-plan-review.js`, which filters on `f.concern === 'unit-of-work'`, and folding a
-conditionally-scoped lens into an unconditional agent would defeat that scoping.
+`unit-of-work` likewise stays a separate reviewer in either scenario: a caller
+reviewing something that is not a phase simply omits it, and folding a
+selectively-included lens into an unconditional agent would take that choice
+away.
 
-### `context.signals` and `selectDimensions(mode, signals)`
+### `context.reviewers` and `resolveReviewers(mode, reviewers)`
 
-`selectDimensions` has a **three-way contract**, and the fail-open branch is
-load-bearing:
+**The caller selects the reviewers.** `resolveReviewers` only resolves the names
+it was handed against the mode's catalogue:
 
-- `signals == null` (omitted, or genuinely unknown) → return **ALL** dimensions
-  for the mode, untouched. A caller that cannot compute a diff knows the least,
-  so it must get the most coverage. `rdm-wf-review-refute-fix.js`'s legacy
-  survivors-only shapes ((a) `mode: 'plan'`, (b) `mode: 'code'` with no item
-  identifier) and dispatch-phase's **plan** gate take this path today;
-  dispatch-phase's **code** gate and `rdm-wf-review-refute-fix.js`'s full
-  `{ roadmap, phase }` / `{ task }` code-review path both now compute real
-  signals (see below) and only fall back to this branch when the diff is
-  unavailable.
-- an **explicit** signals object — even `{}` — → the always-on dimensions plus
-  exactly those whose `when` fires. `{}` means "computed, nothing triggered".
+- `reviewers` **omitted** (`null`/`undefined`) → every reviewer for the mode, in
+  declaration order. A maximal default encodes no policy, where a selective one
+  would.
+- a **list of keys** → exactly those, filtered out of `DIMENSIONS[mode]` in
+  declaration order (never the caller's order, so the fan-out and the candidate
+  `order` tiebreak stay stable).
+- an **unrecognised name** selects nothing and is **not** rejected. There is no
+  unknown-name guard: the mistake shows in `coverage.selected` / `coverage.ran`,
+  which is where under-coverage is meant to be visible.
 - an unknown `mode` → throw.
 
-The `context` contract carries **no** project-conventions key. Making the
-dimension prose project-agnostic (above) added no pipeline input: the finder
-agent is told in prose to read the project's principles document, so `context`
-still holds only `target`, the optional `signals`, `maxRefutations`, and whatever
-else a caller threads into the prompts.
+**Coverage is visible, not enforced.** Nothing checks the set's size,
+composition, or fitness for the target — a caller may deliberately under-review,
+and `coverage.ran` records what actually ran. The one refusal kept is a set that
+resolves to **zero** reviewers, which throws rather than reporting a clean review
+over an empty fleet; that is the pre-existing "refusing to report a clean review"
+invariant, and it reads only the list it was handed.
 
-Do **not** write `d.when(signals || {})`. Substituting `{}` for omitted signals
-makes every conditional predicate read falsy and silently drops the triggered
-dimensions — a strict coverage subset returned precisely when the caller had no
-information. Omitted signals and an empty signals object are deliberately
-different paths, and `verify-workflow-review.sh` asserts both.
+The `context` contract carries **no** diff-shape signals, no target type, and no
+document body. It holds `target` (an identifier — an item ref, a plan slug, or
+the `rdm … show` command a finder runs itself), the optional `reviewers`,
+`maxRefutations`, and the optional `findModel`/`verifyModel` ids. A reviewer that
+needs a document **fetches it itself**; nothing transcribes one into this object.
 
-**Two fail-open layers, and they are different things.** The rule above is the
-**object-level** fail-open: a caller with no diff at all omits `signals`
-entirely, and every dimension runs. `deriveSignals` adds a **value-level**
-fail-open one layer down (below): a caller that HAS changed files but could not
-read their content still returns a fully-populated object, with the
-undeterminable signals set to `true`. Both remain live. "Callers that cannot
-compute a diff must pass no signals rather than a partial object" still governs
-the first case; the second case never produces a partial object at all.
+**What was deleted.** `selectDimensions`, every per-dimension `when` predicate,
+`SIGNAL_KEYS`, `deriveSignals`, `contentSignal`, `addedLines`, `matchesAny`, the
+`EXPORT_CONTENT_PATTERNS` / `USER_FACING_CONTENT_PATTERNS` /
+`SECURITY_CONTENT_PATTERNS` vocabularies, `TEST_PATH_PATTERNS`,
+`CODE_EXTENSIONS`, `stripNonPhaseUnitOfWork`, and the whole recorded-intent
+transport (`extractIntent`, `intentPresent`, `INTENT_PREAMBLE`,
+`INTENT_MISSING_NOTICE`). Diff-shape inference existed to guess what a caller
+already knows; `unit-of-work` scoping and the intent channel existed because the
+engine was choosing rather than being told. All three answers are now the
+caller's, and each reviewer's catalogue entry carries a one-line cue for when to
+include it — single-sourced in `review.mjs`'s `//|` prose and rendered into every
+review skill.
 
-### `deriveSignals(input)`
-
-Pure and deterministic (no `Date.now`/`Math.random`, no shell). Maps
-`{ targetType, changedFiles, diffText? }` onto a **fully-populated** signals
-object — every boolean key in `SIGNAL_KEYS` (`changesLogic`, `missingTests`,
-`multiModule`, `publicApiChanged`, `userFacing`, `securitySurface`) is set
-explicitly. A partially-populated object would make a conditional
-dimension drop out on a *missing* key rather than a real negative.
-
-**Every conditional signal derives from diff CONTENT — the ADDED lines only —
-not from declared or conventional paths.** There is no generic way to specify
-paths that works across repos: a path list is either repo-specific (a hard crate
-prefix, permanently false everywhere else, so its dimension silently never
-fires) or fires on a spelling coincidence (a bundler config file matching a
-`config` segment, so its dimension fires on an unrelated change). Both failure
-modes are *confident* and both degrade silently, which is why neither is
-tolerated. Scanning only added lines means a *removed* `export`/`exec(` line
-never trips a signal, and a `+++ b/path` header is never read as content.
-
-Three named vocabularies, all literal regexes, all module-level constants with
-no `g`/`y` flag (a global regex carries `lastIndex` across `.test()` calls and
-would break determinism):
-
-| vocabulary | signal | covers |
-| --- | --- | --- |
-| `EXPORT_CONTENT_PATTERNS` | `publicApiChanged` | `export` / `export default`, `module.exports`, Rust `pub`/`pub(crate)` + item kind, Java/C#/TS `public`, a capitalized Go identifier, Python `__all__` |
-| `USER_FACING_CONTENT_PATTERNS` | `userFacing` | CLI subcommand/argument/flag registration, the help/usage strings attached to them, HTTP/RPC route/handler/tool registration, printed or logged output |
-| `SECURITY_CONTENT_PATTERNS` | `securitySurface` | process/command execution, filesystem access, environment and secret reads, deserialization/eval, raw memory (both Rust `unsafe` shapes: the inline `unsafe { … }` expression **and** the `unsafe fn`/`impl`/`trait`/`extern` declarations) |
-
-A `CHANGELOG.md` path in `changedFiles` is a positive-**confirming** term for
-`userFacing`, never a sole trigger — a CHANGELOG-only diff has no code files and
-stays a genuine `false`.
-
-Two exclusions are deliberate and must not be "fixed": a bare `function`/`def`
-is not in the export vocabulary (a module-private definition is not a public-API
-change, and including it would make `api-docs` always-on in every JS/Python
-repo), and `JSON.parse(` is not in the security vocabulary (it is the most
-common line in any JS/TS diff and would collapse `security` into an always-on
-dimension). `Command::new(` is ambiguous — clap in one crate, `std::process` in
-another — and is assigned to the security vocabulary only; user-facing CLI
-detection uses `Arg::new(` / `.arg(` / `.about(` / `.help(` instead.
-
-The two retired path lists — the security one and the user-facing one — **no
-longer exist** and are deliberately not replaced, for that same reason. Their
-identifiers are gone from the source, and `verify-workflow-review.sh` § 2a keeps
-them gone. Paths survive only in `TEST_PATH_PATTERNS` and
-`CODE_EXTENSIONS`, which answer *what kind of file is this* (test vs. code)
-rather than *what surface does this change touch*; both are convention-based and
-multi-language, and both are unchanged. Content is scanned in its ORIGINAL case
-(Go's exported-identifier rule and the Rust/Java keywords are case-sensitive);
-only paths are lowercased.
-
-**No declared-path or project-config channel was introduced.** `deriveSignals`'
-input shape is still exactly `{ targetType, changedFiles, diffText }` — content
-derivation reads inputs every caller already supplies — and both call sites are
-unchanged.
-
-**The four-branch rule** (one shared helper, `contentSignal`, that all three
-conditional signals route through; branch order is load-bearing):
-
-1. A **positive content match** → `true`.
-2. **`codeFiles.length === 0`** → a confident `false`, regardless of `diffText`.
-   A docs-only diff is a genuine negative. This branch is tested FIRST — reversed
-   with branch 3, a docs-only diff with an unreadable body would fail open and
-   re-run every conditional dimension on prose.
-3. Code files changed but the content could **not be read at all**
-   (`diffText === null`) → undeterminable, so the signal **fails open by VALUE:
-   it is set to `true`** so its dimension still runs. The key is **never
-   omitted** — `selectDimensions`' `signals == null` test is a *whole-object*
-   check, so an omitted key reads `undefined`, coerces false, and silently DROPS
-   the dimension.
-4. Content **was** read and nothing matched → a confident `false`. Absence of a
-   match in readable content is a real negative, not an unknown; this is what
-   keeps the fail-open from widening into "run every dimension on every code
-   diff". Note `diffText: ''` is a *string*, not `null`: an empty-but-present
-   diff takes this branch.
-
-**Who feeds it.** The code gate derives the diff inside the item's worktree
-(`rdm review source` for the standalone `rdm-wf-review-refute-fix` path; historically a
-mechanical `diff:signals` agent running `git diff --name-only main...HEAD` plus a
-truncated `git diff main...HEAD` in the retired dispatch engine) and threads the result
-through `deriveSignals` into `buildReviewPipeline('code')` — recomputed on **every** rework round, so a
-round-2 fix that newly adds an exported symbol turns `api-docs` on for that
-round. The three-dot base scopes to the branch's own changes; for a phase in
-a shared per-roadmap worktree that is over-inclusive (earlier phases' files ride
-along) but never under-inclusive, which is the safe direction for a coverage
-gate. **Truncation now cuts the other way.** A very large diff is truncated at
-40000 chars in the prompt; a truncated diff is still a non-null *string*, so it
-takes branch 4 (confident `false`) on content that was cut off. Under the old
-path rules truncation only weakened detection toward fail-open; under content
-derivation it weakens detection toward a false NEGATIVE. That is the one place
-where content derivation is strictly less safe than the path rules it replaced,
-and it is bounded by the same 40000-char window on both the `diff:signals` agent
-and the implementer prompt that absorbs it. **Signals-absent fail-open
-contract:** if the diff agent fails, returns null, or reports no changed files,
-the driver omits the `signals` key **entirely** — never `{}` — so every
-dimension runs.
 
 ### Verdict and status mapping
 
@@ -2218,7 +2124,7 @@ blocks that forced it live in
 [`plan-review-gate-policy.md`](plan-review-gate-policy.md).
 
 Everything else inside the stamped block is **machinery** (JSON schemas,
-`survives`/`rankFindings`/`selectDimensions`/`deriveSignals`, the classifier and
+`survives`/`rankFindings`/`resolveReviewers`, the classifier and
 the gate policy) and is never rendered into a skill. Both generators are
 `--check`-gated by `scripts/verify-workflow-review.sh` — the skill generator in
 BOTH modes — which CI runs.
@@ -2463,11 +2369,11 @@ owned by the rework/status machinery, per "never fix large changes inline".
 
 **The code-review stage is the canonical review.** It is
 `rdm-wf-review-refute-fix.js`'s stamped `buildReviewPipeline('code')` — there is no
-independent code-review logic anywhere — fed `deriveSignals` output derived from the
-real branch diff (see `deriveSignals(input)` above for the signals-absent
-fail-open contract). `verify-workflow-review-outcome.sh` pins both halves over that
-engine's driver region: exactly one `buildReviewPipeline('code')` binding site and
-one `classifyOutcome(` call, plus the diff-signals wiring.
+independent code-review logic anywhere — fed the caller's reviewer set (see
+`resolveReviewers(mode, reviewers)` above; omitting it runs them all).
+`verify-workflow-review-outcome.sh` pins both halves over that engine's driver
+region: exactly one `buildReviewPipeline('code')` binding site and one
+`classifyOutcome(` call.
 
 ### Environment args: `rdmBin` and `project`
 

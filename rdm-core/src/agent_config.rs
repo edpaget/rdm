@@ -2412,23 +2412,6 @@ mod tests {
     }
 
     #[test]
-    fn skill_plan_review_covers_three_dimensions() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("**coherence** — *always.*"));
-        assert!(content.contains("**architectural-fit** — *always.*"));
-        // The unit-of-work dimension is triggered by the target type, not by
-        // diff shape: it runs only for a phase.
-        assert!(content.contains("**unit-of-work** — *trigger: the target is a phase.*"));
-        assert!(
-            content.contains("add `unit-of-work` only when the target type from step 1 is a phase")
-        );
-    }
-
-    #[test]
     fn skill_plan_review_architecture_reviewer_falls_back_to_claude_md() {
         let skills = generate_skills(&SkillOptions {
             project: None,
@@ -2599,19 +2582,6 @@ mod tests {
         assert!(content.contains(
             "Skip this step's fix-application half entirely in `--implementation-plan` mode"
         ));
-    }
-
-    #[test]
-    fn skill_plan_review_unit_of_work_reviewer_skips_implementation_plan() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[9].content;
-        // The phases-only trigger and its skip list are rendered from the
-        // canonical source, so assert the (line-wrapped) rendered fragments.
-        assert!(content.contains("*trigger: the target is a phase.* Skipped for"));
-        assert!(content.contains("tasks, standalone roadmap bodies, and `--implementation-plan`"));
     }
 
     #[test]
@@ -3510,32 +3480,6 @@ mod tests {
         assert!(content.contains("rdm hook done-line"));
         assert!(!content.contains("git commit --amend"));
         assert!(content.contains("changing the head requires fresh independent evidence"));
-    }
-
-    #[test]
-    fn skill_review_dispatches_adaptive_fleet() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[2].content;
-        assert!(content.contains("fleet"));
-        // Every canonical dimension is documented, including the new security one.
-        for dim in [
-            "**ac**",
-            "**correctness**",
-            "**tests**",
-            "**architecture**",
-            "**api-docs**",
-            "**changelog**",
-            "**security**",
-        ] {
-            assert!(content.contains(dim), "missing dimension: {dim}");
-        }
-        // Conditional dimensions are gated on per-dimension triggers.
-        assert!(content.contains("trigger"));
-        // The fleet agents review without editing.
-        assert!(content.contains("read-only"));
     }
 
     #[test]

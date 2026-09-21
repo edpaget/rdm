@@ -28,7 +28,7 @@ The specification of that pipeline — which dimensions run, how findings are gr
    - For a phase: `rdm phase show <phase-number> --roadmap <slug> {proj_flag}`
    - For a task: `rdm task show <slug> {proj_flag}`
    Extract the acceptance criteria, steps, and any other requirements from the body.
-3. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task. Note the diff size, which modules it touches, and whether it changes public API, a security-sensitive surface (auth, input parsing or validation, path/file handling, subprocess or shell invocation, secrets, deserialization, network code), dependencies, or user-facing behavior — these are the **trigger signals** for the conditional dimensions in the Review specification.
+3. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task. Note the diff size, which modules it touches, and whether it changes public API, a security-sensitive surface (auth, input parsing or validation, path/file handling, subprocess or shell invocation, secrets, deserialization, network code), dependencies, or user-facing behavior — these are what tell you which reviewers to include (see Review specification § Reviewers).
 
    From those same diff signals, derive a **tier hint** for step 2's fleet: `small` (localized, single module, no risky surface — a typo fix, a one-line log message), `medium` (an ordinary change — new logic in one module, a bugfix), or `large` (touches public API, a security-sensitive surface, spans multiple modules/crates, adds a dependency, or is user-facing). This is a read of the **diff's risk**, not the phase's own difficulty rating — a "hard" phase can still land a small, low-risk diff, and vice versa.
 
@@ -36,7 +36,7 @@ The specification of that pipeline — which dimensions run, how findings are gr
 
 ### 2. Find — dispatch the review fleet (parallel)
 
-Dispatch one **read-only** `Agent` per applicable dimension, per **Review specification § Dimensions** below. Run the always-on dimensions unconditionally; add each triggered dimension when its trigger fires against the diff from step 1. State which dimensions you launched, and why, in the report.
+**You select the reviewers.** Dispatch one **read-only** `Agent` per reviewer you select, per **Review specification § Reviewers** below, whose per-reviewer cues say when to include each one against the diff from step 1. Selecting none means running them all — the safe default when you are unsure. Nothing refuses a thin set, so an under-reviewed diff is a visible choice: state which reviewers you launched, and why, in the report.
 
 **Model sizing.** Every dispatched agent in this step runs on an **explicitly resolved** model — never the inherited session model. For each finder agent, resolve:
 ```bash
@@ -94,15 +94,24 @@ Do not amend the reviewed source commit during this gate. Completion directives 
 
 <!-- rdm:review-spec:begin (fixed content shipped with this skill — rendered at release time from rdm's own canonical review source; do not hand-edit this region, pick up upstream changes via the next rdm agent-config regeneration) -->
 
-### Dimensions — the adaptive review fleet
+### Reviewers — the CALLER selects the fleet
 
-Scale the fleet to what the change actually touches. **Always-on** dimensions
-run for every review; **triggered** dimensions run only when the change hits
-their surface. This keeps a 10-line change cheap while a cross-cutting change
-still gets full coverage. Each dimension is reviewed by its own **read-only**
-agent — it reviews and reports, it never edits. When in doubt about a trigger,
-include the dimension: a spurious agent that finds nothing is cheaper than a
-missed defect. State which dimensions you ran, and why, in the report.
+Pass the reviewer keys you want as `reviewers`. **Naming none runs every
+reviewer for the mode** — a maximal default encodes no policy, where a
+selective one would. Each reviewer is its own **read-only** agent: it reviews
+and reports, it never edits, and it runs the `rdm … show --format json` (or
+`rdm review source`) command its prompt names to fetch the document or diff
+it needs. No document is ever handed to it as an argument.
+
+An unrecognised name selects nothing and is **not** an error — the mistake
+shows up as a gap in `coverage.selected` / `coverage.ran`, which is where
+under-coverage is meant to be visible. Nothing refuses a thin set; coverage is
+visible, not enforced. The one refusal is a set that resolves to NO reviewer
+at all, which throws rather than reporting a clean review over nothing.
+
+When in doubt, include the reviewer: a spurious agent that finds nothing is
+cheaper than a missed defect. State which reviewers you ran, and why, in the
+report.
 
 **Confidence floor.** Drop any finding whose post-refutation confidence is
 below **70**, even when no refuter knocked it down.
@@ -117,9 +126,10 @@ below **70**, even when no refuter knocked it down.
 
 Rank survivors most-severe first, then by confidence descending, then by id.
 
-**Code review dimensions:**
+**Code reviewers** (`mode: 'code'`):
 
-- **ac** — *always.* For each acceptance criterion, rate PASS / FAIL /
+- **ac** — include it on any implementation review; omit it only when
+  the target states no acceptance criteria. For each acceptance criterion, rate PASS / FAIL /
   PARTIAL with evidence (file:line, test name). Flag any criterion that is
   unmet, ambiguous, or untestable. The per-criterion table is the contract
   and is reported intact. **Severity contract:** a criterion the target
@@ -127,39 +137,42 @@ Rank survivors most-severe first, then by confidence descending, then by id.
   been met, regardless of partial implementation — it MUST be reported as a
   `blocking` finding in the optional `findings` array, never as PASS in the
   `ac` table.
-- **correctness** — *always.* Logic bugs, edge cases, race conditions, and
+- **correctness** — include it on every implementation review; there is no
+  diff shape that makes logic errors uninteresting. Logic bugs, edge cases, race conditions, and
   error paths, judged against the error-handling conventions the project
   states in its principles document (`docs/principles.md` if present,
   otherwise `CLAUDE.md` / `AGENTS.md` in the project root) — which error
   type each layer must use, and where context may be added. User-facing
   errors must be actionable.
-- **tests** — *trigger: the diff adds or changes non-trivial logic, or adds
-  no test files.* Do tests exist and cover the key behaviors and edge
+- **tests** — include it when the change adds or alters non-trivial logic,
+  or when you expect it to have added tests and want that checked. Do
+  tests exist and cover the key behaviors and edge
   cases? Was a test-first discipline followed? Are there untested branches?
-- **architecture** — *trigger: the diff touches more than one module/layer,
-  or moves logic between layers.* Does logic live where the project's
+- **architecture** — include it when the change spans more than one module
+  or layer, or moves logic between layers. Does logic live where the project's
   stated layering contract puts it, with the interaction layers on top
   staying thin? No duplicated logic across interfaces? Read the project's
   principles document (`docs/principles.md` if present, otherwise
   `CLAUDE.md` / `AGENTS.md`) for the layering contract and the commit-scope
   convention, and flag any change that violates one.
-- **api-docs** — *trigger: the diff changes a public API item.* Do public
+- **api-docs** — include it when the change adds or alters a public API
+  item (an exported function, a public type, a published endpoint). Do public
   items carry the documentation the project's principles document requires
   (`docs/principles.md` if present, otherwise `CLAUDE.md` / `AGENTS.md`)?
   Read it for which items are in scope and which sections each kind of item
   must carry — failure modes, abort conditions, safety invariants,
   examples.
-- **changelog** — *trigger: the diff makes a user-facing change (CLI
-  commands, API endpoints, config options, observable
-  behavior).* A user-facing change MUST carry a changelog entry in the
+- **changelog** — include it when the change is user-facing (a CLI
+  command, an API endpoint, a config option, or any observable
+  behavior). A user-facing change MUST carry a changelog entry in the
   same commit; a missing entry is **blocking**. Read the project's
   principles document (`docs/principles.md` if present, otherwise
   `CLAUDE.md` / `AGENTS.md`) for the changelog file, its format, and its
   categories. The entry must read from a user's perspective, not describe
   internals.
-- **security** — *trigger: the diff touches auth, input parsing or
+- **security** — include it when the change touches auth, input parsing or
   validation, path/file handling, subprocess or shell invocation, secrets
-  and credentials, deserialization, or network code.* A finding here is a
+  and credentials, deserialization, or network code. A finding here is a
   claim that **an attacker can do something they should not be able to
   do**, and you must be able to point at the code that grants it — not
   lint, not style, not "consider using a safer API". A vulnerability is a

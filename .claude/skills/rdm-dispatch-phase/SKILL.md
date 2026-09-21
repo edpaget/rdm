@@ -289,7 +289,7 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-plan-review.js', args: {
   implementationPlan: true,
   planSlug: '<plan-slug>',
   persist: { on: 'plan/<plan-slug>' },
-  roadmapBody: '<roadmapBody verbatim>',          // OMIT in task mode
+  reviewers: ['coherence', 'architectural-fit', 'restraint'],  // + 'intent-alignment' when the roadmap records `## Intent`
   mechanicalModel: '<models.mechanical>',
   findModel: '<models.reviewFind>',
   verifyModel: '<models.reviewVerify>',
@@ -311,11 +311,23 @@ yourself.** It is the one step a subagent physically cannot perform.
   persisted to another it never read). A `planSlug` on a non-implementation-plan target, and a
   `persist.on` that is not `plan/<plan-slug>`, also each throw — all three fire before any agent
   runs.
-- `roadmapBody` — the **parent roadmap's** body, verbatim and unedited. Do not extract the `##
-  Intent` section yourself: the engine runs the one canonical extractor over the raw body, which is
-  what keeps the hoisted and fetched paths from ever disagreeing. **Omit it in task mode** — a task
-  has no parent roadmap. Omitting it is safe: the engine degrades to no intent-alignment dimension,
-  never to a block.
+- `reviewers` — **the reviewer set you are selecting.** Omitting the key entirely runs every plan
+  reviewer, which is the safe default; naming a set runs exactly those. An unrecognised name is
+  dropped silently and shows as a gap in the unit's `coverage.selected`/`coverage.ran` — nothing
+  rejects a thin set, so under-review is your visible choice, not an error. The plan reviewers are:
+
+  | reviewer | what it is for | include it when |
+  |---|---|---|
+  | `coherence` | is the plan internally consistent, concrete, actionable? | always |
+  | `architectural-fit` | does any step violate a stated project constraint? | always |
+  | `restraint` | has the plan over-specified what could be left to the implementer? | always |
+  | `unit-of-work` | is this independently deliverable and testable? | **only on a phase** — never on an implementation plan, a task, or a roadmap body |
+  | `intent-alignment` | does the plan serve the operator's recorded `## Intent`? | when the parent roadmap records one; it reads that section itself |
+
+  Here the target is an **implementation plan**, so `unit-of-work` is omitted: sizing was settled
+  when the phase was created. Add `'intent-alignment'` when the parent roadmap records an `##
+  Intent` section — the reviewer reads it out of the roadmap itself, so nothing is transcribed into
+  this call. In task mode there is no parent roadmap, so omit it.
 - the model trio — **all three or none.** The engine's guard is all-or-nothing, so two out of three
   saves nothing and still spawns the bootstrap.
 - `wontFixedTexts` — the wont-fix titles from step 3. An empty array is a legal, meaningful value
@@ -407,12 +419,28 @@ new OUTCOME value. Carry `verification` into the next step so it reaches the per
 Workflow({ scriptPath: '.claude/workflows/rdm-wf-review-refute-fix.js', args: {
   mode: 'code', roadmap: '<slug>', phase: '<phase>',     // or task: '<slug>'
   persist: true, implements: 'plan/<plan-slug>', gate: false,
+  reviewers: [<the set you selected — see below>],
   rdmBin: '<rdmBin>', project: '<project>',
 } })
 ```
 
 `persist` records the review on `change/<head>` for the head the engine itself re-resolves;
 `gate: false` keeps the status write here, in step 14, where the refusal can be surfaced.
+
+`reviewers` is **your** judgment about what this diff touches. Omit the key to run every code
+reviewer — the safe default, and the right choice when you are unsure. An unrecognised name is
+dropped silently and shows as a gap in `reviewCoverage`; nothing rejects a thin set, so an
+under-reviewed diff is your visible choice rather than an error. The code reviewers are:
+
+| reviewer | what it is for | include it when |
+|---|---|---|
+| `ac` | per-criterion PASS/FAIL/PARTIAL against the item's acceptance criteria | always — it is the structured channel the outcome reads |
+| `correctness` | logic bugs, edge cases, error paths | always |
+| `tests` | do tests exist and cover the behaviour? | the change adds or alters non-trivial logic |
+| `architecture` | does logic live where the layering contract puts it? | the change spans more than one module or layer |
+| `api-docs` | do public items carry the required documentation? | the change adds or alters a public API item |
+| `changelog` | is there a user-perspective entry in the same commit? | the change is user-facing |
+| `security` | can an attacker now do something they should not? | the change touches auth, input parsing, paths, subprocesses, secrets, deserialization, or network code |
 
 Read the returned object and obey it:
 

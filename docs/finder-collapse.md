@@ -57,10 +57,10 @@ through exactly the path it was deliberately kept out of, and would force a unio
 schema on the merged agent. Plan mode's three lenses share ONE schema, which is
 what makes them mergeable at all.
 
-`unit-of-work` likewise stays its own triggered dimension. It is scoped to phase
-units CONSUMER-SIDE by `stripNonPhaseUnitOfWork` in `rdm-wf-plan-review.js` (which
-filters on `f.concern === 'unit-of-work'`), and folding a conditionally-scoped
-lens into the unconditional agent would defeat that scoping.
+`unit-of-work` likewise stays its own reviewer. It is scoped to phase units by
+the CALLER, who simply omits it for a non-phase target, and folding a
+selectively-included lens into the unconditional agent would take that choice
+away.
 
 ## Method
 

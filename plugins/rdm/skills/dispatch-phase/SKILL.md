@@ -288,6 +288,21 @@ project }` (task mode: `task` in place of `roadmap`/`phase`); pass `args` as a J
 stringified value. Block for its returned result. `persist` records the review on `change/<head>`;
 `gate: false` keeps the status write here, in step 13, where a refusal can be surfaced.
 
+Optionally add `reviewers: [...]` — **your** judgment about what this diff touches. Omit the key to
+run every code reviewer; that is the safe default and the right choice when you are unsure. An
+unrecognised name is dropped silently and shows as a gap in `reviewCoverage`; nothing rejects a thin
+set, so an under-reviewed diff is a visible choice rather than an error. The code reviewers are:
+
+| reviewer | what it is for | include it when |
+|---|---|---|
+| `ac` | per-criterion PASS/FAIL/PARTIAL against the item's acceptance criteria | always — it is the structured channel the outcome reads |
+| `correctness` | logic bugs, edge cases, error paths | always |
+| `tests` | do tests exist and cover the behaviour? | the change adds or alters non-trivial logic |
+| `architecture` | does logic live where the layering contract puts it? | the change spans more than one module or layer |
+| `api-docs` | do public items carry the required documentation? | the change adds or alters a public API item |
+| `changelog` | is there a user-perspective entry in the same commit? | the change is user-facing |
+| `security` | can an attacker now do something they should not? | the change touches auth, input parsing, paths, subprocesses, secrets, deserialization, or network code |
+
 Read the returned object and obey it:
 
 - `outcome: 'escalated'`, or a non-empty `failure` — including `'required review evidence is

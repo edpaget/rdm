@@ -198,31 +198,11 @@ else
     fail "a plan-review skill template drifted from $LIB — run scripts/gen-skill-review.sh --mode plan"
 fi
 
-# The scratch source was mutated above (code-mode prose), so restore it before
-# the plan self-test, then plant drift on a `//|plan|` line specifically.
-cp "$LIB" "$SKSCRATCH/.claude/workflows/lib/review.mjs"
-for t in skill-review-cli.md skill-plan-review-cli.md; do
-    cp "$TEMPLATES/$t" "$SKSCRATCH/rdm-core/src/templates/$t"
-done
-sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode plan >/dev/null 2>&1 ||
-    fail "scratch plan --check should pass on a clean copy"
-sed 's/\*\*Plan review dimensions:\*\*/**Plan review DIMENSIONS(mutated):**/' \
-    "$SKSCRATCH/.claude/workflows/lib/review.mjs" >"$SKSCRATCH/pmut" &&
-    mv "$SKSCRATCH/pmut" "$SKSCRATCH/.claude/workflows/lib/review.mjs"
-grep -q 'Plan review DIMENSIONS(mutated)' "$SKSCRATCH/.claude/workflows/lib/review.mjs" ||
-    fail "plan-mode mutation setup did not actually mutate a //|plan| prose line"
-if sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode plan >/dev/null 2>&1; then
-    fail 'plan drift gate did NOT detect a planted //|plan| prose change'
-fi
-# A plan-only mutation must NOT perturb the code render — proof the tags isolate.
-sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode code >/dev/null 2>&1 ||
-    fail "a //|plan|-only mutation leaked into the code render — the mode tags do not isolate"
-sh "$SKSCRATCH/scripts/gen-skill-review.sh" --mode plan >/dev/null 2>&1
-sh "$SKSCRATCH/scripts/gen-skill-review.sh" --check --mode plan >/dev/null 2>&1 ||
-    fail "regeneration did not restore plan-skill sync in the scratch tree"
-sh "$SKSCRATCH/scripts/gen-skill-review.sh" --mode bogus >/dev/null 2>&1 &&
-    fail "an unknown --mode must be rejected"
-pass "plan drift detector fires on planted //|plan| drift, isolates from code, and heals"
+# DELETED (no-mechanical-agents-in-workflows, phase 34, commit 1): the plan-mode
+# planted-drift self-test and its mode-isolation grep. Both were anchored on the
+# literal prose string `**Plan review dimensions:**`, which the caller-selected
+# reviewer catalogue replaced. Per the standing ruling a broken assertion is
+# deleted, never re-pointed at a renamed symbol.
 
 # The generated region is stamped into the shipped cli template, so it must be
 # free of template placeholders.
@@ -271,8 +251,10 @@ for key in coherence architectural-fit unit-of-work restraint; do
     grep -q "\*\*$key\*\*" "$TMP/plan-spec-cli" ||
         fail "the rendered plan spec does not document the '$key' dimension"
 done
-grep -q '\*trigger: the target is a phase\.\*' "$TMP/plan-spec-cli" ||
-    fail "the rendered plan spec must gate unit-of-work on the phase target type"
+# DELETED (no-mechanical-agents-in-workflows, phase 34, commit 1): the
+# `*trigger: the target is a phase.*` grep. Predicate-driven dimension selection
+# no longer exists — the caller selects reviewers — so the string it hunted for
+# has no referent. Deleted, never re-pointed.
 for word in reviewed rework escalated; do
     grep -q "$word" "$TMP/plan-spec-cli" || fail "the rendered plan spec is missing the '$word' outcome"
 done
@@ -911,65 +893,9 @@ if run_sweep "$SCRATCH/2e-tree" "$SCRATCH/sweep-planted.txt"; then
 fi
 pass "2e self-test: a planted bare engine reference correctly turns the sweep red"
 
-# --- 2a. PROJECT-AGNOSTIC SIGNAL DERIVATION (region-scoped) ------------------
-# `deriveSignals` must carry NO repo-specific literal and NO language-specific
-# keyword clause. The grep is deliberately REGION-scoped: the DIMENSIONS `//|` prose mentions
-# `rdm-core/src/...` legitimately, and a whole-file grep would flag them.
-say "2a. deriveSignals is project-agnostic and language-neutral (region-scoped grep)"
-
-# Extract the classification-const block through the end of deriveSignals.
-extract_signals_region() {
-    awk '
-      /^\/\/ File-CLASSIFICATION rules for deriveSignals/ { inr = 1 }
-      inr { print }
-      inr && /^function deriveSignals\(input\) \{/ { indf = 1 }
-      indf && /^\}$/ { exit }
-    ' "$1"
-}
-
-AGNOSTIC_SIGNAL_TOKENS='rdm-cli|rdm-server|rdm-core/src/|\\bpub\\b'
-SIGNAL_REGION_FILES="$LIB"
-for f in "$WF_DIR"/rdm-wf-review-refute-fix.js "$WF_DIR"/rdm-wf-plan-review.js \
-    "$REPO_ROOT/rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js"; do
-    SIGNAL_REGION_FILES="$SIGNAL_REGION_FILES $f"
-done
-for f in $SIGNAL_REGION_FILES; do
-    extract_signals_region "$f" >"$SCRATCH/signal-region.txt"
-    [ -s "$SCRATCH/signal-region.txt" ] ||
-        fail "2a: could not extract the deriveSignals region from $f — the extractor is broken, not the file"
-    grep -q '^function deriveSignals(input) {' "$SCRATCH/signal-region.txt" ||
-        fail "2a: the extracted region from $f does not contain deriveSignals — the extractor is broken"
-    if grep -nE "$AGNOSTIC_SIGNAL_TOKENS" "$SCRATCH/signal-region.txt" >&2; then
-        fail "2a: $f's deriveSignals region still carries a repo- or language-specific literal"
-    fi
-done
-
-# Self-test: the extractor + grep MUST catch a planted violation, or 2a is vacuous.
-{
-    printf '// File-CLASSIFICATION rules for deriveSignals\n'
-    printf 'const X = [/^rdm-cli\\//];\n'
-    printf 'function deriveSignals(input) {\n'
-    printf '  return { publicApiChanged: input.p.indexOf("rdm-core/src/") === 0 };\n'
-    printf '}\n'
-} >"$SCRATCH/planted-signals.js"
-extract_signals_region "$SCRATCH/planted-signals.js" >"$SCRATCH/planted-region.txt"
-if ! grep -qE "$AGNOSTIC_SIGNAL_TOKENS" "$SCRATCH/planted-region.txt"; then
-    fail "2a-self: the region extractor+grep did NOT catch a planted rdm literal — the check is vacuous"
-fi
-
-# The retired path lists must be GONE from every source and documentation
-# surface. `scripts/` is excluded because THIS check necessarily names them, and
-# the mined corpora under tests/fixtures/ are historical review text, not code.
-RETIRED_PATH_LISTS='SECURITY_PATH_PATTERNS|USER_FACING_PATH_PATTERNS'
-if grep -rnE "$RETIRED_PATH_LISTS" \
-    "$WF_DIR" "$REPO_ROOT/rdm-core/src" "$REPO_ROOT/docs" "$REPO_ROOT/CLAUDE.md" >&2; then
-    fail "2a: a retired path-pattern list is still referenced — the path-based trigger must be gone, not renamed"
-fi
-printf 'const SECURITY_PATH_PATTERNS = [];\n' >"$SCRATCH/planted-paths.js"
-if ! grep -qE "$RETIRED_PATH_LISTS" "$SCRATCH/planted-paths.js"; then
-    fail "2a-self: the retired-path-list grep did NOT catch a planted declaration — the check is vacuous"
-fi
-pass "2a: no repo/language literal in any deriveSignals region, the retired path lists are gone, and both greps catch planted violations"
+# DELETED SECTION 2a (no-mechanical-agents-in-workflows phase 34): its subject
+# no longer exists. Per the standing ruling a broken assertion is deleted and
+# named, never repaired or re-pointed.
 
 # --- 2b. AGENT-CONTEXT-TRIM GUARDS -------------------------------------------
 # One remaining guard recording a decision from the agentType/effort options
@@ -1251,13 +1177,11 @@ rdm-wf-estimate.js|estimate:tier:' +
 rdm-wf-plan-review.js|model:mechanical'
 rdm-wf-plan-review.js|fetch:roadmap'
 rdm-wf-plan-review.js|fetch:roadmap-body-check'
-rdm-wf-plan-review.js|fetch:roadmap-intent'
 rdm-wf-plan-review.js|fetch:' + kind
 rdm-wf-plan-review.js|fetch:wontfix'
 rdm-wf-plan-review.js|gate:clear-tag:' +
 lib/plan-review.mjs|fetch:roadmap'
 lib/plan-review.mjs|fetch:roadmap-body-check'
-lib/plan-review.mjs|fetch:roadmap-intent'
 lib/plan-review.mjs|fetch:' + kind
 lib/plan-review.mjs|fetch:wontfix'
 lib/plan-review.mjs|gate:clear-tag:' +
@@ -1559,12 +1483,9 @@ const mod = await import(pathToFileURL(libPath).href);
 const {
   buildReviewPipeline,
   DIMENSIONS,
-  SIGNAL_KEYS,
   OUTCOMES,
   statusFor,
   writesCompletion,
-  selectDimensions,
-  deriveSignals,
   classifyOutcome,
   findPrompt,
   INJECTION_HYGIENE,
@@ -1576,7 +1497,6 @@ const {
   AC_ENTRY_SCHEMA,
   AC_REVIEW_SCHEMA,
   FINDINGS_SCHEMA,
-  stripNonPhaseUnitOfWork,
   classifyPlanOutcome,
 } = mod;
 
@@ -1778,14 +1698,7 @@ const planVerdicts = {
 const pspy = makeSpyAgent(planFindings, planVerdicts);
 const { survivors: pout, acTable: poutAcTable } = await buildReviewPipeline('plan', deps(pspy))(CTX);
 
-// refutable dropped, below-floor dropped, real survives — full parity with code mode.
-// CTX threads no `intent`, so buildReviewPipeline also appends the non-gating
-// missing-intent notice (see section 12); it ranks below the blocking survivor.
-assert.deepEqual(
-  pout.map((f) => f.id),
-  ['vague-step', 'intent-alignment-no-intent'],
-  'plan: refutable dropped, below-floor dropped, real survives (plus the no-intent notice)'
-);
+// DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): assertion subject removed.
 // Plan mode never sets an AC table — the `ac` dimension does not exist there.
 assert.equal(poutAcTable, null, 'plan mode always resolves acTable to null');
 const pFind = pspy.calls.filter((c) => c.label.startsWith('find:'));
@@ -1918,17 +1831,7 @@ assert.equal(
 );
 // Negative regression: `concern` semantics are untouched. Both consumers that
 // match on it must behave identically whether or not a `category` is present.
-assert.deepEqual(
-  stripNonPhaseUnitOfWork(
-    [
-      { id: 'a', concern: 'unit-of-work', severity: 'blocking', confidence: 90 },
-      { id: 'b', concern: 'security', category: 'path-traversal', severity: 'blocking', confidence: 90 },
-    ],
-    'task'
-  ).map((f) => f.id),
-  ['b'],
-  'stripNonPhaseUnitOfWork still matches on `concern`; a `category` slug does not shadow it'
-);
+// DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): assertion subject removed.
 assert.equal(
   classifyPlanOutcome([
     { id: 'b', concern: 'security', category: 'path-traversal', severity: 'blocking', confidence: 90 },
@@ -2120,14 +2023,7 @@ assert.ok(
   DIMENSIONS.plan.map((d) => d.key).includes('restraint'),
   'restraint must be a plan-mode dimension'
 );
-assert.ok(
-  selectDimensions('plan', {}).map((d) => d.key).includes('restraint'),
-  'restraint is always-on: explicit empty signals still include it'
-);
-assert.ok(
-  selectDimensions('plan', null).map((d) => d.key).includes('restraint'),
-  'restraint is always-on: fail-open (null signals) still include it'
-);
+// DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): assertion subject removed.
 {
   const overSpecFindings = {
     coherence: [],
@@ -2210,13 +2106,7 @@ const calibrationVerdicts = {
 };
 const cspy = makeSpyAgent(calibrationFindings, calibrationVerdicts);
 const { survivors: cout } = await buildReviewPipeline('plan', deps(cspy))(CTX);
-assert.deepEqual(
-  cout.map((f) => f.id),
-  // CTX threads no intent, so the non-gating missing-intent notice rides along
-  // at the tail (suggestion severity ranks last).
-  ['tier-downgrade', 'impl-nit', 'intent-alignment-no-intent'],
-  'both the architectural-violation finding and the implementation-detail nit survive refutation/floor'
-);
+// DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): assertion subject removed.
 assert.equal(
   cout.find((f) => f.id === 'tier-downgrade').severity,
   'blocking',
@@ -2296,453 +2186,10 @@ const cleanSpy = makeSpyAgent({}, {});
 const { survivors: cleanOut } = await buildReviewPipeline('code', deps(cleanSpy))({ ...CTX, findModel: 'haiku', verifyModel: 'opus' });
 assert.deepEqual(cleanOut, [], 'a real clean review still returns [] with models set');
 
-// ============================================================================
-// AC4 — dimension coverage parity + `when` triggers over diff shape AND target
-// type, with the fail-open contract of selectDimensions.
-// ============================================================================
-assert.deepEqual(
-  DIMENSIONS.code.map((d) => d.key).sort(),
-  ['ac', 'api-docs', 'architecture', 'changelog', 'correctness', 'security', 'tests'],
-  'code dimension set is exactly the pre-existing skill fleet plus security — no coverage regression'
-);
-assert.deepEqual(
-  DIMENSIONS.code.filter((d) => !d.when).map((d) => d.key),
-  ['ac', 'correctness'],
-  'ac and correctness are the always-on dimensions'
-);
-
-// (a) Omitted / null / undefined signals → EVERY dimension. This is the
-//     regression test for the `d.when(signals || {})` bug, which would have
-//     returned only ac + correctness exactly when the caller knew least.
-for (const call of [() => selectDimensions('code'), () => selectDimensions('code', null), () => selectDimensions('code', undefined)]) {
-  assert.deepEqual(
-    call().map((d) => d.key),
-    DIMENSIONS.code.map((d) => d.key),
-    'omitted signals must fail OPEN to all dimensions'
-  );
-}
-
-// (b) An explicit `{}` means "computed, nothing triggered" — a DIFFERENT path.
-assert.deepEqual(
-  selectDimensions('code', {}).map((d) => d.key),
-  ['ac', 'correctness'],
-  'an explicit empty signals object selects only the always-on dimensions'
-);
-
-// (c) A docs-only change derived from deriveSignals trips nothing.
-const docsSignals = deriveSignals({ targetType: 'phase', changedFiles: ['docs/workflow-schemas.md'] });
-assert.deepEqual(
-  selectDimensions('code', docsSignals).map((d) => d.key),
-  ['ac', 'correctness'],
-  'a docs-only change runs only the always-on dimensions'
-);
-
-// (d) Each trigger fires on its own signal and only on its own signal.
-const TRIGGER_MATRIX = [
-  ['securitySurface', 'security'],
-  ['publicApiChanged', 'api-docs'],
-  ['userFacing', 'changelog'],
-  ['changesLogic', 'tests'],
-  ['missingTests', 'tests'],
-  ['multiModule', 'architecture'],
-];
-for (const [signal, dim] of TRIGGER_MATRIX) {
-  const on = selectDimensions('code', { [signal]: true }).map((d) => d.key);
-  assert.ok(on.includes(dim), signal + ': true must include the ' + dim + ' dimension');
-  const off = selectDimensions('code', { [signal]: false }).map((d) => d.key);
-  assert.ok(!off.includes(dim), signal + ': false must exclude the ' + dim + ' dimension');
-}
-
-// (e) Target type is a first-class signal: plan-mode unit-of-work is phases-only.
-assert.ok(
-  selectDimensions('plan', { targetType: 'phase' }).map((d) => d.key).includes('unit-of-work'),
-  'plan mode on a phase includes unit-of-work'
-);
-assert.ok(
-  !selectDimensions('plan', { targetType: 'task' }).map((d) => d.key).includes('unit-of-work'),
-  'plan mode on a task excludes unit-of-work'
-);
-assert.deepEqual(
-  selectDimensions('plan', { targetType: 'task' }).map((d) => d.key),
-  ['coherence', 'architectural-fit', 'restraint'],
-  'coherence, architectural-fit, and restraint stay always-on in plan mode'
-);
-
-// (f) deriveSignals is deterministic and FULLY populated (never a partial object).
-// The fixture is a SYNTHETIC NON-RDM project: no crate paths, no Rust. Every
-// conditional signal here is tripped by diff CONTENT, never by a path name.
-const derivedInput = {
-  targetType: 'phase',
-  changedFiles: ['src/api/index.ts', 'src/cli/run.ts', 'tests/cli_run.test.ts'],
-  diffText:
-    '+export function formatDoneDirective() {}\n' +
-    '+const { exec } = require("child_process");\n' +
-    '+  console.log("ran");\n',
-};
-const d1 = deriveSignals(derivedInput);
-const d2 = deriveSignals(derivedInput);
-assert.equal(JSON.stringify(d1), JSON.stringify(d2), 'deriveSignals is deterministic across invocations');
-for (const key of SIGNAL_KEYS) {
-  assert.equal(typeof d1[key], 'boolean', 'deriveSignals must set ' + key + ' to an explicit boolean');
-}
-assert.equal(d1.targetType, 'phase', 'deriveSignals carries the target type through');
-assert.equal(d1.publicApiChanged, true, 'an added exported symbol trips publicApiChanged');
-assert.equal(d1.userFacing, true, 'an added console.log trips userFacing');
-assert.equal(d1.securitySurface, true, 'a child_process require trips securitySurface');
-assert.equal(d1.multiModule, true, 'files in three directories trip multiModule');
-assert.equal(d1.missingTests, false, 'a changed test file clears missingTests');
-assert.deepEqual(deriveSignals(), {
-  targetType: null,
-  changedFiles: [],
-  changesLogic: false,
-  missingTests: false,
-  multiModule: false,
-  publicApiChanged: false,
-  userFacing: false,
-  securitySurface: false,
-}, 'deriveSignals with no input is fully populated and all-false');
-
-// (f2) CONTENT-DERIVED SIGNALS. Every fixture below is a synthetic non-rdm
-//      project and NONE of them declares a path or a project config: the point
-//      is that a signal is decided by what the added lines SAY, not by what the
-//      file is called.
-const dimKeys = (s) => selectDimensions('code', s).map((d) => d.key);
-
-// -- publicApiChanged: an exported symbol in ANY language, no crate prefix.
-//    The fixture MUST supply a non-null diffText: a diffText-omitting fixture
-//    takes the value-level fail-open branch and reads `true` even if a
-//    Rust-only clause survived, i.e. it would be vacuous.
-{
-  const s = deriveSignals({ changedFiles: ['src/api/index.ts'], diffText: '+export function foo() {}\n' });
-  assert.equal(s.publicApiChanged, true, 'an added `export function` trips publicApiChanged with no crate path anywhere');
-  assert.ok(dimKeys(s).includes('api-docs'), 'a content-derived publicApiChanged selects api-docs');
-  const priv = deriveSignals({ changedFiles: ['src/api/index.ts'], diffText: '+function foo() {}\n' });
-  assert.equal(priv.publicApiChanged, false, 'a module-private `function foo()` under the SAME path does NOT trip publicApiChanged');
-  assert.ok(!dimKeys(priv).includes('api-docs'), 'the private-definition case does not select api-docs');
-}
-
-// -- userFacing: content, positive AND negative. Neither declares a path.
-{
-  const on = deriveSignals({
-    changedFiles: ['src/cli/run.js'],
-    diffText: '+  program.option("--verbose", "print more output");\n',
-  });
-  assert.equal(on.userFacing, true, 'an added CLI option registration trips userFacing');
-  assert.ok(dimKeys(on).includes('changelog'), 'a content-derived userFacing selects changelog');
-
-  const off = deriveSignals({ changedFiles: ['src/util/helper.js'], diffText: '+  const x = a + b;\n' });
-  assert.equal(off.userFacing, false, 'an internal refactor does NOT trip userFacing');
-  assert.ok(!dimKeys(off).includes('changelog'), 'the internal-refactor case does not select changelog');
-
-  // The negative is a real discriminator, not an accident of the path: the same
-  // neutral content under a CLI-SOUNDING path is still false.
-  const cliPathNeutral = deriveSignals({ changedFiles: ['src/cli/run.js'], diffText: '+  const x = a + b;\n' });
-  assert.equal(cliPathNeutral.userFacing, false, 'a cli-named path with non-user-facing content stays false — content only');
-
-  // CHANGELOG.md is a CONFIRMING term, never a sole trigger: with no code files
-  // it stays a genuine false.
-  const changelogOnly = deriveSignals({ changedFiles: ['CHANGELOG.md'], diffText: '+- did a thing\n' });
-  assert.equal(changelogOnly.userFacing, false, 'a CHANGELOG-only docs diff never trips userFacing on its own');
-
-  // ...and the OTHER branch of that same OR: a CHANGELOG.md co-changed with a
-  // CODE file CONFIRMS userFacing even though nothing in the added content
-  // matches a user-facing pattern. Without this the confirming term could be
-  // deleted outright and every remaining assertion would stay green.
-  const confirmed = deriveSignals({
-    changedFiles: ['src/util/helper.js', 'CHANGELOG.md'],
-    diffText: '+  const x = a + b;\n+- did a thing\n',
-  });
-  assert.equal(confirmed.userFacing, true, 'a CHANGELOG.md co-changed with a code file CONFIRMS userFacing with no matching content');
-  assert.ok(dimKeys(confirmed).includes('changelog'), 'the CHANGELOG-confirmed userFacing selects the changelog dimension');
-  assert.equal(confirmed.publicApiChanged, false, 'the CHANGELOG confirming term is scoped to userFacing — publicApiChanged stays false');
-  assert.equal(confirmed.securitySurface, false, 'the CHANGELOG confirming term is scoped to userFacing — securitySurface stays false');
-
-  // The confirming term is path-shape aware, not a bare basename equality on a
-  // top-level file: a nested CHANGELOG.md confirms too, in any case.
-  const nested = deriveSignals({
-    changedFiles: ['packages/core/src/util.ts', 'packages/core/ChangeLog.md'],
-    diffText: '+  const x = a + b;\n',
-  });
-  assert.equal(nested.userFacing, true, 'a nested, mixed-case CHANGELOG.md still confirms userFacing');
-}
-
-// -- ONLY ADDED LINES ARE EVER SCANNED. A REMOVED `export`/`exec(` line must
-//    not trip a signal, and a unified diff's own `+++ b/<path>` file header
-//    must not be read as content. Both are load-bearing invariants of
-//    addedLines and neither is implied by any positive-match fixture.
-{
-  const removedExport = deriveSignals({ changedFiles: ['src/api/index.ts'], diffText: '-export function foo() {}\n' });
-  assert.equal(removedExport.publicApiChanged, false, 'a REMOVED export line never trips publicApiChanged');
-
-  const removedSink = deriveSignals({
-    changedFiles: ['src/lib/runner.js'],
-    diffText: '-const { exec } = require("child_process");\n',
-  });
-  assert.equal(removedSink.securitySurface, false, 'a REMOVED process-execution sink never trips securitySurface');
-
-  const removedPrint = deriveSignals({ changedFiles: ['src/cli/run.js'], diffText: '-  console.log("bye");\n' });
-  assert.equal(removedPrint.userFacing, false, 'a REMOVED console.log never trips userFacing');
-
-  // A realistic mixed hunk: removed matching lines plus context, with the only
-  // ADDED line inert. Nothing may fire.
-  const mixed = deriveSignals({
-    changedFiles: ['src/api/index.ts'],
-    diffText:
-      '@@ -1,5 +1,3 @@\n' +
-      ' const unchanged = 1;\n' +
-      '-export function foo() {}\n' +
-      '-  console.log("bye");\n' +
-      '+  const x = 1;\n',
-  });
-  assert.equal(mixed.publicApiChanged, false, 'a mixed hunk whose only match is on a REMOVED line stays false: publicApiChanged');
-  assert.equal(mixed.userFacing, false, 'a mixed hunk whose only match is on a REMOVED line stays false: userFacing');
-
-  // The `+++ b/<path>` header is skipped explicitly: this path would otherwise
-  // match the CommonJS `exports.` pattern through the file NAME alone — exactly
-  // the path-derived triggering this phase removes.
-  const header = deriveSignals({
-    changedFiles: ['src/exports.ts'],
-    diffText: '--- a/src/exports.ts\n+++ b/src/exports.ts\n+  const x = 1;\n',
-  });
-  assert.equal(header.publicApiChanged, false, "a diff's own `+++ b/…` file header is never read as added content");
-}
-
-// -- VOCABULARY COVERAGE: one positive per language/category group in each of
-//    the three vocabularies, so a mis-anchored or typo'd regex in any bucket
-//    cannot ship silently. Grouped, not exhaustive per regex.
-{
-  const sig = (file, diffText) => deriveSignals({ changedFiles: [file], diffText });
-
-  const EXPORT_CASES = [
-    ['ES module named export', 'src/a.ts', '+export const VERSION = "1";\n'],
-    ['ES module default export', 'src/a.js', '+export default function handler() {}\n'],
-    ['CommonJS module.exports', 'src/a.js', '+module.exports = { run };\n'],
-    ['CommonJS exports.NAME', 'src/a.js', '+exports.run = run;\n'],
-    ['Rust pub item', 'src/a.rs', '+pub fn run() {}\n'],
-    ['Rust pub(crate) item', 'src/a.rs', '+pub(crate) struct Cfg;\n'],
-    ['Java/C#/TS member visibility', 'src/a.ts', '+  public static void main(String[] args) {}\n'],
-    ['Go exported func', 'src/a.go', '+func Run(ctx context.Context) error {\n'],
-    ['Go exported type', 'src/a.go', '+type Config struct {\n'],
-    ['Python __all__', 'src/a.py', '+__all__ = ["run"]\n'],
-  ];
-  for (const [label, file, diffText] of EXPORT_CASES) {
-    assert.equal(sig(file, diffText).publicApiChanged, true, 'EXPORT vocabulary matches ' + label);
-  }
-
-  // The deliberate exclusions: a module-private definition is not a public-API
-  // change, and an unexported Go identifier is not either.
-  const EXPORT_NEGATIVES = [
-    ['a bare JS function', 'src/a.js', '+function run() {}\n'],
-    ['a bare Python def', 'src/a.py', '+def run():\n'],
-    ['a private Rust fn', 'src/a.rs', '+fn run() {}\n'],
-    ['an unexported Go func', 'src/a.go', '+func run(ctx context.Context) error {\n'],
-  ];
-  for (const [label, file, diffText] of EXPORT_NEGATIVES) {
-    assert.equal(sig(file, diffText).publicApiChanged, false, 'EXPORT vocabulary deliberately excludes ' + label);
-  }
-
-  const USER_FACING_CASES = [
-    // Kept free of a `help=` kwarg on purpose: with one, the help-string bucket
-    // would cover for a broken add_argument regex and the mutation self-test
-    // proving this case exercises its own bucket would go vacuous.
-    ['argparse add_argument', 'src/a.py', '+    parser.add_argument("--verbose")\n'],
-    ['an argparse help kwarg', 'src/a.py', '+        help="print more output",\n'],
-    ['commander addOption', 'src/a.js', '+  cmd.addOption(new Option("--json"));\n'],
-    ['clap arg builder', 'src/a.rs', '+        .arg(Arg::new("verbose"))\n'],
-    ['clap subcommand builder', 'src/a.rs', '+        .subcommand(sub)\n'],
-    ['an attached help string', 'src/a.rs', '+        .help("print more output")\n'],
-    ['an argparse constructor', 'src/a.py', '+parser = ArgumentParser(prog="tool")\n'],
-    ['an express route', 'src/a.js', '+app.get("/health", handler);\n'],
-    ['a flask route decorator', 'src/a.py', '+@app.route("/health")\n'],
-    ['an MCP tool registration', 'src/a.ts', '+  addTool({ name: "run" });\n'],
-    ['a Go HandleFunc', 'src/a.go', '+    mux.HandleFunc("/health", handler)\n'],
-    ['a Rust println!', 'src/a.rs', '+    println!("done");\n'],
-    ['a Rust eprintln!', 'src/a.rs', '+    eprintln!("failed");\n'],
-    ['a Go fmt.Println', 'src/a.go', '+    fmt.Println("done")\n'],
-    ['a Python print', 'src/a.py', '+    print("done")\n'],
-    ['a console.error', 'src/a.js', '+  console.error("boom");\n'],
-  ];
-  for (const [label, file, diffText] of USER_FACING_CASES) {
-    assert.equal(sig(file, diffText).userFacing, true, 'USER-FACING vocabulary matches ' + label);
-  }
-
-  // The `print(` guard is anchored so a longer identifier or a method call on an
-  // unrelated object does not read as user-visible output.
-  const PRINT_NEGATIVES = [
-    ['pprint', 'src/a.py', '+    pprint(data)\n'],
-    ['sprint', 'src/a.go', '+    s := sprint(x)\n'],
-    ['an unrelated .print( method', 'src/a.js', '+  writer.print(x);\n'],
-  ];
-  for (const [label, file, diffText] of PRINT_NEGATIVES) {
-    assert.equal(sig(file, diffText).userFacing, false, 'the print( guard excludes ' + label);
-  }
-
-  const SECURITY_CASES = [
-    ['a node child_process require', 'src/a.js', '+const cp = require("child_process");\n'],
-    ['a spawnSync call', 'src/a.js', '+  spawnSync(bin, args);\n'],
-    ['a python subprocess call', 'src/a.py', '+    subprocess.run([bin])\n'],
-    ['a python os.system call', 'src/a.py', '+    os.system(cmd)\n'],
-    ['a rust std::process use', 'src/a.rs', '+use std::process::Command;\n'],
-    ['a go exec.Command call', 'src/a.go', '+    out, err := exec.Command(bin).Output()\n'],
-    ['a rust std::fs call', 'src/a.rs', '+    std::fs::write(p, b)?;\n'],
-    ['a node fs require', 'src/a.js', '+const fs = require("fs");\n'],
-    ['an fs read call', 'src/a.js', '+  fs.readFileSync(p);\n'],
-    ['a go ioutil read', 'src/a.go', '+    b, err := ioutil.ReadFile(p)\n'],
-    ['a process.env read', 'src/a.js', '+  const t = process.env.TOKEN;\n'],
-    ['an os.environ read', 'src/a.py', '+    t = os.environ["TOKEN"]\n'],
-    ['a rust env::var read', 'src/a.rs', '+    let t = env::var("TOKEN")?;\n'],
-    ['a go os.Getenv read', 'src/a.go', '+    t := os.Getenv("TOKEN")\n'],
-    ['a secret-shaped identifier', 'src/a.py', '+API_KEY = load()\n'],
-    ['a python pickle.loads', 'src/a.py', '+    obj = pickle.loads(blob)\n'],
-    ['a python yaml.load', 'src/a.py', '+    cfg = yaml.load(text)\n'],
-    ['a js eval', 'src/a.js', '+  eval(src);\n'],
-    ['a js new Function', 'src/a.js', '+  const f = new Function("return 1");\n'],
-    ['a go Unmarshal', 'src/a.go', '+    json.Unmarshal(b, &v)\n'],
-    ['a rust serde_json::from_str', 'src/a.rs', '+    let v: V = serde_json::from_str(s)?;\n'],
-    ['a rust unsafe block', 'src/a.rs', '+    unsafe { *p = 1; }\n'],
-    // The DECLARATION forms, not just the inline expression form. An
-    // `unsafe {`-only pattern reads false on every one of these, which would
-    // silently skip the security dimension on the most consequential shape
-    // unsafe code takes in a Rust diff.
-    ['a rust unsafe fn', 'src/a.rs', '+unsafe fn get_ptr() -> *mut u8 {\n'],
-    ['a rust pub unsafe fn', 'src/a.rs', '+pub unsafe fn write_raw(p: *mut u8, v: u8) {\n'],
-    ['a rust unsafe impl', 'src/a.rs', '+unsafe impl Send for Foo {}\n'],
-    ['a rust unsafe trait', 'src/a.rs', '+unsafe trait Bar {}\n'],
-    ['a rust unsafe extern block', 'src/a.rs', '+unsafe extern "C" {\n'],
-    ['a rust transmute', 'src/a.rs', '+    let x = transmute(y);\n'],
-    ['a rust ptr::write', 'src/a.rs', '+    ptr::write(dst, v);\n'],
-    ['a memcpy', 'src/a.go', '+    memcpy(dst, src, n);\n'],
-  ];
-  for (const [label, file, diffText] of SECURITY_CASES) {
-    assert.equal(sig(file, diffText).securitySurface, true, 'SECURITY vocabulary matches ' + label);
-  }
-
-  // The deliberate exclusion, pinned so a later reader cannot "fix" it: JSON.parse
-  // is the most common line in any JS diff and would collapse `security` into an
-  // always-on dimension for every JS repo.
-  assert.equal(
-    sig('src/a.js', '+  const cfg = JSON.parse(text);\n').securitySurface,
-    false,
-    'SECURITY vocabulary deliberately excludes JSON.parse — it would make security always-on in any JS repo'
-  );
-}
-
-// -- securitySurface: content, not paths. A sink under a neutral path fires; a
-//    security-SOUNDING path with inert content does not.
-{
-  const sink = deriveSignals({
-    changedFiles: ['src/lib/runner.js'],
-    diffText: '+const { exec } = require("child_process");\n+exec(userInput);\n',
-  });
-  assert.equal(sink.securitySurface, true, 'a process-execution sink trips securitySurface under a neutral path');
-  assert.ok(dimKeys(sink).includes('security'), 'a content-derived securitySurface selects security');
-
-  const namedOnly = deriveSignals({ changedFiles: ['src/auth/session.js'], diffText: '+  const label = "session";\n' });
-  assert.equal(namedOnly.securitySurface, false, 'an auth-named path with no sink content does NOT trip securitySurface');
-  assert.ok(!dimKeys(namedOnly).includes('security'), 'the path-name-only case does not select security');
-}
-
-// -- UNDETERMINABLE fails open BY VALUE: code files changed, content unreadable.
-//    The keys are set to `true`, never omitted — an omitted key would read
-//    `undefined` through selectDimensions' populated-object branch and silently
-//    DROP the dimension.
-{
-  const u = deriveSignals({ changedFiles: ['src/util/helper.js'] });
-  assert.equal(u.publicApiChanged, true, 'unreadable content fails OPEN by value: publicApiChanged');
-  assert.equal(u.userFacing, true, 'unreadable content fails OPEN by value: userFacing');
-  assert.equal(u.securitySurface, true, 'unreadable content fails OPEN by value: securitySurface');
-  for (const k of SIGNAL_KEYS) {
-    assert.ok(Object.prototype.hasOwnProperty.call(u, k), 'fail-open must not OMIT the ' + k + ' key');
-    assert.equal(typeof u[k], 'boolean', 'fail-open must keep ' + k + ' an explicit boolean');
-  }
-  assert.equal(
-    Object.keys(u).length,
-    SIGNAL_KEYS.length + 2,
-    'the fail-open object is exactly SIGNAL_KEYS plus targetType and changedFiles — no omitted key, no extra key'
-  );
-  assert.notEqual(u, null, 'the value-level fail-open still returns a POPULATED object, not null');
-  const keys = dimKeys(u);
-  for (const d of ['api-docs', 'changelog', 'security']) {
-    assert.ok(keys.includes(d), 'value-level fail-open must still select ' + d);
-  }
-}
-
-// -- READ-BUT-NO-MATCH is a confident FALSE. This is what keeps the fail-open
-//    from widening into "run every dimension on every code diff".
-{
-  const r = deriveSignals({ changedFiles: ['src/util/helper.js'], diffText: '+  const x = 1;\n' });
-  assert.equal(r.publicApiChanged, false, 'read-but-no-match is a confident false: publicApiChanged');
-  assert.equal(r.userFacing, false, 'read-but-no-match is a confident false: userFacing');
-  assert.equal(r.securitySurface, false, 'read-but-no-match is a confident false: securitySurface');
-  // NOTE — the phase AC says this fixture should select only ['ac','correctness'].
-  // That is UNREACHABLE for any diff containing a code file: `helper.js` matches
-  // CODE_EXTENSIONS, so the deliberately-untouched `changesLogic`/`missingTests`
-  // signals are both true and the `tests` dimension (when: changesLogic ||
-  // missingTests) fires. Adding a test file to the fixture does not help —
-  // `changesLogic` stays true. Changing that would mean editing an out-of-scope
-  // signal, so the achievable assertion is pinned here and the discrepancy is
-  // reported rather than papered over.
-  assert.deepEqual(
-    dimKeys(r),
-    ['ac', 'correctness', 'tests'],
-    'a readable, non-matching code diff selects the always-on set plus tests (changesLogic is path-derived and out of scope)'
-  );
-  for (const d of ['api-docs', 'changelog', 'security']) {
-    assert.ok(!dimKeys(r).includes(d), 'read-but-no-match must NOT select ' + d);
-  }
-}
-
-// -- NO CONFIDENT-TRUE off an incidental path-name match. The retired
-//    config/mcp path patterns are what used to fire here.
-{
-  const neutral = '+  const x = a + b;\n';
-  const w = deriveSignals({ changedFiles: ['webpack.config.js'], diffText: neutral });
-  const h = deriveSignals({ changedFiles: ['src/util/helper.js'], diffText: neutral });
-  assert.equal(w.userFacing, false, 'a config-NAMED path with neutral content does not trip userFacing');
-  assert.equal(
-    w.userFacing,
-    h.userFacing,
-    'a config-named path is identical to a neutral path — the retired config/mcp patterns cannot be reintroduced'
-  );
-  const m = deriveSignals({ changedFiles: ['src/mcp/server.ts'], diffText: '+  const x = 1;\n' });
-  assert.equal(m.userFacing, false, 'an mcp-NAMED path with neutral content does not trip userFacing');
-}
-
-// -- NO new input channel. A fourth key is IGNORED, not read as a config source.
-{
-  const base = { targetType: 'phase', changedFiles: ['a.js'], diffText: '+x\n' };
-  const withExtra = deriveSignals({ ...base, projectConfig: { paths: ['x'] } });
-  assert.deepEqual(withExtra, deriveSignals(base), 'an extra input key is IGNORED — deriveSignals reads no config channel');
-  assert.deepEqual(
-    Object.keys(withExtra).sort(),
-    [...SIGNAL_KEYS, 'changedFiles', 'targetType'].sort(),
-    'deriveSignals output carries no channel-derived key'
-  );
-}
-
-// -- CODE_EXTENSIONS is untouched: the multi-language classification still holds.
-for (const ext of ['.rs', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.go', '.sh', '.pkl']) {
-  assert.equal(
-    deriveSignals({ changedFiles: ['a' + ext], diffText: '+x\n' }).changesLogic,
-    true,
-    'CODE_EXTENSIONS still classifies ' + ext + ' as a code file'
-  );
-}
-
-// (g) Unknown mode throws in both entry points; the always-on set makes an empty
-//     selection unreachable, but the guard is asserted structurally.
-assert.throws(() => selectDimensions('bogus', {}), /unknown review mode/, 'selectDimensions rejects an unknown mode');
-assert.throws(() => selectDimensions('bogus'), /unknown review mode/, 'selectDimensions rejects an unknown mode with no signals');
-
-// (h) The pipeline actually honours the selection: an explicit `{}` narrows the
-//     fleet to the always-on dimensions.
-{
-  const narrowSpy = makeSpyAgent(codeFindings, codeVerdicts);
-  await buildReviewPipeline('code', deps(narrowSpy))({ ...CTX, signals: {} });
-  const labels = narrowSpy.calls.filter((c) => c.label.startsWith('find:')).map((c) => c.label);
-  assert.deepEqual(labels.sort(), ['find:code:ac', 'find:code:correctness'], 'context.signals narrows the dispatched fleet');
-}
-console.log('AC4: dimension coverage parity, `when` triggers, and the selectDimensions fail-open contract hold');
+// DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): the AC4 dimension-
+// coverage-parity / `when`-trigger / selectDimensions fail-open block. Predicate-
+// driven dimension selection and deriveSignals no longer exist, so the whole
+// sub-block's subject is gone. Deleted and named, never re-pointed.
 
 // ============================================================================
 // AC1/AC2 — classifyOutcome in its new home, and the outcome→status mapping.
@@ -2852,11 +2299,7 @@ assert.equal(
 {
   const planAcResult = await buildReviewPipeline('plan', deps(makeSpyAgent(planFindings, planVerdicts)))(CTX);
   assert.equal(planAcResult.acTable, null, 'plan mode never populates an ac table');
-  assert.deepEqual(
-    planAcResult.survivors.map((f) => f.id),
-    ['vague-step', 'intent-alignment-no-intent'],
-    'plan mode survivors are unchanged by the ac-table-channel addition'
-  );
+// DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): assertion subject removed.
 }
 console.log('AC-TABLE-CHANNEL: a surviving FAIL/PARTIAL AC-table criterion mechanically forces rework');
 
@@ -2896,17 +2339,7 @@ assert.throws(() => gateFor('bogus', 'reviewed'), /unknown gate mode/, 'an unkno
 assert.throws(() => gateFor('plan', 'bogus'), /unknown outcome/, 'an unknown outcome throws');
 assert.throws(() => gateFor('code', 'PASS'), /unknown outcome/, 'a retired verdict word throws');
 
-// selectDimensions gates unit-of-work through the ONE target-type predicate.
-for (const t of ['roadmap', 'task', 'implementation-plan']) {
-  assert.ok(
-    !selectDimensions('plan', { targetType: t }).map((d) => d.key).includes('unit-of-work'),
-    'plan mode on a ' + t + ' target excludes unit-of-work'
-  );
-}
-assert.ok(
-  selectDimensions('plan', { targetType: 'phase' }).map((d) => d.key).includes('unit-of-work'),
-  'plan mode on a phase target includes unit-of-work'
-);
+// DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): assertion subject removed.
 console.log('gate policy: mode-dispatched, code re-expressed not forked, plan preserves the tag-gate outcome');
 
 console.log('all review-refute-fix behavior assertions passed');
@@ -2937,7 +2370,7 @@ const {
   coverageSummaryClause,
   classifyOutcome,
   acTableHasGap,
-  selectDimensions,
+  resolveReviewers,
 } = mod;
 
 async function refParallel(thunks) {
@@ -2985,9 +2418,10 @@ function scriptedAgent(plan) {
 }
 const deps = (spy) => ({ agent: spy.agent, pipeline: refPipeline, parallel: refParallel, log: () => {} });
 const labelsFor = (calls, mode, key) => calls.filter((l) => l === 'find:' + mode + ':' + key);
+const CODE_DIMS = resolveReviewers('code').map((d) => d.key);
+const PLAN_DIMS = resolveReviewers('plan').map((d) => d.key);
 
-const CODE_DIMS = selectDimensions('code').map((d) => d.key);
-const PLAN_DIMS = selectDimensions('plan').map((d) => d.key);
+
 
 // ===========================================================================
 // AC1 — RETRY: a finder that resolves null is retried EXACTLY ONCE, and the
@@ -3267,143 +2701,9 @@ cmut_silent_clause() {
 }
 cov_mutate_and_expect_fail clause 'silencing coverageSummaryClause' cmut_silent_clause
 
-# --- 3b. CONTENT-SIGNAL MUTATION SELF-TESTS (non-vacuity) --------------------
-# Prove the content-derivation assertion groups in section 3 are not vacuous.
-# Each mutation targets exactly one branch of `contentSignal` or one vocabulary
-# entry on a hermetic SCRATCH copy of the lib, and section 3's assertions must go
-# RED. A CONTROL run comes first: without it every mutation below would be
-# meaningless. Whole-expression rewrites only, so a mutated copy still parses and
-# a syntax error can never masquerade as a caught defect.
-say "3b. Content-signal mutation self-tests (prove the deriveSignals groups are non-vacuous)"
-SMUT="$TMP/signal-mut"
-mkdir -p "$SMUT"
-
-cp "$LIB" "$SMUT/review.mjs"
-if run_node "$TMP/test.mjs" "$SMUT/review.mjs" >/dev/null 2>&1; then
-    pass "3b-control: the unmutated copy passes section 3"
-else
-    fail "3b-control: the unmutated copy FAILS section 3 — every mutation below is vacuous"
-fi
-
-signal_mutate_and_expect_fail() {
-    smtag="$1"
-    smdesc="$2"
-    smfn="$3"
-    cp "$LIB" "$SMUT/review.mjs"
-    "$smfn" || fail "3b-$smtag: could not plant the mutation ($smdesc)"
-    grep -q 'MUTANT' "$SMUT/review.mjs" || fail "3b-$smtag: the mutation did not apply ($smdesc)"
-    if run_node "$TMP/test.mjs" "$SMUT/review.mjs" >/dev/null 2>&1; then
-        fail "3b-$smtag: section 3 still passed after $smdesc — that assertion group is vacuous"
-    fi
-    pass "3b-$smtag: $smdesc flips a content-signal assertion"
-    cp "$LIB" "$SMUT/review.mjs"
-}
-
-# (a) Drop the no-code-files branch: a docs-only diff would stop being a genuine
-#     negative and would fail open on an unreadable body.
-smut_no_code_branch() {
-    sed 's|^  if (!hasCodeFiles) return false;$|  if (false) return false; // MUTANT|' "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail a 'deleting contentSignal(-s no-code-files branch' smut_no_code_branch
-
-# (b) Flip the undeterminable branch to a confident false: an unreadable diff
-#     would silently DROP api-docs/changelog/security instead of failing open.
-smut_fail_closed() {
-    sed 's|^  if (diffText === null) return true;$|  if (diffText === null) return false; // MUTANT|' "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail b 'making the undeterminable branch fail CLOSED' smut_fail_closed
-
-# (c) Make read-but-no-match return true: the fail-open widens into "run every
-#     dimension on every code diff".
-smut_always_true() {
-    sed 's|^  return matched === true;$|  return true; // MUTANT|' "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail c 'making read-but-no-match return TRUE' smut_always_true
-
-# (d) Re-add a path term to userFacing: the retired config/mcp coincidence
-#     returns and webpack.config.js trips changelog again.
-smut_path_term() {
-    sed 's#^    userFacing: contentSignal(#    userFacing: /* MUTANT */ lower.some((p) => /config/.test(p)) || contentSignal(#' \
-        "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail d 'restoring a path term on userFacing' smut_path_term
-
-# (e) Re-gate publicApiChanged behind a hard crate-path prefix: the defect this
-#     phase removes. Content still matches, but the path check is permanently
-#     false in any other repo, so api-docs never fires again.
-smut_path_gated_api() {
-    sed "s|publicApiChanged: contentSignal(matchesAny(added, EXPORT_CONTENT_PATTERNS), hasCode, diffText),|publicApiChanged: lower.some((p) => p.indexOf('crate/src/') === 0) \&\& contentSignal(matchesAny(added, EXPORT_CONTENT_PATTERNS), hasCode, diffText), // MUTANT|" \
-        "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail e 'restoring a hard crate-path gate on publicApiChanged' smut_path_gated_api
-
-# (e2) Drop the ES-module arm from the export vocabulary, leaving the other
-#      languages: an added `export function` reads false, proving the vocabulary
-#      is genuinely multi-language rather than one language carrying the rest.
-smut_drop_export_arm() {
-    sed 's|export\\s+(default\\b|MUTANT_never_matches(|' "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail e2 'deleting the ES-module arm of the export vocabulary' smut_drop_export_arm
-
-# (f) Neuter a process-execution regex in the security vocabulary: the
-#     child_process positive stops firing.
-smut_drop_security_regex() {
-    sed 's|child_process|MUTANT_never_matches|' "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail f 'neutering the child_process regex in the security vocabulary' smut_drop_security_regex
-
-# (g) Delete the CHANGELOG.md confirming term from userFacing. Only the POSITIVE
-#     confirming fixture (a CHANGELOG co-changed with a code file, inert content)
-#     can catch this — the CHANGELOG-only negative stays green either way.
-smut_drop_changelog_term() {
-    sed 's#|| changelogTouched, hasCode, diffText)#/* MUTANT */, hasCode, diffText)#' "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail g 'deleting the CHANGELOG.md confirming term from userFacing' smut_drop_changelog_term
-
-# (h) Widen addedLines to scan REMOVED lines too: deleting an `export`/`exec(`
-#     line would start tripping a signal.
-smut_scan_removed_lines() {
-    sed "s|charAt(0) !== '+') continue;|charAt(0) !== '+' \&\& line.charAt(0) !== '-') continue; // MUTANT|" \
-        "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail h 'letting addedLines scan REMOVED diff lines' smut_scan_removed_lines
-
-# (i) Drop the `+++` file-header skip: the diff's own header line is read as
-#     content, so a path merely NAMED `exports.ts` trips publicApiChanged —
-#     path-derived triggering smuggled back in through the header.
-smut_scan_diff_headers() {
-    sed "s|if (line.indexOf('+++') === 0) continue;|if (false) continue; // MUTANT|" "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail i 'reading the diff file header as added content' smut_scan_diff_headers
-
-# (j)-(l) One vocabulary-coverage mutation per vocabulary, proving the grouped
-#     per-language positives above actually exercise their own bucket.
-smut_drop_python_all() {
-    sed 's|__all__|MUTANT_never_matches|' "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail j 'neutering the Python __all__ arm of the export vocabulary' smut_drop_python_all
-
-smut_drop_add_argument() {
-    sed 's|add_argument|MUTANT_never_matches|' "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail k 'neutering the argparse arm of the user-facing vocabulary' smut_drop_add_argument
-
-smut_drop_pickle() {
-    sed 's|pickle|MUTANT_never_matches|' "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail l 'neutering the deserialization arm of the security vocabulary' smut_drop_pickle
-
-# (m) Narrow the Rust unsafe vocabulary back to the inline `unsafe {` expression
-#     form alone. `unsafe fn` / `pub unsafe fn` / `unsafe impl` / `unsafe trait`
-#     / `unsafe extern` then read FALSE, so a diff introducing raw-memory code in
-#     its most common shape silently skips the security dimension. This is the
-#     exact regression the declaration-form fixtures above exist to pin.
-smut_narrow_unsafe() {
-    sed 's#(fn|impl|trait|extern|mod)#(MUTANT_never_matches)#' "$LIB" >"$SMUT/review.mjs"
-}
-signal_mutate_and_expect_fail m 'narrowing the unsafe vocabulary to the inline-block form only' smut_narrow_unsafe
-
-pass "3b: all fourteen content-signal mutations flip an assertion, and the control passes"
+# DELETED SECTION 3b (no-mechanical-agents-in-workflows phase 34): its subject
+# no longer exists. Per the standing ruling a broken assertion is deleted and
+# named, never repaired or re-pointed.
 
 # --- 4. PLAN CALIBRATION MUTATION SELF-TEST -----------------------------------
 # Prove the AC1 presence check (embedded in section 3's test.mjs) is not
@@ -3739,10 +3039,10 @@ import { pathToFileURL } from 'node:url';
 
 const libPath = process.argv[2];
 const mod = await import(pathToFileURL(libPath).href);
-const { stripNonPhaseUnitOfWork, filterPlanReviewTag, classifyPlanOutcome, gateFor, hasBlocking } = mod;
+const { filterPlanReviewTag, classifyPlanOutcome, gateFor, hasBlocking } = mod;
 
-// Export presence — the harness (and rdm-wf-plan-review.js's stamped copy) needs all three.
-for (const name of ['stripNonPhaseUnitOfWork', 'filterPlanReviewTag', 'classifyPlanOutcome']) {
+// Export presence — the harness (and rdm-wf-plan-review.js's stamped copy) needs both.
+for (const name of ['filterPlanReviewTag', 'classifyPlanOutcome']) {
   assert.equal(typeof mod[name], 'function', name + ' must be exported from review.mjs');
 }
 
@@ -3751,25 +3051,7 @@ const coh = { id: 'c', concern: 'coherence', severity: 'blocking', confidence: 9
 const arch = { id: 'a', concern: 'architectural-fit', severity: 'blocking', confidence: 92, what_fails: 'violates constraint' };
 const nit = { id: 'n', concern: 'coherence', severity: 'concern', confidence: 80, what_fails: 'minor' };
 
-// --- stripNonPhaseUnitOfWork: phase keeps unit-of-work; every other unit drops it.
-assert.deepEqual(stripNonPhaseUnitOfWork([uow, coh], 'phase').map((f) => f.id), ['u', 'c'], 'phase keeps unit-of-work');
-for (const t of ['task', 'roadmap', 'implementation-plan']) {
-  assert.deepEqual(
-    stripNonPhaseUnitOfWork([uow, coh], t).map((f) => f.id),
-    ['c'],
-    'a ' + t + ' unit drops unit-of-work survivors'
-  );
-}
-// Order-preserving: a non-uow finding before AND after a uow one keeps its order.
-assert.deepEqual(
-  stripNonPhaseUnitOfWork([coh, uow, nit], 'task').map((f) => f.id),
-  ['c', 'n'],
-  'strip is order-preserving'
-);
-// Idempotent.
-const once = stripNonPhaseUnitOfWork([coh, uow], 'roadmap');
-assert.deepEqual(stripNonPhaseUnitOfWork(once, 'roadmap'), once, 'strip is idempotent');
-assert.deepEqual(stripNonPhaseUnitOfWork([], 'phase'), [], 'strip on empty is empty');
+// DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): stripNonPhaseUnitOfWork no longer exists.
 
 // --- filterPlanReviewTag: sibling preserved, only-tag -> empty, idempotent no-op.
 assert.deepEqual(filterPlanReviewTag(['needs-plan-review', 'depends-unlanded']), ['depends-unlanded'], 'sibling preserved');
@@ -3801,8 +3083,7 @@ const seededUnits = [
   { id: 'phase-C', targetType: 'phase', tags: ['needs-plan-review'], survivors: [nit] },
 ];
 const gatePlan = seededUnits.map((u) => {
-  const stripped = stripNonPhaseUnitOfWork(u.survivors, u.targetType);
-  const outcome = classifyPlanOutcome(stripped);
+  const outcome = classifyPlanOutcome(u.survivors);
   const gate = gateFor('plan', outcome);
   // The gate NEVER persists an rdm status, whatever the outcome.
   assert.strictEqual(gate.status, null, 'plan gate persists no rdm status for ' + u.id);
@@ -3823,9 +3104,7 @@ for (const id of ['roadmap-body', 'phase-B', 'phase-C']) {
 //     yields an outcome + findings only; the gate row persists no status and the
 //     unit drops unit-of-work like every non-phase unit.
 {
-  const stripped = stripNonPhaseUnitOfWork([uow, coh], 'implementation-plan');
-  assert.deepEqual(stripped.map((f) => f.id), ['c'], 'implementation-plan drops unit-of-work');
-  const gate = gateFor('plan', classifyPlanOutcome(stripped));
+  const gate = gateFor('plan', classifyPlanOutcome([coh]));
   assert.strictEqual(gate.status, null, 'implementation-plan gate persists no status');
   assert.equal(gate.writesCompletion, false, 'implementation-plan never writes a completion directive');
 }
@@ -3834,7 +3113,7 @@ console.log('plan-standalone helper + gate-planning assertions passed');
 NODE_PLAN_TEST
 
 if run_node "$TMP/plan-test.mjs" "$LIB"; then
-    pass "stripNonPhaseUnitOfWork / filterPlanReviewTag / classifyPlanOutcome + per-unit gate planning verified"
+    pass "filterPlanReviewTag / classifyPlanOutcome + per-unit gate planning verified"
 else
     fail "plan-standalone helper assertions failed"
 fi
@@ -3845,8 +3124,7 @@ grep -q "buildReviewPipeline('plan')" "$PLAN_REVIEW" ||
     fail "rdm-wf-plan-review.js must call buildReviewPipeline('plan')"
 grep -qE "gateFor\('plan'|GATE_POLICY\.plan" "$PLAN_REVIEW" ||
     fail "rdm-wf-plan-review.js must gate through gateFor('plan', …) / GATE_POLICY.plan"
-grep -q 'stripNonPhaseUnitOfWork' "$PLAN_REVIEW" ||
-    fail "rdm-wf-plan-review.js must apply stripNonPhaseUnitOfWork per unit"
+# DELETED (phase 34, commit 1): the stripNonPhaseUnitOfWork grep — no referent.
 grep -q 'filterPlanReviewTag' "$PLAN_REVIEW" ||
     fail "rdm-wf-plan-review.js must clear the tag via filterPlanReviewTag"
 grep -q 'classifyPlanOutcome' "$PLAN_REVIEW" ||
@@ -3872,25 +3150,12 @@ IMPL_GUARDS=$(grep -c "kind !== 'implementation-plan'" "$PLAN_REVIEW")
     fail "rdm-wf-plan-review.js must guard BOTH act and gate with 'if (kind !== \"implementation-plan\")' (found $IMPL_GUARDS)"
 
 # The driver must not RE-DECLARE the pipeline internals (it consumes the stamped
-# block). It DOES thread a minimal `signals: { targetType }` object into every
-# runPlanReview call (task plan-review-selects-unit-of-work-then-strips-it) so
-# selectDimensions' unit-of-work `when` predicate is evaluated at selection
-# time instead of fail-opening — and, since the intent-alignment dimension
-# landed, a `hasIntent` member alongside it (its `when` reads exactly that).
-# Plan mode's signals object is therefore `{ targetType, hasIntent }`; the
-# assertions below require exactly that minimal shape and forbid a diff-shaped
-# signals object (deriveSignals' SIGNAL_KEYS), which would mean code-mode-style
-# signal computation had leaked into the plan driver. stripNonPhaseUnitOfWork remains applied too (checked
-# above) as the defense-in-depth backstop, not the primary mechanism.
+# block).
+# DELETED (phase 34, commit 1): the `signals:` threading assertions and the
+# diff-shaped-signal negative. Signals no longer exist in either mode.
 DRIVER=$(awk '/>>> review-refute-fix:end/{p=1;next} p' "$PLAN_REVIEW")
 if printf '%s\n' "$DRIVER" | grep -nE 'function findPrompt|function refutePrompt|const DIMENSIONS ='; then
     fail "rdm-wf-plan-review.js driver re-declares pipeline internals — it must consume the stamped block"
-fi
-SIGNALS_LINES=$(printf '%s\n' "$DRIVER" | grep -nE 'signals:' || true)
-[ -n "$SIGNALS_LINES" ] ||
-    fail "rdm-wf-plan-review.js must thread signals: { targetType } into runPlanReview (selection-time unit-of-work scoping)"
-if printf '%s\n' "$DRIVER" | grep -qE 'changesLogic|missingTests|multiModule|publicApiChanged|userFacing|securitySurface'; then
-    fail "rdm-wf-plan-review.js must not compute diff-shaped signals (deriveSignals' SIGNAL_KEYS) — plan mode's only signal is targetType"
 fi
 # The hygiene grep (section 2) already covers rdm-wf-plan-review.js via workflows/*.js;
 # re-assert here that it carries no forbidden nondeterministic global.
@@ -4129,8 +3394,9 @@ else
 fi
 # The driver's load-bearing symbols must be present in BOTH copies (guards against
 # a partial mirror the byte-diff above would also catch, but names the gap).
+# DELETED (phase 34, commit 1): the 'stripNonPhaseUnitOfWork' symbol — no referent.
 for sym in 'function parsePlanArgs' 'function buildReviewUnits' 'async function runPlanReviewDriver' \
-    "buildReviewPipeline('plan')" 'stripNonPhaseUnitOfWork' 'filterPlanReviewTag' 'classifyPlanOutcome' \
+    "buildReviewPipeline('plan')" 'filterPlanReviewTag' 'classifyPlanOutcome' \
     'function fetchTranscriptionOk' 'RESERVED_FETCH_TOKENS' 'function snapshotOriginalTags' \
     'function planGateCommands' 'function buildGateEvidence' 'function resolvePlanGateMode' \
     'function buildGateAction' 'function gateFailureClause' 'function gateDeferredClause' \
@@ -4223,8 +3489,7 @@ assert.deepEqual(buildReviewUnits({ kind: 'task', task: 't' }, null).skippedPhas
     { body: 'RB', tags: ['needs-plan-review'], phases: [{ stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] }] });
   assert.equal(b.fetchFailed, false, 'roadmap with body does not fail');
   assert.equal(b.units.length, 2, 'roadmap => body unit + one unit per phase');
-  assert.equal(b.units[0].targetType, 'roadmap', 'first unit is the roadmap body');
-  assert.equal(b.units[1].targetType, 'phase', 'second unit is a phase');
+  // DELETED (phase 34, commit 1): the unit `targetType` assertions — the field is gone.
   assert.equal(b.units[1].ident, 'phase-1-a', 'phase unit ident is the stem');
   assert.deepEqual(b.skippedPhases, [], 'a phase with no status field at all is kept, not skipped');
 }
@@ -4941,455 +4206,10 @@ const FULL_COVERAGE = {
   );
 }
 
-// ---- (8) SELECTION-TIME UNIT-OF-WORK SCOPING (real pipeline) ----------------
-// Task plan-review-selects-unit-of-work-then-strips-it: prove the `signals:
-// { targetType }` threaded into every runPlanReview call in reviewUnit and the
-// --implementation-plan branch actually reaches selectDimensions and scopes
-// `unit-of-work` OUT for task/roadmap-body/implementation-plan units and IN for
-// phase units — driven through the REAL buildReviewPipeline('plan'), not the
-// faked runPlanReview the makeHarness-based sections above inject. This is the
-// one place in this file that imports review.mjs directly: lib/plan-review.mjs
-// does not re-export buildReviewPipeline itself.
-{
-  async function refParallel8(thunks) {
-    return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
-  }
-  async function refPipeline8(items, ...stages) {
-    return Promise.all(
-      items.map(async (item) => {
-        let acc = item;
-        for (const stage of stages) {
-          try {
-            acc = await stage(acc);
-          } catch {
-            return null;
-          }
-        }
-        return acc;
-      })
-    );
-  }
-
-  const reviewModPath = path.join(path.dirname(process.argv[2]), 'review.mjs');
-  const reviewMod = await import(pathToFileURL(reviewModPath).href);
-
-  const UOW = 'find:plan:unit-of-work';
-  const COHERENCE = 'find:plan:coherence';
-  const ARCH_FIT = 'find:plan:architectural-fit';
-  const RESTRAINT = 'find:plan:restraint';
-
-  // Every find:* label resolves to an empty findings array (so no refuter is
-  // ever dispatched — irrelevant to what this section proves and keeps the
-  // harness deterministic); fetch:* resolves via the SAME
-  // wrapFetchResultAsTranscript helper the sections above use, keyed off a
-  // per-call fixture; act:*/gate:* just acknowledge.
-  function buildScopingAgent(fetchResults, dispatched) {
-    return async (prompt, opts) => {
-      const label = (opts && opts.label) || '';
-      dispatched.push(label);
-      if (label.indexOf('find:') === 0) return { findings: [] };
-      if (label.indexOf('refute:') === 0) return { refuted: false, confidence: 90 };
-      if (label.indexOf('fetch:') === 0) {
-        const raw = fetchResults[label] !== undefined ? fetchResults[label] : null;
-        return wrapFetchResultAsTranscript(label, raw, prompt);
-      }
-      return { ok: true };
-    };
-  }
-
-  async function driveScoping(args, fetchResults) {
-    const dispatched = [];
-    const agent = buildScopingAgent(fetchResults, dispatched);
-    const runPlanReview = reviewMod.buildReviewPipeline('plan', {
-      agent,
-      pipeline: refPipeline8,
-      parallel: refParallel8,
-      log: () => {},
-    });
-    const res = await runPlanReviewDriver(args, { agent, parallel: refParallel8, runPlanReview, log: () => {} });
-    return { res, dispatched };
-  }
-
-  // (8a) task target — never dispatches unit-of-work; still dispatches the
-  //      three always-on dimensions (rules out a broken wiring that would
-  //      vacuously pass by dispatching nothing at all).
-  {
-    const { res, dispatched } = await driveScoping(
-      { task: 'fix-bug' },
-      { 'fetch:task': { body: 'Task body under review.', tags: ['needs-plan-review'] } }
-    );
-    assert.ok(!dispatched.includes(UOW), '8a: a task target never dispatches find:plan:unit-of-work');
-    assert.ok(dispatched.includes(COHERENCE), '8a: a task target still dispatches find:plan:coherence');
-    assert.ok(dispatched.includes(ARCH_FIT), '8a: a task target still dispatches find:plan:architectural-fit');
-    assert.ok(dispatched.includes(RESTRAINT), '8a: a task target still dispatches find:plan:restraint');
-    assert.ok(!res.coverage.selected.includes('unit-of-work'), "8a: a task unit's coverage.selected omits unit-of-work");
-    assert.ok(!res.coverage.ran.includes('unit-of-work'), "8a: a task unit's coverage.ran omits unit-of-work");
-  }
-
-  // (8b) --implementation-plan — same non-dispatch, driven through the
-  //      report-only branch (no fetch at all).
-  {
-    const { res, dispatched } = await driveScoping({ implementationPlan: true, planText: 'PLAN TEXT here' }, {});
-    assert.ok(!dispatched.includes(UOW), '8b: an implementation-plan target never dispatches find:plan:unit-of-work');
-    assert.ok(dispatched.includes(COHERENCE), '8b: an implementation-plan target still dispatches find:plan:coherence');
-    assert.ok(dispatched.includes(ARCH_FIT), '8b: an implementation-plan target still dispatches find:plan:architectural-fit');
-    assert.ok(dispatched.includes(RESTRAINT), '8b: an implementation-plan target still dispatches find:plan:restraint');
-    assert.ok(!res.coverage.selected.includes('unit-of-work'), "8b: an implementation-plan's coverage.selected omits unit-of-work");
-    assert.ok(!res.coverage.ran.includes('unit-of-work'), "8b: an implementation-plan's coverage.ran omits unit-of-work");
-  }
-
-  // (8c)/(8d) --roadmap sweep: the roadmap-body unit does NOT scope unit-of-work
-  //      in, but the SAME sweep's one phase unit DOES — proving both directions
-  //      inside a single multi-unit run.
-  {
-    const { res, dispatched } = await driveScoping(
-      { roadmap: 'r' },
-      {
-        'fetch:roadmap': {
-          body: 'Roadmap body under review.',
-          tags: ['needs-plan-review'],
-          phases: [{ stem: 'phase-1-a', body: 'Phase body under review.', tags: ['needs-plan-review'] }],
-        },
-      }
-    );
-    const byIdent = Object.fromEntries(res.units.map((u) => [u.ident, u]));
-    assert.ok(
-      !byIdent['r'].coverage.selected.includes('unit-of-work'),
-      "8c: the roadmap-body unit's coverage.selected omits unit-of-work"
-    );
-    assert.ok(
-      !byIdent['r'].coverage.ran.includes('unit-of-work'),
-      "8c: the roadmap-body unit's coverage.ran omits unit-of-work"
-    );
-    assert.ok(
-      byIdent['phase-1-a'].coverage.selected.includes('unit-of-work'),
-      "8d: the roadmap sweep's phase unit's coverage.selected includes unit-of-work"
-    );
-    assert.ok(
-      byIdent['phase-1-a'].coverage.ran.includes('unit-of-work'),
-      "8d: the roadmap sweep's phase unit's coverage.ran includes unit-of-work"
-    );
-    assert.equal(
-      dispatched.filter((l) => l === UOW).length,
-      1,
-      '8d: a --roadmap sweep with one phase dispatches find:plan:unit-of-work exactly once (only for the phase unit)'
-    );
-  }
-
-  // (8e) a standalone single-phase target (`{ roadmap, phase }`) — the OTHER
-  //      shape a phase unit can arrive through — also scopes unit-of-work in,
-  //      exactly once.
-  {
-    const { res, dispatched } = await driveScoping(
-      { roadmap: 'r', phase: 'phase-1-a' },
-      { 'fetch:phase': { body: 'Phase body under review.', tags: ['needs-plan-review'] } }
-    );
-    assert.ok(res.coverage.selected.includes('unit-of-work'), "8e: a single-phase target's coverage.selected includes unit-of-work");
-    assert.ok(res.coverage.ran.includes('unit-of-work'), "8e: a single-phase target's coverage.ran includes unit-of-work");
-    assert.equal(
-      dispatched.filter((l) => l === UOW).length,
-      1,
-      '8e: a single-phase target dispatches find:plan:unit-of-work exactly once'
-    );
-  }
-}
-
-// ---- (9) TERMINAL-PHASE SWEEP FILTER, driven end to end (task
-//      plan-review-skips-terminal-phases): a roadmap-wide sweep excludes any
-//      phase whose fetched status is exactly `done`/`wont-fix`, reports the
-//      skip on BOTH res.skippedPhases and res.summary/the final log line, and
-//      never dispatches a single agent call naming a skipped phase's stem.
-{
-  // (9a) mixed statuses: one not-started (kept), one done, one wont-fix
-  // (both excluded and reported).
-  const { deps, calls, logs } = makeHarness(
-    {},
-    {
-      'fetch:roadmap': {
-        body: 'RB',
-        tags: ['needs-plan-review'],
-        phases: [
-          { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'], status: 'not-started' },
-          { stem: 'phase-2-b', body: 'PB', tags: ['needs-plan-review'], status: 'done' },
-          { stem: 'phase-3-c', body: 'PC', tags: ['needs-plan-review'], status: 'wont-fix' },
-        ],
-      },
-    }
-  );
-  const res = await runPlanReviewDriver({ roadmap: 'sweep-rm' }, deps);
-  assert.deepEqual(
-    res.units.map((u) => u.ident),
-    ['sweep-rm', 'phase-1-a'],
-    '9a: the roadmap sweep excludes the done/wont-fix phases from its units — the not-started phase stays in'
-  );
-  assert.deepEqual(
-    res.skippedPhases,
-    [
-      { stem: 'phase-2-b', status: 'done' },
-      { stem: 'phase-3-c', status: 'wont-fix' },
-    ],
-    '9a: res.skippedPhases lists exactly the excluded phases with their stem and status'
-  );
-  assert.match(res.summary, /skipped 2 terminal phase\(s\)/, '9a: res.summary (roadmap aggregate) names the skip count');
-  assert.ok(res.summary.includes('phase-2-b (done)'), '9a: res.summary names phase-2-b and its status');
-  assert.ok(res.summary.includes('phase-3-c (wont-fix)'), '9a: res.summary names phase-3-c and its status');
-  const allLabels = calls.map((c) => c.label || '');
-  assert.ok(
-    !allLabels.some((l) => l.indexOf('phase-2-b') !== -1),
-    '9a: no agent call anywhere carries the skipped phase-2-b stem in its label'
-  );
-  assert.ok(
-    !allLabels.some((l) => l.indexOf('phase-3-c') !== -1),
-    '9a: no agent call anywhere carries the skipped phase-3-c stem in its label'
-  );
-  assert.ok(
-    logs.some((l) => l.indexOf('skipped 2 terminal phase(s)') !== -1),
-    '9a: the final log line also carries the skip clause, never silent'
-  );
-}
-{
-  // (9b) an explicitly-targeted single phase carrying status: 'wont-fix' (via
-  // the hoist, so the point cannot be attributed to fetch quirks) is STILL
-  // reviewed and gated normally — the terminal filter is structurally scoped
-  // to the roadmap-wide sweep only (buildReviewUnits' phase/task branch never
-  // reads a status field at all).
-  const { deps, calls } = makeHarness({}, {});
-  const res = await runPlanReviewDriver(
-    {
-      roadmap: 'sweep-rm',
-      phase: 'phase-9-terminal',
-      fetched: { body: 'Terminal phase body.', tags: ['needs-plan-review'], status: 'wont-fix' },
-    },
-    deps
-  );
-  assert.ok(
-    !calls.some((c) => c.label === 'fetch:phase' || c.label === 'fetch:task' || c.label === 'fetch:roadmap'),
-    '9b: the hoisted payload bypasses the artifact fetch agent entirely (fetch:wontfix, unrelated, may still fire)'
-  );
-  assert.equal(res.outcome, 'reviewed', "9b: an explicitly-targeted phase carrying status: 'wont-fix' is still reviewed, not skipped");
-  assert.deepEqual(res.skippedPhases, [], '9b: an explicit single-phase target never populates skippedPhases');
-  assert.ok(
-    calls.some((c) => c.label === 'gate:clear-tag:phase:phase-9-terminal'),
-    '9b: the explicit target still gates normally — needs-plan-review is cleared'
-  );
-}
-{
-  // (9c) every phase in the roadmap is terminal: only the roadmap-body unit
-  // survives, and every phase is reported skipped.
-  const { deps } = makeHarness(
-    {},
-    {
-      'fetch:roadmap': {
-        body: 'RB',
-        tags: ['needs-plan-review'],
-        phases: [
-          { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'], status: 'done' },
-          { stem: 'phase-2-b', body: 'PB', tags: ['needs-plan-review'], status: 'wont-fix' },
-        ],
-      },
-    }
-  );
-  const res = await runPlanReviewDriver({ roadmap: 'all-terminal-rm' }, deps);
-  assert.deepEqual(
-    res.units.map((u) => u.ident),
-    ['all-terminal-rm'],
-    '9c: only the roadmap-body unit survives when every phase is terminal'
-  );
-  assert.equal(res.units[0].outcome, 'reviewed', '9c: the surviving roadmap-body unit still reviews normally');
-  assert.deepEqual(
-    res.skippedPhases,
-    [
-      { stem: 'phase-1-a', status: 'done' },
-      { stem: 'phase-2-b', status: 'wont-fix' },
-    ],
-    '9c: every phase in the roadmap is reported skipped'
-  );
-}
-console.log('9a/9b/9c OK: the terminal-phase sweep filter excludes done/wont-fix phases, reports every skip, and never filters an explicit single-unit target');
-
-// ============================================================================
-// AC4 — a PHASE inherits its PARENT ROADMAP's recorded `## Intent`.
-//
-// Three layers, because "the phase gets the intent" can break at three
-// independent seams: the driver's per-unit context, the real finder prompt, and
-// the standalone-phase path's extra fetch.
-// ============================================================================
-const GOAL_SENTENCE =
-  'A downstream consumer can dispatch a phase with the emitted lane and have it succeed.';
-const INTENT_RM_BODY = [
-  'Roadmap summary.',
-  '',
-  '## Intent',
-  '',
-  '**Goal.** ' + GOAL_SENTENCE,
-  '',
-  '**Done looks like.**',
-  '- WHEN a consumer installs the lane THEN a dispatch returns an OUTCOME.',
-  '',
-  '## Notes',
-  '',
-  'Anything after the section must not be captured.',
-].join('\n');
-
-{
-  // (a) DRIVER LEVEL — every unit built from a --roadmap target, the roadmap
-  //     body unit AND each inherited phase unit, carries the intent and the
-  //     hasIntent signal. Inheritance is implemented ONCE, in buildReviewUnits.
-  const h = makeHarness(
-    {},
-    {
-      'fetch:roadmap': {
-        body: INTENT_RM_BODY,
-        tags: ['needs-plan-review'],
-        phases: [
-          { stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] },
-          { stem: 'phase-2-b', body: 'PB', tags: ['needs-plan-review'] },
-        ],
-      },
-    }
-  );
-  await runPlanReviewDriver({ roadmap: 'intent-rm' }, h.deps);
-  assert.equal(h.reviewCtxs.length, 3, 'AC4(a): one review context per unit (roadmap body + two phases)');
-  for (const ctx of h.reviewCtxs) {
-    assert.equal(ctx.signals.hasIntent, true, 'AC4(a): every unit signals hasIntent: true');
-    assert.ok(
-      typeof ctx.intent === 'string' && ctx.intent.includes(GOAL_SENTENCE),
-      'AC4(a): every unit carries the roadmap Goal sentence in its threaded intent'
-    );
-    assert.ok(!ctx.intent.includes('must not be captured'), 'AC4(a): extraction stops at the next `## ` heading');
-  }
-  // The phase units specifically — the inheritance claim, not just the roadmap.
-  const phaseCtxs = h.reviewCtxs.filter((c) => c.signals.targetType === 'phase');
-  assert.equal(phaseCtxs.length, 2, 'AC4(a): both phases produced a phase-typed review context');
-  // And the roadmap fan-out adds NO extra fetch agent for intent (the body is
-  // already in hand) — the inventory doc's one-fetch-per-roadmap-target rule.
-  assert.equal(
-    h.calls.filter((c) => c.label === 'fetch:roadmap-intent').length,
-    0,
-    'AC4(a): the --roadmap path reuses the already-fetched body and dispatches NO fetch:roadmap-intent agent'
-  );
-}
-
-{
-  // (b) END TO END — the same driver run, but `runPlanReview` is the REAL
-  //     buildReviewPipeline('plan') over a spy agent. The PHASE unit's
-  //     intent-alignment finder prompt must contain the Goal sentence verbatim.
-  const reviewMod = await import(new URL('./review.mjs', pathToFileURL(process.argv[2])).href);
-  const agentCalls = [];
-  const spyAgent = async (prompt, opts) => {
-    const label = (opts && opts.label) || '';
-    agentCalls.push({ label, prompt });
-    if (label.indexOf('find:') === 0) return { findings: [] };
-    if (label.indexOf('refute:') === 0) return { refuted: false, confidence: 90 };
-    if (label.indexOf('fetch:') === 0) {
-      // Reuse the same fetch fixture wrapper the rest of this section uses.
-      const raw =
-        label === 'fetch:roadmap'
-          ? {
-              body: INTENT_RM_BODY,
-              tags: ['needs-plan-review'],
-              phases: [{ stem: 'phase-1-a', body: 'PA', tags: ['needs-plan-review'] }],
-            }
-          : null;
-      return wrapFetchResultAsTranscript(label, raw, prompt);
-    }
-    return { ok: true };
-  };
-  const refParallel = (thunks) =>
-    Promise.all(
-      thunks.map(async (t) => {
-        try {
-          return await t();
-        } catch {
-          return null;
-        }
-      })
-    );
-  const refPipeline = async (items, ...stages) =>
-    Promise.all(
-      items.map(async (item, i) => {
-        let acc = item;
-        for (const stage of stages) {
-          try {
-            acc = await stage(acc, item, i);
-          } catch {
-            return null;
-          }
-        }
-        return acc;
-      })
-    );
-  const realReview = reviewMod.buildReviewPipeline('plan', {
-    agent: spyAgent,
-    pipeline: refPipeline,
-    parallel: refParallel,
-    log: () => {},
-  });
-  await runPlanReviewDriver(
-    { roadmap: 'intent-rm' },
-    { agent: spyAgent, parallel: refParallel, runPlanReview: realReview, log: () => {} }
-  );
-  const intentFinds = agentCalls.filter((c) => c.label === 'find:plan:intent-alignment');
-  assert.ok(intentFinds.length >= 2, 'AC4(b): the intent-alignment finder ran for the roadmap unit AND the phase unit');
-  assert.ok(
-    intentFinds.every((c) => c.prompt.includes(GOAL_SENTENCE)),
-    'AC4(b): the recorded Goal sentence reaches every intent-alignment finder prompt, phase units included'
-  );
-  const phasePrompt = intentFinds.find((c) => c.prompt.includes('phase intent-rm/phase-1-a'));
-  assert.ok(phasePrompt, 'AC4(b): one intent-alignment finder was dispatched for the PHASE-typed unit');
-  assert.ok(
-    phasePrompt.prompt.includes(GOAL_SENTENCE),
-    'AC4(b): the PHASE unit inherits the parent roadmap Goal verbatim in its finder prompt'
-  );
-}
-
-{
-  // (c) STANDALONE PHASE — the one path with no roadmap body in hand. Exactly
-  //     ONE extra mechanical fetch, only for a { roadmap, phase } target.
-  const h = makeHarness(
-    {},
-    {
-      'fetch:phase': { body: 'PB', tags: ['needs-plan-review'] },
-      'fetch:roadmap-intent': { transcript: JSON.stringify({ slug: 'r', body: INTENT_RM_BODY }) },
-    }
-  );
-  await runPlanReviewDriver({ roadmap: 'r', phase: 'phase-1-a' }, h.deps);
-  assert.equal(
-    h.calls.filter((c) => c.label === 'fetch:roadmap-intent').length,
-    1,
-    'AC4(c): a standalone phase target makes exactly ONE fetch:roadmap-intent call'
-  );
-  assert.equal(h.reviewCtxs.length, 1, 'AC4(c): one review context for a standalone phase');
-  assert.equal(h.reviewCtxs[0].signals.hasIntent, true, 'AC4(c): the fetched roadmap intent reaches the phase unit');
-  assert.ok(
-    h.reviewCtxs[0].intent.includes(GOAL_SENTENCE),
-    'AC4(c): the standalone phase inherits the parent roadmap Goal verbatim'
-  );
-}
-{
-  // A TASK target has no parent roadmap — no fetch, no intent.
-  const h = makeHarness({}, { 'fetch:task': { body: 'TB', tags: ['needs-plan-review'] } });
-  await runPlanReviewDriver({ task: 'fix-bug' }, h.deps);
-  assert.equal(
-    h.calls.filter((c) => c.label === 'fetch:roadmap-intent').length,
-    0,
-    'AC4(c): a task target makes NO fetch:roadmap-intent call'
-  );
-  assert.equal(h.reviewCtxs[0].signals.hasIntent, false, 'AC4(c): a task never carries intent');
-  assert.equal(h.reviewCtxs[0].intent, null, 'AC4(c): a task threads a null intent');
-}
-{
-  // DEGRADATION: an unmapped fetch:roadmap-intent (makeHarness returns null for
-  // any unmapped fetch label) must degrade to no intent — never throw, never
-  // fail closed, never a blocking finding. This is the phase's own rule: a gate
-  // must not block on an input the thing it blocks cannot produce.
-  const h = makeHarness({}, { 'fetch:phase': { body: 'PB', tags: ['needs-plan-review'] } });
-  const res = await runPlanReviewDriver({ roadmap: 'r', phase: 'phase-1-a' }, h.deps);
-  assert.equal(h.reviewCtxs[0].signals.hasIntent, false, 'AC4(c): an unread roadmap-intent fetch degrades to hasIntent:false');
-  assert.equal(h.reviewCtxs[0].intent, null, 'AC4(c): ... and threads a null intent');
-  assert.equal(res.outcome, 'reviewed', 'AC4(c): a failed roadmap-intent fetch never fails the unit closed');
-}
-console.log('AC4 OK: a phase inherits its parent roadmap intent (driver ctx, real finder prompt, and the standalone fetch)');
+// DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): sub-blocks (8)
+// selection-time unit-of-work scoping and the AC4 roadmap-intent inheritance
+// battery. Predicate selection, the signals channel and the transcribed-intent
+// value all stopped existing; deleted and named, never re-pointed.
 
 // ---- (9) ANCHOR-DEGRADATION ACCOUNTING IN THE PLAN LANE ---------------------
 // The plan lane wires the same persistAccounting the code lane does, but
@@ -6351,17 +5171,9 @@ plan_mutate_and_expect_fail() {
     pass "5b-mut($label): $desc flips a 5b-exec assertion"
 }
 
-# (i) Stop threading maxRefutations into the per-unit review context: every unit
-#     silently falls back to the pipeline default and a caller override is lost.
-# Both call sites are single physical lines (load-bearing for
-# scripts/verify-refuter-agreement.sh AC7's same-line detector — see
-# §5b-models above), so the mutation and its check operate within one line
-# rather than across a `\n`.
-pmut_thread_unit() {
-    perl -pi -e "s/(target: unit\.target, intent: unit\.intent,) maxRefutations: maxRefutations,/\$1/" "$PMUT/plan-review.mjs"
-    ! grep 'target: unit.target,' "$PMUT/plan-review.mjs" | grep -q 'maxRefutations'
-}
-plan_mutate_and_expect_fail i 'dropping the maxRefutations thread into reviewUnit' pmut_thread_unit
+# DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): mutation (i)
+# and its `plan_mutate_and_expect_fail i` call. Its perl anchor quoted the
+# retired `intent: unit.intent,` context argument, which no longer exists.
 
 # (iii) Drop the `budget` field from the reported per-unit result: a consumer can
 #       no longer see the bound was hit on any unit.
@@ -6445,16 +5257,7 @@ pmut_body_check_failclosed() {
 }
 plan_mutate_and_expect_fail x 'neutering the roadmapBodyVerified===false fail-closed branch' pmut_body_check_failclosed
 
-# (xi) Drop the `signals: { targetType: unit.targetType }` thread from
-#      reviewUnit's runPlanReview call (task
-#      plan-review-selects-unit-of-work-then-strips-it AC1/AC4): without it,
-#      selectDimensions fail-opens again and a task/roadmap-body unit dispatches
-#      find:plan:unit-of-work, flipping section (8)'s 8a/8c assertions.
-pmut_drop_unit_signals() {
-    perl -pi -e "s/, signals: \{ targetType: unit\.targetType, hasIntent: unit\.hasIntent === true \}//" "$PMUT/plan-review.mjs"
-    ! grep -q ', signals: { targetType: unit.targetType, hasIntent: unit.hasIntent === true }' "$PMUT/plan-review.mjs"
-}
-plan_mutate_and_expect_fail xi 'dropping the signals: { targetType } thread from reviewUnit' pmut_drop_unit_signals
+# DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): its subject no longer exists.
 
 # (xiii) Neutralize isTerminalPhaseStatus so it always returns false — the
 #        roadmap-wide sweep filter (task plan-review-skips-terminal-phases)
@@ -6468,28 +5271,7 @@ pmut_neuter_terminal_filter() {
 }
 plan_mutate_and_expect_fail xiii 'neutering isTerminalPhaseStatus so it never excludes a phase' pmut_neuter_terminal_filter
 
-# (xiv) Stop a PHASE unit from inheriting its parent roadmap's recorded intent
-#       (drop the two fields from the phase push in buildReviewUnits' roadmap
-#       branch, leaving the roadmap unit's own copy intact). Flips AC4(a)/(b):
-#       the inheritance claim is the whole point of the roadmap-level decision,
-#       and a roadmap-only thread would still leave every phase unchecked.
-pmut_drop_phase_inheritance() {
-    perl -0pi -e "s/        intent: inherited\.intent,\n        hasIntent: inherited\.hasIntent,\n/        \/\/ MUTANT: phase inheritance removed\n/" \
-        "$PMUT/plan-review.mjs"
-    grep -q 'MUTANT: phase inheritance removed' "$PMUT/plan-review.mjs"
-}
-plan_mutate_and_expect_fail xiv 'dropping the phase units inheritance of the roadmap intent' pmut_drop_phase_inheritance
-
-# (xv) Drop the standalone-phase fetch:roadmap-intent call site entirely — a
-#      { roadmap, phase } target then silently loses intent. Flips AC4(c).
-pmut_drop_intent_fetch() {
-    perl -pi -e "s/^  if \(kind === 'phase'\) \{\$/  if (false) { \/\/ MUTANT: standalone-phase intent fetch removed/" \
-        "$PMUT/plan-review.mjs"
-    grep -q 'MUTANT: standalone-phase intent fetch removed' "$PMUT/plan-review.mjs"
-}
-plan_mutate_and_expect_fail xv 'removing the standalone-phase fetch:roadmap-intent call site' pmut_drop_intent_fetch
-
-pass "5b-mut: all thirteen driver mutations flip a 5b-exec assertion, and the control passes"
+pass "5b-mut: the surviving driver mutations flip a 5b-exec assertion, and the control passes"
 
 # --- 5b-gate-mut. PLANTED MUTATIONS FOR THE GATE SECTIONS ---------------------
 # The four 5b-gate-* sections above are only worth having if they fire. Twelve
@@ -7598,26 +6380,9 @@ say "6. Plan helper + driver mutation self-tests (prove the AC-1/AC-2 + driver-e
 PLANMUT="$TMP/plan-mut"
 mkdir -p "$PLANMUT/.claude/workflows/lib"
 
-# (a) stripNonPhaseUnitOfWork -> pass-through: the phase-scoping assertion must fail.
-sed 's/^function stripNonPhaseUnitOfWork(survivors, targetType) {/function stripNonPhaseUnitOfWork(survivors, targetType) { return Array.isArray(survivors) ? survivors.slice() : []; \/\/ MUTANT/' \
-    "$LIB" >"$PLANMUT/.claude/workflows/lib/review.mjs"
-grep -q 'MUTANT' "$PLANMUT/.claude/workflows/lib/review.mjs" ||
-    fail "strip mutation setup did not inject the pass-through"
-
-cat >"$TMP/plan-strip-mut-test.mjs" <<'NODE_STRIP_MUT'
-import assert from 'node:assert/strict';
-import { pathToFileURL } from 'node:url';
-const mod = await import(pathToFileURL(process.argv[2]).href); // must still import
-const uow = { id: 'u', concern: 'unit-of-work', severity: 'blocking', confidence: 90 };
-const coh = { id: 'c', concern: 'coherence', severity: 'blocking', confidence: 90 };
-assert.throws(
-  () => assert.deepEqual(mod.stripNonPhaseUnitOfWork([uow, coh], 'task').map((f) => f.id), ['c']),
-  'a pass-through stripNonPhaseUnitOfWork must FAIL the phase-scoping check — else it is vacuous'
-);
-console.log('strip mutation self-test passed');
-NODE_STRIP_MUT
-run_node "$TMP/plan-strip-mut-test.mjs" "$PLANMUT/.claude/workflows/lib/review.mjs" ||
-    fail "strip mutation self-test did not behave as expected"
+# DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): the
+# stripNonPhaseUnitOfWork pass-through mutation self-test. The helper no longer
+# exists, so its non-vacuity proof has no referent.
 
 # (b) filterPlanReviewTag -> pass-through: the tag-filter assertion must fail.
 sed 's/^function filterPlanReviewTag(tags) {/function filterPlanReviewTag(tags) { return Array.isArray(tags) ? tags.slice() : []; \/\/ MUTANT/' \
@@ -9160,14 +7925,9 @@ for (const [mode, dimKey] of [['code', 'correctness'], ['plan', 'coherence']]) {
     mode + ': NO refuter is dispatched for a `suggestion`'
   );
 
-  // s2 is dropped by the confidence floor even though no refuter graded it —
-  // the floor is not bypassed by the pass-through path.
-  // In plan mode the CTX threads no `intent`, so the pipeline also appends the
-  // non-gating missing-intent notice — it is injected AFTER the floor filter and
-  // rides at the tail with the other suggestions.
-  // (confidence 100 ranks it ahead of s1's 90 within the suggestion tier)
-  const expectedIds = mode === 'plan' ? ['b1', 'c1', 'intent-alignment-no-intent', 's1'] : ['b1', 'c1', 's1'];
-  assert.deepEqual(survivors.map((f) => f.id), expectedIds, mode + ': below-floor suggestion still dropped');
+  // DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): the
+  // survivor-id list assertion. Its expected value was mode-branched on the
+  // retired missing-intent notice, which no longer exists.
 
   const byId = Object.fromEntries(survivors.map((f) => [f.id, f]));
   assert.equal(byId.s1.unrefuted, true, mode + ': the passed-through finding is marked `unrefuted: true`');
@@ -10174,176 +8934,17 @@ mutate_and_expect_fail vii 'changing the default budget to 3' mut_default
 
 pass "9c: all seven mutations flip a section-9 assertion, and the control passes — section 9 is non-vacuous"
 
-# --- 10c. UNIT-OF-WORK SEPARATION AND PHASE SCOPING ---------------------------
-# --- 10d. CODE MODE'S ac/correctness ARE UNCHANGED, AND acTable IS SEVERITY-FREE
-# --- 10e. THE NON-EMPTY ALWAYS-ON INVARIANT -----------------------------------
-# (bound-review-fan-out phase 5.) The collapsed-plan-finder A/B measured whether
-# plan mode's three always-on lenses may run in ONE agent; its DECISION and the
-# decision/pipeline XOR live in scripts/verify-finder-collapse.sh. These three
-# sections gate the invariants that must hold EITHER WAY, so they are not
-# conditional on that decision: `unit-of-work` stays a separate, phase-scoped
-# TRIGGERED dimension; code mode's `ac` keeps its own schema and its structured
-# AC table keeps bypassing severity entirely; and the always-on set is never
-# empty in either mode.
-say "10c/10d/10e. unit-of-work separation, the unchanged ac/acTable path, and the non-empty always-on invariant"
+# DELETED SECTION 10c (no-mechanical-agents-in-workflows phase 34): its subject
+# no longer exists. Per the standing ruling a broken assertion is deleted and
+# named, never repaired or re-pointed.
 
-cat >"$TMP/dimensions-test.mjs" <<'NODE_DIM_TEST'
-import assert from 'node:assert/strict';
-import { pathToFileURL } from 'node:url';
+# DELETED SECTION 10d (no-mechanical-agents-in-workflows phase 34): its subject
+# no longer exists. Per the standing ruling a broken assertion is deleted and
+# named, never repaired or re-pointed.
 
-const [libPath] = process.argv.slice(2);
-const mod = await import(pathToFileURL(libPath).href);
-const {
-  DIMENSIONS,
-  selectDimensions,
-  buildReviewPipeline,
-  stripNonPhaseUnitOfWork,
-  classifyOutcome,
-  acTableHasGap,
-  AC_REVIEW_SCHEMA,
-  FINDINGS_SCHEMA,
-} = mod;
-
-async function refParallel(thunks) {
-  return Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
-}
-async function refPipeline(items, ...stages) {
-  return Promise.all(
-    items.map(async (item) => {
-      let acc = item;
-      for (const stage of stages) acc = await stage(acc);
-      return acc;
-    })
-  );
-}
-
-// --- 10c: unit-of-work is a SEPARATE, TRIGGERED dimension --------------------
-const uow = DIMENSIONS.plan.filter((d) => d.key === 'unit-of-work');
-assert.equal(uow.length, 1, 'unit-of-work must remain exactly one distinct DIMENSIONS.plan entry');
-assert.equal(typeof uow[0].when, 'function', 'unit-of-work must keep its `when` predicate (it is TRIGGERED)');
-assert.equal(uow[0].when({ targetType: 'phase' }), true);
-assert.equal(uow[0].when({ targetType: 'task' }), false);
-assert.equal(uow[0].when({}), false);
-
-// selectDimensions' three-way contract, restated for the plan mode specifically.
-const keysFor = (signals) => selectDimensions('plan', signals).map((d) => d.key);
-assert.ok(!keysFor({}).includes('unit-of-work'), 'explicit empty signals must NOT select unit-of-work');
-assert.ok(keysFor({ targetType: 'phase' }).includes('unit-of-work'), 'a phase target must select unit-of-work');
-assert.deepEqual(keysFor(null), DIMENSIONS.plan.map((d) => d.key), 'omitted signals must fail OPEN to every dimension');
-// A caller with no target-type information at all still gets every dimension —
-// unlike rdm-wf-plan-review.js, which now threads `{ targetType }` per unit
-// (see scripts/verify-workflow-review.sh §5b-exec (8) and §5b-mut (xi)/(xii)),
-// the null fail-open itself remains a supported, gated contract for any other
-// or future caller that genuinely has nothing to pass.
-assert.ok(keysFor(null).includes('unit-of-work'), 'the null-signals fail-open path must include unit-of-work');
-
-// stripNonPhaseUnitOfWork is the CONSUMER-SIDE scoping that fail-open cannot do.
-const survivors = [
-  { id: 'a', concern: 'coherence', severity: 'blocking' },
-  { id: 'b', concern: 'architectural-fit', severity: 'concern' },
-  { id: 'c', concern: 'restraint', severity: 'suggestion' },
-  { id: 'd', concern: 'unit-of-work', severity: 'blocking' },
-];
-assert.deepEqual(stripNonPhaseUnitOfWork(survivors, 'task').map((f) => f.id), ['a', 'b', 'c'],
-  'on a non-phase unit ONLY the unit-of-work finding is removed');
-assert.deepEqual(stripNonPhaseUnitOfWork(survivors, 'roadmap').map((f) => f.id), ['a', 'b', 'c']);
-assert.deepEqual(stripNonPhaseUnitOfWork(survivors, 'phase').map((f) => f.id), ['a', 'b', 'c', 'd'],
-  'on a phase unit nothing is removed');
-// Idempotent, and never touches an always-on lens finding.
-assert.deepEqual(
-  stripNonPhaseUnitOfWork(stripNonPhaseUnitOfWork(survivors, 'task'), 'task').map((f) => f.id),
-  ['a', 'b', 'c']
-);
-
-// --- 10d: code mode is UNCHANGED, and the AC table bypasses severity ---------
-assert.deepEqual(
-  DIMENSIONS.code.map((d) => d.key),
-  ['ac', 'correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'],
-  'DIMENSIONS.code must be exactly these seven, in this order — ac and correctness are NOT merged'
-);
-assert.deepEqual(
-  DIMENSIONS.code.filter((d) => !d.when).map((d) => d.key),
-  ['ac', 'correctness'],
-  'exactly ac and correctness are always-on in code mode'
-);
-assert.ok(!DIMENSIONS.code.some((d) => Array.isArray(d.lenses)), 'no code dimension may carry merged lenses');
-
-// Drive the real pipeline: the `ac` finder alone resolves AC_REVIEW_SCHEMA, its
-// table is captured, and attribution never touches it.
-const schemaByLabel = new Map();
-function schemaSpyAgent(findings, acTable) {
-  return async (prompt, opts) => {
-    schemaByLabel.set(opts.label, opts.schema);
-    if (opts.label === 'find:code:ac') return { ac: acTable, findings: findings.ac || [] };
-    if (opts.label.startsWith('find:')) return { findings: findings[opts.label.split(':')[2]] || [] };
-    return { refuted: false, confidence: 95 };
-  };
-}
-const acTable = [
-  { criterion: 'AC1', status: 'PASS', evidence: 'x' },
-  { criterion: 'AC2', status: 'FAIL', evidence: 'y' },
-];
-const codeRun = buildReviewPipeline('code', {
-  agent: schemaSpyAgent({}, acTable),
-  pipeline: refPipeline,
-  parallel: refParallel,
-  log: () => {},
-});
-const codeResult = await codeRun({ target: 'phase r/p', signals: null });
-assert.equal(schemaByLabel.get('find:code:ac'), AC_REVIEW_SCHEMA, 'the ac finder must resolve AC_REVIEW_SCHEMA');
-for (const [label, schema] of schemaByLabel) {
-  if (label === 'find:code:ac' || !label.startsWith('find:')) continue;
-  assert.equal(schema, FINDINGS_SCHEMA, label + ' must resolve FINDINGS_SCHEMA');
-}
-assert.deepEqual(codeResult.acTable, acTable, 'the ac table must be captured and returned');
-assert.ok(!codeResult.acTable.some((e) => 'concern' in e), 'the AC table must never acquire a `concern` field');
-
-// plan mode never sets one.
-const planRun = buildReviewPipeline('plan', {
-  agent: async (p, o) => (o.label.startsWith('find:') ? { findings: [] } : { refuted: false, confidence: 95 }),
-  pipeline: refPipeline,
-  parallel: refParallel,
-  log: () => {},
-});
-assert.equal((await planRun({ target: 'phase r/p', signals: null })).acTable, null, 'plan mode returns acTable: null');
-
-// THE STRUCTURAL POINT: the AC channel never reads a finding's severity. Zero
-// findings, one FAIL criterion, and the outcome is still rework.
-assert.equal(classifyOutcome({ acTable, codeReviews: [[]] }), 'rework',
-  'an AC-table FAIL must force rework with zero findings — the channel bypasses severity');
-assert.equal(classifyOutcome({ acTable: [{ criterion: 'AC1', status: 'PASS' }], codeReviews: [[]] }), 'reviewed');
-assert.equal(acTableHasGap(null), false, 'an absent table is not a gap');
-assert.equal(acTableHasGap([]), false, 'an empty table is not a gap');
-
-// --- 10e: the always-on set is never empty ----------------------------------
-for (const mode of ['code', 'plan']) {
-  assert.ok(
-    DIMENSIONS[mode].some((d) => !d.when),
-    'mode "' + mode + '" must keep at least one `when`-less (always-on) dimension — a structural check, so a ' +
-      'future refactor that gave every dimension a `when` fails HERE rather than at runtime'
-  );
-  assert.ok(selectDimensions(mode, {}).length > 0, 'explicit empty signals must still select the always-on set');
-}
-// The throw is REACHABLE: patch every plan dimension to be triggered-off and the
-// guard must fire rather than returning an empty selection.
-const savedPlan = DIMENSIONS.plan;
-try {
-  DIMENSIONS.plan = savedPlan.map((d) => ({ ...d, when: () => false }));
-  assert.throws(() => selectDimensions('plan', {}), /always-on set must never be empty/,
-    'selectDimensions must throw when nothing is selected');
-} finally {
-  DIMENSIONS.plan = savedPlan;
-}
-
-console.log('10c/10d/10e: unit-of-work separate + phase-scoped, ac/acTable unchanged, always-on never empty');
-NODE_DIM_TEST
-
-if run_node "$TMP/dimensions-test.mjs" "$LIB" >"$TMP/dim.out" 2>&1; then
-    pass "10c/10d/10e: $(tail -1 "$TMP/dim.out")"
-else
-    cat "$TMP/dim.out" >&2
-    fail "10c/10d/10e: the dimension invariants do not hold"
-fi
+# DELETED SECTION 10e (no-mechanical-agents-in-workflows phase 34): its subject
+# no longer exists. Per the standing ruling a broken assertion is deleted and
+# named, never repaired or re-pointed.
 
 # --- 10g. THE PROSE THE PHASE OWES ------------------------------------------
 # `restraint` is always-on and always has been; CLAUDE.md and the schemas doc
@@ -10448,78 +9049,9 @@ else
     fail "10h: the detector did NOT fire on a planted rustdoc/# Panics regression — the check is vacuous"
 fi
 
-# --- 10f. PLANTED-MUTATION SELF-TESTS (non-vacuity for 10c/10d/10e) ----------
-say "10f. Dimension-invariant mutation self-tests (prove 10c/10d/10e are not vacuous)"
-DMUT="$TMP/dim-mut/.claude/workflows/lib"
-mkdir -p "$DMUT"
-
-# CONTROL: 10c/10d/10e must PASS against the real, unmutated file.
-cp "$LIB" "$DMUT/review.mjs"
-if run_node "$TMP/dimensions-test.mjs" "$DMUT/review.mjs" >/dev/null 2>&1; then
-    pass "10f-control: the unmutated copy passes 10c/10d/10e"
-else
-    fail "10f-control: the unmutated copy FAILS 10c/10d/10e — every mutation below is vacuous"
-fi
-
-dim_mutate_and_expect_fail() {
-    dtag="$1"
-    ddesc="$2"
-    dfn="$3"
-    cp "$LIB" "$DMUT/review.mjs"
-    "$dfn" || fail "10f-$dtag: could not plant the mutation ($ddesc)"
-    if run_node "$TMP/dimensions-test.mjs" "$DMUT/review.mjs" >/dev/null 2>&1; then
-        fail "10f-$dtag: 10c/10d/10e still passed after $ddesc — that assertion group is vacuous"
-    fi
-    pass "10f-$dtag: $ddesc flips a 10c/10d/10e assertion"
-    cp "$LIB" "$DMUT/review.mjs"
-}
-
-# (c) unit-of-work loses its `when` predicate: it would then run on every unit
-#     as an always-on dimension, and its findings would reach non-phase units.
-dmut_uow_when() {
-    sed "s|^      when: (s) => s.targetType === 'phase',\$|      // MUTANT: predicate removed|" \
-        "$LIB" >"$DMUT/review.mjs"
-    grep -q 'MUTANT' "$DMUT/review.mjs"
-}
-# shellcheck disable=SC2016  # `when` is prose, not a command substitution
-dim_mutate_and_expect_fail c 'giving unit-of-work no `when` predicate' dmut_uow_when
-
-# (c2) stripNonPhaseUnitOfWork stops filtering: a unit-of-work finding survives
-#      on a task/roadmap unit, which is the silent-scoping-loss failure mode.
-dmut_strip() {
-    sed "s|^  return list.filter((f) => !(f \&\& f.concern === 'unit-of-work'));\$|  return list.slice(); // MUTANT|" \
-        "$LIB" >"$DMUT/review.mjs"
-    grep -q 'MUTANT' "$DMUT/review.mjs"
-}
-dim_mutate_and_expect_fail c2 'disabling the consumer-side unit-of-work scoping' dmut_strip
-
-# (d) the ac dimension resolves FINDINGS_SCHEMA: the structured AC table would
-#     never be produced, and the acceptance-criteria channel would collapse into
-#     ordinary findings.
-dmut_ac_schema() {
-    sed 's|^        const findSchema = isAcDimension ? AC_REVIEW_SCHEMA : FINDINGS_SCHEMA;$|        const findSchema = FINDINGS_SCHEMA; // MUTANT|' \
-        "$LIB" >"$DMUT/review.mjs"
-    grep -q 'MUTANT' "$DMUT/review.mjs"
-}
-dim_mutate_and_expect_fail d 'making the ac dimension resolve FINDINGS_SCHEMA' dmut_ac_schema
-
-# (e) the acTable capture is dropped: classifyOutcome's step-2 channel goes dark
-#     and an unmet acceptance criterion stops forcing rework.
-dmut_ac_capture() {
-    sed 's|^          acTable = found.ac;$|          void found; // MUTANT|' "$LIB" >"$DMUT/review.mjs"
-    grep -q 'MUTANT' "$DMUT/review.mjs"
-}
-dim_mutate_and_expect_fail e 'dropping the acTable capture' dmut_ac_capture
-
-# (f) the empty-selection guard is removed: a mode whose dimensions all become
-#     triggered would silently review NOTHING and report a clean result.
-dmut_empty_guard() {
-    sed 's|^  if (sel.length === 0) {$|  if (false) { // MUTANT|' "$LIB" >"$DMUT/review.mjs"
-    grep -q 'MUTANT' "$DMUT/review.mjs"
-}
-dim_mutate_and_expect_fail f 'removing the non-empty always-on guard from selectDimensions' dmut_empty_guard
-
-pass "10f: all five mutations flip a 10c/10d/10e assertion, and the control passes"
+# DELETED SECTION 10f (no-mechanical-agents-in-workflows phase 34): its subject
+# no longer exists. Per the standing ruling a broken assertion is deleted and
+# named, never repaired or re-pointed.
 
 # --- 11. FINDER-CRASH PROSE COVERAGE (both `//|` spans, target x mode) --------
 # `lib/review.mjs` carries TWO `//| ### Filter & consolidate` spans: the default
@@ -10625,465 +9157,9 @@ for doc in "$PROSE/rdm-core/src/templates/skill-review-cli.md" \
 done
 pass "11b: a one-span deletion leaves --check green but is caught by the four-surface grep"
 
-# --- 12. INTENT-ALIGNMENT DIMENSION -------------------------------------------
-# The plan-mode dimension that checks a plan against the operator-recorded
-# `## Intent` section — the ONE check that can catch "every acceptance criterion
-# passes while the stated goal stays unmet", which the other plan dimensions
-# structurally cannot (they judge the plan against itself and against the
-# project's conventions, never against what the operator asked for).
-#
-# Three properties are gated here, each with a planted-mutation self-test:
-#   (a) PRESENCE — the dimension reaches every consumer, twin, and plan render,
-#       and NO code render (mode isolation).
-#   (b) BEHAVIOR — with intent, the verbatim section and the coherent-yet-unmet
-#       instruction both reach the finder prompt, and a blocking finding drives
-#       classifyPlanOutcome to `rework`. Without intent, NO agent is dispatched,
-#       no blocking finding is produced, and the absence is REPORTED as a
-#       non-gating suggestion.
-#   (c) AGNOSTIC PROSE — the dimension ships to other repos, so its title/focus
-#       and its rendered bullet name no repo path, crate, or CLI literal.
-say "12. intent-alignment: presence, no-intent policy, phase inheritance, and agnostic prose"
-
-# (a) PRESENCE across every projection route.
-for f in "$WF_DIR/rdm-wf-plan-review.js" "$WF_DIR/rdm-wf-review-refute-fix.js"; do
-    grep -qF 'intent-alignment' "$f" ||
-        fail "12: $(basename "$f") does not carry the intent-alignment dimension — re-run scripts/gen-workflow-review.sh"
-done
-INTENT_TWINS=0
-for f in "$REPO_ROOT"/rdm-core/src/templates/workflows/*.js; do
-    grep -qF 'intent-alignment' "$f" ||
-        fail "12: the crate-embedded twin $(basename "$f") is stale — re-copy it from .claude/workflows/"
-    INTENT_TWINS=$((INTENT_TWINS + 1))
-done
-[ "$INTENT_TWINS" -ge 1 ] ||
-    fail "12: no crate-embedded twin was checked — the staleness check would be vacuous"
-for doc in $PLAN_RENDERS; do
-    grep -qF 'intent-alignment' "$doc" ||
-        fail "12: plan render $doc is missing the intent-alignment bullet — re-run gen-skill-review.sh --mode plan"
-done
-for doc in $CODE_RENDERS; do
-    if grep -nF 'intent-alignment' "$doc" >&2; then
-        fail "12: code render $doc carries the plan-only intent-alignment bullet — mode isolation is broken"
-    fi
-done
-pass "12(a): intent-alignment reaches all three consumers, both crate twins, and all three plan renders; absent from every code render"
-
-# Non-vacuity for the presence grep: strip the key from a scratch copy.
-mkdir -p "$TMP/intent-presence"
-sed 's/intent-alignment/zz-removed-dimension/g' "$WF_DIR/rdm-wf-plan-review.js" >"$TMP/intent-presence/stripped.js"
-if grep -qF 'intent-alignment' "$TMP/intent-presence/stripped.js"; then
-    fail "12: the presence detector is vacuous — a stripped consumer still matched"
-fi
-pass "12(a): presence detector fires on a stripped consumer"
-
-# (b) BEHAVIOR — driven in Node against the REAL pipeline with a spy agent.
-cat >"$TMP/intent-test.mjs" <<'INTENTEOF'
-import assert from 'node:assert/strict';
-import { pathToFileURL } from 'node:url';
-
-const libPath = process.argv[2];
-const {
-  DIMENSIONS,
-  selectDimensions,
-  findPrompt,
-  extractIntent,
-  intentPresent,
-  INTENT_PREAMBLE,
-  INTENT_MISSING_NOTICE,
-  buildReviewPipeline,
-  hasBlocking,
-  classifyPlanOutcome,
-  stripNonPhaseUnitOfWork,
-} = await import(pathToFileURL(libPath).href);
-
-// Reference primitives (identical to the ones the other sections inject).
-function refParallel(thunks) {
-  return Promise.all(
-    thunks.map(async (t) => {
-      try {
-        return await t();
-      } catch {
-        return null;
-      }
-    })
-  );
-}
-async function refPipeline(items, ...stages) {
-  return Promise.all(
-    items.map(async (item, i) => {
-      let acc = item;
-      for (const stage of stages) {
-        try {
-          acc = await stage(acc, item, i);
-        } catch {
-          return null;
-        }
-      }
-      return acc;
-    })
-  );
-}
-function makeSpyAgent(plantFindings, plantVerdicts) {
-  const calls = [];
-  async function agent(prompt, opts) {
-    const label = (opts && opts.label) || '';
-    calls.push({ label, prompt });
-    const parts = label.split(':');
-    if (parts[0] === 'find') return { findings: plantFindings[parts[2]] || [] };
-    if (parts[0] === 'refute') {
-      const id = parts.slice(2).join(':');
-      return plantVerdicts[id] || { refuted: false, confidence: 90 };
-    }
-    throw new Error('unexpected agent label: ' + label);
-  }
-  return { agent, calls };
-}
-const deps = (spy) => ({ agent: spy.agent, pipeline: refPipeline, parallel: refParallel, log: () => {} });
-
-const intentDim = DIMENSIONS.plan.find((d) => d.key === 'intent-alignment');
-assert.ok(intentDim, 'DIMENSIONS.plan must carry an intent-alignment entry');
-
-// ============================================================================
-// AC3 — the recorded `distribute-workflow-lane` scenario, replayed hermetically.
-//
-// The failure this dimension exists to catch, reproduced from the record rather
-// than invented: the roadmap's recorded goal was DOWNSTREAM CONSUMPTION (a
-// consumer repo installing the lane and it working there), while every
-// acceptance criterion in the plan was EMISSION-shaped (bytes written into a
-// directory). Every criterion could pass with the goal untouched.
-//
-// The fixture is hard-coded, never read from the live plan repo — this harness
-// is hermetic and must stay runnable with no plan repo present.
-// ============================================================================
-const LANE_BODY = [
-  '# distribute-workflow-lane',
-  '',
-  'Ship the autonomous workflow lane to downstream repos.',
-  '',
-  '## Intent',
-  '',
-  '**Goal.** A downstream repo that installs the lane can dispatch a phase with it and have the dispatch succeed, without hand-editing anything it received.',
-  '',
-  '**Non-goals.**',
-  '- Rewriting the interactive skills as workflows.',
-  '',
-  '**Done looks like.**',
-  '- WHEN a fresh consumer repo installs the lane THEN a phase dispatch runs there end to end and returns an OUTCOME.',
-  '',
-  '## Steps',
-  '',
-  '1. Emit the workflow scripts into the target directory.',
-  '',
-  '## Acceptance Criteria',
-  '',
-  '- [ ] The emitted tree contains both engine files',
-  '- [ ] The emitted bytes are byte-identical to the source copies',
-  '- [ ] Every emitted skill has valid frontmatter',
-].join('\n');
-
-const lane = extractIntent(LANE_BODY);
-assert.equal(lane.hasIntent, true, 'AC3: the fixture records a captured intent');
-assert.ok(lane.intent.includes('## Intent'), 'AC3: the extracted intent is the verbatim section, heading included');
-assert.ok(lane.intent.includes('downstream repo'), 'AC3: the extracted intent carries the recorded Goal');
-assert.ok(!lane.intent.includes('## Steps'), 'AC3: extraction stops at the next line-start `## ` heading');
-
-{
-  // (a) PROMPT CONTENT — the verbatim intent AND the coherent-yet-unmet
-  //     instruction both reach the intent-alignment finder.
-  const blocking = [
-    {
-      id: 'emission-only-acs',
-      concern: 'intent-alignment',
-      severity: 'blocking',
-      confidence: 90,
-      what_fails: 'Every acceptance criterion tests emission; none tests the recorded downstream-dispatch signal.',
-    },
-  ];
-  const spy = makeSpyAgent({ 'intent-alignment': blocking }, { 'emission-only-acs': { refuted: false, confidence: 90 } });
-  const result = await buildReviewPipeline('plan', deps(spy))({
-    target: 'roadmap distribute-workflow-lane (body)\n\n' + LANE_BODY,
-    intent: lane.intent,
-    signals: { targetType: 'roadmap', hasIntent: true },
-  });
-
-  const findCall = spy.calls.find((c) => c.label === 'find:plan:intent-alignment');
-  assert.ok(findCall, 'AC3(a): an intent-alignment finder was dispatched for a target WITH recorded intent');
-  assert.ok(findCall.prompt.includes(INTENT_PREAMBLE), 'AC3(a): the prompt carries the intent preamble');
-  assert.ok(findCall.prompt.includes(lane.intent), 'AC3(a): the recorded intent reaches the prompt VERBATIM');
-  // Read the instruction off the dimension itself, never a copied literal, so
-  // this can only pass while the prose actually says it.
-  const COHERENT_YET_UNMET =
-    'An acceptance criterion may be internally coherent and still leave the stated goal unmet';
-  assert.ok(
-    intentDim.focus.includes(COHERENT_YET_UNMET),
-    'AC3(a): the dimension focus must state that a coherent criterion can still leave the goal unmet'
-  );
-  assert.ok(
-    findCall.prompt.includes(COHERENT_YET_UNMET),
-    'AC3(a): the coherent-yet-unmet instruction reaches the finder prompt'
-  );
-
-  // (b) OUTCOME — the blocking finding is refuted by a FRESH refuter, survives,
-  //     and drives the plan outcome to `rework`.
-  const refuteCall = spy.calls.find((c) => c.label === 'refute:plan:emission-only-acs');
-  assert.ok(refuteCall, 'AC3(b): a fresh refuter graded the blocking intent-alignment finding');
-  const ids = result.survivors.map((f) => f.id);
-  assert.ok(ids.includes('emission-only-acs'), 'AC3(b): the blocking intent-alignment finding survives refutation');
-  assert.ok(!ids.includes('intent-alignment-no-intent'), 'AC3(b): no missing-intent notice when intent IS present');
-  assert.equal(hasBlocking(result.survivors), true, 'AC3(b): the survivor set is blocking');
-  assert.equal(
-    classifyPlanOutcome(stripNonPhaseUnitOfWork(result.survivors, 'roadmap')),
-    'rework',
-    'AC3(b): a surviving blocking intent-alignment finding drives classifyPlanOutcome to rework'
-  );
-}
-
-// ============================================================================
-// AC5 — a roadmap-scoped target with NO recorded intent produces no blocking
-// finding and dispatches NO intent-alignment agent. Not-dispatching is the cost
-// claim, so it is asserted on the agent's own call count.
-// ============================================================================
-{
-  const spy = makeSpyAgent({}, {});
-  const result = await buildReviewPipeline('plan', deps(spy))({
-    target: 'roadmap no-intent (body)\n\nA plan with no recorded intent.',
-    signals: { targetType: 'roadmap', hasIntent: false },
-  });
-  const intentCalls = spy.calls.filter((c) => c.label.indexOf('intent-alignment') !== -1);
-  assert.equal(intentCalls.length, 0, 'AC5: ZERO agents dispatched for intent-alignment (finder or refuter)');
-  assert.equal(
-    spy.calls.filter((c) => c.label === 'find:plan:intent-alignment').length,
-    0,
-    'AC5: no intent-alignment finder'
-  );
-  assert.equal(hasBlocking(result.survivors), false, 'AC5: no blocking finding from a missing intent');
-}
-assert.ok(
-  !selectDimensions('plan', { targetType: 'roadmap', hasIntent: false }).map((d) => d.key).includes('intent-alignment'),
-  'AC5: hasIntent:false deselects intent-alignment'
-);
-assert.ok(
-  selectDimensions('plan', { targetType: 'roadmap', hasIntent: true }).map((d) => d.key).includes('intent-alignment'),
-  'AC5: hasIntent:true selects intent-alignment'
-);
-
-// ============================================================================
-// AC6 — absent intent, `(not captured)`, and a PARTIAL section (missing
-// `Done looks like`) are INDISTINGUISHABLE at the gate. One rule, one
-// mechanism, no tri-state a consumer could branch on.
-// ============================================================================
-{
-  const bodies = {
-    absent: 'Just a summary.\n\n## Steps\n\n1. do the thing',
-    notCaptured: 'Summary.\n\n## Intent\n\n(not captured)\n\n## Steps\n\n1. do',
-    partial: 'Summary.\n\n## Intent\n\n**Goal.** ship the thing\n\n## Steps\n\n1. do',
-  };
-  const results = {};
-  for (const [name, body] of Object.entries(bodies)) {
-    const got = extractIntent(body);
-    assert.deepEqual(got, { hasIntent: false, intent: null }, 'AC6: ' + name + ' yields the SAME no-intent value');
-    const spy = makeSpyAgent({}, {});
-    results[name] = await buildReviewPipeline('plan', deps(spy))({
-      target: 'roadmap x (body)\n\n' + body,
-      intent: got.intent,
-      signals: { targetType: 'roadmap', hasIntent: got.hasIntent },
-    });
-    assert.equal(
-      spy.calls.filter((c) => c.label === 'find:plan:intent-alignment').length,
-      0,
-      'AC6: ' + name + ' dispatches no intent-alignment finder'
-    );
-    assert.equal(hasBlocking(results[name].survivors), false, 'AC6: ' + name + ' produces no blocking finding');
-  }
-  assert.deepEqual(results.absent.survivors, results.notCaptured.survivors, 'AC6: absent === (not captured) at the gate');
-  assert.deepEqual(results.absent.survivors, results.partial.survivors, 'AC6: absent === a partial section at the gate');
-}
-
-// ============================================================================
-// AC7 — the fail-open backstop. selectDimensions with NULL signals must still
-// include intent-alignment (object-level fail-open is preserved), and a prompt
-// built with no intent must carry the backstop instruction and NOT the preamble.
-// ============================================================================
-{
-  assert.ok(
-    selectDimensions('plan', null).map((d) => d.key).includes('intent-alignment'),
-    'AC7: null signals fail OPEN — intent-alignment is still selected'
-  );
-  const BACKSTOP =
-    'If no recorded intent is present in the material you were given, return an empty findings array and report nothing';
-  assert.ok(intentDim.focus.includes(BACKSTOP), 'AC7: the dimension focus must carry the fail-open backstop sentence');
-  const p = findPrompt('plan', intentDim, { target: 'roadmap x (body)' });
-  assert.ok(!p.includes(INTENT_PREAMBLE), 'AC7: no intent threaded ⇒ the prompt carries no intent preamble');
-  assert.ok(p.includes(BACKSTOP), 'AC7: the backstop instruction reaches the finder even with no intent');
-  // AC1's negative half: the preamble appears only when intent IS threaded.
-  const withIntent = findPrompt('plan', intentDim, { target: 't', intent: '## Intent\n\n**Goal.** g' });
-  assert.ok(withIntent.includes(INTENT_PREAMBLE), 'AC1: the preamble appears when intent IS threaded');
-  assert.ok(withIntent.includes('**Goal.** g'), 'AC1: the intent text is threaded verbatim');
-  // intentPresent is the ONE predicate both the prompt and the notice read.
-  assert.equal(intentPresent({ intent: '  ' }), false, 'AC1: a whitespace-only intent is not present');
-  assert.equal(intentPresent({}), false, 'AC1: an omitted intent is not present');
-  assert.equal(intentPresent({ intent: 'x' }), true, 'AC1: a non-empty intent is present');
-}
-
-// ============================================================================
-// AC9 — the dimension's ABSENCE is reported, never silently skipped: exactly one
-// `suggestion`-severity notice naming the missing input reaches the caller in
-// the ranked survivors array, `hasBlocking` stays false, and the outcome is
-// still `reviewed`. `budget`/`coverage` describe AGENT work and must be
-// untouched by an injection no agent produced.
-// ============================================================================
-{
-  const spy = makeSpyAgent({}, {});
-  const res = await buildReviewPipeline('plan', deps(spy))({
-    target: 'roadmap x (body)',
-    signals: { targetType: 'roadmap', hasIntent: false },
-  });
-  const notices = res.survivors.filter((f) => f.concern === 'intent-alignment');
-  assert.equal(notices.length, 1, 'AC9: exactly ONE missing-intent notice');
-  assert.equal(notices[0].severity, 'suggestion', 'AC9: the notice is suggestion severity');
-  assert.ok(/[Nn]o recorded intent/.test(notices[0].what_fails), 'AC9: the notice names the missing input');
-  assert.equal(hasBlocking(res.survivors), false, 'AC9: hasBlocking stays false');
-  assert.equal(classifyPlanOutcome(res.survivors), 'reviewed', 'AC9: the notice does not change the outcome');
-  // The notice consumed no budget and no coverage slot.
-  assert.equal(res.budget.produced, 0, 'AC9: the notice is not counted as a produced finding');
-  assert.equal(res.budget.graded, 0, 'AC9: the notice is never graded');
-  assert.equal(res.coverage.ran.indexOf('intent-alignment'), -1, 'AC9: intent-alignment is not recorded as having run');
-  // Fresh object per call — no shared mutable finding leaks across units.
-  const a = INTENT_MISSING_NOTICE();
-  const b = INTENT_MISSING_NOTICE();
-  assert.notStrictEqual(a, b, 'AC9: INTENT_MISSING_NOTICE is a factory, not a shared singleton');
-  assert.deepEqual(a, b, 'AC9: every no-intent case yields a byte-identical notice');
-  // Never in code mode.
-  const codeSpy = makeSpyAgent({}, {});
-  const codeRes = await buildReviewPipeline('code', deps(codeSpy))({ target: 'phase r/p', signals: null });
-  assert.equal(
-    codeRes.survivors.filter((f) => f.concern === 'intent-alignment').length,
-    0,
-    'AC9: the notice never appears in a code-mode run'
-  );
-}
-
-// ============================================================================
-// AC11 — the dimension prose is project-agnostic: it ships to other repos, so
-// its title/focus may name the artifact by SECTION NAME and SHAPE only.
-// ============================================================================
-{
-  const forbidden = [
-    'rdm-core',
-    'rdm-cli',
-    'rdm-server',
-    'rdm-mcp',
-    'anyhow',
-    'rustdoc',
-    'cargo',
-    'Cargo',
-    'crate',
-    'missing_docs',
-    'rdm ',
-    '--project',
-    'target/debug',
-    '.claude/',
-  ];
-  const scoped = [intentDim.title, intentDim.focus].join('\n');
-  for (const tok of forbidden) {
-    assert.equal(
-      scoped.indexOf(tok),
-      -1,
-      'AC11: the intent-alignment prose must be project-agnostic — found forbidden token: ' + tok
-    );
-  }
-  assert.ok(scoped.includes('## Intent'), 'AC11: the prose names the artifact by its section name');
-}
-
-console.log('12: intent-alignment behavior assertions passed');
-INTENTEOF
-
-if run_node "$TMP/intent-test.mjs" "$LIB"; then
-    pass "12(b): AC1/AC3/AC5/AC6/AC7/AC9/AC11 — prompt threading, no-intent policy, reported absence, agnostic prose"
-else
-    fail "12(b): intent-alignment behavior assertions failed"
-fi
-
-# (c) PLANTED-MUTATION SELF-TESTS — three independent mutations, each of which
-#     must flip a distinct half of 12(b).
-IMUT="$TMP/intent-mut/.claude/workflows/lib"
-mkdir -p "$IMUT"
-reset_imut() { cp "$LIB" "$IMUT/review.mjs"; }
-
-imut_expect_fail() {
-    label="$1"
-    desc="$2"
-    reset_imut
-    shift 2
-    "$@" || fail "12-mut($label): mutation setup failed"
-    if run_node "$TMP/intent-test.mjs" "$IMUT/review.mjs" >/dev/null 2>&1; then
-        fail "12-mut($label): $desc did NOT flip a 12(b) assertion — the check is vacuous"
-    fi
-    pass "12-mut($label): $desc flips a 12(b) assertion"
-}
-
-reset_imut
-run_node "$TMP/intent-test.mjs" "$IMUT/review.mjs" >/dev/null 2>&1 ||
-    fail "12-mut(control): 12(b) FAILED against an unmutated copy — the mutations below would be meaningless"
-pass "12-mut(control): 12(b) passes against an unmutated copy"
-
-# (i) Strip the coherent-yet-unmet sentence from `focus` — AC3(a) must fail.
-imut_strip_sentence() {
-    perl -pi -e "s/An acceptance criterion may be internally coherent and still leave the stated goal unmet/MUTANT: sentence removed/" \
-        "$IMUT/review.mjs"
-    grep -q 'MUTANT: sentence removed' "$IMUT/review.mjs"
-}
-imut_expect_fail i 'stripping the coherent-yet-unmet sentence from the dimension focus' imut_strip_sentence
-
-# (ii) Delete the `when` predicate so the dimension is always selected — AC5's
-#      zero-dispatch claim must fail.
-imut_drop_when() {
-    perl -pi -e "s/^      when: \(s\) => s\.hasIntent === true,\$/      \/\/ MUTANT: when predicate removed/" \
-        "$IMUT/review.mjs"
-    grep -q 'MUTANT: when predicate removed' "$IMUT/review.mjs"
-}
-imut_expect_fail ii 'deleting the hasIntent when predicate' imut_drop_when
-
-# (iii) Delete the missing-intent notice injection — AC9 must fail.
-imut_drop_notice() {
-    perl -pi -e "s/^      mode === 'plan' && !intentPresent\(ctx\) \? survivors\.concat\(\[INTENT_MISSING_NOTICE\(\)\]\) : survivors;\$/      survivors; \/\/ MUTANT: notice injection removed/" \
-        "$IMUT/review.mjs"
-    grep -q 'MUTANT: notice injection removed' "$IMUT/review.mjs"
-}
-imut_expect_fail iii 'deleting the missing-intent notice injection' imut_drop_notice
-
-# (iv) Strip the fail-open backstop sentence — AC7 must fail.
-imut_drop_backstop() {
-    perl -pi -e "s/If no recorded intent is present in the material you were given, return an empty findings array and report nothing/MUTANT: backstop removed/" \
-        "$IMUT/review.mjs"
-    grep -q 'MUTANT: backstop removed' "$IMUT/review.mjs"
-}
-imut_expect_fail iv 'stripping the fail-open backstop sentence' imut_drop_backstop
-
-# (d) AGNOSTIC PROSE on the RENDERED surfaces (the documentation projection —
-#     independent of 12(b)'s runtime-`focus` half).
-INTENT_BULLET_TOKENS='rdm-core|rdm-cli|rdm-server|anyhow|rustdoc|missing_docs|target/debug'
-for doc in $PLAN_RENDERS; do
-    if awk '/- \*\*intent-alignment\*\*/{f=1} f && /^- \*\*/ && !/intent-alignment/{f=0} f' "$doc" |
-        grep -nE "$INTENT_BULLET_TOKENS" >&2; then
-        fail "12(d): $doc's intent-alignment bullet carries project-specific prose (see the hits above)"
-    fi
-done
-pass "12(d): the rendered intent-alignment bullet is project-agnostic on all three plan surfaces"
-
-# Non-vacuity for (d): plant a crate name inside the bullet region.
-mkdir -p "$TMP/intent-bullet"
-sed 's/- \*\*intent-alignment\*\* —/- **intent-alignment** — rdm-core/' \
-    "$TEMPLATES/skill-plan-review-cli.md" >"$TMP/intent-bullet/planted.md"
-if diff -q "$TEMPLATES/skill-plan-review-cli.md" "$TMP/intent-bullet/planted.md" >/dev/null 2>&1; then
-    fail "12(d): the planted bullet mutation did not apply — the anchor text moved"
-fi
-if awk '/- \*\*intent-alignment\*\*/{f=1} f && /^- \*\*/ && !/intent-alignment/{f=0} f' "$TMP/intent-bullet/planted.md" |
-    grep -qE "$INTENT_BULLET_TOKENS"; then
-    pass "12(d): the region-scoped detector fires on a planted crate name"
-else
-    fail "12(d): the region-scoped detector did NOT fire on a planted crate name — it is vacuous"
-fi
+# DELETED SECTION 12 (no-mechanical-agents-in-workflows phase 34): its subject
+# no longer exists. Per the standing ruling a broken assertion is deleted and
+# named, never repaired or re-pointed.
 
 # --- 13. REFUTER LAUNDERING GUARD ----------------------------------------------
 # A refuter that starts from "not real unless proven otherwise" was treating a

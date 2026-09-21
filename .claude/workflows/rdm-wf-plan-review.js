@@ -66,15 +66,24 @@ export const meta = {
 // generator; scripts/verify-workflow-review.sh fails the build on drift.
 // >>> review-refute-fix:begin (generated into workflow consumers by scripts/gen-workflow-review.sh — edit the lib, not the copy) <<<
 // >>> review-spec:begin (the `//|` lines below are rendered into the shipped review skills by scripts/gen-skill-review.sh) <<<
-//| ### Dimensions — the adaptive review fleet
+//| ### Reviewers — the CALLER selects the fleet
 //|
-//| Scale the fleet to what the change actually touches. **Always-on** dimensions
-//| run for every review; **triggered** dimensions run only when the change hits
-//| their surface. This keeps a 10-line change cheap while a cross-cutting change
-//| still gets full coverage. Each dimension is reviewed by its own **read-only**
-//| agent — it reviews and reports, it never edits. When in doubt about a trigger,
-//| include the dimension: a spurious agent that finds nothing is cheaper than a
-//| missed defect. State which dimensions you ran, and why, in the report.
+//| Pass the reviewer keys you want as `reviewers`. **Naming none runs every
+//| reviewer for the mode** — a maximal default encodes no policy, where a
+//| selective one would. Each reviewer is its own **read-only** agent: it reviews
+//| and reports, it never edits, and it runs the `rdm … show --format json` (or
+//| `rdm review source`) command its prompt names to fetch the document or diff
+//| it needs. No document is ever handed to it as an argument.
+//|
+//| An unrecognised name selects nothing and is **not** an error — the mistake
+//| shows up as a gap in `coverage.selected` / `coverage.ran`, which is where
+//| under-coverage is meant to be visible. Nothing refuses a thin set; coverage is
+//| visible, not enforced. The one refusal is a set that resolves to NO reviewer
+//| at all, which throws rather than reporting a clean review over nothing.
+//|
+//| When in doubt, include the reviewer: a spurious agent that finds nothing is
+//| cheaper than a missed defect. State which reviewers you ran, and why, in the
+//| report.
 
 // Findings scoring below this confidence are dropped even if not refuted.
 //|
@@ -141,21 +150,23 @@ const UNREFUTED_DISPOSITION = [
   'grading it was pointless — prefer FILING that one over skipping it.',
 ].join('\n');
 
-// The two dimension sets, selected by `mode`. Each finder agent reviews exactly
-// one dimension; a fresh refuter then grades each finding it produced.
+// The two reviewer catalogues, selected by `mode`. Each finder agent reviews
+// exactly one reviewer's dimension; a fresh refuter then grades each finding it
+// produced.
 //   code — reviews an implementation diff (dispatch-phase's code-review stage).
 //   plan — reviews a plan document (dispatch-phase's plan-review stage).
 //
-// A dimension with no `when` predicate is ALWAYS-ON. A dimension carrying
-// `when(signals)` is TRIGGERED: `selectDimensions` evaluates it against both the
-// change's shape AND the target's type. See selectDimensions' three-way contract
-// below — omitted signals mean "unknown", and run everything.
+// NO ENTRY CARRIES A PREDICATE. Which reviewers run is the CALLER's decision,
+// resolved by `resolveReviewers` below from a caller-supplied key list; an
+// absent list runs them all. The engine branches on nothing it has to read, so
+// it needs no signals, no diff shape, and no target type.
 const DIMENSIONS = {
   code: [
     //|code|
-    //|code| **Code review dimensions:**
+    //|code| **Code reviewers** (`mode: 'code'`):
     //|code|
-    //|code| - **ac** — *always.* For each acceptance criterion, rate PASS / FAIL /
+    //|code| - **ac** — include it on any implementation review; omit it only when
+    //|code|   the target states no acceptance criteria. For each acceptance criterion, rate PASS / FAIL /
     //|code|   PARTIAL with evidence (file:line, test name). Flag any criterion that is
     //|code|   unmet, ambiguous, or untestable. The per-criterion table is the contract
     //|code|   and is reported intact. **Severity contract:** a criterion the target
@@ -169,7 +180,8 @@ const DIMENSIONS = {
       focus:
         'For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable. Severity contract: a criterion the target itself defers, caveats, or ships with acknowledged or known gaps has NOT been met, regardless of partial implementation — it MUST be reported as a `blocking` finding in the optional `findings` array, never as PASS in the `ac` table.',
     },
-    //|code| - **correctness** — *always.* Logic bugs, edge cases, race conditions, and
+    //|code| - **correctness** — include it on every implementation review; there is no
+    //|code|   diff shape that makes logic errors uninteresting. Logic bugs, edge cases, race conditions, and
     //|code|   error paths, judged against the error-handling conventions the project
     //|code|   states in its principles document (`docs/principles.md` if present,
     //|code|   otherwise `CLAUDE.md` / `AGENTS.md` in the project root) — which error
@@ -181,18 +193,18 @@ const DIMENSIONS = {
       focus:
         "Logic bugs, edge cases, race conditions, and error paths. Judge error handling against the conventions the project states in its principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md in the project root) — which error type each layer must use, and where context may be added. User-facing errors must be actionable: what went wrong and what the reader can do about it.",
     },
-    //|code| - **tests** — *trigger: the diff adds or changes non-trivial logic, or adds
-    //|code|   no test files.* Do tests exist and cover the key behaviors and edge
+    //|code| - **tests** — include it when the change adds or alters non-trivial logic,
+    //|code|   or when you expect it to have added tests and want that checked. Do
+    //|code|   tests exist and cover the key behaviors and edge
     //|code|   cases? Was a test-first discipline followed? Are there untested branches?
     {
       key: 'tests',
       title: 'Tests',
       focus:
         'Do tests exist and cover the key behaviors and edge cases? Was TDD followed? Are there untested branches or newly added logic with no test?',
-      when: (s) => !!(s.changesLogic || s.missingTests),
     },
-    //|code| - **architecture** — *trigger: the diff touches more than one module/layer,
-    //|code|   or moves logic between layers.* Does logic live where the project's
+    //|code| - **architecture** — include it when the change spans more than one module
+    //|code|   or layer, or moves logic between layers. Does logic live where the project's
     //|code|   stated layering contract puts it, with the interaction layers on top
     //|code|   staying thin? No duplicated logic across interfaces? Read the project's
     //|code|   principles document (`docs/principles.md` if present, otherwise
@@ -203,9 +215,9 @@ const DIMENSIONS = {
       title: 'Architecture',
       focus:
         "Does logic live where the project's stated layering contract puts it, with the interaction layers on top staying thin? No duplicated logic across interfaces? Read the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for the layering contract and the commit-scope convention, and flag any change that violates one.",
-      when: (s) => !!s.multiModule,
     },
-    //|code| - **api-docs** — *trigger: the diff changes a public API item.* Do public
+    //|code| - **api-docs** — include it when the change adds or alters a public API
+    //|code|   item (an exported function, a public type, a published endpoint). Do public
     //|code|   items carry the documentation the project's principles document requires
     //|code|   (`docs/principles.md` if present, otherwise `CLAUDE.md` / `AGENTS.md`)?
     //|code|   Read it for which items are in scope and which sections each kind of item
@@ -216,11 +228,10 @@ const DIMENSIONS = {
       title: 'Public API docs',
       focus:
         "Public API items must carry the documentation the project's principles document requires (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) — read it for which items are in scope and which sections each kind of item must carry (failure modes, abort conditions, safety invariants, examples). Flag any public item added or changed by this diff that is missing a required section.",
-      when: (s) => !!s.publicApiChanged,
     },
-    //|code| - **changelog** — *trigger: the diff makes a user-facing change (CLI
-    //|code|   commands, API endpoints, config options, observable
-    //|code|   behavior).* A user-facing change MUST carry a changelog entry in the
+    //|code| - **changelog** — include it when the change is user-facing (a CLI
+    //|code|   command, an API endpoint, a config option, or any observable
+    //|code|   behavior). A user-facing change MUST carry a changelog entry in the
     //|code|   same commit; a missing entry is **blocking**. Read the project's
     //|code|   principles document (`docs/principles.md` if present, otherwise
     //|code|   `CLAUDE.md` / `AGENTS.md`) for the changelog file, its format, and its
@@ -231,11 +242,10 @@ const DIMENSIONS = {
       title: 'Changelog',
       focus:
         "A user-facing change (CLI command, API endpoint, config option, or observable behavior) MUST carry a changelog entry in the SAME commit — a missing entry is a `blocking` finding. Read the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for the changelog file, its format, and its categories. The entry must describe the change from a user's perspective, not internal implementation details.",
-      when: (s) => !!s.userFacing,
     },
-    //|code| - **security** — *trigger: the diff touches auth, input parsing or
+    //|code| - **security** — include it when the change touches auth, input parsing or
     //|code|   validation, path/file handling, subprocess or shell invocation, secrets
-    //|code|   and credentials, deserialization, or network code.* A finding here is a
+    //|code|   and credentials, deserialization, or network code. A finding here is a
     //|code|   claim that **an attacker can do something they should not be able to
     //|code|   do**, and you must be able to point at the code that grants it — not
     //|code|   lint, not style, not "consider using a safer API". A vulnerability is a
@@ -279,7 +289,6 @@ const DIMENSIONS = {
       title: 'Security',
       focus:
         "A finding here is a claim that an attacker can do something they should not be able to do, and you must be able to point at the code that grants it — not lint, not style, not \"consider using a safer API\". A vulnerability is a complete path from an attacker-controlled source to a dangerous operation with no effective check in between; anything less is a note, not a finding. Distrust comments claiming a value was already validated upstream — verify it in code or do not rely on it. Work these categories: injection (untrusted input reaching an interpreter, shell, query, template, or deserializer), authorization (a check missing, bypassable, or applied to the wrong subject — including traversal, confused-deputy, server-side request forgery, and time-of-check/time-of-use races), memory (a language-level memory, lifetime, or type-safety invariant broken, including at foreign-function boundaries), crypto (weak or misused primitives, reused key material, hardcoded secrets, timing side channels), exposure (secrets or internals reaching logs, errors, commits, or overly permissive files and resources). Put the matching slug in the optional `category` field — e.g. command-injection, path-traversal, unsafe-ffi, hardcoded-secret, info-disclosure. Severity is impact, not certainty, and maps onto the existing three-value contract rather than a second ladder: control of the system or access to many users' data (remote code execution, an authorization bypass reaching other users' records, a secret that unlocks production) is `blocking`; real but bounded harm — needing an authenticated account, a non-default configuration, or victim interaction — is a `concern`; defense in depth and hygiene is a `suggestion`. Between two levels: a non-default precondition lowers it, unauthenticated with no interaction on a default deployment raises it, otherwise take the lower. Uncertainty goes in `confidence`, never in severity. Where the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) states a security convention — how an escape hatch out of the language's own safety guarantees must be justified, how secrets are handled, how subprocesses are invoked — judge against it and treat a violation as a finding.",
-      when: (s) => !!s.securitySurface,
     },
     //|code|
     //|code| **Why `ac` and `correctness` are NOT merged into one always-on finder.**
@@ -297,9 +306,11 @@ const DIMENSIONS = {
   ],
   plan: [
     //|plan|
-    //|plan| **Plan review dimensions:**
+    //|plan| **Plan reviewers** (`mode: 'plan'`):
     //|plan|
-    //|plan| - **coherence** — *always.* Internal consistency and completeness: are
+    //|plan| - **coherence** — include it on every plan review; a plan that
+    //|plan|   contradicts itself is worth catching whatever the target is.
+    //|plan|   Internal consistency and completeness: are
     //|plan|   the steps and acceptance criteria concrete and actionable? An empty or
     //|plan|   ambiguous plan is itself a `blocking` finding — never guess intent. A
     //|plan|   plan step citing a file or behavior as existing, where it was actually
@@ -319,7 +330,9 @@ const DIMENSIONS = {
       focus:
         'Internal consistency and completeness: are the steps and acceptance criteria concrete and actionable? An empty or ambiguous plan is itself a blocking finding — never guess intent. A plan step citing a file or behavior as existing, where it was actually introduced by another in-flight (not-yet-landed) roadmap or task, is only blocking if the target item does NOT carry the `depends-unlanded` tag and does not state the dependency explicitly; when already annotated, downgrade to a concern (or omit) instead of blocking on it. A plan may delegate implementation decisions to whoever carries it out — an undecided point is a concern, not blocking, unless the undecided branches would lead to different goals or outcomes. Coherence is blocking only when an implementer following the plan as written would build the wrong thing, never merely because they would have to make a decision themselves.',
     },
-    //|plan| - **architectural-fit** — *always.* Read the project's principles
+    //|plan| - **architectural-fit** — include it on every plan review; it is the one
+    //|plan|   reviewer that judges the plan against the project's stated constraints.
+    //|plan|   Read the project's principles
     //|plan|   (falling back to `CLAUDE.md` / `AGENTS.md` in the project root when no
     //|plan|   principles note is configured — architectural fit must never go
     //|plan|   silently unchecked). Flag any plan step that would violate a stated
@@ -331,9 +344,12 @@ const DIMENSIONS = {
       focus:
         "Read the project's principles (CLAUDE.md / AGENTS.md if no principles note is configured). Flag any plan step that would violate a stated convention or constraint — a violated constraint is what makes a finding blocking; stylistic preferences alone are not.",
     },
-    //|plan| - **unit-of-work** — *trigger: the target is a phase.* Skipped for
-    //|plan|   tasks, standalone roadmap bodies, and `--implementation-plan`; run once
-    //|plan|   per phase under `--roadmap <slug>` (this can fan out to many parallel
+    //|plan| - **unit-of-work** — this reviewer is about INDEPENDENT DELIVERABILITY, so
+    //|plan|   include it **only on a phase**. Omit it on a task, on a standalone
+    //|plan|   roadmap body, and on an `--implementation-plan` — none of those has a
+    //|plan|   unit-of-work contract to judge, and an implementation plan's sizing was
+    //|plan|   settled when the phase was created. Under `--roadmap <slug>` include it
+    //|plan|   and it runs once per phase unit (this can fan out to many parallel
     //|plan|   agents on a large roadmap — no hard cap is required, but be mindful of
     //|plan|   the cost). Is the phase independently deliverable and testable —
     //|plan|   neither too large to land safely nor too trivial to warrant its own
@@ -350,11 +366,12 @@ const DIMENSIONS = {
       title: 'Unit of work',
       focus:
         'Is the phase independently deliverable and testable — neither too large to land safely nor too trivial to warrant its own phase?',
-      // Target-type trigger (not diff shape): only a PHASE has a unit-of-work
-      // contract to judge. Tasks, roadmaps, and bare implementation plans skip it.
-      when: (s) => s.targetType === 'phase',
     },
-    //|plan| - **intent-alignment** — *trigger: the target has recorded intent.*
+    //|plan| - **intent-alignment** — include it when the target's parent roadmap
+    //|plan|   records a `## Intent` section; omit it when it does not, since the
+    //|plan|   reviewer would have no input. (It reads that section itself — the prompt
+    //|plan|   names the roadmap slug and the `roadmap show` command; nothing
+    //|plan|   transcribes the body for it.)
     //|plan|   Checks the plan against the operator-recorded intent — a `## Intent`
     //|plan|   section on the parent roadmap, stating a Goal, optional Non-goals, and
     //|plan|   Done-looks-like signals. It asks exactly two questions. **Divergence:**
@@ -365,27 +382,18 @@ const DIMENSIONS = {
     //|plan|   unmet — that is precisely what this dimension exists to catch, and the
     //|plan|   reason the other dimensions cannot: they judge the plan against itself
     //|plan|   and against the project's conventions, never against what the operator
-    //|plan|   actually asked for. If no recorded intent is present in the material the
-    //|plan|   finder was given, it returns an empty findings array and reports
-    //|plan|   nothing — the dimension has no input and must never manufacture one.
-    //|plan|   Missing intent is never blocking: the dimension is not selected at all,
-    //|plan|   and its absence is reported instead as a non-blocking `suggestion`
-    //|plan|   naming the missing input.
+    //|plan|   actually asked for. It READS that section itself, out of the parent
+    //|plan|   roadmap, and if there is none it returns an empty findings array and
+    //|plan|   reports nothing — it has no input and must never manufacture one.
+    //|plan|   Missing intent is never blocking.
     {
       key: 'intent-alignment',
       title: 'Intent alignment',
       focus:
-        'Check this plan against the operator-recorded intent you were given — a `## Intent` section on the parent roadmap, stating a Goal, optional Non-goals, and Done-looks-like signals. Ask exactly two questions. DIVERGENCE: could every acceptance criterion in this plan pass while the recorded "Done looks like" remains false? Flag any criterion that can, and say which recorded signal it leaves unmet. SCOPE CREEP: does any step pursue something the intent records as a non-goal? An acceptance criterion may be internally coherent and still leave the stated goal unmet — that is precisely what this dimension exists to catch, and the reason the other dimensions cannot: they judge the plan against itself and against the project\'s stated conventions, never against what the operator actually asked for. Judge only against the recorded intent as written; never infer intent from the plan itself, and never restate a coherence or restraint finding here. If no recorded intent is present in the material you were given, return an empty findings array and report nothing — this dimension has no input and must never manufacture one.',
-      // Value trigger (not diff shape, not target type): the dimension runs only
-      // where an operator actually recorded intent. `hasIntent` is computed
-      // CALLER-SIDE by extractIntent over the roadmap body the caller already
-      // holds. A caller that omits it fails open (selectDimensions' null
-      // contract) and the backstop sentence in `focus` above carries the
-      // no-input case — belt and braces, mirroring unit-of-work's `when` plus
-      // stripNonPhaseUnitOfWork.
-      when: (s) => s.hasIntent === true,
+        'Check this plan against the operator-recorded intent — a `## Intent` section on the PARENT ROADMAP of the target under review, stating a Goal, optional Non-goals, and Done-looks-like signals. READ IT YOURSELF: run the roadmap-show command named above (or, if the target is itself a roadmap, the target\'s own document) and locate its `## Intent` section; nothing has transcribed it for you. Ask exactly two questions. DIVERGENCE: could every acceptance criterion in this plan pass while the recorded "Done looks like" remains false? Flag any criterion that can, and say which recorded signal it leaves unmet. SCOPE CREEP: does any step pursue something the intent records as a non-goal? An acceptance criterion may be internally coherent and still leave the stated goal unmet — that is precisely what this dimension exists to catch, and the reason the other dimensions cannot: they judge the plan against itself and against the project\'s stated conventions, never against what the operator actually asked for. Judge only against the recorded intent as written; never infer intent from the plan itself, and never restate a coherence or restraint finding here. If the roadmap records no `## Intent` section, return an empty findings array and report nothing — this dimension has no input and must never manufacture one.',
     },
-    //|plan| - **restraint** — *always.* The counterweight to unit-of-work: flags a
+    //|plan| - **restraint** — include it on every plan review; over-specification is
+    //|plan|   as likely on a small plan as a large one. The counterweight to unit-of-work: flags a
     //|plan|   plan that has over-specified rather than under-specified. Two shapes
     //|plan|   are both findings — (1) the plan spells out a decision that could
     //|plan|   safely be left to whoever carries it out, and (2) the level of detail
@@ -446,98 +454,6 @@ const INJECTION_HYGIENE =
 // the same sentence so the two cannot drift apart.
 const REFUTER_LAUNDERING_GUARD =
   'A finding may not be refuted on the grounds that it is documented, known, or already accepted as scope, when it contradicts the target\'s stated goal or recorded intent — a recorded deferral is evidence the defect is REAL, not evidence it is not. Refute only for genuine technical uncertainty: you cannot verify, from the actual code or plan, that the finding holds up. The default-to-refuted stance for uncertain findings is unchanged.';
-
-// Recorded-intent channel. The operator-stated goal for the work, captured as a
-// `## Intent` section on the roadmap body by the roadmap-authoring interview.
-// It is read as PROSE — there is no parser, no command, and no typed tri-state
-// behind it, exactly as `## Acceptance Criteria` is read.
-//
-// extractIntent(body) — pure: locate the `## Intent` section in a document body
-// and return { hasIntent, intent }. `intent` is the VERBATIM section text
-// (heading included), never a paraphrase or a re-composition.
-//
-// CAPTURED, one rule: the section must exist, be non-empty, not be exactly the
-// `(not captured)` sentinel, and carry BOTH the literal labels `Goal` and
-// `Done looks like` — the two the recorded grammar says are what make a section
-// captured rather than present-but-empty. Anything else — no heading, an empty
-// section, the sentinel, or a partial backfill missing either label — returns
-// the SAME { hasIntent: false, intent: null }. There is deliberately no `reason`
-// field: the three written states stay distinguishable to a human READER in the
-// roadmap body prose, but they are indistinguishable AT THE GATE, so no consumer
-// can branch on which one fired.
-//
-// Anchoring: a line-start `##` followed by exactly `Intent`, stopping at the
-// next line-start `## `. `### Intent` does not match. A body that legitimately
-// QUOTES the grammar (an authoring template showing the shape) is a known
-// first-match false-positive source — the first heading match is taken and
-// accepted, documented, rather than adding a fenced-code-block parser.
-function extractIntent(body) {
-  if (typeof body !== 'string' || body === '') return { hasIntent: false, intent: null };
-  const lines = body.split('\n');
-  let start = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if (/^##[ \t]+Intent[ \t]*$/.test(lines[i])) {
-      start = i;
-      break;
-    }
-  }
-  if (start === -1) return { hasIntent: false, intent: null };
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) {
-    if (/^## /.test(lines[i])) {
-      end = i;
-      break;
-    }
-  }
-  const section = lines.slice(start, end).join('\n').replace(/\s+$/, '');
-  const bodyText = lines
-    .slice(start + 1, end)
-    .join('\n')
-    .trim();
-  if (bodyText === '' || bodyText === '(not captured)') return { hasIntent: false, intent: null };
-  if (bodyText.indexOf('Goal') === -1 || bodyText.indexOf('Done looks like') === -1) {
-    return { hasIntent: false, intent: null };
-  }
-  return { hasIntent: true, intent: section };
-}
-
-// intentPresent(ctx) — the SINGLE value-level predicate. Both findPrompt's
-// intent block and buildReviewPipeline's missing-intent notice read it, so the
-// prompt and the notice can never disagree about whether intent was threaded.
-function intentPresent(ctx) {
-  return !!(ctx && typeof ctx.intent === 'string' && ctx.intent.trim() !== '');
-}
-
-// Preamble the verbatim recorded intent is pushed behind, in PLAN-MODE prompts
-// only. Code-mode prompts are pinned byte-exact by the verify harness and must
-// never gain it.
-const INTENT_PREAMBLE =
-  'Recorded intent for this work, verbatim — the operator-stated goal, non-goals, and done-looks-like signals this plan must serve:';
-
-// INTENT_MISSING_NOTICE() — a FACTORY (a fresh object per call, so no shared
-// mutable finding leaks between review units). ONE fixed notice for every
-// no-intent case: absent section, the `(not captured)` sentinel, a partial
-// section, and a caller with no roadmap in hand at all are byte-identical here
-// by construction. Reader-level distinguishability lives in the roadmap body
-// prose, never in gate output.
-//
-// `suggestion` severity is load-bearing: it gates at no tier, so `hasBlocking`
-// stays false, `classifyPlanOutcome` still says `reviewed`, and no revision
-// budget is burned on a document nobody can revise.
-function INTENT_MISSING_NOTICE() {
-  return {
-    id: 'intent-alignment-no-intent',
-    concern: 'intent-alignment',
-    location: 'target document',
-    severity: 'suggestion',
-    confidence: 100,
-    what_fails:
-      'No recorded intent was available for this review unit, so the intent-alignment dimension did not run.',
-    why: 'The plan could not be checked against an operator-stated goal — divergence (every acceptance criterion passing while the goal stays unmet) and scope creep against a recorded non-goal both went unchecked for this unit.',
-    recommendation:
-      'Record a `## Intent` section (Goal / Non-goals / Done looks like) on the parent roadmap so this plan can be checked against it.',
-  };
-}
 
 // Prompt for a finder agent reviewing a single dimension of `mode`.
 // >>> find-refute-verdict:begin (the default `//|` span below is swapped for the adjacent local-code-override block, defined right after this span's `:end` marker, only when scripts/gen-skill-review.sh runs with --target local --mode code — every other target/mode combination renders this span unchanged) <<<
@@ -603,13 +519,6 @@ function findPrompt(mode, dim, context) {
   lines.push(INJECTION_HYGIENE);
   if (mode === 'plan') {
     lines.push(PLAN_SEVERITY_CALIBRATION);
-    // The recorded-intent channel, PLAN MODE ONLY — code-mode prompts are pinned
-    // byte-exact by the verify harness and must stay untouched. Threaded into
-    // EVERY plan finder prompt rather than only intent-alignment's: one rule,
-    // one mechanism (a per-dimension `usesIntent` flag would be a second).
-    if (intentPresent(context)) {
-      lines.push(INTENT_PREAMBLE + '\n' + context.intent.trim());
-    }
   }
   lines.push(
     'Report only findings you can back with concrete evidence. One strong finding beats five weak ones.',
@@ -1210,7 +1119,7 @@ function resolveRefutationBudget(value) {
 // it the cut would be nondeterministic in exactly the case this runtime forbids.
 // `order` is the flattened candidate index (dimension index, then
 // within-dimension index), which is deterministic because stage 1 is an
-// order-preserving `Promise.all` over the `selectDimensions` output.
+// order-preserving `Promise.all` over the `resolveReviewers` output.
 //
 // No Date.now / Math.random, and nothing here reads agent-completion order: the
 // cut is computed BEFORE any refuter is dispatched.
@@ -1406,322 +1315,50 @@ function coverageSummaryClause(reviewCoverage) {
   );
 }
 
-// The boolean signal keys deriveSignals always populates explicitly.
-// `targetType` (string|null) and `changedFiles` (array) ride alongside them.
-const SIGNAL_KEYS = [
-  'changesLogic',
-  'missingTests',
-  'multiModule',
-  'publicApiChanged',
-  'userFacing',
-  'securitySurface',
-];
-
-// selectDimensions(mode, signals) — the deterministic pre-step that decides
-// which dimensions actually run.
+// resolveReviewers(mode, reviewers) — the deterministic pre-step that decides
+// which reviewers actually run. The CALLER decides; this function only resolves
+// the names it was handed against the mode's catalogue.
 //
-// THREE-WAY CONTRACT (the fail-open rule is load-bearing):
-//   * `signals == null` (omitted / genuinely unknown) → return ALL dimensions
-//     for the mode, untouched. A caller that cannot compute a diff knows the
-//     LEAST, so it must get the MOST coverage.
-//   * an explicit signals object (even `{}`) → run the always-on dimensions plus
-//     exactly those whose `when` predicate fires. `{}` therefore means "computed,
-//     nothing triggered".
+// THE CONTRACT, in full:
+//   * `reviewers == null` (omitted) → every reviewer for the mode, in
+//     declaration order. A maximal default encodes no policy, where a selective
+//     one would.
+//   * a list of keys → exactly those, filtered out of `DIMENSIONS[mode]` in
+//     DECLARATION order (never the caller's order, so the fan-out and the
+//     candidate `order` tiebreak stay stable whatever order a caller writes).
+//   * an UNRECOGNISED name selects nothing and is NOT rejected. There is no
+//     unknown-name guard: the mistake is visible in `coverage.selected` /
+//     `coverage.ran`, which is where under-coverage is meant to show up, and a
+//     rejection would be a check whose only job is to police a caller.
 //   * an unknown mode → throw.
 //
-// PLAN-MODE MINIMAL SIGNALS: `DIMENSIONS.plan` has exactly TWO entries carrying
-// a `when` predicate — `unit-of-work`, which inspects `targetType` alone
-// (`targetType === 'phase'`), and `intent-alignment`, which inspects
-// `hasIntent` alone (`hasIntent === true`). Nothing else in plan mode is
-// conditional. That makes `{ targetType, hasIntent }` the fully-populated
-// signals object FOR PLAN MODE ONLY: `rdm-wf-plan-review.js` threads exactly
-// that per review unit (see lib/plan-review.mjs's `reviewUnit` and its
-// `--implementation-plan` branch), which selects the three always-on plan
-// dimensions plus `unit-of-work` on phase units and `intent-alignment` on units
-// whose parent roadmap recorded intent, without touching this function. This
-// narrower contract does NOT extend to CODE mode: `DIMENSIONS.code`'s triggered
-// dimensions inspect the diff-shape `SIGNAL_KEYS` above, so a bare
-// `{ targetType }` there would read falsy for every one of them and silently
-// drop coverage — CODE callers must keep passing `deriveSignals`'s
-// fully-populated object.
+// NOTHING ELSE REFUSES. There is no floor on the set's size, no check of its
+// composition, and no judgment about its fitness for the target. Coverage is
+// VISIBLE, not enforced — a caller may deliberately under-review, and
+// `coverage.ran` records what actually ran.
 //
-// A plan-mode caller that supplies only `{ targetType }` silently drops
-// `intent-alignment`. That is SAFE BY CONSTRUCTION and not a coverage
-// regression to fix elsewhere: the dimension is non-blocking in both
-// directions — it produces no gating finding when it does not run, and
-// buildReviewPipeline reports its absence as a `suggestion` — so the worst
-// outcome is a check not performed, never a plan wrongly blocked.
-//
-// AUDIT OBLIGATION: if a future `DIMENSIONS.plan` entry gains a `when` that
-// reads anything beyond `targetType` / `hasIntent`, this narrower plan-mode
-// contract silently breaks for it and must be re-audited before relying on
-// `{ targetType, hasIntent }` alone.
-//
-// Do NOT collapse this into `d.when(signals || {})`. Substituting `{}` for
-// omitted signals would make EVERY conditional predicate read falsy and silently
-// drop the triggered dimensions — returning a strict subset precisely when the
-// caller had no information, which is a silent coverage regression.
-function selectDimensions(mode, signals) {
+// The ONE refusal kept is a resolution that yields ZERO reviewers. That is not
+// a thinness floor: it is the pre-existing "refusing to report a clean review"
+// invariant, and it reads only the list it was handed.
+function resolveReviewers(mode, reviewers) {
   const dims = DIMENSIONS[mode];
   if (!dims) throw new Error('unknown review mode: ' + mode + ' (expected "code" or "plan")');
-  if (signals == null) return dims.slice();
-  const sel = dims.filter((d) => !d.when || d.when(signals));
+  if (reviewers === null || reviewers === undefined) return dims.slice();
+  const wanted = Array.isArray(reviewers) ? reviewers : [reviewers];
+  const keys = wanted.filter((k) => typeof k === 'string' && k !== '');
+  const sel = dims.filter((d) => keys.indexOf(d.key) !== -1);
   if (sel.length === 0) {
-    throw new Error('review: no dimensions selected for mode "' + mode + '" — the always-on set must never be empty');
+    throw new Error(
+      'review: the caller-supplied reviewer set resolved to NO reviewer for mode "' +
+        mode +
+        '" (asked for ' +
+        JSON.stringify(wanted) +
+        '; available: ' +
+        dims.map((d) => d.key).join(', ') +
+        ') — refusing to report a clean review over an empty fleet. Omit `reviewers` entirely to run them all.'
+    );
   }
   return sel;
-}
-
-// File-CLASSIFICATION rules for deriveSignals. These two lists are the only
-// path-shaped rules that survive, and both answer "what KIND of file is this",
-// never "what surface does the change touch".
-//
-// PATTERN AUDIT (recorded so a later reader does not re-add what was removed):
-//   * TEST_PATH_PATTERNS — CONVENTION-based (`tests/`, `*_test.*`, `*.spec.*`).
-//     Portable across repos and languages; kept verbatim.
-//   * CODE_EXTENSIONS — already multi-language and correct; kept verbatim.
-//   * the security path list and the user-facing path list — both REMOVED, and
-//     deliberately not replaced. A path list is either repo-specific (a hard
-//     crate-name prefix) or fires on a spelling coincidence (a bundler config
-//     file matching a `config` segment), so it can be confidently WRONG in both
-//     directions. Both signals now derive from diff CONTENT (the three
-//     vocabularies below).
-//   * the crate-path prefix and the Rust-keyword content clause inside
-//     `publicApiChanged` — both REMOVED. The first was repo-specific
-//     (permanently false anywhere else, so `api-docs` never fired); the second
-//     was language-specific (an added `export function` read false).
-const TEST_PATH_PATTERNS = [/(^|\/)tests?(\/|$)/, /(^|[/_.-])test[_.-]/, /[_.-]test\.[a-z]+$/, /(^|[/_.-])spec[_.-]/];
-const CODE_EXTENSIONS = ['.rs', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.py', '.go', '.sh', '.pkl'];
-
-// addedLines(diffText) — the ADDED lines of a unified diff, `+` prefix stripped.
-// Only added lines are ever scanned: a REMOVED `export`/`exec(` line must not
-// trip a signal, and a `+++ b/path` file header must not be read as content.
-// Context and `@@` hunk-header lines are excluded by the index-0 `+` anchor.
-function addedLines(diffText) {
-  if (typeof diffText !== 'string') return [];
-  const out = [];
-  const lines = diffText.split('\n');
-  for (const line of lines) {
-    if (line.charAt(0) !== '+') continue;
-    if (line.indexOf('+++') === 0) continue;
-    out.push(line.slice(1));
-  }
-  return out;
-}
-
-// matchesAny(lines, patterns) — does any added line match any pattern?
-// The pattern arrays below are module-level constants and deliberately carry NO
-// `g`/`y` flag: a global regex keeps `lastIndex` state across `.test()` calls,
-// which would make deriveSignals non-deterministic across invocations.
-function matchesAny(lines, patterns) {
-  return lines.some((line) => patterns.some((re) => re.test(line)));
-}
-
-// EXPORT_CONTENT_PATTERNS — an added line that introduces an EXPORTED or PUBLIC
-// symbol, across the languages CODE_EXTENSIONS covers. Language-neutral by
-// construction: no path term, no single language's keyword standing in for the
-// whole notion.
-//
-// A bare `function `/`def ` is DELIBERATELY EXCLUDED — a module-private
-// definition is not a public-API change, and including it would make `api-docs`
-// an always-on dimension in every JS/Python repo. Do not "fix" that.
-const EXPORT_CONTENT_PATTERNS = [
-  // JS/TS ES-module exports
-  /\bexport\s+(default\b|const\b|let\b|var\b|function\b|async\b|class\b|type\b|interface\b|enum\b|\*|\{)/,
-  // CommonJS
-  /\bmodule\.exports\b/,
-  /\bexports\.[A-Za-z_$]/,
-  // Rust visibility + item kind (never a bare keyword scan)
-  /(^|[^A-Za-z0-9_])pub(\(crate\)|\(super\))?\s+(fn|struct|enum|trait|mod|type|const|static|use)\b/,
-  // Java / C# / TypeScript member visibility
-  /\bpublic\s+(static\s+|async\s+)?[A-Za-z_$<]/,
-  // Go: an exported identifier is a Capitalized one
-  /^\s*func\s+(\([^)]*\)\s*)?[A-Z]/,
-  /^\s*(type|var|const)\s+[A-Z]/,
-  // Python re-export surface
-  /\b__all__\b/,
-];
-
-// USER_FACING_CONTENT_PATTERNS — an added line that registers or emits a
-// USER-VISIBLE surface: CLI subcommand/argument/flag registration, the help and
-// usage strings attached to those registrations, HTTP/RPC route or tool
-// registration, and printed or logged output.
-//
-// `Command::new(` is deliberately NOT here: it means clap (user-facing) in one
-// crate and `std::process::Command` (a security sink) in another, and the two
-// are textually identical. It is assigned to the SECURITY vocabulary only;
-// user-facing CLI detection uses `Arg::new(` / `.arg(` / `.about(` / `.help(`.
-const USER_FACING_CONTENT_PATTERNS = [
-  // (a) CLI surface: subcommand / argument / flag registration
-  /\badd_argument\s*\(/,
-  /\.addOption\s*\(/,
-  /\.option\s*\(/,
-  /\.arg\s*\(/,
-  /\.command\s*\(/,
-  /\.subcommand\s*\(/,
-  /\.flag\s*\(/,
-  /\bArg::new\s*\(/,
-  /\bArgumentParser\s*\(/,
-  /\bflag\.(String|Bool|Int)\s*\(/,
-  // (b) help / usage / description strings attached to those registrations
-  /\.help\s*\(/,
-  /\.about\s*\(/,
-  /\.long_about\s*\(/,
-  /\bhelp\s*=\s*['"]/,
-  /\busage:\s/,
-  // (c) HTTP or RPC surface: route, endpoint, handler, tool registration
-  /\b(app|router|server)\.(get|post|put|patch|delete|use)\s*\(/,
-  /@app\.route\b/,
-  /\.route\s*\(/,
-  /\baddTool\s*\(/,
-  /\bHandleFunc\s*\(/,
-  // (d) user-visible output: printed or logged messages and error strings
-  /\bconsole\.(log|error|warn|info)\s*\(/,
-  /(^|[^A-Za-z0-9_.])print\s*\(/,
-  /\b(println!|eprintln!|print!|eprint!)/,
-  /\bfmt\.(Print|Printf|Println|Errorf)\s*\(/,
-];
-
-// SECURITY_CONTENT_PATTERNS — sink- and capability-shaped tokens across the
-// languages CODE_EXTENSIONS covers: process/command execution, filesystem
-// access, environment and secret reads, deserialization/eval, and raw memory.
-//
-// `JSON.parse(` is DELIBERATELY EXCLUDED — it is the single most common line in
-// any JS/TS diff, and including it would collapse `security` into an always-on
-// dimension for every JS repo: the mirror image of the defect this vocabulary
-// replaces. Do not "fix" that either.
-const SECURITY_CONTENT_PATTERNS = [
-  // process / command execution
-  /\bchild_process\b/,
-  /\b(execSync|execFileSync|spawnSync|spawn|execFile)\s*\(/,
-  /(^|[^A-Za-z0-9_.])exec\s*\(/,
-  /\bsubprocess\./,
-  /\bos\.system\s*\(/,
-  /\bstd::process\b/,
-  /\bCommand::new\s*\(/,
-  /\bexec\.Command\s*\(/,
-  /\bRuntime\.getRuntime\(\)\.exec/,
-  // filesystem
-  /\bstd::fs::/,
-  /\brequire\(['"](node:)?fs['"]\)/,
-  /\bfrom\s+['"](node:)?fs['"]/,
-  /\bfs\.(read|write|unlink|rm|chmod|open|createWriteStream)/,
-  /\bset_permissions\b/,
-  /\bos\.(remove|chmod|open)\s*\(/,
-  /\bioutil\.(ReadFile|WriteFile)\b/,
-  /\bos\.(Open|Create|Remove)\s*\(/,
-  // environment and secrets
-  /\bprocess\.env\b/,
-  /\bos\.environ\b/,
-  /\benv::var\b/,
-  /\bgetenv\s*\(/,
-  /\bos\.Getenv\s*\(/,
-  /\b(API_KEY|SECRET|PASSWORD|PRIVATE_KEY|ACCESS_TOKEN)\b/,
-  // deserialization / eval
-  /\bpickle\.loads?\s*\(/,
-  /\byaml\.load\s*\(/,
-  /(^|[^A-Za-z0-9_.])eval\s*\(/,
-  /\bnew\s+Function\s*\(/,
-  /\bUnmarshal\s*\(/,
-  /\bserde_json::from_(str|slice|reader)\b/,
-  // raw memory. BOTH Rust `unsafe` shapes are needed: the inline expression
-  // form (`let x = unsafe { *p };`) AND the declaration forms
-  // (`unsafe fn`, `pub unsafe fn`, `unsafe impl`, `unsafe trait`,
-  // `unsafe extern "C"`). Matching only `unsafe {` would silently miss the
-  // declarations — the most common and most consequential way unsafe code
-  // enters a Rust codebase, and exactly what a project's unsafe policy exists
-  // to catch. Do not narrow this back to a single pattern.
-  /\bunsafe\s*\{/,
-  /\bunsafe\s+(fn|impl|trait|extern|mod)\b/,
-  /\bfrom_utf8_unchecked\b/,
-  /\btransmute\s*\(/,
-  /\bptr::(read|write|copy)/,
-  /\bmemcpy\s*\(/,
-];
-
-// contentSignal(matched, hasCodeFiles, diffText) — the ONE rule every
-// content-derived signal routes through. Never inline it per signal: a later
-// edit could then drift one of the three.
-//
-// Branch ORDER is load-bearing:
-//   1. NO code files changed → a confident `false`, whatever the diff body says.
-//      A docs-only diff is a genuine negative, not an unknown.
-//   2. code files changed but the content could NOT be read at all
-//      (`diffText === null`) → UNDETERMINABLE, so fail open BY VALUE: return
-//      `true` so the dimension still runs. Never omit the key —
-//      `selectDimensions`' `signals == null` test is a WHOLE-OBJECT check, so an
-//      omitted key reads `undefined`, coerces false, and SILENTLY DROPS the
-//      dimension.
-//   3. content was read and nothing matched → a confident `false`. Absence of a
-//      match in readable content is a real negative; this is what keeps the
-//      fail-open from widening into "run every dimension on every code diff".
-//
-// Reversing branches 1 and 2 would make a docs-only diff with an unreadable body
-// fail open and re-run every conditional dimension on prose.
-function contentSignal(matched, hasCodeFiles, diffText) {
-  if (!hasCodeFiles) return false;
-  if (diffText === null) return true;
-  return matched === true;
-}
-
-// deriveSignals(input) — map `{ targetType, changedFiles, diffText }` to a
-// FULLY-POPULATED signals object. Every boolean key in SIGNAL_KEYS is set
-// explicitly, never left undefined: a partially-populated object would make a
-// conditional dimension drop out on a MISSING key rather than on a real negative.
-//
-// Pure and deterministic — fixed classification and content rules, no Date.now /
-// Math.random, no shell.
-//
-// EVERY conditional signal derives from diff CONTENT, not from declared or
-// conventional PATHS. There is no generic way to specify paths that works across
-// repos: a path list is either repo-specific or fires on a spelling coincidence.
-// The input shape is unchanged — content derivation reads `diffText` and
-// `changedFiles`, which every caller already supplies, so there is no
-// declared-path or project-config channel to thread.
-//
-// A caller that cannot compute a diff AT ALL still passes NO signals (see
-// selectDimensions' object-level fail-open). The value-level fail-open in
-// `contentSignal` is a DIFFERENT layer: it covers a caller that HAS changed files
-// but could not read their content.
-function deriveSignals(input) {
-  const i = input || {};
-  const targetType = i.targetType || null;
-  const files = Array.isArray(i.changedFiles) ? i.changedFiles.filter((f) => typeof f === 'string') : [];
-  const diffText = typeof i.diffText === 'string' ? i.diffText : null;
-  const lower = files.map((f) => f.toLowerCase());
-
-  const isTest = (p) => TEST_PATH_PATTERNS.some((re) => re.test(p));
-  const isCode = (p) => CODE_EXTENSIONS.some((ext) => p.slice(-ext.length) === ext);
-
-  const codeFiles = lower.filter((p) => isCode(p) && !isTest(p));
-  const testFiles = lower.filter(isTest);
-
-  const dirs = {};
-  for (const p of lower) {
-    const idx = p.lastIndexOf('/');
-    dirs[idx === -1 ? '.' : p.slice(0, idx)] = true;
-  }
-
-  // Content is scanned in its ORIGINAL case. Only PATHS are lowercased: Go's
-  // exported-identifier rule and the Rust/Java keywords are case-sensitive, so
-  // lowercasing the diff would make `func Foo` indistinguishable from `func foo`.
-  const added = addedLines(diffText);
-  const hasCode = codeFiles.length > 0;
-  // A CHANGELOG.md path CONFIRMS a user-facing change; it is never a SOLE
-  // trigger — a CHANGELOG-only diff has no code files, so contentSignal's first
-  // branch keeps it a genuine `false`.
-  const changelogTouched = lower.some((p) => p === 'changelog.md' || p.slice(-13) === '/changelog.md');
-
-  return {
-    targetType: targetType,
-    changedFiles: files.slice(),
-    changesLogic: codeFiles.length > 0,
-    missingTests: codeFiles.length > 0 && testFiles.length === 0,
-    multiModule: Object.keys(dirs).length > 1,
-    publicApiChanged: contentSignal(matchesAny(added, EXPORT_CONTENT_PATTERNS), hasCode, diffText),
-    userFacing: contentSignal(matchesAny(added, USER_FACING_CONTENT_PATTERNS) || changelogTouched, hasCode, diffText),
-    securitySurface: contentSignal(matchesAny(added, SECURITY_CONTENT_PATTERNS), hasCode, diffText),
-  };
 }
 
 // hasBlocking(findings, tier) — is there a blocking finding, tier-scaled?
@@ -2550,41 +2187,19 @@ function degradationSummaryClause(accounting) {
 
 
 // --- Plan-standalone consolidation helpers -----------------------------------
-// Three pure, post-pipeline consolidation/gate helpers the standalone
-// plan-review workflow (.claude/workflows/rdm-wf-plan-review.js) consumes. They are
+// Two pure, post-pipeline consolidation/gate helpers the standalone plan-review
+// workflow (.claude/workflows/rdm-wf-plan-review.js) consumes. They are
 // CONSOLIDATION, not find/refute logic — they operate on the ranked survivors a
 // `buildReviewPipeline('plan')` run already produced, and add no new review
 // dimension, finder, or refuter. They live inside the stamped block so the
 // workflow consumer picks them up verbatim (the runtime cannot import), and are
 // exported for the Node verify harness.
-
-// stripNonPhaseUnitOfWork(survivors, targetType) — drop any survivor whose
-// `concern` is 'unit-of-work' UNLESS the review unit is a phase. Order-preserving
-// and idempotent.
 //
-// SCOPING NOW HAPPENS AT SELECTION TIME, NOT HERE: `rdm-wf-plan-review.js`
-// threads a minimal `signals: { targetType }` object into every
-// `buildReviewPipeline('plan')` call (see lib/plan-review.mjs's `reviewUnit`
-// and its `--implementation-plan` branch), so `selectDimensions`' existing
-// `unit-of-work` `when: targetType === 'phase'` predicate is evaluated instead
-// of fail-opening — the finder simply never runs for a task, roadmap-body, or
-// implementation-plan unit, and this function is a no-op pass-through for that
-// normal path. It remains a defense-in-depth BACKSTOP: any other or future
-// caller of `buildReviewPipeline('plan')` that legitimately omits signals still
-// gets the fail-open ALL-dimensions behavior (a supported, gated contract — see
-// `selectDimensions`), and this filter is what still makes "unit-of-work only
-// on phase units" true for it. It also guards against a regression in the
-// signals-threading above. (An earlier version of this comment credited the
-// no-signals design to "honoring the dispatch-phase deferral of
-// signal-threading to the sibling unify-plan-review roadmap" — that roadmap has
-// since completed and archived at 4/4 without threading signals into
-// rdm-wf-plan-review.js, so the deferral was discharged in name only; this is
-// where it actually lands.)
-function stripNonPhaseUnitOfWork(survivors, targetType) {
-  const list = Array.isArray(survivors) ? survivors : [];
-  if (targetType === 'phase') return list.slice();
-  return list.filter((f) => !(f && f.concern === 'unit-of-work'));
-}
+// `unit-of-work` scoping is NOT one of them any more. It used to be filtered out
+// here for a non-phase unit; now a caller that is not reviewing a phase simply
+// does not name the reviewer (see `resolveReviewers` and the reviewer
+// catalogue's own guidance). A post-hoc strip would be a second mechanism
+// policing the first.
 
 // filterPlanReviewTag(tags) — the read-filter-write half of the plan gate: return
 // the tag list with the reserved `needs-plan-review` removed by EXACT string
@@ -2736,9 +2351,9 @@ function classifyOutcome(input) {
 // Build the review pipeline for `mode` ("code" | "plan").
 //
 // Returns an async `runReview(context)` that:
-//   1. selects the applicable dimensions from `context.signals` (see
-//      selectDimensions' three-way fail-open contract),
-//   2. runs one finder agent per selected dimension IN PARALLEL (stage 1),
+//   1. resolves the reviewers to run from `context.reviewers` (see
+//      resolveReviewers — omitted means all of them),
+//   2. runs one finder agent per selected reviewer IN PARALLEL (stage 1),
 //      RETRYING a finder that resolves null exactly once — in `code` mode the
 //      `ac` dimension's finder returns the AC_REVIEW_SCHEMA shape instead of a
 //      bare findings array, and its `ac` table is captured,
@@ -2749,11 +2364,6 @@ function classifyOutcome(input) {
 //   4. runs a FRESH refuter agent per finding in the top-N, in parallel (stage
 //      2); the overflow and the non-gating findings pass through un-refuted,
 //   5. drops any finding that was refuted or scored below CONFIDENCE_FLOOR,
-//   5b. in `plan` mode with no recorded intent threaded on `context.intent`,
-//      appends ONE `suggestion`-severity `intent-alignment` notice
-//      (INTENT_MISSING_NOTICE) to the survivors, so the dimension's absence is
-//      REPORTED rather than silently skipped — non-gating, so hasBlocking stays
-//      false,
 //   6. returns `{ survivors, acTable, budget, coverage }` — survivors ranked
 //      most-severe-first, the captured AC table (`null` in `plan` mode, or if
 //      the `ac` dimension didn't run or its finder failed to resolve a table),
@@ -2773,12 +2383,11 @@ function classifyOutcome(input) {
 // "a crashed finder drops only its own dimension" behavior is unchanged, and it
 // makes no assumption about a minimum `pipeline()` stage count.
 //
-// CONTEXT CHANNELS. `context.target` (the document/diff under review),
-// `context.signals` (dimension selection — see selectDimensions), and, in plan
-// mode, `context.intent` (the operator-recorded `## Intent` section, VERBATIM,
-// as extractIntent returns it). A caller computes `intent` and the matching
-// `signals.hasIntent` itself; both are optional and their absence is
-// non-blocking by construction (see 5b above).
+// CONTEXT CHANNELS. `context.target` — an IDENTIFIER for what is under review
+// (an item ref, a plan slug, a `rdm … show` command the finder runs itself),
+// never a document body — and `context.reviewers`, the caller-selected reviewer
+// keys (see resolveReviewers; omitted runs them all). Nothing transcribes a
+// document into this object: a finder that needs one fetches it.
 //
 // `deps` lets the verify harness inject fakes; in the Workflow runtime it is
 // omitted and the ambient `agent` / `pipeline` / `parallel` / `log` globals are
@@ -2801,9 +2410,9 @@ function buildReviewPipeline(mode, deps) {
 
   return async function runReview(context) {
     const ctx = context || {};
-    // Deterministic pre-step: which dimensions actually run. A caller with no
-    // diff signals passes none and gets EVERY dimension (fail-open).
-    const dims = selectDimensions(mode, ctx.signals);
+    // Deterministic pre-step: which reviewers actually run. The CALLER decides;
+    // omitting `reviewers` runs every one for the mode.
+    const dims = resolveReviewers(mode, ctx.reviewers);
     // Optional explicit models for the two review steps. Callers that have no
     // tier context (the standalone review-refute-fix consumer) simply omit them
     // and the agents inherit the session model exactly as before. Passing
@@ -3110,7 +2719,7 @@ function buildReviewPipeline(mode, deps) {
     // by every consumer, so a run transcript or a run summary can never read as
     // complete coverage when it was bounded. NOTE: this describes the PIPELINE.
     // A consumer that post-filters survivors (plan-review's
-    // stripNonPhaseUnitOfWork / suppressWontFixed) may drop a survivor that
+    // suppressWontFixed) may drop a survivor that
     // consumed budget — these counts do not track that.
     const budget = {
       max: maxRefutations,
@@ -3146,15 +2755,7 @@ function buildReviewPipeline(mode, deps) {
           : '') +
         coverageSummaryClause(coverage)
     );
-    // MISSING-INTENT NOTICE (plan mode only). Injected AFTER the `survives()`
-    // filter, so it is never subject to the confidence floor and never eligible
-    // for refutation, and BEFORE rankFindings so it is ordered with everything
-    // else. `budget` and `coverage` are deliberately untouched: they describe
-    // AGENT work, and no agent ran for this notice. A `suggestion` gates at no
-    // tier, so hasBlocking stays false and no revision budget is burned.
-    const finalSurvivors =
-      mode === 'plan' && !intentPresent(ctx) ? survivors.concat([INTENT_MISSING_NOTICE()]) : survivors;
-    return { survivors: rankFindings(finalSurvivors), acTable: acTable, budget: budget, coverage: coverage };
+    return { survivors: rankFindings(survivors), acTable: acTable, budget: budget, coverage: coverage };
   };
 }
 // >>> review-refute-fix:end <<<
@@ -3180,7 +2781,7 @@ function buildReviewPipeline(mode, deps) {
 // run time). scripts/verify-workflow-review.sh gates the two copies for drift.
 // No Date.now / Math.random — pure array/string ops plus injected async deps.
 //
-// `buildReviewPipeline`, `stripNonPhaseUnitOfWork`, `filterPlanReviewTag`,
+// `buildReviewPipeline`, `filterPlanReviewTag`,
 // `classifyPlanOutcome`, `gateFor`, `summarizeFindings`, and
 // `resolveRefutationBudget` are NOT declared here: they belong to the canonical
 // review source (lib/review.mjs) and reach this block from the stamped review
@@ -3332,16 +2933,18 @@ function parsePlanArgs(rawArgs) {
   // NOT done here — that belongs to task fix-plan-review-gate-tag-clobber.
   const fetched = a.fetched && typeof a.fetched === 'object' ? a.fetched : null
   const wontFixedTexts = Array.isArray(a.wontFixedTexts) ? a.wontFixedTexts : null
-  // The PARENT ROADMAP's body, verbatim, for a standalone `phase` target — the
-  // hoist for the `fetch:roadmap-intent` read. A DIFFERENT document from
-  // `fetched` above (that one is the phase's own body+tags), hence a separate,
-  // independent key rather than a member of that payload: see
-  // hoistedRoadmapBodyOk. Read from a STRUCTURED key only, never out of the
-  // `$ARGUMENTS` flag string, exactly like `fetched`. The RAW body is taken and
-  // the engine runs its own extractIntent over it, so there is exactly one
-  // implementation of the extraction and the hoisted and fetched paths cannot
-  // disagree about what an `## Intent` section is.
-  const roadmapBody = typeof a.roadmapBody === 'string' && a.roadmapBody.trim() !== '' ? a.roadmapBody : null
+  // The CALLER-SELECTED REVIEWER SET, applied to every review unit in this run.
+  // Read from a STRUCTURED key only, exactly like `fetched` below — a positional
+  // target slug must never be able to change which reviewers run. Absent (null)
+  // means run every plan reviewer; see the review core's `resolveReviewers`.
+  // An unrecognised name is dropped silently there and shows in coverage.
+  //
+  // ONE list for the whole run, deliberately. A roadmap sweep applies it to the
+  // roadmap-body unit and to every phase unit alike: a caller that wants
+  // `unit-of-work` graded on the phases accepts it running against the body too,
+  // and that choice is visible in each unit's `coverage.selected`. A second
+  // per-kind key would be a second mechanism for the caller to keep in sync.
+  const reviewers = Array.isArray(a.reviewers) ? a.reviewers.filter((r) => typeof r === 'string') : null
   const mechanicalModel =
     typeof a.mechanicalModel === 'string' && a.mechanicalModel.trim() !== '' ? a.mechanicalModel.trim() : null
   // The judgment-site siblings of mechanicalModel above: the resolved
@@ -3426,7 +3029,7 @@ function parsePlanArgs(rawArgs) {
     planSlug: planSlug,
     fetched: fetched,
     wontFixedTexts: wontFixedTexts,
-    roadmapBody: roadmapBody,
+    reviewers: reviewers,
     mechanicalModel: mechanicalModel,
     findModel: findModel,
     verifyModel: verifyModel,
@@ -3598,28 +3201,6 @@ function hoistedFetchedOk(fetched, kind) {
     if (!phasesOk) return false
   }
   return true
-}
-
-// hoistedRoadmapBodyOk(roadmapBody) — the shape guard for the OTHER hoistable
-// read on a standalone `phase` target: the PARENT ROADMAP's body, whose
-// `## Intent` section the intent-alignment dimension needs. It guards the
-// `fetch:roadmap-intent` block far below — see that block's own comment for
-// the fail-soft rule this guard preserves. Shape only, exactly like
-// hoistedFetchedOk above: a non-empty string, with no judgment about the
-// CONTENT. Whether the body actually carries an `## Intent` section is
-// extractIntent's business, and a body without one is a legal outcome, not a
-// rejected hoist.
-//
-// DELIBERATELY INDEPENDENT of hoistedFetchedOk: these are two different
-// documents, read by two different agents, and each hoist suppresses exactly
-// its own. There is no combined completeness guard — supplying one without the
-// other is legal and leaves the other path byte-unchanged. Coupling them would
-// change the existing `fetched` hoist's behavior, and the two paths do not even
-// degrade the same way: `fetched` is fail-CLOSED (`built.fetchFailed`) while
-// the read below is fail-SOFT, so an all-or-nothing guard over both would let a
-// missing roadmap body reject an otherwise-complete hoist.
-function hoistedRoadmapBodyOk(roadmapBody) {
-  return typeof roadmapBody === 'string' && String(roadmapBody).trim() !== ''
 }
 
 // RESERVED_FETCH_TOKENS — a small, CLOSED, evidence-grounded list, not a
@@ -4114,34 +3695,6 @@ function buildRoadmapFetchPrompt(slug, opts) {
 // fetch-status sentence for buildRoadmapFetchPrompt is very unlikely to also
 // fabricate a matching length/first-line pair for THIS prompt (see
 // roadmapBodyVerified's caller for how the two are compared).
-// buildRoadmapIntentFetchPrompt(slug) — the STANDALONE-PHASE path's only extra
-// mechanical read. A phase inherits its parent roadmap's recorded `## Intent`
-// (the roadmap-level decision), and on a `--roadmap` target the roadmap body is
-// already fetched, so inheritance there is free. A `--phase` target has no
-// roadmap body in hand, so this one call reads it.
-//
-// Deliberately NOT added to the roadmap fan-out path: `buildRoadmapFetchPrompt`
-// above is held to exactly ONE mechanical agent invocation per roadmap target,
-// and re-reading the same body would contradict that rule and re-inflate the
-// recorded fetch-agent baseline.
-//
-// Shaped exactly like buildPhaseFetchPrompt/buildTaskFetchPrompt: transcribe raw
-// stdout verbatim, never compose. Any failure — a thrown agent, an empty
-// transcript, unparseable JSON — degrades to no intent at the call site, never
-// to an error and never to a blocking finding: a gate must never block on an
-// input the thing it blocks cannot produce.
-function buildRoadmapIntentFetchPrompt(slug) {
-  return [
-    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
-    'Run exactly this command in the repo root:',
-    '  ./target/debug/rdm roadmap show ' + slug + ' --project rdm --format json',
-    'Return a RAW_STDOUT object: `transcript` — the ENTIRE raw stdout of that command, character for',
-    'character, exactly as printed. Do not summarize, reformat, extract fields, rename anything, or',
-    'comment on it — copy it verbatim.',
-    'If the command fails or prints nothing, return an empty string for `transcript`.',
-  ].join('\n')
-}
-
 function buildRoadmapBodyCheckPrompt(slug) {
   return [
     'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
@@ -5014,7 +4567,7 @@ function formatSkippedPhasesClause(skippedPhases) {
   )
 }
 
-// buildReviewUnits(parsed, fetched, roadmapIntent) — pure: turn a parsed target
+// buildReviewUnits(parsed, fetched) — pure: turn a parsed target
 // plus the fetched artifact JSON into the list of independent review units. A `phase`/`task`
 // target is a single unit; a `roadmap` target is the roadmap body plus one unit
 // per NON-TERMINAL phase (see isTerminalPhaseStatus above — a phase whose
@@ -5025,16 +4578,10 @@ function formatSkippedPhasesClause(skippedPhases) {
 // present on every return path (an empty array where nothing was — or could
 // have been — skipped) for shape consistency.
 //
-// RECORDED INTENT (the inheritance decision, implemented in ONE place). Every
-// unit carries `intent` (the verbatim `## Intent` section, or null) and
-// `hasIntent`. On a `roadmap` target the roadmap body is already fetched, so
-// extractIntent runs ONCE over it and the result is set on the roadmap unit AND
-// on every phase unit built from `rm.phases` — phases INHERIT their parent
-// roadmap's intent, at no extra agent cost. A `task` unit never has one. A
-// standalone `phase` unit takes it from the optional third argument, which the
-// driver fills from its `fetch:roadmap-intent` read; it defaults to
-// `{ hasIntent: false, intent: null }` so every pre-existing caller keeps
-// working unchanged and simply gets no intent.
+// RECORDED INTENT is NOT threaded here any more. The `intent-alignment`
+// reviewer reads the parent roadmap's `## Intent` section itself when the caller
+// selects it, so no unit carries a transcribed copy and there is nothing for
+// this function to inherit, extract, or lose.
 //
 // Defense-in-depth: a `fetched.phases` stem-collision/duplication guard runs
 // here too, using ONLY the `stem` field the documented hoist contract already
@@ -5044,11 +4591,8 @@ function formatSkippedPhasesClause(skippedPhases) {
 // hoist (whose content validation is out of this phase's scope — see
 // docs/mechanical-agent-inventory.md). A trip returns the SAME fail-closed
 // shape as an empty body, so the rest of the driver needs no new branch.
-function buildReviewUnits(parsed, fetched, roadmapIntent) {
+function buildReviewUnits(parsed, fetched) {
   const kind = parsed.kind
-  const inheritedIntent = roadmapIntent && roadmapIntent.hasIntent === true
-    ? { hasIntent: true, intent: roadmapIntent.intent }
-    : { hasIntent: false, intent: null }
   if (kind === 'roadmap') {
     const rm = fetched
     if (!rm || !rm.body || String(rm.body).trim() === '') return { units: [], fetchFailed: true, skippedPhases: [] }
@@ -5058,20 +4602,14 @@ function buildReviewUnits(parsed, fetched, roadmapIntent) {
     if (phaseStems.indexOf(parsed.roadmap) !== -1 || new Set(phaseStems).size !== phaseStems.length) {
       return { units: [], fetchFailed: true, skippedPhases: [] }
     }
-    // ONE extractIntent call for the whole fan-out; every phase unit below
-    // inherits this same value.
-    const inherited = extractIntent(String(rm.body))
     const units = []
     units.push({
       kind: 'roadmap',
-      targetType: 'roadmap',
       ident: parsed.roadmap,
       roadmap: parsed.roadmap,
       tags: Array.isArray(rm.tags) ? rm.tags : [],
       body: String(rm.body),
       target: 'roadmap ' + parsed.roadmap + ' (body)\n\n' + String(rm.body),
-      intent: inherited.intent,
-      hasIntent: inherited.hasIntent,
     })
     const phases = Array.isArray(rm.phases) ? rm.phases : []
     const skippedPhases = []
@@ -5083,14 +4621,11 @@ function buildReviewUnits(parsed, fetched, roadmapIntent) {
       }
       units.push({
         kind: 'phase',
-        targetType: 'phase',
         ident: p.stem,
         roadmap: parsed.roadmap,
         tags: Array.isArray(p.tags) ? p.tags : [],
         body: String(p.body || ''),
         target: 'phase ' + parsed.roadmap + '/' + p.stem + '\n\n' + String(p.body || ''),
-        intent: inherited.intent,
-        hasIntent: inherited.hasIntent,
       })
     }
     return { units: units, fetchFailed: false, skippedPhases: skippedPhases }
@@ -5107,16 +4642,11 @@ function buildReviewUnits(parsed, fetched, roadmapIntent) {
     units: [
       {
         kind: kind,
-        targetType: kind,
         ident: ident,
         roadmap: parsed.roadmap,
         tags: Array.isArray(meta.tags) ? meta.tags : [],
         body: String(meta.body),
         target: kind + ' ' + label + '\n\n' + String(meta.body),
-        // A task has no parent roadmap, so it never inherits intent; a
-        // standalone phase takes it from the driver's fetch:roadmap-intent read.
-        intent: kind === 'task' ? null : inheritedIntent.intent,
-        hasIntent: kind === 'task' ? false : inheritedIntent.hasIntent,
       },
     ],
     fetchFailed: false,
@@ -5236,12 +4766,9 @@ async function runPlanReviewDriver(args, deps) {
   // value has already thrown inside parsePlanArgs, before any agent ran.
   let _gateMode = d.gateMode === 'return' ? 'return' : 'apply'
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
-  // the review core, with NO independent review logic in this driver. Each call
-  // site below threads a minimal `{ targetType }` signals object (see the header
-  // note), which is enough for selectDimensions' plan-mode `when` predicate
-  // (unit-of-work: `targetType === 'phase'`) to scope selection at the source;
-  // stripNonPhaseUnitOfWork remains applied per unit as a defense-in-depth
-  // backstop, not the primary scoping mechanism.
+  // the review core, with NO independent review logic in this driver. Which
+  // reviewers run is the CALLER's choice, threaded through as `reviewers`; the
+  // driver never inspects a target to decide.
   const runPlanReview = d.runPlanReview || buildReviewPipeline('plan')
 
   const parsed = parsePlanArgs(args)
@@ -5252,6 +4779,9 @@ async function runPlanReviewDriver(args, deps) {
   if (parsed.gateMode === 'return') _gateMode = 'return'
   // Already validated by parsePlanArgs via the review core's single validator.
   const maxRefutations = parsed.maxRefutations
+  // The caller-selected reviewer set for every unit in this run. `null` (the
+  // default) runs every plan reviewer — see the review core's resolveReviewers.
+  const reviewers = parsed.reviewers
   // The PERSIST switch, resolved once. `persistOn` is the single boolean every
   // branch below consults; `persist` carries the optional explicit target.
   const persist = parsed.persist
@@ -5260,10 +4790,9 @@ async function runPlanReviewDriver(args, deps) {
     _log('plan-review: --implementation-plan has no persisted target — persist ignored')
   }
 
-  // reviewUnit — run find → refute → filter for ONE review unit, then strip
-  // non-phase unit-of-work survivors, drop anything already resolved
-  // wont-fix, read the unit's prior round off its own body, and classify with
-  // the round cap. Returns a per-unit result the act + gate steps consume
+  // reviewUnit — run find → refute → filter for ONE review unit, then drop
+  // anything already resolved wont-fix, read the unit's prior round off its own
+  // body, and classify with the round cap. Returns a per-unit result the act + gate steps consume
   // independently. `wontFixedTexts` is the SAME list for every unit in a run
   // (one search covers the whole run, not one per unit).
   async function reviewUnit(unit, wontFixedTexts, persistOn) {
@@ -5275,11 +4804,10 @@ async function runPlanReviewDriver(args, deps) {
     // both are carried through to the reported result.
     //
     // IMPORTANT: `budget` describes the PIPELINE, not this unit's final reported
-    // findings — stripNonPhaseUnitOfWork and suppressWontFixed run AFTER it and
-    // may drop a survivor that consumed budget.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, intent: unit.intent, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: unit.targetType, hasIntent: unit.hasIntent === true } })
-    const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, unit.targetType)
-    const survivors = suppressWontFixed(strippedSurvivors, wontFixedTexts)
+    // findings — suppressWontFixed runs AFTER it and may drop a survivor that
+    // consumed budget.
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: unit.target, reviewers: reviewers, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
+    const survivors = suppressWontFixed(rawSurvivors, wontFixedTexts)
     // THE CHANNEL SWITCH. Both branches produce the SAME `{ round, findings }`
     // shape; everything below this line is identical on either channel.
     const prior = persistOn
@@ -5375,7 +4903,7 @@ async function runPlanReviewDriver(args, deps) {
   // ------------------------------------------------------------------ implementation-plan
   // THE GRADED DOCUMENT IS THE PLAN ITSELF — `planText` — never an rdm item
   // document. This branch returns before the shared fetch block below, so no
-  // *item* document is ever read here and fetch:phase / fetch:roadmap-intent /
+  // *item* document is ever read here and fetch:phase /
   // fetch:wontfix stay unreachable from this branch: everything those reads
   // would supply must still arrive as a caller-supplied value. The reachable
   // agents on this branch are fetch:plan and fetch:plan-body-check, gated on
@@ -5390,20 +4918,6 @@ async function runPlanReviewDriver(args, deps) {
   // cannot be silently substituted content for the real one. A finding about a
   // phase body is therefore still impossible by construction, not by
   // instruction.
-  //
-  // SIGNALS SITE: a full, honest `{ targetType: 'implementation-plan',
-  // hasIntent }`. `unit-of-work` de-selects at source (targetType !== 'phase'),
-  // which is CORRECT against a plan rather than a coverage regression —
-  // independent deliverability is a property of the PHASE, settled when it was
-  // created and estimated, and not something a review of the plan can act on.
-  // stripNonPhaseUnitOfWork below stays as the defense-in-depth backstop, not
-  // the primary mechanism.
-  //
-  // The recorded `## Intent` is threaded as a VALUE (`intent:`) and never as a
-  // signal; `hasIntent` is the derived boolean ABOUT that value, exactly as
-  // reviewUnit passes it for every other unit. It is extracted CALLER-SIDE by
-  // the one canonical extractor over the hoisted roadmap body, so
-  // intent-alignment runs here without any agent being added.
   //
   // Act and gate are still skipped: a plan document carries no tags, so there is
   // no needs-plan-review to clear. Persist is NOT skipped when the caller named
@@ -5497,31 +5011,16 @@ async function runPlanReviewDriver(args, deps) {
         planText = '(the implementation plan provided in context)'
       }
     }
-    // FAIL-SOFT, matching the fetch:roadmap-intent contract below exactly: a
-    // missing/rejected body, a body with no `## Intent`, and a throw out of
-    // extractIntent all degrade to `{ hasIntent: false, intent: null }`. The
-    // dimension then simply does not run and its absence is reported as a
-    // non-blocking suggestion. Failing closed here would block a plan on an
-    // input the plan cannot produce.
-    let planIntent = { hasIntent: false, intent: null }
-    try {
-      if (hoistedRoadmapBodyOk(parsed.roadmapBody)) {
-        planIntent = extractIntent(String(parsed.roadmapBody))
-      }
-    } catch (e) {
-      planIntent = { hasIntent: false, intent: null }
-    }
     // See reviewUnit's identical notes: acTable is always null in plan mode, and
     // `budget` describes the pipeline, not the post-strip survivor set.
-    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, intent: planIntent.intent, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel, signals: { targetType: 'implementation-plan', hasIntent: planIntent.hasIntent === true } })
-    const strippedSurvivors = stripNonPhaseUnitOfWork(rawSurvivors, 'implementation-plan')
+    const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({ target: planText, reviewers: reviewers, maxRefutations: maxRefutations, findModel: _findModel, verifyModel: _verifyModel })
     // Wont-fix suppression from the CALLER-SUPPLIED list only — no fetch:wontfix
     // agent is reachable here. Without it an already-dismissed finding would
     // resurface and force a revise round, the exact failure class this path
     // exists to close. A caller that supplies nothing is byte-unchanged.
     const survivors = parsed.wontFixedTexts
-      ? suppressWontFixed(strippedSurvivors, parsed.wontFixedTexts)
-      : strippedSurvivors
+      ? suppressWontFixed(rawSurvivors, parsed.wontFixedTexts)
+      : rawSurvivors
     // classifyPlanOutcome, NOT classifyRoundOutcome: the round cap stays out of
     // this mode, where the bound is the orchestrator's own --max-plan-revise
     // budget, which already parks `blocked` on exhaustion.
@@ -5709,61 +5208,12 @@ async function runPlanReviewDriver(args, deps) {
     fetched = candidate
   }
 
-  // RECORDED INTENT for a STANDALONE PHASE target. A phase inherits its parent
-  // roadmap's `## Intent`, but this path has no roadmap body in hand (the
-  // roadmap fan-out above already has one, and reuses it inside
-  // buildReviewUnits — see buildRoadmapIntentFetchPrompt on why this must NOT
-  // be added there). Exactly ONE extra mechanical read, and only here.
-  //
-  // HOIST: a caller that already holds the parent roadmap's body passes it as
-  // `args.roadmapBody` and the read is skipped outright. That hoist is
-  // independent of `fetched` — two documents, two agents — see
-  // hoistedRoadmapBodyOk.
-  //
-  // FAIL-SOFT, never fail-closed: a thrown agent, a null/empty transcript, or
-  // unparseable JSON all degrade to `{ hasIntent: false, intent: null }`. The
-  // dimension then simply does not run and its absence is reported as a
-  // non-blocking suggestion. Failing closed here would block a plan on an input
-  // the plan cannot produce.
-  let roadmapIntent = { hasIntent: false, intent: null }
-  if (kind === 'phase') {
-    try {
-      // Both paths sit INSIDE this try on purpose: the catch below then covers
-      // the hoist too, so a throw out of extractIntent degrades exactly as a
-      // thrown agent does, and the fail-soft guarantee holds by construction
-      // rather than by a second copy of the recovery.
-      if (hoistedRoadmapBodyOk(parsed.roadmapBody)) {
-        roadmapIntent = extractIntent(String(parsed.roadmapBody))
-        _log('plan-review: roadmap intent hoisted from caller args (no fetch agent)')
-      } else {
-        const rawIntent = await _agent(buildRoadmapIntentFetchPrompt(parsed.roadmap), {
-          label: 'fetch:roadmap-intent',
-          phase: 'Read',
-          agentType: 'rdm-mechanical',
-          schema: RAW_STDOUT_SCHEMA,
-          model: _mechanicalModel,
-        })
-        const parsedIntentStdout = parseJsonStdout(rawIntent && rawIntent.transcript)
-        const intentBody =
-          parsedIntentStdout.ok && parsedIntentStdout.value && typeof parsedIntentStdout.value.body === 'string'
-            ? parsedIntentStdout.value.body
-            : ''
-        roadmapIntent = extractIntent(intentBody)
-      }
-    } catch (e) {
-      roadmapIntent = { hasIntent: false, intent: null }
-    }
-    if (!roadmapIntent.hasIntent) {
-      _log('plan-review: no recorded ## Intent for roadmap ' + parsed.roadmap + ' — intent-alignment will not run')
-    }
-  }
-
   // Cache the real tags NOW — before buildReviewUnits, reviewUnit, or the
   // review pipeline touch `fetched` at all. See snapshotOriginalTags' own doc
   // comment for what this does and does not guarantee.
   const originalTags = snapshotOriginalTags(kind, parsed, fetched)
 
-  const built = buildReviewUnits(parsed, fetched, roadmapIntent)
+  const built = buildReviewUnits(parsed, fetched)
   const units = built.units
   // The phases the roadmap-wide sweep excluded as terminal (done/wont-fix) —
   // always an array, empty on the phase/task branch and on either fail-closed

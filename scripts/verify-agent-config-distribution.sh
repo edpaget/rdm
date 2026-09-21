@@ -1428,9 +1428,11 @@ async function assertRawImportRejects(engine) {
   assert.match(err.message, /return/i, 'expected the SyntaxError to name the illegal top-level return, got: ' + err.message);
 }
 
+// DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): the
+// 'deriveSignals' / 'selectDimensions' helper names. Diff-shape inference and
+// predicate-driven selection no longer exist in the emitted engine.
 const REVIEW_HELPERS = [
-  'deriveSignals',
-  'selectDimensions',
+  'resolveReviewers',
   'findPrompt',
   'refutePrompt',
   'projectFlag',
@@ -1558,31 +1560,26 @@ if (stage === 'logic') {
     assert.ok(!rustToken.test(positive.diffText), 'the fixture diff smuggled a Rust token (' + rustToken + ') — the language-neutrality claim would not be exercised');
   }
 
-  const signals = review.deriveSignals({ targetType: 'phase', changedFiles: positive.changedFiles, diffText: positive.diffText });
-  for (const key of ['changesLogic', 'missingTests', 'multiModule', 'publicApiChanged', 'userFacing', 'securitySurface']) {
-    assert.equal(typeof signals[key], 'boolean', 'signal ' + key + ' must be present and boolean');
-    assert.equal(signals[key], true, 'signal ' + key + ' must fire on the fixture feature branch (a Python/TypeScript diff)');
+  // DELETED (no-mechanical-agents-in-workflows phase 34, commit 1): the
+  // deriveSignals/selectDimensions batteries and their docs-only and
+  // CHANGELOG-only controls. Diff-shape inference and predicate-driven
+  // selection no longer exist; the caller supplies the reviewer set. What
+  // remains here is the EMITTED engine's caller-selected resolver, executed.
+  const allCodeReviewers = review.resolveReviewers('code', null).map((d) => d.key);
+  assert.ok(allCodeReviewers.length >= 2, 'the EMITTED engine must expose more than one code reviewer');
+  assert.deepEqual(
+    review.resolveReviewers('code', undefined).map((d) => d.key),
+    allCodeReviewers,
+    'an omitted reviewer set must run every code reviewer in the EMITTED engine'
+  );
+  {
+    const picked = allCodeReviewers.slice(0, 2);
+    assert.deepEqual(review.resolveReviewers('code', picked).map((d) => d.key), picked,
+      'a caller-selected set runs exactly those reviewers in the EMITTED engine');
+    assert.deepEqual(review.resolveReviewers('code', picked.concat(['not-a-reviewer'])).map((d) => d.key), picked,
+      'an unrecognised reviewer name is dropped silently in the EMITTED engine');
   }
-  const dims = review.selectDimensions('code', signals).map((d) => d.key);
-  assert.deepEqual(dims, ['ac', 'correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'], 'every CONDITIONAL code dimension must fire on the fixture diff, got: ' + dims.join(','));
-
-  // Negative control: docs-only.
-  const docs = realDiff('feature/docs-only');
-  const docsSignals = review.deriveSignals({ targetType: 'phase', changedFiles: docs.changedFiles, diffText: docs.diffText });
-  for (const key of ['changesLogic', 'publicApiChanged', 'userFacing', 'securitySurface']) {
-    assert.equal(docsSignals[key], false, 'docs-only control: ' + key + ' must be false');
-  }
-  assert.deepEqual(review.selectDimensions('code', docsSignals).map((d) => d.key), ['ac', 'correctness'], 'docs-only control must select only the always-on pair');
-
-  // CHANGELOG-only control: changelogTouched CONFIRMS userFacing, never triggers it.
-  const cl = realDiff('feature/changelog-only');
-  assert.deepEqual(cl.changedFiles, ['CHANGELOG.md'], 'the changelog-only control must touch exactly CHANGELOG.md');
-  assert.equal(review.deriveSignals({ targetType: 'phase', changedFiles: cl.changedFiles, diffText: cl.diffText }).userFacing, false, 'a CHANGELOG-only diff must not set userFacing');
   fixtureGit(['checkout', '-q', 'feature/checkout']);
-
-  // Fail-open contract, on the EMITTED artifact.
-  assert.equal(review.selectDimensions('code', null).length, 7, 'omitted signals must fail open to every code dimension');
-  assert.deepEqual(review.selectDimensions('code', {}).map((d) => d.key), ['ac', 'correctness'], 'an explicit empty signals object means "computed, nothing triggered"');
 
   // --- Every built command names the FIXTURE binary and project -------------
   const prompts = buildAllPrompts(review, CFG);
@@ -1689,9 +1686,9 @@ else
 fi
 
 # --- 7c. Executed pure logic on the fixture's own diffs --------------------
-say "7c. Executed pure logic: conditional dimensions fire on the fixture's real diffs; every built command names the fixture binary and project"
+say "7c. Executed pure logic: the caller-selected reviewer resolver behaves in the EMITTED engine; every built command names the fixture binary and project"
 if run_node "$TMP/downstream.mjs" logic "$FIXTURE" "$FIXTURE_BIN" "$FIXTURE_PROJECT" "$REVIEW_WF"; then
-    pass "7c: deriveSignals/selectDimensions fired on real Python/TypeScript diffs; zero rdm-specific literals in any built command"
+    pass "7c: the emitted resolveReviewers honoured a caller set and dropped an unknown name; zero rdm-specific literals in any built command"
 else
     fail "7c: downstream pure-logic assertions failed"
 fi
@@ -1739,11 +1736,14 @@ assert_corrupt_emitted_is_red "A (binary literal)" \
 assert_corrupt_emitted_is_red "B (project literal)" \
     "s|const proj = persistProjectFlag(cfg)|const proj = ' --project rdm'|" \
     "project rdm" "$REVIEW_WF"
-# C: the export vocabulary emptied — the api-docs dimension must stop firing,
-# proving the conditional-dimension assertion is not vacuous.
-assert_corrupt_emitted_is_red "C (dimension non-vacuity)" \
-    "s|^const EXPORT_CONTENT_PATTERNS = \[|const EXPORT_CONTENT_PATTERNS = []; const EXPORT_CONTENT_PATTERNS_UNUSED = [|" \
-    "EXPORT_CONTENT_PATTERNS_UNUSED" "$REVIEW_WF"
+# C: the caller-selected reviewer resolver reduced to an unconditional
+# run-everything, so a named set is silently ignored — proving 7c's
+# resolveReviewers assertions are not vacuous. (This replaced an
+# EXPORT_CONTENT_PATTERNS mutation, deleted with the diff-shape vocabularies in
+# no-mechanical-agents-in-workflows phase 34, commit 1.)
+assert_corrupt_emitted_is_red "C (reviewer-selection non-vacuity)" \
+    "s|  if (reviewers === null \|\| reviewers === undefined) return dims.slice();|  return dims.slice(); // MUTANT: reviewer selection ignored|" \
+    "MUTANT: reviewer selection ignored" "$REVIEW_WF"
 # D: the binary literal planted in the review-source command builder — a
 # different call site from A, so one passing cannot cover for the other.
 assert_corrupt_emitted_is_red "D (review source builder)" \

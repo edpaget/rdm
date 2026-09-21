@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto';
 import {createRun, safeGit} from './codex-runtime-state.mjs';
 import {runCodex, boundedParallel} from './codex-process.mjs';
 import {runEstimate} from './codex-runtime-estimate.mjs';
-import {buildReviewPipeline, classifyOutcome, deriveSignals} from '../../.claude/workflows/lib/review.mjs';
+import {buildReviewPipeline, classifyOutcome} from '../../.claude/workflows/lib/review.mjs';
 import {runPlanReviewDriver} from '../../.claude/workflows/lib/plan-review.mjs';
 const hash = text => createHash('sha256').update(text).digest('hex');
 const tiers = ['small','medium','large'];
@@ -101,7 +101,7 @@ export async function reviewCode(ctx, spec, deps, models, tier, initialItem) {
   if (typeof body !== 'string' || !body.trim()) throw new Error('Explicit target/acceptance criteria required');
   const target=`Review source ${root}, exact range ${base}..${head}. Read relevant files in this checkout.\n\n${body}\n\nDiff:\n${diff}`;
   ctx.record('code-snapshot',{base,head,changedFiles,targetHash:hash(target),item});
-  const result=await buildReviewPipeline('code',deps)({target,signals:deriveSignals({changedFiles,diffText:diff,targetType:'phase'}),findModel:models['review-find']?.model,verifyModel:models['review-verify']?.model});
+  const result=await buildReviewPipeline('code',deps)({target,reviewers:spec.reviewers ?? null,findModel:models['review-find']?.model,verifyModel:models['review-verify']?.model});
   clean(root);
   if (safeGit(root,['rev-parse','HEAD']) !== head || (item && JSON.stringify(await readItem(ctx,spec.item)) !== JSON.stringify(item))) throw new Error('Review target changed during review');
   requireComplete(result,true);

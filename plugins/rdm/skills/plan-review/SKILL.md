@@ -25,7 +25,7 @@ The specification of that pipeline — which dimensions run, how findings are gr
    - `--roadmap <slug>` — review the whole roadmap: its own body plus every phase, gated individually. A phase whose status is exactly `done` or `wont-fix` is **excluded from this sweep** — there is no implementation left to vet — and the exclusion must be **reported, never silently dropped**: name every skipped phase (stem + status) in your report. A phase with a missing, blank, or unrecognized status stays **in** the sweep (fail-open). This exclusion applies only to the aggregate `--roadmap` sweep — the next bullet's single-phase target is always reviewed regardless of status.
    - `<roadmap-slug> [phase-number]` — review a single phase. If `phase-number` is omitted, review the roadmap the same as `--roadmap <slug>`.
    - `--implementation-plan` — review an `do` plan document handed to you directly in context, ahead of implementation. There is no persisted rdm item backing this mode, so it produces an outcome and findings report only — **no tag-gate step** (skip the Gate step entirely for this mode), and it skips the Act step's fix-application half the same way (see the carve-out there).
-2. **Read the target artifact** — this also establishes the **target type**, which is the trigger signal for the `unit-of-work` dimension in the Review specification:
+2. **Read the target artifact** — this also establishes the **target type**, which is what tells you whether to include the `unit-of-work` reviewer (see Review specification § Reviewers):
    - Phase (target type `phase`): `rdm phase show <phase-number> --roadmap <slug> --project <PROJECT>` for the body, and `rdm phase show <phase-number> --roadmap <slug> --format json --project <PROJECT>` for its `tags`.
    - Task (target type `task`): `rdm task show <slug> --project <PROJECT>` for the body, and `rdm task show <slug> --format json --project <PROJECT>` for its `tags`.
    - Roadmap (target type `roadmap`): `rdm roadmap show <slug> --format json --project <PROJECT>` returns the roadmap body plus every phase's summary (body, tags, **status**) in one call — the roadmap-level summary already carries each phase's status, so no extra command is needed to check it. Before fetching each phase's full body, set aside any phase whose status is exactly `done` or `wont-fix`: record its stem and status for the report and do **not** fetch its body or dispatch a review fleet for it. For every remaining (non-terminal) phase, fetch its full body with `rdm phase show <n> --roadmap <slug> --project <PROJECT>`, since each is reviewed as a `phase` target in its own right.
@@ -33,7 +33,7 @@ The specification of that pipeline — which dimensions run, how findings are gr
 
 ### 2. Find — dispatch the review fleet (parallel)
 
-Dispatch one **read-only** `Agent` per applicable dimension, per **Review specification § Dimensions** below. Run the always-on dimensions unconditionally; add `unit-of-work` only when the target type from step 1 is a phase — including once per phase when reviewing `--roadmap <slug>`, except a phase set aside as terminal in step 1: dispatch **no agent at all** for it. State which dimensions you launched, and why, in the report.
+**You select the reviewers.** Dispatch one **read-only** `Agent` per reviewer you select, per **Review specification § Reviewers** below, whose per-reviewer cues say when to include each one. Selecting none means running them all — the safe default. Include `unit-of-work` only when the target type from step 1 is a phase — including once per phase when reviewing `--roadmap <slug>`, except a phase set aside as terminal in step 1: dispatch **no agent at all** for it. Include `intent-alignment` when the parent roadmap records a `## Intent` section; it reads that section itself. Nothing refuses a thin set, so an under-reviewed plan is a visible choice — state which reviewers you launched, and why, in the report.
 
 ### 3. Consolidate — refute findings, filter, and reach a verdict
 
@@ -145,21 +145,30 @@ Human-in-the-loop only. Skip this step entirely in `--implementation-plan` mode 
 
 ## Review specification
 
-**Hand-authored sections:** Setup, Find, Consolidate, Categorize & act, and Gate above are hand-authored and permanent. They implement plan-review's domain-specific logic (argument parsing, verdict-determination, and tag-clearing gating) and will not be overwritten by generator updates. The generated marker block below contains plan-mode review dimensions (coherence, architectural-fit, unit-of-work, restraint), refutation logic, filtering, and verdict rules — fixed content rendered from rdm's own canonical review source at release time.
+**Hand-authored sections:** Setup, Find, Consolidate, Categorize & act, and Gate above are hand-authored and permanent. They implement plan-review's domain-specific logic (argument parsing, verdict-determination, and tag-clearing gating) and will not be overwritten by generator updates. The generated marker block below contains the plan-mode reviewer catalogue and its per-reviewer selection cues, refutation logic, filtering, and verdict rules — fixed content rendered from rdm's own canonical review source at release time.
 
 **This block is fixed content, not a local edit target:** there is no regeneration step in this repo — the single home of dimensions, severity scale, refute pass, verdict rules, and gate policy is rdm's own canonical review source, and changes there reach you the next time you regenerate your skills with `rdm agent-config`.
 
 <!-- rdm:review-spec:begin (fixed content shipped with this skill — rendered at release time from rdm's own canonical review source; do not hand-edit this region, pick up upstream changes via the next rdm agent-config regeneration) -->
 
-### Dimensions — the adaptive review fleet
+### Reviewers — the CALLER selects the fleet
 
-Scale the fleet to what the change actually touches. **Always-on** dimensions
-run for every review; **triggered** dimensions run only when the change hits
-their surface. This keeps a 10-line change cheap while a cross-cutting change
-still gets full coverage. Each dimension is reviewed by its own **read-only**
-agent — it reviews and reports, it never edits. When in doubt about a trigger,
-include the dimension: a spurious agent that finds nothing is cheaper than a
-missed defect. State which dimensions you ran, and why, in the report.
+Pass the reviewer keys you want as `reviewers`. **Naming none runs every
+reviewer for the mode** — a maximal default encodes no policy, where a
+selective one would. Each reviewer is its own **read-only** agent: it reviews
+and reports, it never edits, and it runs the `rdm … show --format json` (or
+`rdm review source`) command its prompt names to fetch the document or diff
+it needs. No document is ever handed to it as an argument.
+
+An unrecognised name selects nothing and is **not** an error — the mistake
+shows up as a gap in `coverage.selected` / `coverage.ran`, which is where
+under-coverage is meant to be visible. Nothing refuses a thin set; coverage is
+visible, not enforced. The one refusal is a set that resolves to NO reviewer
+at all, which throws rather than reporting a clean review over nothing.
+
+When in doubt, include the reviewer: a spurious agent that finds nothing is
+cheaper than a missed defect. State which reviewers you ran, and why, in the
+report.
 
 **Confidence floor.** Drop any finding whose post-refutation confidence is
 below **70**, even when no refuter knocked it down.
@@ -174,9 +183,11 @@ below **70**, even when no refuter knocked it down.
 
 Rank survivors most-severe first, then by confidence descending, then by id.
 
-**Plan review dimensions:**
+**Plan reviewers** (`mode: 'plan'`):
 
-- **coherence** — *always.* Internal consistency and completeness: are
+- **coherence** — include it on every plan review; a plan that
+  contradicts itself is worth catching whatever the target is.
+  Internal consistency and completeness: are
   the steps and acceptance criteria concrete and actionable? An empty or
   ambiguous plan is itself a `blocking` finding — never guess intent. A
   plan step citing a file or behavior as existing, where it was actually
@@ -190,15 +201,20 @@ Rank survivors most-severe first, then by confidence descending, then by id.
   `blocking` only when an implementer following the plan as written would
   build the wrong thing, never merely because they would have to make a
   decision themselves.
-- **architectural-fit** — *always.* Read the project's principles
+- **architectural-fit** — include it on every plan review; it is the one
+  reviewer that judges the plan against the project's stated constraints.
+  Read the project's principles
   (falling back to `CLAUDE.md` / `AGENTS.md` in the project root when no
   principles note is configured — architectural fit must never go
   silently unchecked). Flag any plan step that would violate a stated
   convention or constraint: a violated constraint is what makes a finding
   `blocking`; stylistic preferences alone are not.
-- **unit-of-work** — *trigger: the target is a phase.* Skipped for
-  tasks, standalone roadmap bodies, and `--implementation-plan`; run once
-  per phase under `--roadmap <slug>` (this can fan out to many parallel
+- **unit-of-work** — this reviewer is about INDEPENDENT DELIVERABILITY, so
+  include it **only on a phase**. Omit it on a task, on a standalone
+  roadmap body, and on an `--implementation-plan` — none of those has a
+  unit-of-work contract to judge, and an implementation plan's sizing was
+  settled when the phase was created. Under `--roadmap <slug>` include it
+  and it runs once per phase unit (this can fan out to many parallel
   agents on a large roadmap — no hard cap is required, but be mindful of
   the cost). Is the phase independently deliverable and testable —
   neither too large to land safely nor too trivial to warrant its own
@@ -210,7 +226,11 @@ plus every phase gated individually), a `phase`, a `task`, or an
 ahead of implementation. `implementation-plan` has **no persisted rdm
 item** behind it, so it is report-only: no body edit, no filed task, and
 no gate (see § Gate).
-- **intent-alignment** — *trigger: the target has recorded intent.*
+- **intent-alignment** — include it when the target's parent roadmap
+  records a `## Intent` section; omit it when it does not, since the
+  reviewer would have no input. (It reads that section itself — the prompt
+  names the roadmap slug and the `roadmap show` command; nothing
+  transcribes the body for it.)
   Checks the plan against the operator-recorded intent — a `## Intent`
   section on the parent roadmap, stating a Goal, optional Non-goals, and
   Done-looks-like signals. It asks exactly two questions. **Divergence:**
@@ -221,13 +241,12 @@ no gate (see § Gate).
   unmet — that is precisely what this dimension exists to catch, and the
   reason the other dimensions cannot: they judge the plan against itself
   and against the project's conventions, never against what the operator
-  actually asked for. If no recorded intent is present in the material the
-  finder was given, it returns an empty findings array and reports
-  nothing — the dimension has no input and must never manufacture one.
-  Missing intent is never blocking: the dimension is not selected at all,
-  and its absence is reported instead as a non-blocking `suggestion`
-  naming the missing input.
-- **restraint** — *always.* The counterweight to unit-of-work: flags a
+  actually asked for. It READS that section itself, out of the parent
+  roadmap, and if there is none it returns an empty findings array and
+  reports nothing — it has no input and must never manufacture one.
+  Missing intent is never blocking.
+- **restraint** — include it on every plan review; over-specification is
+  as likely on a small plan as a large one. The counterweight to unit-of-work: flags a
   plan that has over-specified rather than under-specified. Two shapes
   are both findings — (1) the plan spells out a decision that could
   safely be left to whoever carries it out, and (2) the level of detail
