@@ -285,8 +285,17 @@ Invoke the **`rdm:rdm-wf-review-refute-fix` Workflow**
 via the Workflow tool with
 `{ mode: 'code', roadmap, phase, persist: true, implements: 'plan/<plan-slug>', gate: false, rdmBin,
 project }` (task mode: `task` in place of `roadmap`/`phase`); pass `args` as a JSON object, never a
-stringified value. Block for its returned result. `persist` records the review on `change/<head>`;
-`gate: false` keeps the status write here, in step 13, where a refusal can be surfaced.
+stringified value, and include the source identity you pinned in step 9 (`source`, `base`,
+`expectedHead`, `expectedBranch`) — a path, two SHAs and a branch name, which is everything the
+engine needs, because each reviewer runs `rdm review source` itself to reach the diff.
+
+Block for its returned result. **The engine reads nothing and writes nothing**: it dispatches finder
+and refuter agents and no others. `persist: true` therefore returns the ladder as `persistCommands` /
+`persistScript` rather than writing anything — **you** run that Bash yourself, in one session, and
+report its exit status. It prints `reviewId=<id>` on success. If one `review comment` line is refused
+for its anchor, re-run that line only with `--path`, `--quote` and `--occurrence` removed; if
+`review start` itself is refused, park rather than choosing another target. `gate: false` keeps the
+status write here, in step 13, where a refusal can be surfaced.
 
 Optionally add `reviewers: [...]` — **your** judgment about what this diff touches. Omit the key to
 run every code reviewer; that is the safe default and the right choice when you are unsure. An
@@ -306,12 +315,11 @@ set, so an under-reviewed diff is a visible choice rather than an error. The cod
 Read the returned object and obey it:
 
 - `outcome: 'escalated'`, or a non-empty `failure` — including `'required review evidence is
-  incomplete'` and `'review persisted with unresolved anchor degradation'` — is a **park**. **You
+  incomplete'` — is a **park**. **You
   MUST NOT** write `reviewed` on it.
-- `reviewPersistence` carries the anchor accounting. Log its degradation counts **verbatim**. A
-  `rework` outcome keeps its own outcome by design even when anchors degraded; adjudicate those
-  comments in triage.
-- Append `reviewId` to `reviewIds`.
+- The outcome is classified **before** the persist ladder is built and is never recomposed
+  afterwards — an anchor that will not land is not a verdict.
+- Append the `reviewId` the ladder printed to `reviewIds`.
 
 ### 11. Triage — ONE procedure, whatever the review's origin
 

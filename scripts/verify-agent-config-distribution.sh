@@ -1438,7 +1438,11 @@ const REVIEW_HELPERS = [
   'projectFlag',
   'resolveRdmBin',
   'parseProjectArg',
-  'buildReviewSourceCommand',
+  // DELETED (no-mechanical-agents-in-workflows phase 34, commit 2):
+  // 'buildReviewSourceCommand'. The driver builds the `rdm review source`
+  // command inline now and NAMES it in the reviewer prompt for the agent to run
+  // itself; there is no extractable helper. The emitted command still reaches
+  // this section's binary/project scan through the finder prompt below.
   'persistReviewCommands',
 ];
 
@@ -1485,8 +1489,11 @@ const REWORK_RESULT = {
 
 function buildAllPrompts(review, cfg) {
   return [
-    '  ' + review.buildReviewSourceCommand(PHASE_TARGET, { base: 'main' }, cfg),
-    '  ' + review.buildReviewSourceCommand(TASK_TARGET, { base: 'main', noCode: true }, cfg),
+    // DELETED (no-mechanical-agents-in-workflows phase 34, commit 2): the two
+    // `buildReviewSourceCommand` lines. That helper is gone — the driver builds
+    // the `rdm review source` command inline and names it in the reviewer
+    // prompt — and there is no extractable pure function left to scan. A
+    // synthetic stand-in built HERE would only scan this file's own string.
     review.findPrompt('code', DIM, { target: PHASE }),
     review.refutePrompt('code', DIM, { id: 'f1', what_fails: 'x' }, { target: PHASE }),
     review.persistReviewCommands(CLEAN_RESULT, PHASE_TARGET, cfg).join('\n'),
@@ -1595,7 +1602,11 @@ if (stage === 'logic') {
       assert.ok(o.line.includes(' --project ' + project), 'project-scoped `' + o.two + '` must carry " --project ' + project + '": ' + o.line);
     }
   }
-  for (const need of ['review source', 'review start', 'review comment', 'review submit']) {
+  // 'review source' is no longer in this list: the driver builds that command
+  // inline and names it in the reviewer prompt, so there is no pure builder for
+  // this scan to call. (DELETED, no-mechanical-agents-in-workflows phase 34,
+  // commit 2 — never re-pointed at a string this file composes itself.)
+  for (const need of ['review start', 'review comment', 'review submit']) {
     assert.ok(seen.has(need), 'expected at least one built `rdm ' + need + '` command, saw: ' + [...seen].join(', '));
   }
   const joined = prompts.join('\n');
@@ -1744,11 +1755,11 @@ assert_corrupt_emitted_is_red "B (project literal)" \
 assert_corrupt_emitted_is_red "C (reviewer-selection non-vacuity)" \
     "s|  if (reviewers === null \|\| reviewers === undefined) return dims.slice();|  return dims.slice(); // MUTANT: reviewer selection ignored|" \
     "MUTANT: reviewer selection ignored" "$REVIEW_WF"
-# D: the binary literal planted in the review-source command builder — a
-# different call site from A, so one passing cannot cover for the other.
-assert_corrupt_emitted_is_red "D (review source builder)" \
-    "s|resolveRdmBin(config \&\& config.rdmBin)|'./target/debug/rdm'|" \
-    "target/debug/rdm" "$REVIEW_WF"
+# DELETED (no-mechanical-agents-in-workflows phase 34, commit 2): mutation D.
+# Its subject was `buildReviewSourceCommand`, the extractable review-source
+# command builder, which no longer exists — the driver builds that command
+# inline. With no second extractable call site there is nothing for a second,
+# independent non-vacuity mutation to act on. Deleted and named.
 
 # --- 7f. Harness self-gate: this file may never import a canonical source --
 say "7f. Self-gate: the harness imports nothing under this repo's non-emitted workflow library"

@@ -38,11 +38,8 @@ import {
   resolveRefutationBudget,
   buildReviewCoverage,
   coverageSummaryClause,
-  buildPersistReviewPrompts,
-  persistAccounting,
-  degradationSummaryClause,
+  persistReviewCommands,
   parseCommentHeader,
-  PERSIST_ACK_SCHEMA,
 } from './review.mjs';
 
 // >>> plan-review-driver:begin <<<
@@ -2108,70 +2105,34 @@ async function runPlanReviewDriver(args, deps) {
     }
   }
 
-  // persistReview(persistTarget, outcome, survivors, label) — THE ONE WRITER
-  // that records a plan-mode verdict as a REAL rdm review, so an agent's review
-  // is the same artifact a human's is. TWO callers: the per-unit loop far below
-  // (roadmap/phase/task targets) and the implementation-plan branch immediately
-  // after this one (a plan named by `planSlug`). Extracted verbatim from the
-  // unit loop rather than duplicated, so the two lanes cannot drift apart.
+  // planPersistCommands(persistTarget, outcome, survivors) — THE ONE WRITER
+  // that turns a plan-mode verdict into the exact command ladder that records it
+  // as a REAL rdm review, so an agent's review is the same artifact a human's is.
+  // TWO callers: the per-unit loop far below (roadmap/phase/task targets) and the
+  // implementation-plan branch. Extracted rather than duplicated, so the two
+  // lanes cannot drift apart.
   //
-  // The agent type is supplied HERE, by this local-only consumer — the writer in
-  // review.mjs carries no agentType literal, because it is stamped verbatim into
-  // a DISTRIBUTED engine that must not thread one.
+  // IT RUNS NOTHING. The commands are returned as data on the unit result; the
+  // ORCHESTRATOR pastes them into Bash and reports the exit status. There is no
+  // persisting agent, so there is no self-report to reconcile: the whole
+  // accounting/degradation apparatus that existed to check one is gone, and plan
+  // mode's gate is unchanged by anchoring outcomes exactly as it always was.
   //
-  // FAIL-SOFT: a thrown agent, an `ok: false` ack, or a missing id logs loudly
-  // and returns nulls, leaving the caller's `outcome`, gate and tags exactly as
-  // they were. A review that failed to record is a lost audit trail, never a
-  // changed verdict.
-  async function persistReview(persistTarget, outcome, survivors, label) {
-    let reviewId = null
-    let reviewPersistence = null
+  // FAIL-SOFT: a writer that throws (an unrepresentable target, an invalid
+  // project name) logs loudly and yields null, leaving the caller's `outcome`,
+  // gate and tags exactly as they were. A review that could not even be
+  // DESCRIBED is a lost audit trail, never a changed verdict.
+  function planPersistCommands(persistTarget, outcome, survivors) {
     try {
-      const persistPrompts = buildPersistReviewPrompts(
+      return persistReviewCommands(
         { mode: 'plan', outcome: outcome, survivors: survivors },
         persistTarget,
         { rdmBin: './target/debug/rdm', project: 'rdm' }
       )
-      const ack = await _agent(persistPrompts.prompt, {
-        label: label,
-        phase: 'Act',
-        agentType: 'rdm-mechanical',
-        schema: PERSIST_ACK_SCHEMA,
-        model: _mechanicalModel,
-      })
-      // DELIBERATE: plan mode's GATE IS UNCHANGED by anchor degradation.
-      // GATE_POLICY.plan still clears needs-plan-review on `reviewed`,
-      // because a plan verdict is about the PLAN, not about how well the
-      // findings anchored in the document. Degradation is therefore EXPOSED
-      // — on the unit result, in its summary clause and in a dedicated log
-      // line — never silently converted into a plan verdict. The code lane
-      // composes it into the outcome (classifyPersistOutcome); this lane
-      // deliberately does not.
-      // `preDegraded` is whatever the WRITER downgraded at build time. A
-      // plan target is a plan-repo document, where a bare `--quote` is the
-      // normal anchor, so this is expected to be empty here — it is threaded
-      // anyway so the two lanes read the same accounting from the same data.
-      reviewPersistence = persistAccounting(ack, survivors, {
-        target: persistTarget,
-        preDegraded: persistPrompts.preDegraded,
-      })
-      if (ack && ack.ok === true && typeof ack.reviewId === 'string' && ack.reviewId !== '') {
-        reviewId = ack.reviewId
-      } else {
-        _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (ack: ' + JSON.stringify(ack) + ')')
-      }
-      if (reviewPersistence.unresolvedDegradation === true) {
-        _log(
-          'plan-review: PERSIST DEGRADED for ' + persistTarget + ' — ' +
-            (typeof reviewPersistence.degraded === 'number' ? reviewPersistence.degraded : 'an unreported number of') +
-            ' anchor(s) failed of ' + reviewPersistence.expectedAnchorable + ' attempted; the record carries unresolved anchor degradation' +
-            degradationSummaryClause(reviewPersistence)
-        )
-      }
     } catch (e) {
-      _log('plan-review: PERSIST FAILED for ' + persistTarget + ' — the review was NOT recorded (' + String((e && e.message) || e) + ')')
+      _log('plan-review: could not build the persist ladder for ' + persistTarget + ' (' + String((e && e.message) || e) + ')')
+      return null
     }
-    return { reviewId: reviewId, reviewPersistence: reviewPersistence }
   }
 
   // ------------------------------------------------------------------ implementation-plan
@@ -2266,7 +2227,7 @@ async function runPlanReviewDriver(args, deps) {
         }
         if (!fetchedBody) {
           _log('plan-review: fetch:plan returned an untrustworthy payload — failing closed')
-          // Report-only fail-closed shape: no reviewId/reviewPersistence/gate
+          // Report-only fail-closed shape: no persist ladder and no gate
           // keys, consistent with this branch's documented return shape —
           // nothing was graded, so nothing is recorded.
           return {
@@ -2314,18 +2275,8 @@ async function runPlanReviewDriver(args, deps) {
     // — an explicit ref naming a different document has already thrown in
     // parsePlanArgs — so the graded document and the recorded verdict cannot
     // disagree.
-    let planReviewId = null
-    let planReviewPersistence = null
-    if (parsed.planSlug && persistOn) {
-      const p = await persistReview(
-        'plan/' + parsed.planSlug,
-        outcome,
-        survivors,
-        'persist:review:plan:' + parsed.planSlug
-      )
-      planReviewId = p.reviewId
-      planReviewPersistence = p.reviewPersistence
-    }
+    const planPersist =
+      parsed.planSlug && persistOn ? planPersistCommands('plan/' + parsed.planSlug, outcome, survivors) : null
     const planResult = {
       kind: 'implementation-plan',
       outcome: outcome,
@@ -2338,8 +2289,10 @@ async function runPlanReviewDriver(args, deps) {
     // shape is byte-unchanged and the documented "no gateAction / gateBlocked /
     // gateDeferred keys at all" contract for this kind still holds.
     if (parsed.planSlug) planResult.planSlug = parsed.planSlug
-    if (planReviewId) planResult.reviewId = planReviewId
-    if (planReviewPersistence) planResult.reviewPersistence = planReviewPersistence
+    if (planPersist) {
+      planResult.persistCommands = planPersist
+      planResult.persistScript = planPersist.join('\n')
+    }
     return planResult
   }
 
@@ -2606,22 +2559,13 @@ async function runPlanReviewDriver(args, deps) {
 
     // --- Persist the review (opt-in; skipped for implementation-plan) ---
     // Record this unit's surviving findings as a REAL rdm review on the unit's
-    // own target, so an agent's review is the same artifact a human's is.
-    // Written through persistReview above — the ONE writer, shared with the
-    // implementation-plan branch — so behavior here is unchanged and the two
-    // lanes cannot drift.
-    let reviewId = null
-    let reviewPersistence = null
+    // own target, so an agent's review is the same artifact a human's is. Built
+    // through planPersistCommands above — the ONE writer, shared with the
+    // implementation-plan branch — and RETURNED, never run: the orchestrator
+    // pastes the ladder into Bash itself.
+    let unitPersist = null
     if (persistOn && kind !== 'implementation-plan') {
-      const persistTarget = persistTargetFor(u, persist, units.length)
-      const p = await persistReview(
-        persistTarget,
-        r.outcome,
-        r.survivors,
-        'persist:review:' + u.kind + ':' + u.ident
-      )
-      reviewId = p.reviewId
-      reviewPersistence = p.reviewPersistence
+      unitPersist = planPersistCommands(persistTargetFor(u, persist, units.length), r.outcome, r.survivors)
     }
 
     // --- Gate (skipped for implementation-plan) ---
@@ -2745,19 +2689,19 @@ async function runPlanReviewDriver(args, deps) {
       coverage: r.coverage || null,
       findings: r.survivors,
     }
-    // Clause concatenation order is FIXED and asserted:
-    //   summarizeFindings → coverage clause (inside r.summary) → gate clause
-    //   → anchor-degradation clause.
-    // The two gate clauses are mutually exclusive by construction (a deferred
-    // unit is never blocked), so at most one of those is ever appended. The
-    // degradation clause is empty unless the persist ran AND something
-    // degraded (or retried), so a persist-omitted run's summary is unchanged.
+    // Clause concatenation order is FIXED: summarizeFindings → coverage clause
+    // (inside r.summary) → gate clause. The two gate clauses are mutually
+    // exclusive by construction (a deferred unit is never blocked), so at most
+    // one is ever appended. The anchor-degradation clause is gone with the ack
+    // it summarized.
     reportedUnit.summary =
-      r.summary + gateFailureClause(reportedUnit) + gateDeferredClause(reportedUnit) + degradationSummaryClause(reviewPersistence)
-    // PRESENT ONLY WHEN THE PERSIST RAN. Never `reviewId: null` — an
-    // always-present key would change the OUTCOME of every persist-omitted run.
-    if (reviewId) reportedUnit.reviewId = reviewId
-    if (reviewPersistence) reportedUnit.reviewPersistence = reviewPersistence
+      r.summary + gateFailureClause(reportedUnit) + gateDeferredClause(reportedUnit)
+    // PRESENT ONLY WHEN THE PERSIST WAS ASKED FOR — an always-present key would
+    // change the returned shape of every persist-omitted run.
+    if (unitPersist) {
+      reportedUnit.persistCommands = unitPersist
+      reportedUnit.persistScript = unitPersist.join('\n')
+    }
     reported.push(reportedUnit)
     _log(
       'plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + reportedUnit.summary + formatUnitBudget(r.budget)
@@ -2796,7 +2740,10 @@ async function runPlanReviewDriver(args, deps) {
     result.gateAction = reported[0].gateAction
     result.gateBlocked = reported[0].gateBlocked
     result.gateDeferred = reported[0].gateDeferred
-    if (reported[0].reviewId) result.reviewId = reported[0].reviewId
+    if (reported[0].persistCommands) {
+      result.persistCommands = reported[0].persistCommands
+      result.persistScript = reported[0].persistScript
+    }
   }
   if (kind === 'roadmap') {
     // Previously unset for roadmap kind (there is no single unit to flatten

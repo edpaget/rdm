@@ -334,6 +334,10 @@ yourself.** It is the one step a subagent physically cannot perform.
   (nothing to suppress) and is **not** the same as omitting the key. Omit it only if the `task
   list` call itself failed.
 
+The plan engine likewise writes nothing. When it returns `persistCommands` / `persistScript`,
+**you** run that ladder in Bash and report the exit status — it records the plan review on
+`plan/<plan-slug>` exactly as the code ladder records the change review.
+
 Because the engine no longer reviews the item document, this call does **not** clear a
 `needs-plan-review` tag on the phase. That tag asserts the *item* was plan-reviewed and is cleared
 by the standalone `rdm-plan-review` surface or a manual sweep, not here.
@@ -420,11 +424,29 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-review-refute-fix.js', args: {
   mode: 'code', roadmap: '<slug>', phase: '<phase>',     // or task: '<slug>'
   persist: true, implements: 'plan/<plan-slug>', gate: false,
   reviewers: [<the set you selected — see below>],
+  source: '<identity.path>', base: '<identity.base>',
+  expectedHead: '<identity.head>', expectedBranch: '<identity.branch>',
   rdmBin: '<rdmBin>', project: '<project>',
 } })
 ```
 
-`persist` records the review on `change/<head>` for the head the engine itself re-resolves;
+**The engine reads nothing and writes nothing.** You pass the identity you pinned in step 9 — a
+path, two SHAs and a branch name, nothing more — and each reviewer runs `rdm review source` itself
+to reach the diff. The engine dispatches finder and refuter agents and no others.
+
+`persist: true` therefore does **not** write a review. It returns the ladder as `persistCommands` /
+`persistScript`: ready-to-run Bash that records the review on `change/<head>`. **You run it**, in
+one Bash call, and report the exit status:
+
+```bash
+<paste result.persistScript verbatim>
+```
+
+It prints `reviewId=<id>` on success — append that to `reviewIds`. If one `review comment` line is
+refused for its anchor, re-run **that line only** with `--path`, `--quote` and `--occurrence`
+removed, leaving a whole-document comment, and say so. If `review start` itself is refused, **park**
+— never invent a different target. A nonzero exit anywhere else is a park.
+
 `gate: false` keeps the status write here, in step 14, where the refusal can be surfaced.
 
 `reviewers` is **your** judgment about what this diff touches. Omit the key to run every code
@@ -445,12 +467,11 @@ under-reviewed diff is your visible choice rather than an error. The code review
 Read the returned object and obey it:
 
 - `outcome: 'escalated'`, or a non-empty `failure` — including `'required review evidence is
-  incomplete'` and `'review persisted with unresolved anchor degradation'` — is a **park**. **You
+  incomplete'` — is a **park**. **You
   MUST NOT** write `reviewed` on it.
-- `reviewPersistence` carries phase 11's accounting. Log its degradation counts **verbatim**. A
-  `rework` outcome keeps its own outcome by design even when anchors degraded; adjudicate those
-  comments in triage (step 12).
-- Append `reviewId` to `reviewIds`.
+- The outcome is classified **before** the persist ladder is even built, and nothing recomposes it
+  afterwards. An anchor that would not land is not a verdict: fix it by re-running the one refused
+  line whole-document, or park, per the persist block above.
 
 ### 12. Triage — ONE procedure, whatever the review's origin
 

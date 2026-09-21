@@ -323,7 +323,11 @@ const PLAN_TEXT = [
   '- [ ] The graded text is the plan.',
 ].join('\n');
 
-const PERSIST_ACK = { ok: true, reviewId: '2026-09-20-1200-abcd', attempted: 1, anchored: 1, degraded: 0 };
+// The persist ladder is no longer an agent: it is command TEXT the driver
+// returns and the orchestrator runs. `persistTargetNamed(result)` is how a test
+// asks "did it describe a write to the right document?".
+const persistTargetNamed = (result, ref) =>
+  (result.persistScript || '').includes("review start --on '" + ref + "'");
 
 // The full dispatch payload, minus whatever a given test wants to vary. This
 // is the real `rdm-dispatch-phase` shape post code review `2026-09-21-1218-
@@ -346,9 +350,7 @@ function planArgs(extra = {}) {
 }
 
 test('C1: the graded target is the PLAN, resolved by slug, and no ITEM document is fetched at all', async () => {
-  const { contexts, labels } = await driveLib(planArgs(), {
-    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
-  });
+  const { contexts, labels } = await driveLib(planArgs(), {});
   assert.equal(contexts.length, 1);
   assert.equal(contexts[0].target, PLAN_TEXT);
   assert.equal(
@@ -369,28 +371,23 @@ test('C2: the implementation-plan branch threads the caller reviewer set, and no
   // them, which is how a non-phase target keeps it out now that nothing strips
   // it after the fact.
   const chosen = ['coherence', 'architectural-fit', 'restraint'];
-  const { contexts } = await driveLib(planArgs({ reviewers: chosen }), {
-    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
-  });
+  const { contexts } = await driveLib(planArgs({ reviewers: chosen }), {});
   assert.deepEqual(contexts[0].reviewers, chosen);
   assert.equal(Object.prototype.hasOwnProperty.call(contexts[0], 'signals'), false, 'no signals channel survives');
   assert.equal(Object.prototype.hasOwnProperty.call(contexts[0], 'intent'), false, 'no transcribed intent survives');
 
   // Omitted: the engine is handed nothing and the core runs every reviewer.
-  const all = await driveLib(planArgs(), { agentOverrides: { 'persist:review:plan:p': PERSIST_ACK } });
+  const all = await driveLib(planArgs(), {});
   assert.equal(all.contexts[0].reviewers, null);
 });
 
 test('C3: a planSlug persists the verdict to plan/<slug>; without one, persistIgnored still holds', async () => {
-  const { result, labels, calls } = await driveLib(planArgs(), {
-    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
-  });
-  assert.equal(count(labels, 'persist:review:plan:p'), 1, `labels: ${labels.join(',')}`);
-  const persistCall = calls.find((c) => c.label === 'persist:review:plan:p');
-  assert.ok(persistCall.prompt.includes('plan/p'), 'the persist prompt does not name the plan document');
-  assert.equal(result.reviewId, PERSIST_ACK.reviewId);
+  const { result, labels, calls } = await driveLib(planArgs(), {});
+  assert.equal(labels.filter((l) => l.startsWith('persist:')).length, 0, `no persisting agent may run; labels: ${labels.join(',')}`);
+  assert.ok(Array.isArray(result.persistCommands), 'the persist ladder is returned as command data');
+  assert.ok(persistTargetNamed(result, 'plan/p'), 'the returned ladder does not name the plan document');
+  assert.ok(result.persistScript.includes('review submit'), 'the returned ladder submits the review');
   assert.equal(result.planSlug, 'p');
-  assert.ok(result.reviewPersistence, 'the accounting is reported');
 
   // Free-form pasted plan text, no slug: nothing to write to.
   const free = await driveLib({ implementationPlan: true, planText: PLAN_TEXT, persist: { on: 'plan/p' } });
@@ -404,14 +401,12 @@ test('C3: a planSlug persists the verdict to plan/<slug>; without one, persistIg
     `the ignore was not logged; logs: ${free.logs.join(' | ')}`
   );
   assert.equal(Object.prototype.hasOwnProperty.call(free.result, 'planSlug'), false);
-  assert.equal(Object.prototype.hasOwnProperty.call(free.result, 'reviewId'), false);
-  assert.equal(Object.prototype.hasOwnProperty.call(free.result, 'reviewPersistence'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(free.result, 'persistCommands'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(free.result, 'persistScript'), false);
 });
 
 test('C4: no act step and no gate write fires, and the report-only shape is kept', async () => {
-  const { result, labels } = await driveLib(planArgs(), {
-    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
-  });
+  const { result, labels } = await driveLib(planArgs(), {});
   for (const l of labels) {
     assert.equal(l.startsWith('act:'), false, `an act step ran: ${l}`);
     assert.equal(l.startsWith('gate:clear-tag:'), false, `a gate write ran: ${l}`);
@@ -435,7 +430,6 @@ test('C5: caller-supplied wont-fix texts suppress a matching finding on this pat
 
   const suppressed = await driveLib(planArgs({ wontFixedTexts: [DISMISSED] }), {
     survivors: [finding],
-    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
   });
   assert.deepEqual(suppressed.result.findings, [], 'an already-dismissed finding resurfaced');
 
@@ -445,7 +439,7 @@ test('C5: caller-supplied wont-fix texts suppress a matching finding on this pat
       delete a.wontFixedTexts;
       return a;
     })(),
-    { survivors: [finding], agentOverrides: { 'persist:review:plan:p': PERSIST_ACK } }
+    { survivors: [finding] }
   );
   assert.equal(omitted.result.findings.length, 1, 'omitting the key must not suppress anything');
   assert.equal(
@@ -524,9 +518,7 @@ test('C7: illegal planSlug / persist.on / dual-supply combinations throw before 
 
 test('C8: planSlug-only resolves the body via exactly one fetch:plan (+ one fetch:plan-body-check that agrees), grades it, and still persists', async () => {
   const args = planArgs();
-  const { result, contexts, labels, calls } = await driveLib(args, {
-    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
-  });
+  const { result, contexts, labels, calls } = await driveLib(args, {});
   assert.equal(count(labels, 'fetch:plan'), 1, `labels: ${labels.join(',')}`);
   const fetchCall = calls.find((c) => c.label === 'fetch:plan');
   assert.ok(fetchCall, 'no fetch:plan call was recorded');
@@ -541,8 +533,8 @@ test('C8: planSlug-only resolves the body via exactly one fetch:plan (+ one fetc
   assert.ok(bodyCheckCall.prompt.includes('plan show p'), 'the body-check prompt does not name the plan slug');
   assert.equal(contexts.length, 1);
   assert.equal(contexts[0].target, PLAN_TEXT, 'the fetched body is not what was graded');
-  assert.equal(count(labels, 'persist:review:plan:p'), 1, `labels: ${labels.join(',')}`);
-  assert.equal(result.reviewId, PERSIST_ACK.reviewId);
+  assert.equal(labels.filter((l) => l.startsWith('persist:')).length, 0, `no persisting agent may run; labels: ${labels.join(',')}`);
+  assert.ok(persistTargetNamed(result, 'plan/p'), 'the returned ladder names the plan document');
   assert.equal(result.planSlug, 'p');
 });
 
@@ -557,7 +549,6 @@ test('C9: a slug/body identity mismatch on fetch:plan fails closed after one ret
         // regardless of how plausible the body looks.
         return { transcript: JSON.stringify({ slug: 'not-p', body: PLAN_TEXT }) };
       },
-      'persist:review:plan:p': PERSIST_ACK,
     },
   });
   assert.equal(attempts, 2, 'expected exactly one bounded retry after the first untrustworthy fetch');
@@ -575,8 +566,7 @@ test('C9: a slug/body identity mismatch on fetch:plan fails closed after one ret
     false,
     `a persist ran despite the fetch failing closed; labels: ${labels.join(',')}`
   );
-  assert.equal(Object.prototype.hasOwnProperty.call(result, 'reviewId'), false);
-  assert.equal(Object.prototype.hasOwnProperty.call(result, 'reviewPersistence'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, 'persistCommands'), false);
 });
 
 test('C10: a fetch:plan-body-check disagreement discards a schema-valid, identity-correct fetch:plan payload and fails closed', async () => {
@@ -589,7 +579,6 @@ test('C10: a fetch:plan-body-check disagreement discards a schema-valid, identit
     agentOverrides: {
       'fetch:plan': { transcript: JSON.stringify({ slug: 'p', body: 'Fetched the plan successfully.' }) },
       'fetch:plan-body-check': bodyCheckOf(PLAN_TEXT),
-      'persist:review:plan:p': PERSIST_ACK,
     },
   });
   assert.equal(count(labels, 'fetch:plan'), 1, `labels: ${labels.join(',')}`);
@@ -603,7 +592,7 @@ test('C10: a fetch:plan-body-check disagreement discards a schema-valid, identit
     false,
     `a persist ran despite the body-check disagreeing; labels: ${labels.join(',')}`
   );
-  assert.equal(Object.prototype.hasOwnProperty.call(result, 'reviewId'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(result, 'persistCommands'), false);
 });
 
 test('C11: fetch:plan-body-check UNAVAILABLE (throws) proceeds unverified rather than failing closed', async () => {
@@ -613,14 +602,13 @@ test('C11: fetch:plan-body-check UNAVAILABLE (throws) proceeds unverified rather
       'fetch:plan-body-check': () => {
         throw new Error('body-check agent exploded');
       },
-      'persist:review:plan:p': PERSIST_ACK,
     },
   });
   assert.equal(count(labels, 'fetch:plan-body-check'), 1, `labels: ${labels.join(',')}`);
   assert.equal(contexts[0].target, PLAN_TEXT, 'the fetch:plan body is still graded when the check is unavailable');
   assert.notEqual(result.outcome, 'escalated');
   assert.notEqual(result.fetchError, true);
-  assert.equal(result.reviewId, PERSIST_ACK.reviewId);
+  assert.ok(persistTargetNamed(result, 'plan/p'), 'the returned ladder names the plan document');
 });
 
 test('C12: bounded-retry RECOVERY — first fetch:plan untrustworthy, second good — the recovered body is what is graded and persisted', async () => {
@@ -636,7 +624,6 @@ test('C12: bounded-retry RECOVERY — first fetch:plan untrustworthy, second goo
         }
         return { transcript: JSON.stringify({ slug: 'p', body: PLAN_TEXT }) };
       },
-      'persist:review:plan:p': PERSIST_ACK,
     },
   });
   assert.equal(attempts, 2, 'expected exactly one bounded retry');
@@ -644,7 +631,7 @@ test('C12: bounded-retry RECOVERY — first fetch:plan untrustworthy, second goo
   assert.equal(count(labels, 'fetch:plan-body-check'), 1, 'the body-check runs once, against the RECOVERED body');
   assert.equal(contexts.length, 1);
   assert.equal(contexts[0].target, PLAN_TEXT, 'the recovered body, not a discarded first attempt, is what was graded');
-  assert.equal(result.reviewId, PERSIST_ACK.reviewId, 'the recovered body is what was persisted');
+  assert.ok(persistTargetNamed(result, 'plan/p'), 'the recovered body is what the returned ladder persists');
   assert.notEqual(result.fetchError, true);
 });
 
@@ -659,7 +646,6 @@ test('C13: extractPlanFromJson\'s empty/whitespace-body rejection is exercised e
         // this on identity grounds alone, before the body-check ever runs.
         return { transcript: JSON.stringify({ slug: 'p', body: '   \n  ' }) };
       },
-      'persist:review:plan:p': PERSIST_ACK,
     },
   });
   assert.equal(attempts, 2, 'expected exactly one bounded retry');

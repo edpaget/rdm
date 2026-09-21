@@ -478,6 +478,47 @@ const INJECTION_HYGIENE =
 const REFUTER_LAUNDERING_GUARD =
   'A finding may not be refuted on the grounds that it is documented, known, or already accepted as scope, when it contradicts the target\'s stated goal or recorded intent — a recorded deferral is evidence the defect is REAL, not evidence it is not. Refute only for genuine technical uncertainty: you cannot verify, from the actual code or plan, that the finding holds up. The default-to-refuted stance for uncertain findings is unchanged.';
 
+// reviewTargetBlock(context) — what a finder or refuter is told about WHAT it is
+// reviewing. NEVER a document: `context.target` is an identifier (an item ref, a
+// plan slug, a short label), and `context.sourceCommand` — when present — is the
+// read-only command the agent runs ITSELF to resolve the change under review.
+//
+// This is the whole read contract. The orchestrator passes identifiers; the
+// judgment agent fetches what it needs into its own context, where the document
+// is read once and never re-emitted, so it cannot be lost or garbled in transit.
+// A diff is never an argument here and never an agent payload.
+function reviewTargetBlock(context) {
+  const c = context || {};
+  const base = (c.target || '(the target described in your working directory)');
+  const lines = [base];
+  if (c.sourceCommand) {
+    lines.push(
+      'RESOLVE THE CHANGE YOURSELF. Run exactly this read-only command and use what it reports:',
+      '  ' + c.sourceCommand,
+      'Then `cd` into the `path` it reports and review exactly the committed range `base..head` it reports (use `git log` / `git diff` there). Review nothing outside that range, and never review uncommitted work.'
+    );
+  }
+  if (c.itemCommand) {
+    lines.push(
+      "READ THE TARGET ITEM YOURSELF — its acceptance criteria are in its `body`, and nothing has transcribed them for you:",
+      '  ' + c.itemCommand
+    );
+  }
+  if (c.planCommand) {
+    lines.push(
+      'The approved implementation plan this change implements is read the same way:',
+      '  ' + c.planCommand
+    );
+  }
+  if (c.roadmapCommand) {
+    lines.push(
+      "The PARENT ROADMAP — read it yourself when you need its recorded `## Intent` section:",
+      '  ' + c.roadmapCommand
+    );
+  }
+  return lines.join('\n');
+}
+
 // Prompt for a finder agent reviewing a single dimension of `mode`.
 // >>> find-refute-verdict:begin (the default `//|` span below is swapped for the adjacent local-code-override block, defined right after this span's `:end` marker, only when scripts/gen-skill-review.sh runs with --target local --mode code — every other target/mode combination renders this span unchanged) <<<
 //|
@@ -505,8 +546,7 @@ const REFUTER_LAUNDERING_GUARD =
 //|   recommendation: <concrete fix>
 //| ```
 function findPrompt(mode, dim, context) {
-  const target = ((context && context.target) || '(the target described in your working directory)') +
-    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') + '\nAuthoritative criterion identities (return exactly one AC row per identity, verbatim): ' + JSON.stringify(context.criteria || []) : '');
+  const target = reviewTargetBlock(context);
   const diffHint =
     mode === 'code'
       ? 'Inspect the implementation diff (use git log / git diff in the worktree).'
@@ -528,6 +568,7 @@ function findPrompt(mode, dim, context) {
         'criterion, status (PASS|FAIL|PARTIAL), and evidence (file:line, test name) — plus an OPTIONAL ' +
         '`findings` array (same shape as the FINDINGS schema) for narrative notes that do not reduce to a ' +
         "single criterion's status.",
+      'Take the criterion identities from the target item\'s own acceptance-criteria section, verbatim, in the order they appear there — return exactly one `ac` row per criterion.',
       'Only leave `ac` empty if the target states no acceptance criteria at all — report that itself as a `findings` entry.',
       'A criterion the target itself defers, caveats, or ships with known gaps is NOT met: report it as a `blocking` findings-array entry (concern: "ac"), never as PASS in the ac table, even if partially implemented.',
     ].join('\n');
@@ -665,8 +706,7 @@ function findPrompt(mode, dim, context) {
 //|plan|   of the plan's own acceptance criteria is judged by the **coherence**
 //|plan|   dimension and surfaces as an ordinary finding.
 function refutePrompt(mode, dim, finding, context) {
-  const target = ((context && context.target) || '(the target described in your working directory)') +
-    (context && context.source ? '\nPinned source (read only this checkout and base..head range): ' + JSON.stringify(context.source) + '\nAcceptance criteria: ' + (context.acceptance || '(read the intended item)') + '\nAuthoritative criterion identities (return exactly one AC row per identity, verbatim): ' + JSON.stringify(context.criteria || []) : '');
+  const target = reviewTargetBlock(context);
   const lines = [
     'You are a READ-ONLY refuter. Do not edit any files.',
     'A prior reviewer raised this ' + dim.key + ' finding against ' + target + ':',
@@ -1475,7 +1515,7 @@ function isChangeTarget(ref) {
 
 // The CLOSED vocabulary of reasons an attempted anchor did not land. Each one
 // maps to exactly one rdm-core error surface and exactly one bounded rung of
-// the prompt's anchoring ladder (see buildPersistReviewPrompts):
+// the prompt's anchoring ladder (prose the caller skills carry):
 //
 //   quote-not-found          Error::QuoteNotFound
 //   ambiguous                Error::QuoteAmbiguous, still failing after --occurrence 1
@@ -1498,51 +1538,15 @@ const PERSIST_DEGRADED_REASONS = [
   'other',
 ];
 
-// JSON Schema the persist agent's acknowledgement must satisfy.
-//
-// THE FOUR COUNTERS ARE DENOMINATED IN FINDINGS, NEVER IN COMMANDS.
-// `attempted` counts each DISTINCT finding at most once, however many
-// `review comment` invocations that finding required, and `anchored` /
-// `wholeDocumentIntended` / `degraded` are DISJOINT per-finding dispositions
-// that must sum to the survivor count:
-//
-//   anchored              the finding ended up WITH an anchor (including one
-//                         that only landed on the second attempt)
-//   wholeDocumentIntended the finding carried no `quote` at all — an ordinary
-//                         whole-document comment, never a failure
-//   degraded              an anchor was ATTEMPTED for the finding and did not land
-//
-// `commandsRun` is the ONLY per-invocation number. It is purely informational
-// and is consulted by NO reconciliation predicate in persistAccounting, so a
-// review whose anchor landed on a legitimate retry is a CLEAN result rather
-// than a downgraded one.
-const PERSIST_ACK_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['ok', 'attempted', 'anchored', 'wholeDocumentIntended', 'degraded', 'targetUsed'],
-  properties: {
-    ok: { type: 'boolean' },
-    reviewId: { type: 'string' },
-    targetUsed: { type: 'string' },
-    attempted: { type: 'integer', minimum: 0 },
-    commandsRun: { type: 'integer', minimum: 0 },
-    anchored: { type: 'integer', minimum: 0 },
-    wholeDocumentIntended: { type: 'integer', minimum: 0 },
-    degraded: { type: 'integer', minimum: 0 },
-    degradedReasons: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['findingId', 'reason'],
-        properties: {
-          findingId: { type: 'string' },
-          reason: { type: 'string', enum: PERSIST_DEGRADED_REASONS },
-        },
-      },
-    },
-  },
-};
+// The persist ACK round-trip is GONE, and with it PERSIST_ACK_SCHEMA,
+// buildPersistReviewPrompts, persistAccounting, classifyPersistOutcome and
+// degradationSummaryClause. Every one existed to read an agent's self-report
+// about commands it claimed to have run against the survivor list it was handed.
+// The orchestrator now pastes `persistReviewCommands`' output into Bash itself
+// and reports the shell's exit status, which needs no such reconciliation — and
+// outcome classification no longer composes anchor degradation, because there is
+// no ack to compose. The anchoring ladder that ack described is prose the caller
+// skills carry (retry without the anchor, or park); it is not a gate.
 
 // The comment-body header convention: the finding metadata rdm's comment
 // frontmatter has no field for, carried on the first six lines of the body in a
@@ -1901,313 +1905,13 @@ function persistReviewCommands(result, target, cfg, opts) {
   return cmds;
 }
 
-// buildPersistReviewPrompts(result, target, deps) — the prompt an agent runs,
-// the ack schema it must satisfy, and the commands themselves. The agent type is
-// NOT decided here (see the header rule above): the caller supplies it.
-function buildPersistReviewPrompts(result, target, deps, opts) {
-  const commands = persistReviewCommands(result, target, deps, opts);
-  const o = opts || {};
-  const fallbackTarget =
-    typeof o.fallbackTarget === 'string' && o.fallbackTarget.trim() !== '' ? o.fallbackTarget.trim() : '';
-  // GUARD THE FALLBACK REF ITSELF. A change-shaped fallback would re-pin a
-  // change identity the fallback exists to escape; a fallback equal to the
-  // primary would emit a second identical ladder that fails the same way; a ref
-  // with no `/` is not a review ref at all.
-  if (fallbackTarget !== '') {
-    if (isChangeTarget(fallbackTarget)) {
-      throw new Error(
-        'review: persist fallbackTarget must be a plan-repo document ref — "roadmap/<slug>", ' +
-          '"phase/<roadmap-slug>/<stem-or-number>", "task/<slug>" or "plan/<slug>" — never another change review (got ' +
-          JSON.stringify(fallbackTarget) +
-          ')'
-      );
-    }
-    if (fallbackTarget === String(target).trim()) {
-      throw new Error(
-        'review: persist fallbackTarget must differ from the primary target (both are ' +
-          JSON.stringify(fallbackTarget) +
-          '); an identical ladder would fail the same way'
-      );
-    }
-    if (fallbackTarget.indexOf('/') === -1) {
-      throw new Error(
-        'review: persist fallbackTarget must be an already-well-formed rdm review ref — "roadmap/<slug>", ' +
-          '"phase/<roadmap-slug>/<stem-or-number>", "task/<slug>" or "plan/<slug>" (got ' +
-          JSON.stringify(fallbackTarget) +
-          '). The consumer builds the ref; the writer never prefixes one.'
-      );
-    }
-  }
-  // A COMPLETE SECOND COMMAND LIST, not prose. Re-entering the writer with
-  // `pathAnchors: false` and neither `source` nor `implements` means the
-  // emitted `review start` / `review comment` lines STRUCTURALLY cannot carry
-  // `--path`, `--base` or `--implements` — the three flags a document target
-  // refuses. `source` is deliberately NOT inherited, because it pins a change
-  // identity onto what is now a document review.
-  const fallbackCommands =
-    fallbackTarget === '' ? [] : persistReviewCommands(result, fallbackTarget, deps, { pathAnchors: false });
-  // An intentional no-code review has an EMPTY committed range: no hunks, so no
-  // `--path` anchor can ever land. Reported as data so a consumer's
-  // persistAccounting can refuse to read a quoted-survivor run against it as clean.
-  const emptyRange = !!(o.source && o.source.noCode === true);
-  const startFallbackRung =
-    fallbackTarget === ''
-      ? []
-      : [
-          '  - If `' +
-            String(target) +
-            '` itself is rejected by `review start` (no source checkout, no merge base, no approved plan to infer), ABANDON this command list entirely and run the FALLBACK COMMAND LADDER below verbatim instead. Report the fallback ref as `targetUsed`, and count every finding whose anchor is lost that way under `degraded` with reason `start-fallback`.',
-        ];
-  const fallbackLadder =
-    fallbackTarget === ''
-      ? []
-      : [
-          'FALLBACK COMMAND LADDER (only if `review start --on ' +
-            String(target) +
-            '` is refused) — run these IN ORDER in ONE shell session INSTEAD of the list above. They target the plan-repo document `' +
-            fallbackTarget +
-            '`, so they carry no `--path`, no `--base` and no `--implements`:',
-          fallbackCommands.join('\n'),
-        ];
-  // BUILD-TIME DEGRADATION. Whatever the writer already downgraded to a
-  // whole-document comment (a quote with no usable `--path` on a change
-  // target — see persistAnchorFor) is reported here as data AND told to the
-  // agent, so it is counted rather than silently read as a clean whole-document
-  // write. There is nothing for the agent to retry: the emitted command for
-  // such a finding carries no `--quote` at all.
-  const preDegraded = persistPreDegradedAnchors(result, target, o);
-  const preDegradedNote =
-    preDegraded.length === 0
-      ? []
-      : [
-          'ALREADY DEGRADED BY THE COMMAND LIST — do NOT retry these, and do NOT try to re-add a `--quote` to them. ' +
-            preDegraded.length +
-            ' finding(s) asked for a source anchor that cannot be expressed against this target, so the commands above already write them whole-document. Count each under `degraded` with the reason given, and report exactly these `degradedReasons` entries for them: ' +
-            preDegraded.map((d) => d.findingId + ' -> ' + d.reason).join('; ') +
-            '.',
-        ];
-  const emptyRangeNote = emptyRange
-    ? [
-        'EMPTY COMMITTED RANGE: this review was declared `--no-code`, so there are no changed hunks and no `--path` anchor can land. A finding that carries a quote is therefore an attempted anchor that cannot succeed; the command list above has already dropped its `--quote` and writes it whole-document, counted under `degraded` with reason `outside-hunk`.',
-      ]
-    : [];
-  const prompt = [
-    'You are a mechanical review-persistence agent. Do not plan, implement, or review anything, and edit no source files.',
-    'Run these commands IN ORDER in ONE shell session — later commands read shell variables the earlier ones set:',
-    commands.join('\n'),
-    'ANCHORING FALLBACK — never skip a comment and never abort the persist. AT MOST TWO ATTEMPTS PER FINDING, then a whole-document write; never a third:',
-    '  - If a `review comment` call fails because the quote is AMBIGUOUS (it occurs more than once), re-run that SAME command with ` --occurrence 1` appended. If that lands, the finding is `anchored` and contributes NO `degradedReasons` entry; only if THAT also fails is it `degraded` with reason `ambiguous`.',
-    '  - If it fails because the quote is NOT FOUND in the document, re-run it once more with the `--quote` and `--occurrence` flags REMOVED ENTIRELY, leaving a whole-document comment; reason `quote-not-found`.',
-    '  - If it fails because the OCCURRENCE IS OUT OF RANGE, re-run it once more with the `--quote` and `--occurrence` flags REMOVED ENTIRELY; reason `occurrence-out-of-range`.',
-    '  - If a `--path` comment is refused because the quote lies OUTSIDE a touched hunk, re-run that SAME command with the `--path`, `--quote` and `--occurrence` flags REMOVED ENTIRELY; reason `outside-hunk`.',
-    '  - If it is refused because the PATH IS NOT IN THE REVIEWED REVISION, re-run with those same three flags REMOVED ENTIRELY; reason `path-missing`.',
-    '  - If it is refused because the path IS NOT A FILE at the reviewed revision (a directory or a submodule), re-run with those same three flags REMOVED ENTIRELY; reason `path-not-a-file`.',
-    '  - If it is refused with `--path only applies to a change review`, the target is a plan-repo document rather than a change: re-run that SAME command with ONLY `--path` removed (keep `--quote`); reason `path-not-applicable`.',
-    '  - NEVER BLANKET-FALLBACK. A `review comment` failure whose stderr matches NONE of the rungs above must NOT be retried with flags stripped: report `ok: false` with a `degradedReasons` entry of reason `other` and stop, so a Git or source-identity failure (a `review source:` error, a source-repo discovery failure, an invalid stored change revision, a moved HEAD) surfaces instead of being laundered into a whole-document comment.',
-  ]
-    .concat(startFallbackRung)
-    .concat([
-    '  - A comment that will not anchor still gets written. A failing comment never stops the remaining comments, the submit, or the commit.',
-    'ONCE AND ONLY ONCE: each finding ends up as EXACTLY ONE persisted comment. A retry REPLACES the failed attempt — never leave two comments for one finding. If a retry also fails, the finding is still written once, whole-document.',
-    'COUNTING — `attempted` is PER FINDING, `commandsRun` is PER INVOCATION: a retry does not add a finding. Increment `attempted` once per DISTINCT finding, however many `review comment` invocations that finding required; increment `commandsRun` once per `review comment` invocation. A finding whose anchor landed on the SECOND attempt is `anchored`, contributes 1 to `attempted` and 2 to `commandsRun`, and adds NO `degradedReasons` entry. A finding that never carried a `quote` at all was never an attempted anchor: it is `wholeDocumentIntended`, NOT `degraded`.',
-    ])
-    .concat(emptyRangeNote)
-    .concat(preDegradedNote)
-    .concat(fallbackLadder)
-    .concat([
-    'Return a PERSIST_ACK object: `ok` (true only if review start, every comment, the submit and the commit all exited 0), `reviewId` (the id captured into RDM_REVIEW_ID), `targetUsed` (the ref `review start` ACTUALLY accepted — the primary ref, or the fallback ref if the fallback ladder ran), `attempted` (how many DISTINCT findings you tried to persist, at most one per finding), `commandsRun` (total `review comment` invocations including retries; informational only), `anchored` (how many findings ended up WITH an anchor), `wholeDocumentIntended` (how many findings carried no quote at all), `degraded` (how many findings had an anchor ATTEMPTED that did not land), and `degradedReasons` (one `{findingId, reason}` entry per degraded finding, reason one of ' +
-      PERSIST_DEGRADED_REASONS.join(', ') +
-      ').',
-    ])
-    .join('\n');
-  return {
-    prompt: prompt,
-    schema: PERSIST_ACK_SCHEMA,
-    commands: commands,
-    fallbackCommands: fallbackCommands,
-    fallbackTarget: fallbackTarget,
-    emptyRange: emptyRange,
-    preDegraded: preDegraded,
-  };
-}
-
 // persistHasQuote(finding) — the SINGLE definition of "this finding asked for an
 // anchor". The writer emits `--quote` under exactly this predicate, so the
-// expected shape persistAccounting reconciles against is derived from the same
-// rule rather than a parallel one that could drift.
+// build-time degradation report below is derived from the same rule rather than
+// a parallel one that could drift.
 function persistHasQuote(finding) {
   return !!finding && typeof finding.quote === 'string' && finding.quote.trim() !== '';
 }
-
-// persistAccounting(ack, survivors, opts) — pure, total, FAIL-SAFE. Recomputes
-// the EXPECTED shape from the survivor list the writer was handed and reads the
-// agent's self-report against it.
-//
-// The point is that a review whose anchors all failed must not be indistinguishable
-// from a clean one. `unresolvedDegradation` is therefore true whenever ANY of:
-//
-//   - the agent reported `degraded > 0`;
-//   - the PER-FINDING counters do not reconcile (the three disjoint
-//     dispositions do not sum to the survivor count, `attempted` is not the
-//     survivor count, or `anchored` exceeds the number of quoted survivors);
-//   - every anchorable finding failed (`expectedAnchorable > 0 && anchored === 0`)
-//     — derived independently, so it catches an ack that under-reports `degraded`;
-//   - `review start` fell back to a different target;
-//   - the committed range was empty while quoted survivors existed;
-//   - the WRITER itself downgraded an anchor at build time (`opts.preDegraded`,
-//     from buildPersistReviewPrompts) — independent of the ack, so an agent
-//     that forgets to report those still cannot buy a clean result;
-//   - the ack is missing or malformed.
-//
-// `commandsRun` is NEVER consulted: a finding that anchored on a legitimate
-// retry is a clean result. Absent data yields `unresolvedDegradation: true`,
-// never a clean reading.
-function persistAccounting(ack, survivors, opts) {
-  const o = opts || {};
-  const list = Array.isArray(survivors) ? survivors.filter(Boolean) : [];
-  const expectedTotal = list.length;
-  const expectedAnchorable = list.filter(persistHasQuote).length;
-  const a = ack && typeof ack === 'object' && !Array.isArray(ack) ? ack : null;
-  const count = (v) => (typeof v === 'number' && isFinite(v) && v >= 0 && Math.floor(v) === v ? v : null);
-  const attempted = a ? count(a.attempted) : null;
-  const commandsRun = a ? count(a.commandsRun) : null;
-  const anchored = a ? count(a.anchored) : null;
-  const wholeDocumentIntended = a ? count(a.wholeDocumentIntended) : null;
-  const degraded = a ? count(a.degraded) : null;
-  const degradedReasons =
-    a && Array.isArray(a.degradedReasons)
-      ? a.degradedReasons
-          .filter((r) => r && typeof r === 'object')
-          .map((r) => ({
-            findingId: String(r.findingId === undefined || r.findingId === null ? '' : r.findingId),
-            reason: PERSIST_DEGRADED_REASONS.indexOf(String(r.reason)) === -1 ? 'other' : String(r.reason),
-          }))
-      : [];
-  const targetUsed = a && typeof a.targetUsed === 'string' && a.targetUsed.trim() !== '' ? a.targetUsed.trim() : null;
-  const primaryTarget = typeof o.target === 'string' && o.target.trim() !== '' ? o.target.trim() : null;
-  const targetFellBack = targetUsed !== null && primaryTarget !== null && targetUsed !== primaryTarget;
-  const emptyRange = o.emptyRange === true || !!(o.source && o.source.noCode === true);
-  // Build-time downgrades the writer already applied. Merged into
-  // `degradedReasons` (never duplicated) so the summary names them even when
-  // the ack omitted them entirely.
-  const preList = Array.isArray(o.preDegraded)
-    ? o.preDegraded
-        .filter((d) => d && typeof d === 'object')
-        .map((d) => ({
-          findingId: String(d.findingId === undefined || d.findingId === null ? '' : d.findingId),
-          reason: PERSIST_DEGRADED_REASONS.indexOf(String(d.reason)) === -1 ? 'other' : String(d.reason),
-        }))
-    : [];
-  const seen = {};
-  for (let i = 0; i < degradedReasons.length; i++) seen[degradedReasons[i].findingId] = true;
-  for (let i = 0; i < preList.length; i++) {
-    if (seen[preList[i].findingId] !== true) {
-      degradedReasons.push(preList[i]);
-      seen[preList[i].findingId] = true;
-    }
-  }
-  const malformed =
-    a === null || attempted === null || anchored === null || wholeDocumentIntended === null || degraded === null;
-  const reconciled =
-    !malformed &&
-    anchored + wholeDocumentIntended + degraded === expectedTotal &&
-    attempted === expectedTotal &&
-    anchored <= expectedAnchorable;
-  const unresolvedDegradation =
-    malformed ||
-    !reconciled ||
-    degraded > 0 ||
-    (expectedAnchorable > 0 && anchored === 0) ||
-    targetFellBack === true ||
-    preList.length > 0 ||
-    (emptyRange === true && expectedAnchorable > 0);
-  return {
-    attempted: attempted,
-    commandsRun: commandsRun,
-    anchored: anchored,
-    wholeDocumentIntended: wholeDocumentIntended,
-    degraded: degraded,
-    degradedReasons: degradedReasons,
-    targetUsed: targetUsed,
-    targetFellBack: targetFellBack,
-    expectedAnchorable: expectedAnchorable,
-    expectedTotal: expectedTotal,
-    reconciled: reconciled,
-    emptyRange: emptyRange,
-    preDegraded: preList.length,
-    unresolvedDegradation: unresolvedDegradation,
-  };
-}
-
-// classifyPersistOutcome(outcome, accounting, opts) — compose unresolved anchor
-// degradation onto an already-classified outcome. Degradation can only ever
-// make a result LESS clean: `reviewed` becomes `escalated`, and `rework` /
-// `escalated` pass through unchanged. `opts.adjudicatedDegradation` is the
-// explicit human adjudication escape hatch.
-//
-// THROWS on an outcome outside the vocabulary rather than defaulting, matching
-// persistVerdictFor's no-silent-default rule.
-function classifyPersistOutcome(outcome, accounting, opts) {
-  if (OUTCOMES.indexOf(outcome) === -1) {
-    throw new Error(
-      'review: cannot classify an unrecognized outcome "' + String(outcome) + '" (expected one of ' + OUTCOMES.join(', ') + ')'
-    );
-  }
-  const o = opts || {};
-  if (o.adjudicatedDegradation === true) return outcome;
-  if (!accounting || accounting.unresolvedDegradation !== true) return outcome;
-  return outcome === 'reviewed' ? 'escalated' : outcome;
-}
-
-// degradationSummaryClause(accounting) — the visible marker that makes a review
-// whose anchors degraded distinguishable in a run summary, the exact sibling of
-// budgetSummaryClause / coverageSummaryClause. Empty string when nothing
-// degraded and nothing was retried, so a healthy run's summary is byte-unchanged.
-//
-// A clean run that merely RETRIED gets a neutral ` [anchors: N retried]` note —
-// never anything that reads as a failure, because a legitimate retry is not
-// degradation.
-//
-// Deliberately short and free of quotes, `$` and backticks — the same
-// constraint its two siblings document, because the string is interpolated into
-// mechanical Bash prompts.
-function degradationSummaryClause(accounting) {
-  const a = accounting;
-  if (!a) return '';
-  const num = (v) => (typeof v === 'number' ? String(v) : 'unreported');
-  if (a.unresolvedDegradation !== true) {
-    const extra =
-      typeof a.commandsRun === 'number' && typeof a.attempted === 'number' ? a.commandsRun - a.attempted : 0;
-    return extra > 0 ? ' [anchors: ' + extra + ' retried]' : '';
-  }
-  const counts = {};
-  const order = [];
-  const reasons = Array.isArray(a.degradedReasons) ? a.degradedReasons : [];
-  for (let i = 0; i < reasons.length; i++) {
-    const r = reasons[i] && reasons[i].reason ? String(reasons[i].reason) : 'other';
-    if (counts[r] === undefined) {
-      counts[r] = 0;
-      order.push(r);
-    }
-    counts[r] += 1;
-  }
-  const reasonText = order.map((r) => (counts[r] > 1 ? r + ' x' + counts[r] : r)).join(', ');
-  let clause =
-    ' [anchors: ' +
-    num(a.anchored) +
-    ' landed, ' +
-    num(a.wholeDocumentIntended) +
-    ' intentionally whole-document, ' +
-    num(a.degraded) +
-    ' degraded' +
-    (reasonText === '' ? '' : ' (' + reasonText + ')');
-  if (a.reconciled === false) clause += '; counters do not reconcile against ' + a.expectedTotal + ' findings';
-  if (a.targetFellBack === true) clause += '; target fell back to ' + (a.targetUsed || 'an unreported ref');
-  if (a.emptyRange === true && a.expectedAnchorable > 0) clause += '; empty committed range';
-  if (typeof a.preDegraded === 'number' && a.preDegraded > 0) clause += '; ' + a.preDegraded + ' unanchorable before any command ran';
-  return clause + ']';
-}
-
 
 // --- Plan-standalone consolidation helpers -----------------------------------
 // Two pure, post-pipeline consolidation/gate helpers the standalone plan-review
@@ -2293,59 +1997,32 @@ function codeReviewRounds(input) {
 // 'rework', never 'escalated': a code-stage defect's nature still can't be
 // classified deterministically (see above), so an AC-table gap stays in the
 // same reviewed|rework lane as every other surviving code finding.
-// Explicit automatic evidence contract. Legacy report-only callers can omit it.
-// Consume the latest attempt, not historical incompleteness carried for audit.
-// Bounded acceptance-section parser: top-level list items or prose paragraphs.
-// Nested/continued lines remain part of their parent criterion. Ambiguous
-// headings, tables and fenced blocks fail closed instead of losing criteria.
-function acceptanceCriteria(body) {
-  if (typeof body !== 'string') return [];
-  const lines = body.replace(/\r\n/g, '\n').split('\n');
-  const headers = lines.map((line, index) => ({ match: /^(#{1,6})\s+Acceptance(?: Criteria)?\s*:?\s*$/i.exec(line), index })).filter(x => x.match);
-  if (headers.length !== 1) return [];
-  const start = headers[0];
-  const section = [];
-  for (const line of lines.slice(start.index + 1)) {
-    const heading = /^(#{1,6})\s/.exec(line);
-    if (heading && heading[1].length <= start.match[1].length) break;
-    if (heading || /^\s*(?:\||```|~~~)/.test(line)) return [];
-    section.push(line);
-  }
-  const items = [];
-  let current = '';
-  let listed = false;
-  function flush() { if (current.trim()) items.push(current.trim().replace(/\s+/g, ' ')); current = ''; }
-  for (const line of section) {
-    const bullet = /^(?:[-*+]\s+(?:\[[ xX]\]\s+)?|\d+[.)]\s+)(\S.*)$/.exec(line);
-    if (bullet) { flush(); listed = true; current = bullet[1]; }
-    else if (!line.trim()) { if (!listed) flush(); }
-    // An unindented, non-bullet line AFTER the list has started ENDS the list;
-    // it does not invalidate it. This used to `return []`, discarding every
-    // criterion already parsed, which turned ordinary trailing prose into
-    // `acceptance criteria missing or ambiguous` and escalated the whole review
-    // before a single dimension ran. The case that forced this: a phase whose
-    // criteria are followed by an operator's "**Deliberately NOT acceptance
-    // criteria**" block — prose added precisely to keep the AC gate honest,
-    // which instead disabled it. Stopping here keeps the real criteria and
-    // ignores the trailing prose, which is what the prose is for.
-    else if (listed && !/^\s+/.test(line)) break;
-    else current += (current ? '\n' : '') + line.trim();
-  }
-  flush();
-  if (items.length === 0 || new Set(items).size !== items.length) return [];
-  return items.map((text, index) => 'AC' + (index + 1) + ': ' + text);
-}
+// `acceptanceCriteria(body)` is GONE. It parsed an item's acceptance-criteria
+// section out of a body the engine had transcribed through a mechanical agent —
+// a body the engine no longer reads. The `ac` reviewer takes the criteria from
+// the item document it fetches itself, in the order they appear there.
 
+// reviewEvidenceComplete(evidence) — may this review be reported as COMPLETE?
+//
+// It reads only what the engine already holds: coverage completeness, that the
+// `ac` reviewer actually ran, that its rows are well-formed and non-duplicated,
+// and that nothing went ungraded for budget or a refuter crash.
+//
+// The `criteria`-versus-`acTable` cross-check is GONE. It compared the AC rows
+// against a criterion list the engine had transcribed out of the item document
+// through a mechanical agent — the one place the engine held a second reading of
+// a document it no longer reads at all. The `ac` reviewer now reads the item
+// itself, so there is nothing on this side to check it against, and a
+// cross-check would mean fetching the document a second time purely to police
+// the first read.
 function reviewEvidenceComplete(evidence) {
   if (!evidence) return false;
   const coverage = evidence.coverage && (evidence.coverage.last || evidence.coverage);
   const budget = evidence.budget || {};
   const ac = evidence.acTable;
-  const criteria = evidence.criteria;
   return !!(coverage && coverage.complete === true && coverage.acDimensionRan === true &&
-    Array.isArray(criteria) && criteria.length > 0 && new Set(criteria).size === criteria.length &&
-    Array.isArray(ac) && ac.length === criteria.length && new Set(ac.map(row => row && row.criterion)).size === criteria.length &&
-    ac.every(row => row && criteria.includes(row.criterion)) && ac.every((row) => row && typeof row.criterion === 'string' &&
+    Array.isArray(ac) && ac.length > 0 && new Set(ac.map(row => row && row.criterion)).size === ac.length &&
+    ac.every((row) => row && typeof row.criterion === 'string' && row.criterion.trim().length > 0 &&
       typeof row.evidence === 'string' && row.evidence.trim().length > 0 && ['PASS', 'FAIL', 'PARTIAL'].includes(row.status)) &&
     !(budget.passedThroughBudget > 0) && !(budget.refuterErrors > 0) &&
     !(evidence.survivors || []).some((f) => f.refuterError || f.unrefutedReason === 'budget'));
@@ -3000,7 +2677,6 @@ export {
   stripQuote,
   PERSIST_VERDICT,
   persistVerdictFor,
-  PERSIST_ACK_SCHEMA,
   PERSIST_HEADER_KEYS,
   formatCommentBody,
   parseCommentHeader,
@@ -3010,11 +2686,7 @@ export {
   persistAnchorFor,
   persistPreDegradedAnchors,
   persistReviewCommands,
-  buildPersistReviewPrompts,
   persistHasQuote,
-  persistAccounting,
-  classifyPersistOutcome,
-  degradationSummaryClause,
   rankFindings,
   DEFAULT_MAX_REFUTATIONS,
   resolveRefutationBudget,
@@ -3028,7 +2700,6 @@ export {
   summarizeFindings,
   codeReviewRounds,
   classifyOutcome,
-  acceptanceCriteria,
   reviewEvidenceComplete,
   DEFAULT_MAX_CODE_REWORK,
   buildReviewPipeline,

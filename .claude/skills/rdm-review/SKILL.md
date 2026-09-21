@@ -56,6 +56,15 @@ args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false,
 args: { mode: "code", task: "<slug>", gate: false, rdmBin: "<absolute checkout binary>", project: "rdm", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>" }
 ```
 
+The engine **reads nothing and writes nothing**: it dispatches finder and refuter agents only. The
+`source`/`base`/`expectedHead`/`expectedBranch` values above are the identity you resolved in step 1
+— a path, two SHAs and a branch name — and each reviewer runs `rdm review source` itself to reach
+the diff. Adding `persist: true` returns the recording ladder as `persistCommands` / `persistScript`
+instead of writing it; **you** run that Bash in one session and report its exit status (it prints
+`reviewId=<id>`). If one `review comment` line is refused for its anchor, re-run that line with
+`--path`, `--quote` and `--occurrence` removed; if `review start` itself is refused, stop and
+escalate rather than choosing another target.
+
 Add `reviewers: [...]` to select which reviewers run — **Review specification § Reviewers** below
 carries a per-reviewer cue for when to include each one. Omitting the key runs every code reviewer,
 which is the safe default when you are unsure what the diff touches. An unrecognised name is dropped
