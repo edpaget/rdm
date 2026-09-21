@@ -353,7 +353,6 @@ pub fn run(
             clear_model,
             body,
             clear_body,
-            append_body,
             reason,
             clear_reason,
             commit,
@@ -379,14 +378,7 @@ pub fn run(
             if let Some(snapshot) = expected_estimate_snapshot {
                 let difficulty =
                     difficulty.context("conditional estimate requires --difficulty")?;
-                // `--append-body` composes with the precondition, deliberately:
-                // the snapshot is checked against the stored body BEFORE this
-                // update is applied, so a guarded append is exactly as safe as a
-                // guarded whole-body write — and it is what lets a caller add an
-                // audit note under a precondition without reading the existing
-                // body out and carrying it back. `--clear-body` stays excluded
-                // by clap.
-                let body = BodyUpdate::from_args_with_append(body, false, append_body)?;
+                let body = BodyUpdate::from_args(body, false)?;
                 let doc = commit_mutation(store, "failed to conditionally estimate phase", |s| {
                     rdm_core::ops::phase::apply_unset_phase_estimate(
                         s, &project, &roadmap, &stem, &snapshot, difficulty, body,
@@ -397,13 +389,12 @@ pub fn run(
                 return Ok(());
             }
             // `update` consults the body only when the user is explicit:
-            // `--body` sets it, `--clear-body` clears it, `--append-body` adds
-            // to it, otherwise it is left untouched. Unlike `create`, this never
-            // reads stdin or opens the editor, so a tags-only/status-only update
-            // can't hang on an open pipe or clobber the body from stray stdin
-            // bytes. (Retires the old `update --tags x < body.md` form; compose
-            // `--body` with `--tags`.)
-            let body = BodyUpdate::from_args_with_append(body, clear_body, append_body)?;
+            // `--body` sets it, `--clear-body` clears it, otherwise it is left
+            // untouched. Unlike `create`, this never reads stdin or opens the
+            // editor, so a tags-only/status-only update can't hang on an open
+            // pipe or clobber the body from stray stdin bytes. (Retires the old
+            // `update --tags x < body.md` form; compose `--body` with `--tags`.)
+            let body = BodyUpdate::from_args(body, clear_body)?;
             let tags = TagsUpdate::from_args(tags, false)?;
             let explicit_source = source.source.is_some()
                 || source.base.is_some()
