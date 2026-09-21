@@ -304,10 +304,13 @@ the plan does not inherit — cannot arise and cannot force a revise round. **Yo
 yourself.** It is the one step a subagent physically cannot perform.
 
 - `planSlug` names the document under review — the engine reads its body itself, with one
-  mechanical `plan show <plan-slug> --format json` read, rather than requiring it transcribed into
-  this call's arguments. Pass only the slug; do **not** pass `planText` here. A `planSlug` on a
-  non-implementation-plan target, and a `persist.on` that is not `plan/<plan-slug>`, each throw
-  before any agent runs.
+  mechanical `plan show <plan-slug> --format json` read plus an independent second read that
+  verifies the transcription, rather than requiring it transcribed into this call's arguments. Pass
+  only the slug; do **not** pass `planText` here — `planSlug` and `planText` are mutually
+  exclusive, and supplying both throws (a caller must never grade one document while the verdict is
+  persisted to another it never read). A `planSlug` on a non-implementation-plan target, and a
+  `persist.on` that is not `plan/<plan-slug>`, also each throw — all three fire before any agent
+  runs.
 - `roadmapBody` — the **parent roadmap's** body, verbatim and unedited. Do not extract the `##
   Intent` section yourself: the engine runs the one canonical extractor over the raw body, which is
   what keeps the hoisted and fetched paths from ever disagreeing. **Omit it in task mode** — a task

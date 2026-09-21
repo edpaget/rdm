@@ -1522,22 +1522,54 @@ hang a review off, so persist is forced off there (`persistIgnored`) and it keep
 the in-context note. With `persist` off, the body-note channel behaves exactly as
 it always has.
 
-**`planSlug` arg.** The slug of the persisted `plan/<slug>` document that an
-`--implementation-plan` target's `planText` was read from. Read from the
-STRUCTURED `args` object only — never parsed out of the `$ARGUMENTS` flag
-string, the same rule as `fetched`/`wontFixedTexts`/`gateMode` — and validated at
-PARSE time, before any `agent()` call: a `planSlug` on a non-implementation-plan
-target, a `planSlug` with no `planText` (a verdict would otherwise be recorded
-about an empty document), and a `persist.on` that is not `plan/<planSlug>` each
-throw an actionable error out of `parsePlanArgs`. It is **not** a hoist — it
-suppresses no mechanical agent. It is the discriminator that makes an
-implementation-plan verdict persistable: with it supplied and `persist` on, the
-review is written to the ref DERIVED as `plan/<planSlug>` (never to `persist.on`,
-which is why a disagreeing one throws), and the run's result carries `planSlug`
-plus `reviewId` / `reviewPersistence`. It adds no gate and no act step — a plan
-document carries no tags, so there is no `needs-plan-review` to clear, and the
-branch still returns without `gateAction`/`gateBlocked`/`gateDeferred`. A
-no-slug run's returned shape is byte-unchanged.
+**`planSlug` arg.** The slug of the persisted `plan/<slug>` document under
+review, for an `--implementation-plan` target. Read from the STRUCTURED `args`
+object only — never parsed out of the `$ARGUMENTS` flag string, the same rule
+as `fetched`/`wontFixedTexts`/`gateMode`. `planSlug` and `planText` are
+**mutually exclusive** — `planSlug` is the document-backed path and always
+resolves the body itself (see below); `planText` is reserved for the free-form
+caller with no persisted document at all. Validated at PARSE time, before any
+`agent()` call, with three throws out of `parsePlanArgs`: a `planSlug` on a
+non-implementation-plan target; a `planSlug` given alongside a non-empty
+`planText` (a whitespace-only `planText` counts as absent, not as dual
+supply — this was a permitted "`planText` wins verbatim" precedence prior to
+code review `2026-09-21-1218-d618`'s AC4 finding `ac-4-dual-supply-divergence`,
+which found the precedence left a corrupted/wrong `planText` gradable while the
+verdict was still persisted against the `planSlug`-named document; supplying
+both is now rejected instead); and a `persist.on` that is not
+`plan/<planSlug>`.
+
+When `planSlug` is present (and `planText` is therefore absent), the driver
+resolves the body itself: one mechanical `fetch:plan` read
+(`buildPlanFetchPrompt`, `RAW_STDOUT_SCHEMA`, one bounded retry), whose
+transcript `extractPlanFromJson` accepts only if the document's own recorded
+`slug` matches `planSlug` and its `body` is non-empty after trimming. A
+successful candidate body then passes through a SECOND, independent mechanical
+read, `fetch:plan-body-check` (`buildPlanBodyCheckPrompt`,
+`ROADMAP_BODY_CHECK_SCHEMA`) — mirroring `fetch:roadmap-body-check` below — which
+re-reads the document and reports only its length and first line, compared
+against the candidate body via `roadmapBodyVerified` (finding
+`correctness-fetch-plan-no-content-integrity-check`: identity and
+non-emptiness alone do not rule out a schema-valid, identity-correct transcript
+whose body is a fabricated one-line status sentence rather than the real
+document). A confirmed body-check disagreement, or exhausting the bounded
+retry on the primary fetch, fails closed: `{ outcome: 'escalated',
+fetchError: true, findings: [], planSlug }` — nothing graded, nothing
+persisted. An unavailable/erroring body-check degrades to "proceed
+unverified" rather than failing closed, matching the roadmap precedent.
+
+`planSlug` is **not** a hoist over an *existing* value the way `fetched` is —
+there is no caller-suppliable shortcut that skips both fetch:plan reads while
+still naming a persisted document; the only way to skip them is the
+mutually-exclusive `planText` free-form path. It is the discriminator that
+makes an implementation-plan verdict persistable: with it supplied and
+`persist` on, the review is written to the ref DERIVED as `plan/<planSlug>`
+(never to `persist.on`, which is why a disagreeing one throws), and the run's
+result carries `planSlug` plus `reviewId` / `reviewPersistence`. It adds no
+gate and no act step — a plan document carries no tags, so there is no
+`needs-plan-review` to clear, and the branch still returns without
+`gateAction`/`gateBlocked`/`gateDeferred`. A no-slug (`planText`-only) run's
+returned shape is byte-unchanged.
 
 ### `VERDICT`
 

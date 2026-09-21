@@ -98,18 +98,23 @@ function computeMissingModels(mechanicalModel, findModel, verifyModel) {
 // flag string, a JSON payload, or a structured object. Returns
 // { kind, roadmap, phase, task, planText, planSlug, ... } where kind is one of
 // 'task' | 'phase' | 'roadmap' | 'implementation-plan', and `planSlug` names the
-// persisted plan/<slug> document under review. `planText` is OPTIONAL when
-// `planSlug` is present: the driver resolves the body itself via one
-// mechanical `fetch:plan` read (see the implementation-plan branch of
-// runPlanReviewDriver) rather than requiring it transcribed into this call's
-// arguments — a non-empty `planText` still wins verbatim when both are
-// supplied (see design decision 3, plan engine-resolves-plan-by-slug). Empty
-// `planSlug` with empty `planText` is the genuine free-form paste-with-nothing
-// case and falls back to a literal placeholder. Throws an actionable error
-// when no target can be resolved, when `planSlug` is given on a non-
-// implementation-plan target, or when an explicit `persist.on` disagrees with
-// `plan/<planSlug>` — see the two surviving throws below, beside
-// `persistIgnored`.
+// persisted plan/<slug> document under review. `planText` and `planSlug` are
+// MUTUALLY EXCLUSIVE (revised design decision 3, plan
+// engine-resolves-plan-by-slug, after AC4 finding ac-4-dual-supply-divergence):
+// supplying both throws, so a caller can never grade one document while the
+// verdict is persisted against another it never read. `planSlug` is the
+// document-backed path — the driver resolves the body itself via one
+// mechanical `fetch:plan` read plus an independent `fetch:plan-body-check`
+// (see the implementation-plan branch of runPlanReviewDriver) rather than
+// requiring it transcribed into this call's arguments. `planText` remains the
+// free-form path for a caller with no persisted document at all — it is
+// graded verbatim only when `planSlug` is absent. Empty `planSlug` with empty
+// `planText` is the genuine free-form paste-with-nothing case and falls back
+// to a literal placeholder. Throws an actionable error when no target can be
+// resolved, when `planSlug` is given on a non-implementation-plan target, when
+// `planSlug` is given alongside a non-empty `planText`, or when an explicit
+// `persist.on` disagrees with `plan/<planSlug>` — see the three surviving
+// throws below, beside `persistIgnored`.
 function parsePlanArgs(rawArgs) {
   let a = rawArgs || {}
   if (typeof a === 'string') {
@@ -255,6 +260,22 @@ function parsePlanArgs(rawArgs) {
           ' requires --implementation-plan, but the target resolved to kind ' +
           kind +
           ' — a slug on a roadmap/phase/task target would be silently ignored'
+      )
+    }
+    // AC4 (ac-4-dual-supply-divergence): a non-empty planText alongside
+    // planSlug used to be graded verbatim while the verdict was still
+    // persisted to plan/<planSlug> — a document the engine never read. That
+    // combination is no longer legal: planSlug ALWAYS resolves the body
+    // itself (see the implementation-plan branch's fetch:plan +
+    // fetch:plan-body-check reads below), so the graded document and the
+    // persist target cannot name different documents. A whitespace-only
+    // planText is treated as absent, not as dual supply.
+    if (planText.trim() !== '') {
+      throw new Error(
+        'plan-review: planSlug ' +
+          planSlug +
+          ' was given alongside a non-empty planText — supply only one; planSlug resolves the body itself ' +
+          '(fetch:plan), planText is for a free-form caller with no persisted document behind it'
       )
     }
     if (persist && typeof persist.on === 'string' && persist.on !== 'plan/' + planSlug) {
@@ -732,7 +753,16 @@ function extractTaskFromJson(json, expectedSlug) {
 // identity-checked read. FAILS CLOSED on an empty body, like
 // extractRoadmapFromJson above: a plan document has no `tags` field worth
 // validating (a plan carries no `needs-plan-review`-style gate tag), so this
-// validator is deliberately narrower than its task/phase siblings.
+// validator is deliberately narrower than its task/phase siblings. It is
+// IDENTITY- and NON-EMPTINESS-only, never a fidelity check on the body's
+// actual content — a schema-valid, identity-correct transcript carrying a
+// fabricated one-line body still passes this function (finding
+// correctness-fetch-plan-no-content-integrity-check). That gap is closed one
+// level up, at the call site: see buildPlanBodyCheckPrompt below, the
+// fetch:plan-body-check SECOND, INDEPENDENT mechanical read the
+// implementation-plan branch runs after a candidate body clears this
+// function, mirroring fetch:roadmap-body-check's treatment of the same
+// failure class.
 function extractPlanFromJson(json, expectedSlug) {
   if (!json || typeof json !== 'object') return { ok: false }
   if (json.slug !== expectedSlug) return { ok: false }
@@ -860,6 +890,34 @@ function buildPlanFetchPrompt(slug) {
     'If the command fails or prints nothing, return an empty string for `transcript`.',
   ].join('\n')
 }
+
+// buildPlanBodyCheckPrompt(slug) — a SECOND, INDEPENDENT mechanical fetch for
+// the implementation-plan slug-resolve path, run only after fetch:plan above
+// has produced an identity-correct, non-empty candidate body — mirroring
+// buildRoadmapBodyCheckPrompt exactly (finding
+// correctness-fetch-plan-no-content-integrity-check: `extractPlanFromJson` is
+// identity- and non-emptiness-only, so a schema-valid transcript carrying a
+// fabricated one-line status sentence in place of the real plan otherwise
+// passes). It re-runs `plan show` itself (never reuses fetch:plan's own
+// transcript) and is asked to report only a checkable PROPERTY of the body —
+// its length and first line — never the body text, exactly like
+// buildRoadmapBodyCheckPrompt. Returns the SAME shape
+// (ROADMAP_BODY_CHECK_SCHEMA), and the comparison reuses `roadmapBodyVerified`
+// below verbatim — that function is fully generic over `(body, check)` despite
+// its roadmap-scoped name.
+function buildPlanBodyCheckPrompt(slug) {
+  return [
+    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
+    'Run exactly this command in the repo root:',
+    '  ./target/debug/rdm plan show ' + slug + ' --project rdm --format json',
+    'Parse that command\'s stdout as JSON and read its `body` field (a string).',
+    'Return a ROADMAP_BODY_CHECK object with two fields: `length` — the exact character count of the',
+    '`body` string; `firstLine` — the `body` string\'s text up to (not including) its first newline',
+    'character, or the entire string when it contains no newline.',
+    'If the command fails, prints nothing, or the output does not parse as JSON with a string `body`',
+    'field, return exactly { length: 0, firstLine: "" }.',
+  ].join('\n')
+}
 // buildRoadmapFetchPrompt(slug) — this fetch stays at exactly ONE mechanical
 // agent invocation per roadmap target, regardless of phase count. It is
 // tempting to fix fetch corruption by splitting this into a cheap `roadmap
@@ -975,10 +1033,14 @@ function buildRoadmapBodyCheckPrompt(slug) {
   ].join('\n')
 }
 
-// roadmapBodyVerified(body, check) — pure tri-state comparison between the
-// `fetch:roadmap` agent's transcribed `body` and the independently-fetched
-// `check` ({ length, firstLine }) from buildRoadmapBodyCheckPrompt above.
-// Returns:
+// roadmapBodyVerified(body, check) — pure tri-state comparison between a
+// fetch agent's transcribed `body` and an independently-fetched `check`
+// ({ length, firstLine }). Despite its roadmap-scoped name this function is
+// fully generic over its two arguments and has no roadmap-specific logic, so
+// the implementation-plan branch's fetch:plan-body-check call site (see
+// buildPlanBodyCheckPrompt above) reuses it verbatim rather than duplicating
+// it under a second name. Named after its original caller,
+// `fetch:roadmap` / `buildRoadmapBodyCheckPrompt` above. Returns:
 //   - `null`  — "unknown, cannot verify": `check` is missing/malformed (a
 //     thrown/erroring check call, already normalized to `null` by its call
 //     site below), OR `check` equals the documented check-failure sentinel
@@ -2192,12 +2254,19 @@ async function runPlanReviewDriver(args, deps) {
   // document. This branch returns before the shared fetch block below, so no
   // *item* document is ever read here and fetch:phase / fetch:roadmap-intent /
   // fetch:wontfix stay unreachable from this branch: everything those reads
-  // would supply must still arrive as a caller-supplied value. The ONE
-  // reachable agent on this branch is fetch:plan, gated on `planText` being
-  // empty — it reads the same document (`plan/<planSlug>`) the persist ref
-  // below writes to, so the graded body and the write target cannot name
-  // different documents. A finding about a phase body is therefore still
-  // impossible by construction, not by instruction.
+  // would supply must still arrive as a caller-supplied value. The reachable
+  // agents on this branch are fetch:plan and fetch:plan-body-check, gated on
+  // `planText` being empty — `planSlug` and `planText` are mutually exclusive
+  // by the time this branch runs (parsePlanArgs throws on both), so a present
+  // `planSlug` always means an absent `planText`. fetch:plan reads the same
+  // document (`plan/<planSlug>`) the persist ref below writes to, and
+  // fetch:plan-body-check independently re-reads it to confirm fetch:plan's
+  // transcription is not a fabricated stand-in (finding
+  // correctness-fetch-plan-no-content-integrity-check) — so the graded body
+  // and the write target cannot name different documents, AND the graded body
+  // cannot be silently substituted content for the real one. A finding about a
+  // phase body is therefore still impossible by construction, not by
+  // instruction.
   //
   // SIGNALS SITE: a full, honest `{ targetType: 'implementation-plan',
   // hasIntent }`. `unit-of-work` de-selects at source (targetType !== 'phase'),
@@ -2218,11 +2287,11 @@ async function runPlanReviewDriver(args, deps) {
   // the plan by slug — see parsePlanArgs' persistIgnored note.
   if (kind === 'implementation-plan') {
     let planText = parsed.planText
-    // planText is OPTIONAL when planSlug is present (design decision 3, plan
-    // engine-resolves-plan-by-slug): a non-empty planText still wins verbatim
-    // and skips fetch:plan entirely — byte-identical to the only legal
-    // dual-supply shape that existed before this branch. The resolve path
-    // fires only when planText is empty/omitted.
+    // planText and planSlug are mutually exclusive from parsePlanArgs onward
+    // (see the "was given alongside a non-empty planText" throw above): a
+    // non-empty planText here therefore always means planSlug is absent, and
+    // vice versa. The resolve path below fires exactly when planText is
+    // empty/omitted and planSlug is present.
     if (!planText || String(planText).trim() === '') {
       if (parsed.planSlug) {
         const attemptPlanFetch = async () => {
@@ -2245,19 +2314,57 @@ async function runPlanReviewDriver(args, deps) {
         if (!fetchedBody) {
           _log('plan-review: fetch:plan returned an untrustworthy payload — retrying once')
           fetchedBody = await attemptPlanFetch()
-          if (!fetchedBody) {
-            _log('plan-review: fetch:plan returned an untrustworthy payload on retry — failing closed')
-            // Report-only fail-closed shape: no reviewId/reviewPersistence/gate
-            // keys, consistent with this branch's documented return shape —
-            // nothing was graded, so nothing is recorded.
-            return {
-              kind: 'implementation-plan',
-              outcome: 'escalated',
-              fetchError: true,
-              summary: 'plan-review: artifact fetch failed',
-              findings: [],
-              planSlug: parsed.planSlug,
-            }
+        }
+        // SECOND, INDEPENDENT verification (finding
+        // correctness-fetch-plan-no-content-integrity-check), exactly like
+        // fetch:roadmap's fetch:roadmap-body-check above (see that call
+        // site's comment): a schema-valid, identity-correct fetch:plan
+        // transcript is not proof the body is real — a fetch agent has
+        // fabricated a one-line status sentence in place of a real document
+        // before (see fetch:roadmap-body-check's own history). A fresh
+        // mechanical call re-reads the plan and reports only a checkable
+        // property of its body (length + first line), compared against what
+        // fetch:plan transcribed. Only run when the primary fetch actually
+        // produced a body — a null fetchedBody already fails closed below
+        // with no help from this check.
+        if (fetchedBody) {
+          let bodyCheck = null
+          try {
+            bodyCheck = await _agent(buildPlanBodyCheckPrompt(parsed.planSlug), {
+              label: 'fetch:plan-body-check',
+              phase: 'Read',
+              agentType: 'rdm-mechanical',
+              schema: ROADMAP_BODY_CHECK_SCHEMA,
+              model: _mechanicalModel,
+            })
+          } catch (e) {
+            bodyCheck = null
+          }
+          const bodyVerified = roadmapBodyVerified(fetchedBody, bodyCheck)
+          if (bodyVerified === false) {
+            // Confirmed disagreement — discard the fetch and fall through to
+            // the fail-closed return below, rather than inventing a parallel
+            // escalation mechanism.
+            _log('plan-review: fetch:plan-body-check disagrees with fetch:plan — failing closed')
+            fetchedBody = null
+          } else if (bodyVerified === null) {
+            // Unavailable/flaky check — proceed unverified, never fail closed
+            // on an "unknown" result.
+            _log('plan-review: fetch:plan-body-check unavailable — proceeding unverified')
+          }
+        }
+        if (!fetchedBody) {
+          _log('plan-review: fetch:plan returned an untrustworthy payload — failing closed')
+          // Report-only fail-closed shape: no reviewId/reviewPersistence/gate
+          // keys, consistent with this branch's documented return shape —
+          // nothing was graded, so nothing is recorded.
+          return {
+            kind: 'implementation-plan',
+            outcome: 'escalated',
+            fetchError: true,
+            summary: 'plan-review: artifact fetch failed',
+            findings: [],
+            planSlug: parsed.planSlug,
           }
         }
         planText = fetchedBody
@@ -2884,6 +2991,7 @@ export {
   buildPhaseFetchPrompt,
   buildTaskFetchPrompt,
   buildPlanFetchPrompt,
+  buildPlanBodyCheckPrompt,
   buildRoadmapFetchPrompt,
   buildRoadmapBodyCheckPrompt,
   buildRoadmapIntentFetchPrompt,

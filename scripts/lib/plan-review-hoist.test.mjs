@@ -69,6 +69,21 @@ const ROADMAP_TRANSCRIPT = [
 
 // ---------------------------------------------------------------- harness
 
+// bodyCheckOf(text) — the real ROADMAP_BODY_CHECK_SCHEMA-shaped { length,
+// firstLine } a fetch:*-body-check site is contracted to report for a given
+// body, computed the same way roadmapBodyVerified compares them (length,
+// first line up to the first newline). Used as the default canned
+// fetch:plan-body-check / fetch:roadmap-body-check response so a test that
+// isn't specifically about the body-check mechanism gets a body-check that
+// genuinely agrees with the primary fetch, rather than an accidental mismatch
+// or an accidental "unavailable" (which would silently mask a real
+// disagreement bug).
+function bodyCheckOf(text) {
+  const str = String(text || '');
+  const nl = str.indexOf('\n');
+  return { length: str.length, firstLine: nl === -1 ? str : str.slice(0, nl) };
+}
+
 // makeAgent(overrides) — a recording fake agent. Every call pushes its label,
 // and (when a `calls` sink is supplied) its PROMPT alongside that label, so a
 // test can decide what a mechanical site was actually told rather than only
@@ -94,6 +109,8 @@ function makeAgent(labels, overrides = {}, calls = null) {
         return { transcript: ROADMAP_TRANSCRIPT };
       case 'fetch:plan':
         return { transcript: JSON.stringify({ slug: 'p', body: PLAN_TEXT }) };
+      case 'fetch:plan-body-check':
+        return bodyCheckOf(PLAN_TEXT);
       case 'fetch:roadmap-intent':
         return { transcript: JSON.stringify({ body: ROADMAP_BODY_WITH_INTENT }) };
       case 'fetch:wontfix':
@@ -462,13 +479,19 @@ const PLAN_TEXT = [
 
 const PERSIST_ACK = { ok: true, reviewId: '2026-09-20-1200-abcd', attempted: 1, anchored: 1, degraded: 0 };
 
-// The full dispatch payload, minus whatever a given test wants to vary.
+// The full dispatch payload, minus whatever a given test wants to vary. This
+// is the real `rdm-dispatch-phase` shape post code review `2026-09-21-1218-
+// d618` (AC4 finding ac-4-dual-supply-divergence): `planSlug` alone, no
+// `planText` — the two are mutually exclusive from parsePlanArgs onward, and
+// the dispatch orchestrator never supplies `planText` (see SKILL.md step 6).
+// The default fake agent's `fetch:plan` / `fetch:plan-body-check` resolve this
+// to PLAN_TEXT (see makeAgent), so every test below still grades PLAN_TEXT —
+// it now arrives via the slug-resolve path instead of being passed directly.
 function planArgs(extra = {}) {
   return Object.assign(
     {
       implementationPlan: true,
       planSlug: 'p',
-      planText: PLAN_TEXT,
       persist: { on: 'plan/p' },
       roadmapBody: ROADMAP_BODY_WITH_INTENT,
       wontFixedTexts: [],
@@ -477,7 +500,7 @@ function planArgs(extra = {}) {
   );
 }
 
-test('C1: the graded target is the PLAN, and no item document is fetched at all', async () => {
+test('C1: the graded target is the PLAN, resolved by slug, and no ITEM document is fetched at all', async () => {
   const { contexts, labels } = await driveLib(planArgs(), {
     agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
   });
@@ -488,8 +511,12 @@ test('C1: the graded target is the PLAN, and no item document is fetched at all'
     false,
     'the phase body leaked into the graded text'
   );
-  const fetches = labels.filter((l) => l.startsWith('fetch:'));
-  assert.deepEqual(fetches, [], `a mechanical fetch ran; labels: ${labels.join(',')}`);
+  // No ITEM document (phase/roadmap/task) is ever reachable from this branch —
+  // only the plan itself, via fetch:plan (+ its independent fetch:plan-body-check).
+  for (const itemFetch of ['fetch:phase', 'fetch:roadmap', 'fetch:task']) {
+    assert.equal(count(labels, itemFetch), 0, `${itemFetch} ran; labels: ${labels.join(',')}`);
+  }
+  assert.equal(count(labels, 'fetch:plan'), 1, `labels: ${labels.join(',')}`);
 });
 
 test('C2: targetType is implementation-plan and the roadmap intent is threaded as a VALUE', async () => {
@@ -608,35 +635,61 @@ test('C6 (standalone regression): a phase target still grades the item body and 
   assert.equal(result.gateAction.clearsPlanReviewTag, true);
 });
 
-test('C7: illegal planSlug / persist.on combinations throw before any agent runs; planSlug alone now parses', () => {
+test('C7: illegal planSlug / persist.on / dual-supply combinations throw before any agent runs; planSlug alone still parses', () => {
   assert.throws(
     () => parsePlanArgs({ roadmap: 'r', phase: 'phase-1-x', planSlug: 'p', planText: PLAN_TEXT }),
     /planSlug p requires --implementation-plan/
   );
-  // The retired throw: a planSlug with no planText used to be illegal (`was
+  // The RETIRED throw: a planSlug with no planText used to be illegal (`was
   // given with no planText`). It now parses cleanly — planText is optional
-  // when planSlug is present, and the driver resolves the body itself via one
-  // fetch:plan read (see C8/C9 below), rather than requiring it transcribed
-  // into this call's arguments.
+  // when planSlug is present, and the driver resolves the body itself via
+  // fetch:plan + fetch:plan-body-check (see C8/C9 below), rather than
+  // requiring it transcribed into this call's arguments.
   const slugOnly = parsePlanArgs({ implementationPlan: true, planSlug: 'p' });
   assert.equal(slugOnly.planSlug, 'p');
   assert.equal(slugOnly.planText, '');
   assert.equal(slugOnly.kind, 'implementation-plan');
+  // The NEW throw (code review 2026-09-21-1218-d618, finding
+  // ac-4-dual-supply-divergence): planSlug alongside a non-empty planText used
+  // to be legal, graded planText verbatim, and persisted to the
+  // planSlug-derived ref — an AC4 violation, since the two could disagree. Dual
+  // supply is now rejected outright, in every combination, including when
+  // persist.on would otherwise have been legal or would itself have
+  // disagreed.
+  assert.throws(
+    () => parsePlanArgs({ implementationPlan: true, planSlug: 'p', planText: PLAN_TEXT }),
+    /planSlug p was given alongside a non-empty planText/
+  );
+  assert.throws(
+    () => parsePlanArgs({ implementationPlan: true, planSlug: 'p', planText: PLAN_TEXT, persist: { on: 'plan/p' } }),
+    /planSlug p was given alongside a non-empty planText/
+  );
   assert.throws(
     () => parsePlanArgs({ implementationPlan: true, planSlug: 'p', planText: PLAN_TEXT, persist: { on: 'plan/other' } }),
+    /planSlug p was given alongside a non-empty planText/,
+    'the dual-supply throw must fire before the persist.on mismatch is even reached'
+  );
+  // A whitespace-only planText alongside planSlug is NOT dual supply — it is
+  // the same "genuinely empty" shape as omitting planText outright.
+  const whitespaceText = parsePlanArgs({ implementationPlan: true, planSlug: 'p', planText: '   \n  ' });
+  assert.equal(whitespaceText.planSlug, 'p');
+  assert.equal(whitespaceText.kind, 'implementation-plan');
+  // persist.on mismatch still throws on its own, when planText is absent.
+  assert.throws(
+    () => parsePlanArgs({ implementationPlan: true, planSlug: 'p', persist: { on: 'plan/other' } }),
     /disagrees with planSlug p/
   );
-  // The legal combinations still parse.
-  const ok = parsePlanArgs({ implementationPlan: true, planSlug: 'p', planText: PLAN_TEXT, persist: { on: 'plan/p' } });
+  // The legal combination still parses: planSlug alone (no planText), persist
+  // on the derived ref.
+  const ok = parsePlanArgs({ implementationPlan: true, planSlug: 'p', persist: { on: 'plan/p' } });
   assert.equal(ok.planSlug, 'p');
   assert.equal(ok.persistIgnored, false);
-  const derived = parsePlanArgs({ implementationPlan: true, planSlug: 'p', planText: PLAN_TEXT, persist: true });
+  const derived = parsePlanArgs({ implementationPlan: true, planSlug: 'p', persist: true });
   assert.equal(derived.persistIgnored, false, 'an unqualified persist:true is honored and the ref is derived');
 });
 
-test('C8: planSlug-only resolves the body via exactly one fetch:plan, grades it, and still persists', async () => {
+test('C8: planSlug-only resolves the body via exactly one fetch:plan (+ one fetch:plan-body-check that agrees), grades it, and still persists', async () => {
   const args = planArgs();
-  delete args.planText;
   const { result, contexts, labels, calls } = await driveLib(args, {
     agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
   });
@@ -644,6 +697,14 @@ test('C8: planSlug-only resolves the body via exactly one fetch:plan, grades it,
   const fetchCall = calls.find((c) => c.label === 'fetch:plan');
   assert.ok(fetchCall, 'no fetch:plan call was recorded');
   assert.ok(fetchCall.prompt.includes('plan show p'), 'the fetch prompt does not name the plan slug');
+  // The independent verification call (finding
+  // correctness-fetch-plan-no-content-integrity-check) fires exactly once and
+  // names the same slug, re-reading the document rather than reusing fetch:plan's
+  // own transcript.
+  assert.equal(count(labels, 'fetch:plan-body-check'), 1, `labels: ${labels.join(',')}`);
+  const bodyCheckCall = calls.find((c) => c.label === 'fetch:plan-body-check');
+  assert.ok(bodyCheckCall, 'no fetch:plan-body-check call was recorded');
+  assert.ok(bodyCheckCall.prompt.includes('plan show p'), 'the body-check prompt does not name the plan slug');
   assert.equal(contexts.length, 1);
   assert.equal(contexts[0].target, PLAN_TEXT, 'the fetched body is not what was graded');
   assert.equal(count(labels, 'persist:review:plan:p'), 1, `labels: ${labels.join(',')}`);
@@ -651,9 +712,8 @@ test('C8: planSlug-only resolves the body via exactly one fetch:plan, grades it,
   assert.equal(result.planSlug, 'p');
 });
 
-test('C9: a slug/body identity mismatch on fetch:plan fails closed after one retry — escalated, no persistence', async () => {
+test('C9: a slug/body identity mismatch on fetch:plan fails closed after one retry — escalated, no persistence, no body-check', async () => {
   const args = planArgs();
-  delete args.planText;
   let attempts = 0;
   const { result, labels } = await driveLib(args, {
     agentOverrides: {
@@ -668,6 +728,9 @@ test('C9: a slug/body identity mismatch on fetch:plan fails closed after one ret
   });
   assert.equal(attempts, 2, 'expected exactly one bounded retry after the first untrustworthy fetch');
   assert.equal(count(labels, 'fetch:plan'), 2, `labels: ${labels.join(',')}`);
+  // A null fetchedBody after the primary retry already fails closed — the
+  // body-check call is guarded on a non-null candidate and must not fire.
+  assert.equal(count(labels, 'fetch:plan-body-check'), 0, `labels: ${labels.join(',')}`);
   assert.equal(result.kind, 'implementation-plan');
   assert.equal(result.outcome, 'escalated');
   assert.equal(result.fetchError, true);
@@ -682,10 +745,117 @@ test('C9: a slug/body identity mismatch on fetch:plan fails closed after one ret
   assert.equal(Object.prototype.hasOwnProperty.call(result, 'reviewPersistence'), false);
 });
 
-test('C10 (dual supply keeps precedence): planText alongside planSlug is graded verbatim with zero fetch:plan calls', async () => {
-  const { contexts, labels } = await driveLib(planArgs(), {
-    agentOverrides: { 'persist:review:plan:p': PERSIST_ACK },
+test('C10: a fetch:plan-body-check disagreement discards a schema-valid, identity-correct fetch:plan payload and fails closed', async () => {
+  // The exact shape the finding recorded: fetch:plan returns a fabricated
+  // one-line status sentence with the RIGHT slug (clears extractPlanFromJson
+  // outright), while the independent body-check reports the length/first-line
+  // of the REAL document. The two must disagree, and disagreement must win.
+  const args = planArgs();
+  const { result, labels } = await driveLib(args, {
+    agentOverrides: {
+      'fetch:plan': { transcript: JSON.stringify({ slug: 'p', body: 'Fetched the plan successfully.' }) },
+      'fetch:plan-body-check': bodyCheckOf(PLAN_TEXT),
+      'persist:review:plan:p': PERSIST_ACK,
+    },
   });
-  assert.equal(count(labels, 'fetch:plan'), 0, `labels: ${labels.join(',')}`);
-  assert.equal(contexts[0].target, PLAN_TEXT);
+  assert.equal(count(labels, 'fetch:plan'), 1, `labels: ${labels.join(',')}`);
+  assert.equal(count(labels, 'fetch:plan-body-check'), 1, `labels: ${labels.join(',')}`);
+  assert.equal(result.kind, 'implementation-plan');
+  assert.equal(result.outcome, 'escalated');
+  assert.equal(result.fetchError, true);
+  assert.deepEqual(result.findings, []);
+  assert.equal(
+    labels.some((l) => l.startsWith('persist:review:')),
+    false,
+    `a persist ran despite the body-check disagreeing; labels: ${labels.join(',')}`
+  );
+  assert.equal(Object.prototype.hasOwnProperty.call(result, 'reviewId'), false);
+});
+
+test('C11: fetch:plan-body-check UNAVAILABLE (throws) proceeds unverified rather than failing closed', async () => {
+  const args = planArgs();
+  const { result, contexts, labels } = await driveLib(args, {
+    agentOverrides: {
+      'fetch:plan-body-check': () => {
+        throw new Error('body-check agent exploded');
+      },
+      'persist:review:plan:p': PERSIST_ACK,
+    },
+  });
+  assert.equal(count(labels, 'fetch:plan-body-check'), 1, `labels: ${labels.join(',')}`);
+  assert.equal(contexts[0].target, PLAN_TEXT, 'the fetch:plan body is still graded when the check is unavailable');
+  assert.notEqual(result.outcome, 'escalated');
+  assert.notEqual(result.fetchError, true);
+  assert.equal(result.reviewId, PERSIST_ACK.reviewId);
+});
+
+test('C12: bounded-retry RECOVERY — first fetch:plan untrustworthy, second good — the recovered body is what is graded and persisted', async () => {
+  const args = planArgs();
+  let attempts = 0;
+  const { result, contexts, labels } = await driveLib(args, {
+    agentOverrides: {
+      'fetch:plan': () => {
+        attempts++;
+        if (attempts === 1) {
+          // Wrong slug on the first attempt — untrustworthy, must be retried.
+          return { transcript: JSON.stringify({ slug: 'not-p', body: PLAN_TEXT }) };
+        }
+        return { transcript: JSON.stringify({ slug: 'p', body: PLAN_TEXT }) };
+      },
+      'persist:review:plan:p': PERSIST_ACK,
+    },
+  });
+  assert.equal(attempts, 2, 'expected exactly one bounded retry');
+  assert.equal(count(labels, 'fetch:plan'), 2, `labels: ${labels.join(',')}`);
+  assert.equal(count(labels, 'fetch:plan-body-check'), 1, 'the body-check runs once, against the RECOVERED body');
+  assert.equal(contexts.length, 1);
+  assert.equal(contexts[0].target, PLAN_TEXT, 'the recovered body, not a discarded first attempt, is what was graded');
+  assert.equal(result.reviewId, PERSIST_ACK.reviewId, 'the recovered body is what was persisted');
+  assert.notEqual(result.fetchError, true);
+});
+
+test('C13: extractPlanFromJson\'s empty/whitespace-body rejection is exercised end-to-end, not just via slug mismatch', async () => {
+  const args = planArgs();
+  let attempts = 0;
+  const { result, labels } = await driveLib(args, {
+    agentOverrides: {
+      'fetch:plan': () => {
+        attempts++;
+        // Right slug, but a whitespace-only body — non-empty check must reject
+        // this on identity grounds alone, before the body-check ever runs.
+        return { transcript: JSON.stringify({ slug: 'p', body: '   \n  ' }) };
+      },
+      'persist:review:plan:p': PERSIST_ACK,
+    },
+  });
+  assert.equal(attempts, 2, 'expected exactly one bounded retry');
+  assert.equal(count(labels, 'fetch:plan'), 2, `labels: ${labels.join(',')}`);
+  assert.equal(count(labels, 'fetch:plan-body-check'), 0, 'extractPlanFromJson rejected before a body-check could run');
+  assert.equal(result.outcome, 'escalated');
+  assert.equal(result.fetchError, true);
+  assert.equal(
+    labels.some((l) => l.startsWith('persist:review:')),
+    false,
+    `a persist ran despite the body being blank; labels: ${labels.join(',')}`
+  );
+});
+
+test('C14: the other two fetch:plan failure shapes — a throwing agent and an unparseable transcript — both degrade to the same fail-closed shape', async () => {
+  const thrown = await driveLib(planArgs(), {
+    agentOverrides: {
+      'fetch:plan': () => {
+        throw new Error('agent crashed');
+      },
+    },
+  });
+  assert.equal(thrown.result.outcome, 'escalated');
+  assert.equal(thrown.result.fetchError, true);
+  assert.equal(count(thrown.labels, 'fetch:plan-body-check'), 0);
+
+  const unparseable = await driveLib(planArgs(), {
+    agentOverrides: { 'fetch:plan': { transcript: 'error: no such plan p' } },
+  });
+  assert.equal(unparseable.result.outcome, 'escalated');
+  assert.equal(unparseable.result.fetchError, true);
+  assert.equal(count(unparseable.labels, 'fetch:plan-body-check'), 0);
 });
