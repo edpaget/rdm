@@ -90,7 +90,7 @@ prompt. **Deleted** means the thing it did stopped being done at all.
 | `gate:persist` | review-refute-fix | **moved to the orchestrator** — returned as `gateCommands` / `gateScript` |
 | `gate:clear-tag:*` | plan-review | **moved to the orchestrator** — returned as `gateAction.commands` |
 | `act:*` | plan-review | **moved to the orchestrator** — applying a small plan fix and filing a large finding as a task is judgment plus a write, which is what the orchestrator is |
-| `act:round-note:*` | plan-review | **moved to the orchestrator** — the engine renders the note and returns it as `roundNote`, which the orchestrator appends. It was a read-modify-write when this was written; `--append-body` has since removed that, and turning `roundNote` into a returned command ladder like the estimate writeback's is an open follow-up, not a claim made here |
+| `act:round-note:*` | plan-review | **moved to the orchestrator** — the engine renders the note and returns it as `roundNote`, which the orchestrator appends with a read-modify-write in Bash. That read-modify-write costs nothing there: the body never leaves the shell, so it is neither transcribed nor at risk of a dropped line. Turning `roundNote` into a returned command ladder like the estimate writeback's is an open follow-up, not a claim made here |
 
 ### The three batch engines
 

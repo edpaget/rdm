@@ -70,23 +70,11 @@ repo. Run these yourself, in order, and report each exit status:
    a write. Findings marked `unrefuted: true` were reported, not verified — treat
    them under the disposition rule in the Review specification below.
 3. **Record the round** — a non-`reviewed` unit carries `roundNote`, the rendered
-   `## Plan Review Round N — <outcome>` block. A round note is a **pure append**,
-   so write it with `--append-body` and never carry the item's existing body
-   through your own output:
-
-   ```bash
-   note=$(cat <<'RDM_ROUND_EOF'
-   <roundNote verbatim>
-   RDM_ROUND_EOF
-   )
-   <rdmBin> phase update <stem> --roadmap <slug> --append-body "$note" --no-edit<proj-flag> || exit 1
-   <rdmBin> commit -m "docs(plan): record plan review round on <item>" || exit 1
-   ```
-
-   (task form: `task update <slug> --append-body "$note" …`.) Commit it, so the
-   next pass can read which round it is on. Reading the whole body out and handing
-   it back through `--body` is the transport this lane removed — a truncated
-   re-supplied body is **not** refused, only a fully empty `--body` is.
+   `## Plan Review Round N — <outcome>` block. Append it to the item's body (read
+   the current body, write the whole thing back) and commit, so the next pass can
+   read which round it is on. `--body` is whole-document-authoritative and there
+   is no patch-shaped write, so do the read-modify-write in **Bash** — keep the
+   body in a shell variable and never route it through your own output.
 4. **Clear the gate** — see below.
 
 ### Applying the gate
@@ -438,12 +426,9 @@ provenances, and they are handled differently:
 Never fix or file a finding that carries neither provenance.
 
 - **Small** — a localized wording, typo, or missing-detail fix to the plan
-  document itself. Apply it directly: `--body` is whole-document-authoritative,
+  document itself. Apply it directly: the body is whole-document-authoritative,
   so read the current body, apply the change, and write the **entire** modified
-  body back. A pure **append** — a new trailing section, with nothing above it
-  changed — uses `--append-body` instead, the one patch-shaped write there is:
-  rdm itself adds the text, so no existing body crosses your own output, where
-  a dropped line would be written back unrefused.
+  body back — there is no patch/diff mechanism.
 - **Large** — a structural concern: a missing prerequisite, scope too big for
   one phase, or a conflicting design decision. Do **NOT** edit the plan
   document for these: file it as a task.
