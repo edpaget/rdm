@@ -39,6 +39,7 @@ import {
   gateFor,
   summarizeFindings,
   resolveRefutationBudget,
+  resolveReviewers,
   buildReviewCoverage,
   coverageSummaryClause,
   persistReviewCommands,
@@ -56,8 +57,8 @@ import {
 // No Date.now / Math.random — pure array/string ops plus injected async deps.
 //
 // `buildReviewPipeline`, `filterPlanReviewTag`,
-// `classifyPlanOutcome`, `gateFor`, `summarizeFindings`, and
-// `resolveRefutationBudget` are NOT declared here: they belong to the canonical
+// `classifyPlanOutcome`, `gateFor`, `summarizeFindings`,
+// `resolveRefutationBudget` and `resolveReviewers` are NOT declared here: they belong to the canonical
 // review source (lib/review.mjs) and reach this block from the stamped review
 // block that precedes it in the workflow consumer (and from the import above in
 // Node).
@@ -183,6 +184,18 @@ function parsePlanArgs(rawArgs) {
   // and that choice is visible in each unit's `coverage.selected`. A second
   // per-kind key would be a second mechanism for the caller to keep in sync.
   const reviewers = Array.isArray(a.reviewers) ? a.reviewers.filter((r) => typeof r === 'string') : null
+  // RESOLVED HERE, at parse time, for the same reason `resolveRefutationBudget`
+  // is: the ONE refusal the reviewer-selection design keeps — a set that
+  // resolves to NO reviewer at all — has to escape the DRIVER, and inside
+  // `reviewUnit` it cannot. `reviewUnit` runs inside a `_parallel` thunk, and
+  // `parallel()`'s documented thrown-thunk → null degradation turns that throw
+  // into a dropped unit: a mistyped reviewer name reviewed nothing and reported
+  // `0 unit(s) reviewed`, indistinguishable from a clean sweep. Resolving before
+  // any thunk exists puts the refusal back where it was designed to be — the
+  // result is discarded, since each unit resolves its own set from the same
+  // list, and every OTHER part of the contract (an unrecognised name dropped
+  // silently, no floor on the set's size) is untouched by calling it early.
+  resolveReviewers('plan', reviewers)
   // The PHASE STEMS a roadmap sweep covers. The engine does NOT read a roadmap
   // to discover them: the orchestrator ran `rdm roadmap show` itself and says
   // which phases to review. Each entry is `{ stem, tags?, status?, priorReviews? }`
@@ -1015,9 +1028,21 @@ async function runPlanReviewDriver(args, deps) {
   const results = await _parallel(units.map((u) => () => reviewUnit(u)))
 
   const reported = []
+  // Units whose thunk yielded nothing. `parallel()` degrades a thrown thunk to
+  // null, so a unit can vanish here for a reason this driver never sees. It is
+  // NOT "nothing to report": a sweep that lost every unit would otherwise read
+  // exactly like one that reviewed every unit cleanly. Named on the result and
+  // in the summary so the two can never be confused again.
+  const failedUnits = []
   for (let i = 0; i < results.length; i++) {
     const r = results[i]
-    if (!r) continue
+    if (!r) {
+      const u = units[i]
+      const ident = u ? u.kind + '/' + u.ident : 'unit ' + (i + 1)
+      failedUnits.push(ident)
+      _log('plan-review (' + ident + '): the review produced no result — this unit was NOT reviewed')
+      continue
+    }
     const u = r.unit
     const gate = gateFor('plan', r.outcome)
     const gateAction = buildGateAction(u, gate)
@@ -1072,16 +1097,26 @@ async function runPlanReviewDriver(args, deps) {
   // `undefined` at the moment it is deciding whether a tag was left set.
   const gatePendingCount = reported.filter((x) => x.gateAction && x.gateAction.clearsPlanReviewTag === true).length
   const skippedClause = formatSkippedPhasesClause(skippedPhases)
+  // Attached to every summary a unit-failure can reach, so "reviewed nothing"
+  // can never present as "found nothing". Empty on a healthy run, so a healthy
+  // run's summary is byte-unchanged.
+  const failedClause = failedUnits.length
+    ? ' [' + failedUnits.length + ' unit(s) NOT reviewed: ' + failedUnits.join(', ') + ']'
+    : ''
   const result = {
     kind: kind,
     units: reported,
     gatePendingCount: gatePendingCount,
     skippedPhases: skippedPhases,
+    // Always present (an array, never undefined) for the same reason
+    // `gatePendingCount` always is: a caller deciding whether a sweep covered
+    // its phases must not have to tell absent from zero.
+    failedUnits: failedUnits,
   }
   if (kind !== 'roadmap' && reported.length === 1) {
     // Flatten a single phase/task target onto the top-level result.
     result.outcome = reported[0].outcome
-    result.summary = reported[0].summary
+    result.summary = reported[0].summary + failedClause
     result.budget = reported[0].budget
     result.coverage = reported[0].coverage
     result.findings = reported[0].findings
@@ -1093,14 +1128,22 @@ async function runPlanReviewDriver(args, deps) {
     }
   }
   if (kind === 'roadmap') {
-    result.summary = 'plan-review (roadmap): ' + reported.length + ' unit(s) reviewed' + skippedClause
+    result.summary = 'plan-review (roadmap): ' + reported.length + ' unit(s) reviewed' + skippedClause + failedClause
+  }
+  // A single-unit target that produced NO reported unit has no flattened
+  // summary of its own, and would otherwise return with none at all. Give it
+  // the failure, so the one shape where the loss is total is also the one that
+  // says so loudest.
+  if (!result.summary && failedUnits.length) {
+    result.summary = 'plan-review (' + kind + '): 0 unit(s) reviewed' + skippedClause + failedClause
   }
   _log(
     'plan-review (' + kind + '): ' + reported.length + ' unit(s) reviewed' +
       (gatePendingCount > 0
         ? ' — ' + gatePendingCount + ' gate(s) pending (run units[].gateAction.commands)'
         : '') +
-      skippedClause
+      skippedClause +
+      failedClause
   )
   return result
 }

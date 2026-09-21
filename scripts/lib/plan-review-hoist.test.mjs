@@ -409,6 +409,88 @@ test('D6: a caller-selected set really narrows the FINDERS the real pipeline dis
   assert.equal(all.labels.filter((l) => l.startsWith('find:')).length, planKeys.length);
 });
 
+// D8/D9 cover the one refusal at the boundary it has to survive. `reviewUnit`
+// runs inside a `parallel()` thunk, and `parallel()` degrades a thrown thunk to
+// `null` — so a refusal raised in there became a dropped unit and a `0 unit(s)
+// reviewed` summary indistinguishable from a clean sweep. Both halves of the
+// fix are driven here: the refusal now escapes the driver, and a unit lost for
+// any OTHER reason is still named rather than silently skipped.
+
+test('D8: a reviewer set that resolves to none REFUSES out of the driver, whatever the target', async () => {
+  for (const args of [
+    { roadmap: 'r', phase: 'phase-1-x', tags: [] },
+    { task: 't', tags: [] },
+    { roadmap: 'r', phases: [{ stem: 'phase-1-x' }, { stem: 'phase-2-y' }], tags: [] },
+    { implementationPlan: true, planSlug: 'a-plan' },
+  ]) {
+    for (const reviewers of [[], ['coherance'], ['nope', 'also-nope']]) {
+      await assert.rejects(
+        () => driveLib({ ...args, reviewers }),
+        /resolved to NO reviewer/,
+        `${JSON.stringify(args)} with ${JSON.stringify(reviewers)} must refuse, not report an empty sweep`
+      );
+    }
+  }
+});
+
+test('D9: the refusal fires before any agent runs, and never degrades to an empty result', async () => {
+  const calls = [];
+  await assert.rejects(
+    () =>
+      runPlanReviewDriver(
+        { roadmap: 'r', phases: [{ stem: 'phase-1-x' }], tags: [], reviewers: ['coherance'] },
+        {
+          agent: makeAgent(calls),
+          parallel: referenceParallel,
+          log: () => {},
+          runPlanReview: async () => ({ survivors: [], acTable: null, budget: null, coverage: null }),
+        }
+      ),
+    /resolved to NO reviewer/
+  );
+  assert.deepEqual(calls, [], 'no agent was dispatched — the refusal is a parse-time decision');
+
+  // And the healthy path is untouched: a real set still reviews and reports.
+  const ok = await driveLib({ roadmap: 'r', phase: 'phase-1-x', tags: [], reviewers: [planKeys[0]] });
+  assert.equal(ok.result.units.length, 1);
+  assert.equal(ok.result.outcome, 'reviewed');
+  assert.deepEqual(ok.result.failedUnits, [], 'a healthy unit reports no loss');
+  assert.doesNotMatch(ok.result.summary, /NOT reviewed/, "a healthy run's summary is unchanged");
+});
+
+test('D10: a unit whose thunk yields nothing is NAMED, never silently dropped', async () => {
+  // `parallel()`'s real degradation, reproduced: one thunk throws, so the unit
+  // comes back null. Whatever the cause, the sweep must not read like a clean
+  // one that simply found nothing.
+  const logs = [];
+  const result = await runPlanReviewDriver(
+    { roadmap: 'r', phases: [{ stem: 'phase-1-x' }, { stem: 'phase-2-y' }], tags: [] },
+    {
+      agent: makeAgent([]),
+      parallel: async (tasks) =>
+        await Promise.all(tasks.map(async (t) => { try { return await t(); } catch { return null; } })),
+      log: (m) => logs.push(String(m)),
+      runPlanReview: async (ctx) => {
+        if (String(ctx.target).includes('phase-1-x')) throw new Error('this unit could not be reviewed');
+        return { survivors: [], acTable: null, budget: null, coverage: null };
+      },
+    }
+  );
+
+  assert.equal(result.units.length, 2, 'the roadmap body and the surviving phase are reported as reviewed');
+  assert.ok(
+    result.units.every((u) => !String(u.ident).includes('phase-1-x')),
+    'the lost unit is not among them'
+  );
+  assert.equal(result.failedUnits.length, 1, 'the lost unit is counted');
+  assert.match(result.failedUnits[0], /phase-1-x/, 'and it is named');
+  assert.match(result.summary, /NOT reviewed/, 'the summary can never read as a clean full sweep');
+  assert.ok(
+    logs.some((l) => /NOT reviewed/.test(l)),
+    'and the loss is logged as a loss, not as an absence of findings'
+  );
+});
+
 test('D7: no reviewer entry carries a selection predicate any more', () => {
   for (const mode of Object.keys(DIMENSIONS)) {
     for (const d of DIMENSIONS[mode]) {

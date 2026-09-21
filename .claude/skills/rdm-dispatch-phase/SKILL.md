@@ -313,7 +313,9 @@ yourself.** It is the one step a subagent physically cannot perform.
 - `reviewers` — **the reviewer set you are selecting.** Omitting the key entirely runs every plan
   reviewer, which is the safe default; naming a set runs exactly those. An unrecognised name is
   dropped silently and shows as a gap in the unit's `coverage.selected`/`coverage.ran` — nothing
-  rejects a thin set, so under-review is your visible choice, not an error. The plan reviewers are:
+  rejects a thin set, so under-review is your visible choice, not an error. A set in which **no**
+  name resolves is the one exception: it throws before any agent runs, rather than reporting a clean
+  review over an empty fleet. The plan reviewers are:
 
   | reviewer | what it is for | include it when |
   |---|---|---|
