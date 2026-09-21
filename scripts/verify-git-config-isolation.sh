@@ -187,6 +187,18 @@ count_leaks() {
 # line then reads `\033[32;1m        PASS\033[0m [ ...` — matching no
 # anchored `^\s*PASS\s+\[` pattern. The zero-result guard in section 1
 # caught it rather than passing vacuously, but the run was still red.
+# The real HOME, captured before any override. A hostile run redirects HOME
+# to make git read a planted config, but rustup resolves its toolchain under
+# `$HOME/.rustup` unless `RUSTUP_HOME` says otherwise — so on a machine where
+# `cargo` is the rustup shim (every CI runner; not a mise-managed checkout,
+# where cargo is a real binary on PATH) the override took the toolchain away
+# with it and cargo died with "could not choose a version of cargo to run".
+# The hostile environment is hostile in GIT CONFIG terms only; pin the two
+# Rust paths that would otherwise follow HOME.
+REAL_HOME=${HOME:-}
+RUSTUP_HOME_PIN=${RUSTUP_HOME:-$REAL_HOME/.rustup}
+CARGO_HOME_PIN=${CARGO_HOME:-$REAL_HOME/.cargo}
+
 run_suites() {
     home_override=$1
     system_override=$2
@@ -197,6 +209,7 @@ run_suites() {
     set +e
     if [ -n "$home_override" ]; then
         HOME="$home_override" GIT_CONFIG_SYSTEM="$system_override" GNUPGHOME="$gnupg_override" \
+            RUSTUP_HOME="$RUSTUP_HOME_PIN" CARGO_HOME="$CARGO_HOME_PIN" \
             TMPDIR="$scratch" CARGO_TERM_COLOR=never \
             cargo nextest run -p rdm-git -p rdm-cli -E "$FILTER" \
             >"$scratch/run.log" 2>&1
@@ -238,6 +251,15 @@ if run_suites "$TMP/hostile-fixture/home" "$TMP/hostile-fixture/system-gitconfig
     :
 else
     tail -40 "$TMP/hostile/run.log" >&2
+    # Distinguish "the suites failed" from "the run never happened". A
+    # hostile run that produced no per-test result at all did not measure
+    # isolation, so reporting a config leak would name the wrong cause —
+    # the same distinction section 1's clean-run guard above makes.
+    if ! grep -qE '^[[:space:]]*(PASS|FAIL|LEAK|ABORT|TIMEOUT)[[:space:]]+\[' "$TMP/hostile/run.log"; then
+        fail "1: the hostile run produced no test results at all — the run itself failed
+(see the log above; a missing toolchain under the overridden HOME is the
+usual cause), so nothing about isolation was measured. Harness is broken."
+    fi
     fail "1: the suites did NOT pass under the HOSTILE environment — a fixture or a
 production guard is reading the developer's ambient git config. See
 rdm-git/src/git_test_support.rs and rdm-cli/tests/git_test_support.rs."
