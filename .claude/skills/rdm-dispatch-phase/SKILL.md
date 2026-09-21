@@ -277,10 +277,10 @@ anything you omit.
   dispatch.verify` is an operator act, not something a dispatch writes.
 
 **Self-check before proceeding:** confirm the planner subagent returned and that `plan show
-<plan-slug> --format json` reports a real plan whose `implements` is `rdm:<item>`, and **record that
-same response's `body` as `planBody`** — step 6 hands it to the plan-review engine as the document
-under review, and this is the read it comes from. No new command. If you drafted the plan yourself
-instead of dispatching, you have inline-collapsed — stop and dispatch.
+<plan-slug> --format json` reports a real plan whose `implements` is `rdm:<item>`. No new command
+beyond that confirmation — step 6 no longer needs the plan body handed to it at all: it resolves the
+body itself, by slug, with one mechanical read of its own. If you drafted the plan yourself instead
+of dispatching, you have inline-collapsed — stop and dispatch.
 
 ### 6. Invoke the plan review — in THIS session
 
@@ -288,7 +288,6 @@ instead of dispatching, you have inline-collapsed — stop and dispatch.
 Workflow({ scriptPath: '.claude/workflows/rdm-wf-plan-review.js', args: {
   implementationPlan: true,
   planSlug: '<plan-slug>',
-  planText: '<planBody verbatim>',
   persist: { on: 'plan/<plan-slug>' },
   roadmapBody: '<roadmapBody verbatim>',          // OMIT in task mode
   mechanicalModel: '<models.mechanical>',
@@ -304,10 +303,11 @@ own document is never handed to the engine, so a finding about an inaccuracy in 
 the plan does not inherit — cannot arise and cannot force a revise round. **You MUST make this call
 yourself.** It is the one step a subagent physically cannot perform.
 
-- `planSlug` / `planText` are **not** hoists — they are the document under review. Pass the plan
-  body verbatim from step 5's `plan show --format json`. A `planSlug` with no `planText`, a
-  `planSlug` on a non-implementation-plan target, and a `persist.on` that is not
-  `plan/<plan-slug>` each throw before any agent runs.
+- `planSlug` names the document under review — the engine reads its body itself, with one
+  mechanical `plan show <plan-slug> --format json` read, rather than requiring it transcribed into
+  this call's arguments. Pass only the slug; do **not** pass `planText` here. A `planSlug` on a
+  non-implementation-plan target, and a `persist.on` that is not `plan/<plan-slug>`, each throw
+  before any agent runs.
 - `roadmapBody` — the **parent roadmap's** body, verbatim and unedited. Do not extract the `##
   Intent` section yourself: the engine runs the one canonical extractor over the raw body, which is
   what keeps the hoisted and fetched paths from ever disagreeing. **Omit it in task mode** — a task
