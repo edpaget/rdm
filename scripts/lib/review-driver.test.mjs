@@ -34,6 +34,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { hasBlocking, refutePrompt, formatCommentBody, parseCommentHeader, buildReviewPipeline, classifyOutcome } from '../../.claude/workflows/lib/review.mjs';
 
 // --------------------------------------------------------------- environment
 
@@ -458,4 +459,140 @@ test('the two legacy survivors-only shapes still return their original report', 
     assert.equal(result.outcome, undefined, 'a legacy report approves nothing');
     assert.equal(result.gateCommands, undefined, 'and emits no ladder, having no item to write to');
   }
+});
+
+// ----------------------------------------------------------- scope grading
+//
+// `refuters-grade-finding-scope` (0129ddf) added a refuter-graded `inScope`
+// verdict field with zero automated coverage — the accepted rework finding
+// this section fixes. These are pure-function/driven-pipeline tests against
+// the real exports of `.claude/workflows/lib/review.mjs` (imported directly,
+// above); nothing here greps source text or asserts on a file's contents, and
+// nothing re-verifies that some other surface still matches this module —
+// each case exercises real behavior of the functions under test.
+
+test('hasBlocking excludes an inScope:false finding at both gating tiers, and gates it when inScope is true or omitted', () => {
+  const blocking = { severity: 'blocking', confidence: 90 };
+  const concern = { severity: 'concern', confidence: 90 };
+
+  // Default tier: only `blocking` gates; `concern` never does, with or without
+  // a scope verdict — included as a control, not part of the matrix.
+  assert.equal(hasBlocking([{ ...blocking, inScope: false }], undefined), false, 'default tier: inScope:false must not gate');
+  assert.equal(hasBlocking([{ ...blocking, inScope: true }], undefined), true, 'default tier: inScope:true still gates');
+  assert.equal(hasBlocking([{ ...blocking }], undefined), true, 'default tier: omitted inScope still gates (fail-safe default)');
+
+  // `large` tier: a surviving `concern` gates too — the one-directional
+  // tightening `hasBlocking`'s own comment describes.
+  assert.equal(hasBlocking([{ ...concern, inScope: false }], 'large'), false, 'large tier, concern: inScope:false must not gate');
+  assert.equal(hasBlocking([{ ...concern, inScope: true }], 'large'), true, 'large tier, concern: inScope:true still gates');
+  assert.equal(hasBlocking([{ ...concern }], 'large'), true, 'large tier, concern: omitted inScope still gates (fail-safe default)');
+
+  // And `blocking` keeps gating the same way at the large tier too.
+  assert.equal(hasBlocking([{ ...blocking, inScope: false }], 'large'), false, 'large tier, blocking: inScope:false must not gate');
+  assert.equal(hasBlocking([{ ...blocking, inScope: true }], 'large'), true, 'large tier, blocking: inScope:true still gates');
+  assert.equal(hasBlocking([{ ...blocking }], 'large'), true, 'large tier, blocking: omitted inScope still gates (fail-safe default)');
+});
+
+test('refutePrompt appends the scope clause only for mode:"code" with a non-empty context.planCommand', () => {
+  const dim = { key: 'correctness' };
+  const finding = { id: 'f1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'it drops a write' };
+  const SCOPE_MARKER = /Grade whether this finding is IN SCOPE/;
+  const PLAN_COMMAND = 'rdm plan show scope-flip --format json';
+
+  const codeWithPlan = refutePrompt('code', dim, finding, { target: 'T', planCommand: PLAN_COMMAND });
+  assert.match(codeWithPlan, SCOPE_MARKER, 'mode:code with a planCommand appends the scope clause');
+
+  // The other three (mode, planCommand-presence) combinations must never carry
+  // it — a plan-mode call, and a code-mode call with no associated plan.
+  const codeNoKey = refutePrompt('code', dim, finding, { target: 'T' });
+  const codeUndefined = refutePrompt('code', dim, finding, { target: 'T', planCommand: undefined });
+  const codeEmpty = refutePrompt('code', dim, finding, { target: 'T', planCommand: '' });
+  const planNoKey = refutePrompt('plan', dim, finding, { target: 'T' });
+  const planWithPlan = refutePrompt('plan', dim, finding, { target: 'T', planCommand: PLAN_COMMAND });
+
+  for (const [label, prompt] of [
+    ['code, no planCommand key', codeNoKey],
+    ['code, planCommand: undefined', codeUndefined],
+    ['code, planCommand: ""', codeEmpty],
+    ['plan, no planCommand key', planNoKey],
+    ['plan, planCommand set', planWithPlan],
+  ]) {
+    assert.doesNotMatch(prompt, SCOPE_MARKER, label + ' must not carry the scope clause');
+  }
+
+  // Byte-identity: an absent key, an explicit `undefined`, and an explicit
+  // empty string are three equivalent spellings of "no plan associated", and
+  // in `code` mode they must produce the exact same prompt — the precise
+  // non-empty-string guard the 56-item refuter-agreement corpus (whose
+  // regenerated context is always `{ target: item.target }`, never carrying a
+  // `planCommand` key) depends on never moving a byte for a corpus item.
+  assert.equal(codeNoKey, codeUndefined, 'an absent key and an explicit undefined must be byte-identical');
+  assert.equal(codeNoKey, codeEmpty, 'an absent key and an explicit empty string must be byte-identical');
+});
+
+test('a blocking finding graded inScope:false still survives but yields "reviewed"; inScope:true yields "rework" — driven end to end', async () => {
+  const CLEAN_AC = [{ criterion: 'AC1: it works', status: 'PASS', evidence: 'covered' }];
+
+  function scopeFleet(inScope) {
+    return async (_prompt, opts) => {
+      const label = (opts && opts.label) || '';
+      if (label === 'find:code:ac') return { ac: CLEAN_AC, findings: [] };
+      if (label === 'find:code:correctness') {
+        return { findings: [{ id: 'scope-bug', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'it drops a write' }] };
+      }
+      if (label.startsWith('refute:')) return { refuted: false, confidence: 90, inScope };
+      return { findings: [] };
+    };
+  }
+
+  async function run(inScope) {
+    const runReview = buildReviewPipeline('code', {
+      agent: scopeFleet(inScope),
+      pipeline: referencePipeline,
+      parallel: referenceParallel,
+      log: () => {},
+    });
+    return runReview({
+      reviewers: ['ac', 'correctness'],
+      planCommand: 'rdm plan show scope-flip --format json',
+      target: 'the change under review',
+    });
+  }
+
+  const outOfScope = await run(false);
+  assert.equal(outOfScope.survivors.length, 1, 'the blocking finding survives refutation — it is never dropped');
+  assert.equal(outOfScope.survivors[0].inScope, false);
+  assert.equal(
+    // `codeReviews: [survivors]` is the shape the real caller
+    // (rdm-wf-review-refute-fix.js, `classifyOutcome({ ..., codeReviews: [survivors], ... })`)
+    // passes for a single completed review round.
+    classifyOutcome({ codeReviews: [outOfScope.survivors], acTable: outOfScope.acTable }),
+    'reviewed',
+    'an out-of-scope blocking survivor must not force rework'
+  );
+
+  const inScopeRun = await run(true);
+  assert.equal(inScopeRun.survivors.length, 1, 'the identical finding still survives when graded in scope');
+  assert.equal(inScopeRun.survivors[0].inScope, true);
+  assert.equal(
+    classifyOutcome({ codeReviews: [inScopeRun.survivors], acTable: inScopeRun.acTable }),
+    'rework',
+    'the same finding graded in scope forces rework — the outcome flips solely on the refuter verdict'
+  );
+});
+
+test('formatCommentBody / parseCommentHeader round-trip inScope: true, inScope: false, and no inScope at all (the n/a sentinel)', () => {
+  const base = { id: 'f1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'it drops a write' };
+
+  const trueBody = formatCommentBody({ ...base, inScope: true });
+  assert.match(trueBody, /^inScope: true$/m);
+  assert.equal(parseCommentHeader(trueBody).inScope, true);
+
+  const falseBody = formatCommentBody({ ...base, inScope: false });
+  assert.match(falseBody, /^inScope: false$/m);
+  assert.equal(parseCommentHeader(falseBody).inScope, false);
+
+  const ungradedBody = formatCommentBody({ ...base });
+  assert.match(ungradedBody, /^inScope: n\/a$/m);
+  assert.equal(parseCommentHeader(ungradedBody).inScope, null, 'never graded for scope parses back to null, not false');
 });
