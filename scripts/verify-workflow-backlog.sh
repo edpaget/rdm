@@ -149,7 +149,7 @@ const {
   normalizeAnalysis,
   consolidateBatch,
   buildBacklogPipeline,
-  buildFetchReportPrompt,
+  backlogReportCommand,
   promptStaleTasks,
   promptDuplicateClusters,
   promptTagClusters,
@@ -225,19 +225,18 @@ assert.deepEqual(
 );
 assert.deepEqual(selectCategories(null), [], 'null report tolerated, selects nothing');
 
-// --- buildFetchReportPrompt: the ONE Bash-executing directive ----------------
-const p0 = buildFetchReportPrompt({});
-assert.ok(p0.includes('Run exactly this command'), 'fetch prompt is the executable directive');
-assert.ok(p0.includes('./target/debug/rdm backlog report --format json'), 'base command present');
-assert.ok(!p0.includes('--older-than'), 'unset olderThan omitted');
-assert.ok(!p0.includes('--tag'), 'unset tag omitted');
-assert.ok(!p0.includes('--project'), 'unset project omitted');
-const p1 = buildFetchReportPrompt({ project: 'rdm', olderThan: 0, tag: 'bug' });
-assert.ok(p1.includes('--older-than 0'), '--older-than 0 threaded through (not dropped as falsy)');
-assert.ok(p1.includes('--tag bug'), '--tag threaded through');
-assert.ok(p1.includes('--project rdm'), '--project threaded through');
-const p2 = buildFetchReportPrompt({ tag: '' });
-assert.ok(!p2.includes('--tag'), 'an explicitly empty tag is not forwarded as a CLI flag (nothing to filter on)');
+// --- backlogReportCommand: the read-only command the CALLER runs -------------
+// (DELETED, no-mechanical-agents-in-workflows phase 34, commit 4: the
+// buildFetchReportPrompt assertions. There is no fetch agent and no prompt; the
+// builder now returns the command TEXT, and these assert that text.)
+const c0 = backlogReportCommand({});
+assert.ok(c0.includes('backlog report --format json'), 'the report command names the read-only subcommand');
+assert.ok(!c0.includes('--project'), 'no project configured means no --project flag');
+const c1 = backlogReportCommand({ project: 'rdm', olderThan: 0, tag: 'bug' });
+assert.ok(c1.includes('--older-than 0'), 'olderThan 0 is threaded (0 is a legal value, not "unset")');
+assert.ok(c1.includes('--tag bug'), 'tag is threaded');
+assert.ok(c1.includes('--project rdm'), 'project is threaded');
+assert.ok(!backlogReportCommand({ tag: '' }).includes('--tag'), 'an empty tag adds no flag');
 
 // --- analyzer prompts inline the old skill's grooming rules ------------------
 const stale = promptStaleTasks([{ slug: 's' }], { project: 'rdm' });
@@ -408,96 +407,10 @@ if run_node "$TMP/behavior.mjs" "$LIB"; then
 else
     fail "backlog behavior/driven-pipeline assertions failed"
 fi
-
-# =============================================================================
-say "1c. Driver: whole-file execution of rdm-wf-backlog.js's mechanical-model bootstrap gate"
-# =============================================================================
-# Section 1/1b only drive buildBacklogPipeline from lib/backlog.mjs — they
-# never execute rdm-wf-backlog.js's own driver tail (the model:mechanical bootstrap
-# + if/else gate around the pipeline call). That tail is hand-authored,
-# top-level code in the workflow script itself, so it needs its own
-# Node-executed test: wrap the real file body in an async function taking
-# (agent, parallel, log, args) as closures, run it with fakes, and assert on
-# the ACTUAL RETURN VALUE — this is what would have caught the
-# `ReferenceError: result is not defined` regression that a static grep for
-# `model: mechanicalModel` near fetch:report could never see.
-
-cat >"$TMP/driver.mjs" <<'NODE_TEST'
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import vm from 'node:vm';
-
-const wfPath = process.argv[2];
-const src = fs.readFileSync(wfPath, 'utf8').replace(/^export const meta/m, 'const meta');
-const wrapped = '(async function (agent, parallel, log, args) {\n' + src + '\n})';
-const fn = vm.runInNewContext(wrapped, {});
-
-const populatedReport = {
-  stale_tasks: [],
-  duplicate_clusters: [{ members: [{ slug: 'b', title: 'B' }] }],
-  tag_clusters: [],
-  archivable_roadmaps: [],
-};
-
-// --- Scenario A: model:mechanical resolves to an empty string ----------------
-// No fetch:report or analyze:* agent call may ever fire, and the driver must
-// return a defined, structured result instead of throwing.
-{
-  const seenLabels = [];
-  const fakeAgent = async (prompt, opts) => {
-    seenLabels.push(opts.label);
-    if (opts.label === 'model:mechanical') return { model: '' };
-    throw new Error('unexpected agent call with label ' + opts.label + ' after an unresolved mechanical model');
-  };
-  const fakeParallel = async (fns) => Promise.all(fns.map((f) => f()));
-  const logs = [];
-  const fakeLog = (m) => logs.push(m);
-
-  const result = await fn(fakeAgent, fakeParallel, fakeLog, {});
-
-  assert.ok(result !== undefined, 'an unresolved mechanical model must not leave the driver returning undefined');
-  assert.equal(result.groomed, false, 'an unresolved mechanical model never reports groomed: true');
-  assert.equal(result.fetchError, true, 'an unresolved mechanical model is surfaced as a fetchError');
-  assert.deepEqual(seenLabels, ['model:mechanical'], 'no fetch:report or analyze:* agent ever fires once the model is unresolved');
-  assert.ok(
-    logs.some((m) => /mechanical model could not be resolved/.test(m)),
-    'the unresolved-model path logs an explanatory message'
-  );
-}
-
-// --- Scenario B: model:mechanical resolves normally, report is populated -----
-// fetch:report must be pinned to the resolved model, and the driver returns
-// the pipeline's real groomed result.
-{
-  const seenLabels = [];
-  const seenModels = {};
-  const fakeAgent = async (prompt, opts) => {
-    seenLabels.push(opts.label);
-    seenModels[opts.label] = opts.model;
-    if (opts.label === 'model:mechanical') return { model: 'claude-haiku-mechanical' };
-    if (opts.label === 'fetch:report') return populatedReport;
-    if (opts.label.indexOf('analyze:') === 0) return { proposals: [{ command: 'rdm ' + opts.label, rationale: 'r' }], openQuestions: [] };
-    throw new Error('unexpected label ' + opts.label);
-  };
-  const fakeParallel = async (fns) => Promise.all(fns.map((f) => f()));
-  const logs = [];
-  const fakeLog = (m) => logs.push(m);
-
-  const result = await fn(fakeAgent, fakeParallel, fakeLog, {});
-
-  assert.equal(result.groomed, true, 'a populated report with a resolved mechanical model grooms normally');
-  assert.equal(seenModels['fetch:report'], 'claude-haiku-mechanical', 'fetch:report is pinned to the resolved mechanical model');
-  assert.ok(seenLabels.includes('analyze:duplicate_clusters'), 'the populated category is analyzed');
-}
-
-console.log('all backlog driver-tail assertions passed');
-NODE_TEST
-
-if run_node "$TMP/driver.mjs" "$WF"; then
-    pass "rdm-wf-backlog.js driver tail: unresolved-model gate returns cleanly, resolved-model path pins fetch:report"
-else
-    fail "rdm-wf-backlog.js driver-tail execution assertions failed (the mechanical-model bootstrap gate is broken)"
-fi
+# DELETED SECTION "1c." (no-mechanical-agents-in-workflows phase 34, commit 4):
+# its subject was a mechanical agent, its model pin, or the caller hoist that
+# suppressed it. None of those exists any more. Deleted and named, never
+# repaired or re-pointed.
 
 # =============================================================================
 say "2. Zero-mutation: a real seeded plan repo is byte-identical before and after a run"
@@ -638,56 +551,42 @@ pass "drift detector fails on a planted mutation and heals on restore"
 say "4. Static invariants on the workflow source"
 # =============================================================================
 
-# Exactly TWO Bash-executing agent directives in the whole file — the Stage-0
-# report fetch and the mechanical-model bootstrap resolve. No analyzer prompt
-# may say "Run exactly this command".
+# ZERO Bash-executing agent directives in the whole file. The Stage-0 report
+# fetch and the mechanical-model bootstrap are gone: the caller runs the one
+# read-only command and passes `report`, and no analyzer prompt may say
+# "Run exactly this command".
 DIRECTIVES=$(grep -c "Run exactly this command" "$WF" || true)
-[ "$DIRECTIVES" -eq 2 ] || fail "expected exactly two 'Run exactly this command' directives in rdm-wf-backlog.js, found $DIRECTIVES"
+[ "$DIRECTIVES" -eq 0 ] || fail "expected NO 'Run exactly this command' directive in rdm-wf-backlog.js, found $DIRECTIVES"
 printf 'Run exactly this command\nRun exactly this command\nRun exactly this command\n' >"$TMP/planted-three-directives.js"
 [ "$(grep -c "Run exactly this command" "$TMP/planted-three-directives.js")" -eq 3 ] ||
     fail "directive-count detector broken — missed a planted third occurrence"
-pass "exactly two Bash-executing agent directives in rdm-wf-backlog.js (report fetch + mechanical-model resolve)"
+pass "NO Bash-executing agent directive in rdm-wf-backlog.js; the detector still counts a planted one"
 
-# That one directive's command template (buildFetchReportPrompt's body) must
-# never contain a mutating verb — extracted from `function buildFetchReportPrompt`
+# The returned command template (backlogReportCommand's body) must
+# never contain a mutating verb — extracted from `function backlogReportCommand`
 # to the next top-level `function `/`const `/`}` at column 0.
 extract_fetch_report_fn() {
     awk '
-        /^function buildFetchReportPrompt/ { collect = 1 }
+        /^function backlogReportCommand/ { collect = 1 }
         collect { print }
         collect && /^}$/ { exit }
     ' "$1"
 }
 extract_fetch_report_fn "$WF" >"$TMP/fetch-report-fn"
-[ -s "$TMP/fetch-report-fn" ] || fail "could not extract buildFetchReportPrompt from $WF"
-grep -q "Run exactly this command" "$TMP/fetch-report-fn" ||
-    fail "buildFetchReportPrompt must be the function containing the one executable directive"
+[ -s "$TMP/fetch-report-fn" ] || fail "could not extract backlogReportCommand from $WF"
+grep -q 'backlog report --format json' "$TMP/fetch-report-fn" ||
+    fail "backlogReportCommand must be the function that builds the read-only report command"
 
 FORBIDDEN_VERBS="rdm task create|rdm task update|rdm task merge|rdm roadmap archive|rdm promote|rdm commit|rdm discard"
 if grep -qE "$FORBIDDEN_VERBS" "$TMP/fetch-report-fn"; then
     grep -nE "$FORBIDDEN_VERBS" "$TMP/fetch-report-fn" >&2 || true
     fail "the report-fetch executable command template must never contain a mutating verb"
 fi
-pass "the report-fetch executable command template contains no mutating verb"
+pass "the emitted report command contains no mutating verb"
 
-# The mechanical-model bootstrap's command template (buildMechanicalModelPrompt's
-# body) must also never contain a mutating verb — same extraction pattern.
-extract_mechanical_model_fn() {
-    awk '
-        /^function buildMechanicalModelPrompt/ { collect = 1 }
-        collect { print }
-        collect && /^}$/ { exit }
-    ' "$1"
-}
-extract_mechanical_model_fn "$WF" >"$TMP/mechanical-model-fn"
-[ -s "$TMP/mechanical-model-fn" ] || fail "could not extract buildMechanicalModelPrompt from $WF"
-grep -q "Run exactly this command" "$TMP/mechanical-model-fn" ||
-    fail "buildMechanicalModelPrompt must be the function containing the mechanical-model directive"
-if grep -qE "$FORBIDDEN_VERBS" "$TMP/mechanical-model-fn"; then
-    grep -nE "$FORBIDDEN_VERBS" "$TMP/mechanical-model-fn" >&2 || true
-    fail "the mechanical-model executable command template must never contain a mutating verb"
-fi
-pass "the mechanical-model executable command template contains no mutating verb"
+# DELETED (no-mechanical-agents-in-workflows phase 34, commit 4): the
+# `buildMechanicalModelPrompt` extraction and its mutating-verb check. The
+# `model:mechanical` bootstrap agent and its prompt builder are gone.
 
 say "4b. Planted-mutation self-test on the executable command template"
 cp "$WF" "$TMP/wf.mutverb.scratch"
@@ -736,34 +635,15 @@ else
     printf 'emitted   (phase: ...): %s\n' "$(echo "$EMITTED_PHASES" | tr '\n' ' ')" >&2
     fail "meta.phases drift: declared phases != emitted phase: literals"
 fi
-sed "s/phase: 'Report',/phase: 'Ghost',/" "$WF" >"$TMP/wf.phase.scratch"
+sed "s/phase: 'Analyze' }, opts/phase: 'Ghost' }, opts/" "$WF" >"$TMP/wf.phase.scratch"
 if [ "$(declared_phases "$TMP/wf.phase.scratch")" = "$(emitted_phases "$TMP/wf.phase.scratch")" ]; then
     fail "meta.phases consistency check did NOT catch a planted undeclared phase"
 fi
 pass "meta.phases consistency detector catches a planted undeclared phase"
-
-# =============================================================================
-say "4c. Mechanical-tier pin: fetch:report resolves to the mechanical model"
-# =============================================================================
-
-# shellcheck disable=SC1091
-. "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
-
-agent_option_blocks "$WF" >"$TMP/mech-blocks"
-[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from rdm-wf-backlog.js"
-
-assert_label_model "$TMP/mech-blocks" 'fetch:report' 'mechanicalModel' ||
-    fail "AC-MECHANICAL-TIER: fetch:report must resolve to model: mechanicalModel"
-pass "AC-MECHANICAL-TIER: fetch:report resolves to model: mechanicalModel"
-
-# Self-test: plant a repoint from mechanicalModel to a hardcoded wrong model
-# and prove the check now fails; restore and prove it passes again.
-sed "s/model: mechanicalModel,/model: 'claude-opus-4-8',/" "$WF" >"$TMP/wf.mech-mutant"
-agent_option_blocks "$TMP/wf.mech-mutant" >"$TMP/mech-blocks-mutant"
-if assert_label_model "$TMP/mech-blocks-mutant" 'fetch:report' 'mechanicalModel'; then
-    fail "AC-MECHANICAL-TIER: detector missed a fetch:report repoint away from mechanicalModel"
-fi
-pass "AC-MECHANICAL-TIER: detector fires when fetch:report is repointed away from mechanicalModel"
+# DELETED SECTION "4c." (no-mechanical-agents-in-workflows phase 34, commit 4):
+# its subject was a mechanical agent, its model pin, or the caller hoist that
+# suppressed it. None of those exists any more. Deleted and named, never
+# repaired or re-pointed.
 
 # =============================================================================
 say "5. Module parse: rdm-wf-backlog.js loads under module semantics (no SyntaxError)"
@@ -804,156 +684,14 @@ fi
 LINES=$(wc -l <"$SKILL" | tr -d ' ')
 [ "$LINES" -le 60 ] || fail "SKILL.md is $LINES lines — expected a thin shim (~40-60 lines), the old prose may not be fully removed"
 pass "SKILL.md is a thin shim ($LINES lines) invoking the backlog Workflow, old prose removed"
+# DELETED SECTION "HOIST." (no-mechanical-agents-in-workflows phase 34, commit 4):
+# its subject was a mechanical agent, its model pin, or the caller hoist that
+# suppressed it. None of those exists any more. Deleted and named, never
+# repaired or re-pointed.
 
-# --- HOIST: caller-supplied mechanicalModel / report --------------------------
-# Phase 3 of the workflow-token-reduction roadmap eliminates mechanical
-# subagents by never spawning them (docs/mechanical-agent-inventory.md). In
-# rdm-wf-backlog.js both hoists live in the DRIVER REGION's realDeps only; the copied
-# `backlog-groom` block is untouched. Both are OPTIONAL — the original agent
-# call is reached through a fall-through and is never deleted — and neither
-# weakens the propose-only contract: `rdm backlog report` is read-only whoever
-# runs it, and the zero-mutation section above still gates that independently.
-say "HOIST. rdm-wf-backlog.js driver region: mechanicalModel / report hoists and their fallbacks"
-
-cat >"$TMP/hoist.mjs" <<'NODE_HOIST'
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
-const wfPath = process.argv[2];
-let src = fs.readFileSync(wfPath, 'utf8');
-src = src.replace(/^export /m, '');
-const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-backlog-hoist-wrapped.mjs');
-fs.writeFileSync(wrapperPath, 'export default async function(args, agent, parallel, log) {\n' + src + '\n}\n');
-const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
-const run = mod.default;
-
-const REPORT = {
-  stale_tasks: [{ slug: 's1', title: 'Stale one', status: 'open', age_days: 99 }],
-  duplicate_clusters: [],
-  tag_clusters: [],
-  archivable_roadmaps: [],
-};
-
-function makeAgent(o) {
-  o = o || {};
-  const calls = [];
-  const agent = async (prompt, opts) => {
-    const label = (opts && opts.label) || '';
-    calls.push({ label, prompt, opts });
-    if (label === 'model:mechanical') return { model: o.model === undefined ? 'agent-haiku' : o.model };
-    if (label === 'fetch:report') return o.report === undefined ? REPORT : o.report;
-    if (label.startsWith('analyze:')) return { proposals: [], openQuestions: [] };
-    return {};
-  };
-  return { agent, calls, count: (l) => calls.filter((c) => c.label === l).length };
-}
-const refParallel = async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
-const nolog = () => {};
-
-{
-  const a = makeAgent({});
-  const out = await run({ mechanicalModel: 'hoisted-haiku', report: REPORT }, a.agent, refParallel, nolog);
-  assert.equal(a.count('model:mechanical'), 0, 'hoisted mechanicalModel -> no model:mechanical agent call');
-  assert.equal(a.count('fetch:report'), 0, 'hoisted report -> no fetch:report agent call');
-  assert.equal(a.count('analyze:stale_tasks'), 1, 'the hoisted report really drives the analyzer fan-out');
-  assert.ok(out && typeof out.summary === 'string', 'the hoisted path still returns a summary');
-}
-{
-  const a = makeAgent({});
-  const outPlain = await run({}, a.agent, refParallel, nolog);
-  assert.equal(a.count('model:mechanical'), 1, 'no hoist -> exactly one model:mechanical agent call');
-  assert.equal(a.count('fetch:report'), 1, 'no hoist -> exactly one fetch:report agent call');
-  const b = makeAgent({});
-  const outHoisted = await run({ mechanicalModel: 'agent-haiku', report: REPORT }, b.agent, refParallel, nolog);
-  assert.deepEqual(outHoisted, outPlain, 'the result is deep-equal with and without the hoists');
-}
-for (const [name, bad] of [
-  ['null', null],
-  ['empty string', ''],
-  ['wrong type', 7],
-]) {
-  const a = makeAgent({});
-  await run({ mechanicalModel: bad, report: REPORT }, a.agent, refParallel, nolog);
-  assert.equal(a.count('model:mechanical'), 1, 'malformed mechanicalModel (' + name + ') falls back to the agent');
-}
-for (const [name, bad] of [
-  ['null', null],
-  ['array', []],
-  ['missing one signal array', { stale_tasks: [], duplicate_clusters: [], tag_clusters: [] }],
-  ['a signal key that is not an array', { ...REPORT, tag_clusters: 'none' }],
-]) {
-  const a = makeAgent({});
-  await run({ mechanicalModel: 'hoisted-haiku', report: bad }, a.agent, refParallel, nolog);
-  assert.equal(a.count('fetch:report'), 1, 'malformed report (' + name + ') falls back to the agent');
-}
-{
-  const a = makeAgent({});
-  await run(JSON.stringify({ mechanicalModel: 'hoisted-haiku', report: REPORT }), a.agent, refParallel, nolog);
-  assert.equal(a.count('model:mechanical'), 0, 'a stringified args payload still surfaces mechanicalModel');
-  assert.equal(a.count('fetch:report'), 0, 'a stringified args payload still surfaces report');
-}
-console.log('backlog hoist assertions passed');
-NODE_HOIST
-
-if run_node "$TMP/hoist.mjs" "$WF"; then
-    pass "backlog hoist/fallback verified against the real driver under a recording fake agent"
-else
-    fail "backlog hoist/fallback assertions failed against $WF"
-fi
-
-assert_wf_mutant_fails() {
-    mutant=$1
-    desc=$2
-    if cmp -s "$WF" "$mutant"; then
-        fail "HOIST: planted mutation was a no-op — $desc"
-    fi
-    if run_node "$TMP/hoist.mjs" "$mutant" >/dev/null 2>&1; then
-        fail "HOIST: assertions PASSED against a driver that $desc — they are vacuous"
-    fi
-    pass "HOIST: assertions fire when the driver $desc"
-}
-
-# (1) Drop the fetch:report fallback: return the (possibly absent) hoist always.
-awk '
-    index($0, "  fetchReport: async function (cfg) {") { print; print "    return rawBacklogArgs.report"; skipping = 1; next }
-    skipping && index($0, "  },") == 1 { skipping = 0; print; next }
-    skipping { next }
-    { print }
-' "$WF" >"$TMP/mutant-no-report-fallback.js"
-assert_wf_mutant_fails "$TMP/mutant-no-report-fallback.js" "drops the fetch:report fallback"
-
-# (2) Weaken the report shape guard to "anything object-ish".
-sed 's/^  return \[.stale_tasks., .duplicate_clusters., .tag_clusters., .archivable_roadmaps.\].filter((k) => !Array.isArray(r\[k\]))$/  return true \&\& [].filter((k) => !Array.isArray(r[k]))/' "$WF" >"$TMP/mutant-weak-report-guard.js"
-assert_wf_mutant_fails "$TMP/mutant-weak-report-guard.js" "weakens the report shape guard to any object"
-
-# (3) Drop the model:mechanical fallback.
-sed "s/^    if (typeof rawBacklogArgs.mechanicalModel === 'string' \&\& rawBacklogArgs.mechanicalModel.trim() !== '') {\$/    if (true) {/" "$WF" >"$TMP/mutant-no-model-fallback.js"
-assert_wf_mutant_fails "$TMP/mutant-no-model-fallback.js" "drops the model:mechanical fallback"
-
-# --- SHIM: the LOCAL rdm-backlog shim gathers and passes both hoists ----------
-# `.claude/skills/rdm-backlog/SKILL.md` is a LOCAL dogfood shim; its distributed
-# template (rdm-core/src/templates/skill-backlog-cli.md) is NOT a Workflow
-# shim yet (tracked by task convert-remaining-skill-templates-to-workflow-shims),
-# so this check belongs here and NOT in verify-agent-config-distribution.sh.
-say "HOIST-SHIM. .claude/skills/rdm-backlog/SKILL.md gathers and passes mechanicalModel + report"
-
-assert_shim_gathers() {
-    grep -qF 'rdm model resolve mechanical' "$1" || return 1
-    grep -qF 'rdm backlog report --format json' "$1" || return 1
-    [ "$(grep -cF 'mechanicalModel' "$1")" -ge 2 ] || return 1
-    [ "$(grep -cF 'report' "$1")" -ge 2 ] || return 1
-    return 0
-}
-assert_shim_gathers "$SKILL" ||
-    fail "HOIST-SHIM: $SKILL must gather 'rdm model resolve mechanical' and 'rdm backlog report --format json' and pass mechanicalModel + report (each named at least twice)"
-pass "HOIST-SHIM: the local shim gathers and passes both hoisted args"
-
-sed 's/mechanicalModel/mechModel/g' "$SKILL" >"$TMP/shim-typo.md"
-if assert_shim_gathers "$TMP/shim-typo.md"; then
-    fail "HOIST-SHIM: detector missed a typo'd arg key in the shim"
-fi
-pass "HOIST-SHIM: detector fires on a typo'd arg key in the shim"
+# DELETED SECTION "HOIST-SHIM." (no-mechanical-agents-in-workflows phase 34, commit 4):
+# its subject was a mechanical agent, its model pin, or the caller hoist that
+# suppressed it. None of those exists any more. Deleted and named, never
+# repaired or re-pointed.
 
 say "verify-workflow-backlog.sh: ALL GREEN"

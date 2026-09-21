@@ -161,21 +161,19 @@ function selectUnestimated(phaseList) {
     .filter(Boolean);
 }
 
-// buildEstimateListPrompt(slug, cfg) — a mechanical Bash agent that lists the
-// phases. `cfg` is the environment payload `{ rdmBin, project }`; `phase list`
-// is PROJECT-SCOPED, so the flag is concatenated BEFORE ' --format json' —
-// appending it at the end of the string would change the command's shape.
-function buildEstimateListPrompt(slug, cfg) {
-  const bin = resolveRdmBin(cfg && cfg.rdmBin);
-  const proj = projectFlag(cfg);
-  return [
-    'You are a mechanical fetch agent. Do not plan or implement anything.',
-    'Run exactly this command in the repo root and read its JSON output:',
-    '  ' + bin + ' phase list --roadmap ' + slug + proj + ' --format json',
-    'Return the parsed JSON array verbatim: each element has `number`, `stem`,',
-    '`title`, `status`, and — when the phase has been estimated — `difficulty` and',
-    '`model`.',
-  ].join('\n');
+// `buildEstimateListPrompt`, `buildEstimateWritebackPrompt` and
+// `buildEstimateTierPrompt` are GONE with the `estimate:list` /
+// `estimate:write:` / `estimate:tier:` agents that ran them. Listing the phases
+// is a read the ORCHESTRATOR does (`rdm phase list --format json`, passed as
+// `phaseList`); persisting a difficulty is a write it does, from the command
+// text `buildEstimateWritebackCommands` returns; and the resulting tier is
+// whatever `rdm phase show` reports once that write has landed.
+
+// estimateListCommand(slug, cfg) — the read-only command that produces the phase
+// list this pipeline consumes, returned as TEXT so a caller that omitted
+// `phaseList` is told exactly what to run.
+function estimateListCommand(slug, cfg) {
+  return resolveRdmBin(cfg && cfg.rdmBin) + ' phase list --roadmap ' + slug + projectFlag(cfg) + ' --format json';
 }
 
 // buildEstimatorPrompt(phaseBody) — rate ONE phase's difficulty AND record a
@@ -198,89 +196,43 @@ function buildEstimatorPrompt(phaseBody) {
   ].join('\n');
 }
 
-// buildEstimateWritebackPrompt(stem, difficulty, justification, slug, cfg) — persist
-// a phase's difficulty AND append a `## Estimate` audit note carrying the
-// rating's justification to the phase body. The model tier derives
-// automatically, so --model is NEVER set (rdm-core owns difficulty->tier).
+// buildEstimateWritebackCommands(stem, difficulty, justification, slug, cfg) —
+// the ORDERED shell commands that persist one phase's difficulty AND append its
+// `## Estimate` audit note, then read the phase back so the caller can see the
+// core-derived tier. Returned as DATA; nothing here runs them.
 //
-// The note text and the phase body may contain double-quotes, backticks, `$`,
-// or newlines, which would break a naive `--body "..."` interpolation — so the
-// agent is instructed to assemble the updated body into a shell variable via a
-// QUOTED heredoc (keeping backticks/`$`/punctuation literal) and pass
-// `--body "$body"`; rdm's --body is authoritative for Unicode/punctuation.
-//
-// Success is verified with a read-back rather than self-asserted from the
-// command's exit code alone: an unresolvable model id makes the whole agent come
-// back empty, not merely non-zero, so the caller needs proof the field landed.
-//
-// `cfg` is the environment payload `{ rdmBin, project }`. All THREE commands
-// below (`phase show`, `phase update`, the read-back `phase show`) are
-// PROJECT-SCOPED and carry the flag.
-function buildEstimateWritebackPrompt(stem, difficulty, justification, slug, cfg) {
+// The note is captured through a QUOTED heredoc, never interpolated into a
+// command line, so backticks, `$` and punctuation ride through literally. The
+// CURRENT body is read by the caller between step 1 and step 2 — `--body` is
+// whole-document-authoritative and there is no patch mechanism — which is why
+// step 2 names the placeholder rather than pretending the engine holds the body.
+// `--model` is deliberately absent: the tier derives from the difficulty in
+// rdm-core, and step 3 is what reads it back.
+function buildEstimateWritebackCommands(stem, difficulty, justification, slug, cfg) {
   const bin = resolveRdmBin(cfg && cfg.rdmBin);
   const proj = projectFlag(cfg);
+  const show = bin + ' phase show ' + stem + ' --roadmap ' + slug + proj + ' --format json';
+  const note = '## Estimate\n\n' + difficulty + ' — ' + justification;
   return [
-    'You are a mechanical write agent. Do not plan or implement anything.',
-    'Persist the phase difficulty AND append an audit note to the phase body.',
-    'Do NOT pass --model — the model tier derives automatically from the difficulty.',
-    '1. Read the current phase body:',
-    '     ' + bin + ' phase show ' + stem + ' --roadmap ' + slug + proj + ' --format json',
-    '   Take the `body` field verbatim.',
-    '2. Build the updated body in a shell variable using a QUOTED heredoc so that',
-    '   backticks, $, and punctuation stay literal. The updated body is the current',
-    '   body, followed by a blank line, then this exact section:',
-    '     ## Estimate',
-    '',
-    '     ' + difficulty + ' — ' + justification,
-    '   For example:',
-    "     body=$(cat <<'RDM_ESTIMATE_EOF'",
-    '     <the current body>',
-    '',
-    '     ## Estimate',
-    '',
-    '     ' + difficulty + ' — ' + justification,
-    '     RDM_ESTIMATE_EOF',
-    '     )',
-    '3. Persist the difficulty and the updated body in a single update:',
-    '     ' +
-      bin +
-      ' phase update ' +
-      stem +
-      ' --difficulty ' +
-      difficulty +
-      ' --body "$body" --no-edit --roadmap ' +
-      slug +
-      proj,
-    '4. Read the phase back to confirm the write landed:',
-    '     ' + bin + ' phase show ' + stem + ' --roadmap ' + slug + proj + ' --format json',
-    'Report ok: true ONLY if the read-back shows difficulty equal to "' +
-      difficulty +
-      '" and the body now contains the ## Estimate note; otherwise report ok: false.',
-  ].join('\n');
-}
-
-// buildEstimateTierPrompt(stem, slug, cfg) — read the core-derived model tier
-// back from rdm-core after a writeback, for the summary. The tier is NEVER
-// computed in JS: it is whatever `rdm phase show`'s `model` field reports
-// (rdm-core's Difficulty::model_tier is authoritative). `phase show` is
-// PROJECT-SCOPED, so it carries the flag from `cfg`.
-function buildEstimateTierPrompt(stem, slug, cfg) {
-  const bin = resolveRdmBin(cfg && cfg.rdmBin);
-  const proj = projectFlag(cfg);
-  return [
-    'You are a mechanical fetch agent. Do not plan or implement anything.',
-    'Run exactly this command in the repo root and read its JSON output:',
-    '  ' + bin + ' phase show ' + stem + ' --roadmap ' + slug + proj + ' --format json',
-    'Return JSON { "model": "<the phase JSON `model` field verbatim, or empty string if unset>" }.',
-  ].join('\n');
+    '  ' + show,
+    "RDM_ESTIMATE_BODY=$(cat <<'RDM_ESTIMATE_EOF'\n<the `body` field from the command above>\n\n" +
+      note +
+      '\nRDM_ESTIMATE_EOF\n)',
+    '  ' + bin + ' phase update ' + stem + ' --difficulty ' + difficulty +
+      ' --body "$RDM_ESTIMATE_BODY" --no-edit --roadmap ' + slug + proj,
+    '  ' + show,
+  ];
 }
 
 // buildEstimatePipeline(deps) — returns the async runEstimate(config) driver.
 // Every runtime side effect is reached through `deps`, so the block stays pure
-// and the module imports cleanly in Node. The flow: list the phases -> filter to
-// the unestimated (optionally narrowed to one phase number) -> parallel-rate
-// each -> per-phase write back the difficulty + audit note -> read the
-// core-derived tier back -> return a DETERMINISTIC summary object. A phase whose
+// and the module imports cleanly in Node. The flow: take the CALLER-SUPPLIED
+// phase list -> filter to the unestimated (optionally narrowed to one phase
+// number) -> parallel-rate each -> build each one's writeback command text ->
+// return a DETERMINISTIC summary object. THE ONLY AGENT IT DISPATCHES IS THE
+// RATER, which is judgment; the list read and the writeback belong to the
+// orchestrator, and the resulting tier is what `rdm phase show` reports once the
+// returned commands have run. A phase whose
 // difficulty is already set is filtered out by selectUnestimated, so it is never
 // rated or written (which is what makes a re-run idempotent). A rater result
 // that is null or omits stem/difficulty is skipped with a log line rather than
@@ -302,8 +254,7 @@ function buildEstimatePipeline(deps) {
     const roadmap = cfg.roadmap || '';
     const onlyNumber = cfg.phase != null ? cfg.phase : null;
 
-    const listed = await d.list(roadmap);
-    const phaseList = Array.isArray(listed) ? listed : [];
+    const phaseList = Array.isArray(cfg.phaseList) ? cfg.phaseList : [];
 
     // Every phase that still needs rating, BEFORE the optional phase narrow.
     const unestimatedStems = selectUnestimated(phaseList);
@@ -347,27 +298,17 @@ function buildEstimatePipeline(deps) {
         .sort((a, b) => (a.stem < b.stem ? -1 : a.stem > b.stem ? 1 : 0));
       for (const r of ratedArr) {
         const justification = typeof r.justification === 'string' ? r.justification : '';
-        let ack = null;
-        try {
-          ack = await d.writeback(r.stem, r.difficulty, justification, roadmap);
-        } catch (e) {
-          ack = null;
-        }
-        if (!ack || ack.ok !== true) {
-          log('estimate: writeback failed for ' + r.stem + ' — difficulty not persisted');
-          continue;
-        }
-        let tier = '';
-        try {
-          tier = await d.showTier(r.stem, roadmap);
-        } catch (e) {
-          tier = '';
-        }
+        // The writeback is COMMAND TEXT, not a dispatch. There is no ack to read
+        // and therefore no `tier` here: the tier is whatever `rdm phase show`
+        // reports after the caller has run these commands, which is the last one
+        // in the list.
+        const commands = buildEstimateWritebackCommands(r.stem, r.difficulty, justification, roadmap, cfg);
         estimated.push({
           stem: r.stem,
           difficulty: r.difficulty,
           justification: justification,
-          tier: typeof tier === 'string' ? tier : '',
+          writebackCommands: commands,
+          writebackScript: commands.join('\n'),
         });
       }
     }
@@ -387,10 +328,10 @@ function buildEstimateSummaryText(summary) {
   const deferred = Array.isArray(s.deferred) ? s.deferred : [];
   const lines = [];
   lines.push('estimate summary for roadmap/' + roadmap);
-  lines.push('estimated (' + estimated.length + '):');
+  lines.push('rated, writeback commands returned for you to run (' + estimated.length + '):');
   if (estimated.length) {
     for (const e of estimated) {
-      lines.push('  - ' + e.stem + ': ' + e.difficulty + ' (tier ' + (e.tier || 'unknown') + ') — ' + (e.justification || ''));
+      lines.push('  - ' + e.stem + ': ' + e.difficulty + ' — ' + (e.justification || ''));
     }
   } else {
     lines.push('  none');
@@ -413,10 +354,9 @@ export {
   parseProjectArg,
   parseEstimateArgs,
   selectUnestimated,
-  buildEstimateListPrompt,
+  estimateListCommand,
   buildEstimatorPrompt,
-  buildEstimateWritebackPrompt,
-  buildEstimateTierPrompt,
+  buildEstimateWritebackCommands,
   buildEstimatePipeline,
   buildEstimateSummaryText,
 };

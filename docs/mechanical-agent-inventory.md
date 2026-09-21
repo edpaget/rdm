@@ -92,6 +92,30 @@ prompt. **Deleted** means the thing it did stopped being done at all.
 | `act:*` | plan-review | **moved to the orchestrator** — applying a small plan fix and filing a large finding as a task is judgment plus a write, which is what the orchestrator is |
 | `act:round-note:*` | plan-review | **moved to the orchestrator** — the engine renders the note and returns it as `roundNote`; appending it to a body is a read-modify-write |
 
+### The three batch engines
+
+| site | engine | disposition |
+|---|---|---|
+| `model:mechanical` | estimate, document, backlog | **deleted** — with no mechanical agent left, there is no mechanical model to resolve |
+| `estimate:list` | estimate | **moved to the orchestrator** — it runs `rdm phase list --format json` and passes `phaseList`; the engine refuses to run without it and returns the command to use |
+| `estimate:write:<stem>` | estimate | **moved to the orchestrator** — the engine returns each phase's `writebackCommands` (read the body, write it back with the `## Estimate` note and the difficulty, read it back) |
+| `estimate:tier:<stem>` | estimate | **deleted** — the tier is whatever `rdm phase show` reports once that writeback has landed, which is the last line of the returned commands |
+| `fetch:roadmap-meta` | document | **moved to the orchestrator** — it runs `rdm roadmap show --format json` and passes `roadmapMeta`; the engine refuses to run without it and returns the command |
+| `gather:<stem>` | document | **kept, reclassified** — it reads a phase document and its commit's history and JUDGES what the change did. That is not transcription, so it lost its `agentType` and its mechanical-model pin rather than being moved |
+| `write:draft` | document | **moved to the orchestrator** — the engine returns `writeCommands` / `writeScript` (mkdir, then a quoted heredoc) |
+| `fetch:report` | backlog | **moved to the orchestrator** — it runs `rdm backlog report --format json` and passes `report`; the engine refuses to run without it and returns the command. The propose-only contract is unaffected: that command is read-only whoever runs it |
+
+`spike-agent-type.js` was **deleted**. Its whole subject was
+`agentType: 'rdm-mechanical'` and `effort:` on a mechanical call site, and its
+result is recorded in `docs/workflow-schemas.md` § "agentType / effort options
+spike". Carving an exemption into the rule for it would have been the wrong
+trade.
+
+The custom agent definition `.claude/agents/rdm-mechanical.md` itself is kept —
+it is a registry entry, still emitted downstream by
+`rdm agent-config claude --skills`, and a future non-workflow caller may want it.
+Nothing under `.claude/workflows/` references it any more.
+
 ### What went with them
 
 The apparatus that existed only to police a transported value, all deleted:

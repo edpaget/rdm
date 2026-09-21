@@ -29,7 +29,7 @@ export const meta = {
   name: 'rdm-wf-document',
   description:
     'Headlessly draft user documentation from a completed rdm roadmap (phase bodies + commit diffs) and write it to disk',
-  phases: [{ title: 'Fetch' }, { title: 'Gather' }, { title: 'Synthesize' }, { title: 'Write' }],
+  phases: [{ title: 'Gather' }, { title: 'Synthesize' }],
 }
 
 // The block below is copied BYTE-IDENTICAL from
@@ -108,7 +108,9 @@ function buildGitRangeCommands(sha) {
 
 // --- Schemas (document-specific; see scripts/verify-workflow-document.sh) -----
 
-// ROADMAP_META — Stage 0's mechanical fetch of the roadmap's phase list.
+// ROADMAP_META — the shape the CALLER supplies for the roadmap's phase list.
+// It is no longer an agent schema — nothing fetches it — but the shape guard
+// below still reads it, and the caller is told exactly this shape.
 // `found` distinguishes "the roadmap does not exist / the command failed" from
 // a roadmap that genuinely has zero phases — both would otherwise present as an
 // empty `phases` array. A not-found roadmap is treated the same as an
@@ -166,72 +168,36 @@ const DRAFT_SCHEMA = {
   properties: { draft: { type: 'string' } },
 }
 
-// WRITE_ACK — Stage 3's mechanical write result.
-const WRITE_ACK_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['ok', 'path'],
-  properties: { ok: { type: 'boolean' }, path: { type: 'string' } },
-}
+// `WRITE_ACK_SCHEMA` is GONE with the `write:draft` agent whose ack it shaped.
+// The write is command text the orchestrator runs; a shell exit status needs no
+// schema.
 
 // --- Prompt builders ----------------------------------------------------------
 
-// buildMechanicalModelPrompt() — a mechanical Bash agent that resolves the
-// mechanical dispatch step to a concrete model id, ONCE per run, before any
-// other mechanical agent fires. This is deliberately the one call in the whole
-// run left UNSIZED (mirrors dispatch-phase's Stage-0 fetch:phase-meta/
-// fetch:task-meta exemption and autopilot's own model:mechanical bootstrap,
-// both recorded in their respective verify-workflow-*.sh AC-MODEL bootstrap
-// whitelists): it is the call that produces the model id every other
-// mechanical agent below runs on, so it cannot know its own model before
-// running.
-function buildMechanicalModelPrompt() {
-  return [
-    'You are a mechanical fetch agent. Do not plan or implement anything.',
-    'Run exactly this command in the repo root and read its printed output:',
-    '  ./target/debug/rdm model resolve mechanical',
-    'Return the printed model id verbatim as JSON { "model": "<id>" }.',
-    'If the command fails or prints nothing, return { "model": "" }.',
-  ].join('\n')
+// `buildMechanicalModelPrompt`, `MECHANICAL_MODEL_SCHEMA` and
+// `buildRoadmapFetchPrompt` are GONE with the `model:mechanical` and
+// `fetch:roadmap-meta` agents. There is no mechanical agent left for a
+// mechanical model to pin, and the roadmap's phase list is a read the
+// ORCHESTRATOR does (`rdm roadmap show --format json`) and passes as
+// `roadmapMeta`.
+
+// documentRoadmapCommand(slug) — the read-only command that produces that
+// payload, returned as TEXT so a caller that omitted it is told what to run.
+function documentRoadmapCommand(slug) {
+  return './target/debug/rdm roadmap show ' + slug + ' --project rdm --format json'
 }
 
-// MECHANICAL_MODEL — the resolved `rdm model resolve mechanical` id, from the
-// one bootstrap call made before Stage 0.
-const MECHANICAL_MODEL_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['model'],
-  properties: {
-    model: { type: 'string' },
-  },
-}
-
-// Stage 0: a mechanical Bash agent reads the roadmap's phase list (the runtime
-// cannot shell out itself).
-function buildRoadmapFetchPrompt(slug) {
-  return [
-    'You are a mechanical fetch agent. Do not plan, implement, or review anything.',
-    'Run exactly this command in the repo root and read its JSON output:',
-    '  ./target/debug/rdm roadmap show ' + slug + ' --project rdm --format json --no-body',
-    'If the command exits non-zero, or reports that the roadmap was not found, return exactly:',
-    '  { "found": false, "slug": "' + slug + '", "title": "", "phases": [] }',
-    'Otherwise return a ROADMAP_META object: found:true, slug (the roadmap JSON `slug`),',
-    'title (the roadmap JSON `title`), and phases — one entry per phase with stem (the phase JSON `stem`),',
-    'title (the phase JSON `title`), and status (the phase JSON `status`), each taken verbatim.',
-    'A roadmap that genuinely has zero phases still has found:true — only an unresolvable roadmap gets found:false.',
-  ].join('\n')
-}
-
-// Stage 1: one mechanical Bash agent per phase, run inside parallel(). Fetches
-// the phase body + commit, then conditionally gathers git history for that
-// commit — falling back to body-only when there is no SHA or the git commands
-// fail. `gitCmdTemplate` is buildGitRangeCommands('<SHA>') — a placeholder
-// rendering the agent substitutes the real commit value into, so the exact
-// command text the agent runs always matches the pure function's format.
+// Stage 1: one READ-ONLY agent per phase, run inside parallel(). It reads the
+// phase document and, when the phase recorded a commit, that commit's history —
+// and it JUDGES what the change actually did, which is why it is not a
+// mechanical transcriber and carries no `agentType`. `gitCmdTemplate` is
+// buildGitRangeCommands('<SHA>') — a placeholder rendering the agent substitutes
+// the real commit value into, so the command text always matches the pure
+// function's format.
 function buildPhaseGatherPrompt(roadmap, phase, gitCmdTemplate) {
   return [
-    'You are a mechanical gather agent. Do not plan, review, or implement anything, and edit no files.',
-    'Run exactly this command in the repo root and read its JSON output:',
+    'You are a READ-ONLY documentation gatherer. Plan nothing, implement nothing, and edit no files.',
+    'Read the phase document yourself — run exactly this command in the repo root and read its JSON output:',
     '  ./target/debug/rdm phase show ' + phase.stem + ' --roadmap ' + roadmap + ' --project rdm --format json',
     'From it, take stem ("' + phase.stem + '"), title (the phase JSON `title`), body (the phase JSON `body`',
     'verbatim), and commit (the phase JSON `commit` field if present and non-empty, else an empty string).',
@@ -298,25 +264,17 @@ function buildSynthesisPrompt(roadmapMeta, records) {
   ].join('\n')
 }
 
-// Stage 3: a mechanical Bash agent writes the draft to disk — the Workflow
-// runtime has no filesystem access of its own. Creates parent directories first
-// so an --out path with no existing parent still succeeds.
-function buildWritePrompt(outPath, draftText) {
+// Stage 3 is the ORCHESTRATOR's. `buildWriteCommands(outPath, draftText)` returns
+// the exact shell that writes the draft — parent directories first, then a
+// QUOTED heredoc so nothing in the draft is interpreted — and the caller runs it.
+// The Workflow runtime has no filesystem of its own, and dispatching an agent to
+// hold one was the mechanical-write pattern this phase removed.
+function buildWriteCommands(outPath, draftText) {
   const marker = 'RDM_DOCUMENT_DRAFT_EOF'
   return [
-    'You are a mechanical write agent. Do not edit any other files.',
-    'Write the exact text between the two ' + marker + ' lines below to the path "' + outPath + '"',
-    'in the repo root, creating any missing parent directories first. Run exactly these commands:',
     '  mkdir -p "$(dirname "' + outPath + '")"',
-    '  cat > "' + outPath + '" <<\'' + marker + "'",
-    draftText,
-    marker,
-    'Return a WRITE_ACK object: { ok: true, path: "' +
-      outPath +
-      '" } if BOTH commands exited 0, otherwise { ok: false, path: "' +
-      outPath +
-      '" }.',
-  ].join('\n')
+    'cat > "' + outPath + '" <<\'' + marker + "'\n" + draftText + '\n' + marker,
+  ]
 }
 
 // --- Driver -------------------------------------------------------------------
@@ -360,65 +318,25 @@ if (!roadmapSlug) {
   return { roadmap: roadmapSlug, aborted: true, incompletePhases: [], path: null, draft: null, fetchError: true }
 }
 
-// Resolve the mechanical model ONCE, before any other mechanical agent runs
-// (including Stage 0's roadmap fetch). An unresolved result stops the run
-// before any mechanical agent fires, rather than silently falling through to
-// an unpinned Stage 0/1/3 agent.
-// HOIST: the caller already ran `rdm model resolve mechanical`.
-let mechanicalModel = ''
-let mechanicalErr = ''
-if (typeof rawDocumentArgs.mechanicalModel === 'string' && rawDocumentArgs.mechanicalModel.trim() !== '') {
-  mechanicalModel = rawDocumentArgs.mechanicalModel.trim()
-  log('document: mechanical model hoisted from caller args')
-} else {
-  try {
-    const mechanicalModelResult = await agent(buildMechanicalModelPrompt(), {
-      label: 'model:mechanical',
-      phase: 'Fetch',
-      agentType: 'rdm-mechanical',
-      schema: MECHANICAL_MODEL_SCHEMA,
-    })
-    mechanicalModel = mechanicalModelResult && typeof mechanicalModelResult.model === 'string' ? mechanicalModelResult.model.trim() : ''
-  } catch (e) {
-    mechanicalModel = ''
-    mechanicalErr = String((e && e.message) || e)
-  }
+// THE ONLY AGENTS THIS ENGINE DISPATCHES ARE THE PER-PHASE GATHERERS AND THE
+// SYNTHESIZER, both of which read and judge. The roadmap's phase list is a read
+// the ORCHESTRATOR does and passes as `roadmapMeta`; the draft is written by the
+// orchestrator from the command text this returns.
+if (!hoistedRoadmapMetaOk(rawDocumentArgs.roadmapMeta)) {
+  const cmd = documentRoadmapCommand(roadmapSlug)
+  const msg =
+    'document: no `roadmapMeta` supplied — run `' +
+    cmd +
+    '` yourself and pass `{ found: true, slug, title, phases: [{ stem, title, status, commit }] }`. ' +
+    'This engine reads nothing.'
+  log(msg)
+  return { roadmap: roadmapSlug, aborted: true, incompletePhases: [], path: null, draft: null, fetchError: true, roadmapCommand: cmd }
 }
-if (!mechanicalModel) {
-  log('document: mechanical model could not be resolved (' + (mechanicalErr || 'rdm model resolve mechanical returned nothing') + ') — stopping before any mechanical agent runs')
-  return { roadmap: roadmapSlug, aborted: true, incompletePhases: [], path: null, draft: null, fetchError: true }
-}
-
-// Stage 0: fetch the roadmap's phase list via a mechanical Bash agent.
-// HOIST: the caller already ran `rdm roadmap show --format json`.
-let roadmapMeta = null
-if (hoistedRoadmapMetaOk(rawDocumentArgs.roadmapMeta)) {
-  roadmapMeta = rawDocumentArgs.roadmapMeta
-  log('document: roadmap meta hoisted from caller args')
-} else {
-  try {
-    roadmapMeta = await agent(buildRoadmapFetchPrompt(roadmapSlug), {
-      label: 'fetch:roadmap-meta',
-      phase: 'Fetch',
-      agentType: 'rdm-mechanical',
-      schema: ROADMAP_META_SCHEMA,
-      model: mechanicalModel,
-    })
-  } catch (e) {
-    roadmapMeta = null
-  }
-}
-
-// Unresolvable roadmap: mirror dispatch-phase's fetchError short-circuit rather
-// than silently proceeding as if the roadmap had zero phases.
-if (!roadmapMeta || roadmapMeta.found !== true) {
-  log('document: roadmap fetch failed for ' + roadmapSlug)
-  return { roadmap: roadmapSlug, aborted: true, incompletePhases: [], path: null, draft: null, fetchError: true }
-}
+const roadmapMeta = rawDocumentArgs.roadmapMeta
 
 const phases = Array.isArray(roadmapMeta.phases) ? roadmapMeta.phases : []
 
-// All-done validation: abort BEFORE any parallel()/synthesis/write stage runs.
+// All-done validation: abort BEFORE any gather/synthesis stage runs.
 const incomplete = computeIncompletePhases(phases)
 if (incomplete.length > 0) {
   log(
@@ -430,7 +348,7 @@ if (incomplete.length > 0) {
   return { roadmap: roadmapSlug, aborted: true, incompletePhases: incomplete, path: null, draft: null, fetchError: false }
 }
 
-// Stage 1: parallel per-phase gather. A zero-phase roadmap (vacuously all-done)
+// Stage 1: parallel per-phase gather.// Stage 1: parallel per-phase gather. A zero-phase roadmap (vacuously all-done)
 // proceeds with an empty record set rather than short-circuiting — a deliberate
 // choice documented alongside computeIncompletePhases above.
 const gitCmdTemplate = buildGitRangeCommands('<SHA>')
@@ -439,9 +357,7 @@ async function gatherPhase(p) {
     const record = await agent(buildPhaseGatherPrompt(roadmapSlug, p, gitCmdTemplate), {
       label: 'gather:' + p.stem,
       phase: 'Gather',
-      agentType: 'rdm-mechanical',
       schema: PHASE_RECORD_SCHEMA,
-      model: mechanicalModel,
     })
     if (record) return record
   } catch (e) {
@@ -472,23 +388,16 @@ if (draftText.trim() === '') {
   return { roadmap: roadmapSlug, aborted: true, incompletePhases: [], path: null, draft: null, fetchError: true }
 }
 
-// Stage 3: mechanical Bash agent writes the draft to disk.
-let writeAck = null
-try {
-  writeAck = await agent(buildWritePrompt(outPath, draftText), {
-    label: 'write:draft',
-    phase: 'Write',
-    agentType: 'rdm-mechanical',
-    schema: WRITE_ACK_SCHEMA,
-    model: mechanicalModel,
-  })
-} catch (e) {
-  writeAck = null
-}
-if (!writeAck || writeAck.ok !== true) {
-  log('document: write failed for ' + outPath)
-  return { roadmap: roadmapSlug, aborted: true, incompletePhases: [], path: null, draft: draftText, fetchError: true }
-}
+// Stage 3: return the write as command text. The ORCHESTRATOR runs it.
+const writeCommands = buildWriteCommands(outPath, draftText)
 
-log('document (' + roadmapSlug + '): draft written to ' + (writeAck.path || outPath))
-return { roadmap: roadmapSlug, aborted: false, incompletePhases: [], path: writeAck.path || outPath, draft: draftText }
+log('document (' + roadmapSlug + '): draft ready for ' + outPath + ' — run the returned writeCommands')
+return {
+  roadmap: roadmapSlug,
+  aborted: false,
+  incompletePhases: [],
+  path: outPath,
+  draft: draftText,
+  writeCommands: writeCommands,
+  writeScript: writeCommands.join('\n'),
+}

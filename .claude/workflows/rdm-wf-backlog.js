@@ -23,7 +23,7 @@ export const meta = {
     "Run a batched backlog grooming pass over rdm's stale/duplicate/tag-cluster/archivable signals and emit a reviewable, propose-only plan of exact rdm commands — no mutations",
   // Must list exactly the distinct `phase:` values the real deps' agent() calls
   // emit — verify-workflow-backlog.sh asserts declared == emitted.
-  phases: [{ title: 'Report' }, { title: 'Analyze' }],
+  phases: [{ title: 'Analyze' }],
 }
 
 // The block below is copied BYTE-IDENTICAL from
@@ -262,25 +262,18 @@ const ANALYSIS_SCHEMA = {
   },
 };
 
-// buildFetchReportPrompt(cfg) — the ONE Bash-executing agent prompt in the
-// whole pipeline. `cmd` is seeded from a literal read-only command and only
-// ever grows by appending flag text — never a mutating verb — so the
-// executable command template stays provably read-only by construction.
-function buildFetchReportPrompt(cfg) {
+// backlogReportCommand(cfg) — the read-only command that produces the report
+// this pipeline consumes. It is returned as TEXT for the ORCHESTRATOR to run;
+// there is no fetch agent any more. `cmd` is seeded from a literal read-only
+// command and only ever grows by appending flag text — never a mutating verb —
+// so the emitted command stays provably read-only by construction.
+function backlogReportCommand(cfg) {
   const c = cfg || {};
   let cmd = './target/debug/rdm backlog report --format json';
   if (c.olderThan != null) cmd += ' --older-than ' + c.olderThan;
   if (typeof c.tag === 'string' && c.tag !== '') cmd += ' --tag ' + c.tag;
   if (c.project) cmd += ' --project ' + c.project;
-  return [
-    'You are a mechanical fetch agent. Do not plan, analyze, or mutate anything.',
-    'Run exactly this command in the repo root and read its JSON output:',
-    '  ' + cmd,
-    'Return the parsed JSON verbatim as an object with four arrays: `stale_tasks` (slug, title,',
-    'status, created, age_days), `duplicate_clusters` (members: slug/title), `tag_clusters` (tag,',
-    'tasks: slug/title), and `archivable_roadmaps` (roadmap, title, phase_count). Any array missing',
-    'from the command output should be returned as an empty array.',
-  ].join('\n');
+  return cmd;
 }
 
 // parseBacklogReport(raw) — validate/default the four signal arrays from
@@ -507,35 +500,9 @@ const BACKLOG_REPORT_SCHEMA = {
   },
 }
 
-// buildMechanicalModelPrompt() — a mechanical Bash agent that resolves the
-// mechanical dispatch step to a concrete model id, ONCE per run, before the
-// report fetch. This is deliberately the one dep call in the whole run left
-// UNSIZED (mirrors dispatch-phase's Stage-0 fetch:phase-meta/fetch:task-meta
-// exemption and autopilot's own model:mechanical bootstrap, both recorded in
-// their respective verify-workflow-*.sh AC-MODEL bootstrap whitelists): it is
-// the call that produces the model id fetch:report runs on, so it cannot know
-// its own model before running. See realDeps.resolveMechanicalModel for the
-// corresponding NO-`model:`-key call.
-function buildMechanicalModelPrompt() {
-  return [
-    'You are a mechanical fetch agent. Do not plan or implement anything.',
-    'Run exactly this command in the repo root and read its printed output:',
-    '  ./target/debug/rdm model resolve mechanical',
-    'Return the printed model id verbatim as JSON { "model": "<id>" }.',
-    'If the command fails or prints nothing, return { "model": "" }.',
-  ].join('\n')
-}
-
-// MECHANICAL_MODEL — the resolved `rdm model resolve mechanical` id, from the
-// one bootstrap call realDeps.resolveMechanicalModel makes before fetch:report.
-const MECHANICAL_MODEL_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  required: ['model'],
-  properties: {
-    model: { type: 'string' },
-  },
-}
+// `buildMechanicalModelPrompt` and `MECHANICAL_MODEL_SCHEMA` are GONE with the
+// `model:mechanical` bootstrap agent. There is no mechanical agent left for a
+// mechanical model to pin — this pipeline dispatches judgment analyzers only.
 
 // --- Driver ------------------------------------------------------------------
 
@@ -564,57 +531,37 @@ function coerceRawArgs(a) {
 // contract — `rdm backlog report` is read-only whoever runs it.
 const rawBacklogArgs = coerceRawArgs(args)
 // hoistedReportOk(r) — the shape guard: an object carrying all four signal
-// arrays. Anything else is rejected and the fetch:report agent runs.
+// arrays. Anything else is refused, because there is no fetch agent to fall back
+// to: the ORCHESTRATOR runs `rdm backlog report --format json` itself — that one
+// read-only command is why the propose-only contract is unaffected — and passes
+// the parsed object as `report`.
 function hoistedReportOk(r) {
   if (!r || typeof r !== 'object') return false
   return ['stale_tasks', 'duplicate_clusters', 'tag_clusters', 'archivable_roadmaps'].filter((k) => !Array.isArray(r[k]))
     .length === 0
 }
 
+// FAIL CLOSED, and say what to run. Without the report there is nothing to
+// analyze and no agent that could go and get it.
+if (!hoistedReportOk(rawBacklogArgs.report)) {
+  const cmd = backlogReportCommand(parseBacklogArgs(args))
+  const msg =
+    'backlog: no `report` supplied — run `' +
+    cmd +
+    '` yourself and pass the parsed JSON as `report`. This engine reads nothing.'
+  log(msg)
+  return { groomed: false, summary: msg, fetchError: true, reportCommand: cmd }
+}
+
 // Real deps close over the ambient Workflow globals (agent/parallel/log). These
 // live OUTSIDE the copied block; the block itself names no ambient global.
-let mechanicalModel = ''
 const realDeps = {
   log: function (msg) {
     log(msg)
   },
-  // resolveMechanicalModel — the one bootstrap call in the whole run left
-  // deliberately UNSIZED (no `model:` key), mirroring dispatch-phase's Stage-0
-  // exemption and autopilot's model:mechanical precedent: this IS the call
-  // that produces the model id fetch:report below runs on, so it cannot know
-  // its own model before running. scripts/verify-workflow-backlog.sh's
-  // mechanical-tier sweep whitelists this label by name for exactly that
-  // reason — do not add a `model:` key here.
-  resolveMechanicalModel: async function () {
-    // HOIST: the caller already ran `rdm model resolve mechanical`.
-    if (typeof rawBacklogArgs.mechanicalModel === 'string' && rawBacklogArgs.mechanicalModel.trim() !== '') {
-      log('backlog: mechanical model hoisted from caller args')
-      return rawBacklogArgs.mechanicalModel.trim()
-    }
-    const r = await agent(buildMechanicalModelPrompt(), {
-      label: 'model:mechanical',
-      phase: 'Report',
-      agentType: 'rdm-mechanical',
-      schema: MECHANICAL_MODEL_SCHEMA,
-    })
-    return r && typeof r.model === 'string' ? r.model.trim() : ''
-  },
-  // The ONE Bash-executing agent in the whole run — read-only, `rdm backlog
-  // report` only (see buildFetchReportPrompt's comment for why its command
-  // template is provably read-only by construction).
-  fetchReport: async function (cfg) {
-    // HOIST: the caller already ran `rdm backlog report --format json`.
-    if (hoistedReportOk(rawBacklogArgs.report)) {
-      log('backlog: report hoisted from caller args')
-      return rawBacklogArgs.report
-    }
-    return agent(buildFetchReportPrompt(cfg), {
-      label: 'fetch:report',
-      phase: 'Report',
-      agentType: 'rdm-mechanical',
-      schema: BACKLOG_REPORT_SCHEMA,
-      model: mechanicalModel,
-    })
+  // Not an agent: the caller already ran the command and handed the result over.
+  fetchReport: async function () {
+    return rawBacklogArgs.report
   },
   agent: async function (prompt, opts) {
     return agent(prompt, Object.assign({ phase: 'Analyze' }, opts))
@@ -622,21 +569,6 @@ const realDeps = {
   parallel: parallel,
 }
 
-// Resolve the mechanical model ONCE, before the report fetch. An unresolved
-// result stops the run before any mechanical agent fires, rather than
-// silently falling through to an unpinned fetch:report.
-const mechanicalModelRaw = await realDeps.resolveMechanicalModel()
-mechanicalModel = typeof mechanicalModelRaw === 'string' ? mechanicalModelRaw.trim() : ''
-if (!mechanicalModel) {
-  log(
-    'backlog: mechanical model could not be resolved (rdm model resolve mechanical returned nothing) — stopping before any mechanical agent runs'
-  )
-  return {
-    groomed: false,
-    summary: 'backlog: mechanical model could not be resolved — stopping before any mechanical agent runs',
-    fetchError: true,
-  }
-}
 const result = await buildBacklogPipeline(realDeps)(args)
 log(result.summary)
 return result

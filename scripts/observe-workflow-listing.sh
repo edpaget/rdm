@@ -75,8 +75,8 @@ declared_skill_names() {
 
 # The bare pre-rename form of each prefixed engine — the names that must be
 # ABSENT from the listing. Derived by stripping the prefix off the declared
-# names, so it cannot go stale either. `spike-agent-type` is an exempt spike
-# artifact: it carries no prefix, contributes no bare form, and is skipped.
+# names, so it cannot go stale either. (The `spike-agent-type` exemption is gone
+# with the file: it was deleted along with the mechanical lane it probed.)
 bare_engine_names() {
     declared_engine_names | sed -n 's/^rdm-wf-//p'
 }
@@ -186,7 +186,6 @@ document
 estimate
 plan-review
 review-refute-fix
-spike-agent-type
 EOF
 
 if assert_listing "$SCRATCH/pre-rename-listing" 2>/dev/null; then

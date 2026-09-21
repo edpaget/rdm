@@ -51,8 +51,9 @@ skill/slash-command listing, right next to the `rdm-*` skill front door that
 drives it — so `rdm-review` (the skill) and `rdm-wf-review-refute-fix`
 (the engine it invokes) are distinguishable at a glance. A `lib/*.mjs` is a
 shared source module, never a listing entry, so its name is deliberately
-unprefixed and frozen. `spike-agent-type.js` is an exempt spike artifact and
-keeps its bare name.
+unprefixed and frozen. (`spike-agent-type.js` used to be an exempt bare-named
+spike artifact; it was deleted along with the mechanical lane it probed, so every
+`.claude/workflows/*.js` now carries the prefix.)
 
 ### Determinism: no `Date.now()`/`Math.random()`
 
@@ -338,8 +339,8 @@ throwing — both invisible to a caller who only checks that the key did not thr
 
 | Artifact | Purpose |
 |---|---|
-| `.claude/agents/rdm-mechanical.md` | The custom agent definition. Minimal system prompt, `tools: Bash, StructuredOutput`. Deliberately carries **no `model:` key** — every mechanical call site already passes `model: models.mechanical` / `_mechanicalModel`, and `scripts/verify-workflow-review.sh` §2c asserts that pinning for the engines that still have a mechanical site. |
-| `.claude/workflows/spike-agent-type.js` | Sequential probe. Crosses `agentType` (absent / `'rdm-mechanical'` / unknown id / `undefined`) with `effort` (absent / `'low'` / `undefined` / invalid), one identical trivial prompt per case, each returning a small schema'd probe object. Excluded from `docs/mechanical-agent-inventory.md`'s mechanical-label derivation (and, historically, from the retired `scripts/verify-workflow-dispatch.sh` §7 inventory gate); **not** excluded from the dir-wide hygiene greps, so it complies with them. |
+| `.claude/agents/rdm-mechanical.md` | The custom agent definition. Minimal system prompt, `tools: Bash, StructuredOutput`. **Nothing under `.claude/workflows/` references it any more** — the `no-mechanical-agents-in-workflows` phase removed every mechanical call site — but the definition is kept as a registry entry and is still emitted downstream by `rdm agent-config claude --skills`. |
+| `.claude/workflows/spike-agent-type.js` | **DELETED** by the `no-mechanical-agents-in-workflows` phase. Its whole subject was `agentType: 'rdm-mechanical'` and `effort:` on a mechanical call site, and there are no mechanical call sites left; carving an exemption into the rule for it would have been the wrong trade. Its results are the tables in this section, which stand. |
 
 <a id="the-workflow-run"></a>
 

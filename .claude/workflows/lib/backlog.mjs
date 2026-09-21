@@ -28,7 +28,7 @@
 //! ## Non-mutation guarantee
 //!
 //! This pipeline runs exactly ONE Bash-executing agent — the Stage-0 report
-//! fetch (`buildFetchReportPrompt`), whose command template is `rdm backlog
+//! report command (`backlogReportCommand`), which is `rdm backlog
 //! report` only (never a mutating verb). Every analyzer agent is explicitly
 //! told it is READ-ONLY and must propose text only, never execute a mutating
 //! rdm command — mirroring review-refute-fix's "READ-ONLY reviewer" framing.
@@ -268,25 +268,18 @@ const ANALYSIS_SCHEMA = {
   },
 };
 
-// buildFetchReportPrompt(cfg) — the ONE Bash-executing agent prompt in the
-// whole pipeline. `cmd` is seeded from a literal read-only command and only
-// ever grows by appending flag text — never a mutating verb — so the
-// executable command template stays provably read-only by construction.
-function buildFetchReportPrompt(cfg) {
+// backlogReportCommand(cfg) — the read-only command that produces the report
+// this pipeline consumes. It is returned as TEXT for the ORCHESTRATOR to run;
+// there is no fetch agent any more. `cmd` is seeded from a literal read-only
+// command and only ever grows by appending flag text — never a mutating verb —
+// so the emitted command stays provably read-only by construction.
+function backlogReportCommand(cfg) {
   const c = cfg || {};
   let cmd = './target/debug/rdm backlog report --format json';
   if (c.olderThan != null) cmd += ' --older-than ' + c.olderThan;
   if (typeof c.tag === 'string' && c.tag !== '') cmd += ' --tag ' + c.tag;
   if (c.project) cmd += ' --project ' + c.project;
-  return [
-    'You are a mechanical fetch agent. Do not plan, analyze, or mutate anything.',
-    'Run exactly this command in the repo root and read its JSON output:',
-    '  ' + cmd,
-    'Return the parsed JSON verbatim as an object with four arrays: `stale_tasks` (slug, title,',
-    'status, created, age_days), `duplicate_clusters` (members: slug/title), `tag_clusters` (tag,',
-    'tasks: slug/title), and `archivable_roadmaps` (roadmap, title, phase_count). Any array missing',
-    'from the command output should be returned as an empty array.',
-  ].join('\n');
+  return cmd;
 }
 
 // parseBacklogReport(raw) — validate/default the four signal arrays from
@@ -447,7 +440,7 @@ export {
   promptDuplicateClusters,
   promptTagClusters,
   promptArchivableRoadmaps,
-  buildFetchReportPrompt,
+  backlogReportCommand,
   parseBacklogReport,
   selectCategories,
   normalizeAnalysis,

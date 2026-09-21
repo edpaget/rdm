@@ -235,17 +235,18 @@ The review pipeline is a deterministic **Claude Code Workflow-tool** script unde
 #### `.claude/agents/` — the custom-agent registry, now a shipped emission surface
 
 `.claude/agents/` is the custom-agent registry `agent()`'s `opts.agentType` resolves against. It
-holds one definition, `rdm-mechanical.md`. The **four local-only workflows** (`rdm-wf-document.js`,
-`rdm-wf-backlog.js`, `rdm-wf-estimate.js`, `rdm-wf-plan-review.js`) thread it at their mechanical call sites; the
-distributed workflow and every judgment site must not. `scripts/verify-workflow-review.sh`
-§2c asserts both directions with planted-mutation self-tests. Resolution is confirmed on the
-Workflow path and the trim measured at **8907 tokens/agent (−23 %)** — roughly half the 19894
-the `claude -p` 2×2 predicts, so quote 8907 for these sites.
-`rdm-core/src/agent_config.rs`'s `generate_agents()` now ships `rdm-mechanical.md` into every
+holds one definition, `rdm-mechanical.md`. **No workflow references it any more**: the
+`no-mechanical-agents-in-workflows` phase removed every mechanical call site from
+`.claude/workflows/`, so there is nothing left to trim — a workflow contains judgment agents and
+nothing else, and `scripts/verify-workflow-review.sh` §2b's `effort:` guard is what remains of the
+option sweep. Resolution was confirmed on the Workflow path and the trim measured at **8907
+tokens/agent (−23 %)** — roughly half the 19894 the `claude -p` 2×2 predicts — so quote 8907 if a
+non-workflow caller ever threads it.
+`rdm-core/src/agent_config.rs`'s `generate_agents()` still ships `rdm-mechanical.md` into every
 `rdm agent-config claude --skills`-produced downstream tree (`ship-mechanical-agent-type-downstream`),
-so a distributed workflow template CAN reference it — none does yet, since threading a distributed
-site is a separate, not-yet-landed follow-up. `scripts/verify-agent-config-distribution.sh` § 3c
-resolves any such reference against the emitted set. Evidence, measurements and disposition live
+so a downstream caller CAN reference it — no workflow does.
+`scripts/verify-agent-config-distribution.sh` § 3c resolves any such reference against the emitted
+set. Evidence, measurements and disposition live
 in `docs/workflow-schemas.md` § "agentType / effort options spike" — that section is canonical; do
 not restate its tables here.
 
@@ -259,8 +260,9 @@ One rule remains, gated by `scripts/verify-workflow-review.sh` §2b with a plant
 self-test:
 
 - **No workflow script may pass `effort:`.** The reason is *scope*, not mechanism —
-  `effort: 'low'` at a call site **is** honored. Lifting this is owned by
-  `finish-agent-type-effort-spike-and-thread-mechanical-sites`.
+  `effort: 'low'` at a call site **is** honored. The fidelity instrument that measured it lived in
+  `spike-agent-type.js`, which was deleted with the mechanical lane; the recorded negative stands in
+  `docs/token-baseline.json` § `mechanicalContextTrim.effortFidelity`.
 
 **When editing this file:** the project `CLAUDE.md` is loaded into every subagent, including a
 custom-`agentType` one, and cannot be suppressed per agent type — it was measured at 19320

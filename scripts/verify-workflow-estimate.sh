@@ -151,10 +151,9 @@ const m = await import(pathToFileURL(libPath).href);
 const {
   parseEstimateArgs,
   selectUnestimated,
-  buildEstimateListPrompt,
+  estimateListCommand,
   buildEstimatorPrompt,
-  buildEstimateWritebackPrompt,
-  buildEstimateTierPrompt,
+  buildEstimateWritebackCommands,
   buildEstimateSummaryText,
 } = m;
 
@@ -192,20 +191,19 @@ assert.deepEqual(
 assert.deepEqual(selectUnestimated([]), [], 'empty list');
 assert.deepEqual(selectUnestimated(null), [], 'non-array tolerated');
 
-// --- buildEstimateListPrompt -------------------------------------------------
-// Parameterized: the binary and the project flag come from the trailing cfg, and
-// the project flag is concatenated BEFORE ' --format json' so the command shape
-// is unchanged from the pre-parameterization literal.
+// --- estimateListCommand: the read-only command the CALLER runs -------------
+// (DELETED, no-mechanical-agents-in-workflows phase 34, commit 4: the
+// buildEstimateListPrompt assertions. There is no list agent and no prompt.)
 const CFG = { rdmBin: '/fake/bin/rdm', project: 'demo' };
-const listPrompt = buildEstimateListPrompt('rm', CFG);
-assert.ok(
-  listPrompt.includes('/fake/bin/rdm phase list --roadmap rm --project demo --format json'),
-  'list prompt runs phase list for the roadmap with the injected binary and project'
+assert.equal(
+  estimateListCommand('rm', CFG),
+  '/fake/bin/rdm phase list --roadmap rm --project demo --format json',
+  'the list command names the roadmap, the injected binary and the project'
 );
-assert.ok(listPrompt.includes('--format json'), 'list prompt asks for JSON');
-assert.ok(
-  buildEstimateListPrompt('rm', { rdmBin: 'rdm' }).includes('rdm phase list --roadmap rm --format json'),
-  'no project configured -> the list prompt emits no project flag at all'
+assert.equal(
+  estimateListCommand('rm', { rdmBin: 'rdm' }),
+  'rdm phase list --roadmap rm --format json',
+  'no project configured -> no project flag at all'
 );
 
 // --- buildEstimatorPrompt (now requires a justification) ---------------------
@@ -215,29 +213,27 @@ assert.ok(ratePrompt.includes('trivial, easy, moderate, hard'), 'estimator lists
 assert.ok(/justification/i.test(ratePrompt), 'estimator asks for a justification');
 assert.ok(ratePrompt.includes('"justification"'), 'estimator return schema includes the justification field');
 
-// --- buildEstimateWritebackPrompt: note + --difficulty + --body, NO --model --
-const wb = buildEstimateWritebackPrompt('phase-1-x', 'hard', 'risky cross-cutting change', 'rm', CFG);
+// --- buildEstimateWritebackCommands: note + --difficulty + --body, NO --model
+// (DELETED, phase 34 commit 4: the buildEstimateWritebackPrompt and
+// buildEstimateTierPrompt assertions. Neither prompt exists — the writeback is
+// command TEXT the caller runs, and the tier is what its last command reads
+// back. These assert that text instead.)
+const wbCmds = buildEstimateWritebackCommands('phase-1-x', 'hard', 'risky cross-cutting change', 'rm', CFG);
+const wb = wbCmds.join('\n');
 assert.ok(wb.includes('--difficulty hard'), 'writeback passes --difficulty');
 assert.ok(wb.includes('--body'), 'writeback passes --body (the audit note rides in the body)');
 assert.ok(wb.includes('## Estimate'), 'writeback appends a ## Estimate section');
 assert.ok(wb.includes('hard — risky cross-cutting change'), 'the note carries "<difficulty> — <justification>"');
-// The `phase update` COMMAND must never carry --model (the prose may still name
-// it to tell the agent to avoid it — so scope the check to the update command).
-const wbUpdateLine = wb.split('\n').find((l) => l.includes('phase update phase-1-x'));
+const wbUpdateLine = wbCmds.find((l) => l.includes('phase update phase-1-x'));
 assert.ok(wbUpdateLine, 'writeback contains a phase update command line');
 assert.ok(!wbUpdateLine.includes('--model'), 'the phase update command NEVER passes --model (tier derives in rdm-core)');
-assert.ok(/heredoc/i.test(wb), 'writeback instructs assembling the body via a quoted heredoc (safe interpolation)');
-assert.ok(wb.includes('phase update phase-1-x'), 'writeback updates the right phase');
+assert.ok(wb.includes("<<'RDM_ESTIMATE_EOF'"), 'the note is captured through a QUOTED heredoc');
 assert.ok(wb.includes('--roadmap rm'), 'writeback scopes to the roadmap');
-
-// --- buildEstimateTierPrompt: tier is READ BACK, never computed --------------
-const tierPrompt = buildEstimateTierPrompt('phase-1-x', 'rm', CFG);
+// The tier is READ BACK, never computed: the last command re-reads the phase.
 assert.ok(
-  tierPrompt.includes('/fake/bin/rdm phase show phase-1-x --roadmap rm --project demo --format json'),
-  'tier prompt reads the phase back with the injected binary and project'
+  wbCmds[wbCmds.length - 1].includes('phase show phase-1-x --roadmap rm --project demo --format json'),
+  'the last command reads the phase back so the caller can see the core-derived tier'
 );
-assert.ok(tierPrompt.includes('phase show phase-1-x'), 'tier prompt reads the phase back');
-assert.ok(tierPrompt.includes('"model"'), 'tier prompt returns the core-derived model field');
 
 // --- no prompt builder leaks a land/merge/main-mutation/completion directive -
 const FORBIDDEN = ['Done:', '--land', '--commit', 'git merge', 'git push', 'checkout main'];
@@ -245,10 +241,9 @@ function hasForbidden(s) {
   return FORBIDDEN.some((f) => s.includes(f));
 }
 const allPrompts = [
-  buildEstimateListPrompt('rm', CFG),
+  estimateListCommand('rm', CFG),
   buildEstimatorPrompt('a phase body'),
-  buildEstimateWritebackPrompt('phase-1-x', 'hard', 'why', 'rm', CFG),
-  buildEstimateTierPrompt('phase-1-x', 'rm', CFG),
+  buildEstimateWritebackCommands('phase-1-x', 'hard', 'why', 'rm', CFG).join('\n'),
 ];
 for (const p of allPrompts) {
   assert.ok(!hasForbidden(p), 'no estimate prompt leaks a land/merge/commit/Done directive:\n' + p);
@@ -259,14 +254,14 @@ assert.ok(hasForbidden('run rdm phase update --land now'), 'forbidden-string det
 const text = buildEstimateSummaryText({
   roadmap: 'rm',
   estimated: [
-    { stem: 'phase-1-a', difficulty: 'easy', justification: 'small', tier: 'small' },
-    { stem: 'phase-2-b', difficulty: 'hard', justification: 'big', tier: 'large' },
+    { stem: 'phase-1-a', difficulty: 'easy', justification: 'small' },
+    { stem: 'phase-2-b', difficulty: 'hard', justification: 'big' },
   ],
   skipped: ['phase-3-c'],
 });
 assert.ok(text.includes('estimate summary for roadmap/rm'), 'summary names the roadmap');
-assert.ok(text.includes('phase-1-a: easy (tier small)'), 'summary lists difficulty + read-back tier');
-assert.ok(text.includes('phase-2-b: hard (tier large)'), 'summary lists the second phase');
+assert.ok(text.includes('phase-1-a: easy — small'), 'summary lists the difficulty and its justification');
+assert.ok(text.includes('phase-2-b: hard — big'), 'summary lists the second phase');
 assert.ok(text.includes('skipped, already estimated (1): phase-3-c'), 'summary lists skipped phases');
 assert.equal(
   buildEstimateSummaryText({ roadmap: 'rm', estimated: [], skipped: [] }),
@@ -282,259 +277,10 @@ if run_node "$TMP/behavior.mjs" "$LIB"; then
 else
     fail "estimate behavior assertions failed"
 fi
-
-# --- 1b. PIPELINE ------------------------------------------------------------
-say "1b. Pipeline: buildEstimatePipeline fed state-backed fakes (rates only unestimated, notes, idempotent, deterministic)"
-
-cat >"$TMP/pipeline.mjs" <<'NODE_TEST'
-import assert from 'node:assert/strict';
-import { pathToFileURL } from 'node:url';
-
-const libPath = process.argv[2];
-const m = await import(pathToFileURL(libPath).href);
-const { buildEstimatePipeline, buildEstimateSummaryText } = m;
-
-// The fake rdm-core: writeback sets BOTH difficulty and a derived model (that is
-// what real rdm-core does — Difficulty::model_tier), so a re-list shows the phase
-// estimated. showTier returns whatever model the writeback stored — the tier is
-// NEVER computed by the JS under test.
-const TIER = { trivial: 'small', easy: 'small', moderate: 'medium', hard: 'large' };
-function makeFakes(phases) {
-  const map = new Map();
-  for (const p of phases) map.set(p.stem, { number: p.number, difficulty: p.difficulty || '', model: p.model || '' });
-  const listCalls = [];
-  const rateCalls = [];
-  const writebackCalls = [];
-  const showTierCalls = [];
-  const logs = [];
-  const fakes = {
-    log: (msg) => logs.push(msg),
-    list: async (roadmap) => {
-      listCalls.push(roadmap);
-      const out = [];
-      for (const [stem, v] of map) out.push({ number: v.number, stem, status: 'not-started', difficulty: v.difficulty, model: v.model });
-      return out;
-    },
-    parallelRate: async (stems) => {
-      rateCalls.push(stems.slice());
-      return stems.map((stem) => ({ stem, difficulty: 'moderate', justification: 'because ' + stem }));
-    },
-    writeback: async (stem, difficulty, justification, roadmap) => {
-      writebackCalls.push({ stem, difficulty, justification, roadmap });
-      // Simulate rdm-core deriving the tier onto model.
-      const cur = map.get(stem) || {};
-      map.set(stem, { number: cur.number, difficulty, model: TIER[difficulty] || 'medium' });
-      return { ok: true };
-    },
-    showTier: async (stem, roadmap) => {
-      showTierCalls.push({ stem, roadmap });
-      const v = map.get(stem) || {};
-      return v.model || '';
-    },
-  };
-  return { fakes, map, listCalls, rateCalls, writebackCalls, showTierCalls, logs };
-}
-
-// === rates ONLY the unestimated phases ======================================
-{
-  const h = makeFakes([
-    { number: 1, stem: 'phase-1-a' },
-    { number: 2, stem: 'phase-2-b' },
-    { number: 3, stem: 'phase-3-c', difficulty: 'hard', model: 'large' },
-  ]);
-  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
-  assert.deepEqual(h.rateCalls, [['phase-1-a', 'phase-2-b']], 'rated exactly the two unestimated stems, in sorted order');
-  assert.deepEqual(
-    h.writebackCalls.map((w) => w.stem),
-    ['phase-1-a', 'phase-2-b'],
-    'writeback fired for exactly the two unestimated stems'
-  );
-  // The audit-note justification is threaded into every writeback.
-  assert.ok(h.writebackCalls.every((w) => typeof w.justification === 'string' && w.justification.length > 0), 'every writeback carries a justification');
-  // The reported tier comes from the showTier read-back, not a JS map.
-  assert.deepEqual(h.showTierCalls.map((s) => s.stem), ['phase-1-a', 'phase-2-b'], 'tier read back per estimated stem');
-  assert.deepEqual(summary.skipped, ['phase-3-c'], 'the already-estimated phase is reported as skipped, never rated');
-  assert.deepEqual(
-    summary.estimated,
-    [
-      { stem: 'phase-1-a', difficulty: 'moderate', justification: 'because phase-1-a', tier: 'medium' },
-      { stem: 'phase-2-b', difficulty: 'moderate', justification: 'because phase-2-b', tier: 'medium' },
-    ],
-    'estimated entries carry difficulty, justification, and the READ-BACK tier'
-  );
-}
-
-// === idempotent on re-run: everything estimated -> nothing rated =============
-{
-  const h = makeFakes([
-    { number: 1, stem: 'phase-1-a' },
-    { number: 2, stem: 'phase-2-b' },
-  ]);
-  await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
-  // Second run against the SAME (now-mutated) state.
-  const h2fakes = h.fakes;
-  h.rateCalls.length = 0;
-  h.writebackCalls.length = 0;
-  const summary2 = await buildEstimatePipeline(h2fakes)({ roadmap: 'rm' });
-  assert.deepEqual(h.rateCalls, [], 're-run rates nothing — every phase is now estimated');
-  assert.deepEqual(h.writebackCalls, [], 're-run writes nothing back (no double-append of the ## Estimate note)');
-  assert.deepEqual(summary2.estimated, [], 're-run estimates nothing');
-  assert.deepEqual(summary2.skipped, ['phase-1-a', 'phase-2-b'], 're-run reports both as skipped');
-}
-
-// === narrow to a single phase number ========================================
-// The two un-targeted phases are STILL UNESTIMATED here — they must be reported
-// as `deferred` (not targeted this run), NOT mislabeled `skipped, already
-// estimated`. This is the exact regression that a summary-membership-only
-// assertion missed, so assert the rendered summary text's truthfulness too.
-{
-  const h = makeFakes([
-    { number: 1, stem: 'phase-1-a' },
-    { number: 2, stem: 'phase-2-b' },
-    { number: 3, stem: 'phase-3-c' },
-  ]);
-  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm', phase: 2 });
-  assert.deepEqual(h.rateCalls, [['phase-2-b']], 'narrowed run rates ONLY the named phase number');
-  assert.deepEqual(summary.estimated.map((e) => e.stem), ['phase-2-b'], 'only the narrowed phase is estimated');
-  assert.deepEqual(summary.skipped, [], 'NO phase is already estimated, so nothing is reported as skipped');
-  assert.deepEqual(
-    summary.deferred,
-    ['phase-1-a', 'phase-3-c'],
-    'the other still-unestimated phases are DEFERRED (not targeted this run), not mislabeled skipped'
-  );
-  const text = buildEstimateSummaryText(summary);
-  assert.ok(
-    !/phase-1-a|phase-3-c/.test(text.split('\n').find((l) => l.startsWith('skipped, already estimated')) || ''),
-    'the summary text never calls a still-unestimated deferred phase "already estimated"'
-  );
-  assert.ok(
-    /deferred, still unestimated[^\n]*phase-1-a, phase-3-c/.test(text),
-    'the summary text reports the deferred phases under an accurate "still unestimated" heading'
-  );
-}
-
-// === narrowing to an already-estimated phase is a no-op =====================
-{
-  const h = makeFakes([{ number: 1, stem: 'phase-1-a', difficulty: 'hard', model: 'large' }]);
-  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm', phase: 1 });
-  assert.deepEqual(h.rateCalls, [], 'a narrowed, already-estimated phase rates nothing');
-  assert.deepEqual(summary.estimated, [], 'nothing estimated');
-}
-
-// === empty roadmap: deterministic zero summary, no fan-out ===================
-{
-  const h = makeFakes([]);
-  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
-  assert.deepEqual(h.rateCalls, [], 'no rater fans out for an empty roadmap');
-  assert.deepEqual(summary, { roadmap: 'rm', estimated: [], skipped: [], deferred: [] }, 'empty roadmap yields a deterministic zero summary');
-}
-
-// === deterministic: two identical runs against fresh fakes are byte-equal ====
-{
-  const phases = [
-    { number: 1, stem: 'phase-1-a' },
-    { number: 2, stem: 'phase-2-b' },
-    { number: 3, stem: 'phase-3-c', difficulty: 'easy', model: 'small' },
-  ];
-  const a = await buildEstimatePipeline(makeFakes(phases).fakes)({ roadmap: 'rm' });
-  const b = await buildEstimatePipeline(makeFakes(phases).fakes)({ roadmap: 'rm' });
-  assert.equal(JSON.stringify(a), JSON.stringify(b), 'the summary is deterministic across identical runs');
-}
-
-// === a null/justification-less rater result is skipped, not dereferenced =====
-{
-  const h = makeFakes([
-    { number: 1, stem: 'phase-1-a' },
-    { number: 2, stem: 'phase-2-b' },
-  ]);
-  h.fakes.parallelRate = async (stems) => {
-    h.rateCalls.push(stems.slice());
-    // phase-1-a comes back null (unresolvable model), phase-2-b omits justification.
-    return [null, { stem: 'phase-2-b', difficulty: 'easy' }];
-  };
-  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
-  assert.deepEqual(h.writebackCalls.map((w) => w.stem), ['phase-2-b'], 'the null rater result is skipped, the valid one is written');
-  assert.equal(summary.estimated[0].justification, '', 'a missing justification defaults to an empty string, never undefined');
-}
-
-// === a writeback reporting { ok: false } is skipped, never misreported ======
-// rdm-core can legitimately report failure (an unresolvable difficulty, a stale
-// stem, a transient CLI error). Such a stem must NOT land in `estimated`, must
-// not have its tier read back, and must not abort the run.
-{
-  const h = makeFakes([
-    { number: 1, stem: 'phase-1-a' },
-    { number: 2, stem: 'phase-2-b' },
-  ]);
-  h.fakes.writeback = async (stem, difficulty, justification, roadmap) => {
-    h.writebackCalls.push({ stem, difficulty, justification, roadmap });
-    if (stem === 'phase-1-a') return { ok: false }; // core reports the write failed
-    const cur = h.map.get(stem) || {};
-    h.map.set(stem, { number: cur.number, difficulty, model: TIER[difficulty] || 'medium' });
-    return { ok: true };
-  };
-  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
-  assert.deepEqual(h.writebackCalls.map((w) => w.stem), ['phase-1-a', 'phase-2-b'], 'both stems are attempted');
-  assert.deepEqual(summary.estimated.map((e) => e.stem), ['phase-2-b'], 'an ok:false writeback is NOT reported as estimated');
-  assert.deepEqual(h.showTierCalls.map((s) => s.stem), ['phase-2-b'], 'the tier is read back only for the successfully-written stem');
-  assert.ok(h.logs.some((l) => l.includes('phase-1-a')), 'the failed writeback is logged');
-}
-
-// === a wholesale parallelRate() throw degrades to a no-op, never propagates ==
-{
-  const h = makeFakes([
-    { number: 1, stem: 'phase-1-a' },
-    { number: 2, stem: 'phase-2-b' },
-  ]);
-  h.fakes.parallelRate = async () => {
-    throw new Error('rater fan-out crashed');
-  };
-  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
-  assert.deepEqual(summary.estimated, [], 'a rater throw yields nothing estimated (the exception is caught)');
-  assert.deepEqual(h.writebackCalls, [], 'nothing is written back when the rater throws wholesale');
-  // Both were SELECTED for rating, so neither is "skipped" (skipped = the
-  // already-estimated phases only) — they just silently drop, logged.
-  assert.deepEqual(summary.skipped, [], 'targeted-but-failed stems are not misreported as already-estimated');
-  assert.ok(h.logs.some((l) => /rating pass failed/i.test(l)), 'the wholesale rater failure is logged');
-}
-
-// === a per-stem writeback() throw is caught; the run continues ==============
-{
-  const h = makeFakes([
-    { number: 1, stem: 'phase-1-a' },
-    { number: 2, stem: 'phase-2-b' },
-  ]);
-  h.fakes.writeback = async (stem, difficulty, justification, roadmap) => {
-    h.writebackCalls.push({ stem, difficulty, justification, roadmap });
-    if (stem === 'phase-1-a') throw new Error('transient CLI error');
-    const cur = h.map.get(stem) || {};
-    h.map.set(stem, { number: cur.number, difficulty, model: TIER[difficulty] || 'medium' });
-    return { ok: true };
-  };
-  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
-  assert.deepEqual(summary.estimated.map((e) => e.stem), ['phase-2-b'], 'a thrown writeback is caught and its stem skipped; the other still lands');
-  assert.ok(h.logs.some((l) => l.includes('phase-1-a')), 'the thrown writeback is logged');
-}
-
-// === a showTier() throw leaves the stem estimated with an empty tier ========
-{
-  const h = makeFakes([{ number: 1, stem: 'phase-1-a' }]);
-  h.fakes.showTier = async () => {
-    throw new Error('read-back failed');
-  };
-  const summary = await buildEstimatePipeline(h.fakes)({ roadmap: 'rm' });
-  assert.deepEqual(summary.estimated.map((e) => e.stem), ['phase-1-a'], 'the writeback succeeded, so the stem is still estimated');
-  assert.equal(summary.estimated[0].tier, '', 'a thrown tier read-back degrades to an empty tier, not an aborted run');
-}
-
-console.log('all estimate pipeline assertions passed');
-NODE_TEST
-
-if run_node "$TMP/pipeline.mjs" "$LIB"; then
-    pass "pipeline rates only unestimated, threads the note, reads tier back, idempotent, narrows, deterministic"
-else
-    fail "estimate pipeline assertions failed"
-fi
+# DELETED SECTION "1b." (no-mechanical-agents-in-workflows phase 34, commit 4):
+# its subject was a mechanical agent, its model pin, or the caller hoist that
+# suppressed it. None of those exists any more. Deleted and named, never
+# repaired or re-pointed.
 
 # --- 2. DRIFT GATE -----------------------------------------------------------
 say "2. Drift: gen-workflow-estimate.sh --check passes on the committed tree"
@@ -621,12 +367,15 @@ if [ -n "$OFFENDERS" ]; then
     printf 'top-level type:array schema(s): %s\n' "$(echo "$OFFENDERS" | tr '\n' ' ')" >&2
     fail "no *_SCHEMA handed to agent() may use a top-level type:'array' (Anthropic tools require 'object'); offending: $OFFENDERS"
 fi
-grep -q 'r.phases' "$WF" || fail "the list realDep must unwrap the PHASE_LIST_SCHEMA wrapper (expected 'r.phases' in rdm-wf-estimate.js)"
+# DELETED (no-mechanical-agents-in-workflows phase 34, commit 4): the
+# `r.phases` unwrap assertion. PHASE_LIST_SCHEMA and the `estimate:list` agent it
+# shaped are gone — the caller passes the parsed array as `phaseList`, so there
+# is no wrapper to unwrap.
 sed "s/^  type: 'object',/  type: 'array',/" "$WF" >"$TMP/wf.array.scratch"
 if [ -z "$(schema_array_offenders "$TMP/wf.array.scratch")" ]; then
     fail "top-level-array detector did NOT fire on a planted type:'array' schema"
 fi
-pass "no *_SCHEMA uses a top-level type:'array'; list unwraps r.phases; detector catches a planted array schema"
+pass "no *_SCHEMA uses a top-level type:'array'; detector catches a planted array schema"
 
 # 3f. meta.phases parity.
 DECLARED_PHASES=$(declared_phases "$WF")
@@ -639,36 +388,27 @@ else
     fail "meta.phases drift: declared phases != emitted phase: literals"
 fi
 
-# 3g. AC-MECHANICAL-TIER: the mechanical fetch/write/tier-read agents resolve
-# to the mechanical model; the judgment rater does not.
+# 3g. THE RATER IS THE ONLY AGENT, AND IT IS NOT PINNED TO A MECHANICAL TIER.
+# (DELETED, no-mechanical-agents-in-workflows phase 34, commit 4: the
+# `estimate:list` / `estimate:write:` / `estimate:tier:` model-pin assertions and
+# their repoint self-test. Those three agents are gone — the caller does the list
+# read and runs the returned writeback commands — so there is no mechanical tier
+# left to pin. What remains is the negative half, which still has a referent.)
 # shellcheck disable=SC1091
 . "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
 
 agent_option_blocks "$WF" >"$TMP/mech-blocks"
-[ -s "$TMP/mech-blocks" ] || fail "AC-MECHANICAL-TIER: could not extract any agent() option blocks from rdm-wf-estimate.js"
+[ -s "$TMP/mech-blocks" ] || fail "could not extract any agent() option blocks from rdm-wf-estimate.js"
 
-assert_label_model "$TMP/mech-blocks" 'estimate:list' 'mechanicalModel' ||
-    fail "AC-MECHANICAL-TIER: estimate:list must resolve to model: mechanicalModel"
-assert_label_model "$TMP/mech-blocks" 'estimate:write:' 'mechanicalModel' ||
-    fail "AC-MECHANICAL-TIER: every estimate:write:<stem> call must resolve to model: mechanicalModel"
-assert_label_model "$TMP/mech-blocks" 'estimate:tier:' 'mechanicalModel' ||
-    fail "AC-MECHANICAL-TIER: every estimate:tier:<stem> call must resolve to model: mechanicalModel"
-pass "AC-MECHANICAL-TIER: estimate:list, estimate:write:<stem>, and estimate:tier:<stem> resolve to model: mechanicalModel"
+RATER_SITES=$(grep -c "label: 'estimate:rate:" "$WF" || true)
+[ "$RATER_SITES" -eq 1 ] || fail "rdm-wf-estimate.js must dispatch exactly one kind of agent (the rater); found $RATER_SITES estimate:rate: sites"
+OTHER_LABELS=$(grep -oE "label: '[^']*'" "$WF" | grep -vc "estimate:rate:" || true)
+[ "$OTHER_LABELS" -eq 0 ] || fail "rdm-wf-estimate.js dispatches a non-rater agent — the rater is the only agent left"
+pass "the rater is the only agent rdm-wf-estimate.js dispatches"
 
-# Negative: estimate:rate:<stem> is the judgment rater and must NOT be pinned
-# to the mechanical tier.
 assert_label_not_model "$TMP/mech-blocks" 'estimate:rate:' 'mechanicalModel' ||
-    fail "AC-MECHANICAL-TIER: estimate:rate:<stem> must NOT be pinned to model: mechanicalModel (judgment stage)"
-pass "AC-MECHANICAL-TIER: estimate:rate:<stem> is left unpinned (judgment stage)"
-
-# Self-test: plant a repoint away from mechanicalModel on estimate:list and
-# prove the check now fails; restore and prove it passes again.
-sed "/label: 'estimate:list'/,/^    })/ s/model: mechanicalModel,/model: 'claude-opus-4-8',/" "$WF" >"$TMP/wf.mech-mutant"
-agent_option_blocks "$TMP/wf.mech-mutant" >"$TMP/mech-blocks-mutant"
-if assert_label_model "$TMP/mech-blocks-mutant" 'estimate:list' 'mechanicalModel'; then
-    fail "AC-MECHANICAL-TIER: detector missed an estimate:list repoint away from mechanicalModel"
-fi
-pass "AC-MECHANICAL-TIER: detector fires when estimate:list is repointed away from mechanicalModel"
+    fail "estimate:rate:<stem> must NOT be pinned to a mechanical model (judgment stage)"
+pass "estimate:rate:<stem> is left unpinned (judgment stage)"
 
 # --- 4. SKILL SHIM -----------------------------------------------------------
 say "4. rdm-estimate SKILL.md is a thin shim referencing rdm-wf-estimate.js with no retired rating-loop prose"
@@ -763,61 +503,13 @@ assert.deepEqual(
   'real phase list: only the two truly-unestimated phases select (phase-2-b has difficulty+model set)'
 );
 
-// --- Drive buildEstimatePipeline with REAL-binary deps -----------------------
-// Only the LLM rating is faked (deterministic 'moderate'); list / writeback /
-// showTier all hit the real rdm binary, so the derived tier and the ## Estimate
-// note are exercised against rdm-core's actual behavior.
-const rateCalls = [];
-const deps = {
-  log: () => {},
-  list: async (roadmap) => rdmJson(['phase', 'list', '--roadmap', roadmap, '--project', PROJ, '--format', 'json']),
-  parallelRate: async (stems) => {
-    rateCalls.push(stems.slice());
-    return stems.map((stem) => ({ stem, difficulty: 'moderate', justification: 'seeded justification for ' + stem }));
-  },
-  writeback: async (stem, difficulty, justification, roadmap) => {
-    const cur = rdmJson(['phase', 'show', stem, '--roadmap', roadmap, '--project', PROJ, '--format', 'json']);
-    const body = (cur.body || '') + '\n\n## Estimate\n\n' + difficulty + ' — ' + justification + '\n';
-    // Never --model: rdm-core derives the tier from --difficulty.
-    rdm(['phase', 'update', stem, '--difficulty', difficulty, '--body', body, '--no-edit', '--roadmap', roadmap, '--project', PROJ]);
-    const after = rdmJson(['phase', 'show', stem, '--roadmap', roadmap, '--project', PROJ, '--format', 'json']);
-    return { ok: after.difficulty === difficulty && (after.body || '').includes('## Estimate') };
-  },
-  showTier: async (stem, roadmap) => {
-    const j = rdmJson(['phase', 'show', stem, '--roadmap', roadmap, '--project', PROJ, '--format', 'json']);
-    return j.model || '';
-  },
-};
-
-const summary = await buildEstimatePipeline(deps)({ roadmap: ROADMAP });
-assert.deepEqual(rateCalls, [['phase-1-a', 'phase-3-c']], 'the pipeline rated exactly the two real-unestimated stems');
-assert.deepEqual(
-  summary.estimated.map((e) => e.stem).slice().sort(),
-  ['phase-1-a', 'phase-3-c'],
-  'exactly the two unestimated phases were estimated end-to-end against the real binary'
-);
-assert.deepEqual(summary.skipped, ['phase-2-b'], 'the pre-estimated phase-2-b is skipped, never rated');
-
-for (const e of summary.estimated) {
-  // The reported tier is read back from rdm-core (moderate -> medium), not a JS map.
-  assert.equal(e.tier, 'medium', 'the tier is read back from rdm-core (moderate derives medium)');
-  const shown = rdmJson(['phase', 'show', e.stem, '--roadmap', ROADMAP, '--project', PROJ, '--format', 'json']);
-  assert.equal(shown.difficulty, 'moderate', 'the real phase now carries difficulty=moderate');
-  assert.equal(shown.model, 'medium', 'rdm-core derived model=medium onto the real phase (no --model passed)');
-  assert.ok((shown.body || '').includes('## Estimate'), 'the ## Estimate audit note landed in the real phase body');
-  assert.ok((shown.body || '').includes('moderate — seeded justification for ' + e.stem), 'the note carries "<difficulty> — <justification>"');
-}
-
-// The pre-estimated phase is untouched: still hard/large, no note appended.
-const b = rdmJson(['phase', 'show', 'phase-2-b', '--roadmap', ROADMAP, '--project', PROJ, '--format', 'json']);
-assert.equal(b.difficulty, 'hard', 'the skipped phase keeps its original difficulty');
-assert.ok(!(b.body || '').includes('## Estimate'), 'the skipped phase never gets a ## Estimate note');
-
-// --- Idempotent re-run against the now-mutated real repo ---------------------
-const summary2 = await buildEstimatePipeline(deps)({ roadmap: ROADMAP });
-assert.deepEqual(summary2.estimated, [], 're-run against the real repo rates nothing — every phase is now estimated');
-assert.deepEqual(summary2.skipped.slice().sort(), ['phase-1-a', 'phase-2-b', 'phase-3-c'], 're-run reports all three as skipped');
-
+// DELETED (no-mechanical-agents-in-workflows phase 34, commit 4): the
+// real-binary pipeline drive. Its `list` / `writeback` / `showTier` deps are the
+// three mechanical agents this phase removed — the pipeline now takes the phase
+// list as an argument and RETURNS the writeback as command text, so there is no
+// injected side-effecting dep left to point at the real binary. What survives
+// above is the half whose subject is untouched: real `rdm phase list` JSON fed
+// through `selectUnestimated`.
 console.log('ALL HERMETIC-SEED ASSERTIONS PASSED');
 NODE_TEST
 
@@ -826,183 +518,15 @@ if run_node "$TMP/real.mjs" "$LIB" "$RDM_BIN" "$PLAN" "$PROJ" "$ROADMAP"; then
 else
     fail "hermetic real-binary estimate assertions failed"
 fi
+# DELETED SECTION "HOIST." (no-mechanical-agents-in-workflows phase 34, commit 4):
+# its subject was a mechanical agent, its model pin, or the caller hoist that
+# suppressed it. None of those exists any more. Deleted and named, never
+# repaired or re-pointed.
 
-# --- HOIST: caller-supplied mechanicalModel / phaseList -----------------------
-# Phase 3 of the workflow-token-reduction roadmap eliminates mechanical
-# subagents by never spawning them (docs/mechanical-agent-inventory.md). In
-# rdm-wf-estimate.js the two hoists live in the DRIVER REGION's realDeps only — the
-# stamped `estimate-core` block and scripts/gen-workflow-estimate.sh are
-# untouched. Both are OPTIONAL: the original agent call is reached through a
-# fall-through and is never deleted, so a direct `Workflow` invocation behaves
-# exactly as before.
-say "HOIST. rdm-wf-estimate.js driver region: mechanicalModel / phaseList hoists and their fallbacks"
-
-cat >"$TMP/hoist.mjs" <<'NODE_HOIST'
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-
-const wfPath = process.argv[2];
-let src = fs.readFileSync(wfPath, 'utf8');
-src = src.replace(/^export /m, '');
-const wrapperPath = path.join(os.tmpdir(), 'verify-workflow-estimate-hoist-wrapped.mjs');
-fs.writeFileSync(wrapperPath, 'export default async function(args, agent, parallel, log) {\n' + src + '\n}\n');
-const mod = await import('file://' + wrapperPath + '?t=' + process.pid);
-const run = mod.default;
-
-// Every run of the REAL driver must thread the now-required environment arg.
-const RDM_BIN_ARG = '/fake/bin/rdm';
-
-const PHASES = [
-  { stem: 'phase-1-a', status: 'not-started' },
-  { stem: 'phase-2-b', status: 'not-started', difficulty: 'moderate', model: 'medium' },
-];
-
-function makeAgent(o) {
-  o = o || {};
-  const calls = [];
-  const agent = async (prompt, opts) => {
-    const label = (opts && opts.label) || '';
-    calls.push({ label, prompt, opts });
-    if (label === 'model:mechanical') return { model: o.model === undefined ? 'agent-haiku' : o.model };
-    if (label === 'estimate:list') return { phases: o.phases === undefined ? PHASES : o.phases };
-    if (label.startsWith('estimate:rate:')) return { stem: label.slice('estimate:rate:'.length), difficulty: 'easy', justification: 'j' };
-    if (label.startsWith('estimate:write:')) return { ok: true };
-    if (label.startsWith('estimate:tier:')) return { model: 'small' };
-    throw new Error('unexpected agent label: ' + label);
-  };
-  return { agent, calls, count: (l) => calls.filter((c) => c.label === l).length };
-}
-const refParallel = async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
-const nolog = () => {};
-
-{
-  // Both hoists supplied -> neither agent runs, and the hoisted values are used.
-  const a = makeAgent({});
-  const out = await run(
-    { roadmap: 'rm', rdmBin: RDM_BIN_ARG, mechanicalModel: 'hoisted-haiku', phaseList: PHASES },
-    a.agent,
-    refParallel,
-    nolog
-  );
-  assert.equal(a.count('model:mechanical'), 0, 'hoisted mechanicalModel -> no model:mechanical agent call');
-  assert.equal(a.count('estimate:list'), 0, 'hoisted phaseList -> no estimate:list agent call');
-  assert.deepEqual(out.estimated.map((e) => e.stem), ['phase-1-a'], 'the hoisted list drives the unestimated filter');
-  const write = a.calls.find((c) => c.label.startsWith('estimate:write:'));
-  assert.equal(write.opts.model, 'hoisted-haiku', 'the hoisted model id pins the mechanical writeback agent');
-}
-{
-  // Neither supplied -> exactly one of each agent, as today, and the SAME result.
-  const a = makeAgent({});
-  const out = await run({ roadmap: 'rm', rdmBin: RDM_BIN_ARG }, a.agent, refParallel, nolog);
-  assert.equal(a.count('model:mechanical'), 1, 'no hoist -> exactly one model:mechanical agent call');
-  assert.equal(a.count('estimate:list'), 1, 'no hoist -> exactly one estimate:list agent call');
-  assert.deepEqual(out.estimated.map((e) => e.stem), ['phase-1-a'], 'the fallback path produces the same estimate set');
-}
-for (const [name, bad] of [
-  ['null', null],
-  ['empty string', ''],
-  ['whitespace only', '   '],
-  ['wrong type', 42],
-]) {
-  const a = makeAgent({});
-  await run({ roadmap: 'rm', rdmBin: RDM_BIN_ARG, mechanicalModel: bad, phaseList: PHASES }, a.agent, refParallel, nolog);
-  assert.equal(a.count('model:mechanical'), 1, 'malformed mechanicalModel (' + name + ') falls back to the agent');
-}
-for (const [name, bad] of [
-  ['null', null],
-  ['object', { phases: PHASES }],
-  ['string', 'phase-1-a'],
-]) {
-  const a = makeAgent({});
-  await run({ roadmap: 'rm', rdmBin: RDM_BIN_ARG, mechanicalModel: 'hoisted-haiku', phaseList: bad }, a.agent, refParallel, nolog);
-  assert.equal(a.count('estimate:list'), 1, 'malformed phaseList (' + name + ') falls back to the agent');
-}
-{
-  // A JSON-STRINGIFIED args payload (which real LLM callers have delivered
-  // despite the contract) must still surface both hoists.
-  const a = makeAgent({});
-  await run(JSON.stringify({ roadmap: 'rm', rdmBin: RDM_BIN_ARG, mechanicalModel: 'hoisted-haiku', phaseList: PHASES }), a.agent, refParallel, nolog);
-  assert.equal(a.count('model:mechanical'), 0, 'a stringified args payload still surfaces mechanicalModel');
-  assert.equal(a.count('estimate:list'), 0, 'a stringified args payload still surfaces phaseList');
-}
-console.log('estimate hoist assertions passed');
-NODE_HOIST
-
-if run_node "$TMP/hoist.mjs" "$WF"; then
-    pass "estimate hoist/fallback verified against the real driver under a recording fake agent"
-else
-    fail "estimate hoist/fallback assertions failed against $WF"
-fi
-
-# Planted-mutation self-tests: each fallback branch must be load-bearing.
-assert_wf_mutant_fails() {
-    mutant=$1
-    desc=$2
-    if cmp -s "$WF" "$mutant"; then
-        fail "HOIST: planted mutation was a no-op — $desc"
-    fi
-    if run_node "$TMP/hoist.mjs" "$mutant" >/dev/null 2>&1; then
-        fail "HOIST: assertions PASSED against a driver that $desc — they are vacuous"
-    fi
-    pass "HOIST: assertions fire when the driver $desc"
-}
-
-# (1) Drop the model fallback: return the (possibly absent) hoist unconditionally.
-awk '
-    index($0, "  resolveMechanicalModel: async function () {") { print; print "    return String(rawEstimateArgs.mechanicalModel || \"\").trim()"; skipping = 1; next }
-    skipping && index($0, "  },") == 1 { skipping = 0; print; next }
-    skipping { next }
-    { print }
-' "$WF" >"$TMP/mutant-no-model-fallback.js"
-assert_wf_mutant_fails "$TMP/mutant-no-model-fallback.js" "drops the model:mechanical fallback"
-
-# (2) Weaken the phaseList guard to "anything truthy".
-sed 's/if (Array.isArray(rawEstimateArgs.phaseList)) {/if (rawEstimateArgs.phaseList) {/' "$WF" >"$TMP/mutant-weak-list-guard.js"
-assert_wf_mutant_fails "$TMP/mutant-weak-list-guard.js" "weakens the phaseList shape guard to any truthy value"
-
-# --- SHIM: the LOCAL rdm-estimate shim gathers and passes both hoists ---------
-# `.claude/skills/rdm-estimate/SKILL.md` is a LOCAL dogfood shim; its distributed
-# template (rdm-core/src/templates/skill-estimate-cli.md) is NOT a Workflow
-# shim yet (tracked by task convert-remaining-skill-templates-to-workflow-shims),
-# so this check belongs here and NOT in verify-agent-config-distribution.sh.
-say "HOIST-SHIM. .claude/skills/rdm-estimate/SKILL.md gathers and passes mechanicalModel + phaseList"
-
-assert_shim_gathers() {
-    grep -qF 'rdm model resolve mechanical' "$1" || return 1
-    grep -qF 'phase list --roadmap <slug>' "$1" || return 1
-    grep -qF 'mechanicalModel' "$1" || return 1
-    grep -qF 'phaseList' "$1" || return 1
-    # Occurrence floor: each key is named in the gathering bullet AND in the
-    # workflow-invocation arg object, so a single stray mention cannot satisfy it.
-    [ "$(grep -cF 'mechanicalModel' "$1")" -ge 2 ] || return 1
-    [ "$(grep -cF 'phaseList' "$1")" -ge 2 ] || return 1
-    # ENVIRONMENT ARGS (§ 9): `rdmBin` now DEFAULTS to a plain `rdm` on PATH, so
-    # a shim that omits it degrades silently to whatever global rdm is first on
-    # PATH — inside this repo, the stale build the development-build rule
-    # forbids. That is why this check survives the contract reversal unchanged:
-    # it guards a silent wrong-binary failure rather than a loud one. Both keys
-    # are named in the config bullet AND in the invocation payload.
-    grep -qF 'rdmBin' "$1" || return 1
-    grep -qF 'project' "$1" || return 1
-    [ "$(grep -cF 'rdmBin' "$1")" -ge 2 ] || return 1
-    [ "$(grep -cF 'rdmBin: "./target/debug/rdm"' "$1")" -ge 1 ] || return 1
-    return 0
-}
-assert_shim_gathers "$SKILL" ||
-    fail "HOIST-SHIM: $SKILL must gather 'rdm model resolve mechanical' and 'rdm phase list --format json' and pass mechanicalModel + phaseList + rdmBin + project (each named at least twice)"
-pass "HOIST-SHIM: the local shim gathers and passes both hoisted args plus rdmBin/project"
-
-sed 's/mechanicalModel/mechModel/g' "$SKILL" >"$TMP/shim-typo.md"
-if assert_shim_gathers "$TMP/shim-typo.md"; then
-    fail "HOIST-SHIM: detector missed a typo'd arg key in the shim"
-fi
-sed 's/rdmBin/rdmBn/g' "$SKILL" >"$TMP/shim-typo-bin.md"
-if assert_shim_gathers "$TMP/shim-typo-bin.md"; then
-    fail "HOIST-SHIM: detector missed a typo'd rdmBin arg key in the shim"
-fi
-pass "HOIST-SHIM: detector fires on a typo'd arg key in the shim (mechanicalModel and rdmBin)"
+# DELETED SECTION "HOIST-SHIM." (no-mechanical-agents-in-workflows phase 34, commit 4):
+# its subject was a mechanical agent, its model pin, or the caller hoist that
+# suppressed it. None of those exists any more. Deleted and named, never
+# repaired or re-pointed.
 
 # --- 9. PARAMETERIZATION ------------------------------------------------------
 # estimate names NO particular rdm executable and NO particular rdm project:
@@ -1094,21 +618,20 @@ const PROJECT_AGNOSTIC = ['model resolve', 'commit', 'status', 'discard'];
 
 const PHASES = [{ number: 1, stem: 'phase-1-x', title: 'X', status: 'not-started' }];
 
-// A capturing fake agent. NOTE: the capture runs deliberately supply NEITHER
-// hoist (`mechanicalModel` / `phaseList`) — a hoist short-circuits the agent
-// that builds the corresponding prompt, silently narrowing the scan.
+// A capturing fake agent. The only agent left is the rater, so the scan's real
+// subject has MOVED: the rdm invocations this engine emits are now the WRITEBACK
+// COMMANDS it returns, not prompts it hands an agent. `capture` below therefore
+// scans both — the rater's prompt (which still names a `phase show`) and the
+// returned command lists. `phaseList` is supplied because the engine refuses to
+// run without it; there is no agent left for withholding it to exercise.
 function makeCapture() {
   const prompts = [];
   const agent = async (prompt, opts) => {
     prompts.push(String(prompt));
     const label = (opts && opts.label) || '';
-    if (label === 'model:mechanical') return { model: 'm-mech' };
-    if (label === 'estimate:list') return { phases: PHASES };
     if (label.startsWith('estimate:rate:')) {
       return { stem: label.slice('estimate:rate:'.length), difficulty: 'moderate', justification: 'j' };
     }
-    if (label.startsWith('estimate:write:')) return { ok: true };
-    if (label.startsWith('estimate:tier:')) return { model: 'medium' };
     throw new Error('unexpected agent label: ' + label);
   };
   return { agent, prompts };
@@ -1148,8 +671,9 @@ function scan(prompts) {
 
 async function capture(args) {
   const c = makeCapture();
-  await run(args, c.agent, refParallel, () => {});
-  return scan(c.prompts);
+  const summary = await run(Object.assign({ phaseList: PHASES }, args), c.agent, refParallel, () => {});
+  const emitted = (summary && summary.estimated ? summary.estimated : []).flatMap((e) => e.writebackCommands || []);
+  return scan(c.prompts.concat(emitted));
 }
 
 // --- Run A: a project IS configured.
@@ -1170,13 +694,10 @@ for (const occ of withProject) {
 
 // Non-vacuity floors: the scan must actually have reached every command shape,
 // not merely found nothing to object to.
-for (const n of ['phase list', 'phase show', 'phase update', 'model resolve']) {
+// (`phase list` and `model resolve` are no longer emitted by this engine — the
+// caller runs them — so they left this floor with the agents that emitted them.)
+for (const n of ['phase show', 'phase update']) {
   assert.ok(seen.has(n), 'expected at least one `rdm ' + n + '` occurrence, saw: ' + [...seen].join(', '));
-}
-const resolves = withProject.filter((o) => o.two === 'model resolve');
-assert.ok(resolves.length >= 1, 'expected at least one `rdm model resolve` occurrence');
-for (const r of resolves) {
-  assert.ok(!r.line.includes('--project'), '`rdm model resolve` is on the allow-list and must never gain a project flag: ' + r.line);
 }
 
 // --- Run B: NO project configured -> not a single --project anywhere.
@@ -1296,17 +817,16 @@ const spy = async (prompt, opts) => {
   agentCalls++;
   prompts.push(String(prompt));
   const label = (opts && opts.label) || '';
-  if (label === 'model:mechanical') return { model: 'm-mech' };
-  if (label === 'estimate:list') return { phases: PHASES };
   if (label.startsWith('estimate:rate:')) {
     return { stem: label.slice('estimate:rate:'.length), difficulty: 'moderate', justification: 'j' };
   }
-  if (label.startsWith('estimate:write:')) return { ok: true };
-  if (label.startsWith('estimate:tier:')) return { model: 'medium' };
   return null;
 };
 const refParallel = async (thunks) => Promise.all(thunks.map((t) => Promise.resolve().then(t).catch(() => null)));
-const out = await mod.default({ roadmap: 'rm' }, spy, refParallel, () => {});
+// `phaseList` is supplied because the engine refuses to run without it; the
+// EMITTED commands it returns are scanned alongside the rater's prompt, since
+// that is where this engine's rdm invocations now live.
+const out = await mod.default({ roadmap: 'rm', phaseList: PHASES }, spy, refParallel, () => {});
 assert.ok(out !== undefined, 'a Workflow invocation with no rdmBin must resolve, not throw');
 assert.ok(agentCalls > 0, 'the run must actually have dispatched agents — otherwise this assertion is vacuous');
 
@@ -1314,7 +834,8 @@ assert.ok(agentCalls > 0, 'the run must actually have dispatched agents — othe
 // invocations; flush-left prose merely naming the tool is not.
 const INVOCATION = /(^|[\s`])((?:[^\s`]*\/)?rdm)\s+[a-z][a-z-]*/g;
 let invocations = 0;
-for (const p of prompts) {
+const emitted = (out && out.estimated ? out.estimated : []).flatMap((e) => e.writebackCommands || []);
+for (const p of prompts.concat(emitted)) {
   for (const line of p.split('\n')) {
     if (!(/^\s{2,}\S/.test(line) || line.includes('`'))) continue;
     INVOCATION.lastIndex = 0;
@@ -1326,8 +847,8 @@ for (const p of prompts) {
   }
 }
 assert.ok(invocations > 0, 'the scan found no rdm invocations at all — it cannot pass vacuously');
-for (const p of prompts) {
-  assert.ok(!p.includes('./target/debug/rdm'), 'a repo-local build path leaked into a prompt under the bare default');
+for (const p of prompts.concat(emitted)) {
+  assert.ok(!p.includes('./target/debug/rdm'), 'a repo-local build path leaked into a prompt or an emitted command under the bare default');
 }
 
 console.log('all defaulted rdmBin assertions passed');
@@ -1367,8 +888,11 @@ pass "9c: the existence-preflight detector fires on planted code while ignoring 
 # --- 9d. Planted-mutation self-tests for 9b -----------------------------------
 say "9d. Planted-mutation self-tests: the allow-list assertion is not vacuous"
 
-# (i) a builder RE-HARDCODES this repo's dev binary path.
-sed "s|+ bin + ' phase list |+ './target/debug/rdm' + ' phase list |" "$WF" >"$TMP/pz-mut-bin.js"
+# (i) a builder RE-HARDCODES this repo's dev binary path. (Anchor moved from the
+# deleted `phase list` builder to `phase show`, which the writeback commands
+# emit — it is the same assertion over the artifact that replaced the one it
+# used to read.)
+sed "s|const show = bin + ' phase show |const show = './target/debug/rdm' + ' phase show |" "$WF" >"$TMP/pz-mut-bin.js"
 if cmp -s "$WF" "$TMP/pz-mut-bin.js"; then
     fail "9d(i): the re-hardcoded-binary mutation did not apply — the self-test is not exercising anything"
 fi
@@ -1377,26 +901,18 @@ if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-bin.js" >/dev/null 2>&1; then
 fi
 pass "9d(i): detector fires when a builder re-hardcodes the rdm binary"
 
-# (ii) the ALLOW-LIST member `rdm model resolve` wrongly gains a project flag —
-#      a command rdm rejects at runtime that a naive whole-file grep still
-#      accepts. This is the exact failure mode 9b exists to catch.
-sed "s|' model resolve mechanical',|' model resolve mechanical' + projectFlag(cfg),|" "$WF" >"$TMP/pz-mut-agnostic.js"
-if cmp -s "$WF" "$TMP/pz-mut-agnostic.js"; then
-    fail "9d(ii): the allow-list mutation did not apply"
-fi
-if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-agnostic.js" >/dev/null 2>&1; then
-    fail "9d(ii): a project flag on 'rdm model resolve' was NOT detected — the allow-list assertion is vacuous"
-fi
-pass "9d(ii): detector fires when an allow-list subcommand gains a project flag"
+# DELETED (no-mechanical-agents-in-workflows phase 34, commit 4): mutation (ii).
+# Its subject was `rdm model resolve mechanical` gaining a project flag; this
+# engine no longer emits that command at all, so there is nothing to mutate.
 
-# (iii) a project-scoped builder DROPS its flag.
+# (ii) a project-scoped builder DROPS its flag.
 sed "s|+ ' --roadmap ' + slug + proj + ' --format json'|+ ' --roadmap ' + slug + ' --format json'|g" "$WF" >"$TMP/pz-mut-drop.js"
 if cmp -s "$WF" "$TMP/pz-mut-drop.js"; then
-    fail "9d(iii): the dropped-flag mutation did not apply"
+    fail "9d(ii): the dropped-flag mutation did not apply"
 fi
 if run_node "$TMP/paramz.mjs" "$TMP/pz-mut-drop.js" >/dev/null 2>&1; then
-    fail "9d(iii): a project-scoped command that dropped its project flag was NOT detected"
+    fail "9d(ii): a project-scoped command that dropped its project flag was NOT detected"
 fi
-pass "9d(iii): detector fires when a project-scoped builder drops '+ proj'"
+pass "9d(ii): detector fires when a project-scoped builder drops '+ proj'"
 
 say "verify-workflow-estimate.sh: ALL GREEN"

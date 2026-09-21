@@ -81,10 +81,11 @@ emitted downstream by `generate_workflows` (`autopilot.js` was
 too, until phase 3 retired it in favor of the prose `rdm-autopilot` skill, and
 `rdm-wf-dispatch-phase.js` was until `agent-orchestrated-dispatch` phase 7 retired it — see the
 retirement record below); `rdm-wf-plan-review.js`,
-`rdm-wf-estimate.js`, `rdm-wf-backlog.js`, `rdm-wf-document.js`, and
-`spike-agent-type.js` are local-only, and every one of the local-only five references
-`agentType: 'rdm-mechanical'`, which a downstream tree has no definition for and which
-*raises* rather than degrading silently. So the phase 4 rewrite of the **distributed**
+`rdm-wf-estimate.js`, `rdm-wf-backlog.js` and `rdm-wf-document.js` are local-only.
+(They used to reference `agentType: 'rdm-mechanical'`, which a downstream tree has
+no definition for and which *raises* rather than degrading silently;
+`no-mechanical-agents-in-workflows` removed every such reference, so that is no
+longer what keeps them local.) So the phase 4 rewrite of the **distributed**
 `skill-autopilot-cli.md` cannot simply mirror the local prose skill by pointing at
 `rdm-wf-estimate` — it needs an explicit answer (ship `rdm-wf-estimate.js` with the `agentType`
 stripped, inline the pre-pass in the shipped prose, or drop the pre-pass downstream).
@@ -138,7 +139,7 @@ narrowed `scripts/verify-skill-autopilot.sh` to its real-binary sections plus th
 | `rdm-wf-estimate.js` | `parallel()` rate over unestimated phases | mechanism | no | **STAY** — the pre-pass fan-out, which the prose loop now depends on *newly* (in the local dogfood skill only — the distributed template drops the pre-pass, see "Decided (phase 4)" above), as a real `workflow()` call rather than autopilot's former stamped copy |
 | `rdm-wf-backlog.js` | `parallel()` over ≤4 signal categories | mechanism; propose-only, zero mutation | no — the handoff to a human is terminal | **STAY** |
 | `rdm-wf-document.js` | `parallel()` git-gather over completed phases | mechanism; zero rdm mutation | no — approval is terminal | **STAY** |
-| `spike-agent-type.js` | none (its cases are dispatched sequentially on purpose) | neither — it is a spike artifact that exercises the Workflow runtime itself, not a lane | n/a | **STAY, exempt** — kept as the executable record of the spike; it would not be authored as a lane workflow today |
+| `spike-agent-type.js` | none (its cases were dispatched sequentially on purpose) | neither — it was a spike artifact that exercised the Workflow runtime itself, not a lane | n/a | **DELETED** by `no-mechanical-agents-in-workflows`: its whole subject was `agentType`/`effort` on a mechanical call site, and there are none left. Its results stand in `docs/workflow-schemas.md` |
 
 ## Retirement record: `rdm-wf-dispatch-phase` (`agent-orchestrated-dispatch` phase 7)
 
