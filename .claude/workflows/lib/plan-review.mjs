@@ -96,9 +96,12 @@ function computeMissingModels(mechanicalModel, findModel, verifyModel) {
 
 // parsePlanArgs(rawArgs) — resolve the four target types from a raw $ARGUMENTS
 // flag string, a JSON payload, or a structured object. Returns
-// { kind, roadmap, phase, task, planText } where kind is one of
-// 'task' | 'phase' | 'roadmap' | 'implementation-plan'. Throws an actionable
-// error when no target can be resolved.
+// { kind, roadmap, phase, task, planText, planSlug, ... } where kind is one of
+// 'task' | 'phase' | 'roadmap' | 'implementation-plan', and `planSlug` names the
+// persisted plan/<slug> document an implementation-plan target's `planText` was
+// read from ('' for a free-form plan pasted in with no slug). Throws an
+// actionable error when no target can be resolved, and when `planSlug` is used
+// incoherently — see its own note below, beside `persistIgnored`.
 function parsePlanArgs(rawArgs) {
   let a = rawArgs || {}
   if (typeof a === 'string') {

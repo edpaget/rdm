@@ -1515,9 +1515,29 @@ prior round's findings are the latest review's comment bodies read back through
 target legitimately advances the round — a round is a pass over the plan,
 whoever made it. Everything downstream is unchanged, so the round-3 escalation
 cap and the REPORTING-ONLY repeat rule are preserved by construction rather than
-by a second implementation. `--implementation-plan` has no persisted target, so
-persist is forced off there and it keeps the in-context note. With `persist`
-off, the body-note channel behaves exactly as it always has.
+by a second implementation. An `--implementation-plan` target persists **only
+when the caller names the plan document it handed over**, with the `planSlug`
+argument below; a free-form plan pasted into the args with no slug has nothing to
+hang a review off, so persist is forced off there (`persistIgnored`) and it keeps
+the in-context note. With `persist` off, the body-note channel behaves exactly as
+it always has.
+
+**`planSlug` arg.** The slug of the persisted `plan/<slug>` document that an
+`--implementation-plan` target's `planText` was read from. Read from the
+STRUCTURED `args` object only — never parsed out of the `$ARGUMENTS` flag
+string, the same rule as `fetched`/`wontFixedTexts`/`gateMode` — and validated at
+PARSE time, before any `agent()` call: a `planSlug` on a non-implementation-plan
+target, a `planSlug` with no `planText` (a verdict would otherwise be recorded
+about an empty document), and a `persist.on` that is not `plan/<planSlug>` each
+throw an actionable error out of `parsePlanArgs`. It is **not** a hoist — it
+suppresses no mechanical agent. It is the discriminator that makes an
+implementation-plan verdict persistable: with it supplied and `persist` on, the
+review is written to the ref DERIVED as `plan/<planSlug>` (never to `persist.on`,
+which is why a disagreeing one throws), and the run's result carries `planSlug`
+plus `reviewId` / `reviewPersistence`. It adds no gate and no act step — a plan
+document carries no tags, so there is no `needs-plan-review` to clear, and the
+branch still returns without `gateAction`/`gateBlocked`/`gateDeferred`. A
+no-slug run's returned shape is byte-unchanged.
 
 ### `VERDICT`
 

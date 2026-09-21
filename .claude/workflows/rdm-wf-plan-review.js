@@ -18,15 +18,24 @@
 //                                   ambient parallel() fan-out).
 //   3. `<slug> [phase]`           — positional: a single phase when a phase arg
 //                                   is present, else identical to --roadmap.
-//   4. `--implementation-plan`    — review an rdm-do plan document handed over in
-//                                   context ahead of implementation. There is NO
-//                                   persisted rdm item behind it, so it is
-//                                   report-only: no body edit, no filed task, and
-//                                   no gate.
+//   4. `--implementation-plan`    — review an implementation plan handed over in
+//                                   context (`planText`) ahead of implementation.
+//                                   This is the shape the in-repo dispatch uses.
+//                                   There is NO persisted rdm ITEM behind it, so
+//                                   it does no body edit, files no task, and
+//                                   never gates. It is not, however, always
+//                                   report-only: when the caller names the
+//                                   persisted `plan/<slug>` document the text was
+//                                   read from, with `planSlug`, an opt-in
+//                                   `persist` records the verdict onto that plan
+//                                   document. A free-form plan with no `planSlug`
+//                                   persists nothing.
 //
 // Args may arrive as a raw $ARGUMENTS flag string, a JSON payload, or a
 // structured object ({ roadmap, phase }, { task }, { implementationPlan,
-// planText }). See parsePlanArgs.
+// planText, planSlug }). See parsePlanArgs. The structured-keys-only args
+// (`fetched`, `wontFixedTexts`, `gateMode`, `planSlug`, the model trio) are never
+// parsed out of the flag string.
 //
 // Unit-of-work scoping: this workflow threads a minimal `signals: { targetType }`
 // object into every buildReviewPipeline('plan') call — one per review unit — so
@@ -3210,9 +3219,12 @@ function computeMissingModels(mechanicalModel, findModel, verifyModel) {
 
 // parsePlanArgs(rawArgs) — resolve the four target types from a raw $ARGUMENTS
 // flag string, a JSON payload, or a structured object. Returns
-// { kind, roadmap, phase, task, planText } where kind is one of
-// 'task' | 'phase' | 'roadmap' | 'implementation-plan'. Throws an actionable
-// error when no target can be resolved.
+// { kind, roadmap, phase, task, planText, planSlug, ... } where kind is one of
+// 'task' | 'phase' | 'roadmap' | 'implementation-plan', and `planSlug` names the
+// persisted plan/<slug> document an implementation-plan target's `planText` was
+// read from ('' for a free-form plan pasted in with no slug). Throws an
+// actionable error when no target can be resolved, and when `planSlug` is used
+// incoherently — see its own note below, beside `persistIgnored`.
 function parsePlanArgs(rawArgs) {
   let a = rawArgs || {}
   if (typeof a === 'string') {

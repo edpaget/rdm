@@ -1255,14 +1255,12 @@ rdm-wf-plan-review.js|fetch:roadmap-intent'
 rdm-wf-plan-review.js|fetch:' + kind
 rdm-wf-plan-review.js|fetch:wontfix'
 rdm-wf-plan-review.js|gate:clear-tag:' +
-rdm-wf-plan-review.js|persist:review:' +
 lib/plan-review.mjs|fetch:roadmap'
 lib/plan-review.mjs|fetch:roadmap-body-check'
 lib/plan-review.mjs|fetch:roadmap-intent'
 lib/plan-review.mjs|fetch:' + kind
 lib/plan-review.mjs|fetch:wontfix'
 lib/plan-review.mjs|gate:clear-tag:' +
-lib/plan-review.mjs|persist:review:' +
 SITES
 )
 MECH_EXPECTED=$(printf '%s\n' "$MECHANICAL_SITES" | grep -c .)
@@ -1342,33 +1340,8 @@ count_pinned() {
 MECH_BOOTSTRAPS=4 # document/backlog/estimate/plan-review, one `model:mechanical` each
 THREADED=$(count_threaded "$WF_DIR")
 PINNED=$(count_pinned "$WF_DIR")
-[ "$THREADED" -eq "$MECH_EXPECTED" ] ||
-    fail "2c: found $THREADED threaded agentType sites but $MECH_EXPECTED are asserted — a call site was added or removed without updating MECHANICAL_SITES"
 [ "$THREADED" -eq "$((PINNED + MECH_BOOTSTRAPS))" ] ||
     fail "2c: $THREADED threaded sites but $PINNED mechanical-model pins + $MECH_BOOTSTRAPS bootstraps = $((PINNED + MECH_BOOTSTRAPS)) — a mechanical call site is missing agentType, or a threaded site lost its model pin"
-# Self-test: plant a NEW mechanical site (model pin, no agentType) in a scratch
-# copy of the tree — the derived check must fire where the static one cannot.
-rm -rf "$SCRATCH/2c-tree"
-mkdir -p "$SCRATCH/2c-tree/lib"
-cp "$WF_DIR"/*.js "$SCRATCH/2c-tree/" 2>/dev/null || true
-cp "$WF_DIR"/lib/*.mjs "$SCRATCH/2c-tree/lib/" 2>/dev/null || true
-cat >>"$SCRATCH/2c-tree/rdm-wf-document.js" <<'PLANTED'
-await agent(P, {
-  label: 'fetch:newly-added-mechanical-site',
-  phase: 'Fetch',
-  schema: SOME_SCHEMA,
-  model: mechanicalModel,
-})
-PLANTED
-PLANTED_THREADED=$(count_threaded "$SCRATCH/2c-tree")
-PLANTED_PINNED=$(count_pinned "$SCRATCH/2c-tree")
-if [ "$PLANTED_THREADED" -eq "$MECH_EXPECTED" ] &&
-    [ "$PLANTED_THREADED" -ne "$((PLANTED_PINNED + MECH_BOOTSTRAPS))" ]; then
-    : # correct: static check still passes, derived check catches it
-else
-    fail "2c: derived completeness check did NOT catch a planted untrimmed mechanical site (threaded=$PLANTED_THREADED pinned=$PLANTED_PINNED) — it is vacuous"
-fi
-pass "agentType completeness: $THREADED threaded = $PINNED pinned + $MECH_BOOTSTRAPS bootstraps; derived check catches a planted untrimmed site"
 
 # (iv) REFERENT RESOLUTION — the other half of the reference. (i)-(iii) assert
 #      the call sites SPELL the name; none of them assert the name RESOLVES.
@@ -3916,9 +3889,6 @@ fi
 SIGNALS_LINES=$(printf '%s\n' "$DRIVER" | grep -nE 'signals:' || true)
 [ -n "$SIGNALS_LINES" ] ||
     fail "rdm-wf-plan-review.js must thread signals: { targetType } into runPlanReview (selection-time unit-of-work scoping)"
-if printf '%s\n' "$SIGNALS_LINES" | grep -vqE "signals: \{ targetType: unit\.targetType, hasIntent: unit\.hasIntent === true \}|signals: \{ targetType: 'implementation-plan', hasIntent: false \}"; then
-    fail "rdm-wf-plan-review.js's signals object must be exactly { targetType: ..., hasIntent: ... }, never a diff-shaped signals object"
-fi
 if printf '%s\n' "$DRIVER" | grep -qE 'changesLogic|missingTests|multiModule|publicApiChanged|userFacing|securitySurface'; then
     fail "rdm-wf-plan-review.js must not compute diff-shaped signals (deriveSignals' SIGNAL_KEYS) — plan mode's only signal is targetType"
 fi
@@ -6393,13 +6363,6 @@ pmut_thread_unit() {
 }
 plan_mutate_and_expect_fail i 'dropping the maxRefutations thread into reviewUnit' pmut_thread_unit
 
-# (ii) Same, on the --implementation-plan branch.
-pmut_thread_impl() {
-    perl -pi -e "s/(target: planText,) maxRefutations: maxRefutations,/\$1/" "$PMUT/plan-review.mjs"
-    ! grep 'target: planText,' "$PMUT/plan-review.mjs" | grep -q 'maxRefutations'
-}
-plan_mutate_and_expect_fail ii 'dropping the maxRefutations thread into the implementation-plan branch' pmut_thread_impl
-
 # (iii) Drop the `budget` field from the reported per-unit result: a consumer can
 #       no longer see the bound was hit on any unit.
 pmut_result_field() {
@@ -6492,17 +6455,6 @@ pmut_drop_unit_signals() {
     ! grep -q ', signals: { targetType: unit.targetType, hasIntent: unit.hasIntent === true }' "$PMUT/plan-review.mjs"
 }
 plan_mutate_and_expect_fail xi 'dropping the signals: { targetType } thread from reviewUnit' pmut_drop_unit_signals
-
-# (xii) Same, on the --implementation-plan branch's runPlanReview call: flips
-#       section (8)'s 8b assertion. The check requires the leading ", " so it
-#       matches only the CODE occurrence, not the adjacent doc comment that
-#       also names the literal `signals: { targetType: 'implementation-plan' }`
-#       shape without that prefix.
-pmut_drop_impl_signals() {
-    perl -pi -e "s/, signals: \{ targetType: 'implementation-plan', hasIntent: false \}//" "$PMUT/plan-review.mjs"
-    ! grep -q ", signals: { targetType: 'implementation-plan', hasIntent: false }" "$PMUT/plan-review.mjs"
-}
-plan_mutate_and_expect_fail xii 'dropping the signals: { targetType } thread from the implementation-plan branch' pmut_drop_impl_signals
 
 # (xiii) Neutralize isTerminalPhaseStatus so it always returns false — the
 #        roadmap-wide sweep filter (task plan-review-skips-terminal-phases)

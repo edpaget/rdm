@@ -227,8 +227,22 @@ The code-review Workflow call's own `findModel`/`verifyModel` gap is out of scop
 / `models.reviewVerify`, and confirm you captured the item's `body`, the roadmap `body`
 (phase mode) and the wont-fix titles. If the worktree or identity command failed, escalate — never
 invent a checkout, and never let a subagent choose one. A failed **hoist** read is different and
-not fatal: say which one failed and omit just that argument in step 6, which falls back to the
-engine's own fetch.
+not fatal, but say which one failed and state the consequence, because it differs per argument and
+only one of them still has an engine-side fallback: step 6 reviews the **implementation plan**, and
+that branch returns before the engine's fetch block, so no `fetch:*` agent is reachable to re-read
+anything you omit.
+
+- the item's `body` is **not** a step-6 argument at all — it feeds the planner (step 5) and the
+  implementer (step 9). If it could not be read, escalate rather than dispatching a planner with no
+  phase text.
+- `roadmapBody` — omitting it loses the recorded `## Intent`, so the engine simply runs no
+  intent-alignment dimension. Non-blocking, and the same outcome a roadmap that records no intent
+  produces. There is no fallback fetch on this path.
+- the model trio — omitting **all three** is the one real fallback: the engine spawns its own
+  `model:mechanical` bootstrap to resolve them. Two of three is not legal (see step 6).
+- `wontFixedTexts` — omitting it suppresses nothing, and there is no wont-fix search on this path,
+  so an already-dismissed finding can resurface and force a revise round. Pass `[]` only when the
+  corpus really is empty.
 
 ### 4. Stamp `in-progress`
 
