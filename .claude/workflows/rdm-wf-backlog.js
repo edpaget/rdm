@@ -1,13 +1,14 @@
 // backlog — a batched, propose-only backlog-grooming pass.
 //
-// Runs `rdm backlog report` ONCE, fans one READ-ONLY analyzer agent out per
-// POPULATED signal category (stale_tasks, duplicate_clusters, tag_clusters,
+// The ORCHESTRATOR runs `rdm backlog report --format json` once and passes it
+// as `report`. This engine fans one READ-ONLY analyzer agent out per POPULATED
+// signal category (stale_tasks, duplicate_clusters, tag_clusters,
 // archivable_roadmaps) in parallel, and consolidates the results into one
 // ordered, reviewable batch of `{command, rationale}` proposals grouped by
 // category plus a merged `## Open questions` section. It NEVER mutates the
-// plan repo: the only Bash-executing agent in the whole run is the read-only
-// report fetch, and every analyzer is explicitly told it may only propose
-// text — a human runs the batch later, or doesn't.
+// plan repo: the ONLY agents it dispatches are those analyzers, each explicitly
+// told it may only propose text — a human runs the batch later, or doesn't.
+// No agent in the run executes Bash at all.
 //
 // Invoke with args: { project?: '<name>', olderThan?: <days>, tag?: '<tag>' }.
 // All three fields are optional.
@@ -522,13 +523,14 @@ function coerceRawArgs(a) {
   if (!raw || typeof raw !== 'object') raw = {}
   return raw
 }
-// Optional caller-supplied hoists (see docs/mechanical-agent-inventory.md). The
+// The caller-supplied `report` (see docs/mechanical-agent-inventory.md). The
 // rdm-backlog shim is already a running agent with the repo in context, so it
-// runs `rdm model resolve mechanical` / `rdm backlog report --format json`
-// itself and passes the results here. Both are OPTIONAL: absent or malformed
-// falls through to the original agent, which is what a direct `Workflow`
-// invocation always does. Hoisting `report` does not weaken the propose-only
-// contract — `rdm backlog report` is read-only whoever runs it.
+// runs `rdm backlog report --format json` itself and passes the parsed object
+// here. It is REQUIRED and FAIL-CLOSED: absent or malformed aborts the run with
+// the command to use, because there is no fetch agent left to fall through to.
+// (The `mechanicalModel` hoist is gone with the mechanical agents it pinned.)
+// Hoisting `report` does not weaken the propose-only contract — `rdm backlog
+// report` is read-only whoever runs it.
 const rawBacklogArgs = coerceRawArgs(args)
 // hoistedReportOk(r) — the shape guard: an object carrying all four signal
 // arrays. Anything else is refused, because there is no fetch agent to fall back

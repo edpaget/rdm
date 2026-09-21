@@ -27,9 +27,11 @@
 //!
 //! ## Non-mutation guarantee
 //!
-//! This pipeline runs exactly ONE Bash-executing agent — the Stage-0 report
-//! report command (`backlogReportCommand`), which is `rdm backlog
-//! report` only (never a mutating verb). Every analyzer agent is explicitly
+//! This pipeline runs NO Bash-executing agent at all. The one read it needs is
+//! `rdm backlog report --format json` — `backlogReportCommand` returns that
+//! exact text, and the ORCHESTRATOR runs it and passes the parsed object as
+//! `report`, which the engine refuses to run without. That command is read-only
+//! whoever runs it, so hoisting it cannot weaken this guarantee. Every analyzer agent is explicitly
 //! told it is READ-ONLY and must propose text only, never execute a mutating
 //! rdm command — mirroring review-refute-fix's "READ-ONLY reviewer" framing.
 //! Every proposed action is returned as a `{command, rationale}` string pair

@@ -2,10 +2,19 @@
 //
 // Validates that every phase of a roadmap is `done`, fans out a per-phase
 // git-gather step in parallel() (falling back to phase-body-only when a phase
-// has no commit SHA, or the SHA is unreachable), runs one synthesis agent to
-// draft the doc from bodies + diffs, and a mechanical Bash agent to write the
-// result to `--out` (default `docs/<slug>.md`). Returns
-// { roadmap, aborted, incompletePhases, path, draft }.
+// has no commit SHA, or the SHA is unreachable), and runs one synthesis agent
+// to draft the doc. The draft is NOT written by an agent: Stage 3 returns
+// `writeCommands` / `writeScript` for the orchestrator to run, writing to
+// `--out` (default `docs/<slug>.md`). Returns
+// { roadmap, aborted, incompletePhases, path, draft, writeCommands, writeScript }.
+//
+// NO rdm DOCUMENT CROSSES AN AGENT BOUNDARY HERE. The gatherer reads its phase
+// itself and returns its own JUDGMENT of what shipped, never the phase body; the
+// synthesizer is given the per-phase `rdm phase show` commands and reads each
+// body in its own context. Both are the engine's own rule (see
+// docs/mechanical-agent-inventory.md § "The orchestrator passes identifiers,
+// never documents"): a body that loses a line in transit degrades the
+// documentation with no signal, so nothing transports one.
 //
 // IMPORTANT: this workflow produces an artifact, not a completion signal — the
 // terminal human approval lives in the rdm-document skill shim, never here. The
@@ -140,18 +149,25 @@ const ROADMAP_META_SCHEMA = {
   },
 }
 
-// PHASE_RECORD — Stage 1's per-phase gather result: body + commit metadata,
-// plus the has-SHA-vs-body-only outcome. `fallback:true` means no git data was
-// gathered (missing or unreachable SHA) and the synthesis agent must lean on
-// `title`/`body` alone for this phase.
+// PHASE_RECORD — Stage 1's per-phase gather result: the gatherer's own JUDGMENT
+// of what this phase shipped, plus commit metadata and the has-SHA-vs-body-only
+// outcome. `fallback:true` means no git data was gathered (missing or
+// unreachable SHA), so `shipped` rests on the phase document alone.
+//
+// There is NO `body` field, deliberately. Requiring the phase body here made a
+// whole rdm document the agent's output, which the engine then re-emitted into
+// the synthesis prompt — a document crossing two agent boundaries as a payload,
+// the exact transport this lane removed everywhere else. The gatherer reads the
+// body in its own context and reports what it concluded; the synthesizer is
+// given `showCommand` and reads the same body itself if it needs the wording.
 const PHASE_RECORD_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['stem', 'title', 'body', 'hasSha', 'fallback'],
+  required: ['stem', 'title', 'shipped', 'hasSha', 'fallback'],
   properties: {
     stem: { type: 'string' },
     title: { type: 'string' },
-    body: { type: 'string' },
+    shipped: { type: 'string' },
     commit: { type: 'string' },
     hasSha: { type: 'boolean' },
     fallback: { type: 'boolean' },
@@ -187,6 +203,14 @@ function documentRoadmapCommand(slug) {
   return './target/debug/rdm roadmap show ' + slug + ' --project rdm --format json'
 }
 
+// documentPhaseCommand(roadmap, stem) — the read-only command that yields ONE
+// phase document. Named in both agents' prompts, run inside each agent's own
+// context. This is the whole mechanism by which a phase body reaches a judgment
+// agent: as a command it runs, never as text it was handed.
+function documentPhaseCommand(roadmap, stem) {
+  return './target/debug/rdm phase show ' + stem + ' --roadmap ' + roadmap + ' --project rdm --format json'
+}
+
 // Stage 1: one READ-ONLY agent per phase, run inside parallel(). It reads the
 // phase document and, when the phase recorded a commit, that commit's history —
 // and it JUDGES what the change actually did, which is why it is not a
@@ -198,9 +222,11 @@ function buildPhaseGatherPrompt(roadmap, phase, gitCmdTemplate) {
   return [
     'You are a READ-ONLY documentation gatherer. Plan nothing, implement nothing, and edit no files.',
     'Read the phase document yourself — run exactly this command in the repo root and read its JSON output:',
-    '  ./target/debug/rdm phase show ' + phase.stem + ' --roadmap ' + roadmap + ' --project rdm --format json',
-    'From it, take stem ("' + phase.stem + '"), title (the phase JSON `title`), body (the phase JSON `body`',
-    'verbatim), and commit (the phase JSON `commit` field if present and non-empty, else an empty string).',
+    '  ' + documentPhaseCommand(roadmap, phase.stem),
+    'From it, take stem ("' + phase.stem + '"), title (the phase JSON `title`), and commit (the phase JSON',
+    '`commit` field if present and non-empty, else an empty string).',
+    'Do NOT copy the phase `body` into your answer, in whole or in part. It stays in your context, where you',
+    'read it; a later agent is given this same command and reads it for itself.',
     'Then decide the git-gather step:',
     '- If `commit` is a non-empty string, treat it as SHA and run these two commands in the CURRENT working',
     '  directory (the source repo you are already in, NOT the plan repo), substituting the real SHA value for',
@@ -210,9 +236,14 @@ function buildPhaseGatherPrompt(roadmap, phase, gitCmdTemplate) {
     '  If BOTH commands succeed and produce output, set hasSha:true, fallback:false, gitLog (the first',
     '  command\'s output), and gitDiffStat (the second command\'s output).',
     '- If `commit` is empty/missing, OR either git command errors or returns no output (e.g. the SHA was',
-    '  rebased away and is unreachable), fall back to body-only: set hasSha:false, fallback:true, and omit',
-    '  gitLog/gitDiffStat entirely — rely on the phase title and body alone.',
-    'Return a PHASE_RECORD object with exactly these fields.',
+    '  rebased away and is unreachable), fall back to the document alone: set hasSha:false, fallback:true,',
+    '  and omit gitLog/gitDiffStat entirely — judge from the phase title and body you just read.',
+    'Then write `shipped`: YOUR OWN account, in at most a short paragraph, of what this phase actually',
+    'delivered and what a USER can now do that they could not before — read out of the body and, where you',
+    'have it, cross-referenced against the diff. It is a judgment, not a transcript: name any place the',
+    'body describes something the diff does not show, or the reverse. If the body is empty or says nothing',
+    'concrete, say so rather than inventing content.',
+    'Return a PHASE_RECORD object with exactly these fields — and no phase body among them.',
   ].join('\n')
 }
 
@@ -228,8 +259,13 @@ function buildSynthesisPrompt(roadmapMeta, records) {
       '" (' +
       roadmapMeta.slug +
       ').',
-    'You are given, per phase, its title/body (the intent) and — where available — a git log + diff --stat',
-    '(what actually shipped). A phase marked fallback:true has no git data; lean on its title/body alone.',
+    'You are given, per phase, a gatherer\'s account of what it shipped (`shipped`) and — where available —',
+    'a git log + diff --stat. A phase marked fallback:true has no git data behind that account.',
+    'NO PHASE BODY IS INCLUDED BELOW, on purpose: a document copied through an agent can lose a line with no',
+    'signal. Each record carries `showCommand` instead. READ THE PHASE YOURSELF — run each record\'s',
+    '`showCommand` in the repo root and read the `body` from its JSON output. That body is the phase\'s',
+    'intent and the source of the concrete examples the Usage section needs. Do it for every phase before',
+    'you draft, and if a command fails, say so in the draft rather than guessing what the phase contained.',
     'Phase records (ordered):',
     JSON.stringify(records, null, 2),
     'Use this structure:',
@@ -255,7 +291,8 @@ function buildSynthesisPrompt(roadmapMeta, records) {
     '- Write for users, not developers — focus on what they can do, not internal implementation details.',
     '- Internal/refactoring-only phases (no user-visible change) belong briefly in "How it works", if',
     '  anywhere at all — omit them from Usage.',
-    '- When a phase body is minimal or empty, lean on its gitDiffStat/gitLog to fill in what actually shipped.',
+    '- When a phase body is minimal or empty, lean on its `shipped` account and its gitDiffStat/gitLog to',
+    '  fill in what actually shipped.',
     '- Cross-reference phase descriptions against diff stats/file lists so the documentation reflects what was',
     '  actually built, and note any discrepancy you find.',
     'If the roadmap has NO phases at all, return a short draft noting the roadmap has no phases to document —',
@@ -361,15 +398,26 @@ async function gatherPhase(p) {
     })
     if (record) return record
   } catch (e) {
-    // fall through to the body-only placeholder below
+    // fall through to the gather-failed record below
   }
-  log('document: gather failed for phase ' + p.stem + ' — falling back to body-only placeholder')
-  return { stem: p.stem, title: p.title || p.stem, body: '', hasSha: false, fallback: true }
+  log('document: gather failed for phase ' + p.stem + ' — the synthesizer reads this phase unaided')
+  return gatherFailedRecord(p)
+}
+// The record a phase gets when its gatherer produced nothing. `shipped` is
+// empty rather than invented, and `showCommand` still points the synthesizer at
+// the document — so a failed gather costs the diff evidence and the gatherer's
+// reading, never access to the phase itself.
+function gatherFailedRecord(p) {
+  return { stem: p.stem, title: p.title || p.stem, shipped: '', hasSha: false, fallback: true }
 }
 const phaseRecords = phases.length > 0 ? await parallel(phases.map((p) => () => gatherPhase(p))) : []
-const safeRecords = phaseRecords.map(
-  (r, i) => r || { stem: phases[i].stem, title: phases[i].title || phases[i].stem, body: '', hasSha: false, fallback: true }
-)
+// Every record carries the command that reads its phase, added HERE rather than
+// asked of the agent: it is derived from the stem the orchestrator supplied, so
+// it cannot be wrong and no agent has to be trusted to reproduce it.
+const safeRecords = phaseRecords.map((r, i) => ({
+  ...(r || gatherFailedRecord(phases[i])),
+  showCommand: documentPhaseCommand(roadmapSlug, phases[i].stem),
+}))
 
 // Stage 2: single synthesis agent drafts the whole document.
 let synth = null
