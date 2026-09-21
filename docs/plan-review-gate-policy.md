@@ -86,47 +86,47 @@ cover a unit that reached `reviewed` through any path that skipped it:
 In each case the structural argument is void, and the gate's clearance is not justified by
 this document.
 
-### The escalation path
+### The gate returns; the orchestrator applies
 
-An invoking surface that judges itself too close to the plan — or an operator who simply
-wants a checkpoint before any plan state changes — passes **`gateMode: 'return'`**.
+**This is no longer an escape hatch — it is how the gate works.** The engine has no
+agent that can run a shell command, so it cannot write the tag at any time, for any
+caller. `gateMode` is gone with the choice it used to express.
 
-The driver then computes the gate action and **writes nothing**. Every unit comes back with
+The driver computes the gate action and **writes nothing**. Every unit comes back with
 
 ```js
 gateAction: {
   kind, ident, roadmap,
   clearsPlanReviewTag,          // false on rework/escalated
-  commands: [updateCmd, commitCmd],  // [] when the tag is not to be cleared
+  tagsUnknown,                  // true when the caller supplied no tag list
+  commands: [updateCmd, commitCmd],  // [] when there is nothing to write
   remainingTags,                // the exact sibling-preserved list to be written
   removedTags,                  // [] when the item never carried the tag (idempotent no-op)
-  applied, deferred, blocked, blockedReason,
 }
 ```
 
-and `gateDeferred: true`. A human, or a distinct surface, applies `gateAction.commands`.
-`gateMode` is read from the **structured `args` object only**, never parsed out of the
-`$ARGUMENTS` flag string: a target slug literally named `return`, or a prose target
-containing `--gate-mode`, must never silently suppress the gate. An illegal value throws at
-parse time, before any agent fires, naming both legal values.
+and the orchestrator applies `gateAction.commands`, in order, reporting the exit
+status. `result.gatePendingCount` says how many units are waiting on it.
 
-Deferral is a **deliberate hand-off, not a failure** — `deferred` and `blocked` are
-separate fields, `gateDeferredCount` and `gateBlockedCount` are separate run-level counts
-(both always present as an explicit `0`, never `undefined`, including on the fail-closed
-early return), and the deferred clause on the summary reads differently from the blocked
-one, so a `'return'`-mode run is never reported as a broken gate.
+**The commands can only be built from a tag list the caller supplied.** `--tags`
+replaces the whole list, so a unit whose current tags the engine was never shown
+gets `commands: []` and `tagsUnknown: true` rather than a `--tags ""` that would
+silently drop a sibling tag such as `depends-unlanded`. Refusing to guess is the
+only safe branch, and it is visible rather than silent.
 
-Because this hand-off *is* the escalation path, the deferred clause carries the **commands
-themselves**, not a pointer at the JSON:
+Because the hand-off is the whole mechanism, the pending clause carries the
+**commands themselves**, not a pointer at the JSON:
 
 ```
- [gate deferred: needs-plan-review NOT cleared by this run (gateMode='return') — apply: <update> && <commit>]
+ [gate pending: needs-plan-review is cleared by running — <update> && <commit>]
 ```
 
 A surface that reports only the `summary` — a log line, a chat message — is therefore
-already reporting the exact escalation. The marker is lowercase `gate deferred` against the
-blocked path's uppercase `GATE BLOCKED`, so the two stay separable by a plain grep over
-either summaries or logs.
+already reporting exactly what remains to be done.
+
+**There is no `gateBlocked` any more.** It meant "the write was attempted and did not
+succeed", and nothing attempts it: an orchestrator whose own `rdm ... update` exits
+nonzero reports that itself, with the shell's own message.
 
 If nobody applies the commands, nothing is silently passed: the item simply keeps
 `needs-plan-review` and is picked up by the standing
@@ -295,36 +295,28 @@ prompt now states this explicitly.
    un-graded, and the clause reports that split honestly instead of overclaiming. See "The
    prompt's grading claim is computed, not asserted" above.
 
-2. **The gate is returnable.** `gateMode: 'return'` computes `gateAction` and writes
-   nothing (see above). `gateAction.commands` come from the same `planGateCommands` helper
-   the prompt prints, so an action applied by hand is byte-identical to the write the agent
-   was asked to make.
+2. **The gate does not write; it returns.** `gateAction.commands` come from the same
+   `planGateCommands` helper, and the orchestrator runs them. There is no `gateMode`,
+   because there is no second behaviour to select.
 
-3. **A blocked gate is loud.** Previously a refused write left
-   `clearsPlanReviewTag: true, tagCleared: false` discoverable only by reading the JSON, and
-   the `ack.ok !== true` path logged nothing at all. Now:
-   - the unit's `summary` (and the flattened top-level `summary`) gains
-     ` [GATE BLOCKED: needs-plan-review NOT cleared despite a reviewed outcome — apply
-     manually: <update> && <commit>]`;
-   - the unit carries `gateBlocked: true` and `gateAction.blockedReason`, distinguishing
-     `ack-not-ok` (a refusal) from `agent-error: <message>` (a crash);
-   - a dedicated `GATE BLOCKED` log line is emitted on **both** failure paths;
-   - the run-level `gateBlockedCount` counts them, and appears on the final log line when
-     non-zero — alongside, and never merged with, the sibling `gateDeferredCount`;
-   - the skill prose requires a blocked unit to be surfaced at the TOP of the report.
+3. **A gate the caller has not yet applied is loud.** The unit's `summary` (and the
+   flattened top-level `summary`) gains
+   ` [gate pending: needs-plan-review is cleared by running — <update> && <commit>]`;
+   `result.gatePendingCount` counts them, appears on the final log line when non-zero,
+   and the skill prose requires a pending unit to be surfaced at the TOP of the report
+   and never described as cleanly reviewed until the commands have run. A unit whose
+   tag list the caller did not supply carries `tagsUnknown: true` and gets **no**
+   commands, because `--tags` replaces the whole list and guessing would drop a sibling.
 
-   A healthy run's summary is **byte-unchanged** — the clause is empty, following the same
-   discipline as `formatUnitBudget` and `coverageSummaryClause`. A `rework`/`escalated`
-   unit, whose `tagCleared` is legitimately false, never trips it.
+   A `rework`/`escalated` unit never trips the clause — it is not supposed to clear the
+   tag — so a healthy run's summary stays byte-unchanged, following the same discipline
+   as `formatUnitBudget` and `coverageSummaryClause`.
 
-   **Quoting hazard, deliberately contained.** Both gate clauses embed an exact rdm command
-   containing double quotes (`--tags "a,b"`) — unlike `coverageSummaryClause`, which is
-   documented as quote-free *because* it is interpolated into Bash prompts. In plan mode
-   `summary` and `reason` are returned data, never prompt inputs, and no prompt builder in
-   `lib/plan-review.mjs` reads either. `verify-workflow-review.sh` § 5b-gate-quoting pins
-   that with a grep over every extracted `build*Prompt` body plus a planted-leak self-test,
-   so a future prompt builder that starts quoting the summary is caught before it ships a
-   broken command line.
+   **Quoting hazard, deliberately contained.** The pending clause embeds an exact rdm
+   command containing double quotes (`--tags "a,b"`) — unlike `coverageSummaryClause`,
+   which is documented as quote-free *because* it is interpolated into Bash prompts. In
+   plan mode `summary` and `reason` are returned data, never prompt inputs, and
+   `lib/plan-review.mjs` builds no prompt at all any more.
 
 4. **The policy is stated on every plan surface; the driver's field names are not.**
    `.claude/workflows/lib/review.mjs`'s `//|plan|` spec is stamped into **four** plan-review
@@ -336,20 +328,18 @@ prompt now states this explicitly.
    (it also shipped `rdm-wf-dispatch-phase.js` until `agent-orchestrated-dispatch` phase 7
    retired that engine). The shipped and plugin skills run the
    gate themselves, in hand-authored prose that shells out to `rdm … update --tags …`
-   directly; they have no driver to pass `gateMode` to and no returned unit to read
-   `gateBlocked` off.
+   directly; they have no driver to read a returned `gateAction` off.
 
-   So the shared spec states the policy in terms of **the write** — state its evidence; be
-   loud if it did not land; do not perform it at all when you are too close to the plan, and
-   report the exact commands instead — which every plan surface can act on whatever
-   mechanism it uses. `gateMode`, `gateAction`, `gateBlocked` and `gateDeferred` appear only
-   in the local shim's **hand-authored** prose, above the generated marker. Stamping them
-   into the shared spec would emit an uninstructable instruction into every downstream tree,
+   So the shared spec states the policy in terms of **the write** — state its evidence, be
+   loud about a clear that has not happened yet, and report the exact commands — which
+   every plan surface can act on whatever mechanism it uses. `gateAction` appears only in
+   the local shim's **hand-authored** prose, above the generated marker. Stamping it into
+   the shared spec would emit an uninstructable instruction into every downstream tree,
    which is the failure this point exists to prevent.
 
    Both halves are gated. `verify-workflow-review.sh` § 1d-gate-policy requires the shared
-   spec and both shipped templates to be free of those four names *and* requires the local
-   shim to carry them — so the check cannot be satisfied by deleting the capability instead
+   spec and both shipped templates to be free of those driver names *and* requires the
+   local shim to carry `gateAction` — so the check cannot be satisfied by deleting the capability instead
    of scoping it — and § 1g plants a field name in the `//|plan|` region, regenerates, and
    requires the detector to fire.
 

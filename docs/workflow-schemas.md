@@ -338,7 +338,7 @@ throwing — both invisible to a caller who only checks that the key did not thr
 
 | Artifact | Purpose |
 |---|---|
-| `.claude/agents/rdm-mechanical.md` | The custom agent definition. Minimal system prompt, `tools: Bash, StructuredOutput`. Deliberately carries **no `model:` key** — every mechanical call site already passes `model: models.mechanical` / `_mechanicalModel`, and `scripts/verify-workflow-review.sh` §5b-mechanical asserts that pinning. |
+| `.claude/agents/rdm-mechanical.md` | The custom agent definition. Minimal system prompt, `tools: Bash, StructuredOutput`. Deliberately carries **no `model:` key** — every mechanical call site already passes `model: models.mechanical` / `_mechanicalModel`, and `scripts/verify-workflow-review.sh` §2c asserts that pinning for the engines that still have a mechanical site. |
 | `.claude/workflows/spike-agent-type.js` | Sequential probe. Crosses `agentType` (absent / `'rdm-mechanical'` / unknown id / `undefined`) with `effort` (absent / `'low'` / `undefined` / invalid), one identical trivial prompt per case, each returning a small schema'd probe object. Excluded from `docs/mechanical-agent-inventory.md`'s mechanical-label derivation (and, historically, from the retired `scripts/verify-workflow-dispatch.sh` §7 inventory gate); **not** excluded from the dir-wide hygiene greps, so it complies with them. |
 
 <a id="the-workflow-run"></a>
@@ -1472,53 +1472,23 @@ it always has.
 
 **`planSlug` arg.** The slug of the persisted `plan/<slug>` document under
 review, for an `--implementation-plan` target. Read from the STRUCTURED `args`
-object only — never parsed out of the `$ARGUMENTS` flag string, the same rule
-as `fetched`/`wontFixedTexts`/`gateMode`. `planSlug` and `planText` are
-**mutually exclusive** — `planSlug` is the document-backed path and always
-resolves the body itself (see below); `planText` is reserved for the free-form
-caller with no persisted document at all. Validated at PARSE time, before any
-`agent()` call, with three throws out of `parsePlanArgs`: a `planSlug` on a
-non-implementation-plan target; a `planSlug` given alongside a non-empty
-`planText` (a whitespace-only `planText` counts as absent, not as dual
-supply — this was a permitted "`planText` wins verbatim" precedence prior to
-code review `2026-09-21-1218-d618`'s AC4 finding `ac-4-dual-supply-divergence`,
-which found the precedence left a corrupted/wrong `planText` gradable while the
-verdict was still persisted against the `planSlug`-named document; supplying
-both is now rejected instead); and a `persist.on` that is not
-`plan/<planSlug>`.
+object only — never parsed out of the `$ARGUMENTS` flag string, the same rule as
+`phases`/`tags`/`priorReviews`/`wontFixedTexts`/`reviewers`.
 
-When `planSlug` is present (and `planText` is therefore absent), the driver
-resolves the body itself: one mechanical `fetch:plan` read
-(`buildPlanFetchPrompt`, `RAW_STDOUT_SCHEMA`, one bounded retry), whose
-transcript `extractPlanFromJson` accepts only if the document's own recorded
-`slug` matches `planSlug` and its `body` is non-empty after trimming. A
-successful candidate body then passes through a SECOND, independent mechanical
-read, `fetch:plan-body-check` (`buildPlanBodyCheckPrompt`,
-`ROADMAP_BODY_CHECK_SCHEMA`) — mirroring `fetch:roadmap-body-check` below — which
-re-reads the document and reports only its length and first line, compared
-against the candidate body via `roadmapBodyVerified` (finding
-`correctness-fetch-plan-no-content-integrity-check`: identity and
-non-emptiness alone do not rule out a schema-valid, identity-correct transcript
-whose body is a fabricated one-line status sentence rather than the real
-document). A confirmed body-check disagreement, or exhausting the bounded
-retry on the primary fetch, fails closed: `{ outcome: 'escalated',
-fetchError: true, findings: [], planSlug }` — nothing graded, nothing
-persisted. An unavailable/erroring body-check degrades to "proceed
-unverified" rather than failing closed, matching the roadmap precedent.
+**It is the ONLY way to name the plan.** `planText` is gone, and with it the
+dual-supply throw and the precedence rule that decided which of the two won —
+there is nothing to transport, so there is nothing to disagree about. The
+reviewers read the document themselves from the `rdm plan show <slug>
+--format json` command their prompt names, which is also the ref the persist
+ladder writes to, so the graded document and the recorded verdict cannot name
+different documents.
 
-`planSlug` is **not** a hoist over an *existing* value the way `fetched` is —
-there is no caller-suppliable shortcut that skips both fetch:plan reads while
-still naming a persisted document; the only way to skip them is the
-mutually-exclusive `planText` free-form path. It is the discriminator that
-makes an implementation-plan verdict persistable: with it supplied and
-`persist` on, the review is written to the ref DERIVED as `plan/<planSlug>`
-(never to `persist.on`, which is why a disagreeing one throws), and the run's
-result carries `planSlug` plus the `persistCommands` / `persistScript` the
-caller runs. It adds no
-gate and no act step — a plan document carries no tags, so there is no
-`needs-plan-review` to clear, and the branch still returns without
-`gateAction`/`gateBlocked`/`gateDeferred`. A no-slug (`planText`-only) run's
-returned shape is byte-unchanged.
+`planSlug` is what makes an implementation-plan verdict persistable: with it and
+`persist` on, the run returns `persistCommands` / `persistScript` for
+`plan/<planSlug>` (never for `persist.on`, which is why a disagreeing one throws
+at parse time). It adds no gate and no act step — a plan document carries no
+tags, so there is no `needs-plan-review` to clear — and the branch returns without
+`gateAction` or any gate key. A no-slug run reports the outcome and findings only.
 
 ### `VERDICT`
 
@@ -2024,52 +1994,55 @@ code lane (`rdm-dispatch-phase`/`rdm-autopilot`). The plan rows carry an explici
 plan review never persists an rdm status; it clears `needs-plan-review` on
 `reviewed` and leaves it on `rework`/`escalated`.
 
-### `rdm-wf-plan-review`'s gate disposition: `gateAction` / `gateBlocked` / `gateDeferred`
+### `rdm-wf-plan-review`'s gate disposition: `gateAction`
 
-`GATE_POLICY.plan` above says what the gate *should* do. These five result fields,
-added by `phase-4-plan-review-gate-blocked-by-safety-classifier`, say what it
-actually did — the two used to be silently conflated, so a refused tag write
-returned `clearsPlanReviewTag: true, tagCleared: false` and nothing else.
+`GATE_POLICY.plan` above says what the gate *should* do. `gateAction` is what the
+CALLER must run to do it: **the engine never writes the tag**, because it has no
+agent that can run a shell command.
 
 | field | where | meaning |
 |---|---|---|
-| `gateAction` | every gated unit, plus the single-target flatten | The declarative action: `{ kind, ident, roadmap, clearsPlanReviewTag, commands, remainingTags, removedTags, applied, deferred, blocked, blockedReason }`. `commands` is `[updateCmd, commitCmd]` built by the same `planGateCommands` helper the gate PROMPT prints, so a caller applying it by hand issues byte-identical writes; it is `[]` on a `rework`/`escalated` unit, which still gets an action so callers can iterate `units[].gateAction` without special-casing. `blockedReason` is `'ack-not-ok'` (a refusal) or `'agent-error: <message>'` (a crash). |
-| `gateBlocked` | every gated unit, plus the flatten | `true` when a `reviewed` unit's tag write was attempted and did not succeed. Also drives a ` [GATE BLOCKED: …]` clause on the unit's `summary` and a dedicated log line on BOTH failure paths. |
-| `gateDeferred` | every gated unit, plus the flatten | `true` when `gateMode: 'return'` made the driver compute the action and write nothing. A hand-off, DISTINCT from `gateBlocked` — the loud clause must not fire on it. Drives a lowercase ` [gate deferred: … — apply: <update> && <commit>]` clause carrying the commands verbatim, so a surface that reports only `summary` is already reporting the escalation. |
-| `gateBlockedCount` | run-level result (and the fetch-failure / model-abort early returns, as an explicit `0`) | How many units are blocked. Appended to the final `N unit(s) gated` log line when non-zero. |
-| `gateDeferredCount` | same places, same explicit `0` | How many units were deferred. A SEPARATE count — a deferral is never folded into `gateBlockedCount`, so a caller alerting on "the gate did not land" and a caller that must go apply commands read different fields. Appended to the same log line, with the lowercase `gate deferred` marker rather than the uppercase `GATE BLOCKED` one, so the two stay greppable apart. |
+| `gateAction` | every unit, plus the single-target flatten | `{ kind, ident, roadmap, clearsPlanReviewTag, tagsUnknown, commands, remainingTags, removedTags }`. `commands` is `[updateCmd, commitCmd]` from `planGateCommands`; `[]` on a `rework`/`escalated` unit, which still gets an action so callers can iterate `units[].gateAction` without special-casing. |
+| `tagsUnknown` | inside `gateAction` | `true` when the outcome clears the tag but the caller supplied no `tags` list. `--tags` replaces the whole list, so writing one the engine was never shown would silently drop a sibling such as `depends-unlanded`; `commands` is `[]` and the refusal is visible rather than silent. |
+| `gatePendingCount` | run-level result | How many units are waiting on the caller to run their commands. Appended to the final `N unit(s) reviewed` log line when non-zero. |
+
+There is no `gateBlocked` and no `gateDeferred`. The first meant "the write was
+attempted and did not succeed" — nothing attempts it. The second meant
+"`gateMode: 'return'` made the driver compute and hand back" — that is now the
+only behaviour, so the distinction has no content. A unit still awaiting its
+write carries a ` [gate pending: … — <update> && <commit>]` clause on its
+`summary`, so a surface that reports only `summary` is already reporting exactly
+what remains to be done.
 
 The `--implementation-plan` branch has no persisted item, so it gains **none** of
 these keys.
 
-**Scope: these five fields and `gateMode` are `rdm-wf-plan-review.js` surface,
-and that workflow is local-only.** They are deliberately absent from the shared
-`//|plan|` review spec, and therefore from the shipped
-`skill-plan-review-cli.md` templates and `plugins/rdm/skills/plan-review/`
-— those skills perform the gate write themselves, in hand-authored prose that
-shells out to `rdm … update --tags …`, and have no driver to pass `gateMode` to
-or returned unit to read `gateBlocked` off. The shared spec states the same
-*policy* in terms of the write instead; the field names live only in the
+**Scope: `gateAction` is `rdm-wf-plan-review.js` surface, and that workflow is
+local-only.** It is deliberately absent from the shared `//|plan|` review spec,
+and therefore from the shipped `skill-plan-review-cli.md` templates and
+`plugins/rdm/skills/plan-review/` — those skills perform the gate write
+themselves, in hand-authored prose that shells out to `rdm … update --tags …`,
+and have no driver to read a returned action off. The shared spec states the same
+*policy* in terms of the write instead; the field name lives only in the
 hand-authored half of `.claude/skills/rdm-plan-review/SKILL.md`.
 `verify-workflow-review.sh` § 1d-gate-policy gates both directions and § 1g
 proves the detector fires. See
 [`plan-review-gate-policy.md`](plan-review-gate-policy.md) § "What changed" ¶ 4.
 
-Both gate clauses embed an exact rdm command containing double quotes
+The pending clause embeds an exact rdm command containing double quotes
 (`--tags "a,b"`), so — unlike `coverageSummaryClause`, which is quote-free
 precisely *because* it is interpolated into Bash prompts — `summary`/`reason` in
 plan mode are returned **data** and must never reach a prompt builder.
-`verify-workflow-review.sh` § 5b-gate-quoting pins that with a grep over every
-`build*Prompt` body plus a planted-leak self-test.
+`lib/plan-review.mjs` builds no prompt at all any more, so there is nothing for
+the clause to leak into.
 
-**`gateMode` arg.** `'apply'` (default) | `'return'`, read from the STRUCTURED
-`args` object only — never parsed out of the `$ARGUMENTS` flag string, the same
-rule as `fetched`/`wontFixedTexts` — and validated at PARSE time, before any
-`agent()` call, the `resolveRefutationBudget` precedent. Under `'return'` the
-`gate:clear-tag` agent is not dispatched at all. The gate prompt itself is now
-evidence-carrying (a four-clause authorization preamble plus the rendered review
-evidence); the decision behind both, its boundary, and the recorded classifier
-blocks that forced it live in
+**`gateMode` is gone.** It chose between "the `gate:clear-tag` agent writes the
+tag in-run" and "compute the action and hand it back", and only the second
+exists. The gate prompt it governed — a four-clause authorization preamble plus
+rendered review evidence — is gone too: it existed to persuade a safety
+classifier that a MECHANICAL AGENT's write was authorized, and there is no such
+agent to authorize. The decision it recorded, its boundary, and the classifier
+blocks that forced it remain in
 [`plan-review-gate-policy.md`](plan-review-gate-policy.md).
 
 Everything else inside the stamped block is **machinery** (JSON schemas,

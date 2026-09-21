@@ -22,39 +22,83 @@ Pass `$ARGUMENTS` straight through to the `rdm-wf-plan-review` Workflow. It acce
 
 The workflow runs the shared `find → refute → filter → verdict → act → gate` pipeline (`buildReviewPipeline('plan')`) and returns a per-unit outcome (`reviewed` | `rework` | `escalated`) with its findings.
 
-### Gather the target payload yourself — do not let a subagent transcribe it
+### You perform every read and every write
 
-You are already a running agent with the repo in context; the workflow is not, so anything it has to look up costs it a whole dedicated mechanical subagent — and, for the target artifact specifically, that subagent has **twice corrupted real plan data in production** (runs `wf_e3402021-0af` and `wf_f4be8027-dbb`, recorded in full on task `fix-plan-review-gate-tag-clobber`). Both corrupt returns were *schema-valid*: one transposed the roadmap's real body and tags into `phases[0]` and packed three words lifted from its own prompt into `tags`, losing five of six phases; the other returned `tags: ["plan-target"]` — a phrase from the prompt's own "Return a PLAN_TARGET object". The gate then faithfully wrote that junk over the target's real tags. `agent(..., { schema })` cannot catch this, because the schema constrains shape and never content.
+The workflow dispatches **finder and refuter agents and nothing else**. It reads no
+rdm document and writes nothing. That means two things for you.
 
-Run the reads yourself and pass the parsed JSON through the workflow `args`. Every one of these is **optional** — the workflow falls back to its in-workflow fetch agent for anything you omit or get wrong — but supplying them is what removes the transcription step entirely:
+**Reads it needs, it names.** Each reviewer is told the `rdm ... show --format json`
+command for the document it must read, and runs that command itself. You supply
+only IDENTIFIERS and short lists, all read from the structured `args` object and
+never parsed out of the `$ARGUMENTS` flag string:
 
-- **`fetched`** — the target artifact, **verbatim**:
-  - `--task <slug>` → `./target/debug/rdm task show <slug> --project rdm --format json`; pass `{ body, tags }` copied straight from that JSON.
-  - single phase → `./target/debug/rdm phase show <phase> --roadmap <slug> --project rdm --format json`; pass `{ body, tags }`.
-  - `--roadmap <slug>` → one `./target/debug/rdm roadmap show <slug> --project rdm --format json`, **plus one `./target/debug/rdm phase show <stem> --roadmap <slug> --project rdm --format json` per phase**; assemble `{ body, tags, phases: [{ stem, body, tags, status }, …] }` with one entry per real phase. `status` is the phase's own status field, copied verbatim from either JSON.
-  - **Never summarize, paraphrase, or describe what you did.** `body` is the document's own text and `tags` is the exact array the binary printed — not a description of the fetch, not words from this prompt. If you cannot read the target, omit `fetched` entirely and let the workflow's fetch agent run; do not pass a placeholder.
-  - **`tags` is required, but an OMITTED key is tolerated (task `fix-plan-review-gate-tag-clobber`).** `rdm ... show --format json` omits the `tags` key entirely for an untagged item — it never prints `[]` — so the workflow accepts a `fetched` payload (or roadmap phase entry) with no `tags` key at all and normalizes it to `[]` for the gate write. A `tags` key that IS present but malformed (not a real string array) is still rejected outright and falls back to the fetch agent — this narrows the old all-or-nothing rule to the omission case only. Pass the array exactly as printed when the binary printed one; omit the key entirely (do not fabricate `[]`) when it printed none.
-  - **`status` is required on every phase entry, same all-or-nothing rule as `tags`.** The workflow's roadmap-wide sweep filter reads it to decide whether a phase is terminal (`done`/`wont-fix`, excluded and reported) or actionable (kept). A `fetched` payload whose phases omit `status`, or blank it, is rejected wholesale and falls back to the workflow's own fetch agent — never silently reviewed unfiltered.
-- **`wontFixedTexts`** — the array of prior wont-fix finding texts from `./target/debug/rdm search "" --type review --project rdm` (or omit it).
-- **`mechanicalModel`**, **`findModel`**, **`verifyModel`** — the ids printed by `./target/debug/rdm model resolve mechanical`, `./target/debug/rdm model resolve review-find`, and `./target/debug/rdm model resolve review-verify`, verbatim. **All-or-nothing**: the workflow only skips its own model-resolving bootstrap agent when all three are present; supply all three or omit all three (a partial hoist is discarded and the bootstrap agent still runs).
+- **`phases`** — for a `--roadmap` target, the phase stems to sweep:
+  `[{ stem, tags, status }, …]`, from your own
+  `./target/debug/rdm roadmap show <slug> --project rdm --format json`. **Omit it and
+  the roadmap document is reviewed alone** — the workflow never reads a roadmap to
+  discover its phases. A phase whose `status` is exactly `done` or `wont-fix` is
+  excluded and reported; a missing or unfamiliar status keeps it in the sweep.
+- **`tags`** — the target item's current tag list, for a single-unit target, exactly
+  as the binary printed it. The gate writes back a filtered copy, and `--tags`
+  replaces the whole list, so **a unit whose tags you did not supply gets no gate
+  commands at all** (`gateAction.tagsUnknown: true`) rather than a `--tags ""` that
+  would drop a sibling tag such as `depends-unlanded`.
+- **`priorReviews`** — `./target/debug/rdm review list --on <ref> --project rdm
+  --format json`, for the round channel. Absent fails toward round 0.
+- **`wontFixedTexts`** — the titles from `./target/debug/rdm search "" --tag
+  plan-review --status wont-fix --type task --project rdm --format json`. Absent
+  suppresses nothing, which is the safe direction.
+- **`reviewers`** — see the bullet above.
+- **`findModel` / `verifyModel`** — the ids printed by `./target/debug/rdm model
+  resolve review-find` and `... review-verify`. Each is independently optional; an
+  omitted one makes that agent inherit the session model. There is no mechanical
+  model any more and no bootstrap agent to skip.
 
-`fetched` is read from the structured `args` object only — never parsed out of the `$ARGUMENTS` flag string.
+**Writes it would make, it hands back.** Nothing in the workflow mutates the plan
+repo. Run these yourself, in order, and report each exit status:
 
-### Applying the gate yourself
+1. **Persist the review** — with `persist` on, each unit carries
+   `persistCommands` / `persistScript`: the `review start` → `review comment` per
+   finding → `review submit` → `commit` ladder. Run the script in **one** Bash
+   session (later lines read variables the earlier ones set); it prints
+   `reviewId=<id>`. If one `review comment` is refused for its anchor, re-run that
+   one line with `--quote` and `--occurrence` removed to leave a whole-document
+   comment. If `review start` itself is refused, stop and report it.
+2. **Act on the findings** — apply a small, localized plan fix by writing the whole
+   `--body` back; file a large structural finding as a task with
+   `--tags plan-review --no-plan-review`. This is yours because it is judgment plus
+   a write. Findings marked `unrefuted: true` were reported, not verified — treat
+   them under the disposition rule in the Review specification below.
+3. **Record the round** — a non-`reviewed` unit carries `roundNote`, the rendered
+   `## Plan Review Round N — <outcome>` block. Append it to the item's body (read
+   the current body, write the whole thing back) and commit, so the next pass can
+   read which round it is on.
+4. **Clear the gate** — see below.
 
-The workflow normally clears `needs-plan-review` itself on a `reviewed` unit. When **this session authored the plan under review**, or the operator wants a checkpoint before any plan state changes, pass `gateMode: 'return'` in the workflow `args` instead. The workflow then computes the gate but writes nothing: every unit comes back with
+### Applying the gate
+
+The workflow never writes the tag. Every unit comes back with
 
 ```
-gateAction: { clearsPlanReviewTag, commands: [<update>, <commit>], remainingTags, removedTags, applied, deferred, blocked, blockedReason }
+gateAction: { clearsPlanReviewTag, tagsUnknown, commands: [<update>, <commit>], remainingTags, removedTags }
 ```
 
-Show the operator the outcome and the finding count first, then run `units[].gateAction.commands` yourself, in order. `gateAction.remainingTags` is the exact sibling-preserved list that will be written — `--tags` replaces the whole list, so do not retype it by hand. A unit that did not reach `reviewed` carries `commands: []`; there is nothing to apply for it.
+Show the operator the outcome and the finding count first, then run
+`units[].gateAction.commands` yourself, in order. `gateAction.remainingTags` is the
+exact sibling-preserved list that will be written — `--tags` replaces the whole
+list, so do not retype it by hand. A unit that did not reach `reviewed` carries
+`commands: []`; there is nothing to apply for it. `result.gatePendingCount` says how
+many units are waiting on you.
 
-`gateMode` is read from the structured `args` object only — never from the `$ARGUMENTS` flag string — and accepts only `'apply'` (the default) or `'return'`; anything else is rejected at parse time, before any agent runs. Why deferral is an escape hatch rather than the default is recorded in `docs/plan-review-gate-policy.md`.
+**Surface a pending gate at the TOP of your report**, with its exact commands,
+before anything else — and never describe such a unit as cleanly reviewed until you
+have run them: until then its tag is still set, so the item reads as
+un-plan-reviewed to every other surface. A unit with `tagsUnknown: true` reached
+`reviewed` but could not be given commands because you did not pass its tags; say
+so rather than clearing the tag from memory.
 
-### Report a blocked gate first
-
-If any unit comes back with `gateBlocked: true` — a `reviewed` outcome whose tag write did not succeed — surface it at the **top** of your report, with the exact command from `gateAction.commands`, before anything else. Never bury it, and never describe that unit as cleanly reviewed: its tag is still set, so the item still reads as un-plan-reviewed to every other surface. `gateAction.blockedReason` distinguishes a refusal (`ack-not-ok`) from a crashed agent (`agent-error: …`), and the run-level `gateBlockedCount` says how many units are affected.
+Why the gate returns rather than writes — and why that is now unconditional rather
+than an escape hatch — is recorded in `docs/plan-review-gate-policy.md`.
 
 ## What the workflow does (domain intent)
 
@@ -64,9 +108,9 @@ Key domain behaviors the workflow implements, worth knowing when reading its out
 
 - **You select the reviewers.** Pass `reviewers: ['coherence', …]` to run exactly those, or omit the key entirely to run every plan reviewer (the safe default). Include `unit-of-work` **only when the target is a phase**; include `intent-alignment` when the parent roadmap records a `## Intent` section — it reads that section itself. An unrecognised name is dropped silently and shows as a gap in the unit's `coverage.selected`/`coverage.ran`; nothing refuses a thin set. The per-reviewer cues are in **Review specification § Reviewers** below.
 - **Per-phase independent gating.** Under `--roadmap <slug>` the roadmap body and every non-terminal phase are reviewed and gated **individually**: one phase's `rework` never holds the tag on a sibling that reached `reviewed`. A phase excluded from the sweep as terminal (`done`/`wont-fix`) is **never gated** — there is no tag disposition to make on a unit that was never reviewed this run.
-- **The gate manages a tag, not a status.** Plan review owns the reserved `needs-plan-review` tag. On `reviewed` it clears the tag by **read-filter-write** (`filterPlanReviewTag` preserves siblings like `depends-unlanded`, since `--tags` replaces the whole list); on `rework`/`escalated` it leaves the tag in place. It **never** writes an rdm status and never writes a land-time completion directive.
-- **`--implementation-plan` is report-only.** No persisted item, so the workflow skips both the act half and the gate entirely — it reports the outcome and findings only.
-- **Fail-closed.** An unread/empty plan is never silently marked reviewed; the workflow leaves the tag in place and reports the fetch failure.
+- **The gate manages a tag, not a status.** Plan review owns the reserved `needs-plan-review` tag. On `reviewed` it emits the **read-filter-write** pair that drops it (`filterPlanReviewTag` preserves siblings like `depends-unlanded`, since `--tags` replaces the whole list); on `rework`/`escalated` it emits nothing and the tag stays. It **never** writes an rdm status and never writes a land-time completion directive — and it never runs the commands itself; you do.
+- **`--implementation-plan` is report-only.** No persisted rdm ITEM behind it, so there is no `needs-plan-review` to clear and no gate at all — it reports the outcome and findings, plus the persist ladder when you named the plan by `planSlug`.
+- **An unread document fails where it is read.** The workflow no longer fetches anything, so there is no fetch to fail closed on: a reviewer that cannot read its target fails, that reviewer is recorded as non-participating in `coverage.failed`, and the reduced coverage is named in the unit's summary — so a 2-of-5 review can never read as a clean one.
 
 ## Guidelines
 

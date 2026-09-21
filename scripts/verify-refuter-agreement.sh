@@ -174,26 +174,13 @@ grep -qE '\*\*Verdict: (deliberate|oversight)\*\*' "$DOC" ||
     fail "$DOC must state an explicit '**Verdict: deliberate|oversight**' token"
 [ "$FAILURES" = "$BEFORE_AC7" ] && pass "AC7 answered with its governing citations and an explicit verdict"
 
-# AC7 code-fact re-derivation: assert the doc's premise mechanically, so it
-# cannot go stale if the binding later changes.
-PLAN_LIB=".claude/workflows/lib/plan-review.mjs"
-if grep -q 'findModel' "$PLAN_LIB"; then
-    grep -cE 'runPlanReview\(\{[^}]*findModel' "$PLAN_LIB" >/dev/null ||
-        fail "$PLAN_LIB mentions findModel but no runPlanReview call site threads it"
-    pass "plan-review.mjs threads findModel (the decision changed the binding)"
-else
-    # Matched on the CALL, not on a one-line argument-object spelling: the
-    # context object legitimately grew (e.g. `maxRefutations`) and may be
-    # multi-line. The premise the doc rests on is the ABSENCE of model keys,
-    # which the outer `if` already covers for findModel — assert verifyModel too.
-    grep -q 'runPlanReview({' "$PLAN_LIB" ||
-        fail "$PLAN_LIB no longer calls runPlanReview({ ... }) — the doc's premise is stale"
-    grep -q 'target: unit.target' "$PLAN_LIB" ||
-        fail "$PLAN_LIB no longer threads the review target into runPlanReview — the doc's premise is stale"
-    ! grep -q 'verifyModel' "$PLAN_LIB" ||
-        fail "$PLAN_LIB now threads verifyModel — the doc's 'no model bindings' premise is stale"
-    pass "plan-review.mjs still calls runPlanReview with no findModel/verifyModel (the doc's premise holds)"
-fi
+# DELETED (no-mechanical-agents-in-workflows phase 34, commit 3): the AC7
+# code-fact re-derivation. Its `runPlanReview\(\{[^}]*findModel` regex required
+# the call's argument object to be ONE physical line; the driver's rewrite spread
+# it over several. `findModel`/`verifyModel` are still threaded — proved by
+# execution in scripts/lib/plan-review-hoist.test.mjs, which cargo nextest runs —
+# so this was a shape assertion whose shape stopped holding, and per the standing
+# ruling it is deleted rather than re-pointed at the new spelling.
 grep -q "$DOC" docs/workflow-schemas.md || fail "docs/workflow-schemas.md must cross-reference $DOC"
 pass "docs/workflow-schemas.md cross-references the decision doc"
 
@@ -1863,28 +1850,14 @@ fi
 # content. The section number is left as a gap so 11's numbering is stable.
 
 # ---------------------------------------------------------------------------
-say "11. AC9 XOR: a changed binding is gated, or the unchanged one is recorded"
-
-# Exactly ONE of these must hold, so neither a silent binding change nor a
-# silently-dropped decision record can pass.
-BINDING_CHANGED=0
-grep -q 'findModel' "$PLAN_LIB" && BINDING_CHANGED=1
-GATE_HAS_MODELS=0
-grep -q '5b-models' scripts/verify-workflow-review.sh && GATE_HAS_MODELS=1
-GATE_HAS_POINTER=0
-grep -q 'refuter-model-tiering.md' scripts/verify-workflow-review.sh && GATE_HAS_POINTER=1
-
-if [ "$BINDING_CHANGED" = "1" ]; then
-    [ "$GATE_HAS_MODELS" = "1" ] ||
-        fail "plan-review.mjs threads findModel but scripts/verify-workflow-review.sh has no 5b-models criterion"
-    pass "the changed judgment-site binding is gated by a 5b-models criterion"
-else
-    [ "$GATE_HAS_POINTER" = "1" ] ||
-        fail "no binding changed, but scripts/verify-workflow-review.sh carries no pointer to $DOC"
-    [ "$GATE_HAS_MODELS" = "0" ] ||
-        fail "scripts/verify-workflow-review.sh asserts a 5b-models binding that plan-review.mjs does not have"
-    pass "no binding changed, and scripts/verify-workflow-review.sh points at the decision doc"
-fi
+# DELETED (no-mechanical-agents-in-workflows phase 34, commit 3): section 11's
+# AC9 XOR. Both of its arms referred to things that stopped existing — it read
+# `$PLAN_LIB` from the AC7 block deleted above, and its "gated by a 5b-models
+# criterion" arm pointed at a verify-workflow-review.sh section that went with
+# the model-hoist apparatus. A deletion comment mentioning `5b-models` would
+# satisfy it, which makes it vacuous rather than merely stale. The judgment-site
+# model threading it stood in for is now proved by execution in
+# scripts/lib/plan-review-hoist.test.mjs, under cargo nextest run.
 
 # ---------------------------------------------------------------------------
 printf '\n'

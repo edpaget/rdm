@@ -290,7 +290,7 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-plan-review.js', args: {
   planSlug: '<plan-slug>',
   persist: { on: 'plan/<plan-slug>' },
   reviewers: ['coherence', 'architectural-fit', 'restraint'],  // + 'intent-alignment' when the roadmap records `## Intent`
-  mechanicalModel: '<models.mechanical>',
+  roadmap: '<slug>',                              // OMIT in task mode — names the roadmap intent-alignment reads
   findModel: '<models.reviewFind>',
   verifyModel: '<models.reviewVerify>',
   wontFixedTexts: [<wontFixedTitles>],
@@ -303,14 +303,13 @@ own document is never handed to the engine, so a finding about an inaccuracy in 
 the plan does not inherit — cannot arise and cannot force a revise round. **You MUST make this call
 yourself.** It is the one step a subagent physically cannot perform.
 
-- `planSlug` names the document under review — the engine reads its body itself, with one
-  mechanical `plan show <plan-slug> --format json` read plus an independent second read that
-  verifies the transcription, rather than requiring it transcribed into this call's arguments. Pass
-  only the slug; do **not** pass `planText` here — `planSlug` and `planText` are mutually
-  exclusive, and supplying both throws (a caller must never grade one document while the verdict is
-  persisted to another it never read). A `planSlug` on a non-implementation-plan target, and a
-  `persist.on` that is not `plan/<plan-slug>`, also each throw — all three fire before any agent
-  runs.
+- `planSlug` names the document under review, and it is the ONLY way to name it: each reviewer is
+  told the `plan show <plan-slug> --format json` command and runs it itself, reading the body once
+  in its own context. There is no `planText`, no second verifying read, and nothing transcribed into
+  this call's arguments. A `planSlug` on a non-implementation-plan target, and a `persist.on` that is
+  not `plan/<plan-slug>`, each throw before any agent runs.
+- `roadmap` names the parent roadmap so the `intent-alignment` reviewer knows which document to read
+  its `## Intent` from. Omit it in task mode.
 - `reviewers` — **the reviewer set you are selecting.** Omitting the key entirely runs every plan
   reviewer, which is the safe default; naming a set runs exactly those. An unrecognised name is
   dropped silently and shows as a gap in the unit's `coverage.selected`/`coverage.ran` — nothing
@@ -328,15 +327,17 @@ yourself.** It is the one step a subagent physically cannot perform.
   when the phase was created. Add `'intent-alignment'` when the parent roadmap records an `##
   Intent` section — the reviewer reads it out of the roadmap itself, so nothing is transcribed into
   this call. In task mode there is no parent roadmap, so omit it.
-- the model trio — **all three or none.** The engine's guard is all-or-nothing, so two out of three
-  saves nothing and still spawns the bootstrap.
+- `findModel` / `verifyModel` — the two judgment-site ids, each independently optional. There is no
+  mechanical model any more and no bootstrap agent to skip; an omitted id just makes that agent
+  inherit the session model.
 - `wontFixedTexts` — the wont-fix titles from step 3. An empty array is a legal, meaningful value
   (nothing to suppress) and is **not** the same as omitting the key. Omit it only if the `task
   list` call itself failed.
 
-The plan engine likewise writes nothing. When it returns `persistCommands` / `persistScript`,
-**you** run that ladder in Bash and report the exit status — it records the plan review on
-`plan/<plan-slug>` exactly as the code ladder records the change review.
+**The plan engine reads nothing and writes nothing either** — it dispatches finder and refuter
+agents only. When it returns `persistCommands` / `persistScript`, **you** run that ladder in Bash,
+in one session, and report the exit status; it records the plan review on `plan/<plan-slug>` exactly
+as the code ladder records the change review.
 
 Because the engine no longer reviews the item document, this call does **not** clear a
 `needs-plan-review` tag on the phase. That tag asserts the *item* was plan-reviewed and is cleared
