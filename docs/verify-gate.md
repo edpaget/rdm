@@ -310,9 +310,11 @@ routinely lands on stderr, and reading one stream would miss it.
 { "resolved": true, "command": "bash scripts/ci.sh", "exit": 7, "tail": "…" }
 ```
 
-`--item` takes the same grammar as `rdm worktree add`: `<roadmap>/<phase>`,
-`task/<slug>`, or a bare `<roadmap>`. An item with no worktree is an actionable error
-naming the `rdm worktree add` that would create one.
+`--item` accepts both the `rdm worktree add` grammar (`<roadmap>/<phase>`, `task/<slug>`,
+or a bare `<roadmap>`) and the kind-prefixed `phase/<roadmap>/<stem>`, `roadmap/<slug>`,
+or `task/<slug>` grammar that `--on`/`--implements` use — a phase always resolves to its
+roadmap's shared worktree, never a per-phase one. An item with no worktree is an
+actionable error naming the `rdm worktree add` that would create one.
 
 It reuses § 6's failure semantics verbatim rather than restating them: the **last** 4000
 characters of merged output, and a multi-line value refused up front.

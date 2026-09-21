@@ -334,3 +334,198 @@ fn verify_run_errors_actionably_for_an_item_with_no_worktree() {
         .failure()
         .stderr(predicate::str::contains("rdm worktree add auth"));
 }
+
+#[test]
+fn verify_run_resolves_a_phase_item_to_its_roadmap_worktree() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "create",
+            "design",
+            "--title",
+            "Design",
+            "--number",
+            "1",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    // The roadmap worktree, never a per-phase one.
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "auth", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+
+    // Unprefixed worktree grammar.
+    set_verify(plan.path(), "printf unprefixed > sentinel-unprefixed.txt");
+    let (code, _) = verify(
+        plan.path(),
+        src.path(),
+        &[
+            "run",
+            "--item",
+            "auth/phase-1-design",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        wt.join("sentinel-unprefixed.txt").exists(),
+        "the unprefixed phase form must resolve to the roadmap worktree"
+    );
+
+    // Kind-prefixed grammar, the shape `--on`/`--implements` use.
+    set_verify(plan.path(), "printf prefixed > sentinel-prefixed.txt");
+    let (code, _) = verify(
+        plan.path(),
+        src.path(),
+        &[
+            "run",
+            "--item",
+            "phase/auth/phase-1-design",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        wt.join("sentinel-prefixed.txt").exists(),
+        "the phase/<roadmap>/<stem> form must also resolve to the roadmap worktree"
+    );
+}
+
+#[test]
+fn verify_run_prefers_the_roadmap_worktree_over_a_stale_per_phase_one() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "create",
+            "design",
+            "--title",
+            "Design",
+            "--number",
+            "1",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "auth", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let roadmap_wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+
+    // Construct a stale per-phase worktree the same way leftover state does.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "worktree",
+            "add",
+            "auth/phase-1-design",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    set_verify(plan.path(), "printf ran > sentinel.txt");
+    let (code, _) = verify(
+        plan.path(),
+        src.path(),
+        &[
+            "run",
+            "--item",
+            "auth/phase-1-design",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        roadmap_wt.join("sentinel.txt").exists(),
+        "the shared roadmap worktree must win over a stale per-phase one"
+    );
+}
+
+#[test]
+fn verify_run_never_suggests_a_per_phase_worktree_for_a_phase_item() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "create",
+            "design",
+            "--title",
+            "Design",
+            "--number",
+            "1",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    set_verify(plan.path(), "true");
+    // No worktree registered at all.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "verify",
+            "run",
+            "--item",
+            "auth/phase-1-design",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("rdm worktree add auth")
+                .and(predicate::str::contains("rdm worktree add auth/phase-1-design").not()),
+        );
+}

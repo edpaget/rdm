@@ -159,26 +159,69 @@ fn tail_of(text: &str) -> String {
     text.chars().skip(count - TAIL_LIMIT).collect()
 }
 
-/// Resolves the worktree directory of `raw` — the same item grammar
-/// `rdm worktree add` accepts.
+/// Rewrites `raw` from the kind-prefixed reference grammar
+/// (`roadmap/<slug>`, `phase/<roadmap>/<stem>`, `task/<slug>`) that
+/// `--on`/`--implements` use into the unprefixed worktree grammar
+/// (`<roadmap>`, `<roadmap>/<stem>`, `task/<slug>`) that
+/// `rdm_git::worktree::ItemRef::parse` accepts.
+///
+/// `plan/<slug>` and `change/<sha>` name no worktree, and anything that
+/// fails to parse as a `rdm_core::model::ReviewTarget` at all, is returned
+/// unchanged — it falls through to `ItemRef::parse`'s own, already
+/// actionable, refusal.
+fn normalize_item_grammar(raw: &str) -> String {
+    match raw.parse::<rdm_core::model::ReviewTarget>() {
+        Ok(rdm_core::model::ReviewTarget::Roadmap { roadmap }) => roadmap,
+        Ok(rdm_core::model::ReviewTarget::Phase { roadmap, stem }) => format!("{roadmap}/{stem}"),
+        Ok(rdm_core::model::ReviewTarget::Task { slug }) => format!("task/{slug}"),
+        _ => raw.to_string(),
+    }
+}
+
+/// Resolves the worktree directory of `raw`.
+///
+/// Accepts both the unprefixed `rdm worktree add` grammar (`<roadmap>`,
+/// `<roadmap>/<phase>`, `task/<slug>`) and the kind-prefixed
+/// `roadmap/<slug>` / `phase/<roadmap>/<stem>` / `task/<slug>` grammar that
+/// `--on`/`--implements` use, via [`normalize_item_grammar`].
+///
+/// A phase always resolves to its roadmap's shared worktree — never an
+/// obsolete per-phase checkout — by routing through
+/// [`rdm_core::worktree::review_worktree_item`], the single existing
+/// "phase → roadmap" collapse policy `GitWorktreeProbe::candidates` already
+/// uses for the `reviewed` gate.
 fn item_worktree(root: &Path, project: &str, raw: &str) -> Result<std::path::PathBuf> {
     use rdm_git::worktree;
     let store = commands::make_store(root)?;
-    let item = worktree::resolve_item(&store, project, raw)
+    let normalized = normalize_item_grammar(raw);
+    let item = worktree::resolve_item(&store, project, &normalized)
         .map_err(|e| anyhow::anyhow!("{e}"))
         .with_context(|| format!("cannot resolve item '{raw}'"))?;
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let repo =
         worktree::discover_distinct_project_repo(&cwd, root).map_err(|e| anyhow::anyhow!("{e}"))?;
     let entries = worktree::list(&repo).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let canonical = item.canonical();
+    let review_target = match &item {
+        worktree::ItemRef::Phase { roadmap, stem } => rdm_core::model::ReviewTarget::Phase {
+            roadmap: roadmap.clone(),
+            stem: stem.clone(),
+        },
+        worktree::ItemRef::Task { slug } => {
+            rdm_core::model::ReviewTarget::Task { slug: slug.clone() }
+        }
+        worktree::ItemRef::Roadmap { roadmap } => rdm_core::model::ReviewTarget::Roadmap {
+            roadmap: roadmap.clone(),
+        },
+    };
+    let key = rdm_core::worktree::review_worktree_item(&review_target)
+        .expect("Phase/Task/Roadmap targets always yield a worktree key");
     entries
         .into_iter()
-        .find(|w| w.item == canonical)
+        .find(|w| w.item == key)
         .map(|w| w.path)
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "no rdm worktree for '{canonical}' — create one with `rdm worktree add {canonical}`, \
+                "no rdm worktree for '{key}' — create one with `rdm worktree add {key}`, \
                  or omit --item to run in the current directory"
             )
         })

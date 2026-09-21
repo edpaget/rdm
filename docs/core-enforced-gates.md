@@ -362,7 +362,7 @@ actually fail rather than only where its call site can be grepped:
 | the rule itself | `rdm-core/tests/gate.rs` — every branch, the fixed order, and the fail-closed probe cases against `MemoryStore` + `MemoryWorktreeProbe` |
 | `rdm-cli` | `rdm-cli/tests/cli_gate.rs` — the full ladder end to end through the real binary, against a temp plan repo and a real `rdm worktree add` worktree |
 | `rdm-server` | `rdm-server/tests/reviewed_gate.rs` — `PATCH` to `status: reviewed` refused **409** per precondition and allowed once the records exist, for phases and tasks; plus the opt-in and other-transitions-unaffected cases |
-| the worktree probe | `rdm-git/src/worktree.rs` tests — the per-phase-beats-roadmap candidate ordering, the task branch, dirty-path reporting, benign misses, and `status_porcelain_at` erroring outside a repo |
+| the worktree probe | `rdm-git/src/worktree.rs` tests — the roadmap-over-stale-phase resolution (`probe_prefers_shared_roadmap_over_stale_phase`, `probe_falls_back_to_the_roadmap_worktree_for_a_phase`), the task branch (`probe_resolves_a_task_worktree`), dirty-path reporting (`probe_reports_a_dirty_worktree_with_its_paths`), benign misses (`probe_reports_no_worktree_rather_than_failing_on_a_miss`), and `status_porcelain_at` erroring outside a repo |
 | the threading | `scripts/verify-reviewed-gate.sh` § A–C — the static allowlist described above |
 | the feature split | `scripts/verify-reviewed-gate.sh` § D — the probe is built in ONE feature-split place (`commands::build_gate_probe`), so neither update arm names `rdm_git::` and both compile with `git` off; CI's feature-matrix step is the dynamic half |
 

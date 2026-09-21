@@ -1466,9 +1466,12 @@ pub(crate) enum VerifyCommand {
     /// indistinguishable from `unresolved` by exit code alone, which is why
     /// the JSON payload's `resolved` field is the contract.
     Run {
-        /// Plan item whose worktree to run in (`<roadmap>/<phase>`,
-        /// `task/<slug>`, or a bare `<roadmap>`). Omit to run in the current
-        /// directory.
+        /// Plan item whose worktree to run in. Accepts the `rdm worktree add`
+        /// grammar (`<roadmap>/<phase>`, `task/<slug>`, or a bare
+        /// `<roadmap>`) as well as the kind-prefixed `phase/<roadmap>/<stem>`,
+        /// `roadmap/<slug>`, or `task/<slug>` grammar `--on`/`--implements`
+        /// use — a phase always resolves to its roadmap's shared worktree.
+        /// Omit to run in the current directory.
         #[arg(long)]
         item: Option<String>,
         /// Project the item belongs to.
