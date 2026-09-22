@@ -292,7 +292,9 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-plan-review.js', args: {
   planSlug: '<plan-slug>',
   persist: { on: 'plan/<plan-slug>' },
   reviewers: ['coherence', 'architectural-fit', 'restraint'],  // + 'intent-alignment' when the roadmap records `## Intent`
-  roadmap: '<slug>',                              // OMIT in task mode — names the roadmap intent-alignment reads
+  roadmap: '<slug>', phase: '<phase>',            // task mode: task: '<slug>' instead, and OMIT roadmap/phase
+  source: '<identity.path>', base: '<identity.base>',
+  expectedHead: '<identity.head>', expectedBranch: '<identity.branch>',
   findModel: '<models.reviewFind>',
   verifyModel: '<models.reviewVerify>',
   wontFixedTexts: [<wontFixedTitles>],
@@ -312,6 +314,19 @@ yourself.** It is the one step a subagent physically cannot perform.
   not `plan/<plan-slug>`, each throw before any agent runs.
 - `roadmap` names the parent roadmap so the `intent-alignment` reviewer knows which document to read
   its `## Intent` from. Omit it in task mode.
+- `source` / `base` / `expectedHead` / `expectedBranch` — the SAME pinned checkout identity you
+  recorded in step 3, in the SAME flat shape step 11's code-review call already takes. Every
+  finder and refuter runs `rdm review source --on <item> --source ... --no-code --format json` and
+  verifies the checkout has not moved before reading any file the plan cites, out of that pinned
+  `path` at that pinned `head` — never out of whatever checkout the session that dispatched them
+  happens to be sitting in. This is what closed the observed failure mode: a plan review graded
+  against `main` while the plan targeted this roadmap's own unlanded worktree. `phase` (or `task`
+  in task mode) is **newly required alongside this pin** — the engine derives the pinned
+  `--on <item>` from it, the same identifiers `roadmap`/`phase`/`task` already name. **Omitting all
+  four is legal**: the engine falls back to reading from the invoking session's own working
+  directory, exactly as before this pin existed — the correct behavior for the standalone
+  `rdm-plan-review`/`rdm-wf-plan-review` surface run outside a dispatch worktree, which this pin
+  does not touch.
 - `reviewers` — **the reviewer set you are selecting.** Omitting the key entirely runs every plan
   reviewer, which is the safe default; naming a set runs exactly those. An unrecognised name is
   dropped silently and shows as a gap in the unit's `coverage.selected`/`coverage.ran` — nothing

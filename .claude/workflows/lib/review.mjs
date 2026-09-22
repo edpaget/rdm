@@ -478,9 +478,12 @@ const INJECTION_HYGIENE =
 const REFUTER_LAUNDERING_GUARD =
   'A finding may not be refuted on the grounds that it is documented, known, or already accepted as scope, when it contradicts the target\'s stated goal or recorded intent — a recorded deferral is evidence the defect is REAL, not evidence it is not. Refute only for genuine technical uncertainty: you cannot verify, from the actual code or plan, that the finding holds up. The default-to-refuted stance for uncertain findings is unchanged.';
 
-// reviewTargetBlock(context) — what a finder or refuter is told about WHAT it is
-// reviewing. `context.target` is an identifier (an item ref, a plan slug, a path,
-// a short label), and the `*Command` keys — when present — are the read-only
+// reviewTargetBlock(mode, context) — what a finder or refuter is told about WHAT
+// it is reviewing. `mode` selects which instructional text a pinned
+// `sourceCommand` renders (code reviews a committed diff; plan review verifies a
+// checkout before reading files out of it — there is no diff to review at plan
+// stage). `context.target` is an identifier (an item ref, a plan slug, a path, a
+// short label), and the `*Command` keys — when present — are the read-only
 // commands the agent runs ITSELF to resolve the change and the documents under
 // review.
 //
@@ -497,16 +500,35 @@ const REFUTER_LAUNDERING_GUARD =
 // interpolates `target` verbatim and asserts nothing about its size or shape; it
 // is the caller's contract, not this function's, and the invariant above is
 // stated as what the workflow lane does rather than as something enforced here.
-function reviewTargetBlock(context) {
+function reviewTargetBlock(mode, context) {
   const c = context || {};
   const base = (c.target || '(the target described in your working directory)');
   const lines = [base];
+  // CORPUS-SAFETY CONSTRAINT: this branch (and every word inside it) may render
+  // ONLY when `c.sourceCommand` is actually set. A 56-item adjudicated finding
+  // corpus records a promptSha256 per item, regenerated through THIS function by
+  // a gate that fails on any drift, with `context = { target: item.target }`
+  // only — no `sourceCommand` — for BOTH `code` and `plan` mode items. There is
+  // no supported way to re-baseline it wholesale (see
+  // docs/refuter-model-tiering.md § Maintenance gap). Do not make this branch,
+  // or the `mode === 'plan'` text inside it, unconditional — that would move
+  // every corpus-recorded prompt's bytes for callers that never asked for a pin.
+  // (That corpus's harness is deliberately not named here: no workflow script
+  // may reference it, or the measurement instrument would sit in the hot path.)
   if (c.sourceCommand) {
-    lines.push(
-      'RESOLVE THE CHANGE YOURSELF. Run exactly this read-only command and use what it reports:',
-      '  ' + c.sourceCommand,
-      'Then `cd` into the `path` it reports and review exactly the committed range `base..head` it reports (use `git log` / `git diff` there). Review nothing outside that range, and never review uncommitted work.'
-    );
+    if (mode === 'plan') {
+      lines.push(
+        'VERIFY THE PINNED CHECKOUT YOURSELF. Run exactly this read-only command:',
+        '  ' + c.sourceCommand,
+        'A non-zero exit means the pinned checkout has drifted since this plan was written — report that as a `blocking` finding and STOP; do not fall back to verifying against a different tree. On success, read every file this plan cites from the reported `path` at the reported `head` (e.g. `git -C <path> show <head>:<repo-relative-path>`) — never from your own working directory, and never an uncommitted file in that checkout.'
+      );
+    } else {
+      lines.push(
+        'RESOLVE THE CHANGE YOURSELF. Run exactly this read-only command and use what it reports:',
+        '  ' + c.sourceCommand,
+        'Then `cd` into the `path` it reports and review exactly the committed range `base..head` it reports (use `git log` / `git diff` there). Review nothing outside that range, and never review uncommitted work.'
+      );
+    }
   }
   if (c.itemCommand) {
     lines.push(
@@ -557,7 +579,7 @@ function reviewTargetBlock(context) {
 //|   recommendation: <concrete fix>
 //| ```
 function findPrompt(mode, dim, context) {
-  const target = reviewTargetBlock(context);
+  const target = reviewTargetBlock(mode, context);
   const diffHint =
     mode === 'code'
       ? 'Inspect the implementation diff (use git log / git diff in the worktree).'
@@ -722,7 +744,7 @@ function findPrompt(mode, dim, context) {
 //|plan|   of the plan's own acceptance criteria is judged by the **coherence**
 //|plan|   dimension and surfaces as an ordinary finding.
 function refutePrompt(mode, dim, finding, context) {
-  const target = reviewTargetBlock(context);
+  const target = reviewTargetBlock(mode, context);
   const lines = [
     'You are a READ-ONLY refuter. Do not edit any files.',
     'A prior reviewer raised this ' + dim.key + ' finding against ' + target + ':',

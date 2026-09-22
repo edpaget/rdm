@@ -453,9 +453,12 @@ const INJECTION_HYGIENE =
 const REFUTER_LAUNDERING_GUARD =
   'A finding may not be refuted on the grounds that it is documented, known, or already accepted as scope, when it contradicts the target\'s stated goal or recorded intent — a recorded deferral is evidence the defect is REAL, not evidence it is not. Refute only for genuine technical uncertainty: you cannot verify, from the actual code or plan, that the finding holds up. The default-to-refuted stance for uncertain findings is unchanged.';
 
-// reviewTargetBlock(context) — what a finder or refuter is told about WHAT it is
-// reviewing. `context.target` is an identifier (an item ref, a plan slug, a path,
-// a short label), and the `*Command` keys — when present — are the read-only
+// reviewTargetBlock(mode, context) — what a finder or refuter is told about WHAT
+// it is reviewing. `mode` selects which instructional text a pinned
+// `sourceCommand` renders (code reviews a committed diff; plan review verifies a
+// checkout before reading files out of it — there is no diff to review at plan
+// stage). `context.target` is an identifier (an item ref, a plan slug, a path, a
+// short label), and the `*Command` keys — when present — are the read-only
 // commands the agent runs ITSELF to resolve the change and the documents under
 // review.
 //
@@ -472,16 +475,35 @@ const REFUTER_LAUNDERING_GUARD =
 // interpolates `target` verbatim and asserts nothing about its size or shape; it
 // is the caller's contract, not this function's, and the invariant above is
 // stated as what the workflow lane does rather than as something enforced here.
-function reviewTargetBlock(context) {
+function reviewTargetBlock(mode, context) {
   const c = context || {};
   const base = (c.target || '(the target described in your working directory)');
   const lines = [base];
+  // CORPUS-SAFETY CONSTRAINT: this branch (and every word inside it) may render
+  // ONLY when `c.sourceCommand` is actually set. A 56-item adjudicated finding
+  // corpus records a promptSha256 per item, regenerated through THIS function by
+  // a gate that fails on any drift, with `context = { target: item.target }`
+  // only — no `sourceCommand` — for BOTH `code` and `plan` mode items. There is
+  // no supported way to re-baseline it wholesale (see
+  // docs/refuter-model-tiering.md § Maintenance gap). Do not make this branch,
+  // or the `mode === 'plan'` text inside it, unconditional — that would move
+  // every corpus-recorded prompt's bytes for callers that never asked for a pin.
+  // (That corpus's harness is deliberately not named here: no workflow script
+  // may reference it, or the measurement instrument would sit in the hot path.)
   if (c.sourceCommand) {
-    lines.push(
-      'RESOLVE THE CHANGE YOURSELF. Run exactly this read-only command and use what it reports:',
-      '  ' + c.sourceCommand,
-      'Then `cd` into the `path` it reports and review exactly the committed range `base..head` it reports (use `git log` / `git diff` there). Review nothing outside that range, and never review uncommitted work.'
-    );
+    if (mode === 'plan') {
+      lines.push(
+        'VERIFY THE PINNED CHECKOUT YOURSELF. Run exactly this read-only command:',
+        '  ' + c.sourceCommand,
+        'A non-zero exit means the pinned checkout has drifted since this plan was written — report that as a `blocking` finding and STOP; do not fall back to verifying against a different tree. On success, read every file this plan cites from the reported `path` at the reported `head` (e.g. `git -C <path> show <head>:<repo-relative-path>`) — never from your own working directory, and never an uncommitted file in that checkout.'
+      );
+    } else {
+      lines.push(
+        'RESOLVE THE CHANGE YOURSELF. Run exactly this read-only command and use what it reports:',
+        '  ' + c.sourceCommand,
+        'Then `cd` into the `path` it reports and review exactly the committed range `base..head` it reports (use `git log` / `git diff` there). Review nothing outside that range, and never review uncommitted work.'
+      );
+    }
   }
   if (c.itemCommand) {
     lines.push(
@@ -532,7 +554,7 @@ function reviewTargetBlock(context) {
 //|   recommendation: <concrete fix>
 //| ```
 function findPrompt(mode, dim, context) {
-  const target = reviewTargetBlock(context);
+  const target = reviewTargetBlock(mode, context);
   const diffHint =
     mode === 'code'
       ? 'Inspect the implementation diff (use git log / git diff in the worktree).'
@@ -697,7 +719,7 @@ function findPrompt(mode, dim, context) {
 //|plan|   of the plan's own acceptance criteria is judged by the **coherence**
 //|plan|   dimension and surfaces as an ordinary finding.
 function refutePrompt(mode, dim, finding, context) {
-  const target = reviewTargetBlock(context);
+  const target = reviewTargetBlock(mode, context);
   const lines = [
     'You are a READ-ONLY refuter. Do not edit any files.',
     'A prior reviewer raised this ' + dim.key + ' finding against ' + target + ':',
@@ -2994,6 +3016,37 @@ function projectFlag(cfg) {
   return cfg && cfg.project ? ' --project ' + cfg.project : ''
 }
 
+// planSourceCommand(item, pin, rdmBin, projFlag) — the pinned `rdm review
+// source` command named in a plan-mode finder/refuter prompt (see
+// `reviewTargetBlock`'s `mode === 'plan'` branch in the review core). Mirrors
+// the code-review engine's own `sourceCommand` builder
+// (`rdm-wf-review-refute-fix.js`'s driver region) byte-for-byte in shape:
+// same flag order, same `shellQuote` on every interpolated value. `--no-code`
+// is ALWAYS passed, unconditionally — plan review runs before implementation,
+// so an empty committed diff between `base` and `head` is the expected,
+// legitimate case here, never a caller mistake the way it is in code mode.
+// `rdmBin` and `projFlag` are taken ALREADY RESOLVED (as `resolveRdmBin`/
+// `projectFlag` return them), matching the calling convention `buildReviewUnits`
+// already uses for its own `RDM`/`PROJ` locals.
+function planSourceCommand(item, pin, rdmBin, projFlag) {
+  return (
+    rdmBin +
+    ' review source --on ' +
+    shellQuote(item) +
+    ' --source ' +
+    shellQuote(pin.path) +
+    ' --base ' +
+    shellQuote(pin.base) +
+    ' --expected-head ' +
+    shellQuote(pin.head) +
+    ' --expected-branch ' +
+    shellQuote(pin.branch) +
+    ' --no-code' +
+    (projFlag || '') +
+    ' --format json'
+  )
+}
+
 // parsePlanArgs(rawArgs) — resolve the four target types from a raw $ARGUMENTS
 // flag string, a JSON payload, or a structured object. Returns
 // { kind, roadmap, phase, task, planSlug, ... } where kind is one of
@@ -3098,6 +3151,53 @@ function parsePlanArgs(rawArgs) {
     throw new Error(
       'plan-review: no target — pass --task <slug>, --roadmap <slug>, <slug> [phase], or --implementation-plan'
     )
+
+  // --- Source pin: the SAME flat arg names the code-review engine takes ------
+  // (`source`, `base`, `expectedHead`, `expectedBranch` — see
+  // rdm-wf-review-refute-fix.js's driver region), reused rather than a nested
+  // shape invented for this engine. Read from STRUCTURED OBJECT KEYS ONLY, like
+  // `planSlug`/`planFile`/`reviewers`/`tags` above: a positional target slug
+  // must never be able to pin a checkout. NONE-OR-ALL: pinning only some of the
+  // four would silently review against an unverified path, so a partial pin
+  // throws here, at parse time, before any agent runs — the same stance
+  // `resolveRefutationBudget` and the other parse-time validators on this
+  // function take.
+  const rawSource = typeof a.source === 'string' ? a.source.trim() : ''
+  const rawBase = typeof a.base === 'string' ? a.base.trim() : ''
+  const rawExpectedHead = typeof a.expectedHead === 'string' ? a.expectedHead.trim() : ''
+  const rawExpectedBranch = typeof a.expectedBranch === 'string' ? a.expectedBranch.trim() : ''
+  const sourceFields = { source: rawSource, base: rawBase, expectedHead: rawExpectedHead, expectedBranch: rawExpectedBranch }
+  const sourceKeyNames = Object.keys(sourceFields)
+  const sourceKeysGiven = sourceKeyNames.filter((k) => sourceFields[k] !== '')
+  let sourcePin = null
+  if (sourceKeysGiven.length > 0) {
+    const missing = sourceKeyNames.filter((k) => sourceKeysGiven.indexOf(k) === -1)
+    if (missing.length > 0) {
+      throw new Error(
+        'plan-review: a source pin needs all four of source/base/expectedHead/expectedBranch — missing ' +
+          missing.join(', ')
+      )
+    }
+    // The same full-hex-SHA shape code review's `requireSha` enforces.
+    if (!/^[0-9a-f]{40,64}$/.test(rawExpectedHead)) {
+      throw new Error('plan-review: expectedHead must be a full hex commit id (got "' + rawExpectedHead + '")')
+    }
+    sourcePin = { path: rawSource, base: rawBase, head: rawExpectedHead, branch: rawExpectedBranch }
+  }
+  // The `--on <item>` value a pinned `rdm review source` call binds to, derived
+  // from the SAME identifiers code review derives it from — `task`, or
+  // `roadmap`+`phase` — never a new hoisted key. `null` when neither resolves
+  // (a bare roadmap sweep with no single phase, or a task-less implementation
+  // plan) — the `buildReviewUnits` path derives each unit's own `--on` from its
+  // own `target` instead of reading this field; only the `implementation-plan`
+  // branch (which has no unit list) actually consumes it.
+  const sourceItem = task ? 'task/' + task : roadmap && phase ? 'phase/' + roadmap + '/' + phase : null
+  if (sourcePin && kind === 'implementation-plan' && !sourceItem) {
+    throw new Error(
+      'plan-review: source is pinned but no item to bind it to — pass task "<slug>" or roadmap "<slug>" + phase ' +
+        '"<stem>" alongside implementationPlan'
+    )
+  }
 
   // --- Caller-supplied values. Read from STRUCTURED OBJECT KEYS ONLY, never
   // parsed out of the `$ARGUMENTS` flag string, which would let a raw prose
@@ -3258,6 +3358,8 @@ function parsePlanArgs(rawArgs) {
     task: task,
     planSlug: planSlug,
     planFile: planFile,
+    sourcePin: sourcePin,
+    sourceItem: sourceItem,
     phases: phases,
     tags: tags,
     priorReviews: priorReviews,
@@ -3847,15 +3949,22 @@ function buildReviewUnits(parsed) {
         skippedPhases.push({ stem: p.stem, status: p.status })
         continue
       }
+      const phaseTarget = 'phase/' + parsed.roadmap + '/' + p.stem
       units.push({
         kind: 'phase',
         ident: p.stem,
         roadmap: parsed.roadmap,
         tags: Array.isArray(p.tags) ? p.tags : null,
         priorReviews: Array.isArray(p.priorReviews) ? p.priorReviews : null,
-        target: 'phase/' + parsed.roadmap + '/' + p.stem,
+        target: phaseTarget,
         itemCommand: RDM + ' phase show ' + p.stem + ' --roadmap ' + parsed.roadmap + PROJ + ' --format json',
         roadmapCommand: roadmapCommand,
+        // Each phase unit binds the pin to ITS OWN target — never a shared or
+        // wrong stem — so a roadmap sweep's phases each verify their own
+        // checkout independently. The bare roadmap-body unit above gets none:
+        // `rdm review source` requires a phase or task item and rejects a
+        // roadmap (`resolve_review_source` in rdm-core/src/worktree.rs).
+        sourceCommand: parsed.sourcePin ? planSourceCommand(phaseTarget, parsed.sourcePin, RDM, PROJ) : null,
       })
     }
     return { units: units, skippedPhases: skippedPhases }
@@ -3866,6 +3975,7 @@ function buildReviewUnits(parsed) {
   // conditional.
   const isTask = parsed.kind === 'task'
   const ident = isTask ? parsed.task : parsed.phase
+  const unitTarget = isTask ? 'task/' + ident : 'phase/' + parsed.roadmap + '/' + ident
   return {
     skippedPhases: [],
     units: [
@@ -3875,12 +3985,13 @@ function buildReviewUnits(parsed) {
         roadmap: parsed.roadmap,
         tags: Array.isArray(parsed.tags) ? parsed.tags : null,
         priorReviews: parsed.priorReviews,
-        target: isTask ? 'task/' + ident : 'phase/' + parsed.roadmap + '/' + ident,
+        target: unitTarget,
         itemCommand: isTask
           ? RDM + ' task show ' + ident + PROJ + ' --format json'
           : RDM + ' phase show ' + ident + ' --roadmap ' + parsed.roadmap + PROJ + ' --format json',
         // A task has no parent roadmap, so no intent to inherit.
         roadmapCommand: isTask ? null : roadmapCommand,
+        sourceCommand: parsed.sourcePin ? planSourceCommand(unitTarget, parsed.sourcePin, RDM, PROJ) : null,
       },
     ],
   }
@@ -3996,6 +4107,7 @@ async function runPlanReviewDriver(args, deps) {
       target: unit.target,
       itemCommand: unit.itemCommand,
       roadmapCommand: unit.roadmapCommand,
+      sourceCommand: unit.sourceCommand,
       reviewers: reviewers,
       maxRefutations: maxRefutations,
       findModel: _findModel,
@@ -4050,6 +4162,12 @@ async function runPlanReviewDriver(args, deps) {
     const slug = parsed.planSlug
     const file = parsed.planFile
     const planTarget = slug ? 'plan/' + slug : 'the implementation plan at ' + file
+    // parsePlanArgs already refused a pin with no `sourceItem` to bind it to
+    // (source is pinned but neither `task` nor `roadmap`+`phase` was given), so
+    // by construction `parsed.sourceItem` is non-null whenever `sourcePin` is.
+    const sourceCommand = parsed.sourcePin
+      ? planSourceCommand(parsed.sourceItem, parsed.sourcePin, parsed.rdmBin, projectFlag(parsed))
+      : null
     const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
       target: planTarget,
       itemCommand: slug
@@ -4058,6 +4176,7 @@ async function runPlanReviewDriver(args, deps) {
       roadmapCommand: parsed.roadmap
         ? parsed.rdmBin + ' roadmap show ' + parsed.roadmap + projectFlag(parsed) + ' --format json'
         : null,
+      sourceCommand: sourceCommand,
       reviewers: reviewers,
       maxRefutations: maxRefutations,
       findModel: _findModel,

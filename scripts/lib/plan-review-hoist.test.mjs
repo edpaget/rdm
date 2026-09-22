@@ -765,3 +765,210 @@ test('E5: neither axis is readable out of the $ARGUMENTS flag string', () => {
   assert.equal(parsed.rdmBin, 'rdm');
   assert.equal(parsed.project, '');
 });
+
+// ================================================================ Suite F
+//
+// The SOURCE PIN — `source`/`base`/`expectedHead`/`expectedBranch`, the SAME
+// flat arg names the code-review engine takes — decided by driving the REAL
+// pipeline (`buildReviewPipeline('plan')`) with a recording agent that returns
+// a real gating finding, so a refuter is dispatched too and BOTH agent kinds'
+// prompts are captured, not only the finder's.
+
+const HEAD = 'a'.repeat(40);
+const BASE = 'b'.repeat(40);
+
+// makeSourceProbeAgent(calls) — records every call and returns just enough of
+// a payload to keep the pipeline moving through both stages: a finder call
+// ('find:...') returns ONE blocking finding (so a refuter is actually
+// dispatched for it), and a refuter call ('refute:...') refutes nothing.
+function makeSourceProbeAgent(calls) {
+  return async function agent(prompt, opts) {
+    const label = (opts && opts.label) || '?';
+    calls.push({ label, prompt: String(prompt) });
+    if (label.startsWith('find:')) {
+      return {
+        findings: [
+          { id: 'f1', concern: 'coherence', severity: 'blocking', confidence: 90, what_fails: 'x', why: 'y', recommendation: 'z' },
+        ],
+      };
+    }
+    return { refuted: false, confidence: 90, rationale: 'r' };
+  };
+}
+
+async function driveRealWithFindings(args) {
+  const calls = [];
+  const agent = makeSourceProbeAgent(calls);
+  const result = await runPlanReviewDriver(args, {
+    agent,
+    parallel: referenceParallel,
+    log: () => {},
+    runPlanReview: buildReviewPipeline('plan', {
+      agent,
+      parallel: referenceParallel,
+      pipeline: referenceParallel,
+      log: () => {},
+    }),
+  });
+  return { result, calls, labels: calls.map((c) => c.label) };
+}
+
+test('F1: an implementation-plan pin (task form) reaches every finder AND refuter prompt, bound to that task', async () => {
+  const { calls } = await driveRealWithFindings({
+    implementationPlan: true,
+    planSlug: 'p',
+    task: 't',
+    reviewers: ['coherence'],
+    source: '/work/wt',
+    base: BASE,
+    expectedHead: HEAD,
+    expectedBranch: 'roadmap/x',
+  });
+  const finders = calls.filter((c) => c.label.startsWith('find:'));
+  const refuters = calls.filter((c) => c.label.startsWith('refute:'));
+  assert.ok(finders.length > 0, 'no finder ran');
+  assert.ok(refuters.length > 0, 'no refuter ran — the probe finding must have been dropped or never graded');
+  const expectedCmd =
+    "rdm review source --on 'task/t' --source '/work/wt' --base '" + BASE + "' --expected-head '" + HEAD +
+    "' --expected-branch 'roadmap/x' --no-code --format json";
+  for (const c of calls) {
+    assert.ok(c.prompt.includes(expectedCmd), c.label + ' is missing the pinned source command:\n' + c.prompt);
+  }
+});
+
+test('F1b: an implementation-plan pin (roadmap+phase form) binds to that phase, not a task', async () => {
+  const { calls } = await driveRealWithFindings({
+    implementationPlan: true,
+    planSlug: 'p',
+    roadmap: 'r',
+    phase: 'phase-4-d',
+    reviewers: ['coherence'],
+    source: '/work/wt',
+    base: BASE,
+    expectedHead: HEAD,
+    expectedBranch: 'roadmap/r',
+  });
+  assert.ok(calls.length > 0);
+  const expectedCmd = "rdm review source --on 'phase/r/phase-4-d' --source '/work/wt'";
+  for (const c of calls) {
+    assert.ok(c.prompt.includes(expectedCmd), c.label + ' is missing the pinned phase --on:\n' + c.prompt);
+  }
+});
+
+test('F2: a roadmap sweep pin binds each phase unit to ITS OWN --on; the roadmap-body unit carries no source command at all', async () => {
+  const { calls } = await driveRealWithFindings({
+    roadmap: 'r',
+    phases: [{ stem: 'phase-1-a' }, { stem: 'phase-2-b' }],
+    tags: [],
+    reviewers: ['coherence'],
+    source: '/work/wt',
+    base: BASE,
+    expectedHead: HEAD,
+    expectedBranch: 'roadmap/r',
+  });
+  const roadmapCalls = calls.filter((c) => c.prompt.includes('roadmap/r') && !c.prompt.includes('phase/r/'));
+  const phase1Calls = calls.filter((c) => c.prompt.includes('phase/r/phase-1-a'));
+  const phase2Calls = calls.filter((c) => c.prompt.includes('phase/r/phase-2-b'));
+  assert.ok(roadmapCalls.length > 0, 'the roadmap-body unit produced no calls');
+  assert.ok(phase1Calls.length > 0, 'phase-1-a produced no calls');
+  assert.ok(phase2Calls.length > 0, 'phase-2-b produced no calls');
+  for (const c of roadmapCalls) {
+    assert.ok(!c.prompt.includes('review source'), 'roadmap-body unit must carry no source pin:\n' + c.prompt);
+  }
+  for (const c of phase1Calls) {
+    assert.ok(c.prompt.includes("--on 'phase/r/phase-1-a'"), c.label + ':\n' + c.prompt);
+    assert.ok(!c.prompt.includes("phase-2-b"), 'phase-1-a must never carry a sibling stem:\n' + c.prompt);
+  }
+  for (const c of phase2Calls) {
+    assert.ok(c.prompt.includes("--on 'phase/r/phase-2-b'"), c.label + ':\n' + c.prompt);
+    assert.ok(!c.prompt.includes("phase-1-a"), 'phase-2-b must never carry a sibling stem:\n' + c.prompt);
+  }
+});
+
+test('F3: a single --phase / --task target pin uses that target\'s own item as --on', async () => {
+  const phaseRun = await driveRealWithFindings({
+    roadmap: 'r',
+    phase: 'phase-3-c',
+    tags: [],
+    reviewers: ['coherence'],
+    source: '/wt',
+    base: BASE,
+    expectedHead: HEAD,
+    expectedBranch: 'roadmap/r',
+  });
+  assert.ok(phaseRun.calls.length > 0);
+  for (const c of phaseRun.calls) assert.ok(c.prompt.includes("--on 'phase/r/phase-3-c'"), c.prompt);
+
+  const taskRun = await driveRealWithFindings({
+    task: 't2',
+    tags: [],
+    reviewers: ['coherence'],
+    source: '/wt',
+    base: BASE,
+    expectedHead: HEAD,
+    expectedBranch: 'task/t2',
+  });
+  assert.ok(taskRun.calls.length > 0);
+  for (const c of taskRun.calls) assert.ok(c.prompt.includes("--on 'task/t2'"), c.prompt);
+});
+
+test('F4: with no source pin supplied, every prompt is unchanged — deterministic, and no new drift/pinned/verify wording leaks in', async () => {
+  const argsNoPin = { task: 't3', tags: [], reviewers: ['coherence'] };
+  const runA = await driveRealWithFindings(argsNoPin);
+  const runB = await driveRealWithFindings(argsNoPin);
+  assert.ok(runA.calls.length > 0);
+  assert.deepEqual(
+    runA.calls.map((c) => c.prompt),
+    runB.calls.map((c) => c.prompt),
+    'no-pin prompts must be byte-identical across runs — the regression pin protecting the refuter-agreement corpus'
+  );
+  for (const c of runA.calls) {
+    assert.ok(!c.prompt.includes('review source'), c.label + ' must not mention `review source` with no pin:\n' + c.prompt);
+    assert.ok(!/VERIFY THE PINNED CHECKOUT/.test(c.prompt), c.label + ' leaked pinned-checkout wording:\n' + c.prompt);
+    assert.ok(!/drifted/i.test(c.prompt), c.label + ' leaked drift wording:\n' + c.prompt);
+  }
+});
+
+test('F5: a malformed source pin throws at parse time, before any agent is dispatched', async () => {
+  // Only some of the four keys supplied.
+  assert.throws(() => parsePlanArgs({ task: 't', source: '/wt', base: BASE }), /needs all four/);
+  assert.throws(() => parsePlanArgs({ task: 't', expectedHead: HEAD, expectedBranch: 'main' }), /needs all four/);
+  // A non-hex / short expectedHead.
+  assert.throws(
+    () => parsePlanArgs({ task: 't', source: '/wt', base: BASE, expectedHead: 'not-a-sha', expectedBranch: 'main' }),
+    /full hex commit id/
+  );
+  assert.throws(
+    () => parsePlanArgs({ task: 't', source: '/wt', base: BASE, expectedHead: 'a'.repeat(10), expectedBranch: 'main' }),
+    /full hex commit id/
+  );
+  // A full pin on an implementation-plan target naming neither a task nor a roadmap+phase.
+  assert.throws(
+    () =>
+      parsePlanArgs({
+        implementationPlan: true,
+        planSlug: 'p',
+        source: '/wt',
+        base: BASE,
+        expectedHead: HEAD,
+        expectedBranch: 'main',
+      }),
+    /no item to bind it to/
+  );
+  // The refusal fires before a single token is spent.
+  const calls = [];
+  await assert.rejects(
+    () =>
+      runPlanReviewDriver(
+        { task: 't', source: '/wt', base: BASE },
+        {
+          agent: makeAgent(calls),
+          parallel: referenceParallel,
+          log: () => {},
+          runPlanReview: async () => ({ survivors: [] }),
+        }
+      ),
+    /needs all four/
+  );
+  assert.deepEqual(calls, [], 'the refusal fires before a single token is spent');
+});

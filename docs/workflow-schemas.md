@@ -2015,6 +2015,61 @@ prompt, so the review material reaches the agents. `deps` (`{ agent, pipeline,
 parallel, log }`) is omitted in the Workflow runtime (the ambient globals are
 used) and injected by the verify harness to drive the pipeline with fakes.
 
+### `context.sourceCommand`: pinning plan review to a worktree checkout
+
+Plan review can read the same pinned worktree checkout the code-review engine already reads,
+instead of whatever checkout the invoking session happens to be sitting in. This closed an observed
+failure: a plan review of a phase in `agent-orchestrated-dispatch` was graded against `main`, while
+the plan itself targeted the roadmap's own unlanded worktree — the reviewers reported real-looking
+findings ("this call site does not exist anywhere in the file") that were true of `main` and false of
+the branch the plan was written against.
+
+`reviewTargetBlock(mode, context)` — the shared prompt-fragment builder both `findPrompt` and
+`refutePrompt` call — takes a `mode` (`'code'` | `'plan'`) alongside `context`. When
+`context.sourceCommand` is set, it renders mode-specific instructions: `code` mode's text is
+unchanged from before this pin existed (resolve the change and review the committed `base..head`
+range); `plan` mode's new text tells the reviewer to run the pinned `rdm review source` command
+itself, treat a non-zero exit as proof the checkout has drifted since the plan was written (report a
+`blocking` finding and STOP — never fall back to verifying against a different tree), and otherwise
+read every file the plan cites from the reported `path` at the reported `head` (`git -C <path> show
+<head>:<repo-relative-path>`), never from its own working directory or an uncommitted file in that
+checkout.
+
+`parsePlanArgs` (`.claude/workflows/lib/plan-review.mjs`) accepts four new, optional, structured-key-
+only args reusing the code-review engine's own flat names rather than a nested shape: `source` (the
+pinned checkout path), `base`, `expectedHead` (full hex SHA — same shape code review's `requireSha`
+enforces), `expectedBranch`. **None-or-all**: supplying only some of the four throws at parse time,
+before any agent runs, naming the missing ones. From these, plus the already-parsed `task` /
+`roadmap`+`phase` identifiers, the parser derives `sourceItem` — `task/<slug>` or
+`phase/<roadmap>/<phase>` — the `--on` value a pinned `rdm review source` call binds to. A pin with no
+resolvable `sourceItem` on an `--implementation-plan` target (neither a `task` nor a `roadmap`+`phase`
+given alongside it) throws for the same reason. `buildReviewUnits` derives each review unit's
+`sourceCommand` from **that unit's own `target`** — a roadmap sweep's phase units each verify their
+own checkout independently, and the bare roadmap-body unit gets no `sourceCommand` at all, since `rdm
+review source` requires a phase or task item and rejects a roadmap (`resolve_review_source` in
+`rdm-core/src/worktree.rs`). `--no-code` is always passed on the built command, unconditionally: plan
+review runs before implementation, so an empty committed diff between `base` and `head` is the
+expected, legitimate case, never a caller mistake the way it is in code mode.
+
+**The no-source fallback is the explicit, permanent default**, not a stopgap: omitting all four pin
+args makes every prompt render byte-identical to before this capability existed, reading from the
+invoking session's own working directory — the correct behavior for the standalone
+`rdm-plan-review`/`rdm-wf-plan-review` surface run outside a dispatch worktree. This is load-bearing
+for `scripts/verify-refuter-agreement.sh`'s 56-item adjudicated finding corpus, which regenerates
+every recorded prompt through the real `findPrompt`/`refutePrompt` with `context = { target:
+item.target }` only (no `sourceCommand`, for both `code` and `plan` mode items) and asserts the
+recorded `promptSha256` is unchanged — there is no supported way to re-baseline it wholesale (see
+`docs/refuter-model-tiering.md` § Maintenance gap). The `context.sourceCommand` branch inside
+`reviewTargetBlock` is therefore strictly conditional, exactly like the existing QUOTE VERIFICATION
+and SCOPE GRADING clauses in `refutePrompt` it follows the same pattern as.
+
+The `rdm-dispatch-phase` skill's step 6 passes its step-3-pinned `identity` (`source`, `base`,
+`expectedHead`, `expectedBranch`) plus `phase`/`task` to the plan-review call, mirroring step 11's
+code-review call. The distributed skill template omits this call entirely — that surface's plan gate
+is a human-submitted approve review rather than a workflow verdict (see the template's own "Why there
+is no plan-review Workflow call here" section) — so it has no step 6 pin to add; the engine change
+still ships to it because `rdm-wf-plan-review.js` itself is emitted as-is to every downstream consumer.
+
 **Every consumer of `runReview`/`d.review(...)` must destructure
 `{ survivors, acTable, budget }`** rather than treat the resolved value as a bare
 array. In the retired `lib/dispatch-phase.mjs` this meant **both** `runCodeGate`
