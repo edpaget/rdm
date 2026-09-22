@@ -172,19 +172,26 @@ const referencePipeline = async (items, ...stages) => {
 const CLEAN_AC = [{ criterion: 'AC1: it works', status: 'PASS', evidence: 'the tests cover it' }];
 
 /**
- * A fake reviewer fleet. `finding` (optional) is planted by the `correctness`
- * finder and graded un-refuted, so it survives to the outcome — which is how a
- * `rework` run is produced without any judgment actually running.
+ * A fake reviewer fleet. `finding` (optional) is planted findings that survive
+ * un-refuted, so an outcome is produced without any judgment actually running.
+ * A bare object plants ONE finding on `correctness` (the pre-existing shape,
+ * kept so every single-finding caller is unaffected); an ARRAY plants one
+ * finding per entry, distributed in order across `correctness`, `tests`,
+ * `architecture`, `api-docs`, `changelog`, `security` — up to six at once.
  */
+const CODE_FINDING_DIMS = ['correctness', 'tests', 'architecture', 'api-docs', 'changelog', 'security'];
 function makeFleet(finding) {
   const labels = [];
+  const findings = Array.isArray(finding) ? finding : finding ? [finding] : [];
   return {
     labels,
     agent: async (_prompt, opts) => {
       const label = (opts && opts.label) || '';
       labels.push(label);
       if (label === 'find:code:ac') return { ac: CLEAN_AC, findings: [] };
-      if (label === 'find:code:correctness' && finding) return { findings: [finding] };
+      for (let i = 0; i < findings.length; i++) {
+        if (label === 'find:code:' + CODE_FINDING_DIMS[i]) return { findings: [findings[i]] };
+      }
       if (label.startsWith('refute:')) return { refuted: false, confidence: 95 };
       return { findings: [] };
     },
@@ -341,18 +348,45 @@ test('a refused write fails the ladder, even in a plain shell with no set -e', a
   git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], ROADMAP_PIN.source);
 });
 
-test('the persist ladder records a real review, with a real `--path` code anchor', async () => {
+test('the persist ladder records a real review: a real `--path` code anchor from the finder-supplied path field, a build-time-degraded anchor, and a whole-document-by-design finding', async () => {
   const { result } = await drive(
     { ...COMMON, gate: false, persist: true, implements: 'plan/' + PLAN, roadmap: ROADMAP, phase: 'phase-2-dirty', ...ROADMAP_PIN },
-    {
-      id: 'anchored-bug',
-      concern: 'correctness',
-      severity: 'blocking',
-      confidence: 95,
-      what_fails: 'it drops a write',
-      location: 'roadmap-work.txt:1',
-      quote: 'shipped',
-    }
+    [
+      {
+        id: 'anchored-bug',
+        concern: 'correctness',
+        severity: 'blocking',
+        confidence: 95,
+        what_fails: 'it drops a write',
+        // A messy `location` shaped like the live evidence that motivated this
+        // fix (a trailing "(mirrored at ...)" parenthetical defeats
+        // pathFromLocation's end-anchored suffix strip) — the explicit `path`
+        // field must be used directly, never parsed out of this prose.
+        location: 'roadmap-work.txt:1 (mirrored at README.md:9-12)',
+        path: 'roadmap-work.txt',
+        quote: 'shipped',
+      },
+      {
+        id: 'degraded-bug',
+        concern: 'tests',
+        severity: 'concern',
+        confidence: 90,
+        what_fails: 'coverage gap',
+        // Prose-only location: no derivable repo-relative path, and no `path`
+        // field either — the requested anchor is dropped at BUILD TIME.
+        location: 'throughout the gate step',
+        quote: 'shipped',
+      },
+      {
+        id: 'whole-doc-note',
+        concern: 'architecture',
+        severity: 'suggestion',
+        confidence: 80,
+        what_fails: 'general note',
+        location: 'general',
+        // No `quote` at all: this finding never asked for an anchor.
+      },
+    ]
   );
 
   assert.ok(result.persistScript, 'a persist:true run emits a ladder');
@@ -362,14 +396,90 @@ test('the persist ladder records a real review, with a real `--path` code anchor
 
   const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
   assert.equal(review.state, 'submitted');
-  assert.equal(review.verdict, 'request-changes', 'a rework outcome persists as request-changes');
   assert.equal(review.target.kind, 'change', 'the reviewed artifact is the pinned change, not the phase document');
-  assert.equal(review.comments.length, 1, 'each survivor is persisted exactly once');
-  const anchor = review.comments[0].anchor;
-  assert.equal(anchor.anchor_type, 'file-quote', 'a change review anchors into the source file, not the document');
-  assert.equal(anchor.path, 'roadmap-work.txt', 'the quoted finding landed a real --path anchor');
-  assert.equal(anchor.quote, 'shipped');
-  assert.match(review.comments[0].body, /anchored-bug/);
+  assert.equal(review.comments.length, 3, 'each survivor is persisted exactly once');
+
+  const anchored = review.comments.find((c) => c.body.includes('anchored-bug'));
+  assert.equal(anchored.anchor.anchor_type, 'file-quote', 'a change review anchors into the source file, not the document');
+  assert.equal(
+    anchored.anchor.path,
+    'roadmap-work.txt',
+    "the finder's explicit `path` field landed the anchor, not a parse of the messy `location`"
+  );
+  assert.equal(anchored.anchor.quote, 'shipped');
+  assert.equal(
+    parseCommentHeader(anchored.body).anchor,
+    'path',
+    'AC1/AC2: a real, structured path lands as an anchored comment, header-marked `anchor: path`, not `path-missing` degradation'
+  );
+
+  const degraded = review.comments.find((c) => c.body.includes('degraded-bug'));
+  assert.equal(degraded.anchor, undefined, 'no repo-relative path could be derived from either field, so this landed whole-document');
+  assert.equal(
+    parseCommentHeader(degraded.body).anchor,
+    'degraded',
+    'AC4: a dropped anchor is header-marked `degraded`, distinct from a whole-document-by-design finding'
+  );
+
+  const wholeDoc = review.comments.find((c) => c.body.includes('whole-doc-note'));
+  assert.equal(wholeDoc.anchor, undefined);
+  assert.equal(
+    parseCommentHeader(wholeDoc.body).anchor,
+    'wholeDocumentIntended',
+    'AC3: a finding that legitimately names no file is recorded as wholeDocumentIntended, never as a degraded anchor'
+  );
+
+  // AC4's other half: the review's OWN summary states the build-time
+  // degradation — a review carrying a dropped anchor cannot read as clean
+  // persistence, even on a run where every anchor did not fail (one of the two
+  // requested anchors landed here).
+  assert.match(
+    review.body,
+    /1 of 2 requested anchor\(s\) could not be placed at persist time \(path-missing x1\); see the `anchor` header on each comment\./,
+    "the review's own summary names the build-time degradation"
+  );
+});
+
+test('a whole-document-by-design finding, alone, never triggers the build-time degradation clause', async () => {
+  // No `path`, no derivable `location`, and — critically — no `quote` at all:
+  // this finding never ASKED for an anchor, so it must never read as one that
+  // was dropped. gate: true here (unlike the mixed-findings test above), so
+  // this also proves a lone whole-document finding still gates cleanly to
+  // `reviewed`. `implements` is passed explicitly, same as the mixed-findings
+  // test above: this worktree covers the whole roadmap, so the real binary has
+  // no single plan to infer from the item alone.
+  const { result } = await drive(
+    { ...COMMON, persist: true, implements: 'plan/' + PLAN, roadmap: ROADMAP, phase: 'phase-1-clean', ...ROADMAP_PIN },
+    [
+      {
+        id: 'note-only',
+        concern: 'correctness',
+        severity: 'suggestion',
+        confidence: 80,
+        what_fails: 'a general observation, not tied to any one file',
+        location: 'general',
+      },
+    ]
+  );
+  assert.equal(result.outcome, 'reviewed');
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder prints the id it created: ' + out);
+
+  const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
+  assert.equal(review.comments.length, 1);
+  assert.equal(review.comments[0].anchor, undefined, 'a quote-less finding has no anchor to land at all');
+  assert.equal(
+    parseCommentHeader(review.comments[0].body).anchor,
+    'wholeDocumentIntended',
+    'AC3: never confused with a dropped anchor'
+  );
+  assert.doesNotMatch(
+    review.body,
+    /requested anchor\(s\) could not be placed at persist time/,
+    'AC4 negative control: a whole-document-by-design finding, with nothing else degraded in the run, must not read as a build-time degradation'
+  );
 });
 
 test('a refused `review start` fails the persist ladder, even in a plain shell with no set -e', async () => {

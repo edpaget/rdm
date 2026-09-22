@@ -265,8 +265,8 @@ applicable dimension, then a **fresh** read-only refuter per finding (the
 finder is never the refuter; the refuter's stance is *"this is NOT a real
 issue unless the code proves otherwise"*) — are now performed deterministically
 by the `rdm-wf-review-refute-fix` Workflow tool invoked in step 2 above. Each finding
-it returns carries `id`, `concern`, `location`, `severity`, `confidence`,
-`what_fails`, `why`, and `recommendation`.
+it returns carries `id`, `concern`, `location`, `path`, `severity`,
+`confidence`, `what_fails`, `why`, and `recommendation`.
 
 **Laundering guard.** The workflow's refuter may not dismiss a finding on the
 grounds that it is documented, known, or already accepted as scope, when it

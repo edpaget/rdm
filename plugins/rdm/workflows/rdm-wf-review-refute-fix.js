@@ -475,6 +475,7 @@ function reviewTargetBlock(context) {
 //|code|   concern: <ac|correctness|tests|architecture|api-docs|changelog|security>
 //|plan|   concern: <coherence|architectural-fit|restraint|unit-of-work>
 //|code|   location: <path>:<line>
+//|code|   path: <repo-relative source path, e.g. path/to/file.ext — required whenever quote is given>
 //|plan|   location: <section/heading or phase stem>
 //|   quote: <verbatim excerpt of the reviewed text this finding is about; omit for a whole-document finding>
 //|   severity: blocking | concern | suggestion
@@ -525,9 +526,14 @@ function findPrompt(mode, dim, context) {
   lines.push(
     'Report only findings you can back with concrete evidence. One strong finding beats five weak ones.',
     'Return JSON matching the FINDINGS schema: a `findings` array, each with id, concern, location, severity (blocking|concern|suggestion), confidence (0-100), what_fails, why, recommendation.',
-    'Each finding MAY also carry `quote`: a VERBATIM excerpt, copied character for character out of the reviewed text, of the span the finding is about. Never paraphrase, reflow, or truncate mid-character — prefer a short span that appears exactly once. Omit `quote` entirely for a finding about the document as a whole.',
-    'Return an empty `findings` array if the dimension is clean.'
+    'Each finding MAY also carry `quote`: a VERBATIM excerpt, copied character for character out of the reviewed text, of the span the finding is about. Never paraphrase, reflow, or truncate mid-character — prefer a short span that appears exactly once. Omit `quote` entirely for a finding about the document as a whole.'
   );
+  if (mode === 'code') {
+    lines.push(
+      'A finding that carries `quote` MUST also carry `path`: the repo-relative source file the quote was taken from (e.g. `path/to/file.ext`) — a STRUCTURED field, distinct from the free-text `location` above (which may carry a line range plus extra human-readable detail). Omit `quote` and `path` together for a finding about the change as a whole.'
+    );
+  }
+  lines.push('Return an empty `findings` array if the dimension is clean.');
   return lines.join('\n');
 }
 
@@ -721,8 +727,8 @@ function refutePrompt(mode, dim, finding, context) {
 //| finder is never the refuter; the refuter's stance is *"this is NOT a real
 //| issue unless the code proves otherwise"*) — are now performed deterministically
 //| by the `rdm-wf-review-refute-fix` Workflow tool invoked in step 2 above. Each finding
-//| it returns carries `id`, `concern`, `location`, `severity`, `confidence`,
-//| `what_fails`, `why`, and `recommendation`.
+//| it returns carries `id`, `concern`, `location`, `path`, `severity`,
+//| `confidence`, `what_fails`, `why`, and `recommendation`.
 //|
 //| **Laundering guard.** The workflow's refuter may not dismiss a finding on the
 //| grounds that it is documented, known, or already accepted as scope, when it
@@ -958,6 +964,17 @@ const FINDINGS_SCHEMA = {
           // (file, line, category) dedupe key is deliberately NOT implemented here.
           category: { type: 'string' },
           location: { type: 'string' },
+          // Optional STRUCTURED repo-relative source path the finding's `quote`
+          // was taken from — a code-mode-only field, distinct from the free-text
+          // `location` above (which may still carry a line range plus extra
+          // human-readable prose, e.g. "path/to/file.rs:12-18 (mirrored at
+          // ...)"). `persistAnchorFor` below tries THIS field first, ahead of
+          // `pathFromLocation`'s regex-stripping heuristic over `location`,
+          // because prose defeats that heuristic in exactly the cases where an
+          // anchor matters most. NOT in `required`: a whole-document finding, or
+          // one whose producer has not adopted this field yet, legitimately has
+          // none — `pathFromLocation` remains the fallback.
+          path: { type: 'string', minLength: 1 },
           // Optional VERBATIM excerpt of the reviewed text the finding is about.
           // Free-form `location` prose cannot be anchored; this can — the persist
           // writer below turns it into an `rdm review comment --quote` anchor, and
@@ -1526,14 +1543,15 @@ const PERSIST_DEGRADED_REASONS = [
 // skills carry (retry without the anchor, or park); it is not a gate.
 
 // The comment-body header convention: the finding metadata rdm's comment
-// frontmatter has no field for, carried on the first seven lines of the body in
+// frontmatter has no field for, carried on the first eight lines of the body in
 // a fixed `key: value` order. TOTAL, never sparse — every key is always
-// emitted, with the literal `none` sentinel for an absent `unrefutedReason` and
-// the literal `n/a` sentinel for a finding never graded for scope — and every
-// value is single-line, so the inverse parser can be line-based. Extending core
-// comment frontmatter instead is recorded as a follow-up task, not done here.
+// emitted, with the literal `none` sentinel for an absent `unrefutedReason`,
+// the literal `n/a` sentinel for a finding never graded for scope, and the
+// closed `PERSIST_ANCHOR_STATES` vocabulary for `anchor` — and every value is
+// single-line, so the inverse parser can be line-based. Extending core comment
+// frontmatter instead is recorded as a follow-up task, not done here.
 // Documented in docs/workflow-schemas.md § "Persisted review comment body".
-const PERSIST_HEADER_KEYS = ['severity', 'confidence', 'refuted', 'unrefutedReason', 'dimension', 'finding-id', 'inScope'];
+const PERSIST_HEADER_KEYS = ['severity', 'confidence', 'refuted', 'unrefutedReason', 'dimension', 'finding-id', 'inScope', 'anchor'];
 
 // persistHeaderValue(v) — collapse to a single line. A header value that spanned
 // lines would desynchronize the line-based parser for every key after it.
@@ -1552,11 +1570,21 @@ function persistScopeValue(f) {
   return 'n/a';
 }
 
-// formatCommentBody(finding) — the seven header lines, a blank line, then the
-// finding's own prose. `refuted` is always `false`: a refuted finding never
-// reaches the writer, because `survives()` dropped it.
-function formatCommentBody(finding) {
+// formatCommentBody(finding, anchorState) — the eight header lines, a blank
+// line, then the finding's own prose. `refuted` is always `false`: a refuted
+// finding never reaches the writer, because `survives()` dropped it.
+//
+// `anchorState` is one of `PERSIST_ANCHOR_STATES`, normally computed by the
+// caller via `persistAnchorState(finding, target, opts)` — the writer in
+// `persistReviewCommands` does exactly that, so the header can never disagree
+// with what was actually emitted. When omitted (a caller with no target/opts
+// context, e.g. a direct unit test), it falls back to the quote-presence-only
+// half of that same rule: `'quote'` when the finding carries a quote,
+// `'wholeDocumentIntended'` when it does not. That fallback can never produce
+// `'path'` or `'degraded'`, both of which require a target to decide.
+function formatCommentBody(finding, anchorState) {
   const f = finding || {};
+  const anchor = typeof anchorState === 'string' ? anchorState : persistHasQuote(f) ? 'quote' : 'wholeDocumentIntended';
   const lines = [
     'severity: ' + persistHeaderValue(f.severity || 'concern'),
     'confidence: ' + persistHeaderValue(f.confidence === undefined || f.confidence === null ? 0 : f.confidence),
@@ -1565,6 +1593,7 @@ function formatCommentBody(finding) {
     'dimension: ' + persistHeaderValue(f.concern || ''),
     'finding-id: ' + persistHeaderValue(f.id || ''),
     'inScope: ' + persistHeaderValue(persistScopeValue(f)),
+    'anchor: ' + persistHeaderValue(anchor),
     '',
     persistHeaderValue(f.concern || ''),
     'What fails: ' + String(f.what_fails === undefined || f.what_fails === null ? '' : f.what_fails),
@@ -1615,6 +1644,8 @@ function parseCommentHeader(body) {
     // `n/a` (never graded for scope) parses back to `null`, not `false` — a
     // header consumer must not read "never graded" as "graded out of scope".
     inScope: values.inScope === 'true' ? true : values.inScope === 'false' ? false : null,
+    // The closed `PERSIST_ANCHOR_STATES` vocabulary, read back verbatim.
+    anchor: values.anchor,
     whatFails: whatFails,
     rest: rest.replace(/^\n+/, ''),
   };
@@ -1685,15 +1716,37 @@ function persistCapture(varName, base, value) {
   return varName + "=$(cat <<'" + tag + "'\n" + String(value) + '\n' + tag + '\n)';
 }
 
+// isRepoRelativePath(s) — the shared repo-relative-path validity check a
+// candidate `--path` value must pass: no leading `/`, no backslash, no `..`
+// segment, no embedded space, and it must actually look like a path (it
+// contains a `/` or ends in a file extension). Factored out of
+// `pathFromLocation` so `persistAnchorFor` can apply the SAME validity check
+// directly to a finder-supplied `finding.path`, rather than re-deriving a
+// parallel rule that could drift from the one `pathFromLocation` already
+// enforces.
+//
+// Pure and total: never throws, and returns false for any non-string input.
+function isRepoRelativePath(s) {
+  if (typeof s !== 'string' || s === '') return false;
+  if (s.indexOf(' ') !== -1) return false;
+  if (s.charAt(0) === '/' || s.indexOf('\\') !== -1) return false;
+  if (s.split('/').indexOf('..') !== -1) return false;
+  return s.indexOf('/') !== -1 || /\.[A-Za-z0-9]+$/.test(s);
+}
+
 // pathFromLocation(location) — the repo-relative source path a code-mode
-// finding's `location` names, or null.
+// finding's `location` names, or null. This is the RESILIENCE-NET heuristic,
+// not the primary path source — see `persistAnchorFor`, which tries the
+// finder's own structured `finding.path` first and falls back to this only
+// when that field is absent or invalid.
 //
 // A code finding's `location` is conventionally `<path>:<line>` or
-// `<path>:<start>-<end>`. Strip the line suffix and accept the remainder ONLY
-// when it really looks repo-relative: it must contain a `/` or a file
-// extension, must not start with `/`, and must contain no `..` segment. A
-// free-form prose location ("the gate step", "throughout") yields null, and the
-// caller then emits a whole-change comment rather than a `--path` one.
+// `<path>:<start>-<end>`. Strip the line suffix and validate the remainder
+// through `isRepoRelativePath`. A free-form prose location ("the gate step",
+// "throughout") yields null, and the caller then emits a whole-change comment
+// rather than a `--path` one. Extra trailing prose past the line suffix (e.g.
+// "path/to/file.rs:12-18 (mirrored at ...)") also yields null — exactly the
+// case a finder-supplied `path` field is meant to route around entirely.
 //
 // Pure and total: never throws, and returns null for any non-string input.
 function pathFromLocation(location) {
@@ -1703,16 +1756,13 @@ function pathFromLocation(location) {
   // Drop a trailing `:<line>` or `:<start>-<end>` suffix (digits only, so a
   // Windows-style `C:` or a prose colon is not silently eaten).
   s = s.replace(/:\d+(?:-\d+)?$/, '');
-  if (s === '' || s.indexOf(' ') !== -1) return null;
-  if (s.charAt(0) === '/' || s.indexOf('\\') !== -1) return null;
-  if (s.split('/').indexOf('..') !== -1) return null;
-  const looksLikePath = s.indexOf('/') !== -1 || /\.[A-Za-z0-9]+$/.test(s);
-  return looksLikePath ? s : null;
+  return isRepoRelativePath(s) ? s : null;
 }
 
 // persistAnchorFor(finding, target, opts) — the SINGLE decision of how one
-// finding gets anchored, shared by the command writer and by the prompt
-// builder's pre-degradation report so the two can never disagree.
+// finding gets anchored, shared by the command writer, the prompt builder's
+// pre-degradation report, and the comment-header `anchor` marker so none of
+// the three can ever disagree.
 //
 // THE RULE A CHANGE TARGET IMPOSES. `rdm review comment` on a `change/<sha>`
 // review refuses `--quote` without `--path` outright
@@ -1727,6 +1777,12 @@ function pathFromLocation(location) {
 // pre-counted as degraded. A plan-repo document target is unaffected — there a
 // bare `--quote` is the normal, correct anchor.
 //
+// PATH SOURCE ORDER: the finder's own structured `finding.path` is tried
+// FIRST (validated through `isRepoRelativePath`); only when it is absent or
+// fails validation does this fall back to `pathFromLocation(finding.location)`
+// — the pre-existing heuristic, kept as a resilience net for a finder whose
+// prompt output lags, not the primary source any more.
+//
 // Returns `{ quote, path, reason }`: `quote` is whether `--quote` is emitted,
 // `path` the `--path` value (or null), and `reason` a PERSIST_DEGRADED_REASONS
 // entry when an anchor the finding ASKED for was dropped at build time.
@@ -1735,13 +1791,43 @@ function persistAnchorFor(finding, target, opts) {
   if (!persistHasQuote(finding)) return { quote: false, path: null, reason: null };
   // An EMPTY COMMITTED RANGE has no hunks, so no `--path` anchor can ever land.
   const emptyRange = !!(o.source && o.source.noCode === true);
-  const path = o.pathAnchors === true && !emptyRange ? pathFromLocation(finding.location) : null;
+  let path = null;
+  if (o.pathAnchors === true && !emptyRange) {
+    const f = finding || {};
+    const declared = typeof f.path === 'string' ? f.path.trim() : '';
+    path = declared !== '' && isRepoRelativePath(declared) ? declared : pathFromLocation(f.location);
+  }
   if (!isChangeTarget(target)) return { quote: true, path: path, reason: null };
   if (path !== null) return { quote: true, path: path, reason: null };
   // `outside-hunk` when the range is empty (every hunk is missing, which is
   // what the emptyRange prose already calls it); `path-missing` when no usable
-  // repo-relative path could be derived from the finding's `location` at all.
+  // repo-relative path could be derived from either `finding.path` or
+  // `finding.location`.
   return { quote: false, path: null, reason: emptyRange ? 'outside-hunk' : 'path-missing' };
+}
+
+// PERSIST_ANCHOR_STATES — the closed vocabulary for a persisted comment's
+// `anchor` header value (see `persistAnchorState` below and § "Persisted
+// review comment body" in docs/workflow-schemas.md).
+const PERSIST_ANCHOR_STATES = ['path', 'quote', 'wholeDocumentIntended', 'degraded'];
+
+// persistAnchorState(finding, target, opts) — the `anchor` header value for
+// ONE finding, derived from the SAME `persistAnchorFor` decision the writer
+// emits, so the header can never disagree with what was actually written:
+//
+//   'path'                  — change target, `--path` + `--quote` both emitted
+//   'quote'                 — non-change target, bare `--quote` emitted
+//   'wholeDocumentIntended' — the finding never carried a `quote` at all
+//   'degraded'              — a `quote` was requested but the anchor it asked
+//                              for was dropped at build time
+//                              (`persistAnchorFor`'s `reason`)
+//
+// Pure and total.
+function persistAnchorState(finding, target, opts) {
+  if (!persistHasQuote(finding)) return 'wholeDocumentIntended';
+  const decision = persistAnchorFor(finding, target, opts);
+  if (decision.reason !== null) return 'degraded';
+  return decision.path !== null ? 'path' : 'quote';
 }
 
 // persistPreDegradedAnchors(result, target, opts) — the build-time degradation
@@ -1760,6 +1846,43 @@ function persistPreDegradedAnchors(result, target, opts) {
     }
   }
   return out;
+}
+
+// persistDegradationClause(result, target, opts) — the human-readable clause
+// naming HOW MANY requested anchors were dropped at build time and WHY,
+// composed purely from `persistPreDegradedAnchors`'s data (itself derived from
+// the same `persistAnchorFor` decision the writer emits — nothing here reads
+// back what a command actually did). Returns `''` when nothing degraded, so a
+// clean run's summary is unchanged. This is a pure BUILD-TIME computation over
+// data already in hand — not a report about what the emitted ladder did after
+// running — so it revives none of the removed persist-ack round trip.
+//
+// Composed into `persistReviewCommands`' `--body` text so a review whose
+// anchors all degraded states that in its OWN persisted summary: it cannot
+// read as clean persistence merely because `classifyOutcome`/`outcome` stay
+// independent of anchor plumbing (a deliberate, recorded design decision — see
+// docs/workflow-schemas.md § "Persisting a review").
+function persistDegradationClause(result, target, opts) {
+  const degraded = persistPreDegradedAnchors(result, target, opts);
+  if (degraded.length === 0) return '';
+  const requested = persistReviewSurvivors(result).filter(persistHasQuote).length;
+  const counts = {};
+  for (let i = 0; i < degraded.length; i++) {
+    const reason = degraded[i].reason;
+    counts[reason] = (counts[reason] || 0) + 1;
+  }
+  const reasons = Object.keys(counts)
+    .sort()
+    .map((r) => r + ' x' + counts[r])
+    .join(', ');
+  return (
+    degraded.length +
+    ' of ' +
+    requested +
+    ' requested anchor(s) could not be placed at persist time (' +
+    reasons +
+    '); see the `anchor` header on each comment.'
+  );
 }
 
 // persistReviewCommands(result, target, cfg, opts) — the ORDERED shell commands that
@@ -1788,8 +1911,9 @@ function persistReviewCommands(result, target, cfg, opts) {
   const mode = persistReviewMode(result);
   const verdict = persistVerdictFor((result || {}).outcome);
   const survivors = persistReviewSurvivors(result);
-  const summary = persistReviewSummary(result);
   const o = opts || {};
+  const degradationClause = persistDegradationClause(result, target, o);
+  const summary = persistReviewSummary(result) + (degradationClause ? '\n\n' + degradationClause : '');
   // Default-off: with no `opts` the emitted bytes are byte-identical to what
   // every pre-existing caller already gets (pinned by
   // scripts/verify-workflow-review.sh § 15).
@@ -1883,11 +2007,15 @@ function persistReviewCommands(result, target, cfg, opts) {
   );
   for (let i = 0; i < survivors.length; i++) {
     const f = survivors[i] || {};
-    let cmd = persistCapture('RDM_PERSIST_BODY', 'RDM_PERSIST_BODY_EOF', formatCommentBody(f)) + '\n';
-    // ONE decision, shared with the pre-degradation report — see
-    // persistAnchorFor. `--quote` never rides alone on a change target.
+    // ONE decision, shared with the pre-degradation report and the comment
+    // header's `anchor` marker — see persistAnchorFor. `--quote` never rides
+    // alone on a change target.
     const anchor = persistAnchorFor(f, target, o);
     const anchorPath = anchor.path;
+    // persistAnchorState re-derives the SAME persistAnchorFor decision above
+    // (cheap and pure) rather than duplicating its branching here, so the
+    // header can never disagree with what the lines below actually emit.
+    let cmd = persistCapture('RDM_PERSIST_BODY', 'RDM_PERSIST_BODY_EOF', formatCommentBody(f, persistAnchorState(f, target, o))) + '\n';
     if (anchor.quote) {
       cmd += persistCapture('RDM_PERSIST_QUOTE', 'RDM_PERSIST_QUOTE_EOF', f.quote) + '\n';
       let pathFlag = '';

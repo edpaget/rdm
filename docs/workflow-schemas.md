@@ -1139,7 +1139,8 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | `id`            | string (required)                        | short stable slug, unique within the finder       |
 | `concern`       | string (required)                        | the dimension key (`ac`, `correctness`, …)        |
 | `category`      | string                                   | **optional**; security-style slug (injection / authorization / memory / crypto / exposure) |
-| `location`      | string                                   | `file:line`, section heading, or phase stem       |
+| `location`      | string                                   | `file:line`, section heading, or phase stem — free-text, may carry extra human-readable detail |
+| `path`          | string                                   | **optional, code mode**; a STRUCTURED repo-relative source path the `quote` was taken from, distinct from `location`. Required alongside `quote` by prompt convention (not schema-enforced); a finding that carries `quote` with no `path` still falls back to the `location`-parsing heuristic (see `pathFromLocation`) |
 | `quote`         | string                                   | **optional**; a VERBATIM excerpt of the reviewed text this finding is about — what makes a persisted comment anchorable |
 | `severity`      | `blocking` \| `concern` \| `suggestion`  | required; drives ranking and the overall verdict  |
 | `confidence`    | integer 0–100 (required)                 | the finder's confidence **in the finding**        |
@@ -1176,6 +1177,17 @@ finding survives on its own merits and simply loses an excerpt that would not
 have anchored. `quote_ok` is independent of `refuted`. A finding that was never
 graded (`unrefuted` / `refuterError`) keeps an UNVERIFIED quote — the writer's
 runtime whole-document fallback is what protects those.
+
+**`path` is what makes a `code`-mode finding's `quote` land at BUILD time,
+rather than depend on parsing `location`.** A code finding's `location`
+conventionally reads `<path>:<line>`, but it is still free-text and may carry
+extra human-readable detail past that (e.g. `"path/to/file.rs:12-18 (mirrored
+at ...)"`) that defeats `pathFromLocation`'s end-anchored suffix-stripping
+heuristic. `path` is the structured escape hatch: the code-mode finder prompt
+asks for it explicitly whenever `quote` is given, and `persistAnchorFor` tries
+it FIRST, ahead of the `location`-parsing fallback (see § "Persisting a
+review" below). `plan` mode has no `path` field in its prompt — a plan review
+targets the document itself, where a bare `--quote` is always the anchor.
 
 The code-mode `ac` dimension's prompt deliberately says nothing about `quote`.
 It returns early from its own `AC_REVIEW_SCHEMA` branch and never reaches the
@@ -1260,7 +1272,7 @@ the summary, and it does NOT count as an AC gap.
 
 ### Persisted review comment body
 
-Every comment `persistReviewCommands` writes starts with a fixed seven-line
+Every comment `persistReviewCommands` writes starts with a fixed eight-line
 header carrying the finding metadata rdm's comment frontmatter has no field for,
 followed by a blank line, then the finding's own prose. The key ORDER is fixed
 and the header is TOTAL — every key is always emitted, never sparse:
@@ -1273,6 +1285,7 @@ unrefutedReason: none
 dimension: coherence
 finding-id: f1
 inScope: n/a
+anchor: path
 
 coherence
 What fails: the retry backoff strategy is unspecified
@@ -1282,8 +1295,8 @@ Recommendation: state the backoff policy
 
 Rules:
 
-- The seven keys, in this order: `severity`, `confidence`, `refuted`,
-  `unrefutedReason`, `dimension`, `finding-id`, `inScope`.
+- The eight keys, in this order: `severity`, `confidence`, `refuted`,
+  `unrefutedReason`, `dimension`, `finding-id`, `inScope`, `anchor`.
 - `unrefutedReason: none` is the SENTINEL for a finding that carries none — the
   key is never omitted.
 - `inScope: n/a` is the SENTINEL for a finding never graded for scope (plan
@@ -1293,6 +1306,23 @@ Rules:
   `true` / `false` / `null` (never a bare string) from these three values.
 - `refuted` is always `false`: a refuted finding never reaches the writer,
   because `survives()` already dropped it.
+- `anchor` is the CLOSED `PERSIST_ANCHOR_STATES` vocabulary — the fourth
+  disposition state a persisted comment can be in, distinguishing "this
+  finding never asked for a file anchor" from "this finding asked and the
+  request was dropped at build time" (both of which land as a bare
+  whole-document comment otherwise indistinguishable from one another):
+  - `path` — change target, `--path` + `--quote` both emitted (the normal
+    anchored case)
+  - `quote` — non-change (plan-repo document) target, bare `--quote` emitted
+    (the normal case there)
+  - `wholeDocumentIntended` — the finding never carried a `quote` at all
+  - `degraded` — the finding carried a `quote` but the requested anchor was
+    dropped at build time (`persistAnchorFor`'s `reason` — `path-missing` or
+    `outside-hunk`)
+
+  Computed by `persistAnchorState(finding, target, opts)`, which re-derives the
+  SAME decision `persistAnchorFor` makes for the writer, so the header can
+  never disagree with what the emitted `rdm review comment` line actually did.
 - Every header VALUE is single-line (embedded newlines are collapsed to spaces),
   so the inverse parser can be line-based.
 - `formatCommentBody` and its inverse `parseCommentHeader` live side by side in
@@ -1345,7 +1375,7 @@ still branches on nothing:
 
 | `opts` field | effect |
 | --- | --- |
-| `pathAnchors` | for each survivor whose `location` yields a repo-relative path via the pure `pathFromLocation`, emit `--path "$RDM_PERSIST_PATH"` alongside `--quote`. Suppressed outright when `source.noCode` is set (no hunks exist, so every such comment would fail), and REFUSED with a throw on a non-change target. Against a change target `--quote` is emitted ONLY when a `--path` accompanies it — see the unanchorable-quote rule below. |
+| `pathAnchors` | for each survivor, resolve a repo-relative `--path`: try the finder's own structured `finding.path` first (validated through `isRepoRelativePath`), and fall back to the pure `pathFromLocation(finding.location)` heuristic only when `finding.path` is absent or invalid — then emit `--path "$RDM_PERSIST_PATH"` alongside `--quote`. Suppressed outright when `source.noCode` is set (no hunks exist, so every such comment would fail), and REFUSED with a throw on a non-change target. Against a change target `--quote` is emitted ONLY when a `--path` accompanies it — see the unanchorable-quote rule below. |
 
 **`rdm-wf-review-refute-fix.js` defaults its code-review persist target to
 `change/HEAD`** — a code review is about the code, so the recorded artifact
@@ -1413,13 +1443,34 @@ usable path is written whole-document instead. Two cases reach it:
 - **An empty committed range** (`opts.source.noCode === true`): no hunks exist,
   so no `--path` can land. Both flags are suppressed and `emptyRange: true` is
   reported in the return. Reason `outside-hunk`.
-- **No derivable path**: `pathFromLocation` yields nothing from a free-form
-  `location` such as `throughout the gate step`. Reason `path-missing`.
+- **No derivable path**: neither the finder's own `finding.path` (validated) nor
+  `pathFromLocation(finding.location)` yields a usable repo-relative path — e.g.
+  `path` is absent and `location` is free-form prose like `throughout the gate
+  step`, or `location` carries extra prose past a parseable `path:line` prefix
+  that defeats the end-anchored heuristic (`"src/x.rs:12 (mirrored at
+  ...)"`) while `path` was also never supplied. Reason `path-missing`.
 
 `persistPreDegradedAnchors(result, target, opts)` reports these as an array of
 `{ findingId, reason }`, computed from the SAME decision the writer emitted. A
 plan-repo document target is unaffected: there a bare `--quote` is the normal,
 correct anchor and the array is empty.
+
+**A degraded anchor is also reported in the review's OWN summary.**
+`persistDegradationClause(result, target, opts)` composes
+`persistPreDegradedAnchors`'s data into a one-line clause — "N of M requested
+anchor(s) could not be placed at persist time (path-missing xN[, outside-hunk
+xN]); see the `anchor` header on each comment." — appended to the `--body` text
+`persistReviewCommands` gives `rdm review start`. Empty (and therefore
+invisible) when nothing degraded. This is a pure BUILD-TIME computation over
+data already in hand, not a report about what the emitted ladder did after
+running, so it revives none of the removed persist-ack round trip. It also
+does NOT touch `classifyOutcome`/`outcome` — outcome classification staying
+independent of anchor plumbing remains a deliberate, recorded design decision
+(see immediately below); the signal lives in the persisted document's own
+body, not in the OUTCOME a caller gates on. Each comment's own `anchor` header
+(§ "Persisted review comment body" above) still carries the per-finding
+detail; this clause is what makes the aggregate visible without opening every
+comment.
 
 **Verdict mapping** (`PERSIST_VERDICT` / `persistVerdictFor`, which THROWS on an
 unrecognized outcome rather than defaulting to `comment`):

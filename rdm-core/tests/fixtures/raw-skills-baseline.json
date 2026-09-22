@@ -7,7 +7,7 @@
   "cli-bare/rdm-estimate/SKILL.md": "8db236226fbc5ed77ac216cc322cc0b04c80087ed4ed2803cb7f55651e3c99a3",
   "cli-bare/rdm-land/SKILL.md": "6af86ca09eaec1a19d9b5cafab5ed0b6756105853704fae0318e6c5e5967c7fd",
   "cli-bare/rdm-plan-review/SKILL.md": "603e089a6969fc0f81b84ee57188a8fc1bb7c146ffc9c53f38603995f9c4e6b8",
-  "cli-bare/rdm-review/SKILL.md": "ce6f4c4722a0e8efe90f8c8c1e7ab1fcc3df1d6f53d28e61aba31163b06f7e5d",
+  "cli-bare/rdm-review/SKILL.md": "fcf0a630dd0a823c02b7879aab4b833e05529d45982cdd7ac5412c0874834705",
   "cli-bare/rdm-revise/SKILL.md": "c7b82af990533b2c0d348d0915b060fe0852abbb314ccb174eaf16006efb0ca9",
   "cli-bare/rdm-roadmap/SKILL.md": "e3127c052f2435382b48765ccf5db9174c0d72f8ecba6a693c57bdc69b9ca5b7",
   "cli-full/rdm-autopilot/SKILL.md": "69b6234c4ae1c945353ada984657cfb717e8fa52e5617ee60eb7fde5b1577667",
@@ -18,12 +18,12 @@
   "cli-full/rdm-estimate/SKILL.md": "031b431e0136ed043c48813972bad4a4782f7bcbf41edba5e16a1e43df9b0f4b",
   "cli-full/rdm-land/SKILL.md": "96c98be550282d6de470051de30e74abbf2099e38e1b65264819f6918635f7f5",
   "cli-full/rdm-plan-review/SKILL.md": "729ee9275de14914152ce904191d4ad6ea6257cc94ca55cdbae8aebff07322a9",
-  "cli-full/rdm-review/SKILL.md": "1fe632b734aba4be42d69a73751d9c8d056955a998bfea7c3b6308b04351a1e5",
+  "cli-full/rdm-review/SKILL.md": "79994bb6a97ae1786bedd73d618b6d078ea68993ac351190d1df924cd24deac7",
   "cli-full/rdm-revise/SKILL.md": "3c058831841f3d147cfce34ca7d6021874609f05cee7c84a5be7ec93a78dfc97",
   "cli-full/rdm-roadmap/SKILL.md": "57f22301e9371d2a0f8abfda4153e3ed10481493a32e2e94fa7cab63a70e5bcf",
   "workflows/rdm-wf-backlog.js": "05412efb9f87f8662af9adb34271ef3d174f8fca05a0ff144b860c661e2dd951",
   "workflows/rdm-wf-document.js": "a5d79fb138946397b3f4394532023ae5f9576e7da5ff1383febab54b879d8796",
   "workflows/rdm-wf-estimate.js": "39417cb0430b5f162a78ec23319a140bf12c637d3f755e40211ef999aa743dbf",
-  "workflows/rdm-wf-plan-review.js": "9e2fb114c4f595a9f06c03b294ba40fa860c45846f54f2d2be524b2aff57f06e",
-  "workflows/rdm-wf-review-refute-fix.js": "5d542b2eb59c612fedfdda9ad719a4617f308331d2026a466f6ad6f853b06960"
+  "workflows/rdm-wf-plan-review.js": "75db3de392046809ab58155aa8045410bd3978224a04a8c2f23eaf25c951d126",
+  "workflows/rdm-wf-review-refute-fix.js": "9946150147b15a6b3e05d662a54487eea9343fe59f3329e485389b44e012f841"
 }
