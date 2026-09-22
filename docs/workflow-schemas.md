@@ -1692,10 +1692,23 @@ latest prior review's comment bodies read back through `parseCommentHeader`
 advances the round — a round is a pass over the plan, whoever made it.
 Everything downstream is unchanged, so the round-3 escalation cap and the
 REPORTING-ONLY repeat rule are preserved by construction rather than by a
-second implementation. No prior persisted review for the target — none exists
-yet, or the caller passed an empty/absent `priorReviews` — fails toward round
-1, the same "fails toward round 0" stance `priorRoundFromReviews` takes on an
-empty list.
+second implementation. No prior persisted review for the target fails toward
+round 1, the same "fails toward round 0" stance `priorRoundFromReviews` takes
+on an empty list — but the reason it is empty matters, and the engine tells
+the two apart:
+
+- `priorReviews: []` — the caller ran `rdm review list` and there genuinely
+  are none yet. Round 1 is the true state, reported silently, exactly as
+  before.
+- `priorReviews` absent (`null` — the key was never supplied, e.g. a caller
+  that skipped `rdm review list` entirely) — the engine cannot know the
+  round, and must not report round 1 as if it did. `reviewUnit` sets
+  `roundUnknown: true` on the unit (mirroring `gateAction.tagsUnknown`'s
+  absent-vs-empty treatment of the tag list) and the unit's `summary` carries
+  a visible `[round unknown: …]` clause (`roundUnknownClause`) naming the
+  fix (`rdm review list --on <target> --format json` as `priorReviews`).
+  `round` still reports 1 — no round arithmetic changes — but the absence is
+  now visible rather than silently indistinguishable from a genuine round 1.
 
 The engine also RENDERS a `## Plan Review Round <N>` audit note
 (`formatRoundNote`) and returns it to the caller as `roundNote`, a

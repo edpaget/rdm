@@ -594,9 +594,22 @@ function gatePendingClause(reportedUnit) {
 // whether THIS pass sets `persist` — so `round = prior.round + 1`,
 // `classifyRoundOutcome(round, survivors)`, and `partitionRepeats(survivors,
 // prior.findings)` engage as soon as at least one PRIOR pass persisted a
-// review for the target. No prior persisted review ⇒ `priorReviews` is empty
-// ⇒ round 1, the same "fails toward round 0" stance `priorRoundFromReviews`
-// documents below — there is no second, body-note-derived channel.
+// review for the target. No prior persisted review ⇒ `priorReviews` is a
+// caller-supplied EMPTY ARRAY ⇒ round 1, the same "fails toward round 0"
+// stance `priorRoundFromReviews` documents below — there is no second,
+// body-note-derived channel.
+//
+// An empty array is not the only way `unit.priorReviews` can be missing,
+// though, and the two are NOT the same claim: `[]` says "the caller ran `rdm
+// review list` and there were none" (genuinely round 1); a bare absence
+// (`null` — the caller never supplied the key, e.g. skipped `rdm review
+// list` entirely) says "the caller does not know" and must not be reported as
+// the same thing. `reviewUnit` tells them apart via `roundUnknown`
+// (`!Array.isArray(unit.priorReviews)`) and reports it visibly — see
+// `roundUnknownClause` below, which mirrors `gatePendingClause`'s
+// `tagsUnknown` treatment of the same absent-vs-empty distinction on the tag
+// channel. The round STILL reports 1 either way (no arithmetic changes), but
+// only the genuinely-empty case reports it silently.
 
 // `extractPriorReviewsFromTranscript` is gone with the transcript it read. The
 // prior reviews now arrive as CALLER DATA (`priorReviews` per unit): the
@@ -607,7 +620,11 @@ function gatePendingClause(reportedUnit) {
 // priorRoundFromReviews(reviews) — how many rounds this target has already
 // been through: every non-draft review recorded against it. A null/unparseable
 // list fails TOWARD 0 (the cap engages later, never never) — the same stance
-// parseRoundNotes takes on a body with no well-formed header.
+// parseRoundNotes takes on a body with no well-formed header. This function
+// itself stays silent about WHY it returned 0 — a genuinely empty `[]` and a
+// missing/non-array `reviews` both land here — because the caller
+// (`reviewUnit`) is the one that computes `roundUnknown` separately and
+// surfaces the absent case; this helper's job is only the count.
 //
 // A HUMAN's review on the same target counts. That is deliberate: a round is a
 // pass over the plan, whoever made it, and filtering by author would let an
@@ -649,6 +666,30 @@ function priorFindingsFromReviews(reviews) {
     out.push({ severity: h.severity, concern: h.dimension, what_fails: h.whatFails })
   }
   return out
+}
+
+// roundUnknownClause(reportedUnit) — the marker that makes a unit whose round
+// could not be determined self-describing in its summary line, mirroring
+// `gatePendingClause`'s `tagsUnknown` branch above: a caller-absent input
+// (here `priorReviews`, there the current tag list) is reported visibly
+// rather than silently taking the same fallback value a genuinely-empty input
+// would. Empty whenever `roundUnknown` is not `true` (including a healthy
+// `priorReviews: []` — a caller that looked and found no prior reviews really
+// is on round 1), so a run that supplied its prior reviews renders
+// byte-unchanged. Present regardless of outcome — unlike `gatePendingClause`,
+// which only ever fires on a `reviewed` unit, a round that could not be
+// determined is worth flagging on every outcome, since `round` (still
+// reported as 1, per the "fails toward round 0" stance) feeds the round-cap
+// arithmetic for every later pass too.
+function roundUnknownClause(reportedUnit) {
+  const u = reportedUnit || {}
+  if (u.roundUnknown !== true) return ''
+  return (
+    ' [round unknown: no priorReviews were supplied for this target, so round ' +
+    (typeof u.round === 'number' ? u.round : 1) +
+    ' could not be verified against the target\'s actual review history — pass `rdm review list --on <target> ' +
+    '--format json` as priorReviews, or treat this pass as round 1 deliberately]'
+  )
 }
 
 const ROUND_HEADER_RE = /^## Plan Review Round (\d+) — (\S+)\s*$/
@@ -799,7 +840,11 @@ function suppressWontFixed(survivors, wontFixedTexts) {
 // feed back into this function. This function, its input (the repeat-
 // UNFILTERED survivor list), and the reporting-only rule on `partitionRepeats`
 // are the only path, so a repeat can never age a still-present blocking
-// finding out into a pass.
+// finding out into a pass. `unit.priorReviews` absent (not merely empty) is a
+// SEPARATE signal — `roundUnknown`, computed and reported by `reviewUnit`,
+// not by this function — that this pass's round number could not actually be
+// verified; it still classifies here as round 1, the same as a genuinely
+// empty prior set.
 // Round 3+ then escalates only when that base outcome is still non-`reviewed`,
 // so an item can never loop forever on an unresolved finding — while a plan
 // that was genuinely fixed on the third pass still passes. The cap is an
@@ -1073,6 +1118,15 @@ async function runPlanReviewDriver(args, deps) {
       verifyModel: _verifyModel,
     })
     const survivors = suppressWontFixed(rawSurvivors, wontFixedTexts)
+    // `roundUnknown` distinguishes a caller who supplied no `priorReviews` at
+    // all (`null` — cannot know the round) from one who supplied `[]` (looked,
+    // found none — genuinely round 1). Computed here, off the RAW
+    // `unit.priorReviews`, rather than inside `priorRoundFromReviews` — that
+    // helper's contract stays "how many rounds", the same non-array-fails-
+    // toward-0 shape it always had; this is a second, independent read of the
+    // same input for visibility only. See roundUnknownClause and the
+    // "review-derived round channel" comment block above.
+    const roundUnknown = !Array.isArray(unit.priorReviews)
     const prior = { round: priorRoundFromReviews(unit.priorReviews), findings: priorFindingsFromReviews(unit.priorReviews) }
     const round = prior.round + 1
     const outcome = classifyRoundOutcome(round, survivors)
@@ -1082,6 +1136,7 @@ async function runPlanReviewDriver(args, deps) {
       survivors: survivors,
       outcome: outcome,
       round: round,
+      roundUnknown: roundUnknown,
       newlyReported: partition.fresh,
       repeats: partition.repeats,
       budget: budget || null,
@@ -1203,6 +1258,7 @@ async function runPlanReviewDriver(args, deps) {
       roadmap: u.roadmap,
       outcome: r.outcome,
       round: r.round,
+      roundUnknown: r.roundUnknown,
       newlyReported: r.newlyReported,
       repeats: r.repeats,
       status: gate.status,
@@ -1227,8 +1283,8 @@ async function runPlanReviewDriver(args, deps) {
       reportedUnit.persistScript = unitPersist.join('\n')
     }
     // Clause order is FIXED: summarizeFindings → coverage clause (inside
-    // r.summary) → gate clause.
-    reportedUnit.summary = r.summary + gatePendingClause(reportedUnit)
+    // r.summary) → round-unknown clause → gate clause.
+    reportedUnit.summary = r.summary + roundUnknownClause(reportedUnit) + gatePendingClause(reportedUnit)
     reported.push(reportedUnit)
     _log('plan-review (' + u.kind + '/' + u.ident + '): ' + r.outcome + ' — ' + reportedUnit.summary + formatUnitBudget(r.budget))
   }
@@ -1303,6 +1359,7 @@ export {
   planGateCommands,
   buildGateAction,
   gatePendingClause,
+  roundUnknownClause,
   resolvePersistArg,
   persistTargetFor,
   priorRoundFromReviews,

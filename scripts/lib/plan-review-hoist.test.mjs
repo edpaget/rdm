@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { runPlanReviewDriver, parsePlanArgs, buildReviewUnits } from '../../.claude/workflows/lib/plan-review.mjs';
-import { DIMENSIONS, resolveReviewers } from '../../.claude/workflows/lib/review.mjs';
+import { DIMENSIONS, resolveReviewers, formatCommentBody } from '../../.claude/workflows/lib/review.mjs';
 
 const checkout = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -212,6 +212,52 @@ test('A9b: the round channel is unaffected by THIS pass\'s own persist flag', as
   );
   assert.equal(result.units[0].round, 3, 'the same two recorded reviews put this pass on round 3, persist on or off');
   assert.equal(result.outcome, 'escalated', 'round 3 with a live blocking finding escalates identically with persist on');
+});
+
+test('A9c: repeat detection sees the CALLER-supplied prior review\'s comments, not an empty set (persist off)', async () => {
+  const blocking = { id: 'c1', concern: 'coherence', severity: 'blocking', confidence: 95, what_fails: 'still ambiguous' };
+  // The exact comment body the persist ladder writes for this finding on a
+  // prior pass, built through the REAL formatter formatCommentBody uses —
+  // never a hand-written string — so this test also catches drift between
+  // the writer and priorFindingsFromReviews' reader (parseCommentHeader).
+  const priorCommentBody = formatCommentBody(blocking);
+  const priorReviews = [
+    { id: '2026-01-01-0000-aaaa', state: 'submitted', created: '2026-01-01', comments: [{ id: 1, body: priorCommentBody }] },
+  ];
+  const { result } = await driveLib(
+    // persist deliberately left unset (off) — this is the path the review
+    // flagged as untested: A9/A9b both pass `comments: []`, so
+    // partitionRepeats never sees a real prior finding.
+    { roadmap: 'r', phase: 'phase-1-x', tags: ['needs-plan-review'], priorReviews },
+    { survivors: [blocking] }
+  );
+  assert.equal(result.units[0].round, 2, 'one recorded prior review puts this pass on round 2');
+  assert.deepEqual(
+    result.units[0].repeats.map((f) => f.id),
+    ['c1'],
+    'the still-live finding is recognized as a repeat of the prior review\'s comment'
+  );
+  assert.deepEqual(result.units[0].newlyReported, [], 'nothing is left to report as fresh — it was already reported last round');
+});
+
+test('A9d: an absent priorReviews list is distinguished from an explicit empty one, visibly', async () => {
+  const absent = await driveLib({ roadmap: 'r', phase: 'phase-1-x', tags: ['needs-plan-review'] });
+  assert.equal(absent.result.units[0].roundUnknown, true, 'no priorReviews key at all means the round cannot be verified');
+  assert.equal(absent.result.units[0].round, 1, 'round arithmetic is unchanged — it still fails toward round 1');
+  assert.match(
+    absent.result.units[0].summary,
+    /\[round unknown: no priorReviews were supplied/,
+    'the unit summary carries a visible round-unknown clause'
+  );
+
+  const empty = await driveLib({ roadmap: 'r', phase: 'phase-1-x', tags: ['needs-plan-review'], priorReviews: [] });
+  assert.equal(empty.result.units[0].roundUnknown, false, 'an explicit empty array means the caller looked and found none');
+  assert.equal(empty.result.units[0].round, 1);
+  assert.equal(
+    /\[round unknown:/.test(empty.result.units[0].summary),
+    false,
+    'a genuinely round-1 unit (caller supplied `[]`) carries no round-unknown clause'
+  );
 });
 
 test('A10: persist RETURNS the ladder naming the unit target; no persisting agent runs', async () => {

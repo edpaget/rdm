@@ -44,7 +44,11 @@ never parsed out of the `$ARGUMENTS` flag string:
   commands at all** (`gateAction.tagsUnknown: true`) rather than a `--tags ""` that
   would drop a sibling tag such as `depends-unlanded`.
 - **`priorReviews`** — `./target/debug/rdm review list --on <ref> --project rdm
-  --format json`, for the round channel. Absent fails toward round 0.
+  --format json`, for the round channel. Pass `[]`, not nothing, when the
+  command returns no reviews — that is the genuinely-round-1 case. Omitting
+  the key entirely still fails toward round 1, but visibly: the unit carries
+  `roundUnknown: true` and its `summary` gets a `[round unknown: …]` clause,
+  rather than silently reporting round 1 as if it were verified.
 - **`wontFixedTexts`** — the titles from `./target/debug/rdm search "" --tag
   plan-review --status wont-fix --type task --project rdm --format json`. Absent
   suppresses nothing, which is the safe direction.
