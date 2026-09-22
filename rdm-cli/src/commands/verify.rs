@@ -236,6 +236,33 @@ fn looks_like_malformed_roadmap_or_phase_ref(raw: &str) -> bool {
     )
 }
 
+/// True when a roadmap literally named `roadmap` exists in `project` AND
+/// `identifier` resolves as one of ITS phases (by stem or number).
+///
+/// This is the narrow condition under which [`normalize_item_grammar`]
+/// prefers reading `roadmap/<identifier>` as `phase/roadmap/<identifier>`
+/// instead of an ordinary roadmap reference. It is never true merely because
+/// a roadmap named `roadmap` exists: an ordinary `roadmap/<slug>` reference
+/// to a *different* roadmap must keep resolving as that roadmap even in a
+/// project that also happens to have one literally named `roadmap` — only an
+/// `identifier` that is actually a phase of it flips the reading.
+fn roadmap_named_roadmap_has_phase(
+    store: &impl rdm_core::store::Store,
+    project: &str,
+    identifier: &str,
+) -> bool {
+    const LITERAL_ROADMAP_SLUG: &str = "roadmap";
+    if rdm_core::io::load_roadmap(store, project, LITERAL_ROADMAP_SLUG).is_err() {
+        return false;
+    }
+    let Ok(stem) =
+        rdm_core::ops::phase::resolve_phase_stem(store, project, LITERAL_ROADMAP_SLUG, identifier)
+    else {
+        return false;
+    };
+    rdm_core::io::load_phase(store, project, LITERAL_ROADMAP_SLUG, &stem).is_ok()
+}
+
 /// Rewrites `raw` from the kind-prefixed reference grammar
 /// (`roadmap/<slug>`, `phase/<roadmap>/<stem>`, `task/<slug>`) that
 /// `--on`/`--implements` use into the unprefixed worktree grammar
@@ -266,6 +293,19 @@ fn looks_like_malformed_roadmap_or_phase_ref(raw: &str) -> bool {
 /// project (a roadmap literally named `roadmap` or `phase` must still
 /// resolve its own unknown-stem errors normally).
 ///
+/// A WELL-FORMED `roadmap/<rest>` reference is a separate case from that
+/// fallthrough. `ReviewTarget::from_str` accepts it whenever `rest` has no
+/// `/`, so ordinarily it is read as "the roadmap named `<rest>`" and `rest`
+/// alone is returned. But a roadmap literally named `roadmap` (legal — it is
+/// not in `rdm_core::link::RESERVED_ROADMAP_SLUGS`) then has no OTHER
+/// two-segment spelling for its own phases: `roadmap/<stem>` always reads as
+/// "the roadmap named `<stem>`" first. [`roadmap_named_roadmap_has_phase`]
+/// is consulted here so that when `rest` genuinely resolves as a phase of a
+/// roadmap named `roadmap`, `phase/roadmap/<rest>` is preferred over an
+/// ordinary roadmap reference — and left alone (today's behavior) otherwise,
+/// so an ordinary `roadmap/<slug>` reference to any other roadmap is
+/// unaffected even in a project that also has one literally named `roadmap`.
+///
 /// Anything else that fails to parse as a `rdm_core::model::ReviewTarget`
 /// at all — including the unprefixed `<roadmap>/<stem>` form, which has no
 /// kind keyword — is also returned unchanged.
@@ -274,9 +314,19 @@ fn looks_like_malformed_roadmap_or_phase_ref(raw: &str) -> bool {
 ///
 /// Returns an error naming the accepted `--item` grammar when `raw` parses,
 /// or looks like it was meant to parse, as `plan/<slug>` or `change/<sha>`.
-fn normalize_item_grammar(raw: &str) -> Result<String> {
+fn normalize_item_grammar(
+    raw: &str,
+    store: &impl rdm_core::store::Store,
+    project: &str,
+) -> Result<String> {
     match raw.parse::<rdm_core::model::ReviewTarget>() {
-        Ok(rdm_core::model::ReviewTarget::Roadmap { roadmap }) => Ok(roadmap),
+        Ok(rdm_core::model::ReviewTarget::Roadmap { roadmap }) => {
+            if roadmap_named_roadmap_has_phase(store, project, &roadmap) {
+                Ok(format!("roadmap/{roadmap}"))
+            } else {
+                Ok(roadmap)
+            }
+        }
         Ok(rdm_core::model::ReviewTarget::Phase { roadmap, stem }) => {
             Ok(format!("{roadmap}/{stem}"))
         }
@@ -336,7 +386,7 @@ fn normalize_item_grammar(raw: &str) -> Result<String> {
 fn item_worktree(root: &Path, project: &str, raw: &str) -> Result<std::path::PathBuf> {
     use rdm_git::worktree;
     let store = commands::make_store(root)?;
-    let normalized = normalize_item_grammar(raw)?;
+    let normalized = normalize_item_grammar(raw, &store, project)?;
     let item = match worktree::resolve_item(&store, project, &normalized) {
         Ok(item) => item,
         Err(e) => {
@@ -459,15 +509,30 @@ mod tests {
         assert_eq!(tail_of(""), "");
     }
 
+    /// An empty store: `normalize_item_grammar`'s new roadmap-named-`roadmap`
+    /// carve-out consults the store only inside `roadmap_named_roadmap_has_phase`,
+    /// which returns `false` the moment `load_roadmap` finds nothing — so every
+    /// PURE grammar test below (asserting today's unaffected behavior) can use
+    /// this with no seeding at all.
+    fn no_roadmap_store() -> rdm_core::store::MemoryStore {
+        rdm_core::store::MemoryStore::new()
+    }
+
+    const PROJ: &str = "demo";
+
     #[test]
     fn normalize_item_grammar_rewrites_the_three_worktree_kinds() {
-        assert_eq!(normalize_item_grammar("roadmap/auth").unwrap(), "auth");
+        let store = no_roadmap_store();
         assert_eq!(
-            normalize_item_grammar("phase/auth/phase-1-design").unwrap(),
+            normalize_item_grammar("roadmap/auth", &store, PROJ).unwrap(),
+            "auth"
+        );
+        assert_eq!(
+            normalize_item_grammar("phase/auth/phase-1-design", &store, PROJ).unwrap(),
             "auth/phase-1-design"
         );
         assert_eq!(
-            normalize_item_grammar("task/fix-bug").unwrap(),
+            normalize_item_grammar("task/fix-bug", &store, PROJ).unwrap(),
             "task/fix-bug"
         );
     }
@@ -476,16 +541,23 @@ mod tests {
     fn normalize_item_grammar_passes_through_the_unprefixed_form_unchanged() {
         // No kind keyword before the first `/` — not a `ReviewTarget` at
         // all — so it must fall through unchanged to `ItemRef::parse`.
+        let store = no_roadmap_store();
         assert_eq!(
-            normalize_item_grammar("auth/phase-1-design").unwrap(),
+            normalize_item_grammar("auth/phase-1-design", &store, PROJ).unwrap(),
             "auth/phase-1-design"
         );
-        assert_eq!(normalize_item_grammar("auth").unwrap(), "auth");
+        assert_eq!(
+            normalize_item_grammar("auth", &store, PROJ).unwrap(),
+            "auth"
+        );
     }
 
     #[test]
     fn normalize_item_grammar_refuses_plan_and_change_naming_the_grammar() {
-        let err = normalize_item_grammar("plan/foo").unwrap_err().to_string();
+        let store = no_roadmap_store();
+        let err = normalize_item_grammar("plan/foo", &store, PROJ)
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("names no worktree"),
             "must say the reference names no worktree: {err}"
@@ -495,7 +567,7 @@ mod tests {
             "must name the accepted grammar: {err}"
         );
 
-        let err = normalize_item_grammar("change/HEAD")
+        let err = normalize_item_grammar("change/HEAD", &store, PROJ)
             .unwrap_err()
             .to_string();
         assert!(
@@ -509,13 +581,16 @@ mod tests {
         // A malformed reference under a reserved kind (`plan`/`change`)
         // still names no worktree, however it's spelled — refused up front
         // just like the well-formed case, not silently passed through.
-        let err = normalize_item_grammar("plan/a/b").unwrap_err().to_string();
+        let store = no_roadmap_store();
+        let err = normalize_item_grammar("plan/a/b", &store, PROJ)
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("names no worktree"),
             "must say the reference names no worktree: {err}"
         );
 
-        let err = normalize_item_grammar("change/a/b")
+        let err = normalize_item_grammar("change/a/b", &store, PROJ)
             .unwrap_err()
             .to_string();
         assert!(
@@ -530,7 +605,10 @@ mod tests {
         // malformed `task/<slug>` reference (an extra segment) must be
         // refused up front here rather than silently reinterpreted by
         // `ItemRef::parse` as a task whose slug is literally `a/b`.
-        let err = normalize_item_grammar("task/a/b").unwrap_err().to_string();
+        let store = no_roadmap_store();
+        let err = normalize_item_grammar("task/a/b", &store, PROJ)
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("names no worktree"),
             "must say the reference names no worktree: {err}"
@@ -545,10 +623,123 @@ mod tests {
         // `phase` still has to resolve through the ordinary grammar.
         // `item_worktree` is what replaces the garbled nested error with an
         // actionable one, and only once real resolution has failed.
-        assert_eq!(normalize_item_grammar("phase/auth").unwrap(), "phase/auth");
+        let store = no_roadmap_store();
         assert_eq!(
-            normalize_item_grammar("roadmap/a/b").unwrap(),
+            normalize_item_grammar("phase/auth", &store, PROJ).unwrap(),
+            "phase/auth"
+        );
+        assert_eq!(
+            normalize_item_grammar("roadmap/a/b", &store, PROJ).unwrap(),
             "roadmap/a/b"
+        );
+    }
+
+    #[test]
+    fn normalize_item_grammar_prefers_a_roadmap_literally_named_roadmap_own_phase() {
+        // A project roadmap literally named `roadmap` (legal — `roadmap` is
+        // not in RESERVED_ROADMAP_SLUGS) with a real phase `design`. The
+        // well-formed two-segment reference `roadmap/design` parses cleanly
+        // as `ReviewTarget::Roadmap { roadmap: "design" }` (model.rs), so
+        // without the carve-out this always collapsed to the bare roadmap
+        // slug `design` — losing the literal `roadmap` prefix — and resolved
+        // (or failed to) as a roadmap named `design` instead of the phase.
+        let mut store = rdm_core::store::MemoryStore::new();
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, PROJ, "Demo").unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: PROJ,
+                slug: "roadmap",
+                title: "Roadmap",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            rdm_core::ops::phase::CreatePhase {
+                project: PROJ,
+                roadmap: "roadmap",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            normalize_item_grammar("roadmap/phase-1-design", &store, PROJ).unwrap(),
+            "roadmap/phase-1-design",
+            "must prefer the <roadmap>/<stem> phase reading, not collapse to a bare roadmap slug"
+        );
+        // The numeric stem form must resolve too — `resolve_phase_stem`
+        // handles the digit-to-stem translation inside the carve-out check.
+        assert_eq!(
+            normalize_item_grammar("roadmap/1", &store, PROJ).unwrap(),
+            "roadmap/1",
+            "a numeric identifier that resolves as a real phase must also take the phase reading"
+        );
+
+        // An identifier that is NOT a real phase of the `roadmap`-named
+        // roadmap must fall back to today's behavior — an ordinary roadmap
+        // reference — so this never over-fires for an unrelated slug.
+        assert_eq!(
+            normalize_item_grammar("roadmap/no-such-phase", &store, PROJ).unwrap(),
+            "no-such-phase",
+            "an identifier that is not a real phase must still read as an ordinary roadmap reference"
+        );
+    }
+
+    #[test]
+    fn normalize_item_grammar_still_resolves_an_ordinary_roadmap_even_when_roadmap_named_roadmap_exists()
+     {
+        // Backward compatibility: a project with BOTH a roadmap literally
+        // named `roadmap` (with its own phase) AND an ordinary roadmap named
+        // `auth`. `roadmap/auth` must still read as "the roadmap named
+        // `auth`", never as a phase of the `roadmap`-named roadmap — `auth`
+        // is not one of its phases, so the carve-out must not fire.
+        let mut store = rdm_core::store::MemoryStore::new();
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, PROJ, "Demo").unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: PROJ,
+                slug: "roadmap",
+                title: "Roadmap",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            rdm_core::ops::phase::CreatePhase {
+                project: PROJ,
+                roadmap: "roadmap",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project: PROJ,
+                slug: "auth",
+                title: "Auth",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            normalize_item_grammar("roadmap/auth", &store, PROJ).unwrap(),
+            "auth",
+            "an ordinary roadmap/<slug> reference to a DIFFERENT roadmap must keep working"
         );
     }
 

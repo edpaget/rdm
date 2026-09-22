@@ -905,6 +905,120 @@ fn verify_run_resolves_a_roadmap_item_and_a_numeric_phase_item() {
 }
 
 #[test]
+fn verify_run_resolves_a_phase_of_a_roadmap_literally_named_roadmap() {
+    let plan = init_plan_repo(); // already has a roadmap `auth`
+    let src = init_source_repo();
+    // A project roadmap literally named `roadmap` (legal — `roadmap` is not
+    // in RESERVED_ROADMAP_SLUGS, only task/plan/src/change are). Before this
+    // fix, `roadmap/<stem>` could never address one of ITS OWN phases:
+    // `ReviewTarget::from_str` parses `roadmap/<rest>` as
+    // `ReviewTarget::Roadmap { roadmap: rest }` whenever `rest` has no `/`,
+    // so `normalize_item_grammar` collapsed it to the bare slug `<rest>` and
+    // it resolved (or failed to) as an unrelated roadmap named `<rest>`.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "roadmap",
+            "create",
+            "roadmap",
+            "--title",
+            "Roadmap",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "create",
+            "design",
+            "--title",
+            "Design",
+            "--number",
+            "1",
+            "--no-edit",
+            "--roadmap",
+            "roadmap",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "roadmap", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let roadmap_wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+
+    set_verify(plan.path(), "printf phase-form > sentinel-phase.txt");
+    let (code, _) = verify(
+        plan.path(),
+        src.path(),
+        &[
+            "run",
+            "--item",
+            "roadmap/phase-1-design",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        roadmap_wt.join("sentinel-phase.txt").exists(),
+        "roadmap/<stem> must resolve to the phase of the roadmap literally named `roadmap`, \
+         not fail looking for a roadmap named `phase-1-design`"
+    );
+
+    // An ordinary `--item roadmap/<slug>` reference must keep resolving as a
+    // WHOLE roadmap even in the presence of the `roadmap`-named roadmap —
+    // the carve-out must not fire for a slug that is not one of its phases.
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "auth", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let auth_wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+
+    set_verify(plan.path(), "printf roadmap-form > sentinel-roadmap.txt");
+    let (code, _) = verify(
+        plan.path(),
+        src.path(),
+        &[
+            "run",
+            "--item",
+            "roadmap/auth",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        auth_wt.join("sentinel-roadmap.txt").exists(),
+        "an ordinary roadmap/<slug> reference must still resolve as a whole roadmap"
+    );
+}
+
+#[test]
 fn verify_run_resolves_a_task_item_to_its_task_worktree() {
     let plan = init_plan_repo();
     let src = init_source_repo();
