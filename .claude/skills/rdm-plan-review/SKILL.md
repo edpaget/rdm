@@ -33,11 +33,16 @@ only IDENTIFIERS and short lists, all read from the structured `args` object and
 never parsed out of the `$ARGUMENTS` flag string:
 
 - **`phases`** — for a `--roadmap` target, the phase stems to sweep:
-  `[{ stem, tags, status }, …]`, from your own
+  `[{ stem, tags, status, priorReviews }, …]`, from your own
   `./target/debug/rdm roadmap show <slug> --project rdm --format json`. **Omit it and
   the roadmap document is reviewed alone** — the workflow never reads a roadmap to
   discover its phases. A phase whose `status` is exactly `done` or `wont-fix` is
-  excluded and reported; a missing or unfamiliar status keeps it in the sweep.
+  excluded and reported; a missing or unfamiliar status keeps it in the sweep. Each
+  entry's own `priorReviews` comes from `./target/debug/rdm review list --on
+  phase/<roadmap-slug>/<stem> --project rdm --format json` — the top-level
+  `priorReviews` below reaches only the roadmap-document unit itself, never the
+  phases. Omit a phase's `priorReviews` key and that phase reports `roundUnknown`
+  (see below).
 - **`tags`** — the target item's current tag list, for a single-unit target, exactly
   as the binary printed it. The gate writes back a filtered copy, and `--tags`
   replaces the whole list, so **a unit whose tags you did not supply gets no gate
@@ -48,7 +53,10 @@ never parsed out of the `$ARGUMENTS` flag string:
   command returns no reviews — that is the genuinely-round-1 case. Omitting
   the key entirely still fails toward round 1, but visibly: the unit carries
   `roundUnknown: true` and its `summary` gets a `[round unknown: …]` clause,
-  rather than silently reporting round 1 as if it were verified.
+  rather than silently reporting round 1 as if it were verified. For a
+  `--roadmap` target this top-level key covers only the roadmap document's own
+  unit — each phase's round state is read from that phase's own entry in
+  `phases` (see above), not from this key.
 - **`wontFixedTexts`** — the titles from `./target/debug/rdm search "" --tag
   plan-review --status wont-fix --type task --project rdm --format json`. Absent
   suppresses nothing, which is the safe direction.
