@@ -634,13 +634,45 @@ fn verify_run_refuses_a_malformed_phase_prefixed_item_naming_the_accepted_gramma
         .args(["verify", "run", "--item", "phase/auth", "--project", "demo"])
         .current_dir(src.path())
         .assert()
-        .failure()
+        .code(3)
         .stderr(
             predicate::str::contains("names no worktree")
                 .and(predicate::str::contains("phase/<roadmap>/<stem>"))
                 .and(predicate::str::contains("rdm phase list").not())
                 .and(predicate::str::contains("unknown item").not()),
         );
+
+    // Same shape as `verify_run_exits_a_distinct_code_when_the_item_does_not_resolve`:
+    // the command IS configured — only the reference is malformed — so the
+    // JSON payload must report `resolved: true` and a null `exit` (nothing
+    // ran to completion).
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "verify",
+            "run",
+            "--item",
+            "phase/auth",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .code(3)
+        .get_output()
+        .clone();
+    let j: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(
+        j["resolved"], true,
+        "the command IS configured — only the reference is malformed"
+    );
+    assert!(
+        j["exit"].is_null(),
+        "nothing ran, so exit must be null: {j}"
+    );
 }
 
 #[test]
@@ -716,6 +748,53 @@ fn verify_run_still_resolves_a_roadmap_literally_named_phase() {
         wt.join("sentinel.txt").exists(),
         "a roadmap literally named `phase` must still resolve via `phase/<stem>`"
     );
+}
+
+#[test]
+fn verify_run_surfaces_the_real_unknown_stem_error_for_a_roadmap_literally_named_phase() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    set_verify(plan.path(), "true");
+    // A roadmap literally named `phase` exists, so `phase/no-such-stem` is a
+    // WELL-FORMED reference into it (roadmap `phase`, stem `no-such-stem`) —
+    // just one whose stem does not exist. It must surface the real,
+    // actionable "phase not found" error `resolve_item` produces, never the
+    // generic "names no worktree" grammar message: the reference itself is
+    // not malformed, only the stem is unknown.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "roadmap",
+            "create",
+            "phase",
+            "--title",
+            "Phase",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "verify",
+            "run",
+            "--item",
+            "phase/no-such-stem",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .code(3)
+        .stderr(
+            predicate::str::contains("phase 'phase/no-such-stem' not found")
+                .and(predicate::str::contains("rdm phase list"))
+                .and(predicate::str::contains("names no worktree").not()),
+        );
 }
 
 #[test]

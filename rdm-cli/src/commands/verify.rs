@@ -246,19 +246,25 @@ fn looks_like_malformed_roadmap_or_phase_ref(raw: &str) -> bool {
 /// up front, naming the grammar `--item` actually accepts — both when they
 /// parse cleanly and when they don't (e.g. `plan/a/b`, with an extra
 /// segment): a malformed reference under either kind still names no
-/// worktree, however it's spelled. They must **not** be handed to
-/// `ItemRef::parse` unchanged: it has no `plan`/`change` case, so any
-/// two-segment string it does not recognize as `task/<slug>` becomes
-/// `ItemRef::Phase` — `plan/foo` would silently become phase `foo` of a
-/// roadmap literally named `plan`, resolving (or failing to) as that phase
-/// instead of being refused as the non-worktree reference it is.
+/// worktree, however it's spelled. The same is true of a malformed
+/// `task/<slug>` reference (e.g. `task/a/b`): `task` is reserved too
+/// (`rdm_core::link::is_reserved_roadmap_slug`), so it is refused up front
+/// rather than silently reinterpreted. None of the three may be handed to
+/// `ItemRef::parse` unchanged: it has no `plan`/`change` case and does not
+/// validate a task slug's shape, so `plan/foo` would silently become phase
+/// `foo` of a roadmap literally named `plan`, and `task/a/b` would become a
+/// task whose slug is literally `a/b`, resolving (or failing to) as that
+/// item instead of being refused as the non-worktree reference it is.
 ///
 /// `roadmap` and `phase` are handled differently on a parse failure,
-/// because — unlike `plan`/`change` — neither is a reserved roadmap slug
-/// (see [`looks_like_malformed_roadmap_or_phase_ref`]): a malformed
+/// because — unlike `task`/`plan`/`change` — neither is a reserved roadmap
+/// slug (see [`looks_like_malformed_roadmap_or_phase_ref`]): a malformed
 /// `roadmap`/`phase`-prefixed reference is returned unchanged here, to fall
 /// through to `ItemRef::parse`'s own resolution, and only replaced with an
-/// actionable message by [`item_worktree`] if that resolution then fails.
+/// actionable message by [`item_worktree`] if that resolution then fails
+/// **and** the prefix does not itself name an existing roadmap in the
+/// project (a roadmap literally named `roadmap` or `phase` must still
+/// resolve its own unknown-stem errors normally).
 ///
 /// Anything else that fails to parse as a `rdm_core::model::ReviewTarget`
 /// at all — including the unprefixed `<roadmap>/<stem>` form, which has no
@@ -282,13 +288,18 @@ fn normalize_item_grammar(raw: &str) -> Result<String> {
         Err(_) => {
             let prefix = raw.split('/').next().unwrap_or(raw);
             match prefix.parse::<rdm_core::model::ReviewTargetKind>() {
-                Ok(
-                    rdm_core::model::ReviewTargetKind::Plan
-                    | rdm_core::model::ReviewTargetKind::Change,
-                ) => Err(no_worktree_grammar_error(raw)),
+                // Decide refuse-up-front vs fall-through by the same
+                // reserved-slug set `rdm_core::link` enforces everywhere
+                // else (`task`, `plan`, `src`, `change`), not a hand-picked
+                // subset of `ReviewTargetKind` — so a malformed reference
+                // under any reserved kind (`task/a/b` included) gets the
+                // actionable grammar message instead of being silently
+                // misread by `ItemRef::parse`.
+                Ok(kind) if rdm_core::link::is_reserved_roadmap_slug(&kind.to_string()) => {
+                    Err(no_worktree_grammar_error(raw))
+                }
                 // `Roadmap`/`Phase` (not reserved — fall through unchanged)
-                // or an unrecognized prefix (the unprefixed form, or a
-                // `Task` malformation `ItemRef::parse` already handles).
+                // or an unrecognized prefix (the unprefixed form).
                 _ => Ok(raw.to_string()),
             }
         }
@@ -316,9 +327,12 @@ fn normalize_item_grammar(raw: &str) -> Result<String> {
 /// Returns an error when `raw` names no worktree grammar (`plan/<slug>`,
 /// `change/<sha>`, or a malformed `roadmap`/`phase`-prefixed reference such
 /// as `phase/<roadmap>` with the stem omitted — see
-/// [`looks_like_malformed_roadmap_or_phase_ref`]), when it does not resolve
-/// to a known plan item, or when no worktree is registered for the resolved
-/// item.
+/// [`looks_like_malformed_roadmap_or_phase_ref`] — but only when the leading
+/// segment does not itself name an existing roadmap in `project`; when it
+/// does, e.g. `phase/<stem>` against a roadmap literally named `phase`, the
+/// real "unknown phase" error from resolution is surfaced instead), when it
+/// does not resolve to a known plan item, or when no worktree is registered
+/// for the resolved item.
 fn item_worktree(root: &Path, project: &str, raw: &str) -> Result<std::path::PathBuf> {
     use rdm_git::worktree;
     let store = commands::make_store(root)?;
@@ -333,12 +347,25 @@ fn item_worktree(root: &Path, project: &str, raw: &str) -> Result<std::path::Pat
             // roadmap literally named `phase`/`roadmap`. Only replace that
             // garbled nested error with the actionable grammar message once
             // resolution has genuinely failed — a real roadmap named
-            // `phase`/`roadmap` must still resolve normally.
-            return Err(if looks_like_malformed_roadmap_or_phase_ref(raw) {
-                no_worktree_grammar_error(raw)
-            } else {
-                anyhow::anyhow!("{e}").context(format!("cannot resolve item '{raw}'"))
-            });
+            // `phase`/`roadmap` must still resolve normally. But even then,
+            // if the leading segment names an *existing* roadmap in this
+            // project (checked with the same plan-repo lookup
+            // `resolve_item` itself uses), the reference is well-formed for
+            // that roadmap — just an unknown phase stem within it — so the
+            // real, actionable error from `resolve_item` must be surfaced
+            // instead of the generic grammar message.
+            let prefix_names_existing_roadmap = raw
+                .split_once('/')
+                .map(|(prefix, _)| prefix)
+                .is_some_and(|prefix| rdm_core::io::load_roadmap(&store, project, prefix).is_ok());
+            return Err(
+                if looks_like_malformed_roadmap_or_phase_ref(raw) && !prefix_names_existing_roadmap
+                {
+                    no_worktree_grammar_error(raw)
+                } else {
+                    anyhow::anyhow!("{e}").context(format!("cannot resolve item '{raw}'"))
+                },
+            );
         }
     };
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
