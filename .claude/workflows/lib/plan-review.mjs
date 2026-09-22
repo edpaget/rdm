@@ -469,17 +469,23 @@ function planGateCommands(kind, roadmap, ident, remainingTags, cfg) {
   const label = kind === 'phase' ? roadmap + '/' + ident : ident
   const bin = resolveRdmBin(cfg && cfg.rdmBin)
   const proj = projectFlag(cfg)
+  // Defense-in-depth: every `rdm` line an engine emits into a persist/gate
+  // ladder carries `< /dev/null`, mirroring review.mjs's
+  // `persistReviewCommands` — see its comment. `update`/`commit` don't
+  // currently block on stdin (task/phase/roadmap `update` never reads it),
+  // but the redirect keeps this ladder safe against the whole class of bug
+  // regardless of which `rdm` surface later grows a stdin read.
   let updateCmd
   if (kind === 'task') {
-    updateCmd = bin + ' task update ' + ident + ' ' + tagsFlag + ' --no-edit' + proj + ' || exit 1'
+    updateCmd = bin + ' task update ' + ident + ' ' + tagsFlag + ' --no-edit' + proj + ' < /dev/null || exit 1'
   } else if (kind === 'phase') {
-    updateCmd = bin + ' phase update ' + ident + ' --roadmap ' + roadmap + ' ' + tagsFlag + ' --no-edit' + proj + ' || exit 1'
+    updateCmd = bin + ' phase update ' + ident + ' --roadmap ' + roadmap + ' ' + tagsFlag + ' --no-edit' + proj + ' < /dev/null || exit 1'
   } else {
-    updateCmd = bin + ' roadmap update ' + ident + ' ' + tagsFlag + ' --no-edit' + proj + ' || exit 1'
+    updateCmd = bin + ' roadmap update ' + ident + ' ' + tagsFlag + ' --no-edit' + proj + ' < /dev/null || exit 1'
   }
   // `rdm commit` REJECTS a project flag, so it carries none — the allow-list
   // rule lib/estimate.mjs states for the same pair.
-  const commitCmd = bin + ' commit -m "chore(plan): clear needs-plan-review on ' + label + '" || exit 1'
+  const commitCmd = bin + ' commit -m "chore(plan): clear needs-plan-review on ' + label + '" < /dev/null || exit 1'
   return { updateCmd: updateCmd, commitCmd: commitCmd, tagsFlag: tagsFlag, label: label }
 }
 

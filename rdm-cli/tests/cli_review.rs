@@ -2290,3 +2290,181 @@ Fixture review with an unknown anchor type.
     assert_eq!(comment["resolution"]["state"], "unresolved");
     assert!(comment["resolution"].get("quote").is_none());
 }
+
+// --- Regression: `review start`/`comment`/`submit` must never block reading
+// stdin. Before the fix, `resolve_body` unconditionally read stdin to EOF
+// whenever it was not a TTY, *before* `--no-edit` was even consulted — under
+// an agent's Bash tool stdin is a non-TTY pipe that is never closed, so the
+// read never returned. These mirror `task_create_body_flag_no_hang_with_open_stdin_pipe`
+// in `cli_task.rs`: spawn the real binary, hold its stdin pipe open (never
+// written, never closed), and assert the process exits within a timeout
+// rather than hanging forever. ---
+
+/// Spawns `rdm --root <plan> <args...>` with stdin held open (piped, never
+/// written, never closed) and returns its exit status, panicking if it does
+/// not exit within 5 seconds.
+fn run_with_open_stdin_pipe(plan: &TempDir, args: &[&str]) -> std::process::ExitStatus {
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rdm"))
+        .env("XDG_CONFIG_HOME", "/dev/null/nonexistent")
+        .arg("--root")
+        .arg(plan.path())
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+
+    // Keep the child's stdin pipe open (never written, never closed) —
+    // dropping it would deliver EOF and defeat the point of this test.
+    let _stdin = child.stdin.take();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let status = child.wait();
+        let _ = tx.send(status);
+    });
+
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("rdm must not hang with stdin held open")
+        .unwrap()
+}
+
+#[test]
+fn review_start_no_body_no_hang_with_open_stdin_pipe() {
+    let plan = init_plan_repo();
+
+    let status = run_with_open_stdin_pipe(
+        &plan,
+        &[
+            "review",
+            "start",
+            "--on",
+            "task/item-x",
+            "--author",
+            "tester",
+            "--no-edit",
+            "--project",
+            "demo",
+        ],
+    );
+
+    assert!(status.success());
+
+    // stdin, if it had been read, must not have been consulted for the body:
+    // the created review's body must be empty (no --body was passed).
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "list",
+            "--on",
+            "task/item-x",
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let list: Value = serde_json::from_slice(&out).unwrap();
+    let id = list[0]["id"].as_str().unwrap();
+    let review = show_review_json(&plan, id);
+    assert_eq!(review["body"], "");
+}
+
+#[test]
+fn review_comment_no_body_no_hang_with_open_stdin_pipe() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+
+    // The fast-fail (empty-body bail) path must not be gated behind a
+    // blocking stdin read either — it must exit promptly with a failure.
+    let status = run_with_open_stdin_pipe(
+        &plan,
+        &["review", "comment", &id, "--no-edit", "--project", "demo"],
+    );
+
+    assert!(!status.success());
+}
+
+#[test]
+fn review_submit_no_body_no_hang_with_open_stdin_pipe() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    add_plain_comment(&plan, &id, "First comment.");
+
+    let status = run_with_open_stdin_pipe(
+        &plan,
+        &[
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "approve",
+            "--no-edit",
+            "--project",
+            "demo",
+        ],
+    );
+
+    assert!(status.success());
+}
+
+#[test]
+fn review_start_ignores_piped_stdin_body() {
+    let plan = init_plan_repo();
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            "task/item-x",
+            "--author",
+            "tester",
+            "--no-edit",
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .write_stdin("SNEAKY STDIN BODY")
+        .assert()
+        .success();
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "list",
+            "--on",
+            "task/item-x",
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let list: Value = serde_json::from_slice(&out).unwrap();
+    let id = list[0]["id"].as_str().unwrap();
+    let review = show_review_json(&plan, id);
+    assert_eq!(review["body"], "");
+    assert!(
+        !review["body"]
+            .as_str()
+            .unwrap()
+            .contains("SNEAKY STDIN BODY")
+    );
+}

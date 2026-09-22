@@ -285,6 +285,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`parseCommentHeader` now accepts a legacy seven-key comment header** (persisted before the `anchor` header line was added) instead of returning `null` and having it misread as an unheadered human comment — which silently broke `priorFindingsFromReviews`'s repeat-finding detection for every review persisted before that change. `anchor` comes back `undefined` (unknown), never guessed, for such a comment.
 
+- **`rdm review start`/`comment`/`submit` no longer hang reading stdin under a non-interactive caller** (e.g. an agent holding stdin open as a never-closing pipe) when `--body` is omitted. They previously blocked on a stdin read before `--no-edit` was even consulted, so `--no-edit` could not save you; they now read a body only from `--body`, or interactively from `$EDITOR`/`$VISUAL` on a real terminal without `--no-edit`. This was deadlocking the very first `review submit` in every persist ladder `rdm-wf-plan-review`/`rdm-wf-review-refute-fix` emit. Independently, every `rdm` line those ladders emit (including `lib/plan-review.mjs`'s tag-clear gate) now redirects stdin from `/dev/null` too, for defense in depth.
+
 ## [0.21.0] - 2026-09-03
 
 ### Added

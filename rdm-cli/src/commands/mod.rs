@@ -165,6 +165,39 @@ pub fn resolve_body(body_flag: Option<String>, no_edit: bool) -> Result<Option<S
     }
 }
 
+/// Resolve body content for a `review start`/`comment`/`submit` invocation.
+///
+/// Unlike [`resolve_body`] (used by the `create`-family commands, where a
+/// piped-heredoc body is documented ergonomics), this helper **never reads
+/// stdin**. That's the fix: `resolve_body` unconditionally blocked on
+/// `io::stdin().read_to_string(...)` whenever stdin was not a TTY, *before*
+/// `no_edit` was even consulted — under an agent's Bash tool stdin is a
+/// non-TTY pipe that is never closed, so the read never returned, and
+/// `--no-edit` could not save you because the hang happened first.
+///
+/// `--body` remains authoritative. Otherwise, on a genuine TTY with
+/// `--no-edit` absent, the interactive `$EDITOR`/`$VISUAL` flow still runs —
+/// that path never blocked (it's real human input at a real terminal) and
+/// dropping it would be an unrelated UX regression. In every other case
+/// (non-TTY, or `--no-edit` passed) this returns `None` rather than reading
+/// anything from stdin.
+///
+/// This also doesn't reuse `BodyUpdate`'s Keep/Set/Clear shape (the fix for
+/// the same class of bug in `task`/`phase`/`roadmap update`): `start`,
+/// `comment`, and `submit` have no existing value to "keep", so that type
+/// doesn't fit here.
+pub fn resolve_review_body(body_flag: Option<String>, no_edit: bool) -> Result<Option<String>> {
+    if let Some(b) = body_flag {
+        return Ok(Some(b));
+    }
+
+    if !no_edit && io::stdin().is_terminal() {
+        open_editor()
+    } else {
+        Ok(None)
+    }
+}
+
 /// Map a [`rdm_core::error::Error::BodyClobberRefused`] into an actionable
 /// CLI error message that points at `--clear-body`.
 pub fn map_body_clobber(err: anyhow::Error) -> anyhow::Error {
@@ -1069,6 +1102,33 @@ mod resolve_body_tests {
         let result = resolve_body(Some(special.to_string()), true).unwrap();
 
         assert_eq!(result, Some(special.to_string()));
+    }
+}
+
+#[cfg(test)]
+mod resolve_review_body_tests {
+    use super::*;
+
+    /// `--body` is authoritative for review write commands too, verbatim
+    /// through special characters.
+    #[test]
+    fn resolve_review_body_returns_special_character_body_verbatim() {
+        let special =
+            "backtick `code` em-dash — curly “quotes” ellipsis … shell $!\\;|<>*~&& --no-edit";
+
+        let result = resolve_review_body(Some(special.to_string()), true).unwrap();
+
+        assert_eq!(result, Some(special.to_string()));
+    }
+
+    /// With `--no-edit` and no `--body`, the result is `None` regardless of
+    /// whether the test process's own stdin happens to be a TTY — `no_edit`
+    /// short-circuits before the TTY check.
+    #[test]
+    fn resolve_review_body_no_edit_without_body_is_none() {
+        let result = resolve_review_body(None, true).unwrap();
+
+        assert_eq!(result, None);
     }
 }
 

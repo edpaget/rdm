@@ -2125,7 +2125,12 @@ function persistReviewCommands(result, target, cfg, opts) {
   const cmds = [];
   if (o.source) {
     cmds.push('cd ' + shellQuote(o.source.path) + ' || exit 1');
-    cmds.push(IND + bin + ' review source --on ' + shellQuote(o.source.item) + ' --source ' + shellQuote(o.source.path) + ' --base ' + shellQuote(o.source.base) + ' --expected-head ' + shellQuote(o.source.head) + ' --expected-branch ' + shellQuote(o.source.branch) + (o.source.noCode ? ' --no-code' : '') + proj + ' >/dev/null || exit 1');
+    // Defense-in-depth: `rdm` itself no longer blocks reading stdin for any
+    // command this ladder emits (the CLI fix), but every line here still
+    // carries `< /dev/null` so the ladder stays safe against this whole
+    // class of bug regardless of which `rdm` surface it invokes ever grows
+    // a stdin read in the future.
+    cmds.push(IND + bin + ' review source --on ' + shellQuote(o.source.item) + ' --source ' + shellQuote(o.source.path) + ' --base ' + shellQuote(o.source.base) + ' --expected-head ' + shellQuote(o.source.head) + ' --expected-branch ' + shellQuote(o.source.branch) + (o.source.noCode ? ' --no-code' : '') + proj + ' >/dev/null < /dev/null || exit 1');
   }
   // SCRATCH FILE VIA mktemp, NEVER A PREDICTABLE NAME. This used to be a fixed
   // basename suffixed with the shell's PID under TMPDIR — a guessable path in a
@@ -2153,6 +2158,9 @@ function persistReviewCommands(result, target, cfg, opts) {
       ' --body "$RDM_PERSIST_SUMMARY" --no-edit --format json' +
       proj +
       ' > "$RDM_PERSIST_START_JSON"' +
+      // Defense-in-depth stdin redirect — see the comment above the first
+      // emitted line in this function.
+      ' < /dev/null' +
       // The scratch file is removed on the failure path too, so guarding this
       // line does not trade a masked refusal for a leaked temp file.
       ' || { rm -f "$RDM_PERSIST_START_JSON"; exit 1; }' +
@@ -2215,21 +2223,21 @@ function persistReviewCommands(result, target, cfg, opts) {
           bin +
           ' review comment "$RDM_REVIEW_ID" --path "$RDM_PERSIST_PATH" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' +
           proj +
-          '; then\n' +
+          ' < /dev/null; then\n' +
           ':\n' +
           'else\n' +
           IND +
           bin +
           ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY_DEGRADED" --no-edit' +
           proj +
-          ' || exit 1\n' +
+          ' < /dev/null || exit 1\n' +
           'RDM_PERSIST_RUNTIME_DEGRADED=$((RDM_PERSIST_RUNTIME_DEGRADED + 1))\n' +
           'fi';
       } else {
-        cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' || exit 1';
+        cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' < /dev/null || exit 1';
       }
     } else {
-      cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' || exit 1';
+      cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' < /dev/null || exit 1';
     }
     cmds.push(cmd);
   }
@@ -2300,14 +2308,14 @@ function persistReviewCommands(result, target, cfg, opts) {
         bin +
         ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_DEGRADED_NOTE" --no-edit' +
         proj +
-        ' || exit 1\n' +
+        ' < /dev/null || exit 1\n' +
         'fi'
     );
   }
-  cmds.push(IND + bin + ' review submit "$RDM_REVIEW_ID" --verdict ' + verdict + ' --no-edit' + proj + ' || exit 1');
+  cmds.push(IND + bin + ' review submit "$RDM_REVIEW_ID" --verdict ' + verdict + ' --no-edit' + proj + ' < /dev/null || exit 1');
   // Session-scoped by the changeset model, so a concurrent dispatch's staged
   // work is never swept in. NEVER `--all`, and never `rdm discard`.
-  cmds.push(IND + bin + ' commit -m ' + shellQuote('chore(plan): record ' + mode + ' review of ' + target) + ' || exit 1');
+  cmds.push(IND + bin + ' commit -m ' + shellQuote('chore(plan): record ' + mode + ' review of ' + target) + ' < /dev/null || exit 1');
   cmds.push('printf \'reviewId=%s\\n\' "$RDM_REVIEW_ID"');
   // AC4's caller-visible signal, printed once the computation above has
   // already run — see the block that sets RDM_PERSIST_ANCHORS_DEGRADED.

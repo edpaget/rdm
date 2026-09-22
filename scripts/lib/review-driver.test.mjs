@@ -32,7 +32,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   hasBlocking,
@@ -135,6 +135,51 @@ function shPlainWithEnv(script, extraEnv, cwd) {
     cwd: cwd || PLAN_ROOT,
     env: { ...SHELL_ENV, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe'],
+  });
+}
+
+/**
+ * Runs `script` in a plain shell the way an orchestrator's Bash tool does —
+ * stdin a pipe that is never written to and never closed — and resolves once
+ * the process exits, or rejects if it doesn't within `timeoutMs`.
+ *
+ * This is deliberately `child_process.spawn`, not `spawnSync`/`execFileSync`:
+ * confirmed by experiment that `spawnSync` with `stdio: 'pipe'` and no
+ * `input` closes the child's stdin immediately (EOF) and does NOT reproduce
+ * the hang this regression targets — only `spawn`, with the stdin stream
+ * left open and never `.end()`ed, does. Held-open stdin is exactly the shape
+ * of an agent's Bash tool: the emitted ladder must run to completion under
+ * it with NO redirect added by the caller (the ladder's own `< /dev/null`
+ * lines, per line, are what save it — see persistReviewCommands).
+ */
+function runWithOpenStdinPipe(script, timeoutMs = 8000) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('/bin/bash', ['-c', script], {
+      cwd: PLAN_ROOT,
+      env: SHELL_ENV,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    // Held open deliberately: never written to, never `.end()`ed.
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => {
+      stdout += d;
+    });
+    child.stderr.on('data', (d) => {
+      stderr += d;
+    });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('script did not exit within ' + timeoutMs + 'ms with stdin held open:\n' + stdout + stderr));
+    }, timeoutMs);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout, stderr });
+    });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
   });
 }
 
@@ -1221,4 +1266,29 @@ test('a suffixed finder `path` that CONTAINS A SLASH is stripped before validati
   assert.equal(decision.path, 'src/foo.rs', 'the `:12-18` suffix must be stripped from the declared path');
   assert.equal(decision.quote, true);
   assert.equal(decision.reason, null, 'a successfully stripped path is not a degradation');
+});
+
+test('AC4: a persist ladder runs to completion under an open stdin with no redirect added by the caller', async () => {
+  // Regression for the review write commands (`rdm review start`/`comment`/
+  // `submit`) hanging under an agent's Bash tool: before the fix, `rdm`
+  // itself blocked reading stdin to EOF whenever it was piped and never
+  // closed, so the FIRST `review submit` in every persist ladder deadlocked.
+  // The CLI fix means `rdm` no longer blocks at all; this proves the SECOND,
+  // independent layer too — the ladder's own `< /dev/null` redirects (added
+  // to `persistReviewCommands`) keep it safe even if a future `rdm` surface
+  // it invokes ever grows a stdin read, with no help from the caller.
+  const { result } = await drive({ ...COMMON, gate: false, persist: true, implements: 'plan/' + PLAN, task: TASK, ...TASK_PIN }, {
+    id: 'stdin-hang-regression',
+    concern: 'correctness',
+    severity: 'concern',
+    confidence: 90,
+    what_fails: 'stub finding, just to produce a non-empty ladder',
+    location: 'general',
+  });
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+
+  const { code, stdout, stderr } = await runWithOpenStdinPipe(result.persistScript);
+  assert.equal(code, 0, 'the ladder must exit 0 with stdin held open:\n' + stdout + stderr);
+  assert.match(stdout, /reviewId=\S+/, 'the ladder ran to completion and printed the id it created');
 });

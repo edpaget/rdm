@@ -1438,6 +1438,15 @@ gets `--quote`; one without becomes a whole-document comment. `review
 start` always carries a NON-EMPTY `--body`, or `submit_review` would raise
 `ReviewEmpty` on a clean review with no comments.
 
+Every `rdm` line this ladder emits also redirects stdin from `/dev/null`.
+`rdm` itself no longer blocks reading stdin for `review start`/`comment`/
+`submit` (the CLI reads only `--body`, never stdin, for those three
+commands), so this is defense-in-depth: the ladder stays safe against the
+whole class of bug regardless of which `rdm` surface it invokes ever grows a
+stdin read in the future. `planGateCommands` (`lib/plan-review.mjs`'s tag-clear
+gate) carries the same redirect on its `task update`/`phase update`/`roadmap
+update`/`commit` lines, for the same reason.
+
 **The anchoring ladder is split between two mechanisms now: MECHANICAL, inside
 the emitted ladder itself, for the one line that carries both `--path` and
 `--quote` (a change-target, path-anchored comment); CALLER PROSE, bounded and

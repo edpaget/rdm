@@ -10,7 +10,7 @@ use rdm_core::ops::reviews::{AddComment, CreateReview, ReviewFilter, UpdateComme
 use rdm_core::ops::{BodyUpdate, TagsUpdate};
 use rdm_core::{display, json};
 
-use super::{commit_mutation, maybe_print_uncommitted_hint, resolve_body};
+use super::{commit_mutation, maybe_print_uncommitted_hint, resolve_review_body};
 use crate::paths;
 use crate::table;
 use crate::{AppStore, OutputFormat, ReviewCommand};
@@ -320,7 +320,7 @@ pub fn run(
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let author = paths::resolve_review_author(author)?;
-            let body = resolve_body(body, no_edit)?;
+            let body = resolve_review_body(body, no_edit)?;
             let parsed = rdm_core::ops::reviews::parse_review_target_ref(store, &project, &on)
                 .context("failed to resolve review target")?;
             let is_change = matches!(parsed, ReviewTarget::Change { .. });
@@ -445,10 +445,9 @@ pub fn run(
                     None => None,
                 }
             };
-            let Some(body) = resolve_body(body, no_edit)?.filter(|b| !b.trim().is_empty()) else {
-                bail!(
-                    "comment body must not be empty — pass --body <text> or pipe content via stdin"
-                );
+            let Some(body) = resolve_review_body(body, no_edit)?.filter(|b| !b.trim().is_empty())
+            else {
+                bail!("comment body must not be empty — pass --body <text>");
             };
             let updated = commit_mutation(store, "failed to add comment", |s| {
                 rdm_core::ops::reviews::add_comment(
@@ -485,7 +484,7 @@ pub fn run(
             // this call site (and the comment arm) instead of living in
             // `BodyUpdate::apply`, whose exact-emptiness semantics other
             // entities (task/phase/roadmap update) already depend on.
-            let raw_body = resolve_body(body, no_edit)?;
+            let raw_body = resolve_review_body(body, no_edit)?;
             let blank_body_given = raw_body.as_deref().is_some_and(|b| b.trim().is_empty());
             let body = raw_body.filter(|b| !b.trim().is_empty());
             if blank_body_given {
