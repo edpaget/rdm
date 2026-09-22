@@ -331,8 +331,12 @@ fn verify_run_errors_actionably_for_an_item_with_no_worktree() {
         .args(["verify", "run", "--item", "auth", "--project", "demo"])
         .current_dir(src.path())
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("rdm worktree add auth"));
+        .code(3)
+        .stderr(predicate::str::contains("rdm worktree add auth"))
+        .stdout(
+            predicate::str::contains("not run to completion")
+                .and(predicate::str::contains("signal").not()),
+        );
 }
 
 #[test]

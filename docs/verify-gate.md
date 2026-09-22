@@ -343,10 +343,15 @@ caller such as the dispatch orchestrator escalates on 3 rather than treating it 
 rework, and must not fall back to a caller-supplied command the way it does for exit 2 —
 the right command is already known, only the directory is not.
 
-Note the one ambiguity, and key off the payload rather than the process: a command that
-*legitimately* exits 2 is indistinguishable by exit code from "unresolved". The
-`resolved` field is the contract; the exit code exists so `rdm verify run && …` composes
-in a shell.
+Note the two ambiguities, and key off the payload rather than the process: a command
+that *legitimately* exits 2 is indistinguishable by exit code from "unresolved", and a
+command that *legitimately* exits 3 (e.g. a pytest internal error) is indistinguishable
+by exit code from "`--item` does not resolve to a worktree". In the exit-3 case the
+payload is what disambiguates: `resolved: true` with `exit: null` means the item never
+resolved and the command never ran (the escalation above); `resolved: true` with a
+non-null `exit` (here, `3`) means the command ran and that was its own exit code (an
+ordinary command failure). The `resolved` field, together with `exit` being null or not,
+is the contract; the exit code exists so `rdm verify run && …` composes in a shell.
 
 ### Discovery is deliberately not here
 
