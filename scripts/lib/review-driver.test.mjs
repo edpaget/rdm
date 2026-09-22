@@ -34,7 +34,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { hasBlocking, refutePrompt, formatCommentBody, parseCommentHeader, buildReviewPipeline, classifyOutcome, persistAnchorFor } from '../../.claude/workflows/lib/review.mjs';
+import {
+  hasBlocking,
+  refutePrompt,
+  formatCommentBody,
+  parseCommentHeader,
+  buildReviewPipeline,
+  classifyOutcome,
+  persistAnchorFor,
+  persistDegradationNoteBody,
+  persistDegradationGateLines,
+} from '../../.claude/workflows/lib/review.mjs';
 
 // --------------------------------------------------------------- environment
 
@@ -109,6 +119,23 @@ function shPlainStatus(script, cwd) {
     env: SHELL_ENV,
     stdio: ['ignore', 'pipe', 'pipe'],
   }).status;
+}
+
+/**
+ * A plain shell run with EXTRA environment variables layered over
+ * `SHELL_ENV`, returning the full `{ status, stdout, stderr }` rather than
+ * just the exit code — used by the RDM_PERSIST_ANCHORS_DEGRADED gate test
+ * below, which has to assert both the exit status AND that the refusal
+ * actually lands on stderr, for a variable no other test in this file ever
+ * sets (tests-1).
+ */
+function shPlainWithEnv(script, extraEnv, cwd) {
+  return spawnSync('/bin/bash', ['-c', script], {
+    encoding: 'utf8',
+    cwd: cwd || PLAN_ROOT,
+    env: { ...SHELL_ENV, ...extraEnv },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
 }
 
 /** Invoke the binary directly — used only to seed and to read state back. */
@@ -409,7 +436,10 @@ test('the persist ladder records a real review: a real `--path` code anchor from
   assert.equal(review.state, 'submitted');
   assert.equal(review.verdict, 'request-changes', 'a rework outcome persists as request-changes');
   assert.equal(review.target.kind, 'change', 'the reviewed artifact is the pinned change, not the phase document');
-  assert.equal(review.comments.length, 3, 'each survivor is persisted exactly once');
+  // Each survivor lands its own comment PLUS the ladder's own degradation
+  // note comment (correctness-1: this run degrades one of two requested
+  // anchors, so RDM_PERSIST_TOTAL_DEGRADED > 0 and the note is appended).
+  assert.equal(review.comments.length, 4, 'each survivor is persisted exactly once, plus one degradation note');
 
   const anchored = review.comments.find((c) => c.body.includes('anchored-bug'));
   assert.equal(anchored.anchor.anchor_type, 'file-quote', 'a change review anchors into the source file, not the document');
@@ -440,6 +470,18 @@ test('the persist ladder records a real review: a real `--path` code anchor from
     'wholeDocumentIntended',
     'AC3: a finding that legitimately names no file is recorded as wholeDocumentIntended, never as a degraded anchor'
   );
+
+  // correctness-1: the persisted review itself now carries a whole-document
+  // NOTE comment naming the REAL (build-time-plus-run-time) degraded total —
+  // not just the build-time-only clause folded into `review.body` below —
+  // so a review whose anchors degraded is never a single stdout line away
+  // from being mistaken for clean persistence. Exactly this note's text,
+  // produced by the same `persistDegradationNoteBody` the emitted ladder's
+  // `printf` uses, with the run-time-only-known total (1) filled in.
+  const note = review.comments.find((c) => c.body.startsWith('persist-note: anchors-degraded'));
+  assert.ok(note, 'a nonzero degraded total must append exactly one whole-document note comment');
+  assert.equal(note.anchor, undefined, 'the note is whole-document, never a file anchor');
+  assert.equal(note.body, persistDegradationNoteBody(1, 2), 'the note names the real total against what was requested');
 
   // AC4's other half: the review's OWN summary states the build-time
   // degradation — a review carrying a dropped anchor cannot read as clean
@@ -584,13 +626,25 @@ test('a path-anchored comment refused at RUN TIME (quote outside a touched hunk)
   assert.match(out, /^anchorsDegraded=all$/m, 'the ladder run-time-degraded its only anchored finding, so `all` fires');
 
   const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
-  assert.equal(review.comments.length, 1);
-  assert.equal(review.comments[0].anchor, undefined, 'the run-time-refused anchor must land whole-document, not as a file anchor');
+  // The one finding's comment, plus the ladder's own degradation note —
+  // correctness-1: the note is what makes a run-time-only-degraded review
+  // ever readable as anything other than clean persistence, since this
+  // finding's own comment carries no build-time trace at all.
+  assert.equal(review.comments.length, 2);
+  const finding = review.comments.find((c) => c.body.includes('outside-hunk-bug'));
+  assert.ok(finding, 'the finding comment must still be present');
+  assert.equal(finding.anchor, undefined, 'the run-time-refused anchor must land whole-document, not as a file anchor');
   assert.equal(
-    parseCommentHeader(review.comments[0].body).anchor,
+    parseCommentHeader(finding.body).anchor,
     'degraded',
     'a run-time-refused anchor is header-marked `degraded`, exactly like a build-time one'
   );
+  // correctness-1: the note names the REAL total (1 of 1) — a total the
+  // build-time-only `persistDegradedSummary` computation below cannot see at
+  // all, since nothing had degraded yet when it ran.
+  const note = review.comments.find((c) => c.body.startsWith('persist-note: anchors-degraded'));
+  assert.ok(note, 'a run-time-only degradation must still append the note comment');
+  assert.equal(note.body, persistDegradationNoteBody(1, 1), 'the note reports the run-time result, not a build-time zero');
   // AC4's build-time-only preview cannot see this: nothing degraded until the
   // ladder actually ran. This is exactly why a caller must key its park
   // decision off the ladder's own printed `anchorsDegraded=` line, never off
@@ -669,6 +723,9 @@ test('a mixed run — one path-anchored comment lands, another is refused at run
   assert.match(out, /^anchorsDegraded=partial$/m, 'one anchor landed and one was refused at run time — never `all`, never `none`');
 
   const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
+  // Two findings, plus the ladder's own degradation note — correctness-1: a
+  // PARTIALLY-degraded run still gets the note, not just an all-degraded one.
+  assert.equal(review.comments.length, 3);
   const landed = review.comments.find((c) => c.body.includes('lands-fine'));
   assert.ok(landed, 'the landed-anchor comment must be present');
   assert.equal(landed.anchor.anchor_type, 'file-quote', 'the landed comment carries a real file anchor');
@@ -678,6 +735,10 @@ test('a mixed run — one path-anchored comment lands, another is refused at run
   assert.ok(refused, 'the run-time-refused comment must still be present, whole-document');
   assert.equal(refused.anchor, undefined, 'the run-time-refused anchor must land whole-document');
   assert.equal(parseCommentHeader(refused.body).anchor, 'degraded');
+
+  const note = review.comments.find((c) => c.body.startsWith('persist-note: anchors-degraded'));
+  assert.ok(note, 'a partially-degraded run must still append the note comment');
+  assert.equal(note.body, persistDegradationNoteBody(1, 2), 'the note reports 1 of 2, not the build-time-only 0');
 
   assert.deepEqual(
     result.persistDegraded,
@@ -782,9 +843,69 @@ test('AC4: every requested anchor degrading trips `persistDegraded.all` and the 
   assert.match(out, /^anchorsDegraded=all$/m, 'the ladder itself prints the all-degraded disposition');
 
   const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
-  assert.equal(review.comments.length, 2, 'both findings still land, whole-document');
-  for (const c of review.comments) {
+  // Both findings, plus the ladder's own degradation note — correctness-1:
+  // an ALL-build-time-degraded run gets the note too, not just a run-time one.
+  assert.equal(review.comments.length, 3, 'both findings still land, whole-document, plus one degradation note');
+  const findingComments = review.comments.filter((c) => !c.body.startsWith('persist-note: anchors-degraded'));
+  assert.equal(findingComments.length, 2, 'both findings still land, whole-document');
+  for (const c of findingComments) {
     assert.equal(parseCommentHeader(c.body).anchor, 'degraded', c.body + ': every comment here must be header-marked degraded');
+  }
+  const note = review.comments.find((c) => c.body.startsWith('persist-note: anchors-degraded'));
+  assert.equal(note.body, persistDegradationNoteBody(2, 2), 'the note reports the all-degraded total, 2 of 2');
+});
+
+test('tests-1: the gateScript refuses to write reviewed when RDM_PERSIST_ANCHORS_DEGRADED=all, and writes normally for partial/none', async () => {
+  // Nothing in the suite before this test ever EXECUTES the gate script's
+  // `RDM_PERSIST_ANCHORS_DEGRADED=all` branch — every other gate test either
+  // never sets the variable (so only the `:-none` default runs) or never
+  // builds `persistCommands` at all, so the guard is never even emitted. A
+  // clean review (no findings) against the task target, with BOTH `persist:
+  // true` and `gate: true`, is enough: `persistCommands` existing is what
+  // makes the driver emit the guard in the first place (arch-1's
+  // `persistDegradationGateLines()`), and this test never actually needs to
+  // run `persistScript` — it drives `gateScript` directly, standing in for
+  // the persist ladder's own run-time result by setting the environment
+  // variable the two ladders are threaded through.
+  const { result } = await drive({ ...COMMON, persist: true, task: TASK, ...TASK_PIN });
+
+  assert.equal(result.outcome, 'reviewed');
+  assert.ok(result.persistCommands, 'persist:true must build a persist ladder — that is what makes the gate guard exist at all');
+  assert.ok(result.gateScript, 'a reviewed outcome with gate:true emits a ladder');
+  assert.match(
+    result.gateScript,
+    /RDM_PERSIST_ANCHORS_DEGRADED/,
+    'the emitted gate script must actually carry the run-time degradation guard'
+  );
+
+  // RDM_PERSIST_ANCHORS_DEGRADED=all: every requested anchor degraded to
+  // whole-document, per the persist ladder's own printed line — the gate
+  // must refuse to write `reviewed`, on stderr, leaving the item at whatever
+  // `needs-review` write already landed just before the guard.
+  const refused = shPlainWithEnv(result.gateScript, { RDM_PERSIST_ANCHORS_DEGRADED: 'all' }, TASK_PIN.source);
+  assert.notEqual(refused.status, 0, 'the gate must exit non-zero when every anchor degraded');
+  assert.match(refused.stderr, /RDM_PERSIST_ANCHORS_DEGRADED=all/, 'the refusal must name its cause on stderr');
+  assert.doesNotMatch(refused.stdout, /status: reviewed/, 'the refusal must land before any reviewed write is reported');
+  assert.notEqual(taskJson(TASK).status, 'reviewed', 'the item must not reach reviewed on an all-degraded run');
+
+  // Self-test: the SAME all-degraded run must succeed once the guard itself
+  // is removed — proving the refusal above is caused by the guard, not by
+  // something else in the ladder (e.g. a refused `--source` binding).
+  const guard = persistDegradationGateLines();
+  assert.ok(result.gateScript.includes(guard), 'the emitted script must contain the exact guard this test strips');
+  const withoutGuard = result.gateScript.split(guard + '\n').join('');
+  assert.notEqual(withoutGuard, result.gateScript, 'the mutant must actually remove the guard, or this self-test is vacuous');
+  const mutant = shPlainWithEnv(withoutGuard, { RDM_PERSIST_ANCHORS_DEGRADED: 'all' }, TASK_PIN.source);
+  assert.equal(mutant.status, 0, 'with the guard stripped, the same all-degraded run must reach reviewed');
+  assert.equal(taskJson(TASK).status, 'reviewed', 'confirms the guard, not something else, was refusing the write above');
+
+  // `partial` and `none` are ordinary persistence — the write must proceed
+  // each time (the item was left at `reviewed` by the mutant run above, but
+  // `needs-review` -> `reviewed` is a no-op transition here, not a skip).
+  for (const value of ['partial', 'none']) {
+    const ok = shPlainWithEnv(result.gateScript, { RDM_PERSIST_ANCHORS_DEGRADED: value }, TASK_PIN.source);
+    assert.equal(ok.status, 0, 'RDM_PERSIST_ANCHORS_DEGRADED=' + value + ' must not be refused: ' + ok.stderr);
+    assert.equal(taskJson(TASK).status, 'reviewed', 'the write must reach reviewed for anchorsDegraded=' + value);
   }
 });
 

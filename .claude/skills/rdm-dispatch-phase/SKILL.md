@@ -468,15 +468,16 @@ target. A nonzero exit anywhere else is a park.
 **Check the ladder's own printed `anchorsDegraded=<all|partial|none>` line before treating the run as
 ordinary persistence — not `result.persistDegraded`, which is a build-time-only preview and can
 under-report a run whose anchors degraded at run time.** When that printed line reads
-`anchorsDegraded=all` — the run requested at least one anchor and **every** one of them degraded,
-whether at build time or at run time — **park** `blocked` with `[code] every requested comment anchor
-degraded to whole-document; see the review's own summary and each comment's \`anchor\` header`, even
-though the ladder itself exited 0. This is deliberately **not** folded into `outcome`/`classifyOutcome`
-(see `docs/workflow-schemas.md` § "Persisting a review" — outcome classification stays independent of
-anchor plumbing), so it is a **separate check you make yourself** after running the ladder, from its
-printed output rather than from `result`. A partially-degraded run (`anchorsDegraded=partial`) is not
-a park — proceed normally; the degradation is already visible in the persisted review's own summary
-and per-comment `anchor` headers.
+`anchorsDegraded=all` — every requested comment anchor degraded to whole-document, whether at build
+time or at run time — **park** `blocked` with `[code] every requested comment anchor degraded to
+whole-document; see the review's own note comment and each comment's \`anchor\` header`, even though
+the ladder itself exited 0. The persist ladder itself now records this in the review: whenever any
+anchor degrades, it appends one whole-document note comment stating how many of how many requested
+anchors could not be placed, so the review can never read as clean persistence merely because
+`outcome`/`classifyOutcome` stay independent of anchor plumbing (see `docs/workflow-schemas.md` §
+"Persisting a review"). Checking `anchorsDegraded` is still a **separate step you take yourself**
+after running the ladder — the write it gates has already happened by the time you read it. A
+partially-degraded run (`anchorsDegraded=partial`) is not a park — proceed normally.
 
 `gate: false` keeps the status write here, in step 14, where the refusal can be surfaced.
 

@@ -1554,6 +1554,29 @@ ONLY when at least one anchor was requested and every single one degraded,
 whichever stage caused it; a run with zero requested anchors, or with some but
 not all degraded, prints `partial` or `none`.
 
+**The REAL total is also recorded IN THE REVIEW ITSELF, not only on stdout.**
+The build-time-only `persistDegradationClause` above is baked into the
+`--body` text before `review start` even runs, so it cannot see a run-time
+refusal — a review whose every anchor degraded at run time used to persist
+with a clean-looking summary and no trace beyond each affected comment's
+`anchor: degraded` header. Once the block above has computed
+`RDM_PERSIST_TOTAL_DEGRADED` (build-time plus run-time), and while the review
+is still a DRAFT — before `review submit` — the ladder appends one
+whole-document comment whenever that total is greater than zero:
+`persistDegradationNoteBody(totalDegraded, requested)` (`persist-note:
+anchors-degraded`, then "`N` of `M` requested anchor(s) could not be placed;
+see the anchor header on each comment above."), with the run-time-only-known
+total filled in through `printf` rather than a quoted heredoc — a quoted
+heredoc cannot expand a shell variable at all, and the fixed text carries no
+apostrophe, so `printf` substitution sidesteps
+`persist-capture-bash32-heredoc-apostrophe` entirely rather than needing it.
+This note carries none of `PERSIST_HEADER_KEYS` (it describes the review, not
+a survivor), so `parseCommentHeader` correctly reports it as unheadered. The
+note is the SAME text a caller reading the persisted review sees regardless of
+whether the degradation happened at build time or run time — the two cases
+are no longer distinguishable only by whether the caller happened to capture
+the ladder's stdout.
+
 `rdm-wf-review-refute-fix.js`'s standalone code-review path (the driver
 region, not the stamped block) ALSO attaches `persistDegradedSummary`'s
 `{ requested, degraded, all }` object as `result.persistDegraded`, alongside
@@ -1573,7 +1596,7 @@ capture its output, and PARK `blocked` when its last line reads
 landed with no usable anchors at all should not be reported as ordinary
 successful persistence. A partially-degraded run (`anchorsDegraded=partial`)
 is not a park; it proceeds normally, with the degradation already visible in
-the review's own summary and per-comment `anchor` headers.
+the review's own note comment (see above) and per-comment `anchor` headers.
 
 **The engine's own headless `gate: true` path reads the same signal, through
 an environment variable.** `persistCommands`/`persistScript` and
@@ -1588,14 +1611,28 @@ exits nonzero with an actionable message instead, rather than writing the
 status. A caller running both ladders is responsible for threading the
 value through — setting `RDM_PERSIST_ANCHORS_DEGRADED` from the persist
 ladder's own printed `anchorsDegraded=<value>` line before running the gate
-script. This puts the all-degraded rule in the ONE canonical engine
-(`rdm-wf-review-refute-fix.js`) rather than duplicated per consumer, which is
-how it had already drifted: `rdm-dispatch-phase`'s prose knew the rule, the
-engine's own `gate: true` path and the `rdm-review` skill did not. No shipped
-consumer currently passes `gate: true` (both `rdm-dispatch-phase` and
-`rdm-review` always pass `gate: false` and own their own status write), so
-this is a completeness fix for the documented capability rather than a change
-in any current caller's behavior.
+script. No shipped consumer currently passes `gate: true` (both
+`rdm-dispatch-phase` and `rdm-review` always pass `gate: false` and own their
+own status write), so this is a completeness fix for the documented
+capability rather than a change in any current caller's behavior.
+
+**The gate lines themselves are single-sourced** (arch-1): the guard shell
+lines above are `persistDegradationGateLines()`, a function in
+`lib/review.mjs`'s stamped block — not hand-written in any driver region. It returns the exact
+`if [ "${RDM_PERSIST_ANCHORS_DEGRADED:-none}" = "all" ]; then … fi` text as a
+single string; a caller building a status-write ladder (today, only
+`rdm-wf-review-refute-fix.js`'s `gateCommands` builder) pushes it verbatim.
+Because it lives in the stamped block, `scripts/gen-workflow-review.sh`
+copies it into every consumer along with the rest of the review pipeline, so
+the RULE — not just its effect — has exactly one definition, rather than a
+hand-copied `if`/`echo`/`exit` block per consumer. The dispatch-phase skill
+(`.claude/skills/rdm-dispatch-phase/SKILL.md` and the shipped
+`rdm-core/src/templates/skill-dispatch-phase-cli.md`) is prose, not code, so
+it cannot call the function directly; its two copies instead carry the
+IDENTICAL paragraph describing the rule, kept in sync by hand rather than by
+a generator (dispatch-phase is not a `scripts/gen-skill-review.sh` consumer —
+that script only renders `skill-review-cli.md` and `skill-plan-review-cli.md`
+from `lib/review.mjs`'s `//|` spec prose).
 
 **Verdict mapping** (`PERSIST_VERDICT` / `persistVerdictFor`, which THROWS on an
 unrecognized outcome rather than defaulting to `comment`):

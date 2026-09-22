@@ -314,11 +314,15 @@ be surfaced.
 ordinary persistence — not `result.persistDegraded`, which is a build-time-only preview and can
 under-report a run whose anchors degraded at run time.** When that printed line reads
 `anchorsDegraded=all` — every requested comment anchor degraded to whole-document, whether at build
-time or at run time — park `blocked` with `[code] every requested comment anchor degraded to
-whole-document; see the review's own summary and each comment's \`anchor\` header`, even though the
-ladder itself exited 0. This is not folded into `outcome` (outcome classification stays independent of
-anchor plumbing), so it is a separate check you make yourself after running the ladder, from its
-output rather than from `result`. A partially-degraded run (`anchorsDegraded=partial`) is not a park.
+time or at run time — **park** `blocked` with `[code] every requested comment anchor degraded to
+whole-document; see the review's own note comment and each comment's \`anchor\` header`, even though
+the ladder itself exited 0. The persist ladder itself now records this in the review: whenever any
+anchor degrades, it appends one whole-document note comment stating how many of how many requested
+anchors could not be placed, so the review can never read as clean persistence merely because
+`outcome`/`classifyOutcome` stay independent of anchor plumbing (see `docs/workflow-schemas.md` §
+"Persisting a review"). Checking `anchorsDegraded` is still a **separate step you take yourself**
+after running the ladder — the write it gates has already happened by the time you read it. A
+partially-degraded run (`anchorsDegraded=partial`) is not a park — proceed normally.
 
 Optionally add `reviewers: [...]` — **your** judgment about what this diff touches. Omit the key to
 run every code reviewer; that is the safe default and the right choice when you are unsure. An

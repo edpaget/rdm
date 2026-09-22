@@ -2161,12 +2161,10 @@ function persistReviewCommands(result, target, cfg, opts) {
     }
     cmds.push(cmd);
   }
-  cmds.push(IND + bin + ' review submit "$RDM_REVIEW_ID" --verdict ' + verdict + ' --no-edit' + proj + ' || exit 1');
-  // Session-scoped by the changeset model, so a concurrent dispatch's staged
-  // work is never swept in. NEVER `--all`, and never `rdm discard`.
-  cmds.push(IND + bin + ' commit -m ' + shellQuote('chore(plan): record ' + mode + ' review of ' + target) + ' || exit 1');
-  cmds.push('printf \'reviewId=%s\\n\' "$RDM_REVIEW_ID"');
-  // AC4's caller-visible signal — now the REAL, post-run result: the
+  // correctness-1: the REAL, post-run degradation total — computed HERE,
+  // BEFORE `review submit`, rather than only after the review is already
+  // closed, so the whole-document note comment two steps below can still be
+  // added to the SAME (still-draft) review this computation describes. The
   // BUILD-TIME half (`persistDegradedSummary`, computed purely from the
   // survivor list and opts, nothing about it depends on what the shell above
   // actually does) PLUS the RUN-TIME half (RDM_PERSIST_RUNTIME_DEGRADED,
@@ -2193,6 +2191,54 @@ function persistReviewCommands(result, target, cfg, opts) {
       'RDM_PERSIST_ANCHORS_DEGRADED=none\n' +
       'fi'
   );
+  // correctness-1: a review whose REAL degraded total is nonzero must never
+  // persist as ordinary clean persistence. The build-time-only
+  // `persistDegradationClause` folded into `summary` above cannot see a
+  // run-time refusal — it has not happened yet when `summary` is built — so
+  // until now the only trace of an all-degraded RUN was a per-comment
+  // `anchor: degraded` header and a stdout line the ladder never wrote back
+  // into the document. One whole-document NOTE comment, added here (before
+  // `review submit`, while the review is still a draft), closes that gap: it
+  // names the real total against the number requested, in the exact wording
+  // `persistDegradationNoteBody` defines, with the run-time-only-known count
+  // filled in through `printf` rather than a quoted heredoc — a quoted
+  // heredoc cannot expand `$RDM_PERSIST_TOTAL_DEGRADED` at all, and `printf`
+  // also sidesteps the apostrophe-breaks-bash-3.2-heredocs defect entirely
+  // (moot here anyway, since this fixed text carries no apostrophe — see
+  // task persist-capture-bash32-heredoc-apostrophe).
+  //
+  // GATED ON `isChangeTarget(target)`, not merely appended unconditionally
+  // behind its own runtime `if`: against a plan-repo document target
+  // `persistAnchorFor` never reports a degraded reason at all (a bare
+  // `--quote` is the normal, correct anchor there — see its own comment), and
+  // the run-time retry branch below is unreachable without `pathAnchors`,
+  // which `persistReviewCommands` already refuses outright on a non-change
+  // target. So `RDM_PERSIST_TOTAL_DEGRADED` is PROVABLY always `0` for such a
+  // target, and emitting this step's text anyway would be dead weight in
+  // every plan-mode ladder — and would silently double what a caller
+  // counting `review comment` invocations in the emitted text expects to
+  // see, even though it can never actually run.
+  if (isChangeTarget(target)) {
+    cmds.push(
+      'if [ "$RDM_PERSIST_TOTAL_DEGRADED" -gt 0 ]; then\n' +
+        'RDM_PERSIST_DEGRADED_NOTE=$(printf ' +
+        shellQuote(persistDegradationNoteBody('%s', degradedSummary.requested)) +
+        ' "$RDM_PERSIST_TOTAL_DEGRADED") || exit 1\n' +
+        IND +
+        bin +
+        ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_DEGRADED_NOTE" --no-edit' +
+        proj +
+        ' || exit 1\n' +
+        'fi'
+    );
+  }
+  cmds.push(IND + bin + ' review submit "$RDM_REVIEW_ID" --verdict ' + verdict + ' --no-edit' + proj + ' || exit 1');
+  // Session-scoped by the changeset model, so a concurrent dispatch's staged
+  // work is never swept in. NEVER `--all`, and never `rdm discard`.
+  cmds.push(IND + bin + ' commit -m ' + shellQuote('chore(plan): record ' + mode + ' review of ' + target) + ' || exit 1');
+  cmds.push('printf \'reviewId=%s\\n\' "$RDM_REVIEW_ID"');
+  // AC4's caller-visible signal, printed once the computation above has
+  // already run — see the block that sets RDM_PERSIST_ANCHORS_DEGRADED.
   cmds.push('printf \'anchorsDegraded=%s\\n\' "$RDM_PERSIST_ANCHORS_DEGRADED"');
   return cmds;
 }
@@ -2203,6 +2249,51 @@ function persistReviewCommands(result, target, cfg, opts) {
 // a parallel one that could drift.
 function persistHasQuote(finding) {
   return !!finding && typeof finding.quote === 'string' && finding.quote.trim() !== '';
+}
+
+// persistDegradationNoteBody(totalDegraded, requested) — the exact text of the
+// whole-document NOTE comment `persistReviewCommands` appends, once, whenever
+// the REAL (build-time-plus-run-time) degraded count is greater than zero
+// (correctness-1). Distinct from a finding comment: it carries none of
+// `PERSIST_HEADER_KEYS` (there is no severity/dimension/finding-id to give it
+// — it describes the REVIEW, not a survivor), so `parseCommentHeader` correctly
+// reports it as unheadered rather than forcing finding-shaped fields onto a
+// review-level note.
+//
+// Pure and exported so `review-driver.test.mjs` can assert the exact wording
+// without re-deriving it, and so the `printf` format string the emitted ladder
+// uses (which can only ever fill in the run-time-only-known total — see the
+// call site below) is produced by this SAME function, called with `'%s'` as
+// `totalDegraded`, rather than a hand-duplicated copy of the sentence.
+function persistDegradationNoteBody(totalDegraded, requested) {
+  return (
+    'persist-note: anchors-degraded\n' +
+    totalDegraded +
+    ' of ' +
+    requested +
+    ' requested anchor(s) could not be placed; see the anchor header on each comment above.'
+  );
+}
+
+// persistDegradationGateLines() — arch-1: the SINGLE definition of the "every
+// requested anchor degraded => refuse to write `reviewed`" gate policy, as
+// ready-to-append shell lines keyed off `RDM_PERSIST_ANCHORS_DEGRADED` (the
+// persist ladder's own printed run-time result — see `persistReviewCommands`'
+// trailing `anchorsDegraded=` line). A caller building a status-write ladder
+// appends this immediately before the write it wants to guard, and only when
+// it is also building a persist ladder for the SAME review (no persist
+// ladder in play means nothing ever sets the variable, and the `:-none`
+// default keeps an unrelated caller unaffected). Kept in the stamped block —
+// not the driver region — so every gate-building consumer references ONE
+// emitted artifact instead of hand-copying the policy; today that is
+// `rdm-wf-review-refute-fix.js`'s `gateCommands` builder.
+function persistDegradationGateLines() {
+  return [
+    'if [ "${RDM_PERSIST_ANCHORS_DEGRADED:-none}" = "all" ]; then',
+    '  echo "review-refute-fix: refusing to write reviewed - every requested comment anchor degraded to whole-document (RDM_PERSIST_ANCHORS_DEGRADED=all); park blocked and see the review own summary and each comment anchor header instead" >&2',
+    '  exit 1',
+    'fi',
+  ].join('\n');
 }
 
 // --- Plan-standalone consolidation helpers -----------------------------------
@@ -3062,12 +3153,10 @@ if (rawArgs.gate && source && !failure) {
   // read-back has to show is `result.status`.
   const update = (s) => '  ' + bin + target + ' --status ' + s + binding + ' --no-edit' + proj + ' || exit 1'
   gateCommands = ['cd ' + shellQuote(source.path) + ' || exit 1', update('needs-review')]
-  // arch-1: the SAME canonical engine that builds `persistCommands` is also
-  // the one place that builds `gateCommands`, so the all-anchors-degraded
-  // rule belongs here rather than hand-copied into each consumer's prose (it
-  // already had — dispatch-phase's prose knew it, this gate script and the
-  // `rdm-review` skill did not). This script and the persist ladder run as
-  // TWO SEPARATE shell sessions (the orchestrator pastes each in turn), so
+  // arch-1: the all-anchors-degraded gate policy is single-sourced as
+  // `persistDegradationGateLines()`, in the stamped block above (see its own
+  // comment) — not hand-copied here. This script and the persist ladder run
+  // as TWO SEPARATE shell sessions (the orchestrator pastes each in turn), so
   // the persist ladder's run-time result cannot be a JS-side value here — it
   // reads it the same way the orchestrator does, off the persist ladder's own
   // trailing `anchorsDegraded=<...>` line, threaded in as the
@@ -3078,12 +3167,7 @@ if (rawArgs.gate && source && !failure) {
   // unaffected. `classifyOutcome`/`outcome` stay untouched — this refuses the
   // WRITE, not the verdict.
   if (status === 'reviewed' && persistCommands) {
-    gateCommands.push(
-      'if [ "${RDM_PERSIST_ANCHORS_DEGRADED:-none}" = "all" ]; then\n' +
-      '  echo "review-refute-fix: refusing to write reviewed - every requested comment anchor degraded to whole-document (RDM_PERSIST_ANCHORS_DEGRADED=all); park blocked and see the review own summary and each comment anchor header instead" >&2\n' +
-      '  exit 1\n' +
-      'fi'
-    )
+    gateCommands.push(persistDegradationGateLines())
   }
   if (status !== 'needs-review') gateCommands.push(update(status))
   gateCommands.push(
