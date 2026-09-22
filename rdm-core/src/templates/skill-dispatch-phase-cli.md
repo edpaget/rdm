@@ -302,10 +302,19 @@ engine needs, because each reviewer runs `rdm review source` itself to reach the
 Block for its returned result. **The engine reads nothing and writes nothing**: it dispatches finder
 and refuter agents and no others. `persist: true` therefore returns the ladder as `persistCommands` /
 `persistScript` rather than writing anything — **you** run that Bash yourself, in one session, and
-report its exit status. It prints `reviewId=<id>` on success. If one `review comment` line is refused
-for its anchor, re-run that line only with `--path`, `--quote` and `--occurrence` removed; if
-`review start` itself is refused, park rather than choosing another target. `gate: false` keeps the
-status write here, in step 13, where a refusal can be surfaced.
+report its exit status. It prints `reviewId=<id>` and then `anchorsDegraded=<all|partial|none>` on
+success. If one `review comment` line is refused for its anchor, re-run that line only with `--path`,
+`--quote` and `--occurrence` removed; if `review start` itself is refused, park rather than choosing
+another target. `gate: false` keeps the status write here, in step 13, where a refusal can be
+surfaced.
+
+Then check `result.persistDegraded` before treating the run as ordinary persistence: when
+`persistDegraded.all === true` — every requested comment anchor degraded to whole-document at build
+time, not just some of them — park `blocked` with `[code] every requested comment anchor degraded to
+whole-document at persist time; see the review's own summary and each comment's \`anchor\` header`,
+even though the ladder itself exited 0. This is not folded into `outcome` (outcome classification
+stays independent of anchor plumbing), so it is a separate check you make yourself after running the
+ladder. A partially-degraded run (`persistDegraded.all === false`) is not a park.
 
 Optionally add `reviewers: [...]` — **your** judgment about what this diff touches. Omit the key to
 run every code reviewer; that is the safe default and the right choice when you are unsure. An

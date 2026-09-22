@@ -249,7 +249,7 @@ Each finding is reported as:
 - id: <short-slug>
   concern: <ac|correctness|tests|architecture|api-docs|changelog|security>
   location: <path>:<line>
-  path: <repo-relative source path, e.g. path/to/file.ext — required whenever quote is given>
+  path: <repo-relative source path with NO line suffix, e.g. path/to/file.ext, never path/to/file.ext:line — required whenever quote is given>
   quote: <verbatim excerpt of the reviewed text this finding is about; omit for a whole-document finding>
   severity: blocking | concern | suggestion
   confidence: 0-100

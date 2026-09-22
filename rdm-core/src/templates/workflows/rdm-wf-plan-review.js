@@ -522,7 +522,7 @@ function reviewTargetBlock(context) {
 //|code|   concern: <ac|correctness|tests|architecture|api-docs|changelog|security>
 //|plan|   concern: <coherence|architectural-fit|restraint|unit-of-work>
 //|code|   location: <path>:<line>
-//|code|   path: <repo-relative source path, e.g. path/to/file.ext — required whenever quote is given>
+//|code|   path: <repo-relative source path with NO line suffix, e.g. path/to/file.ext, never path/to/file.ext:line — required whenever quote is given>
 //|plan|   location: <section/heading or phase stem>
 //|   quote: <verbatim excerpt of the reviewed text this finding is about; omit for a whole-document finding>
 //|   severity: blocking | concern | suggestion
@@ -577,7 +577,7 @@ function findPrompt(mode, dim, context) {
   );
   if (mode === 'code') {
     lines.push(
-      'A finding that carries `quote` MUST also carry `path`: the repo-relative source file the quote was taken from (e.g. `path/to/file.ext`) — a STRUCTURED field, distinct from the free-text `location` above (which may carry a line range plus extra human-readable detail). Omit `quote` and `path` together for a finding about the change as a whole.'
+      'A finding that carries `quote` MUST also carry `path`: the repo-relative source file the quote was taken from (e.g. `path/to/file.ext`, with NO trailing `:line` — that shape belongs to `location`, not `path`) — a STRUCTURED field, distinct from the free-text `location` above (which may carry a line range plus extra human-readable detail). Omit `quote` and `path` together for a finding about the change as a whole.'
     );
   }
   lines.push('Return an empty `findings` array if the dimension is clean.');
@@ -1015,7 +1015,12 @@ const FINDINGS_SCHEMA = {
           // was taken from — a code-mode-only field, distinct from the free-text
           // `location` above (which may still carry a line range plus extra
           // human-readable prose, e.g. "path/to/file.rs:12-18 (mirrored at
-          // ...)"). `persistAnchorFor` below tries THIS field first, ahead of
+          // ...)"). Unlike `location`, this field is a BARE path with NO line
+          // suffix by prompt convention — but `persistAnchorFor` tolerates one
+          // anyway (stripping it via `stripPathLineSuffix` before validating),
+          // because a finder that pattern-matches the adjacent `location:
+          // <path>:<line>` prompt line sometimes tacks a suffix on regardless.
+          // `persistAnchorFor` below tries THIS field first, ahead of
           // `pathFromLocation`'s regex-stripping heuristic over `location`,
           // because prose defeats that heuristic in exactly the cases where an
           // anchor matters most. NOT in `required`: a whole-document finding, or
@@ -1600,6 +1605,18 @@ const PERSIST_DEGRADED_REASONS = [
 // Documented in docs/workflow-schemas.md § "Persisted review comment body".
 const PERSIST_HEADER_KEYS = ['severity', 'confidence', 'refuted', 'unrefutedReason', 'dimension', 'finding-id', 'inScope', 'anchor'];
 
+// LEGACY_PERSIST_HEADER_KEYS — the SEVEN-key header every comment this pipeline
+// wrote before `anchor` was added as a trailing eighth key. `parseCommentHeader`
+// falls back to this shape when the eight-key match fails, so a comment
+// persisted before that change is still recognized as machine-written (with
+// `anchor` reported as unknown, never guessed) rather than silently
+// misclassified as a human comment — which would defeat
+// `priorFindingsFromReviews`'s repeat-finding detection on every pre-existing
+// review. A SIX-key header (pre-dating `inScope`) is a separate, narrower
+// format and stays out of scope here — see
+// `docs/workflow-schemas.md` § "Persisted review comment body".
+const LEGACY_PERSIST_HEADER_KEYS = PERSIST_HEADER_KEYS.slice(0, 7);
+
 // persistHeaderValue(v) — collapse to a single line. A header value that spanned
 // lines would desynchronize the line-based parser for every key after it.
 function persistHeaderValue(v) {
@@ -1650,19 +1667,17 @@ function formatCommentBody(finding, anchorState) {
   return lines.join('\n');
 }
 
-// parseCommentHeader(body) — the INVERSE of formatCommentBody, single-sourced
-// beside it so the two cannot drift. Returns null when the header is absent or
-// malformed (a human-written comment), never throws. `whatFails` is recovered
-// from the body's own `What fails: ` line so a persisted comment can be turned
-// back into the `{ severity, concern, what_fails }` shape repeat detection
-// consumes.
-function parseCommentHeader(body) {
-  const text = typeof body === 'string' ? body : '';
-  const lines = text.split('\n');
-  if (lines.length < PERSIST_HEADER_KEYS.length) return null;
+// tryParseHeaderKeys(lines, keys) — match `lines[0..keys.length)` against
+// `keys` in order, each as a `key:` prefix, and return the collected
+// `{ key: value }` map, or `null` on the first mismatch (including too few
+// lines). Pure and total. Factored out of `parseCommentHeader` so the
+// eight-key and seven-key (legacy) shapes share one matching rule rather than
+// two hand-written loops that could drift apart.
+function tryParseHeaderKeys(lines, keys) {
+  if (lines.length < keys.length) return null;
   const values = {};
-  for (let i = 0; i < PERSIST_HEADER_KEYS.length; i++) {
-    const key = PERSIST_HEADER_KEYS[i];
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
     const line = lines[i];
     if (typeof line !== 'string') return null;
     const prefix = key + ':';
@@ -1671,7 +1686,32 @@ function parseCommentHeader(body) {
     if (v.slice(0, 1) === ' ') v = v.slice(1);
     values[key] = v;
   }
-  const rest = lines.slice(PERSIST_HEADER_KEYS.length).join('\n');
+  return values;
+}
+
+// parseCommentHeader(body) — the INVERSE of formatCommentBody, single-sourced
+// beside it so the two cannot drift. Returns null when the header is absent or
+// malformed (a human-written comment), never throws. `whatFails` is recovered
+// from the body's own `What fails: ` line so a persisted comment can be turned
+// back into the `{ severity, concern, what_fails }` shape repeat detection
+// consumes.
+//
+// Tries the current EIGHT-key header first; a body that only carries the
+// LEGACY seven (no trailing `anchor` line — see `LEGACY_PERSIST_HEADER_KEYS`)
+// still parses, with `anchor` reported as `undefined` (unknown), rather than
+// falling through to `null` and being mistaken for an unheadered human
+// comment.
+function parseCommentHeader(body) {
+  const text = typeof body === 'string' ? body : '';
+  const lines = text.split('\n');
+  let values = tryParseHeaderKeys(lines, PERSIST_HEADER_KEYS);
+  let headerLen = PERSIST_HEADER_KEYS.length;
+  if (!values) {
+    values = tryParseHeaderKeys(lines, LEGACY_PERSIST_HEADER_KEYS);
+    headerLen = LEGACY_PERSIST_HEADER_KEYS.length;
+  }
+  if (!values) return null;
+  const rest = lines.slice(headerLen).join('\n');
   let whatFails = '';
   const restLines = rest.split('\n');
   for (let i = 0; i < restLines.length; i++) {
@@ -1691,7 +1731,9 @@ function parseCommentHeader(body) {
     // `n/a` (never graded for scope) parses back to `null`, not `false` — a
     // header consumer must not read "never graded" as "graded out of scope".
     inScope: values.inScope === 'true' ? true : values.inScope === 'false' ? false : null,
-    // The closed `PERSIST_ANCHOR_STATES` vocabulary, read back verbatim.
+    // The closed `PERSIST_ANCHOR_STATES` vocabulary, read back verbatim. On a
+    // legacy seven-key match `values.anchor` is `undefined` (unknown) — never
+    // guessed at, and distinct from every real `PERSIST_ANCHOR_STATES` value.
     anchor: values.anchor,
     whatFails: whatFails,
     rest: rest.replace(/^\n+/, ''),
@@ -1781,6 +1823,25 @@ function isRepoRelativePath(s) {
   return s.indexOf('/') !== -1 || /\.[A-Za-z0-9]+$/.test(s);
 }
 
+// stripPathLineSuffix(s) — drop a trailing `:<line>` or `:<start>-<end>`
+// suffix (digits only, so a Windows-style `C:` or a prose colon is not
+// silently eaten). Shared by `pathFromLocation` (whose input, `location`,
+// conventionally CARRIES this suffix and must have it stripped) and
+// `persistAnchorFor`'s handling of a finder-declared `path` (whose prompt
+// asks for a BARE repo-relative path with no suffix — but a finder that
+// pattern-matches the adjacent `location: <path>:<line>` prompt line
+// sometimes emits one anyway; `isRepoRelativePath` alone does not catch this,
+// because a suffixed value like `src/foo.rs:12-18` still contains a `/` and
+// passes it, so the real binary refuses the resulting `--path` outright.
+// Stripping is chosen over rejecting the whole declared path and falling
+// back to `pathFromLocation(location)`: the file half of a suffixed `path`
+// is exactly the anchor the finder meant to give, and discarding it in favor
+// of re-deriving from the free-text `location` would throw away a normally
+// MORE reliable signal for a self-inflicted formatting slip.
+function stripPathLineSuffix(s) {
+  return s.replace(/:\d+(?:-\d+)?$/, '');
+}
+
 // pathFromLocation(location) — the repo-relative source path a code-mode
 // finding's `location` names, or null. This is the RESILIENCE-NET heuristic,
 // not the primary path source — see `persistAnchorFor`, which tries the
@@ -1800,9 +1861,7 @@ function pathFromLocation(location) {
   if (typeof location !== 'string') return null;
   let s = location.trim();
   if (s === '') return null;
-  // Drop a trailing `:<line>` or `:<start>-<end>` suffix (digits only, so a
-  // Windows-style `C:` or a prose colon is not silently eaten).
-  s = s.replace(/:\d+(?:-\d+)?$/, '');
+  s = stripPathLineSuffix(s);
   return isRepoRelativePath(s) ? s : null;
 }
 
@@ -1825,10 +1884,17 @@ function pathFromLocation(location) {
 // bare `--quote` is the normal, correct anchor.
 //
 // PATH SOURCE ORDER: the finder's own structured `finding.path` is tried
-// FIRST (validated through `isRepoRelativePath`); only when it is absent or
-// fails validation does this fall back to `pathFromLocation(finding.location)`
-// — the pre-existing heuristic, kept as a resilience net for a finder whose
-// prompt output lags, not the primary source any more.
+// FIRST — a trailing `:<line>` or `:<start>-<end>` suffix is stripped before
+// validating it (the finder prompt asks for a BARE path, but a finder that
+// pattern-matches the adjacent `location: <path>:<line>` line sometimes tacks
+// one on anyway; `isRepoRelativePath` alone would wrongly ACCEPT the suffixed
+// form, because a value like `src/foo.rs:12-18` still contains a `/`, and the
+// real binary then refuses the emitted `--path` outright — see
+// `stripPathLineSuffix`). Only when the (suffix-stripped) declared path is
+// absent or still fails validation does this fall back to
+// `pathFromLocation(finding.location)` — the pre-existing heuristic, kept as
+// a resilience net for a finder whose prompt output lags, not the primary
+// source any more.
 //
 // Returns `{ quote, path, reason }`: `quote` is whether `--quote` is emitted,
 // `path` the `--path` value (or null), and `reason` a PERSIST_DEGRADED_REASONS
@@ -1841,7 +1907,7 @@ function persistAnchorFor(finding, target, opts) {
   let path = null;
   if (o.pathAnchors === true && !emptyRange) {
     const f = finding || {};
-    const declared = typeof f.path === 'string' ? f.path.trim() : '';
+    const declared = typeof f.path === 'string' ? stripPathLineSuffix(f.path.trim()) : '';
     path = declared !== '' && isRepoRelativePath(declared) ? declared : pathFromLocation(f.location);
   }
   if (!isChangeTarget(target)) return { quote: true, path: path, reason: null };
@@ -1930,6 +1996,24 @@ function persistDegradationClause(result, target, opts) {
     reasons +
     '); see the `anchor` header on each comment.'
   );
+}
+
+// persistDegradedSummary(result, target, opts) — the MACHINE-READABLE
+// counterpart to `persistDegradationClause`'s prose: `{ requested, degraded,
+// all }`, where `requested` is how many survivors asked for a `--quote`
+// anchor, `degraded` is how many of those were dropped at build time (the
+// same `persistPreDegradedAnchors` count the clause composes), and `all` is
+// true ONLY when at least one anchor was requested AND every single one
+// degraded — AC4's "the all-anchors-failed signal still escalates" caller
+// hook. A run that requested zero anchors, or degraded only SOME of them,
+// gets `all: false` — a caller must not treat a partially-degraded review the
+// same as a wholly-undermined one. Pure and derived from the same
+// `persistAnchorFor` decision the writer and the prose clause both use, so
+// none of the three can ever disagree.
+function persistDegradedSummary(result, target, opts) {
+  const requested = persistReviewSurvivors(result).filter(persistHasQuote).length;
+  const degraded = persistPreDegradedAnchors(result, target, opts).length;
+  return { requested: requested, degraded: degraded, all: requested > 0 && degraded === requested };
 }
 
 // persistReviewCommands(result, target, cfg, opts) — the ORDERED shell commands that
@@ -2088,6 +2172,18 @@ function persistReviewCommands(result, target, cfg, opts) {
   // work is never swept in. NEVER `--all`, and never `rdm discard`.
   cmds.push(IND + bin + ' commit -m ' + shellQuote('chore(plan): record ' + mode + ' review of ' + target) + ' || exit 1');
   cmds.push('printf \'reviewId=%s\\n\' "$RDM_REVIEW_ID"');
+  // AC4's caller-visible signal: baked at BUILD TIME (the survivor list and
+  // opts are already fully known here — nothing about this line depends on
+  // what the shell above actually does), so this is plain data, not a second
+  // runtime computation that could drift from `persistDegradedSummary`. `all`
+  // fires ONLY when at least one anchor was requested and every one of them
+  // degraded; `partial` covers 1..N-1 of N; `none` covers zero degraded
+  // (including the common case of zero anchors requested at all). See
+  // `persistDegradedSummary` and docs/workflow-schemas.md § "Persisting a
+  // review".
+  const degradedSummary = persistDegradedSummary(result, target, o);
+  const anchorsDegraded = degradedSummary.all ? 'all' : degradedSummary.degraded > 0 ? 'partial' : 'none';
+  cmds.push('printf \'anchorsDegraded=%s\\n\' ' + shellQuote(anchorsDegraded));
   return cmds;
 }
 

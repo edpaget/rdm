@@ -1140,7 +1140,7 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | `concern`       | string (required)                        | the dimension key (`ac`, `correctness`, …)        |
 | `category`      | string                                   | **optional**; security-style slug (injection / authorization / memory / crypto / exposure) |
 | `location`      | string                                   | `file:line`, section heading, or phase stem — free-text, may carry extra human-readable detail |
-| `path`          | string                                   | **optional, code mode**; a STRUCTURED repo-relative source path the `quote` was taken from, distinct from `location`. Required alongside `quote` by prompt convention (not schema-enforced); a finding that carries `quote` with no `path` still falls back to the `location`-parsing heuristic (see `pathFromLocation`) |
+| `path`          | string                                   | **optional, code mode**; a STRUCTURED repo-relative source path the `quote` was taken from, distinct from `location`. Required alongside `quote` by prompt convention (not schema-enforced), and the prompt asks for a BARE path with no `:line` suffix — but `persistAnchorFor` tolerates one anyway, stripping it via `stripPathLineSuffix` before validating (see below); a finding that carries `quote` with no usable `path` still falls back to the `location`-parsing heuristic (see `pathFromLocation`) |
 | `quote`         | string                                   | **optional**; a VERBATIM excerpt of the reviewed text this finding is about — what makes a persisted comment anchorable |
 | `severity`      | `blocking` \| `concern` \| `suggestion`  | required; drives ranking and the overall verdict  |
 | `confidence`    | integer 0–100 (required)                 | the finder's confidence **in the finding**        |
@@ -1188,6 +1188,22 @@ asks for it explicitly whenever `quote` is given, and `persistAnchorFor` tries
 it FIRST, ahead of the `location`-parsing fallback (see § "Persisting a
 review" below). `plan` mode has no `path` field in its prompt — a plan review
 targets the document itself, where a bare `--quote` is always the anchor.
+
+**`path` itself must be BARE, with no `:line` suffix — but a suffixed one is
+tolerated, not refused.** The prompt for `path` is explicit that it takes no
+line suffix (unlike the adjacent `location: <path>:<line>` prompt line), but a
+finder sometimes pattern-matches the two lines and tacks one on anyway (e.g.
+`path: "src/foo.rs:12-18"`). `isRepoRelativePath` alone would wrongly ACCEPT
+that value — it still contains a `/` — and the real binary then refuses the
+resulting `--path` outright. `persistAnchorFor` therefore strips a trailing
+`:<line>` or `:<start>-<end>` suffix from a declared `path` via
+`stripPathLineSuffix` (the SAME regex `pathFromLocation` already applies to
+`location`) before validating it. Stripping was chosen over rejecting the
+whole declared value and falling back to `pathFromLocation(location)`: the
+file half of a suffixed `path` is exactly the anchor the finder meant to give,
+and a finder-supplied `path` is normally the MORE reliable signal — discarding
+it in favor of `location` would throw away that reliability over a
+self-inflicted formatting slip.
 
 The code-mode `ac` dimension's prompt deliberately says nothing about `quote`.
 It returns early from its own `AC_REVIEW_SCHEMA` branch and never reaches the
@@ -1331,6 +1347,18 @@ Rules:
   header, which is how a human-written comment is skipped rather than
   misread as a finding.
 
+**Backward compatibility: a legacy SEVEN-key header still parses.** `anchor`
+was added as a TRAILING eighth key; every comment persisted before that change
+carries only the first seven (`LEGACY_PERSIST_HEADER_KEYS`). `parseCommentHeader`
+tries the full eight-key match first and falls back to the seven-key match
+only when that fails, so a pre-existing comment is still recognized as
+machine-written — `anchor` comes back `undefined` (unknown, never guessed) —
+rather than silently misclassified as an unheadered human comment, which would
+defeat `priorFindingsFromReviews`'s repeat-finding detection (`lib/plan-review.mjs`)
+on every review persisted before this change. A SIX-key header (pre-dating
+`inScope`) is a narrower, separate legacy format, covered by a later phase of
+this same `agent-orchestrated-dispatch` roadmap rather than by this fallback.
+
 Carrying this metadata in comment FRONTMATTER instead is recorded as a
 follow-up (`extend-review-comment-frontmatter-with-finding-metadata`), not done
 here.
@@ -1472,6 +1500,41 @@ body, not in the OUTCOME a caller gates on. Each comment's own `anchor` header
 detail; this clause is what makes the aggregate visible without opening every
 comment.
 
+**The all-anchors-degraded signal (AC4).** A review whose anchors ALL degraded
+is a stronger case than an ordinary partially-degraded one — the persisted
+review carries no useful per-file anchoring at all — and a caller must be able
+to tell the two apart WITHOUT parsing `persistDegradationClause`'s prose.
+`persistDegradedSummary(result, target, opts)` is the machine-readable
+counterpart: `{ requested, degraded, all }`, where `requested` is how many
+survivors asked for a `--quote` anchor, `degraded` is how many were dropped at
+build time (the same count the prose clause composes), and `all` is `true`
+ONLY when at least one anchor was requested and every single one degraded. A
+run with zero requested anchors, or with some but not all degraded, gets
+`all: false`.
+
+Two projections of the same computation:
+
+- The persist ladder's LAST line, `printf 'anchorsDegraded=%s\n' '<value>'`,
+  baked at BUILD time (not a runtime shell computation — the survivor list and
+  `opts` are already fully known when the command list is built) to one of
+  `all` / `partial` / `none`.
+- `rdm-wf-review-refute-fix.js`'s standalone code-review path (the driver
+  region, not the stamped block) attaches the same `{ requested, degraded, all
+  }` object as `result.persistDegraded` alongside `persistCommands` /
+  `persistScript`, whenever a persist ladder was built.
+
+Like `persistDegradationClause`, this is a pure BUILD-TIME computation over
+data already in hand and does NOT touch `classifyOutcome`/`outcome` — the same
+recorded design decision applies. **The caller is responsible for acting on
+it.** `.claude/skills/rdm-dispatch-phase/SKILL.md` (and the shipped
+`rdm-core/src/templates/skill-dispatch-phase-cli.md`) check
+`result.persistDegraded.all` after running the persist ladder and PARK
+`blocked` when it is `true`, even though the ladder itself exited 0 — a review
+that landed with no usable anchors at all should not be reported as ordinary
+successful persistence. A partially-degraded run is not a park; it proceeds
+normally, with the degradation already visible in the review's own summary and
+per-comment `anchor` headers.
+
 **Verdict mapping** (`PERSIST_VERDICT` / `persistVerdictFor`, which THROWS on an
 unrecognized outcome rather than defaulting to `comment`):
 
@@ -1485,7 +1548,8 @@ unrecognized outcome rather than defaulting to `comment`):
 returns the ordered command list as DATA; the engines hand it back on their
 result (`persistCommands`, plus a newline-joined `persistScript`) and the
 ORCHESTRATOR pastes it into one Bash session and reports the exit status. The
-ladder prints `reviewId=<id>` on success.
+ladder prints `reviewId=<id>` and then `anchorsDegraded=<all|partial|none>` on
+success — see "The all-anchors-degraded signal" below.
 
 There is consequently **no persist acknowledgement**, and the machinery that
 existed to read one is gone: `PERSIST_ACK_SCHEMA`,

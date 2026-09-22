@@ -34,7 +34,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { hasBlocking, refutePrompt, formatCommentBody, parseCommentHeader, buildReviewPipeline, classifyOutcome } from '../../.claude/workflows/lib/review.mjs';
+import { hasBlocking, refutePrompt, formatCommentBody, parseCommentHeader, buildReviewPipeline, classifyOutcome, persistAnchorFor } from '../../.claude/workflows/lib/review.mjs';
 
 // --------------------------------------------------------------- environment
 
@@ -396,6 +396,7 @@ test('the persist ladder records a real review: a real `--path` code anchor from
 
   const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
   assert.equal(review.state, 'submitted');
+  assert.equal(review.verdict, 'request-changes', 'a rework outcome persists as request-changes');
   assert.equal(review.target.kind, 'change', 'the reviewed artifact is the pinned change, not the phase document');
   assert.equal(review.comments.length, 3, 'each survivor is persisted exactly once');
 
@@ -438,6 +439,64 @@ test('the persist ladder records a real review: a real `--path` code anchor from
     /1 of 2 requested anchor\(s\) could not be placed at persist time \(path-missing x1\); see the `anchor` header on each comment\./,
     "the review's own summary names the build-time degradation"
   );
+
+  // AC4's machine-readable half, over a PARTIALLY-degraded run: one of the two
+  // requested anchors landed, so `all` must stay false even though one did
+  // degrade — a caller must be able to tell "some" from "every" without
+  // parsing the prose clause above.
+  assert.deepEqual(
+    result.persistDegraded,
+    { requested: 2, degraded: 1, all: false },
+    'a partially-degraded review must not set `all`'
+  );
+  assert.match(out, /^anchorsDegraded=partial$/m, 'the ladder itself prints the partial disposition');
+});
+
+test('a finder-declared `path` carrying a `:line` suffix still lands a real anchor, and the ladder completes', async () => {
+  // A finder prompt-matching the adjacent `location: <path>:<line>` line
+  // sometimes tacks a line suffix onto the STRUCTURED `path` field too, even
+  // though the prompt asks for a bare path there. `isRepoRelativePath` alone
+  // would wrongly accept `roadmap-work.txt:1` (it still contains no `/`, but
+  // does end in a non-extension-shaped suffix) as a path — the real binary
+  // then refuses the resulting `--path`. `persistAnchorFor` strips the suffix
+  // before validating, so this must still land a real, landed `--path` anchor
+  // rather than degrading.
+  const { result } = await drive(
+    { ...COMMON, gate: false, persist: true, implements: 'plan/' + PLAN, roadmap: ROADMAP, phase: 'phase-2-dirty', ...ROADMAP_PIN },
+    {
+      id: 'suffixed-path-bug',
+      concern: 'correctness',
+      severity: 'blocking',
+      confidence: 90,
+      what_fails: 'it drops a write',
+      location: 'roadmap-work.txt:1',
+      // The finder-declared path itself carries the `:1` line suffix this
+      // finding's fix strips before validating.
+      path: 'roadmap-work.txt:1',
+      quote: 'shipped',
+    }
+  );
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder completes and prints the id it created: ' + out);
+  assert.match(out, /^anchorsDegraded=none$/m, 'the suffixed path still lands, so nothing degraded');
+
+  const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
+  assert.equal(review.comments.length, 1);
+  assert.equal(review.comments[0].anchor.anchor_type, 'file-quote', 'the suffixed path must still land a real file anchor');
+  assert.equal(
+    review.comments[0].anchor.path,
+    'roadmap-work.txt',
+    'the `:1` line suffix must be stripped from the declared path before it is used'
+  );
+  assert.equal(
+    parseCommentHeader(review.comments[0].body).anchor,
+    'path',
+    'a landed anchor, never `degraded` — the suffix is tolerated, not treated as an invalid path'
+  );
+  assert.deepEqual(result.persistDegraded, { requested: 1, degraded: 0, all: false });
 });
 
 test('a whole-document-by-design finding, alone, never triggers the build-time degradation clause', async () => {
@@ -480,6 +539,61 @@ test('a whole-document-by-design finding, alone, never triggers the build-time d
     /requested anchor\(s\) could not be placed at persist time/,
     'AC4 negative control: a whole-document-by-design finding, with nothing else degraded in the run, must not read as a build-time degradation'
   );
+  assert.deepEqual(
+    result.persistDegraded,
+    { requested: 0, degraded: 0, all: false },
+    'a run that requested zero anchors must never report `all: true`'
+  );
+  assert.match(out, /^anchorsDegraded=none$/m, 'the ladder prints `none` when nothing was ever requested');
+});
+
+test('AC4: every requested anchor degrading trips `persistDegraded.all` and the ladder prints anchorsDegraded=all', async () => {
+  // Two findings, BOTH carrying a `quote` and BOTH with no derivable path — no
+  // `path` field, and `location` is free-form prose that `pathFromLocation`
+  // cannot parse. Every requested anchor therefore degrades to whole-document
+  // at build time, which is the stronger, ALL-degraded case distinct from the
+  // partially-degraded run covered above.
+  const { result } = await drive(
+    { ...COMMON, gate: false, persist: true, implements: 'plan/' + PLAN, roadmap: ROADMAP, phase: 'phase-2-dirty', ...ROADMAP_PIN },
+    [
+      {
+        id: 'first-degraded',
+        concern: 'correctness',
+        severity: 'blocking',
+        confidence: 90,
+        what_fails: 'no derivable path at all',
+        location: 'throughout the gate step',
+        quote: 'shipped',
+      },
+      {
+        id: 'second-degraded',
+        concern: 'tests',
+        severity: 'concern',
+        confidence: 85,
+        what_fails: 'still no derivable path',
+        location: 'elsewhere, also prose-only',
+        quote: 'shipped',
+      },
+    ]
+  );
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder prints the id it created: ' + out);
+
+  assert.deepEqual(
+    result.persistDegraded,
+    { requested: 2, degraded: 2, all: true },
+    'AC4: every requested anchor degrading must set `all: true`'
+  );
+  assert.match(out, /^anchorsDegraded=all$/m, 'the ladder itself prints the all-degraded disposition');
+
+  const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
+  assert.equal(review.comments.length, 2, 'both findings still land, whole-document');
+  for (const c of review.comments) {
+    assert.equal(parseCommentHeader(c.body).anchor, 'degraded', c.body + ': every comment here must be header-marked degraded');
+  }
 });
 
 test('a refused `review start` fails the persist ladder, even in a plain shell with no set -e', async () => {
@@ -705,4 +819,75 @@ test('formatCommentBody / parseCommentHeader round-trip inScope: true, inScope: 
   const ungradedBody = formatCommentBody({ ...base });
   assert.match(ungradedBody, /^inScope: n\/a$/m);
   assert.equal(parseCommentHeader(ungradedBody).inScope, null, 'never graded for scope parses back to null, not false');
+});
+
+test('parseCommentHeader accepts a legacy SEVEN-key body with no trailing `anchor` line', () => {
+  // The shape every comment carried before `anchor` was added as a trailing
+  // eighth key: the same seven `key: value` lines, straight into the blank
+  // separator and prose with NO `anchor: ...` line at all. This must still be
+  // recognized as machine-written — never misread as an unheadered human
+  // comment, which would silently defeat priorFindingsFromReviews's
+  // repeat-finding detection (lib/plan-review.mjs) on every review persisted
+  // before this change.
+  const legacyBody = [
+    'severity: blocking',
+    'confidence: 90',
+    'refuted: false',
+    'unrefutedReason: none',
+    'dimension: correctness',
+    'finding-id: f1',
+    'inScope: n/a',
+    '',
+    'correctness',
+    'What fails: it drops a write',
+  ].join('\n');
+
+  const h = parseCommentHeader(legacyBody);
+  assert.ok(h, 'a legacy seven-key body must still round-trip through the parser');
+  assert.equal(h.severity, 'blocking');
+  assert.equal(h.confidence, 90);
+  assert.equal(h.refuted, false);
+  assert.equal(h.unrefutedReason, 'none');
+  assert.equal(h.dimension, 'correctness');
+  assert.equal(h.findingId, 'f1');
+  assert.equal(h.inScope, null);
+  assert.equal(h.anchor, undefined, 'a legacy body carries no anchor line, so anchor must be unknown, never guessed');
+  assert.equal(h.whatFails, 'it drops a write');
+
+  // The CURRENT eight-key shape must still be preferred and parse unchanged —
+  // this is a fallback, not a replacement.
+  const currentBody = formatCommentBody({ id: 'f1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'it drops a write' }, 'path');
+  assert.equal(parseCommentHeader(currentBody).anchor, 'path');
+});
+
+test("an invalid finder `path` (absolute, `..`, or whitespace) falls back to pathFromLocation(location)", () => {
+  const target = 'change/abc123';
+  const opts = { pathAnchors: true, source: { noCode: false } };
+  for (const badPath of ['/abs/path.rs', '../escape.rs', '   ']) {
+    const finding = {
+      id: 'f1',
+      concern: 'correctness',
+      quote: 'shipped',
+      path: badPath,
+      location: 'roadmap-work.txt:1',
+    };
+    const decision = persistAnchorFor(finding, target, opts);
+    assert.equal(
+      decision.path,
+      'roadmap-work.txt',
+      'declared path ' + JSON.stringify(badPath) + ' must be rejected and fall back to pathFromLocation(location)'
+    );
+    assert.equal(decision.quote, true, 'a usable fallback path still lands a real anchor');
+    assert.equal(decision.reason, null, 'a successful fallback is not a degradation');
+  }
+
+  // Negative control: an invalid `path` with NO usable `location` fallback
+  // either must still degrade, exactly like an absent `path`.
+  const noFallback = persistAnchorFor(
+    { id: 'f2', concern: 'correctness', quote: 'shipped', path: '/abs/path.rs', location: 'throughout the gate step' },
+    target,
+    opts
+  );
+  assert.equal(noFallback.path, null);
+  assert.equal(noFallback.reason, 'path-missing');
 });
