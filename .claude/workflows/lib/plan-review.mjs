@@ -45,6 +45,8 @@ import {
   persistReviewCommands,
   parseCommentHeader,
   shellQuote,
+  isFullHexSha,
+  reviewSourceCommand,
 } from './review.mjs';
 
 // >>> plan-review-driver:begin <<<
@@ -118,33 +120,20 @@ function projectFlag(cfg) {
 
 // planSourceCommand(item, pin, rdmBin, projFlag) — the pinned `rdm review
 // source` command named in a plan-mode finder/refuter prompt (see
-// `reviewTargetBlock`'s `mode === 'plan'` branch in the review core). Mirrors
-// the code-review engine's own `sourceCommand` builder
-// (`rdm-wf-review-refute-fix.js`'s driver region) byte-for-byte in shape:
-// same flag order, same `shellQuote` on every interpolated value. `--no-code`
-// is ALWAYS passed, unconditionally — plan review runs before implementation,
-// so an empty committed diff between `base` and `head` is the expected,
-// legitimate case here, never a caller mistake the way it is in code mode.
-// `rdmBin` and `projFlag` are taken ALREADY RESOLVED (as `resolveRdmBin`/
-// `projectFlag` return them), matching the calling convention `buildReviewUnits`
-// already uses for its own `RDM`/`PROJ` locals.
+// `reviewTargetBlock`'s `mode === 'plan'` branch in the review core). Built
+// through the SAME `reviewSourceCommand` helper the code-review engine's own
+// `sourceCommand` const (`rdm-wf-review-refute-fix.js`'s driver region) and
+// `persistReviewCommands`' persist ladder call (arch-1: the three used to
+// build this string independently, and the copies had already diverged) — so
+// flag order and quoting can never drift apart again. `--no-code` is ALWAYS
+// passed, unconditionally — plan review runs before implementation, so an
+// empty committed diff between `base` and `head` is the expected, legitimate
+// case here, never a caller mistake the way it is in code mode. `rdmBin` and
+// `projFlag` are taken ALREADY RESOLVED (as `resolveRdmBin`/`projectFlag`
+// return them), matching the calling convention `buildReviewUnits` already
+// uses for its own `RDM`/`PROJ` locals.
 function planSourceCommand(item, pin, rdmBin, projFlag) {
-  return (
-    rdmBin +
-    ' review source --on ' +
-    shellQuote(item) +
-    ' --source ' +
-    shellQuote(pin.path) +
-    ' --base ' +
-    shellQuote(pin.base) +
-    ' --expected-head ' +
-    shellQuote(pin.head) +
-    ' --expected-branch ' +
-    shellQuote(pin.branch) +
-    ' --no-code' +
-    (projFlag || '') +
-    ' --format json'
-  )
+  return reviewSourceCommand(item, pin, rdmBin, projFlag, { noCode: true }) + ' --format json'
 }
 
 // parsePlanArgs(rawArgs) — resolve the four target types from a raw $ARGUMENTS
@@ -278,8 +267,15 @@ function parsePlanArgs(rawArgs) {
           missing.join(', ')
       )
     }
-    // The same full-hex-SHA shape code review's `requireSha` enforces.
-    if (!/^[0-9a-f]{40,64}$/.test(rawExpectedHead)) {
+    // The same full-hex-SHA shape code review's `requireSha` enforces — on
+    // BOTH `base` and `expectedHead` (correctness-1: this used to check only
+    // `expectedHead`, so a malformed `base` reached `rdm review source` and
+    // its failure was reported to the reviewer as checkout drift rather than
+    // a bad caller argument).
+    if (!isFullHexSha(rawBase)) {
+      throw new Error('plan-review: base must be a full hex commit id (got "' + rawBase + '")')
+    }
+    if (!isFullHexSha(rawExpectedHead)) {
       throw new Error('plan-review: expectedHead must be a full hex commit id (got "' + rawExpectedHead + '")')
     }
     sourcePin = { path: rawSource, base: rawBase, head: rawExpectedHead, branch: rawExpectedBranch }

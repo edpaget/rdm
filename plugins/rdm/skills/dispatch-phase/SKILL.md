@@ -514,7 +514,12 @@ Produce the object from the Contract above as your final message, `planId` and `
 This surface's plan gate is the **human-submitted approve review** of step 6, not a workflow. That is
 a choice about *who* gates, not a limitation: `rdm:rdm-wf-plan-review` IS emitted alongside this skill
 (`rdm agent-config claude --skills`/`--plugin` ships all five engines), so you may invoke it yourself
-for a second opinion on the plan. What you may **not** do is treat its verdict as the gate. On this
+for a second opinion on the plan. If you do, pass `source`, `base`, `expectedHead`, and
+`expectedBranch` from the `identity` you pinned in step 3 (`identity.path`, `identity.base`,
+`identity.head`, `identity.branch`), plus the same `phase`/`task` identifier you are dispatching —
+an unpinned call would grade the plan's file claims against whatever tree the invoking session
+happens to be sitting in, not the checkout the plan actually describes, which is the defect this
+worktree-source fix exists to close. What you may **not** do is treat its verdict as the gate. On this
 surface a human owns the decision to let implementation begin, because a downstream repo's
 conventions are exactly what an automated plan reviewer has least access to. Step 6's human approve
 review is therefore the whole gate, and it satisfies the same single `rdm plan show` read a

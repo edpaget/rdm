@@ -22,7 +22,7 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { runPlanReviewDriver, parsePlanArgs, buildReviewUnits } from '../../.claude/workflows/lib/plan-review.mjs';
-import { DIMENSIONS, resolveReviewers, formatCommentBody } from '../../.claude/workflows/lib/review.mjs';
+import { DIMENSIONS, resolveReviewers, formatCommentBody, findPrompt } from '../../.claude/workflows/lib/review.mjs';
 
 const checkout = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -813,6 +813,54 @@ async function driveRealWithFindings(args) {
   return { result, calls, labels: calls.map((c) => c.label) };
 }
 
+// assertPlanModeSourceWording(prompt, label) — tests-1: Suite F used to check
+// ONLY that the pinned `rdm review source ... --no-code` command string was
+// present in a prompt, never which INSTRUCTION TEXT surrounded it. A prompt
+// that carried the right command but the WRONG (code-mode) wording around it
+// — e.g. from `if (mode === 'plan')` in `reviewTargetBlock` being swapped for
+// the code-mode branch, or `mode` failing to reach it at all — passed every
+// assertion in this suite. This asserts the plan-mode markers POSITIVELY
+// (`VERIFY THE PINNED CHECKOUT YOURSELF`, the `git -C <path> show <head>:`
+// pinned-read instruction) and asserts the code-mode markers are ABSENT
+// (`RESOLVE THE CHANGE YOURSELF`, the `committed range` wording) — the
+// reverse of assertCodeModeSourceWording below.
+function assertPlanModeSourceWording(prompt, label) {
+  assert.ok(
+    prompt.includes('VERIFY THE PINNED CHECKOUT YOURSELF'),
+    label + ' is missing the plan-mode pinned-checkout verification instruction:\n' + prompt
+  );
+  assert.ok(
+    prompt.includes('git -C <path> show <head>:'),
+    label + ' is missing the plan-mode pinned-read instruction:\n' + prompt
+  );
+  assert.ok(
+    !prompt.includes('RESOLVE THE CHANGE YOURSELF'),
+    label + ' leaked the code-mode resolve-the-change instruction:\n' + prompt
+  );
+  assert.ok(
+    !prompt.includes('committed range'),
+    label + ' leaked the code-mode committed-range instruction:\n' + prompt
+  );
+}
+
+// assertCodeModeSourceWording(prompt, label) — the reverse direction: a
+// code-mode prompt given a `sourceCommand` must keep the code-mode wording and
+// must never pick up the plan-mode markers.
+function assertCodeModeSourceWording(prompt, label) {
+  assert.ok(
+    prompt.includes('RESOLVE THE CHANGE YOURSELF'),
+    label + ' is missing the code-mode resolve-the-change instruction:\n' + prompt
+  );
+  assert.ok(
+    prompt.includes('committed range'),
+    label + ' is missing the code-mode committed-range instruction:\n' + prompt
+  );
+  assert.ok(
+    !prompt.includes('VERIFY THE PINNED CHECKOUT YOURSELF'),
+    label + ' leaked the plan-mode pinned-checkout verification instruction:\n' + prompt
+  );
+}
+
 test('F1: an implementation-plan pin (task form) reaches every finder AND refuter prompt, bound to that task', async () => {
   const { calls } = await driveRealWithFindings({
     implementationPlan: true,
@@ -833,7 +881,31 @@ test('F1: an implementation-plan pin (task form) reaches every finder AND refute
     "' --expected-branch 'roadmap/x' --no-code --format json";
   for (const c of calls) {
     assert.ok(c.prompt.includes(expectedCmd), c.label + ' is missing the pinned source command:\n' + c.prompt);
+    assertPlanModeSourceWording(c.prompt, c.label);
   }
+});
+
+test('F1c: reviewTargetBlock renders the correct wording per mode from the SAME sourceCommand — the direct unit check behind F1/F2/F3', () => {
+  const ctx = { target: 'x', sourceCommand: "rdm review source --on 'task/t' --source '/wt' --base 'b' --expected-head 'h' --expected-branch 'br' --no-code --format json" };
+  assertPlanModeSourceWording(findPrompt('plan', 'coherence', ctx), 'plan finder');
+  assertCodeModeSourceWording(findPrompt('code', 'correctness', ctx), 'code finder');
+});
+
+test('F1d: correctness-1 — a non-zero exit is never asserted as drift; the reviewer is told to quote stderr instead', () => {
+  const ctx = { target: 'x', sourceCommand: "rdm review source --on 'task/t' --source '/wt' --base 'b' --expected-head 'h' --expected-branch 'br' --no-code --format json" };
+  const planPrompt = findPrompt('plan', 'coherence', ctx);
+  assert.ok(
+    planPrompt.includes('could not be verified'),
+    'a non-zero exit must be framed as "could not be verified" (drift OR a bad pin/environment), not asserted as drift:\n' + planPrompt
+  );
+  assert.ok(
+    /stderr/.test(planPrompt),
+    'the reviewer must be told to quote the command\'s stderr in the blocking finding:\n' + planPrompt
+  );
+  assert.ok(
+    !/means the pinned checkout has drifted/.test(planPrompt),
+    'the prompt must not assert drift as the diagnosis outright:\n' + planPrompt
+  );
 });
 
 test('F1b: an implementation-plan pin (roadmap+phase form) binds to that phase, not a task', async () => {
@@ -883,6 +955,11 @@ test('F2: a roadmap sweep pin binds each phase unit to ITS OWN --on; the roadmap
     assert.ok(c.prompt.includes("--on 'phase/r/phase-2-b'"), c.label + ':\n' + c.prompt);
     assert.ok(!c.prompt.includes("phase-1-a"), 'phase-2-b must never carry a sibling stem:\n' + c.prompt);
   }
+  // tests-1: at least one REFUTER prompt (not only a finder's) must carry the
+  // plan-mode wording, not merely the pinned command string.
+  const phase1Refuters = phase1Calls.filter((c) => c.label.startsWith('refute:'));
+  assert.ok(phase1Refuters.length > 0, 'no refuter ran for phase-1-a — the probe finding must have been dropped or never graded');
+  for (const c of phase1Refuters) assertPlanModeSourceWording(c.prompt, c.label);
 });
 
 test('F3: a single --phase / --task target pin uses that target\'s own item as --on', async () => {
@@ -941,6 +1018,17 @@ test('F5: a malformed source pin throws at parse time, before any agent is dispa
   assert.throws(
     () => parsePlanArgs({ task: 't', source: '/wt', base: BASE, expectedHead: 'a'.repeat(10), expectedBranch: 'main' }),
     /full hex commit id/
+  );
+  // correctness-1: the SAME check on `base` — this used to be unchecked, so a
+  // malformed base reached `rdm review source` and its failure was reported to
+  // the reviewer as checkout drift rather than a bad caller argument.
+  assert.throws(
+    () => parsePlanArgs({ task: 't', source: '/wt', base: 'not-a-sha', expectedHead: HEAD, expectedBranch: 'main' }),
+    /base must be a full hex commit id/
+  );
+  assert.throws(
+    () => parsePlanArgs({ task: 't', source: '/wt', base: 'a'.repeat(10), expectedHead: HEAD, expectedBranch: 'main' }),
+    /base must be a full hex commit id/
   );
   // A full pin on an implementation-plan target naming neither a task nor a roadmap+phase.
   assert.throws(

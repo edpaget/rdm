@@ -495,7 +495,14 @@ function reviewTargetBlock(mode, context) {
       lines.push(
         'VERIFY THE PINNED CHECKOUT YOURSELF. Run exactly this read-only command:',
         '  ' + c.sourceCommand,
-        'A non-zero exit means the pinned checkout has drifted since this plan was written — report that as a `blocking` finding and STOP; do not fall back to verifying against a different tree. On success, read every file this plan cites from the reported `path` at the reported `head` (e.g. `git -C <path> show <head>:<repo-relative-path>`) — never from your own working directory, and never an uncommitted file in that checkout.'
+        // correctness-1: a non-zero exit is NOT proof of drift — it is equally
+        // consistent with a bad pin or a bad environment (a stale path, the
+        // wrong project, a stale rdm binary), none of which the plan author can
+        // fix by revising the plan. Telling the reviewer to quote the actual
+        // stderr, rather than asserting drift as the diagnosis, keeps the
+        // blocking finding actionable instead of misdirecting a re-plan loop
+        // at a caller-argument bug.
+        'A non-zero exit means the pinned checkout could not be verified — this may be drift since the plan was written, or it may be a bad pin/environment (a stale path, the wrong project, a stale rdm binary). Quote the command\'s stderr in a `blocking` finding and STOP; do not fall back to verifying against a different tree, and do not assert drift as the cause unless the stderr actually says so. On success, read every file this plan cites from the reported `path` at the reported `head` (e.g. `git -C <path> show <head>:<repo-relative-path>`) — never from your own working directory, and never an uncommitted file in that checkout.'
       );
     } else {
       lines.push(
@@ -524,6 +531,55 @@ function reviewTargetBlock(mode, context) {
     );
   }
   return lines.join('\n');
+}
+
+// isFullHexSha(value) — the shared shape check for a pinned commit id: 40-64
+// lowercase hex characters. Every pin validator in this lane (the code-review
+// driver's `requireSha`, the plan-review driver's `parsePlanArgs`) enforces
+// this exact shape on BOTH `base` and `expectedHead`, so it is defined once
+// here rather than re-typed at each call site (arch-1/correctness-1: the
+// plan-side copy used to check only `expectedHead`, letting a malformed
+// `base` reach `rdm review source` and have its failure misreported as
+// checkout drift).
+function isFullHexSha(value) {
+  return typeof value === 'string' && /^[0-9a-f]{40,64}$/.test(value);
+}
+
+// reviewSourceCommand(item, pin, rdmBin, projFlag, opts) — the ONE builder for
+// the pinned `rdm review source --on <item> [--source <path> --base <base>
+// --expected-head <head> --expected-branch <branch>] [--no-code] [--project
+// <p>]` command line. Every place that names this command — a finder/refuter
+// prompt (via `reviewTargetBlock`'s `sourceCommand`), the code-review driver's
+// own `sourceCommand` const, the plan-review driver's `planSourceCommand`, and
+// `persistReviewCommands`' pinned `cd` + `review source` verification line —
+// calls this function rather than re-building the string, so the flag order
+// and quoting cannot diverge between them again (arch-1: they already had —
+// the plan-side copy skipped `base` validation entirely).
+//
+// `pin` is `{path, base, head, branch}`, or falsy for an unpinned `--on`-only
+// probe (only the code driver's error path ever constructs one). The caller
+// appends its own trailing bits — ` --format json` for a prompt command, a
+// redirect-and-exit-guard for a persist-ladder line — because those differ per
+// call site and are not part of the command identity this function owns.
+function reviewSourceCommand(item, pin, rdmBin, projFlag, opts) {
+  const o = opts || {};
+  return (
+    rdmBin +
+    ' review source --on ' +
+    shellQuote(item) +
+    (pin
+      ? ' --source ' +
+        shellQuote(pin.path) +
+        ' --base ' +
+        shellQuote(pin.base) +
+        ' --expected-head ' +
+        shellQuote(pin.head) +
+        ' --expected-branch ' +
+        shellQuote(pin.branch)
+      : '') +
+    (o.noCode ? ' --no-code' : '') +
+    (projFlag || '')
+  );
 }
 
 // Prompt for a finder agent reviewing a single dimension of `mode`.
@@ -2127,7 +2183,7 @@ function persistReviewCommands(result, target, cfg, opts) {
     // carries `< /dev/null` so the ladder stays safe against this whole
     // class of bug regardless of which `rdm` surface it invokes ever grows
     // a stdin read in the future.
-    cmds.push(IND + bin + ' review source --on ' + shellQuote(o.source.item) + ' --source ' + shellQuote(o.source.path) + ' --base ' + shellQuote(o.source.base) + ' --expected-head ' + shellQuote(o.source.head) + ' --expected-branch ' + shellQuote(o.source.branch) + (o.source.noCode ? ' --no-code' : '') + proj + ' >/dev/null < /dev/null || exit 1');
+    cmds.push(IND + reviewSourceCommand(o.source.item, o.source, bin, proj, { noCode: o.source.noCode }) + ' >/dev/null < /dev/null || exit 1');
   }
   // SCRATCH FILE VIA mktemp, NEVER A PREDICTABLE NAME. This used to be a fixed
   // basename suffixed with the shell's PID under TMPDIR — a guessable path in a
@@ -3018,33 +3074,20 @@ function projectFlag(cfg) {
 
 // planSourceCommand(item, pin, rdmBin, projFlag) — the pinned `rdm review
 // source` command named in a plan-mode finder/refuter prompt (see
-// `reviewTargetBlock`'s `mode === 'plan'` branch in the review core). Mirrors
-// the code-review engine's own `sourceCommand` builder
-// (`rdm-wf-review-refute-fix.js`'s driver region) byte-for-byte in shape:
-// same flag order, same `shellQuote` on every interpolated value. `--no-code`
-// is ALWAYS passed, unconditionally — plan review runs before implementation,
-// so an empty committed diff between `base` and `head` is the expected,
-// legitimate case here, never a caller mistake the way it is in code mode.
-// `rdmBin` and `projFlag` are taken ALREADY RESOLVED (as `resolveRdmBin`/
-// `projectFlag` return them), matching the calling convention `buildReviewUnits`
-// already uses for its own `RDM`/`PROJ` locals.
+// `reviewTargetBlock`'s `mode === 'plan'` branch in the review core). Built
+// through the SAME `reviewSourceCommand` helper the code-review engine's own
+// `sourceCommand` const (`rdm-wf-review-refute-fix.js`'s driver region) and
+// `persistReviewCommands`' persist ladder call (arch-1: the three used to
+// build this string independently, and the copies had already diverged) — so
+// flag order and quoting can never drift apart again. `--no-code` is ALWAYS
+// passed, unconditionally — plan review runs before implementation, so an
+// empty committed diff between `base` and `head` is the expected, legitimate
+// case here, never a caller mistake the way it is in code mode. `rdmBin` and
+// `projFlag` are taken ALREADY RESOLVED (as `resolveRdmBin`/`projectFlag`
+// return them), matching the calling convention `buildReviewUnits` already
+// uses for its own `RDM`/`PROJ` locals.
 function planSourceCommand(item, pin, rdmBin, projFlag) {
-  return (
-    rdmBin +
-    ' review source --on ' +
-    shellQuote(item) +
-    ' --source ' +
-    shellQuote(pin.path) +
-    ' --base ' +
-    shellQuote(pin.base) +
-    ' --expected-head ' +
-    shellQuote(pin.head) +
-    ' --expected-branch ' +
-    shellQuote(pin.branch) +
-    ' --no-code' +
-    (projFlag || '') +
-    ' --format json'
-  )
+  return reviewSourceCommand(item, pin, rdmBin, projFlag, { noCode: true }) + ' --format json'
 }
 
 // parsePlanArgs(rawArgs) — resolve the four target types from a raw $ARGUMENTS
@@ -3178,8 +3221,15 @@ function parsePlanArgs(rawArgs) {
           missing.join(', ')
       )
     }
-    // The same full-hex-SHA shape code review's `requireSha` enforces.
-    if (!/^[0-9a-f]{40,64}$/.test(rawExpectedHead)) {
+    // The same full-hex-SHA shape code review's `requireSha` enforces — on
+    // BOTH `base` and `expectedHead` (correctness-1: this used to check only
+    // `expectedHead`, so a malformed `base` reached `rdm review source` and
+    // its failure was reported to the reviewer as checkout drift rather than
+    // a bad caller argument).
+    if (!isFullHexSha(rawBase)) {
+      throw new Error('plan-review: base must be a full hex commit id (got "' + rawBase + '")')
+    }
+    if (!isFullHexSha(rawExpectedHead)) {
       throw new Error('plan-review: expectedHead must be a full hex commit id (got "' + rawExpectedHead + '")')
     }
     sourcePin = { path: rawSource, base: rawBase, head: rawExpectedHead, branch: rawExpectedBranch }
