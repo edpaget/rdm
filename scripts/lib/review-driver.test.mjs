@@ -1273,10 +1273,14 @@ test('AC4: a persist ladder runs to completion under an open stdin with no redir
   // `submit`) hanging under an agent's Bash tool: before the fix, `rdm`
   // itself blocked reading stdin to EOF whenever it was piped and never
   // closed, so the FIRST `review submit` in every persist ladder deadlocked.
-  // The CLI fix means `rdm` no longer blocks at all; this proves the SECOND,
-  // independent layer too — the ladder's own `< /dev/null` redirects (added
-  // to `persistReviewCommands`) keep it safe even if a future `rdm` surface
-  // it invokes ever grows a stdin read, with no help from the caller.
+  // The CLI fix means `rdm` no longer blocks reading stdin at all, so THIS
+  // case — run against the real, already-fixed binary — passes on the CLI
+  // fix alone and proves nothing about the ladder's own `< /dev/null`
+  // redirects; it would pass identically even with every one of them
+  // deleted from `persistReviewCommands`. It stays as the end-to-end,
+  // real-binary completion proof. The next test is what actually exercises
+  // the redirects: it points the ladder at a stub `rdm` that blocks reading
+  // stdin regardless of the CLI fix, so only the redirects can save it.
   const { result } = await drive({ ...COMMON, gate: false, persist: true, implements: 'plan/' + PLAN, task: TASK, ...TASK_PIN }, {
     id: 'stdin-hang-regression',
     concern: 'correctness',
@@ -1291,4 +1295,56 @@ test('AC4: a persist ladder runs to completion under an open stdin with no redir
   const { code, stdout, stderr } = await runWithOpenStdinPipe(result.persistScript);
   assert.equal(code, 0, 'the ladder must exit 0 with stdin held open:\n' + stdout + stderr);
   assert.match(stdout, /reviewId=\S+/, 'the ladder ran to completion and printed the id it created');
+});
+
+test('AC4: the per-line `< /dev/null` redirects, not the CLI fix, are what save the ladder from a stdin-blocking rdm', async () => {
+  // The case above proves completion against the real, already-fixed `rdm`
+  // binary, so it cannot tell the redirects apart from the CLI fix — since
+  // the fix, `rdm` never blocks on stdin at all, so that case would pass
+  // exactly the same with every `< /dev/null` in `persistReviewCommands`
+  // deleted. This case makes the redirect claim actually true: it points the
+  // SAME ladder's `rdmBin` at a stub wrapper that deliberately blocks
+  // reading stdin to EOF before delegating to the real binary — regardless
+  // of what the real binary itself does — so the ladder can only complete if
+  // its OWN per-line redirects feed that blocking read a closed stdin.
+  //
+  // Confirmed by hand while writing this test: regex-stripping every
+  // ` < /dev/null` out of the emitted script and running it against this
+  // same stub, with stdin held open the same way, times out every time — the
+  // mutant self-test below reproduces that and asserts it, so this claim
+  // cannot regress silently.
+  const { result } = await drive({ ...COMMON, gate: false, persist: true, implements: 'plan/' + PLAN, task: TASK, ...TASK_PIN }, {
+    id: 'stdin-hang-regression-stub',
+    concern: 'correctness',
+    severity: 'concern',
+    confidence: 90,
+    what_fails: 'stub finding, just to produce a non-empty ladder',
+    location: 'general',
+  });
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+
+  // A wrapper standing in for `rdm` on every line of the ladder: read stdin
+  // to EOF first (which hangs forever on a never-closed pipe, unless the
+  // caller redirected this invocation's stdin), THEN delegate to the real
+  // binary with the same arguments.
+  const stub = path.join(PLAN_ROOT, 'stdin-blocking-rdm');
+  fs.writeFileSync(stub, '#!/bin/sh\ncat >/dev/null\nexec ' + RDM + ' "$@"\n', { mode: 0o755 });
+  const blockingScript = result.persistScript.split(RDM).join(stub);
+  assert.notEqual(blockingScript, result.persistScript, 'the stub substitution must actually replace every rdm invocation, or this test proves nothing');
+
+  const { code, stdout, stderr } = await runWithOpenStdinPipe(blockingScript);
+  assert.equal(code, 0, 'the ladder must exit 0 even when every invoked rdm blocks reading stdin, with the caller\'s stdin held open:\n' + stdout + stderr);
+  assert.match(stdout, /reviewId=\S+/, 'the ladder ran to completion and printed the id it created');
+
+  // Mutant self-test: with the redirects stripped, the exact same stub run
+  // must hang — proving the assertions above are caused by the redirects,
+  // not by something else (an already-closed stdin from the test runner, a
+  // stub that doesn't really block, etc.).
+  const stripped = blockingScript.split(' < /dev/null').join('');
+  assert.notEqual(stripped, blockingScript, 'the mutant must actually remove every redirect, or this self-test is vacuous');
+  await assert.rejects(
+    runWithOpenStdinPipe(stripped, 1500),
+    /did not exit within/,
+    'stripping the per-line `< /dev/null` redirects must reproduce the hang under a stub that blocks reading stdin'
+  );
 });

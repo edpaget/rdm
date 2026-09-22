@@ -2415,6 +2415,100 @@ fn review_submit_no_body_no_hang_with_open_stdin_pipe() {
     assert!(status.success());
 }
 
+/// Same as [`run_with_open_stdin_pipe`], but with additional environment
+/// variables layered over the child's inherited environment — used below to
+/// prove that `resolve_review_body`'s non-interactive path is gated by the
+/// **TTY check**, not merely by `--no-edit`. `run_with_open_stdin_pipe` never
+/// needed this: every one of its callers already passes `--no-edit`.
+fn run_with_open_stdin_pipe_env(
+    plan: &TempDir,
+    args: &[&str],
+    extra_env: &[(&str, &str)],
+) -> std::process::ExitStatus {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_rdm"));
+    cmd.env("XDG_CONFIG_HOME", "/dev/null/nonexistent")
+        .arg("--root")
+        .arg(plan.path())
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    let mut child = cmd.spawn().unwrap();
+
+    // Keep the child's stdin pipe open (never written, never closed) — the
+    // same non-TTY shape as an agent's Bash tool, and the same shape
+    // `run_with_open_stdin_pipe` above holds open.
+    let _stdin = child.stdin.take();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let status = child.wait();
+        let _ = tx.send(status);
+    });
+
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .expect("rdm must not hang with stdin held open")
+        .unwrap()
+}
+
+/// Regression coverage gap (tests-2): no test previously drove
+/// `resolve_review_body` with `--no-edit` **absent** against a non-TTY
+/// stdin. `resolve_review_body` (rdm-cli/src/commands/mod.rs) only opens
+/// `$EDITOR`/`$VISUAL` when `!no_edit && io::stdin().is_terminal()` — the TTY
+/// check, not `no_edit` alone, is what keeps a non-interactive caller (an
+/// agent's Bash tool, stdin a pipe that is never closed) from ever launching
+/// an editor it cannot interact with, even when the caller forgets
+/// `--no-edit`.
+///
+/// `EDITOR`/`VISUAL` are pointed at `false`, a command that always exits
+/// non-zero — loud and immediate if ever actually invoked, in contrast to a
+/// nonexistent binary (which fails the same way, but less clearly signals
+/// "the editor really launched"). If the TTY guard were dropped (e.g.
+/// `if !no_edit { open_editor() }`, discarding the `is_terminal()` half),
+/// `open_editor()` would run `false`, its `status()` would come back
+/// non-zero, and `resolve_review_body` would bail with "editor exited with
+/// non-zero status" — so this test would start failing immediately, well
+/// within the 5-second hang timeout `run_with_open_stdin_pipe_env` enforces.
+///
+/// Confirmed by hand while writing this test: temporarily rewriting
+/// `resolve_review_body` to `if !no_edit { open_editor() } else { Ok(None) }`
+/// (dropping the `is_terminal()` conjunct) turns this red with exactly that
+/// message; reverted immediately after.
+#[test]
+fn review_submit_no_edit_absent_stays_non_interactive_under_open_stdin_pipe() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    add_plain_comment(&plan, &id, "First comment.");
+
+    let status = run_with_open_stdin_pipe_env(
+        &plan,
+        &[
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "approve",
+            "--project",
+            "demo",
+        ],
+        &[("EDITOR", "false"), ("VISUAL", "false")],
+    );
+
+    assert!(
+        status.success(),
+        "review submit with --no-edit omitted must still exit promptly and succeed under a \
+         non-TTY stdin, without ever invoking EDITOR/VISUAL"
+    );
+
+    // No --body was passed and the editor never ran (it would have failed
+    // the command above if it had), so the review's body stays empty.
+    let review = show_review_json(&plan, &id);
+    assert_eq!(review["body"], "");
+}
+
 #[test]
 fn review_start_ignores_piped_stdin_body() {
     let plan = init_plan_repo();
