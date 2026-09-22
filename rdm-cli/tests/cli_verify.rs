@@ -336,6 +336,44 @@ fn verify_run_errors_actionably_for_an_item_with_no_worktree() {
 }
 
 #[test]
+fn verify_run_exits_a_distinct_code_when_the_item_does_not_resolve() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    // A command that would have succeeded had it run — proving the distinct
+    // exit is about resolution, not about the configured command failing.
+    set_verify(plan.path(), "true");
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "verify",
+            "run",
+            "--item",
+            "auth",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("rdm worktree add auth"))
+        .get_output()
+        .clone();
+    let j: Value = serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).unwrap();
+    assert_eq!(
+        j["resolved"], true,
+        "the command IS configured — only the checkout is unknown"
+    );
+    assert_eq!(j["command"], "true");
+    assert!(
+        j["exit"].is_null(),
+        "nothing ran, so exit must be null: {j}"
+    );
+}
+
+#[test]
 fn verify_run_resolves_a_phase_item_to_its_roadmap_worktree() {
     let plan = init_plan_repo();
     let src = init_source_repo();

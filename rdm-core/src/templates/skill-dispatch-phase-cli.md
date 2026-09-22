@@ -267,6 +267,10 @@ new one.
    - exit **1** → a blocking **rework** finding (not an escalation).
    - exit **2** → `resolved: false`, i.e. no `dispatch.verify` is configured. **This is not a
      failure.** Fall through to 2.
+   - exit **3** → the item did not resolve to a worktree at all — the command never ran. This is an
+     **escalation**, not a rework finding and not the exit-2 fallback: park `blocked` naming the
+     resolution error, and do not attempt the plan-recorded-command fallback (the command IS
+     configured; only the checkout is unknown).
 2. Fallback: read the command from the **approved** plan (`rdm plan show --format json` → body → the
    `## Verification command` heading). Refuse a multi-line value the way `rdm verify run` does. Then
    run it directly through Bash with `cd <identity.path>`, recording `{ command, exitCode, tail }`
@@ -275,8 +279,10 @@ new one.
    verification command resolved from dispatch.verify or plan/<plan-slug>`. An unverified pass is
    never reported as a pass.
 
-A nonzero exit from either route is a blocking rework finding bounded by `--max-code-rework` — no new
-OUTCOME value. Carry `verification` into the next step so it reaches the persisted review.
+A nonzero exit from the fallback route, or exit 1 from `rdm verify run`, is a blocking rework finding
+bounded by `--max-code-rework` — no new OUTCOME value. Exit 3 from `rdm verify run` is the one
+exception: it is the escalation above, never rework. Carry `verification` into the next step so it
+reaches the persisted review.
 
 ### 10. Invoke the code review — in THIS session
 

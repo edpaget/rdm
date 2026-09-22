@@ -313,10 +313,12 @@ routinely lands on stderr, and reading one stream would miss it.
 `--item` accepts both the `rdm worktree add` grammar (`<roadmap>/<phase>`, `task/<slug>`,
 or a bare `<roadmap>`) and the kind-prefixed `phase/<roadmap>/<stem>`, `roadmap/<slug>`,
 or `task/<slug>` grammar that `--on`/`--implements` use — a phase always resolves to its
-roadmap's shared worktree, never a per-phase one. An item with no worktree is an
-actionable error naming the `rdm worktree add` that would create one. `--on`'s other two
-kinds, `plan/<slug>` and `change/<sha>`, name no worktree and are refused up front with a
-message naming the grammar `--item` accepts, rather than being misread as a phase.
+roadmap's shared worktree, never a per-phase one. An item with no worktree prints an
+actionable error to stderr naming the `rdm worktree add` that would create one, and exits
+`3` (see below) — the command is configured, but there is nowhere to run it. `--on`'s
+other two kinds, `plan/<slug>` and `change/<sha>`, name no worktree and are refused up
+front with a message naming the grammar `--item` accepts, rather than being misread as a
+phase.
 
 It reuses § 6's failure semantics verbatim rather than restating them: the **last** 4000
 characters of merged output, and a multi-line value refused up front.
@@ -328,9 +330,18 @@ characters of merged output, and a multi-line value refused up front.
 | No command configured | `2` | `false` |
 | Command ran | the command's own exit code | `true` |
 | Command killed by a signal | `1` | `true`, with `"exit": null` |
+| `--item` does not resolve to a worktree | `3` | `true`, with `"exit": null` |
 
 The signal case is fail-closed, mirroring `normalizeVerifyResult`: an unrunnable
 verification is never a pass.
+
+The `--item`-unresolved case reuses the same `resolved: true` / `exit: null` payload
+shape as the signal case, for a different reason — the command is configured but never
+ran because the checkout is unknown, rather than having run and failed to finish. The
+exit **code** (1 vs 3) is what disambiguates the two; the payload shape alone does not. A
+caller such as the dispatch orchestrator escalates on 3 rather than treating it as
+rework, and must not fall back to a caller-supplied command the way it does for exit 2 —
+the right command is already known, only the directory is not.
 
 Note the one ambiguity, and key off the payload rather than the process: a command that
 *legitimately* exits 2 is indistinguishable by exit code from "unresolved". The

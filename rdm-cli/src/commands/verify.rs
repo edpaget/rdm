@@ -42,12 +42,30 @@ const EXIT_UNRESOLVED: i32 = 2;
 /// pass.
 const EXIT_UNRUNNABLE: i32 = 1;
 
+/// Exit code for `--item` naming an item that does not resolve to a
+/// worktree: the configured command is known, but there is nowhere to run
+/// it, so it never ran at all.
+///
+/// Must be distinct from [`EXIT_UNRUNNABLE`] (1): "the command failed" and
+/// "the command never ran" are different facts, and a caller (the dispatch
+/// orchestrator) charges them differently — one is rework, the other an
+/// escalation. Must also be distinct from [`EXIT_UNRESOLVED`] (2): 2 means
+/// "nothing is configured, fall back to a caller-supplied command", and
+/// falling back here would run the *right* command in the wrong (or an
+/// arbitrary) directory, since a command genuinely is configured.
+const EXIT_ITEM_UNRESOLVED: i32 = 3;
+
 /// Dispatches an `rdm verify` subcommand.
 ///
 /// # Errors
 ///
-/// Returns an error when the project cannot be resolved, when `--item` names
-/// an item with no worktree, or when the configured command cannot be spawned.
+/// Returns an error when the project cannot be resolved, when the configured
+/// command is multi-line, or when the configured command cannot be spawned.
+///
+/// Two other failure cases exit the process directly rather than returning
+/// an error, each after emitting a result payload: no command is configured
+/// (exit [`EXIT_UNRESOLVED`]), and `--item` names an item with no worktree
+/// (exit [`EXIT_ITEM_UNRESOLVED`]).
 pub fn run(
     command: VerifyCommand,
     root: &Path,
@@ -123,7 +141,23 @@ fn run_command(
     }
 
     let dir = match item {
-        Some(raw) => item_worktree(root, &project, &raw)?,
+        Some(raw) => match item_worktree(root, &project, &raw) {
+            Ok(dir) => dir,
+            Err(e) => {
+                // Mirror `main.rs`'s top-level error formatting so the
+                // actionable `rdm worktree add <item>` message a caller
+                // greps stderr for is preserved verbatim.
+                eprintln!("error: {e:#}");
+                // `resolved: true` because the command IS configured — only
+                // the checkout is unknown. Combined with a null `exit` this
+                // is the same payload shape `EXIT_UNRUNNABLE` produces for a
+                // different reason (a signal-killed command); the exit
+                // *code* (1 vs 3), not the payload, is what disambiguates
+                // "ran and failed to finish" from "never ran at all".
+                emit(format, true, Some(&cmd), None, None)?;
+                std::process::exit(EXIT_ITEM_UNRESOLVED);
+            }
+        },
         None => std::env::current_dir().context("cannot determine current directory")?,
     };
 
@@ -283,8 +317,13 @@ fn emit(
             match exit {
                 Some(0) => println!("verify: passed ({})", command.unwrap_or("")),
                 Some(c) => println!("verify: FAILED with exit {c} ({})", command.unwrap_or("")),
+                // `exit: None` with `resolved: true` covers two distinct
+                // causes (a signal-killed command, or the item never
+                // resolving to a worktree at all) that the exit *code*
+                // disambiguates, not this payload shape — so the text here
+                // stays cause-agnostic rather than claiming a signal.
                 None => println!(
-                    "verify: FAILED — the command was terminated by a signal ({})",
+                    "verify: FAILED — the command was not run to completion ({})",
                     command.unwrap_or("")
                 ),
             }
