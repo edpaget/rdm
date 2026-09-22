@@ -2029,11 +2029,7 @@ the branch the plan was written against.
 `context.sourceCommand` is set, it renders mode-specific instructions: `code` mode's text is
 unchanged from before this pin existed (resolve the change and review the committed `base..head`
 range); `plan` mode's new text tells the reviewer to run the pinned `rdm review source` command
-itself, treat a non-zero exit as proof the checkout has drifted since the plan was written (report a
-`blocking` finding and STOP — never fall back to verifying against a different tree), and otherwise
-read every file the plan cites from the reported `path` at the reported `head` (`git -C <path> show
-<head>:<repo-relative-path>`), never from its own working directory or an uncommitted file in that
-checkout.
+itself. For the exact wording — including how to interpret a non-zero exit (which may indicate drift or a bad pin/environment), when to quote stderr in a blocking finding, and how to read files from the pinned checkout — see the `plan` branch of `reviewTargetBlock` in `.claude/workflows/lib/review.mjs`.
 
 `parsePlanArgs` (`.claude/workflows/lib/plan-review.mjs`) accepts four new, optional, structured-key-
 only args reusing the code-review engine's own flat names rather than a nested shape: `source` (the
