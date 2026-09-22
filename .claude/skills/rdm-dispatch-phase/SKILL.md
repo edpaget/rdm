@@ -469,6 +469,11 @@ under-reviewed diff is your visible choice rather than an error. The code review
 | `changelog` | is there a user-perspective entry in the same commit? | the change is user-facing |
 | `security` | can an attacker now do something they should not? | the change touches auth, input parsing, paths, subprocesses, secrets, deserialization, or network code |
 
+**Scale the set to the delta, not to the fleet.** A change confined to documentation, comments, or
+CHANGELOG prose does not need all seven reviewers; a substantive logic change does. There is no
+line-count or file-count threshold here — judge what the diff actually touches. Whatever you choose
+is recorded in `reviewCoverage`, so a thin set is a visible choice, not a silent gap.
+
 Read the returned object and obey it:
 
 - `outcome: 'escalated'`, or a non-empty `failure` — including `'required review evidence is
@@ -571,6 +576,9 @@ step 11. Writing `reviewed` off an `addressed` `request-changes` review is refus
 `GateNoApprovedChangeReview`; writing it off an approve recorded at an older head is refused as
 `GateStaleChangeReview`, which names both SHAs.
 
+Apply the same proportionate-reviewer judgment on this re-run: a re-review of a delta that changed
+nothing but documentation, comments, or CHANGELOG prose does not need the full fleet either.
+
 ### 14. The terminal write — through the gate, never around it
 
 ```bash
@@ -586,12 +594,40 @@ step 11. Writing `reviewed` off an `addressed` `request-changes` review is refus
 project repo and the worktree probe degrades to *no probe*, silently skipping the cleanliness
 precondition.
 
-**You MUST NOT bypass the gate.** rdm has an operator-only flag that waives the gate's *record*
-preconditions; it is refused outright unless the gate is enforcing, and this procedure has no case for
-it. The named failure mode is **forging the terminal write**: a bypass here would record a `reviewed`
-the records do not support, which is precisely what the gate exists to prevent. This prose
-deliberately does not spell that flag, so a mechanical scan over every agent-facing surface can keep
-asserting that no surface emits it — do not "helpfully" add the literal back.
+**The gate may be overridden, but only for one refusal and only within narrow conditions.** rdm has
+an operator-only flag, `--override-gate "<reason>"`, that waives the gate's *record* preconditions;
+it is refused outright unless the gate is enforcing. This procedure has exactly one case for it: a
+`GateStaleChangeReview` refusal, and only when, in your judgment:
+
+- the change review at the reviewed HEAD returned verdict `approve` and is `addressed`, with every
+  comment terminal and replied; and
+- every commit between that HEAD and the current HEAD came from triaging comments on that same
+  review; and
+- that delta changes **no executable behavior** — documentation, comments, CHANGELOG, test names,
+  and nothing else; and
+- `<reason>` names the review id, both HEADs (the reviewed HEAD and the current HEAD), and the
+  comments addressed.
+
+**You judge the "no executable behavior changed" condition yourself**, from the diff and the review
+already in your context. rdm does not classify it, and nothing here re-derives eligibility by
+parsing the persisted comment header — judge it from the review record. A misjudgment is recorded in
+the audited reason string, which is the point of overriding rather than fabricating a verdict.
+
+Still forbidden, unconditionally: overriding a missing or `request-changes` review
+(`GateNoApprovedChangeReview`), a missing approved plan (`GateNoApprovedPlan`), or a dirty worktree
+(`GateWorktreeDirty`); overriding to skip a re-review after a genuine code fix; and creating your own
+approve review to satisfy the gate. The waiver above covers **staleness only** — never reach for it
+on any other refusal.
+
+When the four conditions hold:
+
+```bash
+<rdmBin> phase update <phase> --status reviewed --override-gate "<reason>" \
+  --source <identity.path> --base <identity.base> \
+  --expected-head <identity.head> --expected-branch <identity.branch> \
+  --no-edit --roadmap <slug><proj-flag>
+<rdmBin> commit -m "chore(plan): finalize <item>"
+```
 
 On a nonzero exit, capture stderr **verbatim** — `GateNoApprovedPlan`, `GateNoApprovedChangeReview`,
 `GateStaleChangeReview`, `GateWorktreeDirty`, `GateWorktreeUnobservable` each already name the

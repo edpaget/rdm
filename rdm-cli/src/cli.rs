@@ -807,8 +807,10 @@ pub(crate) enum PhaseCommand {
         ///
         /// Waives the approved-plan and approving-change-review preconditions
         /// only — a dirty worktree still refuses. Requires
-        /// `--status reviewed`. For humans: no rdm skill or workflow ever
-        /// passes it.
+        /// `--status reviewed`. Operator-only for a human; the
+        /// `rdm-dispatch-phase` orchestrator may also pass it, but only to
+        /// override a stale-change-review refusal on a delta that changed no
+        /// executable behavior since an already-approved review.
         #[arg(long, value_name = "REASON")]
         override_gate: Option<String>,
         #[command(flatten)]
@@ -1010,8 +1012,10 @@ pub(crate) enum TaskCommand {
         ///
         /// Waives the approved-plan and approving-change-review preconditions
         /// only — a dirty worktree still refuses. Requires
-        /// `--status reviewed`. For humans: no rdm skill or workflow ever
-        /// passes it.
+        /// `--status reviewed`. Operator-only for a human; the
+        /// `rdm-dispatch-phase` orchestrator may also pass it, but only to
+        /// override a stale-change-review refusal on a delta that changed no
+        /// executable behavior since an already-approved review.
         #[arg(long, value_name = "REASON")]
         override_gate: Option<String>,
         #[command(flatten)]

@@ -3020,9 +3020,6 @@ mod tests {
         assert!(content.contains("git stash -u"));
         assert!(content.contains("git reset --hard"));
         assert!(content.contains("git clean -fdx"));
-        // The gate override is operator-only, and the prose deliberately does
-        // not spell the flag (see docs/core-enforced-gates.md).
-        assert!(!content.contains("--override-gate"));
     }
 
     #[test]

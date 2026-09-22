@@ -140,8 +140,11 @@ graded, so its reply says so explicitly on either branch.
 **Refusal as escalation.** The terminal write is source-bound
 (`--source`/`--base`/`--expected-head`/`--expected-branch`) and goes through the core
 `gates.reviewed` gate, which is enabled for rdm's own plan repo. A refusal is captured verbatim,
-parked as `blocked` with that text in the reason, and returned as `outcome: 'escalated'`. The
-operator override is never used; the procedure does not even spell the flag.
+parked as `blocked` with that text in the reason, and returned as `outcome: 'escalated'` — except
+for one narrow case: a `GateStaleChangeReview` refusal on a delta that changed no executable
+behavior since an already-approved review, which the procedure now permits the orchestrator to
+override itself, under the four conditions its "terminal write" step spells out. Every other
+refusal is still escalated rather than bypassed.
 
 **Downstream divergence.** The distributed `skill-dispatch-phase-cli.md` omits the
 `rdm-wf-plan-review` Workflow call — `rdm-wf-plan-review.js` is not emitted downstream, so naming it would reference a

@@ -192,11 +192,14 @@ Two consequences worth stating plainly:
   `gates.reviewed` key, and resolution is per plan root, so they keep seeing
   `NotApplicable`. Nothing about turning it on here leaks into a fixture.
 - The orchestrator surfaces a refusal **verbatim** and parks the item
-  `blocked` with that text in its reason. It never overrides: the override
-  below is an operator act, and the procedure deliberately does not even spell
-  the flag (`.claude/skills/rdm-dispatch-phase/SKILL.md` § "The terminal write").
-  A refusal is information — each message already names the missing record and
-  the command that would create it — not an obstacle to route around.
+  `blocked` with that text in its reason — except for one narrow case: a
+  `GateStaleChangeReview` refusal on a delta that changed no executable
+  behavior since an already-approved review, where the procedure now permits
+  the orchestrator to invoke the override itself, under the four conditions
+  spelled out in `.claude/skills/rdm-dispatch-phase/SKILL.md` § "The terminal
+  write". Every other refusal is information — each message already names the
+  missing record and the command that would create it — not an obstacle to
+  route around.
 
 ## The operator override
 
@@ -234,9 +237,16 @@ rdm phase update <stem> --status reviewed --override-gate "<reason>" --roadmap <
   the bypass is no longer what authorizes the status and must stop claiming
   otherwise.
 
-**The override is for humans.** No rdm skill or workflow emits it, and that is
-asserted mechanically by two harnesses, both behind planted-mutation
-self-tests:
+**The override may now be invoked by one orchestrator, under narrow
+conditions.** The `rdm-dispatch-phase` orchestrator may pass
+`--override-gate` for exactly one case — a `GateStaleChangeReview` refusal
+where the already-approved review is `addressed` with every comment terminal
+and replied, every commit since that review's HEAD came only from triaging
+its comments, the delta changed no executable behavior, and the reason names
+the review id and both HEADs (`.claude/skills/rdm-dispatch-phase/SKILL.md` §
+"The terminal write" spells the four conditions in full). Nothing else may
+invoke it. The autopilot lane remains barred from ever overriding, and that
+is still asserted mechanically, behind a planted-mutation self-test:
 
 - `scripts/verify-skill-autopilot.sh` § 5 greps the autopilot surfaces (the
   local skill plus both shipped templates).

@@ -366,7 +366,7 @@ Always pass `--no-edit` to prevent the CLI from opening an interactive editor (w
 ./target/debug/rdm verify run --item <roadmap> --format json --project rdm  # run it in the item's worktree
 ```
 
-`--status reviewed` can be gated on real plan + change-review records and a clean worktree (repo-only `gates.reviewed`, default OFF, with an audited `--override-gate "<reason>"` for humans only) — canonical: [`docs/core-enforced-gates.md`](docs/core-enforced-gates.md).
+`--status reviewed` can be gated on real plan + change-review records and a clean worktree (repo-only `gates.reviewed`, default OFF, with an audited `--override-gate "<reason>"` restricted to a human operator or, for a single narrow stale-review case, the `rdm-dispatch-phase` orchestrator) — canonical: [`docs/core-enforced-gates.md`](docs/core-enforced-gates.md).
 
 ### Document reviews
 
