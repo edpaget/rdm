@@ -618,6 +618,31 @@ fn verify_run_refuses_a_plan_or_change_item_naming_the_accepted_grammar() {
 }
 
 #[test]
+fn verify_run_refuses_a_malformed_task_item_naming_the_accepted_grammar() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    set_verify(plan.path(), "true");
+
+    // `task` is a reserved roadmap slug (like `plan`/`change`), so a
+    // malformed `task/<slug>` reference (an extra segment) must be refused
+    // up front, naming the accepted grammar, rather than being silently
+    // reinterpreted by `ItemRef::parse` as a task whose slug is literally
+    // `a/b`.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["verify", "run", "--item", "task/a/b", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .code(3)
+        .stderr(
+            predicate::str::contains("names no worktree")
+                .and(predicate::str::contains("task/<slug>"))
+                .and(predicate::str::contains("rdm phase list").not()),
+        );
+}
+
+#[test]
 fn verify_run_refuses_a_malformed_phase_prefixed_item_naming_the_accepted_grammar() {
     let plan = init_plan_repo();
     let src = init_source_repo();

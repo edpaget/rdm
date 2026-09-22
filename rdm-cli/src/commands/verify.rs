@@ -525,6 +525,19 @@ mod tests {
     }
 
     #[test]
+    fn normalize_item_grammar_refuses_malformed_task_too() {
+        // `task` is a reserved roadmap slug just like `plan`/`change`, so a
+        // malformed `task/<slug>` reference (an extra segment) must be
+        // refused up front here rather than silently reinterpreted by
+        // `ItemRef::parse` as a task whose slug is literally `a/b`.
+        let err = normalize_item_grammar("task/a/b").unwrap_err().to_string();
+        assert!(
+            err.contains("names no worktree"),
+            "must say the reference names no worktree: {err}"
+        );
+    }
+
+    #[test]
     fn normalize_item_grammar_passes_through_a_malformed_roadmap_or_phase_ref_unchanged() {
         // `roadmap`/`phase` are not reserved roadmap slugs (unlike
         // `task`/`plan`/`src`/`change`), so a malformed one must NOT be
