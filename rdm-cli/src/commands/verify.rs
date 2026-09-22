@@ -193,6 +193,49 @@ fn tail_of(text: &str) -> String {
     text.chars().skip(count - TAIL_LIMIT).collect()
 }
 
+/// The actionable message naming the grammar `--item` accepts, for a
+/// reference that names no worktree at all: either `raw` parsed cleanly as
+/// `plan/<slug>` or `change/<sha>` (neither is a worktree kind), or it
+/// looked like a malformed `roadmap`/`phase`-prefixed reference (see
+/// [`looks_like_malformed_roadmap_or_phase_ref`]) whose normal resolution
+/// then genuinely failed.
+fn no_worktree_grammar_error(raw: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "'{raw}' names no worktree — --item accepts <roadmap>, <roadmap>/<phase>, \
+         task/<slug>, roadmap/<slug>, or phase/<roadmap>/<stem>"
+    )
+}
+
+/// True when `raw` looks like a malformed kind-prefixed `roadmap`/`phase`
+/// reference: its leading segment (before the first `/`) parses as
+/// [`rdm_core::model::ReviewTargetKind::Roadmap`] or
+/// [`rdm_core::model::ReviewTargetKind::Phase`], but the full string does
+/// **not** parse as a well-formed `rdm_core::model::ReviewTarget` — the
+/// shape a truncated reference like `phase/<roadmap>` (stem omitted) or
+/// `roadmap/a/b` (extra segment) takes.
+///
+/// `roadmap` and `phase` are deliberately excluded from the "refuse up
+/// front" treatment `plan`/`change` get in [`normalize_item_grammar`]:
+/// unlike `task`, `plan`, `src`, and `change`
+/// (`rdm_core::link::RESERVED_ROADMAP_SLUGS`), `roadmap` and `phase` are
+/// **not** reserved roadmap slugs, so a roadmap literally named `roadmap`
+/// or `phase` must still resolve through the ordinary `<roadmap>/<stem>`
+/// grammar `rdm_git::worktree::ItemRef::parse` implements. This predicate
+/// exists only so [`item_worktree`] can replace the resulting garbled
+/// nested error (e.g. "phase 'auth' of roadmap 'phase' not found") with an
+/// actionable one naming the accepted grammar — and only once that ordinary
+/// resolution has actually failed, never up front.
+fn looks_like_malformed_roadmap_or_phase_ref(raw: &str) -> bool {
+    if raw.parse::<rdm_core::model::ReviewTarget>().is_ok() {
+        return false;
+    }
+    let prefix = raw.split('/').next().unwrap_or(raw);
+    matches!(
+        prefix.parse::<rdm_core::model::ReviewTargetKind>(),
+        Ok(rdm_core::model::ReviewTargetKind::Roadmap | rdm_core::model::ReviewTargetKind::Phase)
+    )
+}
+
 /// Rewrites `raw` from the kind-prefixed reference grammar
 /// (`roadmap/<slug>`, `phase/<roadmap>/<stem>`, `task/<slug>`) that
 /// `--on`/`--implements` use into the unprefixed worktree grammar
@@ -200,21 +243,31 @@ fn tail_of(text: &str) -> String {
 /// `rdm_git::worktree::ItemRef::parse` accepts.
 ///
 /// `plan/<slug>` and `change/<sha>` name no worktree and are refused here,
-/// up front, naming the grammar `--item` actually accepts. They must **not**
-/// be handed to `ItemRef::parse` unchanged: it has no `plan`/`change` case,
-/// so any two-segment string it does not recognize as `task/<slug>` becomes
+/// up front, naming the grammar `--item` actually accepts — both when they
+/// parse cleanly and when they don't (e.g. `plan/a/b`, with an extra
+/// segment): a malformed reference under either kind still names no
+/// worktree, however it's spelled. They must **not** be handed to
+/// `ItemRef::parse` unchanged: it has no `plan`/`change` case, so any
+/// two-segment string it does not recognize as `task/<slug>` becomes
 /// `ItemRef::Phase` — `plan/foo` would silently become phase `foo` of a
 /// roadmap literally named `plan`, resolving (or failing to) as that phase
-/// instead of being refused as the non-worktree reference it is. Anything
-/// that fails to parse as a `rdm_core::model::ReviewTarget` at all —
-/// including the unprefixed `<roadmap>/<stem>` form, which has no kind
-/// keyword — is returned unchanged, to fall through to `ItemRef::parse`'s
-/// own resolution.
+/// instead of being refused as the non-worktree reference it is.
+///
+/// `roadmap` and `phase` are handled differently on a parse failure,
+/// because — unlike `plan`/`change` — neither is a reserved roadmap slug
+/// (see [`looks_like_malformed_roadmap_or_phase_ref`]): a malformed
+/// `roadmap`/`phase`-prefixed reference is returned unchanged here, to fall
+/// through to `ItemRef::parse`'s own resolution, and only replaced with an
+/// actionable message by [`item_worktree`] if that resolution then fails.
+///
+/// Anything else that fails to parse as a `rdm_core::model::ReviewTarget`
+/// at all — including the unprefixed `<roadmap>/<stem>` form, which has no
+/// kind keyword — is also returned unchanged.
 ///
 /// # Errors
 ///
-/// Returns an error naming the accepted `--item` grammar when `raw` parses
-/// as `plan/<slug>` or `change/<sha>`.
+/// Returns an error naming the accepted `--item` grammar when `raw` parses,
+/// or looks like it was meant to parse, as `plan/<slug>` or `change/<sha>`.
 fn normalize_item_grammar(raw: &str) -> Result<String> {
     match raw.parse::<rdm_core::model::ReviewTarget>() {
         Ok(rdm_core::model::ReviewTarget::Roadmap { roadmap }) => Ok(roadmap),
@@ -225,13 +278,20 @@ fn normalize_item_grammar(raw: &str) -> Result<String> {
         Ok(
             rdm_core::model::ReviewTarget::Plan { .. }
             | rdm_core::model::ReviewTarget::Change { .. },
-        ) => {
-            bail!(
-                "'{raw}' names no worktree — --item accepts <roadmap>, <roadmap>/<phase>, \
-                 task/<slug>, roadmap/<slug>, or phase/<roadmap>/<stem>"
-            )
+        ) => Err(no_worktree_grammar_error(raw)),
+        Err(_) => {
+            let prefix = raw.split('/').next().unwrap_or(raw);
+            match prefix.parse::<rdm_core::model::ReviewTargetKind>() {
+                Ok(
+                    rdm_core::model::ReviewTargetKind::Plan
+                    | rdm_core::model::ReviewTargetKind::Change,
+                ) => Err(no_worktree_grammar_error(raw)),
+                // `Roadmap`/`Phase` (not reserved — fall through unchanged)
+                // or an unrecognized prefix (the unprefixed form, or a
+                // `Task` malformation `ItemRef::parse` already handles).
+                _ => Ok(raw.to_string()),
+            }
         }
-        Err(_) => Ok(raw.to_string()),
     }
 }
 
@@ -254,24 +314,45 @@ fn normalize_item_grammar(raw: &str) -> Result<String> {
 /// # Errors
 ///
 /// Returns an error when `raw` names no worktree grammar (`plan/<slug>`,
-/// `change/<sha>`), when it does not resolve to a known plan item, or when
-/// no worktree is registered for the resolved item.
+/// `change/<sha>`, or a malformed `roadmap`/`phase`-prefixed reference such
+/// as `phase/<roadmap>` with the stem omitted — see
+/// [`looks_like_malformed_roadmap_or_phase_ref`]), when it does not resolve
+/// to a known plan item, or when no worktree is registered for the resolved
+/// item.
 fn item_worktree(root: &Path, project: &str, raw: &str) -> Result<std::path::PathBuf> {
     use rdm_git::worktree;
     let store = commands::make_store(root)?;
     let normalized = normalize_item_grammar(raw)?;
-    let item = worktree::resolve_item(&store, project, &normalized)
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .with_context(|| format!("cannot resolve item '{raw}'"))?;
+    let item = match worktree::resolve_item(&store, project, &normalized) {
+        Ok(item) => item,
+        Err(e) => {
+            // A malformed `roadmap`/`phase`-prefixed reference falls
+            // through `normalize_item_grammar` unchanged (neither kind is
+            // reserved — see `looks_like_malformed_roadmap_or_phase_ref`),
+            // so it reaches `ItemRef::parse` and is misread as a phase of a
+            // roadmap literally named `phase`/`roadmap`. Only replace that
+            // garbled nested error with the actionable grammar message once
+            // resolution has genuinely failed — a real roadmap named
+            // `phase`/`roadmap` must still resolve normally.
+            return Err(if looks_like_malformed_roadmap_or_phase_ref(raw) {
+                no_worktree_grammar_error(raw)
+            } else {
+                anyhow::anyhow!("{e}").context(format!("cannot resolve item '{raw}'"))
+            });
+        }
+    };
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let repo =
         worktree::discover_distinct_project_repo(&cwd, root).map_err(|e| anyhow::anyhow!("{e}"))?;
     // The single existing "which registered worktree serves this item?"
     // policy (`rdm_core::worktree::review_worktree_item` composed with
     // `worktree::list`), shared with `GitWorktreeProbe`/`review_source`
-    // rather than re-derived here.
+    // rather than re-derived here. Every `ItemRef` variant yields a key, but
+    // fall back to the item's own canonical string rather than panic if
+    // that ever stops being true — this value is used for nothing but
+    // interpolating into a "no worktree" message.
     let key = rdm_core::worktree::review_worktree_item(&item.as_review_target())
-        .expect("Phase/Task/Roadmap targets always yield a worktree key");
+        .unwrap_or_else(|| item.canonical());
     worktree::registered_worktree_for(&repo, &item)
         .map_err(|e| anyhow::anyhow!("{e}"))?
         .map(|w| w.path)
@@ -394,6 +475,61 @@ mod tests {
             err.contains("names no worktree"),
             "must say the reference names no worktree: {err}"
         );
+    }
+
+    #[test]
+    fn normalize_item_grammar_refuses_malformed_plan_and_change_too() {
+        // A malformed reference under a reserved kind (`plan`/`change`)
+        // still names no worktree, however it's spelled — refused up front
+        // just like the well-formed case, not silently passed through.
+        let err = normalize_item_grammar("plan/a/b").unwrap_err().to_string();
+        assert!(
+            err.contains("names no worktree"),
+            "must say the reference names no worktree: {err}"
+        );
+
+        let err = normalize_item_grammar("change/a/b")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("names no worktree"),
+            "must say the reference names no worktree: {err}"
+        );
+    }
+
+    #[test]
+    fn normalize_item_grammar_passes_through_a_malformed_roadmap_or_phase_ref_unchanged() {
+        // `roadmap`/`phase` are not reserved roadmap slugs (unlike
+        // `task`/`plan`/`src`/`change`), so a malformed one must NOT be
+        // refused up front here — a roadmap literally named `roadmap` or
+        // `phase` still has to resolve through the ordinary grammar.
+        // `item_worktree` is what replaces the garbled nested error with an
+        // actionable one, and only once real resolution has failed.
+        assert_eq!(normalize_item_grammar("phase/auth").unwrap(), "phase/auth");
+        assert_eq!(
+            normalize_item_grammar("roadmap/a/b").unwrap(),
+            "roadmap/a/b"
+        );
+    }
+
+    #[test]
+    fn looks_like_malformed_roadmap_or_phase_ref_flags_only_the_truncated_shapes() {
+        assert!(looks_like_malformed_roadmap_or_phase_ref("phase/auth"));
+        assert!(looks_like_malformed_roadmap_or_phase_ref("roadmap/a/b"));
+        // Well-formed kind-prefixed references are not malformed.
+        assert!(!looks_like_malformed_roadmap_or_phase_ref(
+            "phase/auth/phase-1-design"
+        ));
+        assert!(!looks_like_malformed_roadmap_or_phase_ref("roadmap/auth"));
+        // The unprefixed form has no kind keyword at all.
+        assert!(!looks_like_malformed_roadmap_or_phase_ref(
+            "auth/phase-1-design"
+        ));
+        assert!(!looks_like_malformed_roadmap_or_phase_ref("auth"));
+        // `task`/`plan`/`change` are handled elsewhere, not by this
+        // predicate, even when malformed.
+        assert!(!looks_like_malformed_roadmap_or_phase_ref("task/a/b"));
+        assert!(!looks_like_malformed_roadmap_or_phase_ref("plan/a/b"));
     }
 
     #[test]

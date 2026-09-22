@@ -999,15 +999,16 @@ pub fn resolve_target(store: &impl rdm_core::store::Store, project: &str, raw: &
 }
 
 /// Resolves the single registered worktree at `repo_root` that serves `item`,
-/// using the same roadmap-collapse policy
-/// [`GitWorktreeProbe`](crate::GitWorktreeProbe) and its `review_source`
-/// already share:
+/// using the same roadmap-collapse policy [`GitWorktreeProbe`] and its
+/// `review_source` already share:
 /// [`rdm_core::worktree::review_worktree_item`] computes the key (a phase
 /// collapses to its roadmap's shared worktree; a task keys `task/<slug>`),
-/// then this looks it up against [`list`]. Centralizing the "compute the key,
-/// then match it against the registered entries" composition here keeps it
-/// to one implementation, so a caller such as `rdm verify run --item` never
-/// has to re-derive it.
+/// then this looks it up against [`list`]. This is a **second**
+/// implementation of the same "compute the key, then match it against the
+/// registered entries" composition — `GitWorktreeProbe::worktree_for` and
+/// `review_source` each still derive it independently — added so a direct
+/// caller such as `rdm verify run --item` has one to call without
+/// hand-rolling it a third time; it does not consolidate the existing two.
 ///
 /// Returns `Ok(None)` both when `item` names no worktree at all (never true
 /// for a [`Phase`](ItemRef::Phase)/[`Task`](ItemRef::Task)/[`Roadmap`](ItemRef::Roadmap),
@@ -1405,6 +1406,39 @@ mod tests {
         assert_eq!(item.branch_name(), "roadmap/fix-worktree-review-firing");
         assert_eq!(item.dir_name(), "roadmap-fix-worktree-review-firing");
         assert_eq!(item.canonical(), "fix-worktree-review-firing");
+    }
+
+    #[test]
+    fn as_review_target_maps_each_variant_with_fields_preserved() {
+        assert_eq!(
+            ItemRef::Phase {
+                roadmap: "auth".to_string(),
+                stem: "phase-1-design".to_string(),
+            }
+            .as_review_target(),
+            rdm_core::link::ItemRef::Phase {
+                roadmap: "auth".to_string(),
+                stem: "phase-1-design".to_string(),
+            }
+        );
+        assert_eq!(
+            ItemRef::Task {
+                slug: "fix-bug".to_string(),
+            }
+            .as_review_target(),
+            rdm_core::link::ItemRef::Task {
+                slug: "fix-bug".to_string(),
+            }
+        );
+        assert_eq!(
+            ItemRef::Roadmap {
+                roadmap: "auth".to_string(),
+            }
+            .as_review_target(),
+            rdm_core::link::ItemRef::Roadmap {
+                roadmap: "auth".to_string(),
+            }
+        );
     }
 
     #[test]
@@ -2281,6 +2315,69 @@ mod tests {
             "expected {}, got {}",
             roadmap_wt.path.display(),
             check.path
+        );
+    }
+
+    #[test]
+    fn registered_worktree_for_falls_back_to_the_roadmap_worktree_for_a_phase() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let roadmap_item = ItemRef::Roadmap {
+            roadmap: "my-roadmap".to_string(),
+        };
+        let roadmap_wt = add(&repo, &roadmap_item, &roadmap_item.branch_name(), None).unwrap();
+
+        // Worktrees are keyed per ROADMAP and shared by sibling phases, so a
+        // phase with no dedicated worktree resolves to its roadmap's — the
+        // same policy `GitWorktreeProbe::worktree_for` implements, asserted
+        // here directly against `registered_worktree_for`.
+        let info = registered_worktree_for(
+            &repo,
+            &ItemRef::Phase {
+                roadmap: "my-roadmap".to_string(),
+                stem: "phase-2-open-phase".to_string(),
+            },
+        )
+        .unwrap()
+        .expect("the roadmap worktree serves its phases");
+        assert!(
+            same_path(&info.path.display().to_string(), &roadmap_wt.path),
+            "expected {}, got {}",
+            roadmap_wt.path.display(),
+            info.path.display()
+        );
+    }
+
+    #[test]
+    fn registered_worktree_for_reports_none_rather_than_failing_on_a_miss() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        // Nothing registered at all: a benign miss, matching
+        // `GitWorktreeProbe::worktree_for`'s own miss behavior.
+        assert_eq!(
+            registered_worktree_for(
+                &repo,
+                &ItemRef::Phase {
+                    roadmap: "my-roadmap".to_string(),
+                    stem: "phase-2-open-phase".to_string(),
+                },
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            registered_worktree_for(
+                &repo,
+                &ItemRef::Task {
+                    slug: "nope".to_string(),
+                },
+            )
+            .unwrap(),
+            None
         );
     }
 

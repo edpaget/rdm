@@ -618,6 +618,189 @@ fn verify_run_refuses_a_plan_or_change_item_naming_the_accepted_grammar() {
 }
 
 #[test]
+fn verify_run_refuses_a_malformed_phase_prefixed_item_naming_the_accepted_grammar() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    set_verify(plan.path(), "true");
+
+    // `phase/<roadmap>` with the stem omitted (no roadmap named `phase`
+    // exists in this repo) must get the actionable grammar message, never
+    // the garbled nested "unknown item 'phase/auth' — check `rdm phase
+    // list`" error that comes from `ItemRef::parse` misreading it as
+    // `ItemRef::Phase { roadmap: "phase", stem: "auth" }`.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["verify", "run", "--item", "phase/auth", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("names no worktree")
+                .and(predicate::str::contains("phase/<roadmap>/<stem>"))
+                .and(predicate::str::contains("rdm phase list").not())
+                .and(predicate::str::contains("unknown item").not()),
+        );
+}
+
+#[test]
+fn verify_run_still_resolves_a_roadmap_literally_named_phase() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    // `roadmap`/`phase` are NOT reserved roadmap slugs (unlike
+    // `task`/`plan`/`src`/`change`), so a roadmap literally named `phase`
+    // must still resolve through the ordinary 2-segment `phase/<stem>`
+    // grammar — the malformed-reference fix above must not break this.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "roadmap",
+            "create",
+            "phase",
+            "--title",
+            "Phase",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "create",
+            "design",
+            "--title",
+            "Design",
+            "--number",
+            "1",
+            "--no-edit",
+            "--roadmap",
+            "phase",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "phase", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+
+    set_verify(plan.path(), "printf ran > sentinel.txt");
+    let (code, _) = verify(
+        plan.path(),
+        src.path(),
+        &[
+            "run",
+            "--item",
+            "phase/phase-1-design",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        wt.join("sentinel.txt").exists(),
+        "a roadmap literally named `phase` must still resolve via `phase/<stem>`"
+    );
+}
+
+#[test]
+fn verify_run_resolves_a_roadmap_item_and_a_numeric_phase_item() {
+    let plan = init_plan_repo();
+    let src = init_source_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "create",
+            "design",
+            "--title",
+            "Design",
+            "--number",
+            "1",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "auth", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+
+    // `roadmap/<slug>` — whole-roadmap kind-prefixed grammar.
+    set_verify(plan.path(), "printf roadmap-form > sentinel-roadmap.txt");
+    let (code, _) = verify(
+        plan.path(),
+        src.path(),
+        &[
+            "run",
+            "--item",
+            "roadmap/auth",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        wt.join("sentinel-roadmap.txt").exists(),
+        "roadmap/<slug> must resolve to the roadmap worktree"
+    );
+
+    // `phase/<roadmap>/<number>` — the numeric-stem form, resolved via
+    // `resolve_phase_stem`.
+    set_verify(
+        plan.path(),
+        "printf numeric-phase-form > sentinel-numeric.txt",
+    );
+    let (code, _) = verify(
+        plan.path(),
+        src.path(),
+        &[
+            "run",
+            "--item",
+            "phase/auth/1",
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        wt.join("sentinel-numeric.txt").exists(),
+        "phase/<roadmap>/<number> must resolve to the roadmap worktree"
+    );
+}
+
+#[test]
 fn verify_run_resolves_a_task_item_to_its_task_worktree() {
     let plan = init_plan_repo();
     let src = init_source_repo();
