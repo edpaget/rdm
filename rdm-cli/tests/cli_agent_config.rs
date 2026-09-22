@@ -436,13 +436,14 @@ fn agent_config_skills_generates_ten_files() {
         .arg(dir.path())
         .assert()
         .success()
-        // 11 skill files + 1 workflow file ("rdm-wf-review-refute-fix.js")
-        // + 1 agent definition ("rdm-mechanical.md") emitted for Claude +
-        // --out. This is a deliberate, accounted-for change from the prior 11
-        // (skills only) — see agent_config_workflows_written_under_out,
+        // 11 skill files + 5 workflow files + 1 agent definition
+        // ("rdm-mechanical.md") emitted for Claude + --out. The workflow half
+        // grew from 1 to 5 when agent-orchestrated-dispatch phase 26 shipped
+        // the four formerly local-only engines — see
+        // agent_config_workflows_written_under_out,
         // agent_config_workflows_are_byte_identical_to_source, and
         // agent_config_agents_written_under_out below.
-        .stdout(predicate::str::contains("Wrote").count(13));
+        .stdout(predicate::str::contains("Wrote").count(17));
 
     let skills_dir = dir.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -472,6 +473,10 @@ fn agent_config_workflows_written_under_out() {
 
     let workflows_dir = dir.path().join(".claude/workflows");
     assert!(workflows_dir.join("rdm-wf-review-refute-fix.js").exists());
+    assert!(workflows_dir.join("rdm-wf-plan-review.js").exists());
+    assert!(workflows_dir.join("rdm-wf-estimate.js").exists());
+    assert!(workflows_dir.join("rdm-wf-backlog.js").exists());
+    assert!(workflows_dir.join("rdm-wf-document.js").exists());
     // The retired dispatch engine is emitted by nothing.
     assert!(!workflows_dir.join("rdm-wf-dispatch-phase.js").exists());
 }
@@ -1101,7 +1106,7 @@ fn agent_config_plugin_writes_manifest_skills_and_workflows() {
         .arg("distro-check")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(13));
+        .stdout(predicate::str::contains("Wrote").count(17));
 
     let manifest_path = dir.path().join(".claude-plugin/plugin.json");
     assert!(
@@ -1135,6 +1140,10 @@ fn agent_config_plugin_writes_manifest_skills_and_workflows() {
 
     let workflows_dir = dir.path().join("workflows");
     assert!(workflows_dir.join("rdm-wf-review-refute-fix.js").exists());
+    assert!(workflows_dir.join("rdm-wf-plan-review.js").exists());
+    assert!(workflows_dir.join("rdm-wf-estimate.js").exists());
+    assert!(workflows_dir.join("rdm-wf-backlog.js").exists());
+    assert!(workflows_dir.join("rdm-wf-document.js").exists());
     // The retired dispatch engine is emitted by nothing.
     assert!(!workflows_dir.join("rdm-wf-dispatch-phase.js").exists());
 

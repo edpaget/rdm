@@ -484,15 +484,14 @@ Produce the object from the Contract above as your final message, `planId` and `
 
 ## Why there is no plan-review Workflow call here
 
-This surface's plan gate is the **human-submitted approve review** of step 6, not a workflow. The
-plan-review engine (`rdm-wf-plan-review`) is deliberately **not** emitted by `rdm agent-config claude
---skills`: the only engine that ships is the `rdm:rdm-wf-review-refute-fix` one named above, so a skill
-that instructed invoking it would reference a file absent from its own tree and fail at the exact
-point its contract depends on. This follows the precedent already set for the
-`rdm-wf-estimate` pre-pass — see
-`docs/workflow-vs-prose-boundary.md`. Shipping that engine downstream is separate work; until it
-lands, step 6's human approve review is the whole gate, and it satisfies the same single
-`rdm plan show` read a workflow-recorded approve would.
+This surface's plan gate is the **human-submitted approve review** of step 6, not a workflow. That is
+a choice about *who* gates, not a limitation: `rdm:rdm-wf-plan-review` IS emitted alongside this skill
+(`rdm agent-config claude --skills`/`--plugin` ships all five engines), so you may invoke it yourself
+for a second opinion on the plan. What you may **not** do is treat its verdict as the gate. On this
+surface a human owns the decision to let implementation begin, because a downstream repo's
+conventions are exactly what an automated plan reviewer has least access to. Step 6's human approve
+review is therefore the whole gate, and it satisfies the same single `rdm plan show` read a
+workflow-recorded approve would. See `docs/workflow-vs-prose-boundary.md`.
 
 ## Safe operations under --permission-mode auto
 

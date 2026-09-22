@@ -230,17 +230,18 @@ import {
 } from '$LIB';
 
 // --- parseDocumentArgs --------------------------------------------------
-assert.deepEqual(parseDocumentArgs({ roadmap: 'rm', out: 'x.md' }), { roadmap: 'rm', out: 'x.md' });
-assert.deepEqual(parseDocumentArgs({ roadmap: 'rm' }), { roadmap: 'rm', out: '' });
-assert.deepEqual(parseDocumentArgs({}), { roadmap: '', out: '' });
-assert.deepEqual(parseDocumentArgs(undefined), { roadmap: '', out: '' });
-assert.deepEqual(parseDocumentArgs(null), { roadmap: '', out: '' });
-assert.deepEqual(parseDocumentArgs('not json'), { roadmap: '', out: '' });
+const ENV = { rdmBin: 'rdm', project: '' };
+assert.deepEqual(parseDocumentArgs({ roadmap: 'rm', out: 'x.md' }), { roadmap: 'rm', out: 'x.md', ...ENV });
+assert.deepEqual(parseDocumentArgs({ roadmap: 'rm' }), { roadmap: 'rm', out: '', ...ENV });
+assert.deepEqual(parseDocumentArgs({}), { roadmap: '', out: '', ...ENV });
+assert.deepEqual(parseDocumentArgs(undefined), { roadmap: '', out: '', ...ENV });
+assert.deepEqual(parseDocumentArgs(null), { roadmap: '', out: '', ...ENV });
+assert.deepEqual(parseDocumentArgs('not json'), { roadmap: '', out: '', ...ENV });
 assert.deepEqual(
   parseDocumentArgs(JSON.stringify({ roadmap: 'stringified-rm', out: 'docs/z.md' })),
-  { roadmap: 'stringified-rm', out: 'docs/z.md' }
+  { roadmap: 'stringified-rm', out: 'docs/z.md', ...ENV }
 );
-assert.deepEqual(parseDocumentArgs(42), { roadmap: '', out: '' });
+assert.deepEqual(parseDocumentArgs(42), { roadmap: '', out: '', ...ENV });
 console.log('parseDocumentArgs: ok');
 
 // --- defaultOutPath / resolveOutPath ------------------------------------

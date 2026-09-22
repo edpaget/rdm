@@ -57,9 +57,10 @@ spike artifact; it was deleted along with the mechanical lane it probed, so ever
 
 ### Determinism: no `Date.now()`/`Math.random()`
 
-Every `.claude/workflows/*.js` script — all six of them, including the four
-local-only ones that never leave this repo (`rdm-wf-backlog.js`,
-`rdm-wf-document.js`, `rdm-wf-estimate.js`, `rdm-wf-plan-review.js`) — is
+Every `.claude/workflows/*.js` script — all five of them, every one now
+shipped downstream (`agent-orchestrated-dispatch` phase 26 registered
+`rdm-wf-backlog.js`, `rdm-wf-document.js`, `rdm-wf-estimate.js` and
+`rdm-wf-plan-review.js` alongside `rdm-wf-review-refute-fix.js`) — is
 grepped for `Date.now(` / `Math.random(` by its own harness and must come
 back clean. The reason is determinism of the pipeline GENERALLY, not any one
 downstream consumer of it: `verify-workflow-backlog.sh` states the rule
@@ -1457,10 +1458,10 @@ The OUTCOME gains a `reviewId` key **only when the persist step actually ran** �
 never `reviewId: null`. A failed persist logs loudly and changes nothing else.
 
 **The agent type is a per-consumer parameter.** The writer contains no
-`agentType` literal. `rdm-wf-plan-review.js` is local-only and runs the step with
-`agentType: 'rdm-mechanical'`; `rdm-wf-review-refute-fix.js` is DISTRIBUTED and
-threads none (see CLAUDE.md § `.claude/agents/`; threading it is owned by task
-`thread-agent-type-into-distributed-workflows`).
+`agentType` literal, and neither does any consumer: `no-mechanical-agents-in-workflows`
+removed every `agentType` call site from `.claude/workflows/`, so all five
+engines — every one of them distributed since `agent-orchestrated-dispatch`
+phase 26 — thread none (see CLAUDE.md § `.claude/agents/`).
 
 **The round channel.** With `persist` on, plan review stops appending
 `## Plan Review Round <N>` notes to the reviewed document and derives the same
@@ -2026,8 +2027,8 @@ what remains to be done.
 The `--implementation-plan` branch has no persisted item, so it gains **none** of
 these keys.
 
-**Scope: `gateAction` is `rdm-wf-plan-review.js` surface, and that workflow is
-local-only.** It is deliberately absent from the shared `//|plan|` review spec,
+**Scope: `gateAction` is `rdm-wf-plan-review.js` driver surface.** It is
+deliberately absent from the shared `//|plan|` review spec,
 and therefore from the shipped `skill-plan-review-cli.md` templates and
 `plugins/rdm/skills/plan-review/` — those skills perform the gate write
 themselves, in hand-authored prose that shells out to `rdm … update --tags …`,

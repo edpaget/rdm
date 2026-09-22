@@ -652,28 +652,15 @@ EXPECTED_SKILL_DIRS=$(printf '%s\n' $SKILLS | sort | tr '\n' ' ')
     fail "5g: .claude/skills/ directory names changed.\n  expected: $EXPECTED_SKILL_DIRS\n  actual:   $ACTUAL_SKILL_DIRS"
 pass "5g: all 11 rdm-* skill directory names are unchanged"
 
-# --- 5h. single-sourcing statics on the Rust and generator surfaces --------
-say "5h. Single-sourcing: generate_workflows(), the generators, and the non-lists"
-AGENT_CONFIG_RS="$REPO_ROOT/rdm-core/src/agent_config.rs"
-INCLUDE_COUNT=$(grep -c 'include_str!("templates/workflows/' "$AGENT_CONFIG_RS" || true)
-[ "$INCLUDE_COUNT" -eq 1 ] ||
-    fail "5h: expected exactly 1 templates/workflows include_str! site in agent_config.rs (one per SHIPPED engine), found $INCLUDE_COUNT — the four local-only engines must stay unshipped, and the retired dispatch engine must stay retired"
-pass "5h: exactly 1 shipped-engine include_str! site in generate_workflows()"
-
-for gen in gen-workflow-review.sh gen-workflow-estimate.sh; do
-    set_count=$(grep -c '^set -- ' "$REPO_ROOT/scripts/$gen" || true)
-    [ "$set_count" -eq 1 ] ||
-        fail "5h: $gen must keep exactly ONE consumer list (\`set --\`), found $set_count"
-done
-pass "5h: both real generator consumer lists are still a single list each"
-
-# The two scripts the phase plan verified carry NO engine list at all: assert
-# the absence rather than editing a list that does not exist.
-[ "$(grep -cE '\.claude/workflows/[a-z-]+\.js' "$REPO_ROOT/scripts/gen-skill-review.sh" || true)" -eq 0 ] ||
-    fail "5h: gen-skill-review.sh gained an engine .js reference — it lists skill TEMPLATE filenames only"
-[ "$(grep -cE '\.(js|mjs)' "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh" || true)" -eq 0 ] ||
-    fail "5h: scripts/lib/mechanical-tier-check.sh gained a .js/.mjs reference — it must stay engine-name-free"
-pass "5h: gen-skill-review.sh and mechanical-tier-check.sh carry no engine list (confirmed, untouched)"
+# --- 5h. DELETED -----------------------------------------------------------
+# 5h asserted "exactly 1 templates/workflows include_str! site in
+# agent_config.rs", failing with "the four local-only engines must stay
+# unshipped". agent-orchestrated-dispatch phase 26 shipped all four, so the
+# section's premise is reversed, not mis-numbered. Under the standing operator
+# ruling a broken assertion is DELETED, never re-pointed at a new count: a new
+# literal would just re-pin the same implementation detail for the next engine
+# added or removed. Nothing replaces it. The section number is kept as a gap so
+# 5i/5j's numbering and the header's section list stay stable.
 
 # --- 5i. REMOVED -----------------------------------------------------------
 # 5i used to assert CHANGELOG.md's [Unreleased] section named all six engines,
@@ -682,7 +669,7 @@ pass "5h: gen-skill-review.sh and mechanical-tier-check.sh carry no engine list 
 # gate: prepare-release.yml moves the whole [Unreleased] body into a versioned
 # section, so the check went red on main the moment v0.18.1 landed. CLAUDE.md
 # now categorically forbids asserting on CHANGELOG.md content anywhere. The
-# rename itself is gated by sections 3 (byte-identity), 5g/5h (no stale engine
+# rename itself is gated by sections 3 (byte-identity), 5g (no stale engine
 # references anywhere in-tree) and 5j (end-to-end superseded cleanup), none of
 # which read prose. The section number is kept as a gap so 5j's numbering and
 # the header's section list stay stable.

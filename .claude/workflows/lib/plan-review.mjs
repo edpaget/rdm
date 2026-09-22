@@ -70,6 +70,52 @@ import {
 // Bash and passes the ids, and an absent id is inert (the agents inherit the
 // session model).
 
+// --- Environment args: `rdmBin` and `project` -------------------------------
+//
+// The CANONICAL contract every engine in this lane implements, adopted verbatim
+// rather than re-invented — only the error-message prefix differs from
+// lib/estimate.mjs's copy. Canonical write-up: docs/workflow-schemas.md §
+// "Environment args: `rdmBin` and `project`".
+//
+// `persistRdmBin` / `persistProjectFlag` in the stamped review block ABOVE this
+// one are the same contract under distinct names (that block is stamped
+// verbatim into files that already declare these). These three are this block's
+// own, and the two sets never collide.
+
+// resolveRdmBin(value) — resolve the rdm executable to invoke. An ABSENT value
+// DEFAULTS to a plain `rdm` on PATH, because a plugin-installed consumer has no
+// repo-local build path to pass. A present-but-wrong-TYPE value throws rather
+// than silently degrading to PATH. No existence preflight — a plain fallback
+// only.
+function resolveRdmBin(value) {
+  if (typeof value === 'string' && value.trim() !== '') return value
+  if (value === undefined || value === null || typeof value === 'string') return 'rdm'
+  throw new Error(
+    'plan-review: rdmBin must be a string path to the rdm executable (omit it to default to `rdm` on PATH)'
+  )
+}
+
+// parseProjectArg(value) — validate the OPTIONAL project name. Any falsy value
+// means "emit no project flag at all", so rdm's own resolution chain applies
+// downstream. The value is interpolated into agent prompts and into returned
+// Bash, so whitespace and shell metacharacters are rejected rather than escaped.
+function parseProjectArg(value) {
+  if (!value) return ''
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(
+      'plan-review: project must be a plain project name matching /^[A-Za-z0-9._-]+$/ (got "' + String(value) + '")'
+    )
+  }
+  return value
+}
+
+// projectFlag(cfg) — the ` --project <name>` suffix for a PROJECT-SCOPED
+// command, or '' when no project was configured. `rdm commit` is NOT
+// project-scoped and deliberately carries none.
+function projectFlag(cfg) {
+  return cfg && cfg.project ? ' --project ' + cfg.project : ''
+}
+
 // parsePlanArgs(rawArgs) — resolve the four target types from a raw $ARGUMENTS
 // flag string, a JSON payload, or a structured object. Returns
 // { kind, roadmap, phase, task, planSlug, ... } where kind is one of
@@ -242,6 +288,17 @@ function parsePlanArgs(rawArgs) {
   // resolves to the core's documented default; `0` is legal and distinct from
   // unset (grade nothing).
   const maxRefutations = resolveRefutationBudget(a.maxRefutations)
+  // The two ENVIRONMENT axes: which rdm executable every command this engine
+  // builds or names in a prompt invokes, and which project the project-scoped
+  // ones are scoped to. Read from STRUCTURED OBJECT KEYS ONLY, never parsed out
+  // of the `$ARGUMENTS` flag string — the same rule `persist`, `reviewers` and
+  // `planFile` follow, and it matters most here: a positional target slug must
+  // never be able to choose which binary runs. RESOLVED HERE, at parse time,
+  // like `maxRefutations` above, so an invalid value throws before any agent
+  // burns a token. An absent `rdmBin` yields a plain `rdm` on PATH; an absent
+  // `project` yields '' and therefore no flag at all, never a default.
+  const rdmBin = resolveRdmBin(a.rdmBin)
+  const project = parseProjectArg(a.project)
   // The PERSIST switch — record this review as a REAL rdm review (see
   // docs/workflow-schemas.md § "Persisting a review"). Read from a STRUCTURED
   // key only: a positional target slug must never be able to turn writing into
@@ -331,6 +388,8 @@ function parsePlanArgs(rawArgs) {
     findModel: findModel,
     verifyModel: verifyModel,
     maxRefutations: maxRefutations,
+    rdmBin: rdmBin,
+    project: project,
     persist: persist,
     persistIgnored: persistIgnored,
   }
@@ -386,9 +445,14 @@ function persistTargetFor(unit, persist, unitCount) {
 // and the orchestrator applies it. What used to be the named escalation path
 // for a caller too close to the plan is simply how the gate works.
 
-// planGateCommands(kind, roadmap, ident, remainingTags) — the ONE place the
+// planGateCommands(kind, roadmap, ident, remainingTags, cfg) — the ONE place the
 // gate's two commands are built, consumed by buildGateAction (what the caller
 // gets back to run itself). Pure string assembly; no side effects.
+//
+// `cfg` carries the ENVIRONMENT axes (`{ rdmBin, project }`, as parsePlanArgs
+// resolved them). Omitting it yields a plain `rdm` and no project flag, which is
+// exactly the contract — never a repo-local build path baked into the emitted
+// bytes.
 //
 // The COMPLETE remaining list (already filtered by filterPlanReviewTag) is
 // written back, since `--tags` replaces the whole list; an empty list writes
@@ -399,19 +463,23 @@ function persistTargetFor(unit, persist, unitCount) {
 // gateCommands). A caller pastes these into a plain shell with no `set -e`, and
 // a refused `update` followed by a successful `commit` would otherwise exit 0
 // and report a tag cleared that is still set.
-function planGateCommands(kind, roadmap, ident, remainingTags) {
+function planGateCommands(kind, roadmap, ident, remainingTags, cfg) {
   const tags = Array.isArray(remainingTags) ? remainingTags : []
   const tagsFlag = tags.length === 0 ? '--tags ""' : '--tags "' + tags.join(',') + '"'
   const label = kind === 'phase' ? roadmap + '/' + ident : ident
+  const bin = resolveRdmBin(cfg && cfg.rdmBin)
+  const proj = projectFlag(cfg)
   let updateCmd
   if (kind === 'task') {
-    updateCmd = './target/debug/rdm task update ' + ident + ' ' + tagsFlag + ' --no-edit --project rdm || exit 1'
+    updateCmd = bin + ' task update ' + ident + ' ' + tagsFlag + ' --no-edit' + proj + ' || exit 1'
   } else if (kind === 'phase') {
-    updateCmd = './target/debug/rdm phase update ' + ident + ' --roadmap ' + roadmap + ' ' + tagsFlag + ' --no-edit --project rdm || exit 1'
+    updateCmd = bin + ' phase update ' + ident + ' --roadmap ' + roadmap + ' ' + tagsFlag + ' --no-edit' + proj + ' || exit 1'
   } else {
-    updateCmd = './target/debug/rdm roadmap update ' + ident + ' ' + tagsFlag + ' --no-edit --project rdm || exit 1'
+    updateCmd = bin + ' roadmap update ' + ident + ' ' + tagsFlag + ' --no-edit' + proj + ' || exit 1'
   }
-  const commitCmd = './target/debug/rdm commit -m "chore(plan): clear needs-plan-review on ' + label + '" || exit 1'
+  // `rdm commit` REJECTS a project flag, so it carries none — the allow-list
+  // rule lib/estimate.mjs states for the same pair.
+  const commitCmd = bin + ' commit -m "chore(plan): clear needs-plan-review on ' + label + '" || exit 1'
   return { updateCmd: updateCmd, commitCmd: commitCmd, tagsFlag: tagsFlag, label: label }
 }
 
@@ -423,8 +491,10 @@ function planGateCommands(kind, roadmap, ident, remainingTags) {
 // commands and the orchestrator runs them, under its own authority, in the
 // session the operator invoked. There is nobody left to persuade.
 
-// buildGateAction(unit, gate) — the DECLARATIVE gate action returned on EVERY
-// unit, so a caller can iterate `units[].gateAction` uniformly.
+// buildGateAction(unit, gate, cfg) — the DECLARATIVE gate action returned on
+// EVERY unit, so a caller can iterate `units[].gateAction` uniformly. `cfg` is
+// the `{ rdmBin, project }` pair parsePlanArgs resolved, threaded straight
+// through to planGateCommands.
 //
 // The engine never applies it. `commands` comes from `planGateCommands`, and the
 // orchestrator runs those two lines in Bash under its own authority. Three cases:
@@ -438,14 +508,14 @@ function planGateCommands(kind, roadmap, ident, remainingTags) {
 //     writing one this engine was never shown would silently drop a sibling tag
 //     such as `depends-unlanded`. Refusing to guess is the only safe branch, and
 //     it is visible rather than silent.
-function buildGateAction(unit, gate) {
+function buildGateAction(unit, gate, cfg) {
   const u = unit || {}
   const g = gate || {}
   const cached = Array.isArray(u.tags) ? u.tags : null
   const clears = g.clearsPlanReviewTag === true
   const remaining = cached === null ? [] : filterPlanReviewTag(cached)
   const emit = clears && cached !== null
-  const cmds = planGateCommands(u.kind, u.roadmap, u.ident, remaining)
+  const cmds = planGateCommands(u.kind, u.roadmap, u.ident, remaining, cfg)
   return {
     kind: u.kind,
     ident: u.ident,
@@ -812,8 +882,11 @@ function formatSkippedPhasesClause(skippedPhases) {
 // The engine does not read a roadmap to discover its phases — the orchestrator
 // says which to sweep, because it is the one that read the roadmap.
 function buildReviewUnits(parsed) {
-  const RDM = './target/debug/rdm'
-  const PROJ = ' --project rdm'
+  // The ENVIRONMENT axes, as parsePlanArgs resolved them. Re-resolved here (not
+  // read raw) so a caller driving this pure builder directly still gets the
+  // documented fallbacks rather than `undefined` spliced into a command.
+  const RDM = resolveRdmBin(parsed && parsed.rdmBin)
+  const PROJ = projectFlag(parsed)
   const roadmapCommand = parsed.roadmap ? RDM + ' roadmap show ' + parsed.roadmap + PROJ + ' --format json' : null
   if (parsed.kind === 'roadmap') {
     const units = [
@@ -969,7 +1042,7 @@ async function runPlanReviewDriver(args, deps) {
       return persistReviewCommands(
         { mode: 'plan', outcome: outcome, survivors: survivors },
         persistTarget,
-        { rdmBin: './target/debug/rdm', project: 'rdm' }
+        { rdmBin: parsed.rdmBin, project: parsed.project }
       )
     } catch (e) {
       _log('plan-review: could not build the persist ladder for ' + persistTarget + ' (' + String((e && e.message) || e) + ')')
@@ -1035,10 +1108,10 @@ async function runPlanReviewDriver(args, deps) {
     const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
       target: planTarget,
       itemCommand: slug
-        ? './target/debug/rdm plan show ' + slug + ' --project rdm --format json'
+        ? parsed.rdmBin + ' plan show ' + slug + projectFlag(parsed) + ' --format json'
         : 'cat -- ' + shellQuote(file),
       roadmapCommand: parsed.roadmap
-        ? './target/debug/rdm roadmap show ' + parsed.roadmap + ' --project rdm --format json'
+        ? parsed.rdmBin + ' roadmap show ' + parsed.roadmap + projectFlag(parsed) + ' --format json'
         : null,
       reviewers: reviewers,
       maxRefutations: maxRefutations,
@@ -1107,7 +1180,7 @@ async function runPlanReviewDriver(args, deps) {
     }
     const u = r.unit
     const gate = gateFor('plan', r.outcome)
-    const gateAction = buildGateAction(u, gate)
+    const gateAction = buildGateAction(u, gate, parsed)
 
     // The persist ladder for this unit, BUILT and returned, never run.
     const unitPersist = persistOn
@@ -1215,6 +1288,9 @@ async function runPlanReviewDriver(args, deps) {
 // Node-only exports for the verify harness. NOT part of the copied block — the
 // marker END is above this line, so a copy never carries these.
 export {
+  resolveRdmBin,
+  parseProjectArg,
+  projectFlag,
   parsePlanArgs,
   buildReviewUnits,
   runPlanReviewDriver,

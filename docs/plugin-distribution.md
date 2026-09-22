@@ -504,7 +504,7 @@ Invocation: the emitted skills invoke bare `rdm` (e.g., `./target/debug/rdm phas
 
 What **downstream consumers install** via `claude plugin marketplace add` and `claude plugin install`. Built by `rdm agent-config claude --plugin --out <dir>`, emitted to `plugins/rdm/` in this repo for release. Consumers never see the templates — they only see the installed plugin.
 
-**Layout:** 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, etc., with the `rdm-` prefix dropped per the naming decision) and 1 workflow engine (`rdm:rdm-wf-review-refute-fix`, with the `rdm-wf-` prefix kept for disambiguation).
+**Layout:** 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, etc., with the `rdm-` prefix dropped per the naming decision) and 5 workflow engines (`rdm:rdm-wf-review-refute-fix`, `rdm:rdm-wf-plan-review`, `rdm:rdm-wf-estimate`, `rdm:rdm-wf-backlog`, `rdm:rdm-wf-document`, with the `rdm-wf-` prefix kept for disambiguation).
 
 **Invocation:** skills resolve as `rdm:<name>` (e.g., `rdm:roadmap`), and they invoke workflows via `Workflow({ name: "rdm:rdm-wf-review-refute-fix", … })`.
 

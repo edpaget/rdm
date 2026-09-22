@@ -76,16 +76,17 @@ while `autopilot.js` still existed, and continues to hold for the six live scrip
 today: the `Date.now(` / `Math.random(` bans are already grepped by the verify harnesses,
 so no script can violate it and stay green.
 
-**Distribution is a separate axis from disposition.** Only `rdm-wf-review-refute-fix.js` is
-emitted downstream by `generate_workflows` (`autopilot.js` was
-too, until phase 3 retired it in favor of the prose `rdm-autopilot` skill, and
-`rdm-wf-dispatch-phase.js` was until `agent-orchestrated-dispatch` phase 7 retired it — see the
-retirement record below); `rdm-wf-plan-review.js`,
-`rdm-wf-estimate.js`, `rdm-wf-backlog.js` and `rdm-wf-document.js` are local-only.
-(They used to reference `agentType: 'rdm-mechanical'`, which a downstream tree has
-no definition for and which *raises* rather than degrading silently;
-`no-mechanical-agents-in-workflows` removed every such reference, so that is no
-longer what keeps them local.) So the phase 4 rewrite of the **distributed**
+**Distribution is a separate axis from disposition.** Every surviving
+`.claude/workflows/*.js` engine is emitted downstream by `generate_workflows`
+(`autopilot.js` was too, until phase 3 retired it in favor of the prose
+`rdm-autopilot` skill, and `rdm-wf-dispatch-phase.js` was until
+`agent-orchestrated-dispatch` phase 7 retired it — see the retirement record
+below). `rdm-wf-plan-review.js`, `rdm-wf-estimate.js`, `rdm-wf-backlog.js` and
+`rdm-wf-document.js` were local-only until `agent-orchestrated-dispatch` phase
+26: they used to reference `agentType: 'rdm-mechanical'` (removed wholesale by
+`no-mechanical-agents-in-workflows`) and, until phase 26, hardcoded this repo's
+own `./target/debug/rdm` build path and `rdm` project in every command they
+built. Both are gone; the pair is a runtime argument now.) So the phase 4 rewrite of the **distributed**
 `skill-autopilot-cli.md` cannot simply mirror the local prose skill by pointing at
 `rdm-wf-estimate` — it needs an explicit answer (ship `rdm-wf-estimate.js` with the `agentType`
 stripped, inline the pre-pass in the shipped prose, or drop the pre-pass downstream).
@@ -98,19 +99,29 @@ prose would duplicate `estimate.mjs`'s filtering/rating/writeback logic outside 
 single-sourced home and risk silent drift. The local dogfood `rdm-autopilot` skill is
 unaffected and still invokes the real `rdm-wf-estimate` Workflow.
 
+**Superseded in part (`agent-orchestrated-dispatch` phase 26): `rdm-wf-estimate.js` ships.**
+The blocker named above — the `agentType`-downstream rule — was already gone
+(`no-mechanical-agents-in-workflows`), and phase 26 registered the engine for emission. The
+*decision* stands unchanged: the distributed `rdm-autopilot` template still runs no estimate
+pre-pass, now for a reason about cost rather than about resolvability, and a downstream
+consumer that wants tiers rated invokes the shipped engine (or the `rdm-estimate` shim) itself.
+
 **Decided (`agent-orchestrated-dispatch` phase 6): omit the plan-review call downstream.**
 The per-phase driver moved to prose in that phase — `.claude/skills/rdm-dispatch-phase/SKILL.md`
 is now the orchestrator, loaded into the main session with `Skill`, and it invokes **two**
 Workflows: `rdm-wf-plan-review` on the `plan/<slug>` document and `rdm-wf-review-refute-fix`
-on `change/<sha>`. Only the second of those is emitted downstream (`SHIPPED_WORKFLOWS` in
-`rdm-core/src/agent_config.rs` emits `rdm-wf-review-refute-fix.js`, nothing else), so a
-distributed skill naming
-`rdm-wf-plan-review.js` would reference a file absent from its own tree and fail
-`scripts/verify-agent-config-distribution.sh`'s shim-reference check. This is the identical
-hazard as the `rdm-wf-estimate` case above, and it takes the identical answer: the
+on `change/<sha>`. At the time only the second was emitted downstream, so a distributed skill
+naming `rdm-wf-plan-review.js` would have referenced a file absent from its own tree. That was
+the identical hazard as the `rdm-wf-estimate` case above, and it took the identical answer: the
 distributed `skill-dispatch-phase-cli.md` **omits the plan-review invocation** and waits on a
 human-submitted `rdm review submit --verdict approve` on the plan at that step, while this
-repo's local `.claude/skills/` copy makes the real Workflow call. The two are the *same read*
+repo's local `.claude/skills/` copy makes the real Workflow call.
+
+**Restated after phase 26:** `SHIPPED_WORKFLOWS` now emits all five engines, so the
+resolvability hazard is gone and a distributed shim *could* invoke `rdm-wf-plan-review`. The
+omission stands anyway, on a different and now-stated reason: on the distributed surface a
+**human** owns the decision to let implementation begin, because a downstream repo's
+conventions are exactly what an automated plan reviewer has least access to. The two are the *same read*
 — rdm flips plan status on any `review submit` against a `plan/<slug>` target — so the
 distributed procedure is not a degraded variant of the gate, only a different author of the
 approving review. Shipping the plan-review engine downstream stays `ship-plan-review-workflow`'s

@@ -373,39 +373,66 @@ pub fn generate_codex_skills(opts: &SkillOptions) -> Vec<SkillFile> {
 /// a `const`/variable path — so "named in exactly one place" means one table
 /// entry per engine, not one literal.
 ///
-/// Only the ONE engine rdm actually distributes appears here. The four
-/// local-only engines (`rdm-wf-backlog`, `rdm-wf-document`, `rdm-wf-estimate`,
-/// `rdm-wf-plan-review`) are deliberately unshipped — adding them would change
-/// emitted bytes and expand the distribution boundary. `rdm-wf-dispatch-phase`
-/// was a second shipped engine until `agent-orchestrated-dispatch` phase 7
-/// retired it in favour of the prose `rdm-dispatch-phase` skill; see
-/// [`SUPERSEDED_WORKFLOWS`] for the cleanup entry that removes an orphaned
-/// downstream copy. The emitted-file-count test and the rustdoc example on
+/// All five engines rdm distributes appear here. The four that used to be
+/// local-only (`rdm-wf-plan-review`, `rdm-wf-estimate`, `rdm-wf-backlog`,
+/// `rdm-wf-document`) were registered by `agent-orchestrated-dispatch` phase
+/// 26, once each of them took the rdm executable and the project name as
+/// runtime arguments instead of naming this repo's own dogfood build path.
+/// `rdm-wf-dispatch-phase` was a sixth shipped engine until
+/// `agent-orchestrated-dispatch` phase 7 retired it in favour of the prose
+/// `rdm-dispatch-phase` skill; see [`SUPERSEDED_WORKFLOWS`] for the cleanup
+/// entry that removes an orphaned downstream copy.
+///
+/// The `include_str!` bodies are HAND-MAINTAINED copies of
+/// `.claude/workflows/*.js`, exactly as the single original entry always was:
+/// nothing writes them, and `generate_workflows_are_byte_identical_to_source`
+/// is what catches drift after the fact. Producing them from a generator is
+/// owed work with a named owner (`agent-orchestrated-dispatch` phase 38) — an
+/// accepted debt, not an oversight.
+///
+/// The emitted-file-count test and the rustdoc example on
 /// [`generate_workflows`] deliberately keep their OWN independent literals
 /// rather than reading this table, so they stay a real check on what rdm ships
 /// instead of asserting the table equals itself.
-const SHIPPED_WORKFLOWS: [(&str, &str); 1] = [(
-    "rdm-wf-review-refute-fix.js",
-    include_str!("templates/workflows/rdm-wf-review-refute-fix.js"),
-)];
+const SHIPPED_WORKFLOWS: [(&str, &str); 5] = [
+    (
+        "rdm-wf-review-refute-fix.js",
+        include_str!("templates/workflows/rdm-wf-review-refute-fix.js"),
+    ),
+    (
+        "rdm-wf-plan-review.js",
+        include_str!("templates/workflows/rdm-wf-plan-review.js"),
+    ),
+    (
+        "rdm-wf-estimate.js",
+        include_str!("templates/workflows/rdm-wf-estimate.js"),
+    ),
+    (
+        "rdm-wf-backlog.js",
+        include_str!("templates/workflows/rdm-wf-backlog.js"),
+    ),
+    (
+        "rdm-wf-document.js",
+        include_str!("templates/workflows/rdm-wf-document.js"),
+    ),
+];
 
 /// Returns the autonomous-lane Workflow-tool scripts that ship alongside the
 /// Claude Code skills.
 ///
-/// This is the already-stamped `.claude/workflows/*.js` consumer from this
-/// repo's own dogfood setup (`rdm-wf-review-refute-fix.js`), embedded verbatim
-/// via `include_str!` and returned
+/// These are the already-stamped `.claude/workflows/*.js` consumers from this
+/// repo's own dogfood setup, embedded verbatim via `include_str!` and returned
 /// unmodified — there is no project/principles substitution, unlike
 /// [`generate_skills`]'s `render_skill` pass. This is a separate emission
 /// surface from `generate_skills`/`SkillFile`, not folded into it: the two
 /// counts (skills vs. workflows) are independent and should not be summed
 /// when asserting either one.
 ///
-/// The script names no particular rdm executable and no particular rdm
-/// project: both arrive as runtime arguments (`rdmBin`, required and
-/// fail-closed; `project`, optional and applied only to project-scoped
-/// subcommands), so the emitted bytes work unmodified in an arbitrary
-/// downstream target repo. `scripts/verify-agent-config-distribution.sh` § 7
+/// No script names a particular rdm executable or a particular rdm project:
+/// both arrive as runtime arguments (`rdmBin`, defaulting to a plain `rdm` on
+/// PATH; `project`, optional and applied only to project-scoped subcommands),
+/// so the emitted bytes work unmodified in an arbitrary downstream target repo.
+/// `scripts/verify-agent-config-distribution.sh` § 7
 /// gates that claim by emitting into a hermetic non-rdm, non-Rust fixture and
 /// executing the emitted engine's pipeline logic and built commands there.
 /// `lib/*.mjs` (the canonical source modules the scripts are stamped from) is
@@ -418,7 +445,7 @@ const SHIPPED_WORKFLOWS: [(&str, &str); 1] = [(
 /// use rdm_core::agent_config::generate_workflows;
 ///
 /// let workflows = generate_workflows();
-/// assert_eq!(workflows.len(), 1);
+/// assert_eq!(workflows.len(), 5);
 /// assert_eq!(workflows[0].relative_path, "rdm-wf-review-refute-fix.js");
 /// ```
 pub fn generate_workflows() -> Vec<WorkflowFile> {
@@ -436,13 +463,14 @@ pub fn generate_workflows() -> Vec<WorkflowFile> {
 /// place" shape.
 ///
 /// Currently one entry: `rdm-mechanical`, the mechanical-transcription agent
-/// definition the four local-only Workflow scripts (`rdm-wf-backlog.js`,
-/// `rdm-wf-document.js`, `rdm-wf-estimate.js`, `rdm-wf-plan-review.js`)
-/// resolve against via `agentType`. The one *distributed* workflow
-/// (`rdm-wf-review-refute-fix.js`) does not
-/// reference it yet — this table exists so a downstream tree has somewhere
-/// for such a reference to resolve, in advance of one being added. See
-/// `docs/workflow-schemas.md` § "agentType / effort options spike".
+/// definition. **No shipped Workflow script references it** — the
+/// `no-mechanical-agents-in-workflows` phase removed every `agentType` call
+/// site from `.claude/workflows/`, so the emitted engines contain zero
+/// `agentType` occurrences. This table exists so a downstream tree has
+/// somewhere for such a reference to resolve, should a consumer add one; it is
+/// emitted on `--skills` (not on `--plugin`, which is manifest + skills +
+/// workflows only). See `docs/workflow-schemas.md` § "agentType / effort
+/// options spike".
 const SHIPPED_AGENTS: [(&str, &str); 1] = [(
     "rdm-mechanical.md",
     include_str!("templates/agents/rdm-mechanical.md"),
@@ -1033,10 +1061,10 @@ fn namespace_engine_refs(body: &str, stem: &str) -> String {
 /// 2. every remaining bare `<stem>` / `<stem>.js` token is namespaced by
 ///    [`namespace_engine_refs`], which skips the ones pass 1 already produced.
 ///
-/// Only [`SHIPPED_WORKFLOWS`] stems are namespaced. Engines this
-/// distribution does **not** ship — `rdm-wf-estimate`, referenced in prose
-/// explaining why the shipped autopilot has no estimate pre-pass — stay bare,
-/// because namespacing them would name a plugin entry that does not exist.
+/// Only [`SHIPPED_WORKFLOWS`] stems are namespaced. A stem this distribution
+/// does **not** ship — `rdm-wf-dispatch-phase`, retired in favour of the prose
+/// `rdm-dispatch-phase` skill — stays bare, because namespacing it would name a
+/// plugin entry that does not exist.
 ///
 /// Applied BEFORE [`rewrite_skill_names`]. The two are in fact
 /// order-independent — the `rdm:<engine>` this produces has the kebab token
@@ -1185,7 +1213,7 @@ pub fn generate_plugin_skills(opts: &SkillOptions) -> Vec<PluginFile> {
 /// use rdm_core::agent_config::generate_plugin_workflows;
 ///
 /// let workflows = generate_plugin_workflows();
-/// assert_eq!(workflows.len(), 1);
+/// assert_eq!(workflows.len(), 5);
 /// assert_eq!(
 ///     workflows[0].relative_path,
 ///     "workflows/rdm-wf-review-refute-fix.js"
@@ -1202,7 +1230,7 @@ pub fn generate_plugin_workflows() -> Vec<PluginFile> {
 }
 
 /// Generates the complete `rdm` plugin tree: the manifest, then the eleven
-/// plugin-layout skills, then the one workflow engine — 13 files, all paths
+/// plugin-layout skills, then the five workflow engines — 17 files, all paths
 /// relative to the plugin root.
 ///
 /// # Panics
@@ -1219,7 +1247,7 @@ pub fn generate_plugin_workflows() -> Vec<PluginFile> {
 ///     project: None,
 ///     principles_file: None,
 /// });
-/// assert_eq!(files.len(), 13);
+/// assert_eq!(files.len(), 17);
 /// assert_eq!(files[0].relative_path, ".claude-plugin/plugin.json");
 /// ```
 pub fn generate_plugin_files(opts: &SkillOptions) -> Vec<PluginFile> {
@@ -1871,10 +1899,20 @@ mod tests {
     // --- Workflow generation tests ---
 
     #[test]
-    fn generate_workflows_returns_one_file() {
+    fn generate_workflows_returns_all_five_engines() {
         let workflows = generate_workflows();
-        assert_eq!(workflows.len(), 1);
-        assert_eq!(workflows[0].relative_path, "rdm-wf-review-refute-fix.js");
+        let paths: Vec<&str> = workflows.iter().map(|w| w.relative_path).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "rdm-wf-review-refute-fix.js",
+                "rdm-wf-plan-review.js",
+                "rdm-wf-estimate.js",
+                "rdm-wf-backlog.js",
+                "rdm-wf-document.js",
+            ]
+        );
+        assert_eq!(workflows.len(), 5);
     }
 
     #[test]
@@ -3976,9 +4014,13 @@ mod tests {
                 "skills/plan-review/SKILL.md",
                 "skills/backlog/SKILL.md",
                 "workflows/rdm-wf-review-refute-fix.js",
+                "workflows/rdm-wf-plan-review.js",
+                "workflows/rdm-wf-estimate.js",
+                "workflows/rdm-wf-backlog.js",
+                "workflows/rdm-wf-document.js",
             ]
         );
-        assert_eq!(files.len(), 13);
+        assert_eq!(files.len(), 17);
 
         for path in &paths {
             let p = std::path::Path::new(path);
@@ -4218,12 +4260,16 @@ mod tests {
             "autopilot must namespace the engine its per-phase unit invokes"
         );
 
-        // Engines this distribution does NOT ship stay bare — namespacing
-        // them would name a plugin entry that does not exist.
+        // A stem this distribution does NOT ship stays bare — namespacing it
+        // would name a plugin entry that does not exist. `rdm-wf-estimate`
+        // used to be the example here; it ships since
+        // `agent-orchestrated-dispatch` phase 26 and is now covered
+        // POSITIVELY by the `engine_stems` loop above, so the retired
+        // dispatch engine is what remains unshipped.
         assert_eq!(
-            plugin_joined.matches("rdm:rdm-wf-estimate").count(),
+            plugin_joined.matches("rdm:rdm-wf-dispatch-phase").count(),
             0,
-            "rdm-wf-estimate is not shipped and must not be namespaced"
+            "rdm-wf-dispatch-phase is retired, not shipped, and must not be namespaced"
         );
     }
 
@@ -4423,11 +4469,23 @@ mod tests {
             // downstream — where it would now name a file no emission produces —
             // is a deliberate decision rather than an unnoticed one.
             ("rdm-wf-dispatch-phase", 0),
-            // 2 -> 3: the dispatch-phase orchestrator cites the estimate
+            // 3 -> 1: the dispatch-phase orchestrator used to cite the estimate
             // pre-pass as the precedent for omitting the plan-review engine
-            // downstream. Still never namespaced — rdm does not ship it.
-            ("rdm-wf-estimate", 3),
-            ("rdm-mechanical", 1),
+            // downstream; both of those reasons were false and both were
+            // rewritten by `agent-orchestrated-dispatch` phase 26, leaving only
+            // the autopilot shim's single mention. That engine IS shipped now,
+            // so the mention IS namespaced in plugin bodies — which is exactly
+            // why it is the TOKEN count that is pinned here, not the spelling.
+            ("rdm-wf-estimate", 1),
+            // 1 -> 0: the autopilot shim's only mention was inside a stale
+            // rationale claiming `rdm-wf-estimate` resolves
+            // `agentType: 'rdm-mechanical'` and that a downstream tree receives
+            // no agent registry. Neither was true — no workflow has referenced
+            // an agentType since `no-mechanical-agents-in-workflows`, and
+            // `SHIPPED_AGENTS` emits the definition on `--skills` — so
+            // `agent-orchestrated-dispatch` phase 26 removed it. Kept in the
+            // table at 0 so a reference creeping back is deliberate.
+            ("rdm-mechanical", 0),
             ("rdm-next", 1),
             ("rdm-side", 1),
         ];
@@ -4510,7 +4568,11 @@ mod tests {
         // rdm-do shim and the autopilot loop each state explicitly (as the
         // `Skill({ skill: ... })` entry they invoke), where they previously named
         // the engine file instead.
-        let expected = 50;
+        // 50 -> 51: `agent-orchestrated-dispatch` phase 26 rewrote the
+        // autopilot shim's estimate rationale, which now names the
+        // `rdm-estimate` shim as the way a downstream consumer rates tiers
+        // before starting the loop.
+        let expected = 51;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"
@@ -4571,11 +4633,17 @@ mod tests {
             .expect("rdm-core manifest dir has a parent");
         let raw = generate_workflows();
         let plugin = generate_plugin_workflows();
-        assert_eq!(plugin.len(), 1);
+        assert_eq!(plugin.len(), 5);
         assert_eq!(raw.len(), plugin.len());
 
-        let expected_provenance_literals = [2usize];
-        let expected_meta_names = ["rdm-wf-review-refute-fix"];
+        let expected_provenance_literals = [2usize, 7, 4, 4, 3];
+        let expected_meta_names = [
+            "rdm-wf-review-refute-fix",
+            "rdm-wf-plan-review",
+            "rdm-wf-estimate",
+            "rdm-wf-backlog",
+            "rdm-wf-document",
+        ];
 
         for (idx, (raw_wf, plugin_wf)) in raw.iter().zip(plugin.iter()).enumerate() {
             assert_eq!(
@@ -4637,10 +4705,16 @@ mod tests {
         // `rdm-wf-` disambiguator survived plugin emission.
         assert_eq!(
             engine_names,
-            ["rdm-wf-review-refute-fix"]
-                .into_iter()
-                .map(String::from)
-                .collect::<std::collections::BTreeSet<_>>()
+            [
+                "rdm-wf-review-refute-fix",
+                "rdm-wf-plan-review",
+                "rdm-wf-estimate",
+                "rdm-wf-backlog",
+                "rdm-wf-document",
+            ]
+            .into_iter()
+            .map(String::from)
+            .collect::<std::collections::BTreeSet<_>>()
         );
 
         assert!(

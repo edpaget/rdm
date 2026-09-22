@@ -28,12 +28,54 @@
 // time). scripts/verify-workflow-document.sh gates the two copies for drift.
 // No Date.now / Math.random — pure array/string ops only.
 
+// --- Environment args: `rdmBin` and `project` -------------------------------
+//
+// The CANONICAL contract every engine in this lane implements, adopted verbatim
+// rather than re-invented — only the error-message prefix differs from
+// lib/estimate.mjs's copy. Canonical write-up: docs/workflow-schemas.md §
+// "Environment args: `rdmBin` and `project`".
+
+// resolveRdmBin(value) — resolve the rdm executable the two read commands name.
+// An ABSENT value DEFAULTS to a plain `rdm` on PATH, because a plugin-installed
+// consumer has no repo-local build path to pass. A present-but-wrong-TYPE value
+// throws rather than silently degrading to PATH. No existence preflight.
+function resolveRdmBin(value) {
+  if (typeof value === 'string' && value.trim() !== '') return value;
+  if (value === undefined || value === null || typeof value === 'string') return 'rdm';
+  throw new Error(
+    'document: rdmBin must be a string path to the rdm executable (omit it to default to `rdm` on PATH)'
+  );
+}
+
+// parseProjectArg(value) — validate the OPTIONAL project name. Any falsy value
+// means "emit no project flag at all", so rdm's own resolution chain applies.
+// The value is interpolated into agent prompts, so whitespace and shell
+// metacharacters are rejected rather than escaped.
+function parseProjectArg(value) {
+  if (!value) return '';
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(
+      'document: project must be a plain project name matching /^[A-Za-z0-9._-]+$/ (got "' + String(value) + '")'
+    );
+  }
+  return value;
+}
+
+// projectFlag(cfg) — the ` --project <name>` suffix for a PROJECT-SCOPED
+// command, or '' when no project was configured.
+function projectFlag(cfg) {
+  return cfg && cfg.project ? ' --project ' + cfg.project : '';
+}
+
 // parseDocumentArgs(args) — coerce and default the whole args payload.
 //
 // The Workflow tool contract forbids stringified args, but LLM callers (the
 // rdm-document skill shim, or a hand-run invocation) may still deliver a JSON
 // string; coerce once, mirroring parseDispatchArgs in the since-deleted
 // lib/dispatch-phase.mjs.
+//
+// `rdmBin` and `project` are the ENVIRONMENT axes, resolved HERE at parse time
+// so an invalid value throws before any agent burns a token.
 function parseDocumentArgs(args) {
   let documentArgs = args || {};
   if (typeof documentArgs === 'string') {
@@ -47,7 +89,36 @@ function parseDocumentArgs(args) {
   return {
     roadmap: documentArgs.roadmap || '',
     out: documentArgs.out || '',
+    rdmBin: resolveRdmBin(documentArgs.rdmBin),
+    project: parseProjectArg(documentArgs.project),
   };
+}
+
+// documentRoadmapCommand(slug, cfg) — the read-only command that produces the
+// roadmap payload this engine refuses to run without, returned as TEXT so a
+// caller that omitted it is told exactly what to run.
+//
+// It lives INSIDE the copied block, not beside the driver, so it is importable
+// in Node and its threading of `cfg` is decidable by execution rather than by
+// reading the engine.
+function documentRoadmapCommand(slug, cfg) {
+  return resolveRdmBin(cfg && cfg.rdmBin) + ' roadmap show ' + slug + projectFlag(cfg) + ' --format json';
+}
+
+// documentPhaseCommand(roadmap, stem, cfg) — the read-only command that yields
+// ONE phase document. Named in both agents' prompts, run inside each agent's own
+// context. This is the whole mechanism by which a phase body reaches a judgment
+// agent: as a command it runs, never as text it was handed.
+function documentPhaseCommand(roadmap, stem, cfg) {
+  return (
+    resolveRdmBin(cfg && cfg.rdmBin) +
+    ' phase show ' +
+    stem +
+    ' --roadmap ' +
+    roadmap +
+    projectFlag(cfg) +
+    ' --format json'
+  );
 }
 
 // defaultOutPath(slug) — the default write location when no --out is given.
@@ -92,4 +163,15 @@ function buildGitRangeCommands(sha) {
 
 // Node-only exports for the verify harness. NOT part of the copied block — the
 // marker END is above this line, so a copy never carries these.
-export { parseDocumentArgs, defaultOutPath, resolveOutPath, computeIncompletePhases, buildGitRangeCommands };
+export {
+  resolveRdmBin,
+  parseProjectArg,
+  projectFlag,
+  parseDocumentArgs,
+  documentRoadmapCommand,
+  documentPhaseCommand,
+  defaultOutPath,
+  resolveOutPath,
+  computeIncompletePhases,
+  buildGitRangeCommands,
+};

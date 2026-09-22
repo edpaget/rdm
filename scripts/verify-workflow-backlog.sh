@@ -171,8 +171,8 @@ assert.equal(ANALYSIS_SCHEMA.type, 'object', 'ANALYSIS_SCHEMA is a top-level obj
 assert.deepEqual(ANALYSIS_SCHEMA.required, ['proposals', 'openQuestions']);
 
 // --- parseBacklogArgs ---------------------------------------------------------
-assert.deepEqual(parseBacklogArgs({}), { project: null, olderThan: null, tag: null }, 'all-optional defaults');
-assert.deepEqual(parseBacklogArgs(undefined), { project: null, olderThan: null, tag: null }, 'undefined args tolerated');
+assert.deepEqual(parseBacklogArgs({}), { rdmBin: 'rdm', project: null, olderThan: null, tag: null }, 'all-optional defaults');
+assert.deepEqual(parseBacklogArgs(undefined), { rdmBin: 'rdm', project: null, olderThan: null, tag: null }, 'undefined args tolerated');
 assert.equal(parseBacklogArgs({ olderThan: 0 }).olderThan, 0, '--older-than 0 is meaningful, not dropped as falsy');
 assert.equal(parseBacklogArgs({ olderThan: '0' }).olderThan, 0, 'string "0" coerced to int 0');
 assert.equal(parseBacklogArgs({ olderThan: 5 }).olderThan, 5, 'positive olderThan');
@@ -187,8 +187,8 @@ assert.throws(() => parseBacklogArgs({ olderThan: 'abc' }), /non-negative intege
 // A caller may stringify the Workflow tool payload; coerce it instead of failing.
 assert.equal(parseBacklogArgs('{"project":"p","olderThan":3}').project, 'p', 'stringified JSON args coerced');
 assert.equal(parseBacklogArgs('{"project":"p","olderThan":3}').olderThan, 3, 'stringified args keep field coercion');
-assert.deepEqual(parseBacklogArgs('not json'), { project: null, olderThan: null, tag: null }, 'non-JSON string falls back to defaults');
-assert.deepEqual(parseBacklogArgs('null'), { project: null, olderThan: null, tag: null }, 'JSON null falls back to defaults, no TypeError');
+assert.deepEqual(parseBacklogArgs('not json'), { rdmBin: 'rdm', project: null, olderThan: null, tag: null }, 'non-JSON string falls back to defaults');
+assert.deepEqual(parseBacklogArgs('null'), { rdmBin: 'rdm', project: null, olderThan: null, tag: null }, 'JSON null falls back to defaults, no TypeError');
 
 // --- parseBacklogReport -------------------------------------------------------
 assert.deepEqual(

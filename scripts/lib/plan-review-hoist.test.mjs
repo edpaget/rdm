@@ -564,3 +564,144 @@ test('D7: no reviewer entry carries a selection predicate any more', () => {
     }
   }
 });
+
+// ================================================================ Suite E
+//
+// The ENVIRONMENT axes (`rdmBin` / `project`), decided by EXECUTING the real
+// builders rather than by grepping the source for an absent literal. Every
+// command this engine builds or names in a prompt must carry the CALLER's
+// executable, and a project flag only when the caller named a project.
+
+import {
+  planGateCommands,
+  buildGateAction,
+  resolveRdmBin,
+  parseProjectArg,
+  projectFlag,
+} from '../../.claude/workflows/lib/plan-review.mjs';
+
+const BIN = '/opt/tools/rdm';
+
+// Every command string reachable from one driver run: the reviewers' read
+// commands (threaded through the review context), the gate ladder, and the
+// persist ladder.
+function commandsFrom({ result, contexts }) {
+  const out = [];
+  for (const ctx of contexts) {
+    if (ctx.itemCommand) out.push(ctx.itemCommand);
+    if (ctx.roadmapCommand) out.push(ctx.roadmapCommand);
+  }
+  for (const u of result.units || []) {
+    for (const c of (u.gateAction && u.gateAction.commands) || []) out.push(c);
+    for (const c of u.persistCommands || []) out.push(c);
+  }
+  for (const c of result.persistCommands || []) out.push(c);
+  if (result.itemCommand) out.push(result.itemCommand);
+  return out;
+}
+
+// A ladder mixes plain shell (mktemp, sed, printf) with rdm invocations. An
+// rdm invocation is recognized STRUCTURALLY — an executable followed by a known
+// rdm subcommand — so the filter cannot accidentally exempt one by name.
+const RDM_SUBCOMMANDS =
+  'review|commit|plan|roadmap|phase|task|search|backlog|promote|next|model|config|link|verify';
+const rdmInvocation = (line) => new RegExp('^\\s*(\\S+) (' + RDM_SUBCOMMANDS + ')\\b').exec(line);
+
+// Only a subcommand rdm scopes by project carries the flag. `rdm commit`
+// refuses one, which is why it is excluded here rather than by a blanket
+// "every command carries it".
+const UNSCOPED = new Set(['commit']);
+
+test('E1: a caller-supplied rdmBin reaches every command, on every target kind', async () => {
+  const targets = [
+    { task: 't', tags: ['needs-plan-review'], persist: true },
+    { roadmap: 'r', phase: 'phase-1-x', tags: ['needs-plan-review'], persist: true },
+    {
+      roadmap: 'r',
+      phases: [{ stem: 'phase-1-a', tags: ['needs-plan-review'] }],
+      tags: ['needs-plan-review'],
+      persist: true,
+    },
+    { implementationPlan: true, planSlug: 'p', roadmap: 'r', persist: true },
+  ];
+  for (const t of targets) {
+    const run = await driveLib({ ...t, rdmBin: BIN, project: 'demo' });
+    const cmds = commandsFrom(run);
+    assert.ok(cmds.length > 0, `no command was built for ${JSON.stringify(t)}`);
+    let seen = 0;
+    for (const c of cmds) {
+      const m = rdmInvocation(c);
+      if (!m) continue;
+      seen += 1;
+      assert.equal(m[1], BIN, `command does not invoke the caller's binary: ${c}`);
+      if (UNSCOPED.has(m[2])) {
+        assert.ok(!c.includes('--project'), `${m[2]} must never carry a project flag: ${c}`);
+      } else {
+        assert.ok(c.includes(' --project demo'), `project-scoped command lost its flag: ${c}`);
+      }
+    }
+    assert.ok(seen > 0, `no rdm invocation was built for ${JSON.stringify(t)}`);
+  }
+});
+
+test('E2: an omitted project emits NO flag at all, and an omitted rdmBin yields a plain `rdm`', async () => {
+  const run = await driveLib({
+    roadmap: 'r',
+    phases: [{ stem: 'phase-1-a', tags: ['needs-plan-review'] }],
+    tags: ['needs-plan-review'],
+    persist: true,
+  });
+  const cmds = commandsFrom(run);
+  let seen = 0;
+  for (const c of cmds) {
+    const m = rdmInvocation(c);
+    if (!m) continue;
+    seen += 1;
+    assert.equal(m[1], 'rdm', `absent rdmBin must fall back to a plain \`rdm\`: ${c}`);
+    assert.ok(!c.includes('--project'), `absent project must emit no flag at all: ${c}`);
+  }
+  assert.ok(seen > 0, 'no rdm invocation was built');
+});
+
+test('E3: the gate ladder carries the pair on all three item kinds', () => {
+  const cfg = { rdmBin: BIN, project: 'demo' };
+  for (const kind of ['task', 'phase', 'roadmap']) {
+    const cmds = planGateCommands(kind, 'r', 'i', ['keep'], cfg);
+    assert.ok(cmds.updateCmd.startsWith(BIN + ' '), cmds.updateCmd);
+    assert.ok(cmds.updateCmd.includes(' --project demo'), cmds.updateCmd);
+    assert.ok(cmds.commitCmd.startsWith(BIN + ' commit '), cmds.commitCmd);
+    assert.ok(!cmds.commitCmd.includes('--project'), cmds.commitCmd);
+    // And the same three kinds through the declarative wrapper.
+    const action = buildGateAction(
+      { kind, ident: 'i', roadmap: 'r', tags: ['needs-plan-review', 'keep'] },
+      { clearsPlanReviewTag: true },
+      cfg
+    );
+    assert.equal(action.commands.length, 2);
+    assert.ok(action.commands.every((c) => c.startsWith(BIN + ' ')), action.commands.join(' && '));
+  }
+});
+
+test('E4: an invalid value of either axis is refused, at parse time', () => {
+  assert.throws(() => parsePlanArgs({ task: 't', rdmBin: 42 }), /rdmBin must be a string path/);
+  assert.throws(() => parsePlanArgs({ task: 't', rdmBin: {} }), /rdmBin must be a string path/);
+  assert.throws(() => parsePlanArgs({ task: 't', project: 'a b' }), /plain project name/);
+  assert.throws(() => parsePlanArgs({ task: 't', project: 'a;rm -rf /' }), /plain project name/);
+  assert.throws(() => parsePlanArgs({ task: 't', project: 7 }), /plain project name/);
+  // The documented fallbacks, on the helpers themselves.
+  assert.equal(resolveRdmBin(undefined), 'rdm');
+  assert.equal(resolveRdmBin(''), 'rdm');
+  assert.equal(resolveRdmBin('/x/rdm'), '/x/rdm');
+  assert.equal(parseProjectArg(undefined), '');
+  assert.equal(parseProjectArg('demo'), 'demo');
+  assert.equal(projectFlag({ project: 'demo' }), ' --project demo');
+  assert.equal(projectFlag({}), '');
+});
+
+test('E5: neither axis is readable out of the $ARGUMENTS flag string', () => {
+  // A positional target string must never be able to choose the binary or the
+  // project — the same rule `persist` and `reviewers` follow.
+  const parsed = parsePlanArgs('--task t --rdmBin /evil/rdm --project pwned');
+  assert.equal(parsed.rdmBin, 'rdm');
+  assert.equal(parsed.project, '');
+});

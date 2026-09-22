@@ -48,8 +48,45 @@
 // every side effect is reached through the injected `deps` object, so the
 // module imports cleanly in Node.
 
+// --- Environment args: `rdmBin` and `project` -------------------------------
+//
+// The CANONICAL contract every engine in this lane implements, adopted verbatim
+// rather than re-invented — only the error-message prefix differs from
+// lib/estimate.mjs's copy. Canonical write-up: docs/workflow-schemas.md §
+// "Environment args: `rdmBin` and `project`". `projectFlag` (this block's own,
+// declared below) is the third member of the same set.
+
+// resolveRdmBin(value) — resolve the rdm executable this pass NAMES in the
+// report command and in every proposal it hands back. An ABSENT value DEFAULTS
+// to a plain `rdm` on PATH, because a plugin-installed consumer has no
+// repo-local build path to pass. A present-but-wrong-TYPE value throws rather
+// than silently degrading to PATH. No existence preflight.
+function resolveRdmBin(value) {
+  if (typeof value === 'string' && value.trim() !== '') return value;
+  if (value === undefined || value === null || typeof value === 'string') return 'rdm';
+  throw new Error(
+    'backlog: rdmBin must be a string path to the rdm executable (omit it to default to `rdm` on PATH)'
+  );
+}
+
+// parseProjectArg(value) — validate the OPTIONAL project name. Any falsy value
+// means "emit no project flag at all", so rdm's own resolution chain applies.
+// The value is interpolated into analyzer prompts and into the commands this
+// pass proposes, so whitespace and shell metacharacters are rejected rather
+// than escaped.
+function parseProjectArg(value) {
+  if (!value) return '';
+  if (typeof value !== 'string' || !/^[A-Za-z0-9._-]+$/.test(value)) {
+    throw new Error(
+      'backlog: project must be a plain project name matching /^[A-Za-z0-9._-]+$/ (got "' + String(value) + '")'
+    );
+  }
+  return value;
+}
+
 // parseBacklogArgs(args) — validate and normalize the run config. Every field
-// is optional: `project` (string or null, standard resolution chain applies
+// is optional: `rdmBin` (the rdm executable to name, defaulting to a plain
+// `rdm` on PATH), `project` (string or null, standard resolution chain applies
 // when omitted), `olderThan` (non-negative integer or null — 0 is MEANINGFUL
 // and must never be conflated with unset by a falsy check), and `tag` (string
 // or null — an explicitly-passed empty string is also meaningful and distinct
@@ -68,7 +105,10 @@ function parseBacklogArgs(args) {
     }
   }
   if (!a || typeof a !== 'object') a = {};
-  const project = typeof a.project === 'string' && a.project !== '' ? a.project : null;
+  // Validated by the shared contract, then normalized back to `null` for
+  // "unset" so every downstream truthiness check reads exactly as before.
+  const project = parseProjectArg(a.project) || null;
+  const rdmBin = resolveRdmBin(a.rdmBin);
   let olderThan = null;
   if (a.olderThan !== undefined && a.olderThan !== null && a.olderThan !== '') {
     const n = typeof a.olderThan === 'number' ? a.olderThan : parseInt(a.olderThan, 10);
@@ -80,7 +120,7 @@ function parseBacklogArgs(args) {
   // typeof-string check (not a truthiness check) so an explicit '' survives —
   // only undefined/null/non-string collapse to "unset".
   const tag = typeof a.tag === 'string' ? a.tag : null;
-  return { project: project, olderThan: olderThan, tag: tag };
+  return { rdmBin: rdmBin, project: project, olderThan: olderThan, tag: tag };
 }
 
 // CATEGORY — the fixed, deterministic order every category is considered in,
@@ -88,18 +128,23 @@ function parseBacklogArgs(args) {
 // entry's `analyzerPrompt(items, cfg)` inlines the grooming rules the
 // `rdm-backlog` skill used to carry as prose.
 
-// analyzerPreamble(title) — the shared READ-ONLY framing every analyzer
+// analyzerPreamble(title, cfg) — the shared READ-ONLY framing every analyzer
 // prompt opens with, mirroring review-refute-fix's "READ-ONLY reviewer"
 // instruction: propose text only, never execute a mutating command, and hold
 // destructive-if-wrong proposals (retire/merge/archive) to a stricter
 // confidence bar than purely additive ones (proposing a new roadmap).
-function analyzerPreamble(title) {
+//
+// The two example lookups name the CALLER'S rdm executable, like every other
+// command this engine emits: an example naming a binary absent from the
+// consumer's tree is the same defect as a proposal naming one.
+function analyzerPreamble(title, cfg) {
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
   return [
     'You are a READ-ONLY backlog-grooming analyst for the "' + title + '" category.',
     'Propose text ONLY. You must NEVER execute create/update/merge/archive/promote/commit/discard,',
     'or any other mutating rdm command — every action you propose is for a human to run later,',
-    'never executed by you. You may run read-only lookups only (e.g. `./target/debug/rdm roadmap',
-    'list`, `./target/debug/rdm search`) to inform your analysis.',
+    'never executed by you. You may run read-only lookups only (e.g. `' + bin + ' roadmap',
+    'list`, `' + bin + ' search`) to inform your analysis.',
     'Hold destructive-if-wrong actions (retire, merge, archive) to a STRICTER confidence bar than',
     'purely additive ones (proposing a new roadmap): if you are not confident, file an open question',
     'instead of guessing — never propose a merge/retire/archive/consolidate action you are unsure of.',
@@ -145,17 +190,18 @@ function outputContract() {
 // promptStaleTasks(items, cfg) — retire-vs-consolidate rules for stale_tasks.
 function promptStaleTasks(items, cfg) {
   const proj = projectFlag(cfg);
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
   return [
-    analyzerPreamble('Stale tasks'),
+    analyzerPreamble('Stale tasks', cfg),
     '',
     'For each task below, decide exactly ONE of:',
     '- Retire, if it reads as superseded or no longer relevant:',
-    '    ./target/debug/rdm task update <slug> --status wont-fix --reason "<why it is stale / superseded>" --no-edit' +
+    '    ' + bin + ' task update <slug> --status wont-fix --reason "<why it is stale / superseded>" --no-edit' +
       proj,
     '- Consolidate, if it is still valid work that fits a theme, into an existing roadmap:',
-    '    ./target/debug/rdm promote <slug> --into <roadmap> --no-edit' + proj,
+    '    ' + bin + ' promote <slug> --into <roadmap> --no-edit' + proj,
     '  or into a brand new one (no --no-edit/--body on this form — those apply only to --into):',
-    '    ./target/debug/rdm promote <slug> --roadmap-slug <new-slug>' + proj,
+    '    ' + bin + ' promote <slug> --roadmap-slug <new-slug>' + proj,
     '- Otherwise: file an open question. Do not guess.',
     '',
     autopilotFramingNote(),
@@ -169,12 +215,13 @@ function promptStaleTasks(items, cfg) {
 // promptDuplicateClusters(items, cfg) — survivor-pick rules for duplicate_clusters.
 function promptDuplicateClusters(items, cfg) {
   const proj = projectFlag(cfg);
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
   return [
-    analyzerPreamble('Duplicate clusters'),
+    analyzerPreamble('Duplicate clusters', cfg),
     '',
     'For each cluster below, pick a survivor — state the rule you used (most complete body, or',
     'earliest `created`) — and fold the rest into it:',
-    '    ./target/debug/rdm task merge <survivor> --from <other1> --from <other2> --no-edit' + proj,
+    '    ' + bin + ' task merge <survivor> --from <other1> --from <other2> --no-edit' + proj,
     'If no survivor is clearly best, file an open question instead. Do not guess.',
     '',
     itemsBlock(items),
@@ -186,20 +233,21 @@ function promptDuplicateClusters(items, cfg) {
 // promptTagClusters(items, cfg) — existing-roadmap-check rules for tag_clusters.
 function promptTagClusters(items, cfg) {
   const proj = projectFlag(cfg);
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
   return [
-    analyzerPreamble('Tag clusters'),
+    analyzerPreamble('Tag clusters', cfg),
     '',
     'A cluster of related tasks sharing one tag is a consolidation candidate. First check',
     '(read-only) whether a thematic roadmap already covers it:',
-    '    ./target/debug/rdm roadmap list' + proj,
-    '    ./target/debug/rdm search <tag> --type roadmap' + proj,
+    '    ' + bin + ' roadmap list' + proj,
+    '    ' + bin + ' search <tag> --type roadmap' + proj,
     'If one exists, propose one `promote --into` per task:',
-    '    ./target/debug/rdm promote <slug> --into <existing-roadmap> --no-edit' + proj,
+    '    ' + bin + ' promote <slug> --into <existing-roadmap> --no-edit' + proj,
     'If none exists, propose a create-then-fold sequence: first (no --no-edit/--body on this form —',
     'those apply only to --into):',
-    '    ./target/debug/rdm promote <first-slug> --roadmap-slug <new-thematic-slug>' + proj,
+    '    ' + bin + ' promote <first-slug> --roadmap-slug <new-thematic-slug>' + proj,
     'then for every remaining task in the cluster:',
-    '    ./target/debug/rdm promote <slug> --into <that-new-slug> --no-edit' + proj,
+    '    ' + bin + ' promote <slug> --into <that-new-slug> --no-edit' + proj,
     'Never propose both --into and --roadmap-slug for the same task — they are mutually exclusive.',
     '',
     autopilotFramingNote(),
@@ -213,12 +261,13 @@ function promptTagClusters(items, cfg) {
 // promptArchivableRoadmaps(items, cfg) — archive rationale for archivable_roadmaps.
 function promptArchivableRoadmaps(items, cfg) {
   const proj = projectFlag(cfg);
+  const bin = resolveRdmBin(cfg && cfg.rdmBin);
   return [
-    analyzerPreamble('Archivable roadmaps'),
+    analyzerPreamble('Archivable roadmaps', cfg),
     '',
     'Each roadmap below is already all-terminal (every phase done/wont-fix) but not yet archived.',
     'For each one, propose:',
-    '    ./target/debug/rdm roadmap archive <roadmap>' + proj,
+    '    ' + bin + ' roadmap archive <roadmap>' + proj,
     'with rationale "all phases terminal, not yet archived." Never add --force — these candidates',
     'never need it; --force exists only to override an INCOMPLETE roadmap, which is not this case.',
     '',
@@ -273,11 +322,12 @@ const ANALYSIS_SCHEMA = {
 // backlogReportCommand(cfg) — the read-only command that produces the report
 // this pipeline consumes. It is returned as TEXT for the ORCHESTRATOR to run;
 // there is no fetch agent any more. `cmd` is seeded from a literal read-only
-// command and only ever grows by appending flag text — never a mutating verb —
-// so the emitted command stays provably read-only by construction.
+// SUBCOMMAND — only the executable in front of it is caller-supplied — and only
+// ever grows by appending flag text, never a mutating verb, so the emitted
+// command stays provably read-only by construction.
 function backlogReportCommand(cfg) {
   const c = cfg || {};
-  let cmd = './target/debug/rdm backlog report --format json';
+  let cmd = resolveRdmBin(c.rdmBin) + ' backlog report --format json';
   if (c.olderThan != null) cmd += ' --older-than ' + c.olderThan;
   if (typeof c.tag === 'string' && c.tag !== '') cmd += ' --tag ' + c.tag;
   if (c.project) cmd += ' --project ' + c.project;
@@ -430,6 +480,8 @@ function buildBacklogPipeline(deps) {
 // Node-only exports for the verify harness. NOT part of the copied block — the
 // marker END is above this line, so a copy never carries these.
 export {
+  resolveRdmBin,
+  parseProjectArg,
   parseBacklogArgs,
   CATEGORY,
   ANALYSIS_SCHEMA,

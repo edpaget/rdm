@@ -68,7 +68,7 @@ PLUGIN_SKILLS="roadmap do review document estimate dispatch-phase autopilot land
 # Plugin-mode workflow file names (Decision 2: `rdm-wf-` prefix kept —
 # identical to the raw-skills surface).
 REVIEW_WF="rdm-wf-review-refute-fix.js"
-PLUGIN_WORKFLOWS="$REVIEW_WF"
+PLUGIN_WORKFLOWS="$REVIEW_WF rdm-wf-plan-review.js rdm-wf-estimate.js rdm-wf-backlog.js rdm-wf-document.js"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
@@ -224,9 +224,9 @@ say "1b. Emitting 'agent-config claude --plugin --out <tmp>'"
 pass "emitted into $TMP/plugin"
 
 # --- 2. structural / layout -----------------------------------------------
-say "2. Structural: manifest valid, 11 skills + 1 workflow at conventional paths, .claude-plugin/ holds only the manifest"
+say "2. Structural: manifest valid, 11 skills + 5 workflows at conventional paths, .claude-plugin/ holds only the manifest"
 if check_layout "$TMP/plugin"; then
-    pass "layout: manifest valid, all 11 skills + 1 workflow present, .claude-plugin/ clean"
+    pass "layout: manifest valid, all 11 skills + 5 workflows present, .claude-plugin/ clean"
 else
     fail "layout check failed (see lines above)"
 fi
