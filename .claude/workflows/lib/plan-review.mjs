@@ -568,12 +568,14 @@ function gatePendingClause(reportedUnit) {
 // `UNREFUTED_DISPOSITION` in the review core, rendered into every review skill.
 
 // --- Round-capping helpers (bounds repeated plan-review passes on one item) --
-// A ROUND AUDIT NOTE is appended to a non-`reviewed` unit's body after each
-// pass, following the shipped `## Estimate <difficulty> — <justification>`
-// body-note convention: a `## Plan Review Round <N> — <outcome>` header
-// followed by one bullet per surviving finding. Reading it back on the next
-// pass tells the driver which round it is on and what was already reported,
-// with no external state.
+// A ROUND AUDIT NOTE is rendered for a non-`reviewed` unit after each pass,
+// following the shipped `## Estimate <difficulty> — <justification>` body-note
+// convention: a `## Plan Review Round <N> — <outcome>` header followed by one
+// bullet per surviving finding. `formatRoundNote` below only RENDERS it — the
+// engine returns it to the caller as `roundNote` for a human-readable log, and
+// its inverse `parseRoundNotes` is never called from `reviewUnit`. Neither
+// function feeds the round channel; the driver's own round state comes solely
+// from `unit.priorReviews`, described below.
 //
 // IMPORTANT: repeat-filtering below is REPORTING-ONLY. It thins what gets
 // written to the audit note / shown to a human so an unresolved complaint
@@ -586,12 +588,15 @@ function gatePendingClause(reportedUnit) {
 // it) or an explicit human `wont-fix` removes a finding from the outcome.
 
 // --- The review-derived round channel ----------------------------------------
-// The persisted-review replacement for parseRoundNotes. Same `{ round, findings }`
-// shape, so everything downstream — `round = prior.round + 1`,
-// `classifyRoundOutcome(round, survivors)`, `partitionRepeats(survivors,
-// prior.findings)` — is literally unchanged and the round-3 cap and the
-// reporting-only repeat rule are preserved BY CONSTRUCTION rather than by a
-// second implementation.
+// The ONLY input to the round cap: `unit.priorReviews`, shaped into
+// `{ round, findings }` by `priorRoundFromReviews`/`priorFindingsFromReviews`
+// below. This channel is read UNCONDITIONALLY by `reviewUnit` — regardless of
+// whether THIS pass sets `persist` — so `round = prior.round + 1`,
+// `classifyRoundOutcome(round, survivors)`, and `partitionRepeats(survivors,
+// prior.findings)` engage as soon as at least one PRIOR pass persisted a
+// review for the target. No prior persisted review ⇒ `priorReviews` is empty
+// ⇒ round 1, the same "fails toward round 0" stance `priorRoundFromReviews`
+// documents below — there is no second, body-note-derived channel.
 
 // `extractPriorReviewsFromTranscript` is gone with the transcript it read. The
 // prior reviews now arrive as CALLER DATA (`priorReviews` per unit): the
@@ -786,14 +791,15 @@ function suppressWontFixed(survivors, wontFixedTexts) {
 // round classifies from the FULL (wont-fix-suppressed but repeat-unfiltered)
 // survivor set via classifyPlanOutcome, exactly as an uncapped run would.
 //
-// TWO CHANNELS, ONE CLASSIFIER. The prior `{ round, findings }` state now comes
-// from EITHER the `## Plan Review Round` body note (persist off) or the reviews
-// persisted on the target (persist on) — and that is the ONLY difference between
-// them. The channel supplies `{ round, findings }` and nothing else; this
-// function, its input (the repeat-UNFILTERED survivor list), and the
-// reporting-only rule on `partitionRepeats` are identical on both. A repeat can
-// therefore never age a still-present blocking finding out into a pass on either
-// channel.
+// ONE CHANNEL, ONE CLASSIFIER. The prior `{ round, findings }` state comes
+// solely from `unit.priorReviews` — the reviews already persisted on the
+// target, supplied by the caller — regardless of whether THIS pass sets
+// `persist`. There is no second, body-note-derived channel: `formatRoundNote`/
+// `parseRoundNotes` render/parse a human-readable audit note only and never
+// feed back into this function. This function, its input (the repeat-
+// UNFILTERED survivor list), and the reporting-only rule on `partitionRepeats`
+// are the only path, so a repeat can never age a still-present blocking
+// finding out into a pass.
 // Round 3+ then escalates only when that base outcome is still non-`reviewed`,
 // so an item can never loop forever on an unresolved finding — while a plan
 // that was genuinely fixed on the third pass still passes. The cap is an

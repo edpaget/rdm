@@ -70,11 +70,17 @@ repo. Run these yourself, in order, and report each exit status:
    a write. Findings marked `unrefuted: true` were reported, not verified — treat
    them under the disposition rule in the Review specification below.
 3. **Record the round** — a non-`reviewed` unit carries `roundNote`, the rendered
-   `## Plan Review Round N — <outcome>` block. Append it to the item's body (read
-   the current body, write the whole thing back) and commit, so the next pass can
-   read which round it is on. `--body` is whole-document-authoritative and there
-   is no patch-shaped write, so do the read-modify-write in **Bash** — keep the
-   body in a shell variable and never route it through your own output.
+   `## Plan Review Round N — <outcome>` block. This is a **human-readable log
+   only**: the engine never reads it back. The round-3 cap and repeat detection
+   instead come from `priorReviews` (the reviews already persisted on the
+   target), so they only engage across passes when at least one **prior** pass
+   actually persisted a review — if round-tracking matters, run the persist
+   ladder (step 1) even for an otherwise "informal" pass, not just this note.
+   Append `roundNote` to the item's body anyway (read the current body, write
+   the whole thing back) and commit, for a human audit trail. `--body` is
+   whole-document-authoritative and there is no patch-shaped write, so do the
+   read-modify-write in **Bash** — keep the body in a shell variable and never
+   route it through your own output.
 4. **Clear the gate** — see below.
 
 ### Applying the gate

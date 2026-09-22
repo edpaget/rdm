@@ -1680,21 +1680,35 @@ removed every `agentType` call site from `.claude/workflows/`, so all five
 engines — every one of them distributed since `agent-orchestrated-dispatch`
 phase 26 — thread none (see CLAUDE.md § `.claude/agents/`).
 
-**The round channel.** With `persist` on, plan review stops appending
-`## Plan Review Round <N>` notes to the reviewed document and derives the same
-`{ round, findings }` state from the reviews recorded on the target: the round
-number is the count of non-draft reviews (`priorRoundFromReviews`), and the
-prior round's findings are the latest review's comment bodies read back through
-`parseCommentHeader` (`priorFindingsFromReviews`). A human's review on the same
-target legitimately advances the round — a round is a pass over the plan,
-whoever made it. Everything downstream is unchanged, so the round-3 escalation
-cap and the REPORTING-ONLY repeat rule are preserved by construction rather than
-by a second implementation. An `--implementation-plan` target persists **only
+**The round channel.** Round state comes from exactly one channel, read
+unconditionally by `reviewUnit` regardless of whether the CURRENT pass sets
+`persist`: `unit.priorReviews`, the reviews already persisted on the target,
+which the caller supplies (sourced from `rdm review list --on <target>
+--format json`, normally by the orchestrator). It shapes into
+`{ round, findings }` — the round number is the count of non-draft prior
+reviews (`priorRoundFromReviews`), and the prior round's findings are the
+latest prior review's comment bodies read back through `parseCommentHeader`
+(`priorFindingsFromReviews`). A human's review on the same target legitimately
+advances the round — a round is a pass over the plan, whoever made it.
+Everything downstream is unchanged, so the round-3 escalation cap and the
+REPORTING-ONLY repeat rule are preserved by construction rather than by a
+second implementation. No prior persisted review for the target — none exists
+yet, or the caller passed an empty/absent `priorReviews` — fails toward round
+1, the same "fails toward round 0" stance `priorRoundFromReviews` takes on an
+empty list.
+
+The engine also RENDERS a `## Plan Review Round <N>` audit note
+(`formatRoundNote`) and returns it to the caller as `roundNote`, a
+human-readable log only; appending it to the document is the caller's write,
+and its inverse, `parseRoundNotes`, is never called from `reviewUnit` — the
+note is not a second input to the round channel. An `--implementation-plan`
+target does not use the round channel at all: `classifyPlanOutcome`, not
+`classifyRoundOutcome`, decides its outcome, and that target persists **only
 when the caller names the plan document it handed over**, with the `planSlug`
-argument below; a free-form plan pasted into the args with no slug has nothing to
-hang a review off, so persist is forced off there (`persistIgnored`) and it keeps
-the in-context note. With `persist` off, the body-note channel behaves exactly as
-it always has.
+argument below — independent of whether any prior review exists. A free-form
+plan pasted into the args with no slug has nothing to hang a review off, so
+persist is forced off there (`persistIgnored`) and it keeps the in-context
+note.
 
 **`planSlug` arg.** The slug of the persisted `plan/<slug>` document under
 review, for an `--implementation-plan` target. Read from the STRUCTURED `args`

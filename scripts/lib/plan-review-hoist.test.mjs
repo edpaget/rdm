@@ -200,6 +200,20 @@ test('A9: the round channel reads the prior reviews the CALLER supplied', async 
   assert.equal(result.outcome, 'escalated', 'round 3 with a live blocking finding escalates');
 });
 
+test('A9b: the round channel is unaffected by THIS pass\'s own persist flag', async () => {
+  const priorReviews = [
+    { id: '2026-01-01-0000-aaaa', state: 'submitted', created: '2026-01-01', comments: [] },
+    { id: '2026-01-02-0000-bbbb', state: 'submitted', created: '2026-01-02', comments: [] },
+  ];
+  const blocking = { id: 'c1', concern: 'coherence', severity: 'blocking', confidence: 95, what_fails: 'still ambiguous' };
+  const { result } = await driveLib(
+    { roadmap: 'r', phase: 'phase-1-x', tags: ['needs-plan-review'], priorReviews, persist: true },
+    { survivors: [blocking] }
+  );
+  assert.equal(result.units[0].round, 3, 'the same two recorded reviews put this pass on round 3, persist on or off');
+  assert.equal(result.outcome, 'escalated', 'round 3 with a live blocking finding escalates identically with persist on');
+});
+
 test('A10: persist RETURNS the ladder naming the unit target; no persisting agent runs', async () => {
   const { result, labels } = await driveLib({ roadmap: 'r', phase: 'phase-1-x', tags: [], persist: true });
   assert.deepEqual(labels, []);
