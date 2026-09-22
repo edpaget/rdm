@@ -1333,8 +1333,13 @@ Rules:
     (the normal case there)
   - `wholeDocumentIntended` — the finding never carried a `quote` at all
   - `degraded` — the finding carried a `quote` but the requested anchor was
-    dropped at build time (`persistAnchorFor`'s `reason` — `path-missing` or
-    `outside-hunk`)
+    dropped, either at BUILD time (`persistAnchorFor`'s `reason` —
+    `path-missing` or `outside-hunk`) or at RUN time (a build-time-valid
+    `--path`/`--quote` pair the real binary still refused once the ladder
+    ran — see "The all-anchors-degraded signal (AC4)" below). Both cases
+    persist the SAME `anchor: degraded` header; the header does not
+    distinguish which stage caused it, only the ladder's own runtime tally
+    does.
 
   Computed by `persistAnchorState(finding, target, opts)`, which re-derives the
   SAME decision `persistAnchorFor` makes for the writer, so the header can
@@ -1433,28 +1438,46 @@ gets `--quote`; one without becomes a whole-document comment. `review
 start` always carries a NON-EMPTY `--body`, or `submit_review` would raise
 `ReviewEmpty` on a clean review with no comments.
 
-**The anchoring ladder is CALLER PROSE now, and it is BOUNDED and per-error.**
-It is stated in the skill that runs the commands, not in the engine that builds
-them, because the engine no longer runs anything. Each rung names the real
-rdm-core refusal it recovers from, and the bound is explicit: AT MOST TWO
-ATTEMPTS PER FINDING, then a whole-document write, never a third.
+**The anchoring ladder is split between two mechanisms now: MECHANICAL, inside
+the emitted ladder itself, for the one line that carries both `--path` and
+`--quote` (a change-target, path-anchored comment); CALLER PROSE, bounded and
+per-error, for everything else.**
+
+For a change-target, path-anchored comment (`anchor.path !== null` —
+`persistAnchorFor` already validated the path at build time), the emitted
+`review comment --path … --quote …` line is wrapped in a shell `if`: on
+refusal — for ANY reason, `QuoteOutsideChangedHunks`, `ChangePathNotInRevision`,
+`ChangePathNotAFile`, or anything else the real binary reports for that
+specific line — the SAME comment is re-emitted, in the SAME script, whole-document
+(`--path`/`--quote` both dropped), header-rewritten to `anchor: degraded`, and
+tallied into a run-time counter (`RDM_PERSIST_RUNTIME_DEGRADED`). This is a
+mechanical property of the emitted bytes, not something a caller has to
+remember to do — see "The all-anchors-degraded signal (AC4)" below for how the
+tally reaches the ladder's own `anchorsDegraded=` line.
+
+Every other refusal is still CALLER PROSE, stated in the skill that runs the
+commands (the engine builds the ladder but never runs it), each rung naming
+the real rdm-core refusal it recovers from, bounded to AT MOST TWO ATTEMPTS PER
+FINDING, then a whole-document write, never a third:
 
 | refusal | rung |
 | --- | --- |
 | `quote ... occurs N times` (`QuoteAmbiguous`) | retry with `--occurrence 1` |
 | `quote ... not found` (`QuoteNotFound`) | drop `--quote`/`--occurrence` |
 | `--occurrence N is out of range` (`QuoteOccurrenceOutOfRange`) | drop `--quote`/`--occurrence` |
-| `is not touched by <base>..<head>` (`QuoteOutsideChangedHunks`) | drop `--path`/`--quote`/`--occurrence` |
-| `does not exist at <head>` (`ChangePathNotInRevision`) | drop the same three |
-| `is a directory at <head>` (`ChangePathNotAFile`) | drop the same three |
 | `--path only applies to a change review` | drop ONLY `--path` |
 | `review start` refused the target | **park** — never choose a different target |
 | anything else | **NEVER blanket-fallback** — stop and report the failure |
 
-That last row is load-bearing: a Git or source-identity failure (a
-`review source:` error, a source-repo discovery failure, an invalid stored
-change revision, a moved HEAD) must SURFACE rather than be laundered into a
-whole-document comment by a blanket flag-strip.
+The three change-target `--path`+`--quote` refusals
+(`QuoteOutsideChangedHunks`/`ChangePathNotInRevision`/`ChangePathNotAFile`)
+used to be caller-prose rungs here too; they are now the mechanical case above
+and no longer need a caller to remember them.
+
+The last remaining "anything else" row is load-bearing: a Git or
+source-identity failure (a `review source:` error, a source-repo discovery
+failure, an invalid stored change revision, a moved HEAD) must SURFACE rather
+than be laundered into a whole-document comment by a blanket flag-strip.
 
 **An unanchorable quote is DOWNGRADED at build time, never emitted.**
 `rdm review comment` on a `change/<sha>` review refuses `--quote` without
@@ -1483,6 +1506,12 @@ usable path is written whole-document instead. Two cases reach it:
 plan-repo document target is unaffected: there a bare `--quote` is the normal,
 correct anchor and the array is empty.
 
+This is the BUILD-TIME half of degradation only — a finding whose declared
+`--path` passes every build-time check can still be refused once the ladder
+actually runs (see the mechanical retry described above and "The
+all-anchors-degraded signal (AC4)" below), which `persistPreDegradedAnchors`
+cannot see, because nothing has run yet when it is computed.
+
 **A degraded anchor is also reported in the review's OWN summary.**
 `persistDegradationClause(result, target, opts)` composes
 `persistPreDegradedAnchors`'s data into a one-line clause — "N of M requested
@@ -1504,36 +1533,69 @@ comment.
 is a stronger case than an ordinary partially-degraded one — the persisted
 review carries no useful per-file anchoring at all — and a caller must be able
 to tell the two apart WITHOUT parsing `persistDegradationClause`'s prose.
-`persistDegradedSummary(result, target, opts)` is the machine-readable
-counterpart: `{ requested, degraded, all }`, where `requested` is how many
-survivors asked for a `--quote` anchor, `degraded` is how many were dropped at
-build time (the same count the prose clause composes), and `all` is `true`
-ONLY when at least one anchor was requested and every single one degraded. A
-run with zero requested anchors, or with some but not all degraded, gets
-`all: false`.
 
-Two projections of the same computation:
+`persistDegradedSummary(result, target, opts)` is the BUILD-TIME half:
+`{ requested, degraded, all }`, where `requested` is how many survivors asked
+for a `--quote` anchor and `degraded` is how many were dropped before a single
+command ran (the same count the prose clause composes). It cannot see a
+run-time refusal, because nothing has run yet when it is computed — see the
+mechanical retry above.
 
-- The persist ladder's LAST line, `printf 'anchorsDegraded=%s\n' '<value>'`,
-  baked at BUILD time (not a runtime shell computation — the survivor list and
-  `opts` are already fully known when the command list is built) to one of
-  `all` / `partial` / `none`.
-- `rdm-wf-review-refute-fix.js`'s standalone code-review path (the driver
-  region, not the stamped block) attaches the same `{ requested, degraded, all
-  }` object as `result.persistDegraded` alongside `persistCommands` /
-  `persistScript`, whenever a persist ladder was built.
+The REAL, post-run result — build-time drops PLUS run-time ones — has exactly
+one authoritative source: **the persist ladder's own trailing line**,
+`printf 'anchorsDegraded=%s\n' "$RDM_PERSIST_ANCHORS_DEGRADED"`. Unlike the
+rest of the ladder, this line's VALUE is a genuine shell computation, not baked
+in at build time: the ladder combines the build-time `degraded` count (a
+literal integer, known when the command list is built) with
+`RDM_PERSIST_RUNTIME_DEGRADED` (the counter the mechanical retry above
+increments), and buckets the total against the build-time `requested` count
+into `all` / `partial` / `none` with a shell `if`/`elif`/`else`. `all` fires
+ONLY when at least one anchor was requested and every single one degraded,
+whichever stage caused it; a run with zero requested anchors, or with some but
+not all degraded, prints `partial` or `none`.
 
-Like `persistDegradationClause`, this is a pure BUILD-TIME computation over
-data already in hand and does NOT touch `classifyOutcome`/`outcome` — the same
-recorded design decision applies. **The caller is responsible for acting on
-it.** `.claude/skills/rdm-dispatch-phase/SKILL.md` (and the shipped
-`rdm-core/src/templates/skill-dispatch-phase-cli.md`) check
-`result.persistDegraded.all` after running the persist ladder and PARK
-`blocked` when it is `true`, even though the ladder itself exited 0 — a review
-that landed with no usable anchors at all should not be reported as ordinary
-successful persistence. A partially-degraded run is not a park; it proceeds
-normally, with the degradation already visible in the review's own summary and
-per-comment `anchor` headers.
+`rdm-wf-review-refute-fix.js`'s standalone code-review path (the driver
+region, not the stamped block) ALSO attaches `persistDegradedSummary`'s
+`{ requested, degraded, all }` object as `result.persistDegraded`, alongside
+`persistCommands` / `persistScript` — but this is a BUILD-TIME PREVIEW ONLY,
+computed before the ladder has run, and it can under-report a run whose
+anchors degraded at run time. **A caller MUST key its park decision off the
+ladder's own printed `anchorsDegraded=` line, not off `result.persistDegraded`
+alone.**
+
+Neither the build-time preview nor the ladder's own printed line touches
+`classifyOutcome`/`outcome` — the same recorded design decision applies. **The
+caller is responsible for acting on the printed line.**
+`.claude/skills/rdm-dispatch-phase/SKILL.md` (and the shipped
+`rdm-core/src/templates/skill-dispatch-phase-cli.md`) run the persist ladder,
+capture its output, and PARK `blocked` when its last line reads
+`anchorsDegraded=all`, even though the ladder itself exited 0 — a review that
+landed with no usable anchors at all should not be reported as ordinary
+successful persistence. A partially-degraded run (`anchorsDegraded=partial`)
+is not a park; it proceeds normally, with the degradation already visible in
+the review's own summary and per-comment `anchor` headers.
+
+**The engine's own headless `gate: true` path reads the same signal, through
+an environment variable.** `persistCommands`/`persistScript` and
+`gateCommands`/`gateScript` are two SEPARATE shell sessions the orchestrator
+pastes in turn, so the gate script — built before the persist ladder has ever
+run — cannot see a JS-side value for the run-time result. Instead, when both
+`persist` and `gate` are requested together and the outcome maps to
+`reviewed`, the emitted `gateScript` opens with a guard reading the
+`RDM_PERSIST_ANCHORS_DEGRADED` environment variable (defaulting to `none` when
+unset): when it reads `all`, the gate script refuses to write `reviewed` and
+exits nonzero with an actionable message instead, rather than writing the
+status. A caller running both ladders is responsible for threading the
+value through — setting `RDM_PERSIST_ANCHORS_DEGRADED` from the persist
+ladder's own printed `anchorsDegraded=<value>` line before running the gate
+script. This puts the all-degraded rule in the ONE canonical engine
+(`rdm-wf-review-refute-fix.js`) rather than duplicated per consumer, which is
+how it had already drifted: `rdm-dispatch-phase`'s prose knew the rule, the
+engine's own `gate: true` path and the `rdm-review` skill did not. No shipped
+consumer currently passes `gate: true` (both `rdm-dispatch-phase` and
+`rdm-review` always pass `gate: false` and own their own status write), so
+this is a completeness fix for the documented capability rather than a change
+in any current caller's behavior.
 
 **Verdict mapping** (`PERSIST_VERDICT` / `persistVerdictFor`, which THROWS on an
 unrecognized outcome rather than defaulting to `comment`):
@@ -1563,10 +1625,13 @@ both are deliberate:
   is decided once, from the survivors and the AC table, before any write is even
   described. A `reviewed` review whose anchor would not land is still `reviewed`;
   what to do about the anchor is the caller's, not the verdict's.
-- **The anchoring fallback is prose, not a gate.** A caller skill states it: if a
-  `review comment` line is refused for its anchor, re-run that one line with
-  `--path`, `--quote` and `--occurrence` removed to leave a whole-document
-  comment; if `review start` itself is refused, park rather than choosing a
+- **The anchoring fallback is split.** For the one line that carries both
+  `--path` and `--quote` (a change-target, path-anchored comment), the retry
+  is now MECHANICAL, inside the emitted ladder itself — see "The anchoring
+  ladder" above. For everything else, it is still prose a caller skill states:
+  if a bare `review comment --quote` line is refused, retry with
+  `--occurrence 1` or drop `--quote`/`--occurrence` per the refusal table
+  above; if `review start` itself is refused, park rather than choosing a
   different target.
 
 The OUTCOME gains a `reviewId` key **only when the persist step actually ran** —

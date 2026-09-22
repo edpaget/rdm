@@ -458,22 +458,25 @@ one Bash call, and report the exit status:
 ```
 
 It prints `reviewId=<id>` and then `anchorsDegraded=<all|partial|none>` on success — append the id to
-`reviewIds`. If one `review comment` line is refused for its anchor, re-run **that line only** with
-`--path`, `--quote` and `--occurrence` removed, leaving a whole-document comment, and say so. If
-`review start` itself is refused, **park** — never invent a different target. A nonzero exit anywhere
-else is a park.
+`reviewIds`. A path-anchored comment (one carrying both `--path` and `--quote`) that the real binary
+refuses at run time — a quote outside a hunk the change touches, a path outside the reviewed range —
+is retried **mechanically, by the ladder itself**: it lands whole-document, header-marked `anchor:
+degraded`, and is counted into the printed `anchorsDegraded=` line. There is nothing for you to
+re-run by hand for that case. If `review start` itself is refused, **park** — never invent a different
+target. A nonzero exit anywhere else is a park.
 
-**Check `result.persistDegraded` before treating the run as ordinary persistence.** When
-`persistDegraded.all === true` — the run requested at least one anchor and **every** one of them was
-dropped at build time — **park** `blocked` with `[code] every requested comment anchor degraded to
-whole-document at persist time (<persistDegraded.degraded>/<persistDegraded.requested>); see the
-review's own summary and each comment's \`anchor\` header`, even though the ladder itself exited 0.
-This is deliberately **not** folded into `outcome`/`classifyOutcome` (see
-`docs/workflow-schemas.md` § "Persisting a review" — outcome classification stays independent of
-anchor plumbing), so it is a **separate check you make yourself** after running the ladder. A
-partially-degraded run (`persistDegraded.all === false`, `persistDegraded.degraded > 0`) is not a
-park — proceed normally; the degradation is already visible in the persisted review's own summary and
-per-comment `anchor` headers.
+**Check the ladder's own printed `anchorsDegraded=<all|partial|none>` line before treating the run as
+ordinary persistence — not `result.persistDegraded`, which is a build-time-only preview and can
+under-report a run whose anchors degraded at run time.** When that printed line reads
+`anchorsDegraded=all` — the run requested at least one anchor and **every** one of them degraded,
+whether at build time or at run time — **park** `blocked` with `[code] every requested comment anchor
+degraded to whole-document; see the review's own summary and each comment's \`anchor\` header`, even
+though the ladder itself exited 0. This is deliberately **not** folded into `outcome`/`classifyOutcome`
+(see `docs/workflow-schemas.md` § "Persisting a review" — outcome classification stays independent of
+anchor plumbing), so it is a **separate check you make yourself** after running the ladder, from its
+printed output rather than from `result`. A partially-degraded run (`anchorsDegraded=partial`) is not
+a park — proceed normally; the degradation is already visible in the persisted review's own summary
+and per-comment `anchor` headers.
 
 `gate: false` keeps the status write here, in step 14, where the refusal can be surfaced.
 

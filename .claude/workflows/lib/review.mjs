@@ -2113,6 +2113,15 @@ function persistReviewCommands(result, target, cfg, opts) {
   // a successful review that does not exist. The empty-id check below is the
   // second half: `review start` can also "succeed" into output this ladder cannot
   // read an id out of, and an empty id must never reach the comment loop.
+  //
+  // ONE NAMED EXCEPTION: a path-anchored `review comment` line (below) is the
+  // CONDITION of an `if`, never `|| exit 1`ed directly — a build-time-valid
+  // `--path`/`--quote` pair can still be refused at RUN TIME (a quote outside a
+  // hunk the change touches, a path outside the reviewed range), and that must
+  // retry whole-document rather than abort the whole ladder. Both branches of
+  // that `if` are still fully guarded: the `else` arm's fallback command carries
+  // its own `|| exit 1`, so the line as a WHOLE can still only ever succeed or
+  // abort the ladder — it just tries a second shape before giving up.
   const cmds = [];
   if (o.source) {
     cmds.push('cd ' + shellQuote(o.source.path) + ' || exit 1');
@@ -2161,6 +2170,15 @@ function persistReviewCommands(result, target, cfg, opts) {
       '\n' +
       '[ -n "$RDM_REVIEW_ID" ] || exit 1'
   );
+  // RDM_PERSIST_RUNTIME_DEGRADED — the RUN-TIME half of the anchor-degradation
+  // tally, unconditionally initialized so the final arithmetic below never
+  // references an undefined variable, even when no survivor ever attempts a
+  // path-anchored comment. `persistDegradedSummary`/`persistPreDegradedAnchors`
+  // only ever see the BUILD-TIME half (an anchor `persistAnchorFor` already
+  // decided could not be attempted at all); this counts the OTHER way an
+  // anchor is lost — a build-time-valid `--path`/`--quote` pair the real
+  // binary refuses once the ladder actually runs (ac-1/correctness-1/arch-1).
+  cmds.push('RDM_PERSIST_RUNTIME_DEGRADED=0');
   for (let i = 0; i < survivors.length; i++) {
     const f = survivors[i] || {};
     // ONE decision, shared with the pre-degradation report and the comment
@@ -2170,23 +2188,46 @@ function persistReviewCommands(result, target, cfg, opts) {
     const anchorPath = anchor.path;
     // persistAnchorState re-derives the SAME persistAnchorFor decision above
     // (cheap and pure) rather than duplicating its branching here, so the
-    // header can never disagree with what the lines below actually emit.
+    // header can never disagree with what the lines below actually emit —
+    // for the primary attempt. The path-anchored branch below additionally
+    // pre-builds a `degraded` header variant for the runtime-fallback body,
+    // since which one actually gets persisted is decided by the shell, not
+    // by this function.
     let cmd = persistCapture('RDM_PERSIST_BODY', 'RDM_PERSIST_BODY_EOF', formatCommentBody(f, persistAnchorState(f, target, o))) + '\n';
     if (anchor.quote) {
       cmd += persistCapture('RDM_PERSIST_QUOTE', 'RDM_PERSIST_QUOTE_EOF', f.quote) + '\n';
-      let pathFlag = '';
       if (anchorPath !== null) {
+        // PATH-ANCHORED COMMENT, RETRIED AT RUN TIME. `persistAnchorFor`
+        // already validated `anchorPath` at BUILD TIME, but only the real
+        // binary knows whether `f.quote` sits inside a hunk the change
+        // actually touches (`outside-hunk`) or whether `anchorPath` is in
+        // the reviewed range at all — a build-time-valid pair can still be
+        // REFUSED once this line actually runs. So it is never `|| exit 1`ed
+        // straight away: on refusal the SAME comment is re-emitted
+        // whole-document, header-rewritten to `anchor: degraded`
+        // (RDM_PERSIST_BODY_DEGRADED), and tallied into
+        // RDM_PERSIST_RUNTIME_DEGRADED so the tail `anchorsDegraded=` line
+        // below reports the REAL result, not just the build-time one.
         cmd += persistCapture('RDM_PERSIST_PATH', 'RDM_PERSIST_PATH_EOF', anchorPath) + '\n';
-        pathFlag = ' --path "$RDM_PERSIST_PATH"';
+        cmd += persistCapture('RDM_PERSIST_BODY_DEGRADED', 'RDM_PERSIST_BODY_DEGRADED_EOF', formatCommentBody(f, 'degraded')) + '\n';
+        cmd +=
+          'if ' +
+          bin +
+          ' review comment "$RDM_REVIEW_ID" --path "$RDM_PERSIST_PATH" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' +
+          proj +
+          '; then\n' +
+          ':\n' +
+          'else\n' +
+          IND +
+          bin +
+          ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY_DEGRADED" --no-edit' +
+          proj +
+          ' || exit 1\n' +
+          'RDM_PERSIST_RUNTIME_DEGRADED=$((RDM_PERSIST_RUNTIME_DEGRADED + 1))\n' +
+          'fi';
+      } else {
+        cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' || exit 1';
       }
-      cmd +=
-        IND +
-        bin +
-        ' review comment "$RDM_REVIEW_ID"' +
-        pathFlag +
-        ' --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' +
-        proj +
-        ' || exit 1';
     } else {
       cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' || exit 1';
     }
@@ -2197,18 +2238,34 @@ function persistReviewCommands(result, target, cfg, opts) {
   // work is never swept in. NEVER `--all`, and never `rdm discard`.
   cmds.push(IND + bin + ' commit -m ' + shellQuote('chore(plan): record ' + mode + ' review of ' + target) + ' || exit 1');
   cmds.push('printf \'reviewId=%s\\n\' "$RDM_REVIEW_ID"');
-  // AC4's caller-visible signal: baked at BUILD TIME (the survivor list and
-  // opts are already fully known here — nothing about this line depends on
-  // what the shell above actually does), so this is plain data, not a second
-  // runtime computation that could drift from `persistDegradedSummary`. `all`
-  // fires ONLY when at least one anchor was requested and every one of them
-  // degraded; `partial` covers 1..N-1 of N; `none` covers zero degraded
-  // (including the common case of zero anchors requested at all). See
-  // `persistDegradedSummary` and docs/workflow-schemas.md § "Persisting a
-  // review".
+  // AC4's caller-visible signal — now the REAL, post-run result: the
+  // BUILD-TIME half (`persistDegradedSummary`, computed purely from the
+  // survivor list and opts, nothing about it depends on what the shell above
+  // actually does) PLUS the RUN-TIME half (RDM_PERSIST_RUNTIME_DEGRADED,
+  // tallied by the loop above as each path-anchored attempt either lands or
+  // is retried whole-document). `all` fires ONLY when at least one anchor was
+  // requested and every one of them degraded, whichever half caused it;
+  // `partial` covers 1..N-1 of N; `none` covers zero degraded (including the
+  // common case of zero anchors requested at all). See `persistDegradedSummary`
+  // and docs/workflow-schemas.md § "Persisting a review".
   const degradedSummary = persistDegradedSummary(result, target, o);
-  const anchorsDegraded = degradedSummary.all ? 'all' : degradedSummary.degraded > 0 ? 'partial' : 'none';
-  cmds.push('printf \'anchorsDegraded=%s\\n\' ' + shellQuote(anchorsDegraded));
+  cmds.push(
+    'RDM_PERSIST_TOTAL_DEGRADED=$((' +
+      degradedSummary.degraded +
+      ' + RDM_PERSIST_RUNTIME_DEGRADED))\n' +
+      'if [ ' +
+      degradedSummary.requested +
+      ' -gt 0 ] && [ "$RDM_PERSIST_TOTAL_DEGRADED" -eq ' +
+      degradedSummary.requested +
+      ' ]; then\n' +
+      'RDM_PERSIST_ANCHORS_DEGRADED=all\n' +
+      'elif [ "$RDM_PERSIST_TOTAL_DEGRADED" -gt 0 ]; then\n' +
+      'RDM_PERSIST_ANCHORS_DEGRADED=partial\n' +
+      'else\n' +
+      'RDM_PERSIST_ANCHORS_DEGRADED=none\n' +
+      'fi'
+  );
+  cmds.push('printf \'anchorsDegraded=%s\\n\' "$RDM_PERSIST_ANCHORS_DEGRADED"');
   return cmds;
 }
 

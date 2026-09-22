@@ -303,18 +303,22 @@ Block for its returned result. **The engine reads nothing and writes nothing**: 
 and refuter agents and no others. `persist: true` therefore returns the ladder as `persistCommands` /
 `persistScript` rather than writing anything — **you** run that Bash yourself, in one session, and
 report its exit status. It prints `reviewId=<id>` and then `anchorsDegraded=<all|partial|none>` on
-success. If one `review comment` line is refused for its anchor, re-run that line only with `--path`,
-`--quote` and `--occurrence` removed; if `review start` itself is refused, park rather than choosing
-another target. `gate: false` keeps the status write here, in step 13, where a refusal can be
-surfaced.
+success. A path-anchored comment (one carrying both `--path` and `--quote`) that the real binary
+refuses at run time is retried **mechanically, by the ladder itself** — it lands whole-document,
+header-marked `anchor: degraded`, and is counted into the printed `anchorsDegraded=` line, so there is
+nothing for you to re-run by hand for that case. If `review start` itself is refused, park rather than
+choosing another target.  `gate: false` keeps the status write here, in step 13, where a refusal can
+be surfaced.
 
-Then check `result.persistDegraded` before treating the run as ordinary persistence: when
-`persistDegraded.all === true` — every requested comment anchor degraded to whole-document at build
-time, not just some of them — park `blocked` with `[code] every requested comment anchor degraded to
-whole-document at persist time; see the review's own summary and each comment's \`anchor\` header`,
-even though the ladder itself exited 0. This is not folded into `outcome` (outcome classification
-stays independent of anchor plumbing), so it is a separate check you make yourself after running the
-ladder. A partially-degraded run (`persistDegraded.all === false`) is not a park.
+**Check the ladder's own printed `anchorsDegraded=<all|partial|none>` line before treating the run as
+ordinary persistence — not `result.persistDegraded`, which is a build-time-only preview and can
+under-report a run whose anchors degraded at run time.** When that printed line reads
+`anchorsDegraded=all` — every requested comment anchor degraded to whole-document, whether at build
+time or at run time — park `blocked` with `[code] every requested comment anchor degraded to
+whole-document; see the review's own summary and each comment's \`anchor\` header`, even though the
+ladder itself exited 0. This is not folded into `outcome` (outcome classification stays independent of
+anchor plumbing), so it is a separate check you make yourself after running the ladder, from its
+output rather than from `result`. A partially-degraded run (`anchorsDegraded=partial`) is not a park.
 
 Optionally add `reviewers: [...]` — **your** judgment about what this diff touches. Omit the key to
 run every code reviewer; that is the safe default and the right choice when you are unsure. An

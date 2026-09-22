@@ -259,11 +259,22 @@ function addWorktree(ref) {
   }).trim();
 }
 
-/** One real commit on a worktree's branch, so the reviewed range is non-empty. */
-function pin(worktree, filename) {
-  fs.writeFileSync(path.join(worktree, filename), 'shipped\n');
-  git(['add', filename], worktree);
-  git(['commit', '--quiet', '-m', 'feat: ' + filename], worktree);
+/**
+ * One real commit on a worktree's branch, so the reviewed range is non-empty.
+ * `filenames` is a single path or an array of paths, all committed together —
+ * a subdirectory path (e.g. `'dir/roadmap-work.txt'`) is created on demand,
+ * so a test needing a file OUTSIDE the worktree root (the suffixed-path
+ * regression below) doesn't need its own separate pinned commit.
+ */
+function pin(worktree, filenames) {
+  const files = Array.isArray(filenames) ? filenames : [filenames];
+  for (const f of files) {
+    const full = path.join(worktree, f);
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    fs.writeFileSync(full, 'shipped\n');
+    git(['add', f], worktree);
+  }
+  git(['commit', '--quiet', '-m', 'feat: ' + files.join(', ')], worktree);
   return {
     source: worktree,
     base: git(['rev-parse', 'main'], worktree),
@@ -272,7 +283,7 @@ function pin(worktree, filename) {
   };
 }
 
-const ROADMAP_PIN = pin(addWorktree(ROADMAP), 'roadmap-work.txt');
+const ROADMAP_PIN = pin(addWorktree(ROADMAP), ['roadmap-work.txt', 'dir/roadmap-work.txt']);
 const TASK_PIN = pin(addWorktree('task/' + TASK), 'task-work.txt');
 
 const COMMON = { mode: 'code', rdmBin: RDM, project: PROJECT, gate: true };
@@ -455,12 +466,24 @@ test('the persist ladder records a real review: a real `--path` code anchor from
 test('a finder-declared `path` carrying a `:line` suffix still lands a real anchor, and the ladder completes', async () => {
   // A finder prompt-matching the adjacent `location: <path>:<line>` line
   // sometimes tacks a line suffix onto the STRUCTURED `path` field too, even
-  // though the prompt asks for a bare path there. `isRepoRelativePath` alone
-  // would wrongly accept `roadmap-work.txt:1` (it still contains no `/`, but
-  // does end in a non-extension-shaped suffix) as a path — the real binary
-  // then refuses the resulting `--path`. `persistAnchorFor` strips the suffix
-  // before validating, so this must still land a real, landed `--path` anchor
-  // rather than degrading.
+  // though the prompt asks for a bare path there. Regression coverage: the
+  // fixture MUST be a `:line`-suffixed path that CONTAINS A SLASH
+  // (`dir/roadmap-work.txt:1`), with a prose-only `location` that no fallback
+  // can rescue it through. A slash-free suffixed path like
+  // `roadmap-work.txt:1` does NOT exercise the fix at all — `isRepoRelativePath`
+  // already REJECTS it outright (no `/`, and `.txt:1` does not match the
+  // extension regex), so if the `stripPathLineSuffix` call in
+  // `persistAnchorFor` were deleted, the declared path would be rejected and
+  // the code would fall back to `pathFromLocation('roadmap-work.txt:1')`,
+  // landing the SAME anchor either way — a test built on that fixture cannot
+  // fail no matter which behavior runs. `dir/roadmap-work.txt:1` DOES contain
+  // a slash, so `isRepoRelativePath` accepts it whole, suffix and all,
+  // without the strip: the real binary would then be handed a literal
+  // `--path 'dir/roadmap-work.txt:1'`, which names no file, and (now that a
+  // refused path-anchored comment retries whole-document rather than
+  // aborting the ladder — see the runtime-degradation test below) the
+  // comment would land `anchor: degraded` instead of `anchor: path`. Either
+  // way this test's assertions below only pass when the strip is applied.
   const { result } = await drive(
     { ...COMMON, gate: false, persist: true, implements: 'plan/' + PLAN, roadmap: ROADMAP, phase: 'phase-2-dirty', ...ROADMAP_PIN },
     {
@@ -469,10 +492,12 @@ test('a finder-declared `path` carrying a `:line` suffix still lands a real anch
       severity: 'blocking',
       confidence: 90,
       what_fails: 'it drops a write',
-      location: 'roadmap-work.txt:1',
-      // The finder-declared path itself carries the `:1` line suffix this
-      // finding's fix strips before validating.
-      path: 'roadmap-work.txt:1',
+      // Prose-only, deliberately not itself a derivable repo-relative path —
+      // so `pathFromLocation` cannot rescue a broken strip either.
+      location: 'see the gate step',
+      // The finder-declared path carries both a subdirectory AND the `:1`
+      // line suffix this finding's fix strips before validating.
+      path: 'dir/roadmap-work.txt:1',
       quote: 'shipped',
     }
   );
@@ -488,7 +513,7 @@ test('a finder-declared `path` carrying a `:line` suffix still lands a real anch
   assert.equal(review.comments[0].anchor.anchor_type, 'file-quote', 'the suffixed path must still land a real file anchor');
   assert.equal(
     review.comments[0].anchor.path,
-    'roadmap-work.txt',
+    'dir/roadmap-work.txt',
     'the `:1` line suffix must be stripped from the declared path before it is used'
   );
   assert.equal(
@@ -497,6 +522,173 @@ test('a finder-declared `path` carrying a `:line` suffix still lands a real anch
     'a landed anchor, never `degraded` — the suffix is tolerated, not treated as an invalid path'
   );
   assert.deepEqual(result.persistDegraded, { requested: 1, degraded: 0, all: false });
+});
+
+test('a path-anchored comment refused at RUN TIME (quote outside a touched hunk) is retried whole-document by the ladder itself, and anchorsDegraded reports it', async () => {
+  // Every prior test in this file covers BUILD-TIME degradation (no derivable
+  // path at all). This is the run-time half (ac-1/correctness-1/ac-2/arch-1):
+  // a finding whose declared `path` passes every build-time check — a real,
+  // in-range file — but whose `quote` sits OUTSIDE every hunk the reviewed
+  // range actually touches. `persistAnchorFor` has no way to see this ahead
+  // of time; only the real binary, at `rdm review comment` time, refuses it
+  // (`Error::QuoteOutsideChangedHunks`, "is not touched by <base>..<head>").
+  //
+  // rdm generates its hunks with `--unified=0` (see rdm-core/src/change.rs),
+  // so a change touching only ONE line of a two-line file leaves the OTHER
+  // line entirely outside any hunk — genuinely "outside a touched hunk", not
+  // an approximation. Two real commits on the roadmap worktree's branch
+  // construct exactly that: the first adds `outside-hunk.txt` with a line
+  // that will stay untouched (`keepme`) and one that will change; BASE is
+  // pinned there. The second changes only the second line; HEAD is pinned
+  // there. The finding quotes the UNTOUCHED first line.
+  const src = ROADMAP_PIN.source;
+  fs.writeFileSync(path.join(src, 'outside-hunk.txt'), 'keepme\nchangeme\n');
+  git(['add', 'outside-hunk.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: add outside-hunk.txt'], src);
+  const base = git(['rev-parse', 'HEAD'], src);
+  fs.writeFileSync(path.join(src, 'outside-hunk.txt'), 'keepme\nchanged\n');
+  git(['add', 'outside-hunk.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: change only the second line'], src);
+  const head = git(['rev-parse', 'HEAD'], src);
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], src);
+
+  const { result } = await drive(
+    {
+      ...COMMON,
+      gate: false,
+      persist: true,
+      implements: 'plan/' + PLAN,
+      roadmap: ROADMAP,
+      phase: 'phase-2-dirty',
+      source: src,
+      base,
+      expectedHead: head,
+      expectedBranch: branch,
+    },
+    {
+      id: 'outside-hunk-bug',
+      concern: 'correctness',
+      severity: 'blocking',
+      confidence: 90,
+      what_fails: 'looks fine, but is not',
+      location: 'see the gate step',
+      path: 'outside-hunk.txt',
+      quote: 'keepme',
+    }
+  );
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder completes (exit 0) even though the anchor was refused at run time: ' + out);
+  assert.match(out, /^anchorsDegraded=all$/m, 'the ladder run-time-degraded its only anchored finding, so `all` fires');
+
+  const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
+  assert.equal(review.comments.length, 1);
+  assert.equal(review.comments[0].anchor, undefined, 'the run-time-refused anchor must land whole-document, not as a file anchor');
+  assert.equal(
+    parseCommentHeader(review.comments[0].body).anchor,
+    'degraded',
+    'a run-time-refused anchor is header-marked `degraded`, exactly like a build-time one'
+  );
+  // AC4's build-time-only preview cannot see this: nothing degraded until the
+  // ladder actually ran. This is exactly why a caller must key its park
+  // decision off the ladder's own printed `anchorsDegraded=` line, never off
+  // `result.persistDegraded` alone (correctness-1/arch-1).
+  assert.deepEqual(
+    result.persistDegraded,
+    { requested: 1, degraded: 0, all: false },
+    'the build-time-only preview must not see a run-time refusal'
+  );
+
+  // Restore the shared worktree's branch so later tests reusing
+  // `...ROADMAP_PIN` (whose `expectedHead` was captured once, at seed time)
+  // still see the head they were pinned against.
+  git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], src);
+});
+
+test('a mixed run — one path-anchored comment lands, another is refused at run time — prints anchorsDegraded=partial', async () => {
+  // Same run-time mechanism as the previous test, but alongside a finding
+  // that lands cleanly, proving the tally distinguishes "some" from "every".
+  const src = ROADMAP_PIN.source;
+  // `untouched.txt` is committed BEFORE `base`, so it exists unchanged at
+  // both ends of the reviewed range — not part of the diff at all, which the
+  // real binary refuses the same way as a quote outside a touched hunk
+  // ("is not touched by <base>..<head>").
+  fs.writeFileSync(path.join(src, 'untouched.txt'), 'never touched\n');
+  git(['add', 'untouched.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: seed a file the next commit will not touch'], src);
+  const base = git(['rev-parse', 'HEAD'], src);
+  fs.writeFileSync(path.join(src, 'landed.txt'), 'shipped-anchor\n');
+  git(['add', 'landed.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: add landed.txt'], src);
+  const head = git(['rev-parse', 'HEAD'], src);
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], src);
+
+  const { result } = await drive(
+    {
+      ...COMMON,
+      gate: false,
+      persist: true,
+      implements: 'plan/' + PLAN,
+      roadmap: ROADMAP,
+      phase: 'phase-2-dirty',
+      source: src,
+      base,
+      expectedHead: head,
+      expectedBranch: branch,
+    },
+    [
+      {
+        id: 'lands-fine',
+        concern: 'correctness',
+        severity: 'blocking',
+        confidence: 90,
+        what_fails: 'a real bug, correctly anchored',
+        location: 'see the gate step',
+        path: 'landed.txt',
+        quote: 'shipped-anchor',
+      },
+      {
+        id: 'refused-at-runtime',
+        concern: 'tests',
+        severity: 'concern',
+        confidence: 85,
+        what_fails: 'coverage gap, quote names an untouched file',
+        location: 'see the gate step',
+        path: 'untouched.txt',
+        quote: 'never touched',
+      },
+    ]
+  );
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder completes: ' + out);
+  assert.match(out, /^anchorsDegraded=partial$/m, 'one anchor landed and one was refused at run time — never `all`, never `none`');
+
+  const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
+  const landed = review.comments.find((c) => c.body.includes('lands-fine'));
+  assert.ok(landed, 'the landed-anchor comment must be present');
+  assert.equal(landed.anchor.anchor_type, 'file-quote', 'the landed comment carries a real file anchor');
+  assert.equal(parseCommentHeader(landed.body).anchor, 'path');
+
+  const refused = review.comments.find((c) => c.body.includes('refused-at-runtime'));
+  assert.ok(refused, 'the run-time-refused comment must still be present, whole-document');
+  assert.equal(refused.anchor, undefined, 'the run-time-refused anchor must land whole-document');
+  assert.equal(parseCommentHeader(refused.body).anchor, 'degraded');
+
+  assert.deepEqual(
+    result.persistDegraded,
+    { requested: 2, degraded: 0, all: false },
+    'the build-time-only preview sees neither run-time outcome'
+  );
+
+  // Restore the shared worktree's branch so later tests reusing
+  // `...ROADMAP_PIN` (whose `expectedHead` was captured once, at seed time)
+  // still see the head they were pinned against.
+  git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], src);
 });
 
 test('a whole-document-by-design finding, alone, never triggers the build-time degradation clause', async () => {
@@ -890,4 +1082,22 @@ test("an invalid finder `path` (absolute, `..`, or whitespace) falls back to pat
   );
   assert.equal(noFallback.path, null);
   assert.equal(noFallback.reason, 'path-missing');
+});
+
+test('a suffixed finder `path` that CONTAINS A SLASH is stripped before validating, not rejected outright', () => {
+  // The regression case tests-1 named: `isRepoRelativePath` alone would
+  // ACCEPT a slash-bearing suffixed path whole ('src/foo.rs:12-18' contains
+  // a `/`), so a broken strip would hand the real binary a literal
+  // `--path 'src/foo.rs:12-18'`, which names no file. `location` here is
+  // free-form prose with no derivable path of its own, so nothing can rescue
+  // a broken strip by falling back to it — the outcome depends entirely on
+  // `stripPathLineSuffix` actually running inside `persistAnchorFor`.
+  const decision = persistAnchorFor(
+    { id: 'f1', concern: 'correctness', quote: 'shipped', path: 'src/foo.rs:12-18', location: 'prose' },
+    'change/abc123',
+    { pathAnchors: true, source: { noCode: false } }
+  );
+  assert.equal(decision.path, 'src/foo.rs', 'the `:12-18` suffix must be stripped from the declared path');
+  assert.equal(decision.quote, true);
+  assert.equal(decision.reason, null, 'a successfully stripped path is not a degradation');
 });
