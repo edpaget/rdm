@@ -1551,6 +1551,53 @@ mod tests {
         assert_eq!(json["comments"][0]["reply"], "Done.");
     }
 
+    /// The no-git sibling of `update_comment_resolution_after_submit_succeeds`:
+    /// `status`/`reply` alone (no `applied_commit`, which requires git to
+    /// verify) still resolve on a submitted review in a build with no git
+    /// support at all. Keeps no-git coverage of the resolution path from
+    /// shrinking to nothing now that the `applied_commit` case is git-only.
+    #[cfg(not(feature = "git"))]
+    #[tokio::test]
+    async fn update_comment_resolution_status_and_reply_succeed_without_git() {
+        let (_dir, state) = setup();
+        let id = draft_with_anchored_comment(&state).await;
+        submit_ok(&state, &id, "request-changes").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments/1");
+        let body = serde_json::json!({
+            "status": "addressed",
+            "reply": "Done."
+        });
+        let response = send(&state, patch_json(&uri, &body.to_string())).await;
+        assert_eq!(response.status(), 200);
+        let json = json_body(response).await;
+        assert_eq!(json["comments"][0]["status"], "addressed");
+        assert_eq!(json["comments"][0]["reply"], "Done.");
+    }
+
+    /// AC11's no-git half: `applied_commit` cannot be verified without git,
+    /// so it is refused outright — never silently accepted (which would be
+    /// the fail-open failure mode a stub returning `Ok(sha.to_string())`
+    /// would produce) — with a message naming the actual remedy.
+    #[cfg(not(feature = "git"))]
+    #[tokio::test]
+    async fn update_comment_applied_commit_requires_git_support() {
+        let (_dir, state) = setup();
+        let id = draft_with_anchored_comment(&state).await;
+        submit_ok(&state, &id, "request-changes").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments/1");
+        let body =
+            serde_json::json!({ "applied_commit": "c2d9db220824277d2518d7cbeab8560ddd7f9448" });
+        let response = send(&state, patch_json(&uri, &body.to_string())).await;
+        assert_eq!(response.status(), 400);
+        let json = json_body(response).await;
+        assert!(
+            json["detail"]
+                .as_str()
+                .unwrap()
+                .contains("requires git support")
+        );
+    }
+
     #[cfg(feature = "git")]
     #[tokio::test]
     async fn update_comment_applied_commit_nonexistent_sha_returns_400() {

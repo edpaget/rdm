@@ -134,6 +134,10 @@ fn seed_source_repo() -> (TempDir, String, String) {
 /// source: its own `main`, its own single commit, no relation to
 /// `seed_source_repo`'s history at all. Mirrors `cli_review_change.rs`'s
 /// `init_unrelated_repo`.
+///
+/// Only used by `#[cfg(feature = "git")]` tests, so it is gated the same way
+/// — a no-git build has no caller for it.
+#[cfg(feature = "git")]
 fn init_unrelated_repo() -> (TempDir, String) {
     let dir = TempDir::new().unwrap();
     let p = dir.path();

@@ -1972,6 +1972,26 @@ fn review_applied_commit_correction_after_addressed_keeps_state() {
         .success()
         .stdout(predicate::str::contains("state: addressed"));
 
+    // A second, later commit gives the correction a genuinely different
+    // resolvable SHA to write. Re-using `plan_head` here would let this test
+    // pass even if the CLI silently ignored `--applied-commit` on a closed
+    // review, since the stored value would already equal it from the
+    // `--status addressed` write above.
+    std::fs::write(plan.path().join("second-commit-marker.txt"), "marker\n").unwrap();
+    git(plan.path(), &["add", "second-commit-marker.txt"]);
+    git(
+        plan.path(),
+        &["commit", "-m", "second commit for the correction test"],
+    );
+    let second_head = String::from_utf8(git(plan.path(), &["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    assert_ne!(
+        plan_head, second_head,
+        "the correction must target a genuinely different commit"
+    );
+
     // Correcting applied_commit/reply after the review has closed succeeds,
     // and the review's state stays addressed.
     rdm()
@@ -1984,7 +2004,7 @@ fn review_applied_commit_correction_after_addressed_keeps_state() {
             "--comment",
             "1",
             "--applied-commit",
-            &plan_head[..8],
+            &second_head[..8],
             "--reply",
             "Corrected note.",
             "--project",
@@ -2015,7 +2035,11 @@ fn review_applied_commit_correction_after_addressed_keeps_state() {
 
     let json = show_review_json(&plan, &id);
     assert_eq!(json["state"], "addressed");
-    assert_eq!(json["comments"][0]["applied_commit"], plan_head.as_str());
+    // The corrected value — the SECOND commit, not the one stored before the
+    // review closed — is what `review show` reports. This is the assertion
+    // that would fail if `--applied-commit` were silently ignored on a
+    // closed review.
+    assert_eq!(json["comments"][0]["applied_commit"], second_head.as_str());
     assert_eq!(json["comments"][0]["reply"], "Corrected note.");
 }
 
