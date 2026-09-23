@@ -53,6 +53,21 @@ when the field is still empty — it falls back to the merge-base exactly as
 `change/<sha>` does, reporting that fallback in the response's `baseNote`
 field.
 
+A recorded `started_head` is rev-parsed/verified exactly like an explicit
+`--base`, so an unreachable value (e.g. garbage-collected) still fails
+closed. But a `started_head` that *does* resolve is additionally checked with
+`git merge-base --is-ancestor` against `head`: if the roadmap or task branch
+was later rebased onto an advanced default branch, or an earlier commit
+amended or rebased, the recorded SHA can still exist as an object while no
+longer being an ancestor of the current checkout's HEAD. Reviewing that range
+directly (`git diff started_head head`) would silently mix in every change
+the default branch picked up, plus reverse diffs of the rewritten commits.
+Rather than fail closed there, `review source` falls back to the merge-base
+with the default branch — a strict superset of the intended range, safe if
+noisier — and names the stale `started_head` and the reason in `baseNote`. An
+explicit `--base` is exempt from this check: it was named deliberately, and
+is the escape hatch an operator has after history changes.
+
 The write-once stamp itself (the first `not-started`/`open` → `in-progress`
 transition) fails two different ways when it can't resolve a starting HEAD.
 An explicit `--source <path>` is a direct instruction, so a HEAD read failure

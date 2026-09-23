@@ -105,7 +105,11 @@ pub struct ReviewSourceRequest {
     /// `default_branch`: a phase in a shared roadmap worktree is reviewed as
     /// its own diff, starting at the commit its `in-progress` stamp
     /// recorded, rather than as every earlier phase's changes too. `base`
-    /// still overrides both when the caller supplies it explicitly.
+    /// still overrides both when the caller supplies it explicitly. A
+    /// resolvable `started_head` that is no longer an ancestor of `head`
+    /// (e.g. the branch was rebased) is not used as-is — the resolver falls
+    /// back to the merge-base with `default_branch` and reports it via
+    /// [`ReviewSource::base_note`].
     pub started_head: Option<String>,
 }
 
@@ -132,9 +136,12 @@ pub struct ReviewSource {
     /// Explicit empty-diff declaration.
     pub no_code: bool,
     /// Set only when `base` fell back to the merge-base with the default
-    /// branch — i.e. neither an explicit `--base` nor a recorded
-    /// `started_head` was available — naming that fallback so a caller can
-    /// surface it rather than silently reviewing a merge-base range.
+    /// branch instead of a recorded `started_head` — either because no
+    /// `started_head` was available, or because one was recorded but is no
+    /// longer an ancestor of `head` (e.g. the branch was rebased onto an
+    /// advanced default branch) — naming that fallback so a caller can
+    /// surface it rather than silently reviewing a merge-base range. Never
+    /// set when the caller supplied an explicit `--base`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_note: Option<String>,
 }

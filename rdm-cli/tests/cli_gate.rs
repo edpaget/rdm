@@ -1265,6 +1265,143 @@ fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
     );
 }
 
+/// review 2026-09-23-0326-b262, finding `started-head-no-ancestry-check`,
+/// checked at the binary boundary: a phase's recorded `started_head` remains
+/// a resolvable commit object, but stops being an ancestor of HEAD once the
+/// shared roadmap worktree's branch is rebased onto an advanced default
+/// branch. `review source` must fall back to the merge-base with the default
+/// branch rather than silently reviewing the wrong, unscoped range.
+#[test]
+fn review_source_falls_back_when_started_head_is_not_an_ancestor_at_the_binary_boundary() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "create",
+            "impl",
+            "--title",
+            "Impl",
+            "--number",
+            "2",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "auth", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-design",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    std::fs::write(wt.join("src/lib.rs"), "fn one() {}\nfn two() {}\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "-m", "phase 1 work"]);
+    let phase_1_head = rev_parse(&wt, "HEAD");
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-2-impl",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    assert_eq!(
+        phase_json_for(plan.path(), "phase-2-impl", "auth")["started_head"],
+        phase_1_head
+    );
+
+    std::fs::write(wt.join("src/extra.rs"), "fn three() {}\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "-m", "phase 2 work"]);
+
+    // `main` advances independently of the roadmap branch...
+    std::fs::write(src.path().join("advance.txt"), "advanced\n").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "advance main"]);
+    let main_tip = rev_parse(src.path(), "HEAD");
+
+    // ...and the shared roadmap worktree is rebased onto it, rewriting every
+    // commit's SHA, including phase 1's recorded `started_head`.
+    git(&wt, &["rebase", "main"]);
+    let rebased_head = rev_parse(&wt, "HEAD");
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "source",
+            "--on",
+            "phase/auth/phase-2-impl",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let source: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(source["head"], rebased_head);
+    assert_eq!(
+        source["base"], main_tip,
+        "a non-ancestor started_head must fall back to the merge-base with main, not the stale \
+         recorded value"
+    );
+    let note = source["baseNote"]
+        .as_str()
+        .expect("a non-ancestor started_head must explain the fallback via baseNote");
+    assert!(
+        note.contains(&phase_1_head) && note.contains("ancestor"),
+        "note should name the stale started_head and explain the fallback: {note}"
+    );
+}
+
 /// tests-2 (review 2026-09-23-0309-996c): AC2's merge-base fallback, checked
 /// at the binary boundary rather than only at the `rdm-git` struct level. A
 /// phase that was never stamped `in-progress` has no recorded `started_head`,

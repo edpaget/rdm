@@ -1207,16 +1207,51 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
         let head = Self::git_text(&path, &["rev-parse", "--verify", "HEAD^{commit}"])?
             .trim()
             .to_string();
-        // Base precedence: an explicit `--base` always wins. Otherwise prefer
-        // the item's recorded `started_head` — a phase in a shared roadmap
-        // worktree is then reviewed as its own diff, starting where its
-        // `in-progress` stamp recorded, rather than as every earlier phase's
-        // changes too. A recorded `started_head` is rev-parsed/verified
-        // exactly like an explicit `--base`, so a stale or unreachable value
-        // fails closed the same way rather than silently falling back. With
-        // neither present, fall back to today's merge-base with the default
-        // branch and say so in `base_note`.
-        let (base, base_note) = match request.base.as_ref().or(request.started_head.as_ref()) {
+        // Merge-base with the default branch, computed on demand: both the
+        // "no started_head recorded" fallback and the "recorded started_head
+        // is no longer an ancestor of HEAD" fallback below land here.
+        let merge_base_with_default =
+            |path: &Path, head: &str| -> rdm_core::error::Result<String> {
+                let default = Self::git_text(
+                    path,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--end-of-options",
+                        &format!("{}^{{commit}}", request.default_branch),
+                    ],
+                )?
+                .trim()
+                .to_string();
+                Ok(Self::git_text(path, &["merge-base", &default, head])?
+                    .trim()
+                    .to_string())
+            };
+        // Base precedence: an explicit `--base` always wins, with no
+        // ancestry check — it was named deliberately, and refusing it would
+        // remove the one escape hatch an operator has after history
+        // changes. Otherwise prefer the item's recorded `started_head` — a
+        // phase in a shared roadmap worktree is then reviewed as its own
+        // diff, starting where its `in-progress` stamp recorded, rather
+        // than as every earlier phase's changes too. A recorded
+        // `started_head` is rev-parsed/verified exactly like an explicit
+        // `--base`; an unreachable (e.g. garbage-collected) SHA still fails
+        // closed at that rev-parse. But a *resolvable* `started_head` that
+        // is no longer an ancestor of HEAD (the branch was rebased, or an
+        // earlier commit amended/rebased) would otherwise silently drive a
+        // wrong, unscoped `git diff started_head HEAD` — every change main
+        // picked up, plus reverse diffs of the rewritten commits — with
+        // nothing to say so. Check ancestry with `git merge-base
+        // --is-ancestor` and, on a miss, fall back to today's merge-base
+        // with the default branch rather than erroring: that merge-base
+        // diff is a strict superset of the intended range (safe, if
+        // noisier), whereas refusing would block the `reviewed` gate
+        // outright for every later review of an item that merely sits on a
+        // rebased branch — worse than the fallback it would refuse to make.
+        // `base_note` says so either way, so the caller knows the range
+        // widened. With neither `--base` nor `started_head` present, fall
+        // back to the merge-base directly and say so in `base_note`.
+        let (base, base_note) = match request.base.as_ref() {
             Some(base) => (
                 Self::git_text(
                     &path,
@@ -1231,29 +1266,45 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
                 .to_string(),
                 None,
             ),
-            None => {
-                let default = Self::git_text(
-                    &path,
-                    &[
-                        "rev-parse",
-                        "--verify",
-                        "--end-of-options",
-                        &format!("{}^{{commit}}", request.default_branch),
-                    ],
-                )?
-                .trim()
-                .to_string();
-                let merge_base = Self::git_text(&path, &["merge-base", &default, &head])?
+            None => match request.started_head.as_ref() {
+                Some(started_head) => {
+                    let resolved = Self::git_text(
+                        &path,
+                        &[
+                            "rev-parse",
+                            "--verify",
+                            "--end-of-options",
+                            &format!("{started_head}^{{commit}}"),
+                        ],
+                    )?
                     .trim()
                     .to_string();
-                (
-                    merge_base,
-                    Some(format!(
-                        "no started_head recorded for this item; base defaulted to the merge-base with '{}'",
-                        request.default_branch
-                    )),
-                )
-            }
+                    if crate::is_ancestor_at(&path, &resolved, &head)? {
+                        (resolved, None)
+                    } else {
+                        let merge_base = merge_base_with_default(&path, &head)?;
+                        (
+                            merge_base,
+                            Some(format!(
+                                "recorded started_head '{resolved}' is not an ancestor of HEAD \
+                                 (the branch may have been rebased, or an earlier commit \
+                                 amended/rebased); base fell back to the merge-base with '{}'",
+                                request.default_branch
+                            )),
+                        )
+                    }
+                }
+                None => {
+                    let merge_base = merge_base_with_default(&path, &head)?;
+                    (
+                        merge_base,
+                        Some(format!(
+                            "no started_head recorded for this item; base defaulted to the merge-base with '{}'",
+                            request.default_branch
+                        )),
+                    )
+                }
+            },
         };
         let files = Self::git_text(
             &path,
@@ -2380,6 +2431,79 @@ mod tests {
         assert!(
             rdm_core::resolve_review_source(&probe, &second, &bogus).is_err(),
             "an unreachable started_head must refuse rather than silently fall back"
+        );
+    }
+
+    /// review 2026-09-23-0326-b262, finding `started-head-no-ancestry-check`:
+    /// a `started_head` that still resolves as a commit (unlike the
+    /// garbage-collected-SHA case above) but is no longer an ancestor of
+    /// HEAD — because the branch was rebased onto an advanced default
+    /// branch — must fall back to the merge-base with `base_note` saying so,
+    /// rather than silently reviewing the wrong, unscoped range.
+    #[test]
+    fn review_source_falls_back_when_started_head_is_not_an_ancestor_of_head() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let roadmap = ItemRef::Roadmap {
+            roadmap: "my-roadmap".into(),
+        };
+        let wt = add(&repo, &roadmap, &roadmap.branch_name(), None).unwrap();
+
+        // Phase 1's commit — its HEAD becomes phase 2's recorded
+        // `started_head`.
+        std::fs::write(wt.path.join("phase-1.txt"), "phase one\n").unwrap();
+        run_git(&wt.path, &["add", "."]);
+        run_git(&wt.path, &["commit", "-m", "phase 1"]);
+        let phase_1_head = crate::head_commit_info_at(&wt.path).unwrap().unwrap().sha;
+
+        // Phase 2's commit.
+        std::fs::write(wt.path.join("phase-2.txt"), "phase two\n").unwrap();
+        run_git(&wt.path, &["add", "."]);
+        run_git(&wt.path, &["commit", "-m", "phase 2"]);
+
+        // `main` advances independently of the roadmap branch...
+        std::fs::write(repo.join("main-advance.txt"), "advanced\n").unwrap();
+        run_git(&repo, &["add", "."]);
+        run_git(&repo, &["commit", "-m", "advance main"]);
+        let main_tip = crate::head_commit_info_at(&repo).unwrap().unwrap().sha;
+
+        // ...and the roadmap branch is rebased onto it, rewriting every
+        // commit's SHA, including phase 1's recorded `started_head`.
+        run_git(&wt.path, &["rebase", "main"]);
+        let rebased_head = crate::head_commit_info_at(&wt.path).unwrap().unwrap().sha;
+        assert!(
+            !crate::is_ancestor_at(&wt.path, &phase_1_head, &rebased_head).unwrap(),
+            "test setup: the pre-rebase started_head must no longer be an ancestor of the \
+             rebased HEAD"
+        );
+
+        let probe = GitWorktreeProbe::new(repo.clone());
+        let second = core_phase("my-roadmap", "phase-2-open-phase");
+        let via_stale_started_head = rdm_core::ReviewSourceRequest {
+            started_head: Some(phase_1_head.clone()),
+            default_branch: "main".into(),
+            ..Default::default()
+        };
+        let source =
+            rdm_core::resolve_review_source(&probe, &second, &via_stale_started_head).unwrap();
+        assert_eq!(
+            source.base, main_tip,
+            "a non-ancestor started_head must fall back to the merge-base with the default \
+             branch, not the stale value"
+        );
+        assert_eq!(source.head, rebased_head);
+        let note = source
+            .base_note
+            .expect("a non-ancestor started_head must explain the fallback via base_note");
+        assert!(
+            note.contains(&phase_1_head),
+            "note should name the stale started_head: {note}"
+        );
+        assert!(
+            note.contains("ancestor"),
+            "note should explain why it fell back: {note}"
         );
     }
 
