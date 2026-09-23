@@ -172,6 +172,13 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("review '{id}' has not been submitted")),
                 instance: None,
             },
+            Error::ReviewClosed { .. } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
             Error::ReviewInvalidTransition {
                 review_id,
                 from,
@@ -378,6 +385,13 @@ impl From<&Error> for ProblemDetail {
                 detail: Some("title cannot be empty or whitespace-only".to_string()),
                 instance: None,
             },
+            Error::InvalidAppliedCommit(_) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
             Error::ConflictingUpdate { field } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Unprocessable Content".to_string(),
@@ -520,5 +534,28 @@ mod tests {
         let caller = ProblemDetail::from(&Error::InvalidChangeRevisionInput("--all".into()));
         assert_eq!(caller.status, 400);
         assert!(caller.detail.unwrap().contains("must not start"));
+    }
+
+    #[test]
+    fn from_invalid_applied_commit() {
+        let err = Error::InvalidAppliedCommit("abc123".to_string());
+        let pd = ProblemDetail::from(&err);
+        assert_eq!(pd.status, 400);
+        assert_eq!(pd.title, "Bad Request");
+        assert!(pd.detail.as_ref().unwrap().contains("abc123"));
+    }
+
+    #[test]
+    fn from_review_closed() {
+        let err = Error::ReviewClosed {
+            review_id: "2026-09-23-1234-abcd".to_string(),
+            state: rdm_core::model::ReviewState::Addressed,
+        };
+        let pd = ProblemDetail::from(&err);
+        assert_eq!(pd.status, 409);
+        assert_eq!(pd.title, "Conflict");
+        let detail = pd.detail.unwrap();
+        assert!(detail.contains("2026-09-23-1234-abcd"));
+        assert!(detail.contains("addressed"));
     }
 }

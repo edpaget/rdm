@@ -1417,6 +1417,76 @@ pub fn resolve_start_commit(
     Ok(sha.to_string())
 }
 
+/// Resolves and validates a `--applied-commit <sha>` value for `review
+/// update --comment <n>`, before it is threaded into
+/// [`rdm_core::ops::reviews::UpdateComment`].
+///
+/// Unlike `--start-commit` (which requires a full 40-hex SHA already
+/// resolved by the caller), `sha` may be an abbreviated SHA, `HEAD`, a
+/// branch, or a tag — [`rdm_core::source::SourceRepo::rev_parse`] resolves
+/// it, and the **resolved full SHA** is returned, not the operator's literal
+/// input. This is a deliberate departure from `--start-commit`'s stricter
+/// contract: `applied_commit` is provenance documentation resolved fresh at
+/// write time, not a stored identity used for range comparisons, so letting
+/// git do the expansion is strictly safer than requiring pre-expansion by
+/// hand (the concrete bug this exists to close was exactly that: a
+/// hand-expanded short SHA, typed wrong).
+///
+/// The repository checked depends on the review's target kind:
+/// [`rdm_core::model::ReviewTarget::Change`] resolves against the project's
+/// configured **source repo** (via [`crate::source_repo::discover_source_repo`],
+/// the same discovery `review show`/`review source` already use); every
+/// other target kind (`roadmap`, `phase`, `task`, `plan`) resolves against
+/// the **plan repo** rooted at `root`.
+///
+/// This is a hard refusal, not a best-effort default: `--applied-commit` is
+/// an explicit instruction minting a public `rdm:src/…@<sha>` permalink, so
+/// a SHA that cannot be verified against the correct repository is refused
+/// rather than accepted silently or degraded with a warning.
+///
+/// # Errors
+///
+/// Returns an error naming the checked repository when `sha` does not
+/// resolve to a commit there, or when the repository itself cannot be
+/// reached (no source repo configured/reachable for a `change/<sha>`
+/// review, or the plan repo is not a git checkout).
+#[cfg(feature = "git")]
+pub fn resolve_applied_commit(
+    store: &AppStore,
+    project: &str,
+    root: &Path,
+    target: &rdm_core::model::ReviewTarget,
+    sha: &str,
+) -> Result<String> {
+    use rdm_core::source::SourceRepo;
+
+    let (repo_path, resolved) = match target {
+        rdm_core::model::ReviewTarget::Change { .. } => {
+            let repo = crate::source_repo::discover_source_repo(store, project)?;
+            let resolved = repo.rev_parse(sha).map_err(|e| anyhow::anyhow!("{e}"))?;
+            (repo.root().to_path_buf(), resolved)
+        }
+        _ => {
+            let repo = rdm_git::GitSourceRepo::new(root);
+            let resolved = repo.rev_parse(sha).map_err(|e| anyhow::anyhow!("{e}"))?;
+            (root.to_path_buf(), resolved)
+        }
+    };
+    resolved.ok_or_else(|| {
+        anyhow::anyhow!(
+            "--applied-commit '{sha}' does not resolve to a commit in '{}'",
+            repo_path.display()
+        )
+    })
+}
+
+// No `#[cfg(not(feature = "git"))]` counterpart: unlike `--start-commit`
+// (validated by call sites in `phase.rs`/`task.rs` that exist in every
+// build), `--applied-commit` is only reachable through the `review update`
+// subcommand, which is itself `#[cfg(feature = "git")]`-gated in its
+// entirety (see `Command::Review` in `cli.rs`) — there is no non-git call
+// site for a stub to serve.
+
 /// review 2026-09-23-1257-1982, finding
 /// `tests-start-commit-explicit-source-branch-untested`: the two CLI
 /// integration tests that pass `--source` together with `--start-commit`

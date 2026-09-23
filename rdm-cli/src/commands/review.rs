@@ -61,6 +61,7 @@ fn filter_in_scope(items: Vec<PendingReviewItem>, cwd: &Path) -> Vec<PendingRevi
 pub fn run(
     command: ReviewCommand,
     store: &mut AppStore,
+    root: &Path,
     repo_config: &Config,
     format: OutputFormat,
 ) -> Result<()> {
@@ -629,6 +630,26 @@ pub fn run(
                 );
             }
             let project = paths::resolve_project(project, repo_config)?;
+            // `--applied-commit` is resolved (format + existence, against the
+            // review's target-appropriate repository) before the mutation
+            // starts, so a SHA that fails validation never reaches
+            // `update_comment`. The resolved full SHA is what gets stored —
+            // not the operator's literal, possibly-abbreviated, input.
+            let resolved_applied_commit = match applied_commit.as_deref() {
+                Some(sha) => {
+                    let review_doc =
+                        rdm_core::ops::reviews::get_review(store, &project, &review_id)
+                            .context("failed to load review to resolve --applied-commit")?;
+                    Some(super::resolve_applied_commit(
+                        store,
+                        &project,
+                        root,
+                        &review_doc.frontmatter.target,
+                        sha,
+                    )?)
+                }
+                None => None,
+            };
             let doc = commit_mutation(store, "failed to update review", |s| {
                 if let Some(comment_id) = comment {
                     rdm_core::ops::reviews::update_comment(
@@ -638,7 +659,7 @@ pub fn run(
                             review_id: &review_id,
                             comment_id,
                             status,
-                            applied_commit: applied_commit.as_deref(),
+                            applied_commit: resolved_applied_commit.as_deref(),
                             reply: reply.as_deref(),
                             ..Default::default()
                         },

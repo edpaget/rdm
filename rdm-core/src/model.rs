@@ -977,6 +977,19 @@ pub enum ReviewTarget {
     },
 }
 
+/// Returns `true` when `s` is exactly 40 lowercase ASCII hexadecimal
+/// characters — the shape of a fully-resolved git commit SHA as rdm
+/// persists it.
+///
+/// This is a pure shape check with no repository access: it does not prove
+/// the SHA names an existing commit, only that it has the right form to be
+/// one.
+pub(crate) fn is_full_commit_sha(s: &str) -> bool {
+    s.len() == 40
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 impl ReviewTarget {
     /// Validates the syntax of resolved identities before persistence or source use.
     ///
@@ -1004,11 +1017,7 @@ impl ReviewTarget {
     /// base is not exactly 40 lowercase ASCII hexadecimal characters.
     pub fn validate_change_identity(head: &str, base: Option<&str>) -> crate::error::Result<()> {
         for (field, value) in std::iter::once(("head", head)).chain(base.map(|b| ("base", b))) {
-            if value.len() != 40
-                || !value
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            {
+            if !is_full_commit_sha(value) {
                 return Err(crate::error::Error::InvalidStoredChangeRevision {
                     field,
                     value: value.to_string(),

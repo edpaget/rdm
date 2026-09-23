@@ -167,9 +167,24 @@ pub enum Error {
     /// The operation requires the review to be a draft (comment structure
     /// changes, submission, and un-forced deletion are draft-only).
     ReviewNotDraft(String),
-    /// The operation requires the review to be submitted (a comment's
-    /// status, `applied_commit`, and `reply` only change after submission).
+    /// The operation requires the review to have been submitted at least
+    /// once — a comment's `status`, `applied_commit`, or `reply` cannot
+    /// change on a review still in `draft`. Once submitted, `applied_commit`
+    /// and `reply` remain correctable through `addressed`/`dismissed`; only
+    /// `status` freezes at that point (see [`Error::ReviewClosed`]).
     ReviewNotSubmitted(String),
+    /// A comment's resolution `status` was changed on a review that has
+    /// already closed (`addressed` or `dismissed`). `status` is fixed once
+    /// a review closes; `applied_commit` and `reply` remain correctable.
+    ReviewClosed {
+        /// The review that is closed.
+        review_id: String,
+        /// The review's current (closed) state.
+        state: ReviewState,
+    },
+    /// An `applied_commit` value is not exactly 40 lowercase ASCII
+    /// hexadecimal characters.
+    InvalidAppliedCommit(String),
     /// A comment's `doc` names a document outside the review's scope.
     CommentDocOutOfScope(String),
     /// A comment's `doc` was set on a review whose target kind does not
@@ -769,6 +784,18 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "review '{id}' has not been submitted — a comment's status, applied_commit, and reply can only change after submission"
+                )
+            }
+            Error::ReviewClosed { review_id, state } => {
+                write!(
+                    f,
+                    "review '{review_id}' is {state} — a comment's resolution status is fixed once a review closes; correct applied_commit or reply directly if the record itself was wrong"
+                )
+            }
+            Error::InvalidAppliedCommit(sha) => {
+                write!(
+                    f,
+                    "applied commit '{sha}' is not a 40-character lowercase hex commit SHA"
                 )
             }
             Error::CommentDocOutOfScope(msg) => {

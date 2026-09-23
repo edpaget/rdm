@@ -1637,8 +1637,8 @@ mod tests {
                 anchor: rdm_core::ops::reviews::AnchorUpdate::Keep,
                 doc: rdm_core::ops::reviews::DocUpdate::Keep,
                 status: Some(rdm_core::model::ReviewCommentStatus::Addressed),
-                applied_commit: Some("abc1234"),
-                reply: Some("Fixed in abc1234."),
+                applied_commit: Some("c2d9db220824277d2518d7cbeab8560ddd7f9448"),
+                reply: Some("Fixed in c2d9db2."),
             },
         )
         .unwrap();
@@ -1649,8 +1649,8 @@ mod tests {
             html.contains(r#"badge-addressed">Addressed</span>"#),
             "got: {html}"
         );
-        assert!(html.contains("applied in <code>abc1234</code>"));
-        assert!(html.contains("Fixed in abc1234."));
+        assert!(html.contains("applied in <code>c2d9db220824277d2518d7cbeab8560ddd7f9448</code>"));
+        assert!(html.contains("Fixed in c2d9db2."));
     }
 
     // -- draft panel --

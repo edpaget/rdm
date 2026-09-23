@@ -498,6 +498,28 @@ pub async fn update_comment(
     };
 
     let mut store = state.store();
+    // `applied_commit` is resolved (format + existence, against the review's
+    // target-appropriate repository) before the mutation starts — a hard
+    // refusal, not the read path's degrade-with-a-note pattern — so a SHA
+    // that fails validation never reaches `update_comment`. The resolved
+    // full SHA is what gets stored, not the caller's literal input.
+    let resolved_applied_commit = match req.applied_commit.as_deref() {
+        Some(sha) => {
+            let review_doc = rdm_core::ops::reviews::get_review(&store, &project, &review_id)
+                .map_err(core_error)?;
+            Some(
+                crate::source_repo::resolve_applied_commit(
+                    &store,
+                    &project,
+                    &state.plan_root,
+                    &review_doc.frontmatter.target,
+                    sha,
+                )
+                .map_err(bad_request)?,
+            )
+        }
+        None => None,
+    };
     let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::update_comment(
             s,
@@ -509,7 +531,7 @@ pub async fn update_comment(
                 anchor,
                 doc: doc_update,
                 status: req.status,
-                applied_commit: req.applied_commit.as_deref(),
+                applied_commit: resolved_applied_commit.as_deref(),
                 reply: req.reply.as_deref(),
             },
         )
@@ -790,6 +812,50 @@ mod tests {
         let body = serde_json::json!({ "verdict": verdict, "summary": "Overall summary." });
         let response = send(state, post_json(&uri, &body.to_string())).await;
         assert_eq!(response.status(), 200);
+    }
+
+    /// A `git` command in `dir`, isolated from the developer's ambient git
+    /// config and identity — the same construction
+    /// `rdm-server/tests/change_reviews.rs` uses.
+    #[cfg(feature = "git")]
+    fn git(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "Fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@example.com")
+            .env("GIT_COMMITTER_NAME", "Fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@example.com")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    }
+
+    /// Git-initializes `state.plan_root` with one commit and returns its
+    /// full HEAD sha. `setup()` writes plan data through `FsStore`, which
+    /// never touches git, so a test exercising `applied_commit`'s
+    /// existence-check against the **plan repo** (a non-`change/<sha>`
+    /// review target) needs this explicitly.
+    #[cfg(feature = "git")]
+    fn git_init_plan_root(state: &AppState) -> String {
+        let dir = &state.plan_root;
+        git(dir, &["init", "-b", "main"]);
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "-m", "seed"]);
+        String::from_utf8_lossy(&git(dir, &["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string()
     }
 
     // -- list --
@@ -1459,23 +1525,106 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "git")]
     #[tokio::test]
     async fn update_comment_resolution_after_submit_succeeds() {
         let (_dir, state) = setup();
+        // A resolvable SHA from the fixture's own git repo — `applied_commit`
+        // is now existence-checked against the plan repo for a non-`change`
+        // target, so an arbitrary literal like the old "abc123" would be
+        // refused. An abbreviated prefix proves the resolved full SHA is
+        // what's stored.
+        let head = git_init_plan_root(&state);
         let id = draft_with_anchored_comment(&state).await;
         submit_ok(&state, &id, "request-changes").await;
         let uri = format!("/projects/demo/reviews/{id}/comments/1");
         let body = serde_json::json!({
             "status": "addressed",
-            "applied_commit": "abc123",
-            "reply": "Done in abc123."
+            "applied_commit": head[..8],
+            "reply": "Done."
         });
         let response = send(&state, patch_json(&uri, &body.to_string())).await;
         assert_eq!(response.status(), 200);
         let json = json_body(response).await;
         assert_eq!(json["comments"][0]["status"], "addressed");
-        assert_eq!(json["comments"][0]["applied_commit"], "abc123");
-        assert_eq!(json["comments"][0]["reply"], "Done in abc123.");
+        assert_eq!(json["comments"][0]["applied_commit"], head.as_str());
+        assert_eq!(json["comments"][0]["reply"], "Done.");
+    }
+
+    #[cfg(feature = "git")]
+    #[tokio::test]
+    async fn update_comment_applied_commit_nonexistent_sha_returns_400() {
+        let (_dir, state) = setup();
+        git_init_plan_root(&state);
+        let id = draft_with_anchored_comment(&state).await;
+        submit_ok(&state, &id, "request-changes").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments/1");
+        let body = serde_json::json!({
+            "applied_commit": "0123456789abcdef0123456789abcdef01234567",
+        });
+        let response = send(&state, patch_json(&uri, &body.to_string())).await;
+        assert_eq!(response.status(), 400);
+        let json = json_body(response).await;
+        assert!(
+            json["detail"]
+                .as_str()
+                .unwrap()
+                .contains("does not resolve to a commit")
+        );
+    }
+
+    #[cfg(feature = "git")]
+    #[tokio::test]
+    async fn update_comment_applied_commit_correctable_after_addressed() {
+        let (_dir, state) = setup();
+        let head = git_init_plan_root(&state);
+        let id = draft_with_anchored_comment(&state).await;
+        submit_ok(&state, &id, "request-changes").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments/1");
+        let addressed = send(
+            &state,
+            patch_json(
+                &uri,
+                &serde_json::json!({
+                    "status": "addressed",
+                    "applied_commit": head[..8],
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+        assert_eq!(addressed.status(), 200);
+        let review_uri = format!("/projects/demo/reviews/{id}");
+        let close = send(&state, patch_json(&review_uri, r#"{"state":"addressed"}"#)).await;
+        assert_eq!(close.status(), 200);
+
+        // Correcting applied_commit/reply after the review has closed
+        // succeeds, and neither the review's state nor the comment's status
+        // changes.
+        let correction = send(
+            &state,
+            patch_json(
+                &uri,
+                &serde_json::json!({
+                    "applied_commit": head.as_str(),
+                    "reply": "Corrected note.",
+                })
+                .to_string(),
+            ),
+        )
+        .await;
+        assert_eq!(correction.status(), 200);
+        let json = json_body(correction).await;
+        assert_eq!(json["state"], "addressed");
+        assert_eq!(json["comments"][0]["status"], "addressed");
+        assert_eq!(json["comments"][0]["applied_commit"], head.as_str());
+        assert_eq!(json["comments"][0]["reply"], "Corrected note.");
+
+        // A status change is still refused — 409, naming the real state.
+        let status_change = send(&state, patch_json(&uri, r#"{"status":"wont-fix"}"#)).await;
+        assert_eq!(status_change.status(), 409);
+        let json = json_body(status_change).await;
+        assert!(json["detail"].as_str().unwrap().contains("addressed"));
     }
 
     #[tokio::test]

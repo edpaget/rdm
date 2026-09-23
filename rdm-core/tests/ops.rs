@@ -7709,16 +7709,19 @@ fn update_comment_status_applied_commit_reply_while_submitted() {
             review_id: &id,
             comment_id: 1,
             status: Some(ReviewCommentStatus::Addressed),
-            applied_commit: Some("abc123"),
-            reply: Some("Fixed in abc123."),
+            applied_commit: Some("c2d9db220824277d2518d7cbeab8560ddd7f9448"),
+            reply: Some("Fixed in c2d9db2."),
             ..Default::default()
         },
     )
     .unwrap();
     let comment = &doc.frontmatter.comments[0];
     assert_eq!(comment.status, ReviewCommentStatus::Addressed);
-    assert_eq!(comment.applied_commit.as_deref(), Some("abc123"));
-    assert_eq!(comment.reply.as_deref(), Some("Fixed in abc123."));
+    assert_eq!(
+        comment.applied_commit.as_deref(),
+        Some("c2d9db220824277d2518d7cbeab8560ddd7f9448")
+    );
+    assert_eq!(comment.reply.as_deref(), Some("Fixed in c2d9db2."));
 }
 
 #[test]
@@ -7738,6 +7741,177 @@ fn update_comment_status_fields_rejected_while_draft() {
         },
     );
     assert!(matches!(result, Err(Error::ReviewNotSubmitted(_))));
+}
+
+#[test]
+fn update_comment_applied_commit_rejects_non_full_sha() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "Fix the guard clause.");
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::RequestChanges))
+        .unwrap();
+
+    let result = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            applied_commit: Some("abc123"),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(result, Err(Error::InvalidAppliedCommit(sha)) if sha == "abc123"));
+}
+
+#[test]
+fn update_comment_applied_commit_reply_correction_while_draft_rejected() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "Open question.");
+
+    let result = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            applied_commit: Some("c2d9db220824277d2518d7cbeab8560ddd7f9448"),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(result, Err(Error::ReviewNotSubmitted(_))));
+
+    let result = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            reply: Some("A reply."),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(result, Err(Error::ReviewNotSubmitted(_))));
+}
+
+#[test]
+fn update_comment_applied_commit_and_reply_correctable_after_addressed() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "Fix the guard clause.");
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::RequestChanges))
+        .unwrap();
+    rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            status: Some(ReviewCommentStatus::Addressed),
+            applied_commit: Some("c2d9db220824277d2518d7cbeab8560ddd7f9448"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::reviews::update_review(&mut store, "fbm", &id, ReviewTransition::Addressed)
+        .unwrap();
+
+    let doc = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            applied_commit: Some("ebae919bd5f67e4a707abfba9182ad451328c86f"),
+            reply: Some("Corrected: actually fixed in ebae919."),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.state, ReviewState::Addressed);
+    let comment = &doc.frontmatter.comments[0];
+    assert_eq!(
+        comment.applied_commit.as_deref(),
+        Some("ebae919bd5f67e4a707abfba9182ad451328c86f")
+    );
+    assert_eq!(
+        comment.reply.as_deref(),
+        Some("Corrected: actually fixed in ebae919.")
+    );
+    assert_eq!(comment.status, ReviewCommentStatus::Addressed);
+}
+
+#[test]
+fn update_comment_status_rejected_after_addressed() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "Fix the guard clause.");
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::RequestChanges))
+        .unwrap();
+    rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            status: Some(ReviewCommentStatus::Addressed),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::reviews::update_review(&mut store, "fbm", &id, ReviewTransition::Addressed)
+        .unwrap();
+
+    let result = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            status: Some(ReviewCommentStatus::WontFix),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(
+        result,
+        Err(Error::ReviewClosed { state, .. }) if state == ReviewState::Addressed
+    ));
+}
+
+#[test]
+fn update_comment_applied_commit_and_reply_correctable_after_dismissed() {
+    let mut store = setup_with_project();
+    add_task_fix_login(&mut store);
+    let id = draft_task_review(&mut store);
+    add_plain_comment(&mut store, &id, "Fix the guard clause.");
+    rdm_core::ops::reviews::submit_review(&mut store, "fbm", &id, Some(Verdict::RequestChanges))
+        .unwrap();
+    rdm_core::ops::reviews::update_review(&mut store, "fbm", &id, ReviewTransition::Dismissed)
+        .unwrap();
+
+    let doc = rdm_core::ops::reviews::update_comment(
+        &mut store,
+        UpdateComment {
+            project: "fbm",
+            review_id: &id,
+            comment_id: 1,
+            applied_commit: Some("c2d9db220824277d2518d7cbeab8560ddd7f9448"),
+            reply: Some("Not going to fix, corrected note."),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.state, ReviewState::Dismissed);
+    let comment = &doc.frontmatter.comments[0];
+    assert_eq!(
+        comment.applied_commit.as_deref(),
+        Some("c2d9db220824277d2518d7cbeab8560ddd7f9448")
+    );
 }
 
 #[test]

@@ -471,12 +471,17 @@ pub struct UpdateComment<'a> {
 /// Returns [`Error::InvalidStoredChangeRevision`] for malformed resolved change
 /// identities (head or present base must be 40 lowercase ASCII hex characters).
 ///
+/// Returns [`Error::InvalidAppliedCommit`] if `applied_commit` is not exactly
+/// 40 lowercase ASCII hex characters.
+///
 /// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
 /// [`Error::CommentNotFound`] if the comment id isn't in the review,
 /// [`Error::ReviewNotDraft`] if a structural change is attempted after
-/// submission, [`Error::ReviewNotSubmitted`] if a resolution change is
-/// attempted before submission (or after the review reached a terminal
-/// state), [`Error::CommentDocOutOfScope`]/[`Error::CommentDocNotApplicable`]
+/// submission, [`Error::ReviewNotSubmitted`] if any resolution field
+/// (`status`, `applied_commit`, or `reply`) is changed while the review is
+/// still a draft, [`Error::ReviewClosed`] if `status` is changed after the
+/// review has reached a terminal state (`applied_commit` and `reply` remain
+/// correctable there), [`Error::CommentDocOutOfScope`]/[`Error::CommentDocNotApplicable`]
 /// for an invalid `doc`, [`Error::Io`] on read/write failure, or
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] on a malformed
 /// review file.
@@ -492,6 +497,11 @@ pub fn update_comment(store: &mut impl Store, req: UpdateComment<'_>) -> Result<
         applied_commit,
         reply,
     } = req;
+    if let Some(sha) = applied_commit
+        && !crate::model::is_full_commit_sha(sha)
+    {
+        return Err(Error::InvalidAppliedCommit(sha.to_string()));
+    }
     let mut review_doc = crate::io::load_review(store, project, review_id)?;
     if !review_doc
         .frontmatter
@@ -506,12 +516,19 @@ pub fn update_comment(store: &mut impl Store, req: UpdateComment<'_>) -> Result<
     }
 
     let structure_change = body.is_some() || anchor != AnchorUpdate::Keep || doc != DocUpdate::Keep;
-    let resolution_change = status.is_some() || applied_commit.is_some() || reply.is_some();
+    let status_change = status.is_some();
+    let provenance_change = applied_commit.is_some() || reply.is_some();
     if structure_change && review_doc.frontmatter.state != ReviewState::Draft {
         return Err(Error::ReviewNotDraft(review_id.to_string()));
     }
-    if resolution_change && review_doc.frontmatter.state != ReviewState::Submitted {
+    if (status_change || provenance_change) && review_doc.frontmatter.state == ReviewState::Draft {
         return Err(Error::ReviewNotSubmitted(review_id.to_string()));
+    }
+    if status_change && review_doc.frontmatter.state != ReviewState::Submitted {
+        return Err(Error::ReviewClosed {
+            review_id: review_id.to_string(),
+            state: review_doc.frontmatter.state,
+        });
     }
     if let DocUpdate::Set(ref d) = doc {
         validate_comment_doc(store, project, &review_doc.frontmatter.target, d)?;

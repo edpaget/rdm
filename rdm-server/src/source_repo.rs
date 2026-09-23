@@ -150,6 +150,81 @@ fn describe(cause: &rdm_core::source_select::SourceUnavailable) -> &'static str 
     }
 }
 
+/// Resolves and validates an `applied_commit` value for `PATCH
+/// /projects/:project/reviews/:review_id/comments/:comment_id`, before it is
+/// threaded into [`rdm_core::ops::reviews::UpdateComment`].
+///
+/// Mirrors `rdm-cli`'s `resolve_applied_commit`
+/// (`rdm-cli/src/commands/mod.rs`): `sha` may be an abbreviated SHA, `HEAD`,
+/// a branch, or a tag, and the **resolved full SHA** is returned, not the
+/// caller's literal input. The repository checked depends on the review's
+/// target kind — [`rdm_core::model::ReviewTarget::Change`] resolves against
+/// the project's configured local source repo (via [`source_for`]); every
+/// other target kind (`roadmap`, `phase`, `task`, `plan`) resolves against
+/// the plan repo rooted at `plan_root`.
+///
+/// This is a **hard refusal**, unlike this module's read path
+/// ([`resolve_change_review_for_project`]), which degrades with a note
+/// instead of failing. `applied_commit` mints a public `rdm:src/…@<sha>`
+/// provenance record, so a SHA that cannot be verified against the correct
+/// repository must block the write rather than be accepted unverified or
+/// silently degraded — the same fail-closed contract `rdm-cli`'s
+/// `--applied-commit` enforces.
+///
+/// # Errors
+///
+/// Returns the detail string for a `400 Bad Request` when `sha` cannot be
+/// verified: it does not resolve to a commit in the checked repository, or
+/// that repository could not be reached at all (including, for a
+/// `change/<sha>` review, every cause [`source_for`] itself reports).
+#[cfg(feature = "git")]
+pub fn resolve_applied_commit(
+    store: &impl rdm_core::store::VersionedStore,
+    project: &str,
+    plan_root: &std::path::Path,
+    target: &rdm_core::model::ReviewTarget,
+    sha: &str,
+) -> Result<String, String> {
+    use rdm_core::source::SourceRepo;
+
+    let (repo_path, resolved) = match target {
+        rdm_core::model::ReviewTarget::Change { .. } => {
+            let repo = source_for(store, project)?;
+            let resolved = repo.rev_parse(sha).map_err(|e| e.to_string())?;
+            (repo.root().to_path_buf(), resolved)
+        }
+        _ => {
+            let repo = rdm_git::GitSourceRepo::new(plan_root);
+            let resolved = repo.rev_parse(sha).map_err(|e| e.to_string())?;
+            (plan_root.to_path_buf(), resolved)
+        }
+    };
+    resolved.ok_or_else(|| {
+        format!(
+            "applied_commit '{sha}' does not resolve to a commit in '{}'",
+            repo_path.display()
+        )
+    })
+}
+
+/// The [`resolve_applied_commit`] stub for builds without git support:
+/// `applied_commit` cannot be verified without a repository to check it
+/// against, so it is refused outright rather than accepted unverified.
+///
+/// # Errors
+///
+/// Always returns an error: this build has no git support.
+#[cfg(not(feature = "git"))]
+pub fn resolve_applied_commit(
+    _store: &impl rdm_core::store::VersionedStore,
+    _project: &str,
+    _plan_root: &std::path::Path,
+    _target: &rdm_core::model::ReviewTarget,
+    _sha: &str,
+) -> Result<String, String> {
+    Err("applied_commit requires git support".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     /// Every note this module can produce begins by naming the surface, so a

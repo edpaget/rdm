@@ -1688,6 +1688,14 @@ fn review_update_without_any_change_errors() {
 #[test]
 fn review_full_authoring_loop_end_to_end() {
     let plan = init_plan_repo();
+    // `init_plan_repo` ends with a real `rdm commit`, so the plan repo's
+    // HEAD at this point is a resolvable commit — a short prefix of it
+    // exercises `--applied-commit`'s abbreviated-SHA resolution below.
+    let plan_head = String::from_utf8(git(plan.path(), &["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    let plan_head_short = &plan_head[..8];
     create_task_with_body(
         &plan,
         "loop-task",
@@ -1777,9 +1785,9 @@ fn review_full_authoring_loop_end_to_end() {
             "--status",
             "addressed",
             "--applied-commit",
-            "abc1234",
+            plan_head_short,
             "--reply",
-            "Clarified in abc1234.",
+            "Clarified in the seed commit.",
             "--project",
             "demo",
         ])
@@ -1849,9 +1857,166 @@ fn review_full_authoring_loop_end_to_end() {
     let json = show_review_json(&plan, &id);
     assert_eq!(json["state"], "addressed");
     assert_eq!(json["comments"][0]["status"], "addressed");
-    assert_eq!(json["comments"][0]["applied_commit"], "abc1234");
-    assert_eq!(json["comments"][0]["reply"], "Clarified in abc1234.");
+    // The abbreviated SHA passed above is stored resolved to its full
+    // 40-character form, not the operator's literal input.
+    assert_eq!(json["comments"][0]["applied_commit"], plan_head.as_str());
+    assert_eq!(
+        json["comments"][0]["reply"],
+        "Clarified in the seed commit."
+    );
     assert_eq!(json["comments"][1]["status"], "wont-fix");
+}
+
+#[test]
+fn review_applied_commit_rejects_nonexistent_sha_in_plan_repo() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "loop-task", "Step one is unclear.");
+    let id = start_review(&plan, "task/loop-task");
+    add_plain_comment(&plan, &id, "Clarify step one.");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // A well-formed but nonexistent SHA is refused, naming the plan repo,
+    // and leaves the comment's applied_commit unset.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--applied-commit",
+            "0123456789abcdef0123456789abcdef01234567",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not resolve to a commit"));
+
+    let json = show_review_json(&plan, &id);
+    assert!(json["comments"][0]["applied_commit"].is_null());
+}
+
+#[test]
+fn review_applied_commit_correction_after_addressed_keeps_state() {
+    let plan = init_plan_repo();
+    let plan_head = String::from_utf8(git(plan.path(), &["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    create_task_with_body(&plan, "loop-task", "Step one is unclear.");
+    let id = start_review(&plan, "task/loop-task");
+    add_plain_comment(&plan, &id, "Clarify step one.");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            &plan_head[..8],
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--state",
+            "addressed",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: addressed"));
+
+    // Correcting applied_commit/reply after the review has closed succeeds,
+    // and the review's state stays addressed.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--applied-commit",
+            &plan_head[..8],
+            "--reply",
+            "Corrected note.",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("state: addressed"));
+
+    // A status change is still refused, naming the actual state.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "wont-fix",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("addressed"));
+
+    let json = show_review_json(&plan, &id);
+    assert_eq!(json["state"], "addressed");
+    assert_eq!(json["comments"][0]["applied_commit"], plan_head.as_str());
+    assert_eq!(json["comments"][0]["reply"], "Corrected note.");
 }
 
 #[test]

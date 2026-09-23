@@ -2629,3 +2629,181 @@ fn change_comment_reports_a_missing_head_not_a_missing_path() {
         "the path must not be blamed for a missing commit: {text}"
     );
 }
+
+// --- AC5/AC7: `--applied-commit` on a change/<sha> review resolves against
+// the project's configured source repo, not the plan repo, and stores the
+// resolved full SHA rather than the operator's abbreviated input ---
+
+#[test]
+fn change_review_applied_commit_resolves_short_sha_against_source_repo() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Needs a follow-up.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--body",
+            "Needs work.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    // A short prefix of the SOURCE repo's real HEAD resolves.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            &head[..8],
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["comments"][0]["applied_commit"], head.as_str());
+}
+
+#[test]
+fn change_review_applied_commit_refuses_a_sha_only_in_an_unrelated_repo() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Needs a follow-up.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--body",
+            "Needs work.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    // This SHA is a real commit, but only in a repo unrelated to the
+    // project's configured source — proving the check reads the SOURCE
+    // repo, not the plan repo (which would also fail to resolve it, for the
+    // wrong reason).
+    let unrelated = init_unrelated_repo();
+    let unrelated_head = git_out(unrelated.path(), &["rev-parse", "HEAD"]);
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--applied-commit",
+            &unrelated_head,
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("does not resolve to a commit"),
+        "must refuse the unresolvable sha: {text}"
+    );
+    assert!(
+        text.contains(&src.path().to_string_lossy().to_string())
+            || text.contains(
+                &src.path()
+                    .canonicalize()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_string()
+            ),
+        "must name the source repo checked, not the plan repo: {text}"
+    );
+
+    let j = review_json(plan.path(), src.path(), &id);
+    assert!(j["comments"][0]["applied_commit"].is_null());
+}
