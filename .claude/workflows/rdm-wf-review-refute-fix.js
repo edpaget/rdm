@@ -1643,10 +1643,18 @@ const PERSIST_HEADER_KEYS = ['severity', 'confidence', 'refuted', 'unrefutedReas
 // `anchor` reported as unknown, never guessed) rather than silently
 // misclassified as a human comment — which would defeat
 // `priorFindingsFromReviews`'s repeat-finding detection on every pre-existing
-// review. A SIX-key header (pre-dating `inScope`) is a separate, narrower
-// format and stays out of scope here — see
-// `docs/workflow-schemas.md` § "Persisted review comment body".
+// review.
 const LEGACY_PERSIST_HEADER_KEYS = PERSIST_HEADER_KEYS.slice(0, 7);
+
+// LEGACY_6KEY_PERSIST_HEADER_KEYS — the SIX-key header every comment this
+// pipeline wrote before `inScope` was added (phase 35). `parseCommentHeader`
+// falls back to this shape when both the eight-key and seven-key matches fail,
+// so a comment persisted before that change is still recognized as machine-written
+// (with `inScope` reported as null for unknown, and `anchor` as undefined, never
+// guessed) rather than silently misclassified as a human comment — which would
+// defeat `priorFindingsFromReviews`'s repeat-finding detection on every
+// pre-existing review.
+const LEGACY_6KEY_PERSIST_HEADER_KEYS = PERSIST_HEADER_KEYS.slice(0, 6);
 
 // persistHeaderValue(v) — collapse to a single line. A header value that spanned
 // lines would desynchronize the line-based parser for every key after it.
@@ -1730,8 +1738,8 @@ function tryParseHeaderKeys(lines, keys) {
 // Tries the current EIGHT-key header first; a body that only carries the
 // LEGACY seven (no trailing `anchor` line — see `LEGACY_PERSIST_HEADER_KEYS`)
 // still parses, with `anchor` reported as `undefined` (unknown), rather than
-// falling through to `null` and being mistaken for an unheadered human
-// comment.
+// falling through. Similarly, a LEGACY six-key body (pre-`inScope`) parses with
+// both `inScope` and `anchor` unknown.
 function parseCommentHeader(body) {
   const text = typeof body === 'string' ? body : '';
   const lines = text.split('\n');
@@ -1740,6 +1748,10 @@ function parseCommentHeader(body) {
   if (!values) {
     values = tryParseHeaderKeys(lines, LEGACY_PERSIST_HEADER_KEYS);
     headerLen = LEGACY_PERSIST_HEADER_KEYS.length;
+  }
+  if (!values) {
+    values = tryParseHeaderKeys(lines, LEGACY_6KEY_PERSIST_HEADER_KEYS);
+    headerLen = LEGACY_6KEY_PERSIST_HEADER_KEYS.length;
   }
   if (!values) return null;
   const rest = lines.slice(headerLen).join('\n');

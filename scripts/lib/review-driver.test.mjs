@@ -1218,6 +1218,36 @@ test('parseCommentHeader accepts a legacy SEVEN-key body with no trailing `ancho
   assert.equal(parseCommentHeader(currentBody).anchor, 'path');
 });
 
+test('parseCommentHeader accepts a legacy SIX-key body with no inScope or anchor lines', () => {
+  // The shape every comment carried before `inScope` was added (phase 35):
+  // six `key: value` lines, straight into the blank separator, no inScope or
+  // anchor at all. Must still be recognized as machine-written — never misread
+  // as an unheadered human comment, which would defeat repeat-finding detection.
+  const legacyBody = [
+    'severity: blocking',
+    'confidence: 90',
+    'refuted: false',
+    'unrefutedReason: none',
+    'dimension: correctness',
+    'finding-id: f1',
+    '',
+    'correctness',
+    'What fails: it drops a write',
+  ].join('\n');
+
+  const h = parseCommentHeader(legacyBody);
+  assert.ok(h, 'a legacy six-key body must round-trip through the parser');
+  assert.equal(h.severity, 'blocking');
+  assert.equal(h.confidence, 90);
+  assert.equal(h.refuted, false);
+  assert.equal(h.unrefutedReason, 'none');
+  assert.equal(h.dimension, 'correctness');
+  assert.equal(h.findingId, 'f1');
+  assert.equal(h.inScope, null, 'pre-phase-35, inScope was never written; null (unknown), not guessed');
+  assert.equal(h.anchor, undefined, 'pre-phase-28, anchor was never written; undefined, not guessed');
+  assert.equal(h.whatFails, 'it drops a write');
+});
+
 test("an invalid finder `path` (absolute, `..`, or whitespace) falls back to pathFromLocation(location)", () => {
   const target = 'change/abc123';
   const opts = { pathAnchors: true, source: { noCode: false } };

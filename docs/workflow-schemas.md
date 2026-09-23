@@ -1360,9 +1360,19 @@ only when that fails, so a pre-existing comment is still recognized as
 machine-written — `anchor` comes back `undefined` (unknown, never guessed) —
 rather than silently misclassified as an unheadered human comment, which would
 defeat `priorFindingsFromReviews`'s repeat-finding detection (`lib/plan-review.mjs`)
-on every review persisted before this change. A SIX-key header (pre-dating
-`inScope`) is a narrower, separate legacy format, covered by a later phase of
-this same `agent-orchestrated-dispatch` roadmap rather than by this fallback.
+on every review persisted before this change.
+
+**Backward compatibility: a legacy SIX-key header still parses.** `inScope` was
+added as a TRAILING seventh key (and `anchor` as an eighth); every comment
+persisted before `inScope` was added carries only the first six
+(`LEGACY_6KEY_PERSIST_HEADER_KEYS`). `parseCommentHeader` progressively tries
+the full eight-key match, then the seven-key match, and finally the six-key
+match only when both earlier matches fail, so a pre-existing comment is still
+recognized as machine-written — `inScope` comes back `null` (unknown, never guessed)
+and `anchor` comes back `undefined` (unknown, never guessed) — rather than
+silently misclassified as an unheadered human comment, which would defeat
+`priorFindingsFromReviews`'s repeat-finding detection (`lib/plan-review.mjs`)
+on every review persisted before this change.
 
 Carrying this metadata in comment FRONTMATTER instead is recorded as a
 follow-up (`extend-review-comment-frontmatter-with-finding-metadata`), not done
