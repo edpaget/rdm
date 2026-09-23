@@ -1232,8 +1232,8 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
         // remove the one escape hatch an operator has after history
         // changes. Otherwise prefer the item's recorded `started_head` — a
         // phase in a shared roadmap worktree is then reviewed as its own
-        // diff, starting where its `in-progress` stamp recorded, rather
-        // than as every earlier phase's changes too. A recorded
+        // diff, starting where its explicit `--start-commit` recorded,
+        // rather than as every earlier phase's changes too. A recorded
         // `started_head` is rev-parsed/verified exactly like an explicit
         // `--base`; an unreachable (e.g. garbage-collected) SHA still fails
         // closed at that rev-parse. But a *resolvable* `started_head` that

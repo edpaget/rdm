@@ -99,16 +99,17 @@ pub struct ReviewSourceRequest {
     /// Deliberate declaration that an empty committed diff is reviewable.
     pub no_code: bool,
     /// The item's recorded [`crate::model::Phase::started_head`] /
-    /// [`crate::model::Task::started_head`], when one has been stamped.
+    /// [`crate::model::Task::started_head`], when one has been recorded via
+    /// an explicit `--start-commit`.
     ///
     /// When `base` is `None`, this is preferred over the merge-base with
     /// `default_branch`: a phase in a shared roadmap worktree is reviewed as
-    /// its own diff, starting at the commit its `in-progress` stamp
-    /// recorded, rather than as every earlier phase's changes too. `base`
-    /// still overrides both when the caller supplies it explicitly. A
-    /// resolvable `started_head` that is no longer an ancestor of `head`
-    /// (e.g. the branch was rebased) is not used as-is — the resolver falls
-    /// back to the merge-base with `default_branch` and reports it via
+    /// its own diff, starting at the commit `--start-commit` recorded,
+    /// rather than as every earlier phase's changes too. `base` still
+    /// overrides both when the caller supplies it explicitly. A resolvable
+    /// `started_head` that is no longer an ancestor of `head` (e.g. the
+    /// branch was rebased) is not used as-is — the resolver falls back to
+    /// the merge-base with `default_branch` and reports it via
     /// [`ReviewSource::base_note`].
     pub started_head: Option<String>,
 }

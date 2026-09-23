@@ -152,17 +152,22 @@ the wrong branch, and race any concurrent dispatch run reading the same global q
 
 ```bash
 rdm worktree add <slug> {proj_flag}          # or: rdm worktree add task/<slug>
+```
+
+Always run this, **including under `--plan-only`** — step 4's identity pin needs the worktree to
+exist, whether or not this pass goes on to implement anything. One worktree per roadmap: every phase
+of a roadmap is implemented in place in the same checkout, so `worktree add` on a later phase returns
+the existing path. **You MUST NOT** create a phase-specific branch or fork off `main`.
+
+```bash
 rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> {proj_flag}
 rdm commit -m "chore(plan): start <item>"
 ```
 
-(task form: `rdm task update <slug> --status in-progress …`). One worktree per roadmap: every phase
-of a roadmap is implemented in place in the same checkout, so `worktree add` on a later phase
-returns the existing path. **You MUST NOT** create a phase-specific branch or fork off `main`. This
-status stamp records nothing about the item's starting commit — that is step 8's job, an explicit
-write independent of this one.
-
-**Skip this entire step under `--plan-only`** — a plan-only pass does no implementation.
+(task form: `rdm task update <slug> --status in-progress …`). **Skip only these two lines under
+`--plan-only`** — a plan-only pass does no implementation, so stamping `in-progress` would misreport
+work that never happened. This status stamp records nothing about the item's starting commit — that
+is step 8's job, an explicit write independent of this one.
 
 ### 4. Pin the checkout identity
 

@@ -457,22 +457,19 @@ pub struct Phase {
     /// firing checkout's branch) rather than by SHA reachability alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_branch: Option<String>,
-    /// The item's resolved checkout HEAD at the moment it first transitioned
-    /// out of `not-started` into `in-progress`.
+    /// The commit the phase's shared roadmap worktree was at when the
+    /// phase's own work began.
     ///
-    /// Write-once, and narrower than "the field is currently empty": it is
-    /// only ever set on the transition whose *prior* status was
-    /// `not-started`. Every other transition into `in-progress` — a
-    /// `reviewed -> in-progress` rework re-stamp, a `blocked -> in-progress`
-    /// unpark, or an `in-progress -> in-progress` re-stamp — leaves the field
-    /// exactly as it found it, even when it is still empty. That matters
-    /// because a phase can reach one of those later transitions while still
-    /// carrying commits and no recorded value (stamped by a pre-this-field
-    /// binary, or whose first stamp's worktree could not be resolved); if a
-    /// later re-stamp were allowed to fill the gap, it would record a base
-    /// *after* the phase's own commits, and `review source` would silently
-    /// scope the review to only what came after. Leaving the field alone in
-    /// that case keeps `review source`'s safe merge-base fallback instead.
+    /// Write-once, and set only by an explicit commit SHA passed to
+    /// [`crate::ops::phase::update_phase`]'s `started_head` argument (the
+    /// CLI's `phase update --start-commit <sha>`) — no status transition
+    /// sets this field as a side effect. A second write against a phase that
+    /// already has a recorded value is rejected with
+    /// [`crate::error::Error::StartHeadAlreadyRecorded`] rather than
+    /// silently overwriting or skipping it; the existing value is left
+    /// untouched. In practice, the `rdm-dispatch-phase` skill records this
+    /// from its already-pinned checkout head immediately before the phase's
+    /// first implementer dispatch.
     /// Unlike [`Phase::review_sha`] (re-stamped on every `needs-review`
     /// transition), this field records where the phase's own work *began*,
     /// so [`rdm review source`](crate::worktree) can default a phase's
@@ -549,12 +546,14 @@ pub struct Task {
     /// firing checkout's branch) rather than by SHA reachability alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_branch: Option<String>,
-    /// The item's resolved checkout HEAD at the moment it first transitioned
-    /// out of `open` into `in-progress`. Write-once, mirroring
-    /// [`Phase::started_head`] exactly, including the "only the transition
-    /// whose prior status was the pre-work status" narrowing (here `open`,
-    /// there `not-started`) and the resulting rework/unpark/re-stamp
-    /// exemption.
+    /// The commit the task's worktree was at when the task's own work
+    /// began. Write-once, mirroring [`Phase::started_head`] exactly: set
+    /// only by an explicit commit SHA passed to
+    /// [`crate::ops::task::update_task`]'s `started_head` argument (the
+    /// CLI's `task update --start-commit <sha>`), never by a status
+    /// transition, and a second write against a task that already has a
+    /// recorded value is rejected with
+    /// [`crate::error::Error::StartHeadAlreadyRecorded`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_head: Option<String>,
     /// Reason the task was closed (a retire/supersede note), if any.

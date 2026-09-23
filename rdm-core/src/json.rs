@@ -68,8 +68,9 @@ pub struct PhaseJson {
     /// Git commit SHA associated with phase completion, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
-    /// The item's resolved checkout HEAD at the moment it first transitioned
-    /// to `in-progress`. Write-once; see [`crate::model::Phase::started_head`].
+    /// The commit the phase's worktree was at when the phase's own work
+    /// began, recorded by an explicit `--start-commit`. Write-once; see
+    /// [`crate::model::Phase::started_head`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_head: Option<String>,
     /// Estimated difficulty of the phase, if assessed.
@@ -144,8 +145,9 @@ pub struct TaskJson {
     /// Git commit SHA that completed this task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
-    /// The item's resolved checkout HEAD at the moment it first transitioned
-    /// to `in-progress`. Write-once; see [`crate::model::Task::started_head`].
+    /// The commit the task's worktree was at when the task's own work
+    /// began, recorded by an explicit `--start-commit`. Write-once; see
+    /// [`crate::model::Task::started_head`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started_head: Option<String>,
     /// Reason the task was closed (a retire/supersede note), if any.

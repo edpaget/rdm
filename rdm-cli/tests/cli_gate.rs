@@ -1007,13 +1007,13 @@ fn review_show_json(plan: &Path, cwd: &Path, id: &str) -> Value {
 }
 
 /// AC1 + AC2 + AC3 at the binary boundary: two phases implemented in
-/// sequence in one shared roadmap worktree. The second phase's
-/// `in-progress` stamp records `started_head` from OUTSIDE the worktree
-/// (the source repo's main checkout), a re-stamp does not move it,
-/// `review source` defaults its base to that recorded value rather than the
-/// merge-base — scoping `changedFiles` to the second phase's own commit —
-/// and an approving `change/` review persisted at that base lets the gated
-/// `reviewed` write through.
+/// sequence in one shared roadmap worktree. The second phase's explicit
+/// `--start-commit` records `started_head` from OUTSIDE the worktree
+/// (the source repo's main checkout), a second `--start-commit` is refused
+/// and does not move it, `review source` defaults its base to that recorded
+/// value rather than the merge-base — scoping `changedFiles` to the second
+/// phase's own commit — and an approving `change/` review persisted at that
+/// base lets the gated `reviewed` write through.
 #[test]
 fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
     let src = init_source_repo();
@@ -1440,17 +1440,17 @@ fn review_source_falls_back_when_started_head_is_not_an_ancestor_at_the_binary_b
 
 /// tests-2 (review 2026-09-23-0309-996c): AC2's merge-base fallback, checked
 /// at the binary boundary rather than only at the `rdm-git` struct level. A
-/// phase that was never stamped `in-progress` has no recorded `started_head`,
-/// so `review source` must fall back to the merge-base with the project's
-/// default branch and say so via `baseNote` — the only prior CLI assertion of
-/// the key was `.is_none()`, which would still pass if the field were renamed
-/// or dropped outright.
+/// phase that never had `--start-commit` run against it has no recorded
+/// `started_head`, so `review source` must fall back to the merge-base with
+/// the project's default branch and say so via `baseNote` — the only prior
+/// CLI assertion of the key was `.is_none()`, which would still pass if the
+/// field were renamed or dropped outright.
 #[test]
 fn review_source_with_no_started_head_falls_back_to_merge_base_with_a_note() {
     let src = init_source_repo();
     let plan = init_plan_repo(src.path());
-    // A shared roadmap worktree with one commit on it, but the phase itself
-    // was never stamped `in-progress` — no `started_head` was ever recorded.
+    // A shared roadmap worktree with one commit on it, but `--start-commit`
+    // was never run against the phase — no `started_head` was ever recorded.
     let wt = add_worktree(plan.path(), src.path());
     let merge_base = rev_parse(src.path(), "HEAD");
     let head = rev_parse(&wt, "HEAD");
@@ -1462,7 +1462,7 @@ fn review_source_with_no_started_head_falls_back_to_merge_base_with_a_note() {
         phase_json_for(plan.path(), "phase-1-design", "auth")
             .get("started_head")
             .is_none(),
-        "phase-1-design must never have been stamped in-progress in this test"
+        "phase-1-design must never have had --start-commit run against it in this test"
     );
 
     let out = rdm()
