@@ -1,6 +1,6 @@
 ---
 name: rdm-autopilot
-description: Drive one named rdm roadmap from not-started to reviewed autonomously — pick the next actionable phase, estimate it, dispatch it on its model tier, interpret the outcome, and advance — batching decisions and blockers instead of interrupting
+description: Drive one named rdm roadmap from not-started to reviewed autonomously — pick the next actionable phase, estimate it, dispatch it on its model tier, interpret the outcome, and advance, parking the phase and stopping the run on the first blocker instead of interrupting
 allowed-tools:
   - Bash
   - Workflow
