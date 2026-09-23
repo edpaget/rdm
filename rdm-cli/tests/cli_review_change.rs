@@ -2807,3 +2807,182 @@ fn change_review_applied_commit_refuses_a_sha_only_in_an_unrelated_repo() {
     let j = review_json(plan.path(), src.path(), &id);
     assert!(j["comments"][0]["applied_commit"].is_null());
 }
+
+/// Rework round 1, item 2 (code review 2026-09-23-1828-5aca, finding
+/// `unreachable-repo-reported-as-missing-commit`). When the checked path
+/// exists but is not a git checkout at all, `--applied-commit` must say so —
+/// not report the SHA as "does not resolve", which would send the operator
+/// off to recheck a SHA that was never the problem.
+#[test]
+fn change_review_applied_commit_refuses_when_source_is_not_a_git_checkout() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Needs a follow-up.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--body",
+            "Needs work.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    // Reconfigure the project's source to a plain directory: it exists, but
+    // it is not a git repository at all.
+    let not_a_repo = TempDir::new().unwrap();
+    std::fs::write(not_a_repo.path().join("README.md"), "plain dir\n").unwrap();
+    set_project_source(plan.path(), "demo", &not_a_repo.path().to_string_lossy());
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--applied-commit",
+            "0123456",
+            "--project",
+            "demo",
+        ])
+        .current_dir(not_a_repo.path())
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("not a git checkout"),
+        "must name the real cause, not \"does not resolve\": {text}"
+    );
+    assert!(
+        !text.contains("does not resolve to a commit"),
+        "an unreachable repo must not be reported as a missing commit: {text}"
+    );
+}
+
+/// Rework round 1, item 2. A well-formed but unknown abbreviated SHA still
+/// gets the "does not resolve" refusal (the checkout IS a real git repo, so
+/// this is genuinely a missing-commit case) — but now with a hint that an
+/// abbreviated SHA may be ambiguous, since the operator cannot tell "no such
+/// commit" apart from "this prefix matches more than one" from the same
+/// underlying `Ok(None)`.
+#[test]
+fn change_review_applied_commit_unknown_short_sha_hints_at_ambiguity() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Needs a follow-up.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--body",
+            "Needs work.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--applied-commit",
+            "0123456",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure()
+        .get_output()
+        .stderr
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("does not resolve to a commit"),
+        "a real git repo with no matching commit is genuinely unresolvable: {text}"
+    );
+    assert!(
+        text.contains("ambiguous") && text.contains("full SHA"),
+        "must hint that an abbreviated SHA may be ambiguous: {text}"
+    );
+}

@@ -130,6 +130,21 @@ fn seed_source_repo() -> (TempDir, String, String) {
     (dir, base, head)
 }
 
+/// A git repository that is emphatically *not* the project's configured
+/// source: its own `main`, its own single commit, no relation to
+/// `seed_source_repo`'s history at all. Mirrors `cli_review_change.rs`'s
+/// `init_unrelated_repo`.
+fn init_unrelated_repo() -> (TempDir, String) {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    std::fs::write(p.join("README.md"), "not the source repo\n").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "unrelated"]);
+    let head = git_out(p, &["rev-parse", "HEAD"]);
+    (dir, head)
+}
+
 fn phase_item() -> ItemRef {
     ItemRef::Phase {
         roadmap: ROADMAP.to_string(),
@@ -521,5 +536,100 @@ async fn html_change_review_renders_the_same_states() {
     assert!(
         html.contains(RESOLVING_QUOTE),
         "the resolved anchor's quote must render: {html}"
+    );
+}
+
+// --- `applied_commit` on a `change/<sha>` review resolves against the
+// configured SOURCE repo, not the plan repo — code review 2026-09-23-1828-5aca
+// finding `server-change-target-applied-commit-untested` ---
+
+/// A short prefix of the source repo's real HEAD resolves and is stored as
+/// the full SHA — proving the server checks the SOURCE repo, not
+/// `state.plan_root` (which is an `FsStore` directory with no git repo at
+/// all in this fixture, so resolving against it would fail outright).
+#[cfg(feature = "git")]
+#[tokio::test]
+async fn applied_commit_change_review_resolves_short_sha_against_source_repo() {
+    let (src, base, head) = seed_source_repo();
+    let plan = seed_plan_repo(&base, &head);
+    set_project_source(plan.path(), Some(&src.path().to_string_lossy()));
+
+    let (addr, client) = spawn(plan.path()).await;
+    let res = client
+        .patch(format!(
+            "http://{addr}/projects/{PROJECT}/reviews/{REVIEW_ID}/comments/1"
+        ))
+        .json(&serde_json::json!({ "applied_commit": &head[..8] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["comments"][0]["applied_commit"], head.as_str());
+}
+
+/// A real commit SHA that exists only in an unrelated repo — never in the
+/// configured source, and never in the plan repo either — is refused with a
+/// 400 naming the source repo path.
+#[cfg(feature = "git")]
+#[tokio::test]
+async fn applied_commit_change_review_refuses_a_sha_only_in_an_unrelated_repo() {
+    let (src, base, head) = seed_source_repo();
+    let plan = seed_plan_repo(&base, &head);
+    set_project_source(plan.path(), Some(&src.path().to_string_lossy()));
+    let (_unrelated, unrelated_head) = init_unrelated_repo();
+
+    let (addr, client) = spawn(plan.path()).await;
+    let res = client
+        .patch(format!(
+            "http://{addr}/projects/{PROJECT}/reviews/{REVIEW_ID}/comments/1"
+        ))
+        .json(&serde_json::json!({ "applied_commit": &unrelated_head }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    let detail = body["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("does not resolve to a commit"),
+        "must refuse the unresolvable sha: {detail}"
+    );
+    let src_path = src.path().to_string_lossy().to_string();
+    let src_path_canonical = src
+        .path()
+        .canonicalize()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    assert!(
+        detail.contains(&src_path) || detail.contains(&src_path_canonical),
+        "must name the source repo checked, not the plan repo: {detail}"
+    );
+}
+
+/// With no `source.repo` configured, `applied_commit` on a `change/<sha>`
+/// review is refused with a 400 carrying `source_for`'s own detail — never a
+/// silent accept, and never the read path's degrade-with-a-note.
+#[tokio::test]
+async fn applied_commit_change_review_refuses_with_no_source_configured() {
+    let (_src, base, head) = seed_source_repo();
+    let plan = seed_plan_repo(&base, &head);
+    set_project_source(plan.path(), None);
+
+    let (addr, client) = spawn(plan.path()).await;
+    let res = client
+        .patch(format!(
+            "http://{addr}/projects/{PROJECT}/reviews/{REVIEW_ID}/comments/1"
+        ))
+        .json(&serde_json::json!({ "applied_commit": &head }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let body: Value = res.json().await.unwrap();
+    let detail = body["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("configures no local source repo") || detail.contains("git support"),
+        "must carry source_for's own detail: {detail}"
     );
 }

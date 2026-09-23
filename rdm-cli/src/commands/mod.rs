@@ -1444,12 +1444,26 @@ pub fn resolve_start_commit(
 /// a SHA that cannot be verified against the correct repository is refused
 /// rather than accepted silently or degraded with a warning.
 ///
+/// Two distinct refusal causes are told apart, rather than both collapsing
+/// into "does not resolve":
+/// [`rdm_git::discover_git_dir`] checks the checked path is actually a git
+/// checkout *before* `rev_parse` ever runs, since
+/// [`SourceRepo::rev_parse`](rdm_core::source::SourceRepo::rev_parse) maps
+/// every non-zero git exit — including "not a git repository" and an
+/// ambiguous abbreviated SHA — to the same `Ok(None)`, and reporting that as
+/// "no such commit" would send an operator with a correct SHA to go recheck
+/// it instead of fixing the repository. A SHA that genuinely fails to
+/// resolve in a real git checkout is still reported as "does not resolve",
+/// now with a hint that an abbreviated SHA may be ambiguous.
+///
 /// # Errors
 ///
-/// Returns an error naming the checked repository when `sha` does not
-/// resolve to a commit there, or when the repository itself cannot be
-/// reached (no source repo configured/reachable for a `change/<sha>`
-/// review, or the plan repo is not a git checkout).
+/// Returns an error naming the checked path as not a git checkout when it
+/// isn't one; an error naming the checked repository (with a hint that an
+/// abbreviated SHA may be ambiguous) when `sha` does not resolve to a commit
+/// there; or, when the repository itself cannot be discovered at all (no
+/// source repo configured/reachable for a `change/<sha>` review), that
+/// discovery failure's own actionable text.
 #[cfg(feature = "git")]
 pub fn resolve_applied_commit(
     store: &AppStore,
@@ -1460,21 +1474,28 @@ pub fn resolve_applied_commit(
 ) -> Result<String> {
     use rdm_core::source::SourceRepo;
 
-    let (repo_path, resolved) = match target {
+    let (repo_path, what) = match target {
         rdm_core::model::ReviewTarget::Change { .. } => {
             let repo = crate::source_repo::discover_source_repo(store, project)?;
-            let resolved = repo.rev_parse(sha).map_err(|e| anyhow::anyhow!("{e}"))?;
-            (repo.root().to_path_buf(), resolved)
+            (
+                repo.root().to_path_buf(),
+                "the project's configured source repo",
+            )
         }
-        _ => {
-            let repo = rdm_git::GitSourceRepo::new(root);
-            let resolved = repo.rev_parse(sha).map_err(|e| anyhow::anyhow!("{e}"))?;
-            (root.to_path_buf(), resolved)
-        }
+        _ => (root.to_path_buf(), "the plan repo"),
     };
+    if rdm_git::discover_git_dir(&repo_path).is_err() {
+        bail!(
+            "--applied-commit cannot be checked: {what} at '{}' is not a git checkout",
+            repo_path.display()
+        );
+    }
+    let repo = rdm_git::GitSourceRepo::new(&repo_path);
+    let resolved = repo.rev_parse(sha).map_err(|e| anyhow::anyhow!("{e}"))?;
     resolved.ok_or_else(|| {
         anyhow::anyhow!(
-            "--applied-commit '{sha}' does not resolve to a commit in '{}'",
+            "--applied-commit '{sha}' does not resolve to a commit in {what} at '{}' — if this \
+             is an abbreviated SHA, it may be ambiguous; try a longer prefix or the full SHA",
             repo_path.display()
         )
     })
