@@ -1830,22 +1830,24 @@ function persistReviewSummary(result) {
   return String(r.outcome) + ': ' + base;
 }
 
-// persistHeredocTag(base, value) — a quoted-heredoc delimiter guaranteed not to
-// occur as a whole line inside `value`. Deterministic (no randomness — the
-// workflow runtime forbids it): extend with `X` until unique.
-function persistHeredocTag(base, value) {
-  let tag = base;
-  while (('\n' + String(value) + '\n').indexOf('\n' + tag + '\n') !== -1) tag = tag + 'X';
-  return tag;
-}
-
-// persistCapture(varName, base, value) — capture arbitrary text into a shell
-// variable through a QUOTED heredoc, which keeps backticks, `$`, double quotes,
-// em-dashes and newlines literal. Never interpolate a finding's text into a
-// command line directly.
-function persistCapture(varName, base, value) {
-  const tag = persistHeredocTag(base, value);
-  return varName + "=$(cat <<'" + tag + "'\n" + String(value) + '\n' + tag + '\n)';
+// persistCapture(varName, value) — capture arbitrary text into a shell
+// variable through a plain single-quoted assignment (`shellQuote`, defined
+// below), which keeps backticks, `$`, double quotes, em-dashes and embedded
+// newlines literal. Never interpolate a finding's text into a command line
+// directly.
+//
+// This used to be a QUOTED HEREDOC nested inside a `$(...)` command
+// substitution (`VAR=$(cat <<'TAG' ... TAG)`). macOS's system /bin/bash
+// (frozen at 3.2.57) cannot even PARSE that construct when the heredoc body
+// contains a literal apostrophe — the parser mis-tracks quote balance across
+// the nested heredoc while scanning for the matching `)`, so the script fails
+// before it ever runs (see task persist-capture-bash32-heredoc-apostrophe).
+// `shellQuote` sidesteps the whole defect class: there is no heredoc and no
+// nested `$(...)`, only a single-quoted string (which may itself span
+// multiple lines — a literal embedded newline inside single quotes is valid
+// POSIX shell).
+function persistCapture(varName, value) {
+  return varName + '=' + shellQuote(value);
 }
 
 // isRepoRelativePath(s) — the shared repo-relative-path validity check a
@@ -2167,7 +2169,7 @@ function persistReviewCommands(result, target, cfg, opts) {
   // template stays quoted for a TMPDIR containing a space.
   cmds.push('RDM_PERSIST_START_JSON=$(mktemp "${TMPDIR:-/tmp}/rdm-persist-start.XXXXXX") || exit 1');
   cmds.push(
-    persistCapture('RDM_PERSIST_SUMMARY', 'RDM_PERSIST_SUMMARY_EOF', summary) +
+    persistCapture('RDM_PERSIST_SUMMARY', summary) +
       '\n' +
       IND +
       bin +
@@ -2219,9 +2221,9 @@ function persistReviewCommands(result, target, cfg, opts) {
     // pre-builds a `degraded` header variant for the runtime-fallback body,
     // since which one actually gets persisted is decided by the shell, not
     // by this function.
-    let cmd = persistCapture('RDM_PERSIST_BODY', 'RDM_PERSIST_BODY_EOF', formatCommentBody(f, persistAnchorState(f, target, o))) + '\n';
+    let cmd = persistCapture('RDM_PERSIST_BODY', formatCommentBody(f, persistAnchorState(f, target, o))) + '\n';
     if (anchor.quote) {
-      cmd += persistCapture('RDM_PERSIST_QUOTE', 'RDM_PERSIST_QUOTE_EOF', f.quote) + '\n';
+      cmd += persistCapture('RDM_PERSIST_QUOTE', f.quote) + '\n';
       if (anchorPath !== null) {
         // PATH-ANCHORED COMMENT, RETRIED AT RUN TIME. `persistAnchorFor`
         // already validated `anchorPath` at BUILD TIME, but only the real
@@ -2234,8 +2236,8 @@ function persistReviewCommands(result, target, cfg, opts) {
         // (RDM_PERSIST_BODY_DEGRADED), and tallied into
         // RDM_PERSIST_RUNTIME_DEGRADED so the tail `anchorsDegraded=` line
         // below reports the REAL result, not just the build-time one.
-        cmd += persistCapture('RDM_PERSIST_PATH', 'RDM_PERSIST_PATH_EOF', anchorPath) + '\n';
-        cmd += persistCapture('RDM_PERSIST_BODY_DEGRADED', 'RDM_PERSIST_BODY_DEGRADED_EOF', formatCommentBody(f, 'degraded')) + '\n';
+        cmd += persistCapture('RDM_PERSIST_PATH', anchorPath) + '\n';
+        cmd += persistCapture('RDM_PERSIST_BODY_DEGRADED', formatCommentBody(f, 'degraded')) + '\n';
         cmd +=
           'if ' +
           bin +
@@ -2299,11 +2301,14 @@ function persistReviewCommands(result, target, cfg, opts) {
   // `review submit`, while the review is still a draft), closes that gap: it
   // names the real total against the number requested, in the exact wording
   // `persistDegradationNoteBody` defines, with the run-time-only-known count
-  // filled in through `printf` rather than a quoted heredoc — a quoted
-  // heredoc cannot expand `$RDM_PERSIST_TOTAL_DEGRADED` at all, and `printf`
-  // also sidesteps the apostrophe-breaks-bash-3.2-heredocs defect entirely
-  // (moot here anyway, since this fixed text carries no apostrophe — see
-  // task persist-capture-bash32-heredoc-apostrophe).
+  // filled in through `printf` rather than `persistCapture` — `persistCapture`
+  // emits a static single-quoted string via `shellQuote` and cannot expand
+  // `$RDM_PERSIST_TOTAL_DEGRADED` at all, so this run-time interpolation needs
+  // `printf` regardless. Both this call site and `persistCapture` now share
+  // the same heredoc-free strategy (a quoted `shellQuote`/`printf` argument,
+  // never a heredoc nested in `$(...)`) — see task
+  // persist-capture-bash32-heredoc-apostrophe for the defect that motivated
+  // dropping heredocs from both.
   //
   // GATED ON `isChangeTarget(target)`, not merely appended unconditionally
   // behind its own runtime `if`: against a plan-repo document target

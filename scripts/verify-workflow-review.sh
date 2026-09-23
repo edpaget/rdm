@@ -4673,8 +4673,12 @@ assert.throws(() => persistVerdictFor('constructor'), /unrecognized outcome/, 'a
   assert.ok(joined.indexOf('review start') < joined.indexOf('review comment'), 'start precedes comments');
   assert.ok(joined.indexOf('review comment') < joined.indexOf('review submit'), 'comments precede submit');
   assert.ok(joined.indexOf('review submit') < joined.indexOf(' commit -m'), 'submit precedes the commit');
-  // Quoted-heredoc capture, never naive interpolation.
-  assert.ok(joined.includes("$(cat <<'RDM_PERSIST_QUOTE_EOF'"), 'the quote is captured through a QUOTED heredoc');
+  // Shell-quoted capture (persistCapture -> shellQuote), never naive interpolation
+  // or a heredoc nested in $(...) -- the latter fails to PARSE under macOS's
+  // bash 3.2 when the captured text contains an apostrophe (see task
+  // persist-capture-bash32-heredoc-apostrophe).
+  assert.ok(joined.includes("RDM_PERSIST_QUOTE='"), 'the quote is captured through a shell-quoted assignment');
+  assert.ok(!joined.includes('<<'), 'the ladder never emits a heredoc');
   assert.ok(joined.includes('Beta "unique" $span with `backticks`'), 'the quote text rides through literally');
   // The zero-survivor `reviewed` case still carries a NON-EMPTY summary, or
   // rdm-core's submit_review raises ReviewEmpty.

@@ -1438,15 +1438,27 @@ merely unimplemented.
 **Emitted commands**, in order: `rdm review start --on <target> --body <summary>
 --no-edit --format json` → one `rdm review comment` per survivor → `rdm review
 submit --verdict <v>` → a session-scoped `rdm commit`. Quotes and bodies are
-captured through QUOTED HEREDOCS, never interpolated into a command line, so
-backticks, `$`, double quotes, em-dashes and newlines ride through literally.
-`target` itself is shell-quoted (via the same `shellQuote` helper as every
-other untrusted value) at both its occurrences — the `--on` argument and the
-`commit -m` message — so a target containing `$(...)` or a backtick cannot
-execute a command when the emitted lines run. A survivor carrying a `quote`
-gets `--quote`; one without becomes a whole-document comment. `review
-start` always carries a NON-EMPTY `--body`, or `submit_review` would raise
-`ReviewEmpty` on a clean review with no comments.
+captured through `persistCapture`, which assigns them to a shell variable via
+a plain single-quoted `shellQuote` string (never interpolated into a command
+line directly), so backticks, `$`, double quotes, em-dashes and newlines ride
+through literally — a single-quoted string may itself span multiple lines,
+since an embedded literal newline inside single quotes is valid POSIX shell.
+`target` itself is shell-quoted (via that same `shellQuote` helper) at both
+its occurrences — the `--on` argument and the `commit -m` message — so a
+target containing `$(...)` or a backtick cannot execute a command when the
+emitted lines run. A survivor carrying a `quote` gets `--quote`; one without
+becomes a whole-document comment. `review start` always carries a NON-EMPTY
+`--body`, or `submit_review` would raise `ReviewEmpty` on a clean review with
+no comments.
+
+`persistCapture` used to emit a QUOTED HEREDOC nested inside a `$(...)`
+command substitution (`VAR=$(cat <<'TAG' ... TAG)`). macOS's system
+`/bin/bash` (frozen at 3.2.57) cannot even parse that construct when the
+heredoc body contains a literal apostrophe — the parser mis-tracks quote
+balance across the nested heredoc, so the script fails before it ever runs.
+The plain `shellQuote`-based assignment above replaced it, eliminating the
+defect entirely rather than special-casing apostrophes (task
+`persist-capture-bash32-heredoc-apostrophe`).
 
 Every `rdm` line this ladder emits also redirects stdin from `/dev/null`.
 `rdm` itself no longer blocks reading stdin for `review start`/`comment`/
@@ -1585,10 +1597,14 @@ whole-document comment whenever that total is greater than zero:
 `persistDegradationNoteBody(totalDegraded, requested)` (`persist-note:
 anchors-degraded`, then "`N` of `M` requested anchor(s) could not be placed;
 see the anchor header on each comment above."), with the run-time-only-known
-total filled in through `printf` rather than a quoted heredoc — a quoted
-heredoc cannot expand a shell variable at all, and the fixed text carries no
-apostrophe, so `printf` substitution sidesteps
-`persist-capture-bash32-heredoc-apostrophe` entirely rather than needing it.
+total filled in through `printf` rather than `persistCapture` — `persistCapture`
+emits a static `shellQuote`d string and cannot expand a shell variable at all,
+so this call site needed `printf` regardless of which capture strategy
+`persistCapture` itself uses (see task
+`persist-capture-bash32-heredoc-apostrophe`, which replaced `persistCapture`'s
+own heredoc-in-`$(...)` form with the same `shellQuote`-based approach for an
+unrelated reason — that form could not even PARSE under macOS's bash 3.2 when
+the captured text contained an apostrophe).
 This note carries none of `PERSIST_HEADER_KEYS` (it describes the review, not
 a survivor), so `parseCommentHeader` correctly reports it as unheadered. The
 note is the SAME text a caller reading the persisted review sees regardless of

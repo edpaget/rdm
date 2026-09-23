@@ -550,6 +550,43 @@ test('the persist ladder records a real review: a real `--path` code anchor from
   assert.match(out, /^anchorsDegraded=partial$/m, 'the ladder itself prints the partial disposition');
 });
 
+test('a finding whose text carries a literal apostrophe still parses and runs under the real /bin/bash (bash 3.2 heredoc-in-$() defect)', async () => {
+  // persist-capture-bash32-heredoc-apostrophe: the old `persistCapture`
+  // emitted `VAR=$(cat <<'TAG' ... TAG)` — a quoted heredoc nested inside a
+  // command substitution. macOS's system /bin/bash (frozen at 3.2.57) fails
+  // to PARSE that construct at all when the heredoc body contains a literal
+  // apostrophe, well before the script ever runs. `what_fails` below is
+  // exactly the kind of ordinary English prose a finder emits, and it is the
+  // regression artifact this test exists to run — not merely describe.
+  const { result } = await drive(
+    { ...COMMON, gate: false, persist: true, implements: 'plan/' + PLAN, roadmap: ROADMAP, phase: 'phase-2-dirty', ...ROADMAP_PIN },
+    [
+      {
+        id: 'apostrophe-bug',
+        concern: 'correctness',
+        severity: 'blocking',
+        confidence: 95,
+        what_fails: "it's dropped on the fallback path",
+        location: 'general',
+      },
+    ]
+  );
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder prints the id it created: ' + out);
+
+  const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
+  assert.equal(review.state, 'submitted');
+  const apostropheComment = review.comments.find((c) => c.body.includes('apostrophe-bug'));
+  assert.ok(apostropheComment, 'the comment carrying the apostrophe-bearing finding was persisted');
+  assert.ok(
+    apostropheComment.body.includes("it's dropped on the fallback path"),
+    'the apostrophe-bearing text rides through verbatim'
+  );
+});
+
 test('a finder-declared `path` carrying a `:line` suffix still lands a real anchor, and the ladder completes', async () => {
   // A finder prompt-matching the adjacent `location: <path>:<line>` line
   // sometimes tacks a line suffix onto the STRUCTURED `path` field too, even
