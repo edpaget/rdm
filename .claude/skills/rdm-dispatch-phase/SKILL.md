@@ -229,7 +229,7 @@ than silent.
 
 Then resolve the two dispatch models from the item's tier. Read `model` from `phase show <phase>
 --roadmap <slug><proj-flag> --format json` (task form: `task show <slug><proj-flag> --format
-json`) and call it `T`. **Record that same response's `body`** as `item.body` — steps 5 and 9 hand
+json`) and call it `T`. **Record that same response's `body`** as `item.body` — steps 5 and 10 hand
 it to the planner and the implementer, and this is the read it comes from. Do not issue a second
 one.
 

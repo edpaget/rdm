@@ -88,7 +88,11 @@ impl WorktreeCheck {
 pub struct ReviewSourceRequest {
     /// Optional registered checkout; tasks require an explicit base with this binding.
     pub path: Option<String>,
-    /// Base revision; otherwise use the configured default branch's merge base.
+    /// Base revision. An explicit `base` always wins, with no ancestry check.
+    /// Otherwise the item's recorded `started_head` is used if it is an
+    /// ancestor of `head`. Otherwise the merge-base with the configured
+    /// default branch is used, and that fallback is reported in
+    /// [`ReviewSource::base_note`].
     pub base: Option<String>,
     /// Expected full HEAD; refusal on drift.
     pub expected_head: Option<String>,
