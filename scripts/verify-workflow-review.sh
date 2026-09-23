@@ -136,13 +136,25 @@ fi
 # whenever the real tree happens to be clean.
 say "1b. Drift detector fires on planted drift (self-test)"
 SCRATCH="$TMP/scratch"
-mkdir -p "$SCRATCH/scripts" "$SCRATCH/.claude/workflows/lib"
+mkdir -p "$SCRATCH/scripts/lib" "$SCRATCH/.claude/workflows/lib" \
+    "$SCRATCH/rdm-core/src/templates/workflows"
 cp "$GEN" "$SCRATCH/scripts/gen-workflow-review.sh"
+cp "$REPO_ROOT/scripts/lib/gen-workflow-block.sh" "$SCRATCH/scripts/lib/gen-workflow-block.sh"
 cp "$LIB" "$SCRATCH/.claude/workflows/lib/review.mjs"
+# gen-workflow-review.sh also stamps the plan-review-driver block from
+# PLAN_LIB into rdm-wf-plan-review.js — the scratch tree needs that source too.
+cp "$PLAN_LIB" "$SCRATCH/.claude/workflows/lib/plan-review.mjs"
 cp "$WF_DIR/rdm-wf-review-refute-fix.js" "$SCRATCH/.claude/workflows/rdm-wf-review-refute-fix.js"
 # gen-workflow-review.sh lists every consumer; the scratch tree must carry them
 # all or the scratch --check fails on a missing consumer rather than on drift.
 cp "$WF_DIR/rdm-wf-plan-review.js" "$SCRATCH/.claude/workflows/rdm-wf-plan-review.js"
+# The generator also whole-file-syncs each consumer's embedded
+# rdm-core/src/templates/workflows/ copy — the scratch tree needs a destination
+# for sync_full_copy to compare against, exactly like the real tree.
+cp "$WF_DIR/rdm-wf-review-refute-fix.js" \
+    "$SCRATCH/rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js"
+cp "$WF_DIR/rdm-wf-plan-review.js" \
+    "$SCRATCH/rdm-core/src/templates/workflows/rdm-wf-plan-review.js"
 sh "$SCRATCH/scripts/gen-workflow-review.sh" --check >/dev/null 2>&1 ||
     fail "scratch --check should pass on a clean copy"
 # Mutate a line INSIDE the generated block, portably (no in-place sed).
@@ -5256,11 +5268,15 @@ pass "15h: all four stamped copies carry the mktemp form and none carries the \$
 say "15h-mut. Temp-file hygiene fires on the restored \$\$ path (self-test)"
 
 MUT15H="$TMP/mut-15h"
-mkdir -p "$MUT15H/scripts" "$MUT15H/.claude/workflows/lib"
+mkdir -p "$MUT15H/scripts/lib" "$MUT15H/.claude/workflows/lib" \
+    "$MUT15H/rdm-core/src/templates/workflows"
 cp "$GEN" "$MUT15H/scripts/gen-workflow-review.sh"
+cp "$REPO_ROOT/scripts/lib/gen-workflow-block.sh" "$MUT15H/scripts/lib/gen-workflow-block.sh"
 cp "$LIB" "$MUT15H/.claude/workflows/lib/review.mjs"
+cp "$PLAN_LIB" "$MUT15H/.claude/workflows/lib/plan-review.mjs"
 for consumer in rdm-wf-review-refute-fix.js rdm-wf-plan-review.js; do
     cp "$WF_DIR/$consumer" "$MUT15H/.claude/workflows/$consumer"
+    cp "$WF_DIR/$consumer" "$MUT15H/rdm-core/src/templates/workflows/$consumer"
 done
 
 # Revert BOTH halves of the fix in the scratch lib, in Node rather than perl:

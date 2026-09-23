@@ -383,12 +383,16 @@ pub fn generate_codex_skills(opts: &SkillOptions) -> Vec<SkillFile> {
 /// `rdm-dispatch-phase` skill; see [`SUPERSEDED_WORKFLOWS`] for the cleanup
 /// entry that removes an orphaned downstream copy.
 ///
-/// The `include_str!` bodies are HAND-MAINTAINED copies of
-/// `.claude/workflows/*.js`, exactly as the single original entry always was:
-/// nothing writes them, and `generate_workflows_are_byte_identical_to_source`
-/// is what catches drift after the fact. Producing them from a generator is
-/// owed work with a named owner (`agent-orchestrated-dispatch` phase 38) — an
-/// accepted debt, not an oversight.
+/// The `include_str!` bodies are copies of `.claude/workflows/*.js`,
+/// generated (not hand-maintained) by whichever of the four
+/// `scripts/gen-workflow-*.sh` scripts owns that engine's `.claude/workflows/`
+/// consumer — `gen-workflow-review.sh` (review-refute-fix and plan-review),
+/// `gen-workflow-estimate.sh`, `gen-workflow-backlog.sh`, and
+/// `gen-workflow-document.sh` — each of which whole-file-syncs its
+/// consumer(s) into the matching path under `templates/workflows/` as part of
+/// the same run that stamps the consumer's marked block, and fails its
+/// `--check` mode if either copy drifts. `generate_workflows_are_byte_identical_to_source`
+/// remains a live regression check on the resulting bytes.
 ///
 /// The emitted-file-count test and the rustdoc example on
 /// [`generate_workflows`] deliberately keep their OWN independent literals

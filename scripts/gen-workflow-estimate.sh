@@ -1,5 +1,6 @@
 #!/bin/sh
-# Stamp the estimate-core block into every workflow-script consumer.
+# Stamp the estimate-core block into every workflow-script consumer, then sync
+# each consumer's embedded rdm-core/src/templates/workflows/ copy to match.
 #
 # The Claude Code Workflow runtime cannot import/require a helper module (proven
 # by the P1 import spike — see docs/workflow-schemas.md § "Import spike"), so the
@@ -8,109 +9,54 @@
 # VERBATIM into each consumer between matching marker comments. Edit the lib,
 # then run this script.
 #
+# The embedded copy under `rdm-core/src/templates/workflows/` — what
+# `include_str!` ships into `rdm agent-config claude --skills`/`--plugin` — is
+# kept in sync with the `.claude/workflows/rdm-wf-estimate.js` consumer this
+# script writes, as a whole-file copy, in the same run. There is no separate
+# regeneration step for it.
+#
 # Usage:
 #   scripts/gen-workflow-estimate.sh           # rewrite consumers in place
-#   scripts/gen-workflow-estimate.sh --check   # exit non-zero if any consumer drifted
+#   scripts/gen-workflow-estimate.sh --check   # exit non-zero if anything drifted
 #
 # The `--check` mode is what scripts/verify-workflow-estimate.sh and CI use to
-# prove no consumer was hand-edited out of sync with the source of truth.
+# prove no consumer or embedded copy was hand-edited out of sync with the
+# source of truth.
 
 set -eu
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
-SOURCE="$REPO_ROOT/.claude/workflows/lib/estimate.mjs"
-BEGIN='estimate-core:begin'
-END='estimate-core:end'
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/lib/gen-workflow-block.sh"
 
-# Detect --check from the ORIGINAL args before the positional list is replaced
-# with the consumer paths below.
+WORKFLOWS_DIR="$REPO_ROOT/.claude/workflows"
+EMBEDDED_DIR="$REPO_ROOT/rdm-core/src/templates/workflows"
+
+# Detect --check from the ORIGINAL args.
 CHECK=0
 if [ "${1:-}" = "--check" ]; then
     CHECK=1
 fi
+
+status=0
 
 # The list of consumers that embed the block. Add new consumers here — they are
 # kept in sync automatically. autopilot (now the prose `rdm-autopilot` skill,
 # not a workflow script) invokes the real `rdm-wf-estimate` Workflow directly
 # via the Workflow tool for its estimate pre-pass, rather than reusing a stamped
 # copy of this block — so it is not a consumer here.
-set -- "$REPO_ROOT/.claude/workflows/rdm-wf-estimate.js"
+stamp_block \
+    "$WORKFLOWS_DIR/lib/estimate.mjs" \
+    'estimate-core:begin' \
+    'estimate-core:end' \
+    "$CHECK" \
+    "$WORKFLOWS_DIR/rdm-wf-estimate.js" || status=1
 
-if [ ! -f "$SOURCE" ]; then
-    echo "error: source of truth not found: $SOURCE" >&2
-    exit 1
-fi
-
-# Extract the block strictly between the marker lines of the source. Match the
-# markers only where they follow the "// >>> " comment prefix, so an incidental
-# mention of the marker token inside the block can't be mistaken for a real
-# marker line and silently truncate extraction.
-blockfile=$(mktemp)
-trap 'rm -f "$blockfile"' EXIT INT HUP TERM
-
-awk -v b=">>> $BEGIN" -v e=">>> $END" '
-    index($0, b) { infence = 1; next }
-    index($0, e) { infence = 0 }
-    infence { print }
-' "$SOURCE" >"$blockfile"
-
-if [ ! -s "$blockfile" ]; then
-    echo "error: no block found between '$BEGIN' / '$END' markers in $SOURCE" >&2
-    exit 1
-fi
-
-status=0
-for consumer in "$@"; do
-    if [ ! -f "$consumer" ]; then
-        echo "error: consumer not found: $consumer" >&2
-        exit 1
-    fi
-    if ! grep -q ">>> $BEGIN" "$consumer" || ! grep -q ">>> $END" "$consumer"; then
-        echo "error: consumer $consumer is missing the '>>> $BEGIN'/'>>> $END' markers" >&2
-        exit 1
-    fi
-
-    # Assemble: consumer head (through its begin marker line) + block + consumer
-    # tail (from its end marker line onward). The consumer keeps its OWN marker
-    # lines; only the region between them is replaced. Markers are matched only
-    # after the "// >>> " comment prefix (index()), so an incidental in-block
-    # mention of the token can't be mistaken for a marker.
-    out=$(mktemp)
-    awk -v b=">>> $BEGIN" -v e=">>> $END" -v bf="$blockfile" '
-        BEGIN { state = 0 }
-        state == 0 {
-            print
-            if (index($0, b)) {
-                while ((getline line < bf) > 0) print line
-                close(bf)
-                state = 1
-            }
-            next
-        }
-        state == 1 {
-            if (index($0, e)) { print; state = 2 }
-            next
-        }
-        state == 2 { print }
-    ' "$consumer" >"$out"
-
-    if [ "$CHECK" -eq 1 ]; then
-        if ! diff -u "$consumer" "$out" >/dev/null 2>&1; then
-            echo "DRIFT: $consumer is out of sync with $SOURCE — run scripts/gen-workflow-estimate.sh" >&2
-            diff -u "$consumer" "$out" >&2 || true
-            status=1
-        fi
-    else
-        if diff -q "$consumer" "$out" >/dev/null 2>&1; then
-            echo "unchanged: $consumer"
-        else
-            cp "$out" "$consumer"
-            echo "regenerated: $consumer"
-        fi
-    fi
-    rm -f "$out"
-done
+sync_full_copy \
+    "$WORKFLOWS_DIR/rdm-wf-estimate.js" \
+    "$EMBEDDED_DIR/rdm-wf-estimate.js" \
+    "$CHECK" || status=1
 
 exit "$status"
