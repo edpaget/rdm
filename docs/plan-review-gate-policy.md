@@ -337,11 +337,12 @@ prompt now states this explicitly.
    the shared spec would emit an uninstructable instruction into every downstream tree,
    which is the failure this point exists to prevent.
 
-   Both halves are gated. `verify-workflow-review.sh` § 1d-gate-policy requires the shared
-   spec and both shipped templates to be free of those driver names *and* requires the
-   local shim to carry `gateAction` — so the check cannot be satisfied by deleting the capability instead
-   of scoping it — and § 1g plants a field name in the `//|plan|` region, regenerates, and
-   requires the detector to fire.
+   Both halves used to be gated: `verify-workflow-review.sh` § 1d-gate-policy required the
+   shared spec and both shipped templates to be free of those driver names *and* required the
+   local shim to carry `gateAction`, with a § 1g self-test planting a field name in the
+   `//|plan|` region and regenerating to prove the detector fired. That section was retired
+   by the operator amendment to `task/retire-static-grep-harnesses` (2026-09-23); the scoping
+   above is now held by convention and code review, not an automated check.
 
 ---
 

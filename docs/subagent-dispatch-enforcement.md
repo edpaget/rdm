@@ -81,8 +81,10 @@ none conflicts with another.
   `Workflow` invocation of the retired engine; the enforcement it carries is the
   imperative that the entry is `Skill` and **never** `Agent` (an `Agent`
   subagent has no `Workflow` tool, so the orchestrator's review calls would be
-  unreachable), which `scripts/verify-skill-autopilot.sh` § 1 gates with two
-  planted-mutation self-tests.
+  unreachable). `scripts/verify-skill-autopilot.sh` § 1 used to gate this with
+  two planted-mutation self-tests; it was retired by the operator amendment to
+  `task/retire-static-grep-harnesses` (2026-09-23), so the imperative is now
+  held by convention and code review.
 - `.claude/skills/rdm-dispatch-phase/SKILL.md` and its CLI template
   (`rdm-core/src/templates/skill-dispatch-phase-cli.md`): **re-landed by
   `agent-orchestrated-dispatch` phase 6**, which rewrote both files from a thin

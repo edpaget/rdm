@@ -262,21 +262,25 @@ and replied, every commit since that review's HEAD came only from triaging
 its comments, the delta changed no executable behavior, and the reason names
 the review id and both HEADs (`.claude/skills/rdm-dispatch-phase/SKILL.md` §
 "The terminal write" spells the four conditions in full). Nothing else may
-invoke it. The autopilot lane remains barred from ever overriding, and that
-is still asserted mechanically, behind a planted-mutation self-test:
+invoke it. The autopilot lane remains barred from ever overriding, but this
+is now held by convention and code review rather than an automated check:
 
-- `scripts/verify-skill-autopilot.sh` § 5 greps the autopilot surfaces (the
-  local skill plus both shipped templates).
+- *(Historical, retired by the operator amendment to
+  `task/retire-static-grep-harnesses`, 2026-09-23.)* `scripts/verify-skill-autopilot.sh`
+  § 5 used to grep the autopilot surfaces (the local skill plus both shipped
+  templates) for the flag, behind a planted-mutation self-test.
 - *(Historical, retired with the dispatch engine in `agent-orchestrated-dispatch`
   phase 7.)* `scripts/verify-workflow-dispatch.sh` § 11 also greped the
   **orchestrator** surfaces by *discovery* — walking every agent-facing
   instruction surface in the repo and refusing if any mentioned the flag. That
   was a static grep over prose and templates, the class
-  `task/retire-static-grep-harnesses` owns; the enforcement that survives is
-  core's own refusal to honour an override that lacks a reason, plus
-  `rdm-core/tests/gate.rs`'s `an_override_waives_a_and_b_but_never_c` /
-  `an_empty_override_reason_is_refused` /
-  `an_override_is_recorded_then_cleared_on_leaving_reviewed`.
+  `task/retire-static-grep-harnesses` owns.
+
+The enforcement that survives is core's own refusal to honour an override
+that lacks a reason, plus `rdm-core/tests/gate.rs`'s
+`an_override_waives_a_and_b_but_never_c` /
+`an_empty_override_reason_is_refused` /
+`an_override_is_recorded_then_cleared_on_leaving_reviewed`.
 
 The discovery shape is the point. A later phase that introduces a new
 orchestrator — whatever it is named, and whether it is a workflow script, a

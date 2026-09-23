@@ -8,9 +8,15 @@ DECISION line out of the instrument, and mechanize a decision/pipeline XOR so a
 half-landed change can never coexist with a no-ship figure.
 
 Instrument: `scripts/lib/finder-collapse.mjs` + `scripts/run-finder-collapse.mjs`
-+ `scripts/mine-plan-finder-corpus.mjs`, gated by
++ `scripts/mine-plan-finder-corpus.mjs`, formerly gated by
 `scripts/verify-finder-collapse.sh`. Figures live in
 [`docs/token-baseline.json`](token-baseline.json) § `planFinderCollapse`.
+
+**Retired 2026-09-23.** The decision below is closed (`no-ship`), and the
+instrument's corpus assumed three plan reviewers, which is stale now that
+there are five. The instrument, its harness, and its fixture were deleted;
+this document and the `token-baseline.json` figures remain as the historical
+record. Nothing below still runs.
 
 ## The question
 
@@ -178,7 +184,8 @@ Round-robin is what stops the single `task` unit being crowded out by the 15
 **REAL exported `findPrompt`** over the **REAL always-on `DIMENSIONS.plan`
 entries**, imported from `.claude/workflows/lib/review.mjs`. The instrument never
 carries its own copy of the production prompt — a drifted copy would measure a
-strawman. `scripts/verify-finder-collapse.sh` § 3 gates that fidelity.
+strawman. `scripts/verify-finder-collapse.sh` § 3 gated that fidelity before
+the harness was retired.
 
 **Arm B** is the candidate: one finder built by `buildCollapsedPlanPrompt`, a
 **minimal delta** from `findPrompt` — same READ-ONLY stance, same `Review target`
@@ -199,10 +206,11 @@ closing instruction. The only changes are the ones the merge makes necessary:
 Any wording change beyond that would be a confound: the A/B varies the number of
 agents, and that only.
 
-`buildCollapsedPlanPrompt` lives in the **instrument** during the experiment, so
-a no-ship decision leaves `.claude/workflows/lib/review.mjs` byte-unchanged. On a
-ship decision it moves into `review.mjs`, the instrument imports it from there,
-and the harness asserts the two renders are byte-identical.
+`buildCollapsedPlanPrompt` lived in the **instrument** during the experiment, so
+the recorded no-ship decision left `.claude/workflows/lib/review.mjs`
+byte-unchanged; a ship decision would have moved it into `review.mjs`, but the
+decision closed no-ship and the instrument was retired before that branch was
+ever exercised.
 
 ### Replicates, model, and what is adjudicated
 
@@ -230,8 +238,8 @@ does not. Equivalence is never asserted from counts alone.
 
 Everything per-lens is reported **per lens and never blended** — a single
 cross-lens mean is exactly what would hide an extinct lens behind two healthy
-ones. `findBlendedLensKeys` gates that structurally over both the report and the
-committed `planFinderCollapse` section.
+ones. `findBlendedLensKeys` gated that structurally over both the report and the
+committed `planFinderCollapse` section, before the instrument was retired.
 
 Tokens are reported **by class** (output / uncached input / cache-write /
 cache-read), and normalized to a **unit-observation** — one `(unit, replicate)`
@@ -268,17 +276,21 @@ not permitted, and the rule is mechanized as an AND over all six so it cannot be
 reached by argument. `auditCollapseDoc` additionally rejects a committed
 `ship-collapsed` decision whose only passing criterion is 6.
 
-### The decision/pipeline XOR
+### The decision/pipeline XOR (retired)
 
-`scripts/verify-finder-collapse.sh` § 9 enforces the invariant that a half-landed
-pipeline can never coexist with a no-ship figure, in **both** directions:
+`scripts/verify-finder-collapse.sh` § 9 enforced the invariant that a half-landed
+pipeline could never coexist with a no-ship figure, in **both** directions, until
+the harness was retired:
 
 - while `planFinderCollapse.decision !== 'ship-collapsed'`,
-  `.claude/workflows/lib/review.mjs` must contain **no** merged-plan-dimension
+  `.claude/workflows/lib/review.mjs` had to contain **no** merged-plan-dimension
   symbol (`PLAN_LENSES`, `lenses:`, `attributeConcern`, `lensDimFor`) and
-  `DIMENSIONS.plan` must still hold exactly
+  `DIMENSIONS.plan` had to still hold exactly
   `coherence, architectural-fit, unit-of-work, restraint`;
-- when it **is** `ship-collapsed`, the inverse must hold.
+- when it **was** `ship-collapsed`, the inverse had to hold.
+
+Nothing enforces this any more; `DIMENSIONS.plan`'s shape is now held only by
+convention and code review, same as every other retired grep-based check.
 
 ## Results
 
@@ -420,10 +432,12 @@ outcome the phase names as legitimate: *"A collapsed finder that materially lose
 findings in any one lens is a legitimate terminal negative: document it and leave
 the pipeline unchanged."*
 
-The durable output is the **instrument**: the plan-review-unit miner, the two-arm
+The output was the **instrument**: the plan-review-unit miner, the two-arm
 trial builder, the collapsed prompt, the per-lens scorer with its six-criterion
 table and its adjudication-coverage gate, the corpus-free `--audit`, and the
-hermetic harness with its planted mutations and the decision/pipeline XOR.
+hermetic harness with its planted mutations and the decision/pipeline XOR. All
+of it was retired on 2026-09-23 (see the note at the top of this document) —
+what remains durable is this document and the figures in `token-baseline.json`.
 
 ### What a future attempt would have to change
 

@@ -614,8 +614,8 @@ if check_workflow_invocations_resolve "$SCRATCH_BARE/.claude/skills" "$SCRATCH_B
 fi
 pass "self-test F: a planted BARE pre-rename 'dispatch-phase' invocation correctly failed to resolve"
 
-# --- 5g. no emitted or in-repo name was double-prefixed --------------------
-say "5g. No front-door skill was renamed: zero double-prefixed names anywhere"
+# --- 5g. no front-door skill directory was renamed --------------------------
+say "5g. No front-door skill was renamed: the .claude/skills/ directory set is unchanged"
 ACTUAL_SKILL_DIRS=$(find "$REPO_ROOT/.claude/skills" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; | sort | tr '\n' ' ')
 # shellcheck disable=SC2086  # SKILLS is a deliberately word-split name list
 EXPECTED_SKILL_DIRS=$(printf '%s\n' $SKILLS | sort | tr '\n' ' ')
@@ -640,10 +640,13 @@ pass "5g: all 11 rdm-* skill directory names are unchanged"
 # gate: prepare-release.yml moves the whole [Unreleased] body into a versioned
 # section, so the check went red on main the moment v0.18.1 landed. CLAUDE.md
 # now categorically forbids asserting on CHANGELOG.md content anywhere. The
-# rename itself is gated by sections 3 (byte-identity), 5g (no stale engine
-# references anywhere in-tree) and 5j (end-to-end superseded cleanup), none of
-# which read prose. The section number is kept as a gap so 5j's numbering and
-# the header's section list stay stable.
+# rename itself is gated by sections 3 (byte-identity), 5g (the
+# .claude/skills/ directory name set is unchanged) and 5j (end-to-end
+# superseded cleanup), none of which read prose. The whole-repo double-prefix
+# sweep 5g used to also run (part 1 of the section, retired by the operator
+# amendment to task/retire-static-grep-harnesses, 2026-09-23) is gone; the
+# section number is kept as a gap so 5j's numbering and the header's section
+# list stay stable.
 
 # --- 5j. END-TO-END: a downstream re-emit removes the superseded files -----
 say "5j. Superseded cleanup end-to-end: a stale downstream tree is cleaned, a custom file is not"

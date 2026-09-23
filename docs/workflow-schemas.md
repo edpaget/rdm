@@ -137,9 +137,11 @@ both generators and ~96 harness assertions for zero listing benefit:
 | `autopilot.js`, `lib/autopilot.mjs`, and the `autopilot` Workflow name | **Retired, with no successor.** `rdm-autopilot` survives as a prose skill with no engine behind it, so `autopilot` must never be prefixed — doing so would corrupt the one front door the rename must leave untouched. `scripts/verify-agent-config-distribution.sh`'s self-test D depends on `autopilot` naming a Workflow that does not resolve. |
 | Historical `CHANGELOG.md` entries | Descriptions of the pre-rename world; correct as written. |
 
-`scripts/verify-workflow-review.sh` § 2e runs the seven anchored reference-form
-greps over the tree and fails on any hit outside that allowlist, with a
-planted-mutation self-test proving the sweep is not vacuous.
+`scripts/verify-workflow-review.sh` § 2e used to run the seven anchored
+reference-form greps over the tree and fail on any hit outside that allowlist,
+with a planted-mutation self-test; it was retired by the operator amendment to
+`task/retire-static-grep-harnesses` (2026-09-23), so the survivors above are
+now held by convention and code review.
 
 - A **workflow script** (`.js`) begins with `export const meta = { … }` (a pure
   literal) and uses the ambient Workflow globals `agent()`, `pipeline()`,
@@ -2305,9 +2307,10 @@ current three-finder shape over real mined plan documents; the collapsed finder
 lost a material share of findings in **every** lens. The pre-registered decision
 rule, the run, the per-lens figures and the `no-ship` DECISION are in
 [`finder-collapse.md`](finder-collapse.md), with the machine-checkable figures in
-[`token-baseline.json`](token-baseline.json) § `planFinderCollapse`. A
-decision/pipeline XOR in `scripts/verify-finder-collapse.sh` keeps a half-landed
-merge from ever coexisting with that figure.
+[`token-baseline.json`](token-baseline.json) § `planFinderCollapse`. The
+instrument and its harness (`scripts/verify-finder-collapse.sh`) were retired
+on 2026-09-23 — the decision is closed, and the harness's corpus assumed three
+plan reviewers, which is stale now that there are five.
 
 **`code` — not a candidate at all, and this is the canonical statement of why.**
 `ac` and `correctness` are not symmetric with plan mode's lenses:
@@ -2491,8 +2494,10 @@ themselves, in hand-authored prose that shells out to `rdm … update --tags …
 and have no driver to read a returned action off. The shared spec states the same
 *policy* in terms of the write instead; the field name lives only in the
 hand-authored half of `.claude/skills/rdm-plan-review/SKILL.md`.
-`verify-workflow-review.sh` § 1d-gate-policy gates both directions and § 1g
-proves the detector fires. See
+`verify-workflow-review.sh` § 1d-gate-policy used to gate both directions,
+with a § 1g self-test proving the detector fired; that section was retired by
+the operator amendment to `task/retire-static-grep-harnesses` (2026-09-23), so
+the scoping is now held by convention and code review. See
 [`plan-review-gate-policy.md`](plan-review-gate-policy.md) § "What changed" ¶ 4.
 
 The pending clause embeds an exact rdm command containing double quotes
@@ -2872,9 +2877,11 @@ than a loud one. The verified `rdmBin`-threading shims are
 `.claude/skills/rdm-dispatch-phase`, `.claude/skills/rdm-do` (both `--auto`
 flows), `.claude/skills/rdm-autopilot`, and the shipped
 `skill-dispatch-phase-cli.md` / `skill-do-cli.md` /
-`skill-autopilot-cli.md` templates. All of them name `rdmBin`, asserted
-per-shim by `verify-skill-autopilot.sh` and `verify-agent-config-distribution.sh`
-§ 6d, each with a planted-removal self-test. *(Until
+`skill-autopilot-cli.md` templates. All of them name `rdmBin`. The per-shim
+grep that used to assert this (`verify-agent-config-distribution.sh` § 6d,
+with a planted-removal self-test) was retired by the operator amendment to
+`task/retire-static-grep-harnesses` (2026-09-23); it is now held by
+convention and code review. *(Until
 `agent-orchestrated-dispatch` phase 7 they threaded it into the
 `rdm-wf-dispatch-phase` Workflow payload; the prose orchestrator uses the same
 resolved value for its own Bash commands and for its two review-Workflow

@@ -138,8 +138,10 @@ emitted templates, `scripts/verify-workflow-review.sh` over the review engines, 
 deleted `scripts/verify-workflow-do-auto.sh` and `scripts/verify-workflow-do-auto-task.sh`
 (their subject, the `--auto` → engine wiring inside `rdm-do`'s prose, no longer exists) and
 narrowed `scripts/verify-skill-autopilot.sh` to its real-binary sections plus the one
-`Skill`-entry contract nothing else covers. The wider sweep of that harness class is owned by
-`task/retire-static-grep-harnesses`.
+`Skill`-entry contract nothing else covered. `task/retire-static-grep-harnesses` then retired
+that `Skill`-entry contract itself (2026-09-23, along with the `--override-gate` guard) — it
+was a static grep, not a real-binary section — so `scripts/verify-skill-autopilot.sh` now
+covers only real-binary sections.
 
 | Script | Fan-out | Shape | Mid-run gate | Disposition |
 |---|---|---|---|---|
@@ -237,11 +239,14 @@ deciding what of that coverage survived (and in what form) was a first-class pha
 `prose-autopilot-orchestration` — phase 3 — not a cleanup afterthought. Criterion 5 above
 cuts both ways: the loop was a poor fit for a hermetic harness, but "poor fit" is not
 "zero value", so what it caught was replaced rather than dropped: phase 3 landed
-`scripts/verify-skill-autopilot.sh`, which gates the surviving loop policies (static text
-invariants for drive-to-reviewed, rework-retry-once-then-park, escalated→park, budget
-stops, estimate-pre-pass-always-runs, `--plan-only` dedup) plus a dynamic advance/park
-write+read-back contract against the real binary — there is no `lib/autopilot.mjs`
-anymore, so there is no byte-identical-copy drift gate to run.
+`scripts/verify-skill-autopilot.sh`, which gates a dynamic advance/park write+read-back
+contract against the real binary, the `rdm-wf-estimate` sibling-harness gate, and the
+land-time completion-trailer contract — there is no `lib/autopilot.mjs` anymore, so there
+is no byte-identical-copy drift gate to run. (Its "static text invariants for the
+surviving loop policies" — the loop-policy prose greps and the Skill-entry contract —
+were removed by phase 6 and by `task/retire-static-grep-harnesses` (2026-09-23)
+respectively; see `CLAUDE.md`'s Autopilot harness bullet for what the harness asserts
+today.)
 
 ## Coupling
 
