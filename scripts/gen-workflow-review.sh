@@ -1,7 +1,8 @@
 #!/bin/sh
 # Stamp the review-refute-fix and plan-review-driver blocks into every
 # workflow-script consumer, then sync each consumer's embedded
-# rdm-core/src/templates/workflows/ copy to match.
+# rdm-core/src/templates/workflows/ copy and its checked-in
+# plugins/rdm/workflows/ copy to match.
 #
 # The Claude Code Workflow runtime cannot import/require a helper module (proven
 # by the P1 import spike — see docs/workflow-schemas.md § "Import spike"), so the
@@ -16,10 +17,12 @@
 # from the SAME review.mjs source into the shipped review skill templates.
 #
 # The embedded copies under `rdm-core/src/templates/workflows/` — what
-# `include_str!` ships into `rdm agent-config claude --skills`/`--plugin` — are
+# `include_str!` ships into `rdm agent-config claude --skills`/`--plugin` — AND
+# the checked-in plugin-tree copies under `plugins/rdm/workflows/` are both
 # kept in sync with the `.claude/workflows/` consumers this script writes, as a
 # whole-file copy, in the same run. There is no separate regeneration step for
-# them.
+# either. (The rest of `plugins/rdm/` — skill markdown, the manifest — still
+# needs its own `agent-config claude --plugin` run; see docs/plugin-distribution.md.)
 #
 # Usage:
 #   scripts/gen-workflow-review.sh           # rewrite consumers in place
@@ -39,6 +42,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
 WORKFLOWS_DIR="$REPO_ROOT/.claude/workflows"
 EMBEDDED_DIR="$REPO_ROOT/rdm-core/src/templates/workflows"
+PLUGIN_DIR="$REPO_ROOT/plugins/rdm/workflows"
 
 # Detect --check from the ORIGINAL args.
 CHECK=0
@@ -69,11 +73,16 @@ stamp_block \
     "$WORKFLOWS_DIR/rdm-wf-plan-review.js" || status=1
 
 # Sync every consumer this script writes into its embedded
-# rdm-core/src/templates/workflows/ copy.
+# rdm-core/src/templates/workflows/ copy and its checked-in
+# plugins/rdm/workflows/ copy.
 for basename in rdm-wf-review-refute-fix.js rdm-wf-plan-review.js; do
     sync_full_copy \
         "$WORKFLOWS_DIR/$basename" \
         "$EMBEDDED_DIR/$basename" \
+        "$CHECK" || status=1
+    sync_full_copy \
+        "$WORKFLOWS_DIR/$basename" \
+        "$PLUGIN_DIR/$basename" \
         "$CHECK" || status=1
 done
 
