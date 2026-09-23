@@ -963,6 +963,27 @@ fn phase_json_for(plan: &Path, stem: &str, roadmap: &str) -> Value {
     serde_json::from_slice(&out).unwrap()
 }
 
+fn task_json_for(plan: &Path, slug: &str) -> Value {
+    let out = rdm()
+        .arg("--root")
+        .arg(plan)
+        .args([
+            "task",
+            "show",
+            slug,
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&out).unwrap()
+}
+
 /// AC1 + AC2 + AC3 at the binary boundary: two phases implemented in
 /// sequence in one shared roadmap worktree. The second phase's
 /// `in-progress` stamp records `started_head` from OUTSIDE the worktree
@@ -1189,4 +1210,162 @@ fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
         phase_json_for(plan.path(), "phase-2-impl", "auth")["status"],
         "reviewed"
     );
+}
+
+/// tests-1 / in-progress-source-runs-full-review-resolution (review
+/// 2026-09-23-0249-4ccc): an explicit `--source <path>` on the in-progress
+/// transition must record that checkout's plain HEAD, never routed through
+/// the full `review source` validation. That validation refuses exactly the
+/// state a fresh worktree is in at a phase's start — HEAD == main, an empty
+/// committed range — with "empty committed range; declare --no-code ...",
+/// which used to refuse the in-progress stamp outright.
+#[test]
+fn phase_in_progress_source_stamps_started_head_on_a_fresh_worktree() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "auth", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+    let wt_head = rev_parse(&wt, "HEAD");
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-design",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+            "--source",
+            wt.to_str().unwrap(),
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    assert_eq!(
+        phase_json_for(plan.path(), "phase-1-design", "auth")["started_head"],
+        wt_head
+    );
+}
+
+/// Task-side twin of the phase test above: `task update --status
+/// in-progress --source <fresh worktree>` must succeed and record that
+/// worktree's HEAD, rather than failing on the task-side full-validation
+/// refusal ("explicit task checkout requires --base").
+#[test]
+fn task_in_progress_source_stamps_started_head_on_a_fresh_worktree() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "task/solo", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+    let wt_head = rev_parse(&wt, "HEAD");
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "update",
+            "solo",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--project",
+            "demo",
+            "--source",
+            wt.to_str().unwrap(),
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    assert_eq!(task_json_for(plan.path(), "solo")["started_head"], wt_head);
+}
+
+/// tests-2 (review 2026-09-23-0249-4ccc): task-side worktree resolution and
+/// the task `review source` `started_head` default, exercised at the binary
+/// boundary with a real `rdm worktree add task/<slug>` worktree — the task
+/// mirror of `started_head_scopes_the_second_phase_review_and_satisfies_the_gate`.
+/// Stamps in-progress from the MAIN checkout (outside the worktree, so
+/// resolution goes through the registered worktree, not the caller's cwd),
+/// then after one commit confirms `review source --on task/<slug>` defaults
+/// its base to the recorded `started_head`.
+#[test]
+fn task_started_head_scopes_review_source_to_the_tasks_own_commit() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "task/solo", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+    let base_head = rev_parse(&wt, "HEAD");
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "update",
+            "solo",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    assert_eq!(
+        task_json_for(plan.path(), "solo")["started_head"],
+        base_head
+    );
+
+    std::fs::write(wt.join("src/extra.rs"), "fn extra() {}\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "-m", "task work"]);
+    let task_head = rev_parse(&wt, "HEAD");
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "source", "--on", "task/solo", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let source: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(source["base"], base_head);
+    assert_eq!(source["head"], task_head);
 }

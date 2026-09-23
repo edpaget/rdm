@@ -111,9 +111,9 @@ Its format lives in `rdm_core::hook::format_done_directive` (surfaced as `rdm ho
 Keep these in your own context for the whole run and carry them into every later step:
 
 - `identity` — the pinned checkout: `repository`, `path`, `branch`, `base`, `head`.
-- `models` — `{ plan, implement }`, the two model ids resolved in step 3 ("Ensure the worktree
-  exists, then pin the checkout identity") from the item's `model` tier. Carried into the
-  planner/implementer dispatches; never re-resolved mid-run.
+- `models` — `{ plan, implement }`, the two model ids resolved in step 4 ("Pin the checkout
+  identity") from the item's `model` tier. Carried into the planner/implementer dispatches; never
+  re-resolved mid-run.
 - `planId` — `plan/<slug>`, and the chain of superseded predecessors on a re-plan.
 - `reviewIds` — **additive**. A rework pass keeps resolving comments on the review ids it already
   has and appends any new one; it never starts a fresh review to "redo" a pass.
@@ -161,36 +161,60 @@ branch, and race any concurrent dispatch run reading the same global queue.
 
 This is what makes a parked run resumable from the plan repo alone, with no session context.
 
-### 3. Ensure the worktree exists, then pin the checkout identity
-
-`review source` deliberately never creates or changes a worktree, so ensure the item's checkout
-exists first (idempotent — it reuses one that is already there), then resolve the identity:
+### 3. Ensure the worktree exists, then stamp `in-progress`
 
 ```bash
 <rdmBin> worktree add <slug><proj-flag>          # or: worktree add task/<slug>
-<rdmBin> review source --on <item><proj-flag> --format json
+<rdmBin> phase update <phase> --status in-progress --no-edit --roadmap <slug><proj-flag>
+<rdmBin> commit -m "chore(plan): start <item>"
 ```
 
-One worktree per roadmap: every phase of a roadmap is implemented in place in the same checkout, so
-`worktree add` on a later phase simply returns the existing path. **You MUST NOT** create a
-phase-specific branch or fork off `main`.
+(task form: `task update <slug> --status in-progress …`). One worktree per roadmap: every phase of a
+roadmap is implemented in place in the same checkout, so `worktree add` on a later phase simply
+returns the existing path. **You MUST NOT** create a phase-specific branch or fork off `main`.
+
+This stamp deliberately runs BEFORE step 4 pins `identity.base`: `phase update --status in-progress`
+resolves `started_head` from the item's registered worktree the same way `verify run --item` does, so
+the worktree only has to **exist** for the stamp to succeed — it does not need `identity` pinned
+first. The stamp is write-once (an already-stamped item, e.g. on resume, is left untouched), so
+running it here on every pass is always safe. Ordering it first is load-bearing: it is what lets step
+4's very first `review source` read already see `started_head`, instead of falling back to the
+merge-base and depending on some later re-read to pick up the real value — which would leave the plan
+review (step 6) and the first pass of the code review (step 11) graded against the wrong, too-wide
+range.
+
+**Skip this entire step under `--plan-only`** — a plan-only pass does no implementation, and stamping
+would misreport work that never happened. Step 4 still runs: its `base` then resolves to whatever
+`started_head` an earlier real dispatch already recorded for this item, or the merge-base with the
+default branch if this item has never been stamped at all — a plan-only pass over a phase with
+earlier siblings on the shared branch should be read with that in mind, since the merge-base is not
+scoped to this phase alone.
+
+### 4. Pin the checkout identity
+
+`review source` deliberately never creates or changes a worktree — step 3 already ensured it exists
+and, on the normal path, just stamped `started_head` — so this step only resolves the identity:
+
+```bash
+<rdmBin> review source --on <item><proj-flag> --format json
+```
 
 Record `repository`, `path`, `branch`, `base`, `head` as `identity`. Every later step uses this
 same `path` as its working directory and this same `base`/`head` on the terminal write.
 
 `identity.base` is the phase's (or task's) own **starting head** — `review source` defaults it to
-the item's recorded `started_head` (the checkout HEAD at the moment its `in-progress` stamp first
-recorded it — step 4, or an earlier dispatch's step 4 on resume), not the merge-base with the
-default branch. This matters because the roadmap worktree is shared: it carries every earlier
-phase's commits, including a parked (`blocked`) one's. Without this default, `identity.base` would
-be the merge-base, and this phase's review (and the finders/refuters in steps 6 and 11) would
-re-find every earlier phase's already-triaged changes and attribute them to this phase. On a fresh
-phase's first pass through this step, `started_head` is not yet recorded (step 4 hasn't run), so this
-first read falls back to the merge-base — harmless for a phase with no earlier-phase commits to
-exclude yet — and step 9's self-check re-runs `review source` *after* step 4's stamp, picking up the
-real `started_head` before it reaches steps 11/14. With no `started_head` ever recorded for an item
-(rare — only when it never resolved a worktree at its own `in-progress` transition), `base` falls
-back to the merge-base exactly as before, and the response's `baseNote` field says so.
+the item's recorded `started_head` (the checkout HEAD step 3 just stamped, or an earlier dispatch's
+step 3 on resume), not the merge-base with the default branch. This matters because the roadmap
+worktree is shared: it carries every earlier phase's commits, including a parked (`blocked`) one's.
+Without this default, `identity.base` would be the merge-base, and this phase's review (and the
+finders/refuters in steps 6 and 11) would re-find every earlier phase's already-triaged changes and
+attribute them to this phase. Because step 3 stamps first, this first read already sees
+`started_head` on the normal path — there is no separate later re-read that moves `base` out from
+under an already-run plan or code review. `base` is still the merge-base here only under
+`--plan-only` (step 3's stamp is skipped) or for an item that has genuinely never resolved a
+worktree at its own `in-progress` transition; in the second case the fallback is real, not harmless,
+for any phase after the first on a shared branch — it includes every earlier phase's commits — and
+the response's `baseNote` field names it so the gap is visible rather than silent.
 
 Then resolve the two dispatch models from the item's tier. Read `model` from `phase show <phase>
 --roadmap <slug><proj-flag> --format json` (task form: `task show <slug><proj-flag> --format
@@ -260,16 +284,6 @@ what you omit.
   so an already-dismissed finding can resurface and force a revise round. Pass `[]` only when the
   corpus really is empty.
 
-### 4. Stamp `in-progress`
-
-```bash
-<rdmBin> phase update <phase> --status in-progress --no-edit --roadmap <slug><proj-flag>
-<rdmBin> commit -m "chore(plan): start <item>"
-```
-
-(task form: `task update <slug> --status in-progress …`). **Skip this entirely under `--plan-only`**
-— a plan-only pass does no implementation and stamping would misreport work that never happened.
-
 ### 5. Dispatch the planner subagent
 
 **Declare** that you are dispatching the planner on `model: <models.plan>`, then dispatch **one**
@@ -329,7 +343,7 @@ yourself.** It is the one step a subagent physically cannot perform.
 - `roadmap` names the parent roadmap so the `intent-alignment` reviewer knows which document to read
   its `## Intent` from. Omit it in task mode.
 - `source` / `base` / `expectedHead` / `expectedBranch` — the SAME pinned checkout identity you
-  recorded in step 3, in the SAME flat shape step 11's code-review call already takes. Every
+  recorded in step 4, in the SAME flat shape step 11's code-review call already takes. Every
   finder and refuter runs `rdm review source --on <item> --source ... --no-code --format json` and
   verifies the checkout has not moved before reading any file the plan cites, out of that pinned
   `path` at that pinned `head` — never out of whatever checkout the session that dispatched them
@@ -363,7 +377,7 @@ yourself.** It is the one step a subagent physically cannot perform.
 - `findModel` / `verifyModel` — the two judgment-site ids, each independently optional. There is no
   mechanical model any more and no bootstrap agent to skip; an omitted id just makes that agent
   inherit the session model.
-- `wontFixedTexts` — the wont-fix titles from step 3. An empty array is a legal, meaningful value
+- `wontFixedTexts` — the wont-fix titles from step 4. An empty array is a legal, meaningful value
   (nothing to suppress) and is **not** the same as omitting the key. Omit it only if the `task
   list` call itself failed.
 

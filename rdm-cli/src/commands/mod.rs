@@ -1347,3 +1347,53 @@ pub fn resolve_source_args(
     let identity = rdm_core::resolve_review_source(&probe, item, &request)?;
     Ok((probe.with_source(item.clone(), request), identity))
 }
+
+/// Resolves the starting HEAD to write-once-stamp as `started_head` on an
+/// item's first `in-progress` transition.
+///
+/// Deliberately **not** [`resolve_source_args`]: that function's full
+/// `review source` validation (non-empty committed range, and — for a task —
+/// an explicit `--base`) is meant for reviewing a *finished* diff, and it
+/// refuses exactly the states an in-progress stamp fires in — a fresh
+/// worktree whose HEAD still equals the default branch, or a task `--source`
+/// with no `--base`. An in-progress stamp needs nothing but a HEAD read, so
+/// this reads one directly, shared here between `phase update` and `task
+/// update` instead of re-derived in each (both used to hand-roll this same
+/// ~30-line resolution, and separately from the composition
+/// `verify.rs::item_worktree` builds for `rdm verify run --item`).
+///
+/// `explicit_source`, when given (an explicit `--source <path>`), binds
+/// directly to that checkout's HEAD. Otherwise this resolves the item's
+/// registered worktree the same way `rdm verify run --item` does — the
+/// single "which worktree serves this item" composition
+/// (`discover_distinct_project_repo` → `registered_worktree_for` →
+/// `head_commit_info_at`).
+///
+/// Best-effort: any resolution failure (no worktree registered yet, the repo
+/// unreadable, cwd not inside a distinct project checkout) returns `None`
+/// rather than an error — the write-once apply in `apply_phase_update` /
+/// `apply_task_update` simply leaves `started_head` unset until a later
+/// in-progress stamp can resolve it.
+#[cfg(feature = "git")]
+#[must_use]
+pub fn resolve_started_head(
+    root: &Path,
+    item: &rdm_git::worktree::ItemRef,
+    explicit_source: Option<&str>,
+) -> Option<String> {
+    if let Some(path) = explicit_source {
+        return rdm_git::head_commit_info_at(Path::new(path))
+            .ok()
+            .flatten()
+            .map(|c| c.sha);
+    }
+    let cwd = std::env::current_dir().ok()?;
+    let repo = rdm_git::worktree::discover_distinct_project_repo(&cwd, root).ok()?;
+    let worktree = rdm_git::worktree::registered_worktree_for(&repo, item)
+        .ok()
+        .flatten()?;
+    rdm_git::head_commit_info_at(&worktree.path)
+        .ok()
+        .flatten()
+        .map(|c| c.sha)
+}

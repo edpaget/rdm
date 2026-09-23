@@ -94,7 +94,7 @@ time, off `writesCompletion: true`.
 ## Run state
 
 Keep these for the whole run: `identity` (the pinned checkout: `repository`, `path`, `branch`,
-`base`, `head`), `models` (`{ plan, implement }`, the two model ids resolved in step 3 from the
+`base`, `head`), `models` (`{ plan, implement }`, the two model ids resolved in step 4 from the
 item's `model` tier, carried into the planner/implementer dispatches and never re-resolved
 mid-run), `planId` plus any superseded predecessors, `reviewIds` (**additive** — a rework pass
 keeps resolving comments on the ids it already has and never starts a fresh review to redo a pass),
@@ -139,31 +139,54 @@ the wrong branch, and race any concurrent dispatch run reading the same global q
   review) if the implementation is already committed.
 - Nothing → continue to step 3.
 
-### 3. Ensure the worktree exists, then pin the checkout identity
-
-`rdm review source` deliberately never creates or changes a worktree, so ensure the checkout exists
-first (idempotent — it reuses one already there), then resolve the identity:
+### 3. Ensure the worktree exists, then stamp `in-progress`
 
 ```bash
 rdm worktree add <slug> --project <PROJECT>          # or: rdm worktree add task/<slug>
+rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> --project <PROJECT>
+rdm commit -m "chore(plan): start <item>"
+```
+
+(task form: `rdm task update <slug> --status in-progress …`). One worktree per roadmap: every phase
+of a roadmap is implemented in place in the same checkout, so `worktree add` on a later phase
+returns the existing path. **You MUST NOT** create a phase-specific branch or fork off `main`.
+
+This stamp deliberately runs BEFORE step 4 pins `identity.base`: `phase update --status in-progress`
+resolves `started_head` from the item's registered worktree the same way `verify run --item` does,
+so the worktree only has to **exist** for the stamp to succeed — it does not need `identity` pinned
+first. The stamp is write-once (an already-stamped item, e.g. on resume, is left untouched), so
+running it here on every pass is always safe. Ordering it first is load-bearing: it is what lets
+step 4's very first `rdm review source` read already see `started_head`, instead of falling back to
+the merge-base and depending on some later re-read to pick up the real value.
+
+**Skip this entire step under `--plan-only`** — a plan-only pass does no implementation, and
+stamping would misreport work that never happened. Step 4 still runs: its `base` then resolves to
+whatever `started_head` an earlier real dispatch already recorded for this item, or the merge-base
+with the default branch if this item has never been stamped at all.
+
+### 4. Pin the checkout identity
+
+`rdm review source` deliberately never creates or changes a worktree — step 3 already ensured it
+exists and, on the normal path, just stamped `started_head` — so this step only resolves the
+identity:
+
+```bash
 rdm review source --on <item> --project <PROJECT> --format json
 ```
 
-Record `repository`, `path`, `branch`, `base`, `head` as `identity`. One worktree per roadmap: every
-phase of a roadmap is implemented in place in the same checkout, so `worktree add` on a later phase
-returns the existing path. **You MUST NOT** create a phase-specific branch or fork off `main`.
-
-`identity.base` is the item's own **starting head** — `rdm review source` defaults it to the item's
-recorded `started_head` (the checkout HEAD at the moment its `in-progress` stamp — step 4, or an
-earlier dispatch's step 4 on resume — first recorded it), not the merge-base with the default
-branch. This matters because the roadmap worktree is shared: it carries every earlier phase's
-commits, including a parked (`blocked`) one's, so without this default the review would re-find
-already-triaged earlier-phase changes and attribute them to this phase. A fresh phase's first read
-here (before step 4 has run) falls back to the merge-base, which is harmless since there is nothing
-earlier to exclude yet; the step 8 self-check re-runs `rdm review source` after the stamp and picks
-up the real `started_head` before it reaches the code review. With no `started_head` ever recorded
-for an item, `base` falls back to the merge-base exactly as before, and the response's `baseNote`
-field says so.
+Record `repository`, `path`, `branch`, `base`, `head` as `identity`. `identity.base` is the item's
+own **starting head** — `rdm review source` defaults it to the item's recorded `started_head` (the
+checkout HEAD step 3 just stamped, or an earlier dispatch's step 3 on resume), not the merge-base
+with the default branch. This matters because the roadmap worktree is shared: it carries every
+earlier phase's commits, including a parked (`blocked`) one's, so without this default the review
+would re-find already-triaged earlier-phase changes and attribute them to this phase. Because step 3
+stamps first, this first read already sees `started_head` on the normal path — there is no separate
+later re-read that moves `base` out from under an already-run code review. `base` is still the
+merge-base here only under `--plan-only` (step 3's stamp is skipped) or for an item that has
+genuinely never resolved a worktree at its own `in-progress` transition; in the second case the
+fallback is real, not harmless, for any phase after the first on a shared branch — it includes every
+earlier phase's commits — and the response's `baseNote` field names it so the gap is visible rather
+than silent.
 
 Then resolve the two dispatch models from the item's tier. Read `model` from `rdm phase show
 <phase> --roadmap <slug> --project <PROJECT> --format json` (task form: `rdm task show <slug> --project <PROJECT>
@@ -185,17 +208,6 @@ call's own `findModel`/`verifyModel` gap is out of scope for this phase (tracked
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, and the two resolved
 `models.plan` / `models.implement` you just read. A failed command is an escalation — never invent
 a checkout, and never let a subagent choose one.
-
-### 4. Stamp `in-progress`
-
-```bash
-rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> --project <PROJECT>
-rdm commit -m "chore(plan): start <item>"
-```
-
-(task form: `rdm task update <slug> --status in-progress …`). **Skip this entirely under
-`--plan-only`** — a plan-only pass does no implementation, and stamping would misreport work that
-never happened.
 
 ### 5. Dispatch the planner subagent
 
@@ -527,7 +539,7 @@ This surface's plan gate is the **human-submitted approve review** of step 6, no
 a choice about *who* gates, not a limitation: `rdm:rdm-wf-plan-review` IS emitted alongside this skill
 (`rdm agent-config claude --skills`/`--plugin` ships all five engines), so you may invoke it yourself
 for a second opinion on the plan. If you do, pass `source`, `base`, `expectedHead`, and
-`expectedBranch` from the `identity` you pinned in step 3 (`identity.path`, `identity.base`,
+`expectedBranch` from the `identity` you pinned in step 4 (`identity.path`, `identity.base`,
 `identity.head`, `identity.branch`), plus the same `phase`/`task` identifier you are dispatching —
 an unpinned call would grade the plan's file claims against whatever tree the invoking session
 happens to be sitting in, not the checkout the plan actually describes, which is the defect this

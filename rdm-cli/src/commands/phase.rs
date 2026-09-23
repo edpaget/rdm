@@ -408,22 +408,30 @@ pub fn run(
             if explicit_source {
                 anyhow::bail!("explicit source binding requires git support");
             }
+            // The in-progress `started_head` stamp below needs only a plain
+            // HEAD read (`commands::resolve_started_head`), never the full
+            // `review source` validation this builds — that validation
+            // refuses exactly the states an in-progress stamp fires in (a
+            // fresh worktree with an empty committed range). Skip building it
+            // for a bare in-progress transition so `--source` on that
+            // transition can't be refused by a check it doesn't need.
             #[cfg(feature = "git")]
-            let source_binding = if explicit_source {
-                Some(commands::resolve_source_args(
-                    store,
-                    &project,
-                    &source,
-                    &rdm_core::link::ItemRef::Phase {
-                        roadmap: roadmap.clone(),
-                        stem: stem.clone(),
-                    },
-                    repo_config.default_branch.as_deref().unwrap_or("main"),
-                    Some(root),
-                )?)
-            } else {
-                None
-            };
+            let source_binding =
+                if explicit_source && status != Some(rdm_core::model::PhaseStatus::InProgress) {
+                    Some(commands::resolve_source_args(
+                        store,
+                        &project,
+                        &source,
+                        &rdm_core::link::ItemRef::Phase {
+                            roadmap: roadmap.clone(),
+                            stem: stem.clone(),
+                        },
+                        repo_config.default_branch.as_deref().unwrap_or("main"),
+                        Some(root),
+                    )?)
+                } else {
+                    None
+                };
             // Stamp the source-repo HEAD SHA when entering needs-review, so the
             // review can later be scoped to the branch/worktree that produced
             // it. No commit yet (unstamped) → fail open downstream.
@@ -470,34 +478,22 @@ pub fn run(
             // enters `in-progress`, so `rdm review source`'s default base (the
             // recorded `started_head`) reviews exactly this phase's own
             // commits in a shared roadmap worktree, not every earlier
-            // phase's too. An explicit `--source <path>` binds to that
-            // checkout's HEAD directly; otherwise resolve the roadmap's
-            // registered worktree the same way `rdm verify run --item`
-            // does. Best-effort: no worktree yet (or none resolvable)
-            // records nothing rather than failing the status update — the
-            // write-once apply in `apply_phase_update` leaves an existing
-            // value untouched regardless.
+            // phase's too. `commands::resolve_started_head` binds an explicit
+            // `--source <path>` directly to that checkout's HEAD, or
+            // otherwise resolves the roadmap's registered worktree the same
+            // way `rdm verify run --item` does — a plain HEAD read, not the
+            // full `review source` validation `source_binding` above skips
+            // for this status. Best-effort: no worktree yet (or none
+            // resolvable) records nothing rather than failing the status
+            // update — the write-once apply in `apply_phase_update` leaves an
+            // existing value untouched regardless.
             #[cfg(feature = "git")]
             let started_head = if status == Some(rdm_core::model::PhaseStatus::InProgress) {
-                source_binding
-                    .as_ref()
-                    .map(|(_, source)| source.head.clone())
-                    .or_else(|| {
-                        let cwd = std::env::current_dir().ok()?;
-                        let repo =
-                            rdm_git::worktree::discover_distinct_project_repo(&cwd, root).ok()?;
-                        let item = rdm_git::worktree::ItemRef::Phase {
-                            roadmap: roadmap.clone(),
-                            stem: stem.clone(),
-                        };
-                        let worktree = rdm_git::worktree::registered_worktree_for(&repo, &item)
-                            .ok()
-                            .flatten()?;
-                        rdm_git::head_commit_info_at(&worktree.path)
-                            .ok()
-                            .flatten()
-                            .map(|c| c.sha)
-                    })
+                let item = rdm_git::worktree::ItemRef::Phase {
+                    roadmap: roadmap.clone(),
+                    stem: stem.clone(),
+                };
+                commands::resolve_started_head(root, &item, source.source.as_deref())
             } else {
                 None
             };
