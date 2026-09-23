@@ -375,9 +375,9 @@ than inside a behavioral phase. The allowlist holds the boundary until then.
   `gated_entry_refuses_where_ungated_primitive_writes` asserts the split is
   intentional and visible rather than an oversight.
 - **The gate never writes a `Done:` trailer.** The gate checks records and
-  nothing else. The trailer's format lives in
-  `rdm_core::hook::format_done_directive` (surfaced as `rdm hook done-line`)
-  and `rdm-land` remains its only writer.
+  nothing else. `rdm-land` no longer writes a `Done:` trailer either — it
+  marks a landed item `done` directly, with a recorded commit, after the
+  fast-forward.
 
 ## Coverage
 

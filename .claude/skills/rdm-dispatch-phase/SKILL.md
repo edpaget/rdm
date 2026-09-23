@@ -103,8 +103,8 @@ plus two fields, so `rdm-autopilot`'s advance/park handling needs no change:
 ```
 
 (Task mode carries `task` in place of `roadmap`/`phase`.) **You MUST NOT write a `Done:` trailer.**
-Its format lives in `rdm_core::hook::format_done_directive` (surfaced as `rdm hook done-line`) and
-`rdm-land` is its only writer, at land time, off `writesCompletion: true`.
+`writesCompletion: true` means `rdm-land` will mark the item `done` directly at land time —
+no trailer is written by anyone in this flow.
 
 ## Run state
 

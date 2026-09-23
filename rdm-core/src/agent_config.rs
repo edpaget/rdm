@@ -2862,9 +2862,9 @@ mod tests {
         assert!(content.contains("linear history"));
         assert!(content.contains("rebase"));
         assert!(content.contains("no merge commit"));
-        // Preconditions: reviewed, the Done: line, the CI-equivalent checks.
+        // Preconditions: reviewed, a clean worktree, the CI-equivalent checks.
         assert!(content.contains("reviewed"));
-        assert!(content.contains("Done:"));
+        assert!(!content.contains("Done:"));
         // CI-equivalent checks are discovered from the consuming repo, not hardcoded to rdm's
         // own Rust toolchain (rdm's cargo triad appears only as an illustrative parenthetical).
         assert!(content.contains("CI config"));
@@ -2877,10 +2877,11 @@ mod tests {
         assert!(content.contains("git rebase --abort"));
         assert!(content.contains("docs/escalation-protocol.md"));
         assert!(content.contains("never force"));
-        // Post-commit flips reviewed -> done; idempotent fallback exists.
-        assert!(content.contains("reviewed → done"));
-        assert!(content.contains("post-commit"));
+        // Landing marks the item(s) done directly — no trailer, no hook dependency.
+        assert!(content.contains("target set"));
+        assert!(content.contains("landed tip"));
         assert!(content.contains("--status done --commit"));
+        assert!(content.contains("not a fallback for a missing hook"));
         // Cleanup: single remove + batch prune.
         assert!(content.contains("rdm worktree remove <item> --delete-branch"));
         assert!(content.contains("rdm worktree prune"));
@@ -2890,44 +2891,45 @@ mod tests {
     }
 
     #[test]
-    fn skill_land_synthesizes_the_completion_trailer_before_the_rebase() {
+    fn skill_land_marks_items_done_directly_after_landing() {
         let skills = generate_skills(&SkillOptions {
             project: None,
             principles_file: None,
         });
         let content = &skills[7].content;
-        // Precondition 2 reads the completion policy off the autonomous
-        // OUTCOME rather than inferring it from a missing trailer...
+        // No trailer is synthesized, amended, or read from a hook any more
+        // (phase `agent-orchestrated-dispatch/phase-45-remove-done-lines-from-git`).
+        assert!(!content.contains("rdm hook done-line"));
+        assert!(!content.contains("git commit --amend"));
+        assert!(!content.contains("Done:"));
+        // Landing marks every item in the target set done directly, with the
+        // landed tip's commit, after the fast-forward.
         assert!(
-            content.contains("`writesCompletion: true` on `reviewed`"),
-            "skill-land must state the OUTCOME carries writesCompletion on reviewed"
+            content.contains("Mark every item in the target set `done`, directly"),
+            "skill-land must mark every item in the target set done directly"
         );
         assert!(
-            content.contains("Read the policy off the outcome, do not infer it"),
-            "skill-land must instruct the lander to read the policy, not infer it"
+            content.contains("git -C <primary> rev-parse main"),
+            "skill-land must read the landed tip"
         );
-        // ...synthesizes the line from rdm (one home for the format)...
+        // For a bare-roadmap land, every reviewed phase gets the SAME landed
+        // tip rather than a per-phase distinct commit — with the general
+        // reasoning for why that attribution is not sound.
         assert!(
-            content.contains("rdm hook done-line"),
-            "skill-land must source the trailer from rdm hook done-line"
-        );
-        assert!(
-            content.contains("git commit --amend"),
-            "skill-land must amend the synthesized trailer onto the branch tip"
-        );
-        // ...BEFORE the rebase/fast-forward, so landing needs no manual rebase.
-        assert!(
-            content.contains("**before** the rebase and fast-forward below"),
-            "skill-land must amend BEFORE the rebase so no manual rebase is ever needed"
+            content.contains("record the **same** landed tip for every phase in the target set"),
+            "skill-land must record the same landed tip for every phase in a bare-roadmap land"
         );
         assert!(
-            content.contains("never needs a manual rebase"),
-            "skill-land must state that an autonomous branch never needs a manual rebase"
+            content.contains("a phase's approving change-review head can be wrong"),
+            "skill-land must explain why a change-review head is not a sound attribution source"
         );
-        // A failed done-line is an abort, not an empty amend.
         assert!(
-            content.contains("never amend an empty trailer"),
-            "skill-land must abort rather than amend an empty trailer"
+            content.contains("a phase-start record is not reliably populated"),
+            "skill-land must explain why a phase-start record is not a sound attribution source"
+        );
+        // The write always happens; it is not a fallback for a missing hook.
+        assert!(
+            content.contains("This write always happens — it is not a fallback for a missing hook")
         );
     }
 
@@ -3650,10 +3652,10 @@ mod tests {
         assert!(content.contains("OUTCOME verbatim"));
         assert!(content.contains("planId"));
         assert!(content.contains("reviewIds"));
-        // The completion trailer is sourced from rdm, never hand-typed...
-        assert!(content.contains("rdm hook done-line"));
-        assert!(content.contains("Never hand-type the completion trailer"));
-        // ...so the raw format string never appears in the shipped skill.
+        // `rdm-land` marks a landed item `done` directly now (phase
+        // `agent-orchestrated-dispatch/phase-45-remove-done-lines-from-git`)
+        // — no trailer is written or hand-typed anywhere in this flow.
+        assert!(content.contains("No completion trailer is written in this flow"));
         assert!(!content.contains("<roadmap-slug>/<phase-stem>"));
     }
 
@@ -4580,7 +4582,13 @@ mod tests {
         // to the autopilot shim's Park step naming `rdm-land` as the lander
         // of a parked phase's commits (still on the shared branch under
         // later phases') once the roadmap reaches `reviewed`.
-        let expected = 52;
+        // 52 -> 50: `agent-orchestrated-dispatch` phase 45 deleted
+        // `skill-land-cli.md`'s "the branch carries the `Done:` line"
+        // precondition wholesale — `rdm-land` no longer synthesizes or amends
+        // a trailer, so the sentence explaining that the autonomous lane
+        // deliberately never writes one (naming `rdm-dispatch-phase` and
+        // `rdm-autopilot` each once) went with it.
+        let expected = 50;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"

@@ -270,10 +270,10 @@ derived from its length — a push would manufacture a phantom review round.
 
 `--plan-only` is unaffected by construction: the driver returns at its `if (planOnly)`
 branch before `runCodeGate` is reached, so neither the act step, the post-act re-verify, nor
-the probe can fire. `Done:`-trailer writing is likewise untouched — `rdm-land` remains the
-sole land-time writer, synthesizing the directive from the OUTCOME via
-`rdm hook done-line`. This gate only makes `rdm-land`'s existing "the worktree is clean"
-precondition satisfiable by construction rather than by luck.
+the probe can fire. `rdm-land`'s own completion write is likewise untouched — it still marks
+the landed item(s) `done` directly, with a recorded commit, after the fast-forward. This gate
+only makes `rdm-land`'s existing "the worktree is clean" precondition satisfiable by
+construction rather than by luck.
 
 Pre-existing dirt the dispatch did not create will now force `rework`. That is the intended
 direction — `reviewed` must mean landable — and the finding names the paths so an operator

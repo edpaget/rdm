@@ -37,11 +37,12 @@ bare `<roadmap>`) and runs:
    ```
 5. **Fast-forward `main`** — advance `main` from the primary worktree where it is
    checked out: `git -C <primary> merge --ff-only <branch>`.
-6. **Confirm the item flipped `reviewed → done`** — the fast-forward onto the
-   default branch fires `rdm hook post-commit`, which reads the `Done:` line and
-   marks the item done. If hooks aren't installed, the idempotent fallback is
+6. **Mark the landed item(s) `done` directly** — read the landed tip
+   (`git -C <primary> rev-parse main`) and run
    `rdm phase update <phase> --status done --commit <sha>` (or the `task`
-   variant).
+   variant) for every item being landed. For a bare-roadmap land this covers
+   every phase that was `reviewed` on the branch, each recorded with the same
+   landed tip — see "The linear-history guarantee" below for why.
 7. **Clean up** — `rdm worktree remove <item> --delete-branch` for this item, or
    `rdm worktree prune` for batch cleanup of all already-`done` items.
 
@@ -57,7 +58,6 @@ bare `<roadmap>`) and runs:
 Landing checks these before touching `main`, and **aborts** if any fail:
 
 - the item is `reviewed`;
-- its branch carries the `Done: <item>` line (what the post-commit hook reads);
 - the worktree is clean (no uncommitted changes);
 - the CI-equivalent checks pass **on the rebased branch** (step 4).
 
@@ -68,9 +68,19 @@ Landing checks these before touching `main`, and **aborts** if any fail:
 stays linear. If a fast-forward is not possible, that is a signal to abort — never
 fall back to a merge commit and never force.
 
-The fast-forward is also exactly what triggers `rdm hook post-commit` on the
-default branch to flip the item `reviewed → done`. The existing `Done:`-line
-mechanism keeps working unchanged; `rdm-land` writes no `Done:` line by hand.
+After the fast-forward, `rdm-land` marks the landed item(s) `done` itself —
+`rdm phase update`/`task update --status done --commit <sha>` — rather than
+writing or amending a `Done:` trailer for a hook to read. For a bare-roadmap
+land, every `reviewed` phase in the target set is recorded with the **same**
+commit: the landed tip. Attributing each phase's own distinct last commit
+turns out not to be sound in general — a phase's approving change-review head
+can be wrong when the phase was finalized by a commit made *after* that
+review (e.g. under a stale-review `--override-gate` waiver), and a
+phase-start record (`started_head`) is not reliably populated for every
+phase — so the landed tip, which can never cite a wrong, unlanded, or
+nonexistent commit, is used for every phase instead. A single-item land needs
+none of this: the landed tip *is* that one item's own last commit, since the
+fast-forward advances by exactly its un-landed work.
 
 ## Safety posture — explicit, opt-in only
 

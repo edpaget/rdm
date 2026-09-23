@@ -77,12 +77,12 @@ its Workflow call don't block on a prompt.
    actively reviewed in either mode.
 4. **Return the orchestrator's OUTCOME verbatim** as your final message, including its `planId` and
    `reviewIds`. Do not paraphrase it, re-derive a status from it, or add a `Done:` line: the
-   orchestrator already performed the gated status write, and `rdm-land` is the only writer of the
-   completion trailer, at land time, off `writesCompletion: true`.
+   orchestrator already performed the gated status write; `writesCompletion: true` means `rdm-land`
+   will mark the item `done` directly at land time.
 
-**Never hand-type the completion trailer.** Its format has exactly one home, `rdm hook done-line`. The
-reviewed work is left on the `roadmap/<slug>` branch for `rdm-land`; the merge hook flips `reviewed` →
-`done`.
+**No completion trailer is written in this flow.** The reviewed work is left on the
+`roadmap/<slug>` branch for `rdm-land`, which marks the item `done` directly, with the landed
+tip's commit, after fast-forwarding onto `main`.
 
 **Single-item scope.** This entry point runs one item and returns its OUTCOME — it does not loop over a
 roadmap. Use `rdm-autopilot` for that, or re-run this skill by hand to take another pass on a
