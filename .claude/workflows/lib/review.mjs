@@ -1007,20 +1007,20 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 // forked code path.
 //
 //   code — the post-implementation gate: persist an rdm status on the item
-//          (per kind) and, on `reviewed` only, permit the land-time completion
-//          directive. `clearsPlanReviewTag` is always false — the code gate has
-//          nothing to do with the pre-implementation tag.
+//          (per kind) and, on `reviewed` only, mark the item eligible for the
+//          land-time `done` write `rdm-land` performs directly.
+//          `clearsPlanReviewTag` is always false — the code gate has nothing
+//          to do with the pre-implementation tag.
 //   plan — the pre-implementation gate: a plan review NEVER persists an rdm
 //          status (`status` is an explicit `null`, never `undefined`, so a
 //          caller cannot round-trip it into an empty status), and instead
 //          clears the reserved `needs-plan-review` tag on `reviewed` only.
 //
-// The completion policy is expressed ONLY as the boolean `writesCompletion`,
-// never as the literal trailer string: this block is stamped verbatim into
-// workflow scripts, and scripts/verify-workflow-review.sh forbids that literal
-// anywhere inside the stamped region. The literal lives in the skill-only
-// `review-gate-spec` region below the stamped block, and the format string
-// itself lives in rdm-core (surfaced as `rdm hook done-line`).
+// The completion policy is expressed ONLY as the boolean `writesCompletion`:
+// `reviewed` means the item is eligible for the land-time `done` write
+// `rdm-land` performs directly, after a clean fast-forward onto `main`. No
+// completion directive or trailer literal is embedded anywhere in this
+// stamped block, or written by any surface that consumes it.
 const GATE_POLICY = {
   code: {
     reviewed: { phase: 'reviewed', task: 'reviewed', status: 'reviewed', writesCompletion: true, clearsPlanReviewTag: false },
@@ -3226,32 +3226,25 @@ function buildReviewPipeline(mode, deps) {
 //|code| The review owns the `needs-review` → `reviewed` gate. Persist the status the
 //|code| outcome maps to, for the item's kind:
 //|code|
-//|code| | Outcome | When | Phase status | Task status | Completion trailer |
+//|code| | Outcome | When | Phase status | Task status | Marked done at landing |
 //|code| |---|---|---|---|---|
-//|code| | **reviewed** | clean at the independently reviewed head | `reviewed` | `reviewed` | eligible at landing |
-//|code| | **rework** | a fixable defect, or an unmet acceptance criterion | `in-progress` | `in-progress` | do **not** write it |
-//|code| | **escalated** | a blocker needing a human decision | `blocked` | `blocked` | do **not** write it |
+//|code| | **reviewed** | clean at the independently reviewed head | `reviewed` | `reviewed` | eligible |
+//|code| | **rework** | a fixable defect, or an unmet acceptance criterion | `in-progress` | `in-progress` | not eligible |
+//|code| | **escalated** | a blocker needing a human decision | `blocked` | `blocked` | not eligible |
 //|code|
 //|code| Tasks and phases map identically — `blocked` is a valid task status, so an
 //|code| escalated task is *not* downgraded to `in-progress`. On `escalated`, prefix
 //|code| the recorded reason with `[code]` so the blocked queue shows which gate
 //|code| escalated it.
 //|code|
-//|code| Never set the item to `done` directly — that flip is owned by the
-//|code| merge-to-main hook.
-//|code|
-//|code| **The completion trailer belongs to landing.** Do not amend the reviewed
-//|code| commit during this gate: an amendment changes its SHA and invalidates the
-//|code| source binding. Landing owns the completion directive; any changed head
-//|code| needs fresh review evidence before it can pass the source-bound gate.
-//|code| Obtain the directive from rdm rather than hand-typing its format:
-//|code|
-//|code| ```bash
-//|code| {rdm_bin} hook done-line --roadmap <slug> --phase <stem>   # prints: Done: <slug>/<stem>
-//|code| {rdm_bin} hook done-line --task <slug>                     # prints: Done: task/<slug>
-//|code| ```
-//|code|
-//|code| On `rework` and `escalated`, write **no** trailer.
+//|code| Never set the item to `done` directly from this gate, and never amend the
+//|code| reviewed commit: amending changes its SHA and invalidates the source
+//|code| binding, and any changed head needs fresh review evidence before it can
+//|code| pass the source-bound gate again. Marking the item `done` belongs to the
+//|code| separately authorized landing step (`rdm-land`), which marks every landed
+//|code| item `done` itself after a clean fast-forward onto `main`, recording the
+//|code| landed tip's own commit. There is no `Done:` trailer to write, here or at
+//|code| landing.
 //|plan|
 //|plan| ### Gate — clear or leave `needs-plan-review`
 //|plan|

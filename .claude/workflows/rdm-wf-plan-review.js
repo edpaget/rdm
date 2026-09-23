@@ -982,20 +982,20 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 // forked code path.
 //
 //   code — the post-implementation gate: persist an rdm status on the item
-//          (per kind) and, on `reviewed` only, permit the land-time completion
-//          directive. `clearsPlanReviewTag` is always false — the code gate has
-//          nothing to do with the pre-implementation tag.
+//          (per kind) and, on `reviewed` only, mark the item eligible for the
+//          land-time `done` write `rdm-land` performs directly.
+//          `clearsPlanReviewTag` is always false — the code gate has nothing
+//          to do with the pre-implementation tag.
 //   plan — the pre-implementation gate: a plan review NEVER persists an rdm
 //          status (`status` is an explicit `null`, never `undefined`, so a
 //          caller cannot round-trip it into an empty status), and instead
 //          clears the reserved `needs-plan-review` tag on `reviewed` only.
 //
-// The completion policy is expressed ONLY as the boolean `writesCompletion`,
-// never as the literal trailer string: this block is stamped verbatim into
-// workflow scripts, and scripts/verify-workflow-review.sh forbids that literal
-// anywhere inside the stamped region. The literal lives in the skill-only
-// `review-gate-spec` region below the stamped block, and the format string
-// itself lives in rdm-core (surfaced as `rdm hook done-line`).
+// The completion policy is expressed ONLY as the boolean `writesCompletion`:
+// `reviewed` means the item is eligible for the land-time `done` write
+// `rdm-land` performs directly, after a clean fast-forward onto `main`. No
+// completion directive or trailer literal is embedded anywhere in this
+// stamped block, or written by any surface that consumes it.
 const GATE_POLICY = {
   code: {
     reviewed: { phase: 'reviewed', task: 'reviewed', status: 'reviewed', writesCompletion: true, clearsPlanReviewTag: false },

@@ -84,8 +84,8 @@ trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 # The canonical source carries two marker systems. `review-spec` must nest
 # STRICTLY inside the stamped block (so the spec prose rides along in every
 # workflow consumer), while `review-gate-spec` must sit STRICTLY after the
-# stamped block's end (it is the only place the land-time completion trailer may
-# appear, and the dispatch harness forbids that literal inside a stamped region).
+# stamped block's end — it is the skill-only Act/Gate prose a stamped
+# workflow script never executes itself.
 say "0. Marker structure: review-spec nested inside the stamped block, review-gate-spec after it"
 line_of() { grep -n "$1" "$2" | head -1 | cut -d: -f1; }
 BLOCK_BEGIN=$(line_of '>>> review-refute-fix:begin' "$LIB")
@@ -104,21 +104,7 @@ done
 [ "$BLOCK_END" -lt "$GATE_BEGIN" ] || fail "review-gate-spec must start AFTER the stamped block ends"
 [ "$GATE_BEGIN" -lt "$GATE_END" ] || fail "review-gate-spec markers are inverted"
 
-# The stamped region of the SOURCE must not name the land-time completion
-# trailer: it is copied verbatim into every stamped workflow consumer, none of
-# which may write a land-time completion directive.
-awk -v b=">>> review-refute-fix:begin" -v e=">>> review-refute-fix:end" '
-    index($0, b) { inb = 1; next }
-    index($0, e) { inb = 0 }
-    inb { print }
-' "$LIB" >"$TMP/source-stamped-region"
-[ -s "$TMP/source-stamped-region" ] || fail "extracted an EMPTY stamped region from $LIB"
-if grep -n 'Done:' "$TMP/source-stamped-region" >&2; then
-    fail "the stamped region of $LIB must not contain a 'Done:' trailer literal — put it in review-gate-spec"
-fi
-# The gate region MUST carry it, otherwise the split is pointless.
-grep -q 'Done:' "$LIB" || fail "the review-gate-spec region should document the 'Done:' trailer"
-pass "marker regions nest correctly; the trailer literal lives only outside the stamped block"
+pass "marker regions nest correctly"
 
 # --- 1. DRIFT ----------------------------------------------------------------
 say "1. Drift: every consumer is in sync with the source block"
@@ -250,8 +236,6 @@ fi
 if grep -n 'tasks have no .blocked. status' "$TEMPLATES/skill-review-cli.md" >&2; then
     fail "skill-review-cli.md still claims tasks have no blocked status"
 fi
-grep -q 'rdm hook done-line' "$TEMPLATES/skill-review-cli.md" ||
-    fail "skill-review-cli.md must source the completion trailer from 'rdm hook done-line'"
 pass "shared spec region is non-empty, placeholder-free, and documents all seven dimensions"
 
 # --- 1d. PLAN SPEC PROJECTION -------------------------------------------------
@@ -369,7 +353,7 @@ pass "1d-gate-policy: the policy doc records all three blocked runs, the non-goa
 
 # Mode isolation, both directions. A code-only line left untagged would ship
 # into the plan skill (and vice versa); these greps are the detector.
-for bad in '\*\*ac\*\*' '\*\*changelog\*\*' '\*\*security\*\*' 'rdm hook done-line' 'AC table' 'AC FAIL'; do
+for bad in '\*\*ac\*\*' '\*\*changelog\*\*' '\*\*security\*\*' 'AC table' 'AC FAIL'; do
     if grep -nE "$bad" "$TMP/plan-spec-cli" >&2; then
         fail "code-only prose ($bad) leaked into the generated plan spec — tag it //|code|"
     fi
@@ -607,40 +591,20 @@ diff -u "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" "$LOCALSCRATC
     fail "the local-code-override mutation LEAKED into the shipped/code render — target isolation is broken"
 pass "the find-refute-verdict local-code-override is consumed by target=local mode=code and isolated from target=shipped"
 
-# Restore the scratch source and consumers before the {rdm_bin} hygiene pass.
+# Restore the scratch source and consumers before the next pass.
 reset_localscratch_source
 reset_localscratch_consumers
 
-# {rdm_bin} hygiene: every freshly generated output, across both targets and
-# both modes, must never carry an unsubstituted {rdm_bin} literal, and must
-# resolve to the RIGHT binary per target.
-sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target local --mode code >/dev/null 2>&1
-sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target local --mode plan >/dev/null 2>&1
-sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode code >/dev/null 2>&1
-sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode plan >/dev/null 2>&1
-if grep -rn '{rdm_bin}' "$LOCALSCRATCH/.claude/skills" "$LOCALSCRATCH/rdm-core/src/templates" >&2; then
-    fail "an unsubstituted {rdm_bin} literal survived generation"
-fi
-grep -q './target/debug/rdm hook done-line' "$LOCALSCRATCH/.claude/skills/rdm-review/SKILL.md" ||
-    fail "the local/code render must contain './target/debug/rdm hook done-line'"
-if grep -n '\./target/debug/rdm hook done-line' "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" >&2; then
-    fail "the shipped/code render must use a bare 'rdm hook done-line', never './target/debug/rdm'"
-fi
-grep -q 'rdm hook done-line' "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" ||
-    fail "the shipped/code render must contain the bare 'rdm hook done-line' example"
-pass "{rdm_bin} resolves per target (rdm vs ./target/debug/rdm) with no leftover placeholder"
-
-# Self-test: the {rdm_bin} leftover-placeholder check must not be vacuous —
-# disable the substitution step in a scratch copy of the generator and confirm
-# it now fires.
-grep -v 'sed -i.bak "s/{rdm_bin}' "$SKILL_GEN" >"$LOCALSCRATCH/scripts/gen-skill-review-nosub.sh"
-chmod +x "$LOCALSCRATCH/scripts/gen-skill-review-nosub.sh"
-if sh "$LOCALSCRATCH/scripts/gen-skill-review-nosub.sh" --target local --mode code 2>"$LOCALSCRATCH/nosub-err"; then
-    fail "the {rdm_bin} leftover-placeholder check did not fire when substitution was disabled — it is vacuous"
-fi
-grep -q 'unsubstituted {rdm_bin}' "$LOCALSCRATCH/nosub-err" ||
-    fail "disabling {rdm_bin} substitution did not produce the expected leftover-placeholder error"
-pass "the {rdm_bin} hygiene check is not vacuous — it fires when substitution is disabled"
+# The {rdm_bin} substitution hygiene check and its non-vacuity self-test were
+# removed here (`agent-orchestrated-dispatch` phase 48): the phase's landing-
+# prose rewrite deleted the review-gate-spec's only `{rdm_bin}`-placeholder
+# command example (the `hook done-line` block), so no spec content anywhere
+# uses the placeholder any more and a leftover-literal grep can never find
+# one to prove the check isn't vacuous. Per this file's standing ruling, a
+# check that can no longer be meaningfully asserted true is deleted, not
+# re-pointed. `gen-skill-review.sh`'s own substitution/leftover-detection
+# logic is untouched and still applies if a future spec line reintroduces
+# `{rdm_bin}`.
 
 # Direct regression assertion (AC4): the phase's reported gap — a missing
 # `restraint` dimension and missing severity-calibration paragraph in the

@@ -3555,8 +3555,9 @@ mod tests {
         assert!(content.contains("escalated"));
         assert!(content.contains("`in-progress`"));
         assert!(content.contains("`blocked`"));
-        // The completion trailer is never hand-typed: it is sourced from rdm.
-        assert!(content.contains("rdm hook done-line"));
+        // The gate never hand-types or writes a completion trailer; `rdm-land`
+        // marks the item `done` directly at landing.
+        assert!(!content.contains("rdm hook done-line"));
         assert!(!content.contains("git commit --amend"));
         assert!(content.contains("changing the head requires fresh independent evidence"));
     }
@@ -3736,8 +3737,9 @@ mod tests {
 
     /// The shipped review skill carries the generated review specification:
     /// the canonical outcome vocabulary, the seven-dimension fleet including
-    /// the `security` dimension, and a completion trailer sourced from
-    /// `rdm hook done-line` rather than a hand-typed format string.
+    /// the `security` dimension, and no completion trailer of any kind — the
+    /// gate never writes one; `rdm-land` marks a reviewed item `done` itself
+    /// directly at landing.
     #[test]
     fn skill_review_carries_the_generated_spec() {
         let skills = generate_skills(&SkillOptions {
@@ -3750,15 +3752,20 @@ mod tests {
             "**reviewed**",
             "**rework**",
             "**escalated**",
-            "rdm hook done-line",
             "`blocked` is a valid task status",
         ] {
             assert!(content.contains(needle), "missing {needle}");
         }
-        for retired in ["PASS WITH CONCERNS", "**BLOCKED**", "**FAIL**"] {
+        for retired in [
+            "PASS WITH CONCERNS",
+            "**BLOCKED**",
+            "**FAIL**",
+            "rdm hook done-line",
+            "merge-to-main hook",
+        ] {
             assert!(
                 !content.contains(retired),
-                "retired verdict word still present: {retired}"
+                "retired verdict word or completion-trailer literal still present: {retired}"
             );
         }
     }
@@ -4626,7 +4633,13 @@ mod tests {
         // a trailer, so the sentence explaining that the autonomous lane
         // deliberately never writes one (naming `rdm-dispatch-phase` and
         // `rdm-autopilot` each once) went with it.
-        let expected = 50;
+        // 50 -> 52: `agent-orchestrated-dispatch` phase 48 rewrote
+        // `skill-review-cli.md`'s stale "owned by the merge-to-main hook" /
+        // `rdm hook done-line` landing prose (both the generated Gate table
+        // paragraph and the hand-authored gate sentence) to instead name
+        // `rdm-land` as the step that marks a reviewed item `done` directly
+        // at landing — one new `rdm-land` mention in each of the two spots.
+        let expected = 52;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"

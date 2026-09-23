@@ -111,7 +111,7 @@ On `escalated` **only**, record the escalation on the item itself with `--reason
 ./target/debug/rdm task update <slug> --status blocked --reason "[code] <the decision or blocker>" --no-edit --project rdm
 ```
 
-Do not amend the reviewed source commit during this gate. Completion directives belong to the separately authorized landing step; changing the head requires fresh independent evidence before another source-bound approval. Leave the item `reviewed`, not `done`.
+Do not amend the reviewed source commit during this gate. Marking the item `done` belongs to the separately authorized landing step (`rdm-land`), which marks it directly after a clean fast-forward onto `main`; changing the head requires fresh independent evidence before another source-bound approval. Leave the item `reviewed`, not `done`.
 
 ## Review specification
 
@@ -410,32 +410,25 @@ that is neither worth incorporating in flight nor worth filing.
 The review owns the `needs-review` → `reviewed` gate. Persist the status the
 outcome maps to, for the item's kind:
 
-| Outcome | When | Phase status | Task status | Completion trailer |
+| Outcome | When | Phase status | Task status | Marked done at landing |
 |---|---|---|---|---|
-| **reviewed** | clean at the independently reviewed head | `reviewed` | `reviewed` | eligible at landing |
-| **rework** | a fixable defect, or an unmet acceptance criterion | `in-progress` | `in-progress` | do **not** write it |
-| **escalated** | a blocker needing a human decision | `blocked` | `blocked` | do **not** write it |
+| **reviewed** | clean at the independently reviewed head | `reviewed` | `reviewed` | eligible |
+| **rework** | a fixable defect, or an unmet acceptance criterion | `in-progress` | `in-progress` | not eligible |
+| **escalated** | a blocker needing a human decision | `blocked` | `blocked` | not eligible |
 
 Tasks and phases map identically — `blocked` is a valid task status, so an
 escalated task is *not* downgraded to `in-progress`. On `escalated`, prefix
 the recorded reason with `[code]` so the blocked queue shows which gate
 escalated it.
 
-Never set the item to `done` directly — that flip is owned by the
-merge-to-main hook.
-
-**The completion trailer belongs to landing.** Do not amend the reviewed
-commit during this gate: an amendment changes its SHA and invalidates the
-source binding. Landing owns the completion directive; any changed head
-needs fresh review evidence before it can pass the source-bound gate.
-Obtain the directive from rdm rather than hand-typing its format:
-
-```bash
-./target/debug/rdm hook done-line --roadmap <slug> --phase <stem>   # prints: Done: <slug>/<stem>
-./target/debug/rdm hook done-line --task <slug>                     # prints: Done: task/<slug>
-```
-
-On `rework` and `escalated`, write **no** trailer.
+Never set the item to `done` directly from this gate, and never amend the
+reviewed commit: amending changes its SHA and invalidates the source
+binding, and any changed head needs fresh review evidence before it can
+pass the source-bound gate again. Marking the item `done` belongs to the
+separately authorized landing step (`rdm-land`), which marks every landed
+item `done` itself after a clean fast-forward onto `main`, recording the
+landed tip's own commit. There is no `Done:` trailer to write, here or at
+landing.
 
 ### Guidelines
 
