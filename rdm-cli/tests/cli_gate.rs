@@ -984,6 +984,28 @@ fn task_json_for(plan: &Path, slug: &str) -> Value {
     serde_json::from_slice(&out).unwrap()
 }
 
+fn review_show_json(plan: &Path, cwd: &Path, id: &str) -> Value {
+    let out = rdm()
+        .arg("--root")
+        .arg(plan)
+        .args([
+            "review",
+            "show",
+            id,
+            "--format",
+            "json",
+            "--project",
+            "demo",
+        ])
+        .current_dir(cwd)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&out).unwrap()
+}
+
 /// AC1 + AC2 + AC3 at the binary boundary: two phases implemented in
 /// sequence in one shared roadmap worktree. The second phase's
 /// `in-progress` stamp records `started_head` from OUTSIDE the worktree
@@ -1178,7 +1200,38 @@ fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
         "change/HEAD",
         &["--implements", "plan/impl-plan", "--base", &phase_1_head],
     );
+    // AC3's first half (review 2026-09-23-0326-b262, finding
+    // ac-3-base-unasserted): the persisted review must actually RECORD the
+    // base the gate is meant to bind against — passing `--base` at start
+    // time isn't proof of that on its own, since the reviewed gate only
+    // ever compares `head`.
+    let change_review = review_show_json(plan.path(), &wt, &change_id);
+    assert_eq!(
+        change_review["target"]["base"], phase_1_head,
+        "the persisted change review must record the phase's started_head as its base"
+    );
     submit_approve(plan.path(), &change_id);
+
+    // Default path: `review start --on change/HEAD` with no explicit
+    // `--base` does NOT pick up the item's `started_head` — it resolves
+    // through `resolve_change_target`'s plain merge-base-with-default-branch
+    // path (rdm-core/src/change.rs), same as any other change review.
+    // Documented here rather than changed: teaching `review start` to default
+    // to `started_head` is out of this phase's scope. `rdm review source`
+    // (and therefore `phase update --status reviewed --source ...`) is the
+    // surface that defaults to `started_head`.
+    let default_base_id = start_review(
+        plan.path(),
+        Some(&wt),
+        "change/HEAD",
+        &["--implements", "plan/impl-plan"],
+    );
+    let default_base_review = review_show_json(plan.path(), &wt, &default_base_id);
+    assert_eq!(
+        default_base_review["target"]["base"], base_head,
+        "review start with no --base resolves against the merge-base with main, not the \
+         phase's started_head"
+    );
 
     rdm()
         .arg("--root")
