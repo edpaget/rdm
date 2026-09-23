@@ -176,8 +176,9 @@ pick roadmap (human)
 │                                                              │
 │      outcome = reviewed  ──► advance (next steps past it)    │
 │      outcome = rework    ──► retry (new subagent); on budget │
-│                              exhaustion park blocked [code]  │
-│      outcome = escalated ──► already blocked, continue       │
+│                              exhaustion park blocked [code],  │
+│                              STOP (escalated)                 │
+│      outcome = escalated ──► already blocked, STOP (escalated)│
 └─────────────────────────────────────────────────────────────┘
       │ (repeat until a stop condition)
       ▼
@@ -217,8 +218,8 @@ per phase is the structured outcome the subagent returns, one of three:
 | Outcome | Phase state | Autopilot action |
 |---------|-------------|------------------|
 | `reviewed` | `reviewed`, `Done:` line on the branch | advance |
-| `rework` | back to `in-progress` (fixable defect) | re-dispatch (new subagent) within the rework-retry budget; on exhaustion park `blocked` with a `[code]` reason and continue |
-| `escalated` | already `blocked` (`[plan]`/`[code]`) | leave it; continue with the remaining actionable phases |
+| `rework` | back to `in-progress` (fixable defect) | re-dispatch (new subagent) within the rework-retry budget; on exhaustion park `blocked` with a `[code]` reason and stop the run — see "Budgets and stop conditions" |
+| `escalated` | already `blocked` (`[plan]`/`[code]`) | stop the run — see "Budgets and stop conditions" |
 
 ### Context isolation
 
@@ -257,6 +258,17 @@ The loop stops when **any** of these holds:
 - `rdm next` returns `blocked-on-dependencies`.
 - All remaining work is `blocked`/escalated.
 - `--max-phases` or the global step budget is reached.
+- **Any park** — an `escalated` OUTCOME, an exhausted rework retry, a
+  repeatedly failing advance write, or an unrecognized OUTCOME — parks the
+  phase `blocked` exactly as before, and the run now stops immediately with
+  `stopReason: escalated`, naming the parked stem. On the shared per-roadmap
+  worktree model a parked phase's commits stay on `roadmap/<slug>` underneath
+  whatever a later phase would commit on top of them, so continuing past a
+  park used to mean a later phase was implemented and reviewed on top of code
+  already known to be defective. This was observed on 2026-09-22: a phase
+  escalated with real defects and autopilot parked it and dispatched the next
+  phase on top of it anyway. A park is now a hard stop, not a skip — see
+  plan repo `plan/autopilot-stop-on-escalation` for the decision record.
 
 ## Recovering a crashed run
 
@@ -331,9 +343,13 @@ subagents don't block on permission prompts.
 
 Every run — whatever stopped it — ends with a summary: the phases completed
 this run, the tasks filed by the dispatched runs, and the escalations awaiting
-the user, each tagged `plan` vs `code`. Batching escalations is the whole point
-of autopilot: instead of interrupting the user per phase, it parks decisions and
-blockers and surfaces them together at the end. Review the queue with:
+the user, each tagged `plan` vs `code`. Since a park now stops the run, a
+single run carries at most one escalation — the one that stopped it — plus
+however many phases completed before it. "Batching" describes not
+interrupting the user mid-phase for a routine decision, not accumulating
+multiple parks across a run: the run still never raises a question
+interactively, but it no longer keeps going past the first park to gather a
+whole queue of them in one pass. Review the queue with:
 
 ```bash
 rdm review blocked --project <proj>

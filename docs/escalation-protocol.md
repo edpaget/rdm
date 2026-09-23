@@ -129,14 +129,27 @@ For each finding or blocker, apply the first matching rule:
 1. **Auto-handle** — it is a routine finding. Let `rdm-review` fix it inline or
    file it as a task. Do not interrupt the user. (This is the common case.)
 2. **Park as `blocked`** — it is an escalation, but the run is unattended (no
-   human is waiting) *or* other phases can still make progress. Record it (below)
-   and move on, so the user can answer it in a batch later.
+   human is waiting). Record it (below) so the user can answer it later. This is
+   the mechanism, and it is the same at both levels: `rdm-dispatch-phase` always
+   parks the item it is driving this way and returns — that is unchanged. What
+   changed is what happens *above* it: `rdm-autopilot`'s roadmap loop used to
+   treat a park as "move on, other phases can still make progress" and dispatch
+   the next phase anyway; it now stops the whole run the moment any phase is
+   parked, rather than continuing past it (see
+   [`docs/autonomous-loop.md`](./autonomous-loop.md) § "Budgets and stop
+   conditions" for why — on the shared per-roadmap worktree model, a later
+   phase would otherwise be implemented and reviewed on top of code already
+   known to be defective).
 3. **Raise to the user now** — it is an escalation **and** a human is interactively
    present **and** it blocks all further progress. Stop and ask.
 
-On autopilot the default is **park** — batching decisions is what keeps the loop
-from interrupting the user for every phase. Raising mid-run is reserved for the
-interactive case where stopping is cheap and progress is otherwise blocked.
+On autopilot the default is still **park**, not an interactive mid-run
+question — a park never stops to ask the user anything while the run is
+in flight. But a park now also **ends the run** (stop reason `escalated`)
+instead of letting the loop continue on to the next phase; see
+[`docs/autonomous-loop.md`](./autonomous-loop.md) § "Budgets and stop
+conditions". Raising mid-run is reserved for the interactive case where
+stopping is cheap and progress is otherwise blocked.
 
 ## Recording and resuming an escalation
 
