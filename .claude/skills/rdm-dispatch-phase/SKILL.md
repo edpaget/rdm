@@ -176,24 +176,28 @@ returns the existing path. **You MUST NOT** create a phase-specific branch or fo
 This stamp deliberately runs BEFORE step 4 pins `identity.base`: `phase update --status in-progress`
 resolves `started_head` from the item's registered worktree the same way `verify run --item` does, so
 the worktree only has to **exist** for the stamp to succeed — it does not need `identity` pinned
-first. The stamp is write-once (an already-stamped item, e.g. on resume, is left untouched), so
-running it here on every pass is always safe. Ordering it first is load-bearing: it is what lets step
-4's very first `review source` read already see `started_head`, instead of falling back to the
-merge-base and depending on some later re-read to pick up the real value — which would leave the plan
-review (step 6) and the first pass of the code review (step 11) graded against the wrong, too-wide
-range.
+first. The stamp is write-once, and narrower than "an already-stamped item is left untouched": it
+records a value ONLY on the transition whose prior status was `not-started`/`open` — this item's true
+first-ever entry into `in-progress`. A resume (`reviewed -> in-progress`), an unpark
+(`blocked -> in-progress`), or a repeat step-3 run while already `in-progress` never records a value,
+even when the field is still empty, so running this step on every pass can never move the base
+forward past commits the item already made before that later run. Ordering it first is load-bearing
+on the item's real first pass: it is what lets step 4's very first `review source` read already see
+`started_head`, instead of falling back to the merge-base and depending on some later re-read to pick
+up the real value — which would leave the plan review (step 6) and the first pass of the code review
+(step 11) graded against the wrong, too-wide range.
 
 **Skip this entire step under `--plan-only`** — a plan-only pass does no implementation, and stamping
 would misreport work that never happened. Step 4 still runs: its `base` then resolves to whatever
-`started_head` an earlier real dispatch already recorded for this item, or the merge-base with the
-default branch if this item has never been stamped at all — a plan-only pass over a phase with
-earlier siblings on the shared branch should be read with that in mind, since the merge-base is not
-scoped to this phase alone.
+`started_head` an earlier real dispatch's first pass already recorded for this item, or the
+merge-base with the default branch if this item has never made that first-entry transition at all —
+a plan-only pass over a phase with earlier siblings on the shared branch should be read with that in
+mind, since the merge-base is not scoped to this phase alone.
 
 ### 4. Pin the checkout identity
 
 `review source` deliberately never creates or changes a worktree — step 3 already ensured it exists
-and, on the normal path, just stamped `started_head` — so this step only resolves the identity:
+and, on the item's first pass, just stamped `started_head` — so this step only resolves the identity:
 
 ```bash
 <rdmBin> review source --on <item><proj-flag> --format json
@@ -203,18 +207,20 @@ Record `repository`, `path`, `branch`, `base`, `head` as `identity`. Every later
 same `path` as its working directory and this same `base`/`head` on the terminal write.
 
 `identity.base` is the phase's (or task's) own **starting head** — `review source` defaults it to
-the item's recorded `started_head` (the checkout HEAD step 3 just stamped, or an earlier dispatch's
-step 3 on resume), not the merge-base with the default branch. This matters because the roadmap
+the item's recorded `started_head` (the checkout HEAD step 3 stamped on this item's first-ever entry
+into `in-progress` — this run's step 3 if this is that first pass, or an earlier dispatch's step 3 if
+this is a resume), not the merge-base with the default branch. This matters because the roadmap
 worktree is shared: it carries every earlier phase's commits, including a parked (`blocked`) one's.
 Without this default, `identity.base` would be the merge-base, and this phase's review (and the
 finders/refuters in steps 6 and 11) would re-find every earlier phase's already-triaged changes and
-attribute them to this phase. Because step 3 stamps first, this first read already sees
-`started_head` on the normal path — there is no separate later re-read that moves `base` out from
-under an already-run plan or code review. `base` is still the merge-base here only under
-`--plan-only` (step 3's stamp is skipped) or for an item that has genuinely never resolved a
-worktree at its own `in-progress` transition; in the second case the fallback is real, not harmless,
-for any phase after the first on a shared branch — it includes every earlier phase's commits — and
-the response's `baseNote` field names it so the gap is visible rather than silent.
+attribute them to this phase. On the item's first pass, step 3 stamps first, so this first read
+already sees `started_head` — there is no separate later re-read that moves `base` out from under an
+already-run plan or code review, because no later step-3 run (resume, unpark, or repeat) ever writes
+to the field again. `base` is still the merge-base here only under `--plan-only` (step 3's stamp is
+skipped) or for an item that has genuinely never made that first-entry transition with a resolvable
+worktree; in the second case the fallback is real, not harmless, for any phase after the first on a
+shared branch — it includes every earlier phase's commits — and the response's `baseNote` field names
+it so the gap is visible rather than silent.
 
 Then resolve the two dispatch models from the item's tier. Read `model` from `phase show <phase>
 --roadmap <slug><proj-flag> --format json` (task form: `task show <slug><proj-flag> --format

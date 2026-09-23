@@ -458,16 +458,27 @@ pub struct Phase {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_branch: Option<String>,
     /// The item's resolved checkout HEAD at the moment it first transitioned
-    /// to `in-progress`.
+    /// out of `not-started` into `in-progress`.
     ///
-    /// Write-once: set on the first `in-progress` stamp and never overwritten
-    /// by a later transition, including a `reviewed -> in-progress` rework
-    /// re-stamp. Unlike [`Phase::review_sha`] (re-stamped on every
-    /// `needs-review` transition), this field records where the phase's own
-    /// work *began*, so [`rdm review source`](crate::worktree) can default a
-    /// phase's review `base` to it rather than to the merge-base with the
-    /// default branch — scoping the review to this phase's own commits in a
-    /// shared roadmap worktree. See `docs/change-reviews.md` § "The target".
+    /// Write-once, and narrower than "the field is currently empty": it is
+    /// only ever set on the transition whose *prior* status was
+    /// `not-started`. Every other transition into `in-progress` — a
+    /// `reviewed -> in-progress` rework re-stamp, a `blocked -> in-progress`
+    /// unpark, or an `in-progress -> in-progress` re-stamp — leaves the field
+    /// exactly as it found it, even when it is still empty. That matters
+    /// because a phase can reach one of those later transitions while still
+    /// carrying commits and no recorded value (stamped by a pre-this-field
+    /// binary, or whose first stamp's worktree could not be resolved); if a
+    /// later re-stamp were allowed to fill the gap, it would record a base
+    /// *after* the phase's own commits, and `review source` would silently
+    /// scope the review to only what came after. Leaving the field alone in
+    /// that case keeps `review source`'s safe merge-base fallback instead.
+    /// Unlike [`Phase::review_sha`] (re-stamped on every `needs-review`
+    /// transition), this field records where the phase's own work *began*,
+    /// so [`rdm review source`](crate::worktree) can default a phase's
+    /// review `base` to it rather than to the merge-base with the default
+    /// branch — scoping the review to this phase's own commits in a shared
+    /// roadmap worktree. See `docs/change-reviews.md` § "The target".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_head: Option<String>,
     /// Estimated difficulty of the phase, if assessed.
@@ -539,8 +550,11 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_branch: Option<String>,
     /// The item's resolved checkout HEAD at the moment it first transitioned
-    /// to `in-progress`. Write-once, mirroring [`Phase::started_head`]
-    /// exactly, including the rework re-stamp exemption.
+    /// out of `open` into `in-progress`. Write-once, mirroring
+    /// [`Phase::started_head`] exactly, including the "only the transition
+    /// whose prior status was the pre-work status" narrowing (here `open`,
+    /// there `not-started`) and the resulting rework/unpark/re-stamp
+    /// exemption.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_head: Option<String>,
     /// Reason the task was closed (a retire/supersede note), if any.

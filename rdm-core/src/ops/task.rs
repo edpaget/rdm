@@ -378,6 +378,7 @@ fn update_task_inner(
                 doc.frontmatter.commit = Some(sha);
             }
         } else {
+            let prior_status = doc.frontmatter.status;
             doc.frontmatter.status = status;
             if status.is_terminal() {
                 doc.frontmatter.completed = Some(Local::now().date_naive());
@@ -395,12 +396,20 @@ fn update_task_inner(
                 doc.frontmatter.review_sha = None;
                 doc.frontmatter.review_branch = None;
             }
-            // Write-once: stamp `started_head` the first time the task
-            // enters `in-progress`. Any later transition — including a
-            // `reviewed -> in-progress` rework re-stamp — leaves an
-            // already-recorded value untouched, so a resumed task's base
-            // never moves forward past its own commits.
+            // Write-once: stamp `started_head` only on the task's first
+            // ever entry into `in-progress` — i.e. exactly when the prior
+            // status was `open`. Any other transition into `in-progress` (a
+            // `reviewed -> in-progress` rework re-stamp, a `blocked ->
+            // in-progress` unpark, or an `in-progress -> in-progress`
+            // re-stamp such as the dispatch skill's step 3) leaves the
+            // field untouched even when it is still empty: the task may
+            // already carry commits predating this field, or from a first
+            // stamp whose worktree could not be resolved, and recording a
+            // base after those commits would let a later review silently
+            // skip them. An item that never got a value keeps `review
+            // source`'s safe merge-base fallback.
             if status == TaskStatus::InProgress
+                && prior_status == TaskStatus::Open
                 && doc.frontmatter.started_head.is_none()
                 && let Some(head) = started_head
             {

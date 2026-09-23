@@ -1212,6 +1212,62 @@ fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
     );
 }
 
+/// tests-2 (review 2026-09-23-0309-996c): AC2's merge-base fallback, checked
+/// at the binary boundary rather than only at the `rdm-git` struct level. A
+/// phase that was never stamped `in-progress` has no recorded `started_head`,
+/// so `review source` must fall back to the merge-base with the project's
+/// default branch and say so via `baseNote` — the only prior CLI assertion of
+/// the key was `.is_none()`, which would still pass if the field were renamed
+/// or dropped outright.
+#[test]
+fn review_source_with_no_started_head_falls_back_to_merge_base_with_a_note() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    // A shared roadmap worktree with one commit on it, but the phase itself
+    // was never stamped `in-progress` — no `started_head` was ever recorded.
+    let wt = add_worktree(plan.path(), src.path());
+    let merge_base = rev_parse(src.path(), "HEAD");
+    let head = rev_parse(&wt, "HEAD");
+    assert_ne!(
+        merge_base, head,
+        "the fixture's one commit on the worktree branch must make base and head diverge"
+    );
+    assert!(
+        phase_json_for(plan.path(), "phase-1-design", "auth")
+            .get("started_head")
+            .is_none(),
+        "phase-1-design must never have been stamped in-progress in this test"
+    );
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "source",
+            "--on",
+            "phase/auth/phase-1-design",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let source: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(source["base"], merge_base);
+    assert_eq!(source["head"], head);
+    let note = source["baseNote"]
+        .as_str()
+        .unwrap_or_else(|| panic!("baseNote must be a string naming the default branch: {source}"));
+    assert!(
+        note.contains("main"),
+        "baseNote must name the default branch 'main': {note}"
+    );
+}
+
 /// tests-1 / in-progress-source-runs-full-review-resolution (review
 /// 2026-09-23-0249-4ccc): an explicit `--source <path>` on the in-progress
 /// transition must record that checkout's plain HEAD, never routed through

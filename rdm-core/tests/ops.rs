@@ -1526,6 +1526,221 @@ fn update_phase_started_head_none_supplied_leaves_field_untouched() {
     assert_eq!(updated.frontmatter.started_head, None);
 }
 
+/// C1 regression: a phase that entered `in-progress` once with no resolvable
+/// worktree (so `started_head` was never recorded) must NOT have the field
+/// filled in by a later `reviewed -> in-progress` rework, even though a head
+/// is now available and the field is still empty. Filling it here would
+/// record a base *after* the phase's own original commits.
+#[test]
+fn update_phase_reviewed_to_in_progress_with_no_recorded_head_stays_unset() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // First entry into in-progress: no worktree resolvable, nothing recorded.
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::NeedsReview),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::Reviewed),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    // Rework: reviewed -> in-progress, now WITH a resolvable worktree head.
+    // It must NOT be recorded — the prior status was `reviewed`, not
+    // `not-started`.
+    let reworked = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("laterhead".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        reworked.frontmatter.started_head, None,
+        "a reviewed -> in-progress rework must never stamp started_head, even when it was never recorded"
+    );
+}
+
+/// C1 regression: same as above, but for a `blocked -> in-progress` unpark.
+#[test]
+fn update_phase_blocked_to_in_progress_with_no_recorded_head_stays_unset() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // First entry into in-progress: no worktree resolvable, nothing recorded.
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::Blocked),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    // Unpark: blocked -> in-progress, now WITH a resolvable worktree head. It
+    // must NOT be recorded — the prior status was `blocked`, not
+    // `not-started`.
+    let unparked = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("laterhead".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        unparked.frontmatter.started_head, None,
+        "a blocked -> in-progress unpark must never stamp started_head, even when it was never recorded"
+    );
+}
+
+/// C1 regression: same as above, but for a plain `in-progress -> in-progress`
+/// re-stamp (e.g. the dispatch skill's step 3 running on every pass).
+#[test]
+fn update_phase_in_progress_re_stamp_with_no_recorded_head_stays_unset() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // First entry into in-progress: no worktree resolvable, nothing recorded.
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    // Re-stamp while still in-progress, now WITH a resolvable worktree head.
+    // It must NOT be recorded — the prior status was `in-progress`, not
+    // `not-started`.
+    let restamped = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("laterhead".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        restamped.frontmatter.started_head, None,
+        "an in-progress -> in-progress re-stamp must never stamp started_head, even when it was never recorded"
+    );
+}
+
 #[test]
 fn update_phase_from_done_clears_completed() {
     let mut store = setup_with_roadmap();
@@ -3336,6 +3551,219 @@ fn update_task_started_head_none_supplied_leaves_field_untouched() {
     .unwrap();
     assert_eq!(updated.frontmatter.status, TaskStatus::InProgress);
     assert_eq!(updated.frontmatter.started_head, None);
+}
+
+/// C1 regression: a task that entered `in-progress` once with no resolvable
+/// worktree (so `started_head` was never recorded) must NOT have the field
+/// filled in by a later `reviewed -> in-progress` rework, even though a head
+/// is now available and the field is still empty. Filling it here would
+/// record a base *after* the task's own original commits.
+#[test]
+fn update_task_reviewed_to_in_progress_with_no_recorded_head_stays_unset() {
+    let mut store = setup_with_project();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // First entry into in-progress: no worktree resolvable, nothing recorded.
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::NeedsReview),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::Reviewed),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    // Rework: reviewed -> in-progress, now WITH a resolvable worktree head.
+    // It must NOT be recorded — the prior status was `reviewed`, not `open`.
+    let reworked = rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("laterhead".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        reworked.frontmatter.started_head, None,
+        "a reviewed -> in-progress rework must never stamp started_head, even when it was never recorded"
+    );
+}
+
+/// C1 regression: same as above, but for a `blocked -> in-progress` unpark.
+#[test]
+fn update_task_blocked_to_in_progress_with_no_recorded_head_stays_unset() {
+    let mut store = setup_with_project();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // First entry into in-progress: no worktree resolvable, nothing recorded.
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::Blocked),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    // Unpark: blocked -> in-progress, now WITH a resolvable worktree head. It
+    // must NOT be recorded — the prior status was `blocked`, not `open`.
+    let unparked = rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("laterhead".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        unparked.frontmatter.started_head, None,
+        "a blocked -> in-progress unpark must never stamp started_head, even when it was never recorded"
+    );
+}
+
+/// C1 regression: same as above, but for a plain `in-progress -> in-progress`
+/// re-stamp (e.g. the dispatch skill's step 3 running on every pass).
+#[test]
+fn update_task_in_progress_re_stamp_with_no_recorded_head_stays_unset() {
+    let mut store = setup_with_project();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // First entry into in-progress: no worktree resolvable, nothing recorded.
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    // Re-stamp while still in-progress, now WITH a resolvable worktree head.
+    // It must NOT be recorded — the prior status was `in-progress`, not
+    // `open`.
+    let restamped = rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("laterhead".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        restamped.frontmatter.started_head, None,
+        "an in-progress -> in-progress re-stamp must never stamp started_head, even when it was never recorded"
+    );
 }
 
 #[test]

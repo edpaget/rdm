@@ -1,7 +1,12 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+use std::path::Path;
 use tempfile::TempDir;
+
+#[path = "git_test_support.rs"]
+mod git_test_support;
+use git_test_support::git;
 
 fn rdm() -> Command {
     let mut cmd = Command::cargo_bin("rdm").unwrap();
@@ -56,6 +61,40 @@ fn init_with_roadmap(dir: &TempDir) {
         ])
         .assert()
         .success();
+}
+
+/// A temp source repo whose git root is a **subdirectory** of the `TempDir`.
+///
+/// `rdm worktree add` places a new worktree at
+/// `repo_root.parent()/<name>__worktrees/<item>` — a sibling of the repo
+/// root. If the repo root were the `TempDir` itself that sibling would land
+/// in the system temp directory, where `TempDir::drop` never reaches it.
+/// Rooting the repo one level down keeps the sibling inside the `TempDir`.
+struct SourceRepo {
+    _dir: TempDir,
+    root: std::path::PathBuf,
+}
+
+impl SourceRepo {
+    fn path(&self) -> &Path {
+        &self.root
+    }
+}
+
+/// A source repo on `main` with one commit — enough for `git rev-parse
+/// --show-toplevel` and `rdm worktree add` to work, with nothing else
+/// configured (no project `source` binding; resolution goes through the
+/// caller's cwd, exactly as `cli_gate.rs`'s fixtures do).
+fn init_source_repo() -> SourceRepo {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("repo");
+    fs::create_dir_all(&root).unwrap();
+    let p = root.as_path();
+    git(p, &["init", "-b", "main"]);
+    fs::write(p.join("README.md"), "# source\n").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "initial"]);
+    SourceRepo { _dir: dir, root }
 }
 
 fn phase_estimate_snapshot(dir: &TempDir) -> String {
@@ -2103,18 +2142,27 @@ fn phase_update_empty_title_rejected() {
         .stdout(predicate::str::contains("Keep This Title"));
 }
 
-/// AC1's no-worktree half: with no registered worktree for the roadmap, an
-/// `in-progress` transition still succeeds and `started_head` stays absent
-/// from `phase show --format json` — a best-effort resolution, never a hard
-/// failure. The worktree-present half (recording the worktree's HEAD from a
-/// cwd outside it, and the write-once re-stamp) is covered end to end
-/// against a real source-repo worktree in `cli_gate.rs`'s
-/// `started_head_scopes_the_second_phase_review_and_satisfies_the_gate`.
-#[test]
-fn in_progress_with_no_worktree_records_no_started_head() {
-    let dir = TempDir::new().unwrap();
-    init_with_roadmap(&dir);
-    create_phase(&dir, "core", "Core");
+fn phase_show_json(dir: &TempDir, cwd: Option<&Path>) -> serde_json::Value {
+    let mut cmd = rdm();
+    cmd.arg("--root").arg(dir.path()).args([
+        "phase",
+        "show",
+        "phase-1-core",
+        "--roadmap",
+        "two-way",
+        "--project",
+        "fbm",
+        "--format",
+        "json",
+    ]);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    let output = cmd.assert().success().get_output().stdout.clone();
+    serde_json::from_slice(&output).unwrap()
+}
+
+fn stamp_in_progress(dir: &TempDir, cwd: &Path) -> assert_cmd::assert::Assert {
     rdm()
         .arg("--root")
         .arg(dir.path())
@@ -2130,30 +2178,103 @@ fn in_progress_with_no_worktree_records_no_started_head() {
             "--project",
             "fbm",
         ])
+        .current_dir(cwd)
         .assert()
-        .success();
-    let output = rdm()
+}
+
+/// AC1's no-worktree half — rebuilt hermetically per review 2026-09-23-0309-996c
+/// (`tests-1`): the original version never set `current_dir`/built a source
+/// repo, so it resolved against whatever real git repo the test process
+/// happened to run in (this host checkout) and passed only because no
+/// `roadmap/two-way` worktree existed there by accident. This version builds
+/// a real temp source repo (as `cli_gate.rs` does), runs with
+/// `.current_dir(src.path())`, and only THEN asserts on the no-worktree case
+/// AC1 actually names: a source repo is present but no worktree is
+/// registered for the item.
+///
+/// It then covers the write-once edge this repo's C1 rework (review
+/// 2026-09-23-0309-996c) introduced: adding the worktree afterward and
+/// re-stamping `in-progress` must NOT fill the field in, because that
+/// re-stamp's prior status is `in-progress`, not `not-started` — the
+/// original review's suggested assertion ("now filled in") is exactly what
+/// C1 supersedes. `review source` on the still-unstamped phase then falls
+/// back to the merge-base.
+///
+/// The worktree-present first-entry case (recording the worktree's HEAD from
+/// a cwd outside it, and the write-once re-stamp once a value IS recorded) is
+/// covered end to end against a real source-repo worktree in `cli_gate.rs`'s
+/// `started_head_scopes_the_second_phase_review_and_satisfies_the_gate`.
+#[test]
+fn in_progress_with_no_worktree_records_no_started_head() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core");
+    let src = init_source_repo();
+
+    // No worktree registered for `two-way` at all: the stamp still succeeds,
+    // but nothing is recorded.
+    stamp_in_progress(&dir, src.path()).success();
+    let json = phase_show_json(&dir, None);
+    assert!(
+        json.get("started_head").is_none(),
+        "no registered worktree means no started_head to record: {json}"
+    );
+
+    // Register the worktree now, then re-stamp `in-progress` — this is a
+    // repeat entry (prior status is already `in-progress`), so under C1 the
+    // field must STAY absent, not get filled in on this later pass.
+    let out = rdm()
         .arg("--root")
         .arg(dir.path())
-        .args([
-            "phase",
-            "show",
-            "phase-1-core",
-            "--roadmap",
-            "two-way",
-            "--project",
-            "fbm",
-            "--format",
-            "json",
-        ])
+        .args(["worktree", "add", "two-way", "--project", "fbm"])
+        .current_dir(src.path())
         .assert()
         .success()
         .get_output()
         .stdout
         .clone();
-    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+    stamp_in_progress(&dir, src.path()).success();
+    let json = phase_show_json(&dir, None);
     assert!(
         json.get("started_head").is_none(),
-        "no registered worktree means no started_head to record: {json}"
+        "a repeat in-progress stamp must never fill in started_head, even once a worktree resolves: {json}"
+    );
+
+    // A real committed change on the worktree branch, so the reviewed range
+    // is non-empty and `review source` has something to resolve a base for.
+    let merge_base = String::from_utf8_lossy(&git(src.path(), &["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+    fs::write(wt.join("extra.txt"), "phase work\n").unwrap();
+    git(&wt, &["add", "extra.txt"]);
+    git(&wt, &["commit", "-m", "phase work"]);
+
+    // With no started_head recorded, `review source` falls back to the
+    // merge-base with the default branch.
+    let out = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "review",
+            "source",
+            "--on",
+            "phase/two-way/phase-1-core",
+            "--project",
+            "fbm",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let source: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(source["base"], merge_base);
+    assert!(
+        source["baseNote"]
+            .as_str()
+            .is_some_and(|n| n.contains("main")),
+        "review source must fall back to the merge-base with a note naming 'main': {source}"
     );
 }

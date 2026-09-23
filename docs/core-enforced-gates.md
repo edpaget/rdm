@@ -103,14 +103,20 @@ the plan Store do not share an atomic transaction.
 
 **The default `base`, absent an explicit `--base`, is the item's recorded
 `started_head`** — the resolved checkout HEAD at the moment `phase update`/
-`task update --status in-progress` first stamped it (write-once; a later
-`in-progress` re-stamp, including a `reviewed -> in-progress` rework, never
-moves it). This scopes a phase's review, and the gate's `--source`-bound
-`reviewed` write when it omits `--base`, to that phase's own commits in a
-shared roadmap worktree — not every earlier phase's too. With no
-`started_head` recorded (e.g. the item never resolved a worktree at its
-`in-progress` transition), `base` falls back to the merge-base with the
-project's default branch, exactly as before, and `rdm review source`'s
+`task update --status in-progress` stamped it on the item's first-ever
+transition out of `not-started`/`open` (write-once, and narrower than "the
+field happens to be empty": only that specific transition records a value.
+Every other transition into `in-progress` — a `reviewed -> in-progress`
+rework, a `blocked -> in-progress` unpark, or an `in-progress -> in-progress`
+re-stamp — leaves the field exactly as it found it, even when nothing was
+ever recorded, so it can never move forward past commits the phase already
+made before that later stamp). This scopes a phase's review, and the gate's
+`--source`-bound `reviewed` write when it omits `--base`, to that phase's own
+commits in a shared roadmap worktree — not every earlier phase's too. With no
+`started_head` recorded (e.g. the item never resolved a worktree at its first
+`in-progress` transition, or every `in-progress` stamp it has received was
+one of the later transitions above), `base` falls back to the merge-base with
+the project's default branch, exactly as before, and `rdm review source`'s
 response carries a `baseNote` explaining the fallback.
 
 ### Fail-closed probe semantics for (c)
