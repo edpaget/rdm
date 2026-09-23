@@ -1676,8 +1676,11 @@ const PERSIST_DEGRADED_REASONS = [
 // through rdm-cli/src/main.rs's single `process::exit(1)`, and the command
 // supports no `--format json` error output at all — so this stderr-substring
 // match is the only available machine-distinguishing signal between a
-// benign "the quote sits on an untouched line" refusal and a systemic one.
-// This is a real limitation, not an oversight (see
+// benign refusal — the quote sits on an untouched line, OR the path names a
+// real, in-range file the change never modifies at all; both arms above —
+// and a systemic one (a path absent at the reviewed head, a quote absent
+// from the document entirely, or an ambiguous quote). This is a real
+// limitation, not an oversight (see
 // docs/workflow-schemas.md); if rdm-core ever grows a structured error
 // surface for `review comment`, this classification should move onto it.
 const ANCHOR_REFUSAL_BENIGN_MARKER = 'not touch';
@@ -2341,14 +2344,17 @@ function persistReviewCommands(result, target, cfg, opts) {
           ' < /dev/null || { rm -f "$RDM_PERSIST_ANCHOR_STDERR"; exit 1; }\n' +
           'RDM_PERSIST_RUNTIME_DEGRADED=$((RDM_PERSIST_RUNTIME_DEGRADED + 1))\n' +
           // A `blocking` finding losing its anchor always requires a park,
-          // even for the otherwise-benign untouched-line cause — decided
-          // here at JS code-gen time (severity is known statically), not by
-          // a shell conditional. Everything else contributes to the park
-          // counter only when the captured stderr is NOT the benign marker
-          // — i.e. a systemic cause (wrong path, wrong range, quote absent
-          // entirely). The grep pattern is the SAME literal
-          // ANCHOR_REFUSAL_BENIGN_MARKER, shell-quoted, so this emitted
-          // shell and isAnchorRefusalBenign cannot silently diverge.
+          // even for an otherwise-benign cause (a quote on an untouched
+          // line, or naming a real, in-range file the diff never modifies
+          // at all — both QuoteOutsideChangedHunks) — decided here at JS
+          // code-gen time (severity is known statically), not by a shell
+          // conditional. Everything else contributes to the park counter
+          // only when the captured stderr is NOT the benign marker — i.e. a
+          // systemic cause (a path absent at the reviewed head, a quote
+          // absent from the document entirely, or an ambiguous quote). The
+          // grep pattern is the SAME literal ANCHOR_REFUSAL_BENIGN_MARKER,
+          // shell-quoted, so this emitted shell and isAnchorRefusalBenign
+          // cannot silently diverge.
           (f.severity === 'blocking'
             ? 'RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1))\n'
             : 'if grep -q ' +

@@ -547,18 +547,15 @@ one Bash call, and report the exit status:
 
 It prints `reviewId=<id>`, then `anchorsDegraded=<all|partial|none>`, then `anchorsParkRequired=<yes|no>`
 on success — append the id to `reviewIds`. A path-anchored comment (one carrying both `--path` and
-`--quote`) that the real binary refuses at run time — a quote outside a hunk the change touches, a
-path outside the reviewed range, a quote that does not exist in the file at all — is retried
-**mechanically, by the ladder itself**: it lands whole-document, header-marked `anchor: degraded`,
-and is counted into the printed `anchorsDegraded=` line. There is nothing for you to re-run by hand
-for that case. If `review start` itself is refused, **park** — never invent a different target. A
-nonzero exit anywhere else is a park.
+`--quote`) that the real binary refuses at run time is retried **mechanically, by the ladder itself**:
+it lands whole-document, header-marked `anchor: degraded`, and is counted into the printed
+`anchorsDegraded=` line. There is nothing for you to re-run by hand for that case. If `review start`
+itself is refused, **park** — never invent a different target. A nonzero exit anywhere else is a park.
 
 **Check the ladder's own printed `anchorsParkRequired=<yes|no>` line before treating the run as
 ordinary persistence — not `anchorsDegraded`, and not `result.persistDegraded`, which is a
 build-time-only preview and can under-report a run whose anchors degraded at run time.** When that
-printed line reads `anchorsParkRequired=yes` — an anchor was lost for a systemic cause (the reviewed
-range was wrong, the path was outside it, or the quote did not exist in the file at all), or a
+printed line reads `anchorsParkRequired=yes` — an anchor was lost for a systemic cause, or a
 `blocking` finding lost its anchor for any reason, including the benign one below — **park** `blocked`
 with `[code] a comment anchor was lost for a systemic cause, or a blocking finding lost its anchor;
 see the review's own note comment and each comment's \`anchor\` header`, even though the ladder itself
@@ -569,12 +566,17 @@ stay independent of anchor plumbing (see `docs/workflow-schemas.md` § "Persisti
 `anchorsParkRequired` is still a **separate step you take yourself** after running the ladder — the
 write it gates has already happened by the time you read it.
 
-`anchorsDegraded` stays purely informational now — the total whole-document-fallback volume, still
-worth noting in a reply, but **never a park signal by itself**. A non-`blocking` finding (a suggestion
-or concern) whose comment landed whole-document only because its quoted line sits outside the diff's
-touched hunks — the correct, lossless outcome for "you missed an edit here" — reads `anchorsDegraded=all`
-or `partial` but `anchorsParkRequired=no`: goes to ordinary triage, and its reply notes the anchor did
-not resolve. `anchorsDegraded=partial` was never a park signal and still is not.
+**Benign vs. systemic, for a run-time refusal of a `--path`+`--quote` line:** a quote sitting on a
+line the diff did not touch, or naming a real, in-range file the diff never modifies at all, is
+BENIGN — "you missed an edit here" (or "you missed editing this file entirely") is as legitimate a
+finding as one about a touched line, and the ladder's whole-document fallback loses nothing. A path
+that does not exist at the reviewed head at all, a quote that does not exist anywhere in the document,
+or an ambiguous quote (occurs more than once) is SYSTEMIC — the finder was probably not looking at the
+right code. `anchorsDegraded` stays purely informational now — the total whole-document-fallback
+volume, still worth noting in a reply, but **never a park signal by itself**. A non-`blocking` finding
+(a suggestion or concern) refused only for the benign cause above reads `anchorsDegraded=all` or
+`partial` but `anchorsParkRequired=no`: goes to ordinary triage, and its reply notes the anchor did not
+resolve. `anchorsDegraded=partial` was never a park signal and still is not.
 
 `gate: false` keeps the status write here, in step 15, where the refusal can be surfaced.
 

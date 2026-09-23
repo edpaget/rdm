@@ -44,6 +44,7 @@ import {
   persistAnchorFor,
   persistDegradationNoteBody,
   persistDegradationGateLines,
+  isAnchorRefusalBenign,
 } from '../../.claude/workflows/lib/review.mjs';
 
 // --------------------------------------------------------------- environment
@@ -872,6 +873,130 @@ test('a finding refused at RUN TIME for a SYSTEMIC cause (quote not found anywhe
   git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], src);
 });
 
+test('a non-blocking finding about a real, in-range file the change never modifies at all is BENIGN and does not require a park', async () => {
+  // Plan-review 2026-09-23-1600-114a: `'not touch'` matches BOTH Display arms
+  // of Error::QuoteOutsideChangedHunks — the "quote on an untouched line"
+  // arm (covered by the sibling tests above) AND the "path is not touched by
+  // <range> at all" arm exercised here, where the finding names a file that
+  // exists at head but that the diff never modifies. "You missed editing
+  // this file entirely" is as legitimate a finding as "you missed an edit
+  // here" — both land whole-document with nothing lost — so this must stay
+  // benign, exactly like the untouched-line case.
+  const src = ROADMAP_PIN.source;
+  fs.writeFileSync(path.join(src, 'never-modified.txt'), 'existing content\n');
+  git(['add', 'never-modified.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: add never-modified.txt'], src);
+  const base = git(['rev-parse', 'HEAD'], src);
+  fs.writeFileSync(path.join(src, 'other-change.txt'), 'something else entirely\n');
+  git(['add', 'other-change.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: add an unrelated file'], src);
+  const head = git(['rev-parse', 'HEAD'], src);
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], src);
+
+  const { result } = await drive(
+    {
+      ...COMMON,
+      gate: false,
+      persist: true,
+      implements: 'plan/' + PLAN,
+      roadmap: ROADMAP,
+      phase: 'phase-2-dirty',
+      source: src,
+      base,
+      expectedHead: head,
+      expectedBranch: branch,
+    },
+    {
+      id: 'whole-file-untouched',
+      concern: 'correctness',
+      severity: 'suggestion',
+      confidence: 90,
+      what_fails: 'this file should have been updated alongside the change, but was not',
+      location: 'see the gate step',
+      path: 'never-modified.txt',
+      quote: 'existing content',
+    }
+  );
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder completes (exit 0) even though the anchor was refused at run time: ' + out);
+  assert.match(out, /^anchorsDegraded=all$/m, 'the whole-document fallback still happened, so anchorsDegraded is unaffected');
+  assert.match(
+    out,
+    /^anchorsParkRequired=no$/m,
+    'a non-blocking finding about a real, in-range, but wholly-untouched file is benign, not a park signal'
+  );
+
+  const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
+  const finding = review.comments.find((c) => c.body.includes('whole-file-untouched'));
+  assert.ok(finding, 'the finding comment must still be present, whole-document, with its text intact');
+  assert.equal(finding.anchor, undefined, 'the run-time-refused anchor must land whole-document, not as a file anchor');
+  assert.equal(
+    parseCommentHeader(finding.body).anchor,
+    'degraded',
+    'a run-time-refused anchor is header-marked `degraded`, exactly like a build-time one'
+  );
+
+  // Restore the shared worktree's branch, same as the sibling tests above.
+  git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], src);
+});
+
+test('a finding whose path does not exist at head at all requires a park regardless of severity (SYSTEMIC)', async () => {
+  // Plan-review 2026-09-23-1600-114a: the actually-systemic run-time causes
+  // are a path absent from the reviewed head (Error::ChangePathNotInRevision,
+  // exercised here), a path naming a directory/submodule
+  // (Error::ChangePathNotAFile), a quote absent from the document entirely
+  // (Error::QuoteNotFound, covered by the sibling test above), and an
+  // ambiguous quote (Error::QuoteAmbiguous/QuoteOccurrenceOutOfRange) — never
+  // "the path is outside the reviewed range", which is the BENIGN case above.
+  const src = ROADMAP_PIN.source;
+  fs.writeFileSync(path.join(src, 'real-file.txt'), 'first line\nsecond line\n');
+  git(['add', 'real-file.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: add real-file.txt'], src);
+  const base = git(['rev-parse', 'HEAD'], src);
+  fs.writeFileSync(path.join(src, 'real-file.txt'), 'first line\nsecond line, changed\n');
+  git(['add', 'real-file.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: change the second line'], src);
+  const head = git(['rev-parse', 'HEAD'], src);
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], src);
+
+  const { result } = await drive(
+    {
+      ...COMMON,
+      gate: false,
+      persist: true,
+      implements: 'plan/' + PLAN,
+      roadmap: ROADMAP,
+      phase: 'phase-2-dirty',
+      source: src,
+      base,
+      expectedHead: head,
+      expectedBranch: branch,
+    },
+    {
+      id: 'path-does-not-exist-at-head',
+      concern: 'tests',
+      severity: 'concern',
+      confidence: 70,
+      what_fails: 'the finder named a path that does not exist in the reviewed revision at all',
+      location: 'see the gate step',
+      path: 'this-path-was-never-committed.txt',
+      quote: 'second line',
+    }
+  );
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder completes (exit 0) even though the anchor was refused at run time: ' + out);
+  assert.match(out, /^anchorsParkRequired=yes$/m, 'a path absent at the reviewed head is systemic, so the park fires regardless of severity');
+
+  // Restore the shared worktree's branch, same as the sibling tests above.
+  git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], src);
+});
+
 test('a mixed run — one path-anchored comment lands, another is refused at run time — prints anchorsDegraded=partial', async () => {
   // Same run-time mechanism as the previous test, but alongside a finding
   // that lands cleanly, proving the tally distinguishes "some" from "every".
@@ -932,6 +1057,12 @@ test('a mixed run — one path-anchored comment lands, another is refused at run
   const id = /reviewId=(\S+)/.exec(out);
   assert.ok(id, 'the ladder completes: ' + out);
   assert.match(out, /^anchorsDegraded=partial$/m, 'one anchor landed and one was refused at run time — never `all`, never `none`');
+  // phase-46 (anchor-degraded-park-by-cause): 'refused-at-runtime' is a
+  // non-blocking `concern` refused only because `untouched.txt` is a real,
+  // in-range file the diff simply never modifies — the benign
+  // QuoteOutsideChangedHunks `None` arm ("is not touched by"), exactly like
+  // an untouched LINE in an otherwise-touched file. Not a park signal.
+  assert.match(out, /^anchorsParkRequired=no$/m, 'a non-blocking finding refused only for the benign untouched-file cause is not a park signal');
 
   const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
   // Two findings, plus the ladder's own degradation note — correctness-1: a
@@ -1052,6 +1183,10 @@ test('AC4: every requested anchor degrading trips `persistDegraded.all` and the 
     'AC4: every requested anchor degrading must set `all: true`'
   );
   assert.match(out, /^anchorsDegraded=all$/m, 'the ladder itself prints the all-degraded disposition');
+  // phase-46 (anchor-degraded-park-by-cause): both findings degraded at
+  // BUILD TIME (no derivable path at all) — systemic by construction, so
+  // the park signal fires regardless of either finding's severity.
+  assert.match(out, /^anchorsParkRequired=yes$/m, 'a build-time degradation is always systemic, so the park signal fires');
 
   const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
   // Both findings, plus the ladder's own degradation note — correctness-1:
@@ -1219,6 +1354,77 @@ test('the two legacy survivors-only shapes still return their original report', 
 // above); nothing here greps source text or asserts on a file's contents, and
 // nothing re-verifies that some other surface still matches this module —
 // each case exercises real behavior of the functions under test.
+
+test('isAnchorRefusalBenign classifies every review-comment refusal variant, fed the verbatim rdm-core Display text', () => {
+  // phase-46 (anchor-degraded-park-by-cause), plan-review 2026-09-23-1600-114a
+  // item 3: each string below is copied verbatim from the corresponding
+  // Display arm in rdm-core/src/error.rs (`write!`/`writeln!` bodies for
+  // Error::QuoteOutsideChangedHunks, QuoteNotFound, QuoteAmbiguous,
+  // QuoteOccurrenceOutOfRange, ChangePathNotInRevision, ChangePathNotAFile
+  // and ChangeHeadNotInSource), with placeholders filled with arbitrary
+  // concrete values — not paraphrased or re-derived — so a future wording
+  // change to any of these Display impls that drops or adds the "not touch"
+  // substring is caught here, not just in the real-binary tests above.
+
+  // Error::QuoteOutsideChangedHunks — BOTH arms are benign (item 2: a quote
+  // on an untouched line inside an otherwise-touched file, and a quote in a
+  // real, in-range file the change never touches at all).
+  assert.equal(
+    isAnchorRefusalBenign(
+      'the quote lands on src/lib.rs lines 12-12, which a1b2c3d..e4f5678 does not touch — quote text inside a changed hunk (nearest: lines 8-9), or omit --path/--quote for a whole-change comment'
+    ),
+    true,
+    'QuoteOutsideChangedHunks (Some(nearest) arm — untouched line) must be benign'
+  );
+  assert.equal(
+    isAnchorRefusalBenign("'src/never-touched.rs' is not touched by a1b2c3d..e4f5678 — comment on a file the change modifies, or omit --path/--quote for a whole-change comment"),
+    true,
+    'QuoteOutsideChangedHunks (None arm — whole untouched file) must be benign'
+  );
+
+  // Every other review-comment refusal this call site can produce is
+  // systemic.
+  assert.equal(
+    isAnchorRefusalBenign(
+      'quote "shipped" not found in the current document — check the exact text (including punctuation and whitespace), or omit --quote for a whole-document comment'
+    ),
+    false,
+    'QuoteNotFound must be systemic'
+  );
+  assert.equal(
+    isAnchorRefusalBenign('quote "shipped" occurs 2 times in the current document — pass --occurrence <n> (1-based) to pick one:\n  1: ...shipped...\n  2: ...shipped...'),
+    false,
+    'QuoteAmbiguous must be systemic'
+  );
+  assert.equal(
+    isAnchorRefusalBenign('--occurrence 3 is out of range for quote "shipped" — only 2 occurrence(s) found (valid: 1..=2)'),
+    false,
+    'QuoteOccurrenceOutOfRange must be systemic'
+  );
+  assert.equal(
+    isAnchorRefusalBenign("'src/does-not-exist.rs' does not exist at e4f5678 — check the path (it is relative to the source repository root), or omit --path/--quote for a whole-change comment"),
+    false,
+    'ChangePathNotInRevision must be systemic'
+  );
+  assert.equal(
+    isAnchorRefusalBenign("'src/a-directory' is a directory at e4f5678 — anchor a comment to a file, or omit --path/--quote for a whole-change comment"),
+    false,
+    'ChangePathNotAFile must be systemic'
+  );
+  assert.equal(
+    isAnchorRefusalBenign(
+      'the source repository does not contain the reviewed commit ' +
+        'a'.repeat(40) +
+        " — anchor resolution skipped (fetch the branch, or point the project's `source.repo` at the right checkout)"
+    ),
+    false,
+    'ChangeHeadNotInSource must be systemic'
+  );
+
+  // Non-string / absent stderr never crashes and is never mistaken for benign.
+  assert.equal(isAnchorRefusalBenign(undefined), false, 'undefined stderr must not be classified benign');
+  assert.equal(isAnchorRefusalBenign(''), false, 'empty stderr must not be classified benign');
+});
 
 test('hasBlocking excludes an inScope:false finding at both gating tiers, and gates it when inScope is true or omitted', () => {
   const blocking = { severity: 'blocking', confidence: 90 };

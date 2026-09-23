@@ -1615,15 +1615,17 @@ the ladder's stdout.
 **The anchor-degraded park signal (AC1), keyed on CAUSE, not on the raw
 `anchorsDegraded` tally (phase-46: anchor-degraded-park-by-cause).** A
 degraded anchor is not, by itself, a park signal: a "you missed an edit
-here" finding necessarily quotes a line the diff did not change, so
-`rdm review comment --path` correctly refuses that anchor
-(`Error::QuoteOutsideChangedHunks`) and the ladder's mechanical retry lands
-it whole-document with nothing lost — `anchorsDegraded=all` or `partial` in
+here" finding necessarily quotes a line the diff did not change, and a "you
+missed editing this file entirely" finding names a real, in-range file the
+diff never modifies at all — both are `Error::QuoteOutsideChangedHunks`
+(one Display arm per case; see rule 1 below), `rdm review comment --path`
+correctly refuses either anchor, and the ladder's mechanical retry lands it
+whole-document with nothing lost — `anchorsDegraded=all` or `partial` in
 that case describes a LOSSLESS fallback, not a problem. `anchorsDegraded`
-could not previously distinguish that benign case from a systemic one (the
-reviewed range wrong, the path outside it, the quote absent from the
-document entirely), so the dispatch skill's park rule used to fire on both
-alike.
+could not previously distinguish those benign cases from a systemic one (a
+path that does not exist at the reviewed head at all, a quote absent from
+the document entirely, or an ambiguous quote), so the dispatch skill's park
+rule used to fire on both alike.
 
 A second, narrower line — `anchorsParkRequired=<yes|no>` — is what a caller
 should actually key a park decision on. It is computed by the ladder from
@@ -1633,11 +1635,16 @@ two rules:
    (`persistPreDegradedAnchors` non-empty — no derivable path, or an empty
    reviewed range) is systemic by construction. Any RUN-TIME refusal whose
    captured stderr does NOT contain the substring `"not touch"` — i.e.
-   anything other than `QuoteOutsideChangedHunks` — is also systemic.
+   anything other than `QuoteOutsideChangedHunks` (a path absent at the
+   reviewed head — `ChangePathNotInRevision`; a path naming a directory or
+   submodule — `ChangePathNotAFile`; a quote absent from the document
+   entirely — `QuoteNotFound`; or an ambiguous quote occurring more than
+   once — `QuoteAmbiguous`/`QuoteOccurrenceOutOfRange`) — is also systemic.
    `ANCHOR_REFUSAL_BENIGN_MARKER` (`'not touch'`) and the pure helper
    `isAnchorRefusalBenign(stderrText)` are the single definition of this
-   check; both of `QuoteOutsideChangedHunks`'s Display arms
-   (`rdm-core/src/error.rs:877-884`) contain it, and none of
+   check; BOTH of `QuoteOutsideChangedHunks`'s Display arms
+   (`rdm-core/src/error.rs:877-884` — the line-inside-a-modified-file arm
+   AND the whole-untouched-file arm alike) contain the marker, and none of
    `ChangePathNotInRevision`, `ChangePathNotAFile`, `QuoteNotFound`,
    `QuoteAmbiguous`, or `QuoteOccurrenceOutOfRange` do.
 2. **A `blocking` finding losing its anchor always requires a park, even for
@@ -1647,9 +1654,16 @@ two rules:
    without needing to inspect stderr at all.
 
 Everything else — a non-`blocking` survivor refused only because its quote
-sits on an untouched line in an otherwise-in-range file — still contributes
-to `anchorsDegraded` (the volume stays visible) but NOT to
-`anchorsParkRequired`.
+sits on an untouched line in an otherwise-touched file, OR because it names
+a real, in-range file the diff never modifies at all — still contributes to
+`anchorsDegraded` (the volume stays visible) but NOT to
+`anchorsParkRequired`. Both are the SAME error variant
+(`Error::QuoteOutsideChangedHunks`, just its two different `nearest` arms —
+raised by `derive_file_quote` in `rdm-core/src/change.rs`, called from
+`derive_change_anchor`), and both are equally legitimate findings: "you
+missed an edit here" and "you missed editing this file entirely" are the
+same class of comment, and neither loses anything by landing
+whole-document.
 
 Mechanically: a per-finding `mktemp` scratch file
 (`RDM_PERSIST_ANCHOR_STDERR`, same hygiene as `RDM_PERSIST_START_JSON` —
