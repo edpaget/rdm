@@ -186,6 +186,7 @@ pub fn resolve_body(body_flag: Option<String>, no_edit: bool) -> Result<Option<S
 /// the same class of bug in `task`/`phase`/`roadmap update`): `start`,
 /// `comment`, and `submit` have no existing value to "keep", so that type
 /// doesn't fit here.
+#[cfg(feature = "git")]
 pub fn resolve_review_body(body_flag: Option<String>, no_edit: bool) -> Result<Option<String>> {
     if let Some(b) = body_flag {
         return Ok(Some(b));
@@ -1105,7 +1106,7 @@ mod resolve_body_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "git"))]
 mod resolve_review_body_tests {
     use super::*;
 
