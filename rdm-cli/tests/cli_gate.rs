@@ -1090,7 +1090,7 @@ fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
     // Write-once: a second `--start-commit` is refused and does not move it.
     // A bare `--status in-progress` re-stamp (no `--start-commit`) is also
     // harmless — it no longer touches the field at all.
-    rdm()
+    let refused = rdm()
         .arg("--root")
         .arg(plan.path())
         .args([
@@ -1108,6 +1108,11 @@ fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
         .current_dir(src.path())
         .assert()
         .failure();
+    let refused_stderr = String::from_utf8_lossy(&refused.get_output().stderr).to_string();
+    assert!(
+        refused_stderr.contains(&base_head) && refused_stderr.contains("write-once"),
+        "the write-once refusal must name the already-recorded SHA and say 'write-once': {refused_stderr}"
+    );
     rdm()
         .arg("--root")
         .arg(plan.path())
@@ -1489,6 +1494,133 @@ fn review_source_with_no_started_head_falls_back_to_merge_base_with_a_note() {
     );
 }
 
+/// review 2026-09-23-1257-1982, finding `ac2-pin-empty-range-on-fresh-item`:
+/// the dispatch skill's step-4 identity pin runs `rdm review source --on
+/// <item> --format json --no-code` — in exactly that form, with no
+/// `--started_head` recorded and no commits beyond what `rdm worktree add`
+/// itself creates — so `base` (the merge-base with the default branch)
+/// equals `head`, and without `--no-code` this refuses with "empty committed
+/// range". This is the AC2 case ("the pre-implementation identity pin
+/// succeeds on a phase with no commits yet") checked at the binary boundary,
+/// for a phase.
+#[test]
+fn review_source_no_code_succeeds_on_a_freshly_added_roadmap_worktree() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "auth", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "source",
+            "--on",
+            "phase/auth/phase-1-design",
+            "--project",
+            "demo",
+            "--no-code",
+            "--format",
+            "json",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let source: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        source["base"], source["head"],
+        "a freshly added worktree with no commits beyond the default branch must have base == head: {source}"
+    );
+    assert_eq!(source["changedFiles"], serde_json::json!([]));
+}
+
+/// Task-side twin of the phase test above: the dispatch skill's step-4 pin
+/// must also succeed, with `--no-code`, on a freshly added task worktree.
+#[test]
+fn review_source_no_code_succeeds_on_a_freshly_added_task_worktree() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "task/solo", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "source",
+            "--on",
+            "task/solo",
+            "--project",
+            "demo",
+            "--no-code",
+            "--format",
+            "json",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let source: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(
+        source["base"], source["head"],
+        "a freshly added worktree with no commits beyond the default branch must have base == head: {source}"
+    );
+    assert_eq!(source["changedFiles"], serde_json::json!([]));
+}
+
+/// Without `--no-code`, the same freshly added worktree refuses with "empty
+/// committed range" — the regression the finding above reproduced. This is
+/// the negative control proving the two tests above actually exercise the
+/// fix, not a scenario that already had a non-empty range for some other
+/// reason.
+#[test]
+fn review_source_without_no_code_refuses_on_a_freshly_added_worktree() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "auth", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "source",
+            "--on",
+            "phase/auth/phase-1-design",
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty committed range"));
+}
+
 /// The `explicit_source`-skips-full-validation special case for an
 /// `in-progress` transition is gone under `explicit-start-commit`: the
 /// e6edac4 unconditional behavior is restored, so `--status in-progress
@@ -1690,6 +1822,35 @@ fn task_started_head_scopes_review_source_to_the_tasks_own_commit() {
     git(&wt, &["add", "."]);
     git(&wt, &["commit", "-m", "task work"]);
     let task_head = rev_parse(&wt, "HEAD");
+
+    // Write-once: a second `--start-commit` against the task is refused,
+    // naming the already-recorded SHA, and does not move it.
+    let refused = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "update",
+            "solo",
+            "--start-commit",
+            &task_head,
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure();
+    let refused_stderr = String::from_utf8_lossy(&refused.get_output().stderr).to_string();
+    assert!(
+        refused_stderr.contains(&base_head) && refused_stderr.contains("write-once"),
+        "the write-once refusal must name the already-recorded SHA and say 'write-once': {refused_stderr}"
+    );
+    assert_eq!(
+        task_json_for(plan.path(), "solo")["started_head"],
+        base_head,
+        "a refused task --start-commit must never move an already-recorded started_head"
+    );
 
     let out = rdm()
         .arg("--root")

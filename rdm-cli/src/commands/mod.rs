@@ -1416,3 +1416,145 @@ pub fn resolve_start_commit(
     }
     Ok(sha.to_string())
 }
+
+/// review 2026-09-23-1257-1982, finding
+/// `tests-start-commit-explicit-source-branch-untested`: the two CLI
+/// integration tests that pass `--source` together with `--start-commit`
+/// both point it at the item's own registered worktree — the only path the
+/// full `phase update`/`task update` `--source` binding (`explicit_source` /
+/// `resolve_source_args`) ever accepts, since it independently requires the
+/// path to match a registered checkout. That leaves `resolve_start_commit`'s
+/// own `source_path.is_some()` branch — "validate against that path's repo
+/// instead of the registry lookup" — proven only by a fixture that cannot
+/// tell it apart from the registry lookup it's supposed to override.
+///
+/// `resolve_start_commit` itself has no such constraint: when `source_path`
+/// is `Some`, it never touches the registry (`root`/`item` go unused on that
+/// branch), so it can be exercised directly, as a plain function call,
+/// against two independent repositories that share no objects at all —
+/// something no `phase update`/`task update` invocation can construct.
+#[cfg(all(test, feature = "git"))]
+mod resolve_start_commit_explicit_source_tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    /// A `git` command in `dir`, isolated from the developer's real
+    /// global/system config and with a fixed author/committer identity, so a
+    /// bare `git commit` succeeds unattended. Mirrors
+    /// `rdm-cli/tests/git_test_support.rs`'s helper — that copy lives under
+    /// `tests/`, a separate compilation unit this `src/`-rooted unit test
+    /// cannot import.
+    fn git(dir: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test.com")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    }
+
+    fn rev_parse_head(dir: &Path) -> String {
+        let out = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Two independent repositories (separate `git init`, no shared
+    /// history), each with one commit unique to it.
+    fn two_independent_repos() -> (TempDir, String, TempDir, String) {
+        let a = TempDir::new().unwrap();
+        git(a.path(), &["init", "-b", "main"]);
+        std::fs::write(a.path().join("a.txt"), "a\n").unwrap();
+        git(a.path(), &["add", "."]);
+        git(a.path(), &["commit", "-m", "only in a"]);
+        let sha_a = rev_parse_head(a.path());
+
+        let b = TempDir::new().unwrap();
+        git(b.path(), &["init", "-b", "main"]);
+        std::fs::write(b.path().join("b.txt"), "b\n").unwrap();
+        git(b.path(), &["add", "."]);
+        git(b.path(), &["commit", "-m", "only in b"]);
+        let sha_b = rev_parse_head(b.path());
+
+        (a, sha_a, b, sha_b)
+    }
+
+    /// `root`/`item` are irrelevant on the `source_path.is_some()` branch;
+    /// any dummy value proves the point, since the branch never reads them.
+    fn dummy_item() -> rdm_git::worktree::ItemRef {
+        rdm_git::worktree::ItemRef::Task {
+            slug: "unused".to_string(),
+        }
+    }
+
+    #[test]
+    fn explicit_source_succeeds_for_a_sha_that_exists_only_in_that_checkout() {
+        let (repo_a, sha_a, _repo_b, sha_b) = two_independent_repos();
+
+        // A SHA that exists only in `repo_a` succeeds when `--source` points
+        // at `repo_a` — proving resolution used that path's repo, not some
+        // other source (a registry that was never consulted, or a shared
+        // object database, since none exists here).
+        let resolved = resolve_start_commit(
+            Path::new("/nonexistent-root"),
+            &dummy_item(),
+            &sha_a,
+            Some(repo_a.path().to_str().unwrap()),
+        )
+        .unwrap();
+        assert_eq!(resolved, sha_a);
+
+        // The reciprocal: a SHA that exists only in `repo_b` does NOT exist
+        // in `repo_a`, so the same call with that SHA fails.
+        let err = resolve_start_commit(
+            Path::new("/nonexistent-root"),
+            &dummy_item(),
+            &sha_b,
+            Some(repo_a.path().to_str().unwrap()),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains(&sha_b),
+            "error must name the rejected SHA: {err}"
+        );
+    }
+
+    #[test]
+    fn explicit_source_refuses_a_sha_only_in_a_different_checkout_naming_the_source_path() {
+        let (_repo_a, sha_a, repo_b, _sha_b) = two_independent_repos();
+
+        // `sha_a` exists only in `repo_a`. Validating it against `repo_b`
+        // (an entirely different, unrelated repository) must fail, and the
+        // error must name the `--source` path that was actually checked —
+        // `repo_b`, not `repo_a` and not some registered worktree.
+        let err = resolve_start_commit(
+            Path::new("/nonexistent-root"),
+            &dummy_item(),
+            &sha_a,
+            Some(repo_b.path().to_str().unwrap()),
+        )
+        .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains(&sha_a) && msg.contains(repo_b.path().to_str().unwrap()),
+            "error must name both the rejected SHA and the --source path it was checked against: {msg}"
+        );
+    }
+}

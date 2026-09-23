@@ -135,11 +135,17 @@ the wrong branch, and race any concurrent dispatch run reading the same global q
 - An `approved` plan for `<item>` **and** an open review **in that set** → **resume at triage (step
   12)** with those ids. Do not re-plan, do not create a second review, and do not re-ask a
   confirmation for a decision already recorded as a reply on a comment.
-- An `approved` plan and no open review in that set → resume at step 9 (implement), or step 11 (code
-  review) if the implementation is already committed. A resume of this kind skips step 8 entirely —
-  it is not this item's first implementer dispatch, and recording a start now would wrongly exclude
-  commits already made. `review source` falls back to the merge-base for such an item if it never got
-  a recorded `started_head`, which is safe (wider, not narrower).
+- An `approved` plan and no open review in that set, with the implementation **not yet committed**
+  (e.g. a `--plan-only` pass followed by a real dispatch, or a crash between plan approval and the
+  implementer's commit) → resume at **step 8** (record the start commit), then continue to step 9
+  (implement) as normal. No implementation commit exists yet, so this is the item's first implementer
+  dispatch in every sense that matters — step 8 MUST run here, not be skipped; its own read-back and
+  write-once refusal already make running it safe even if some earlier pass somehow recorded a value.
+- An `approved` plan and no open review in that set, with the implementation **already committed** →
+  resume directly at step 11 (code review). This resume skips step 8: it is not this item's first
+  implementer dispatch, and recording a start now would wrongly exclude commits already made. `review
+  source` falls back to the merge-base for such an item if it never got a recorded `started_head`,
+  which is safe (wider, not narrower).
 - Nothing → continue to step 3.
 
 ### 3. Ensure the worktree exists, then stamp `in-progress`
@@ -161,11 +167,22 @@ write independent of this one.
 ### 4. Pin the checkout identity
 
 `rdm review source` deliberately never creates or changes a worktree — step 3 already ensured it
-exists — so this step only resolves the identity:
+exists — so this step only resolves the identity. Pass `--no-code`:
 
 ```bash
-rdm review source --on <item> --project <PROJECT> --format json
+rdm review source --on <item> --project <PROJECT> --no-code --format json
 ```
+
+This pin only needs `repository`/`path`/`branch`/`base`/`head` — never the diff itself — and on a
+genuinely fresh item (no commits at all yet, so HEAD still equals the default branch) the merge-base
+equals HEAD, so the committed range really is empty. Without `--no-code`, `rdm review source` refuses
+that with "empty committed range; declare --no-code only for intentional no-code review", which would
+stop the dispatch here, before planning even starts, on exactly the "phase with no commits yet" AC2
+requires to work — this holds for the first phase of a fresh roadmap and for any fresh task worktree,
+regardless of whether `started_head` is recorded. `--no-code` only waives that refusal; it changes
+nothing about which `base`/`head` get resolved. Every later `review source` call that needs the real
+diff runs without it, because by then real commits exist: step 9's self-check (after the implementer
+has committed), each code reviewer inside step 11, and step 13's re-review.
 
 Record `repository`, `path`, `branch`, `base`, `head` as `identity`. `identity.base` is the item's
 own **starting head** — `rdm review source` defaults it to the item's recorded `started_head`, not
@@ -173,8 +190,7 @@ the merge-base with the default branch, once one is recorded. This matters becau
 worktree is shared: it carries every earlier phase's commits, including a parked (`blocked`) one's,
 so without this default the review would re-find already-triaged earlier-phase changes and attribute
 them to this phase. On the item's true first pass nothing has been recorded yet, so this pin safely
-falls back to the merge-base with the default branch instead — a superset of the intended range,
-never an empty one, and never a reason for this read to fail. Step 8 below records the item's actual
+falls back to the merge-base with the default branch instead. Step 8 below records the item's actual
 starting point from this same pinned `identity.head`, immediately before the first implementer
 dispatch. `base` also falls back to the merge-base for an item that has never made that first
 implementer dispatch with a resolvable worktree; either way the response's `baseNote` field names the
