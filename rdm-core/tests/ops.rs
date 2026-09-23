@@ -7912,6 +7912,15 @@ fn update_comment_applied_commit_and_reply_correctable_after_dismissed() {
         comment.applied_commit.as_deref(),
         Some("c2d9db220824277d2518d7cbeab8560ddd7f9448")
     );
+    assert_eq!(
+        comment.reply.as_deref(),
+        Some("Not going to fix, corrected note.")
+    );
+    // The comment's status was never set before dismissing (Dismissed is
+    // reachable straight from Submitted, unlike Addressed, which requires
+    // every comment already terminal) — a provenance correction must not
+    // silently change it from its pre-correction value.
+    assert_eq!(comment.status, ReviewCommentStatus::Open);
 }
 
 #[test]
