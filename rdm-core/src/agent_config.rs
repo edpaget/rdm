@@ -2912,12 +2912,38 @@ mod tests {
             content.contains("git -C <primary> rev-parse main"),
             "skill-land must read the landed tip"
         );
-        // For a bare-roadmap land, every reviewed phase gets the SAME landed
+        // A `<roadmap>/<phase>` land is treated as roadmap-scoped, not
+        // single-item: the roadmap branch is shared, so its fast-forward can
+        // carry other reviewed phases' commits past the one named (re-review
+        // 2026-09-23-1523-5ab5).
+        assert!(
+            content.contains(
+                "For a bare `<roadmap>` land **or** a `<roadmap>/<phase>` land, also determine \
+                 the **target set**"
+            ),
+            "skill-land must scope the target set to roadmap-scoped lands, not just bare-roadmap"
+        );
+        assert!(
+            content.contains("the named phase included"),
+            "skill-land must include the named phase in a <roadmap>/<phase> land's target set"
+        );
+        assert!(
+            content.contains("For a `task/<slug>` land, the target set is just that one task"),
+            "skill-land must keep a task land's target set to just that task"
+        );
+        assert!(
+            content.contains("For a `task/<slug>` land, that tip *is* the task's own last commit"),
+            "skill-land must keep the own-last-commit wording only for a task land"
+        );
+        // For a roadmap-scoped land, every reviewed phase gets the landed
         // tip rather than a per-phase distinct commit — with the general
         // reasoning for why that attribution is not sound.
         assert!(
-            content.contains("record the **same** landed tip for every phase in the target set"),
-            "skill-land must record the same landed tip for every phase in a bare-roadmap land"
+            content.contains(
+                "record the landed tip, not each phase's own last commit, for every phase in \
+                 the target set"
+            ),
+            "skill-land must record the landed tip for every phase in a roadmap-scoped land"
         );
         assert!(
             content.contains("a phase's approving change-review head can be wrong"),

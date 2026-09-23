@@ -40,11 +40,14 @@ bare `<roadmap>`) and runs:
 6. **Mark the landed item(s) `done` directly** — read the landed tip
    (`git -C <primary> rev-parse main`) and run
    `rdm phase update <phase> --status done --commit <sha>` (or the `task`
-   variant) for every item being landed. For a bare-roadmap land this covers
-   every phase that was `reviewed` on the branch, each recorded with the same
-   landed tip — see "The linear-history guarantee" below for why. Each of
-   those calls only stages its change, so once the loop finishes, land the
-   batch with a single session-scoped
+   variant) for every item in the target set. A roadmap branch is shared, so
+   both a bare-roadmap land and a `<roadmap>/<phase>` land cover every phase
+   that was `reviewed` on the branch — the named phase included — each
+   recorded with the same landed tip; only a `task/<slug>` land is a true
+   single-item write, since a task's branch isn't shared — see "The
+   linear-history guarantee" below for why. Each of those calls only stages
+   its change, so once the loop finishes, land the batch with a single
+   session-scoped
    `rdm commit -m "chore(plan): mark <item(s)> done after landing"` —
    otherwise the completion record stays in this session's own changeset,
    invisible to other clones and lost if the session is later discarded.
@@ -75,17 +78,23 @@ fall back to a merge commit and never force.
 
 After the fast-forward, `rdm-land` marks the landed item(s) `done` itself —
 `rdm phase update`/`task update --status done --commit <sha>` — rather than
-writing or amending a `Done:` trailer for a hook to read. For a bare-roadmap
-land, every `reviewed` phase in the target set is recorded with the **same**
-commit: the landed tip. Attributing each phase's own distinct last commit
-turns out not to be sound in general — a phase's approving change-review head
-can be wrong when the phase was finalized by a commit made *after* that
-review (e.g. under a stale-review `--override-gate` waiver), and a
-phase-start record (`started_head`) is not reliably populated for every
-phase — so the landed tip, which can never cite a wrong, unlanded, or
-nonexistent commit, is used for every phase instead. A single-item land needs
-none of this: the landed tip *is* that one item's own last commit, since the
-fast-forward advances by exactly its un-landed work.
+writing or amending a `Done:` trailer for a hook to read. For a **roadmap-
+scoped** land — bare `<roadmap>` or `<roadmap>/<phase>` — every `reviewed`
+phase in the target set is recorded with the **same** commit: the landed
+tip, not each phase's own last commit. This is not just a simplification:
+the roadmap branch is shared, so `<roadmap>/<phase>`'s own fast-forward can
+carry other reviewed phases' commits past the one that was named, making
+"the item's own last commit" an unsound label for a roadmap-scoped land in
+the first place. Attributing each phase's own distinct last commit also
+turns out not to be sound in general even when it can be isolated — a
+phase's approving change-review head can be wrong when the phase was
+finalized by a commit made *after* that review (e.g. under a stale-review
+`--override-gate` waiver), and a phase-start record (`started_head`) is not
+reliably populated for every phase — so the landed tip, which can never cite
+a wrong, unlanded, or nonexistent commit, is used for every phase instead.
+Only a `task/<slug>` land needs none of this: a task's branch is not shared,
+so the landed tip *is* that task's own last commit, since the fast-forward
+advances by exactly its un-landed work.
 
 ## Safety posture — explicit, opt-in only
 
