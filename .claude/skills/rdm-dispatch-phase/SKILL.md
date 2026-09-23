@@ -178,6 +178,20 @@ phase-specific branch or fork off `main`.
 Record `repository`, `path`, `branch`, `base`, `head` as `identity`. Every later step uses this
 same `path` as its working directory and this same `base`/`head` on the terminal write.
 
+`identity.base` is the phase's (or task's) own **starting head** — `review source` defaults it to
+the item's recorded `started_head` (the checkout HEAD at the moment its `in-progress` stamp first
+recorded it — step 4, or an earlier dispatch's step 4 on resume), not the merge-base with the
+default branch. This matters because the roadmap worktree is shared: it carries every earlier
+phase's commits, including a parked (`blocked`) one's. Without this default, `identity.base` would
+be the merge-base, and this phase's review (and the finders/refuters in steps 6 and 11) would
+re-find every earlier phase's already-triaged changes and attribute them to this phase. On a fresh
+phase's first pass through this step, `started_head` is not yet recorded (step 4 hasn't run), so this
+first read falls back to the merge-base — harmless for a phase with no earlier-phase commits to
+exclude yet — and step 9's self-check re-runs `review source` *after* step 4's stamp, picking up the
+real `started_head` before it reaches steps 11/14. With no `started_head` ever recorded for an item
+(rare — only when it never resolved a worktree at its own `in-progress` transition), `base` falls
+back to the merge-base exactly as before, and the response's `baseNote` field says so.
+
 Then resolve the two dispatch models from the item's tier. Read `model` from `phase show <phase>
 --roadmap <slug><proj-flag> --format json` (task form: `task show <slug><proj-flag> --format
 json`) and call it `T`. **Record that same response's `body`** as `item.body` — steps 5 and 9 hand

@@ -74,6 +74,7 @@ fn seed() -> MemoryStore {
                 commit: None,
                 review_sha: None,
                 review_branch: None,
+                started_head: None,
                 difficulty: None,
                 model: None,
                 blocked_reason: None,
@@ -99,6 +100,7 @@ fn seed() -> MemoryStore {
                 commit: None,
                 review_sha: None,
                 review_branch: None,
+                started_head: None,
                 close_reason: None,
                 gate_override: None,
             },
@@ -560,6 +562,7 @@ fn the_gate_reads_through_the_same_store_the_write_goes_through() {
         None,
         None,
         None,
+        None,
         TitleUpdate::Keep,
         &ReviewedGate::enforcing(None),
     )
@@ -587,6 +590,7 @@ fn gated_entry_refuses_where_ungated_primitive_writes() {
         None,
         None,
         None,
+        None,
         TitleUpdate::Keep,
         &ReviewedGate::enforcing(None),
     )
@@ -610,6 +614,7 @@ fn gated_entry_refuses_where_ungated_primitive_writes() {
         None,
         None,
         None,
+        None,
         TitleUpdate::Keep,
     )
     .unwrap();
@@ -627,6 +632,7 @@ fn gated_entry_refuses_where_ungated_primitive_writes() {
         None,
         None,
         None,
+        None,
         TitleUpdate::Keep,
         &ReviewedGate::enforcing(None),
     )
@@ -640,6 +646,7 @@ fn gated_entry_refuses_where_ungated_primitive_writes() {
         None,
         TagsUpdate::Keep,
         BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -671,6 +678,7 @@ fn the_gate_only_fires_on_a_transition_to_reviewed() {
             None,
             None,
             None,
+            None,
             TitleUpdate::Keep,
             &ReviewedGate::enforcing(None),
         )
@@ -695,6 +703,7 @@ fn rewriting_reviewed_onto_an_already_reviewed_item_re_evaluates_the_gate() {
         None,
         None,
         None,
+        None,
         TitleUpdate::Keep,
     )
     .unwrap();
@@ -706,6 +715,7 @@ fn rewriting_reviewed_onto_an_already_reviewed_item_re_evaluates_the_gate() {
         Some(PhaseStatus::Reviewed),
         TagsUpdate::Keep,
         BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -784,6 +794,7 @@ fn an_override_is_recorded_then_cleared_on_leaving_reviewed() {
         None,
         None,
         None,
+        None,
         TitleUpdate::Keep,
         &ReviewedGate::enforcing(None).with_override("operator: hotfix", "alice"),
     )
@@ -801,6 +812,7 @@ fn an_override_is_recorded_then_cleared_on_leaving_reviewed() {
         Some(PhaseStatus::InProgress),
         TagsUpdate::Keep,
         BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -823,6 +835,7 @@ fn an_override_is_recorded_then_cleared_on_leaving_reviewed() {
         None,
         None,
         None,
+        None,
         TitleUpdate::Keep,
         &ReviewedGate::enforcing(None),
     )
@@ -841,6 +854,7 @@ fn a_satisfied_gate_clears_a_previously_recorded_override() {
         Some(PhaseStatus::Reviewed),
         TagsUpdate::Keep,
         BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -866,6 +880,7 @@ fn a_satisfied_gate_clears_a_previously_recorded_override() {
         Some(PhaseStatus::Reviewed),
         TagsUpdate::Keep,
         BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -900,6 +915,7 @@ fn a_task_override_is_recorded_and_a_status_none_update_preserves_it() {
         None,
         None,
         None,
+        None,
         TitleUpdate::Keep,
         &ReviewedGate::enforcing(None).with_override("hotfix", "bob"),
     )
@@ -919,6 +935,7 @@ fn a_task_override_is_recorded_and_a_status_none_update_preserves_it() {
         None,
         None,
         None,
+        None,
         TitleUpdate::Keep,
     )
     .unwrap();
@@ -934,6 +951,7 @@ fn a_task_override_is_recorded_and_a_status_none_update_preserves_it() {
         None,
         TagsUpdate::Keep,
         BodyUpdate::Keep,
+        None,
         None,
         None,
         None,

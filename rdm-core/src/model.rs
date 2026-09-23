@@ -457,6 +457,19 @@ pub struct Phase {
     /// firing checkout's branch) rather than by SHA reachability alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_branch: Option<String>,
+    /// The item's resolved checkout HEAD at the moment it first transitioned
+    /// to `in-progress`.
+    ///
+    /// Write-once: set on the first `in-progress` stamp and never overwritten
+    /// by a later transition, including a `reviewed -> in-progress` rework
+    /// re-stamp. Unlike [`Phase::review_sha`] (re-stamped on every
+    /// `needs-review` transition), this field records where the phase's own
+    /// work *began*, so [`rdm review source`](crate::worktree) can default a
+    /// phase's review `base` to it rather than to the merge-base with the
+    /// default branch — scoping the review to this phase's own commits in a
+    /// shared roadmap worktree. See `docs/change-reviews.md` § "The target".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_head: Option<String>,
     /// Estimated difficulty of the phase, if assessed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub difficulty: Option<Difficulty>,
@@ -525,6 +538,11 @@ pub struct Task {
     /// firing checkout's branch) rather than by SHA reachability alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub review_branch: Option<String>,
+    /// The item's resolved checkout HEAD at the moment it first transitioned
+    /// to `in-progress`. Write-once, mirroring [`Phase::started_head`]
+    /// exactly, including the rework re-stamp exemption.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_head: Option<String>,
     /// Reason the task was closed (a retire/supersede note), if any.
     ///
     /// Recorded when a task is retired — for example marked
@@ -1899,6 +1917,7 @@ status: not-started
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             difficulty: None,
             model: None,
             blocked_reason: None,
@@ -1921,6 +1940,7 @@ status: not-started
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             difficulty: Some(Difficulty::Hard),
             model: Some(ModelTier::Large),
             blocked_reason: None,
@@ -1945,6 +1965,7 @@ status: not-started
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             difficulty: None,
             model: None,
             blocked_reason: Some("ambiguous acceptance criterion".to_string()),
@@ -1957,6 +1978,40 @@ status: not-started
             parsed.blocked_reason.as_deref(),
             Some("ambiguous acceptance criterion")
         );
+    }
+
+    #[test]
+    fn phase_deserialize_missing_started_head_is_none() {
+        let yaml = r#"
+phase: 2
+title: Keeper service threading
+status: not-started
+"#;
+        let phase: Phase = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(phase.started_head, None);
+    }
+
+    #[test]
+    fn phase_round_trips_started_head() {
+        let phase = Phase {
+            phase: 1,
+            title: "Core".to_string(),
+            status: PhaseStatus::InProgress,
+            tags: None,
+            completed: None,
+            commit: None,
+            review_sha: None,
+            review_branch: None,
+            started_head: Some("deadbeefcafe".to_string()),
+            difficulty: None,
+            model: None,
+            blocked_reason: None,
+            gate_override: None,
+        };
+        let yaml = serde_yaml::to_string(&phase).unwrap();
+        assert!(yaml.contains("started_head: deadbeefcafe"));
+        let parsed: Phase = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.started_head.as_deref(), Some("deadbeefcafe"));
     }
 
     #[test]
@@ -2050,6 +2105,42 @@ created: 2026-01-01
     }
 
     #[test]
+    fn task_deserialize_missing_started_head_is_none() {
+        let yaml = r#"
+project: fbm
+title: Simple task
+status: in-progress
+priority: low
+created: 2026-01-01
+"#;
+        let task: Task = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(task.started_head, None);
+    }
+
+    #[test]
+    fn task_round_trips_started_head() {
+        let task = Task {
+            project: "fbm".to_string(),
+            title: "In-progress task".to_string(),
+            status: TaskStatus::InProgress,
+            priority: Priority::Low,
+            created: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            tags: None,
+            completed: None,
+            commit: None,
+            review_sha: None,
+            review_branch: None,
+            started_head: Some("deadbeefcafe".to_string()),
+            close_reason: None,
+            gate_override: None,
+        };
+        let yaml = serde_yaml::to_string(&task).unwrap();
+        assert!(yaml.contains("started_head: deadbeefcafe"));
+        let parsed: Task = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(parsed.started_head.as_deref(), Some("deadbeefcafe"));
+    }
+
+    #[test]
     fn task_round_trips_close_reason() {
         // Some(reason) round-trips through YAML.
         let task = Task {
@@ -2063,6 +2154,7 @@ created: 2026-01-01
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             close_reason: Some("superseded by task/survivor".to_string()),
             gate_override: None,
         };

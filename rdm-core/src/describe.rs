@@ -526,6 +526,7 @@ mod tests {
             commit: Some("abc123".to_string()),
             review_sha: None,
             review_branch: None,
+            started_head: None,
             difficulty: Some(crate::model::Difficulty::Hard),
             model: Some(crate::model::ModelTier::Large),
             blocked_reason: Some("ambiguous acceptance criterion".to_string()),
@@ -551,6 +552,7 @@ mod tests {
             commit: Some("abc123".to_string()),
             review_sha: None,
             review_branch: None,
+            started_head: None,
             close_reason: Some("superseded by task/other".to_string()),
             gate_override: Some(crate::model::GateOverride {
                 reason: "operator: hotfix".to_string(),

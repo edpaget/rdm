@@ -58,6 +58,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();

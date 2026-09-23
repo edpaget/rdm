@@ -61,6 +61,7 @@ async fn spawn_server() -> (TempDir, SocketAddr, Client) {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -355,6 +356,7 @@ async fn tasks_default_filter_shows_active_only() {
                 None,
                 rdm_core::ops::TagsUpdate::Keep,
                 rdm_core::ops::BodyUpdate::Keep,
+                None,
                 None,
                 None,
                 None,

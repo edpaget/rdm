@@ -705,6 +705,7 @@ pub fn apply_done_directives(
                         Some(sha_owned),
                         None,
                         None,
+                        None,
                         rdm_core::ops::TitleUpdate::Keep,
                     )
                     .map(|_| ())
@@ -732,6 +733,7 @@ pub fn apply_done_directives(
                         rdm_core::ops::TagsUpdate::Keep,
                         rdm_core::ops::BodyUpdate::Keep,
                         Some(sha_owned),
+                        None,
                         None,
                         None,
                         rdm_core::ops::TitleUpdate::Keep,
@@ -1300,8 +1302,17 @@ mod hook_timeout_tests {
 }
 
 /// Resolve explicit source arguments for thin phase/task/review adapters.
+///
+/// Loads `item`'s recorded `started_head` from `store` (best-effort: a load
+/// failure — e.g. the item vanished between resolution and this call — maps
+/// to `None` rather than aborting the source resolution) and threads it into
+/// the [`rdm_core::ReviewSourceRequest`], so [`rdm_core::resolve_review_source`]
+/// can default an unset `--base` to it instead of the merge-base with
+/// `default_branch`. An explicit `--base` still overrides.
 #[cfg(feature = "git")]
 pub fn resolve_source_args(
+    store: &AppStore,
+    project: &str,
     args: &crate::cli::ReviewSourceArgs,
     item: &rdm_core::link::ItemRef,
     default_branch: &str,
@@ -1312,6 +1323,17 @@ pub fn resolve_source_args(
         Some(root) => rdm_git::worktree::discover_distinct_project_repo(&cwd, root)?,
         None => cwd,
     };
+    let started_head = match item {
+        rdm_core::link::ItemRef::Phase { roadmap, stem } => {
+            rdm_core::io::load_phase(store, project, roadmap, stem)
+                .ok()
+                .and_then(|doc| doc.frontmatter.started_head)
+        }
+        rdm_core::link::ItemRef::Task { slug } => rdm_core::io::load_task(store, project, slug)
+            .ok()
+            .and_then(|doc| doc.frontmatter.started_head),
+        _ => None,
+    };
     let request = rdm_core::ReviewSourceRequest {
         path: args.source.clone(),
         base: args.base.clone(),
@@ -1319,6 +1341,7 @@ pub fn resolve_source_args(
         expected_branch: args.expected_branch.clone(),
         default_branch: default_branch.to_string(),
         no_code: args.no_code,
+        started_head,
     };
     let probe = GateProbe::new(repo);
     let identity = rdm_core::resolve_review_source(&probe, item, &request)?;

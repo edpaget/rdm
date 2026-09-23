@@ -4219,6 +4219,7 @@ with its new content identity: {after:?}"
                 None,
                 None,
                 None,
+                None,
                 rdm_core::ops::update::TitleUpdate::Set("t1".to_string()),
             )
             .map(|_| ())
@@ -4252,6 +4253,7 @@ with its new content identity: {after:?}"
                 None,
                 rdm_core::ops::update::TagsUpdate::Keep,
                 rdm_core::ops::update::BodyUpdate::Set("b's edit".to_string()),
+                None,
                 None,
                 None,
                 None,
@@ -4299,6 +4301,7 @@ with its new content identity: {after:?}"
                 None,
                 None,
                 None,
+                None,
                 rdm_core::ops::update::TitleUpdate::Set("t1".to_string()),
             )
             .map(|_| ())
@@ -4328,6 +4331,7 @@ with its new content identity: {after:?}"
                 None,
                 rdm_core::ops::update::TagsUpdate::Keep,
                 rdm_core::ops::update::BodyUpdate::Set("b's edit".to_string()),
+                None,
                 None,
                 None,
                 None,
@@ -4982,6 +4986,7 @@ with its new content identity: {after:?}"
                 None,
                 None,
                 None,
+                None,
                 rdm_core::ops::update::TitleUpdate::Keep,
             )
             .map(|_| ())
@@ -5037,6 +5042,7 @@ with its new content identity: {after:?}"
                 None,
                 None,
                 None,
+                None,
                 rdm_core::ops::update::TitleUpdate::Keep,
             )
             .map(|_| ())
@@ -5056,6 +5062,7 @@ with its new content identity: {after:?}"
                 None,
                 rdm_core::ops::update::TagsUpdate::Keep,
                 rdm_core::ops::update::BodyUpdate::Set("B's edit".to_string()),
+                None,
                 None,
                 None,
                 None,
@@ -5116,6 +5123,7 @@ with its new content identity: {after:?}"
                 None,
                 None,
                 None,
+                None,
                 rdm_core::ops::update::TitleUpdate::Keep,
             )
             .map(|_| ())
@@ -5169,6 +5177,7 @@ with its new content identity: {after:?}"
                 None,
                 None,
                 None,
+                None,
                 rdm_core::ops::update::TitleUpdate::Keep,
             )
             .map(|_| ())
@@ -5203,6 +5212,7 @@ with its new content identity: {after:?}"
                 None,
                 rdm_core::ops::update::TagsUpdate::Keep,
                 rdm_core::ops::update::BodyUpdate::Set("B's edit".to_string()),
+                None,
                 None,
                 None,
                 None,
@@ -5265,6 +5275,7 @@ with its new content identity: {after:?}"
                 None,
                 rdm_core::ops::update::TagsUpdate::Keep,
                 rdm_core::ops::update::BodyUpdate::Set("uncommitted update".to_string()),
+                None,
                 None,
                 None,
                 None,

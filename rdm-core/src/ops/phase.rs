@@ -144,6 +144,7 @@ pub fn create_phase(store: &mut impl Store, req: CreatePhase<'_>) -> Result<Docu
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             difficulty: None,
             model: None,
             blocked_reason: None,
@@ -185,6 +186,13 @@ pub fn create_phase(store: &mut impl Store, req: CreatePhase<'_>) -> Result<Docu
 /// (rather than preserving the existing ones the way `status: None` does) —
 /// this is the refresh path `rdm review restamp` uses to keep a stamp from
 /// going stale after a commit is amended or rebased mid-review.
+///
+/// The `started_head` parameter is **write-once**, unlike every other field
+/// above: when `status` transitions to [`PhaseStatus::InProgress`] and the
+/// phase has no `started_head` recorded yet, the provided value (if any) is
+/// stamped. Any other transition — including a later `InProgress` re-stamp
+/// (e.g. a `reviewed -> in-progress` rework) — leaves an already-recorded
+/// value untouched. See [`crate::model::Phase::started_head`].
 /// When `tags`/`body`/`title` are `Keep`, the existing values are preserved;
 /// otherwise see [`TagsUpdate`], [`BodyUpdate`], and [`TitleUpdate`]. A
 /// [`TitleUpdate::Set`] renames the phase in place — its stem and number are
@@ -212,6 +220,7 @@ pub fn update_phase(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    started_head: Option<String>,
     title: TitleUpdate,
 ) -> Result<Document<Phase>> {
     update_phase_inner(
@@ -225,6 +234,7 @@ pub fn update_phase(
         commit,
         review_sha,
         review_branch,
+        started_head,
         title,
         GateOverrideUpdate::ClearOnLeavingReviewed,
     )
@@ -272,6 +282,7 @@ pub fn update_phase_gated(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    started_head: Option<String>,
     title: TitleUpdate,
     gate: &ReviewedGate<'_>,
 ) -> Result<Document<Phase>> {
@@ -287,6 +298,7 @@ pub fn update_phase_gated(
         commit,
         review_sha,
         review_branch,
+        started_head,
         title,
         gate_override,
     )
@@ -306,6 +318,7 @@ fn update_phase_inner(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    started_head: Option<String>,
     title: TitleUpdate,
     gate_override: GateOverrideUpdate,
 ) -> Result<Document<Phase>> {
@@ -323,6 +336,7 @@ fn update_phase_inner(
         commit,
         review_sha,
         review_branch,
+        started_head,
         title,
         gate_override,
     )?;
@@ -385,6 +399,7 @@ fn apply_phase_update(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    started_head: Option<String>,
     title: TitleUpdate,
     gate_override: GateOverrideUpdate,
 ) -> Result<()> {
@@ -418,6 +433,17 @@ fn apply_phase_update(
             } else {
                 doc.frontmatter.review_sha = None;
                 doc.frontmatter.review_branch = None;
+            }
+            // Write-once: stamp `started_head` the first time the phase
+            // enters `in-progress`. Any later transition — including a
+            // `reviewed -> in-progress` rework re-stamp — leaves an
+            // already-recorded value untouched, so a resumed phase's base
+            // never moves forward past its own commits.
+            if status == PhaseStatus::InProgress
+                && doc.frontmatter.started_head.is_none()
+                && let Some(head) = started_head
+            {
+                doc.frontmatter.started_head = Some(head);
             }
         }
     }
@@ -463,6 +489,7 @@ pub fn update_phase_with_estimate(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    started_head: Option<String>,
     difficulty: DifficultyUpdate,
     model: ModelTierUpdate,
     title: TitleUpdate,
@@ -478,6 +505,7 @@ pub fn update_phase_with_estimate(
         commit,
         review_sha,
         review_branch,
+        started_head,
         difficulty,
         model,
         title,
@@ -520,6 +548,7 @@ pub fn update_phase_with_estimate_gated(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    started_head: Option<String>,
     difficulty: DifficultyUpdate,
     model: ModelTierUpdate,
     title: TitleUpdate,
@@ -537,6 +566,7 @@ pub fn update_phase_with_estimate_gated(
         commit,
         review_sha,
         review_branch,
+        started_head,
         difficulty,
         model,
         title,
@@ -558,6 +588,7 @@ fn update_phase_with_estimate_inner(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    started_head: Option<String>,
     difficulty: DifficultyUpdate,
     model: ModelTierUpdate,
     title: TitleUpdate,
@@ -577,6 +608,7 @@ fn update_phase_with_estimate_inner(
         commit,
         review_sha,
         review_branch,
+        started_head,
         title,
         gate_override,
     )?;

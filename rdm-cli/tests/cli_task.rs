@@ -2097,3 +2097,52 @@ fn task_merge_twice_is_safe() {
     let text = String::from_utf8(output).unwrap();
     assert_eq!(text.matches("## Merged from task `dup`").count(), 1);
 }
+
+/// AC1's no-worktree half, the task mirror of
+/// `cli_phase.rs::in_progress_with_no_worktree_records_no_started_head`:
+/// with no registered worktree for the task, an `in-progress` transition
+/// still succeeds and `started_head` stays absent from
+/// `task show --format json`.
+#[test]
+fn in_progress_with_no_worktree_records_no_started_head() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_task(&dir, "fix-bug", "Fix bug");
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "show",
+            "fix-bug",
+            "--project",
+            "fbm",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert!(
+        json.get("started_head").is_none(),
+        "no registered worktree means no started_head to record: {json}"
+    );
+}

@@ -34,6 +34,20 @@ rdm review start --on change/HEAD    --project <p>   # from inside a checkout
 - The review additionally records `change_branch`: the source-repo branch the
   checkout was on, used only to pick the tip drift is measured against.
 
+This `base` default (merge-base with the default branch, absent an explicit
+`--base`) is specific to the `change/<sha>` target. A **`phase/<roadmap>/<stem>`
+or `task/<slug>`** target — resolved through `rdm review source --on …`, and
+through the same code path the gated `reviewed` write's `--source` binding
+uses — has a different default: it prefers the item's recorded `started_head`
+(the item's resolved checkout HEAD at the moment it first transitioned to
+`in-progress`, stamped by `phase update`/`task update` and exposed by
+`phase show`/`task show --format json`) over the merge-base, so a phase
+implemented in a shared roadmap worktree is reviewed as its own diff rather
+than as every earlier phase's changes too. `--base` still overrides, and with
+no `started_head` recorded (or no worktree was ever resolved for the item) it
+falls back to the merge-base exactly as `change/<sha>` does, reporting that
+fallback in the response's `baseNote` field.
+
 `change` is deliberately **not** a link kind. `rdm:change/<sha>` is rejected by
 `rdm_core::link::parse` with a message pointing at `rdm:src/<path>@<sha>` —
 there is no plan-repo document at the other end of a change reference, so

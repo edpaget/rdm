@@ -107,6 +107,7 @@ async fn spawn_git_backed_server() -> (TempDir, SocketAddr, Client, String) {
         None,
         None,
         None,
+        None,
         TitleUpdate::Keep,
     )
     .unwrap();
@@ -118,6 +119,7 @@ async fn spawn_git_backed_server() -> (TempDir, SocketAddr, Client, String) {
         None,
         TagsUpdate::Keep,
         BodyUpdate::Set("new-body-marker".to_string()),
+        None,
         None,
         None,
         None,

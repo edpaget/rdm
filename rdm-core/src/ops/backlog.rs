@@ -473,6 +473,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -495,6 +496,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -514,6 +516,7 @@ mod tests {
             None,
             crate::ops::TagsUpdate::Keep,
             crate::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,
@@ -678,6 +681,7 @@ mod tests {
             None,
             crate::ops::TagsUpdate::Keep,
             crate::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,
@@ -900,6 +904,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -1043,6 +1048,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -1090,6 +1096,7 @@ mod tests {
             Some(crate::model::PhaseStatus::WontFix),
             crate::ops::TagsUpdate::Keep,
             crate::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,
@@ -1150,6 +1157,7 @@ mod tests {
             Some(crate::model::PhaseStatus::Done),
             crate::ops::TagsUpdate::Keep,
             crate::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,
@@ -1223,6 +1231,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -1283,6 +1292,7 @@ mod tests {
             Some(crate::model::PhaseStatus::Done),
             crate::ops::TagsUpdate::Keep,
             crate::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,

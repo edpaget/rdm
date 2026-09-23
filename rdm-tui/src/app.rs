@@ -832,6 +832,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             rdm_core::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -1251,6 +1252,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             rdm_core::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -1277,6 +1279,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             rdm_core::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -1299,6 +1302,7 @@ mod tests {
             None,
             rdm_core::ops::TagsUpdate::Keep,
             rdm_core::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,

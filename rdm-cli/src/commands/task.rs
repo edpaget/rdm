@@ -155,6 +155,8 @@ pub fn run(
             #[cfg(feature = "git")]
             let source_binding = if explicit_source {
                 Some(commands::resolve_source_args(
+                    store,
+                    &project,
                     &source,
                     &rdm_core::link::ItemRef::Task { slug: slug.clone() },
                     repo_config.default_branch.as_deref().unwrap_or("main"),
@@ -204,6 +206,40 @@ pub fn run(
                 .filter(|_| review_sha.is_some())
                 .map(|(_, source)| source.branch.clone())
                 .or(review_branch);
+
+            // Write-once: resolve the task's starting HEAD the first time it
+            // enters `in-progress`, so `rdm review source`'s default base (the
+            // recorded `started_head`) reviews exactly this task's own
+            // commits. An explicit `--source <path>` binds to that
+            // checkout's HEAD directly; otherwise resolve the task's
+            // registered worktree the same way `rdm verify run --item`
+            // does. Best-effort: no worktree yet (or none resolvable)
+            // records nothing rather than failing the status update — the
+            // write-once apply leaves an already-recorded value untouched
+            // regardless.
+            #[cfg(feature = "git")]
+            let started_head = if status == Some(rdm_core::model::TaskStatus::InProgress) {
+                source_binding
+                    .as_ref()
+                    .map(|(_, source)| source.head.clone())
+                    .or_else(|| {
+                        let cwd = std::env::current_dir().ok()?;
+                        let repo =
+                            rdm_git::worktree::discover_distinct_project_repo(&cwd, root).ok()?;
+                        let item = rdm_git::worktree::ItemRef::Task { slug: slug.clone() };
+                        let worktree = rdm_git::worktree::registered_worktree_for(&repo, &item)
+                            .ok()
+                            .flatten()?;
+                        rdm_git::head_commit_info_at(&worktree.path)
+                            .ok()
+                            .flatten()
+                            .map(|c| c.sha)
+                    })
+            } else {
+                None
+            };
+            #[cfg(not(feature = "git"))]
+            let started_head = None;
 
             // Data-integrity guard: warn (non-blocking) when a task reaches
             // needs-review with no committed diff beyond the default branch.
@@ -260,6 +296,7 @@ pub fn run(
                     commit,
                     review_sha,
                     review_branch,
+                    started_head,
                     title,
                     &gate,
                 )?;

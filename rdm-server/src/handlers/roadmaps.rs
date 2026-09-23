@@ -722,6 +722,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             rdm_core::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -768,6 +769,7 @@ mod tests {
             Some(PhaseStatus::Done),
             rdm_core::ops::TagsUpdate::Keep,
             rdm_core::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,
@@ -2046,6 +2048,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 rdm_core::ops::TitleUpdate::Keep,
             )
             .unwrap();
@@ -2326,6 +2329,7 @@ mod tests {
             None,
             rdm_core::ops::TagsUpdate::Keep,
             rdm_core::ops::BodyUpdate::Set("See [the bug](rdm:task/fix-bug).".to_string()),
+            None,
             None,
             None,
             None,

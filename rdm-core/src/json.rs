@@ -68,6 +68,10 @@ pub struct PhaseJson {
     /// Git commit SHA associated with phase completion, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// The item's resolved checkout HEAD at the moment it first transitioned
+    /// to `in-progress`. Write-once; see [`crate::model::Phase::started_head`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_head: Option<String>,
     /// Estimated difficulty of the phase, if assessed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub difficulty: Option<Difficulty>,
@@ -140,6 +144,10 @@ pub struct TaskJson {
     /// Git commit SHA that completed this task.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// The item's resolved checkout HEAD at the moment it first transitioned
+    /// to `in-progress`. Write-once; see [`crate::model::Task::started_head`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_head: Option<String>,
     /// Reason the task was closed (a retire/supersede note), if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_reason: Option<String>,
@@ -495,6 +503,7 @@ pub fn phase_to_json(
         tags: fm.tags.clone(),
         completed: fm.completed,
         commit: fm.commit.clone(),
+        started_head: fm.started_head.clone(),
         difficulty: fm.difficulty,
         model: fm.model,
         blocked_reason: fm.blocked_reason.clone(),
@@ -524,6 +533,7 @@ pub fn task_to_json(slug: &str, doc: &Document<Task>, revision: Option<&str>) ->
         tags: fm.tags.clone(),
         completed: fm.completed,
         commit: fm.commit.clone(),
+        started_head: fm.started_head.clone(),
         close_reason: fm.close_reason.clone(),
         gate_override: fm.gate_override.clone(),
         plans: Vec::new(),
@@ -1237,6 +1247,7 @@ mod tests {
                 commit: None,
                 review_sha: None,
                 review_branch: None,
+                started_head: None,
                 difficulty: None,
                 model: None,
                 blocked_reason: None,
@@ -1274,6 +1285,7 @@ mod tests {
                 commit: None,
                 review_sha: None,
                 review_branch: None,
+                started_head: None,
                 close_reason: None,
                 gate_override: None,
             },
@@ -1370,6 +1382,35 @@ mod tests {
         assert!(json.close_reason.is_none());
         let serialized = serde_json::to_string(&json).unwrap();
         assert!(!serialized.contains("close_reason"));
+    }
+
+    #[test]
+    fn task_to_json_carries_started_head() {
+        let mut doc = make_task_doc("t", "p");
+        doc.frontmatter.started_head = Some("deadbeef".to_string());
+        let json = task_to_json("t", &doc, None);
+        assert_eq!(json.started_head.as_deref(), Some("deadbeef"));
+        let serialized = serde_json::to_string(&json).unwrap();
+        assert!(serialized.contains("\"started_head\":\"deadbeef\""));
+    }
+
+    #[test]
+    fn started_head_skipped_when_none() {
+        let doc = make_task_doc("t", "p");
+        let json = task_to_json("t", &doc, None);
+        assert!(json.started_head.is_none());
+        let serialized = serde_json::to_string(&json).unwrap();
+        assert!(!serialized.contains("started_head"));
+    }
+
+    #[test]
+    fn phase_to_json_carries_started_head() {
+        let mut doc = make_phase_doc(1, "Setup", PhaseStatus::InProgress);
+        doc.frontmatter.started_head = Some("cafef00d".to_string());
+        let json = phase_to_json("phase-1-setup", &doc, "acme", None, None, None);
+        assert_eq!(json.started_head.as_deref(), Some("cafef00d"));
+        let serialized = serde_json::to_string(&json).unwrap();
+        assert!(serialized.contains("\"started_head\":\"cafef00d\""));
     }
 
     #[test]

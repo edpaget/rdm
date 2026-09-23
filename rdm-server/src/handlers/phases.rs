@@ -425,6 +425,7 @@ pub async fn update_phase(
             None,
             None,
             None,
+            None,
             rdm_core::ops::TitleUpdate::Keep,
             &gate,
         )
@@ -1869,6 +1870,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             rdm_core::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -1913,6 +1915,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             rdm_core::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -1927,6 +1930,7 @@ mod tests {
             rdm_core::ops::BodyUpdate::Set(
                 "See [phase one](rdm:phase/alpha/phase-1-first).".to_string(),
             ),
+            None,
             None,
             None,
             None,

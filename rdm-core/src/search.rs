@@ -512,6 +512,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -551,6 +552,7 @@ mod tests {
             None,
             crate::ops::TagsUpdate::Keep,
             crate::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,
@@ -662,6 +664,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -692,6 +695,7 @@ mod tests {
             None,
             crate::ops::TagsUpdate::Keep,
             crate::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,
@@ -726,6 +730,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             crate::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -737,6 +742,7 @@ mod tests {
             None,
             crate::ops::TagsUpdate::Keep,
             crate::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,

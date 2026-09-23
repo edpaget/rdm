@@ -138,6 +138,7 @@ pub fn create_task(store: &mut impl Store, req: CreateTask<'_>) -> Result<Docume
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             close_reason: None,
             gate_override: None,
         },
@@ -207,6 +208,13 @@ pub fn list_tasks(store: &impl Store, project: &str) -> Result<Vec<(String, Docu
 /// this is the refresh path `rdm review restamp` uses to keep a stamp from
 /// going stale after a commit is amended or rebased mid-review.
 ///
+/// The `started_head` parameter is **write-once**, unlike every other field
+/// above: when `status` transitions to [`TaskStatus::InProgress`] and the
+/// task has no `started_head` recorded yet, the provided value (if any) is
+/// stamped. Any other transition — including a later `InProgress` re-stamp
+/// (e.g. a `reviewed -> in-progress` rework) — leaves an already-recorded
+/// value untouched. See [`crate::model::Task::started_head`].
+///
 /// A [`TitleUpdate::Set`] renames the task in place — the `slug` that
 /// identifies it is never changed; [`TitleUpdate::Keep`] leaves it unchanged.
 ///
@@ -232,6 +240,7 @@ pub fn update_task(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    started_head: Option<String>,
     title: TitleUpdate,
 ) -> Result<Document<Task>> {
     update_task_inner(
@@ -245,6 +254,7 @@ pub fn update_task(
         commit,
         review_sha,
         review_branch,
+        started_head,
         title,
         GateOverrideUpdate::ClearOnLeavingReviewed,
     )
@@ -284,6 +294,7 @@ pub fn update_task_gated(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    started_head: Option<String>,
     title: TitleUpdate,
     gate: &ReviewedGate<'_>,
 ) -> Result<Document<Task>> {
@@ -299,6 +310,7 @@ pub fn update_task_gated(
         commit,
         review_sha,
         review_branch,
+        started_head,
         title,
         gate_override,
     )
@@ -340,6 +352,7 @@ fn update_task_inner(
     commit: Option<String>,
     review_sha: Option<String>,
     review_branch: Option<String>,
+    started_head: Option<String>,
     title: TitleUpdate,
     gate_override: GateOverrideUpdate,
 ) -> Result<Document<Task>> {
@@ -381,6 +394,17 @@ fn update_task_inner(
             } else {
                 doc.frontmatter.review_sha = None;
                 doc.frontmatter.review_branch = None;
+            }
+            // Write-once: stamp `started_head` the first time the task
+            // enters `in-progress`. Any later transition — including a
+            // `reviewed -> in-progress` rework re-stamp — leaves an
+            // already-recorded value untouched, so a resumed task's base
+            // never moves forward past its own commits.
+            if status == TaskStatus::InProgress
+                && doc.frontmatter.started_head.is_none()
+                && let Some(head) = started_head
+            {
+                doc.frontmatter.started_head = Some(head);
             }
         }
     }
@@ -458,6 +482,7 @@ pub fn promote_task(
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             difficulty: None,
             model: None,
             blocked_reason: None,
@@ -552,6 +577,7 @@ pub fn consolidate_task_into_roadmap(
         None,
         TagsUpdate::Keep,
         BodyUpdate::Set(pointer_body),
+        None,
         None,
         None,
         None,
@@ -723,6 +749,7 @@ pub fn merge_tasks(
             None,
             None,
             None,
+            None,
             TitleUpdate::Keep,
         )?;
         let closed_doc = set_task_close_reason(
@@ -745,6 +772,7 @@ pub fn merge_tasks(
         None,
         TagsUpdate::Set(tags),
         BodyUpdate::Set(body),
+        None,
         None,
         None,
         None,
@@ -869,6 +897,7 @@ mod tests {
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             close_reason: None,
             gate_override: None,
         }

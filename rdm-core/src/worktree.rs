@@ -98,6 +98,15 @@ pub struct ReviewSourceRequest {
     pub default_branch: String,
     /// Deliberate declaration that an empty committed diff is reviewable.
     pub no_code: bool,
+    /// The item's recorded [`crate::model::Phase::started_head`] /
+    /// [`crate::model::Task::started_head`], when one has been stamped.
+    ///
+    /// When `base` is `None`, this is preferred over the merge-base with
+    /// `default_branch`: a phase in a shared roadmap worktree is reviewed as
+    /// its own diff, starting at the commit its `in-progress` stamp
+    /// recorded, rather than as every earlier phase's changes too. `base`
+    /// still overrides both when the caller supplies it explicitly.
+    pub started_head: Option<String>,
 }
 
 /// Canonical committed source identity shared by every review stage.
@@ -122,6 +131,12 @@ pub struct ReviewSource {
     pub diff_text: String,
     /// Explicit empty-diff declaration.
     pub no_code: bool,
+    /// Set only when `base` fell back to the merge-base with the default
+    /// branch — i.e. neither an explicit `--base` nor a recorded
+    /// `started_head` was available — naming that fallback so a caller can
+    /// surface it rather than silently reviewing a merge-base range.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_note: Option<String>,
 }
 
 /// The single source-selection policy for probes and standalone reviews.

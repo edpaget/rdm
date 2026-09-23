@@ -2102,3 +2102,58 @@ fn phase_update_empty_title_rejected() {
         .success()
         .stdout(predicate::str::contains("Keep This Title"));
 }
+
+/// AC1's no-worktree half: with no registered worktree for the roadmap, an
+/// `in-progress` transition still succeeds and `started_head` stays absent
+/// from `phase show --format json` — a best-effort resolution, never a hard
+/// failure. The worktree-present half (recording the worktree's HEAD from a
+/// cwd outside it, and the write-once re-stamp) is covered end to end
+/// against a real source-repo worktree in `cli_gate.rs`'s
+/// `started_head_scopes_the_second_phase_review_and_satisfies_the_gate`.
+#[test]
+fn in_progress_with_no_worktree_records_no_started_head() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core");
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert!(
+        json.get("started_head").is_none(),
+        "no registered worktree means no started_head to record: {json}"
+    );
+}

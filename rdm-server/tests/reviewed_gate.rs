@@ -88,6 +88,7 @@ fn seed_plan_repo(gate: Option<bool>) -> TempDir {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -99,6 +100,7 @@ fn seed_plan_repo(gate: Option<bool>) -> TempDir {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,

@@ -60,6 +60,7 @@ fn write_and_load_phase() {
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             difficulty: None,
             model: None,
             blocked_reason: None,
@@ -97,6 +98,7 @@ fn write_and_load_task() {
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             close_reason: None,
             gate_override: None,
         },
@@ -870,6 +872,7 @@ fn update_phase_replace_tags() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -904,6 +907,7 @@ fn update_phase_clear_tags() {
         None,
         rdm_core::ops::TagsUpdate::Set(vec![]),
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -989,6 +993,7 @@ fn update_phase_to_done_sets_completed() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1020,6 +1025,7 @@ fn update_phase_to_done_with_commit_stores_sha() {
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
         Some("abc123".to_string()),
+        None,
         None,
         None,
         rdm_core::ops::TitleUpdate::Keep,
@@ -1059,6 +1065,7 @@ fn update_phase_to_needs_review_stamps_review_sha() {
         None,
         Some("deadbeef".to_string()),
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1095,6 +1102,7 @@ fn update_phase_leaving_needs_review_clears_review_sha() {
         None,
         Some("deadbeef".to_string()),
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1107,6 +1115,7 @@ fn update_phase_leaving_needs_review_clears_review_sha() {
         Some(PhaseStatus::Done),
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -1142,6 +1151,7 @@ fn update_phase_already_needs_review_restamps_on_reapply() {
         None,
         Some("sha1".to_string()),
         Some("branch-a".to_string()),
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1158,6 +1168,7 @@ fn update_phase_already_needs_review_restamps_on_reapply() {
         None,
         Some("sha2".to_string()),
         Some("branch-b".to_string()),
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1199,6 +1210,7 @@ fn update_phase_status_none_preserves_review_sha() {
         None,
         Some("deadbeef".to_string()),
         Some("feature/x".to_string()),
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1211,6 +1223,7 @@ fn update_phase_status_none_preserves_review_sha() {
         None,
         rdm_core::ops::TagsUpdate::Set(vec!["x".to_string()]),
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -1249,6 +1262,7 @@ fn update_phase_to_needs_review_stamps_review_branch() {
         None,
         Some("deadbeef".to_string()),
         Some("feature/x".to_string()),
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1290,6 +1304,7 @@ fn update_phase_leaving_needs_review_clears_review_branch() {
         None,
         Some("deadbeef".to_string()),
         Some("feature/x".to_string()),
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1305,10 +1320,210 @@ fn update_phase_leaving_needs_review_clears_review_branch() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.review_branch, None);
+}
+
+#[test]
+fn update_phase_to_in_progress_stamps_started_head() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let updated = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("deadbeef".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        updated.frontmatter.started_head,
+        Some("deadbeef".to_string())
+    );
+
+    // Verify persistence.
+    let loaded = rdm_core::io::load_phase(&store, "fbm", "two-way", "phase-1-core").unwrap();
+    assert_eq!(
+        loaded.frontmatter.started_head,
+        Some("deadbeef".to_string())
+    );
+}
+
+#[test]
+fn update_phase_re_stamping_in_progress_does_not_overwrite_started_head() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("deadbeef".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    // A second in-progress stamp with a DIFFERENT value must not overwrite
+    // the first — the whole point of write-once.
+    let updated = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("cafef00d".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        updated.frontmatter.started_head,
+        Some("deadbeef".to_string()),
+        "a re-stamp of in-progress must never move an already-recorded started_head"
+    );
+}
+
+#[test]
+fn update_phase_reviewed_to_in_progress_rework_does_not_overwrite_started_head() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("deadbeef".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::Reviewed),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    // Rework: reviewed -> in-progress again, with a NEW started_head value —
+    // the first recorded value must survive so the phase's review base still
+    // covers its rework commits without moving forward past them.
+    let reworked = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("newhead".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        reworked.frontmatter.started_head,
+        Some("deadbeef".to_string()),
+        "a reviewed -> in-progress rework re-stamp must not move started_head"
+    );
+}
+
+#[test]
+fn update_phase_started_head_none_supplied_leaves_field_untouched() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    // No worktree resolvable: the CLI passes `None`, and the phase still
+    // transitions to in-progress successfully with nothing recorded.
+    let updated = rdm_core::ops::phase::update_phase(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        Some(PhaseStatus::InProgress),
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(updated.frontmatter.status, PhaseStatus::InProgress);
+    assert_eq!(updated.frontmatter.started_head, None);
 }
 
 #[test]
@@ -1336,6 +1551,7 @@ fn update_phase_from_done_clears_completed() {
         Some("abc123".to_string()),
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1347,6 +1563,7 @@ fn update_phase_from_done_clears_completed() {
         Some(PhaseStatus::InProgress),
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -1385,6 +1602,7 @@ fn blocked_reason_is_recorded_then_preserved_across_resume_then_clearable() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1412,6 +1630,7 @@ fn blocked_reason_is_recorded_then_preserved_across_resume_then_clearable() {
         Some(PhaseStatus::InProgress),
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -1477,6 +1696,7 @@ fn blocked_phases_lists_only_parked_phases_with_reasons() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1525,6 +1745,7 @@ fn update_phase_body_replaces_existing() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1561,6 +1782,7 @@ fn update_phase_none_body_preserves_existing() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1578,6 +1800,7 @@ fn update_phase_not_found() {
         Some(PhaseStatus::Done),
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -1841,6 +2064,7 @@ fn update_phase_done_to_done_with_new_commit_updates_sha() {
         Some("abc123".to_string()),
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1855,6 +2079,7 @@ fn update_phase_done_to_done_with_new_commit_updates_sha() {
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
         Some("def456".to_string()),
+        None,
         None,
         None,
         rdm_core::ops::TitleUpdate::Keep,
@@ -1890,6 +2115,7 @@ fn update_phase_done_to_done_without_commit_is_noop() {
         Some("abc123".to_string()),
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1903,6 +2129,7 @@ fn update_phase_done_to_done_without_commit_is_noop() {
         Some(PhaseStatus::Done),
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -1936,6 +2163,7 @@ fn update_phase_to_wont_fix_sets_completed() {
         Some(PhaseStatus::WontFix),
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -1977,6 +2205,7 @@ fn update_phase_wont_fix_to_not_started_clears_completed() {
         Some("abc123".to_string()),
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -1988,6 +2217,7 @@ fn update_phase_wont_fix_to_not_started_clears_completed() {
         Some(PhaseStatus::NotStarted),
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -2158,6 +2388,7 @@ fn pending_review_items_lists_phases_and_tasks_in_needs_review() {
         None,
         Some("sha-phase".to_string()),
         Some("branch-phase".to_string()),
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2193,6 +2424,7 @@ fn pending_review_items_lists_phases_and_tasks_in_needs_review() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -2430,6 +2662,7 @@ fn update_task_status() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2464,6 +2697,7 @@ fn update_task_priority() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2492,6 +2726,7 @@ fn update_task_tags() {
         None,
         rdm_core::ops::TagsUpdate::Set(vec!["new-tag".to_string()]),
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -2524,6 +2759,7 @@ fn update_task_body_replaces_existing() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Set("Replaced.\n".to_string()),
+        None,
         None,
         None,
         None,
@@ -2562,6 +2798,7 @@ fn update_task_none_body_preserves_existing() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2579,6 +2816,7 @@ fn update_task_not_found() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -2610,6 +2848,7 @@ fn update_task_done_sets_completed_and_commit() {
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
         Some("abc123".to_string()),
+        None,
         None,
         None,
         rdm_core::ops::TitleUpdate::Keep,
@@ -2650,6 +2889,7 @@ fn update_task_to_needs_review_stamps_review_sha() {
         None,
         Some("deadbeef".to_string()),
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2685,6 +2925,7 @@ fn update_task_leaving_needs_review_clears_review_sha() {
         None,
         Some("deadbeef".to_string()),
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2696,6 +2937,7 @@ fn update_task_leaving_needs_review_clears_review_sha() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -2730,6 +2972,7 @@ fn update_task_already_needs_review_restamps_on_reapply() {
         None,
         Some("sha1".to_string()),
         Some("branch-a".to_string()),
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2745,6 +2988,7 @@ fn update_task_already_needs_review_restamps_on_reapply() {
         None,
         Some("sha2".to_string()),
         Some("branch-b".to_string()),
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2786,6 +3030,7 @@ fn update_task_status_none_preserves_review_sha() {
         None,
         Some("deadbeef".to_string()),
         Some("feature/x".to_string()),
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2797,6 +3042,7 @@ fn update_task_status_none_preserves_review_sha() {
         Some(Priority::High),
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -2835,6 +3081,7 @@ fn update_task_to_needs_review_stamps_review_branch() {
         None,
         Some("deadbeef".to_string()),
         Some("feature/x".to_string()),
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2876,6 +3123,7 @@ fn update_task_leaving_needs_review_clears_review_branch() {
         None,
         Some("deadbeef".to_string()),
         Some("feature/x".to_string()),
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2891,10 +3139,203 @@ fn update_task_leaving_needs_review_clears_review_branch() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
     assert_eq!(updated.frontmatter.review_branch, None);
+}
+
+#[test]
+fn update_task_to_in_progress_stamps_started_head() {
+    let mut store = setup_with_project();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let updated = rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("deadbeef".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        updated.frontmatter.started_head,
+        Some("deadbeef".to_string())
+    );
+
+    // Verify persistence.
+    let loaded = rdm_core::io::load_task(&store, "fbm", "fix-bug").unwrap();
+    assert_eq!(
+        loaded.frontmatter.started_head,
+        Some("deadbeef".to_string())
+    );
+}
+
+#[test]
+fn update_task_re_stamping_in_progress_does_not_overwrite_started_head() {
+    let mut store = setup_with_project();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("deadbeef".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    let updated = rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("cafef00d".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        updated.frontmatter.started_head,
+        Some("deadbeef".to_string()),
+        "a re-stamp of in-progress must never move an already-recorded started_head"
+    );
+}
+
+#[test]
+fn update_task_reviewed_to_in_progress_rework_does_not_overwrite_started_head() {
+    let mut store = setup_with_project();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("deadbeef".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::Reviewed),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    let reworked = rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        Some("newhead".to_string()),
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(
+        reworked.frontmatter.started_head,
+        Some("deadbeef".to_string()),
+        "a reviewed -> in-progress rework re-stamp must not move started_head"
+    );
+}
+
+#[test]
+fn update_task_started_head_none_supplied_leaves_field_untouched() {
+    let mut store = setup_with_project();
+    rdm_core::ops::task::create_task(
+        &mut store,
+        rdm_core::ops::task::CreateTask {
+            project: "fbm",
+            slug: "fix-bug",
+            title: "Fix",
+            priority: Priority::Low,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let updated = rdm_core::ops::task::update_task(
+        &mut store,
+        "fbm",
+        "fix-bug",
+        Some(TaskStatus::InProgress),
+        None,
+        rdm_core::ops::TagsUpdate::Keep,
+        rdm_core::ops::BodyUpdate::Keep,
+        None,
+        None,
+        None,
+        None,
+        rdm_core::ops::TitleUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(updated.frontmatter.status, TaskStatus::InProgress);
+    assert_eq!(updated.frontmatter.started_head, None);
 }
 
 #[test]
@@ -2919,6 +3360,7 @@ fn update_task_done_sets_completed_without_commit() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -2955,6 +3397,7 @@ fn update_task_idempotent_done_updates_commit() {
         Some("sha1".to_string()),
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -2970,6 +3413,7 @@ fn update_task_idempotent_done_updates_commit() {
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
         Some("sha2".to_string()),
+        None,
         None,
         None,
         rdm_core::ops::TitleUpdate::Keep,
@@ -3006,6 +3450,7 @@ fn update_task_reopen_clears_completed_and_commit() {
         Some("abc123".to_string()),
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -3019,6 +3464,7 @@ fn update_task_reopen_clears_completed_and_commit() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -3055,6 +3501,7 @@ fn update_task_wont_fix_sets_completed() {
         Some("sha-wf".to_string()),
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -3079,6 +3526,7 @@ fn promote_task_to_roadmap() {
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             close_reason: None,
             gate_override: None,
         },
@@ -3188,6 +3636,7 @@ fn consolidate_appends_phase_with_number_body_tags_and_provenance() {
             commit: None,
             review_sha: None,
             review_branch: None,
+            started_head: None,
             close_reason: None,
             gate_override: None,
         },
@@ -3423,6 +3872,7 @@ fn consolidate_already_terminal_task_errors() {
                 commit: None,
                 review_sha: None,
                 review_branch: None,
+                started_head: None,
                 close_reason: None,
                 gate_override: None,
             },
@@ -4354,6 +4804,7 @@ fn mutate_writes_only_the_entity_path() {
             None,
             None,
             None,
+            None,
             rdm_core::ops::TitleUpdate::Keep,
         )
     })
@@ -4414,6 +4865,7 @@ fn mutate_batch_commits_exactly_once_for_multiple_steps() {
                 Some("aaa1111".to_string()),
                 None,
                 None,
+                None,
                 rdm_core::ops::TitleUpdate::Keep,
             )
             .map(|_| ())
@@ -4432,6 +4884,7 @@ fn mutate_batch_commits_exactly_once_for_multiple_steps() {
                 Some("bad0000".to_string()),
                 None,
                 None,
+                None,
                 rdm_core::ops::TitleUpdate::Keep,
             )
             .map(|_| ())
@@ -4446,6 +4899,7 @@ fn mutate_batch_commits_exactly_once_for_multiple_steps() {
                 rdm_core::ops::TagsUpdate::Keep,
                 rdm_core::ops::BodyUpdate::Keep,
                 Some("aaa2222".to_string()),
+                None,
                 None,
                 None,
                 rdm_core::ops::TitleUpdate::Keep,
@@ -4564,6 +5018,7 @@ fn mutate_batch_reapplying_same_step_preserves_completed_date() {
                 Some("a".to_string()),
                 None,
                 None,
+                None,
                 rdm_core::ops::TitleUpdate::Keep,
             )
             .map(|_| ())
@@ -4587,6 +5042,7 @@ fn mutate_batch_reapplying_same_step_preserves_completed_date() {
                 rdm_core::ops::TagsUpdate::Keep,
                 rdm_core::ops::BodyUpdate::Keep,
                 Some("b".to_string()),
+                None,
                 None,
                 None,
                 rdm_core::ops::TitleUpdate::Keep,
@@ -4640,6 +5096,7 @@ fn mutate_batch_preserves_each_steps_own_sha() {
                 Some("shaaaa1".to_string()),
                 None,
                 None,
+                None,
                 rdm_core::ops::TitleUpdate::Keep,
             )
             .map(|_| ())
@@ -4654,6 +5111,7 @@ fn mutate_batch_preserves_each_steps_own_sha() {
                 rdm_core::ops::TagsUpdate::Keep,
                 rdm_core::ops::BodyUpdate::Keep,
                 Some("shaaaa2".to_string()),
+                None,
                 None,
                 None,
                 rdm_core::ops::TitleUpdate::Keep,
@@ -4713,6 +5171,7 @@ fn mutate_batch_continues_after_a_failing_step() {
                 Some("aaa1111".to_string()),
                 None,
                 None,
+                None,
                 rdm_core::ops::TitleUpdate::Keep,
             )
             .map(|_| ())
@@ -4729,6 +5188,7 @@ fn mutate_batch_continues_after_a_failing_step() {
                 Some("bad0000".to_string()),
                 None,
                 None,
+                None,
                 rdm_core::ops::TitleUpdate::Keep,
             )
             .map(|_| ())
@@ -4743,6 +5203,7 @@ fn mutate_batch_continues_after_a_failing_step() {
                 rdm_core::ops::TagsUpdate::Keep,
                 rdm_core::ops::BodyUpdate::Keep,
                 Some("aaa2222".to_string()),
+                None,
                 None,
                 None,
                 rdm_core::ops::TitleUpdate::Keep,
@@ -4899,6 +5360,7 @@ fn archive_roadmap_moves_files() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -5015,6 +5477,7 @@ fn archive_roadmap_all_done_no_force_needed() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -5070,6 +5533,7 @@ fn archive_succeeds_with_mixed_done_and_wont_fix() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -5081,6 +5545,7 @@ fn archive_succeeds_with_mixed_done_and_wont_fix() {
         Some(PhaseStatus::WontFix),
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -5380,6 +5845,7 @@ fn update_phase_empty_body_refused_when_existing_nonempty() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     );
     assert!(matches!(result, Err(Error::BodyClobberRefused)));
@@ -5422,6 +5888,7 @@ fn update_phase_empty_body_allowed_when_existing_empty() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Set(String::new()),
+        None,
         None,
         None,
         None,
@@ -5470,6 +5937,7 @@ fn update_phase_empty_body_allowed_with_flag() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -5501,6 +5969,7 @@ fn update_task_empty_body_refused_when_existing_nonempty() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Set(String::new()),
+        None,
         None,
         None,
         None,
@@ -5536,6 +6005,7 @@ fn update_task_empty_body_allowed_with_flag() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Clear,
+        None,
         None,
         None,
         None,
@@ -5636,6 +6106,7 @@ fn set_status(store: &mut MemoryStore, roadmap: &str, stem: &str, status: PhaseS
         Some(status),
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -5933,6 +6404,7 @@ fn update_phase_with_estimate_applies_status_review_and_estimate_in_one_op() {
         None,
         Some("abc123".to_string()),
         Some("roadmap/two-way".to_string()),
+        None,
         rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
         rdm_core::ops::ModelTierUpdate::Keep,
         rdm_core::ops::TitleUpdate::Keep,
@@ -6003,6 +6475,7 @@ fn update_phase_with_estimate_keep_keep_matches_plain_update() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -6015,6 +6488,7 @@ fn update_phase_with_estimate_keep_keep_matches_plain_update() {
         Some(PhaseStatus::InProgress),
         rdm_core::ops::TagsUpdate::Set(vec!["x".to_string()]),
         rdm_core::ops::BodyUpdate::Set("Body.".to_string()),
+        None,
         None,
         None,
         None,
@@ -6127,6 +6601,7 @@ fn update_phase_with_estimate_writes_phase_file_exactly_once() {
         Some(PhaseStatus::InProgress),
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -6348,6 +6823,7 @@ fn update_phase_title_updates_in_place() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Set("Renamed Phase".to_string()),
     )
     .unwrap();
@@ -6373,6 +6849,7 @@ fn update_phase_title_empty_rejected_leaves_title_untouched() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Set(String::new()),
     )
     .unwrap_err();
@@ -6395,6 +6872,7 @@ fn update_phase_keep_title_preserves_existing() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -6414,6 +6892,7 @@ fn update_phase_with_estimate_title_updates_in_place() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -6456,6 +6935,7 @@ fn update_task_title_updates_in_place() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Set("Renamed Task".to_string()),
     )
     .unwrap();
@@ -6478,6 +6958,7 @@ fn update_task_title_empty_rejected_leaves_title_untouched() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Set("\t\n ".to_string()),
     )
     .unwrap_err();
@@ -6497,6 +6978,7 @@ fn update_task_keep_title_preserves_existing() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,
@@ -7724,6 +8206,7 @@ fn update_wont_fix_with_reason_persists() {
         None,
         None,
         None,
+        None,
         rdm_core::ops::TitleUpdate::Keep,
     )
     .unwrap();
@@ -7854,6 +8337,7 @@ fn re_retire_preserves_completed_and_reason() {
         None,
         rdm_core::ops::TagsUpdate::Keep,
         rdm_core::ops::BodyUpdate::Keep,
+        None,
         None,
         None,
         None,

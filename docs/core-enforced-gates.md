@@ -101,6 +101,18 @@ from another checkout. `review pending --format json` exposes `review_sha` and
 `branch` for readback. Revalidation detects drift at workflow boundaries; git and
 the plan Store do not share an atomic transaction.
 
+**The default `base`, absent an explicit `--base`, is the item's recorded
+`started_head`** — the resolved checkout HEAD at the moment `phase update`/
+`task update --status in-progress` first stamped it (write-once; a later
+`in-progress` re-stamp, including a `reviewed -> in-progress` rework, never
+moves it). This scopes a phase's review, and the gate's `--source`-bound
+`reviewed` write when it omits `--base`, to that phase's own commits in a
+shared roadmap worktree — not every earlier phase's too. With no
+`started_head` recorded (e.g. the item never resolved a worktree at its
+`in-progress` transition), `base` falls back to the merge-base with the
+project's default branch, exactly as before, and `rdm review source`'s
+response carries a `baseNote` explaining the fallback.
+
 ### Fail-closed probe semantics for (c)
 
 Three distinct cases, and the distinction is load-bearing:

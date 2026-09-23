@@ -77,6 +77,8 @@ pub fn run(
                 _ => bail!("review source requires an item"),
             };
             let (_, identity) = super::resolve_source_args(
+                store,
+                &project,
                 &source,
                 &item,
                 repo_config.default_branch.as_deref().unwrap_or("main"),
@@ -204,6 +206,7 @@ pub fn run(
                                     None,
                                     Some(sha),
                                     branch,
+                                    None,
                                     rdm_core::ops::TitleUpdate::Keep,
                                 )
                             })?;
@@ -227,6 +230,7 @@ pub fn run(
                                     None,
                                     Some(sha),
                                     branch,
+                                    None,
                                     rdm_core::ops::TitleUpdate::Keep,
                                 )
                             })?;

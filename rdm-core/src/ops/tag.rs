@@ -232,6 +232,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             crate::ops::TitleUpdate::Keep,
         )
         .unwrap();

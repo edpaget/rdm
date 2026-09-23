@@ -435,6 +435,7 @@ mod tests {
                     commit: None,
                     review_sha: None,
                     review_branch: None,
+                    started_head: None,
                     close_reason: None,
                     gate_override: None,
                 },

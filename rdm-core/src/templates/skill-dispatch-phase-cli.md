@@ -153,6 +153,18 @@ Record `repository`, `path`, `branch`, `base`, `head` as `identity`. One worktre
 phase of a roadmap is implemented in place in the same checkout, so `worktree add` on a later phase
 returns the existing path. **You MUST NOT** create a phase-specific branch or fork off `main`.
 
+`identity.base` is the item's own **starting head** — `rdm review source` defaults it to the item's
+recorded `started_head` (the checkout HEAD at the moment its `in-progress` stamp — step 4, or an
+earlier dispatch's step 4 on resume — first recorded it), not the merge-base with the default
+branch. This matters because the roadmap worktree is shared: it carries every earlier phase's
+commits, including a parked (`blocked`) one's, so without this default the review would re-find
+already-triaged earlier-phase changes and attribute them to this phase. A fresh phase's first read
+here (before step 4 has run) falls back to the merge-base, which is harmless since there is nothing
+earlier to exclude yet; the step 8 self-check re-runs `rdm review source` after the stamp and picks
+up the real `started_head` before it reaches the code review. With no `started_head` ever recorded
+for an item, `base` falls back to the merge-base exactly as before, and the response's `baseNote`
+field says so.
+
 Then resolve the two dispatch models from the item's tier. Read `model` from `rdm phase show
 <phase> --roadmap <slug> {proj_flag} --format json` (task form: `rdm task show <slug> {proj_flag}
 --format json`) and call it `T`.

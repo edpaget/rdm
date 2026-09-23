@@ -4576,7 +4576,11 @@ mod tests {
         // autopilot shim's estimate rationale, which now names the
         // `rdm-estimate` shim as the way a downstream consumer rates tiers
         // before starting the loop.
-        let expected = 51;
+        // 51 -> 52: `agent-orchestrated-dispatch` phase 40 added a prose note
+        // to the autopilot shim's Park step naming `rdm-land` as the lander
+        // of a parked phase's commits (still on the shared branch under
+        // later phases') once the roadmap reaches `reviewed`.
+        let expected = 52;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"

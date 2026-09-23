@@ -1207,18 +1207,30 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
         let head = Self::git_text(&path, &["rev-parse", "--verify", "HEAD^{commit}"])?
             .trim()
             .to_string();
-        let base = match &request.base {
-            Some(base) => Self::git_text(
-                &path,
-                &[
-                    "rev-parse",
-                    "--verify",
-                    "--end-of-options",
-                    &format!("{base}^{{commit}}"),
-                ],
-            )?
-            .trim()
-            .to_string(),
+        // Base precedence: an explicit `--base` always wins. Otherwise prefer
+        // the item's recorded `started_head` — a phase in a shared roadmap
+        // worktree is then reviewed as its own diff, starting where its
+        // `in-progress` stamp recorded, rather than as every earlier phase's
+        // changes too. A recorded `started_head` is rev-parsed/verified
+        // exactly like an explicit `--base`, so a stale or unreachable value
+        // fails closed the same way rather than silently falling back. With
+        // neither present, fall back to today's merge-base with the default
+        // branch and say so in `base_note`.
+        let (base, base_note) = match request.base.as_ref().or(request.started_head.as_ref()) {
+            Some(base) => (
+                Self::git_text(
+                    &path,
+                    &[
+                        "rev-parse",
+                        "--verify",
+                        "--end-of-options",
+                        &format!("{base}^{{commit}}"),
+                    ],
+                )?
+                .trim()
+                .to_string(),
+                None,
+            ),
             None => {
                 let default = Self::git_text(
                     &path,
@@ -1231,9 +1243,16 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
                 )?
                 .trim()
                 .to_string();
-                Self::git_text(&path, &["merge-base", &default, &head])?
+                let merge_base = Self::git_text(&path, &["merge-base", &default, &head])?
                     .trim()
-                    .to_string()
+                    .to_string();
+                (
+                    merge_base,
+                    Some(format!(
+                        "no started_head recorded for this item; base defaulted to the merge-base with '{}'",
+                        request.default_branch
+                    )),
+                )
             }
         };
         let files = Self::git_text(
@@ -1283,6 +1302,7 @@ impl rdm_core::worktree::WorktreeProbe for GitWorktreeProbe {
                 .collect(),
             diff_text,
             no_code: request.no_code,
+            base_note,
         })
     }
 }
@@ -1737,6 +1757,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             rdm_core::ops::update::TitleUpdate::Keep,
         )
         .unwrap();
@@ -1890,6 +1911,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             rdm_core::ops::update::TitleUpdate::Keep,
         )
         .unwrap();
@@ -1914,6 +1936,7 @@ mod tests {
             None,
             rdm_core::ops::update::TagsUpdate::Keep,
             rdm_core::ops::update::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,
@@ -2262,6 +2285,102 @@ mod tests {
             ..explicit
         };
         assert!(rdm_core::resolve_review_source(&probe, &task, &wrong).is_err());
+    }
+
+    /// Phase-scoped review base (`docs/change-reviews.md` § "The target"):
+    /// with no explicit `--base`, `review_source` prefers the item's
+    /// recorded `started_head` over the merge-base with the default branch,
+    /// so a second phase implemented in the same shared roadmap worktree is
+    /// reviewed as its own diff — not the first phase's commits too. An
+    /// unreachable `started_head` fails closed exactly like an invalid
+    /// `--base`, and an explicit `--base` still overrides both.
+    #[test]
+    fn review_source_defaults_base_to_started_head_and_falls_back_to_merge_base() {
+        if !git_available() {
+            return;
+        }
+        let (_plan, repo, _store, _parent) = prune_fixture();
+        let roadmap = ItemRef::Roadmap {
+            roadmap: "my-roadmap".into(),
+        };
+        let wt = add(&repo, &roadmap, &roadmap.branch_name(), None).unwrap();
+        let initial = crate::head_commit_info_at(&wt.path).unwrap().unwrap().sha;
+
+        // Phase 1's commit(s).
+        std::fs::write(wt.path.join("phase-1.txt"), "phase one\n").unwrap();
+        run_git(&wt.path, &["add", "."]);
+        run_git(&wt.path, &["commit", "-m", "phase 1"]);
+        let phase_1_head = crate::head_commit_info_at(&wt.path).unwrap().unwrap().sha;
+
+        // Phase 2 starts here (its recorded `started_head`) and commits.
+        std::fs::write(wt.path.join("phase-2.txt"), "phase two\n").unwrap();
+        run_git(&wt.path, &["add", "."]);
+        run_git(&wt.path, &["commit", "-m", "phase 2"]);
+        let phase_2_head = crate::head_commit_info_at(&wt.path).unwrap().unwrap().sha;
+
+        let probe = GitWorktreeProbe::new(repo.clone());
+        let second = core_phase("my-roadmap", "phase-2-open-phase");
+
+        // Defaults to `started_head`: base == phase_1_head, and only phase
+        // 2's own file is in scope — phase 1's commit is excluded.
+        let via_started_head = rdm_core::ReviewSourceRequest {
+            started_head: Some(phase_1_head.clone()),
+            default_branch: "main".into(),
+            ..Default::default()
+        };
+        let source = rdm_core::resolve_review_source(&probe, &second, &via_started_head).unwrap();
+        assert_eq!(source.base, phase_1_head);
+        assert_eq!(source.head, phase_2_head);
+        assert_eq!(source.changed_files, ["phase-2.txt"]);
+        assert!(
+            source.base_note.is_none(),
+            "a resolved started_head must not carry a fallback note"
+        );
+
+        // No `started_head` recorded: falls back to the merge-base with the
+        // default branch (here, `initial`, since main never advanced) and
+        // says so via `base_note`.
+        let no_started_head = rdm_core::ReviewSourceRequest {
+            default_branch: "main".into(),
+            ..Default::default()
+        };
+        let fallback = rdm_core::resolve_review_source(&probe, &second, &no_started_head).unwrap();
+        assert_eq!(fallback.base, initial);
+        assert_eq!(
+            fallback.changed_files,
+            ["phase-1.txt", "phase-2.txt"],
+            "the merge-base fallback covers every commit since the default branch, not just phase 2's"
+        );
+        let note = fallback
+            .base_note
+            .expect("the merge-base fallback must explain itself");
+        assert!(
+            note.contains("main"),
+            "note should name the fallback branch: {note}"
+        );
+
+        // An explicit `--base` overrides `started_head`.
+        let explicit_base = rdm_core::ReviewSourceRequest {
+            base: Some(initial.clone()),
+            started_head: Some(phase_1_head.clone()),
+            default_branch: "main".into(),
+            ..Default::default()
+        };
+        let overridden = rdm_core::resolve_review_source(&probe, &second, &explicit_base).unwrap();
+        assert_eq!(overridden.base, initial);
+        assert!(overridden.base_note.is_none());
+
+        // A stale/unreachable `started_head` fails closed, exactly like an
+        // invalid `--base`.
+        let bogus = rdm_core::ReviewSourceRequest {
+            started_head: Some("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef".into()),
+            default_branch: "main".into(),
+            ..Default::default()
+        };
+        assert!(
+            rdm_core::resolve_review_source(&probe, &second, &bogus).is_err(),
+            "an unreachable started_head must refuse rather than silently fall back"
+        );
     }
 
     #[test]

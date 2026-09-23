@@ -921,3 +921,272 @@ fn a_clean_item_serializes_without_a_gate_override_key() {
         "an un-overridden phase must not carry the key at all: {j}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Phase-scoped review base (roadmap agent-orchestrated-dispatch, phase 40):
+// each phase's `started_head` is stamped write-once on its first
+// `in-progress` transition, `review source` defaults its base to that value
+// instead of the merge-base with the default branch, and the gated
+// `reviewed` write composes with that default end to end.
+// ---------------------------------------------------------------------------
+
+fn rev_parse(dir: &Path, rev: &str) -> String {
+    let out = git(dir, &["rev-parse", rev]);
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn current_branch(dir: &Path) -> String {
+    let out = git(dir, &["symbolic-ref", "--short", "HEAD"]);
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn phase_json_for(plan: &Path, stem: &str, roadmap: &str) -> Value {
+    let out = rdm()
+        .arg("--root")
+        .arg(plan)
+        .args([
+            "phase",
+            "show",
+            stem,
+            "--format",
+            "json",
+            "--roadmap",
+            roadmap,
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice(&out).unwrap()
+}
+
+/// AC1 + AC2 + AC3 at the binary boundary: two phases implemented in
+/// sequence in one shared roadmap worktree. The second phase's
+/// `in-progress` stamp records `started_head` from OUTSIDE the worktree
+/// (the source repo's main checkout), a re-stamp does not move it,
+/// `review source` defaults its base to that recorded value rather than the
+/// merge-base — scoping `changedFiles` to the second phase's own commit —
+/// and an approving `change/` review persisted at that base lets the gated
+/// `reviewed` write through.
+#[test]
+fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "create",
+            "impl",
+            "--title",
+            "Impl",
+            "--number",
+            "2",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    // The shared roadmap worktree, with no work committed to it yet.
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "auth", "--project", "demo"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+    let base_head = rev_parse(&wt, "HEAD");
+
+    // AC1: stamp phase 1 in-progress from OUTSIDE the worktree (the main
+    // source checkout) — resolution goes through the registered worktree,
+    // not the caller's cwd.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-design",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    assert_eq!(
+        phase_json_for(plan.path(), "phase-1-design", "auth")["started_head"],
+        base_head
+    );
+
+    // Phase 1's own commit.
+    std::fs::write(wt.join("src/lib.rs"), "fn one() {}\nfn two() {}\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "-m", "phase 1 work"]);
+    let phase_1_head = rev_parse(&wt, "HEAD");
+
+    // Write-once: a second in-progress stamp does not move it.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-design",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    assert_eq!(
+        phase_json_for(plan.path(), "phase-1-design", "auth")["started_head"],
+        base_head,
+        "a re-stamp of in-progress must not move an already-recorded started_head"
+    );
+
+    // Phase 2 starts here — its started_head is phase 1's HEAD.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-2-impl",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    assert_eq!(
+        phase_json_for(plan.path(), "phase-2-impl", "auth")["started_head"],
+        phase_1_head
+    );
+
+    // Phase 2's own commit.
+    std::fs::write(wt.join("src/extra.rs"), "fn three() {}\n").unwrap();
+    git(&wt, &["add", "."]);
+    git(&wt, &["commit", "-m", "phase 2 work"]);
+    let phase_2_head = rev_parse(&wt, "HEAD");
+
+    // AC2: `review source` defaults base to phase 2's started_head, so only
+    // phase 2's own file is in scope — phase 1's is excluded.
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "source",
+            "--on",
+            "phase/auth/phase-2-impl",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let source: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(source["base"], phase_1_head);
+    assert_eq!(source["head"], phase_2_head);
+    assert_eq!(source["changedFiles"], serde_json::json!(["src/extra.rs"]));
+    assert!(
+        source.get("baseNote").is_none(),
+        "a resolved started_head must not carry a fallback note: {source}"
+    );
+
+    // `--base <sha>` still overrides.
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "source",
+            "--on",
+            "phase/auth/phase-2-impl",
+            "--base",
+            &base_head,
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let overridden: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(overridden["base"], base_head);
+
+    // AC3: an approving `change/` review persisted at that base lets the
+    // gated `reviewed` write through.
+    create_approved_plan(plan.path(), "impl-plan", "phase/auth/phase-2-impl");
+    let branch = current_branch(&wt);
+    let change_id = start_review(
+        plan.path(),
+        Some(&wt),
+        "change/HEAD",
+        &["--implements", "plan/impl-plan", "--base", &phase_1_head],
+    );
+    submit_approve(plan.path(), &change_id);
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-2-impl",
+            "--status",
+            "reviewed",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+            "--source",
+            wt.to_str().unwrap(),
+            "--base",
+            &phase_1_head,
+            "--expected-head",
+            &phase_2_head,
+            "--expected-branch",
+            &branch,
+        ])
+        .current_dir(&wt)
+        .assert()
+        .success();
+    assert_eq!(
+        phase_json_for(plan.path(), "phase-2-impl", "auth")["status"],
+        "reviewed"
+    );
+}

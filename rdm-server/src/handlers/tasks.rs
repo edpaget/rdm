@@ -451,6 +451,7 @@ pub async fn update_task(
             None,
             None,
             None,
+            None,
             rdm_core::ops::TitleUpdate::Keep,
             &gate,
         )
@@ -1302,6 +1303,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             rdm_core::ops::TitleUpdate::Keep,
         )
         .unwrap();
@@ -1324,6 +1326,7 @@ mod tests {
             None,
             rdm_core::ops::TagsUpdate::Keep,
             rdm_core::ops::BodyUpdate::Keep,
+            None,
             None,
             None,
             None,
@@ -1775,6 +1778,7 @@ mod tests {
             None,
             rdm_core::ops::TagsUpdate::Keep,
             rdm_core::ops::BodyUpdate::Set("See [the feature](rdm:task/feature) too.".to_string()),
+            None,
             None,
             None,
             None,
