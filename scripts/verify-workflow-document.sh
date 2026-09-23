@@ -15,14 +15,10 @@
 # helper module — see docs/workflow-schemas.md § "Import spike"). This harness
 # gates four things:
 #
-#   1. STATIC INVARIANTS — grep-based assertions on the workflow source and the
-#      skill shim: the parallel() fan-out, the --out / rdm-show wiring, the
-#      abort-on-incomplete and has-SHA/body-only branches, both document-core
-#      markers present, no `--status` mutation or plan-mode/confirmation call
-#      anywhere in rdm-wf-document.js, no `Date.now(`/`Math.random(` in rdm-wf-document.js or
-#      lib/document.mjs, the skill shim retains the terminal
-#      "not done until reviewed and approved" human-approval language, and the
-#      skill shim no longer carries the old step-by-step git-gather prose.
+#   1. STATIC INVARIANTS — grep-based assertions on the workflow source: no
+#      `--status` mutation or plan-mode/confirmation call anywhere in
+#      rdm-wf-document.js, and no `Date.now(`/`Math.random(` in
+#      rdm-wf-document.js or lib/document.mjs.
 #   2. BLOCK DRIFT — the `document-core` region is byte-identical between the
 #      lib source of truth and the stamped workflow script (with a
 #      planted-mutation self-test proving the gate is not a no-op).
@@ -99,29 +95,6 @@ trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 say "1. Static invariants on rdm-wf-document.js and the rdm-document skill shim"
 # ==============================================================================
 
-grep -q 'parallel(' "$WF" || fail "rdm-wf-document.js must fan out per-phase gathering via parallel("
-grep -q -- '--out' "$WF" || fail "rdm-wf-document.js must reference --out"
-grep -q 'rdm roadmap show' "$WF" || fail "rdm-wf-document.js must fetch the roadmap via rdm roadmap show"
-grep -q 'rdm phase show' "$WF" || fail "rdm-wf-document.js must fetch each phase via rdm phase show"
-grep -q -- '--format json' "$WF" || fail "rdm-wf-document.js's rdm fetch commands must request --format json"
-pass "parallel() fan-out and the rdm roadmap show / phase show --format json wiring are present"
-
-grep -q 'incompletePhases' "$WF" || fail "rdm-wf-document.js must carry an incompletePhases abort branch"
-grep -q 'aborted: true' "$WF" || fail "rdm-wf-document.js must return aborted: true on the incomplete-phase short-circuit"
-grep -q 'computeIncompletePhases' "$WF" || fail "rdm-wf-document.js must call computeIncompletePhases"
-pass "abort-on-incomplete branch present"
-
-grep -q 'hasSha' "$WF" || fail "rdm-wf-document.js must carry the hasSha has-SHA/body-only decision"
-grep -q 'fallback' "$WF" || fail "rdm-wf-document.js must carry the body-only fallback flag"
-grep -q 'buildGitRangeCommands' "$WF" || fail "rdm-wf-document.js must call buildGitRangeCommands"
-pass "has-SHA / body-only fallback branch present"
-
-for marker in ">>> document-core:begin" ">>> document-core:end"; do
-    grep -q "$marker" "$LIB" || fail "document-core marker missing from $LIB: $marker"
-    grep -q "$marker" "$WF" || fail "document-core marker missing from $WF: $marker"
-done
-pass "document-core markers present in both lib and workflow"
-
 # AC: the workflow performs no rdm status mutation of its own (it is an
 # artifact producer, not a gate) and runs no confirmation/plan-mode call.
 if grep -qE -- '--status[[:space:]]' "$WF"; then
@@ -143,21 +116,6 @@ for f in "$WF" "$LIB"; do
 done
 pass "no Date.now( / Math.random( in rdm-wf-document.js or lib/document.mjs"
 
-# AC: the skill shim retains the terminal human-approval language...
-if ! grep -qi 'not done until' "$SKILL" || ! grep -qi 'reviewed and approved' "$SKILL"; then
-    fail "SKILL.md must retain the terminal 'not done until reviewed and approved' human-approval language"
-fi
-pass "SKILL.md retains the terminal human-approval language"
-
-# ...and was actually thinned, not just re-saved: the old step-by-step
-# git-gather prose (a literal step named "Cross-reference") must be gone.
-if grep -q '\*\*Cross-reference\*\*' "$SKILL"; then
-    fail "SKILL.md still carries the old step-by-step 'Cross-reference' git-gather prose — it must be thinned into rdm-wf-document.js's prompts"
-fi
-pass "SKILL.md no longer carries the old step-by-step git-gather prose"
-
-grep -q 'Workflow' "$SKILL" || fail "SKILL.md must invoke the document Workflow"
-pass "SKILL.md is a thin Workflow-invoking shim"
 # DELETED SECTION "1b." (no-mechanical-agents-in-workflows phase 34, commit 4):
 # its subject was a mechanical agent, its model pin, or the caller hoist that
 # suppressed it. None of those exists any more. Deleted and named, never

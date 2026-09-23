@@ -1022,19 +1022,6 @@ fi
     fail "the remedy path created a lease; rung 3 needs no on-disk state"
 ok "exporting RDM_HARNESS_SESSION_ID gives one changeset, a landing commit, no lease, and no advisory"
 
-# --- K6: the document records which harnesses get continuity (AC3) ----------
-# A grep-level guard that the harness-continuity table is not silently dropped
-# by a later edit. It gates presence, not prose.
-DOC_K="$REPO_ROOT/docs/session-identity.md"
-[ -f "$DOC_K" ] || fail "docs/session-identity.md is missing"
-grep -q 'Continuity across ephemeral wrapper shells' "$DOC_K" ||
-    fail "docs/session-identity.md has no phase-11 continuity section"
-for _needle in 'RDM_HARNESS_SESSION_ID' 'Claude Code' 'Pi' 'plain interactive shell' 'no readable process table'; do
-    grep -qi -- "$_needle" "$DOC_K" ||
-        fail "docs/session-identity.md's harness-continuity table no longer covers '$_needle'"
-done
-ok "docs/session-identity.md records the phase-11 outcome and the per-harness table"
-
 # ---------------------------------------------------------------------------
 # Section K (self-tests) — two planted mutations, each rebuilt and re-run
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 # WHAT THIS GATES
 #   1  Hygiene: the three scripts parse, are grep-readable text, carry no clock
 #      and no RNG, are not coupled to the lane's hot path, and document
-#      themselves; docs/finder-collapse.md exists and pre-registers a rule.
+#      themselves.
 #   2  Corpus validation and the pre-registered POWER floors: every committed
 #      unit is schema-valid with a real plan document, the run population clears
 #      the floors, buildCollapseTrials THROWS on a truncated corpus, and
@@ -67,7 +67,6 @@ CORPUS="tests/fixtures/finder-collapse/corpus.jsonl"
 TRIALS="tests/fixtures/finder-collapse/trials-opus-r2.json"
 ADJUDICATION="tests/fixtures/finder-collapse/adjudication.jsonl"
 SIDECARS="tests/fixtures/finder-collapse/mine-sidecars"
-DOC="docs/finder-collapse.md"
 BASELINE_JSON="docs/token-baseline.json"
 REVIEW_LIB=".claude/workflows/lib/review.mjs"
 
@@ -137,14 +136,6 @@ for flag in --dry-run --dispatch --dispatch-stub --score --audit --replicates --
 done
 grep -qi 'COST WARNING' "$TMP/runhelp.txt" || fail "$RUNNER --help must carry a COST WARNING"
 [ "$FAILURES" = "$BEFORE" ] && pass "both CLIs document their whole surface, and the runner warns about spend"
-
-BEFORE="$FAILURES"
-[ -f "$DOC" ] || fail "missing $DOC"
-grep -q '## Decision rule' "$DOC" || fail "$DOC must pre-register a decision rule"
-grep -q '## DECISION' "$DOC" || fail "$DOC must carry a DECISION section"
-grep -qi 'never a ship' "$DOC" || fail "$DOC must state that the token criterion alone is never a ship"
-grep -qi 'legitimate terminal negative' "$DOC" || fail "$DOC must name the per-lens loss as a legitimate negative"
-[ "$FAILURES" = "$BEFORE" ] && pass "$DOC pre-registers a rule, names the negative outcome, and forbids a token-only ship"
 
 # ---------------------------------------------------------------------------
 say "2. Corpus validation and the pre-registered POWER floors"

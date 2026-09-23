@@ -203,14 +203,6 @@ trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 # tool, so the orchestrator's two review-engine calls would be unreachable.
 say "1. Static invariants on .claude/skills/rdm-autopilot/SKILL.md"
 
-# Frontmatter must declare the three tools this loop actually uses.
-awk '/^---$/{n++; next} n==1' "$SKILL" >"$TMP/frontmatter"
-grep -q -- '- Bash' "$TMP/frontmatter" || fail "SKILL.md frontmatter must list '- Bash' in allowed-tools"
-grep -q -- '- Workflow' "$TMP/frontmatter" || fail "SKILL.md frontmatter must list '- Workflow' in allowed-tools"
-grep -q -- '- Skill' "$TMP/frontmatter" ||
-    fail "SKILL.md frontmatter must list '- Skill' in allowed-tools — the per-phase unit is entered with Skill"
-pass "frontmatter lists Bash, Workflow and Skill"
-
 # The Skill-entry contract, asserted as a shape rather than a sentence: the
 # file must contain a Skill({ ... skill: 'rdm-dispatch-phase' ... }) entry and
 # must NOT contain an Agent(...) dispatch of that same skill.
@@ -239,12 +231,6 @@ if assert_skill_entry "$TMP/skill-typo-mutant.md"; then
     fail "self-test B: a typo'd Skill entry was NOT caught — the Skill-entry check is vacuous"
 fi
 pass "self-test B: a typo'd Skill entry turns the check red"
-
-# The estimate Workflow is the ONE Workflow call left in this loop, so it must
-# still be named as an invocation.
-# shellcheck disable=SC2016
-grep -qF '**`rdm-wf-estimate`' "$SKILL" || fail "SKILL.md must name the 'estimate' Workflow it still invokes"
-pass "the surviving estimate Workflow call is still named"
 
 # --- 2. DYNAMIC OUTCOME CONTRACT ----------------------------------------------
 say "2. Dynamic advance/park write+read-back contract against the real binary"

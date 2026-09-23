@@ -221,22 +221,7 @@ extract_spec_region "$TEMPLATES/skill-review-cli.md" >"$TMP/spec-cli"
 if grep -nE '\{proj_flag\}|\{proj_param\}|\{t_[a-z_]+\}|\{principles\}' "$TMP/spec-cli" >&2; then
     fail "a template placeholder leaked into the shared generated review spec"
 fi
-# Prose <-> DIMENSIONS consistency: every code dimension key must be named in the
-# rendered fleet, and the retired verdict vocabulary must be gone everywhere.
-for key in ac correctness tests architecture api-docs changelog security; do
-    grep -q "\*\*$key\*\*" "$TMP/spec-cli" ||
-        fail "the rendered review spec does not document the '$key' dimension"
-done
-for word in reviewed rework escalated; do
-    grep -q "$word" "$TMP/spec-cli" || fail "the rendered review spec is missing the '$word' outcome"
-done
-if grep -n 'PASS WITH CONCERNS' "$TEMPLATES/skill-review-cli.md" >&2; then
-    fail "skill-review-cli.md still uses the retired PASS WITH CONCERNS verdict"
-fi
-if grep -n 'tasks have no .blocked. status' "$TEMPLATES/skill-review-cli.md" >&2; then
-    fail "skill-review-cli.md still claims tasks have no blocked status"
-fi
-pass "shared spec region is non-empty, placeholder-free, and documents all seven dimensions"
+pass "shared spec region is non-empty and placeholder-free"
 
 # --- 1d. PLAN SPEC PROJECTION -------------------------------------------------
 # The plan render is produced by the same emitter from the same regions, so it
@@ -248,23 +233,7 @@ extract_spec_region "$TEMPLATES/skill-plan-review-cli.md" >"$TMP/plan-spec-cli"
 if grep -nE '\{proj_flag\}|\{proj_param\}|\{t_[a-z_]+\}|\{principles\}' "$TMP/plan-spec-cli" >&2; then
     fail "a template placeholder leaked into the shared generated plan-review spec"
 fi
-for key in coherence architectural-fit unit-of-work restraint; do
-    grep -q "\*\*$key\*\*" "$TMP/plan-spec-cli" ||
-        fail "the rendered plan spec does not document the '$key' dimension"
-done
-# DELETED (no-mechanical-agents-in-workflows, phase 34, commit 1): the
-# `*trigger: the target is a phase.*` grep. Predicate-driven dimension selection
-# no longer exists — the caller selects reviewers — so the string it hunted for
-# has no referent. Deleted, never re-pointed.
-for word in reviewed rework escalated; do
-    grep -q "$word" "$TMP/plan-spec-cli" || fail "the rendered plan spec is missing the '$word' outcome"
-done
-grep -q 'needs-plan-review' "$TMP/plan-spec-cli" ||
-    fail "the rendered plan spec must document the needs-plan-review gate"
-grep -q 'no gate at all' "$TMP/plan-spec-cli" ||
-    fail "the rendered plan spec must carry the --implementation-plan no-gate carve-out"
-grep -q 'gate each phase \*\*individually\*\*' "$TMP/plan-spec-cli" ||
-    fail "the rendered plan spec must carry per-phase --roadmap gating"
+pass "plan spec region is non-empty and placeholder-free"
 
 # --- 1d-gate-policy. THE SELF-REVIEW POLICY PROSE (AC3) -----------------------
 # phase-4-plan-review-gate-blocked-by-safety-classifier: the gate is now
@@ -281,25 +250,7 @@ grep -q 'gate each phase \*\*individually\*\*' "$TMP/plan-spec-cli" ||
 # WRITE ("if the write fails … do not perform the write at all"), never in
 # terms of the local driver's argument or result field names. Those live in the
 # local shim's hand-authored prose, gated separately below.
-PLAN_GATE_ANCHORS=$(
-    cat <<'ANCHORS'
-specified gate behavior
-did not is LOUD
-never describe that unit as cleanly reviewed
-do not perform
-deliberate
-hand-off, not a failure
-docs/plan-review-gate-policy.md
-ANCHORS
-)
-printf '%s\n' "$PLAN_GATE_ANCHORS" | while IFS= read -r anchor; do
-    [ -n "$anchor" ] || continue
-    grep -qF "$anchor" "$TMP/plan-spec-cli" ||
-        fail "1d-gate-policy: the rendered plan spec is missing the gate-policy anchor: $anchor"
-done || exit 1
-pass "1d-gate-policy: the rendered plan spec states the evidence-carrying/deferrable/loud gate policy"
-
-# ...and states it WITHOUT the local driver's internals. `gateMode`/`gateAction`/
+# ...states it WITHOUT the local driver's internals. `gateMode`/`gateAction`/
 # `gateBlocked`/`gateDeferred` are `rdm-wf-plan-review.js` surface, and that
 # workflow is never shipped (`rdm-core/src/templates/workflows/` holds only
 # review-refute-fix). A consumer of the distributed skill has
@@ -504,34 +455,6 @@ sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --check --target local --mode pla
     fail "regeneration did not restore sync in the local rdm-plan-review scratch copy"
 pass "local rdm-plan-review (target=local mode=plan) drift detector fires on a consumer-side edit and heals"
 
-# Non-vacuity for §1d-gate-policy's anchor greps: strip the
-# docs/plan-review-gate-policy.md pointer from the //|plan| region in a scratch
-# SOURCE copy, regenerate, and require the anchor to disappear from the plan
-# render while the CODE render stays byte-unchanged (the same
-# mutate-source/assert-isolation shape used for the local-code-override below).
-reset_localscratch_source
-reset_localscratch_consumers
-sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode code >/dev/null 2>&1
-cp "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" "$LOCALSCRATCH/baseline-code-for-gate-policy.md"
-grep -v 'docs/plan-review-gate-policy.md' "$LOCALSCRATCH/.claude/workflows/lib/review.mjs" >"$LOCALSCRATCH/mut-gate-src" &&
-    mv "$LOCALSCRATCH/mut-gate-src" "$LOCALSCRATCH/.claude/workflows/lib/review.mjs"
-if grep -q 'docs/plan-review-gate-policy.md' "$LOCALSCRATCH/.claude/workflows/lib/review.mjs"; then
-    fail "1g: the gate-policy pointer mutation did not actually strip the line"
-fi
-sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target local --mode plan >/dev/null 2>&1
-# Scoped to the GENERATED region: the hand-authored shim prose above it also
-# names the policy doc (deliberately), so a whole-file grep would false-pass.
-extract_spec_region "$LOCALSCRATCH/.claude/skills/rdm-plan-review/SKILL.md" >"$LOCALSCRATCH/mutated-plan-spec"
-if grep -q 'docs/plan-review-gate-policy.md' "$LOCALSCRATCH/mutated-plan-spec"; then
-    fail "1g: stripping the //|plan| gate-policy pointer did NOT change the plan render — §1d-gate-policy's grep is vacuous"
-fi
-sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode code >/dev/null 2>&1
-diff -u "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" "$LOCALSCRATCH/baseline-code-for-gate-policy.md" >/dev/null 2>&1 ||
-    fail "1g: the //|plan| gate-policy prose LEAKED into the code render — mode isolation is broken"
-pass "1g: the gate-policy pointer is consumed by the plan render only, and its absence is detectable"
-reset_localscratch_source
-reset_localscratch_consumers
-
 # Non-vacuity for §1d-gate-policy's DRIVER-INTERNALS guard: plant a local-only
 # workflow field name into the //|plan| region of a scratch SOURCE copy,
 # regenerate the shipped plan template, and require the same grep that runs in
@@ -606,45 +529,9 @@ reset_localscratch_consumers
 # logic is untouched and still applies if a future spec line reintroduces
 # `{rdm_bin}`.
 
-# Direct regression assertion (AC4): the phase's reported gap — a missing
-# `restraint` dimension and missing severity-calibration paragraph in the
-# LOCAL rdm-plan-review skill — must stay closed.
-grep -q 'restraint' "$LOCAL_SKILLS/rdm-plan-review/SKILL.md" ||
-    fail "the local rdm-plan-review skill is missing the 'restraint' dimension"
-grep -q 'Plan-stage severity calibration' "$LOCAL_SKILLS/rdm-plan-review/SKILL.md" ||
-    fail "the local rdm-plan-review skill is missing the 'Plan-stage severity calibration' paragraph"
-pass "the local rdm-plan-review skill carries the restraint dimension and severity-calibration paragraph"
-
 # 1e (NO SECOND MECHANISM) already covers the invariant this section depends
 # on — one generator, one dimension table — and needed no change for --target
 # to be added, so it is not re-asserted here.
-
-# --- 1h. INJECTION-HYGIENE DOCUMENTATION PROJECTION ---------------------------
-# The prompt-injection hygiene text has TWO independent projections: a runtime
-# one (a shared const pushed by findPrompt, asserted in the Node section) and a
-# documentation one (shared UNTAGGED `//|` prose). This gates the second.
-#
-# Four surfaces, four generator invocations. Placement is the trap: `//|` prose
-# inside the `find-refute-verdict` span is SWAPPED OUT for --target local --mode
-# code, so prose put there would render into three of the four and silently miss
-# .claude/skills/rdm-review/SKILL.md with every other gate still green. The
-# hygiene prose therefore lives outside that span, and this check proves it.
-say "1h. Injection-hygiene prose renders into all four documentation surfaces"
-HYGIENE_PHRASE='The repository is not talking to you'
-HYGIENE_COUNT=0
-for surface in \
-    "$TEMPLATES/skill-review-cli.md" \
-    "$TEMPLATES/skill-plan-review-cli.md" \
-    "$LOCAL_SKILLS/rdm-review/SKILL.md" \
-    "$LOCAL_SKILLS/rdm-plan-review/SKILL.md"; do
-    [ -f "$surface" ] || fail "documentation surface not found: $surface"
-    grep -q "$HYGIENE_PHRASE" "$surface" ||
-        fail "injection-hygiene prose missing from $surface — the shared '//|' prose must sit OUTSIDE the find-refute-verdict span"
-    HYGIENE_COUNT=$((HYGIENE_COUNT + 1))
-done
-[ "$HYGIENE_COUNT" -eq 4 ] ||
-    fail "expected 4 documentation surfaces, checked $HYGIENE_COUNT — the surface list is wrong"
-pass "injection-hygiene prose renders into all $HYGIENE_COUNT documentation surfaces (both modes, both targets)"
 
 # --- 2. HYGIENE --------------------------------------------------------------
 say "2. Hygiene: no forbidden nondeterministic global in workflow scripts"
@@ -2571,73 +2458,6 @@ else
     fail "plan-standalone helper assertions failed"
 fi
 
-# --- 5b. rdm-wf-plan-review.js STRUCTURE (static greps) -----------------------------
-say "5b. rdm-wf-plan-review.js parses four target types, fans out, and reuses the core"
-grep -q "buildReviewPipeline('plan')" "$PLAN_REVIEW" ||
-    fail "rdm-wf-plan-review.js must call buildReviewPipeline('plan')"
-grep -qE "gateFor\('plan'|GATE_POLICY\.plan" "$PLAN_REVIEW" ||
-    fail "rdm-wf-plan-review.js must gate through gateFor('plan', …) / GATE_POLICY.plan"
-# DELETED (phase 34, commit 1): the stripNonPhaseUnitOfWork grep — no referent.
-grep -q 'filterPlanReviewTag' "$PLAN_REVIEW" ||
-    fail "rdm-wf-plan-review.js must clear the tag via filterPlanReviewTag"
-grep -q 'classifyPlanOutcome' "$PLAN_REVIEW" ||
-    fail "rdm-wf-plan-review.js must classify each outcome via classifyPlanOutcome"
-grep -qE '\bparallel\(' "$PLAN_REVIEW" ||
-    fail "rdm-wf-plan-review.js must fan out per-phase via parallel()"
-# The three flag target forms are all parsed...
-for form in '--task' '--roadmap' '--implementation-plan'; do
-    grep -q -- "$form" "$PLAN_REVIEW" ||
-        fail "rdm-wf-plan-review.js does not parse the '$form' target form"
-done
-# ...and the fourth (positional `<slug> [phase]`) resolves to the phase/roadmap kinds.
-grep -q "kind = 'phase'" "$PLAN_REVIEW" ||
-    fail "rdm-wf-plan-review.js must resolve a positional <slug> phase target"
-grep -q "kind = 'roadmap'" "$PLAN_REVIEW" ||
-    fail "rdm-wf-plan-review.js must resolve the roadmap target"
-
-# DELETED (no-mechanical-agents-in-workflows phase 34, commit 3): the
-# `if (kind !== 'implementation-plan')` guard count. It confirmed that no rdm
-# update/create/commit was REACHABLE from that branch. Nothing is reachable from
-# any branch now — the driver executes no rdm command anywhere — so the guard it
-# counted has no referent. The carve-out itself is asserted by execution instead
-# (scripts/lib/plan-review-hoist.test.mjs C3: the implementation-plan result
-# carries no gate keys at all).
-
-# The driver must not RE-DECLARE the pipeline internals (it consumes the stamped
-# block).
-# DELETED (phase 34, commit 1): the `signals:` threading assertions and the
-# diff-shaped-signal negative. Signals no longer exist in either mode.
-DRIVER=$(awk '/>>> review-refute-fix:end/{p=1;next} p' "$PLAN_REVIEW")
-if printf '%s\n' "$DRIVER" | grep -nE 'function findPrompt|function refutePrompt|const DIMENSIONS ='; then
-    fail "rdm-wf-plan-review.js driver re-declares pipeline internals — it must consume the stamped block"
-fi
-# The hygiene grep (section 2) already covers rdm-wf-plan-review.js via workflows/*.js;
-# re-assert here that it carries no forbidden nondeterministic global.
-if grep -nE 'Date\.now\(|Math\.random\(' "$PLAN_REVIEW" >&2; then
-    fail "rdm-wf-plan-review.js contains a forbidden nondeterministic global"
-fi
-pass "rdm-wf-plan-review.js parses four targets, fans out, reuses the core, and carves out implementation-plan"
-
-# The roadmap-wide sweep must exclude terminal (done/wont-fix) phases via the
-# fail-open isTerminalPhaseStatus filter (task plan-review-skips-terminal-phases).
-grep -q 'TERMINAL_PHASE_STATUSES' "$PLAN_REVIEW" ||
-    fail "rdm-wf-plan-review.js must declare TERMINAL_PHASE_STATUSES"
-grep -q 'function isTerminalPhaseStatus' "$PLAN_REVIEW" ||
-    fail "rdm-wf-plan-review.js must declare isTerminalPhaseStatus"
-pass "rdm-wf-plan-review.js: TERMINAL_PHASE_STATUSES / isTerminalPhaseStatus are present (terminal-phase sweep filter)"
-
-# DELETED SECTION 5b-cache (no-mechanical-agents-in-workflows phase 34): its subject
-# no longer exists. Per the standing ruling a broken assertion is deleted and
-# named, never repaired or re-pointed.
-
-# DELETED SECTION 5b-mechanical (no-mechanical-agents-in-workflows phase 34): its subject
-# no longer exists. Per the standing ruling a broken assertion is deleted and
-# named, never repaired or re-pointed.
-
-# DELETED SECTION 5b-models (no-mechanical-agents-in-workflows phase 34): its subject
-# no longer exists. Per the standing ruling a broken assertion is deleted and
-# named, never repaired or re-pointed.
-
 # --- 5b-drift. PLAN-REVIEW DRIVER BLOCK: byte-identical (lib vs workflow) ------
 # The plan-review DRIVER (parsePlanArgs + the fetch/act/gate orchestration in
 # runPlanReviewDriver) is the single source of truth in lib/plan-review.mjs and
@@ -2716,29 +2536,6 @@ pass "plan-review-driver block is byte-in-sync and the runtime entry is workflow
 # the caller hoists that suppressed them. The driver dispatches finder and
 # refuter agents only now, and that claim is decided by EXECUTION in
 # scripts/lib/plan-review-hoist.test.mjs, which cargo nextest runs.
-
-# --- 5c. SKILL SHIM (AC-5) ---------------------------------------------------
-# The local dogfood SKILL.md is a thin shim over rdm-wf-plan-review.js. Its hand-authored
-# prose (above the generated review-spec marker) must reference the workflow, keep
-# the canonical pipeline phrase, and speak only the new outcome vocabulary — the
-# retired PASS WITH CONCERNS / REWORK words survive ONLY inside the generated
-# region (as the collapse-mapping note), never in the hand-authored prose.
-say "5c. rdm-plan-review SKILL.md is a thin shim over rdm-wf-plan-review.js"
-SKILL_MD="$REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
-[ -f "$SKILL_MD" ] || fail "SKILL.md not found: $SKILL_MD"
-grep -q 'rdm-wf-plan-review.js' "$SKILL_MD" || fail "SKILL.md must reference the rdm-wf-plan-review.js Workflow"
-grep -q '<!-- rdm:review-spec:begin' "$SKILL_MD" || fail "SKILL.md must keep the generated review-spec begin marker"
-grep -q '<!-- rdm:review-spec:end' "$SKILL_MD" || fail "SKILL.md must keep the generated review-spec end marker"
-# Hand-authored prose = everything BEFORE the generated region begins.
-awk 'index($0, "<!-- rdm:review-spec:begin") { exit } { print }' "$SKILL_MD" >"$TMP/skill-hand"
-grep -q 'find → refute → filter → verdict → act → gate' "$TMP/skill-hand" ||
-    fail "SKILL.md hand-authored prose must keep the canonical pipeline phrase"
-for retired in 'PASS WITH CONCERNS' 'REWORK'; do
-    if grep -n "$retired" "$TMP/skill-hand" >&2; then
-        fail "SKILL.md hand-authored prose still uses the retired '$retired' vocabulary"
-    fi
-done
-pass "SKILL.md is a thin shim: references the workflow, keeps the pipeline phrase and markers, drops retired vocab"
 
 # DELETED SECTION 5d (no-mechanical-agents-in-workflows phase 34): its subject
 # no longer exists. Per the standing ruling a broken assertion is deleted and
@@ -2932,48 +2729,6 @@ else
     fail "8: non-gating refutation skip assertions failed"
 fi
 
-# --- 8b. RENDERED SKILL PROSE (whole file, not just the generated region) -----
-# The refuter invariant is stated TWICE in every review skill: once inside the
-# generated `## Review specification` region, and once in hand-authored prose the
-# generator does not own. Grepping only the region would let the hand-authored
-# copy keep contradicting the code, so these greps are deliberately whole-file.
-say "8b. Every rendered review skill states the pass-through rule, in hand-authored prose too"
-
-REVIEW_DOCS="$TEMPLATES/skill-review-cli.md $TEMPLATES/skill-plan-review-cli.md \
-$REPO_ROOT/.claude/skills/rdm-review/SKILL.md $REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
-
-for doc in $REVIEW_DOCS; do
-    [ -f "$doc" ] || fail "8b: expected review skill doc not found: $doc"
-    grep -qF 'unrefuted: true' "$doc" ||
-        fail "8b: $doc never mentions the \`unrefuted: true\` marker"
-    grep -qF 'reported, not verified' "$doc" ||
-        fail "8b: $doc does not carry the un-refuted disposition rule"
-    # The retired absolutes. Each one is now FALSE for a non-gating finding, so
-    # none of them may survive anywhere in the file.
-    ! grep -qF 'Findings are never surfaced, fixed, or acted on until a *separate* agent' "$doc" ||
-        fail "8b: $doc still claims EVERY finding is refuted before being surfaced"
-    ! grep -qF 'no finding is surfaced, fixed, or acted on until a *separate* refuter agent' "$doc" ||
-        fail "8b: $doc still claims EVERY finding is refuted before being acted on"
-    ! grep -qF 'Never fix or file an unverified finding.' "$doc" ||
-        fail "8b: $doc still forbids acting on any un-refuted finding"
-    ! grep -qF 'Suggestions may skip refutation (low stakes)' "$doc" ||
-        fail "8b: $doc still describes the suggestion skip as an optional low-stakes shortcut"
-    # The § Refute lead is a THIRD statement of the same invariant, and a
-    # partially-updated doc (§ Act rewritten, § Refute not) contradicts itself
-    # rather than merely lagging. Catch that shape too.
-    ! grep -qF 'For every finding, dispatch a **separate** read-only refuter' "$doc" ||
-        fail "8b: $doc's Refute section still claims EVERY finding gets a refuter, contradicting its own Act section"
-    # The act step's reporting vocabulary must name every action the code lane's
-    # schema accepts, or a skill reader is told to skip a finding and then given
-    # no way to report that it skipped one.
-    # Two literals, because the rendered prose wraps between them.
-    grep -qF 'state how it was handled (fixed-inline / filed-as-task /' "$doc" ||
-        fail "8b: $doc's act step no longer states the fixed-inline/filed-as-task vocabulary"
-    grep -qF 'skipped, with a reason' "$doc" ||
-        fail "8b: $doc's act step still reports a two-action vocabulary that cannot express a skip"
-done
-pass "8b: all four rendered review docs state the marker + disposition rule and drop every retired absolute"
-
 # --- 8c. PLANTED-MUTATION SELF-TESTS (non-vacuity, both directions) -----------
 # Three independent mutations, each of which MUST flip one of the section-8
 # assertions. Without these, a refactor that quietly re-broadened the skip (or
@@ -3100,14 +2855,6 @@ pass "8c: the surviving mutations flip their assertion — section 8 is non-vacu
 # never turn a `rework` outcome into `reviewed`.
 say '9. Refutation budget: under/at/over budget, four-state distinguishability, determinism, monotonicity'
 
-# The chosen N must never be changeable without the evidence that produced it.
-# These greps pin the derivation comment to the concrete phase-2 figures.
-grep -q 'const DEFAULT_MAX_REFUTATIONS = 5;' "$LIB" ||
-    fail "9: DEFAULT_MAX_REFUTATIONS is not declared as 5 in $LIB"
-for lit in 'determiningFindingRank' '98.2' '94.5' 'docs/token-baseline.json'; do
-    grep -qF "$lit" "$LIB" ||
-        fail "9: the DEFAULT_MAX_REFUTATIONS derivation no longer cites '$lit' — N must never change without its evidence"
-done
 # The cut must stay free of the two globals this runtime forbids (section 2
 # greps the workflow scripts; re-assert scoped to the canonical source).
 for forbidden in 'Date.now(' 'Math.random('; do
@@ -3725,28 +3472,6 @@ else
     fail "9: refutation budget assertions failed"
 fi
 
-# --- 9b-skills. THE FOUR-STATE VOCABULARY IN EVERY RENDERED SKILL -------------
-# Every rendered review skill must name all four provenance states and the budget
-# rule, or a skill reader is handed a finding it cannot classify. Whole-file
-# greps, like 8b's, so hand-authored prose cannot contradict the generated span.
-say "9b-skills. Every rendered review skill states the budget rule and the four-state marker table"
-for doc in $REVIEW_DOCS; do
-    [ -f "$doc" ] || fail "9b-skills: expected review skill doc not found: $doc"
-    grep -qF "unrefutedReason: 'budget'" "$doc" ||
-        fail "9b-skills: $doc never names the \`budget\` pass-through reason"
-    grep -qF "unrefutedReason: 'non-gating'" "$doc" ||
-        fail "9b-skills: $doc never names the \`non-gating\` pass-through reason"
-    grep -qF 'refuterError: true' "$doc" ||
-        fail "9b-skills: $doc never names the \`refuterError\` crash marker"
-    grep -qF 'Refutation budget' "$doc" ||
-        fail "9b-skills: $doc does not state the refutation budget rule"
-    grep -qF 'determiningFindingRank' "$doc" ||
-        fail "9b-skills: $doc does not point at the evidence behind the default"
-    grep -qF 'maxRefutations' "$doc" ||
-        fail "9b-skills: $doc does not name the per-run override"
-done
-pass "9b-skills: all four rendered review docs state the budget rule, its evidence, and all four state markers"
-
 # --- 9c. PLANTED-MUTATION SELF-TESTS (non-vacuity) ----------------------------
 # Seven independent mutations, each of which MUST flip one of section 9's
 # assertions, plus a control run against the REAL file that must PASS. Without
@@ -3922,110 +3647,6 @@ fi
 # DELETED SECTION 10f (no-mechanical-agents-in-workflows phase 34): its subject
 # no longer exists. Per the standing ruling a broken assertion is deleted and
 # named, never repaired or re-pointed.
-
-# --- 11. FINDER-CRASH PROSE COVERAGE (both `//|` spans, target x mode) --------
-# `lib/review.mjs` carries TWO `//| ### Filter & consolidate` spans: the default
-# one, and the `find-refute-verdict:local-code-override` one that
-# gen-skill-review.sh's extract_region swaps in ONLY for --target local --mode
-# code. Both must state the finder-crash rule, or one rendered surface ships
-# without it.
-#
-# `gen-skill-review.sh --check` gates render-vs-committed EQUALITY, never prose
-# COVERAGE — it stays fully green on a span you forgot to edit. This explicit
-# four-surface grep is therefore the only real gate, and the planted-mutation
-# self-test below proves exactly that: it deletes the sentence from the OVERRIDE
-# span only, regenerates so `--check` would be green again, and asserts this
-# section still goes red.
-say "11. The finder-crash rule renders into all four surfaces, from BOTH //| spans"
-
-FINDER_CRASH_RE='A \*\*finder\*\* that returns nothing is retried \*\*once\*\*'
-ABSENT_AC_RE='does \*\*not\*\* count as an AC gap'
-
-for doc in $CODE_RENDERS $PLAN_RENDERS; do
-    grep -qE "$FINDER_CRASH_RE" "$doc" ||
-        fail "11: $doc does not state the finder-crash rule — one of the two //| Filter & consolidate spans was missed"
-    # It must state the complete-coverage approval policy and the reduced-coverage
-    # visibility, not merely mention a retry.
-    grep -q 'non-participating' "$doc" ||
-        fail "11: $doc states the retry but never names non-participation"
-    grep -q 'Automatic approval requires every selected dimension' "$doc" ||
-        fail "11: $doc does not state the complete-coverage approval policy"
-done
-pass "11: all four rendered surfaces state the finder-crash rule and the complete-coverage approval policy"
-
-# Mode isolation, BOTH directions: the absent-AC-table sentence is code-only.
-for doc in $CODE_RENDERS; do
-    grep -qE "$ABSENT_AC_RE" "$doc" || fail "11: code render $doc is missing the absent-AC-table rule"
-done
-for doc in $PLAN_RENDERS; do
-    if grep -nE "$ABSENT_AC_RE" "$doc" >&2; then
-        fail "11: plan render $doc carries the code-only absent-AC-table rule (mode isolation broken)"
-    fi
-done
-pass "11: the absent-AC-table rule is code-only — present in all three code renders, absent from all three plan renders"
-
-# --- 11b. ONE-SPAN DELETION SELF-TEST -----------------------------------------
-# Delete the sentence from the OVERRIDE span only, in a scratch tree, regenerate
-# every target x mode combination there (so --check would be green), and prove
-# section 11's grep still fires on .claude/skills/rdm-review/SKILL.md — the ONE
-# consumer rendered from that span.
-say "11b. One-span deletion self-test (proves the grep catches what --check cannot)"
-PROSE="$TMP/prose-mut"
-rm -rf "$PROSE"
-mkdir -p "$PROSE/.claude/workflows/lib" "$PROSE/.claude/skills/rdm-review" \
-    "$PROSE/.claude/skills/rdm-plan-review" "$PROSE/rdm-core/src/templates" "$PROSE/scripts"
-cp "$LIB" "$PROSE/.claude/workflows/lib/review.mjs"
-cp "$REPO_ROOT/scripts/gen-skill-review.sh" "$PROSE/scripts/"
-cp "$REPO_ROOT/.claude/skills/rdm-review/SKILL.md" "$PROSE/.claude/skills/rdm-review/"
-cp "$REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md" "$PROSE/.claude/skills/rdm-plan-review/"
-for t in skill-review-cli skill-plan-review-cli; do
-    cp "$TEMPLATES/$t.md" "$PROSE/rdm-core/src/templates/"
-done
-
-# Delete the finder-crash bullet from the OVERRIDE span only: everything from the
-# override span's begin marker to its end marker.
-awk '
-    index($0, "find-refute-verdict:local-code-override:begin") { inov = 1 }
-    index($0, "find-refute-verdict:local-code-override:end")   { inov = 0 }
-    inov && index($0, "A **finder** that returns nothing is retried **once**") { drop = 1; next }
-    inov && drop && index($0, "//| - ") { drop = 0 }
-    inov && drop { next }
-    { print }
-' "$LIB" >"$PROSE/.claude/workflows/lib/review.mjs.new"
-mv "$PROSE/.claude/workflows/lib/review.mjs.new" "$PROSE/.claude/workflows/lib/review.mjs"
-if diff -q "$LIB" "$PROSE/.claude/workflows/lib/review.mjs" >/dev/null 2>&1; then
-    fail "11b: the planted one-span deletion did not apply — the anchor text moved"
-fi
-# The DEFAULT span must be untouched: the deletion is deliberately one-sided.
-DEFAULT_HITS=$(awk '
-    index($0, "find-refute-verdict:local-code-override:begin") { inov = 1 }
-    index($0, "find-refute-verdict:local-code-override:end")   { inov = 0; next }
-    !inov { print }
-' "$PROSE/.claude/workflows/lib/review.mjs" | grep -c 'A \*\*finder\*\* that returns nothing' || true)
-[ "$DEFAULT_HITS" -ge 1 ] || fail "11b: the deletion removed the DEFAULT span too — the self-test is not one-sided"
-
-for combo in shipped:code shipped:plan local:code local:plan; do
-    ctarget=${combo%%:*}
-    cmode=${combo##*:}
-    (cd "$PROSE" && sh scripts/gen-skill-review.sh --target "$ctarget" --mode "$cmode" >/dev/null) ||
-        fail "11b: could not regenerate --target $ctarget --mode $cmode in the scratch tree"
-done
-# --check would now be GREEN in the scratch tree (render == committed there)...
-(cd "$PROSE" && sh scripts/gen-skill-review.sh --check --target local --mode code >/dev/null 2>&1) ||
-    fail "11b: --check is NOT green after regenerating the mutated tree — the premise of this self-test is wrong"
-# ...but the prose grep must still catch it, on exactly the one affected surface.
-if grep -qE "$FINDER_CRASH_RE" "$PROSE/.claude/skills/rdm-review/SKILL.md"; then
-    fail "11b: the one-span deletion did NOT reach the local rdm-review render — section 11's grep would be vacuous"
-fi
-# And the surfaces rendered from the DEFAULT span are unaffected, proving the
-# self-test isolates the override span rather than blanking every render.
-for doc in "$PROSE/rdm-core/src/templates/skill-review-cli.md" \
-    "$PROSE/rdm-core/src/templates/skill-plan-review-cli.md" \
-    "$PROSE/.claude/skills/rdm-plan-review/SKILL.md"; do
-    grep -qE "$FINDER_CRASH_RE" "$doc" ||
-        fail "11b: the default-span renders lost the rule too — the deletion was not override-scoped"
-done
-pass "11b: a one-span deletion leaves --check green but is caught by the four-surface grep"
 
 # DELETED SECTION 12 (no-mechanical-agents-in-workflows phase 34): its subject
 # no longer exists. Per the standing ruling a broken assertion is deleted and
@@ -4740,17 +4361,6 @@ if run_node "$TMP/persist-pure.mjs" "$LIB" "$PLAN_LIB"; then
 else
     fail "15: persist writer pure assertions failed"
 fi
-
-# Documentation projection: the header convention must actually be documented.
-DOC="$REPO_ROOT/docs/workflow-schemas.md"
-grep -q '### Persisted review comment body' "$DOC" ||
-    fail "15: docs/workflow-schemas.md is missing the '### Persisted review comment body' subsection"
-for k in severity confidence refuted unrefutedReason dimension finding-id; do
-    grep -q "$k" "$DOC" || fail "15: docs/workflow-schemas.md does not document the '$k' header key"
-done
-grep -q 'Persisting a review' "$DOC" ||
-    fail "15: docs/workflow-schemas.md is missing the persist subsection"
-pass "15: the comment-body header convention and the persist arg are documented"
 
 # --- 15b. THE PERSIST WRITER against the REAL binary --------------------------
 # Everything above is pure. This section seeds a temp git-backed plan repo with

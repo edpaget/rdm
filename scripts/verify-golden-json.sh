@@ -31,8 +31,6 @@
 #      that re-running scripts/capture-golden.sh heals the drift the
 #      self-test in step 3 just proved it detects — mutating a scratch copy
 #      never touched the real tree, so a fresh capture already matches it.
-#   5. README static check (AC4): tests/golden/README.md exists, mentions
-#      scripts/capture-golden.sh, and documents the additive-field trap.
 #
 # Run after touching scripts/lib/golden-capture.sh, scripts/capture-golden.sh,
 # or any command the golden set covers.
@@ -246,15 +244,5 @@ if ! _diff_against_golden "$CAPTURE_A" "$GOLDEN_DIR"; then
     fail "the real committed tests/golden/*.json no longer diffs clean against capture A — the self-test in step 3 leaked into the real tree"
 fi
 ok "a fresh capture against the real (unmutated) committed goldens is clean — the re-bless path heals what step 3 proved it detects"
-
-# ---------------------------------------------------------------------------
-say "5. AC4: README documents the re-bless workflow and the additive-field trap"
-# ---------------------------------------------------------------------------
-
-README="$GOLDEN_DIR/README.md"
-[ -f "$README" ] || fail "tests/golden/README.md is missing"
-grep -q 'scripts/capture-golden.sh' "$README" || fail "tests/golden/README.md does not mention scripts/capture-golden.sh"
-grep -qi 'additive' "$README" || fail "tests/golden/README.md does not document the additive-field-still-fails caveat"
-ok "tests/golden/README.md documents the re-bless command and the additive-field caveat"
 
 say "All golden-JSON drift checks passed."

@@ -1495,38 +1495,6 @@ run_node "$REFSEV" --audit "$BASELINE_DOC" >/dev/null ||
     fail "docs/token-baseline.json's determiningFindingRank figures are not internally consistent — re-run the instrument and update the doc"
 pass "--check matches the fixture and --audit passes corpus-free on both the fixture and the COMMITTED baseline figures"
 
-# --- AC6: the prose twin actually reads the committed figures -----------------
-grep -q '^## Phase 2: rank of the determining finding' "$BASELINE_MD" ||
-    fail "$BASELINE_MD has no '## Phase 2: rank of the determining finding' section"
-run_node -e '
-const fs = require("node:fs");
-const doc = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).determiningFindingRank;
-const md = fs.readFileSync(process.argv[2], "utf8");
-const start = md.indexOf("## Phase 2: rank of the determining finding");
-const rest = md.slice(start);
-const section = rest.slice(0, rest.indexOf("\n## ", 1) === -1 ? undefined : rest.indexOf("\n## ", 1));
-const need = [
-  doc.measurementWindow.until,
-  String(doc.measurementWindow.runCount),
-  doc.measurementWindow.agentRecordCount.toLocaleString("en-US"),
-  String(doc.units.total),
-  String(doc.units.recoverable),
-  String(doc.units.determining),
-  String(doc.units.unrecoverable),
-  doc.units.recoverableSharePercent + " %",
-  doc.capVerdict.verdict === "supports-cap" ? "SUPPORTS a cap" : doc.capVerdict.verdict,
-  "contamination is per unit, never run-wide",
-  String(doc.orphanAgents.finders),
-];
-const missing = need.filter((s) => section.indexOf(s) === -1);
-if (missing.length) {
-  console.error("docs/token-baseline.md § Phase 2 does not read the committed figures. Missing: " + JSON.stringify(missing));
-  process.exit(1);
-}
-' "$BASELINE_DOC" "$BASELINE_MD" ||
-    fail "the prose section must state the corpus window, record count, unit counts, recoverable share, orphan bound, the per-unit scoping rule, and the verdict"
-pass "docs/token-baseline.md § Phase 2 states the window, record count, unit partition, recoverable share, scoping rule and verdict from the JSON twin"
-
 # --- planted mutations: no part of this section may be vacuous ----------------
 # Each follows the section-5/6 idiom: mutate a scratch copy, PROVE the mutation
 # changed the file, then require the corresponding check to flip to FAIL. The

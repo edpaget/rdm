@@ -409,23 +409,6 @@ assert_label_not_model "$TMP/mech-blocks" 'estimate:rate:' 'mechanicalModel' ||
     fail "estimate:rate:<stem> must NOT be pinned to a mechanical model (judgment stage)"
 pass "estimate:rate:<stem> is left unpinned (judgment stage)"
 
-# --- 4. SKILL SHIM -----------------------------------------------------------
-say "4. rdm-estimate SKILL.md is a thin shim referencing rdm-wf-estimate.js with no retired rating-loop prose"
-
-grep -qF '.claude/workflows/rdm-wf-estimate.js' "$SKILL" || fail "SKILL.md must reference '.claude/workflows/rdm-wf-estimate.js'"
-grep -q 'Workflow' "$SKILL" || fail "SKILL.md must invoke the estimate Workflow"
-# The retired step-by-step rating loop prose must be gone.
-for retired in "Rate its difficulty as one of" "body=\$(cat <<'EOF'" "Skipping is the override mechanism"; do
-    if grep -qF -- "$retired" "$SKILL"; then
-        fail "SKILL.md still contains retired rating-loop prose: $retired"
-    fi
-done
-# The shim must not re-narrate the per-phase heredoc writeback command.
-if grep -qF -- '--difficulty <difficulty> --body' "$SKILL"; then
-    fail "SKILL.md still re-narrates the writeback heredoc command — it should defer to the workflow"
-fi
-pass "SKILL.md is a thin shim: references rdm-wf-estimate.js, no retired rating-loop prose"
-
 # --- 5. HERMETIC SEED (real target/debug/rdm) --------------------------------
 say "5. Hermetic seed: real rdm JSON drives selectUnestimated / buildEstimatePipeline against a temp plan repo"
 

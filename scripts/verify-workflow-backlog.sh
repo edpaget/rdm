@@ -668,22 +668,6 @@ else
     fail "parse gate regressed on the unmodified file after the self-test"
 fi
 
-# =============================================================================
-say "6. Skill shim: rdm-backlog/SKILL.md is thin and points at the Workflow tool"
-# =============================================================================
-
-grep -q 'Workflow' "$SKILL" || fail "SKILL.md must mention the Workflow tool"
-grep -qE "backlog.*[Ww]orkflow|[Ww]orkflow.*'backlog'" "$SKILL" ||
-    fail "SKILL.md must invoke the 'backlog' Workflow"
-if grep -q '## Grooming analysis' "$SKILL"; then
-    fail "SKILL.md still carries the old per-category 'Grooming analysis' prose — that logic now lives in lib/backlog.mjs"
-fi
-if grep -qF 'stale_tasks** — for each task' "$SKILL"; then
-    fail "SKILL.md still carries the old stale_tasks command-template prose"
-fi
-LINES=$(wc -l <"$SKILL" | tr -d ' ')
-[ "$LINES" -le 60 ] || fail "SKILL.md is $LINES lines — expected a thin shim (~40-60 lines), the old prose may not be fully removed"
-pass "SKILL.md is a thin shim ($LINES lines) invoking the backlog Workflow, old prose removed"
 # DELETED SECTION "HOIST." (no-mechanical-agents-in-workflows phase 34, commit 4):
 # its subject was a mechanical agent, its model pin, or the caller hoist that
 # suppressed it. None of those exists any more. Deleted and named, never

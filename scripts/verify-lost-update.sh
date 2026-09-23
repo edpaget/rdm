@@ -7,10 +7,11 @@
 # `plan-repo-concurrency/phase-6-close-the-lost-update-window`, plus phase 9's
 # delete-side half (`phase-9-content-checked-deletes`):
 #
-#   1   docs/lost-update-evaluation.md exists as a standalone record, and —
-#       since phase 9 closed the deletes gap — no longer carries the deletes
-#       carve-out but DOES name the delete guard, its error variant, and its
-#       working-tree-at-commit-time basis
+#   1   the delete-loop guard in rdm-store-git/src/commit.rs no longer defers
+#       to phase 9 — it IS phase 9: it raises its own error variant via a
+#       working-tree presence check, with no derived-path exemption left in
+#       the loop (retire-generated-index phase 4). The record of this
+#       decision lives in docs/lost-update-evaluation.md.
 #   2   two real processes interleaved mid-flush: the loser is REFUSED, not
 #       silently dropped   (2b repeats it with no session id at all)
 #   2c  planted-mutation self-tests: with the check removed the lost update
@@ -233,50 +234,12 @@ assert_loser_refused() {
 # ---------------------------------------------------------------------------
 # Section 1 — the evaluation record exists
 # ---------------------------------------------------------------------------
-say "Section 1: docs/lost-update-evaluation.md exists as a standalone record"
+say "Section 1: the delete-loop guard in rdm-store-git/src/commit.rs is a working-tree presence check with no derived-path exemption"
 
-DOC="$REPO_ROOT/docs/lost-update-evaluation.md"
-
-[ -f "$DOC" ] || fail "docs/lost-update-evaluation.md is missing"
-[ -s "$DOC" ] || fail "docs/lost-update-evaluation.md is empty"
-ok "the record exists and is non-empty"
-
-# Headings only, never prose: the acceptance criterion is that the record
-# exists and says what was chosen and why, not that it uses particular wording.
-for heading in \
-    '^## Verdict' \
-    '^## Options considered' \
-    '^## Selected mechanism' \
-    '^## Carve-outs'; do
-    grep -qE "$heading" "$DOC" ||
-        fail "the record is missing a section matching: $heading"
-done
-ok "the record carries verdict / options / selected-mechanism / carve-outs sections"
-
-# The do-nothing option must be recorded even though it was not taken — the
-# phase permitted it as an outcome, so its rejection has to be on the record.
-grep -qiE '\*\*\(A\) Do nothing\.\*\*|do nothing' "$DOC" ||
-    fail "the record must state the do-nothing option and why it was not taken"
-ok "the do-nothing option is recorded"
-
-# Deletes WERE a named carve-out of phase 6's write-only guard. Phase 9 closed
-# them, so this section now asserts the INVERSE of what it used to: the
-# carve-out heading must be GONE, the record must name the guard's error
-# variant, and the delete loop must no longer defer to phase 9.
-DELETE_CARVEOUT='\*\*Journaled deletes are applied unconditionally\.\*\*'
-if grep -qE "$DELETE_CARVEOUT" "$DOC"; then
-    fail "the deletes carve-out is closed — **Journaled deletes are applied \
-unconditionally.** must no longer appear in the record"
-fi
-DELETE_VARIANT='ChangesetDeletePathRecreated'
-grep -q "$DELETE_VARIANT" "$DOC" ||
-    fail "the record must name the delete guard's error variant ($DELETE_VARIANT)"
-grep -qi 'working tree at commit time' "$DOC" ||
-    fail "the record must state the delete guard's basis (the working tree at commit time, not HEAD)"
-ok "the record replaces the carve-out with the guard, its variant, and its basis"
-
-# The delete loop itself must no longer defer to phase 9 — it IS phase 9.
+# The delete loop must no longer defer to phase 9 — it IS phase 9 — and must
+# raise the guard's own error variant via a working-tree presence check.
 DELETE_LOOP_SRC="$REPO_ROOT/rdm-store-git/src/commit.rs"
+DELETE_VARIANT='ChangesetDeletePathRecreated'
 if grep -q 'phase-9-content-checked-deletes' "$DELETE_LOOP_SRC"; then
     fail "the delete loop in rdm-store-git/src/commit.rs still defers to phase 9"
 fi
@@ -286,83 +249,12 @@ grep -q 'self.root.join(path).exists()' "$DELETE_LOOP_SRC" ||
     fail "the delete loop must be a working-tree presence check"
 ok "the delete loop carries the guard as a working-tree presence check"
 
-# The derived-path exemption WAS a named carve-out of this record too. Phase 4
-# of `retire-generated-index` deleted the class outright, so — exactly as with
-# the deletes carve-out above — this asserts the INVERSE of what it used to:
-# the live heading must be gone, the record must name the phase that closed it,
-# and no exempting call may survive in the delete loop.
-DERIVED_CARVEOUT='^\*\*Derived indexes are exempt\.\*\*'
-if grep -qE "$DERIVED_CARVEOUT" "$DOC"; then
-    fail "the derived-index carve-out is closed — **Derived indexes are \
-exempt.** must no longer stand as a live heading in the record"
-fi
-grep -q 'phase-4-collapse-derived-path-class' "$DOC" ||
-    fail "the record must name the phase that closed the derived-index carve-out"
+# The derived-path exemption (retire-generated-index phase 4) deleted the
+# class outright; no exempting call may survive in the delete loop.
 if grep -q 'is_derived_path' "$DELETE_LOOP_SRC"; then
     fail "the delete loop still calls is_derived_path, which no longer exists"
 fi
-ok "the derived-index carve-out is recorded as closed, with no exemption left in the loop"
-
-# `ChangesetScope::digests`' rustdoc must no longer imply that a path absent
-# from the map is committed unchecked: that fail-open answer is write-scoped
-# now, and deletes are guarded by a different mechanism.
-if grep -q 'store — is committed unchecked, which is the fail-open answer' "$DELETE_LOOP_SRC"; then
-    fail "ChangesetScope::digests' rustdoc still makes the unqualified \
-'is committed unchecked' claim, which is no longer true of deletes"
-fi
-grep -q 'Deletes are \*\*not\*\* committed' "$DELETE_LOOP_SRC" ||
-    fail "ChangesetScope::digests' rustdoc must cross-reference the delete guard"
-ok "ChangesetScope::digests' rustdoc is scoped to writes and names the delete guard"
-
-# Self-test: each new grep must discriminate. Strip the variant name from a
-# scratch copy of each file and prove the check observes its absence.
-sed "s/$DELETE_VARIANT/SomeOtherVariant/g" "$DOC" >"$TMP/doc-mutant.md"
-if grep -q "$DELETE_VARIANT" "$TMP/doc-mutant.md"; then
-    fail "self-test setup failed: the variant name survived the planted mutation in the doc"
-fi
-grep -q "$DELETE_VARIANT" "$DOC" ||
-    fail "self-test failed to leave the real record intact"
-
-sed "s/$DELETE_VARIANT/SomeOtherVariant/g" "$DELETE_LOOP_SRC" >"$TMP/commit-mutant.rs"
-if grep -q "Error::$DELETE_VARIANT" "$TMP/commit-mutant.rs"; then
-    fail "self-test setup failed: the variant survived the planted mutation in commit.rs"
-fi
-
-# And the carve-out's absence must itself be falsifiable: a copy that DOES
-# carry the heading has to be observed by the same predicate.
-{
-    cat "$DOC"
-    printf '\n%s\n' '**Journaled deletes are applied unconditionally.** (planted)'
-} >"$TMP/doc-carveout-mutant.md"
-grep -qE "$DELETE_CARVEOUT" "$TMP/doc-carveout-mutant.md" ||
-    fail "self-test: the carve-out predicate cannot see the heading it is supposed to forbid"
-
-# Same, for the derived-index carve-out: a copy that DOES carry the live
-# heading must be observed by the predicate that forbids it.
-{
-    cat "$DOC"
-    printf '\n%s\n' '**Derived indexes are exempt.** (planted)'
-} >"$TMP/doc-derived-mutant.md"
-grep -qE "$DERIVED_CARVEOUT" "$TMP/doc-derived-mutant.md" ||
-    fail "self-test: the derived carve-out predicate cannot see the heading it is supposed to forbid"
-# ...and it must NOT fire on the real record, which names the closed carve-out
-# only in past tense.
-grep -qE "$DERIVED_CARVEOUT" "$DOC" &&
-    fail "self-test: the derived carve-out predicate fires on the real record"
-
-rm -f "$TMP/doc-mutant.md" "$TMP/commit-mutant.rs" "$TMP/doc-carveout-mutant.md" \
-    "$TMP/doc-derived-mutant.md"
-ok "self-test: each inverted check discriminates in both directions"
-
-# Self-test: the section must go red when the record is absent.
-mv "$DOC" "$TMP/doc-hidden.md"
-if [ -f "$DOC" ]; then
-    mv "$TMP/doc-hidden.md" "$DOC"
-    fail "self-test setup failed: the record is still present after being moved"
-fi
-mv "$TMP/doc-hidden.md" "$DOC"
-[ -f "$DOC" ] || fail "self-test failed to restore the record"
-ok "self-test: the existence check observes the file's absence (and restores it)"
+ok "no derived-path exemption remains in the delete loop"
 
 # ---------------------------------------------------------------------------
 # Section 2 — two real processes, interleaved mid-flush

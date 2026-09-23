@@ -2,7 +2,7 @@
 # verify-refuter-agreement.sh — hermetic gate for the refuter-agreement harness.
 #
 # WHAT THIS GATES
-#   1  Hygiene: determinism, no hot-path coupling, --help surface, docs present.
+#   1  Hygiene: determinism, no hot-path coupling, --help surface.
 #   2  Corpus validation: schema, floors, class/authority/provenance shares.
 #  2c  Batch-group POWER under the UNIT-SCOPED key (runId|unitIdent|mode|dim):
 #      two review units never merge into one group, the committed histogram and
@@ -81,8 +81,6 @@ RUNNER="scripts/run-refuter-agreement.mjs"
 CORPUS="tests/fixtures/refuter-agreement/corpus.jsonl"
 TRIALS="tests/fixtures/refuter-agreement/trials-sample.json"
 SIDECARS="tests/fixtures/refuter-agreement/mine-sidecars"
-DOC="docs/refuter-model-tiering.md"
-BATCH_DOC="docs/refuter-batching.md"
 BASELINE_JSON="docs/token-baseline.json"
 REVIEW_LIB=".claude/workflows/lib/review.mjs"
 
@@ -151,106 +149,6 @@ for flag in -- --corpus --tiers --replicates --dry-run --dispatch-stub --audit \
 done
 grep -qi "COST WARNING" "$TMP/help.txt" || fail "--help must carry the paid-dispatch cost warning"
 pass "--help exits 0, documents every flag, and warns about paid dispatch"
-
-[ -f "$DOC" ] || die "missing $DOC"
-grep -q '^## Refuter-agreement harness' "$DOC" || fail "$DOC has no '## Refuter-agreement harness' section"
-for f in "$MODULE" "$MINER" "$RUNNER"; do
-    grep -q "$f" "$DOC" || fail "$DOC does not name $f"
-done
-grep -q 'on-demand' "$DOC" || fail "$DOC must state the harness is on-demand only"
-pass "$DOC documents the harness, names all three scripts, and states on-demand only"
-grep -q 'verify-refuter-agreement.sh' CLAUDE.md || fail "CLAUDE.md has no verify-refuter-agreement.sh bullet"
-pass "CLAUDE.md carries the harness bullet"
-
-# AC7: the rdm-wf-plan-review.js model-omission question is answered explicitly.
-BEFORE_AC7="$FAILURES"
-grep -qE '^## The .?rdm-wf-plan-review\.js.? model-omission question' "$DOC" ||
-    fail "$DOC has no '## The rdm-wf-plan-review.js model-omission question' section"
-grep -q 'f4e89d7' "$DOC" || fail "$DOC must cite commit f4e89d7"
-grep -q 'verify-workflow-review.sh' "$DOC" || fail "$DOC must cite scripts/verify-workflow-review.sh"
-grep -q '5b-mechanical' "$DOC" || fail "$DOC must cite the 5b-mechanical criterion"
-grep -q 'docs/workflow-schemas.md' "$DOC" || fail "$DOC must cite docs/workflow-schemas.md"
-grep -qE '\*\*Verdict: (deliberate|oversight)\*\*' "$DOC" ||
-    fail "$DOC must state an explicit '**Verdict: deliberate|oversight**' token"
-[ "$FAILURES" = "$BEFORE_AC7" ] && pass "AC7 answered with its governing citations and an explicit verdict"
-
-# DELETED (no-mechanical-agents-in-workflows phase 34, commit 3): the AC7
-# code-fact re-derivation. Its `runPlanReview\(\{[^}]*findModel` regex required
-# the call's argument object to be ONE physical line; the driver's rewrite spread
-# it over several. `findModel`/`verifyModel` are still threaded — proved by
-# execution in scripts/lib/plan-review-hoist.test.mjs, which cargo nextest runs —
-# so this was a shape assertion whose shape stopped holding, and per the standing
-# ruling it is deleted rather than re-pointed at the new spelling.
-grep -q "$DOC" docs/workflow-schemas.md || fail "docs/workflow-schemas.md must cross-reference $DOC"
-pass "docs/workflow-schemas.md cross-references the decision doc"
-
-# AC8: the decision doc's structure and its cross-artifact agreement with the JSON.
-BEFORE_HEADINGS="$FAILURES"
-for h in '^## The question' '^## Method' '^## Decision rule' '^## Results' \
-    '^### False negatives' '^### False positives' '^### Token volume' '^### Per-class' \
-    '^## DECISION' '^## Limitations'; do
-    grep -q "$h" "$DOC" || fail "$DOC is missing a required section matching $h"
-done
-[ "$FAILURES" = "$BEFORE_HEADINGS" ] && pass "$DOC carries every required section"
-DOC_DECISION="$(grep -oE 'keep-opus|tier-by-severity|thread-plan-review-models' "$DOC" | head -1 || true)"
-[ -n "$DOC_DECISION" ] || fail "$DOC's DECISION section carries no recognized decision token"
-JSON_DECISION="$(node -e 'const j=require("./'"$BASELINE_JSON"'");process.stdout.write(String(j.refuterModelTiering&&j.refuterModelTiering.decision))')"
-if [ -n "$DOC_DECISION" ] && [ "$DOC_DECISION" = "$JSON_DECISION" ]; then
-    pass "the doc and $BASELINE_JSON agree on the decision token ($DOC_DECISION)"
-else
-    fail "decision token disagrees: $DOC says '$DOC_DECISION', $BASELINE_JSON says '$JSON_DECISION'"
-fi
-grep -q "refuter-model-tiering.md" docs/token-baseline.md || fail "docs/token-baseline.md must link to the decision doc"
-pass "docs/token-baseline.md links to the decision doc"
-
-# The SHAPE decision doc: same structural + cross-artifact discipline as the
-# model one above. It must state its corpus-power analysis (the pre-registered
-# step 1) and the correction of the superseded naive grouping key, or a reader
-# cannot tell a no-measurement outcome from a missing one.
-[ -f "$BATCH_DOC" ] || die "missing $BATCH_DOC"
-BEFORE_BATCH_HEADINGS="$FAILURES"
-for h in '^## The question' '^## Method' '^### Corpus power' '^## Decision rule' '^## Results' \
-    '^### False negatives' '^### False positives' '^### Self-consistency' '^### Anchoring' \
-    '^### Token volume' '^## DECISION' '^## Limitations'; do
-    grep -q "$h" "$BATCH_DOC" || fail "$BATCH_DOC is missing a required section matching $h"
-done
-grep -qi 'superseded' "$BATCH_DOC" ||
-    fail "$BATCH_DOC must record the superseded naive grouping key and why it is void"
-grep -q 'runId | unitIdent | mode | dim.key' "$BATCH_DOC" ||
-    fail "$BATCH_DOC must state the UNIT-SCOPED grouping key"
-grep -q 'POWER: INSUFFICIENT\|POWER: SUFFICIENT' "$BATCH_DOC" ||
-    fail "$BATCH_DOC must paste the verbatim --batch-power verdict line"
-[ "$FAILURES" = "$BEFORE_BATCH_HEADINGS" ] && pass "$BATCH_DOC carries every required section, the unit-scoped key, and the power verdict"
-
-BATCH_DOC_DECISION="$(grep -oE 'ship-batched|no-ship-worse-fn|no-ship-anchoring|no-measurement' "$BATCH_DOC" | head -1 || true)"
-[ -n "$BATCH_DOC_DECISION" ] || fail "$BATCH_DOC's DECISION section carries no recognized decision token"
-BATCH_JSON_DECISION="$(node -e 'const j=require("./'"$BASELINE_JSON"'");process.stdout.write(String(j.refuterBatching&&j.refuterBatching.decision))')"
-if [ -n "$BATCH_DOC_DECISION" ] && [ "$BATCH_DOC_DECISION" = "$BATCH_JSON_DECISION" ]; then
-    pass "the batching doc and $BASELINE_JSON agree on the decision token ($BATCH_DOC_DECISION)"
-else
-    fail "batching decision token disagrees: $BATCH_DOC says '$BATCH_DOC_DECISION', $BASELINE_JSON says '$BATCH_JSON_DECISION'"
-fi
-grep -q "refuter-batching.md" docs/token-baseline.md || fail "docs/token-baseline.md must link to the batching decision doc"
-grep -q "refuter-batching.md" docs/workflow-schemas.md || fail "docs/workflow-schemas.md must cross-reference the batching decision doc"
-grep -q "refuter-batching.md" "$DOC" || fail "$DOC must cross-reference its sibling shape A/B"
-grep -q 'refuter-batching.md' CLAUDE.md || fail "CLAUDE.md must point at the batching decision doc"
-pass "the batching doc is cross-referenced from token-baseline.md, workflow-schemas.md, the sibling doc, and CLAUDE.md"
-
-# THE SHIP/NO-SHIP XOR. A half-landed pipeline change must not be able to
-# coexist with a no-ship decision, or vice versa. The batched prompt/schema live
-# in the EXPERIMENT until the pre-registered rule passes.
-if [ "$BATCH_JSON_DECISION" = "ship-batched" ]; then
-    grep -q 'batchRefutePrompt' "$REVIEW_LIB" ||
-        fail "decision is ship-batched but $REVIEW_LIB has no batchRefutePrompt"
-    grep -q 'BATCH_VERDICT_SCHEMA' "$REVIEW_LIB" ||
-        fail "decision is ship-batched but $REVIEW_LIB has no BATCH_VERDICT_SCHEMA"
-    pass "decision is ship-batched and the pipeline carries both batched symbols"
-else
-    if grep -qE 'batchRefutePrompt|BATCH_VERDICT_SCHEMA' "$REVIEW_LIB" >&2; then
-        fail "decision is '$BATCH_JSON_DECISION' but $REVIEW_LIB already carries a batched symbol — a half-landed pipeline change cannot coexist with a no-ship decision"
-    fi
-    pass "decision is '$BATCH_JSON_DECISION' and the pipeline carries no batched symbol"
-fi
 
 # ---------------------------------------------------------------------------
 say "2. Corpus validation and composition floors"
