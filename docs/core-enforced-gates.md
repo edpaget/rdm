@@ -384,11 +384,15 @@ actually fail rather than only where its call site can be grepped:
 | `rdm-server` | `rdm-server/tests/reviewed_gate.rs` — `PATCH` to `status: reviewed` refused **409** per precondition and allowed once the records exist, for phases and tasks; plus the opt-in and other-transitions-unaffected cases |
 | the worktree probe | `rdm-git/src/worktree.rs` tests — the roadmap-over-stale-phase resolution (`probe_prefers_shared_roadmap_over_stale_phase`, `probe_falls_back_to_the_roadmap_worktree_for_a_phase`), the task branch (`probe_resolves_a_task_worktree`), dirty-path reporting (`probe_reports_a_dirty_worktree_with_its_paths`), benign misses (`probe_reports_no_worktree_rather_than_failing_on_a_miss`), and `status_porcelain_at` erroring outside a repo |
 
-The threading (the ungated allowlist and the `_gated`-entry boundary) and the
-feature split (`commands::build_gate_probe` staying the one place that names
-`rdm_git::`) were previously covered by `scripts/verify-reviewed-gate.sh` §§
-A–D; that harness was retired (see "The ungated allowlist" above) and neither
-is covered by an automated check today.
+The threading (the ungated allowlist and the `_gated`-entry boundary) was
+previously covered by `scripts/verify-reviewed-gate.sh` §§ A–C; that harness
+was retired (see "The ungated allowlist" above) and it is now held by code
+review rather than an automated check. The feature split
+(`commands::build_gate_probe` staying the one place that names `rdm_git::`)
+lost only its static single-call-site grep (§ D) — CI's feature-matrix step
+(`.github/workflows/ci.yml`'s `cargo check -p rdm-cli --no-default-features`
+and its sibling checks) still fails the build if an update arm calls
+`rdm_git::` without the feature guard.
 
 The `rdm-server` row exists because a static call-site grep cannot see a gate
 that is wired but not enforcing: a wrong config key, a wrong file, or an error
