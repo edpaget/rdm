@@ -1689,6 +1689,27 @@ const PERSIST_DEGRADED_REASONS = [
   'other',
 ];
 
+// ANCHOR_REFUSAL_BENIGN_MARKER / isAnchorRefusalBenign(stderrText) —
+// phase-46 (anchor-degraded-park-by-cause): the one substring shared by BOTH
+// Display arms of Error::QuoteOutsideChangedHunks
+// (rdm-core/src/error.rs:877-884 — "... which <range> does not touch — ..." /
+// "'<path>' is not touched by <range> — ...") and by NO other refusal this
+// call site can produce: checked against ChangePathNotInRevision,
+// ChangePathNotAFile, QuoteNotFound, QuoteAmbiguous and
+// QuoteOccurrenceOutOfRange, none of which contain it. There is no
+// structured error surface for `review comment` — every refusal exits 1
+// through rdm-cli/src/main.rs's single `process::exit(1)`, and the command
+// supports no `--format json` error output at all — so this stderr-substring
+// match is the only available machine-distinguishing signal between a
+// benign "the quote sits on an untouched line" refusal and a systemic one.
+// This is a real limitation, not an oversight (see
+// docs/workflow-schemas.md); if rdm-core ever grows a structured error
+// surface for `review comment`, this classification should move onto it.
+const ANCHOR_REFUSAL_BENIGN_MARKER = 'not touch';
+function isAnchorRefusalBenign(stderrText) {
+  return typeof stderrText === 'string' && stderrText.indexOf(ANCHOR_REFUSAL_BENIGN_MARKER) !== -1;
+}
+
 // The persist ACK round-trip is GONE, and with it PERSIST_ACK_SCHEMA,
 // buildPersistReviewPrompts, persistAccounting, classifyPersistOutcome and
 // degradationSummaryClause. Every one existed to read an agent's self-report
@@ -2281,6 +2302,15 @@ function persistReviewCommands(result, target, cfg, opts) {
   // anchor is lost — a build-time-valid `--path`/`--quote` pair the real
   // binary refuses once the ladder actually runs (ac-1/correctness-1/arch-1).
   cmds.push('RDM_PERSIST_RUNTIME_DEGRADED=0');
+  // RDM_PERSIST_PARK_REQUIRED — phase-46 (anchor-degraded-park-by-cause): the
+  // running park-cause counter, distinct from RDM_PERSIST_RUNTIME_DEGRADED
+  // above (which counts every run-time-degraded anchor, benign or not).
+  // Seeded from the BUILD-TIME degradation count: any build-time-dropped
+  // anchor (no derivable path, or an empty reviewed range — see
+  // persistPreDegradedAnchors) is systemic by construction, so it always
+  // contributes to the park signal, exactly like a systemic run-time
+  // refusal does below.
+  cmds.push('RDM_PERSIST_PARK_REQUIRED=' + (persistPreDegradedAnchors(result, target, o).length > 0 ? '1' : '0'));
   for (let i = 0; i < survivors.length; i++) {
     const f = survivors[i] || {};
     // ONE decision, shared with the pre-degradation report and the comment
@@ -2312,20 +2342,44 @@ function persistReviewCommands(result, target, cfg, opts) {
         // below reports the REAL result, not just the build-time one.
         cmd += persistCapture('RDM_PERSIST_PATH', anchorPath) + '\n';
         cmd += persistCapture('RDM_PERSIST_BODY_DEGRADED', formatCommentBody(f, 'degraded')) + '\n';
+        // RDM_PERSIST_ANCHOR_STDERR — a per-finding mktemp scratch file (same
+        // hygiene as RDM_PERSIST_START_JSON above: created with `mktemp`,
+        // `|| exit 1`, removed after use), capturing this line's stderr so
+        // the refusal can be classified (phase-46: anchor-degraded-park-by-cause).
+        // `cat`ted back to stderr on refusal so nothing already visible to the
+        // operator is lost.
+        cmd += 'RDM_PERSIST_ANCHOR_STDERR=$(mktemp "${TMPDIR:-/tmp}/rdm-persist-anchor-stderr.XXXXXX") || exit 1\n';
         cmd +=
           'if ' +
           bin +
           ' review comment "$RDM_REVIEW_ID" --path "$RDM_PERSIST_PATH" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' +
           proj +
-          ' < /dev/null; then\n' +
+          ' < /dev/null 2>"$RDM_PERSIST_ANCHOR_STDERR"; then\n' +
+          'rm -f "$RDM_PERSIST_ANCHOR_STDERR"\n' +
           ':\n' +
           'else\n' +
+          'cat "$RDM_PERSIST_ANCHOR_STDERR" >&2\n' +
           IND +
           bin +
           ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY_DEGRADED" --no-edit' +
           proj +
-          ' < /dev/null || exit 1\n' +
+          ' < /dev/null || { rm -f "$RDM_PERSIST_ANCHOR_STDERR"; exit 1; }\n' +
           'RDM_PERSIST_RUNTIME_DEGRADED=$((RDM_PERSIST_RUNTIME_DEGRADED + 1))\n' +
+          // A `blocking` finding losing its anchor always requires a park,
+          // even for the otherwise-benign untouched-line cause — decided
+          // here at JS code-gen time (severity is known statically), not by
+          // a shell conditional. Everything else contributes to the park
+          // counter only when the captured stderr is NOT the benign marker
+          // — i.e. a systemic cause (wrong path, wrong range, quote absent
+          // entirely). The grep pattern is the SAME literal
+          // ANCHOR_REFUSAL_BENIGN_MARKER, shell-quoted, so this emitted
+          // shell and isAnchorRefusalBenign cannot silently diverge.
+          (f.severity === 'blocking'
+            ? 'RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1))\n'
+            : 'if grep -q ' +
+              shellQuote(ANCHOR_REFUSAL_BENIGN_MARKER) +
+              ' "$RDM_PERSIST_ANCHOR_STDERR"; then :; else RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1)); fi\n') +
+          'rm -f "$RDM_PERSIST_ANCHOR_STDERR"\n' +
           'fi';
       } else {
         cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' < /dev/null || exit 1';
@@ -2365,6 +2419,18 @@ function persistReviewCommands(result, target, cfg, opts) {
       'RDM_PERSIST_ANCHORS_DEGRADED=none\n' +
       'fi'
   );
+  // RDM_PERSIST_ANCHORS_PARK_REQUIRED — phase-46 (anchor-degraded-park-by-cause):
+  // buckets the running RDM_PERSIST_PARK_REQUIRED counter (seeded from the
+  // build-time degradation count above, then incremented per systemic
+  // run-time refusal or per `blocking` finding that lost its anchor for ANY
+  // reason — see the per-survivor loop) into a plain yes/no, distinct from
+  // (and no longer implied by) RDM_PERSIST_ANCHORS_DEGRADED above, which
+  // stays purely informational — the total whole-document-fallback volume,
+  // including every benign untouched-line refusal, never a park signal by
+  // itself. Read by persistDegradationGateLines() below and printed as the
+  // trailing `anchorsParkRequired=` line for the caller — see
+  // docs/workflow-schemas.md § "The anchor-degraded park signal (AC1)".
+  cmds.push('if [ "$RDM_PERSIST_PARK_REQUIRED" -gt 0 ]; then\n' + 'RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes\n' + 'else\n' + 'RDM_PERSIST_ANCHORS_PARK_REQUIRED=no\n' + 'fi');
   // correctness-1: a review whose REAL degraded total is nonzero must never
   // persist as ordinary clean persistence. The build-time-only
   // `persistDegradationClause` folded into `summary` above cannot see a
@@ -2417,6 +2483,10 @@ function persistReviewCommands(result, target, cfg, opts) {
   // AC4's caller-visible signal, printed once the computation above has
   // already run — see the block that sets RDM_PERSIST_ANCHORS_DEGRADED.
   cmds.push('printf \'anchorsDegraded=%s\\n\' "$RDM_PERSIST_ANCHORS_DEGRADED"');
+  // AC1's caller-visible park signal, printed once the block above has set
+  // RDM_PERSIST_ANCHORS_PARK_REQUIRED — the ONLY line a caller should key a
+  // park decision off of (phase-46: anchor-degraded-park-by-cause).
+  cmds.push('printf \'anchorsParkRequired=%s\\n\' "$RDM_PERSIST_ANCHORS_PARK_REQUIRED"');
   return cmds;
 }
 
@@ -2452,22 +2522,28 @@ function persistDegradationNoteBody(totalDegraded, requested) {
   );
 }
 
-// persistDegradationGateLines() — arch-1: the SINGLE definition of the "every
-// requested anchor degraded => refuse to write `reviewed`" gate policy, as
-// ready-to-append shell lines keyed off `RDM_PERSIST_ANCHORS_DEGRADED` (the
-// persist ladder's own printed run-time result — see `persistReviewCommands`'
-// trailing `anchorsDegraded=` line). A caller building a status-write ladder
-// appends this immediately before the write it wants to guard, and only when
-// it is also building a persist ladder for the SAME review (no persist
-// ladder in play means nothing ever sets the variable, and the `:-none`
-// default keeps an unrelated caller unaffected). Kept in the stamped block —
-// not the driver region — so every gate-building consumer references ONE
-// emitted artifact instead of hand-copying the policy; today that is
+// persistDegradationGateLines() — arch-1, keyed as of phase-46
+// (anchor-degraded-park-by-cause): the SINGLE definition of the "a park is
+// required => refuse to write `reviewed`" gate policy, as ready-to-append
+// shell lines keyed off `RDM_PERSIST_ANCHORS_PARK_REQUIRED` (the persist
+// ladder's own printed run-time result — see `persistReviewCommands`'
+// trailing `anchorsParkRequired=` line). The cause is either systemic (a
+// build-time-dropped anchor, or a run-time refusal whose stderr does not
+// match ANCHOR_REFUSAL_BENIGN_MARKER) or a `blocking` finding that lost its
+// anchor for any reason at all — never merely "every anchor degraded",
+// which `RDM_PERSIST_ANCHORS_DEGRADED` still tracks but which no longer by
+// itself implies a park. A caller building a status-write ladder appends
+// this immediately before the write it wants to guard, and only when it is
+// also building a persist ladder for the SAME review (no persist ladder in
+// play means nothing ever sets the variable, and the `:-no` default keeps
+// an unrelated caller unaffected). Kept in the stamped block — not the
+// driver region — so every gate-building consumer references ONE emitted
+// artifact instead of hand-copying the policy; today that is
 // `rdm-wf-review-refute-fix.js`'s `gateCommands` builder.
 function persistDegradationGateLines() {
   return [
-    'if [ "${RDM_PERSIST_ANCHORS_DEGRADED:-none}" = "all" ]; then',
-    '  echo "review-refute-fix: refusing to write reviewed - every requested comment anchor degraded to whole-document (RDM_PERSIST_ANCHORS_DEGRADED=all); park blocked and see the review own summary and each comment anchor header instead" >&2',
+    'if [ "${RDM_PERSIST_ANCHORS_PARK_REQUIRED:-no}" = "yes" ]; then',
+    '  echo "review-refute-fix: refusing to write reviewed - an anchor was lost for a systemic cause, or a blocking finding lost its anchor (RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes); park blocked and see the review own summary and each comment anchor header instead" >&2',
     '  exit 1',
     'fi',
   ].join('\n');
@@ -3272,6 +3348,7 @@ export {
   stripPathLineSuffix,
   isRepoRelativePath,
   PERSIST_DEGRADED_REASONS,
+  isAnchorRefusalBenign,
   PERSIST_ANCHOR_STATES,
   persistAnchorState,
   isChangeTarget,

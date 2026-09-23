@@ -1612,26 +1612,93 @@ whether the degradation happened at build time or run time — the two cases
 are no longer distinguishable only by whether the caller happened to capture
 the ladder's stdout.
 
+**The anchor-degraded park signal (AC1), keyed on CAUSE, not on the raw
+`anchorsDegraded` tally (phase-46: anchor-degraded-park-by-cause).** A
+degraded anchor is not, by itself, a park signal: a "you missed an edit
+here" finding necessarily quotes a line the diff did not change, so
+`rdm review comment --path` correctly refuses that anchor
+(`Error::QuoteOutsideChangedHunks`) and the ladder's mechanical retry lands
+it whole-document with nothing lost — `anchorsDegraded=all` or `partial` in
+that case describes a LOSSLESS fallback, not a problem. `anchorsDegraded`
+could not previously distinguish that benign case from a systemic one (the
+reviewed range wrong, the path outside it, the quote absent from the
+document entirely), so the dispatch skill's park rule used to fire on both
+alike.
+
+A second, narrower line — `anchorsParkRequired=<yes|no>` — is what a caller
+should actually key a park decision on. It is computed by the ladder from
+two rules:
+
+1. **A systemic cause always requires a park.** Any BUILD-TIME degradation
+   (`persistPreDegradedAnchors` non-empty — no derivable path, or an empty
+   reviewed range) is systemic by construction. Any RUN-TIME refusal whose
+   captured stderr does NOT contain the substring `"not touch"` — i.e.
+   anything other than `QuoteOutsideChangedHunks` — is also systemic.
+   `ANCHOR_REFUSAL_BENIGN_MARKER` (`'not touch'`) and the pure helper
+   `isAnchorRefusalBenign(stderrText)` are the single definition of this
+   check; both of `QuoteOutsideChangedHunks`'s Display arms
+   (`rdm-core/src/error.rs:877-884`) contain it, and none of
+   `ChangePathNotInRevision`, `ChangePathNotAFile`, `QuoteNotFound`,
+   `QuoteAmbiguous`, or `QuoteOccurrenceOutOfRange` do.
+2. **A `blocking` finding losing its anchor always requires a park, even for
+   the benign cause.** Severity is known statically when the shell is
+   generated, so this branches at JS code-gen time — a `severity: 'blocking'`
+   survivor's run-time refusal unconditionally bumps the park counter,
+   without needing to inspect stderr at all.
+
+Everything else — a non-`blocking` survivor refused only because its quote
+sits on an untouched line in an otherwise-in-range file — still contributes
+to `anchorsDegraded` (the volume stays visible) but NOT to
+`anchorsParkRequired`.
+
+Mechanically: a per-finding `mktemp` scratch file
+(`RDM_PERSIST_ANCHOR_STDERR`, same hygiene as `RDM_PERSIST_START_JSON` —
+created with `mktemp`, `|| exit 1`, removed after use) captures the
+path-anchored `review comment` line's stderr; on refusal it is `cat`ted back
+to stderr (so nothing already visible to the operator is lost) and then
+either unconditionally bumps the running `RDM_PERSIST_PARK_REQUIRED` counter
+(a `blocking` finding) or does so only `if ! grep -q 'not touch'
+"$RDM_PERSIST_ANCHOR_STDERR"` (everything else) — the grep pattern is the
+SAME literal `ANCHOR_REFUSAL_BENIGN_MARKER`, shell-quoted, so the JS helper
+and the emitted shell cannot silently diverge. `RDM_PERSIST_PARK_REQUIRED` is
+seeded from the build-time degradation count before the survivor loop runs.
+Once the loop finishes, the ladder buckets the counter into
+`RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes` (`-gt 0`) or `=no`, and prints it as
+the trailing `anchorsParkRequired=<yes|no>` line — immediately after the
+existing `anchorsDegraded=<all|partial|none>` line, which keeps printing
+exactly as before.
+
+There is no structured error surface for `review comment` — every refusal
+exits 1 through `rdm-cli/src/main.rs`'s single `process::exit(1)`, and the
+command supports no `--format json` error output — so this stderr-substring
+match is the only available machine-distinguishing signal between the benign
+and systemic cases. This is a real, stated limitation of the design, not an
+oversight: if a future `rdm-core` change adds a structured error surface for
+`review comment`, this classification should move onto it.
+
 `rdm-wf-review-refute-fix.js`'s standalone code-review path (the driver
 region, not the stamped block) ALSO attaches `persistDegradedSummary`'s
 `{ requested, degraded, all }` object as `result.persistDegraded`, alongside
 `persistCommands` / `persistScript` — but this is a BUILD-TIME PREVIEW ONLY,
 computed before the ladder has run, and it can under-report a run whose
-anchors degraded at run time. **A caller MUST key its park decision off the
-ladder's own printed `anchorsDegraded=` line, not off `result.persistDegraded`
-alone.**
+anchors degraded (or whose park requirement) is decided at run time. **A
+caller MUST key its park decision off the ladder's own printed
+`anchorsParkRequired=` line — never off `anchorsDegraded` alone, and never
+off `result.persistDegraded`.**
 
-Neither the build-time preview nor the ladder's own printed line touches
-`classifyOutcome`/`outcome` — the same recorded design decision applies. **The
-caller is responsible for acting on the printed line.**
+Neither the build-time preview nor either of the ladder's own printed lines
+touches `classifyOutcome`/`outcome` — the same recorded design decision
+applies. **The caller is responsible for acting on the printed line.**
 `.claude/skills/rdm-dispatch-phase/SKILL.md` (and the shipped
 `rdm-core/src/templates/skill-dispatch-phase-cli.md`) run the persist ladder,
 capture its output, and PARK `blocked` when its last line reads
-`anchorsDegraded=all`, even though the ladder itself exited 0 — a review that
-landed with no usable anchors at all should not be reported as ordinary
-successful persistence. A partially-degraded run (`anchorsDegraded=partial`)
-is not a park; it proceeds normally, with the degradation already visible in
-the review's own note comment (see above) and per-comment `anchor` headers.
+`anchorsParkRequired=yes`, even though the ladder itself exited 0 — a review
+whose anchors were lost for a systemic cause, or whose `blocking` finding
+lost its anchor at all, should not be reported as ordinary successful
+persistence. `anchorsParkRequired=no` is not a park, regardless of what
+`anchorsDegraded` reads; it proceeds normally, with the degradation already
+visible in the review's own note comment (see above) and per-comment
+`anchor` headers.
 
 **The engine's own headless `gate: true` path reads the same signal, through
 an environment variable.** `persistCommands`/`persistScript` and
@@ -1640,22 +1707,25 @@ pastes in turn, so the gate script — built before the persist ladder has ever
 run — cannot see a JS-side value for the run-time result. Instead, when both
 `persist` and `gate` are requested together and the outcome maps to
 `reviewed`, the emitted `gateScript` opens with a guard reading the
-`RDM_PERSIST_ANCHORS_DEGRADED` environment variable (defaulting to `none` when
-unset): when it reads `all`, the gate script refuses to write `reviewed` and
-exits nonzero with an actionable message instead, rather than writing the
-status. A caller running both ladders is responsible for threading the
-value through — setting `RDM_PERSIST_ANCHORS_DEGRADED` from the persist
-ladder's own printed `anchorsDegraded=<value>` line before running the gate
-script. No shipped consumer currently passes `gate: true` (both
+`RDM_PERSIST_ANCHORS_PARK_REQUIRED` environment variable (defaulting to `no`
+when unset): when it reads `yes`, the gate script refuses to write `reviewed`
+and exits nonzero with an actionable message instead, rather than writing the
+status. A caller running both ladders is responsible for threading the value
+through — setting `RDM_PERSIST_ANCHORS_PARK_REQUIRED` from the persist
+ladder's own printed `anchorsParkRequired=<value>` line before running the
+gate script. No shipped consumer currently passes `gate: true` (both
 `rdm-dispatch-phase` and `rdm-review` always pass `gate: false` and own their
 own status write), so this is a completeness fix for the documented
-capability rather than a change in any current caller's behavior.
+capability rather than a change in any current caller's behavior. (The
+variable was previously named `RDM_PERSIST_ANCHORS_DEGRADED` and keyed on
+`= "all"`; phase-46 renamed and rekeyed it to match the new cause-based
+signal.)
 
 **The gate lines themselves are single-sourced** (arch-1): the guard shell
 lines above are `persistDegradationGateLines()`, a function in
 `lib/review.mjs`'s stamped block — not hand-written in any driver region. It returns the exact
-`if [ "${RDM_PERSIST_ANCHORS_DEGRADED:-none}" = "all" ]; then … fi` text as a
-single string; a caller building a status-write ladder (today, only
+`if [ "${RDM_PERSIST_ANCHORS_PARK_REQUIRED:-no}" = "yes" ]; then … fi` text as
+a single string; a caller building a status-write ladder (today, only
 `rdm-wf-review-refute-fix.js`'s `gateCommands` builder) pushes it verbatim.
 Because it lives in the stamped block, `scripts/gen-workflow-review.sh`
 copies it into every consumer along with the rest of the review pipeline, so
@@ -1682,8 +1752,9 @@ unrecognized outcome rather than defaulting to `comment`):
 returns the ordered command list as DATA; the engines hand it back on their
 result (`persistCommands`, plus a newline-joined `persistScript`) and the
 ORCHESTRATOR pastes it into one Bash session and reports the exit status. The
-ladder prints `reviewId=<id>` and then `anchorsDegraded=<all|partial|none>` on
-success — see "The all-anchors-degraded signal" below.
+ladder prints `reviewId=<id>`, then `anchorsDegraded=<all|partial|none>`, then
+`anchorsParkRequired=<yes|no>` on success — see "The all-anchors-degraded
+signal" and "The anchor-degraded park signal" above.
 
 There is consequently **no persist acknowledgement**, and the machinery that
 existed to read one is gone: `PERSIST_ACK_SCHEMA`,

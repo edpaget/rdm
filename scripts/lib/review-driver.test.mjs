@@ -706,6 +706,11 @@ test('a path-anchored comment refused at RUN TIME (quote outside a touched hunk)
   const id = /reviewId=(\S+)/.exec(out);
   assert.ok(id, 'the ladder completes (exit 0) even though the anchor was refused at run time: ' + out);
   assert.match(out, /^anchorsDegraded=all$/m, 'the ladder run-time-degraded its only anchored finding, so `all` fires');
+  // phase-46 (anchor-degraded-park-by-cause): this finding is `blocking`, so
+  // its anchor loss requires a park even though the underlying cause is the
+  // benign untouched-line one — see the sibling test below (same fixture
+  // shape, `suggestion` severity) for the case that does NOT park.
+  assert.match(out, /^anchorsParkRequired=yes$/m, 'a `blocking` finding losing its anchor always requires a park');
 
   const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
   // The one finding's comment, plus the ladder's own degradation note —
@@ -740,6 +745,130 @@ test('a path-anchored comment refused at RUN TIME (quote outside a touched hunk)
   // Restore the shared worktree's branch so later tests reusing
   // `...ROADMAP_PIN` (whose `expectedHead` was captured once, at seed time)
   // still see the head they were pinned against.
+  git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], src);
+});
+
+test('a non-blocking finding refused at RUN TIME for the BENIGN cause (quote outside a touched hunk) does not require a park', async () => {
+  // phase-46 (anchor-degraded-park-by-cause), AC1's first sentence. Same
+  // mechanism as the test above, but `severity: 'suggestion'` — matching the
+  // review that motivated this phase (2026-09-23-1430-9ff7, a single
+  // non-gating suggestion whose quote sat on an untouched frontmatter line).
+  // anchorsDegraded stays `all` (the whole-document fallback still happened
+  // and that volume is still worth surfacing), but anchorsParkRequired reads
+  // `no`: a correct, lossless refusal of a finding on an untouched line is
+  // not, by itself, a park signal.
+  const src = ROADMAP_PIN.source;
+  fs.writeFileSync(path.join(src, 'outside-hunk-suggestion.txt'), 'keepme\nchangeme\n');
+  git(['add', 'outside-hunk-suggestion.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: add outside-hunk-suggestion.txt'], src);
+  const base = git(['rev-parse', 'HEAD'], src);
+  fs.writeFileSync(path.join(src, 'outside-hunk-suggestion.txt'), 'keepme\nchanged\n');
+  git(['add', 'outside-hunk-suggestion.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: change only the second line'], src);
+  const head = git(['rev-parse', 'HEAD'], src);
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], src);
+
+  const { result } = await drive(
+    {
+      ...COMMON,
+      gate: false,
+      persist: true,
+      implements: 'plan/' + PLAN,
+      roadmap: ROADMAP,
+      phase: 'phase-2-dirty',
+      source: src,
+      base,
+      expectedHead: head,
+      expectedBranch: branch,
+    },
+    {
+      id: 'outside-hunk-suggestion',
+      concern: 'correctness',
+      severity: 'suggestion',
+      confidence: 90,
+      what_fails: 'a non-gating observation on a line the diff did not touch',
+      location: 'see the gate step',
+      path: 'outside-hunk-suggestion.txt',
+      quote: 'keepme',
+    }
+  );
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder completes (exit 0) even though the anchor was refused at run time: ' + out);
+  assert.match(out, /^anchorsDegraded=all$/m, 'the whole-document fallback still happened, so anchorsDegraded is unaffected');
+  assert.match(
+    out,
+    /^anchorsParkRequired=no$/m,
+    'a non-blocking finding refused only for the benign untouched-line cause is not a park signal'
+  );
+
+  const review = JSON.parse(rdm(['review', 'show', id[1], '--project', PROJECT, '--format', 'json']));
+  const finding = review.comments.find((c) => c.body.includes('outside-hunk-suggestion'));
+  assert.ok(finding, 'the finding comment must still be present, whole-document, with its text intact');
+  assert.equal(finding.anchor, undefined, 'the run-time-refused anchor must land whole-document, not as a file anchor');
+  assert.equal(
+    parseCommentHeader(finding.body).anchor,
+    'degraded',
+    'a run-time-refused anchor is header-marked `degraded`, exactly like a build-time one'
+  );
+
+  // Restore the shared worktree's branch, same as the sibling test above.
+  git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], src);
+});
+
+test('a finding refused at RUN TIME for a SYSTEMIC cause (quote not found anywhere in the file) requires a park regardless of severity', async () => {
+  // phase-46 (anchor-degraded-park-by-cause), AC1's second sentence.
+  // Error::QuoteNotFound's Display text carries no "not touch" substring —
+  // the quote does not exist in the document AT ALL, not merely outside a
+  // touched hunk, which is exactly the systemic-mismatch case the park rule
+  // exists for. Severity is deliberately non-`blocking` here, proving the
+  // park fires because the CAUSE is systemic, not because of the finding's
+  // own weight.
+  const src = ROADMAP_PIN.source;
+  fs.writeFileSync(path.join(src, 'missing-quote.txt'), 'keepme\nchangeme\n');
+  git(['add', 'missing-quote.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: add missing-quote.txt'], src);
+  const base = git(['rev-parse', 'HEAD'], src);
+  fs.writeFileSync(path.join(src, 'missing-quote.txt'), 'keepme\nchanged\n');
+  git(['add', 'missing-quote.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: change only the second line'], src);
+  const head = git(['rev-parse', 'HEAD'], src);
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], src);
+
+  const { result } = await drive(
+    {
+      ...COMMON,
+      gate: false,
+      persist: true,
+      implements: 'plan/' + PLAN,
+      roadmap: ROADMAP,
+      phase: 'phase-2-dirty',
+      source: src,
+      base,
+      expectedHead: head,
+      expectedBranch: branch,
+    },
+    {
+      id: 'quote-does-not-exist',
+      concern: 'tests',
+      severity: 'concern',
+      confidence: 70,
+      what_fails: 'a quote text that never appears in the file at all',
+      location: 'see the gate step',
+      path: 'missing-quote.txt',
+      quote: 'this text appears nowhere in the file',
+    }
+  );
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder completes (exit 0) even though the anchor was refused at run time: ' + out);
+  assert.match(out, /^anchorsParkRequired=yes$/m, 'a systemic run-time refusal requires a park even for a non-blocking severity');
+
+  // Restore the shared worktree's branch, same as the sibling tests above.
   git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], src);
 });
 
@@ -937,14 +1066,14 @@ test('AC4: every requested anchor degrading trips `persistDegraded.all` and the 
   assert.equal(note.body, persistDegradationNoteBody(2, 2), 'the note reports the all-degraded total, 2 of 2');
 });
 
-test('tests-1: the gateScript refuses to write reviewed when RDM_PERSIST_ANCHORS_DEGRADED=all, and writes normally for partial/none', async () => {
+test('tests-1: the gateScript refuses to write reviewed when RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes, and writes normally for no/unset', async () => {
   // Nothing in the suite before this test ever EXECUTES the gate script's
-  // `RDM_PERSIST_ANCHORS_DEGRADED=all` branch — every other gate test either
-  // never sets the variable (so only the `:-none` default runs) or never
-  // builds `persistCommands` at all, so the guard is never even emitted. A
-  // clean review (no findings) against the task target, with BOTH `persist:
-  // true` and `gate: true`, is enough: `persistCommands` existing is what
-  // makes the driver emit the guard in the first place (arch-1's
+  // `RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes` branch — every other gate test
+  // either never sets the variable (so only the `:-no` default runs) or
+  // never builds `persistCommands` at all, so the guard is never even
+  // emitted. A clean review (no findings) against the task target, with BOTH
+  // `persist: true` and `gate: true`, is enough: `persistCommands` existing
+  // is what makes the driver emit the guard in the first place (arch-1's
   // `persistDegradationGateLines()`), and this test never actually needs to
   // run `persistScript` — it drives `gateScript` directly, standing in for
   // the persist ladder's own run-time result by setting the environment
@@ -956,38 +1085,39 @@ test('tests-1: the gateScript refuses to write reviewed when RDM_PERSIST_ANCHORS
   assert.ok(result.gateScript, 'a reviewed outcome with gate:true emits a ladder');
   assert.match(
     result.gateScript,
-    /RDM_PERSIST_ANCHORS_DEGRADED/,
-    'the emitted gate script must actually carry the run-time degradation guard'
+    /RDM_PERSIST_ANCHORS_PARK_REQUIRED/,
+    'the emitted gate script must actually carry the run-time park-required guard'
   );
 
-  // RDM_PERSIST_ANCHORS_DEGRADED=all: every requested anchor degraded to
-  // whole-document, per the persist ladder's own printed line — the gate
-  // must refuse to write `reviewed`, on stderr, leaving the item at whatever
-  // `needs-review` write already landed just before the guard.
-  const refused = shPlainWithEnv(result.gateScript, { RDM_PERSIST_ANCHORS_DEGRADED: 'all' }, TASK_PIN.source);
-  assert.notEqual(refused.status, 0, 'the gate must exit non-zero when every anchor degraded');
-  assert.match(refused.stderr, /RDM_PERSIST_ANCHORS_DEGRADED=all/, 'the refusal must name its cause on stderr');
+  // RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes: a park is required, per the
+  // persist ladder's own printed line — the gate must refuse to write
+  // `reviewed`, on stderr, leaving the item at whatever `needs-review` write
+  // already landed just before the guard.
+  const refused = shPlainWithEnv(result.gateScript, { RDM_PERSIST_ANCHORS_PARK_REQUIRED: 'yes' }, TASK_PIN.source);
+  assert.notEqual(refused.status, 0, 'the gate must exit non-zero when a park is required');
+  assert.match(refused.stderr, /RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes/, 'the refusal must name its cause on stderr');
   assert.doesNotMatch(refused.stdout, /status: reviewed/, 'the refusal must land before any reviewed write is reported');
-  assert.notEqual(taskJson(TASK).status, 'reviewed', 'the item must not reach reviewed on an all-degraded run');
+  assert.notEqual(taskJson(TASK).status, 'reviewed', 'the item must not reach reviewed on a park-required run');
 
-  // Self-test: the SAME all-degraded run must succeed once the guard itself
+  // Self-test: the SAME park-required run must succeed once the guard itself
   // is removed — proving the refusal above is caused by the guard, not by
   // something else in the ladder (e.g. a refused `--source` binding).
   const guard = persistDegradationGateLines();
   assert.ok(result.gateScript.includes(guard), 'the emitted script must contain the exact guard this test strips');
   const withoutGuard = result.gateScript.split(guard + '\n').join('');
   assert.notEqual(withoutGuard, result.gateScript, 'the mutant must actually remove the guard, or this self-test is vacuous');
-  const mutant = shPlainWithEnv(withoutGuard, { RDM_PERSIST_ANCHORS_DEGRADED: 'all' }, TASK_PIN.source);
-  assert.equal(mutant.status, 0, 'with the guard stripped, the same all-degraded run must reach reviewed');
+  const mutant = shPlainWithEnv(withoutGuard, { RDM_PERSIST_ANCHORS_PARK_REQUIRED: 'yes' }, TASK_PIN.source);
+  assert.equal(mutant.status, 0, 'with the guard stripped, the same park-required run must reach reviewed');
   assert.equal(taskJson(TASK).status, 'reviewed', 'confirms the guard, not something else, was refusing the write above');
 
-  // `partial` and `none` are ordinary persistence — the write must proceed
-  // each time (the item was left at `reviewed` by the mutant run above, but
+  // `no` and unset are ordinary persistence — the write must proceed each
+  // time (the item was left at `reviewed` by the mutant run above, but
   // `needs-review` -> `reviewed` is a no-op transition here, not a skip).
-  for (const value of ['partial', 'none']) {
-    const ok = shPlainWithEnv(result.gateScript, { RDM_PERSIST_ANCHORS_DEGRADED: value }, TASK_PIN.source);
-    assert.equal(ok.status, 0, 'RDM_PERSIST_ANCHORS_DEGRADED=' + value + ' must not be refused: ' + ok.stderr);
-    assert.equal(taskJson(TASK).status, 'reviewed', 'the write must reach reviewed for anchorsDegraded=' + value);
+  for (const value of ['no', undefined]) {
+    const extraEnv = value === undefined ? {} : { RDM_PERSIST_ANCHORS_PARK_REQUIRED: value };
+    const ok = shPlainWithEnv(result.gateScript, extraEnv, TASK_PIN.source);
+    assert.equal(ok.status, 0, 'RDM_PERSIST_ANCHORS_PARK_REQUIRED=' + value + ' must not be refused: ' + ok.stderr);
+    assert.equal(taskJson(TASK).status, 'reviewed', 'the write must reach reviewed for anchorsParkRequired=' + value);
   }
 });
 

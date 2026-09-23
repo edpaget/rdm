@@ -545,27 +545,36 @@ one Bash call, and report the exit status:
 <paste result.persistScript verbatim>
 ```
 
-It prints `reviewId=<id>` and then `anchorsDegraded=<all|partial|none>` on success — append the id to
-`reviewIds`. A path-anchored comment (one carrying both `--path` and `--quote`) that the real binary
-refuses at run time — a quote outside a hunk the change touches, a path outside the reviewed range —
-is retried **mechanically, by the ladder itself**: it lands whole-document, header-marked `anchor:
-degraded`, and is counted into the printed `anchorsDegraded=` line. There is nothing for you to
-re-run by hand for that case. If `review start` itself is refused, **park** — never invent a different
-target. A nonzero exit anywhere else is a park.
+It prints `reviewId=<id>`, then `anchorsDegraded=<all|partial|none>`, then `anchorsParkRequired=<yes|no>`
+on success — append the id to `reviewIds`. A path-anchored comment (one carrying both `--path` and
+`--quote`) that the real binary refuses at run time — a quote outside a hunk the change touches, a
+path outside the reviewed range, a quote that does not exist in the file at all — is retried
+**mechanically, by the ladder itself**: it lands whole-document, header-marked `anchor: degraded`,
+and is counted into the printed `anchorsDegraded=` line. There is nothing for you to re-run by hand
+for that case. If `review start` itself is refused, **park** — never invent a different target. A
+nonzero exit anywhere else is a park.
 
-**Check the ladder's own printed `anchorsDegraded=<all|partial|none>` line before treating the run as
-ordinary persistence — not `result.persistDegraded`, which is a build-time-only preview and can
-under-report a run whose anchors degraded at run time.** When that printed line reads
-`anchorsDegraded=all` — every requested comment anchor degraded to whole-document, whether at build
-time or at run time — **park** `blocked` with `[code] every requested comment anchor degraded to
-whole-document; see the review's own note comment and each comment's \`anchor\` header`, even though
-the ladder itself exited 0. The persist ladder itself now records this in the review: whenever any
-anchor degrades, it appends one whole-document note comment stating how many of how many requested
-anchors could not be placed, so the review can never read as clean persistence merely because
-`outcome`/`classifyOutcome` stay independent of anchor plumbing (see `docs/workflow-schemas.md` §
-"Persisting a review"). Checking `anchorsDegraded` is still a **separate step you take yourself**
-after running the ladder — the write it gates has already happened by the time you read it. A
-partially-degraded run (`anchorsDegraded=partial`) is not a park — proceed normally.
+**Check the ladder's own printed `anchorsParkRequired=<yes|no>` line before treating the run as
+ordinary persistence — not `anchorsDegraded`, and not `result.persistDegraded`, which is a
+build-time-only preview and can under-report a run whose anchors degraded at run time.** When that
+printed line reads `anchorsParkRequired=yes` — an anchor was lost for a systemic cause (the reviewed
+range was wrong, the path was outside it, or the quote did not exist in the file at all), or a
+`blocking` finding lost its anchor for any reason, including the benign one below — **park** `blocked`
+with `[code] a comment anchor was lost for a systemic cause, or a blocking finding lost its anchor;
+see the review's own note comment and each comment's \`anchor\` header`, even though the ladder itself
+exited 0. The persist ladder itself now records this in the review: whenever any anchor degrades, it
+appends one whole-document note comment stating how many of how many requested anchors could not be
+placed, so the review can never read as clean persistence merely because `outcome`/`classifyOutcome`
+stay independent of anchor plumbing (see `docs/workflow-schemas.md` § "Persisting a review"). Checking
+`anchorsParkRequired` is still a **separate step you take yourself** after running the ladder — the
+write it gates has already happened by the time you read it.
+
+`anchorsDegraded` stays purely informational now — the total whole-document-fallback volume, still
+worth noting in a reply, but **never a park signal by itself**. A non-`blocking` finding (a suggestion
+or concern) whose comment landed whole-document only because its quoted line sits outside the diff's
+touched hunks — the correct, lossless outcome for "you missed an edit here" — reads `anchorsDegraded=all`
+or `partial` but `anchorsParkRequired=no`: goes to ordinary triage, and its reply notes the anchor did
+not resolve. `anchorsDegraded=partial` was never a park signal and still is not.
 
 `gate: false` keeps the status write here, in step 15, where the refusal can be surfaced.
 
