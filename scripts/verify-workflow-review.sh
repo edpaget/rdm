@@ -338,9 +338,10 @@ reset_localscratch_consumers
 # --- 2d. ENGINE NAMING (the rdm-wf- prefix contract) --------------------------
 # Every engine under .claude/workflows/ carries the `rdm-wf-` prefix so a
 # listing entry can never be confused with its identically-worded `rdm-*` skill
-# front door. Three things must hold together, and this section asserts all
-# three plus a planted-mutation self-test for each.
-say "2d. Engine naming: rdm-wf-* filenames, meta.name parity, frozen lib filenames"
+# front door. This section asserts the engine filename set, the frozen
+# lib/*.mjs filename set, and byte-identity of the shipped template copies to
+# their local engines.
+say "2d. Engine naming: rdm-wf-* filenames, frozen lib filenames, shipped byte-identity"
 
 EXPECTED_ENGINES="rdm-wf-backlog.js rdm-wf-document.js rdm-wf-estimate.js rdm-wf-plan-review.js rdm-wf-review-refute-fix.js"
 ACTUAL_ENGINES=$(find "$WF_DIR" -maxdepth 1 -name '*.js' -exec basename {} \; | sort | tr '\n' ' ')

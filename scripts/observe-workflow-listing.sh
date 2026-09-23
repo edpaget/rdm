@@ -21,10 +21,11 @@
 # `claude` CLI, no network, nothing real — a hermetic stand-in built entirely
 # from source-derived text, which is exactly the grep-based-static-check shape
 # the amendment removes everywhere else. `verify-workflow-review.sh` § 2d no
-# longer invokes this script; the rdm-wf- prefix contract on TREE state
-# (filenames, meta.name parity, engine/skill name disjointness) is what § 2d
-# still gates. Only the live capture below — checked against what a real
-# client actually renders — remains, and it is not CI-run.
+# longer invokes this script; § 2d now gates only the `rdm-wf-*.js` engine
+# filename set and the shipped template copies' byte-identity to the local
+# engines (its meta.name-parity and engine/skill-disjointness checks were
+# retired in the same pass). Only the live capture below — checked against
+# what a real client actually renders — remains, and it is not CI-run.
 #
 # Requires: the `claude` CLI on PATH, authenticated.
 

@@ -90,7 +90,7 @@
 #      emission never needs the plan repo.
 #   7. DOWNSTREAM EXECUTION: byte-identity is NECESSARY but not SUFFICIENT —
 #      it says nothing about whether the emitted lane WORKS anywhere else. So
-#      sections 7a-7f stand up a hermetic non-rdm, NON-RUST fixture (a
+#      sections 7a-7e stand up a hermetic non-rdm, NON-RUST fixture (a
 #      Python/TypeScript source repo with a real feature branch, a docs-only
 #      and a CHANGELOG-only negative control, its own `rdm init`-seeded plan
 #      repo under project `acme-web`, and its own rdm executable path), emit
@@ -834,7 +834,7 @@ fi
 #
 # Sections 2/3/3b/4/5/6 above prove the emitted bytes are RIGHT. They do not
 # prove the emitted lane WORKS somewhere that is neither this repo nor Rust —
-# byte-identity is necessary, not sufficient. Sections 7a-7f close that: they
+# byte-identity is necessary, not sufficient. Sections 7a-7e close that: they
 # stand up a hermetic non-rdm, non-Rust consumer repo, emit into it, then
 # EXECUTE the emitted engine's pure pipeline logic and the rdm command ladders
 # it builds against that fixture's own binary and project.
@@ -1568,47 +1568,6 @@ assert_corrupt_emitted_is_red "C (reviewer-selection non-vacuity)" \
 # command builder, which no longer exists — the driver builds that command
 # inline. With no second extractable call site there is nothing for a second,
 # independent non-vacuity mutation to act on. Deleted and named.
-
-# --- 7f. Harness self-gate: this file may never import a canonical source --
-say "7f. Self-gate: the harness imports nothing under this repo's non-emitted workflow library"
-
-# The canonical modules this repo stamps FROM are never emitted. Importing one
-# would certify a local artifact instead of the downstream one — the exact
-# "held the disproof in its hands" failure sections 7a-7e exist to close. The
-# forbidden patterns are COMPOSED from fragments so this gate can never match
-# its own source text.
-assert_no_lib_import() {
-    _file=$1
-    _libdir="$(printf '%s' '.claude/workflows')$(printf '%s' '/lib/')"
-    _hits=$(grep -c -- "$_libdir" "$_file" || true)
-    [ "$_hits" -eq 0 ] || {
-        echo "  forbidden: $_file references $_libdir" >&2
-        return 1
-    }
-    _mjs=$(grep -cE -- "$(printf '%s' 'lib')$(printf '%s' '/[a-z-]*\.mjs')" "$_file" || true)
-    [ "$_mjs" -eq 0 ] || {
-        echo "  forbidden: $_file references a canonical-source module path" >&2
-        return 1
-    }
-    return 0
-}
-
-assert_no_lib_import "$0" ||
-    fail "7f: this harness references a non-emitted canonical source module — every module it executes must be derived from the EMITTED tree"
-pass "7f: the harness references no non-emitted canonical source module"
-
-MUTANT_HARNESS="$TMP/harness-lib-mutant"
-cp "$0" "$MUTANT_HARNESS"
-{
-    printf '# planted for the 7f self-test: '
-    printf '%s' '.claude/workflows'
-    printf '%s' '/lib/'
-    printf 'review.mjs\n'
-} >>"$MUTANT_HARNESS"
-if assert_no_lib_import "$MUTANT_HARNESS" >/dev/null 2>&1; then
-    fail "7f self-test: a planted canonical-source reference was NOT detected — the self-gate is vacuous"
-fi
-pass "7f self-test: a planted canonical-source reference correctly turns the self-gate red"
 
 # --- 7g. The EMITTED instruction files teach the scoped commit model -------
 say "7g. Staging model: the emitted instructions describe the changeset that exists, not the retired whole-tree one"
