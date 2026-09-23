@@ -112,7 +112,7 @@ Constraint Exists"). The transform is unchanged.
 
 - The `rdm-wf-` prefix is **the disambiguator** — it prevents collision between the skill shim and the engine it invokes. Dropping it would violate the disjointness invariant (see above).
 - Keeping `rdm-wf-` requires **zero changes** to the source tree, to any engine file, to `meta.name` declarations, or to the skills that invoke them.
-- All existing gates in the repository (`scripts/verify-workflow-review.sh` §2d, §2e, and `observe-workflow-listing.sh`) remain green without modification because they inspect the source tree, not plugin-mode emission output.
+- All existing gates in the repository (`scripts/verify-workflow-review.sh` §2d and `observe-workflow-listing.sh`) remain green without modification because they inspect the source tree, not plugin-mode emission output. (§2d's `check_listing_disjoint` and §2e's anchored bare-name sweep, cited below, were retired by the operator amendment to `retire-static-grep-harnesses` (2026-09-23); the disjointness/naming argument in this decision record still held at the time it was made.)
 - Future phases that implement the plugin manifest generator can apply a straightforward name-rewrite transform at emission time (`rdm-wf-dispatch-phase` → `/rdm:rdm-wf-dispatch-phase`) without touching any shipping code.
 
 ## Decision 3: Shim Invocation Form
@@ -237,13 +237,18 @@ The naming decisions above are **plugin-mode transformations applied at emission
 
 ### Source-Tree Gates (Unchanged)
 
-Three gates validate the source tree and raw-skills emission:
-
-1. **`scripts/verify-workflow-review.sh` § 2d (`check_listing_disjoint`):** Asserts that engine `meta.name` fields and skill frontmatter names form disjoint listing entries in the raw output. The gate inspects `.claude/workflows/` and `.claude/skills/` only.
-
-2. **`scripts/verify-workflow-review.sh` § 2e (anchored bare-name sweep):** Searches for engine names (without `rdm-wf-` prefix) across multiple roots: `scripts/`, `rdm-cli/`, `rdm-core/`, `docs/`, `CLAUDE.md`, and `README.md`. The goal is to catch unintended references to bare engine names (which would be ambiguous before the plugin context renames them).
-
-3. **`scripts/observe-workflow-listing.sh`:** Runs `claude -p` to capture the real listing and asserts engine/skill name disjointness. This also operates on the raw surface, not plugin-mode output.
+`scripts/verify-workflow-review.sh` § 2d asserts the `rdm-wf-*.js` engine
+filename set and byte-identity of the shipped template copies against the
+source tree, and `scripts/observe-workflow-listing.sh` runs `claude -p` to
+capture the real listing (non-hermetic, run deliberately, not CI-run). Both
+inspect the raw surface, not plugin-mode emission output. Two prior gates
+cited here at the time this decision was made — § 2d's `check_listing_disjoint`
+(engine `meta.name`/skill-frontmatter disjointness) and § 2e's anchored
+bare-name sweep (searching `scripts/`, `rdm-cli/`, `rdm-core/`, `docs/`,
+`CLAUDE.md`, `README.md` for unprefixed engine names) — were retired by the
+operator amendment to the `retire-static-grep-harnesses` plan (2026-09-23),
+which extended grep-only-harness retirement to workflow JS/skill-template
+source; the naming-collision argument above still held when it was written.
 
 ### Plugin-Mode Transformation (Applied at Emission)
 

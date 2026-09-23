@@ -2,9 +2,8 @@
 # verify-finder-collapse.sh — hermetic gate for the collapsed-plan-finder A/B.
 #
 # WHAT THIS GATES
-#   1  Hygiene: the three scripts parse, are grep-readable text, carry no clock
-#      and no RNG, are not coupled to the lane's hot path, and document
-#      themselves.
+#   1  Hygiene: the three scripts parse, and both CLIs document their whole
+#      flag surface (with a paid-dispatch cost warning on the runner).
 #   2  Corpus validation and the pre-registered POWER floors: every committed
 #      unit is schema-valid with a real plan document, the run population clears
 #      the floors, buildCollapseTrials THROWS on a truncated corpus, and
@@ -32,9 +31,7 @@
 #      dispatchTrial) driven with zero spend.
 #   8  --audit of the committed figures with NO corpus present, and the
 #      no-blended-cross-lens-rate negative in both JSON and text.
-#   9  The DECISION/PIPELINE XOR: a no-ship decision and a half-landed merged
-#      dimension can never coexist, in both directions.
-#  10  Planted-mutation self-tests proving 2, 3, 4, 5, 6, 8 and 9 are not
+#  10  Planted-mutation self-tests proving 2, 3, 4, 5, 6 and 8 are not
 #      vacuous — including reverting the miner's --limit bucket to a bare
 #      `break`, which must break section 4's under-truncation identity.
 #
@@ -78,52 +75,6 @@ for f in "$MODULE" "$MINER" "$RUNNER"; do
     node --check "$f" >/dev/null 2>&1 || fail "$f does not parse under node --check"
 done
 pass "all three scripts parse"
-
-# GREP LIVENESS. Almost every hygiene assertion below is a grep, and grep treats
-# a file containing a NUL byte as BINARY: it reports no match and exits 1,
-# silently turning each of those assertions into a vacuous pass.
-BEFORE="$FAILURES"
-for f in "$MODULE" "$MINER" "$RUNNER"; do
-    # shellcheck disable=SC2016  # a Node program, deliberately not shell-expanded
-    node -e '
-const b = require("fs").readFileSync(process.argv[1]);
-if (b.includes(0)) {
-  console.error(process.argv[1] + " contains a NUL byte at offset " + b.indexOf(0));
-  process.exit(1);
-}
-' "$f" || fail "$f is not grep-readable text"
-    grep -q 'export' "$f" || fail "$f: a control grep for 'export' found nothing"
-done
-[ "$FAILURES" = "$BEFORE" ] && pass "all three scripts are grep-readable text, so the greps below are not vacuous"
-
-# Determinism: the decision must be a pure function of its inputs. A clock or an
-# RNG anywhere makes two runs over the same corpus incomparable.
-BEFORE="$FAILURES"
-for f in "$MODULE" "$MINER" "$RUNNER"; do
-    if grep -nE 'Date\.now\(|Math\.random\(' "$f" >&2; then
-        fail "$f contains a forbidden nondeterministic global (a clock or an RNG)"
-    fi
-done
-[ "$FAILURES" = "$BEFORE" ] && pass "no clock and no RNG anywhere in the instrument"
-
-# The dependency may only ever point ONE way: the instrument imports FROM the
-# lane, never the other way round.
-BEFORE="$FAILURES"
-if grep -rn "finder-collapse" .claude/workflows/ >&2; then
-    fail "a workflow script references the finder-collapse instrument — the lane must never depend on it"
-fi
-grep -q "workflows/lib/review.mjs" "$RUNNER" || fail "$RUNNER must import the REAL review lib"
-if grep -nE "(from|import\()[[:space:]]*['\"][^'\"]*workflows/lib/review\.mjs" "$MODULE" >&2; then
-    fail "$MODULE must take findPrompt/DIMENSIONS as INJECTED deps, never import the lane itself"
-fi
-[ "$FAILURES" = "$BEFORE" ] && pass "the instrument imports from the lane and the lane never imports the instrument"
-
-# Only the runner may spawn anything, and only the module owns the dispatcher.
-BEFORE="$FAILURES"
-if grep -nE "\bfetch\(|node:https?|child_process" "$MINER" >&2; then
-    fail "$MINER must not reach the network or spawn a subprocess"
-fi
-[ "$FAILURES" = "$BEFORE" ] && pass "the miner reaches neither the network nor a subprocess"
 
 BEFORE="$FAILURES"
 for f in "$MINER" "$RUNNER"; do
@@ -675,59 +626,6 @@ assert.deepEqual(m.findBlendedLensKeys({ observed: { maxPerLensMaterialLossShare
 console.log("no blended cross-lens rate key, and the detector fires on a planted one");
 ' "$BASELINE_JSON" || fail "the blended-rate negative failed"
 [ "$FAILURES" = "$BEFORE" ] && pass "no blended cross-lens rate anywhere in the committed figures"
-
-# ---------------------------------------------------------------------------
-say "9. The DECISION/PIPELINE XOR"
-
-BEFORE="$FAILURES"
-# shellcheck disable=SC2016  # a Node program, deliberately not shell-expanded
-DECISION="$(node -e '
-const d = JSON.parse(require("fs").readFileSync("docs/token-baseline.json", "utf8"));
-process.stdout.write(String((d.planFinderCollapse || {}).decision));
-')"
-case "$DECISION" in
-    ship-collapsed | no-ship | no-measurement) ;;
-    *) fail "docs/token-baseline.json planFinderCollapse.decision is \"$DECISION\" — the XOR needs a recorded decision" ;;
-esac
-xor_check() {
-    # $1 = decision, $2 = path to a review.mjs to inspect
-    local decision="$1" lib="$2" bad=0 sym
-    if [ "$decision" = "ship-collapsed" ]; then
-        for sym in 'PLAN_LENSES' 'attributeConcern' 'lensDimFor'; do
-            grep -q "$sym" "$lib" || bad=1
-        done
-    else
-        for sym in 'PLAN_LENSES' 'attributeConcern' 'lensDimFor'; do
-            if grep -q "$sym" "$lib"; then bad=1; fi
-        done
-        # shellcheck disable=SC2016  # a Node program, deliberately not shell-expanded
-        node --input-type=module -e '
-import assert from "node:assert/strict";
-const { DIMENSIONS } = await import(process.argv[1]);
-assert.deepEqual(DIMENSIONS.plan.map((d) => d.key), ["coherence", "architectural-fit", "unit-of-work", "intent-alignment", "restraint"]);
-assert.ok(!DIMENSIONS.plan.some((d) => Array.isArray(d.lenses)), "no merged dimension may exist");
-' "file://$(cd "$(dirname "$lib")" && pwd)/$(basename "$lib")" >/dev/null 2>&1 || bad=1
-    fi
-    return "$bad"
-}
-xor_check "$DECISION" "$REPO_ROOT/$REVIEW_LIB" ||
-    fail "decision is \"$DECISION\" but $REVIEW_LIB's shape disagrees — a half-landed pipeline cannot coexist with the recorded decision"
-[ "$FAILURES" = "$BEFORE" ] && pass "the recorded decision (\"$DECISION\") and the real DIMENSIONS.plan shape agree"
-
-# Both directions of the XOR are non-vacuous: plant the opposite shape and the
-# same check must fire.
-BEFORE="$FAILURES"
-XOR_TREE="$TMP/xor"
-mkdir -p "$XOR_TREE"
-sed 's/^const DIMENSIONS = {$/const PLAN_LENSES = []; \/\/ MUTANT\nconst DIMENSIONS = {/' "$REVIEW_LIB" >"$XOR_TREE/planted-ship.mjs"
-grep -q 'MUTANT' "$XOR_TREE/planted-ship.mjs" || fail "the XOR self-test could not plant its mutation"
-if xor_check "no-ship" "$XOR_TREE/planted-ship.mjs"; then
-    fail "the XOR check passed a no-ship decision against a lib carrying PLAN_LENSES (vacuous)"
-fi
-if xor_check "ship-collapsed" "$REPO_ROOT/$REVIEW_LIB" && [ "$DECISION" != "ship-collapsed" ]; then
-    fail "the XOR check passed a ship-collapsed decision against the unmerged lib (vacuous)"
-fi
-[ "$FAILURES" = "$BEFORE" ] && pass "the XOR fires in both directions (planted-mutation self-test)"
 
 # ---------------------------------------------------------------------------
 say "10. Planted-mutation self-tests (prove sections 2-8 are not vacuous)"

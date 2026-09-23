@@ -193,45 +193,6 @@ run_node() {
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 
-# --- 1. STATIC INVARIANTS (narrowed) ------------------------------------------
-# Deliberately small. The per-phase unit is no longer a Workflow this skill
-# hands args to, so the arg-shape / hoist-payload greps this section used to
-# carry have no subject at all (see the header note above). What is left is the
-# ONE contract a mangled edit could silently break without any other harness
-# noticing: the per-phase unit MUST be entered with `Skill` into this same
-# session, never with `Agent` — an Agent-spawned subagent has no `Workflow`
-# tool, so the orchestrator's two review-engine calls would be unreachable.
-say "1. Static invariants on .claude/skills/rdm-autopilot/SKILL.md"
-
-# The Skill-entry contract, asserted as a shape rather than a sentence: the
-# file must contain a Skill({ ... skill: 'rdm-dispatch-phase' ... }) entry and
-# must NOT contain an Agent(...) dispatch of that same skill.
-assert_skill_entry() {
-    _f=$1
-    grep -qE "Skill\(\{[^}]*skill: *'rdm-dispatch-phase'" "$_f" || return 1
-    ! grep -qE "Agent\(\{[^}]*rdm-dispatch-phase" "$_f" || return 1
-    return 0
-}
-assert_skill_entry "$SKILL" ||
-    fail "SKILL.md must enter the per-phase unit with Skill({ skill: 'rdm-dispatch-phase', ... }) and must never dispatch it with Agent — an Agent subagent has no Workflow tool, so both review-engine calls would be unreachable"
-pass "the per-phase unit is entered with Skill, never dispatched with Agent"
-
-# Self-test A: an Agent dispatch of the orchestrator must turn it red.
-cp "$SKILL" "$TMP/skill-agent-mutant.md"
-printf "\nAgent({ agentType: 'general-purpose', prompt: 'run rdm-dispatch-phase' })\n" \
-    >>"$TMP/skill-agent-mutant.md"
-if assert_skill_entry "$TMP/skill-agent-mutant.md"; then
-    fail "self-test A: a planted Agent dispatch of rdm-dispatch-phase was NOT caught — the Skill-entry check is vacuous"
-fi
-pass "self-test A: a planted Agent dispatch of the orchestrator turns the check red"
-
-# Self-test B: losing the Skill entry entirely must turn it red.
-sed "s/skill: 'rdm-dispatch-phase'/skill: 'rdm-dispatch-phse'/g" "$SKILL" >"$TMP/skill-typo-mutant.md"
-if assert_skill_entry "$TMP/skill-typo-mutant.md"; then
-    fail "self-test B: a typo'd Skill entry was NOT caught — the Skill-entry check is vacuous"
-fi
-pass "self-test B: a typo'd Skill entry turns the check red"
-
 # --- 2. DYNAMIC OUTCOME CONTRACT ----------------------------------------------
 say "2. Dynamic advance/park write+read-back contract against the real binary"
 
@@ -395,64 +356,5 @@ if rdm_plan hook done-line --roadmap rm2 --phase phase-1-x --task t >/dev/null 2
     fail "rdm hook done-line must reject both --phase and --task together"
 fi
 pass "rdm hook done-line rejects malformed requests, so the lander aborts rather than amending an empty trailer"
-
-# --- 5. --override-gate IS FOR HUMANS ONLY ------------------------------------
-#
-# `--override-gate` bypasses the core `reviewed` transition gate's record
-# preconditions. It exists for an operator making a judgment call, and its whole
-# value is that the bypass is rare and audited. An autonomous loop that reached
-# for it would turn the gate into decoration — so assert, mechanically, that
-# neither the local autopilot skill nor the shipped template can ever emit it.
-#
-# SCOPE: `OVERRIDE_SURFACES` below covers exactly two files — the local
-# `rdm-autopilot` SKILL.md and its shipped template `skill-autopilot-cli.md`.
-# The `rdm-dispatch-phase` orchestrator's own surfaces (its SKILL.md, its
-# template, the plugin copy) are deliberately NOT grep-swept: the discovery-based
-# sweep that used to do it went with the retired dispatch engine's harness
-# (agent-orchestrated-dispatch phase 7) and was not ported, because a
-# string-presence assertion over prose is not a verification this roadmap keeps.
-# The gate's refusal semantics are proven behaviorally instead, against the real
-# binary, in `rdm-core/tests/gate.rs` and `rdm-cli/tests/cli_gate.rs`.
-say "5. --override-gate: neither the autopilot skill nor its shipped template emits it"
-
-OVERRIDE_SURFACES="$SKILL
-$REPO_ROOT/rdm-core/src/templates/skill-autopilot-cli.md"
-
-check_no_override() {
-    # $1: root under which the (relative-or-absolute) files live. Prints the
-    # offending file for any surface that mentions the flag.
-    for f in $OVERRIDE_SURFACES; do
-        rel=${f#"$REPO_ROOT"/}
-        target="$1/$rel"
-        [ -f "$target" ] || continue
-        if grep -qF -e '--override-gate' "$target"; then
-            printf '%s\n' "$rel"
-        fi
-    done
-}
-
-OFFENDERS=$(check_no_override "$REPO_ROOT")
-[ -z "$OFFENDERS" ] || fail "autopilot surface(s) emit --override-gate, which is operator-only:
-$OFFENDERS
-
-An autonomous loop must never bypass the reviewed gate. Park the item instead
-and let a human decide."
-pass "no autopilot surface emits --override-gate"
-
-# Self-test: plant the flag into a scratch copy and prove the check goes red.
-OG_SCRATCH="$TMP/override-scratch"
-mkdir -p "$OG_SCRATCH/.claude/skills/rdm-autopilot"
-cp "$SKILL" "$OG_SCRATCH/.claude/skills/rdm-autopilot/SKILL.md"
-printf '\nrdm phase update <stem> --status reviewed --override-gate "autopilot said so"\n' \
-    >>"$OG_SCRATCH/.claude/skills/rdm-autopilot/SKILL.md"
-PLANTED=$(check_no_override "$OG_SCRATCH")
-printf '%s' "$PLANTED" | grep -q 'rdm-autopilot/SKILL.md' ||
-    fail "self-test failed: a planted --override-gate is NOT caught, so section 5 proves nothing"
-pass "self-test: a planted --override-gate IS caught"
-
-# Heal: the real tree still passes (restated so both arms are explicit).
-[ -z "$(check_no_override "$REPO_ROOT")" ] ||
-    fail "self-test failed: the real, unmutated tree does not pass section 5"
-pass "self-test: the real, unmutated tree passes"
 
 say "verify-skill-autopilot.sh: ALL GREEN"

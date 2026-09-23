@@ -36,13 +36,7 @@
 #   2. DRIFT      — scripts/gen-workflow-estimate.sh --check passes on the tree,
 #                   with a planted-mutation self-test proving the gate is not a
 #                   no-op and heals on restore.
-#   3. STATIC     — rdm-wf-estimate.js loads under module semantics; no import/require;
-#                   no Date.now / Math.random anywhere in the estimate sources; no
-#                   `difficultyToTier` anywhere under .claude/workflows/; no
-#                   *_SCHEMA handed to agent() with a top-level type:'array'
-#                   (Anthropic tools require 'object'); meta.phases parity; and
-#                   the rewritten rdm-estimate SKILL.md is a thin shim referencing
-#                   rdm-wf-estimate.js with no retired rating-loop prose.
+#   3. PARSE      — rdm-wf-estimate.js loads under module semantics (no SyntaxError).
 #   5. HERMETIC   — a temp git-backed plan repo seeded via the REAL target/debug/rdm
 #      SEED         binary (mixed estimated/unestimated phases), whose actual
 #                   `rdm phase list --format json` output is fed through
@@ -54,12 +48,13 @@
 #                   hand-fabricated fakes of sections 1/1b.
 #   9. PARAM      — estimate names NO particular rdm executable and NO particular
 #                   rdm project: both are RUNTIME args (`rdmBin`, `project`),
-#                   the same contract the shipped review engine carries. Per-file literal
-#                   zeroing with planted mutants (9a), a driven prompt capture
-#                   checking every emitted `rdm <subcommand>` against the
-#                   project-agnostic allow-list expressed AS DATA (9b), the
-#                   fail-closed `rdmBin` rule (9c). (9d, the planted-mutation
-#                   self-tests for 9b, is DELETED — see its record below.)
+#                   the same contract the shipped review engine carries. A driven
+#                   prompt capture checking every emitted `rdm <subcommand>`
+#                   against the project-agnostic allow-list expressed AS DATA (9b),
+#                   the fail-closed `rdmBin` rule (9c). (9a, a per-file literal
+#                   zeroing grep over static source, is retired; 9d, the
+#                   planted-mutation self-tests for 9b, was already deleted — see
+#                   its record below.)
 #
 # Node is used only as a host to unit-test the pure module and drive the pipeline
 # with fakes; it is stdlib-only (node:assert), with no package.json /
@@ -124,16 +119,6 @@ parse_workflow() {
         echo '})'
     } |
         run_node --check --input-type=module -
-}
-
-# Distinct `phase: '<name>',` literals the workflow actually emits.
-emitted_phases() {
-    grep -oE "phase: '[A-Za-z]+'," "$1" | sed "s/phase: '//;s/',//" | sort -u
-}
-# Distinct `{ title: '<name>' }` entries declared in the `meta.phases` array.
-declared_phases() {
-    awk '/phases: \[/{p=1} p{print} p&&/\],?$/{exit}' "$1" |
-        grep -oE "title: '[^']+'" | sed "s/title: '//;s/'\$//" | sort -u
 }
 
 TMP=$(mktemp -d)
@@ -312,102 +297,15 @@ else
     fail "restore did not heal the drift gate"
 fi
 
-# --- 3. STATIC INVARIANTS ----------------------------------------------------
-say "3. Static invariants on rdm-wf-estimate.js and the estimate sources"
+# --- 3. MODULE PARSE ----------------------------------------------------------
+say "3. Module parse: rdm-wf-estimate.js loads under module semantics (no SyntaxError)"
 
-# 3a. Module parse.
 if parse_workflow "$WF" >/dev/null 2>&1; then
     pass "rdm-wf-estimate.js parses under module semantics (top-level meta declared once)"
 else
     parse_workflow "$WF" >&2 || true
     fail "rdm-wf-estimate.js does NOT parse — fix the SyntaxError"
 fi
-
-# 3b. No import/require (the runtime forbids it — sharing is by stamped copy).
-if grep -nE '(^|[^A-Za-z_])import[ (]' "$WF" >/dev/null 2>&1; then
-    grep -nE '(^|[^A-Za-z_])import[ (]' "$WF" >&2 || true
-    fail "rdm-wf-estimate.js must not import (the runtime forbids it — sharing is by stamped copy)"
-fi
-if grep -nE '(^|[^A-Za-z_])require\(' "$WF" >/dev/null 2>&1; then
-    fail "rdm-wf-estimate.js must not require() (the runtime forbids it)"
-fi
-grep -q '>>> estimate-core:begin' "$WF" || fail "missing estimate-core:begin marker in rdm-wf-estimate.js"
-grep -q '>>> estimate-core:end' "$WF" || fail "missing estimate-core:end marker in rdm-wf-estimate.js"
-pass "no import/require; both estimate-core markers present in rdm-wf-estimate.js"
-
-# 3c. No Date.now / Math.random anywhere in the estimate sources.
-if grep -nE 'Date\.now\(|Math\.random\(' "$WF" "$LIB" 2>/dev/null; then
-    fail "found Date.now( / Math.random( in an estimate source — the runtime forbids them and they break determinism"
-fi
-printf 'const x = Date.now();\n' >"$TMP/planted-nondeterm.js"
-if ! grep -nE 'Date\.now\(|Math\.random\(' "$TMP/planted-nondeterm.js" >/dev/null 2>&1; then
-    fail "hygiene grep did NOT catch a planted Date.now() — the detector is broken"
-fi
-pass "no Date.now / Math.random in rdm-wf-estimate.js or lib/estimate.mjs; detector catches a planted one"
-
-# 3d. No difficultyToTier ANYWHERE under .claude/workflows/ (rdm-core owns the map).
-if grep -rn 'difficultyToTier' "$WF_DIR" >/dev/null 2>&1; then
-    grep -rn 'difficultyToTier' "$WF_DIR" >&2 || true
-    fail "difficultyToTier must not appear anywhere under .claude/workflows/ — rdm-core (Difficulty::model_tier) owns the difficulty->tier policy"
-fi
-printf 'function difficultyToTier() {}\n' >"$TMP/planted-d2t.js"
-grep -q 'difficultyToTier' "$TMP/planted-d2t.js" || fail "difficultyToTier detector broken"
-pass "no difficultyToTier anywhere under .claude/workflows/; detector catches a planted one"
-
-# 3e. No *_SCHEMA handed to agent() may declare a top-level type:'array'.
-schema_array_offenders() {
-    awk '
-        /^const [A-Za-z_]+_SCHEMA = \{/ { name = $2; expect = 1; next }
-        expect == 1 { if ($0 ~ /type: .array./) print name; expect = 0 }
-    ' "$1"
-}
-OFFENDERS=$(schema_array_offenders "$WF" || true)
-if [ -n "$OFFENDERS" ]; then
-    printf 'top-level type:array schema(s): %s\n' "$(echo "$OFFENDERS" | tr '\n' ' ')" >&2
-    fail "no *_SCHEMA handed to agent() may use a top-level type:'array' (Anthropic tools require 'object'); offending: $OFFENDERS"
-fi
-# DELETED (no-mechanical-agents-in-workflows phase 34, commit 4): the
-# `r.phases` unwrap assertion. PHASE_LIST_SCHEMA and the `estimate:list` agent it
-# shaped are gone — the caller passes the parsed array as `phaseList`, so there
-# is no wrapper to unwrap.
-sed "s/^  type: 'object',/  type: 'array',/" "$WF" >"$TMP/wf.array.scratch"
-if [ -z "$(schema_array_offenders "$TMP/wf.array.scratch")" ]; then
-    fail "top-level-array detector did NOT fire on a planted type:'array' schema"
-fi
-pass "no *_SCHEMA uses a top-level type:'array'; detector catches a planted array schema"
-
-# 3f. meta.phases parity.
-DECLARED_PHASES=$(declared_phases "$WF")
-EMITTED_PHASES=$(emitted_phases "$WF")
-if [ "$DECLARED_PHASES" = "$EMITTED_PHASES" ]; then
-    pass "meta.phases lists exactly the emitted phase: literals ($(echo "$EMITTED_PHASES" | tr '\n' ' '))"
-else
-    printf 'declared (meta.phases): %s\n' "$(echo "$DECLARED_PHASES" | tr '\n' ' ')" >&2
-    printf 'emitted   (phase: ...): %s\n' "$(echo "$EMITTED_PHASES" | tr '\n' ' ')" >&2
-    fail "meta.phases drift: declared phases != emitted phase: literals"
-fi
-
-# 3g. THE RATER IS THE ONLY AGENT, AND IT IS NOT PINNED TO A MECHANICAL TIER.
-# (DELETED, no-mechanical-agents-in-workflows phase 34, commit 4: the
-# `estimate:list` / `estimate:write:` / `estimate:tier:` model-pin assertions and
-# their repoint self-test. Those three agents are gone — the caller does the list
-# read and runs the returned writeback commands — so there is no mechanical tier
-# left to pin. What remains is the negative half, which still has a referent.)
-# shellcheck disable=SC1091
-. "$REPO_ROOT/scripts/lib/mechanical-tier-check.sh"
-
-agent_option_blocks "$WF" >"$TMP/mech-blocks"
-[ -s "$TMP/mech-blocks" ] || fail "could not extract any agent() option blocks from rdm-wf-estimate.js"
-
-RATER_SITES=$(grep -c "label: 'estimate:rate:" "$WF" || true)
-[ "$RATER_SITES" -eq 1 ] || fail "rdm-wf-estimate.js must dispatch exactly one kind of agent (the rater); found $RATER_SITES estimate:rate: sites"
-OTHER_LABELS=$(grep -oE "label: '[^']*'" "$WF" | grep -vc "estimate:rate:" || true)
-[ "$OTHER_LABELS" -eq 0 ] || fail "rdm-wf-estimate.js dispatches a non-rater agent — the rater is the only agent left"
-pass "the rater is the only agent rdm-wf-estimate.js dispatches"
-
-assert_label_not_model "$TMP/mech-blocks" 'estimate:rate:' 'mechanicalModel' ||
-    fail "estimate:rate:<stem> must NOT be pinned to a mechanical model (judgment stage)"
-pass "estimate:rate:<stem> is left unpinned (judgment stage)"
 
 # --- 5. HERMETIC SEED (real target/debug/rdm) --------------------------------
 say "5. Hermetic seed: real rdm JSON drives selectUnestimated / buildEstimatePipeline against a temp plan repo"
@@ -515,56 +413,13 @@ fi
 # both arrive as RUNTIME args (`rdmBin`, `project`) and are threaded into every
 # prompt that shells out. This mirrors scripts/verify-agent-config-distribution.sh
 # § 7c, which gates the SAME contract for the shipped review engine — the helpers
-# here are copies in shape, not a second contract. Four sub-gates:
+# here are copies in shape, not a second contract. Two sub-gates:
 #
-#   9a — per-file literal zeroing across BOTH copies (lib + workflow), asserted
-#        PER FILE so a half-applied edit cannot pass.
 #   9b — a DRIVEN prompt capture: run the real workflow under a capturing fake
 #        agent, tokenize every emitted `rdm <subcommand>` occurrence, and check
 #        it against the project-agnostic allow-list expressed AS DATA.
-#   9c — the fail-closed `rdmBin` rule (and the optional-project validation),
-#        plus a grep proving it was NOT implemented as an existence preflight.
-#   9d — planted-mutation self-tests for 9b.
+#   9c — the fail-closed `rdmBin` rule (and the optional-project validation).
 say "9. Parameterization: no hardcoded rdm binary or project; the environment axes are runtime args"
-
-# --- 9a. Per-file literal zeroing ---------------------------------------------
-say "9a. Per-file literal zeroing (lib + workflow)"
-
-# assert_no_env_literals <file> — zero occurrences of THIS repo's dev binary path
-# and zero of THIS repo's project flag. Deliberately per-file: a concatenated
-# stream would let a zero in one copy mask a hit in the other, which is exactly
-# the half-applied-edit failure mode (the estimate-core block is byte-stamped,
-# the driver below it is hand-swept). Comments and prose count too — a leftover
-# explanatory comment naming either literal is the same staleness hazard.
-assert_no_env_literals() {
-    _f=$1
-    _bin=$(grep -c 'target/debug/rdm' "$_f" || true)
-    _proj=$(grep -c -- '--project rdm' "$_f" || true)
-    [ "$_bin" -eq 0 ] && [ "$_proj" -eq 0 ]
-}
-
-for f in "$LIB" "$WF"; do
-    if assert_no_env_literals "$f"; then
-        pass "9a: ${f#"$REPO_ROOT"/} carries neither 'target/debug/rdm' nor '--project rdm'"
-    else
-        grep -n 'target/debug/rdm' "$f" >&2 || true
-        grep -n -- '--project rdm' "$f" >&2 || true
-        fail "9a: $f still hardcodes this repo's rdm binary and/or project — both must be runtime args"
-    fi
-done
-
-# Self-test: plant the literals into EACH file in turn and prove the per-file
-# check fires on each one individually (so restoring only one cannot go green).
-_i=0
-for f in "$LIB" "$WF"; do
-    _i=$((_i + 1))
-    cp "$f" "$TMP/env-mutant-$_i"
-    printf '\n// planted: ./target/debug/rdm phase show --project rdm\n' >>"$TMP/env-mutant-$_i"
-    if assert_no_env_literals "$TMP/env-mutant-$_i"; then
-        fail "9a: the per-file literal check did not fire on a planted literal in $f — the gate is vacuous"
-    fi
-done
-pass "9a: the per-file check fires independently on both planted mutants"
 
 # --- 9b. Driven prompt capture ------------------------------------------------
 say "9b. Driven prompt capture: every emitted rdm invocation honors the allow-list"
@@ -706,7 +561,7 @@ else
 fi
 
 # --- 9c. Fail-closed rdmBin ---------------------------------------------------
-say "9c. Defaulted rdmBin: an absent arg resolves to a plain 'rdm', a wrong-TYPE arg still throws, and neither is an existence preflight"
+say "9c. Defaulted rdmBin: an absent arg resolves to a plain 'rdm', a wrong-TYPE arg still throws"
 
 cat >"$TMP/rdmbin.mjs" <<'NODE_RDMBIN'
 import assert from 'node:assert/strict';
@@ -841,31 +696,6 @@ if run_node "$TMP/rdmbin.mjs" "$LIB" "$WF"; then
 else
     fail "9c: defaulted rdmBin assertions failed"
 fi
-
-# The guard must NOT be an existence preflight. `which -a rdm` resolves to the
-# stale global build in this repo, so an existence check passes while running
-# exactly the binary the development-build rule forbids. COMMENT LINES ARE
-# STRIPPED FIRST so a rationale comment naming the rejected mechanism is not
-# itself flagged.
-assert_no_existence_preflight() {
-    grep -vE '^[[:space:]]*(//|\*|/\*)' "$1" |
-        grep -nE 'which +(-a +)?rdm|command -v|existsSync|accessSync|statSync' >"$TMP/preflight-hits" 2>/dev/null || true
-    [ ! -s "$TMP/preflight-hits" ]
-}
-for f in "$LIB" "$WF"; do
-    if ! assert_no_existence_preflight "$f"; then
-        cat "$TMP/preflight-hits" >&2
-        fail "9c: $f must not implement the rdmBin guard as an existence preflight — the guard is on the ABSENCE of the argument"
-    fi
-done
-pass "9c: no existence preflight (which rdm / command -v / existsSync) in either estimate copy"
-
-cp "$WF" "$TMP/preflight-mutant.js"
-printf "\nconst ok = existsSync(rdmBin)\n" >>"$TMP/preflight-mutant.js"
-if assert_no_existence_preflight "$TMP/preflight-mutant.js"; then
-    fail "9c: the existence-preflight detector missed a planted existsSync call — the gate is vacuous"
-fi
-pass "9c: the existence-preflight detector fires on planted code while ignoring the rationale prose"
 
 # DELETED SECTION "9d." (no-mechanical-agents-in-workflows phase 34, final
 # round): both planted-mutation self-tests for 9b.

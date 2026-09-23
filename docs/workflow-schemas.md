@@ -87,13 +87,13 @@ which is untouched in this pass.
 The prefix only pays off if the **rendered** listing shows it, and that listing
 is produced by the Claude Code client from `.claude/`, not by anything in this
 repo — so no hermetic check here can confirm it. What this repo gates
-hermetically (`verify-workflow-review.sh` § 2d) is that the tree *declares* the
-right names: engine filenames, `meta.name`-equals-stem parity, and engine/skill
-name disjointness. Confirming the client agrees is a separate, deliberate step:
+hermetically (`verify-workflow-review.sh` § 2d) is that the tree declares the
+`rdm-wf-*.js` engine filename set and that the shipped template copies stay
+byte-identical to the local engines. Confirming the client agrees is a
+separate, deliberate step:
 
 ```sh
-scripts/observe-workflow-listing.sh                  # live capture + assert
-scripts/observe-workflow-listing.sh --self-test-only # hermetic; what CI runs
+scripts/observe-workflow-listing.sh                  # live capture + assert; not CI-run
 ```
 
 The script derives the expected names from the tree (never a hardcoded list),
@@ -102,22 +102,21 @@ what comes back: every declared engine renders under its `rdm-wf-` name, no
 bare pre-rename name survives, every `rdm-*` front door still renders under its
 original name, and nothing is double-prefixed.
 
-Two properties make the result trustworthy rather than decorative:
+**It discriminates.** Run against `main` and against the renamed tree at the
+same moment on the same machine, the identical command returned different
+listings — bare `backlog`, `dispatch-phase`, `document`, `estimate`,
+`plan-review`, `review-refute-fix` in the first, and the `rdm-wf-`-prefixed
+entries in the second, with all eleven `rdm-*` front doors unchanged in both
+and no double-prefixed entry (a doubled `rdm-`, or the engine prefix stacked
+in front of a front-door name) in either. The cwd is the only variable, so
+the listing genuinely tracks the tree.
 
-- **It discriminates.** Run against `main` and against the renamed tree at the
-  same moment on the same machine, the identical command returned different
-  listings — bare `backlog`, `dispatch-phase`, `document`, `estimate`,
-  `plan-review`, `review-refute-fix` in the first, and the `rdm-wf-`-prefixed
-  entries in the second, with all eleven `rdm-*` front doors unchanged in both
-  and no double-prefixed entry (a doubled `rdm-`, or the engine prefix stacked
-  in front of a front-door name) in either. The cwd is the only variable, so
-  the listing genuinely tracks the tree.
-- **Its assertions are not vacuous.** `--self-test-only` requires them to
-  *reject* a pinned pre-rename listing and to *accept* one built from the
-  tree's own declarations, and the script refuses to run at all if a derivation
-  yields an empty name set — the failure mode where "no bare name was found" is
-  true only because nothing was looked for. § 2d runs that half, so CI catches
-  an observer that has stopped discriminating.
+A prior hermetic `--self-test-only` half asserted the same discrimination
+against a pinned pre-rename listing rather than a real capture — no `claude`
+CLI, no network, nothing real involved. It was retired by the operator
+amendment to the `retire-static-grep-harnesses` plan (2026-09-23), which
+extended grep-only-harness retirement to workflow JS/skill-template source;
+`verify-workflow-review.sh` § 2d no longer invokes it.
 
 A stale listing is not evidence of a failed rename: a client only watches
 directories that existed at *its* session start, so a long-running session can

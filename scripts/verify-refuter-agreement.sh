@@ -85,61 +85,13 @@ BASELINE_JSON="docs/token-baseline.json"
 REVIEW_LIB=".claude/workflows/lib/review.mjs"
 
 # ---------------------------------------------------------------------------
-say "1. Hygiene: determinism, no hot-path coupling, help surface, docs"
+say "1. Hygiene: parse, help surface"
 
 for f in "$MODULE" "$MINER" "$RUNNER"; do
     [ -f "$f" ] || die "missing $f"
     node --check "$f" >/dev/null 2>&1 || fail "$f does not parse under node --check"
 done
 pass "all three scripts parse"
-
-# GREP LIVENESS. Almost every hygiene assertion below is a grep, and grep treats
-# a file containing a NUL byte as BINARY: it reports no match and exits 1,
-# silently turning each of those assertions into a vacuous pass. A stray NUL is
-# easy to introduce inside a template literal and `node --check` accepts it, so
-# assert the scripts are real text before trusting a single grep result.
-BEFORE="$FAILURES"
-for f in "$MODULE" "$MINER" "$RUNNER"; do
-    node -e '
-const b = require("fs").readFileSync(process.argv[1]);
-if (b.includes(0)) {
-  console.error(process.argv[1] + " contains a NUL byte at offset " + b.indexOf(0) +
-    " — grep would treat it as binary and every grep-based check in this gate would pass vacuously");
-  process.exit(1);
-}
-' "$f" || fail "$f is not grep-readable text"
-    grep -q 'export' "$f" || fail "$f: a control grep for 'export' found nothing — grep cannot read this file"
-done
-[ "$FAILURES" = "$BEFORE" ] && pass "all three scripts are grep-readable text (no NUL byte), so the greps below are not vacuous"
-
-# Determinism: the report must be a pure function of its inputs. A clock or an
-# RNG anywhere makes two runs over the same corpus incomparable.
-BEFORE="$FAILURES"
-for f in "$MODULE" "$MINER" "$RUNNER"; do
-    if grep -nE 'Date\.now\(|Math\.random\(' "$f" >&2; then
-        fail "$f contains a forbidden nondeterministic global (a clock or an RNG)"
-    fi
-done
-[ "$FAILURES" = "$BEFORE" ] && pass "no clock and no RNG anywhere in the harness"
-
-# No network beyond the dispatcher the operator explicitly asks for.
-BEFORE="$FAILURES"
-for f in "$MODULE" "$MINER"; do
-    if grep -nE "\bfetch\(|node:https?|require\('https?'\)|child_process" "$f" >&2; then
-        fail "$f reaches the network or spawns a subprocess; only the runner may"
-    fi
-done
-[ "$FAILURES" = "$BEFORE" ] && pass "the module and the miner neither reach the network nor spawn subprocesses"
-
-# HOT-PATH COUPLING: the harness must be a strict CONSUMER of the lane. It
-# imports FROM .claude/workflows/lib/review.mjs and nothing under
-# .claude/workflows/ may import it back.
-if grep -rn 'refuter-agreement' .claude/workflows/ >&2; then
-    fail "a file under .claude/workflows/ references refuter-agreement — the harness must never be in the hot path"
-fi
-pass "nothing under .claude/workflows/ references refuter-agreement"
-grep -q "workflows/lib/review.mjs" "$RUNNER" || fail "the runner must import the REAL refutePrompt from .claude/workflows/lib/review.mjs"
-pass "the runner imports the real refutePrompt from the canonical review source"
 
 node "$RUNNER" --help >"$TMP/help.txt" 2>&1 || fail "--help exited non-zero"
 for flag in -- --corpus --tiers --replicates --dry-run --dispatch-stub --audit \

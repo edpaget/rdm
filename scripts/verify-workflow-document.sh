@@ -13,12 +13,8 @@
 # lives once in `.claude/workflows/lib/document.mjs` and is copied
 # BYTE-IDENTICAL into the workflow script (the Workflow runtime cannot import a
 # helper module — see docs/workflow-schemas.md § "Import spike"). This harness
-# gates four things:
+# gates three things:
 #
-#   1. STATIC INVARIANTS — grep-based assertions on the workflow source: no
-#      `--status` mutation or plan-mode/confirmation call anywhere in
-#      rdm-wf-document.js, and no `Date.now(`/`Math.random(` in
-#      rdm-wf-document.js or lib/document.mjs.
 #   2. BLOCK DRIFT — the `document-core` region is byte-identical between the
 #      lib source of truth and the stamped workflow script (with a
 #      planted-mutation self-test proving the gate is not a no-op).
@@ -92,36 +88,6 @@ TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 
 # ==============================================================================
-say "1. Static invariants on rdm-wf-document.js and the rdm-document skill shim"
-# ==============================================================================
-
-# AC: the workflow performs no rdm status mutation of its own (it is an
-# artifact producer, not a gate) and runs no confirmation/plan-mode call.
-if grep -qE -- '--status[[:space:]]' "$WF"; then
-    fail "rdm-wf-document.js must not mutate any rdm --status — that is the (never-run) job of a gate, not this artifact producer"
-fi
-if grep -qE "(buildReviewPipeline\(|runPlanGate\(|runPlanReview\(|workflow\('plan-review'|--verdict)" "$WF"; then
-    fail "rdm-wf-document.js must not invoke a plan-mode/review-pipeline call — approval happens only in the skill shim"
-fi
-pass "no --status mutation and no plan-mode/confirmation call in rdm-wf-document.js"
-
-# AC: no Date.now(/Math.random( in either file (forbidden-primitives rule).
-for f in "$WF" "$LIB"; do
-    if grep -qF 'Date.now(' "$f"; then
-        fail "forbidden Date.now( found in $f"
-    fi
-    if grep -qF 'Math.random(' "$f"; then
-        fail "forbidden Math.random( found in $f"
-    fi
-done
-pass "no Date.now( / Math.random( in rdm-wf-document.js or lib/document.mjs"
-
-# DELETED SECTION "1b." (no-mechanical-agents-in-workflows phase 34, commit 4):
-# its subject was a mechanical agent, its model pin, or the caller hoist that
-# suppressed it. None of those exists any more. Deleted and named, never
-# repaired or re-pointed.
-
-# ==============================================================================
 say "2. Block drift: the document-core region is byte-identical (lib vs workflow)"
 # ==============================================================================
 
@@ -164,14 +130,6 @@ fi
 cp "$WF" "$TMP/wf.scratch"
 blocks_equal "$TMP/lib.scratch" "$TMP/wf.scratch" || fail "restore did not heal the byte-equality gate"
 pass "drift detector fails on a planted mutation and heals on restore"
-
-# Non-vacuity: assert the region actually carries every core symbol in BOTH
-# files, so a partial hand-mirror cannot slip through by extracting nothing.
-for sym in parseDocumentArgs defaultOutPath resolveOutPath computeIncompletePhases buildGitRangeCommands; do
-    grep -q "$sym" "$TMP/lib-block" || fail "document-core block in the LIB is missing $sym"
-    grep -q "$sym" "$TMP/wf-block" || fail "document-core block in the WORKFLOW is missing $sym (partial mirror?)"
-done
-pass "document-core block carries every pure function in both files"
 
 # ==============================================================================
 say "3. Behavior: pure decision logic driven in Node against fabricated inputs"

@@ -158,20 +158,6 @@ AGENTS="rdm-mechanical.md"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
 
-# --- 0. single-place self-check on this script's own engine literals -------
-# The `rdm-wf-` rename made "one engine name, one place" a contract, not a
-# preference: a re-hardcoded literal is exactly how a future half-rename slips
-# through. Each engine filename may appear EXACTLY ONCE in this file — in its
-# variable assignment above.
-for engine_literal in $WORKFLOWS $RETIRED_WF; do
-    # The variable assignment itself is the one permitted occurrence; the
-    # `$WORKFLOWS` expansion above reaches it without adding a second literal.
-    occurrences=$(grep -c -- "$engine_literal" "$0" || true)
-    [ "$occurrences" -eq 1 ] ||
-        fail "0: '$engine_literal' appears $occurrences time(s) in $0 — it must be named in exactly one place (\$REVIEW_WF / \$RETIRED_WF); route the new site through the variable"
-done
-pass "0: each engine filename is named exactly once in this script"
-
 # --- helpers -------------------------------------------------------------
 
 # Asserts every $WORKFLOWS engine script under <emitted_dir>/.claude/workflows

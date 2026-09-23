@@ -10,9 +10,7 @@
 # projections so a refactor can't silently break either review lane:
 #
 #   1. DRIFT   — every consumer is in sync with the source block (gen --check).
-#   2. HYGIENE — no forbidden nondeterministic global (Date.now / Math.random)
-#                creeps into a workflow script (the runtime forbids them).
-#   3. BEHAVIOR — the pure pipeline logic, driven in Node with an injected fake
+#   2. BEHAVIOR — the pure pipeline logic, driven in Node with an injected fake
 #                 agent + reference pipeline/parallel (zero LLM calls):
 #                   * a planted refutable finding is dropped, a planted real one
 #                     survives, and a not-refuted-but-low-confidence finding is
@@ -79,32 +77,6 @@ run_node() {
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT INT HUP TERM
-
-# --- 0. MARKER STRUCTURE ------------------------------------------------------
-# The canonical source carries two marker systems. `review-spec` must nest
-# STRICTLY inside the stamped block (so the spec prose rides along in every
-# workflow consumer), while `review-gate-spec` must sit STRICTLY after the
-# stamped block's end — it is the skill-only Act/Gate prose a stamped
-# workflow script never executes itself.
-say "0. Marker structure: review-spec nested inside the stamped block, review-gate-spec after it"
-line_of() { grep -n "$1" "$2" | head -1 | cut -d: -f1; }
-BLOCK_BEGIN=$(line_of '>>> review-refute-fix:begin' "$LIB")
-BLOCK_END=$(line_of '>>> review-refute-fix:end' "$LIB")
-SPEC_BEGIN=$(line_of '>>> review-spec:begin' "$LIB")
-SPEC_END=$(line_of '>>> review-spec:end' "$LIB")
-GATE_BEGIN=$(line_of '>>> review-gate-spec:begin' "$LIB")
-GATE_END=$(line_of '>>> review-gate-spec:end' "$LIB")
-for v in BLOCK_BEGIN BLOCK_END SPEC_BEGIN SPEC_END GATE_BEGIN GATE_END; do
-    eval "val=\$$v"
-    [ -n "$val" ] || fail "missing marker in $LIB: $v"
-done
-[ "$BLOCK_BEGIN" -lt "$SPEC_BEGIN" ] || fail "review-spec:begin must come AFTER the stamped block's begin marker"
-[ "$SPEC_BEGIN" -lt "$SPEC_END" ] || fail "review-spec markers are inverted"
-[ "$SPEC_END" -lt "$BLOCK_END" ] || fail "review-spec:end must come BEFORE the stamped block's end marker"
-[ "$BLOCK_END" -lt "$GATE_BEGIN" ] || fail "review-gate-spec must start AFTER the stamped block ends"
-[ "$GATE_BEGIN" -lt "$GATE_END" ] || fail "review-gate-spec markers are inverted"
-
-pass "marker regions nest correctly"
 
 # --- 1. DRIFT ----------------------------------------------------------------
 say "1. Drift: every consumer is in sync with the source block"
@@ -207,127 +179,6 @@ fi
 # reviewer catalogue replaced. Per the standing ruling a broken assertion is
 # deleted, never re-pointed at a renamed symbol.
 
-# The generated region is stamped into the shipped cli template, so it must be
-# free of template placeholders.
-extract_spec_region() {
-    awk '
-        index($0, "<!-- rdm:review-spec:begin") { inr = 1; next }
-        index($0, "<!-- rdm:review-spec:end") { inr = 0 }
-        inr { print }
-    ' "$1"
-}
-extract_spec_region "$TEMPLATES/skill-review-cli.md" >"$TMP/spec-cli"
-[ -s "$TMP/spec-cli" ] || fail "the generated spec region in skill-review-cli.md is EMPTY"
-if grep -nE '\{proj_flag\}|\{proj_param\}|\{t_[a-z_]+\}|\{principles\}' "$TMP/spec-cli" >&2; then
-    fail "a template placeholder leaked into the shared generated review spec"
-fi
-pass "shared spec region is non-empty and placeholder-free"
-
-# --- 1d. PLAN SPEC PROJECTION -------------------------------------------------
-# The plan render is produced by the same emitter from the same regions, so it
-# gets the same battery — plus mode-isolation greps in BOTH directions, which
-# are the detector for a mistagged (or untagged) prose line leaking across.
-say "1d. Plan spec region: rendered, isolated from the code render, and gate-preserving"
-extract_spec_region "$TEMPLATES/skill-plan-review-cli.md" >"$TMP/plan-spec-cli"
-[ -s "$TMP/plan-spec-cli" ] || fail "the generated spec region in skill-plan-review-cli.md is EMPTY"
-if grep -nE '\{proj_flag\}|\{proj_param\}|\{t_[a-z_]+\}|\{principles\}' "$TMP/plan-spec-cli" >&2; then
-    fail "a template placeholder leaked into the shared generated plan-review spec"
-fi
-pass "plan spec region is non-empty and placeholder-free"
-
-# --- 1d-gate-policy. THE SELF-REVIEW POLICY PROSE (AC3) -----------------------
-# phase-4-plan-review-gate-blocked-by-safety-classifier: the gate is now
-# evidence-carrying, deferrable, and loud on failure. That decision must be
-# STATED on the rendered plan surfaces (not only in the JS), and must NOT leak
-# into the code render — the existing bidirectional mode-isolation discipline.
-#
-# DRIVER-AGNOSTIC BY CONSTRUCTION. The canonical spec is stamped into THREE plan
-# consumers, and only one of them (`.claude/skills/rdm-plan-review/SKILL.md`) is
-# driven by `rdm-wf-plan-review.js` — a LOCAL-ONLY workflow. The shipped
-# cli template and the plugin skill perform the gate write themselves, in
-# hand-authored Bash prose, with no JS driver to hand args to and no returned
-# object to read fields off. So the policy is stated here in terms of the
-# WRITE ("if the write fails … do not perform the write at all"), never in
-# terms of the local driver's argument or result field names. Those live in the
-# local shim's hand-authored prose, gated separately below.
-# ...states it WITHOUT the local driver's internals. `gateMode`/`gateAction`/
-# `gateBlocked`/`gateDeferred` are `rdm-wf-plan-review.js` surface, and that
-# workflow is never shipped (`rdm-core/src/templates/workflows/` holds only
-# review-refute-fix). A consumer of the distributed skill has
-# nothing to pass `gateMode` TO and no object to read `gateBlocked` OFF, so
-# stamping those names into the shared spec would emit an uninstructable
-# instruction into every downstream tree. This grep is the regression detector.
-for driverfield in gateMode gateAction gateBlocked gateDeferred; do
-    if grep -nF "$driverfield" "$TMP/plan-spec-cli" >&2; then
-        fail "1d-gate-policy: local-workflow driver internals ($driverfield) leaked into the SHARED plan spec — the shipped/plugin plan-review skill has no JS driver to use them; keep them in the local shim's hand-authored prose"
-    fi
-done
-for driverfield in gateMode gateAction gateBlocked gateDeferred; do
-    if grep -nF "$driverfield" "$TEMPLATES/skill-plan-review-cli.md" >&2; then
-        fail "1d-gate-policy: $driverfield appears in $TEMPLATES/skill-plan-review-cli.md — the distributed plan-review skill never invokes rdm-wf-plan-review.js"
-    fi
-done
-pass "1d-gate-policy: the shared plan spec and both shipped templates are free of local-workflow driver internals"
-
-# The other half of the same contract: the LOCAL dogfood shim, which IS driven
-# by the workflow, must still carry them — otherwise the check above could be
-# satisfied by deleting the capability outright rather than by scoping it.
-PLAN_SHIM_MD="$REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
-awk 'index($0, "<!-- rdm:review-spec:begin") { exit } { print }' "$PLAN_SHIM_MD" >"$TMP/plan-shim-hand"
-# DELETED (no-mechanical-agents-in-workflows phase 34, commit 3): the
-# "gateMode: 'return'" and "gateBlocked: true" required-prose entries. Both names
-# stopped existing: the gate can no longer write, so there is no 'apply' mode to
-# opt out of and no attempted write that can be blocked. The remaining three
-# entries still have referents and still run.
-for driverfield in 'gateAction' 'gateAction.commands' 'docs/plan-review-gate-policy.md'; do
-    grep -qF "$driverfield" "$TMP/plan-shim-hand" ||
-        fail "1d-gate-policy: the LOCAL rdm-plan-review shim's hand-authored prose must document $driverfield — it is the one plan consumer the workflow drives"
-done
-pass "1d-gate-policy: the local workflow-driven shim documents gateAction in its own hand-authored prose"
-
-# The policy DOC itself must exist and must not silently lose its recorded
-# evidence or its explicit non-goal — the phase body's own instruction was that
-# this not be resolved by quieting the classifier.
-GATE_POLICY_DOC="$REPO_ROOT/docs/plan-review-gate-policy.md"
-[ -f "$GATE_POLICY_DOC" ] ||
-    fail "1d-gate-policy: docs/plan-review-gate-policy.md is missing — the self-review decision must be written down"
-grep -q 'NON-GOAL' "$GATE_POLICY_DOC" ||
-    fail "1d-gate-policy: docs/plan-review-gate-policy.md must carry an explicit NON-GOAL section"
-grep -qF 'wf_1ee517c8-ec2' "$GATE_POLICY_DOC" ||
-    fail "1d-gate-policy: docs/plan-review-gate-policy.md must record the wf_1ee517c8-ec2 classifier block"
-RECORDED_7E=$(grep -cF 'wf_7e7d554d-452' "$GATE_POLICY_DOC" || true)
-[ "$RECORDED_7E" -ge 2 ] ||
-    fail "1d-gate-policy: docs/plan-review-gate-policy.md must record BOTH wf_7e7d554d-452 blocks, found $RECORDED_7E"
-grep -qF 'review-gate-intent' "$GATE_POLICY_DOC" ||
-    fail "1d-gate-policy: docs/plan-review-gate-policy.md must name review-gate-intent as the owner of the broader question"
-pass "1d-gate-policy: the policy doc records all three blocked runs, the non-goal, and the review-gate-intent deferral"
-
-# Mode isolation, both directions. A code-only line left untagged would ship
-# into the plan skill (and vice versa); these greps are the detector.
-for bad in '\*\*ac\*\*' '\*\*changelog\*\*' '\*\*security\*\*' 'AC table' 'AC FAIL'; do
-    if grep -nE "$bad" "$TMP/plan-spec-cli" >&2; then
-        fail "code-only prose ($bad) leaked into the generated plan spec — tag it //|code|"
-    fi
-done
-for bad in 'needs-plan-review' '\*\*unit-of-work\*\*' '\*\*restraint\*\*' 'specified gate behavior' 'plan-review-gate-policy'; do
-    if grep -nE "$bad" "$TMP/spec-cli" >&2; then
-        fail "plan-only prose ($bad) leaked into the generated code spec — tag it //|plan|"
-    fi
-done
-
-# The retired vocabulary may survive ONLY inside the generated block, and only
-# as the explicit "PASS/PWC collapse to reviewed" mapping note. The
-# hand-authored prose must speak the new vocabulary exclusively.
-awk 'index($0, "<!-- rdm:review-spec:begin") { exit } { print }' "$TEMPLATES/skill-plan-review-cli.md" >"$TMP/plan-hand"
-for retired in 'PASS WITH CONCERNS' 'REWORK'; do
-    if grep -n "$retired" "$TMP/plan-hand" >&2; then
-        fail "skill-plan-review-cli.md still uses the retired $retired verdict in its hand-authored prose"
-    fi
-done
-grep -q 'find → refute → filter → verdict → act → gate' "$TMP/plan-hand" ||
-    fail "skill-plan-review-cli.md must describe the canonical find → refute → filter → verdict → act → gate pipeline"
-pass "plan spec region is byte-identical, placeholder-free, mode-isolated, and gate-preserving"
-
 # --- 1e. NO SECOND MECHANISM --------------------------------------------------
 # The plan surface must reuse the ONE generator and the ONE dimension table.
 say "1e. No second mechanism: one generator, exactly two dimension modes"
@@ -343,24 +194,6 @@ MODE_KEYS=$(run_node -e '
 [ "$MODE_KEYS" = "code,plan" ] ||
     fail "review.mjs must declare exactly the two DIMENSIONS modes code,plan (got: $MODE_KEYS)"
 pass "one generator, one dimension table with exactly the code and plan modes"
-
-# --- 1f. NO DANGLING GENERATOR REFERENCES IN SHIPPED TEMPLATES ----------------
-# `.claude/workflows/lib/review.mjs` and `scripts/gen-skill-review.sh` are
-# dogfood-only tooling (see the `distribute-workflow-lane` roadmap, Phase 1's
-# landed decision recorded in its commit message: "lib/*.mjs is deliberately
-# not shipped since no regeneration script travels downstream to consume
-# it") — a consumer repo never has them. No shipped skill template may
-# instruct the reader to edit or run either path.
-say "1f. No dangling generator references in shipped templates"
-if grep -lE 'scripts/gen-skill-review\.sh|\.claude/workflows/lib/review\.mjs' "$TEMPLATES"/*.md; then
-    fail "a shipped template references scripts/gen-skill-review.sh or .claude/workflows/lib/review.mjs — these do not exist in a consumer repo"
-fi
-# Self-test: the grep MUST catch a planted dangling reference.
-printf 'edit .claude/workflows/lib/review.mjs and run scripts/gen-skill-review.sh\n' >"$SCRATCH/planted-dangling.md"
-if ! grep -lE 'scripts/gen-skill-review\.sh|\.claude/workflows/lib/review\.mjs' "$SCRATCH/planted-dangling.md" >/dev/null 2>&1; then
-    fail "dangling-reference grep did NOT catch a planted reference — the detector is broken"
-fi
-pass "no shipped template references the dogfood-only generator or its source module"
 
 # --- 1g. LOCAL DOGFOOD SKILL PROJECTION ---------------------------------------
 # The SAME canonical source ALSO projects into the two LOCAL dogfood skill
@@ -455,36 +288,7 @@ sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --check --target local --mode pla
     fail "regeneration did not restore sync in the local rdm-plan-review scratch copy"
 pass "local rdm-plan-review (target=local mode=plan) drift detector fires on a consumer-side edit and heals"
 
-# Non-vacuity for §1d-gate-policy's DRIVER-INTERNALS guard: plant a local-only
-# workflow field name into the //|plan| region of a scratch SOURCE copy,
-# regenerate the shipped plan template, and require the same grep that runs in
-# §1d to fire on it. Without this, the guard could pass simply because nobody
-# ever writes those names — it must be shown to actually catch the leak this
-# phase's review found (driver internals stamped into the distributed skill).
 reset_localscratch_source
-reset_localscratch_consumers
-awk '{
-    if (index($0, "//|plan| The decision this rests on") == 1) {
-        print "//|plan| Pass `gateMode` and read `gateBlocked` off the returned unit."
-    }
-    print
-}' "$LOCALSCRATCH/.claude/workflows/lib/review.mjs" >"$LOCALSCRATCH/mut-driverfield"
-mv "$LOCALSCRATCH/mut-driverfield" "$LOCALSCRATCH/.claude/workflows/lib/review.mjs"
-grep -qF 'gateMode' "$LOCALSCRATCH/.claude/workflows/lib/review.mjs" ||
-    fail "1g: the driver-internals mutation did not actually plant gateMode in the scratch source"
-sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode plan >/dev/null 2>&1
-DRIVERFIELD_LEAKED=0
-for driverfield in gateMode gateAction gateBlocked gateDeferred; do
-    if grep -qF "$driverfield" "$LOCALSCRATCH/rdm-core/src/templates/skill-plan-review-cli.md"; then
-        DRIVERFIELD_LEAKED=1
-    fi
-done
-[ "$DRIVERFIELD_LEAKED" -eq 1 ] ||
-    fail "1g: planting a local-workflow field name in the //|plan| region did NOT reach the shipped plan template — §1d-gate-policy's driver-internals grep is vacuous"
-pass "1g: the driver-internals guard demonstrably catches a local-workflow field name stamped into the shipped plan template"
-reset_localscratch_source
-reset_localscratch_consumers
-
 reset_localscratch_consumers
 
 # Non-vacuity + target-isolation: mutate a distinguishing sentence INSIDE the
@@ -506,8 +310,6 @@ sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target local --mode code >/dev/
 if diff -q "$LOCALSCRATCH/.claude/skills/rdm-review/SKILL.md" "$LOCALSCRATCH/baseline-local-review.md" >/dev/null 2>&1; then
     fail "mutating the local-code-override block did not change the local/code render — the override is not actually consumed"
 fi
-grep -q 'ARE NOW PERFORMED DETERMINISTICALLY (mutated)' "$LOCALSCRATCH/.claude/skills/rdm-review/SKILL.md" ||
-    fail "the local/code render did not pick up the mutated override text"
 
 sh "$LOCALSCRATCH/scripts/gen-skill-review.sh" --target shipped --mode code >/dev/null 2>&1
 diff -u "$LOCALSCRATCH/rdm-core/src/templates/skill-review-cli.md" "$LOCALSCRATCH/baseline-shipped-review.md" >/dev/null 2>&1 ||
@@ -532,19 +334,6 @@ reset_localscratch_consumers
 # 1e (NO SECOND MECHANISM) already covers the invariant this section depends
 # on — one generator, one dimension table — and needed no change for --target
 # to be added, so it is not re-asserted here.
-
-# --- 2. HYGIENE --------------------------------------------------------------
-say "2. Hygiene: no forbidden nondeterministic global in workflow scripts"
-if grep -nE 'Date\.now\(|Math\.random\(' "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null; then
-    fail "found Date.now( / Math.random( in a workflow script — the runtime forbids them"
-fi
-# Self-test: the grep MUST catch a planted violation (guards against a glob that
-# silently matches zero files, turning the check into a no-op).
-printf 'const x = Date.now();\n' >"$SCRATCH/planted.js"
-if ! grep -nE 'Date\.now\(|Math\.random\(' "$SCRATCH/planted.js" >/dev/null 2>&1; then
-    fail "hygiene grep did NOT catch a planted Date.now() — the detector is broken"
-fi
-pass "no forbidden globals present; detector catches a planted one"
 
 # --- 2d. ENGINE NAMING (the rdm-wf- prefix contract) --------------------------
 # Every engine under .claude/workflows/ carries the `rdm-wf-` prefix so a
@@ -571,100 +360,6 @@ EXPECTED_LIBS_SORTED=$(printf '%s\n' $EXPECTED_LIBS | sort | tr '\n' ' ')
   actual:   $ACTUAL_LIBS"
 pass "2d: all five lib/*.mjs filenames are unchanged"
 
-# meta.name must equal the filename stem, or the listing shows one name while
-# the file carries another.
-check_meta_name_parity() {
-    parity_dir=$1
-    parity_bad=0
-    for engine in "$parity_dir"/rdm-wf-*.js; do
-        [ -f "$engine" ] || continue
-        stem=$(basename "$engine" .js)
-        declared=$(sed -n "s/^  name: '\(.*\)',$/\1/p" "$engine" | head -1)
-        [ -n "$declared" ] || {
-            echo "  $engine declares no meta.name" >&2
-            parity_bad=1
-            continue
-        }
-        [ "$declared" = "$stem" ] || {
-            echo "  $engine declares meta.name '$declared' but its stem is '$stem'" >&2
-            parity_bad=1
-        }
-    done
-    return "$parity_bad"
-}
-check_meta_name_parity "$WF_DIR" || fail "2d: an engine's meta.name does not match its filename stem (see lines above)"
-pass "2d: every engine's meta.name equals its filename stem"
-
-# Non-vacuity: revert one meta.name to its bare pre-rename form in a scratch
-# copy and confirm the parity check turns red.
-mkdir -p "$SCRATCH/2d"
-cp "$WF_DIR"/rdm-wf-*.js "$SCRATCH/2d/"
-sed "s/^  name: 'rdm-wf-backlog',$/  name: 'backlog',/" \
-    "$SCRATCH/2d/rdm-wf-backlog.js" >"$SCRATCH/2d/rdm-wf-backlog.js.mut"
-mv "$SCRATCH/2d/rdm-wf-backlog.js.mut" "$SCRATCH/2d/rdm-wf-backlog.js"
-grep -q "name: 'backlog'," "$SCRATCH/2d/rdm-wf-backlog.js" ||
-    fail "2d self-test: could not plant the bare meta.name — the self-test is vacuous"
-if check_meta_name_parity "$SCRATCH/2d" 2>/dev/null; then
-    fail "2d self-test: a planted bare meta.name did NOT turn the parity check red"
-fi
-pass "2d self-test: a planted bare meta.name correctly turns the parity check red"
-
-# The rendered listing entry for an engine is its meta.name and for a skill its
-# frontmatter name, drawn into ONE namespace. The whole point of the rdm-wf-
-# prefix is that no reader can mistake one for the other, so assert the two
-# name sets are disjoint. This is the mechanical, re-derivable half of "the
-# listing shows the prefixed names". The other half — that a real client
-# RENDERS what the tree declares — cannot be checked hermetically, because the
-# listing is produced by the Claude Code client rather than by anything in this
-# repo. `scripts/observe-workflow-listing.sh` closes it: it captures the
-# listing from a live `claude -p` rooted at this repo and asserts the same
-# contract against it. Its assertion logic is exercised here (below) so CI
-# still gates it; the captured before/after is recorded in
-# docs/workflow-schemas.md § "Observing the rendered listing".
-collect_listing_names() {
-    # $1 = workflows dir, $2 = skills dir. Emits every listing entry name.
-    for engine in "$1"/*.js; do
-        [ -f "$engine" ] || continue
-        sed -n "s/^  name: '\(.*\)',$/\1/p" "$engine" | head -1
-    done
-    for skill in "$2"/*/SKILL.md; do
-        [ -f "$skill" ] || continue
-        sed -n 's/^name: *\(.*\)$/\1/p' "$skill" | head -1
-    done
-}
-check_listing_disjoint() {
-    dup=$(collect_listing_names "$1" "$2" | sort | uniq -d)
-    [ -z "$dup" ] || {
-        echo "  colliding listing entry name(s): $dup" >&2
-        return 1
-    }
-    return 0
-}
-check_listing_disjoint "$WF_DIR" "$REPO_ROOT/.claude/skills" ||
-    fail "2d: an engine and a skill render the SAME listing entry name — the rdm-wf- prefix exists precisely to make this impossible (see lines above)"
-pass "2d: engine and skill listing entry names are disjoint (no front-door/engine collision)"
-
-# Non-vacuity: plant a scratch skill whose frontmatter name collides with an
-# engine's meta.name and confirm the disjointness check turns red.
-mkdir -p "$SCRATCH/2d-listing/skills/colliding"
-printf -- '---\nname: rdm-wf-backlog\ndescription: planted collision\n---\n' \
-    >"$SCRATCH/2d-listing/skills/colliding/SKILL.md"
-if check_listing_disjoint "$WF_DIR" "$SCRATCH/2d-listing/skills" 2>/dev/null; then
-    fail "2d self-test: a planted name collision did NOT turn the disjointness check red"
-fi
-pass "2d self-test: a planted engine/skill name collision correctly turns the check red"
-
-# The live listing observer's ASSERTION logic is gated here, hermetically. Its
-# --self-test-only mode needs no `claude`, no network and no credentials: it
-# requires the assertions to reject a pinned PRE-rename listing and to accept
-# one built from what the tree declares. Running it here means a change that
-# renders those assertions vacuous fails CI, rather than lying dormant until
-# someone next runs the non-hermetic live capture by hand.
-sh "$REPO_ROOT/scripts/observe-workflow-listing.sh" --self-test-only >/dev/null ||
-    fail "2d: scripts/observe-workflow-listing.sh --self-test-only failed — the rendered-listing assertions no longer discriminate.
-  Run it directly to see which half broke."
-pass "2d: the rendered-listing observer's assertions still discriminate (hermetic self-test)"
-
 # Every SHIPPED copy must stay byte-identical to its local counterpart. The set
 # is discovered from the template directory itself, with a floor so the loop
 # cannot pass vacuously on an emptied tree.
@@ -679,143 +374,9 @@ done
     fail "2d: rdm-core/src/templates/workflows/ holds no engine at all — the byte-identity check would be vacuous"
 pass "2d: all $SHIPPED_SEEN shipped template copies are byte-identical to their local engines"
 
-# The engine names rendered by the `find-refute-verdict:local-code-override`
-# block must reach ONLY the local dogfood rdm-review skill. The two SHIPPED
-# review-skill templates carry no engine reference today and must gain none —
-# a mis-scoped edit into the DEFAULT find-refute-verdict span would silently
-# expand the distributed surface.
-for shipped_skill in skill-review-cli.md skill-plan-review-cli.md; do
-    [ "$(grep -c 'rdm-wf-' "$REPO_ROOT/rdm-core/src/templates/$shipped_skill" || true)" -eq 0 ] ||
-        fail "2d: $shipped_skill gained an engine reference — the local-code-override block must never render into a SHIPPED template"
-done
-pass "2d: no shipped review-skill template gained an engine reference"
-
-# --- 2e. ANCHORED REFERENCE-FORM SWEEP ---------------------------------------
-# The seven ways an engine can be named. Every hit outside the allowlist means
-# a reference still points at a file that no longer exists.
-say "2e. Anchored reference-form sweep: no live reference names a bare engine"
-
-ENGINE_ALT='dispatch-phase|review-refute-fix|backlog|document|estimate|plan-review'
-
-# Paths deliberately excluded, each for a stated reason. `autopilot` is absent
-# from ENGINE_ALT on purpose: it is a front door with NO engine behind it, and
-# substituting it would corrupt the one skill this rename must not touch.
-sweep_allowed() {
-    case $1 in
-        # Historical entries describing the pre-rename world.
-        */CHANGELOG.md) return 0 ;;
-        # Frozen measurement corpora keyed to committed figures.
-        */docs/token-baseline.json | */docs/token-baseline.md) return 0 ;;
-        # Frozen adjudication/measurement fixtures.
-        */tests/fixtures/*) return 0 ;;
-        # This harness and the distribution harness both name the PRE-rename
-        # forms deliberately, as planted-mutation inputs.
-        */scripts/verify-workflow-review.sh) return 0 ;;
-        */scripts/verify-agent-config-distribution.sh) return 0 ;;
-        # The superseded-name table records the pre-rename names by design.
-        */rdm-core/src/agent_config.rs) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-run_sweep() {
-    sweep_root=$1
-    sweep_out=$2
-    : >"$sweep_out"
-    {
-        # form 1 + 7: workflow-directory paths
-        grep -rnE "workflows/($ENGINE_ALT)\.js" "$sweep_root/.claude" "$sweep_root/scripts" "$sweep_root/docs" "$sweep_root/rdm-core" "$sweep_root/rdm-cli" "$sweep_root/CLAUDE.md" "$sweep_root/README.md" 2>/dev/null || :
-        # form 2: meta.name declarations
-        grep -rnE "^\s*name: '($ENGINE_ALT)'," "$sweep_root/.claude/workflows" "$sweep_root/rdm-core/src/templates/workflows" 2>/dev/null || :
-        # form 3: nested workflow() calls — expected to be structurally ZERO
-        grep -rnE "workflow\(['\"]($ENGINE_ALT)['\"]" "$sweep_root/.claude" "$sweep_root/rdm-core" "$sweep_root/scripts" "$sweep_root/docs" 2>/dev/null || :
-        # form 4: backticked name adjacent to Workflow/workflow
-        grep -rnE "\`($ENGINE_ALT)\` *\**\[?[Ww]orkflow" "$sweep_root/.claude" "$sweep_root/rdm-core/src/templates" "$sweep_root/docs" "$sweep_root/CLAUDE.md" "$sweep_root/README.md" 2>/dev/null || :
-        # form 5: bare prose invocation line
-        grep -rnE "^Workflow: *($ENGINE_ALT) *$" "$sweep_root/.claude" "$sweep_root/rdm-core/src/templates" 2>/dev/null || :
-        # form 6: bare <name>.js with no path prefix
-        grep -rnE "(^|[^/A-Za-z0-9_-])($ENGINE_ALT)\.js" "$sweep_root/README.md" "$sweep_root/CLAUDE.md" "$sweep_root/docs" "$sweep_root/rdm-cli" "$sweep_root/rdm-core" "$sweep_root/scripts" "$sweep_root/.claude" 2>/dev/null || :
-    } >"$sweep_out.raw" 2>/dev/null
-    while IFS= read -r hit; do
-        hit_path=${hit%%:*}
-        sweep_allowed "$hit_path" || printf '%s\n' "$hit" >>"$sweep_out"
-    done <"$sweep_out.raw"
-    [ ! -s "$sweep_out" ]
-}
-
-run_sweep "$REPO_ROOT" "$SCRATCH/sweep.txt" ||
-    fail "2e: a live reference still names a bare (pre-rename) engine:
-$(sort -u "$SCRATCH/sweep.txt")"
-pass "2e: no live reference names a bare engine (only allowlisted historical prose survives)"
-
-# Form 3 gets its own dedicated ZERO assertion — the phase's contract is that
-# it is structurally empty, not that it was swept.
-if grep -rnE "workflow\(['\"]($ENGINE_ALT)['\"]" "$REPO_ROOT/.claude" "$REPO_ROOT/rdm-core" >/dev/null 2>&1; then
-    fail "2e: a nested workflow() call by engine name reappeared — it must stay structurally ZERO"
-fi
-pass "2e: form 3 (nested workflow() calls by engine name) is still structurally zero"
-
-# Non-vacuity: plant a bare path reference in a scratch tree and confirm the
-# sweep turns red.
-rm -rf "$SCRATCH/2e-tree"
-mkdir -p "$SCRATCH/2e-tree/docs"
-# shellcheck disable=SC2016  # backticks are literal Markdown, not substitution
-printf 'See `.claude/workflows/document.js` for details.\n' >"$SCRATCH/2e-tree/docs/planted.md"
-if run_sweep "$SCRATCH/2e-tree" "$SCRATCH/sweep-planted.txt"; then
-    fail "2e self-test: a planted bare '.claude/workflows/document.js' reference was NOT caught — the sweep is vacuous"
-fi
-pass "2e self-test: a planted bare engine reference correctly turns the sweep red"
-
 # DELETED SECTION 2a (no-mechanical-agents-in-workflows phase 34): its subject
 # no longer exists. Per the standing ruling a broken assertion is deleted and
 # named, never repaired or re-pointed.
-
-# --- 2b. AGENT-CONTEXT-TRIM GUARDS -------------------------------------------
-# One remaining guard recording a decision from the agentType/effort options
-# spike (docs/workflow-schemas.md § "agentType / effort options spike"). The
-# spike has now been RUN via the Workflow tool (wf_2bea58b9-38f): effort IS
-# honored at the call site (reversing the earlier definition-side negative),
-# so this guard is now a SCOPE boundary, not a statement that the option is
-# inert. No call site was edited, so the guard stays live.
-#
-# The sibling guard that used to live here — "no DISTRIBUTED workflow copy may
-# reference an agentType" — is REMOVED as of `ship-mechanical-agent-type-downstream`:
-# `rdm-core/src/agent_config.rs`'s `generate_agents()` now ships
-# `.claude/agents/rdm-mechanical.md` into every downstream tree, so the
-# precondition for that guard (no emission surface to resolve against) no
-# longer holds. Its successor is `scripts/verify-agent-config-distribution.sh`
-# § 3c, which resolves every emitted `agentType:` literal against the EMITTED
-# `.claude/agents/*.md` set — the same failure this guard used to prevent,
-# caught the moment a real reference exists instead of by a blanket
-# prohibition.
-say "2b. Agent-context-trim guards (agentType / effort options spike)"
-
-# (i) No call site may pass `effort:`. READ THIS BEFORE "FIXING" IT: the option
-#     is NOT inert. The verification channel is the top-level `effort` field on
-#     each `assistant` transcript record, and the two routes disagree:
-#       - DECLARED in an agent definition -> ran at "high" (not honored)
-#       - agent(prompt, {effort:'low'}) from a Workflow run -> recorded "low"
-#         (spike case E: the first "low" record in a 156384-record corpus)
-#     So this guard is not a claim that the key does nothing. It now rests on a
-#     RUN result rather than on the phase body's original scope rule: the
-#     fidelity study dispatched (`wf_0e8e31e2-415`, 15 pairs / 30 dispatches) and
-#     came back a NEGATIVE. Its transcription half passed 15/15, but (a) the same
-#     pairs show no output-token drop — 11831 at low vs 9819 control, 8 pairs up
-#     and 7 down — and (b) every mechanical site pins the mechanical tier, which
-#     resolves to haiku, and haiku emits no top-level `effort` field at all
-#     (0 of 9914 corpus records), so the option is unfalsifiable exactly where it
-#     would be threaded. With Q2b (an invalid value degrades silently rather than
-#     throwing) there is no error channel either. See docs/token-baseline.json
-#     § mechanicalContextTrim.effortFidelity. There is no exempt file any more —
-#     `spike-agent-type.js` was deleted with the mechanical lane it probed.
-if grep -nE '(^|[^A-Za-z-])effort:' "$WF_DIR"/*.js "$WF_DIR"/lib/*.mjs 2>/dev/null; then
-    fail "a workflow script passes effort: — the fidelity study RAN and returned a negative (no output-token drop, and the option is unobservable on the mechanical tier's model), so no mechanical site may carry it; NB effort:'low' IS honored at the call site on models that report it — this guard is an evidence-backed refusal, not an inertness claim — see docs/token-baseline.json § mechanicalContextTrim.effortFidelity"
-fi
-printf 'await agent(P, { label: "x", effort: %s })\n' "'low'" >"$SCRATCH/planted-effort.js"
-if ! grep -nE '(^|[^A-Za-z-])effort:' "$SCRATCH/planted-effort.js" >/dev/null 2>&1; then
-    fail "effort guard did NOT catch a planted effort: key — the detector is broken"
-fi
-pass "no workflow call site passes effort:; detector catches a planted one"
 
 # DELETED SECTION 2b-fid (no-mechanical-agents-in-workflows phase 34): its subject
 # no longer exists. Per the standing ruling a broken assertion is deleted and
@@ -2483,29 +2044,6 @@ else
     cat "$TMP/plan-driver-diff" >&2
     fail "plan-review-driver block DRIFTED — copy the lib block verbatim into $PLAN_REVIEW"
 fi
-# The driver's load-bearing symbols must be present in BOTH copies (guards against
-# a partial mirror the byte-diff above would also catch, but names the gap).
-# DELETED (phase 34): the required-symbol entries whose functions no longer
-# exist — 'stripNonPhaseUnitOfWork' (commit 1), and 'fetchTranscriptionOk',
-# 'RESERVED_FETCH_TOKENS', 'snapshotOriginalTags', 'buildGateEvidence',
-# 'resolvePlanGateMode', 'gateFailureClause', 'gateDeferredClause',
-# 'hoistedModelsComplete', 'computeMissingModels' (commit 3). The entries below
-# still have referents.
-for sym in 'function parsePlanArgs' 'function buildReviewUnits' 'async function runPlanReviewDriver' \
-    "buildReviewPipeline('plan')" 'filterPlanReviewTag' 'classifyPlanOutcome' \
-    'function planGateCommands' 'function buildGateAction' 'function gatePendingClause'; do
-    grep -q "$sym" "$TMP/plan-driver-lib" || fail "plan-review-driver block in the LIB is missing $sym"
-    grep -q "$sym" "$TMP/plan-driver-wf" || fail "plan-review-driver block in the WORKFLOW is missing $sym (partial mirror?)"
-done
-# The runtime entry that calls runPlanReviewDriver lives OUTSIDE the copied block
-# (it uses top-level `return` / ambient globals, illegal in a Node module), so it
-# must NOT appear in the lib copy.
-grep -q 'return await runPlanReviewDriver' "$PLAN_REVIEW" ||
-    fail "rdm-wf-plan-review.js must invoke the driver via a thin runtime entry (return await runPlanReviewDriver(...))"
-if grep -q 'return await runPlanReviewDriver' "$PLAN_LIB"; then
-    fail "the top-level runtime entry leaked into the lib copy — it must stay OUTSIDE the block"
-fi
-pass "plan-review-driver block is byte-in-sync and the runtime entry is workflow-only"
 
 # DELETED SECTION 5b-exec (no-mechanical-agents-in-workflows phase 34, commit 3):
 # its whole subject was the plan driver's mechanical fetch/act/gate agents and
@@ -2854,12 +2392,6 @@ pass "8c: the surviving mutations flip their assertion — section 8 is non-vacu
 # resolution, and — the blocking correctness question — an over-budget finding can
 # never turn a `rework` outcome into `reviewed`.
 say '9. Refutation budget: under/at/over budget, four-state distinguishability, determinism, monotonicity'
-
-# The cut must stay free of the two globals this runtime forbids (section 2
-# greps the workflow scripts; re-assert scoped to the canonical source).
-for forbidden in 'Date.now(' 'Math.random('; do
-    ! grep -qF "$forbidden" "$LIB" || fail "9: $LIB must not use $forbidden"
-done
 
 cat >"$TMP/budget-test.mjs" <<'NODE_BUDGET_TEST'
 import assert from 'node:assert/strict';
@@ -3576,73 +3108,6 @@ pass "9c: all seven mutations flip a section-9 assertion, and the control passes
 # DELETED SECTION 10g (no-mechanical-agents-in-workflows phase 34): its subject
 # no longer exists. Per the standing ruling a broken assertion is deleted and
 # named, never repaired or re-pointed.
-
-# The two rendered-surface lists, previously defined in the deleted §10g. They
-# are SETUP, not an assertion — §10h below consumes them.
-CODE_RENDERS="$TEMPLATES/skill-review-cli.md $REPO_ROOT/.claude/skills/rdm-review/SKILL.md"
-PLAN_RENDERS="$TEMPLATES/skill-plan-review-cli.md $REPO_ROOT/.claude/skills/rdm-plan-review/SKILL.md"
-
-# --- 10h. PROJECT-AGNOSTIC PROSE ON THE RENDERED SURFACES --------------------
-# AC2b (section 3) guards the runtime projection — the `focus` strings a finder
-# agent actually receives. This guards the DOCUMENTATION projection: the `//|`
-# spec prose gen-skill-review.sh renders into the four SHIPPED skill templates
-# and the two dogfood copies. The two projections are independent (a `//|` line
-# is inert at runtime; a `focus` string never reaches a template), so a
-# regression could land in either one alone. `unsafe` stays off the WHOLE-FILE
-# token list because the rendered dimension prose now legitimately names
-# `unsafe-ffi` — a slug from the reference agent's language-NEUTRAL memory
-# category vocabulary, not a language construct. The region-scoped half below
-# still forbids the language-specific idioms themselves (a backticked `unsafe`
-# construct, a `// SAFETY:` comment convention) inside the dimension prose.
-say "10h: rendered review skills carry no project-specific convention prose"
-AGNOSTIC_TOKENS='rdm-core|rdm-cli|rdm-server|anyhow|rustdoc|missing_docs|# Panics|# Safety|# Errors'
-for doc in $CODE_RENDERS $PLAN_RENDERS; do
-    if grep -nE "$AGNOSTIC_TOKENS" "$doc" >&2; then
-        fail "10h: $doc carries project-specific convention prose (see the hits above)"
-    fi
-done
-
-# Region-scoped half: inside the `rdm:review-spec` markers — the rendered
-# dimension prose and nothing else — the language-specific idioms the security
-# dimension used to carry must be gone too. This is the documentation-side
-# mirror of AC2b's now-empty carve-out ledger.
-# shellcheck disable=SC2016  # the backticks are literal prose in the searched idiom
-REGION_TOKENS='`unsafe`|// SAFETY:'
-for doc in $CODE_RENDERS $PLAN_RENDERS; do
-    if awk '/rdm:review-spec:begin/{f=1} f; /rdm:review-spec:end/{f=0}' "$doc" |
-        grep -nE "$REGION_TOKENS" >&2; then
-        fail "10h: $doc's review-spec region carries a language-specific idiom (see the hits above)"
-    fi
-done
-# Non-vacuity for the region-scoped half: plant the retired idiom back inside
-# the region and prove the detector fires.
-mkdir -p "$TMP/agnostic-region"
-# shellcheck disable=SC2016  # the backticks are literal prose in the planted regression
-sed 's/Distrust comments claiming/Every `unsafe` block needs a `\/\/ SAFETY:` comment. Distrust comments claiming/' \
-    "$TEMPLATES/skill-review-cli.md" >"$TMP/agnostic-region/planted.md"
-if diff -q "$TEMPLATES/skill-review-cli.md" "$TMP/agnostic-region/planted.md" >/dev/null 2>&1; then
-    fail "10h: the planted region-idiom mutation did not apply — the anchor text moved"
-fi
-if awk '/rdm:review-spec:begin/{f=1} f; /rdm:review-spec:end/{f=0}' "$TMP/agnostic-region/planted.md" |
-    grep -qE "$REGION_TOKENS"; then
-    pass "10h: rendered dimension prose carries no language-specific idiom; the detector fires on a planted one"
-else
-    fail "10h: the region-scoped detector did NOT fire on a planted \`unsafe\`/SAFETY regression — the check is vacuous"
-fi
-# Non-vacuity: the same grep MUST fire on a planted copy.
-AGDOC="$TMP/agnostic-doc"
-mkdir -p "$AGDOC"
-# shellcheck disable=SC2016  # the backticks are literal prose in the planted regression
-sed 's/documentation the project/rustdoc `# Panics` documentation the project/' \
-    "$TEMPLATES/skill-review-cli.md" >"$AGDOC/planted.md"
-if diff -q "$TEMPLATES/skill-review-cli.md" "$AGDOC/planted.md" >/dev/null 2>&1; then
-    fail "10h: the planted-prose mutation did not apply — the anchor text moved"
-fi
-if grep -qE "$AGNOSTIC_TOKENS" "$AGDOC/planted.md"; then
-    pass "10h: rendered skills are project-agnostic; the detector fires on a planted regression"
-else
-    fail "10h: the detector did NOT fire on a planted rustdoc/# Panics regression — the check is vacuous"
-fi
 
 # DELETED SECTION 10f (no-mechanical-agents-in-workflows phase 34): its subject
 # no longer exists. Per the standing ruling a broken assertion is deleted and
@@ -4817,51 +4282,16 @@ else
     fail "15h: the emitted persist ladder failed the temp-file hygiene assertions"
 fi
 
-# The SHIPPED bytes, not only the lib. Every stamped consumer plus the plugin
-# engine must carry the same three literals and neither of the two
-# forbidden ones — these are the files a downstream agent actually executes.
-for stamped in \
-    "$WF_DIR/rdm-wf-review-refute-fix.js" \
-    "$WF_DIR/rdm-wf-plan-review.js" \
-    "$TEMPLATES/workflows/rdm-wf-review-refute-fix.js" \
-    "$REPO_ROOT/plugins/rdm/workflows/rdm-wf-review-refute-fix.js"; do
-    [ -f "$stamped" ] || fail "15h: stamped consumer not found: $stamped"
-    # -F throughout, and the patterns are single-quoted on purpose: `$` and
-    # `${…}` are the literal SHELL TEXT being searched for inside the emitted
-    # JavaScript, never something to expand here. -F rather than a BRE because
-    # the mktemp template's `${TMPDIR:-/tmp}` contains `[`-class-looking and
-    # brace metacharacters that a regex would silently fail to match, leaving
-    # the check vacuous.
-    # shellcheck disable=SC2016
-    grep -qF 'mktemp "${TMPDIR:-/tmp}/rdm-persist-start.XXXXXX"' "$stamped" ||
-        fail "15h: $stamped does not create its scratch file with mktemp"
-    # shellcheck disable=SC2016
-    grep -qF 'rm -f "$RDM_PERSIST_START_JSON"' "$stamped" ||
-        fail "15h: $stamped never removes its scratch file"
-    grep -qF 'rdm-persist-start.$$.json' "$stamped" &&
-        fail "15h: $stamped still carries the predictable \$\$-named scratch path"
-done
-pass "15h: all four stamped copies carry the mktemp form and none carries the \$\$-named path"
-
 # --- 15h-mut. PLANTED-MUTATION SELF-TEST -------------------------------------
-# Restore the pre-fix `$$` line in a scratch copy of the lib, re-stamp the
-# consumers from it, and require § 15h's checks to FAIL — then heal. Exactly the
-# shape § 1b uses for the drift detector: without this, a future rewrite of the
-# hygiene assertions could pass while asserting nothing.
+# Restore the pre-fix `$$` line in a scratch copy of the lib and require
+# § 15h's check to FAIL. Exactly the shape § 1b uses for the drift detector:
+# without this, a future rewrite of the hygiene assertions could pass while
+# asserting nothing.
 say "15h-mut. Temp-file hygiene fires on the restored \$\$ path (self-test)"
 
 MUT15H="$TMP/mut-15h"
-mkdir -p "$MUT15H/scripts/lib" "$MUT15H/.claude/workflows/lib" \
-    "$MUT15H/rdm-core/src/templates/workflows" "$MUT15H/plugins/rdm/workflows"
-cp "$GEN" "$MUT15H/scripts/gen-workflow-review.sh"
-cp "$REPO_ROOT/scripts/lib/gen-workflow-block.sh" "$MUT15H/scripts/lib/gen-workflow-block.sh"
+mkdir -p "$MUT15H/.claude/workflows/lib"
 cp "$LIB" "$MUT15H/.claude/workflows/lib/review.mjs"
-cp "$PLAN_LIB" "$MUT15H/.claude/workflows/lib/plan-review.mjs"
-for consumer in rdm-wf-review-refute-fix.js rdm-wf-plan-review.js; do
-    cp "$WF_DIR/$consumer" "$MUT15H/.claude/workflows/$consumer"
-    cp "$WF_DIR/$consumer" "$MUT15H/rdm-core/src/templates/workflows/$consumer"
-    cp "$WF_DIR/$consumer" "$MUT15H/plugins/rdm/workflows/$consumer"
-done
 
 # Revert BOTH halves of the fix in the scratch lib, in Node rather than perl:
 # the mktemp line is full of `/`, `"`, `{` and `$`, which a one-liner regex has
@@ -4905,18 +4335,5 @@ if run_node "$TMP/persist-hygiene.mjs" "$MUT15H/.claude/workflows/lib/review.mjs
     fail "15h-mut: the reverted (pre-fix) writer PASSED the hygiene assertions — § 15h is vacuous"
 fi
 pass "15h-mut: restoring the \$\$ path and dropping the rm makes § 15h fail"
-
-# And the stamped-bytes half of § 15h must fail on a re-stamped mutant too, so
-# the seven-copy grep is not vacuous either.
-sh "$MUT15H/scripts/gen-workflow-review.sh" >/dev/null 2>&1 ||
-    fail "15h-mut: re-stamping the scratch tree failed"
-# shellcheck disable=SC2016  # the literal shell text in the emitted ladder
-if grep -qF 'mktemp "${TMPDIR:-/tmp}/rdm-persist-start.XXXXXX"' \
-    "$MUT15H/.claude/workflows/rdm-wf-review-refute-fix.js"; then
-    fail "15h-mut: the re-stamped mutant still carries the mktemp form — the stamping is not reaching it"
-fi
-grep -qF 'rdm-persist-start.$$.json' "$MUT15H/.claude/workflows/rdm-wf-review-refute-fix.js" ||
-    fail "15h-mut: the re-stamped mutant does not carry the \$\$ path — the grep half of § 15h is vacuous"
-pass "15h-mut: the re-stamped mutant carries the \$\$ path and not the mktemp form — the stamped-bytes grep is load-bearing"
 
 say "verify-workflow-review.sh: ALL GREEN"

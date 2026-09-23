@@ -5,35 +5,28 @@
 # Why this exists as its own script rather than a section of
 # `verify-workflow-review.sh`: the listing is rendered by the Claude Code
 # client from `.claude/`, not by anything in this repo, so the only way to
-# check it is to ask a real client. That makes the live half NON-HERMETIC — it
-# needs the `claude` CLI, credentials, and a network round trip — which is
-# exactly why it must not sit inside a harness that CI runs. Everything the
-# repo CAN check hermetically (engine filenames, `meta.name`-equals-stem
-# parity, engine/skill name disjointness) is already gated by
-# `verify-workflow-review.sh` § 2d. This script closes the remaining gap: that
-# what the client actually RENDERS matches what the tree declares.
-#
-# Two halves, deliberately separable:
-#
-#   --self-test-only   HERMETIC. Runs the assertion logic against a pinned
-#                      PRE-rename listing and requires it to turn red. Proves
-#                      the assertions discriminate rather than passing on
-#                      anything. Needs no `claude`, no network, no credentials,
-#                      so `verify-workflow-review.sh` § 2d wires it in and CI
-#                      runs it on every commit.
-#
-#   (default)          LIVE. Runs the self-test, then captures the real listing
-#                      from a `claude -p` process rooted at this repo and
-#                      asserts the contract against it. Run this deliberately
-#                      when changing engine names; paste the emitted capture as
-#                      the evidence.
+# check it is to ask a real client. That makes this NON-HERMETIC — it needs
+# the `claude` CLI, credentials, and a network round trip — which is exactly
+# why it must not sit inside a harness that CI runs. Run this deliberately
+# when changing engine names; paste the emitted capture as the evidence.
 #
 # The expected names are DERIVED from the tree (each engine's `meta.name`, each
 # skill's frontmatter `name`), never hardcoded here — so this script asserts
 # "the listing agrees with the tree", which is the actual contract, and cannot
 # drift into asserting a stale hand-copied list.
 #
-# Requires (live half only): the `claude` CLI on PATH, authenticated.
+# A prior hermetic `--self-test-only` half (verified the assertion logic
+# against a pinned PRE-rename listing) was retired by the operator amendment
+# to the `retire-static-grep-harnesses` plan (2026-09-23): it exercised no
+# `claude` CLI, no network, nothing real — a hermetic stand-in built entirely
+# from source-derived text, which is exactly the grep-based-static-check shape
+# the amendment removes everywhere else. `verify-workflow-review.sh` § 2d no
+# longer invokes this script; the rdm-wf- prefix contract on TREE state
+# (filenames, meta.name parity, engine/skill name disjointness) is what § 2d
+# still gates. Only the live capture below — checked against what a real
+# client actually renders — remains, and it is not CI-run.
+#
+# Requires: the `claude` CLI on PATH, authenticated.
 
 set -eu
 
@@ -51,9 +44,6 @@ fail() {
     printf '\nFAIL: %s\n' "$1" >&2
     exit 1
 }
-
-SELF_TEST_ONLY=0
-[ "${1:-}" = "--self-test-only" ] && SELF_TEST_ONLY=1
 
 # --- expected names, derived from the tree ----------------------------------
 
@@ -159,63 +149,11 @@ assert_listing() {
     return "$bad"
 }
 
-# --- self-test (hermetic) ----------------------------------------------------
-#
-# A pinned capture of the PRE-rename listing, taken from a real `claude -p`
-# rooted at `main` while this phase was implemented. Feeding it to
-# assert_listing must fail: the six prefixed entries are missing and the six
-# bare ones are present. If this ever passes, the assertions above have gone
-# vacuous and the live half proves nothing.
-say "self-test: the assertions must reject a pre-rename listing"
-
-cat >"$SCRATCH/pre-rename-listing" <<'EOF'
-rdm-autopilot
-rdm-backlog
-rdm-dispatch-phase
-rdm-do
-rdm-document
-rdm-estimate
-rdm-land
-rdm-plan-review
-rdm-review
-rdm-revise
-rdm-roadmap
-backlog
-dispatch-phase
-document
-estimate
-plan-review
-review-refute-fix
-EOF
-
-if assert_listing "$SCRATCH/pre-rename-listing" 2>/dev/null; then
-    fail "self-test: the pinned PRE-rename listing was accepted — assert_listing is vacuous"
-fi
-pass "a pre-rename listing is correctly rejected"
-
-# The mirror image: a listing built from exactly what the tree declares must be
-# ACCEPTED. Without this, a check that rejects everything would also pass the
-# test above.
-{
-    declared_skill_names
-    declared_engine_names
-} >"$SCRATCH/synthetic-listing"
-assert_listing "$SCRATCH/synthetic-listing" >/dev/null 2>&1 ||
-    fail "self-test: a listing matching the tree exactly was REJECTED — assert_listing rejects everything and proves nothing"
-pass "a listing matching the tree is correctly accepted"
-
-if [ "$SELF_TEST_ONLY" -eq 1 ]; then
-    say "self-test only — skipping the live capture"
-    printf '\nAll good (hermetic half).\n'
-    exit 0
-fi
-
 # --- live capture (non-hermetic) ---------------------------------------------
 say "live: capturing the rendered listing from a claude process rooted at this repo"
 
 command -v claude >/dev/null 2>&1 ||
-    fail "the \`claude\` CLI is not on PATH — the live half needs a real client to render the listing.
-  Run with --self-test-only to exercise just the hermetic assertion check."
+    fail "the \`claude\` CLI is not on PATH — this needs a real client to render the listing."
 
 PROMPT='List, one per line and nothing else, the exact name of every entry available to your Skill tool (both skills and workflows). No commentary, no bullets, no grouping - just the bare names.'
 

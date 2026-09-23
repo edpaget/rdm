@@ -39,18 +39,8 @@
 #   3. BLOCK DRIFT    — the `backlog-groom` region is byte-identical between
 #                       the lib source of truth and the stamped workflow
 #                       script (with a planted-mutation self-test).
-#   4. STATIC INVARIANTS — grep-based: exactly one Bash-executing agent
-#                       directive ("Run exactly this command") in the whole
-#                       file, and its command template never contains a
-#                       mutating verb (with a planted-mutation self-test);
-#                       no import/require; both markers present; meta.phases
-#                       parity with the emitted `phase:` literals; no
-#                       Date.now(/Math.random( anywhere.
 #   5. MODULE PARSE   — rdm-wf-backlog.js loads under module semantics (no
 #                       SyntaxError), with a planted duplicate-meta self-test.
-#   6. SKILL SHIM     — .claude/skills/rdm-backlog/SKILL.md is a thin shim
-#                       pointing at the `rdm-wf-backlog` Workflow tool, with the old
-#                       per-category command-template prose removed.
 #
 # Node is used only as a host to unit-test the pure module and drive the
 # pipeline with fakes; it is stdlib-only (node:assert), with no package.json /
@@ -113,18 +103,6 @@ parse_workflow() {
         echo '})'
     } |
         run_node --check --input-type=module -
-}
-
-# Distinct `phase: '<name>'` literals the workflow actually emits (trailing
-# comma or closing brace both occur across call sites, so neither is anchored).
-emitted_phases() {
-    grep -oE "phase: '[A-Za-z]+'" "$1" | sed "s/phase: '//;s/'//" | sort -u
-}
-
-# Distinct `{ title: '<name>' }` entries declared in the `meta.phases` array.
-declared_phases() {
-    awk '/phases: \[/{p=1} p{print} p&&/^\]$/{exit}' "$1" |
-        grep -oE "title: '[A-Za-z]+'" | sed "s/title: '//;s/'//" | sort -u
 }
 
 TMP=$(mktemp -d)
@@ -546,104 +524,6 @@ fi
 cp "$WF" "$TMP/wf.scratch"
 blocks_equal "$TMP/lib.scratch" "$TMP/wf.scratch" || fail "restore did not heal the byte-equality gate"
 pass "drift detector fails on a planted mutation and heals on restore"
-
-# =============================================================================
-say "4. Static invariants on the workflow source"
-# =============================================================================
-
-# ZERO Bash-executing agent directives in the whole file. The Stage-0 report
-# fetch and the mechanical-model bootstrap are gone: the caller runs the one
-# read-only command and passes `report`, and no analyzer prompt may say
-# "Run exactly this command".
-DIRECTIVES=$(grep -c "Run exactly this command" "$WF" || true)
-[ "$DIRECTIVES" -eq 0 ] || fail "expected NO 'Run exactly this command' directive in rdm-wf-backlog.js, found $DIRECTIVES"
-printf 'Run exactly this command\nRun exactly this command\nRun exactly this command\n' >"$TMP/planted-three-directives.js"
-[ "$(grep -c "Run exactly this command" "$TMP/planted-three-directives.js")" -eq 3 ] ||
-    fail "directive-count detector broken — missed a planted third occurrence"
-pass "NO Bash-executing agent directive in rdm-wf-backlog.js; the detector still counts a planted one"
-
-# The returned command template (backlogReportCommand's body) must
-# never contain a mutating verb — extracted from `function backlogReportCommand`
-# to the next top-level `function `/`const `/`}` at column 0.
-extract_fetch_report_fn() {
-    awk '
-        /^function backlogReportCommand/ { collect = 1 }
-        collect { print }
-        collect && /^}$/ { exit }
-    ' "$1"
-}
-extract_fetch_report_fn "$WF" >"$TMP/fetch-report-fn"
-[ -s "$TMP/fetch-report-fn" ] || fail "could not extract backlogReportCommand from $WF"
-grep -q 'backlog report --format json' "$TMP/fetch-report-fn" ||
-    fail "backlogReportCommand must be the function that builds the read-only report command"
-
-FORBIDDEN_VERBS="rdm task create|rdm task update|rdm task merge|rdm roadmap archive|rdm promote|rdm commit|rdm discard"
-if grep -qE "$FORBIDDEN_VERBS" "$TMP/fetch-report-fn"; then
-    grep -nE "$FORBIDDEN_VERBS" "$TMP/fetch-report-fn" >&2 || true
-    fail "the report-fetch executable command template must never contain a mutating verb"
-fi
-pass "the emitted report command contains no mutating verb"
-
-# DELETED (no-mechanical-agents-in-workflows phase 34, commit 4): the
-# `buildMechanicalModelPrompt` extraction and its mutating-verb check. The
-# `model:mechanical` bootstrap agent and its prompt builder are gone.
-
-say "4b. Planted-mutation self-test on the executable command template"
-cp "$WF" "$TMP/wf.mutverb.scratch"
-sed "s/if (c.project) cmd += ' --project ' + c.project;/if (c.project) cmd += ' --project ' + c.project; cmd += ' \&\& rdm task create x';/" \
-    "$WF" >"$TMP/wf.mutverb.scratch"
-extract_fetch_report_fn "$TMP/wf.mutverb.scratch" >"$TMP/fetch-report-fn.mutant"
-if ! grep -qE "$FORBIDDEN_VERBS" "$TMP/fetch-report-fn.mutant"; then
-    fail "planted-mutation self-test broken — the injected 'rdm task create' was not detected"
-fi
-extract_fetch_report_fn "$WF" >"$TMP/fetch-report-fn.orig"
-if grep -qE "$FORBIDDEN_VERBS" "$TMP/fetch-report-fn.orig"; then
-    fail "the real file must still pass after the self-test"
-fi
-pass "planted-mutation self-test: detector fires on injected verb, real file still passes"
-
-# No import/require (the runtime forbids it); both markers present.
-if grep -nE '(^|[^A-Za-z_])import[ (]' "$WF" >/dev/null 2>&1; then
-    fail "rdm-wf-backlog.js must not import (the runtime forbids it — sharing is by stamped copy)"
-fi
-if grep -nE '(^|[^A-Za-z_])require\(' "$WF" >/dev/null 2>&1; then
-    fail "rdm-wf-backlog.js must not require() (the runtime forbids it)"
-fi
-grep -q '>>> backlog-groom:begin' "$WF" || fail "missing backlog-groom:begin marker"
-grep -q '>>> backlog-groom:end' "$WF" || fail "missing backlog-groom:end marker"
-pass "no import/require; both backlog-groom markers present"
-
-# No Date.now(/Math.random( anywhere in either file.
-for f in "$LIB" "$WF"; do
-    if grep -qF 'Date.now(' "$f" || grep -qF 'Math.random(' "$f"; then
-        fail "$f must not contain Date.now(/Math.random( — the pipeline must be deterministic"
-    fi
-done
-printf 'const t = Date.now()\n' >"$TMP/planted-datenow.js"
-grep -qF 'Date.now(' "$TMP/planted-datenow.js" || fail "Date.now( detector broken"
-printf 'const r = Math.random()\n' >"$TMP/planted-mathrandom.js"
-grep -qF 'Math.random(' "$TMP/planted-mathrandom.js" || fail "Math.random( detector broken"
-pass "no Date.now(/Math.random( in lib or workflow; detectors catch planted ones"
-
-# meta.phases must list EXACTLY the distinct emitted `phase:` literals.
-DECLARED_PHASES=$(declared_phases "$WF")
-EMITTED_PHASES=$(emitted_phases "$WF")
-if [ "$DECLARED_PHASES" = "$EMITTED_PHASES" ]; then
-    pass "meta.phases lists exactly the emitted phase: literals ($(echo "$EMITTED_PHASES" | tr '\n' ' '))"
-else
-    printf 'declared (meta.phases): %s\n' "$(echo "$DECLARED_PHASES" | tr '\n' ' ')" >&2
-    printf 'emitted   (phase: ...): %s\n' "$(echo "$EMITTED_PHASES" | tr '\n' ' ')" >&2
-    fail "meta.phases drift: declared phases != emitted phase: literals"
-fi
-sed "s/phase: 'Analyze' }, opts/phase: 'Ghost' }, opts/" "$WF" >"$TMP/wf.phase.scratch"
-if [ "$(declared_phases "$TMP/wf.phase.scratch")" = "$(emitted_phases "$TMP/wf.phase.scratch")" ]; then
-    fail "meta.phases consistency check did NOT catch a planted undeclared phase"
-fi
-pass "meta.phases consistency detector catches a planted undeclared phase"
-# DELETED SECTION "4c." (no-mechanical-agents-in-workflows phase 34, commit 4):
-# its subject was a mechanical agent, its model pin, or the caller hoist that
-# suppressed it. None of those exists any more. Deleted and named, never
-# repaired or re-pointed.
 
 # =============================================================================
 say "5. Module parse: rdm-wf-backlog.js loads under module semantics (no SyntaxError)"
