@@ -1634,19 +1634,59 @@ two rules:
 1. **A systemic cause always requires a park.** Any BUILD-TIME degradation
    (`persistPreDegradedAnchors` non-empty — no derivable path, or an empty
    reviewed range) is systemic by construction. Any RUN-TIME refusal whose
-   captured stderr does NOT contain the substring `"not touch"` — i.e.
-   anything other than `QuoteOutsideChangedHunks` (a path absent at the
-   reviewed head — `ChangePathNotInRevision`; a path naming a directory or
-   submodule — `ChangePathNotAFile`; a quote absent from the document
-   entirely — `QuoteNotFound`; or an ambiguous quote occurring more than
-   once — `QuoteAmbiguous`/`QuoteOccurrenceOutOfRange`) — is also systemic.
-   `ANCHOR_REFUSAL_BENIGN_MARKER` (`'not touch'`) and the pure helper
+   captured stderr does NOT match either pattern in
+   `ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS` — i.e. anything other than
+   `QuoteOutsideChangedHunks` (a path absent at the reviewed head —
+   `ChangePathNotInRevision`; a path naming a directory or submodule —
+   `ChangePathNotAFile`; a quote absent from the document entirely —
+   `QuoteNotFound`; or an ambiguous quote occurring more than once —
+   `QuoteAmbiguous`/`QuoteOccurrenceOutOfRange`) — is also systemic.
+   `ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS` and the pure helper
    `isAnchorRefusalBenign(stderrText)` are the single definition of this
-   check; BOTH of `QuoteOutsideChangedHunks`'s Display arms
-   (`rdm-core/src/error.rs:877-884` — the line-inside-a-modified-file arm
-   AND the whole-untouched-file arm alike) contain the marker, and none of
-   `ChangePathNotInRevision`, `ChangePathNotAFile`, `QuoteNotFound`,
-   `QuoteAmbiguous`, or `QuoteOccurrenceOutOfRange` do.
+   check.
+
+   **The classification is NOT a plain substring search** (plan-review
+   2026-09-23-1613-a415). An earlier version matched any stderr containing
+   the substring `"not touch"`, on the theory that it is the one thing both
+   `QuoteOutsideChangedHunks` Display arms share
+   (`rdm-core/src/error.rs:877-886`). That is unsafe: several SYSTEMIC
+   refusals this call site can produce echo the finder's own
+   caller-controlled `--quote`/`--path` text back into their own message —
+   `Error::QuoteNotFound` prints `quote {quote:?} not found ...`,
+   `Error::QuoteAmbiguous` echoes the quote in its occurrence list, and
+   `Error::ChangePathNotInRevision` echoes the path — so a finder whose
+   quote or path happened to contain the words "not touch" (an ordinary
+   thing to write about code, e.g. "this code does not touch the validation
+   path") would misclassify a genuinely systemic refusal as benign, purely
+   because of caller-supplied text nowhere near the real cause.
+
+   Each entry in `ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS` instead requires a
+   FIXED, rdm-authored substring unique to one `QuoteOutsideChangedHunks`
+   Display arm, anchored at END OF LINE, so it can only match text rdm
+   itself appends after every interpolated field:
+   `quote text inside a changed hunk \(nearest: lines [0-9]+-[0-9]+\), or
+   omit --path/--quote for a whole-change comment$` for the `Some(nearest)`
+   arm (`"quote text inside a changed hunk (nearest: lines "` appears
+   nowhere else in `error.rs`; the hunk line numbers rdm interpolates there
+   are digits it computes itself from real git hunk data, never finder
+   text), and `comment on a file the change modifies, or omit
+   --path/--quote for a whole-change comment$` for the `None` arm
+   (`"comment on a file the change modifies"` likewise appears nowhere
+   else). Neither pattern is the shared trailing clause `"or omit
+   --path/--quote for a whole-change comment"` BY ITSELF — that clause is
+   also how `ChangePathNotInRevision`, `ChangePathNotAFile` and
+   `ChangePathNotLinkable` end, so matching it alone would misclassify a
+   path absent at the reviewed head as benign regardless of any caller data
+   at all. `{quote:?}` is Rust's `Debug` format, which escapes embedded
+   quotes and newlines, so caller text can never terminate a line early and
+   forge either pattern's required end-of-line tail.
+
+   `ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS` is a POSIX-ERE-compatible array
+   (each entry escapes its one literal `(`/`)` pair and uses a `[0-9]+`
+   class — no JS-only regex syntax), so the SAME array drives both
+   `isAnchorRefusalBenign` (via `new RegExp(patterns.join('|'), 'm')`) and
+   the `grep -qE` alternation the emitted ladder runs — the two cannot
+   silently diverge.
 2. **A `blocking` finding losing its anchor always requires a park, even for
    the benign cause.** Severity is known statically when the shell is
    generated, so this branches at JS code-gen time — a `severity: 'blocking'`
@@ -1671,20 +1711,22 @@ created with `mktemp`, `|| exit 1`, removed after use) captures the
 path-anchored `review comment` line's stderr; on refusal it is `cat`ted back
 to stderr (so nothing already visible to the operator is lost) and then
 either unconditionally bumps the running `RDM_PERSIST_PARK_REQUIRED` counter
-(a `blocking` finding) or does so only `if ! grep -q 'not touch'
-"$RDM_PERSIST_ANCHOR_STDERR"` (everything else) — the grep pattern is the
-SAME literal `ANCHOR_REFUSAL_BENIGN_MARKER`, shell-quoted, so the JS helper
-and the emitted shell cannot silently diverge. `RDM_PERSIST_PARK_REQUIRED` is
-seeded from the build-time degradation count before the survivor loop runs.
-Once the loop finishes, the ladder buckets the counter into
-`RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes` (`-gt 0`) or `=no`, and prints it as
-the trailing `anchorsParkRequired=<yes|no>` line — immediately after the
-existing `anchorsDegraded=<all|partial|none>` line, which keeps printing
-exactly as before.
+(a `blocking` finding) or does so only `if grep -qE '<pattern1>$|<pattern2>$'
+"$RDM_PERSIST_ANCHOR_STDERR"; then :; else RDM_PERSIST_PARK_REQUIRED=...; fi`
+(everything else), where `<pattern1>` and `<pattern2>` are
+`ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS` joined with `|` and shell-quoted as
+ONE argument — the exact same array `isAnchorRefusalBenign` tests against,
+so the JS helper and the emitted shell cannot silently diverge.
+`RDM_PERSIST_PARK_REQUIRED` is seeded from the build-time degradation count
+before the survivor loop runs. Once the loop finishes, the ladder buckets
+the counter into `RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes` (`-gt 0`) or `=no`,
+and prints it as the trailing `anchorsParkRequired=<yes|no>` line —
+immediately after the existing `anchorsDegraded=<all|partial|none>` line,
+which keeps printing exactly as before.
 
 There is no structured error surface for `review comment` — every refusal
 exits 1 through `rdm-cli/src/main.rs`'s single `process::exit(1)`, and the
-command supports no `--format json` error output — so this stderr-substring
+command supports no `--format json` error output — so this stderr-pattern
 match is the only available machine-distinguishing signal between the benign
 and systemic cases. This is a real, stated limitation of the design, not an
 oversight: if a future `rdm-core` change adds a structured error surface for

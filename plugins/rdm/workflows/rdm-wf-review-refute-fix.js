@@ -1617,28 +1617,66 @@ const PERSIST_DEGRADED_REASONS = [
   'other',
 ];
 
-// ANCHOR_REFUSAL_BENIGN_MARKER / isAnchorRefusalBenign(stderrText) —
-// phase-46 (anchor-degraded-park-by-cause): the one substring shared by BOTH
-// Display arms of Error::QuoteOutsideChangedHunks
-// (rdm-core/src/error.rs:877-884 — "... which <range> does not touch — ..." /
-// "'<path>' is not touched by <range> — ...") and by NO other refusal this
-// call site can produce: checked against ChangePathNotInRevision,
-// ChangePathNotAFile, QuoteNotFound, QuoteAmbiguous and
-// QuoteOccurrenceOutOfRange, none of which contain it. There is no
-// structured error surface for `review comment` — every refusal exits 1
-// through rdm-cli/src/main.rs's single `process::exit(1)`, and the command
-// supports no `--format json` error output at all — so this stderr-substring
-// match is the only available machine-distinguishing signal between a
-// benign refusal — the quote sits on an untouched line, OR the path names a
-// real, in-range file the change never modifies at all; both arms above —
-// and a systemic one (a path absent at the reviewed head, a quote absent
-// from the document entirely, or an ambiguous quote). This is a real
-// limitation, not an oversight (see
+// ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS / isAnchorRefusalBenign(stderrText) —
+// phase-46 (anchor-degraded-park-by-cause), reworked per plan-review
+// 2026-09-23-1613-a415. A plain substring search for a shared marker (the
+// original approach: `stderrText.indexOf('not touch')`) is UNSAFE, because a
+// systemic refusal can ECHO caller-controlled text — the finder's own
+// `--quote`/`--path` value — back into its own message:
+// Error::QuoteNotFound prints `quote {quote:?} not found ...`,
+// Error::QuoteAmbiguous echoes the quote in its occurrence list, and
+// Error::ChangePathNotInRevision echoes the path. A finder whose quote
+// happens to contain the literal text "not touch" (plausible: "does not
+// touch the validation path" is an ordinary thing to write about code) but
+// that does not exist in the file at all — a genuinely SYSTEMIC refusal —
+// would misclassify as benign.
+//
+// Each pattern below instead requires a FIXED, rdm-authored substring that
+// is unique to one Display arm of Error::QuoteOutsideChangedHunks
+// (rdm-core/src/error.rs:877-886), anchored at END OF LINE (`$`), so it can
+// only match text rdm itself appends after every interpolated field:
+//
+//   - Some(nearest) arm: "...quote text inside a changed hunk (nearest:
+//     lines {hs}-{he}), or omit --path/--quote for a whole-change comment"
+//     — "quote text inside a changed hunk (nearest: lines " appears NOWHERE
+//     else in error.rs; {hs}/{he} are hunk line numbers rdm computes itself
+//     from real git hunk data (digits only, never finder text).
+//   - None arm: "...comment on a file the change modifies, or omit
+//     --path/--quote for a whole-change comment" — "comment on a file the
+//     change modifies" likewise appears nowhere else.
+//
+// Neither pattern is the shared trailing clause "or omit --path/--quote for
+// a whole-change comment" BY ITSELF — that clause is also how three
+// SYSTEMIC refusals this call site can produce end
+// (Error::ChangePathNotInRevision, Error::ChangePathNotAFile,
+// Error::ChangePathNotLinkable), so matching it alone would misclassify a
+// path absent at the reviewed head as benign, independent of any caller
+// data at all. Checked against every other refusal this call site can
+// produce (the three above, plus QuoteNotFound, QuoteAmbiguous,
+// QuoteOccurrenceOutOfRange and ChangeHeadNotInSource): none contain either
+// pattern.
+//
+// There is no structured error surface for `review comment` — every refusal
+// exits 1 through rdm-cli/src/main.rs's single `process::exit(1)`, and the
+// command supports no `--format json` error output at all — so this
+// stderr-pattern match is the only available machine-distinguishing signal
+// between the two benign cases above (a quote on an untouched line, or a
+// quote in a real, in-range file the change never modifies at all) and a
+// systemic one. This is a real limitation, not an oversight (see
 // docs/workflow-schemas.md); if rdm-core ever grows a structured error
 // surface for `review comment`, this classification should move onto it.
-const ANCHOR_REFUSAL_BENIGN_MARKER = 'not touch';
+//
+// Every pattern is POSIX-ERE-compatible (only a literal `(`/`)` escaped and
+// a `[0-9]+` class — no JS-only regex syntax), so this SAME array drives
+// both `isAnchorRefusalBenign` here AND the `grep -qE` alternation
+// `persistReviewCommands` emits below — the two cannot silently diverge.
+const ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS = [
+  'quote text inside a changed hunk \\(nearest: lines [0-9]+-[0-9]+\\), or omit --path/--quote for a whole-change comment$',
+  'comment on a file the change modifies, or omit --path/--quote for a whole-change comment$',
+];
 function isAnchorRefusalBenign(stderrText) {
-  return typeof stderrText === 'string' && stderrText.indexOf(ANCHOR_REFUSAL_BENIGN_MARKER) !== -1;
+  if (typeof stderrText !== 'string') return false;
+  return new RegExp(ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS.join('|'), 'm').test(stderrText);
 }
 
 // The persist ACK round-trip is GONE, and with it PERSIST_ACK_SCHEMA,
@@ -2302,16 +2340,18 @@ function persistReviewCommands(result, target, cfg, opts) {
           // at all — both QuoteOutsideChangedHunks) — decided here at JS
           // code-gen time (severity is known statically), not by a shell
           // conditional. Everything else contributes to the park counter
-          // only when the captured stderr is NOT the benign marker — i.e. a
-          // systemic cause (a path absent at the reviewed head, a quote
-          // absent from the document entirely, or an ambiguous quote). The
-          // grep pattern is the SAME literal ANCHOR_REFUSAL_BENIGN_MARKER,
-          // shell-quoted, so this emitted shell and isAnchorRefusalBenign
-          // cannot silently diverge.
+          // only when the captured stderr does NOT match either benign
+          // tail pattern — i.e. a systemic cause (a path absent at the
+          // reviewed head, a quote absent from the document entirely, or
+          // an ambiguous quote). `grep -qE` with the alternation of BOTH
+          // ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS entries, joined by `|` and
+          // shell-quoted as ONE argument — the exact same array
+          // isAnchorRefusalBenign tests against — so this emitted shell and
+          // isAnchorRefusalBenign cannot silently diverge.
           (f.severity === 'blocking'
             ? 'RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1))\n'
-            : 'if grep -q ' +
-              shellQuote(ANCHOR_REFUSAL_BENIGN_MARKER) +
+            : 'if grep -qE ' +
+              shellQuote(ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS.join('|')) +
               ' "$RDM_PERSIST_ANCHOR_STDERR"; then :; else RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1)); fi\n') +
           'rm -f "$RDM_PERSIST_ANCHOR_STDERR"\n' +
           'fi';
@@ -2463,7 +2503,7 @@ function persistDegradationNoteBody(totalDegraded, requested) {
 // ladder's own printed run-time result — see `persistReviewCommands`'
 // trailing `anchorsParkRequired=` line). The cause is either systemic (a
 // build-time-dropped anchor, or a run-time refusal whose stderr does not
-// match ANCHOR_REFUSAL_BENIGN_MARKER) or a `blocking` finding that lost its
+// match any ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS entry) or a `blocking` finding that lost its
 // anchor for any reason at all — never merely "every anchor degraded",
 // which `RDM_PERSIST_ANCHORS_DEGRADED` still tracks but which no longer by
 // itself implies a park. A caller building a status-write ladder appends

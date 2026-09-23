@@ -873,6 +873,65 @@ test('a finding refused at RUN TIME for a SYSTEMIC cause (quote not found anywhe
   git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], src);
 });
 
+test('a SYSTEMIC refusal whose quote text itself contains "does not touch" must still park (the classifier is not a plain substring search)', async () => {
+  // Plan-review 2026-09-23-1613-a415: Error::QuoteNotFound echoes the
+  // finder's own `--quote` value verbatim (`quote {quote:?} not found ...`).
+  // A plain `stderr.indexOf('not touch')`/`grep -q 'not touch'` search would
+  // misread THIS refusal as benign purely because the caller-controlled
+  // quote text happens to contain that substring, even though the cause is
+  // fully systemic — the quote does not exist in the file at all. The
+  // classifier must key on rdm's own fixed message tail, not on anything the
+  // caller's text could ever produce.
+  const src = ROADMAP_PIN.source;
+  fs.writeFileSync(path.join(src, 'spoofed-quote.txt'), 'keepme\nchangeme\n');
+  git(['add', 'spoofed-quote.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: add spoofed-quote.txt'], src);
+  const base = git(['rev-parse', 'HEAD'], src);
+  fs.writeFileSync(path.join(src, 'spoofed-quote.txt'), 'keepme\nchanged\n');
+  git(['add', 'spoofed-quote.txt'], src);
+  git(['commit', '--quiet', '-m', 'feat: change only the second line'], src);
+  const head = git(['rev-parse', 'HEAD'], src);
+  const branch = git(['rev-parse', '--abbrev-ref', 'HEAD'], src);
+
+  const { result } = await drive(
+    {
+      ...COMMON,
+      gate: false,
+      persist: true,
+      implements: 'plan/' + PLAN,
+      roadmap: ROADMAP,
+      phase: 'phase-2-dirty',
+      source: src,
+      base,
+      expectedHead: head,
+      expectedBranch: branch,
+    },
+    {
+      id: 'quote-spoofs-the-old-marker',
+      concern: 'tests',
+      severity: 'concern',
+      confidence: 70,
+      what_fails: 'the finder wrote a quote about code that does not touch a validation path, but this exact text never appears in the file',
+      location: 'see the gate step',
+      path: 'spoofed-quote.txt',
+      quote: 'this code does not touch the validation path at all',
+    }
+  );
+
+  assert.ok(result.persistScript, 'a persist:true run emits a ladder');
+  const out = sh(result.persistScript);
+  const id = /reviewId=(\S+)/.exec(out);
+  assert.ok(id, 'the ladder completes (exit 0) even though the anchor was refused at run time: ' + out);
+  assert.match(
+    out,
+    /^anchorsParkRequired=yes$/m,
+    'a systemic QuoteNotFound refusal must park even when the echoed quote text itself contains "does not touch"'
+  );
+
+  // Restore the shared worktree's branch, same as the sibling tests above.
+  git(['reset', '--quiet', '--hard', ROADMAP_PIN.expectedHead], src);
+});
+
 test('a non-blocking finding about a real, in-range file the change never modifies at all is BENIGN and does not require a park', async () => {
   // Plan-review 2026-09-23-1600-114a: `'not touch'` matches BOTH Display arms
   // of Error::QuoteOutsideChangedHunks — the "quote on an untouched line"
@@ -1357,14 +1416,16 @@ test('the two legacy survivors-only shapes still return their original report', 
 
 test('isAnchorRefusalBenign classifies every review-comment refusal variant, fed the verbatim rdm-core Display text', () => {
   // phase-46 (anchor-degraded-park-by-cause), plan-review 2026-09-23-1600-114a
-  // item 3: each string below is copied verbatim from the corresponding
-  // Display arm in rdm-core/src/error.rs (`write!`/`writeln!` bodies for
+  // item 3, reworked per plan-review 2026-09-23-1613-a415: each string below
+  // is copied verbatim from the corresponding Display arm in
+  // rdm-core/src/error.rs (`write!`/`writeln!` bodies for
   // Error::QuoteOutsideChangedHunks, QuoteNotFound, QuoteAmbiguous,
   // QuoteOccurrenceOutOfRange, ChangePathNotInRevision, ChangePathNotAFile
   // and ChangeHeadNotInSource), with placeholders filled with arbitrary
   // concrete values — not paraphrased or re-derived — so a future wording
-  // change to any of these Display impls that drops or adds the "not touch"
-  // substring is caught here, not just in the real-binary tests above.
+  // change to any of these Display impls that drops or adds the fixed tail
+  // text the classifier keys on is caught here, not just in the real-binary
+  // tests above.
 
   // Error::QuoteOutsideChangedHunks — BOTH arms are benign (item 2: a quote
   // on an untouched line inside an otherwise-touched file, and a quote in a
@@ -1395,6 +1456,29 @@ test('isAnchorRefusalBenign classifies every review-comment refusal variant, fed
     isAnchorRefusalBenign('quote "shipped" occurs 2 times in the current document — pass --occurrence <n> (1-based) to pick one:\n  1: ...shipped...\n  2: ...shipped...'),
     false,
     'QuoteAmbiguous must be systemic'
+  );
+
+  // Plan-review 2026-09-23-1613-a415: both QuoteNotFound and QuoteAmbiguous
+  // echo the finder's own `--quote` value verbatim (`quote {quote:?} ...`).
+  // A caller-controlled quote that happens to CONTAIN the old marker text
+  // ("not touch") must still classify systemic — the classifier keys on
+  // rdm's own fixed message tail, never on anything caller text could ever
+  // produce, no matter what it says.
+  assert.equal(
+    isAnchorRefusalBenign(
+      'quote "this code does not touch the validation path" not found in the current document — check the exact text (including punctuation and whitespace), or omit --quote for a whole-document comment'
+    ),
+    false,
+    'QuoteNotFound with a quote that itself contains "not touch" must still be systemic'
+  );
+  assert.equal(
+    isAnchorRefusalBenign(
+      'quote "this code does not touch the validation path" occurs 2 times in the current document — pass --occurrence <n> (1-based) to pick one:\n' +
+        '  1: ...this code does not touch the validation path...\n' +
+        '  2: ...this code does not touch the validation path...'
+    ),
+    false,
+    'QuoteAmbiguous with a quote that itself contains "not touch" must still be systemic'
   );
   assert.equal(
     isAnchorRefusalBenign('--occurrence 3 is out of range for quote "shipped" — only 2 occurrence(s) found (valid: 1..=2)'),
