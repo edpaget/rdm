@@ -164,12 +164,14 @@ Rank survivors most-severe first, then by confidence descending, then by id.
   examples.
 - **changelog** — include it when the change is user-facing (a CLI
   command, an API endpoint, a config option, or any observable
-  behavior). A user-facing change MUST carry a changelog entry in the
-  same commit; a missing entry is **blocking**. Read the project's
-  principles document (`docs/principles.md` if present, otherwise
-  `CLAUDE.md` / `AGENTS.md`) for the changelog file, its format, and its
-  categories. The entry must read from a user's perspective, not describe
-  internals.
+  behavior). Grade the REVIEWED RANGE as a whole, not each commit in
+  isolation: a user-facing change anywhere in the range with no
+  accurate changelog entry at the range's head is **blocking**. An
+  entry added or corrected by a later commit in the same range is not
+  a finding. Read the project's principles document
+  (`docs/principles.md` if present, otherwise `CLAUDE.md` / `AGENTS.md`)
+  for the changelog file, its format, and its categories. The entry
+  must read from a user's perspective, not describe internals.
 - **security** — include it when the change touches auth, input parsing or
   validation, path/file handling, subprocess or shell invocation, secrets
   and credentials, deserialization, or network code. A finding here is a

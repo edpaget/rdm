@@ -182,17 +182,19 @@ const DIMENSIONS = {
     },
     //|code| - **changelog** — include it when the change is user-facing (a CLI
     //|code|   command, an API endpoint, a config option, or any observable
-    //|code|   behavior). A user-facing change MUST carry a changelog entry in the
-    //|code|   same commit; a missing entry is **blocking**. Read the project's
-    //|code|   principles document (`docs/principles.md` if present, otherwise
-    //|code|   `CLAUDE.md` / `AGENTS.md`) for the changelog file, its format, and its
-    //|code|   categories. The entry must read from a user's perspective, not describe
-    //|code|   internals.
+    //|code|   behavior). Grade the REVIEWED RANGE as a whole, not each commit in
+    //|code|   isolation: a user-facing change anywhere in the range with no
+    //|code|   accurate changelog entry at the range's head is **blocking**. An
+    //|code|   entry added or corrected by a later commit in the same range is not
+    //|code|   a finding. Read the project's principles document
+    //|code|   (`docs/principles.md` if present, otherwise `CLAUDE.md` / `AGENTS.md`)
+    //|code|   for the changelog file, its format, and its categories. The entry
+    //|code|   must read from a user's perspective, not describe internals.
     {
       key: 'changelog',
       title: 'Changelog',
       focus:
-        "A user-facing change (CLI command, API endpoint, config option, or observable behavior) MUST carry a changelog entry in the SAME commit — a missing entry is a `blocking` finding. Read the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for the changelog file, its format, and its categories. The entry must describe the change from a user's perspective, not internal implementation details.",
+        "A user-facing change (CLI command, API endpoint, config option, or observable behavior) MUST carry an accurate changelog entry by the head of the reviewed range — grade the range as a whole, not each commit in isolation. A missing entry at the range's head is a `blocking` finding; an entry added or corrected by a later commit in the same range is not a finding. Read the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for the changelog file, its format, and its categories. The entry must describe the change from a user's perspective, not internal implementation details.",
     },
     //|code| - **security** — include it when the change touches auth, input parsing or
     //|code|   validation, path/file handling, subprocess or shell invocation, secrets
