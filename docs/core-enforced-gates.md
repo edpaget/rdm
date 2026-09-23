@@ -342,23 +342,16 @@ None can ever write `reviewed`:
 | `rdm-cli/src/commands/mod.rs` ×2 | `Done` | the `Done:` post-merge/post-commit hook path, contractually exit-0 and bounded — it must never acquire a failure mode |
 | `rdm-core/src/ops/task.rs` ×3 | `Done` / `WontFix` / `None` | `consolidate_task_into_roadmap` and `merge_tasks`, core-internal |
 
-`scripts/verify-reviewed-gate.sh` is what holds this boundary: it asserts every
-non-test call to an ungated primitive is on the allowlist (with an exact count,
-so a new one cannot hide), that every user-facing status-write surface uses a
-`_gated` entry, and that each refusal names a remediation — each half behind a
-planted-mutation self-test, and the two interlocking so a downgraded `_gated`
-call trips both.
-
-Its Section E holds the documentation half of the same boundary. All **three**
-gated wrappers — `update_phase_gated`, `update_phase_with_estimate_gated` and
-`update_task_gated` — must enumerate every `Gate*` variant `rdm-core/src/error.rs`
-declares, by name, in their own `# Errors` block. No block may delegate by
-intra-doc pointer with a hard-coded count ("plus the five gate variants listed
-on …"), which is exactly how one of them went stale: it carried no literal
-`Error::Gate` text, so a variant grep reported it green while the count it
-stated had become false. Wrappers are discovered by signature
-(`pub fn [a-z_]*_gated(`) and the discovered count is pinned at three, so a
-fourth wrapper reddens the section instead of being silently skipped.
+This boundary was previously held by `scripts/verify-reviewed-gate.sh`, a
+static call-graph grep over `*.rs` source with planted-mutation self-tests. It
+was retired by the operator amendment to the `retire-static-grep-harnesses`
+plan (2026-09-23), which extended the grep-only-harness retirement to
+Rust-source greps as well as prose. The convention — every non-test call to an
+ungated primitive stays on the allowlist above, every user-facing status-write
+surface uses a `_gated` entry, and every gated wrapper's `# Errors` block
+enumerates every `Gate*` variant `rdm-core/src/error.rs` declares — is now held
+by convention, the "Deliberately UNGATED" comments at each allowlisted call
+site, and code review, rather than by an automated check.
 
 **Follow-up (deferred):** rename the ungated primitives to `*_unchecked` once
 the 142 test call sites can be swept as a standalone mechanical commit rather
@@ -390,8 +383,12 @@ actually fail rather than only where its call site can be grepped:
 | `rdm-cli` | `rdm-cli/tests/cli_gate.rs` — the full ladder end to end through the real binary, against a temp plan repo and a real `rdm worktree add` worktree |
 | `rdm-server` | `rdm-server/tests/reviewed_gate.rs` — `PATCH` to `status: reviewed` refused **409** per precondition and allowed once the records exist, for phases and tasks; plus the opt-in and other-transitions-unaffected cases |
 | the worktree probe | `rdm-git/src/worktree.rs` tests — the roadmap-over-stale-phase resolution (`probe_prefers_shared_roadmap_over_stale_phase`, `probe_falls_back_to_the_roadmap_worktree_for_a_phase`), the task branch (`probe_resolves_a_task_worktree`), dirty-path reporting (`probe_reports_a_dirty_worktree_with_its_paths`), benign misses (`probe_reports_no_worktree_rather_than_failing_on_a_miss`), and `status_porcelain_at` erroring outside a repo |
-| the threading | `scripts/verify-reviewed-gate.sh` § A–C — the static allowlist described above |
-| the feature split | `scripts/verify-reviewed-gate.sh` § D — the probe is built in ONE feature-split place (`commands::build_gate_probe`), so neither update arm names `rdm_git::` and both compile with `git` off; CI's feature-matrix step is the dynamic half |
+
+The threading (the ungated allowlist and the `_gated`-entry boundary) and the
+feature split (`commands::build_gate_probe` staying the one place that names
+`rdm_git::`) were previously covered by `scripts/verify-reviewed-gate.sh` §§
+A–D; that harness was retired (see "The ungated allowlist" above) and neither
+is covered by an automated check today.
 
 The `rdm-server` row exists because a static call-site grep cannot see a gate
 that is wired but not enforcing: a wrong config key, a wrong file, or an error

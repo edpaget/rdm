@@ -18,8 +18,11 @@ commit scope, `commit_now` is gone in favor of `GitStore::commit_changeset` /
 `commit_whole_tree`, `git_status` is now the three-bucket `git_status_report`,
 and all four committers — `rdm commit`, `apply_done_directives` (the `Done:`
 hooks), `bootstrap`, and `init` — build their tree
-from a changeset. § I is inverted to match and now asserts the coupling *is*
-present while `commit.rs` still resolves no session identity of its own. What
+from a changeset. The coupling *is* present, and `commit.rs` still resolves no
+session identity of its own — `scripts/verify-session-identity.sh` § I, which
+statically gated that, was itself retired by the operator amendment to the
+`retire-static-grep-harnesses` plan (2026-09-23; grep-only-harness retirement
+extended to Rust-source greps as well as prose). What
 each surface does with a changeset is described under
 [*What a changeset does at commit / status / discard time*](#what-a-changeset-does-at-commit--status--discard-time)
 below; the commit-side design record is
@@ -931,18 +934,20 @@ applies to what a *write* action lands or destroys, never to what you can see.
   `rdm-cli/tests/cli_session.rs` / `cli_commit.rs` end to end against the real
   binary.
 - `bash scripts/verify-session-identity.sh` — the identity harness: sections
-  A–K as described above. § I is inverted as of phase 5: it now asserts that
-  `rdm-store-git/src/commit.rs` *carries* the changeset commit scope while
-  resolving no session identity of its own. § J (phase 10) gates the
-  harness-id-beats-inherited-lease rule. § K (phase 11) drives real per-call
-  `sh -c 'eval …; :'` wrapper shells under a long-lived non-shell driver and
-  gates this section's outcome: the wrappers are genuinely distinct live
-  processes (K0), each call fragments (K1), `rdm commit` exits 0 and names both
-  the cause and the remedy while the work stays recoverable (K2), the lease set
-  stays bounded with the dead wrapper's entry swept (K3/K3b), two concurrent
-  drivers never merge (K4), the documented `RDM_HARNESS_SESSION_ID` remedy
-  really does yield one changeset, a landing commit and zero leases (K5), and
-  this document still carries the per-harness table (K6). Two planted-mutation
+  A–K as described above (§ I, a structural grep over
+  `rdm-store-git/src/commit.rs`, was retired by the operator amendment to the
+  `retire-static-grep-harnesses` plan (2026-09-23), which extended
+  grep-only-harness retirement to Rust-source greps as well as prose — the
+  coupling it checked is unchanged, just no longer statically gated). § J
+  (phase 10) gates the harness-id-beats-inherited-lease rule. § K (phase 11)
+  drives real per-call `sh -c 'eval …; :'` wrapper shells under a long-lived
+  non-shell driver and gates this section's outcome: the wrappers are
+  genuinely distinct live processes (K0), each call fragments (K1),
+  `rdm commit` exits 0 and names both the cause and the remedy while the
+  work stays recoverable (K2), the lease set stays bounded with the dead
+  wrapper's entry swept (K3/K3b), two concurrent drivers never merge (K4),
+  and the documented `RDM_HARNESS_SESSION_ID` remedy really does yield one
+  changeset, a landing commit and zero leases (K5). Two planted-mutation
   self-tests rebuild a mutant in a scratch `CARGO_TARGET_DIR` and prove neither
   half is vacuous: silencing `continuity_advisory` must break K2, and removing
   the create-path sweep must break K3.
@@ -950,6 +955,7 @@ applies to what a *write* action lands or destroys, never to what you can see.
   disjoint concurrent commits (A), the same with no session id set plus
   rung-2 continuity and rung-4 degradation (B/B2/B3), the `Done:` hook path
   (C, distinct — every other section can pass while the hook still sweeps),
-  the commit-primitive call-site allowlist (D), `init --remote` / the
-  legacy repos / server reconciliation (E), committed-index
-  reconciliation (F), scoped discard (G), and shared reads (H).
+  `init --remote` / the legacy repos / server reconciliation (E),
+  committed-index reconciliation (F), scoped discard (G), and shared reads
+  (H). Its commit-primitive call-site allowlist (D) was retired by the same
+  operator amendment.

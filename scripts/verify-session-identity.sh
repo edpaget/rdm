@@ -7,10 +7,7 @@
 # rejection on a recycled pid, journal exactness and disjointness, the
 # invisibility of session state to `rdm status` and to a whole-tree commit
 # (with a planted-decoy self-test), the measured resolution cost including a
-# real `rdm hook post-commit` run, a structural grep proving
-# rdm-store-git/src/commit.rs carries the changeset commit scope while
-# resolving no session identity of its own (§ I; inverted in phase 5, which
-# introduced exactly the coupling it used to forbid), and (§ J, phase 10) that
+# real `rdm hook post-commit` run, and (§ J, phase 10) that
 # a harness-published session id ALWAYS wins over an already-inherited
 # ancestor lease: two real child processes of one already-leased ancestor,
 # each carrying its own distinct CLAUDE_CODE_SESSION_ID, resolve distinct
@@ -547,48 +544,6 @@ echo "$BATCH_LINE" | grep -q 'changeset=..*' ||
 echo "$BATCH_LINE" | grep -q 'paths=[1-9]' ||
     fail "the batch-commit event landed zero paths: $BATCH_LINE"
 ok "the hook path completes, applies its directive, and journals its own writes"
-
-# ---------------------------------------------------------------------------
-# Section I — commit.rs IS coupled to the changeset model
-# ---------------------------------------------------------------------------
-# INVERTED as of `plan-repo-concurrency/phase-5-scope-commits-to-changesets`.
-#
-# Through phase 4 this section FORBADE the coupling: routing committers through
-# the journal was a later phase's work, and a stray reference here would have
-# been premature. Phase 5 is that later phase — attribution now lives in the
-# tree builder itself — so the same file must now *carry* the coupling, and the
-# original assertion would fail the build on arrival. The section is inverted
-# rather than deleted so the boundary stays gated in both directions.
-say "Section I: rdm-store-git/src/commit.rs carries the changeset commit scope"
-
-COMMIT_RS="$REPO_ROOT/rdm-store-git/src/commit.rs"
-[ -f "$COMMIT_RS" ] || fail "$COMMIT_RS not found"
-
-for needle in 'ChangesetScope' 'CommitScope' 'changeset'; do
-    grep -q "$needle" "$COMMIT_RS" ||
-        fail "commit.rs no longer mentions '$needle' — the scoped commit path is the mechanism that keeps one session's commit from sweeping another's paths; losing it silently reverts phase 5"
-done
-ok "commit.rs declares the changeset commit scope"
-
-# The coupling must be to the *path list*, not to ambient process state: the
-# tree builder takes the paths it is given so it stays testable without a
-# resolved session. `rdm_core::session::journal` may be referenced in prose.
-if grep -q 'resolve_session\|resolve_system_session\|SessionPaths::' "$COMMIT_RS"; then
-    fail "commit.rs resolves session identity itself — the scope must arrive as a caller-supplied path list, so the tree builder stays testable without ambient process state"
-fi
-ok "commit.rs takes a supplied path list and resolves no session identity of its own"
-
-# Self-test: both directions of the assertion must be able to fail.
-sed 's/ChangesetScope/WholeTreeOnly/g' "$COMMIT_RS" >"$TMP/commit-unscoped.rs"
-grep -q 'ChangesetScope' "$TMP/commit-unscoped.rs" &&
-    fail "self-test failed: a commit.rs with the scope removed still matches, so the assertion proves nothing"
-ok "self-test: a commit.rs stripped of the changeset scope IS caught"
-
-cp "$COMMIT_RS" "$TMP/commit-ambient.rs"
-printf '\n// planted: let s = rdm_core::session::resolve_session(paths);\n' >>"$TMP/commit-ambient.rs"
-grep -q 'resolve_session' "$TMP/commit-ambient.rs" ||
-    fail "self-test failed: a planted ambient-session resolution is not detected, so that assertion proves nothing"
-ok "self-test: a planted ambient session resolution IS caught"
 
 # ---------------------------------------------------------------------------
 # Section J — a harness variable beats an already-inherited ancestor lease

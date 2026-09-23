@@ -250,8 +250,9 @@ pub fn update_phase(
 /// status uses. [`update_phase`] itself stays unchecked on purpose: the
 /// restamp path, the exit-0-contracted `Done:` hook path, and core's own
 /// consolidate/merge writes all write statuses that can never be `reviewed`,
-/// and must never acquire a gate failure mode. `scripts/verify-reviewed-gate.sh`
-/// is what keeps that ungated set from silently growing.
+/// and must never acquire a gate failure mode. Keeping that ungated set from
+/// silently growing is a convention held by code review, not an automated
+/// check.
 ///
 /// The gate is evaluated **before** the single load+write, so a refusal leaves
 /// the phase file untouched. Exactly one store write happens per call, whether

@@ -9,7 +9,6 @@
 #      cross-process continuity (B2) and rung-4 degradation (B3)
 #   C  the `Done:` hook path is scoped — a DISTINCT section, because every
 #      other criterion can pass while `apply_done_directives` still sweeps
-#   D  every commit primitive call site is on an explicit allowlist
 #   E  `rdm init --remote` lands its config commit, a legacy repo gains no
 #      rdm-authored dirt and its `.git/config` is left byte-identical, and a
 #      server mutation is attributable
@@ -23,7 +22,7 @@
 #   H  reads stay shared — no read isolation was introduced
 #   I  a commit under a project another session has not landed still lands
 #
-# Sections C, D, F, G3/G4 and I carry planted-mutation self-tests proving
+# Sections C, F, G3/G4 and I carry planted-mutation self-tests proving
 # they can fail.
 #
 # G5/G6 (an INDEX.md journaled into a session's own changeset via an explicit
@@ -406,81 +405,6 @@ commit_files "$REPO_C" HEAD >"$TMP/c.files.swept"
 contains_path "$TMP/c.files.swept" "projects/demo/tasks/bystander.md" ||
     fail "self-test failed: a whole-tree commit did NOT pick up the bystander, so section C's assertion proves nothing"
 ok "self-test: a whole-tree (unscoped) hook IS caught by the same assertion"
-
-# ---------------------------------------------------------------------------
-# Section D — every commit primitive call site is on an explicit allowlist
-# ---------------------------------------------------------------------------
-say "Section D: no unsanctioned caller of a commit primitive"
-
-# The primitives. `create_git_commit` and `git_commit` are `pub(crate)` in
-# rdm-store-git, so an out-of-crate caller cannot even compile; this grep
-# additionally catches a new IN-crate caller and every caller of the
-# whole-tree escape hatch, which the compiler cannot object to.
-# Anchored on a `.`/`::` call prefix so a mere *mention* (a doc link, or a
-# test named `commit_creates_git_commit`) is not mistaken for a call site.
-PRIMITIVES='[.:]\(create_git_commit\|git_commit\|git_commit_changeset\|commit_whole_tree\|commit_changeset\|commit_changeset_id\)('
-
-# The sanctioned sites, by file. Adding a legitimate caller is a deliberate
-# edit to this list — which is printed on failure so the reason is obvious.
-# The two `rdm-server/tests/` entries are test-seeding callers, which are a
-# legitimate whole-tree class rather than an oversight: seeding a fixture
-# genuinely wants the sweep.
-ALLOWLIST='rdm-store-git/src/commit.rs
-rdm-store-git/src/lib.rs
-rdm-cli/src/commands/commit.rs
-rdm-cli/src/commands/mod.rs
-rdm-cli/src/commands/bootstrap.rs
-rdm-cli/src/commands/init.rs
-rdm-server/src/state.rs
-rdm-server/tests/git_history.rs
-rdm-server/tests/mutation_policy.rs'
-
-scan_primitives() {
-    # $1: root to scan. Prints "file" for every hit outside the allowlist.
-    (
-        cd "$1" || exit 1
-        find . -name '*.rs' -not -path './target/*' | sed 's|^\./||'
-    ) | while read -r f; do
-        [ -f "$1/$f" ] || continue
-        if grep -q "$PRIMITIVES" "$1/$f"; then
-            printf '%s\n' "$f"
-        fi
-    done
-}
-
-scan_primitives "$REPO_ROOT" | sort >"$TMP/d.hits"
-[ -s "$TMP/d.hits" ] || fail "the primitive grep matched nothing at all — it proves nothing"
-
-printf '%s\n' "$ALLOWLIST" | sort >"$TMP/d.allow"
-UNSANCTIONED=$(comm -23 "$TMP/d.hits" "$TMP/d.allow")
-if [ -n "$UNSANCTIONED" ]; then
-    fail "unsanctioned commit-primitive caller(s):
-$UNSANCTIONED
-
-The sanctioned sites are:
-$ALLOWLIST
-
-A new committer must be a deliberate addition to this allowlist, and must use
-the SCOPED entry point (GitStore::commit_changeset) unless it genuinely wants
-the machine-global sweep (GitStore::commit_whole_tree)."
-fi
-ok "every commit-primitive caller is on the allowlist ($(wc -l <"$TMP/d.hits" | tr -d ' ') file(s))"
-
-# Self-test 1: a planted new caller IS caught.
-mkdir -p "$TMP/d-scratch/rdm-cli/src/commands"
-cp "$REPO_ROOT/rdm-cli/src/commands/status.rs" "$TMP/d-scratch/rdm-cli/src/commands/status.rs"
-printf '\nfn planted() { store.commit_whole_tree("oops"); }\n' \
-    >>"$TMP/d-scratch/rdm-cli/src/commands/status.rs"
-scan_primitives "$TMP/d-scratch" | sort >"$TMP/d.scratch.hits"
-grep -qx 'rdm-cli/src/commands/status.rs' "$TMP/d.scratch.hits" ||
-    fail "self-test failed: a planted commit-primitive caller is NOT caught, so section D proves nothing"
-ok "self-test: a planted new commit-primitive caller IS caught"
-
-# Self-test 2: the real tree passes (already asserted above, restated so both
-# arms of the gate are explicit).
-[ -z "$(comm -23 "$TMP/d.hits" "$TMP/d.allow")" ] ||
-    fail "self-test failed: the real, unmutated tree does not pass its own gate"
-ok "self-test: the real, unmutated tree passes"
 
 # ---------------------------------------------------------------------------
 # Section E — Store-bypassing writers still reach a commit

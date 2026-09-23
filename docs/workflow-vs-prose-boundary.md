@@ -198,7 +198,7 @@ Read any of these back with `rdm review show <id> --project rdm`, and the plan w
 **Accepted loss.** Deleting `scripts/verify-workflow-dispatch.sh` gave up its
 static-invariant net (greps over prose and templates) along with the engine it tested. Every
 *behavioral* protection it carried survives elsewhere — wrong-checkout selection and gate
-override in `rdm-core/tests/gate.rs` + `rdm-cli/tests/cli_gate.rs` + `scripts/verify-reviewed-gate.sh`,
+override in `rdm-core/tests/gate.rs` + `rdm-cli/tests/cli_gate.rs`,
 required review coverage in `scripts/verify-workflow-review.sh` §3c, persist-side anchor
 accounting in `scripts/verify-workflow-review-outcome.sh` (and `scripts/verify-workflow-review.sh`
 § 9a), the verification gate in `rdm-cli/tests/cli_verify.rs`,

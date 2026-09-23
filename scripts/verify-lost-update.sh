@@ -7,11 +7,13 @@
 # `plan-repo-concurrency/phase-6-close-the-lost-update-window`, plus phase 9's
 # delete-side half (`phase-9-content-checked-deletes`):
 #
-#   1   the delete-loop guard in rdm-store-git/src/commit.rs no longer defers
-#       to phase 9 — it IS phase 9: it raises its own error variant via a
-#       working-tree presence check, with no derived-path exemption left in
-#       the loop (retire-generated-index phase 4). The record of this
-#       decision lives in docs/lost-update-evaluation.md.
+#   (Section 1, a static grep over rdm-store-git/src/commit.rs proving the
+#   delete-loop guard no longer defers to phase 9, was retired by the
+#   operator amendment to the retire-static-grep-harnesses plan
+#   (2026-09-23), which extended grep-only-harness retirement to Rust-source
+#   greps as well as prose. The behavior it checked is covered dynamically by
+#   section 6 below. The record of the decision behind the guard lives in
+#   docs/lost-update-evaluation.md.)
 #   2   two real processes interleaved mid-flush: the loser is REFUSED, not
 #       silently dropped   (2b repeats it with no session id at all)
 #   2c  planted-mutation self-tests: with the check removed the lost update
@@ -234,28 +236,6 @@ assert_loser_refused() {
 # ---------------------------------------------------------------------------
 # Section 1 — the evaluation record exists
 # ---------------------------------------------------------------------------
-say "Section 1: the delete-loop guard in rdm-store-git/src/commit.rs is a working-tree presence check with no derived-path exemption"
-
-# The delete loop must no longer defer to phase 9 — it IS phase 9 — and must
-# raise the guard's own error variant via a working-tree presence check.
-DELETE_LOOP_SRC="$REPO_ROOT/rdm-store-git/src/commit.rs"
-DELETE_VARIANT='ChangesetDeletePathRecreated'
-if grep -q 'phase-9-content-checked-deletes' "$DELETE_LOOP_SRC"; then
-    fail "the delete loop in rdm-store-git/src/commit.rs still defers to phase 9"
-fi
-grep -q "Error::$DELETE_VARIANT" "$DELETE_LOOP_SRC" ||
-    fail "the delete loop in rdm-store-git/src/commit.rs must raise Error::$DELETE_VARIANT"
-grep -q 'self.root.join(path).exists()' "$DELETE_LOOP_SRC" ||
-    fail "the delete loop must be a working-tree presence check"
-ok "the delete loop carries the guard as a working-tree presence check"
-
-# The derived-path exemption (retire-generated-index phase 4) deleted the
-# class outright; no exempting call may survive in the delete loop.
-if grep -q 'is_derived_path' "$DELETE_LOOP_SRC"; then
-    fail "the delete loop still calls is_derived_path, which no longer exists"
-fi
-ok "no derived-path exemption remains in the delete loop"
-
 # ---------------------------------------------------------------------------
 # Section 2 — two real processes, interleaved mid-flush
 # ---------------------------------------------------------------------------

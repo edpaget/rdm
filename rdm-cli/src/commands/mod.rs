@@ -692,8 +692,7 @@ pub fn apply_done_directives(
                     // post-commit hook path, which is contractually exit-0 and
                     // must never acquire a failure mode (CLAUDE.md's hook
                     // reliability guarantee). It writes `Done`, which the
-                    // `reviewed` gate never guards anyway. On the allowlist in
-                    // `scripts/verify-reviewed-gate.sh`.
+                    // `reviewed` gate never guards anyway.
                     rdm_core::ops::phase::update_phase(
                         s,
                         &project_owned,
@@ -722,8 +721,7 @@ pub fn apply_done_directives(
                 let sha_owned = sha.clone();
                 steps.push(Box::new(move |s| {
                     // Deliberately UNGATED: same `Done:` hook path as above,
-                    // writing `Done`. On the allowlist in
-                    // `scripts/verify-reviewed-gate.sh`.
+                    // writing `Done`.
                     rdm_core::ops::task::update_task(
                         s,
                         &project_owned,

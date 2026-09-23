@@ -286,7 +286,7 @@ Attribution lives in the tree builder itself. `GitRepo::create_git_commit` takes
 
 Both tree builders share one entry-sort comparator (`sort_tree_entries`), so identical content yields an identical tree oid either way and the `treeNotSorted` hazard cannot be re-derived in the new path.
 
-`GitRepo::git_commit` was demoted to `pub(crate)`, so a new out-of-crate committer fails to compile. `scripts/verify-scoped-commit.sh` § D backs that with an allowlist grep (with both self-test arms) that also catches new in-crate callers and callers of the escape hatch, which the compiler cannot object to. Test-seeding callers (`rdm-store-git`'s `#[cfg(test)]` module, `rdm-server/tests/git_history.rs`) are a legitimate whole-tree class and are on the allowlist by name.
+`GitRepo::git_commit` was demoted to `pub(crate)`, so a new out-of-crate committer fails to compile. `scripts/verify-scoped-commit.sh` previously backed that in-crate with an allowlist grep over every commit-primitive call site (with both self-test arms); that section (§ D) was retired by the operator amendment to the `retire-static-grep-harnesses` plan (2026-09-23), which extended grep-only-harness retirement to Rust-source greps as well as prose. Test-seeding callers (`rdm-store-git`'s `#[cfg(test)]` module, `rdm-server/tests/git_history.rs`) remain a legitimate whole-tree class.
 
 `rdm resolve`/pull paths that shell out to a real `git commit`/`git merge` still create whole-tree commits outside this mechanism. That is correct — they are *merge* operations, not session commits — and is stated here so the allowlist is understood rather than quietly widened.
 

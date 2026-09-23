@@ -600,9 +600,8 @@ fn gated_entry_refuses_where_ungated_primitive_writes() {
     let doc = rdm_core::io::load_phase(&store, PROJECT, ROADMAP, STEM).unwrap();
     assert_eq!(doc.frontmatter.status, PhaseStatus::NeedsReview);
 
-    // The UNGATED primitive is deliberately unchecked and still writes. The
-    // allowlist harness (`scripts/verify-reviewed-gate.sh`) is what bounds its
-    // callers, not a runtime check.
+    // The UNGATED primitive is deliberately unchecked and still writes. Its
+    // callers are bounded by convention and code review, not a runtime check.
     let doc = rdm_core::ops::phase::update_phase(
         &mut store,
         PROJECT,

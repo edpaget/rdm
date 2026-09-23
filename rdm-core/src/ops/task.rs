@@ -571,7 +571,7 @@ pub fn consolidate_task_into_roadmap(
 
     // Deliberately UNGATED: writes `Done`, which the `reviewed` gate never
     // guards, and is a core-internal consolidation rather than a user-supplied
-    // status. On the allowlist in `scripts/verify-reviewed-gate.sh`.
+    // status.
     let updated_task = update_task(
         store,
         project,
@@ -739,8 +739,7 @@ pub fn merge_tasks(
         // to its body, then stamp the close_reason pointer.
         let source_pointer_body =
             format!("{}\n\nSuperseded by task `{survivor}`.", source_doc.body);
-        // Deliberately UNGATED: writes `WontFix`. On the allowlist in
-        // `scripts/verify-reviewed-gate.sh`.
+        // Deliberately UNGATED: writes `WontFix`.
         update_task(
             store,
             project,
@@ -765,8 +764,7 @@ pub fn merge_tasks(
     }
 
     // 7. Write the survivor once with the unioned tags and accumulated body.
-    // Deliberately UNGATED: writes `status: None` (tags/body only). On the
-    // allowlist in `scripts/verify-reviewed-gate.sh`.
+    // Deliberately UNGATED: writes `status: None` (tags/body only).
     let survivor_updated = update_task(
         store,
         project,

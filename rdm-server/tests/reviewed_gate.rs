@@ -2,11 +2,10 @@
 //!
 //! `rdm-server` is one of the surfaces this phase deliberately routed through
 //! the gated update entries, because a `PATCH` body carries an arbitrary
-//! caller-supplied status and can therefore reach `reviewed`.
-//! `scripts/verify-reviewed-gate.sh` proves the *call site* uses the gated
-//! function; nothing there proves the gate actually refuses over HTTP, that
-//! the config key is read from the right file, or that the new `Gate*` error
-//! variants really map to 409. That is what this file does.
+//! caller-supplied status and can therefore reach `reviewed`. Using the
+//! gated call site proves nothing about whether the gate actually refuses
+//! over HTTP, that the config key is read from the right file, or that the
+//! `Gate*` error variants really map to 409. That is what this file does.
 //!
 //! Everything is seeded through `rdm-core` against a temp plan repo, exactly
 //! as `tests/integration.rs` does, and driven through a real TCP server.

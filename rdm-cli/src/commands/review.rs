@@ -194,8 +194,7 @@ pub fn run(
                                 // path writes `NeedsReview`, which the `reviewed`
                                 // gate never guards. Gating it would be inert and
                                 // would put `scripts/verify-worktree-review-loop.sh`
-                                // at risk. On the allowlist in
-                                // `scripts/verify-reviewed-gate.sh`.
+                                // at risk.
                                 rdm_core::ops::phase::update_phase(
                                     s,
                                     &project,
@@ -218,8 +217,7 @@ pub fn run(
                             let branch = target_branch.clone();
                             commit_mutation(store, "failed to restamp task", |s| {
                                 // Deliberately UNGATED: same restamp path, writing
-                                // `NeedsReview`. On the allowlist in
-                                // `scripts/verify-reviewed-gate.sh`.
+                                // `NeedsReview`.
                                 rdm_core::ops::task::update_task(
                                     s,
                                     &project,
