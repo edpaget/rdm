@@ -53,6 +53,16 @@ when the field is still empty — it falls back to the merge-base exactly as
 `change/<sha>` does, reporting that fallback in the response's `baseNote`
 field.
 
+The write-once stamp itself (the first `not-started`/`open` → `in-progress`
+transition) fails two different ways when it can't resolve a starting HEAD.
+An explicit `--source <path>` is a direct instruction, so a HEAD read failure
+there is a hard error naming the path — the status update is refused and
+nothing is written. Automatic resolution (no `--source` given, the item's
+registered worktree is discovered instead) stays best-effort: a resolution
+miss there still lets the status transition succeed, but — since the field is
+write-once — prints a non-blocking warning to stderr naming the item and
+noting that later reviews of it will fall back to the merge-base.
+
 `change` is deliberately **not** a link kind. `rdm:change/<sha>` is rejected by
 `rdm_core::link::parse` with a message pointing at `rdm:src/<path>@<sha>` —
 there is no plan-repo document at the other end of a change reference, so

@@ -479,26 +479,59 @@ pub fn run(
             // recorded `started_head`) reviews exactly this phase's own
             // commits in a shared roadmap worktree, not every earlier
             // phase's too. `commands::resolve_started_head` binds an explicit
-            // `--source <path>` directly to that checkout's HEAD, or
+            // `--source <path>` directly to that checkout's HEAD — hard
+            // error, propagated below, if that HEAD can't be read — or
             // otherwise resolves the roadmap's registered worktree the same
             // way `rdm verify run --item` does — a plain HEAD read, not the
             // full `review source` validation `source_binding` above skips
-            // for this status. Best-effort: no worktree yet (or none
-            // resolvable) records nothing rather than failing the status
-            // update — the write-once apply in `apply_phase_update` leaves an
-            // existing value untouched regardless.
+            // for this status. That automatic path stays best-effort: no
+            // worktree yet (or none resolvable) records nothing rather than
+            // failing the status update — the write-once apply in
+            // `apply_phase_update` leaves an existing value untouched
+            // regardless.
             #[cfg(feature = "git")]
             let started_head = if status == Some(rdm_core::model::PhaseStatus::InProgress) {
                 let item = rdm_git::worktree::ItemRef::Phase {
                     roadmap: roadmap.clone(),
                     stem: stem.clone(),
                 };
-                commands::resolve_started_head(root, &item, source.source.as_deref())
+                commands::resolve_started_head(root, &item, source.source.as_deref())?
             } else {
                 None
             };
             #[cfg(not(feature = "git"))]
             let started_head = None;
+
+            // Non-blocking: when this in-progress transition is the phase's
+            // actual write-once started_head opportunity (mirrors
+            // `apply_phase_update`'s own guard — prior status not-started,
+            // no started_head recorded yet) but resolution came back empty
+            // without an explicit --source to hard-error on, warn so the
+            // operator knows the field permanently falls back to `review
+            // source`'s merge-base for this phase rather than losing it
+            // silently (review 2026-09-23-0326-b262, finding
+            // `started-head-silent-permanent-loss`).
+            #[cfg(feature = "git")]
+            let started_head_warning: Option<String> = if status
+                == Some(rdm_core::model::PhaseStatus::InProgress)
+                && started_head.is_none()
+                && rdm_core::io::load_phase(store, &project, &roadmap, &stem)
+                    .map(|doc| {
+                        doc.frontmatter.status == rdm_core::model::PhaseStatus::NotStarted
+                            && doc.frontmatter.started_head.is_none()
+                    })
+                    .unwrap_or(false)
+            {
+                Some(format!(
+                    "warning: phase '{stem}' (roadmap '{roadmap}') entered in-progress but its \
+                     starting HEAD could not be resolved — started_head was not recorded; later \
+                     reviews of this phase will fall back to the merge-base"
+                ))
+            } else {
+                None
+            };
+            #[cfg(not(feature = "git"))]
+            let started_head_warning: Option<String> = None;
 
             // Data-integrity guard: if a phase reaches needs-review with no
             // committed diff worth reviewing, it would strand in review state
@@ -579,6 +612,9 @@ pub fn run(
             })
             .map_err(map_body_clobber)?;
             println!("Updated '{stem}' → {}", doc.frontmatter.status);
+            if let Some(warning) = started_head_warning {
+                eprintln!("{warning}");
+            }
             if let Some(warning) = needs_review_warning {
                 eprintln!("{warning}");
             }

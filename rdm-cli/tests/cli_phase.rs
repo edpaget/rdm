@@ -2212,8 +2212,17 @@ fn in_progress_with_no_worktree_records_no_started_head() {
     let src = init_source_repo();
 
     // No worktree registered for `two-way` at all: the stamp still succeeds,
-    // but nothing is recorded.
-    stamp_in_progress(&dir, src.path()).success();
+    // but nothing is recorded — and since this IS the phase's write-once
+    // started_head opportunity, it warns on stderr (non-blocking) rather
+    // than losing the miss silently (review 2026-09-23-0326-b262, finding
+    // `started-head-silent-permanent-loss`).
+    let first_stamp = stamp_in_progress(&dir, src.path()).success();
+    let first_stderr = String::from_utf8_lossy(&first_stamp.get_output().stderr).to_string();
+    assert!(
+        first_stderr.contains("started_head was not recorded")
+            && first_stderr.contains("phase-1-core"),
+        "a resolution miss on the write-once transition must warn, naming the phase: {first_stderr}"
+    );
     let json = phase_show_json(&dir, None);
     assert!(
         json.get("started_head").is_none(),
@@ -2222,7 +2231,9 @@ fn in_progress_with_no_worktree_records_no_started_head() {
 
     // Register the worktree now, then re-stamp `in-progress` — this is a
     // repeat entry (prior status is already `in-progress`), so under C1 the
-    // field must STAY absent, not get filled in on this later pass.
+    // field must STAY absent, not get filled in on this later pass. Since
+    // this transition is no longer the write-once opportunity, it must not
+    // repeat the warning either.
     let out = rdm()
         .arg("--root")
         .arg(dir.path())
@@ -2234,7 +2245,12 @@ fn in_progress_with_no_worktree_records_no_started_head() {
         .stdout
         .clone();
     let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
-    stamp_in_progress(&dir, src.path()).success();
+    let restamp = stamp_in_progress(&dir, src.path()).success();
+    let restamp_stderr = String::from_utf8_lossy(&restamp.get_output().stderr).to_string();
+    assert!(
+        !restamp_stderr.contains("started_head was not recorded"),
+        "a re-stamp past the write-once window must not repeat the started_head warning: {restamp_stderr}"
+    );
     let json = phase_show_json(&dir, None);
     assert!(
         json.get("started_head").is_none(),
@@ -2276,5 +2292,54 @@ fn in_progress_with_no_worktree_records_no_started_head() {
             .as_str()
             .is_some_and(|n| n.contains("main")),
         "review source must fall back to the merge-base with a note naming 'main': {source}"
+    );
+}
+
+/// review 2026-09-23-0326-b262, finding `started-head-silent-permanent-loss`:
+/// an explicit `--source <path>` is a direct instruction, so a HEAD read
+/// failure on the write-once `in-progress` transition must be a hard error
+/// naming the bad path, with NOTHING written — not silently dropped like the
+/// automatic-resolution miss covered above.
+#[test]
+fn explicit_source_head_read_failure_on_in_progress_is_a_hard_error_and_writes_nothing() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core");
+    let bad_path = dir.path().join("not-a-git-repo");
+    fs::create_dir_all(&bad_path).unwrap();
+
+    let assert = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--status",
+            "in-progress",
+            "--no-edit",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--source",
+        ])
+        .arg(&bad_path)
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains(&bad_path.to_string_lossy().to_string()),
+        "the error must name the bad --source path: {stderr}"
+    );
+
+    let json = phase_show_json(&dir, None);
+    assert_eq!(
+        json["status"], "not-started",
+        "a hard-erroring explicit --source stamp must write nothing: {json}"
+    );
+    assert!(
+        json.get("started_head").is_none(),
+        "a hard-erroring explicit --source stamp must not record a partial value: {json}"
     );
 }

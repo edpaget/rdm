@@ -1369,31 +1369,57 @@ pub fn resolve_source_args(
 /// (`discover_distinct_project_repo` → `registered_worktree_for` →
 /// `head_commit_info_at`).
 ///
-/// Best-effort: any resolution failure (no worktree registered yet, the repo
-/// unreadable, cwd not inside a distinct project checkout) returns `None`
-/// rather than an error — the write-once apply in `apply_phase_update` /
-/// `apply_task_update` simply leaves `started_head` unset until a later
-/// in-progress stamp can resolve it.
+/// The two resolution paths fail differently, on purpose (review
+/// 2026-09-23-0326-b262, finding `started-head-silent-permanent-loss`): an
+/// explicit `--source <path>` is a direct instruction, and the field is
+/// write-once, so silently dropping it would permanently strand the item on
+/// the merge-base fallback with no trace beyond a later `baseNote`. A HEAD
+/// read failure there is therefore a **hard error** naming the path — the
+/// caller (`phase update`/`task update`) propagates it with `?` before the
+/// status mutation runs, so nothing is written. Automatic resolution (no
+/// `--source` given) stays **best-effort**: no worktree registered yet, an
+/// unreadable repo, or a cwd outside a distinct project checkout all return
+/// `Ok(None)` rather than an error, since there is no explicit instruction to
+/// have failed — the caller is responsible for warning (non-blocking) when
+/// that `None` lands on the item's actual write-once transition.
+///
+/// # Errors
+///
+/// Returns an error naming `explicit_source`'s path when it is given and its
+/// HEAD cannot be read (no git repository there, or the repository has no
+/// commits yet).
 #[cfg(feature = "git")]
-#[must_use]
 pub fn resolve_started_head(
     root: &Path,
     item: &rdm_git::worktree::ItemRef,
     explicit_source: Option<&str>,
-) -> Option<String> {
+) -> Result<Option<String>> {
     if let Some(path) = explicit_source {
-        return rdm_git::head_commit_info_at(Path::new(path))
+        let head = rdm_git::head_commit_info_at(Path::new(path)).map_err(|e| {
+            anyhow::anyhow!(
+                "could not resolve a starting HEAD from --source '{path}': {e} — started_head \
+                 was not recorded; pass a valid git checkout path, or omit --source to resolve \
+                 the item's registered worktree automatically"
+            )
+        })?;
+        return match head {
+            Some(commit) => Ok(Some(commit.sha)),
+            None => Err(anyhow::anyhow!(
+                "could not resolve a starting HEAD from --source '{path}': the repository has no \
+                 commits yet — started_head was not recorded"
+            )),
+        };
+    }
+    let resolved = (|| {
+        let cwd = std::env::current_dir().ok()?;
+        let repo = rdm_git::worktree::discover_distinct_project_repo(&cwd, root).ok()?;
+        let worktree = rdm_git::worktree::registered_worktree_for(&repo, item)
+            .ok()
+            .flatten()?;
+        rdm_git::head_commit_info_at(&worktree.path)
             .ok()
             .flatten()
-            .map(|c| c.sha);
-    }
-    let cwd = std::env::current_dir().ok()?;
-    let repo = rdm_git::worktree::discover_distinct_project_repo(&cwd, root).ok()?;
-    let worktree = rdm_git::worktree::registered_worktree_for(&repo, item)
-        .ok()
-        .flatten()?;
-    rdm_git::head_commit_info_at(&worktree.path)
-        .ok()
-        .flatten()
-        .map(|c| c.sha)
+            .map(|c| c.sha)
+    })();
+    Ok(resolved)
 }

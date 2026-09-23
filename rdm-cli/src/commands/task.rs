@@ -220,23 +220,55 @@ pub fn run(
             // enters `in-progress`, so `rdm review source`'s default base (the
             // recorded `started_head`) reviews exactly this task's own
             // commits. `commands::resolve_started_head` binds an explicit
-            // `--source <path>` directly to that checkout's HEAD, or
+            // `--source <path>` directly to that checkout's HEAD — hard
+            // error, propagated below, if that HEAD can't be read — or
             // otherwise resolves the task's registered worktree the same way
             // `rdm verify run --item` does — a plain HEAD read, not the full
             // `review source` validation `source_binding` above skips for
-            // this status. Best-effort: no worktree yet (or none resolvable)
-            // records nothing rather than failing the status update — the
-            // write-once apply leaves an already-recorded value untouched
-            // regardless.
+            // this status. That automatic path stays best-effort: no
+            // worktree yet (or none resolvable) records nothing rather than
+            // failing the status update — the write-once apply leaves an
+            // already-recorded value untouched regardless.
             #[cfg(feature = "git")]
             let started_head = if status == Some(rdm_core::model::TaskStatus::InProgress) {
                 let item = rdm_git::worktree::ItemRef::Task { slug: slug.clone() };
-                commands::resolve_started_head(root, &item, source.source.as_deref())
+                commands::resolve_started_head(root, &item, source.source.as_deref())?
             } else {
                 None
             };
             #[cfg(not(feature = "git"))]
             let started_head = None;
+
+            // Non-blocking: when this in-progress transition is the task's
+            // actual write-once started_head opportunity (mirrors
+            // `apply_task_update`'s own guard — prior status open, no
+            // started_head recorded yet) but resolution came back empty
+            // without an explicit --source to hard-error on, warn so the
+            // operator knows the field permanently falls back to `review
+            // source`'s merge-base for this task rather than losing it
+            // silently (review 2026-09-23-0326-b262, finding
+            // `started-head-silent-permanent-loss`).
+            #[cfg(feature = "git")]
+            let started_head_warning: Option<String> = if status
+                == Some(rdm_core::model::TaskStatus::InProgress)
+                && started_head.is_none()
+                && rdm_core::io::load_task(store, &project, &slug)
+                    .map(|doc| {
+                        doc.frontmatter.status == rdm_core::model::TaskStatus::Open
+                            && doc.frontmatter.started_head.is_none()
+                    })
+                    .unwrap_or(false)
+            {
+                Some(format!(
+                    "warning: task '{slug}' entered in-progress but its starting HEAD could not \
+                     be resolved — started_head was not recorded; later reviews of this task will \
+                     fall back to the merge-base"
+                ))
+            } else {
+                None
+            };
+            #[cfg(not(feature = "git"))]
+            let started_head_warning: Option<String> = None;
 
             // Data-integrity guard: warn (non-blocking) when a task reaches
             // needs-review with no committed diff beyond the default branch.
@@ -312,6 +344,9 @@ pub fn run(
                 "Updated task '{slug}' → status: {}, priority: {}",
                 doc.frontmatter.status, doc.frontmatter.priority
             );
+            if let Some(warning) = started_head_warning {
+                eprintln!("{warning}");
+            }
             if let Some(warning) = needs_review_warning {
                 eprintln!("{warning}");
             }
