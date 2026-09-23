@@ -42,7 +42,12 @@ bare `<roadmap>`) and runs:
    `rdm phase update <phase> --status done --commit <sha>` (or the `task`
    variant) for every item being landed. For a bare-roadmap land this covers
    every phase that was `reviewed` on the branch, each recorded with the same
-   landed tip — see "The linear-history guarantee" below for why.
+   landed tip — see "The linear-history guarantee" below for why. Each of
+   those calls only stages its change, so once the loop finishes, land the
+   batch with a single session-scoped
+   `rdm commit -m "chore(plan): mark <item(s)> done after landing"` —
+   otherwise the completion record stays in this session's own changeset,
+   invisible to other clones and lost if the session is later discarded.
 7. **Clean up** — `rdm worktree remove <item> --delete-branch` for this item, or
    `rdm worktree prune` for batch cleanup of all already-`done` items.
 

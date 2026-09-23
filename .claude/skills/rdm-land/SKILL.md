@@ -53,6 +53,8 @@ Before touching `main`, confirm all of:
    ./target/debug/rdm task update <slug> --status done --commit <tip-sha> --no-edit --project rdm
    ```
    This write always happens — it is not a fallback for a missing hook. (This roadmap's own phases 40 and 44 are the concrete evidence behind this call: phase 40's real last commit, `9e397ca`, was never itself independently reviewed — it landed under a stale-review waiver over `2a86887` — and phase 44's real last commit, `247cf25`, is a post-approval reword over review head `2294e96`. Neither commit appears in any `change_reviews[]` entry, and both phases' `started_head` is unset, so attributing per-phase commits from either source would have been wrong here.)
+
+   **Land this batch.** Each `phase update`/`task update` above only stages its change to disk — it does not commit. Once the loop finishes, run `./target/debug/rdm commit -m "chore(plan): mark <item(s)> done after landing"` once to commit this session's changeset. Skipping this leaves the completion record staged in this session's own changeset: invisible to other clones of the plan repo, and lost if the session is later discarded.
 7. **Clean up the worktree:** `./target/debug/rdm worktree remove <item> --delete-branch --project rdm` removes this item's worktree and its now-merged branch. For batch end-of-run cleanup of *all* already-`done` items at once, use `./target/debug/rdm worktree prune --project rdm` (add `--delete-branch` to also drop the merged branches).
 
 ## Abort / escalation

@@ -51,6 +51,8 @@ Before touching `main`, confirm all of:
    rdm task update <slug> --status done --commit <tip-sha> --no-edit --project <PROJECT>
    ```
    This write always happens — it is not a fallback for a missing hook.
+
+   **Land this batch.** Each `phase update`/`task update` above only stages its change to disk — it does not commit. Once the loop finishes, run `rdm commit -m "chore(plan): mark <item(s)> done after landing"` once to commit this session's changeset. Skipping this leaves the completion record staged in this session's own changeset: invisible to other clones of the plan repo, and lost if the session is later discarded.
 7. **Clean up the worktree:** `rdm worktree remove <item> --delete-branch --project <PROJECT>` removes this item's worktree and its now-merged branch. For batch end-of-run cleanup of *all* already-`done` items at once, use `rdm worktree prune --project <PROJECT>` (add `--delete-branch` to also drop the merged branches).
 
 ## Abort / escalation

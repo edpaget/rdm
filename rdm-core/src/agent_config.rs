@@ -2931,6 +2931,18 @@ mod tests {
         assert!(
             content.contains("This write always happens — it is not a fallback for a missing hook")
         );
+        // The per-item phase/task update calls only stage their changes —
+        // step 6 must land the batch with an explicit session-scoped commit,
+        // or the completion record never reaches other clones (code review
+        // 2026-09-23-1518-0acc).
+        assert!(
+            content.contains("Land this batch"),
+            "skill-land must land the done-marking batch explicitly"
+        );
+        assert!(
+            content.contains(r#"rdm commit -m "chore(plan): mark <item(s)> done after landing""#),
+            "skill-land must commit the batch with a session-scoped rdm commit"
+        );
     }
 
     #[test]
