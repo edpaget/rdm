@@ -755,7 +755,7 @@ pub(crate) enum PhaseCommand {
         stem: String,
         /// Apply difficulty/body only if this full phase snapshot still matches
         /// and both difficulty and model remain unset. From phase show JSON.
-        #[arg(long, requires = "difficulty", conflicts_with_all = ["status", "title", "tags", "clear_difficulty", "model", "clear_model", "clear_body", "reason", "clear_reason", "commit"])]
+        #[arg(long, requires = "difficulty", conflicts_with_all = ["status", "title", "tags", "clear_difficulty", "model", "clear_model", "clear_body", "reason", "clear_reason", "commit", "start_commit"])]
         expected_estimate_snapshot: Option<String>,
         /// New status (omit to preserve existing).
         #[arg(long)]
@@ -813,8 +813,19 @@ pub(crate) enum PhaseCommand {
         /// executable behavior since an already-approved review.
         #[arg(long, value_name = "REASON")]
         override_gate: Option<String>,
+        /// Records this phase's write-once `started_head` — the full commit
+        /// SHA the roadmap worktree was at when this phase's own work began
+        /// — so `rdm review source`'s default base reviews exactly this
+        /// phase's commits rather than every earlier phase's too.
+        ///
+        /// Independent of `--status`: pass alone, or combined with any
+        /// status transition. Refuses to overwrite an already-recorded
+        /// value. The dispatch skill records this from its pinned head
+        /// immediately before the phase's first implementer dispatch.
+        #[arg(long, value_name = "SHA")]
+        start_commit: Option<String>,
         #[command(flatten)]
-        source: ReviewSourceArgs,
+        source: Box<ReviewSourceArgs>,
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,
@@ -1018,8 +1029,19 @@ pub(crate) enum TaskCommand {
         /// executable behavior since an already-approved review.
         #[arg(long, value_name = "REASON")]
         override_gate: Option<String>,
+        /// Records this task's write-once `started_head` — the full commit
+        /// SHA the task's worktree was at when the task's own work began —
+        /// so `rdm review source`'s default base reviews exactly this
+        /// task's commits.
+        ///
+        /// Independent of `--status`: pass alone, or combined with any
+        /// status transition. Refuses to overwrite an already-recorded
+        /// value. The dispatch skill records this from its pinned head
+        /// immediately before the task's first implementer dispatch.
+        #[arg(long, value_name = "SHA")]
+        start_commit: Option<String>,
         #[command(flatten)]
-        source: ReviewSourceArgs,
+        source: Box<ReviewSourceArgs>,
         /// Suppress interactive editor for body content.
         #[arg(long)]
         no_edit: bool,

@@ -39,17 +39,13 @@ This `base` default (merge-base with the default branch, absent an explicit
 or `task/<slug>`** target — resolved through `rdm review source --on …`, and
 through the same code path the gated `reviewed` write's `--source` binding
 uses — has a different default: it prefers the item's recorded `started_head`
-(the item's resolved checkout HEAD at the moment it first transitioned out of
-`not-started`/`open` into `in-progress`, stamped by `phase update`/
-`task update` and exposed by `phase show`/`task show --format json`) over the
+(the commit the roadmap or task worktree was at when the item's own work
+began, recorded explicitly by `phase update`/`task update --start-commit
+<sha>` and exposed by `phase show`/`task show --format json`) over the
 merge-base, so a phase implemented in a shared roadmap worktree is reviewed as
 its own diff rather than as every earlier phase's changes too. `--base` still
-overrides, and with no `started_head` recorded — because the item never
-resolved a worktree at that first transition, or because every `in-progress`
-stamp it has received since was a later transition (a
-`reviewed -> in-progress` rework, a `blocked -> in-progress` unpark, or an
-`in-progress -> in-progress` re-stamp), none of which record a value even
-when the field is still empty — it falls back to the merge-base exactly as
+overrides, and with no `started_head` recorded — because nothing has ever
+recorded one for this item — it falls back to the merge-base exactly as
 `change/<sha>` does, reporting that fallback in the response's `baseNote`
 field.
 
@@ -68,15 +64,20 @@ noisier — and names the stale `started_head` and the reason in `baseNote`. An
 explicit `--base` is exempt from this check: it was named deliberately, and
 is the escape hatch an operator has after history changes.
 
-The write-once stamp itself (the first `not-started`/`open` → `in-progress`
-transition) fails two different ways when it can't resolve a starting HEAD.
-An explicit `--source <path>` is a direct instruction, so a HEAD read failure
-there is a hard error naming the path — the status update is refused and
-nothing is written. Automatic resolution (no `--source` given, the item's
-registered worktree is discovered instead) stays best-effort: a resolution
-miss there still lets the status transition succeed, but — since the field is
-write-once — prints a non-blocking warning to stderr naming the item and
-noting that later reviews of it will fall back to the merge-base.
+**Who writes `started_head`, and when.** No status transition records it as a
+side effect. `phase update`/`task update --start-commit <sha>` is an
+explicit, write-once command, independent of `--status` — it may be passed
+alone or combined with any status transition in the same call. A second
+`--start-commit` against an item that already has a recorded value is
+refused, naming the existing value; the original is left untouched. In
+practice, the `rdm-dispatch-phase` skill is the one that records it: from the
+head it has already pinned for the item, immediately before that item's first
+implementer dispatch, skipping when a value is already recorded (a resumed
+dispatch, or a phase predating this field). A malformed value (not a full
+40-lowercase-hex-character commit SHA) or one that doesn't resolve to a
+commit in the item's worktree is refused before any write, naming the
+rejected value and — for the existence check — the repository it was checked
+against.
 
 `change` is deliberately **not** a link kind. `rdm:change/<sha>` is rejected by
 `rdm_core::link::parse` with a message pointing at `rdm:src/<path>@<sha>` —

@@ -1052,9 +1052,10 @@ fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
     let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
     let base_head = rev_parse(&wt, "HEAD");
 
-    // AC1: stamp phase 1 in-progress from OUTSIDE the worktree (the main
-    // source checkout) — resolution goes through the registered worktree,
-    // not the caller's cwd.
+    // AC1: record phase 1's `--start-commit` from OUTSIDE the worktree (the
+    // main source checkout) — resolution goes through the registered
+    // worktree, not the caller's cwd. Combined with `--status in-progress`
+    // in the same call, matching the dispatch skill's usage.
     rdm()
         .arg("--root")
         .arg(plan.path())
@@ -1064,6 +1065,8 @@ fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
             "phase-1-design",
             "--status",
             "in-progress",
+            "--start-commit",
+            &base_head,
             "--no-edit",
             "--roadmap",
             "auth",
@@ -1084,7 +1087,27 @@ fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
     git(&wt, &["commit", "-m", "phase 1 work"]);
     let phase_1_head = rev_parse(&wt, "HEAD");
 
-    // Write-once: a second in-progress stamp does not move it.
+    // Write-once: a second `--start-commit` is refused and does not move it.
+    // A bare `--status in-progress` re-stamp (no `--start-commit`) is also
+    // harmless — it no longer touches the field at all.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-design",
+            "--start-commit",
+            &phase_1_head,
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure();
     rdm()
         .arg("--root")
         .arg(plan.path())
@@ -1106,7 +1129,8 @@ fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
     assert_eq!(
         phase_json_for(plan.path(), "phase-1-design", "auth")["started_head"],
         base_head,
-        "a re-stamp of in-progress must not move an already-recorded started_head"
+        "a refused --start-commit, and a plain in-progress re-stamp with none given, must never \
+         move an already-recorded started_head"
     );
 
     // Phase 2 starts here — its started_head is phase 1's HEAD.
@@ -1119,6 +1143,8 @@ fn started_head_scopes_the_second_phase_review_and_satisfies_the_gate() {
             "phase-2-impl",
             "--status",
             "in-progress",
+            "--start-commit",
+            &phase_1_head,
             "--no-edit",
             "--roadmap",
             "auth",
@@ -1306,6 +1332,7 @@ fn review_source_falls_back_when_started_head_is_not_an_ancestor_at_the_binary_b
         .stdout
         .clone();
     let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+    let stamp_head = rev_parse(&wt, "HEAD");
 
     rdm()
         .arg("--root")
@@ -1316,6 +1343,8 @@ fn review_source_falls_back_when_started_head_is_not_an_ancestor_at_the_binary_b
             "phase-1-design",
             "--status",
             "in-progress",
+            "--start-commit",
+            &stamp_head,
             "--no-edit",
             "--roadmap",
             "auth",
@@ -1340,6 +1369,8 @@ fn review_source_falls_back_when_started_head_is_not_an_ancestor_at_the_binary_b
             "phase-2-impl",
             "--status",
             "in-progress",
+            "--start-commit",
+            &phase_1_head,
             "--no-edit",
             "--roadmap",
             "auth",
@@ -1458,15 +1489,16 @@ fn review_source_with_no_started_head_falls_back_to_merge_base_with_a_note() {
     );
 }
 
-/// tests-1 / in-progress-source-runs-full-review-resolution (review
-/// 2026-09-23-0249-4ccc): an explicit `--source <path>` on the in-progress
-/// transition must record that checkout's plain HEAD, never routed through
-/// the full `review source` validation. That validation refuses exactly the
-/// state a fresh worktree is in at a phase's start — HEAD == main, an empty
-/// committed range — with "empty committed range; declare --no-code ...",
-/// which used to refuse the in-progress stamp outright.
+/// The `explicit_source`-skips-full-validation special case for an
+/// `in-progress` transition is gone under `explicit-start-commit`: the
+/// e6edac4 unconditional behavior is restored, so `--status in-progress
+/// --source <fresh worktree>` (HEAD == main, an empty committed range) now
+/// refuses exactly like any other explicit source binding does, unless
+/// `--no-code` declares the empty range intentional. Recording the start
+/// commit is a completely separate, explicit `--start-commit` write that
+/// does not go through this validation at all.
 #[test]
-fn phase_in_progress_source_stamps_started_head_on_a_fresh_worktree() {
+fn phase_source_binding_on_a_fresh_worktree_requires_no_code() {
     let src = init_source_repo();
     let plan = init_plan_repo(src.path());
     let out = rdm()
@@ -1501,6 +1533,34 @@ fn phase_in_progress_source_stamps_started_head_on_a_fresh_worktree() {
         ])
         .current_dir(src.path())
         .assert()
+        .failure()
+        .stderr(predicate::str::contains("empty committed range"));
+
+    // `--start-commit`, combined with the same explicit `--source` and
+    // `--no-code` to satisfy the source binding, records the field from that
+    // explicit checkout's HEAD rather than the registry lookup.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-design",
+            "--status",
+            "in-progress",
+            "--start-commit",
+            &wt_head,
+            "--no-code",
+            "--no-edit",
+            "--roadmap",
+            "auth",
+            "--project",
+            "demo",
+            "--source",
+            wt.to_str().unwrap(),
+        ])
+        .current_dir(src.path())
+        .assert()
         .success();
     assert_eq!(
         phase_json_for(plan.path(), "phase-1-design", "auth")["started_head"],
@@ -1508,12 +1568,12 @@ fn phase_in_progress_source_stamps_started_head_on_a_fresh_worktree() {
     );
 }
 
-/// Task-side twin of the phase test above: `task update --status
-/// in-progress --source <fresh worktree>` must succeed and record that
-/// worktree's HEAD, rather than failing on the task-side full-validation
-/// refusal ("explicit task checkout requires --base").
+/// Task-side twin of the phase test above: an explicit `--source <fresh
+/// worktree>` on a task no longer bypasses full `review source` validation
+/// for an `in-progress` transition — it fails on the task-side rule that an
+/// explicit checkout requires `--base` too.
 #[test]
-fn task_in_progress_source_stamps_started_head_on_a_fresh_worktree() {
+fn task_source_binding_on_a_fresh_worktree_requires_base() {
     let src = init_source_repo();
     let plan = init_plan_repo(src.path());
     let out = rdm()
@@ -1538,6 +1598,34 @@ fn task_in_progress_source_stamps_started_head_on_a_fresh_worktree() {
             "solo",
             "--status",
             "in-progress",
+            "--no-edit",
+            "--project",
+            "demo",
+            "--source",
+            wt.to_str().unwrap(),
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires --base"));
+
+    // `--start-commit`, combined with the same explicit `--source`, `--base`
+    // and `--no-code` needed to satisfy the task's source binding, records
+    // the field from that explicit checkout's HEAD.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "update",
+            "solo",
+            "--status",
+            "in-progress",
+            "--start-commit",
+            &wt_head,
+            "--base",
+            &wt_head,
+            "--no-code",
             "--no-edit",
             "--project",
             "demo",
@@ -1584,6 +1672,8 @@ fn task_started_head_scopes_review_source_to_the_tasks_own_commit() {
             "solo",
             "--status",
             "in-progress",
+            "--start-commit",
+            &base_head,
             "--no-edit",
             "--project",
             "demo",

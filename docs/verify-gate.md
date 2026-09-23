@@ -366,7 +366,7 @@ A guess must never silently become a project's durable verification contract.
   transition gate, which moves § 8's worktree-clean assertion into `rdm-core`. Its
   "Explicit source binding" section documents `rdm review source`'s default `base` —
   the item's recorded `started_head`, not the merge-base with the default branch,
-  once one is stamped.
+  once one is recorded via the explicit, write-once `--start-commit <sha>`.
 - [`workflow-schemas.md`](workflow-schemas.md) § "Verify gate" — the result schema and the
   `verify:run` label.
 - [`escalation-protocol.md`](escalation-protocol.md) — the budgets this gate reuses.

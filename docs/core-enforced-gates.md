@@ -102,22 +102,21 @@ from another checkout. `review pending --format json` exposes `review_sha` and
 the plan Store do not share an atomic transaction.
 
 **The default `base`, absent an explicit `--base`, is the item's recorded
-`started_head`** — the resolved checkout HEAD at the moment `phase update`/
-`task update --status in-progress` stamped it on the item's first-ever
-transition out of `not-started`/`open` (write-once, and narrower than "the
-field happens to be empty": only that specific transition records a value.
-Every other transition into `in-progress` — a `reviewed -> in-progress`
-rework, a `blocked -> in-progress` unpark, or an `in-progress -> in-progress`
-re-stamp — leaves the field exactly as it found it, even when nothing was
-ever recorded, so it can never move forward past commits the phase already
-made before that later stamp). This scopes a phase's review, and the gate's
+`started_head`** — the commit the roadmap or task worktree was at when the
+item's own work began, recorded by an explicit, write-once
+`phase update`/`task update --start-commit <sha>`, independent of `--status`.
+No status transition records this field as a side effect; a second
+`--start-commit` against an item that already has a recorded value is refused
+rather than silently skipped, and the original value is left untouched. In
+practice, the `rdm-dispatch-phase` skill records it from its already-pinned
+head immediately before an item's first implementer dispatch, skipping when a
+value is already recorded. This scopes a phase's review, and the gate's
 `--source`-bound `reviewed` write when it omits `--base`, to that phase's own
 commits in a shared roadmap worktree — not every earlier phase's too. With no
-`started_head` recorded (e.g. the item never resolved a worktree at its first
-`in-progress` transition, or every `in-progress` stamp it has received was
-one of the later transitions above), `base` falls back to the merge-base with
-the project's default branch, exactly as before, and `rdm review source`'s
-response carries a `baseNote` explaining the fallback.
+`started_head` recorded (nothing has ever recorded one for this item), `base`
+falls back to the merge-base with the project's default branch, exactly as
+before, and `rdm review source`'s response carries a `baseNote` explaining the
+fallback.
 
 ### Fail-closed probe semantics for (c)
 

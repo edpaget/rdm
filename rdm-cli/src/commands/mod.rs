@@ -1348,78 +1348,71 @@ pub fn resolve_source_args(
     Ok((probe.with_source(item.clone(), request), identity))
 }
 
-/// Resolves the starting HEAD to write-once-stamp as `started_head` on an
-/// item's first `in-progress` transition.
+/// Resolves and validates a `--start-commit <sha>` value for `phase update`/
+/// `task update`, before it is threaded into the write-once `started_head`
+/// apply in `rdm-core`.
 ///
-/// Deliberately **not** [`resolve_source_args`]: that function's full
-/// `review source` validation (non-empty committed range, and — for a task —
-/// an explicit `--base`) is meant for reviewing a *finished* diff, and it
-/// refuses exactly the states an in-progress stamp fires in — a fresh
-/// worktree whose HEAD still equals the default branch, or a task `--source`
-/// with no `--base`. An in-progress stamp needs nothing but a HEAD read, so
-/// this reads one directly, shared here between `phase update` and `task
-/// update` instead of re-derived in each (both used to hand-roll this same
-/// ~30-line resolution, and separately from the composition
-/// `verify.rs::item_worktree` builds for `rdm verify run --item`).
+/// Format is checked first, reusing the same shape check already applied to
+/// stored change identities
+/// ([`rdm_core::model::ReviewTarget::validate_change_identity`]) rather than
+/// writing a second regex — `sha` must be a full 40-lowercase-hex-character
+/// commit SHA. Existence is then checked against a repository: `source_path`
+/// when an explicit `--source <path>` was also given on the same update
+/// (matching how other explicit-source flags override auto-resolution in
+/// `phase update`/`task update`), otherwise the item's registered roadmap/
+/// task worktree — the same "which worktree serves this item" composition
+/// (`discover_distinct_project_repo` → `registered_worktree_for`)
+/// `rdm-cli/src/commands/verify.rs`'s `item_worktree` uses for `rdm verify
+/// run --item`. This checks only that the object exists and is a commit
+/// (`git cat-file -e <sha>^{commit}`), not that it is reachable from any
+/// particular branch — ancestry is `review source`'s concern at read time,
+/// not this write's.
 ///
-/// `explicit_source`, when given (an explicit `--source <path>`), binds
-/// directly to that checkout's HEAD. Otherwise this resolves the item's
-/// registered worktree the same way `rdm verify run --item` does — the
-/// single "which worktree serves this item" composition
-/// (`discover_distinct_project_repo` → `registered_worktree_for` →
-/// `head_commit_info_at`).
-///
-/// The two resolution paths fail differently, on purpose (review
-/// 2026-09-23-0326-b262, finding `started-head-silent-permanent-loss`): an
-/// explicit `--source <path>` is a direct instruction, and the field is
-/// write-once, so silently dropping it would permanently strand the item on
-/// the merge-base fallback with no trace beyond a later `baseNote`. A HEAD
-/// read failure there is therefore a **hard error** naming the path — the
-/// caller (`phase update`/`task update`) propagates it with `?` before the
-/// status mutation runs, so nothing is written. Automatic resolution (no
-/// `--source` given) stays **best-effort**: no worktree registered yet, an
-/// unreadable repo, or a cwd outside a distinct project checkout all return
-/// `Ok(None)` rather than an error, since there is no explicit instruction to
-/// have failed — the caller is responsible for warning (non-blocking) when
-/// that `None` lands on the item's actual write-once transition.
+/// Unlike the old automatic `started_head` resolution this replaces, there is
+/// no best-effort path: `--start-commit` is an explicit instruction, so a
+/// resolution failure is always a hard error naming the rejected value (and,
+/// for the existence check, the repository path it was checked against)
+/// rather than a silent skip.
 ///
 /// # Errors
 ///
-/// Returns an error naming `explicit_source`'s path when it is given and its
-/// HEAD cannot be read (no git repository there, or the repository has no
-/// commits yet).
+/// Returns an error naming `sha` when it is not a full 40-lowercase-hex-character
+/// commit SHA, when no worktree is registered for `item` and no explicit
+/// `--source` was given, or when `sha` does not resolve to a commit in the
+/// resolved repository.
 #[cfg(feature = "git")]
-pub fn resolve_started_head(
+pub fn resolve_start_commit(
     root: &Path,
     item: &rdm_git::worktree::ItemRef,
-    explicit_source: Option<&str>,
-) -> Result<Option<String>> {
-    if let Some(path) = explicit_source {
-        let head = rdm_git::head_commit_info_at(Path::new(path)).map_err(|e| {
-            anyhow::anyhow!(
-                "could not resolve a starting HEAD from --source '{path}': {e} — started_head \
-                 was not recorded; pass a valid git checkout path, or omit --source to resolve \
-                 the item's registered worktree automatically"
-            )
-        })?;
-        return match head {
-            Some(commit) => Ok(Some(commit.sha)),
-            None => Err(anyhow::anyhow!(
-                "could not resolve a starting HEAD from --source '{path}': the repository has no \
-                 commits yet — started_head was not recorded"
-            )),
-        };
+    sha: &str,
+    source_path: Option<&str>,
+) -> Result<String> {
+    rdm_core::model::ReviewTarget::validate_change_identity(sha, None)
+        .map_err(|e| anyhow::anyhow!("invalid --start-commit '{sha}': {e}"))?;
+    let repo_path: std::path::PathBuf = match source_path {
+        Some(path) => std::path::PathBuf::from(path),
+        None => {
+            let cwd = std::env::current_dir()?;
+            let repo = rdm_git::worktree::discover_distinct_project_repo(&cwd, root)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            rdm_git::worktree::registered_worktree_for(&repo, item)
+                .map_err(|e| anyhow::anyhow!("{e}"))?
+                .map(|w| w.path)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "cannot validate --start-commit '{sha}': no rdm worktree is registered \
+                         for this item — create one with `rdm worktree add`, or pass --source to \
+                         validate against an explicit checkout"
+                    )
+                })?
+        }
+    };
+    let exists = rdm_git::commit_exists_at(&repo_path, sha).map_err(|e| anyhow::anyhow!("{e}"))?;
+    if !exists {
+        anyhow::bail!(
+            "--start-commit '{sha}' does not resolve to a commit in '{}'",
+            repo_path.display()
+        );
     }
-    let resolved = (|| {
-        let cwd = std::env::current_dir().ok()?;
-        let repo = rdm_git::worktree::discover_distinct_project_repo(&cwd, root).ok()?;
-        let worktree = rdm_git::worktree::registered_worktree_for(&repo, item)
-            .ok()
-            .flatten()?;
-        rdm_git::head_commit_info_at(&worktree.path)
-            .ok()
-            .flatten()
-            .map(|c| c.sha)
-    })();
-    Ok(resolved)
+    Ok(sha.to_string())
 }

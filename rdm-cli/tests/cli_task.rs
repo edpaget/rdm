@@ -2176,51 +2176,37 @@ fn stamp_task_in_progress(dir: &TempDir, cwd: &Path) -> assert_cmd::assert::Asse
         .assert()
 }
 
-/// AC1's no-worktree half, the task mirror of
-/// `cli_phase.rs::in_progress_with_no_worktree_records_no_started_head` —
-/// rebuilt hermetically per review 2026-09-23-0309-996c (`tests-1`) for the
-/// same reason: the original version never set `current_dir`/built a source
-/// repo, so it resolved against whatever real git repo the test process
-/// happened to run in and passed only because no `task/fix-bug` worktree
-/// existed there by accident. This version builds a real temp source repo,
-/// runs with `.current_dir(src.path())`, and asserts the no-worktree case
-/// AC1 actually names.
-///
-/// It then covers the write-once edge this repo's C1 rework introduced:
-/// registering the worktree afterward and re-stamping `in-progress` must NOT
-/// fill the field in, because that re-stamp's prior status is `in-progress`,
-/// not `open` — the original review's suggested assertion ("now filled in")
-/// is exactly what C1 supersedes. `review source` on the still-unstamped
-/// task then falls back to the merge-base.
+/// The task mirror of
+/// `cli_phase.rs::in_progress_status_alone_never_records_started_head`: under
+/// `explicit-start-commit`, no status transition records `started_head` on
+/// its own. A bare `--status in-progress` stamp (no `--start-commit`)
+/// succeeds with no warning and no recording, whether or not a worktree is
+/// registered, and repeating it never fills the field in either. `review
+/// source` on the still-unstamped task then falls back to the merge-base.
 #[test]
-fn in_progress_with_no_worktree_records_no_started_head() {
+fn in_progress_status_alone_never_records_started_head() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);
     create_task(&dir, "fix-bug", "Fix bug");
     let src = init_source_repo();
 
     // No worktree registered for `task/fix-bug` at all: the stamp still
-    // succeeds, but nothing is recorded — and since this IS the task's
-    // write-once started_head opportunity, it warns on stderr (non-blocking)
-    // rather than losing the miss silently (review 2026-09-23-0326-b262,
-    // finding `started-head-silent-permanent-loss`).
+    // succeeds, with nothing recorded and no warning — there is no automatic
+    // resolution left to miss.
     let first_stamp = stamp_task_in_progress(&dir, src.path()).success();
     let first_stderr = String::from_utf8_lossy(&first_stamp.get_output().stderr).to_string();
     assert!(
-        first_stderr.contains("started_head was not recorded") && first_stderr.contains("fix-bug"),
-        "a resolution miss on the write-once transition must warn, naming the task: {first_stderr}"
+        !first_stderr.contains("started_head"),
+        "a bare in-progress stamp must not warn about started_head: {first_stderr}"
     );
     let json = task_show_json(&dir);
     assert!(
         json.get("started_head").is_none(),
-        "no registered worktree means no started_head to record: {json}"
+        "a bare --status in-progress must never record started_head: {json}"
     );
 
-    // Register the worktree now, then re-stamp `in-progress` — this is a
-    // repeat entry (prior status is already `in-progress`), so under C1 the
-    // field must STAY absent, not get filled in on this later pass. Since
-    // this transition is no longer the write-once opportunity, it must not
-    // repeat the warning either.
+    // Register the worktree now, then re-stamp `in-progress` (still with no
+    // `--start-commit`) — the field must STAY absent.
     let out = rdm()
         .arg("--root")
         .arg(dir.path())
@@ -2232,12 +2218,7 @@ fn in_progress_with_no_worktree_records_no_started_head() {
         .stdout
         .clone();
     let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
-    let restamp = stamp_task_in_progress(&dir, src.path()).success();
-    let restamp_stderr = String::from_utf8_lossy(&restamp.get_output().stderr).to_string();
-    assert!(
-        !restamp_stderr.contains("started_head was not recorded"),
-        "a re-stamp past the write-once window must not repeat the started_head warning: {restamp_stderr}"
-    );
+    stamp_task_in_progress(&dir, src.path()).success();
     let json = task_show_json(&dir);
     assert!(
         json.get("started_head").is_none(),
@@ -2282,18 +2263,19 @@ fn in_progress_with_no_worktree_records_no_started_head() {
     );
 }
 
-/// review 2026-09-23-0326-b262, finding `started-head-silent-permanent-loss`:
-/// the task mirror of `cli_phase.rs`'s explicit-`--source` hard-error test —
-/// a bad `--source` on the write-once `open` -> `in-progress` transition must
-/// fail actionably, naming the path, with nothing written.
+/// The task mirror of
+/// `cli_phase.rs::start_commit_resolution_failures_are_hard_errors_and_write_nothing`:
+/// `--start-commit` is an explicit instruction, independent of `--status`, so
+/// every resolution failure is a hard error with NOTHING written.
 #[test]
-fn explicit_source_head_read_failure_on_in_progress_is_a_hard_error_and_writes_nothing() {
+fn start_commit_resolution_failures_are_hard_errors_and_write_nothing() {
     let dir = TempDir::new().unwrap();
     init_with_project(&dir);
     create_task(&dir, "fix-bug", "Fix bug");
-    let bad_path = dir.path().join("not-a-git-repo");
-    fs::create_dir_all(&bad_path).unwrap();
+    let src = init_source_repo();
+    let real_sha = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
+    // No worktree registered for `task/fix-bug` at all.
     let assert = rdm()
         .arg("--root")
         .arg(dir.path())
@@ -2301,29 +2283,87 @@ fn explicit_source_head_read_failure_on_in_progress_is_a_hard_error_and_writes_n
             "task",
             "update",
             "fix-bug",
-            "--status",
-            "in-progress",
+            "--start-commit",
+            real_sha,
             "--no-edit",
             "--project",
             "fbm",
-            "--source",
         ])
-        .arg(&bad_path)
+        .current_dir(src.path())
         .assert()
         .failure();
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
     assert!(
-        stderr.contains(&bad_path.to_string_lossy().to_string()),
-        "the error must name the bad --source path: {stderr}"
+        stderr.contains("no rdm worktree"),
+        "an unregistered item must refuse naming the missing worktree: {stderr}"
     );
-
     let json = task_show_json(&dir);
-    assert_eq!(
-        json["status"], "open",
-        "a hard-erroring explicit --source stamp must write nothing: {json}"
+    assert!(json.get("started_head").is_none());
+
+    let out = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["worktree", "add", "task/fix-bug", "--project", "fbm"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+
+    // A malformed value (not 40 lowercase hex characters) is refused before
+    // any existence check.
+    let assert = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--start-commit",
+            "not-a-sha",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains("not-a-sha"),
+        "a malformed --start-commit must name the rejected value: {stderr}"
     );
+    let json = task_show_json(&dir);
+    assert!(json.get("started_head").is_none());
+
+    // A well-formed SHA that does not resolve to a commit in the item's
+    // worktree.
+    let assert = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "fix-bug",
+            "--start-commit",
+            real_sha,
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    assert!(
+        stderr.contains(real_sha) && stderr.contains(wt.to_str().unwrap()),
+        "a nonexistent commit must name both the SHA and the repo it was checked against: {stderr}"
+    );
+    let json = task_show_json(&dir);
     assert!(
         json.get("started_head").is_none(),
-        "a hard-erroring explicit --source stamp must not record a partial value: {json}"
+        "no --start-commit resolution failure may write a partial value: {json}"
     );
 }

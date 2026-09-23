@@ -357,6 +357,7 @@ pub fn run(
             clear_reason,
             commit,
             override_gate,
+            start_commit,
             source,
             no_edit: _,
         } => {
@@ -408,30 +409,22 @@ pub fn run(
             if explicit_source {
                 anyhow::bail!("explicit source binding requires git support");
             }
-            // The in-progress `started_head` stamp below needs only a plain
-            // HEAD read (`commands::resolve_started_head`), never the full
-            // `review source` validation this builds — that validation
-            // refuses exactly the states an in-progress stamp fires in (a
-            // fresh worktree with an empty committed range). Skip building it
-            // for a bare in-progress transition so `--source` on that
-            // transition can't be refused by a check it doesn't need.
             #[cfg(feature = "git")]
-            let source_binding =
-                if explicit_source && status != Some(rdm_core::model::PhaseStatus::InProgress) {
-                    Some(commands::resolve_source_args(
-                        store,
-                        &project,
-                        &source,
-                        &rdm_core::link::ItemRef::Phase {
-                            roadmap: roadmap.clone(),
-                            stem: stem.clone(),
-                        },
-                        repo_config.default_branch.as_deref().unwrap_or("main"),
-                        Some(root),
-                    )?)
-                } else {
-                    None
-                };
+            let source_binding = if explicit_source {
+                Some(commands::resolve_source_args(
+                    store,
+                    &project,
+                    &source,
+                    &rdm_core::link::ItemRef::Phase {
+                        roadmap: roadmap.clone(),
+                        stem: stem.clone(),
+                    },
+                    repo_config.default_branch.as_deref().unwrap_or("main"),
+                    Some(root),
+                )?)
+            } else {
+                None
+            };
             // Stamp the source-repo HEAD SHA when entering needs-review, so the
             // review can later be scoped to the branch/worktree that produced
             // it. No commit yet (unstamped) → fail open downstream.
@@ -474,64 +467,35 @@ pub fn run(
                 .map(|(_, source)| source.branch.clone())
                 .or(review_branch);
 
-            // Write-once: resolve the phase's starting HEAD the first time it
-            // enters `in-progress`, so `rdm review source`'s default base (the
-            // recorded `started_head`) reviews exactly this phase's own
-            // commits in a shared roadmap worktree, not every earlier
-            // phase's too. `commands::resolve_started_head` binds an explicit
-            // `--source <path>` directly to that checkout's HEAD — hard
-            // error, propagated below, if that HEAD can't be read — or
-            // otherwise resolves the roadmap's registered worktree the same
-            // way `rdm verify run --item` does — a plain HEAD read, not the
-            // full `review source` validation `source_binding` above skips
-            // for this status. That automatic path stays best-effort: no
-            // worktree yet (or none resolvable) records nothing rather than
-            // failing the status update — the write-once apply in
-            // `apply_phase_update` leaves an existing value untouched
-            // regardless.
+            // `--start-commit` is an explicit, write-once record of this
+            // phase's starting HEAD, independent of `--status`: it is
+            // validated (format, then existence in the item's worktree or an
+            // explicit `--source`) here, and applied unconditionally in
+            // `apply_phase_update` — refusing rather than silently skipping
+            // if the phase already has a recorded value.
             #[cfg(feature = "git")]
-            let started_head = if status == Some(rdm_core::model::PhaseStatus::InProgress) {
-                let item = rdm_git::worktree::ItemRef::Phase {
-                    roadmap: roadmap.clone(),
-                    stem: stem.clone(),
-                };
-                commands::resolve_started_head(root, &item, source.source.as_deref())?
-            } else {
-                None
+            let started_head = match start_commit.as_deref() {
+                Some(sha) => {
+                    let item = rdm_git::worktree::ItemRef::Phase {
+                        roadmap: roadmap.clone(),
+                        stem: stem.clone(),
+                    };
+                    Some(commands::resolve_start_commit(
+                        root,
+                        &item,
+                        sha,
+                        source.source.as_deref(),
+                    )?)
+                }
+                None => None,
             };
             #[cfg(not(feature = "git"))]
-            let started_head = None;
-
-            // Non-blocking: when this in-progress transition is the phase's
-            // actual write-once started_head opportunity (mirrors
-            // `apply_phase_update`'s own guard — prior status not-started,
-            // no started_head recorded yet) but resolution came back empty
-            // without an explicit --source to hard-error on, warn so the
-            // operator knows the field permanently falls back to `review
-            // source`'s merge-base for this phase rather than losing it
-            // silently (review 2026-09-23-0326-b262, finding
-            // `started-head-silent-permanent-loss`).
-            #[cfg(feature = "git")]
-            let started_head_warning: Option<String> = if status
-                == Some(rdm_core::model::PhaseStatus::InProgress)
-                && started_head.is_none()
-                && rdm_core::io::load_phase(store, &project, &roadmap, &stem)
-                    .map(|doc| {
-                        doc.frontmatter.status == rdm_core::model::PhaseStatus::NotStarted
-                            && doc.frontmatter.started_head.is_none()
-                    })
-                    .unwrap_or(false)
-            {
-                Some(format!(
-                    "warning: phase '{stem}' (roadmap '{roadmap}') entered in-progress but its \
-                     starting HEAD could not be resolved — started_head was not recorded; later \
-                     reviews of this phase will fall back to the merge-base"
-                ))
-            } else {
+            let started_head: Option<String> = {
+                if start_commit.is_some() {
+                    anyhow::bail!("--start-commit requires git support");
+                }
                 None
             };
-            #[cfg(not(feature = "git"))]
-            let started_head_warning: Option<String> = None;
 
             // Data-integrity guard: if a phase reaches needs-review with no
             // committed diff worth reviewing, it would strand in review state
@@ -612,9 +576,6 @@ pub fn run(
             })
             .map_err(map_body_clobber)?;
             println!("Updated '{stem}' → {}", doc.frontmatter.status);
-            if let Some(warning) = started_head_warning {
-                eprintln!("{warning}");
-            }
             if let Some(warning) = needs_review_warning {
                 eprintln!("{warning}");
             }

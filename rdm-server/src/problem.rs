@@ -271,6 +271,16 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(err.to_string()),
                 instance: None,
             },
+            // A `--start-commit`/`started_head` write-once conflict: the
+            // request is well-formed, but the field is already recorded.
+            // 409, same shape as the lost-update refusals above.
+            Error::StartHeadAlreadyRecorded { .. } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Conflict".to_string(),
+                status: 409,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
             Error::TaskAlreadyConsolidated(slug) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Conflict".to_string(),

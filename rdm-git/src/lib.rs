@@ -337,6 +337,24 @@ pub fn is_ancestor_at(path: &Path, ancestor_sha: &str, descendant_sha: &str) -> 
     }
 }
 
+/// Whether `sha` resolves to a real commit object in the repository at `path`.
+///
+/// Shells out to `git cat-file -e <sha>^{commit}`, the same existence check
+/// [`path_exists_at_rev`] uses to confirm a revision resolves before trusting
+/// it. Used to validate a `--start-commit` value before it is stamped onto a
+/// phase or task's `started_head`: this checks only that the object exists
+/// and is a commit, not that it is reachable from any particular branch —
+/// ancestry is `review source`'s concern at read time, not this write's.
+///
+/// # Errors
+///
+/// Returns [`Error::Git`] if git is not installed or `path` is not inside a
+/// git repository.
+pub fn commit_exists_at(path: &Path, sha: &str) -> Result<bool> {
+    let output = run_git_at(path, &["cat-file", "-e", &format!("{sha}^{{commit}}")])?;
+    Ok(output.status.success())
+}
+
 /// Whether `file_path` exists at `rev` in the repository at `repo_path`.
 ///
 /// Shells out to `git cat-file -e <rev>:<file_path>`, but first confirms

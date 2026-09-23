@@ -401,6 +401,14 @@ pub enum Error {
     /// omit the update to leave the existing title unchanged). The CLI exposes
     /// this as `--title`.
     EmptyTitle,
+    /// A `phase update --start-commit`/`task update --start-commit` targeted
+    /// an item that already has a recorded `started_head`. The field is
+    /// write-once: the new value is rejected and the existing one — what
+    /// `review source` uses — is left untouched.
+    StartHeadAlreadyRecorded {
+        /// The already-recorded value.
+        existing: String,
+    },
     /// An update request set both a value and its `clear_*` flag for the same
     /// field — for example `--body` together with `--clear-body`. The two are
     /// contradictory; pass exactly one.
@@ -1020,6 +1028,11 @@ impl std::fmt::Display for Error {
                     "title cannot be empty or whitespace-only — pass a non-empty --title (omit --title to leave the existing title unchanged)"
                 )
             }
+            Error::StartHeadAlreadyRecorded { existing } => write!(
+                f,
+                "started_head is already recorded as '{existing}' and is write-once — the new \
+                 value was not written; that recorded value is what `review source` uses"
+            ),
             Error::ConflictingUpdate { field } => {
                 write!(f, "cannot set both '{field}' and 'clear_{field}'")
             }

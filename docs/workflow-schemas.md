@@ -2069,8 +2069,8 @@ recorded `promptSha256` is unchanged — there is no supported way to re-baselin
 `reviewTargetBlock` is therefore strictly conditional, exactly like the existing QUOTE VERIFICATION
 and SCOPE GRADING clauses in `refutePrompt` it follows the same pattern as.
 
-The `rdm-dispatch-phase` skill's step 6 passes its step-3-pinned `identity` (`source`, `base`,
-`expectedHead`, `expectedBranch`) plus `phase`/`task` to the plan-review call, mirroring step 11's
+The `rdm-dispatch-phase` skill's step 6 passes its step-4-pinned `identity` (`source`, `base`,
+`expectedHead`, `expectedBranch`) plus `phase`/`task` to the plan-review call, mirroring step 12's
 code-review call. The distributed skill template omits this call entirely — that surface's plan gate
 is a human-submitted approve review rather than a workflow verdict (see the template's own "Why there
 is no plan-review Workflow call here" section) — so it has no step 6 pin to add; the engine change

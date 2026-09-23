@@ -208,12 +208,13 @@ pub fn list_tasks(store: &impl Store, project: &str) -> Result<Vec<(String, Docu
 /// this is the refresh path `rdm review restamp` uses to keep a stamp from
 /// going stale after a commit is amended or rebased mid-review.
 ///
-/// The `started_head` parameter is **write-once**, unlike every other field
-/// above: when `status` transitions to [`TaskStatus::InProgress`] and the
-/// task has no `started_head` recorded yet, the provided value (if any) is
-/// stamped. Any other transition — including a later `InProgress` re-stamp
-/// (e.g. a `reviewed -> in-progress` rework) — leaves an already-recorded
-/// value untouched. See [`crate::model::Task::started_head`].
+/// The `started_head` parameter is **write-once** and independent of
+/// `status`: a `Some` value is recorded when the task has no `started_head`
+/// yet, or rejected with [`Error::StartHeadAlreadyRecorded`] when one is
+/// already recorded — the CLI's `--start-commit` flag, which may be passed
+/// alone or combined with any `--status` transition. No status transition
+/// records this field on its own; `started_head: None` always leaves the
+/// existing value untouched. See [`crate::model::Task::started_head`].
 ///
 /// A [`TitleUpdate::Set`] renames the task in place — the `slug` that
 /// identifies it is never changed; [`TitleUpdate::Keep`] leaves it unchanged.
@@ -225,6 +226,8 @@ pub fn list_tasks(store: &impl Store, project: &str) -> Result<Vec<(String, Docu
 /// whitespace-only value,
 /// [`Error::BodyClobberRefused`] if `body` is [`BodyUpdate::Set("")`](BodyUpdate::Set)
 /// over a non-empty body (use [`BodyUpdate::Clear`] to confirm),
+/// [`Error::StartHeadAlreadyRecorded`] if `started_head` is `Some` and the
+/// task already has a recorded value,
 /// [`Error::Io`] if reading or writing fails, or
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
 /// existing task file has invalid frontmatter.
@@ -378,7 +381,6 @@ fn update_task_inner(
                 doc.frontmatter.commit = Some(sha);
             }
         } else {
-            let prior_status = doc.frontmatter.status;
             doc.frontmatter.status = status;
             if status.is_terminal() {
                 doc.frontmatter.completed = Some(Local::now().date_naive());
@@ -396,26 +398,18 @@ fn update_task_inner(
                 doc.frontmatter.review_sha = None;
                 doc.frontmatter.review_branch = None;
             }
-            // Write-once: stamp `started_head` only on the task's first
-            // ever entry into `in-progress` — i.e. exactly when the prior
-            // status was `open`. Any other transition into `in-progress` (a
-            // `reviewed -> in-progress` rework re-stamp, a `blocked ->
-            // in-progress` unpark, or an `in-progress -> in-progress`
-            // re-stamp such as the dispatch skill's step 3) leaves the
-            // field untouched even when it is still empty: the task may
-            // already carry commits predating this field, or from a first
-            // stamp whose worktree could not be resolved, and recording a
-            // base after those commits would let a later review silently
-            // skip them. An item that never got a value keeps `review
-            // source`'s safe merge-base fallback.
-            if status == TaskStatus::InProgress
-                && prior_status == TaskStatus::Open
-                && doc.frontmatter.started_head.is_none()
-                && let Some(head) = started_head
-            {
-                doc.frontmatter.started_head = Some(head);
-            }
         }
+    }
+    // Write-once, independent of `status`: a `Some` value is recorded only
+    // if the task has no `started_head` yet — an accidental second
+    // `--start-commit` is a real error, not a silent no-op, since it would
+    // otherwise look like it succeeded while leaving the original (correct)
+    // value in place. `None` never touches an existing value.
+    if let Some(head) = started_head {
+        if let Some(existing) = doc.frontmatter.started_head.clone() {
+            return Err(Error::StartHeadAlreadyRecorded { existing });
+        }
+        doc.frontmatter.started_head = Some(head);
     }
     if let Some(p) = priority {
         doc.frontmatter.priority = p;

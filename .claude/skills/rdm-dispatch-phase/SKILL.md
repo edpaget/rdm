@@ -65,7 +65,7 @@ subagent forward on each notification until it converges — never assume the ca
 
 - `<roadmap-slug> <phase>` (stem or number) — phase mode; or `--task <slug>` — task mode.
 - `--interactive` — the human-in-the-loop mode `rdm-do` (without `--auto`) selects. It changes
-  exactly two things, named in step 7 and step 12. Nothing else.
+  exactly two things, named in step 7 and step 13. Nothing else.
 - `--plan-only` — stop after the plan is approved. Stamps nothing, implements nothing, writes no
   status, records no change review.
 - `--max-plan-revise N` (default 2) / `--max-code-rework N` (default 2). `0` is legal and distinct
@@ -118,7 +118,7 @@ Keep these in your own context for the whole run and carry them into every later
 - `reviewIds` — **additive**. A rework pass keeps resolving comments on the review ids it already
   has and appends any new one; it never starts a fresh review to "redo" a pass.
 - `planReviseCount`, `codeReworkCount` — against `--max-plan-revise` / `--max-code-rework`.
-- `verification` — `{ command, exitCode, tail }` from step 10.
+- `verification` — `{ command, exitCode, tail }` from step 11.
 
 ## Procedure
 
@@ -129,7 +129,7 @@ a stop, not a guess: say so and return without invoking anything.
 
 ### 2. Resume before planning — never discard work a prior pass recorded
 
-Read **the item's own review set** (defined once here; step 12 uses this same recipe, for both its
+Read **the item's own review set** (defined once here; step 13 uses this same recipe, for both its
 work list and its completion check) before doing anything else:
 
 ```bash
@@ -153,10 +153,13 @@ item's worktree for a change that lives somewhere else, record an `--applied-com
 branch, and race any concurrent dispatch run reading the same global queue.
 
 - An `approved` plan for `<item>` **and** an open review **in that set** → **resume at triage (step
-  12)** with those ids. Do not re-plan, do not create a second review, and do not re-ask a
+  13)** with those ids. Do not re-plan, do not create a second review, and do not re-ask a
   confirmation for a decision already recorded as a reply on a comment.
-- An `approved` plan and no open review in that set → resume at step 9 (implement) or, if the
-  implementation is already committed, step 11 (code review).
+- An `approved` plan and no open review in that set → resume at step 10 (implement) or, if the
+  implementation is already committed, step 12 (code review). A resume of this kind skips step 9
+  entirely — it is not this item's first implementer dispatch, and recording a start now would
+  wrongly exclude commits already made. `review source` falls back to the merge-base for such an item
+  if it never got a recorded `started_head`, which is safe (wider, not narrower).
 - Nothing → continue to step 3.
 
 This is what makes a parked run resumable from the plan repo alone, with no session context.
@@ -171,33 +174,16 @@ This is what makes a parked run resumable from the plan repo alone, with no sess
 
 (task form: `task update <slug> --status in-progress …`). One worktree per roadmap: every phase of a
 roadmap is implemented in place in the same checkout, so `worktree add` on a later phase simply
-returns the existing path. **You MUST NOT** create a phase-specific branch or fork off `main`.
+returns the existing path. **You MUST NOT** create a phase-specific branch or fork off `main`. This
+status stamp records nothing about the item's starting commit — that is step 9's job, an explicit
+write independent of this one.
 
-This stamp deliberately runs BEFORE step 4 pins `identity.base`: `phase update --status in-progress`
-resolves `started_head` from the item's registered worktree the same way `verify run --item` does, so
-the worktree only has to **exist** for the stamp to succeed — it does not need `identity` pinned
-first. The stamp is write-once, and narrower than "an already-stamped item is left untouched": it
-records a value ONLY on the transition whose prior status was `not-started`/`open` — this item's true
-first-ever entry into `in-progress`. A resume (`reviewed -> in-progress`), an unpark
-(`blocked -> in-progress`), or a repeat step-3 run while already `in-progress` never records a value,
-even when the field is still empty, so running this step on every pass can never move the base
-forward past commits the item already made before that later run. Ordering it first is load-bearing
-on the item's real first pass: it is what lets step 4's very first `review source` read already see
-`started_head`, instead of falling back to the merge-base and depending on some later re-read to pick
-up the real value — which would leave the plan review (step 6) and the first pass of the code review
-(step 11) graded against the wrong, too-wide range.
-
-**Skip this entire step under `--plan-only`** — a plan-only pass does no implementation, and stamping
-would misreport work that never happened. Step 4 still runs: its `base` then resolves to whatever
-`started_head` an earlier real dispatch's first pass already recorded for this item, or the
-merge-base with the default branch if this item has never made that first-entry transition at all —
-a plan-only pass over a phase with earlier siblings on the shared branch should be read with that in
-mind, since the merge-base is not scoped to this phase alone.
+**Skip this entire step under `--plan-only`** — a plan-only pass does no implementation.
 
 ### 4. Pin the checkout identity
 
 `review source` deliberately never creates or changes a worktree — step 3 already ensured it exists
-and, on the item's first pass, just stamped `started_head` — so this step only resolves the identity:
+— so this step only resolves the identity:
 
 ```bash
 <rdmBin> review source --on <item><proj-flag> --format json
@@ -207,20 +193,18 @@ Record `repository`, `path`, `branch`, `base`, `head` as `identity`. Every later
 same `path` as its working directory and this same `base`/`head` on the terminal write.
 
 `identity.base` is the phase's (or task's) own **starting head** — `review source` defaults it to
-the item's recorded `started_head` (the checkout HEAD step 3 stamped on this item's first-ever entry
-into `in-progress` — this run's step 3 if this is that first pass, or an earlier dispatch's step 3 if
-this is a resume), not the merge-base with the default branch. This matters because the roadmap
-worktree is shared: it carries every earlier phase's commits, including a parked (`blocked`) one's.
-Without this default, `identity.base` would be the merge-base, and this phase's review (and the
-finders/refuters in steps 6 and 11) would re-find every earlier phase's already-triaged changes and
-attribute them to this phase. On the item's first pass, step 3 stamps first, so this first read
-already sees `started_head` — there is no separate later re-read that moves `base` out from under an
-already-run plan or code review, because no later step-3 run (resume, unpark, or repeat) ever writes
-to the field again. `base` is still the merge-base here only under `--plan-only` (step 3's stamp is
-skipped) or for an item that has genuinely never made that first-entry transition with a resolvable
-worktree; in the second case the fallback is real, not harmless, for any phase after the first on a
-shared branch — it includes every earlier phase's commits — and the response's `baseNote` field names
-it so the gap is visible rather than silent.
+the item's recorded `started_head`, not the merge-base with the default branch, once one is
+recorded. This matters because the roadmap worktree is shared: it carries every earlier phase's
+commits, including a parked (`blocked`) one's. Without this default, `identity.base` would be the
+merge-base, and this phase's review (and the finders/refuters in steps 6 and 12) would re-find every
+earlier phase's already-triaged changes and attribute them to this phase. On the item's true first
+pass nothing has been recorded yet, so this pin safely falls back to the merge-base with the default
+branch instead — a superset of the intended range, never an empty one, and never a reason for this
+read to fail. Step 9 below records the item's actual starting point from this same pinned
+`identity.head`, immediately before the first implementer dispatch. `base` also falls back to the
+merge-base for an item that has never made that first implementer dispatch with a resolvable
+worktree; either way the response's `baseNote` field names the fallback so the gap is visible rather
+than silent.
 
 Then resolve the two dispatch models from the item's tier. Read `model` from `phase show <phase>
 --roadmap <slug><proj-flag> --format json` (task form: `task show <slug><proj-flag> --format
@@ -278,7 +262,7 @@ them**: the engine dispatches finder and refuter agents only, so nothing is reac
 what you omit.
 
 - the item's `body` is **not** a step-6 argument at all — it feeds the planner (step 5) and the
-  implementer (step 9). If it could not be read, escalate rather than dispatching a planner with no
+  implementer (step 10). If it could not be read, escalate rather than dispatching a planner with no
   phase text.
 - the roadmap `body` is likewise **not** a step-6 argument — it feeds step 5's planner. If it could
   not be read, the planner loses the recorded `## Intent`; the `intent-alignment` reviewer is
@@ -349,7 +333,7 @@ yourself.** It is the one step a subagent physically cannot perform.
 - `roadmap` names the parent roadmap so the `intent-alignment` reviewer knows which document to read
   its `## Intent` from. Omit it in task mode.
 - `source` / `base` / `expectedHead` / `expectedBranch` — the SAME pinned checkout identity you
-  recorded in step 4, in the SAME flat shape step 11's code-review call already takes. Every
+  recorded in step 4, in the SAME flat shape step 12's code-review call already takes. Every
   finder and refuter runs `rdm review source --on <item> --source ... --no-code --format json` and
   verifies the checkout has not moved before reading any file the plan cites, out of that pinned
   `path` at that pinned `head` — never out of whatever checkout the session that dispatched them
@@ -442,7 +426,38 @@ review(s): <ids>; plan: plan/<plan-slug>`.
 Report `outcome: 'reviewed'` with `writesCompletion: false`, having written **no** status and **no**
 change review. A plan-only pass that stamps or writes status misreports work that never happened.
 
-### 9. Dispatch the implementer subagent
+### 9. Record the item's starting commit
+
+**Skip this entire step under `--plan-only`** — a plan-only pass does no implementation, so there is
+nothing yet to scope a review to.
+
+Read the item back (`<rdmBin> phase show <phase> --roadmap <slug><proj-flag> --format json` / task
+form: `<rdmBin> task show <slug><proj-flag> --format json`). Skip the write below when either is
+true: `started_head` is already recorded (a resumed dispatch, or an item predating this field), or
+this run's own state shows this is a resume with prior implementation commits already on this item,
+not a fresh first pass (recording now would wrongly include that earlier pass's commits in the
+item's "starting" point). Otherwise:
+
+```bash
+<rdmBin> phase update <phase> --no-edit --start-commit <identity.head> --roadmap <slug><proj-flag>
+<rdmBin> commit -m "chore(plan): record start commit for <item>"
+```
+
+(task form: `<rdmBin> task update <slug> --no-edit --start-commit <identity.head><proj-flag>`), using
+the head pinned in step 4 (`identity.head`) — the shared roadmap worktree's HEAD immediately before
+this item's first implementer dispatch, so it excludes every earlier phase's commits already on the
+branch. `--start-commit` is write-once and refuses to overwrite an existing value; a refusal here
+means it was already recorded by someone else between your read above and this write — re-read
+`started_head` rather than treating the refusal as a failure.
+
+When you DO record it, also set `identity.base` in your own run state to this same value
+(`identity.head`) — the one expected change to `base` on a first pass, moving it from step 4's
+merge-base fallback to the item's real starting point. Step 10's self-check below then compares
+against this updated `identity.base`, so it sees the very value this step just recorded and does not
+escalate. When you skip the write (already recorded, or a resumed pass with prior commits), leave
+`identity.base` exactly as step 4 (or an earlier pass) left it.
+
+### 10. Dispatch the implementer subagent
 
 **Declare** it, then dispatch **one** `Agent` subagent with `model: <models.implement>`, the approved
 plan body verbatim, the item body, and `identity.path` as its working directory. Require it to
@@ -450,10 +465,13 @@ commit in that worktree and return the commit SHA. Follow the `--permission-mode
 **You MUST NOT** implement inline.
 
 **Self-check before proceeding:** confirm the implementer returned, then re-run `review source --on
-<item>` and restate the pinned `path`/`branch`/`base` — any change to `repository`, `path`, `branch`
-or `base` is an **escalation**, never a retry. `head` is expected to have moved; record the new one.
+<item>` and restate the pinned `path`/`branch`/`base`, comparing `base` against the **current**
+`identity.base` in your run state — the value step 9 just set, or left unchanged — not the value step
+4 originally read. Any change to `repository`, `path`, `branch`, or a `base` that no longer matches
+that current `identity.base`, is an **escalation**, never a retry. `head` is expected to have moved;
+record the new one.
 
-### 10. Verify in the pinned checkout
+### 11. Verify in the pinned checkout
 
 1. `<rdmBin> verify run --item <item><proj-flag> --format json`
    - exit **0** → pass. Record `{ command, exitCode: 0, tail }`.
@@ -481,7 +499,7 @@ OUTCOME value. The one exception is exit 3 from `verify run` whose JSON payload 
 and `exit: null`: that is the escalation above, never rework. Carry `verification` into the next step
 so it reaches the persisted review.
 
-### 11. Invoke the code review — in THIS session
+### 12. Invoke the code review — in THIS session
 
 ```
 Workflow({ scriptPath: '.claude/workflows/rdm-wf-review-refute-fix.js', args: {
@@ -494,7 +512,7 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-review-refute-fix.js', args: {
 } })
 ```
 
-**The engine reads nothing and writes nothing.** You pass the identity you pinned in step 9 — a
+**The engine reads nothing and writes nothing.** You pass the identity you pinned in step 10 — a
 path, two SHAs and a branch name, nothing more — and each reviewer runs `rdm review source` itself
 to reach the diff. The engine dispatches finder and refuter agents and no others.
 
@@ -528,7 +546,7 @@ anchors could not be placed, so the review can never read as clean persistence m
 after running the ladder — the write it gates has already happened by the time you read it. A
 partially-degraded run (`anchorsDegraded=partial`) is not a park — proceed normally.
 
-`gate: false` keeps the status write here, in step 14, where the refusal can be surfaced.
+`gate: false` keeps the status write here, in step 15, where the refusal can be surfaced.
 
 `reviewers` is **your** judgment about what this diff touches. Omit the key to run every code
 reviewer — the safe default, and the right choice when you are unsure. An unrecognised name is
@@ -559,7 +577,7 @@ Read the returned object and obey it:
   afterwards. An anchor that would not land is not a verdict: fix it by re-running the one refused
   line whole-document, or park, per the persist block above.
 
-### 12. Triage — ONE procedure, whatever the review's origin
+### 13. Triage — ONE procedure, whatever the review's origin
 
 Build the work list from **the item's review set** (step 2's recipe (a)+(b)+(c), re-read now)
 **plus** the ids the engine returned, deduped by id. Every id on the list must trace back to
@@ -642,20 +660,20 @@ a reason to block this write.
 Bounded by `--max-code-rework`; on exhaustion park `blocked` with `[code] rework budget exhausted;
 unresolved comments on review <id>` so the review id is in the reason.
 
-### 13. Re-review at the post-triage HEAD
+### 14. Re-review at the post-triage HEAD
 
 Every source fix moves HEAD, and the core gate requires an **approving** change review recorded at
 the HEAD the write observes. Triage only moves a review to `addressed`; it never changes a verdict,
 and the persist map sends `rework`/`escalated` to `request-changes`. So after the **last**
 source-touching act: re-run `review source --on <item>`, restate the new pinned head, and re-run
-step 11. Writing `reviewed` off an `addressed` `request-changes` review is refused as
+step 12. Writing `reviewed` off an `addressed` `request-changes` review is refused as
 `GateNoApprovedChangeReview`; writing it off an approve recorded at an older head is refused as
 `GateStaleChangeReview`, which names both SHAs.
 
 Apply the same proportionate-reviewer judgment on this re-run: a re-review of a delta that changed
 nothing but documentation, comments, or CHANGELOG prose does not need the full fleet either.
 
-### 14. The terminal write — through the gate, never around it
+### 15. The terminal write — through the gate, never around it
 
 ```bash
 <rdmBin> phase update <phase> --status reviewed \
@@ -721,7 +739,7 @@ uncommitted edit trips it even when this item is clean, and `git reset --hard`/`
 On success, read the status back (`phase show --format json` → `status == "reviewed"`) and treat a
 mismatch as an escalation, not a success.
 
-### 15. Return the OUTCOME
+### 16. Return the OUTCOME
 
 Produce the object from the Contract above as your final message, `planId` and `reviewIds` included.
 This is the in-session result of a loaded skill rather than a Workflow return value; the fields are
@@ -735,7 +753,7 @@ Identical procedure, two differences only:
    instead of proceeding on the workflow-persisted one. An `--interactive` run abandoned at that
    wait MUST park with a durable reason rather than spin, and the poll MUST NOT treat `draft` as
    `changes-requested`.
-2. **Step 12** presents each triage decision for confirmation before replying.
+2. **Step 13** presents each triage decision for confirmation before replying.
 
 Both modes run the same commands and produce the same review-record shape.
 
