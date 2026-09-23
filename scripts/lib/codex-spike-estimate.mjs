@@ -6,17 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
-
-const ratingSchema = {
-  type: 'object', additionalProperties: false,
-  properties: {
-    stem: { type: 'string' },
-    difficulty: { type: 'string', enum: ['trivial', 'easy', 'moderate', 'hard'] },
-    justification: { type: 'string' },
-  },
-  required: ['stem', 'difficulty', 'justification'],
-};
+import { runEstimate } from './codex-runtime-estimate.mjs';
 
 /** Run canonical estimate twice in an isolated git-backed fixture.
  * Retain that repository under evidenceDir when supplied; otherwise remove it.
@@ -26,9 +16,6 @@ export async function runEstimateExperiment({ rdmBin, sourceDir, evidenceDir, ag
   if (!path.isAbsolute(rdmBin) || !path.isAbsolute(sourceDir) || typeof agent !== 'function') {
     throw new Error('estimate experiment requires absolute binary/source paths and an agent');
   }
-  const { buildEstimatePipeline, buildEstimatorPrompt } = await import(
-    pathToFileURL(path.join(sourceDir, '.claude/workflows/lib/estimate.mjs')).href
-  );
   const parent = evidenceDir ? path.resolve(evidenceDir) : tmpdir();
   await mkdir(parent, { recursive: true });
   const root = await mkdtemp(path.join(parent, 'estimate-fixture-'));
@@ -74,58 +61,28 @@ export async function runEstimateExperiment({ rdmBin, sourceDir, evidenceDir, ag
     const sourceHead = revision(sourceDir);
     const fixtureSeedHead = revision(root);
     const before = snapshot();
-    let failure;
-    const capture = fn => async (...args) => {
-      try { return await fn(...args); } catch (error) { failure ??= error; throw error; }
-    };
-    const run = buildEstimatePipeline({
-      list: async () => list(),
-      log: message => logs.push(message),
-      parallelRate: capture(async stems => {
-        const results = await Promise.allSettled(stems.map(async stem => {
-          counters[pass].agentCalls++;
-          return agent(buildEstimatorPrompt(`Phase stem: ${stem}\n${show(stem).body}`), {
-            label: `estimate:rate:${stem}`, schema: ratingSchema,
-          });
-        }));
-        // Validate the entire batch before returning any item to writeback.
-        return results.map((result, index) => {
-          if (result.status === 'rejected') throw result.reason;
-          const r = result.value;
-          if (!r || typeof r !== 'object' || Array.isArray(r) ||
-              Object.keys(r).sort().join(',') !== 'difficulty,justification,stem' ||
-              r.stem !== stems[index] || !ratingSchema.properties.difficulty.enum.includes(r.difficulty) ||
-              typeof r.justification !== 'string' || !r.justification.trim() || /[\r\n]/.test(r.justification)) {
-            throw new Error(`invalid estimate for ${stems[index]}: target, difficulty, and one-line justification required`);
-          }
-          return r;
-        });
-      }),
-      writeback: capture(async (stem, difficulty, justification) => {
-        const current = show(stem);
-        if (current.difficulty || current.model) throw new Error(`estimate target is already set: ${stem}`);
-        const body = `${current.body || ''}\n\n## Estimate\n\n${difficulty} — ${justification}\n`;
-        counters[pass].writes++;
-        command(['phase', 'update', stem, '--difficulty', difficulty, '--body', body, '--no-edit', ...scope]);
-        const after = show(stem);
-        assert.equal(after.difficulty, difficulty);
-        assert.equal(after.body.trimEnd(), body.trimEnd());
-        return { ok: true };
-      }),
-      showTier: capture(async stem => {
-        const tier = show(stem).model;
-        assert.ok(typeof tier === 'string' && tier, 'core tier must be returned');
-        return tier;
-      }),
+    const run = () => runEstimate({
+      roadmap, apply: true,
+      ctx: {
+        identity: { sourceDir, planRoot: root, rdmBin, project }, session,
+        record: async (event, detail) => logs.push({ event, detail }),
+        rdm: async (args, options) => {
+          if (args[0] === 'phase' && args[1] === 'update') counters[pass].writes++;
+          const result = command(args);
+          return options?.json ? JSON.parse(result) : result;
+        },
+      },
+      agent: (prompt, options) => {
+        counters[pass].agentCalls++;
+        return agent(prompt, options);
+      },
     });
     pass = 'first';
-    const first = await run({ roadmap });
-    if (failure) throw failure;
+    const first = await run();
     assert.equal(first.estimated.length, 2, 'every unset fixture must be estimated');
     const after = snapshot();
     pass = 'second';
-    const second = await run({ roadmap });
-    if (failure) throw failure;
+    const second = await run();
     assert.deepEqual(counters.second, { agentCalls: 0, writes: 0 });
     assert.deepEqual(second.estimated, []);
     assert.deepEqual(snapshot(), after);

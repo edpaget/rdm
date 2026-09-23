@@ -8,8 +8,8 @@ hk = "1.45"
 pkl = "latest"
 shellcheck = "latest"
 shfmt = "latest"
-# node hosts the dogfood-only workflow-review harness (scripts/verify-workflow-review.sh).
-# Dev/CI toolchain only — never a runtime or crate dependency, not shipped in the binary.
+# Node executes production JS for Rust-owned Codex tests and legacy workflows.
+# Ordinary binary-only CLI use does not require it; the optional Codex runtime does.
 node = "24"
 
 [env]

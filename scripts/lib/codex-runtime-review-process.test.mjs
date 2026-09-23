@@ -69,7 +69,8 @@ setTimeout(()=>{
     runner = path.join(root, 'mutated-runner.mjs');
     fs.writeFileSync(runner, `import fs from 'node:fs';import {runRuntime} from ${JSON.stringify(pathToFileURL(copy).href)};try {console.log(JSON.stringify(await runRuntime(JSON.parse(fs.readFileSync(process.argv[2],'utf8')))));}catch(error){console.error(error.message);process.exitCode=1;}`);
   }
-  const spec = { operation, sourceDir: source, planRoot: plans, rdmBin: realBin, project: 'fixture', session: 'parent', runDir: path.join(root, 'run'), concurrency: 2, base, head,
+  const spec = { operation, sourceDir: source, planRoot: plans, rdmBin: realBin, project: 'fixture', session: 'parent', runDir: path.join(root, 'run'), concurrency: 2,
+    ...(operation === 'code-review' ? {base, head} : {}),
     target: 'Acceptance criteria: add(2,3) returns 5.', planFile,
     host: { capabilities: { 'gpt-fixture-find': ['medium'], 'gpt-fixture-verify': ['high'] }, tiers: {
       small: { model: 'gpt-fixture-find', effort: 'medium' }, medium: { model: 'gpt-fixture-find', effort: 'medium' }, large: { model: 'gpt-fixture-verify', effort: 'high' },

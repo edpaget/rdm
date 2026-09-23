@@ -1735,66 +1735,10 @@ stripped_n=$(grep -c 'changeset' "$STRIPPED_INST" || true)
     fail "7h self-test: stripping 'changeset' left occurrences behind — the positive floor is not testing what it claims"
 pass "7h self-test: the positive floor detects an emission with the concept stripped out"
 
-say "7i. Codex manual distribution and foreign-plan execution"
-CODEX_OUT="$TMP/codex"
-"$RDM_BIN" agent-config codex --out "$CODEX_OUT" --project "$FIXTURE_PROJECT" >/dev/null
-"$RDM_BIN" agent-config codex --skills --out "$CODEX_OUT" --project "$FIXTURE_PROJECT" >"$TMP/codex.log" 2>"$TMP/codex-notice.log"
-[ -f "$CODEX_OUT/AGENTS.md" ] || fail 'Codex instructions missing'
-[ ! -d "$CODEX_OUT/.claude" ] || fail 'Codex emitted a Claude runtime'
-[ ! -d "$CODEX_OUT/.codex/skills" ] || fail 'Codex used the obsolete project skill path'
-CODEX_SKILLS='rdm-roadmap rdm-do rdm-revise rdm-land'
-[ "$(find "$CODEX_OUT/.agents/skills" -name SKILL.md | wc -l | tr -d ' ')" -eq 4 ] || fail 'Codex skill inventory differs'
-for skill in $CODEX_SKILLS; do
-    md="$CODEX_OUT/.agents/skills/$skill/SKILL.md"
-    [ "$(head -n 1 "$md")" = '---' ] || fail "$skill missing frontmatter"
-    grep -q "^name: $skill$" "$md" || fail "$skill name mismatch"
-    grep -q '^description: .' "$md" || fail "$skill description missing"
-    if grep -Eq '\.claude/|Workflow\(|\{proj_flag\}|\{principles\}' "$md"; then
-        fail "$skill has unresolved host/template dependencies"
-    fi
-done
-for skill in rdm-review rdm-plan-review rdm-estimate rdm-backlog rdm-document rdm-dispatch-phase rdm-autopilot; do
-    [ ! -d "$CODEX_OUT/.agents/skills/$skill" ] || fail "$skill should be withheld"
-    grep -q "$skill" "$TMP/codex-notice.log" || fail "$skill is silently withheld"
-done
-HOME="$TMP/codex-home" CODEX_HOME="$TMP/codex-config" "$RDM_BIN" agent-config codex --user >/dev/null
-HOME="$TMP/codex-home" CODEX_HOME="$TMP/codex-config" "$RDM_BIN" agent-config codex --skills --user >/dev/null 2>&1
-[ -f "$TMP/codex-config/AGENTS.md" ] || fail 'Codex ignored CODEX_HOME'
-[ -f "$TMP/codex-home/.agents/skills/rdm-do/SKILL.md" ] || fail 'Codex user skills in wrong directory'
-[ ! -d "$TMP/codex-config/skills" ] || fail 'Codex user skills wrongly follow CODEX_HOME'
-if "$RDM_BIN" agent-config codex --plugin --out "$TMP/codex-plugin" >"$TMP/codex-plugin.log" 2>&1; then
-    fail 'Codex plugin emission unexpectedly succeeded'
-fi
-grep -q -- '--skills --out' "$TMP/codex-plugin.log" || fail 'Codex plugin failure lacks supported alternative'
-[ ! -e "$TMP/codex-plugin" ] || fail 'Rejected Codex plugin wrote files'
-
-# Exercise a real command extracted from the emitted skill, not a parallel recipe.
-CODEX_COMMAND=$(grep -F 'roadmap list ' "$CODEX_OUT/.agents/skills/rdm-roadmap/SKILL.md")
-[ -n "$CODEX_COMMAND" ] || fail 'No emitted Codex command to execute'
-HOME="$FIXTURE_HOME" RDM_ROOT="$FIXTURE_PLAN" RDM_BIN="$FIXTURE_BIN" \
-    RDM_SESSION=codex-distribution-fixture sh -c "$CODEX_COMMAND" >"$TMP/codex-command.log"
-grep -q "$FIXTURE_ROADMAP" "$TMP/codex-command.log" || fail 'Emitted Codex command did not read the fixture'
-CODEX_FINALIZE=$(grep -F 'phase update ' "$CODEX_OUT/.agents/skills/rdm-do/SKILL.md" |
-    sed -e "s/<phase>/$FIXTURE_PHASE/g" -e "s/<roadmap>/$FIXTURE_ROADMAP/g")
-[ -n "$CODEX_FINALIZE" ] || fail 'No emitted Codex finalize command to execute'
-(
-    cd "$FIXTURE_REPO"
-    HOME="$FIXTURE_HOME" RDM_ROOT="$FIXTURE_PLAN" RDM_BIN="$FIXTURE_BIN" \
-        RDM_SESSION=codex-distribution-fixture sh -c "$CODEX_FINALIZE"
-) >"$TMP/codex-finalize.log"
-fixture_rdm phase show "$FIXTURE_PHASE" --roadmap "$FIXTURE_ROADMAP" --project "$FIXTURE_PROJECT" --format json >"$TMP/codex-finalized.json"
-grep -q '"status": "needs-review"' "$TMP/codex-finalized.json" || fail 'Codex finalize did not stop at needs-review'
-# These stamps are stored metadata, intentionally omitted by phase show's JSON projection.
-CODEX_PHASE_DOC="$FIXTURE_PLAN/projects/$FIXTURE_PROJECT/roadmaps/$FIXTURE_ROADMAP/$FIXTURE_PHASE.md"
-grep -qx "review_sha: $(fixture_git rev-parse HEAD)" "$CODEX_PHASE_DOC" || fail 'Codex finalize stamped the wrong source commit'
-grep -qx 'review_branch: feature/checkout' "$CODEX_PHASE_DOC" || fail 'Codex finalize stamped the wrong source branch'
-
-# Local skill bytes have one generator, unlike the intentionally divergent Claude lane.
-"$RDM_BIN" agent-config codex --skills --out "$TMP/codex-local" --project rdm --principles-file docs/principles.md >/dev/null 2>&1
-for skill in $CODEX_SKILLS; do
-    cmp "$TMP/codex-local/.agents/skills/$skill/SKILL.md" "$REPO_ROOT/.agents/skills/$skill/SKILL.md" || fail "$skill local copy drifted; run sh scripts/gen-codex-skills.sh"
-done
-pass 'Codex project/user paths, supported inventory, host boundaries, local drift, and emitted CLI execution'
+# 7i moved to Rust: cli_agent_config Codex tests, codex_distribution, and
+# rdm-core's codex_local_skills_match_downstream_generation cover this slice.
+# The remaining development-wrapper and optional smoke checks below retain
+# their legacy owner; they are not substitutes for the Rust distribution tests.
 
 # The dogfood entrypoint must be independent of cwd and retain identity across shells.
 for invocation in 1 2; do

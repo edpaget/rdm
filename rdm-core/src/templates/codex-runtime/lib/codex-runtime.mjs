@@ -5,8 +5,8 @@ import {createHash} from 'node:crypto';
 import {createRun, safeGit, rdmEnvironment} from './codex-runtime-state.mjs';
 import {runCodex, boundedParallel} from './codex-process.mjs';
 import {runEstimate} from './codex-runtime-estimate.mjs';
-import {buildReviewPipeline, classifyOutcome, shellQuote, resolveReviewers} from '../../.claude/workflows/lib/review.mjs';
-import {runPlanReviewDriver} from '../../.claude/workflows/lib/plan-review.mjs';
+import {buildReviewPipeline, classifyOutcome, shellQuote, resolveReviewers} from '../shared/review.mjs';
+import {runPlanReviewDriver} from '../shared/plan-review.mjs';
 const hash = text => createHash('sha256').update(text).digest('hex');
 const tiers = ['small','medium','large'];
 

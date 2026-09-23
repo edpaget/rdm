@@ -3,7 +3,8 @@
 Phase three adds an explicit Node API and command runner for real review targets
 and roadmap estimates. The runtime imports the canonical review and estimate
 modules; it does not invoke Claude's workflow engine. Installed Codex skills
-remain the four manual skills until phase four integrates these entrypoints.
+remain the four manual skills. Phase four reconciles this explicit runtime and
+packages its dependencies; automated skill integration is later work.
 
 ## Operations and ownership
 
@@ -11,7 +12,7 @@ remain the four manual skills until phase four integrates these entrypoints.
 | --- | --- | --- |
 | `plan-review` | Absolute implementation-plan file | Local evidence only; no plan-review tags or status transitions |
 | `code-review` | Clean source checkout, full base/head commit IDs, acceptance criteria | Local evidence only; no review gate advancement |
-| `estimate` | Existing roadmap in the explicit project | Preview by default; `apply: true` updates unset difficulty/audit notes and commits only this run's plan changeset |
+| `estimate` | Existing roadmap in the explicit project | Preview by default; `apply: true` updates unset difficulty (core derives its tier) and commits only this run's plan changeset |
 
 The caller owns sequencing, authorization and deciding what to do with findings.
 A completed review run means execution and coverage completed, not that findings
@@ -35,9 +36,23 @@ that host configuration before running judgment against untrusted material.
 
 ## Explicit run specification
 
-Use the repository's Node version (`mise exec node -- …`) and make the Codex CLI
-available on `PATH` with working authentication. No Node dependency is added to
-the installed Rust binary. From this checkout:
+The runtime is tested with the repository's pinned Node.js 24, Git, the selected RDM executable,
+and a Codex CLI on `PATH` with working authentication for judgment calls.
+Repository development uses the Node version pinned in `.mise.toml`.
+Ordinary RDM CLI commands still require only the installed binary.
+Install the four manual skills and the explicit runtime into a source repository:
+
+```sh
+rdm agent-config codex --skills --project my-project --out /absolute/path/to/source
+node /absolute/path/to/source/.agents/rdm-runtime/rdm-codex.mjs /absolute/path/to/run-spec.json
+```
+
+`--user` emits the runtime under `~/.agents/rdm-runtime`, alongside the user
+skills, independently of `CODEX_HOME`. Refresh rewrites generated paths and
+preserves unrelated files; inspect existing files before emission. The runtime
+is self-contained and does not load this checkout's `.claude` tree. It installs
+no automated skill entrypoints and does not invoke the Claude Workflow tool.
+The same runtime remains directly callable from this checkout:
 
 ```sh
 node scripts/rdm-codex.mjs /absolute/path/to/run-spec.json
@@ -123,6 +138,12 @@ file. The canonical implementation-plan driver reviews a content snapshot,
 and the runtime rejects a changed file before accepting the result. It does
 not perform a high-level roadmap review or persist document review actions.
 Parent-intent coverage follows the canonical driver's reported coverage.
+Set `roadmap` to supply parent intent and `reviewers` to select review dimensions.
+An optional phase `item` validates the registered checkout and pins source
+context using `base`/`head` (defaulting to current HEAD). A persisted plan is
+not yet supported as this operation's target; phase seven owns that integration.
+Source revision fields without an `item` are rejected rather than silently
+ignored: a source pin must name the phase it belongs to.
 
 For `code-review`, replace `planFile` with full hexadecimal `base` and `head`
 commit IDs, plus either explicit `target` text containing acceptance criteria
@@ -132,14 +153,21 @@ or an item reference:
 {"item":{"type":"phase","roadmap":"codex-agent-support","phase":"phase-3-host-agnostic-runtime-adapter"}}
 ```
 
+Optional `planSlug` supplies the approved implementation plan used for scope
+grading. The runtime reads it through the selected CLI/project, checks approval,
+passes its read command to reviewers, and rejects plan drift during the review.
+
 The head must equal checkout HEAD, base must be its ancestor, the range must
 have a nonempty diff, and the worktree must be clean including untracked files.
 Item reviews use the same guarded phase snapshot for model selection, review
 input and final validation, rejecting changes during model resolution. They
 read the actual phase body and validate its registered roadmap
-worktree and branch. The runtime derives dimensions from changed files/diff,
-executes canonical finder/refuter orchestration, and rechecks checkout and
-item snapshots. Missing dimension coverage, missing AC evidence, refuter errors,
+worktree and branch. The caller selects dimensions with `reviewers`; omitting
+the selection runs every canonical reviewer. The runtime executes canonical
+finder/refuter orchestration and rechecks checkout and item snapshots.
+An empty selection is rejected. Intentionally omitting the AC reviewer is
+distinct from selecting it and failing to obtain its evidence. Failed selected
+coverage, missing selected AC evidence, refuter errors,
 and refutation overflow are incomplete runs, never clean approvals. A normal
 nonzero shell lookup is retained in raw evidence but may be followed by a valid
 completed judgment; interrupted commands, failed tools, and failed Codex turns
@@ -154,8 +182,8 @@ phase, then supplies its opaque `estimate_snapshot` token to the core conditiona
 update. Core checks that snapshot and requires difficulty/model to remain unset
 within the mutation read/write cycle, so a concurrent committed edit between
 adapter read and update cannot be overwritten. It preserves tags and existing
-body, and writes only still-unset difficulty
-plus the canonical audit note. It reads back persisted values/core tier and
+body, and writes only still-unset difficulty; it does not append Estimate body
+notes. It reads back persisted values/core tier and
 commits only the runtime-owned session. Before reporting success, it verifies
 the committed estimates and that the owned session journal has settled; a
 successful commit process that skipped a vanished path is insufficient.
@@ -249,14 +277,24 @@ backlog/document drivers, interrupted-write replay, and production skill
 entrypoints beyond the manual lane. These are explicit capability boundaries,
 not claims of complete workflow parity.
 
-Credential-free tests run with:
+Canonical production sources remain under `scripts/` and
+`.claude/workflows/lib/`. `node scripts/gen-codex-runtime.mjs` refreshes the
+generated runtime templates embedded by rdm-core, relocating only shared-module
+imports. `sh scripts/gen-codex-skills.sh` also refreshes these templates before
+emitting the local skill/runtime tree. Never edit generated runtime copies.
+
+Credential-free Rust tests own fixtures, scripted judgments and assertions:
 
 ```sh
-node --test --test-concurrency=1 scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs
+cargo nextest run -p rdm-core -E 'test(codex)'
+cargo nextest run -p rdm-cli --test codex_runtime --test codex_estimate --test codex_estimate_interruption --test codex_distribution
 ```
 
-Test files run sequentially to avoid competing development-binary rebuilds;
-the runtime concurrency tests still exercise parallel judgment processes.
-These tests exercise contracts and isolated fixtures. Live authenticated
+The distribution tests execute emitted production modules in foreign source
+and plan repositories using Cargo's binary. Byte checks protect generation
+ownership; they are separate from those behavioral tests. Missing Node fails
+with setup guidance. These tests exercise contracts and isolated fixtures. Live authenticated
 runs have separate evidence; passing fixtures alone does not establish a
 successful account/model invocation or completed independent review.
+The [migration map](codex-test-migration.md) accounts for retired tests and the
+legacy suites that remain pending migration.

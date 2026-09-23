@@ -157,6 +157,18 @@ fn write_skills(
         let path = skills_root.join(skill.relative_path);
         write_output(&path, skill.content.as_bytes())?;
     }
+    if platform == Platform::Codex {
+        let runtime_dir = skills_root
+            .parent()
+            .expect("skills have a parent")
+            .join("rdm-runtime");
+        for asset in agent_config::generate_codex_runtime() {
+            write_output(
+                &runtime_dir.join(asset.relative_path),
+                asset.content.as_bytes(),
+            )?;
+        }
+    }
     // Workflow-tool scripts (and their custom-agent definitions) are
     // Claude-only (Pi has no Workflow-tool runtime) and --out-only (not
     // --user; see the doc comment above for why).

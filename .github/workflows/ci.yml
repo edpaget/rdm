@@ -67,7 +67,8 @@ jobs:
           cargo check -p rdm-server --no-default-features
 
       - name: Test
-        run: cargo nextest run
+        # Rust owns Codex fixtures/assertions; Node only executes production JS.
+        run: mise exec node -- cargo nextest run
 
       - name: Shell harnesses
         run: |
@@ -80,8 +81,15 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
-      - name: Codex execution and runtime contracts (no credentials)
-        run: mise exec node -- node --test --test-concurrency=1 scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs
+      - name: Remaining legacy Codex process contracts (no credentials)
+        # Keep unmigrated cases visible until their Rust replacements land.
+        # Review/model/estimate/spike acceptance now runs in nextest above.
+        run: >-
+          mise exec node -- node --test --test-concurrency=1
+          scripts/lib/codex-spike-process.test.mjs
+          scripts/lib/codex-runtime-state.test.mjs
+          scripts/lib/codex-runtime-review-process.test.mjs
+          scripts/lib/codex-runtime-queue.test.mjs
 
       - name: Audit dependencies
         run: cargo deny check

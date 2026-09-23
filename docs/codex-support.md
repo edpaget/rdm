@@ -2,8 +2,9 @@
 
 Phase one enables manual, review-gated work. The [phase-three runtime](codex-runtime.md)
 adds explicit implementation-plan review, pinned code review, and roadmap
-estimates with durable evidence and conservative recovery. Automated skill
-dispatch remains phase-four work.
+estimates with durable evidence and conservative recovery. Phase four repairs
+the shared interfaces and distributes that explicit runtime. Automated skill
+dispatch remains later integration work.
 
 The [phase-two execution spike](codex-orchestration-spike.md) records experimental
 Codex execution of shared review and estimate logic. It does not enable the
@@ -20,11 +21,15 @@ rdm agent-config codex --skills --project my-project --out /path/to/source
 The first command writes `AGENTS.md`; inspect existing instructions before
 emission because the generator overwrites its output files. The second writes
 four `.agents/skills/<name>/SKILL.md` files and reports the seven withheld
-skills. It installs no workflows, custom agents, or plugins and does not
-remove unrelated or previously installed skills.
+skills. It also installs the explicit runtime and shared modules under
+`.agents/rdm-runtime`; see [runtime setup](codex-runtime.md). This does not enable
+automated skills, install Claude workflows/custom agents/plugins, or remove
+unrelated or previously installed skills. Node and authenticated Codex are
+needed only when executing runtime judgment, not for ordinary CLI use.
 
 `--user` writes instructions to `$CODEX_HOME/AGENTS.md` (default
-`~/.codex/AGENTS.md`) but skills to `~/.agents/skills`, independently of
+`~/.codex/AGENTS.md`) but skills to `~/.agents/skills` and the runtime to
+`~/.agents/rdm-runtime`, independently of
 `CODEX_HOME`. rdm preserves relative environment paths: a relative `CODEX_HOME`
 is resolved against the invoking process's working directory. Prefer absolute
 values when switching checkouts. The existing `agents-md` platform retains its previous behavior;
@@ -60,6 +65,14 @@ templates, with `--project rdm --principles-file docs/principles.md`:
 ```sh
 sh scripts/gen-codex-skills.sh
 ```
+
+That command refreshes generated runtime templates from their canonical
+production modules before building. Validate Codex distribution with
+`cargo nextest run -p rdm-core -E 'test(codex)'` and
+`cargo nextest run -p rdm-cli --test cli_agent_config --test codex_distribution`.
+The Rust tests check generated-local drift and execute installed production
+runtime code in an unrelated source/plan fixture. Standalone shell verification
+harnesses are not Codex acceptance gates.
 
 Set explicit values before launching Codex, or repeat them on every shell
 tool invocation. Replace the paths and choose a unique session ID once for
@@ -142,10 +155,9 @@ never implied by permission to implement.
 
 ## Verification and first improvement candidate
 
-The existing distribution harness tests fresh project and user emission,
-frontmatter, forbidden host dependencies, plugin rejection, generated-local
-drift, and a real CLI command from an emitted skill against a foreign plan
-fixture. Rust tests cover platform/path and emitted-skill behavior. These
+Rust distribution tests cover fresh project and user emission, frontmatter,
+manual-lane host boundaries, plugin rejection, generated-local drift, and
+explicit runtime execution against foreign source/plan repositories. These
 deterministic checks do not substitute for a live Codex discovery/invocation
 smoke test; record the tested CLI version and its observed result separately.
 

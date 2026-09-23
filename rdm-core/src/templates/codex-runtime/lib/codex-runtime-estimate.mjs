@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { safeGit } from './codex-runtime-state.mjs';
-import { buildEstimatePipeline, buildEstimatorPrompt } from '../../.claude/workflows/lib/estimate.mjs';
-import { shellQuote } from '../../.claude/workflows/lib/review.mjs';
+import { buildEstimatePipeline, buildEstimatorPrompt } from '../shared/estimate.mjs';
+import { shellQuote } from '../shared/review.mjs';
 
 const ratingSchema = {
   type: 'object', additionalProperties: false,

@@ -155,9 +155,14 @@ From this checkout, carry the explicit development environment required by
 and performs model calls; the test command does not.
 
 ```sh
-node --test scripts/lib/codex-spike-*.test.mjs
+cargo nextest run -p rdm-cli --test codex_runtime --test codex_estimate
+node --test scripts/lib/codex-spike-process.test.mjs
 node scripts/run-codex-orchestration-spike.mjs gpt-6-astra medium
 ```
+
+The review/estimate tests moved to Rust in phase 4; the legacy process suite
+remains visible pending its migration. See the [case map](codex-test-migration.md).
+The live results below remain historical evidence, not a claim of a new live run.
 
 The runner prints its temporary evidence directory and leaves fixtures for
 inspection. The resume probe uses exported `runCodex`: make a call with

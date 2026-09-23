@@ -10,7 +10,7 @@ export function requireCompleteReview(result, code = false) {
   }
 }
 
-export async function runReviewExperiment({agent, target, model, parallel, log = () => {}}) {
+export async function runReviewExperiment({agent, target, planFile, model, parallel, log = () => {}}) {
   const deps = {
     agent, log,
     parallel: parallel ?? (async thunks => Promise.all(thunks.map(async thunk => {
@@ -29,7 +29,7 @@ export async function runReviewExperiment({agent, target, model, parallel, log =
   const codeOutcome = classifyOutcome({codeReviews: [code.survivors], acTable: code.acTable, tier: 'medium'});
   const plan = await runPlanReviewDriver({
     implementationPlan: true,
-    planText: 'Implement sum.mjs add(a,b) using addition; first add a failing test asserting add(2,3) === 5, then implement and run node --test. Keep the existing API and add no dependencies.',
+    planFile,
     findModel: model, verifyModel: model, gateMode: 'return',
   }, {...deps, runPlanReview: buildReviewPipeline('plan', deps)});
   requireCompleteReview(plan);

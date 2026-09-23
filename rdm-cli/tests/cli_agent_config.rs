@@ -30,7 +30,7 @@ fn codex_project_emits_instructions_and_supported_skills() {
         .assert()
         .success();
     assert!(dir.path().join("AGENTS.md").is_file());
-    rdm()
+    let emission = rdm()
         .args([
             "agent-config",
             "codex",
@@ -43,7 +43,21 @@ fn codex_project_emits_instructions_and_supported_skills() {
         .assert()
         .success()
         .stderr(predicate::str::contains("rdm-review"))
-        .stderr(predicate::str::contains("needs-review"));
+        .stderr(predicate::str::contains("needs-review"))
+        .get_output()
+        .clone();
+    for withheld in [
+        "rdm-review",
+        "rdm-plan-review",
+        "rdm-estimate",
+        "rdm-backlog",
+        "rdm-document",
+        "rdm-dispatch-phase",
+        "rdm-autopilot",
+    ] {
+        assert!(String::from_utf8_lossy(&emission.stderr).contains(withheld));
+        assert!(!dir.path().join(".agents/skills").join(withheld).exists());
+    }
     let root = dir.path().join(".agents/skills");
     let mut names: Vec<_> = std::fs::read_dir(&root)
         .unwrap()
@@ -53,6 +67,7 @@ fn codex_project_emits_instructions_and_supported_skills() {
     assert_eq!(names, ["rdm-do", "rdm-land", "rdm-revise", "rdm-roadmap"]);
     for name in names {
         let content = std::fs::read_to_string(root.join(name).join("SKILL.md")).unwrap();
+        assert!(content.starts_with("---\n"));
         let frontmatter = content.split("---").nth(1).unwrap();
         assert!(
             frontmatter
@@ -66,6 +81,7 @@ fn codex_project_emits_instructions_and_supported_skills() {
         );
         assert!(content.contains("--project acme"));
         assert!(!content.contains("{proj_flag}"));
+        assert!(!content.contains("{principles}"));
         assert!(!content.contains(".claude/"));
         assert!(!content.contains("Workflow("));
     }
@@ -91,6 +107,11 @@ fn codex_user_paths_separate_config_and_skills() {
         .assert()
         .success();
     assert!(dir.path().join(".agents/skills/rdm-do/SKILL.md").is_file());
+    assert!(
+        dir.path()
+            .join(".agents/rdm-runtime/rdm-codex.mjs")
+            .is_file()
+    );
     assert!(!config.join("skills").exists());
 }
 

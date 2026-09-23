@@ -35,6 +35,8 @@ await writeFile(join(fixture, 'sum.mjs'), 'export function add(a, b) { return a 
 git('add', 'sum.mjs'); git('-c', 'core.hooksPath=/dev/null', 'commit', '-qm', 'fix: planted arithmetic regression');
 const head = git('rev-parse', 'HEAD');
 const diff = git('diff', `${base}..${head}`);
+const planFile = join(evidenceDir, 'implementation-plan.md');
+await writeFile(planFile, 'Implement sum.mjs add(a,b) using addition; first add a failing test asserting add(2,3) === 5, then implement and run node --test. Keep the existing API and add no dependencies.\n');
 const calls = [];
 let sequence = 0;
 let active = 0;
@@ -71,7 +73,7 @@ const report = {
   evidenceDir, calls, billedCost: 'not exposed by CLI', contextWindowOccupancy: 'not exposed by CLI',
 };
 try {
-  report.review = await runReviewExperiment({agent, model, parallel: thunks => boundedParallel(thunks, 2),
+  report.review = await runReviewExperiment({agent, model, planFile, parallel: thunks => boundedParallel(thunks, 2),
     target: `Review only ${base}..${head} in ${fixture}. Acceptance criterion: add(2,3) returns 5. Diff:\n${diff}`});
   assert.equal(report.review.codeOutcome, 'rework', 'planted regression must prevent approval');
   assert(report.review.code.budget.graded > 0, 'live run must exercise a refuter');
