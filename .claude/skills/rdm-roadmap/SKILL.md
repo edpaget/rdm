@@ -53,15 +53,14 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
    ```
 
    If the roadmap already exists (e.g. you're re-running this skill against one created earlier), read its current body, splice in the `## Intent` section, and write the whole body back instead — bodies are whole-document-authoritative, there is no patch/diff mechanism: `./target/debug/rdm roadmap update <slug> --body "<full updated body>" --no-edit --project rdm`.
-6. **Create each phase** with context, steps, and acceptance criteria in the body:
+6. **Create each phase** with Context, Approach, and Acceptance Criteria in the body. `## Approach` is the strategy or design principle guiding the work — the high-level approach, key architectural decisions, and why this approach over alternatives — not a numbered step list; implementation detail is derived downstream by whoever carries the phase out. Each criterion under `## Acceptance Criteria` must follow the AC rubric in `docs/authoring-grammar.md`: name one observable outcome in positive form, carry its own scope bound, and declare any known deferral in `## Approach` (never as a caveat inside the criterion itself):
    ```bash
    ./target/debug/rdm phase create <slug> --title "Phase title" --number <n> --tags <tag> --no-edit --roadmap <roadmap-slug> --project rdm <<'EOF'
    ## Context
    Why this phase exists and what it builds on.
 
-   ## Steps
-   1. First step
-   2. Second step
+   ## Approach
+   The strategy or design principle guiding the implementation — not a step list.
 
    ## Acceptance Criteria
    - [ ] Criterion one
@@ -77,7 +76,7 @@ Create an rdm roadmap with phases for the topic described in `$ARGUMENTS`.
 
 - Aim for 2–6 phases per roadmap
 - Each phase should be independently deliverable and testable
-- Include Context, Steps, and Acceptance Criteria in every phase body
+- Include Context, Approach, and Acceptance Criteria in every phase body
 - Order phases so each builds on the previous one
 - Use clear, descriptive slugs (e.g., `add-caching`, `migrate-auth`)
 - Tag the roadmap and phases so related work is findable. Use lowercase
