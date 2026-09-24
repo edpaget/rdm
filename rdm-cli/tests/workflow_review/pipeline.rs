@@ -2,7 +2,10 @@
 
 use serde_json::json;
 
-use crate::support::{Agent, Js, Lib, Outcome, Reply, find, ids, plant, run_mutant, run_real};
+use crate::support::{
+    Agent, Failure, Js, Lib, MutantVerdict, Outcome, Reply, find, ids, mutant_verdict, plant,
+    run_mutant, run_real,
+};
 
 const CTX_TARGET: &str = "phase widget/phase-1-foo";
 
@@ -116,6 +119,26 @@ fn code_mode_drops_refuted_and_low_confidence_findings_mutant_floor_comparison()
         ),
         code_mode_drops_refuted_and_low_confidence,
     );
+}
+
+/// A mutant whose replacement text is not valid JavaScript never reaches the
+/// scenario, so it must be classified as not run — never as caught.
+#[test]
+fn syntax_breaking_mutant_is_a_load_failure_not_a_catch() {
+    let lib = Lib::mutant(
+        "syntax-breaking",
+        &[(
+            crate::support::REVIEW_LIB,
+            "  if (confidence < CONFIDENCE_FLOOR) return false;\n  return true;\n}",
+            "  if (confidence < CONFIDENCE_FLOOR) return false;\n  return true;\n}}}",
+        )],
+    );
+    match mutant_verdict(&lib, code_mode_drops_refuted_and_low_confidence) {
+        MutantVerdict::NotRun(Failure::Load(e)) => {
+            assert_eq!(e.name, "SyntaxError", "the import failed to parse: {e}");
+        }
+        other => panic!("a syntax-breaking mutant must be a load failure, got {other:?}"),
+    }
 }
 
 fn survival_rule(lib: &Lib) -> Outcome {

@@ -5,8 +5,9 @@
 //! A scenario is a `fn(&Lib) -> Outcome`. The normal test runs it against the
 //! real sources and requires `Ok`; a mutant test runs it against an isolated
 //! copy with one planted logic change and requires a *behavioural* failure
-//! (a failed check or a JavaScript exception) — an infrastructure failure
-//! never counts as catching a mutant.
+//! (a failed check or a JavaScript exception thrown while the scenario
+//! runs) — an infrastructure failure, or JavaScript that fails to import or
+//! compile, never counts as catching a mutant.
 
 #![allow(dead_code)]
 
@@ -43,6 +44,10 @@ pub enum Failure {
     Check(String),
     /// Workflow JavaScript threw where the scenario expected a value.
     Js(JsError),
+    /// Workflow JavaScript failed to load: a module import, a driver
+    /// compile or a helper extraction threw (for example a `SyntaxError`),
+    /// so no scenario code ran.
+    Load(JsError),
     /// The test infrastructure failed (runtime, protocol, setup).
     Infra(String),
 }
@@ -52,6 +57,7 @@ impl fmt::Display for Failure {
         match self {
             Self::Check(m) => write!(f, "check failed: {m}"),
             Self::Js(e) => write!(f, "workflow JavaScript threw {e}\n{}", e.stack),
+            Self::Load(e) => write!(f, "workflow JavaScript failed to load: {e}\n{}", e.stack),
             Self::Infra(m) => write!(f, "infrastructure failure: {m}"),
         }
     }
@@ -74,6 +80,15 @@ impl From<WorkflowError> for Failure {
 
 /// A scenario's result.
 pub type Outcome = Result<(), Failure>;
+
+/// Maps a load-time result (import, compile, helper extraction): a
+/// JavaScript throw there is [`Failure::Load`], not a scenario failure.
+pub fn load<T>(r: Result<T, WorkflowError>) -> Result<T, Failure> {
+    r.map_err(|e| match e {
+        WorkflowError::Js(js) => Failure::Load(js),
+        other => Failure::Infra(other.to_string()),
+    })
+}
 
 /// Fails the scenario unless `cond` holds.
 macro_rules! check {
@@ -159,16 +174,40 @@ pub fn run_real(scenario: fn(&Lib) -> Outcome) {
     }
 }
 
+/// How a mutant run ended.
+#[derive(Debug)]
+pub enum MutantVerdict {
+    /// The scenario passed against the mutated sources.
+    Survived,
+    /// The run failed before or outside the scenario's logic.
+    NotRun(Failure),
+    /// A check failed or the scenario's JavaScript threw: the mutant is
+    /// caught.
+    Caught(Failure),
+}
+
+/// Runs `scenario` against `lib` and classifies the result: only a failed
+/// check or a throw during the scenario counts as caught; an infrastructure
+/// or load failure (the mutated source did not even import or compile) does
+/// not.
+pub fn mutant_verdict(lib: &Lib, scenario: fn(&Lib) -> Outcome) -> MutantVerdict {
+    match scenario(lib) {
+        Ok(()) => MutantVerdict::Survived,
+        Err(f @ (Failure::Infra(_) | Failure::Load(_))) => MutantVerdict::NotRun(f),
+        Err(f @ (Failure::Check(_) | Failure::Js(_))) => MutantVerdict::Caught(f),
+    }
+}
+
 /// Runs `scenario` against a mutant and requires a behavioural failure.
 pub fn run_mutant(lib: Lib, scenario: fn(&Lib) -> Outcome) {
-    match scenario(&lib) {
-        Ok(()) => {
+    match mutant_verdict(&lib, scenario) {
+        MutantVerdict::Survived => {
             panic!("the planted mutant survived: the scenario passed against mutated sources")
         }
-        Err(Failure::Infra(e)) => {
-            panic!("the mutant run failed for an infrastructure reason, not the planted logic: {e}")
+        MutantVerdict::NotRun(f) => {
+            panic!("the mutant run failed before exercising the planted logic: {f}")
         }
-        Err(caught) => eprintln!("mutant caught: {caught}"),
+        MutantVerdict::Caught(caught) => eprintln!("mutant caught: {caught}"),
     }
 }
 
@@ -185,7 +224,7 @@ impl Js {
     /// Starts a host and imports `lib`'s review core.
     pub fn open(lib: &Lib) -> Result<Self, Failure> {
         let mut host = Host::start_default()?;
-        let review = host.import(&lib.path(REVIEW_LIB))?;
+        let review = load(host.import(&lib.path(REVIEW_LIB)))?;
         Ok(Self {
             host,
             review,
@@ -216,7 +255,7 @@ impl Js {
 
     fn plan_module(&mut self) -> Result<Value, Failure> {
         if self.plan.is_none() {
-            self.plan = Some(self.host.import(&self.plan_path)?);
+            self.plan = Some(load(self.host.import(&self.plan_path))?);
         }
         Ok(self.plan.clone().unwrap_or(Value::Null))
     }

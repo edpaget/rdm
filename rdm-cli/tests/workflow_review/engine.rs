@@ -35,7 +35,7 @@ fn run_driver(
 ) -> Result<Result<Value, rdm_devtools::workflow::JsError>, Failure> {
     let script = lib.read(REVIEW_ENGINE)?;
     let mut host = Host::start_default()?;
-    let driver = host.load_driver(&script)?;
+    let driver = crate::support::load(host.load_driver(&script))?;
     let deps = agent.install(&mut host);
     split(host.call(
         &driver,
@@ -120,7 +120,7 @@ fn emitted_template_helpers_run_without_driver() {
     run_real(|lib| {
         let script = lib.read(REVIEW_ENGINE_TEMPLATE)?;
         let mut host = Host::start_default()?;
-        let helpers = host.extract_helpers(
+        let helpers = crate::support::load(host.extract_helpers(
             &script,
             &[
                 "resolveRdmBin",
@@ -129,7 +129,7 @@ fn emitted_template_helpers_run_without_driver() {
                 "buildReviewPipeline",
                 "classifyOutcome",
             ],
-        )?;
+        ))?;
         let call =
             |host: &mut Host, name: &str, args: Vec<Value>| split(host.call(&helpers[name], args));
         check_eq!(
