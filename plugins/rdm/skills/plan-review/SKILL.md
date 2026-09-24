@@ -16,7 +16,7 @@ Review the *plan* of an rdm roadmap, phase, or task — not its implementation. 
 
 ## Invoke the workflow
 
-Pass `$ARGUMENTS` straight through to the `rdm:rdm-wf-plan-review` Workflow. It accepts the same four target forms:
+Pass `$ARGUMENTS` through to the `rdm:rdm-wf-plan-review` Workflow with any `--rdm-bin <path>` and `--project <name>` pairs removed first — they travel only as the structured `rdmBin`/`project` keys below, because the workflow's tokenizer would read their values as target slugs. It accepts the same four target forms:
 
 - `--task <slug>` — review a task's plan.
 - `--roadmap <slug>` — review the whole roadmap: its own body plus **every phase, gated independently**. A phase whose status is exactly `done` or `wont-fix` is **excluded from this sweep** — there is no implementation left to vet, and clearing `needs-plan-review` on a retired phase would assert something untrue about it — and the exclusion is **reported, never silently dropped**: the run names every skipped phase (stem + status) in its summary and log. A phase with a missing, blank, or unrecognized status is **kept in the sweep** (fail-open) rather than skipped. This filter applies only to the aggregate `--roadmap` sweep — targeting a terminal phase explicitly (see the next bullet) still reviews it.
