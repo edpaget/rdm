@@ -1042,6 +1042,107 @@ cannot score a false pass), throwaway roots required rather than defaulted since
 two shapes write to a plan repo, and command validity. Each of the four has a
 planted-mutation self-test.
 
+### Planner/implementer effort route spike (phase 4, model-effort-profiles)
+
+**2026-09-23.** The section above measured `agentType`/`effort` at the *mechanical*
+`agent()` call sites the retired `spike-agent-type.js` dispatched from a
+`Workflow` script. This spike asks a narrower, still-open question: can
+`rdm-dispatch-phase`'s two **non-Workflow** roles — the planner (step 5) and the
+implementer (step 10), each dispatched with the `Agent` tool from the main
+session, not from a Workflow script — be given a reasoning-effort profile at
+all? Every case below uses the trivial probe prompt `Reply with the word ok.`,
+run from a fresh `mktemp -d` scratch cwd so its transcript is isolated under its
+own `~/.claude/projects/<slug>/` directory, on `claude-opus-5-5` (this
+environment's ambient session default effort recorded on every control case is
+`"medium"`, not the `"high"` the § "agentType / effort options spike" 156k-record
+corpus found — a different measurement window/config, noted here because it is
+the baseline every row below is read against, not because it changes any
+verdict: every comparison here is a same-run paired control/treatment, not a
+cross-corpus one).
+
+**Setup correction (Route 2):** the approved plan's `.claude/agents/effort-probe.md`
+template carried no `name:` frontmatter key. Dispatched verbatim, the first
+attempt (scratch cwd `tmp.kgyrVP7U8s`) raised `Agent type 'effort-probe' not
+found. Available agents: claude, Explore, general-purpose, Plan,
+statusline-setup` — the same failure mode § "agentType / effort options spike"
+Q1a retracted, but for a different, verifiable cause this time: the directory
+existed before the session started (so the documented restart caveat does not
+apply), and this repo's own live `.claude/agents/rdm-mechanical.md` definition
+does carry a `name:` key. Adding `name: effort-probe` to the frontmatter and
+re-dispatching from a fresh scratch cwd resolved the agent type cleanly (see
+Route 2 below) — recorded here as a setup-bug fix, not a deviation from what the
+spike measures.
+
+**Results:**
+
+| Case | Declared | Recorded effort | Verdict | Transcript path |
+|---|---|---|---|---|
+| Route 1 — control (`claude -p` default agent) | *(none)* | `medium` | baseline | `~/.claude/projects/-private-var-folders-wh-d1mw3dm11z1-pglt1-w9t0mw0000gn-T-tmp-i8W8UPAiPT/b3784614-74a5-47e4-ab11-7463aa662c2a.jsonl` |
+| Route 1 — treatment (`--agents '{"effortprobe":{...,"effort":"low"}}' --agent effortprobe`) | `effort: "low"` | `medium` | **NOT HONORED** — accepted (no throw), transcript unchanged from control | `~/.claude/projects/-private-var-folders-wh-d1mw3dm11z1-pglt1-w9t0mw0000gn-T-tmp-19E0rh50DC/4528a9e6-fca6-4123-a5f6-ffde4c71f08f.jsonl` |
+| Route 2 — setup attempt, no `name:` key | `effort: "low"` in `.claude/agents/effort-probe.md`, no `name:` | n/a — dispatch never resolved | **INVALID SETUP** — `Agent type 'effort-probe' not found`; no child transcript exists | `~/.claude/projects/-private-var-folders-wh-d1mw3dm11z1-pglt1-w9t0mw0000gn-T-tmp-kgyrVP7U8s/` (top-level session only, no `subagents/` dir) |
+| Route 2 — control (`subagent_type: 'general-purpose'`, no custom definition) | *(none)* | `medium` | baseline | `.../tmp-H3SADOGNZs/9bdff87f-2392-4284-9850-550075f573a3/subagents/agent-acdd6196ca3ab80e4.jsonl` |
+| Route 2 — treatment (`subagent_type: 'effort-probe'`, `name:` key added) | `effort: "low"` in `.claude/agents/effort-probe.md` | `low` | **HONORED** | `.../tmp-njARIOwPYb/f67c1c8b-379d-40ff-a794-022ae9b1c0b0/subagents/agent-a997f4247016a72af.jsonl` |
+| Route 3 | — | — | **SKIPPED** — stop condition reached at Route 2 | n/a |
+| Route 4 | — | — | **SKIPPED** — stop condition reached at Route 2 | n/a |
+
+Route 2's validity check passed: the treatment child's
+`agent-a997f4247016a72af.meta.json` records `"agentType":"effort-probe"`
+verbatim, and the top-level run's `subagent_stats.by_type` shows
+`{"effort-probe":1}` — the dispatch really resolved the custom definition
+rather than silently falling back to `general-purpose`. The paired control,
+dispatched from a sibling scratch cwd with no `.claude/agents/` directory at
+all, recorded the ambient `medium` on its own child transcript, so the `low` on
+the treatment child is attributable to the agent definition's `effort: low`
+frontmatter key, not to session-level drift between the two runs.
+
+**Route 3 (Workflow `agent()`), cost write-up — read for context, not exercised
+here.** Per the plan, Route 3 is tested only if no earlier route is honored; it
+is not, since Route 2 is. It is already established (§ "agent() options spike")
+that `agent(prompt, { effort })` called from a `.claude/workflows/*.js` script
+*is* honored. Adopting that mechanism for the planner/implementer would mean
+converting `rdm-dispatch-phase/SKILL.md` steps 5 and 10 from `Agent`-tool
+dispatch to a `Workflow({ scriptPath: ... })` call, which the skill's own "How
+this skill must be entered" section documents as reachable *only* from the main
+session holding the `Workflow` tool — the same constraint step 6 (plan review)
+and step 12 (code review) already live under. Costs of that move, judged from
+reading those two steps and the delegation-boundary table above them: (1)
+*tool access* — a Workflow-dispatched `agent()` call still spawns the same kind
+of subagent the `Agent` tool does, but the *script* wrapping it runs in a
+sandboxed engine that cannot `import`/`require` (documented above, § "Import
+spike") and has no read/edit tools of its own — every read/write the
+planner/implementer needs would have to move into the dispatched agent's own
+prompt, as it already does for `Agent`-tool dispatch, so this cost is neutral;
+(2) *fire-and-forget/control-flow semantics* — a Workflow call is a single
+synchronous return once the sub-pipeline completes, unlike `Agent`'s
+notification-driven background launch that step 5/10 already drive to
+convergence "on each notification"; folding the planner and implementer into a
+Workflow script would trade a documented, working async pattern for a new
+one-shot script that would need its own retry/timeout handling authored from
+scratch; (3) *context passed* — identical either way: item body, plan body,
+`identity.path` as working directory; (4) *coupling* — this is the real cost.
+The planner and implementer are currently prose steps in
+`rdm-dispatch-phase/SKILL.md`, editable and reviewable as plan text; moving them
+into `.claude/workflows/lib/*.mjs` would make them Workflow-authored JS,
+subject to the stamped-copy generator/drift-gate discipline every other engine
+module here carries (`scripts/gen-workflow-*.sh --check`), and would cross the
+project's own workflow-vs-prose boundary rule (`docs/workflow-vs-prose-boundary.md`):
+planning and implementing are judgment, which that rule reserves for prose, not
+for a deterministic Workflow script. **Recommendation: not practically
+adoptable for phase 6.** The coupling cost is real and the tool-access/context
+costs are neutral at best, and Route 2 already resolves the actual gap through
+the tool these two roles already use, with no boundary crossing at all.
+
+**Phase 6's route: Route 2** — a per-role custom agent-definition (`.claude/agents/<name>.md`
+with an `effort:` frontmatter key and a `name:` key matching the intended
+`subagent_type`), selected per dispatch via the `Agent` tool's `subagent_type`.
+This composes directly with `rdm-dispatch-phase` steps 5 and 10, which already
+dispatch the planner and implementer as named `Agent` calls — phase 6 need only
+add a resolved-tier `subagent_type` (backed by a generated or maintained
+per-profile agent definition) to each of those two calls, with no change to the
+tool used, the delegation boundary, or the async dispatch-and-converge pattern.
+Routes 3 and 4 were not exercised (stop condition reached at Route 2, per the
+approved protocol).
+
 ### Orchestrator / Workflow-reachability spike (can an Agent subagent drive the review workflows?)
 
 `agent-orchestrated-dispatch` phase 1. The whole roadmap assumed a prose per-phase
