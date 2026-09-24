@@ -84,6 +84,13 @@ jobs:
       - name: Regenerate Cargo.lock
         run: cargo check --workspace
 
+      - name: Update plugin manifest version
+        run: |
+          # The checked-in plugin tree stamps the crate version into its manifest;
+          # Claude Code keys plugin updates on it, so it must move with each release.
+          sed -i 's/^  "version": ".*"$/  "version": "${{ steps.next.outputs.version }}"/' plugins/rdm/.claude-plugin/plugin.json
+          grep -q '"version": "${{ steps.next.outputs.version }}"' plugins/rdm/.claude-plugin/plugin.json
+
       - name: Update CHANGELOG.md
         run: |
           today=$(date +%Y-%m-%d)
@@ -101,7 +108,7 @@ jobs:
       - name: Commit, tag, and push
         run: |
           version="${{ steps.next.outputs.version }}"
-          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git add Cargo.toml Cargo.lock CHANGELOG.md plugins/rdm/.claude-plugin/plugin.json
           git commit -m "chore(release): v${version}"
           git tag "v${version}"
           git push origin HEAD "v${version}"
