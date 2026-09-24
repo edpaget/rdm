@@ -1307,6 +1307,37 @@ function resolveRefutationBudget(value) {
   return n;
 }
 
+// The reasoning efforts an `agent()` call accepts — the same five
+// `rdm model resolve` can return for the `claude` host (docs/model-profiles.md).
+const AGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+// resolveEffort(value, name) — validate an optional per-step reasoning effort.
+// Unset (null/undefined/blank) resolves to null, and the caller then OMITS the
+// `effort` key from its agent() options entirely (see effortOption): `model:
+// undefined` was measured inert, `effort: undefined` never was. A present value
+// outside AGENT_EFFORTS throws — resolved before any agent is dispatched, like
+// resolveRefutationBudget — so a bad effort costs no tokens and never silently
+// runs at the session default.
+function resolveEffort(value, name) {
+  if (value === null || value === undefined) return null;
+  const v = typeof value === 'string' ? value.trim() : value;
+  if (v === '') return null;
+  if (typeof v !== 'string' || AGENT_EFFORTS.indexOf(v) === -1) {
+    throw new Error(
+      'review: ' + name + ' must be one of ' + AGENT_EFFORTS.join(', ') + ' (got "' + String(value) + '") — ' +
+        'pass the `effort` field `rdm model resolve <step> --format json` reports, or omit it'
+    );
+  }
+  return v;
+}
+
+// effortOption(effort) — the agent() options fragment for a resolved effort:
+// `{ effort }` when one was supplied, `{}` otherwise, so it is spread into the
+// options object and an absent effort adds no key at all.
+function effortOption(effort) {
+  return effort ? { effort: effort } : {};
+}
+
 // rankBudgetCandidates(candidates) — the TOTAL, STABLE order the budget cut is
 // taken from. Operates on `{ dim, finding, order, idx, raw }` candidate records
 // (not bare findings), and reuses SEVERITY_RANK — it introduces no new severity
@@ -2803,6 +2834,13 @@ function buildReviewPipeline(mode, deps) {
     // key is safe and needs no conditional-assignment helper.
     const findModel = ctx.findModel;
     const verifyModel = ctx.verifyModel;
+    // Optional reasoning efforts for the same two steps — the `effort` half of
+    // the `rdm model resolve --format json` profile. Validated HERE, before any
+    // agent is dispatched. Unlike the model, an absent effort is never passed
+    // as an `undefined` key: the spreads below add `effort` only when one was
+    // supplied, so an effort-less caller dispatches exactly what it did before.
+    const findEffortOpt = effortOption(resolveEffort(ctx.findEffort, 'findEffort'));
+    const verifyEffortOpt = effortOption(resolveEffort(ctx.verifyEffort, 'verifyEffort'));
     // Per-run refutation budget. Resolved HERE, before any agent is dispatched,
     // so an invalid value throws instead of burning tokens. `0` is legal and is
     // NOT conflated with unset — see resolveRefutationBudget.
@@ -2846,6 +2884,7 @@ function buildReviewPipeline(mode, deps) {
             phase: 'Find',
             schema: findSchema,
             model: findModel,
+            ...findEffortOpt,
           });
         } catch (e) {
           // A finder that THREW (as opposed to resolving null) is recorded as
@@ -2879,6 +2918,7 @@ function buildReviewPipeline(mode, deps) {
               phase: 'Find',
               schema: findSchema,
               model: findModel,
+              ...findEffortOpt,
             });
           } catch (e) {
             rec.error = 'threw';
@@ -3050,6 +3090,7 @@ function buildReviewPipeline(mode, deps) {
           phase: 'Refute',
           schema: VERDICT_SCHEMA,
           model: verifyModel,
+          ...verifyEffortOpt,
         })
           .then((verdict) => {
             if (!verdict || typeof verdict.refuted !== 'boolean' || typeof verdict.confidence !== 'number') throw new Error('invalid refuter verdict');
@@ -3403,6 +3444,8 @@ export {
   rankFindings,
   DEFAULT_MAX_REFUTATIONS,
   resolveRefutationBudget,
+  AGENT_EFFORTS,
+  resolveEffort,
   rankBudgetCandidates,
   buildReviewBudget,
   budgetSummaryClause,

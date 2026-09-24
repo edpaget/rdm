@@ -1387,6 +1387,47 @@ test('gate: false returns the verdict and writes nothing — the interactive ski
   );
 });
 
+test('findEffort/verifyEffort engine args reach every finder and refuter call the engine dispatches', async () => {
+  const fleet = makeFleet({ id: 'c-1', concern: 'correctness', severity: 'blocking', confidence: 90, what_fails: 'x' });
+  const seen = [];
+  const recording = async (prompt, opts) => {
+    seen.push({ label: (opts && opts.label) || '', opts: { ...(opts || {}) } });
+    return fleet.agent(prompt, opts);
+  };
+  const args = {
+    ...COMMON,
+    gate: false,
+    roadmap: ROADMAP,
+    phase: 'phase-1-clean',
+    ...ROADMAP_PIN,
+    findModel: 'm-find',
+    findEffort: 'low',
+    verifyModel: 'm-verify',
+    verifyEffort: 'high',
+  };
+  await driver(args, recording, referencePipeline, referenceParallel, () => {});
+  const finds = seen.filter((c) => c.label.startsWith('find:'));
+  const refutes = seen.filter((c) => c.label.startsWith('refute:'));
+  assert.ok(finds.length > 0 && refutes.length > 0, 'the engine dispatched finders and refuters');
+  for (const c of finds) assert.deepEqual([c.opts.model, c.opts.effort], ['m-find', 'low'], c.label);
+  for (const c of refutes) assert.deepEqual([c.opts.model, c.opts.effort], ['m-verify', 'high'], c.label);
+
+  // And an engine run with no effort args dispatches no effort key at all.
+  const bare = [];
+  await driver(
+    { ...COMMON, gate: false, roadmap: ROADMAP, phase: 'phase-1-clean', ...ROADMAP_PIN },
+    async (prompt, opts) => {
+      bare.push({ ...(opts || {}) });
+      return fleet.agent(prompt, opts);
+    },
+    referencePipeline,
+    referenceParallel,
+    () => {}
+  );
+  assert.ok(bare.length > 0);
+  for (const o of bare) assert.equal(Object.prototype.hasOwnProperty.call(o, 'effort'), false, o.label);
+});
+
 test('naming both a task and phase identifiers is refused before anything runs', async () => {
   await assert.rejects(
     () => drive({ ...COMMON, task: TASK, roadmap: ROADMAP, phase: 'phase-1-clean', ...ROADMAP_PIN }),

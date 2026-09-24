@@ -39,7 +39,8 @@
 // structured object ({ roadmap, phase }, { task }, { implementationPlan,
 // planSlug }). See parsePlanArgs. The structured-keys-only args (`phases`,
 // `tags`, `priorReviews`, `wontFixedTexts`, `reviewers`, `planSlug`, the two
-// judgment-site model ids) are never parsed out of the flag string.
+// judgment-site model ids `findModel`/`verifyModel` and their reasoning efforts
+// `findEffort`/`verifyEffort`) are never parsed out of the flag string.
 //
 // Reviewer selection is the CALLER's: pass `reviewers`, or omit it to run every
 // plan reviewer. Include `unit-of-work` only on a phase; include
@@ -1280,6 +1281,37 @@ function resolveRefutationBudget(value) {
     );
   }
   return n;
+}
+
+// The reasoning efforts an `agent()` call accepts — the same five
+// `rdm model resolve` can return for the `claude` host (docs/model-profiles.md).
+const AGENT_EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+
+// resolveEffort(value, name) — validate an optional per-step reasoning effort.
+// Unset (null/undefined/blank) resolves to null, and the caller then OMITS the
+// `effort` key from its agent() options entirely (see effortOption): `model:
+// undefined` was measured inert, `effort: undefined` never was. A present value
+// outside AGENT_EFFORTS throws — resolved before any agent is dispatched, like
+// resolveRefutationBudget — so a bad effort costs no tokens and never silently
+// runs at the session default.
+function resolveEffort(value, name) {
+  if (value === null || value === undefined) return null;
+  const v = typeof value === 'string' ? value.trim() : value;
+  if (v === '') return null;
+  if (typeof v !== 'string' || AGENT_EFFORTS.indexOf(v) === -1) {
+    throw new Error(
+      'review: ' + name + ' must be one of ' + AGENT_EFFORTS.join(', ') + ' (got "' + String(value) + '") — ' +
+        'pass the `effort` field `rdm model resolve <step> --format json` reports, or omit it'
+    );
+  }
+  return v;
+}
+
+// effortOption(effort) — the agent() options fragment for a resolved effort:
+// `{ effort }` when one was supplied, `{}` otherwise, so it is spread into the
+// options object and an absent effort adds no key at all.
+function effortOption(effort) {
+  return effort ? { effort: effort } : {};
 }
 
 // rankBudgetCandidates(candidates) — the TOTAL, STABLE order the budget cut is
@@ -2778,6 +2810,13 @@ function buildReviewPipeline(mode, deps) {
     // key is safe and needs no conditional-assignment helper.
     const findModel = ctx.findModel;
     const verifyModel = ctx.verifyModel;
+    // Optional reasoning efforts for the same two steps — the `effort` half of
+    // the `rdm model resolve --format json` profile. Validated HERE, before any
+    // agent is dispatched. Unlike the model, an absent effort is never passed
+    // as an `undefined` key: the spreads below add `effort` only when one was
+    // supplied, so an effort-less caller dispatches exactly what it did before.
+    const findEffortOpt = effortOption(resolveEffort(ctx.findEffort, 'findEffort'));
+    const verifyEffortOpt = effortOption(resolveEffort(ctx.verifyEffort, 'verifyEffort'));
     // Per-run refutation budget. Resolved HERE, before any agent is dispatched,
     // so an invalid value throws instead of burning tokens. `0` is legal and is
     // NOT conflated with unset — see resolveRefutationBudget.
@@ -2821,6 +2860,7 @@ function buildReviewPipeline(mode, deps) {
             phase: 'Find',
             schema: findSchema,
             model: findModel,
+            ...findEffortOpt,
           });
         } catch (e) {
           // A finder that THREW (as opposed to resolving null) is recorded as
@@ -2854,6 +2894,7 @@ function buildReviewPipeline(mode, deps) {
               phase: 'Find',
               schema: findSchema,
               model: findModel,
+              ...findEffortOpt,
             });
           } catch (e) {
             rec.error = 'threw';
@@ -3025,6 +3066,7 @@ function buildReviewPipeline(mode, deps) {
           phase: 'Refute',
           schema: VERDICT_SCHEMA,
           model: verifyModel,
+          ...verifyEffortOpt,
         })
           .then((verdict) => {
             if (!verdict || typeof verdict.refuted !== 'boolean' || typeof verdict.confidence !== 'number') throw new Error('invalid refuter verdict');
@@ -3450,6 +3492,12 @@ function parsePlanArgs(rawArgs) {
   // inert and the agent inherits the session model.
   const findModel = typeof a.findModel === 'string' && a.findModel.trim() !== '' ? a.findModel.trim() : null
   const verifyModel = typeof a.verifyModel === 'string' && a.verifyModel.trim() !== '' ? a.verifyModel.trim() : null
+  // The matching reasoning efforts — the `effort` half of the same resolved
+  // `--format json` profiles. Normalised exactly like the model ids; the VALUE
+  // is validated by the review core (buildReviewPipeline) before any agent is
+  // dispatched, and an absent effort adds no `effort` key to any agent() call.
+  const findEffort = typeof a.findEffort === 'string' && a.findEffort.trim() !== '' ? a.findEffort.trim() : null
+  const verifyEffort = typeof a.verifyEffort === 'string' && a.verifyEffort.trim() !== '' ? a.verifyEffort.trim() : null
   // Per-unit REFUTATION budget, threaded into every review context below.
   // Read from a STRUCTURED key only (like every other hoist here) and RESOLVED
   // HERE, at parse time — before any agent() call — by the review core's single
@@ -3558,6 +3606,8 @@ function parsePlanArgs(rawArgs) {
     reviewers: reviewers,
     findModel: findModel,
     verifyModel: verifyModel,
+    findEffort: findEffort,
+    verifyEffort: verifyEffort,
     maxRefutations: maxRefutations,
     rdmBin: rdmBin,
     project: project,
@@ -4230,6 +4280,8 @@ function formatUnitBudget(budget) {
 //                         ('plan'); optional — built from the review core when
 //                         omitted (the Workflow runtime path).
 //   deps.findModel / deps.verifyModel — judgment-site model ids; caller args win.
+//   deps.findEffort / deps.verifyEffort — judgment-site reasoning efforts; caller
+//                         args win; absent means no `effort` key on any call.
 //
 // Returns the structured result the caller reports:
 //   - implementation-plan: { kind, outcome, summary, findings } plus, with a
@@ -4243,6 +4295,8 @@ async function runPlanReviewDriver(args, deps) {
   const _log = d.log || function () {}
   let _findModel = d.findModel
   let _verifyModel = d.verifyModel
+  let _findEffort = d.findEffort
+  let _verifyEffort = d.verifyEffort
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
   // the review core, with NO independent review logic in this driver. Which
   // reviewers run is the CALLER's choice, threaded through as `reviewers`.
@@ -4252,6 +4306,8 @@ async function runPlanReviewDriver(args, deps) {
   const kind = parsed.kind
   if (parsed.findModel) _findModel = parsed.findModel
   if (parsed.verifyModel) _verifyModel = parsed.verifyModel
+  if (parsed.findEffort) _findEffort = parsed.findEffort
+  if (parsed.verifyEffort) _verifyEffort = parsed.verifyEffort
   // Already validated by parsePlanArgs via the review core's single validator.
   const maxRefutations = parsed.maxRefutations
   const reviewers = parsed.reviewers
@@ -4303,6 +4359,8 @@ async function runPlanReviewDriver(args, deps) {
       maxRefutations: maxRefutations,
       findModel: _findModel,
       verifyModel: _verifyModel,
+      findEffort: _findEffort,
+      verifyEffort: _verifyEffort,
     })
     const survivors = suppressWontFixed(rawSurvivors, wontFixedTexts)
     // `roundUnknown` distinguishes a caller who supplied no `priorReviews` at
@@ -4372,6 +4430,8 @@ async function runPlanReviewDriver(args, deps) {
       maxRefutations: maxRefutations,
       findModel: _findModel,
       verifyModel: _verifyModel,
+      findEffort: _findEffort,
+      verifyEffort: _verifyEffort,
     })
     const survivors = suppressWontFixed(rawSurvivors, wontFixedTexts)
     // classifyPlanOutcome, NOT classifyRoundOutcome: the round cap stays out of
@@ -4554,7 +4614,11 @@ async function runPlanReviewDriver(args, deps) {
 // mechanical agent left for a mechanical model to pin, and the two judgment-site
 // ids are the ORCHESTRATOR's to resolve in Bash and pass as `findModel` /
 // `verifyModel`. An absent id is inert — the finder and refuter inherit the
-// session model — so an omitted one degrades rather than aborting.
+// session model — so an omitted one degrades rather than aborting. The same
+// holds for `findEffort` / `verifyEffort`, the `effort` half of each resolved
+// `rdm model resolve … --format json` profile: an absent effort adds no
+// `effort` key to any agent() call, and an invalid one is refused before any
+// agent runs.
 
 return await runPlanReviewDriver(args, {
   agent: typeof agent !== 'undefined' ? agent : undefined,

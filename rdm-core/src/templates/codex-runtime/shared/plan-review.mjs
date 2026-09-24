@@ -355,6 +355,12 @@ function parsePlanArgs(rawArgs) {
   // inert and the agent inherits the session model.
   const findModel = typeof a.findModel === 'string' && a.findModel.trim() !== '' ? a.findModel.trim() : null
   const verifyModel = typeof a.verifyModel === 'string' && a.verifyModel.trim() !== '' ? a.verifyModel.trim() : null
+  // The matching reasoning efforts — the `effort` half of the same resolved
+  // `--format json` profiles. Normalised exactly like the model ids; the VALUE
+  // is validated by the review core (buildReviewPipeline) before any agent is
+  // dispatched, and an absent effort adds no `effort` key to any agent() call.
+  const findEffort = typeof a.findEffort === 'string' && a.findEffort.trim() !== '' ? a.findEffort.trim() : null
+  const verifyEffort = typeof a.verifyEffort === 'string' && a.verifyEffort.trim() !== '' ? a.verifyEffort.trim() : null
   // Per-unit REFUTATION budget, threaded into every review context below.
   // Read from a STRUCTURED key only (like every other hoist here) and RESOLVED
   // HERE, at parse time — before any agent() call — by the review core's single
@@ -463,6 +469,8 @@ function parsePlanArgs(rawArgs) {
     reviewers: reviewers,
     findModel: findModel,
     verifyModel: verifyModel,
+    findEffort: findEffort,
+    verifyEffort: verifyEffort,
     maxRefutations: maxRefutations,
     rdmBin: rdmBin,
     project: project,
@@ -1135,6 +1143,8 @@ function formatUnitBudget(budget) {
 //                         ('plan'); optional — built from the review core when
 //                         omitted (the Workflow runtime path).
 //   deps.findModel / deps.verifyModel — judgment-site model ids; caller args win.
+//   deps.findEffort / deps.verifyEffort — judgment-site reasoning efforts; caller
+//                         args win; absent means no `effort` key on any call.
 //
 // Returns the structured result the caller reports:
 //   - implementation-plan: { kind, outcome, summary, findings } plus, with a
@@ -1148,6 +1158,8 @@ async function runPlanReviewDriver(args, deps) {
   const _log = d.log || function () {}
   let _findModel = d.findModel
   let _verifyModel = d.verifyModel
+  let _findEffort = d.findEffort
+  let _verifyEffort = d.verifyEffort
   // The plan review IS the canonical pipeline — buildReviewPipeline('plan') from
   // the review core, with NO independent review logic in this driver. Which
   // reviewers run is the CALLER's choice, threaded through as `reviewers`.
@@ -1157,6 +1169,8 @@ async function runPlanReviewDriver(args, deps) {
   const kind = parsed.kind
   if (parsed.findModel) _findModel = parsed.findModel
   if (parsed.verifyModel) _verifyModel = parsed.verifyModel
+  if (parsed.findEffort) _findEffort = parsed.findEffort
+  if (parsed.verifyEffort) _verifyEffort = parsed.verifyEffort
   // Already validated by parsePlanArgs via the review core's single validator.
   const maxRefutations = parsed.maxRefutations
   const reviewers = parsed.reviewers
@@ -1208,6 +1222,8 @@ async function runPlanReviewDriver(args, deps) {
       maxRefutations: maxRefutations,
       findModel: _findModel,
       verifyModel: _verifyModel,
+      findEffort: _findEffort,
+      verifyEffort: _verifyEffort,
     })
     const survivors = suppressWontFixed(rawSurvivors, wontFixedTexts)
     // `roundUnknown` distinguishes a caller who supplied no `priorReviews` at
@@ -1277,6 +1293,8 @@ async function runPlanReviewDriver(args, deps) {
       maxRefutations: maxRefutations,
       findModel: _findModel,
       verifyModel: _verifyModel,
+      findEffort: _findEffort,
+      verifyEffort: _verifyEffort,
     })
     const survivors = suppressWontFixed(rawSurvivors, wontFixedTexts)
     // classifyPlanOutcome, NOT classifyRoundOutcome: the round cap stays out of
