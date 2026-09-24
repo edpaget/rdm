@@ -129,7 +129,8 @@ resolves to the same built-in default as every other step at that tier, so there
 hoist, forward, or fail to resolve); the `next` hoist (it saved only the old loop's
 first-iteration `fetchNext` subagent dispatch; this skill reads `rdm next` via Bash on every
 iteration, including the first, at zero subagent cost) and the triple-unwrap defense inside
-`interpretNext` (see step 4.3).
+`interpretNext` (it hedged against an intermediate agent re-encoding `rdm next` JSON as a string;
+that agent no longer exists, so such a payload now falls through to `unparseable` — see step 4.3).
 
 ## Recovering a crashed dispatch
 
