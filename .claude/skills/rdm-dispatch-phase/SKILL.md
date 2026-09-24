@@ -80,9 +80,10 @@ Resolve once, in step 1, and use everywhere after:
   set. Never probe the filesystem to pick a binary. If a "Resolving `rdmBin`" section is appended to
   this skill, it is the single authoritative resolution order — follow it and do not re-derive one
   here.
-- `<proj-flag>` — ` --project <name>` when `--project` was given, otherwise nothing at all (never an
-  empty `--project` value). `<project>` in the Workflow calls is that same name, omitted when
-  `<proj-flag>` is empty.
+- `<proj-flag>` — ` --project <name>` when `--project` was given, otherwise ` --project rdm` (this
+  repo's project), or nothing at all when no project name applies and rdm's own
+  `RDM_PROJECT`/`default_project` chain should resolve it (never an empty `--project` value).
+  `<project>` in the Workflow calls is that same name, omitted when `<proj-flag>` is empty.
 - `<item>` — `phase/<roadmap>/<stem>` or `task/<slug>`. Every `--on`/`--implements` ref uses this
   exact string.
 
@@ -328,6 +329,9 @@ each reviewer runs `plan show` itself. If you drafted the plan yourself instead 
 have inline-collapsed — stop and dispatch.
 
 ### 6. Invoke the plan review — in THIS session
+
+**Skipped under `--interactive`** — go straight to step 7, whose approve must then come from a
+human. Otherwise:
 
 Invoke the **`rdm-wf-plan-review` Workflow** (`.claude/workflows/rdm-wf-plan-review.js`) via the
 Workflow tool, passing `args` as a JSON object (never a stringified value):
@@ -797,13 +801,14 @@ Produce the object from the Contract above as your final message, `planId` and `
 
 ## Interactive mode (`rdm-do` without `--auto`)
 
-Identical procedure, two differences only:
+Identical procedure, three differences only:
 
-1. **Step 7** prints the human plan-review commands and waits for a human-submitted approve review
-   instead of proceeding on the workflow-persisted one. An `--interactive` run abandoned at that
+1. **Step 6** is skipped: no plan-review Workflow runs, so no workflow-persisted approve exists.
+2. **Step 7** prints the human plan-review commands and waits for a human-submitted approve review
+   (step 6 recorded none). An `--interactive` run abandoned at that
    wait MUST park with a durable reason rather than spin, and the poll MUST NOT treat `draft` as
    `changes-requested`.
-2. **Step 13** presents each triage decision for confirmation before replying.
+3. **Step 13** presents each triage decision for confirmation before replying.
 
 Both modes run the same commands and produce the same review-record shape.
 

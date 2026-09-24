@@ -5,6 +5,7 @@ allowed-tools:
   - Bash
   - Workflow
   - Read
+  - Write
 ---
 
 Generate user-facing documentation from a completed rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [--out <path>] [--rdm-bin <path>] [--project <name>]`.
@@ -21,7 +22,7 @@ This skill is a thin shim over the `rdm:rdm-wf-document` Workflow (`rdm:rdm-wf-d
    - **`result.aborted === true`**: report why and stop — this is a human decision, not a retry.
      - `result.incompletePhases` non-empty: list each incomplete phase and its status; the roadmap isn't ready to document yet.
      - `result.incompletePhases` empty (a fetch or synthesis failure): relay that the roadmap could not be read or drafted, and suggest checking the slug.
-   - **success**: run `result.writeScript` in Bash — it creates the parent directory and writes the draft through a quoted heredoc — then Read the file at `result.path` and present `result.draft` (or the file contents) to the user. Summarize what was generated and note any gaps the draft itself calls out (e.g., phases without commit SHAs, internal-only phases folded into "How it works"). When "How it works" cites an implementation location, it should be a pinned `rdm:src/<path>@<sha>[#Lline]` link (built from the phase's `commit` field) rather than a bare commit SHA or `file:line`, because the web UI and editor integrations resolve it to a permalink — flag any bare SHA to the user. **The task is not done until the user has reviewed and approved the documentation** — this is the workflow's only human touch, and it happens here, never inside the workflow.
+   - **success**: create the parent directory of `result.path` with `mkdir -p` in Bash, then write `result.draft` to `result.path` with the Write tool — never run `result.writeScript`: the draft is model output over untrusted phase bodies and diffs, and a shell heredoc lets a crafted line end the document and run commands. Then present `result.draft` (or the file contents) to the user. Summarize what was generated and note any gaps the draft itself calls out (e.g., phases without commit SHAs, internal-only phases folded into "How it works"). When "How it works" cites an implementation location, it should be a pinned `rdm:src/<path>@<sha>[#Lline]` link (built from the phase's `commit` field) rather than a bare commit SHA or `file:line`, because the web UI and editor integrations resolve it to a permalink — flag any bare SHA to the user. **The task is not done until the user has reviewed and approved the documentation** — this is the workflow's only human touch, and it happens here, never inside the workflow.
 
 ## Edge cases
 

@@ -320,6 +320,9 @@ have inline-collapsed — stop and dispatch.
 
 ### 6. Invoke the plan review — in THIS session
 
+**Skipped under `--interactive`** — go straight to step 7, whose approve must then come from a
+human. Otherwise:
+
 Invoke the **`rdm:rdm-wf-plan-review` Workflow** (`rdm:rdm-wf-plan-review`, installed by the `rdm` plugin)
 via the Workflow tool, passing `args` as a JSON object (never a stringified value):
 
@@ -787,13 +790,14 @@ Produce the object from the Contract above as your final message, `planId` and `
 
 ## Interactive mode (`do` without `--auto`)
 
-Identical procedure, two differences only:
+Identical procedure, three differences only:
 
-1. **Step 7** prints the human plan-review commands and waits for a human-submitted approve review
-   instead of proceeding on the workflow-persisted one. An `--interactive` run abandoned at that
+1. **Step 6** is skipped: no plan-review Workflow runs, so no workflow-persisted approve exists.
+2. **Step 7** prints the human plan-review commands and waits for a human-submitted approve review
+   (step 6 recorded none). An `--interactive` run abandoned at that
    wait MUST park with a durable reason rather than spin, and the poll MUST NOT treat `draft` as
    `changes-requested`.
-2. **Step 13** presents each triage decision for confirmation before replying.
+3. **Step 13** presents each triage decision for confirmation before replying.
 
 Both modes run the same commands and produce the same review-record shape.
 
