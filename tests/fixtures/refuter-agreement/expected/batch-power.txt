@@ -1,0 +1,19 @@
+Batch-size distribution the corpus can actually form (UNIT-SCOPED key: runId|unitIdent|mode|dim)
+
+  corpus items                 56
+- constructed (no run/unit)    12
+- non-gating (suggestion)       4
+- unrecoverable unit identity  5
+= groupable items              35  in 29 group(s)
+
+Size histogram (size:groups)   1:24, 2:4, 3:1
+  code                        1:16, 2:4, 3:1
+  plan                        1:8
+
+Minimum group size for the anchoring measurement: 3
+Size-1 groups are EXCLUDED from it (24 item(s) in singleton groups).
+Qualifying population: 1 group(s) / 3 item(s) against floors of 6 group(s) / 18 item(s).
+No group carries provenance.agentIndex, so every size below is an UPPER BOUND: a REWORK re-review is a second dispatch this key cannot yet split apart.
+
+POWER: INSUFFICIENT
+A batched arm built from this population is byte-for-byte a per-finding arm across most of its items, so the anchoring effect would be unobservable. This is a NO-MEASUREMENT outcome, not a passing gate.

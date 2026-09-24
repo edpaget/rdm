@@ -1,0 +1,13 @@
+DRY RUN — label 78289ada7052, shape per-finding: 3 item(s) x 2 tier(s) x 2 replicate(s) = 12 trial(s), plus 0 batched dispatch(es). Nothing dispatched.
+  mined-wf_4d4e31c2-e6a-a9a79c41385d01b94|opus|1  (3237 prompt chars)
+  mined-wf_4d4e31c2-e6a-a9a79c41385d01b94|opus|2  (3237 prompt chars)
+  mined-wf_4d4e31c2-e6a-a9a79c41385d01b94|sonnet|1  (3237 prompt chars)
+  mined-wf_4d4e31c2-e6a-a9a79c41385d01b94|sonnet|2  (3237 prompt chars)
+  mined-wf_8df5d963-f14-af6ee0e0613005cb4|opus|1  (2158 prompt chars)
+  mined-wf_8df5d963-f14-af6ee0e0613005cb4|opus|2  (2158 prompt chars)
+  mined-wf_8df5d963-f14-af6ee0e0613005cb4|sonnet|1  (2158 prompt chars)
+  mined-wf_8df5d963-f14-af6ee0e0613005cb4|sonnet|2  (2158 prompt chars)
+  mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3|opus|1  (3056 prompt chars)
+  mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3|opus|2  (3056 prompt chars)
+  mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3|sonnet|1  (3056 prompt chars)
+  mined-wf_8df5d963-f14-a13bfc6ff5ac57ff3|sonnet|2  (3056 prompt chars)

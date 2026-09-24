@@ -1,0 +1,112 @@
+{
+  "projectsRoot": "<ROOT>",
+  "runsConsidered": 1,
+  "recordCount": 3,
+  "byAgentClass": [
+    {
+      "key": "gate",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 400,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    },
+    {
+      "key": "plan",
+      "agentCount": 1,
+      "dedupedRequestCount": 1,
+      "output": 80,
+      "uncachedInput": 60,
+      "cacheWrite": 200,
+      "cacheRead": 100
+    },
+    {
+      "key": "stamp",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 0,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    }
+  ],
+  "byLabel": [
+    {
+      "key": "gate:mechanical",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 400,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    },
+    {
+      "key": "plan:author",
+      "agentCount": 1,
+      "dedupedRequestCount": 1,
+      "output": 80,
+      "uncachedInput": 60,
+      "cacheWrite": 200,
+      "cacheRead": 100
+    },
+    {
+      "key": "stamp:in-progress",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 0,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    }
+  ],
+  "byModel": [
+    {
+      "key": "claude-sonnet-5",
+      "agentCount": 1,
+      "dedupedRequestCount": 1,
+      "output": 80,
+      "uncachedInput": 60,
+      "cacheWrite": 200,
+      "cacheRead": 100
+    },
+    {
+      "key": "haiku",
+      "agentCount": 2,
+      "dedupedRequestCount": 0,
+      "output": 400,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    }
+  ],
+  "byWorkflow": [
+    {
+      "key": "autopilot",
+      "agentCount": 3,
+      "dedupedRequestCount": 1,
+      "output": 480,
+      "uncachedInput": 60,
+      "cacheWrite": 200,
+      "cacheRead": 100
+    }
+  ],
+  "floorByAgentClass": [
+    {
+      "key": "plan",
+      "n": 1,
+      "minTokens": 360,
+      "p10Tokens": 360,
+      "medianTokens": 360,
+      "meanTokens": 360
+    }
+  ],
+  "totalsDiscrepancy": {
+    "sidecarTotalTokens": 1200,
+    "dedupedTotalTokens": 840,
+    "delta": 360
+  },
+  "warnings": [
+    "no transcript found for agent agent4 in run wf_run002; falling back to sidecar tokens"
+  ]
+}

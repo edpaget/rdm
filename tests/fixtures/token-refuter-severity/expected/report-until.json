@@ -1,0 +1,141 @@
+{
+  "instrument": "scripts/measure-refuter-severity.mjs",
+  "corpus": {
+    "projectsRoot": "<ROOT>",
+    "until": "2026-07-24T00:00:00Z",
+    "laneWorkflows": [
+      "autopilot",
+      "dispatch-phase",
+      "plan-review",
+      "backlog",
+      "estimate",
+      "document"
+    ],
+    "runCount": 0,
+    "agentRecordCount": 0
+  },
+  "refuteBySeverity": [],
+  "refuteTotals": {
+    "agentCount": 0,
+    "dedupedRequestCount": 0,
+    "output": 0,
+    "uncachedInput": 0,
+    "cacheWrite": 0,
+    "cacheRead": 0
+  },
+  "laneTotals": {
+    "agentCount": 0,
+    "dedupedRequestCount": 0,
+    "output": 0,
+    "uncachedInput": 0,
+    "cacheWrite": 0,
+    "cacheRead": 0
+  },
+  "projected": {
+    "severities": [
+      "suggestion"
+    ],
+    "agentsNotSpawned": 0,
+    "output": 0,
+    "uncachedInput": 0,
+    "cacheWrite": 0,
+    "cacheRead": 0,
+    "allTokens": 0,
+    "freshTokens": 0,
+    "percentOfRefuteAgents": 0,
+    "percentOfRefuteTokens": 0,
+    "percentOfLaneTokens": 0
+  },
+  "refuterFanout": {
+    "findingsPerFinder": {
+      "rows": [],
+      "unreadableFinderCount": 0,
+      "unresolvedLabelCount": 0
+    },
+    "refuterCountsByUnit": {
+      "n": 0,
+      "min": 0,
+      "p50": 0,
+      "p90": 0,
+      "max": 0,
+      "totalRefuters": 0,
+      "recoveredRefuters": 0,
+      "unrecoverableRefuterCount": 0,
+      "recoveryRatePercent": 0
+    }
+  },
+  "determiningFindingRank": {
+    "units": {
+      "total": 0,
+      "determining": 0,
+      "nonDetermining": 0,
+      "unrecoverable": 0,
+      "recoverable": 0,
+      "recoverableSharePercent": 0
+    },
+    "unrecoverableByReason": [],
+    "orphanAgents": {
+      "finders": 0,
+      "refuters": 0,
+      "runsAffected": 0
+    },
+    "rankHistogram": [],
+    "withinTop": [
+      {
+        "n": 3,
+        "count": 0,
+        "percentOfDetermining": 0,
+        "percentOfRecoverable": 0
+      },
+      {
+        "n": 5,
+        "count": 0,
+        "percentOfDetermining": 0,
+        "percentOfRecoverable": 0
+      }
+    ],
+    "largeTier": {
+      "units": {
+        "total": 0,
+        "determining": 0,
+        "nonDetermining": 0,
+        "unrecoverable": 0,
+        "recoverable": 0,
+        "recoverableSharePercent": 0
+      },
+      "rankHistogram": [],
+      "withinTop": [
+        {
+          "n": 3,
+          "count": 0,
+          "percentOfDetermining": 0,
+          "percentOfRecoverable": 0
+        },
+        {
+          "n": 5,
+          "count": 0,
+          "percentOfDetermining": 0,
+          "percentOfRecoverable": 0
+        }
+      ]
+    },
+    "acTableGapUnits": 0,
+    "capVerdict": {
+      "verdict": "inconclusive",
+      "rule": {
+        "supportsCapAtOrAbovePercent": 95,
+        "killsCapBelowPercent": 80,
+        "minRecoverableSharePercent": 50,
+        "minDeterminingUnits": 20,
+        "basis": "withinTop n=5, as a percentage of DETERMINING units; a cap is only supported when enough units were recoverable to speak to it at all."
+      },
+      "inputs": {
+        "determining": 0,
+        "recoverable": 0,
+        "total": 0,
+        "recoverableSharePercent": 0,
+        "withinTop5PercentOfDetermining": 0
+      }
+    }
+  }
+}

@@ -1,0 +1,52 @@
+Refuter agreement by model tier — 56 corpus item(s), baseline tier "opus"
+Composition: mechanically-true-not-a-defect 24, stale-fact 15, false-premise 5, real-defect 7, style-preference 3, misread-scope 2 | authority: authoritative 43, judgement-call 13 | provenance: mined 44, constructed 12
+
+## FALSE NEGATIVES — a real defect wrongly refuted -> SHIPS A DEFECT
+Denominator: defect-truth trials only. Authoritative-only is the DECISION-GRADE figure.
+| tier | authoritative FN | judgement-call FN | all FN | output | uncached input | cache write | cache read | mean tokens/trial | mean tool calls/trial |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| opus | 1/4 (25.0%) | 0/0 (n/a) | 1/4 (25.0%) | 11,500 | 24,000 | 6,000 | 480,000 | 43,458.3 | 13.6 |
+| sonnet | 2/4 (50.0%) | 0/0 (n/a) | 2/4 (50.0%) | 24,000 | 36,000 | 12,000 | 540,000 | 51,000 | 7.7 |
+
+## FALSE POSITIVES — a non-defect kept -> COSTS A REWORK ROUND
+Denominator: non-defect-truth trials only. A DIFFERENT denominator from the block above.
+| tier | authoritative FP | judgement-call FP | all FP | ungraded | mean tokens/trial | mean tool calls/trial |
+|---|---:|---:|---:|---:|---:|---:|
+| opus | 0/3 (0.0%) | 2/2 (100.0%) | 2/5 (40.0%) | 1 | 43,458.3 | 13.6 |
+| sonnet | 2/4 (50.0%) | 1/2 (50.0%) | 3/6 (50.0%) | 0 | 51,000 | 7.7 |
+
+## SELF-CONSISTENCY — same item, same tier, replicate disagreement
+| tier | replicate pairs | flips | flip rate |
+|---|---:|---:|---:|
+| opus | 4 | 1 | 25.0% |
+| sonnet | 5 | 1 | 20.0% |
+A tier with a low FN rate but a high flip rate is not safer — it is lucky.
+
+## PER-CLASS (the aggregate above is over a deliberately weighted corpus)
+### opus
+| class | FN (defect-truth trials) | FP (non-defect-truth trials) | ungraded |
+|---|---:|---:|---:|
+| mechanically-true-not-a-defect | 0/0 (n/a) | 2/4 (50.0%) | 0 |
+| real-defect | 1/4 (25.0%) | 0/0 (n/a) | 0 |
+| stale-fact | 0/0 (n/a) | 0/1 (0.0%) | 1 |
+
+### sonnet
+| class | FN (defect-truth trials) | FP (non-defect-truth trials) | ungraded |
+|---|---:|---:|---:|
+| mechanically-true-not-a-defect | 0/0 (n/a) | 3/4 (75.0%) | 0 |
+| real-defect | 2/4 (50.0%) | 0/0 (n/a) | 0 |
+| stale-fact | 0/0 (n/a) | 0/2 (0.0%) | 0 |
+
+## TOKEN VOLUME vs BASELINE
+- opus: baseline (43,458.3 mean tokens/trial, 13.6 mean tool calls/trial).
+- sonnet: 51,000 mean tokens/trial vs 43,458.3 for opus — a delta of 7,541.7 (17.4%).
+Re-tiering changes PRICE-PER-TOKEN, not token VOLUME. These are volume figures only.
+
+Excluded from every rate above: 4 trial(s) on historical-only severities (suggestion).
+
+## CAVEATS
+- The corpus is DELIBERATELY WEIGHTED toward mechanically-true-not-a-defect (the class where the tiers diverged). The aggregate is therefore NOT a population estimate of production finding mix — quote the per-class rates.
+- False negatives and false positives have asymmetric cost and structurally different denominators. They are reported separately and are never averaged into an accuracy number.
+- Token figures here are VOLUME, not price. Re-tiering changes price-per-token, not token volume (the initial A/B measured Sonnet at 52.9k vs Opus 48.4k per refuter). Any cost conclusion is a price-per-token argument and must be labelled as such.
+- Historical `suggestion`-severity items are recorded but excluded from every headline rate: phase 6 landed NON_GATING_SEVERITIES = [suggestion], so no refuter is spawned for one again.
+- Ground truth is adjudicated against the PINNED TREE recorded in each item's groundTruth.adjudicatedAgainstCommit — the tree a replay run actually reads — not against the tree the historical refuter read. A finding that was real then and is fixed now is `stale-fact`/defect:false, because that is the correct answer for a refuter reading this tree.

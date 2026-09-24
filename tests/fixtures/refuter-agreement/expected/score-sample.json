@@ -1,0 +1,262 @@
+{
+  "corpus": {
+    "size": 56,
+    "byClass": {
+      "mechanically-true-not-a-defect": 24,
+      "stale-fact": 15,
+      "false-premise": 5,
+      "real-defect": 7,
+      "style-preference": 3,
+      "misread-scope": 2
+    },
+    "byAuthority": {
+      "authoritative": 43,
+      "judgement-call": 13
+    },
+    "byProvenance": {
+      "mined": 44,
+      "constructed": 12
+    },
+    "bySeverity": {
+      "concern": 45,
+      "blocking": 7,
+      "suggestion": 4
+    },
+    "byMode": {
+      "code": 42,
+      "plan": 14
+    },
+    "divergenceClassShare": 42.9,
+    "authoritativeShare": 76.8,
+    "minedShare": 78.6,
+    "defectItems": 7,
+    "nonDefectItems": 49,
+    "driftedItems": 0
+  },
+  "baselineTier": "opus",
+  "tiers": [
+    {
+      "bucket": "opus",
+      "tier": "opus",
+      "arm": null,
+      "authoritativeOnly": {
+        "trials": 8,
+        "ungraded": 1,
+        "defectTrials": 4,
+        "nonDefectTrials": 3,
+        "falseNegatives": 1,
+        "falseNegativeRate": 25,
+        "correctRefutations": 3,
+        "falsePositives": 0,
+        "falsePositiveRate": 0,
+        "correctKeeps": 3
+      },
+      "judgementCallOnly": {
+        "trials": 2,
+        "ungraded": 0,
+        "defectTrials": 0,
+        "nonDefectTrials": 2,
+        "falseNegatives": 0,
+        "falseNegativeRate": null,
+        "correctRefutations": 0,
+        "falsePositives": 2,
+        "falsePositiveRate": 100,
+        "correctKeeps": 0
+      },
+      "all": {
+        "trials": 10,
+        "ungraded": 1,
+        "defectTrials": 4,
+        "nonDefectTrials": 5,
+        "falseNegatives": 1,
+        "falseNegativeRate": 25,
+        "correctRefutations": 3,
+        "falsePositives": 2,
+        "falsePositiveRate": 40,
+        "correctKeeps": 3
+      },
+      "byClass": [
+        {
+          "class": "mechanically-true-not-a-defect",
+          "trials": 4,
+          "ungraded": 0,
+          "defectTrials": 0,
+          "nonDefectTrials": 4,
+          "falseNegatives": 0,
+          "falseNegativeRate": null,
+          "correctRefutations": 2,
+          "falsePositives": 2,
+          "falsePositiveRate": 50,
+          "correctKeeps": 0
+        },
+        {
+          "class": "real-defect",
+          "trials": 4,
+          "ungraded": 0,
+          "defectTrials": 4,
+          "nonDefectTrials": 0,
+          "falseNegatives": 1,
+          "falseNegativeRate": 25,
+          "correctRefutations": 0,
+          "falsePositives": 0,
+          "falsePositiveRate": null,
+          "correctKeeps": 3
+        },
+        {
+          "class": "stale-fact",
+          "trials": 2,
+          "ungraded": 1,
+          "defectTrials": 0,
+          "nonDefectTrials": 1,
+          "falseNegatives": 0,
+          "falseNegativeRate": null,
+          "correctRefutations": 1,
+          "falsePositives": 0,
+          "falsePositiveRate": 0,
+          "correctKeeps": 0
+        }
+      ],
+      "selfConsistency": {
+        "replicatePairs": 4,
+        "replicateFlips": 1,
+        "flipRate": 25
+      },
+      "historicalOnlyTrials": 2,
+      "cost": {
+        "dispatchedTrials": 12,
+        "dispatches": 12,
+        "gradedFindings": 10,
+        "output": 11500,
+        "uncachedInput": 24000,
+        "cacheWrite": 6000,
+        "cacheRead": 480000,
+        "totalTokens": 521500,
+        "meanTokensPerTrial": 43458.3,
+        "meanTokensPerDispatch": 43458.3,
+        "meanTokensPerGradedFinding": 52150,
+        "toolCalls": 163,
+        "meanToolCallsPerTrial": 13.6
+      },
+      "tokenDelta": null
+    },
+    {
+      "bucket": "sonnet",
+      "tier": "sonnet",
+      "arm": null,
+      "authoritativeOnly": {
+        "trials": 8,
+        "ungraded": 0,
+        "defectTrials": 4,
+        "nonDefectTrials": 4,
+        "falseNegatives": 2,
+        "falseNegativeRate": 50,
+        "correctRefutations": 2,
+        "falsePositives": 2,
+        "falsePositiveRate": 50,
+        "correctKeeps": 2
+      },
+      "judgementCallOnly": {
+        "trials": 2,
+        "ungraded": 0,
+        "defectTrials": 0,
+        "nonDefectTrials": 2,
+        "falseNegatives": 0,
+        "falseNegativeRate": null,
+        "correctRefutations": 1,
+        "falsePositives": 1,
+        "falsePositiveRate": 50,
+        "correctKeeps": 0
+      },
+      "all": {
+        "trials": 10,
+        "ungraded": 0,
+        "defectTrials": 4,
+        "nonDefectTrials": 6,
+        "falseNegatives": 2,
+        "falseNegativeRate": 50,
+        "correctRefutations": 3,
+        "falsePositives": 3,
+        "falsePositiveRate": 50,
+        "correctKeeps": 2
+      },
+      "byClass": [
+        {
+          "class": "mechanically-true-not-a-defect",
+          "trials": 4,
+          "ungraded": 0,
+          "defectTrials": 0,
+          "nonDefectTrials": 4,
+          "falseNegatives": 0,
+          "falseNegativeRate": null,
+          "correctRefutations": 1,
+          "falsePositives": 3,
+          "falsePositiveRate": 75,
+          "correctKeeps": 0
+        },
+        {
+          "class": "real-defect",
+          "trials": 4,
+          "ungraded": 0,
+          "defectTrials": 4,
+          "nonDefectTrials": 0,
+          "falseNegatives": 2,
+          "falseNegativeRate": 50,
+          "correctRefutations": 0,
+          "falsePositives": 0,
+          "falsePositiveRate": null,
+          "correctKeeps": 2
+        },
+        {
+          "class": "stale-fact",
+          "trials": 2,
+          "ungraded": 0,
+          "defectTrials": 0,
+          "nonDefectTrials": 2,
+          "falseNegatives": 0,
+          "falseNegativeRate": null,
+          "correctRefutations": 2,
+          "falsePositives": 0,
+          "falsePositiveRate": 0,
+          "correctKeeps": 0
+        }
+      ],
+      "selfConsistency": {
+        "replicatePairs": 5,
+        "replicateFlips": 1,
+        "flipRate": 20
+      },
+      "historicalOnlyTrials": 2,
+      "cost": {
+        "dispatchedTrials": 12,
+        "dispatches": 12,
+        "gradedFindings": 10,
+        "output": 24000,
+        "uncachedInput": 36000,
+        "cacheWrite": 12000,
+        "cacheRead": 540000,
+        "totalTokens": 612000,
+        "meanTokensPerTrial": 51000,
+        "meanTokensPerDispatch": 51000,
+        "meanTokensPerGradedFinding": 61200,
+        "toolCalls": 92,
+        "meanToolCallsPerTrial": 7.7
+      },
+      "tokenDelta": {
+        "baselineTier": "opus",
+        "meanTokensPerTrial": 51000,
+        "baselineMeanTokensPerTrial": 43458.3,
+        "delta": 7541.7,
+        "percent": 17.4
+      }
+    }
+  ],
+  "historicalOnlyTrials": 4,
+  "unknownCorpusIds": [],
+  "caveats": [
+    "The corpus is DELIBERATELY WEIGHTED toward mechanically-true-not-a-defect (the class where the tiers diverged). The aggregate is therefore NOT a population estimate of production finding mix — quote the per-class rates.",
+    "False negatives and false positives have asymmetric cost and structurally different denominators. They are reported separately and are never averaged into an accuracy number.",
+    "Token figures here are VOLUME, not price. Re-tiering changes price-per-token, not token volume (the initial A/B measured Sonnet at 52.9k vs Opus 48.4k per refuter). Any cost conclusion is a price-per-token argument and must be labelled as such.",
+    "Historical `suggestion`-severity items are recorded but excluded from every headline rate: phase 6 landed NON_GATING_SEVERITIES = [suggestion], so no refuter is spawned for one again.",
+    "Ground truth is adjudicated against the PINNED TREE recorded in each item's groundTruth.adjudicatedAgainstCommit — the tree a replay run actually reads — not against the tree the historical refuter read. A finding that was real then and is fixed now is `stale-fact`/defect:false, because that is the correct answer for a refuter reading this tree."
+  ]
+}

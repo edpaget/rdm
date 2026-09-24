@@ -1,0 +1,9 @@
+DRY RUN — label 78289ada7052, shape both: 3 item(s) x 1 tier(s) x 2 replicate(s) = 6 trial(s), plus 2 batched dispatch(es). Nothing dispatched.
+  mined-wf_c8d0fac2-6d9-a6474ce6a4b314fd4|opus|1  (2719 prompt chars)
+  mined-wf_c8d0fac2-6d9-a6474ce6a4b314fd4|opus|2  (2719 prompt chars)
+  mined-wf_c8d0fac2-6d9-a6d801a8595b0078f|opus|1  (3127 prompt chars)
+  mined-wf_c8d0fac2-6d9-a6d801a8595b0078f|opus|2  (3127 prompt chars)
+  mined-wf_c8d0fac2-6d9-a29ede2859745b969|opus|1  (3755 prompt chars)
+  mined-wf_c8d0fac2-6d9-a29ede2859745b969|opus|2  (3755 prompt chars)
+  wf_c8d0fac2-6d9|workflow-token-reduction/phase-1-token-measurement-harness|code|correctness|opus|1  [batched x3]  (7676 prompt chars)
+  wf_c8d0fac2-6d9|workflow-token-reduction/phase-1-token-measurement-harness|code|correctness|opus|2  [batched x3]  (7676 prompt chars)

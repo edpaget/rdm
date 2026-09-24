@@ -1,0 +1,36 @@
+{
+  "instrument": "scripts/mine-refuter-corpus.mjs",
+  "corpusRoot": "<ROOT>",
+  "projectSlugPrefixes": [
+    "-Users-edward-Projects-rdm"
+  ],
+  "until": null,
+  "refuterRecordCount": 9,
+  "recovered": 0,
+  "skips": {
+    "unparseable-finding": 1,
+    "no-transcript": 1,
+    "unrecoverable-dim": 1,
+    "unrecoverable-mode": 1,
+    "no-prompt": 1,
+    "no-verdict": 1,
+    "below-min-group-size": 3
+  },
+  "batchGrouping": {
+    "minGroupSize": 3,
+    "groupCount": 2,
+    "sizeHistogram": {
+      "1": 2
+    },
+    "sizeHistogramByMode": {
+      "code": {
+        "1": 2
+      }
+    },
+    "qualifyingGroups": 0,
+    "qualifyingItems": 0,
+    "unrecoverableUnitExcluded": 1,
+    "nonGatingExcluded": 0
+  },
+  "items": []
+}

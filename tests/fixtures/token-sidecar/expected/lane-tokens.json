@@ -1,0 +1,239 @@
+{
+  "projectsRoot": "<ROOT>",
+  "runsConsidered": 2,
+  "recordCount": 9,
+  "byAgentClass": [
+    {
+      "key": "fetch",
+      "agentCount": 1,
+      "dedupedRequestCount": 2,
+      "output": 170,
+      "uncachedInput": 180,
+      "cacheWrite": 500,
+      "cacheRead": 500
+    },
+    {
+      "key": "find",
+      "agentCount": 2,
+      "dedupedRequestCount": 1,
+      "output": 1500,
+      "uncachedInput": 40,
+      "cacheWrite": 1000,
+      "cacheRead": 2000
+    },
+    {
+      "key": "gate",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 400,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    },
+    {
+      "key": "implement",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 0,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    },
+    {
+      "key": "plan",
+      "agentCount": 1,
+      "dedupedRequestCount": 1,
+      "output": 80,
+      "uncachedInput": 60,
+      "cacheWrite": 200,
+      "cacheRead": 100
+    },
+    {
+      "key": "refute",
+      "agentCount": 2,
+      "dedupedRequestCount": 0,
+      "output": 1450,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    },
+    {
+      "key": "stamp",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 0,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    }
+  ],
+  "byLabel": [
+    {
+      "key": "fetch:task-meta",
+      "agentCount": 1,
+      "dedupedRequestCount": 2,
+      "output": 170,
+      "uncachedInput": 180,
+      "cacheWrite": 500,
+      "cacheRead": 500
+    },
+    {
+      "key": "find:code:ac",
+      "agentCount": 1,
+      "dedupedRequestCount": 1,
+      "output": 300,
+      "uncachedInput": 40,
+      "cacheWrite": 1000,
+      "cacheRead": 2000
+    },
+    {
+      "key": "find:code:correctness",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 1200,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    },
+    {
+      "key": "gate:mechanical",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 400,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    },
+    {
+      "key": "implement:worktree",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 0,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    },
+    {
+      "key": "plan:author",
+      "agentCount": 1,
+      "dedupedRequestCount": 1,
+      "output": 80,
+      "uncachedInput": 60,
+      "cacheWrite": 200,
+      "cacheRead": 100
+    },
+    {
+      "key": "refute:code:ac-1",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 800,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    },
+    {
+      "key": "refute:code:correctness-1",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 650,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    },
+    {
+      "key": "stamp:in-progress",
+      "agentCount": 1,
+      "dedupedRequestCount": 0,
+      "output": 0,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    }
+  ],
+  "byModel": [
+    {
+      "key": "claude-opus-5[1m]",
+      "agentCount": 3,
+      "dedupedRequestCount": 2,
+      "output": 1620,
+      "uncachedInput": 180,
+      "cacheWrite": 500,
+      "cacheRead": 500
+    },
+    {
+      "key": "claude-sonnet-5",
+      "agentCount": 4,
+      "dedupedRequestCount": 2,
+      "output": 1580,
+      "uncachedInput": 100,
+      "cacheWrite": 1200,
+      "cacheRead": 2100
+    },
+    {
+      "key": "haiku",
+      "agentCount": 2,
+      "dedupedRequestCount": 0,
+      "output": 400,
+      "uncachedInput": 0,
+      "cacheWrite": 0,
+      "cacheRead": 0
+    }
+  ],
+  "byWorkflow": [
+    {
+      "key": "autopilot",
+      "agentCount": 3,
+      "dedupedRequestCount": 1,
+      "output": 480,
+      "uncachedInput": 60,
+      "cacheWrite": 200,
+      "cacheRead": 100
+    },
+    {
+      "key": "dispatch-phase",
+      "agentCount": 6,
+      "dedupedRequestCount": 3,
+      "output": 3120,
+      "uncachedInput": 220,
+      "cacheWrite": 1500,
+      "cacheRead": 2500
+    }
+  ],
+  "floorByAgentClass": [
+    {
+      "key": "fetch",
+      "n": 1,
+      "minTokens": 800,
+      "p10Tokens": 800,
+      "medianTokens": 800,
+      "meanTokens": 800
+    },
+    {
+      "key": "find",
+      "n": 1,
+      "minTokens": 3040,
+      "p10Tokens": 3040,
+      "medianTokens": 3040,
+      "meanTokens": 3040
+    },
+    {
+      "key": "plan",
+      "n": 1,
+      "minTokens": 360,
+      "p10Tokens": 360,
+      "medianTokens": 360,
+      "meanTokens": 360
+    }
+  ],
+  "totalsDiscrepancy": {
+    "sidecarTotalTokens": 9200,
+    "dedupedTotalTokens": 8180,
+    "delta": 1020
+  },
+  "warnings": [
+    "no transcript found for agent agent-fc in run wf_run001; falling back to sidecar tokens",
+    "no transcript found for agent agent-ra1 in run wf_run001; falling back to sidecar tokens",
+    "no transcript found for agent agent-rc1 in run wf_run001; falling back to sidecar tokens",
+    "no transcript found for agent agent4 in run wf_run002; falling back to sidecar tokens"
+  ]
+}

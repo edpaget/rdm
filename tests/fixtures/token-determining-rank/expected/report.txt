@@ -1,0 +1,62 @@
+Refuter spend by graded finding severity — 3 run(s), 26 agent record(s)
+Corpus: <ROOT>
+
+| severity | agents | graded | refuted | refuted rate | output | uncached input | cache write | cache read | all tokens | fresh tokens |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| blocking | 10 | 10 | 5 | 50% | 184 | 234 | 1,134 | 10,134 | 11,686 | 1,552 |
+| concern | 2 | 2 | 0 | 0% | 39 | 49 | 229 | 2,029 | 2,346 | 317 |
+| **refute total** | **12** | | | | 223 | 283 | 1,363 | 12,163 | **14,032** | **1,869** |
+
+`graded` counts refuters whose returned verdict was recoverable from the transcript; the
+rate is over those, not over every dispatched refuter.
+
+Projected drop (severities suggestion, measured over the historical corpus): 0 refuter(s) not spawned — 0% of all refuters, 0% of refuter tokens, 0% of all lane tokens.
+  0 tokens (0 excluding cache reads).
+
+No post-change lane corpus exists: every run above executed pre-change code. This is an
+exact accounting of what non-gating refutation actually cost, not a forecast.
+
+Findings per finder, by mode and dimension:
+
+| mode | dim | n | min | p50 | p90 | max | refuters dispatched |
+|---|---|---:|---:|---:|---:|---:|---:|
+| code | ac | 6 | 0 | 0 | 1 | 1 | 0 |
+| code | correctness | 5 | 1 | 2 | 3.2 | 4 | 11 |
+| plan | architectural-fit | 1 | 0 | 0 | 0 | 0 | 0 |
+| plan | coherence | 2 | 1 | 1 | 1 | 1 | 1 |
+
+Unreadable finder transcripts: 0. Finders with an unresolved label: 0. Neither contributes to any row above.
+
+Refuters dispatched per review unit (unit identity from each refuter's own prompt):
+
+| units | min | p50 | p90 | max |
+|---:|---:|---:|---:|---:|
+| 7 | 1 | 1 | 2.8000000000000007 | 4 |
+
+Unit recovered for 12/12 refuters (100%); 0 unrecoverable (never bucketed into any unit).
+
+Rank of the outcome-determining finding, over each unit's full CANDIDATE list
+(ranking among survivors is degenerate — severity sorts first, so it is always 1):
+
+| rank | units |
+|---:|---:|
+| 1 | 1 |
+| 2 | 1 |
+| 4 | 1 |
+
+| units | determining | non-determining | unrecoverable | recoverable | recoverable share |
+|---:|---:|---:|---:|---:|---:|
+| 7 | 3 | 2 | 2 | 5 | 71.4% |
+
+Determining finding within top 3: 2 unit(s) — 66.7% of determining units, 40% of recoverable units, over a recoverable share of 71.4% (5/7 units).
+Determining finding within top 5: 3 unit(s) — 100% of determining units, 60% of recoverable units, over a recoverable share of 71.4% (5/7 units).
+
+| unrecoverable reason | units |
+|---|---:|
+| unknown-disposition-above-determining | 1 |
+| dimension-coverage-gap | 1 |
+
+Orphan agents (unit identity unresolvable, attributable to no unit and therefore invalidating none): 1 finder(s), 0 refuter(s), across 1 run(s).
+Units whose `ac` table carried a FAIL/PARTIAL (a second outcome channel this measurement does not score): 1.
+Tier is not recoverable from either prompt; at the `large` blocker set (blocking+concern) the same corpus yields 5 determining unit(s), 4 within top 3, 5 within top 5.
+Cap verdict (derived, not asserted): inconclusive.
