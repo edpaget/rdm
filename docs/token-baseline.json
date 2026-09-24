@@ -1480,7 +1480,7 @@
         "projected.percentOfLaneTokens"
       ],
       "checkGatedBy": "node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json (recomputes over the real corpus; requires the sidecars, so it is run by hand, not by the harness)",
-      "auditGatedBy": "node scripts/measure-refuter-severity.mjs --audit docs/token-baseline.json, run by scripts/verify-token-report.sh section 6 — corpus-free arithmetic audit (rows sum to refuteTotals, projected re-derives from the rows, every refutedRate is its own quotient), so the committed figures are gated on any machine.",
+      "auditGatedBy": "cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-severity --audit docs/token-baseline.json, run under cargo nextest run by rdm-devtools::measure_refuter_severity audit_committed_baseline_ok — corpus-free arithmetic audit (rows sum to refuteTotals, projected re-derives from the rows, every refutedRate is its own quotient), so the committed figures are gated on any machine.",
       "provenanceOnly": [
         "description",
         "method",
@@ -1673,7 +1673,7 @@
         "refuterCountsByUnit.recoveryRatePercent"
       ],
       "checkGatedBy": "node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json (recomputes over the real corpus; requires the sidecars, so it is run by hand, not by the harness)",
-      "auditGatedBy": "node scripts/measure-refuter-severity.mjs --audit docs/token-baseline.json, run by scripts/verify-token-report.sh section 6 — corpus-free arithmetic audit (every row’s min <= p50 <= p90 <= max, recoveredRefuters + unrecoverableRefuterCount === totalRefuters, recoveryRatePercent re-derives), so the committed figures are gated on any machine.",
+      "auditGatedBy": "cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-severity --audit docs/token-baseline.json, run under cargo nextest run by rdm-devtools::measure_refuter_severity audit_committed_baseline_ok — corpus-free arithmetic audit (every row’s min <= p50 <= p90 <= max, recoveredRefuters + unrecoverableRefuterCount === totalRefuters, recoveryRatePercent re-derives), so the committed figures are gated on any machine.",
       "provenanceOnly": [
         "description",
         "method",
@@ -1883,7 +1883,7 @@
         "capVerdict.verdict"
       ],
       "checkGatedBy": "node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json (recomputes over the real corpus; requires the sidecars, so it is run by hand, not by the harness)",
-      "auditGatedBy": "node scripts/measure-refuter-severity.mjs --audit docs/token-baseline.json, run by scripts/verify-token-report.sh section 7 — corpus-free arithmetic audit (determining + nonDetermining + unrecoverable === total; unrecoverableByReason sums to units.unrecoverable and every reason is in the closed vocabulary, with no run-wide reason admitted; rankHistogram sums to units.determining; withinTop is monotone in n and bounded by determining; every percentage re-derives from the doc's own counts; largeTier is monotone above the default tier; and capVerdict.verdict is RE-DERIVED via deriveCapVerdict/CAP_VERDICT_RULE), so the committed figures and the supports/kills conclusion are gated on any machine.",
+      "auditGatedBy": "cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-severity --audit docs/token-baseline.json, run under cargo nextest run by rdm-devtools::measure_refuter_severity audit_committed_baseline_ok (the verdict re-derivation also by the rdm-devtools unit test measure::refuter_severity::doc::tests::committed_verdict_rederives_only_under_the_real_rule) — corpus-free arithmetic audit (determining + nonDetermining + unrecoverable === total; unrecoverableByReason sums to units.unrecoverable and every reason is in the closed vocabulary, with no run-wide reason admitted; rankHistogram sums to units.determining; withinTop is monotone in n and bounded by determining; every percentage re-derives from the doc's own counts; largeTier is monotone above the default tier; and capVerdict.verdict is RE-DERIVED via deriveCapVerdict/CAP_VERDICT_RULE), so the committed figures and the supports/kills conclusion are gated on any machine.",
       "provenanceOnly": [
         "description",
         "method",

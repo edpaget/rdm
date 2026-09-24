@@ -19,8 +19,8 @@ token-saving claims against this snapshot, using the comparison unit named in
 
 ## Tool renames
 
-The JavaScript instruments this document (and `docs/token-baseline.json`, which
-stays byte-unchanged as the frozen record) names were ported to the
+The JavaScript instruments this document (and `docs/token-baseline.json`, whose
+figures stay unchanged as the frozen record) names were ported to the
 repository-only Rust binary `rdm-measure` (crate `rdm-devtools`, never shipped).
 Flags and report schemas are unchanged except that each report's `instrument`
 field now names the Rust command, and `run-refuter-agreement.mjs --dispatch-stub
@@ -40,6 +40,13 @@ table:
 JavaScript runtime; measuring (`refuter-severity` without `--audit`) and
 `refuter-agreement --dry-run`/real runs call the canonical `review.mjs` decisions
 through the workflow binding and need Node.
+
+The JSON's recorded commands (`regenerateCommand`, `checkGatedBy` and the like)
+are left as they were run and read through the table above, with one exception:
+the three `auditGatedBy` fields claimed a live gate, so they now name the
+current one — `rdm-measure refuter-severity --audit`, run under nextest by
+`measure_refuter_severity::audit_committed_baseline_ok`. No test compares the
+file's bytes; the audits and tests parse it and read only its figures.
 
 ## Methodology
 
