@@ -193,18 +193,21 @@ const DIMENSIONS = {
     //|code|   PARTIAL with evidence (file:line, test name). Flag any criterion that is
     //|code|   unmet, ambiguous, or untestable. The per-criterion table is the contract
     //|code|   and is reported intact. **Severity contract (code mode only):** a
-    //|code|   criterion the target's own body defers or bounds — a scope decision
-    //|code|   recorded before the work began, e.g. an Approach or Out-of-scope note —
-    //|code|   is not a gap; rate it PASS as scoped. A criterion caveated or deferred
-    //|code|   for the first time in the implementation diff or its commentary, with
-    //|code|   no antecedent in the body, has NOT been met, regardless of partial
-    //|code|   implementation — it MUST be reported as a `blocking` finding in the
-    //|code|   optional `findings` array, never as PASS in the `ac` table.
+    //|code|   criterion is honored as scoped only when the body declares the deferral
+    //|code|   OUTSIDE the criterion itself — e.g. an Approach or Out-of-scope note —
+    //|code|   and the criterion's own wording already excludes the deferred part; rate
+    //|code|   it PASS as scoped. A caveat or exception written INSIDE the criterion
+    //|code|   text itself ("supports all operators except regex, deferred to phase 2")
+    //|code|   is still unmet, whether or not it is also named as a deferral elsewhere.
+    //|code|   A criterion caveated or deferred for the first time in the implementation
+    //|code|   diff or its commentary, with no antecedent in the body, is likewise unmet
+    //|code|   — it MUST be reported as a `blocking` finding in the optional `findings`
+    //|code|   array, never as PASS in the `ac` table.
     {
       key: 'ac',
       title: 'AC compliance',
       focus:
-        "For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable. Severity contract (code mode only): a criterion the target's own body defers or bounds — a scope decision recorded before the work began, e.g. an Approach or Out-of-scope note — is not a gap; rate it PASS as scoped. A criterion caveated or deferred for the first time in the implementation diff or its commentary, with no antecedent in the body, has NOT been met, regardless of partial implementation — it MUST be reported as a `blocking` finding in the optional `findings` array, never as PASS in the `ac` table.",
+        'For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable. Severity contract (code mode only): a criterion is honored as scoped only when the body declares the deferral OUTSIDE the criterion itself — e.g. an Approach or Out-of-scope note — and the criterion\'s own wording already excludes the deferred part; rate it PASS as scoped. A caveat or exception written INSIDE the criterion text itself ("supports all operators except regex, deferred to phase 2") is still unmet, whether or not it is also named as a deferral elsewhere. A criterion caveated or deferred for the first time in the implementation diff or its commentary, with no antecedent in the body, is likewise unmet — it MUST be reported as a `blocking` finding in the optional `findings` array, never as PASS in the `ac` table.',
     },
     //|code| - **correctness** — include it on every implementation review; there is no
     //|code|   diff shape that makes logic errors uninteresting. Logic bugs, edge cases, race conditions, and
@@ -664,7 +667,7 @@ function findPrompt(mode, dim, context) {
         "single criterion's status.",
       'Take the criterion identities from the target item\'s own acceptance-criteria section, verbatim, in the order they appear there — return exactly one `ac` row per criterion.',
       'Only leave `ac` empty if the target states no acceptance criteria at all — report that itself as a `findings` entry.',
-      'Severity contract (code mode only): a criterion the target\'s own body defers or bounds — a scope decision recorded in the body you read above, before the work began — is not a gap; rate it PASS as scoped. A criterion caveated or deferred for the first time in the implementation diff or its commentary, with no antecedent in the body, is NOT met: report it as a `blocking` findings-array entry (concern: "ac"), never as PASS in the ac table, even if partially implemented.',
+      'Severity contract (code mode only): a criterion is honored as scoped only when the body you read above declares the deferral OUTSIDE the criterion itself — e.g. an Approach or Out-of-scope note — and the criterion\'s own wording already excludes the deferred part; rate it PASS as scoped. A caveat or exception written INSIDE the criterion text itself ("supports all operators except regex, deferred to phase 2") is still unmet, whether or not it is also named as a deferral elsewhere. A criterion caveated or deferred for the first time in the implementation diff or its commentary, with no antecedent in the body, is likewise unmet: report it as a `blocking` findings-array entry (concern: "ac"), never as PASS in the ac table, even if partially implemented.',
     ].join('\n');
   }
   const lines = [

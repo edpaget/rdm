@@ -3275,7 +3275,7 @@ const libPath = process.argv[2];
 const staticCheckMode = process.argv[3]; // 'expect-present' | 'expect-absent-focus' | 'expect-absent-findprompt'
 const { DIMENSIONS, findPrompt, buildReviewPipeline, classifyOutcome } = await import(pathToFileURL(libPath).href);
 
-const FOCUS_PHRASE = 'has NOT been met, regardless of partial implementation';
+const FOCUS_PHRASE = 'is still unmet, whether or not it is also named as a deferral elsewhere';
 const FINDPROMPT_PHRASE = 'report it as a `blocking` findings-array entry';
 
 const acDim = DIMENSIONS.code.find((d) => d.key === 'ac');
@@ -3373,7 +3373,7 @@ fi
 DEFAC_MUT="$TMP/deferred-ac-mut"
 mkdir -p "$DEFAC_MUT"
 
-sed 's/has NOT been met/has definitely been met/' "$LIB" >"$DEFAC_MUT/focus-stripped.mjs"
+sed 's/is still unmet, whether or not it is also named as a deferral elsewhere/is now considered fully met/' "$LIB" >"$DEFAC_MUT/focus-stripped.mjs"
 if diff -q "$LIB" "$DEFAC_MUT/focus-stripped.mjs" >/dev/null 2>&1; then
     fail "14-mut: the focus-phrase mutation did not apply — the anchor text moved"
 fi

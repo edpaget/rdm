@@ -156,13 +156,16 @@ Rank survivors most-severe first, then by confidence descending, then by id.
   PARTIAL with evidence (file:line, test name). Flag any criterion that is
   unmet, ambiguous, or untestable. The per-criterion table is the contract
   and is reported intact. **Severity contract (code mode only):** a
-  criterion the target's own body defers or bounds — a scope decision
-  recorded before the work began, e.g. an Approach or Out-of-scope note —
-  is not a gap; rate it PASS as scoped. A criterion caveated or deferred
-  for the first time in the implementation diff or its commentary, with
-  no antecedent in the body, has NOT been met, regardless of partial
-  implementation — it MUST be reported as a `blocking` finding in the
-  optional `findings` array, never as PASS in the `ac` table.
+  criterion is honored as scoped only when the body declares the deferral
+  OUTSIDE the criterion itself — e.g. an Approach or Out-of-scope note —
+  and the criterion's own wording already excludes the deferred part; rate
+  it PASS as scoped. A caveat or exception written INSIDE the criterion
+  text itself ("supports all operators except regex, deferred to phase 2")
+  is still unmet, whether or not it is also named as a deferral elsewhere.
+  A criterion caveated or deferred for the first time in the implementation
+  diff or its commentary, with no antecedent in the body, is likewise unmet
+  — it MUST be reported as a `blocking` finding in the optional `findings`
+  array, never as PASS in the `ac` table.
 - **correctness** — include it on every implementation review; there is no
   diff shape that makes logic errors uninteresting. Logic bugs, edge cases, race conditions, and
   error paths, judged against the error-handling conventions the project
