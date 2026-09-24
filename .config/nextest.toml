@@ -32,10 +32,11 @@ test-group = "server-integration"
 filter = "package(rdm-devtools)"
 slow-timeout = { period = "20s", terminate-after = 3 }
 
-# The workflow component tests drive a Node child per test through
-# rdm_devtools::workflow; a hung host must fail the run rather than hang it.
+# The workflow component tests and the Codex runtime process tests drive a
+# Node child per test through rdm_devtools::workflow; a hung host must fail
+# the run rather than hang it.
 [[profile.default.overrides]]
-filter = "package(rdm-cli) & (binary(workflow_review) | binary(workflow_passes) | binary(distribution))"
+filter = "package(rdm-cli) & (binary(workflow_review) | binary(workflow_passes) | binary(distribution) | binary(codex_process))"
 slow-timeout = { period = "30s", terminate-after = 4 }
 
 # Phase-6 negative controls: each first ensures an isolated mutant build of
