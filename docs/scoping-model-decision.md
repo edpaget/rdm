@@ -154,7 +154,7 @@ WARN: mutations are staged, not committed. They are attributed to changeset
 X-Rdm-Staged. Reconcile with: rdm commit --changeset <id>
 ```
 
-Gated by `rdm-server/tests/mutation_policy.rs` (a real bound listener over a real git-backed plan repo: the staging default does not advance HEAD and does report itself; `--autocommit` lands a commit scoped to this changeset's own paths) and by `ServerOptions`' unit tests in `rdm-server/src/state.rs`. `scripts/verify-scoped-commit.sh` § E3 gates the reconciliation half with real separate processes.
+Gated by `rdm-server/tests/mutation_policy.rs` (a real bound listener over a real git-backed plan repo: the staging default does not advance HEAD and does report itself; `--autocommit` lands a commit scoped to this changeset's own paths) and by `ServerOptions`' unit tests in `rdm-server/src/state.rs`. `rdm-cli/tests/cli_commit.rs`'s `commit_by_changeset_id_is_the_orphan_recovery_path` and `status_defaults_to_the_callers_changeset_and_all_shows_everything` gate the reconciliation half with real separate `rdm` processes under distinct session ids (see [`test-migration-inventory.md`](test-migration-inventory.md) § 9, row E3).
 
 Phase 7 owns the agent-facing instruction rewrite for this surface.
 
