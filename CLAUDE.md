@@ -211,7 +211,7 @@ The dispatch also stamps the target phase/task `in-progress` itself, best-effort
 cargo build   # ALWAYS run this before any rdm command
 ```
 
-`.mise.toml` sets `$RDM_BIN` to this checkout's build (`target/debug/rdm`) — the same convention `AGENTS.md` and the Claude Code skills already use. Run every rdm command in this repo as `"$RDM_BIN" <command>` (or `"${RDM_BIN:-rdm}"`), never a bare `rdm`, which risks a stale global install. If you modify any rdm source code, `cargo build` again before running further rdm commands.
+`.mise.toml` sets `$RDM_BIN` to the checkout the session started in, which stays wrong inside a roadmap or task worktree — `$RDM_BIN` must always name the build of the checkout you're editing. After `cd`-ing into a worktree, rebind it (`export RDM_BIN="$PWD/target/debug/rdm"`, mirroring `AGENTS.md`'s "rebind `RDM_BIN` to the returned checkout"), or just run that checkout's `./target/debug/rdm` directly. Run every rdm command as `"$RDM_BIN" <command>` (or `"${RDM_BIN:-rdm}"`), never a bare `rdm`, which risks a stale global install. If you modify any rdm source code, `cargo build` again before running further rdm commands.
 
 ### Hard rule — no direct access to the plan repo
 
@@ -219,7 +219,7 @@ Do NOT use the Read, Glob, Grep, or Bash tools to read, search, list, or modify 
 
 ### CLI usage
 
-`"$RDM_BIN" agent-config claude` prints rdm's full CLI usage guide (discovering work, reading, searching, updating status, document reviews, linking, creating items, status transitions, session-scoped commits); the same content lives in `rdm-core/src/templates/instructions-cli.md`. Substitute `"$RDM_BIN"` for the bare `rdm` it shows, and `--project rdm` for `{proj_flag}`.
+`"$RDM_BIN" agent-config claude --project rdm` prints rdm's full CLI usage guide (discovering work, reading, searching, updating status, document reviews, linking, creating items, status transitions, session-scoped commits) with `--project rdm` already filled in, instead of the guide's own `--project <PROJECT>` placeholder; the same content lives in `rdm-core/src/templates/instructions-cli.md`. Substitute `"$RDM_BIN"` for the bare `rdm` it shows.
 
 This repo also enables `plan_review` (see "Plan review" below) and `gates.reviewed` on its own plan data — see [`docs/core-enforced-gates.md`](docs/core-enforced-gates.md) for the latter's config and override policy.
 

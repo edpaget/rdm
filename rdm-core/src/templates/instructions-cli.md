@@ -18,11 +18,11 @@ rdm task list {proj_flag} --tag bug        # list open tasks carrying tag "bug"
 rdm task list {proj_flag} --tag bug --tag ui  # ANDs across tags — must carry every listed tag
 ```
 
-`--tag` is repeatable on both `roadmap list` and `task list` (each extra flag
-narrows further; matching is exact and case-sensitive). Passing no `--tag` at
-all imposes no tag constraint. When any listed item carries tags, list output
-gains a trailing `Tags` column — or, for the default `roadmap list` view, a
-` [tags: a, b]` suffix on each tagged line.
+`--tag` is repeatable on `roadmap list`, `task list`, the top-level `rdm list`,
+and `search` (each extra flag narrows further; matching is exact and
+case-sensitive). Passing no `--tag` at all imposes no tag constraint. When any
+listed item carries tags, list output gains a trailing `Tags` column — or, for
+the default `roadmap list` view, a ` [tags: a, b]` suffix on each tagged line.
 
 ## Reading details
 
