@@ -11,4 +11,14 @@
 #[macro_use]
 mod support;
 
+#[path = "../git_test_support.rs"]
+mod git_test_support;
+
+mod budget;
+mod coverage;
+mod engine;
+mod generators;
+mod outcome;
+mod persist;
 mod pipeline;
+mod plan;

@@ -338,18 +338,13 @@ impl Agent {
     /// `{ findings: findings[dim] or [] }`; refuter `refute:<mode>:<id>`
     /// returns `verdicts[id]` or `{ refuted: false, confidence: 90 }`.
     pub fn planted(findings: Value, verdicts: Value) -> Self {
-        Self::scripted(move |call| match parse_label(&call.label) {
-            Label::Find { dim, .. } => Reply::Value(json!({
-                "findings": findings.get(&dim).cloned().unwrap_or_else(|| json!([]))
-            })),
-            Label::Refute { id, .. } => Reply::Value(
-                verdicts
-                    .get(&id)
-                    .cloned()
-                    .unwrap_or_else(|| json!({ "refuted": false, "confidence": 90 })),
-            ),
-            Label::Other => Reply::Throw(format!("unexpected agent label: {}", call.label)),
-        })
+        Self::scripted(move |call| planted_reply(&findings, &verdicts, call))
+    }
+
+    /// What this agent's script would answer to `call`, without recording
+    /// it — for composing an override on top of a planted agent.
+    pub fn reply_for(&self, call: &AgentCall) -> Reply {
+        (self.state.borrow_mut().script)(call)
     }
 
     /// Holds replies to calls whose label starts with `prefix` until `count`
@@ -460,6 +455,22 @@ impl Agent {
     /// Every `log` message.
     pub fn logs(&self) -> Vec<String> {
         self.state.borrow().logs.clone()
+    }
+}
+
+/// The [`Agent::planted`] reply rule.
+pub fn planted_reply(findings: &Value, verdicts: &Value, call: &AgentCall) -> Reply {
+    match parse_label(&call.label) {
+        Label::Find { dim, .. } => Reply::Value(json!({
+            "findings": findings.get(&dim).cloned().unwrap_or_else(|| json!([]))
+        })),
+        Label::Refute { id, .. } => Reply::Value(
+            verdicts
+                .get(&id)
+                .cloned()
+                .unwrap_or_else(|| json!({ "refuted": false, "confidence": 90 })),
+        ),
+        Label::Other => Reply::Throw(format!("unexpected agent label: {}", call.label)),
     }
 }
 
