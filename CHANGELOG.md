@@ -85,12 +85,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `rdm-dispatch-phase` now resolves full model + effort profiles and runs the planner, implementer, finders and refuters at their resolved effort. The planner and implementer are dispatched through new `rdm-effort-<level>` agent definitions, installed by `rdm agent-config claude --skills` and shipped in the `rdm` plugin.
 
-### Fixed
-
-- **`docs/authoring-grammar.md` rubric rule 3 now correctly requires acceptance criteria to declare known deferrals at authoring time.** The previous version (commit 31124d3) inverted the rule and forbade declaring deferrals in criteria, contradicting the phase's acceptance criterion and the approved plan specification. Deferral declaration now means bounding the criterion's scope so gaps fall outside it, and naming the deferred work explicitly in the phase body (e.g., in `## Approach` or a separate follow-up section) — not declaring it as a caveat within the criterion itself. A deferral first discovered at review time becomes a blocking finding under a contract the author never saw; the fix prevents that failure mode. Rule 2's failure-mode text is also corrected to be consistent.
-
-- **`docs/authoring-grammar.md` corrects the attribution of `## Key code` section writing.** The inventory now accurately reflects that only the Codex rdm-do instructions request this section; the Claude rdm-do skill no longer appends it. The entry is marked "legacy on other surfaces" to match the existing treatment of `## Estimate`.
-
 ### Changed
 
 - The shipped `rdm-dispatch-phase` skill now states up front that the orchestrator is authorized to invoke `--override-gate` for the narrow stale-review waiver case, instead of leading with "operator-only" and correcting it afterward — a framing that had caused a Claude Code auto-mode classifier to deny a legitimate, in-procedure override and force an unnecessary manual approval. The four conditions for the waiver are unchanged, and the audited `<reason>` string must now also cite the authorizing skill section (e.g. "per rdm-dispatch-phase § 'The terminal write' stale-review waiver"), not just the review id and both HEADs. Applies to `.claude/skills/rdm-dispatch-phase/SKILL.md`, the shipped CLI template, and the checked-in plugin tree at `plugins/rdm/skills/dispatch-phase/SKILL.md`.
