@@ -779,14 +779,57 @@ fn runtime_model_resolution_process_cannot_change_phase_policy_silently() {
 #[cfg(unix)]
 fn process_timeout_reaps_descendants_before_late_effects() {
     use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
     let fixture = Fixture::new();
     let binary = fixture.root.join("fake-codex");
-    fs::write(&binary,"#!/bin/sh\ncat >/dev/null\n(sleep 1; touch late-effect) &\necho $! > descendant-pid\nwait\n").unwrap();
+    // The descendant's late effect is gated on a `release` marker the test
+    // creates only after the runtime has timed out, not on a clock, so the
+    // only timing assumption left is that `sh` records the descendant within
+    // the (generous) timeout. The poll is bounded so a leaked descendant
+    // cannot outlive the test by more than ~10 s.
+    fs::write(
+        &binary,
+        "#!/bin/sh\ncat >/dev/null\n\
+         (i=0; while [ ! -f release ] && [ $i -lt 200 ]; do sleep 0.05; i=$((i+1)); done; touch late-effect) &\n\
+         echo $! > descendant-pid\nwait\n",
+    )
+    .unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
-    let error=bridge::invoke("scripts/lib/codex-process.mjs","runCodex",json!([{"bin":binary,"cwd":fixture.root,"prompt":"fixture","schema":{"type":"object","properties":{},"required":[],"additionalProperties":false},"model":"fixture-model","effort":"medium","timeoutMs":100}]),|_,_|panic!()).unwrap_err();
+    let error = bridge::invoke(
+        "scripts/lib/codex-process.mjs",
+        "runCodex",
+        json!([{"bin":binary,"cwd":fixture.root,"prompt":"fixture","schema":{"type":"object","properties":{},"required":[],"additionalProperties":false},"model":"fixture-model","effort":"medium","timeoutMs":1500}]),
+        |_, _| panic!(),
+    )
+    .unwrap_err();
     assert!(error.contains("timed out"), "{error}");
-    assert!(fixture.root.join("descendant-pid").exists());
-    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let pid: u32 = fs::read_to_string(fixture.root.join("descendant-pid"))
+        .expect("the fake records its descendant well inside the 1.5 s timeout")
+        .trim()
+        .parse()
+        .unwrap();
+    let alive = || {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while alive() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let survived = alive();
+    if survived {
+        let _ = Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .status();
+    }
+    assert!(!survived, "descendant {pid} survived the timeout");
+    // Positive control: a descendant that survived would now land its effect
+    // within one 50 ms poll; a reaped one never can.
+    fs::write(fixture.root.join("release"), "").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
     assert!(!fixture.root.join("late-effect").exists());
 }
 
