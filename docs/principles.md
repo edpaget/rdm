@@ -54,9 +54,11 @@ Keeping I/O out of the library makes core a pure-logic crate: no filesystem assu
 
 ---
 
-## 4. All Code Must Be Tested
+## 4. Tests Observe Behavior; Be Honest About Gaps
 
-Every behavior must be covered by automated tests. There are no exceptions for glue code or simple wrappers.
+Every behavior must be covered by automated tests. A test runs the code and observes what it does. Tests never assert that a string is present in or absent from a source, template, prose, or `CHANGELOG.md` file — planted-mutation self-tests do not make such a check evidence of behavior. Regenerating a generated artifact and comparing it to a committed copy is not a text check. A test that breaks on a correct refactor is a defect.
+
+When a behavior cannot be exercised (a model following a prompt, the real Claude host runtime, a live account), state the gap where the item's review will see it — e.g. "verified by dogfooding" or "not covered". Do not cover it with a vacuous test.
 
 - **Follow TDD.** Write a failing test first, then the minimum code to make it pass, then refactor.
 - **Unit tests live next to the code.** Use `#[cfg(test)] mod tests` in the same file. Test internal logic through the module's public interface.
@@ -66,7 +68,7 @@ Every behavior must be covered by automated tests. There are no exceptions for g
 
 ### Why
 
-Tests are the primary defense against regressions. Core's `Store` abstraction lets unit tests run entirely in-memory — fast and deterministic — while CLI and server integration tests exercise the real filesystem and HTTP stack to catch I/O bugs. TDD keeps the design testable from the start rather than bolting tests on after the fact.
+Tests are the primary defense against regressions. A test that asserts file text in lieu of exercising behavior is vacuous — it confirms the test exists, not that the code works. Core's `Store` abstraction lets unit tests run entirely in-memory — fast and deterministic — while CLI and server integration tests exercise the real filesystem and HTTP stack to catch I/O bugs. TDD keeps the design testable from the start. When behavior cannot be exercised (e.g., a prompt reaching Claude's host runtime, a live user account), stating the gap is more useful than a cheated test — it is an actionable record of what the item's review must cover outside automated tests.
 
 ---
 
@@ -193,13 +195,42 @@ Every commit follows the [Conventional Commits](https://www.conventionalcommits.
 - **Changelog follows Keep a Changelog.** An `[Unreleased]` section collects pending changes. Categories: Added, Changed, Deprecated, Removed, Fixed, Security. Entries move to a versioned section on release.
 - **The entry lands in the same commit as the change.** A user-facing change and its changelog entry are one commit — entries are never deferred to a follow-up or batched at release time.
 - **Commits tell *why*, not *what*.** The diff shows what changed. The commit message explains the motivation.
+- **No test, harness, or CI step may assert on `CHANGELOG.md`.** Never assert that `[Unreleased]` contains a word, names a file, or describes a feature; never assert it is co-staged with a code change; never write a planted-mutation self-test over the changelog body. Release automation moves the whole `[Unreleased]` body into a versioned section, so any such check goes red on `main` the moment a release lands. The changelog rule is enforced by review, not by a gate. Assert on the code or the emitted artifact, never on the prose describing it.
 
 ### Why
 
-Structured commits enable automated changelog generation, semantic versioning, and bisect-friendly history. A developer reading `git log` can quickly understand the intent behind each change without reading the diff.
+Structured commits enable automated changelog generation, semantic versioning, and bisect-friendly history. A developer reading `git log` can quickly understand the intent behind each change without reading the diff. Entries must be kept current by convention — a vacuous test guarding them is cheaper than a release blocker.
 
 ---
 
-## Pending: verbatim principle input from `CLAUDE.md` (input for phase 6, not yet reworded into house style)
+## 14. No Guards Verifying Something Else Is Still True
 
-**FORBIDDEN, categorically: no test, harness, or CI step may assert on `CHANGELOG.md`.** Not that `[Unreleased]` contains a word, names a file, or describes a feature; not that it is co-staged with a code change; and not a planted-mutation self-test over the changelog body. Release automation moves the whole `[Unreleased]` body into a versioned section, so any such check goes red on `main` the moment a release lands — this blocked v0.18.1. The changelog rule above is enforced by review, not by a gate. Assert on the code or the emitted artifact, never on the prose describing it.
+A gate that only confirms a value already fetched or a guard keeping hand-written prose in sync with code is a form of vacuous test. Two specific shapes are banned.
+
+- **One:** a second read across an agent boundary to confirm a value already fetched elsewhere. The value was authoritative at the first read. A concurrent change will expose the gap in the same way whether the check exists or not — it is pretense of protection rather than the real thing.
+- **Two:** a guard that keeps hand-written prose (comments, documentation, type annotations) in sync with code. Stale prose is accepted and the project learns from practice; a defect that results from it is a real bug and belongs in the backlog as a task, not hidden in a test.
+- **Exception:** regenerating a generated artifact (e.g. a skill template, a plugin tree, an `INDEX.md` snapshot) and comparing it to the committed copy is **not** this pattern. The regeneration runs the generator function — exercising behavior per §4 — and the comparison is the assertion, not the guard. A `--check` drift gate is valid.
+
+### Why
+
+Guards that re-read a value betray a false premise — that a second read is cheaper or more reliable than the first. Hand-written-prose guards are pretense that stale docs are worse than a brittle test; the test breaks on every refactor that doesn't touch the prose, and the prod bug happens anyway. Learning from defects (including documentation defects) is the right response; encoding the prose state in a test is not.
+
+---
+
+## 15. Acceptance Criteria Are Satisfiable from the Artifacts
+
+Acceptance criteria never require a future human-driven run outside the work unit. Everything needed to verify the criterion is either (a) the code, tests, or documentation the work produces, or (b) something already in the repo before the work starts.
+
+### Why
+
+An AC that requires a human to follow steps after the work lands is a hidden acceptance gate, not a way to verify completion. It delays signoff and is easy to forget. If an AC requires manual verification, the work isn't done.
+
+---
+
+## 16. Nothing Is Built for the rdm Repo Alone
+
+If it isn't shipped in the same unit of work, it isn't built. This covers local-only test harnesses, dogfood-only workflows, unpublished skill or agent definitions, and development tools that don't appear in the distributed binary.
+
+### Why
+
+Dogfood-only work rots into hardcoded forks that diverge from the shipped path. Building twice — once for internal use and once for distribution — is a recipe for drift. Ship early, use what's shipped, and iterate on one codebase.

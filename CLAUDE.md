@@ -42,13 +42,7 @@ Scopes: `core`, `cli`, `server`, or omit for cross-cutting changes.
 
 ### TDD
 
-Write tests **before** implementation code:
-
-1. Write a failing test that describes the desired behavior
-2. Write the minimal code to make the test pass
-3. Refactor while keeping tests green
-
-Run tests with `cargo nextest run`. Run specific crate tests with `cargo nextest run -p rdm-core`, etc. Use `cargo watch -x 'nextest run'` for continuous testing during development.
+See [`docs/principles.md`](docs/principles.md) §4 for testing principles. Run tests with `cargo nextest run`. Run specific crate tests with `cargo nextest run -p rdm-core`, etc. Use `cargo watch -x 'nextest run'` for continuous testing during development.
 
 ### Changelog
 
@@ -60,7 +54,7 @@ Maintain a `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.co
 - **Every commit with a user-facing change MUST include a corresponding `CHANGELOG.md` update in the same commit.** Do not defer changelog entries to a later commit or batch them up. If you are making a `feat`, `fix`, or any change that affects CLI commands, API endpoints, config options, or observable behavior, add the entry before committing.
 - Entries should describe the change from a user's perspective (what they can now do, what was fixed) rather than internal implementation details
 
-**FORBIDDEN, categorically: no test, harness, or CI step may assert on `CHANGELOG.md`.** See [`docs/principles.md`](docs/principles.md) for the reasoning.
+**FORBIDDEN, categorically: no test, harness, or CI step may assert on `CHANGELOG.md`.** See [`docs/principles.md`](docs/principles.md) §13.
 
 ### Public API Docs
 
@@ -77,7 +71,7 @@ Optional sections (`# Arguments`, `# Returns`) are fine but not required — pre
 
 ### Unsafe Policy
 
-No `unsafe` without a `// SAFETY:` comment explaining the invariant. Prefer safe alternatives.
+See [`docs/principles.md`](docs/principles.md) §10.
 
 ### Error Handling
 
