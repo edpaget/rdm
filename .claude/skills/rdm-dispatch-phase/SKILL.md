@@ -720,10 +720,11 @@ nothing but documentation, comments, or CHANGELOG prose does not need the full f
 project repo and the worktree probe degrades to *no probe*, silently skipping the cleanliness
 precondition.
 
-**The gate may be overridden, but only for one refusal and only within narrow conditions.** rdm has
-an operator-only flag, `--override-gate "<reason>"`, that waives the gate's *record* preconditions;
-it is refused outright unless the gate is enforcing. This procedure has exactly one case for it: a
-`GateStaleChangeReview` refusal, and only when, in your judgment:
+**The gate may be overridden, but only for one refusal and only within narrow conditions.** You —
+the `rdm-dispatch-phase` orchestrator — are authorized to invoke rdm's `--override-gate "<reason>"`
+flag for exactly one case: a `GateStaleChangeReview` refusal, when, in your judgment, all four
+conditions below hold. A human operator may invoke the same flag more broadly; either way it waives
+the gate's *record* preconditions and is refused outright unless the gate is enforcing.
 
 - the change review at the reviewed HEAD returned verdict `approve` and is `addressed`, with every
   comment terminal and replied; and
@@ -731,8 +732,10 @@ it is refused outright unless the gate is enforcing. This procedure has exactly 
   review; and
 - that delta changes **no executable behavior** — documentation, comments, CHANGELOG, test names,
   and nothing else; and
-- `<reason>` names the review id, both HEADs (the reviewed HEAD and the current HEAD), and the
-  comments addressed.
+- `<reason>` names the review id, both HEADs (the reviewed HEAD and the current HEAD), the comments
+  addressed, and cites this authorization by section name — e.g. "per rdm-dispatch-phase § 'The
+  terminal write' stale-review waiver" — so the citation stays correct however this section is later
+  renumbered.
 
 **You judge the "no executable behavior changed" condition yourself**, from the diff and the review
 already in your context. rdm does not classify it, and nothing here re-derives eligibility by

@@ -4639,7 +4639,13 @@ mod tests {
         // paragraph and the hand-authored gate sentence) to instead name
         // `rdm-land` as the step that marks a reviewed item `done` directly
         // at landing — one new `rdm-land` mention in each of the two spots.
-        let expected = 52;
+        // 52 -> 54: `skill-override-gate-explicit-authorization` reworded
+        // `skill-dispatch-phase-cli.md`'s stale-review override paragraph to
+        // state the orchestrator's authorization positively, naming
+        // `rdm-dispatch-phase` twice more than before (once identifying the
+        // authorized orchestrator, once in the reason-string's required
+        // citation of the authorizing section).
+        let expected = 54;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"
