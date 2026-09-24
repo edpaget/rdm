@@ -843,6 +843,16 @@
         "method": "Live claude -p 'Run the command: echo RESOLUTION_PROBE_OK' run twice in this worktree (session default agent, project CLAUDE.md moved aside then restored), reading firstRequestTokens (input + cache_creation + cache_read on the first assistant record) off each run's transcript -- same instrument as docs/workflow-schemas.md's 'The measurement (2x2, live, this repo)' section, default-agent cell only (not the full 2x2). measuredTokens is the with-minus-without delta (42238 - 29257), directly comparable to measuredTrim2x2.claudeMdCostTokens.inDefaultAgent (19309) above.",
         "percentReductionVsBaseline": 32.77,
         "note": "authoring-grammar-and-context-diet phase 4 split CLAUDE.md into directives (kept), reference (moved to docs/ behind a citation), and history (deleted): 543 lines / 48207 chars (original baseline) -> 486 lines / 36994 chars (this worktree's pre-phase-4 state was 542 lines / 74119 chars, already grown since the baseline). measuredTokens (12981) is smaller than both pre-diet figures it is comparable to: claudeMdCostTokens.inDefaultAgent (19309) and claudeMdFinding.measuredTokens (19320, the custom-agentType row)."
+      },
+      "afterDedupeCliGuide": {
+        "measurementDate": "2026-09-24",
+        "chars": 20071,
+        "measuredTokens": 6754,
+        "measuredCharsPerToken": 2.97,
+        "basis": "measured",
+        "method": "Live claude -p 'Run the command: echo RESOLUTION_PROBE_OK' run twice in this worktree (session default agent, project CLAUDE.md present vs. moved aside then restored), reading firstRequestTokens (input + cache_creation + cache_read on the first assistant record) off each run's transcript -- same instrument as afterAuthoringGrammarAndContextDiet above and docs/workflow-schemas.md's 'The measurement (2x2, live, this repo)' section, default-agent cell only. measuredTokens is the with-minus-without delta (36031 - 29277).",
+        "percentReductionVsBaseline": 58.36,
+        "note": "authoring-grammar-and-context-diet phase 7 removed the CLAUDE.md sections that restated rdm's generated CLI usage guide (Discovering work, Reading details, Searching, Updating status, Document reviews, Linking, Creating items, Planning workflow, Status transitions, Workflow), replacing them with a short citation to `rdm agent-config claude` / `rdm-core/src/templates/instructions-cli.md`, and switched the kept dev-only directives from a hardcoded `./target/debug/rdm` path to the `$RDM_BIN` convention: 486 lines / 36994 chars (afterAuthoringGrammarAndContextDiet, post phase 4, pre phase 6) -> 245 lines / 20071 chars (this phase, post phase 6's principles work). measuredTokens (6754) is well below afterAuthoringGrammarAndContextDiet's 12981, consistent with the file having lost roughly half its remaining bytes to the citation."
       }
     },
     "corroborationCrossProject": {

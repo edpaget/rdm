@@ -36,6 +36,8 @@ rdm task show <slug> {proj_flag}             # show task details
 Add `--no-body` to any `show` command to suppress body content when you only need metadata.
 Add `--at <sha>` to any `show` command to read the body as it was at a specific git revision; metadata still reflects the current state, and the SHA is surfaced in the output as a `Revision:` line (text/markdown) or a `revision` field (JSON).
 
+`rdm info --format json` reports what rdm actually resolved for the current environment in one call — `{root, project, default_branch, default_format}`, each following the CLI's real precedence chain — useful when discovering the plan repo location without scraping `rdm config list` or reading `rdm.toml` directly.
+
 ## Searching
 
 `rdm search` is fuzzy (typo-tolerant) and matches against titles and bodies. Tags are a hard pre-filter — combine them to narrow results.
@@ -43,9 +45,13 @@ Add `--at <sha>` to any `show` command to read the body as it was at a specific 
 ```bash
 rdm search auth {proj_flag}                  # find items mentioning "auth"
 rdm search index --type task {proj_flag}     # find only tasks matching "index"
+rdm search search --status in-progress {proj_flag}  # find in-progress items
+rdm search auth --format json {proj_flag}    # structured output for chaining
 rdm search "" --tag bug {proj_flag}          # list every item carrying tag "bug"
 rdm search auth --tag bug --tag ui {proj_flag}  # ANDs across tags — must carry every listed tag
 ```
+
+Available filters: `--type` (roadmap|phase|task), `--status` (e.g., done, in-progress, open), `--tag <name>` (repeatable, AND), `--limit` (default 20), `--format` (text|json).
 
 ## Updating status
 
@@ -55,6 +61,8 @@ Always pass `--no-edit` to prevent the CLI from opening an interactive editor.
 rdm phase update <stem-or-number> --status done --no-edit --roadmap <slug> {proj_flag}
 rdm task update <slug> --status done --no-edit {proj_flag}
 ```
+
+`--status reviewed` can optionally be gated on real plan and change-review records plus a clean worktree — a repo-only `gates.reviewed` config flag, default off. When enabled, moving an item to `reviewed` requires a passing review; an audited `--override-gate "<reason>"` is available as an escape hatch, intended for a human operator or a documented automated exception, never a routine bypass.
 
 ## Committing changes
 
@@ -105,6 +113,7 @@ Key mechanics:
 - On a roadmap review, `--doc phase/<stem-or-number>` points a comment at one of the roadmap's phases.
 - `rdm review show` reports each comment's anchor as `resolved`, `drifted` (the document changed since the review), or `unresolved`. In JSON, drifted ranges index the `created_commit` version of the body — read it with `--at <created_commit>` — never the current one.
 - **Acting on a review (the agent loop)**: `rdm review requests` → for each comment, make the change → `rdm review update <id> --comment <n> --status addressed --applied-commit <sha> --reply "..."` (or `--status wont-fix --reply "why"`) → `rdm review update <id> --state addressed`. The `rdm-revise` skill automates this loop end to end, including drifted-anchor clarification replies.
+- A `change/<sha>` review (or `change/HEAD`, run from inside a source checkout, which resolves to the current HEAD commit) reviews code rather than a document: comments anchor into the source repo with `--path <repo-relative path> --quote "exact text"`, restricted to the hunks the change touches.
 - Searching review text: `rdm search <query> --type review {proj_flag}` matches summaries and comment bodies.
 
 ## Creating items
@@ -181,6 +190,14 @@ And one pinned code-link form, for pointing at a specific file (and optionally a
 
 - `rdm:src/<path>[@<rev>][#Lstart[-Lend]]` — e.g. `rdm:src/rdm-core/src/link.rs@a1b2c3d#L42-L58`
 
+```bash
+rdm link check {proj_flag}                       # validate every rdm: link in the project (CI-friendly, nonzero on anything broken)
+rdm link check --on task/<slug> {proj_flag}      # scope the check to one document
+rdm link list --on phase/<slug>/<stem> {proj_flag}  # a document's outgoing links, resolved
+rdm link resolve rdm:task/fix-login {proj_flag}  # resolve a single URI given on the command line
+rdm backlinks task/fix-login {proj_flag}         # documents that reference this item
+```
+
 Rules:
 
 - Use exact slugs and stems as printed by rdm — never invent or paraphrase one. Run `rdm search <topic> {proj_flag}` first if you're not sure an item exists yet.
@@ -220,6 +237,14 @@ rdm task create <slug> --title "Description of the issue" --body "Details." --no
 ```
 
 This keeps the current phase focused and ensures nothing is forgotten.
+
+**Worktree-vs-main hazard:** when you are working inside a shared worktree for a roadmap or task (not `main`), any file or symbol you cite in a new task's body may exist only on that unlanded branch. Describing it as "existing" without qualification is a false premise once checked against `main`. Before filing a side-task from a worktree, check whether the paths/behavior you're citing are on `main` (e.g. if you introduced or modified them in this same roadmap's or task's phases, they are not yet on `main`). If they aren't, tag the new task with the reserved tag `depends-unlanded` and phrase the body as "`<file/behavior>`, introduced by `<roadmap-or-task-worktree-ref>`, not yet on main":
+
+```bash
+rdm task create sweep-x --title "..." --body "path/to/file.rs, introduced by roadmap tagging-support, not yet on main. ..." --tags depends-unlanded --no-edit {proj_flag}
+```
+
+Remember `--tags` replaces the whole list on `update` — if you later update a `depends-unlanded` task, read-modify-write the tag list so you don't silently drop the annotation.
 
 ### When a task grows too complex
 

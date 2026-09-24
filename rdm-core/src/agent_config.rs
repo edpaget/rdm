@@ -4179,7 +4179,15 @@ mod tests {
 
     /// Recomputes the `"<combo-key>/<relative_path>" -> "<sha256-hex>"` map
     /// over the raw emission surface: [`generate_skills`] across both
-    /// [`raw_baseline_combos`], plus [`generate_workflows`].
+    /// [`raw_baseline_combos`], [`generate_agent_config`] (`Platform::Claude`)
+    /// across the same combos, plus [`generate_workflows`].
+    ///
+    /// `generate_agent_config` is covered here rather than in a parallel
+    /// fixture because it is not part of [`generate_skills`],
+    /// [`generate_plugin_skills`], or [`generate_plugin_files`] — its one
+    /// caller is `agent-config`'s non-`--skills`/non-`--plugin` render path
+    /// (plus `--user`, which writes the same content to a different path, so
+    /// one covered render is sufficient).
     fn raw_emission_checksums() -> std::collections::BTreeMap<String, String> {
         let mut map = std::collections::BTreeMap::new();
         for (key, opts) in raw_baseline_combos() {
@@ -4189,6 +4197,15 @@ mod tests {
                     sha256_hex(skill.content.as_bytes()),
                 );
             }
+            let agent_config = generate_agent_config(&AgentConfigOptions {
+                platform: Platform::Claude,
+                project: opts.project.clone(),
+                principles_file: opts.principles_file.clone(),
+            });
+            map.insert(
+                format!("{key}/CLAUDE.md"),
+                sha256_hex(agent_config.as_bytes()),
+            );
         }
         for workflow in generate_workflows() {
             map.insert(
