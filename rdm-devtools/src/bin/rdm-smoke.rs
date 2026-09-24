@@ -67,6 +67,14 @@ struct RunArgs {
     command: Vec<OsString>,
 }
 
+/// Writes one line to stderr, ignoring failure: `eprintln!` panics on a closed
+/// stderr, which would abort the run (or its exit-code mapping) midway.
+macro_rules! say {
+    ($($arg:tt)*) => {{
+        let _ = writeln!(io::stderr(), $($arg)*);
+    }};
+}
+
 fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -93,7 +101,7 @@ fn exit_code(code: i32) -> ExitCode {
 
 fn run(args: RunArgs) -> ExitCode {
     let Some((program, rest)) = args.command.split_first() else {
-        eprintln!("rdm-smoke: no program given after `--`");
+        say!("rdm-smoke: no program given after `--`");
         return ExitCode::from(2);
     };
     let copy = match args.private_copy.as_deref().map(|s| s.split_once(':')) {
@@ -102,7 +110,7 @@ fn run(args: RunArgs) -> ExitCode {
             Some((PathBuf::from(src), PathBuf::from(dest)))
         }
         Some(_) => {
-            eprintln!("rdm-smoke: --private-copy expects SRC:DEST with both paths non-empty");
+            say!("rdm-smoke: --private-copy expects SRC:DEST with both paths non-empty");
             return ExitCode::from(2);
         }
     };
@@ -115,7 +123,7 @@ fn run(args: RunArgs) -> ExitCode {
     }
 
     let mut hooks = Hooks::new().on_spawn(|pid| {
-        eprintln!("rdm-smoke: ready pid={pid}");
+        say!("rdm-smoke: ready pid={pid}");
     });
     if let Some((src, dest)) = &copy {
         hooks = hooks
@@ -136,13 +144,13 @@ fn run(args: RunArgs) -> ExitCode {
             match written {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
-                    eprintln!("rdm-smoke: could not write the program's stdout: {e}");
+                    say!("rdm-smoke: could not write the program's stdout: {e}");
                     ExitCode::from(70)
                 }
             }
         }
         Err(err) => {
-            eprintln!("rdm-smoke: {err}");
+            say!("rdm-smoke: {err}");
             match err {
                 RunError::NonZeroExit {
                     code: Some(code), ..

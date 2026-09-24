@@ -446,9 +446,12 @@ by the non-published `rdm-devtools` workspace crate (`publish = false`,
   (`RDM_SMOKE_BIN` overrides the on-demand cargo build).
 - `rdm-devtools-fixture` — interpreter-free fixture executable driving the
   tests.
-- `rdm-devtools/tests/process_lifecycle.rs` and `tests/smoke_cli.rs` — one
-  nextest test per lifecycle outcome, including SIGINT/SIGTERM to the real
-  runner process and a broken-teardown control (`broken_cleanup_mutant_is_detected`).
+- `rdm-devtools/tests/process_lifecycle.rs`, `tests/smoke_cli.rs` and
+  `tests/signal_during_prepare.rs` — one test per lifecycle outcome,
+  including a panicking hook, SIGINT/SIGTERM to the real runner process and a
+  broken-teardown control (`broken_cleanup_mutant_is_detected`). The
+  signal-during-prepare test raises a process-wide SIGINT, so it sits alone
+  in its own binary and is safe under plain `cargo test` as well as nextest.
 
 Usable invocation:
 
@@ -465,9 +468,9 @@ Host: macOS (Darwin 27.0.0, arm64), 2026-09-23, base `b4a3782`.
 | Suite | Runs (wall, seconds) | Notes |
 |---|---|---|
 | `node --test scripts/lib/codex-smoke-process.test.mjs` (Node v24.18.0), before deletion | 3.49, 5.98, 0.81 (spec reporter); 2.24, 3.38, 3.90 (tap reporter; `duration_ms` 2158, 2863, 3490) | 3 tests: success/failure/timeout combined, SIGINT, SIGTERM |
-| `cargo nextest run -p rdm-devtools`, warm build | 8.12, 8.05, 7.26 (nextest summary 6.26, 6.17, 6.25) | 17 tests |
+| `cargo nextest run -p rdm-devtools`, warm build | 8.12, 8.05, 7.26 (nextest summary 6.26, 6.17, 6.25) | 17 tests when timed; the suite now has 22 |
 | `cargo nextest run -p rdm-devtools -E 'test(/sig/)' --test-threads 8`, with hostile `RDM_ROOT`, `RDM_PROJECT`, `RDM_SESSION`, `NODE_OPTIONS`, `GIT_CONFIG_GLOBAL` inherited | 1.23 (summary 0.45) | 2 signal tests, concurrent |
-| full `-p rdm-devtools --test-threads 16` under the same hostile env | summary 6.16 | all 17 pass |
+| full `-p rdm-devtools --test-threads 16` under the same hostile env | summary 6.16 | all 17 then-present tests pass |
 
 Per-test (nextest, warm): lifecycle tests 0.05–0.45 s each; the timeout tests
 1.4–1.6 s (1–1.5 s timeouts); SIGINT/SIGTERM 0.45–0.48 s;

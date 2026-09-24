@@ -5,12 +5,12 @@ mod common;
 
 use std::cell::Cell;
 use std::io;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{ReapGuard, check_teardown, fixture, read_pid, wait_for_file};
 use rdm_devtools::process::{Hooks, ProcessSpec, RunError, RunOutput, Teardown, run_bounded};
-use signal_hook::consts::SIGINT;
 use tempfile::TempDir;
 
 /// A non-secret marker file that the run's cleanup hook removes.
@@ -154,26 +154,6 @@ fn success_sweeps_group_left_behind() {
 }
 
 #[test]
-fn signal_during_prepare_never_spawns_and_runs_cleanup() {
-    // nextest runs each test in its own process, so raising a signal here
-    // reaches only this run's interception.
-    let dir = TempDir::new().unwrap();
-    let m = marker(&dir);
-    let spawned = Cell::new(false);
-    let err = run_bounded(
-        &spec(&["print", "never"]),
-        Hooks::new()
-            .prepare(|| signal_hook::low_level::raise(SIGINT))
-            .cleanup(remove(&m))
-            .on_spawn(|_| spawned.set(true)),
-    )
-    .unwrap_err();
-    assert!(matches!(err, RunError::Interrupted(SIGINT)), "{err:?}");
-    assert!(!spawned.get(), "a signal during prepare must not spawn");
-    check_teardown(&m, &[]).unwrap();
-}
-
-#[test]
 fn output_cap_kills_and_runs_cleanup() {
     let dir = TempDir::new().unwrap();
     let m = marker(&dir);
@@ -216,6 +196,53 @@ fn prepare_failure_runs_cleanup_and_never_spawns() {
     .unwrap_err();
     assert!(matches!(err, RunError::Prepare(_)), "{err:?}");
     assert!(!spawned.get(), "a failed prepare must not spawn");
+    check_teardown(&m, &[]).unwrap();
+}
+
+#[test]
+fn on_spawn_panic_kills_group_reaps_and_runs_cleanup() {
+    let dir = TempDir::new().unwrap();
+    let m = marker(&dir);
+    let pidfile = dir.path().join("grandchild.pid");
+    let mut guard = ReapGuard::default();
+    let child = Cell::new(0);
+    let s = spec(&["spawn-grandchild", pidfile.to_str().unwrap()]);
+    let panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+        run_bounded(
+            &s,
+            Hooks::new().cleanup(remove(&m)).on_spawn(|p| {
+                child.set(p);
+                // Panic only once the grandchild exists, so the sweep has a
+                // descendant to kill.
+                wait_for_file(&pidfile, Duration::from_secs(5));
+                panic!("on_spawn hook panicked");
+            }),
+        )
+    }));
+    assert!(panicked.is_err(), "the hook's panic must propagate");
+    guard.track(child.get());
+    let grandchild = read_pid(&pidfile).expect("fixture wrote the grandchild pid");
+    guard.track(grandchild);
+    check_teardown(&m, &[child.get(), grandchild]).unwrap();
+    guard.clear();
+}
+
+#[test]
+fn prepare_panic_runs_cleanup_and_never_spawns() {
+    let dir = TempDir::new().unwrap();
+    let m = marker(&dir);
+    let spawned = Cell::new(false);
+    let panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+        run_bounded(
+            &spec(&["print", "never"]),
+            Hooks::new()
+                .prepare(|| panic!("prepare hook panicked after writing its copy"))
+                .cleanup(remove(&m))
+                .on_spawn(|_| spawned.set(true)),
+        )
+    }));
+    assert!(panicked.is_err(), "the hook's panic must propagate");
+    assert!(!spawned.get(), "a panicking prepare must not spawn");
     check_teardown(&m, &[]).unwrap();
 }
 

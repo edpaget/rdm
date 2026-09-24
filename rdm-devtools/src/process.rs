@@ -21,6 +21,10 @@
 //!    cleanup failure supersedes the run's own result.
 //! 7. The signal interception is removed.
 //!
+//! A panic in a caller hook is a catchable path too: a panic in `on_spawn`
+//! still kills the group and reaps the child, and a panic in `prepare` or
+//! `on_spawn` still runs `cleanup`, before the panic resumes unwinding.
+//!
 //! `SIGKILL` of the runner itself, or a machine failure, cannot run cleanup;
 //! that limitation is inherent and documented for callers.
 //!
@@ -37,6 +41,7 @@ use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::io::{self, Read};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -402,7 +407,21 @@ pub fn run_bounded(spec: &ProcessSpec, hooks: Hooks<'_>) -> Result<RunOutput, Ru
         on_spawn,
     } = hooks;
 
-    let result = run_inner(spec, prepare, on_spawn, &flag);
+    // A panic in `prepare` or `on_spawn` must still run cleanup (the child,
+    // if any, has already been torn down inside `run_inner`); the panic then
+    // resumes once cleanup and signal unregistration are done.
+    let result = match panic::catch_unwind(AssertUnwindSafe(|| {
+        run_inner(spec, prepare, on_spawn, &flag)
+    })) {
+        Ok(result) => result,
+        Err(payload) => {
+            if let Some(cleanup) = cleanup {
+                let _ = cleanup();
+            }
+            drop(guard);
+            panic::resume_unwind(payload);
+        }
+    };
 
     let skip_cleanup = result.is_err() && spec.teardown == Teardown::SkipCleanupOnError;
     let result = match cleanup {
@@ -457,8 +476,14 @@ fn run_inner(
     }
     drop(done_tx);
 
-    if let Some(on_spawn) = on_spawn {
-        on_spawn(pid);
+    if let Some(on_spawn) = on_spawn
+        && let Err(payload) = panic::catch_unwind(AssertUnwindSafe(|| on_spawn(pid)))
+    {
+        // The hook panicked: tear the child down before unwinding further.
+        // Errors are ignored because the panic is the outcome being reported.
+        let _ = terminate(&mut child, pid, true, spec.teardown);
+        let _ = child.wait();
+        panic::resume_unwind(payload);
     }
 
     let deadline = Instant::now() + spec.timeout;
