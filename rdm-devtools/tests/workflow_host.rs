@@ -11,10 +11,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use common::{fixture, gone_within};
+use common::{ReapGuard, fixture, gone_within, read_pid, wait_for_file};
 use rdm_devtools::process::{ProcessSpec, Session, SessionError};
 use rdm_devtools::workflow::{Host, HostConfig, MutantTree, WorkflowError, member};
 use serde_json::{Value, json};
+use tempfile::TempDir;
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -281,6 +282,74 @@ fn over_long_line_kills_the_session() {
     );
     assert!(session.is_closed());
     assert!(gone_within(pid, Duration::from_secs(3)));
+}
+
+#[test]
+fn dropping_a_live_session_kills_and_reaps_its_group() {
+    let dir = TempDir::new().unwrap();
+    let pidfile = dir.path().join("grandchild.pid");
+    let spec = ProcessSpec::new(fixture())
+        .arg("spawn-grandchild")
+        .arg(&pidfile)
+        .timeout(Duration::from_secs(10));
+    let mut session = Session::spawn(&spec).expect("spawn");
+    let pid = session.pid();
+    let mut guard = ReapGuard::default();
+    guard.track(pid);
+    assert_eq!(session.recv_line().expect("ready line"), "ready");
+    assert!(wait_for_file(&pidfile, Duration::from_secs(3)));
+    let grandchild = read_pid(&pidfile).unwrap();
+    guard.track(grandchild);
+
+    drop(session);
+
+    assert!(gone_within(pid, Duration::from_secs(3)), "child reaped");
+    assert!(
+        gone_within(grandchild, Duration::from_secs(3)),
+        "the whole process group is killed"
+    );
+    guard.clear();
+}
+
+#[test]
+fn dropping_a_started_host_reaps_the_runtime_and_removes_its_dir() {
+    let host = Host::start_default().expect("start host");
+    let pid = host.pid();
+    let dir = host.temp_dir().to_owned();
+    assert!(dir.exists(), "the host's temp dir exists while it runs");
+
+    drop(host);
+
+    assert!(gone_within(pid, Duration::from_secs(3)), "runtime reaped");
+    assert!(!dir.exists(), "temp dir removed");
+}
+
+#[test]
+fn child_exiting_mid_request_reports_exited_with_its_stderr() {
+    let spec = ProcessSpec::new(fixture())
+        .args(["stderr-exit", "fixture fell over", "3"])
+        .timeout(Duration::from_secs(10));
+    let mut session = Session::spawn(&spec).expect("spawn");
+    let pid = session.pid();
+    session
+        .send_line("{\"op\":\"ping\"}")
+        .expect("queue a request");
+    let err = session.recv_line().unwrap_err();
+    match &err {
+        SessionError::Exited { stderr } => {
+            assert!(
+                stderr.contains("fixture fell over"),
+                "stderr tail: {stderr:?}"
+            );
+        }
+        other => panic!("expected Exited, got {other:?}"),
+    }
+    assert!(
+        err.to_string().contains("fixture fell over"),
+        "the message carries the tail: {err}"
+    );
+    assert!(session.is_closed(), "the session is torn down");
+    assert!(gone_within(pid, Duration::from_secs(3)), "child reaped");
 }
 
 #[test]

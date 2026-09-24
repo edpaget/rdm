@@ -15,6 +15,8 @@
 //! - `print-env <VAR>...` — print `VAR=value` (or `VAR unset`) per name, exit 0
 //! - `ready-then-sleep` — print `ready`, then sleep until killed
 //! - `cat <path>` — print the bytes of `path` and exit 0 (exit 4 if unreadable)
+//! - `stderr-exit <text> <code>` — write `text` to stderr and exit with `code`
+//!   at once, without reading stdin or writing stdout
 
 use std::io::Write;
 use std::process::{Command, ExitCode, Stdio};
@@ -122,6 +124,11 @@ fn main() -> ExitCode {
             }
             _ => ExitCode::from(4),
         },
+        "stderr-exit" => {
+            let code = rest.get(1).and_then(|c| c.parse::<u8>().ok()).unwrap_or(1);
+            eprintln!("{}", rest.first().map_or("", String::as_str));
+            ExitCode::from(code)
+        }
         "ready-then-sleep" => {
             let _ = writeln!(stdout, "ready");
             let _ = stdout.flush();
