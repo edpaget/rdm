@@ -2,7 +2,7 @@
 //! drive real project-repo git state: `cli_worktree.rs`, `cli_gate.rs`,
 //! `cli_verify.rs`, `cli_review_change.rs`, `cli_phase.rs`, `cli_task.rs`,
 //! and the `workflow_review/`, `workflow_passes/`, `distribution/`,
-//! `cli_loops/` and `golden_json/` test binaries (through
+//! `cli_loops/`, `golden_json/` and `concurrency/` test binaries (through
 //! `common/plan_fixture.rs`). Included via
 //! `#[path = "git_test_support.rs"] mod git_test_support;` from each — it is
 //! deliberately NOT shared with any other `cli_*.rs` file, and NOT exposed
@@ -48,8 +48,41 @@
 
 #![allow(dead_code)]
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+/// The inherited git variables that would redirect a child `git` (or an
+/// `rdm` that shells out to git, or opens a repo through gitoxide) away from
+/// the repo a fixture names: a hook-driven run exports several of these, and
+/// any one of them would point the fixture at the invoking checkout instead.
+/// `GIT_CONFIG_PARAMETERS`/`GIT_CONFIG_COUNT` inject configuration the same
+/// way a hostile `~/.gitconfig` would; [`repo_redirect_removals`] also drops
+/// the numbered `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` pairs.
+pub const REPO_REDIRECT_VARS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_PREFIX",
+    "GIT_NAMESPACE",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+];
+
+/// Every variable a child must not inherit: [`REPO_REDIRECT_VARS`] plus any
+/// inherited numbered `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`.
+pub fn repo_redirect_removals() -> Vec<OsString> {
+    let mut keys: Vec<OsString> = REPO_REDIRECT_VARS.iter().map(OsString::from).collect();
+    keys.extend(std::env::vars_os().map(|(k, _)| k).filter(|k| {
+        let k = k.to_string_lossy();
+        k.starts_with("GIT_CONFIG_KEY_") || k.starts_with("GIT_CONFIG_VALUE_")
+    }));
+    keys
+}
 
 /// Runs `git` in `dir`, asserting success and returning the raw [`Output`].
 ///
@@ -78,11 +111,11 @@ pub fn git_with_global(dir: &Path, args: &[&str], global_config_path: &Path) -> 
 
 fn run(dir: &Path, args: &[&str], global_override: Option<&Path>) -> Output {
     let mut cmd = Command::new("git");
+    for key in repo_redirect_removals() {
+        cmd.env_remove(key);
+    }
     cmd.args(args)
         .current_dir(dir)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
         .env("GIT_AUTHOR_NAME", "test")
         .env("GIT_AUTHOR_EMAIL", "test@test.com")
         .env("GIT_COMMITTER_NAME", "test")

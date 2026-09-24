@@ -5,8 +5,8 @@
 //! process runs in.
 //!
 //! Included with `#[path = "../common/plan_fixture.rs"] mod plan_fixture;` by
-//! the `workflow_review`, `workflow_passes`, `distribution`, `cli_loops` and
-//! `golden_json` binaries, each of which also
+//! the `workflow_review`, `workflow_passes`, `distribution`, `cli_loops`,
+//! `golden_json` and `concurrency` binaries, each of which also
 //! includes `common/workflow_support.rs` and `git_test_support.rs` (this file
 //! names both through `crate::`, which is why it is under `tests/common/`
 //! and not a test target of its own).
@@ -80,13 +80,14 @@ pub fn hermetic(cmd: &mut Command, root: &Path, session: &str) {
 }
 
 /// The variables [`hermetic`] removes: every inherited `RDM_*`, and the git
-/// variables that would redirect a repo.
+/// variables that would redirect a repo
+/// ([`crate::git_test_support::repo_redirect_removals`]).
 pub fn hermetic_removals() -> Vec<OsString> {
     let mut keys: Vec<OsString> = std::env::vars_os()
         .map(|(k, _)| k)
         .filter(|k| k.to_string_lossy().starts_with("RDM_"))
         .collect();
-    keys.extend(["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"].map(OsString::from));
+    keys.extend(crate::git_test_support::repo_redirect_removals());
     keys
 }
 
@@ -113,8 +114,10 @@ pub const SANDBOX_GIT_EMAIL: &str = "fixture@example.invalid";
 
 /// An isolated user context for a process a test spawns: its own `HOME` and
 /// `XDG_{CONFIG,DATA,STATE}_HOME` under the test's temp directory, no
-/// inherited `RDM_*`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` or
-/// `CLAUDE_CODE_SESSION_ID`, global/system git config pointed at
+/// inherited `RDM_*`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or harness session
+/// variable (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_SESSION_ID` — either would
+/// silently move a bare `rdm` from rung 2 to rung 3), no repo-redirecting git
+/// variable, global/system git config pointed at
 /// `/dev/null`, and a fixed git identity. Everything goes on the child
 /// [`Command`]; the test process's own environment is never touched.
 #[derive(Clone, Debug)]
@@ -154,7 +157,13 @@ impl Sandbox {
     pub fn removals() -> Vec<OsString> {
         let mut keys = hermetic_removals();
         keys.extend(
-            ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_SESSION_ID"].map(OsString::from),
+            [
+                "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
+                "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_SESSION_ID",
+            ]
+            .map(OsString::from),
         );
         keys
     }
