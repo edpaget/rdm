@@ -7,8 +7,8 @@
 //! |---|---|---|
 //! | `lane-tokens` | `scripts/measure-lane-tokens.mjs` + `scripts/lib/token-report.mjs` | [`lane_tokens`], [`sidecar`] |
 //! | `refuter-severity` | `scripts/measure-refuter-severity.mjs` | [`refuter_severity`] |
-//! | `mine-refuter-corpus` | `scripts/mine-refuter-corpus.mjs` | `refuter_agreement::miner` |
-//! | `refuter-agreement` | `scripts/run-refuter-agreement.mjs` + `scripts/lib/refuter-agreement.mjs` | `refuter_agreement` |
+//! | `mine-refuter-corpus` | `scripts/mine-refuter-corpus.mjs` | [`refuter_agreement::miner`] |
+//! | `refuter-agreement` | `scripts/run-refuter-agreement.mjs` + `scripts/lib/refuter-agreement.mjs` | [`refuter_agreement`] |
 //!
 //! Measurement orchestration, parsing, scoring and reporting are Rust. The
 //! few canonical workflow decisions a measurement replays (ranking, gating,
@@ -26,6 +26,7 @@ pub mod jsdate;
 pub mod jsjson;
 pub mod jsnum;
 pub mod lane_tokens;
+pub mod refuter_agreement;
 pub mod refuter_severity;
 pub mod review_rules;
 pub mod sidecar;

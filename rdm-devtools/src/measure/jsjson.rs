@@ -140,6 +140,11 @@ impl JsValue {
         serde_json::from_str(text)
     }
 
+    /// `{}`.
+    pub fn empty_object() -> Self {
+        Self::Object(JsObject::new())
+    }
+
     /// The object, when this is one.
     pub fn as_object(&self) -> Option<&JsObject> {
         match self {
@@ -510,5 +515,104 @@ mod tests {
         // U+FF5E sorts after U+1F600 in UTF-8 order but before it in UTF-16.
         assert_eq!(js_str_cmp("\u{ff5e}", "\u{1f600}"), Ordering::Greater);
         assert_eq!(js_len("\u{1f600}"), 2);
+    }
+}
+
+/// A string-keyed map that serializes in insertion order (a JavaScript object
+/// built by assignment, for example a tally keyed by first appearance).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct JsMap<V>(pub Vec<(String, V)>);
+
+impl<V> JsMap<V> {
+    /// An empty map.
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    /// The value at `key`.
+    pub fn get(&self, key: &str) -> Option<&V> {
+        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+
+    /// The value at `key`, inserting `init()` first if absent.
+    pub fn entry(&mut self, key: &str, init: impl FnOnce() -> V) -> &mut V {
+        let at = match self.0.iter().position(|(k, _)| k == key) {
+            Some(at) => at,
+            None => {
+                self.0.push((key.to_owned(), init()));
+                self.0.len() - 1
+            }
+        };
+        &mut self.0[at].1
+    }
+
+    /// The entries, in order.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &V)> {
+        self.0.iter().map(|(k, v)| (k, v))
+    }
+
+    /// Whether the map is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl<V: Serialize> Serialize for JsMap<V> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut map = s.serialize_map(Some(self.0.len()))?;
+        for (k, v) in &self.0 {
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
+    }
+}
+
+/// Builds a [`JsValue::Object`] from `(key, value)` pairs, in order.
+pub fn obj<I, K>(pairs: I) -> JsValue
+where
+    I: IntoIterator<Item = (K, JsValue)>,
+    K: Into<String>,
+{
+    let mut o = JsObject::new();
+    for (k, v) in pairs {
+        o.insert(k, v);
+    }
+    JsValue::Object(o)
+}
+
+impl From<&str> for JsValue {
+    fn from(s: &str) -> Self {
+        Self::String(s.to_owned())
+    }
+}
+
+impl From<String> for JsValue {
+    fn from(s: String) -> Self {
+        Self::String(s)
+    }
+}
+
+impl From<bool> for JsValue {
+    fn from(b: bool) -> Self {
+        Self::Bool(b)
+    }
+}
+
+impl From<f64> for JsValue {
+    fn from(n: f64) -> Self {
+        Self::Number(n)
+    }
+}
+
+impl From<usize> for JsValue {
+    fn from(n: usize) -> Self {
+        #[allow(clippy::cast_precision_loss)]
+        Self::Number(n as f64)
+    }
+}
+
+impl<T: Into<JsValue>> From<Option<T>> for JsValue {
+    fn from(v: Option<T>) -> Self {
+        v.map_or(Self::Null, Into::into)
     }
 }

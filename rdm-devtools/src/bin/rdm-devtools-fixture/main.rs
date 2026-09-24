@@ -17,6 +17,15 @@
 //! - `cat <path>` — print the bytes of `path` and exit 0 (exit 4 if unreadable)
 //! - `stderr-exit <text> <code>` — write `text` to stderr and exit with `code`
 //!   at once, without reading stdin or writing stdout
+//!
+//! Invoked under another name (tests symlink it), it plays a fake external
+//! tool chosen by its argv0 basename, driven by the scenario JSON file named in
+//! `DEVTOOLS_FAKE_SCENARIO`:
+//!
+//! - `claude` — the paid-dispatch CLI (see `claude.rs`)
+
+mod claude;
+mod scenario;
 
 use std::io::Write;
 use std::process::{Command, ExitCode, Stdio};
@@ -51,7 +60,22 @@ fn spawn_grandchild(pidfile: &str) -> bool {
     written.is_ok() && std::fs::rename(&tmp, pidfile).is_ok()
 }
 
+/// The argv0 basename this invocation was started under.
+fn argv0_name() -> String {
+    std::env::args_os()
+        .next()
+        .and_then(|a| {
+            std::path::Path::new(&a)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default()
+}
+
 fn main() -> ExitCode {
+    if argv0_name() == "claude" {
+        return claude::run();
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = args.first().map(String::as_str).unwrap_or("");
     let rest = args.get(1..).unwrap_or(&[]);

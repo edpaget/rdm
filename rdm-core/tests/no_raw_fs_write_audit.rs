@@ -44,7 +44,11 @@ const ALLOWED: &[(&str, &str)] = &[
     ),
     (
         "rdm-devtools/src/bin/rdm-measure.rs",
-        "repository-only measurement tool writes an operator-named --out report file, never $RDM_ROOT",
+        "repository-only measurement tool writes operator-named --out report files (lane-tokens, mine-refuter-corpus), never $RDM_ROOT",
+    ),
+    (
+        "rdm-devtools/src/measure/refuter_agreement/mod.rs",
+        "repository-only measurement tool writes an operator-named --out results file, never $RDM_ROOT",
     ),
     (
         "rdm-devtools/src/workflow.rs",

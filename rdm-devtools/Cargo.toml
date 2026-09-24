@@ -21,7 +21,7 @@ path = "src/bin/rdm-measure.rs"
 
 [[bin]]
 name = "rdm-devtools-fixture"
-path = "src/bin/rdm-devtools-fixture.rs"
+path = "src/bin/rdm-devtools-fixture/main.rs"
 
 [dependencies]
 chrono = { workspace = true }
@@ -29,5 +29,6 @@ clap = { workspace = true }
 rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 signal-hook = { workspace = true }
 tempfile = { workspace = true }
