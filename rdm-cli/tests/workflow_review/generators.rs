@@ -259,38 +259,3 @@ fn local_consumer_edit_detected_then_healed_code() {
 fn local_consumer_edit_detected_then_healed_plan() {
     local_consumer_edit("plan", ".claude/skills/rdm-plan-review/SKILL.md");
 }
-
-#[test]
-fn local_override_does_not_leak_into_shipped_render() {
-    let tree = scratch(SKILL_TREE);
-    let root = tree.root();
-    let local = ".claude/skills/rdm-review/SKILL.md";
-    let shipped = "rdm-core/src/templates/skill-review-cli.md";
-    let local_before = std::fs::read(root.join(local)).unwrap();
-    let shipped_before = std::fs::read(root.join(shipped)).unwrap();
-    edit_line(
-        root,
-        ".claude/workflows/lib/review.mjs",
-        Some(">>> find-refute-verdict:local-code-override:begin"),
-        "//|",
-        " (planted override change)",
-    );
-    assert_ok(
-        &sh(root, SKILL_GEN, &["--target", "local", "--mode", "code"]),
-        "render local/code",
-    );
-    assert_ne!(
-        std::fs::read(root.join(local)).unwrap(),
-        local_before,
-        "the local-code-override region is consumed by the local code render"
-    );
-    assert_ok(
-        &sh(root, SKILL_GEN, &["--target", "shipped", "--mode", "code"]),
-        "render shipped/code",
-    );
-    assert_eq!(
-        std::fs::read(root.join(shipped)).unwrap(),
-        shipped_before,
-        "the override never leaks into the shipped render"
-    );
-}

@@ -1,42 +1,29 @@
 ---
 name: rdm-document
-description: Generate user documentation from a completed rdm roadmap
+description: Generate user documentation from a completed rdm roadmap using phase descriptions and commit SHAs
 allowed-tools:
-  - Read
   - Bash
-  - Glob
-  - Grep
-  - Write
-  - Edit
+  - Workflow
+  - Read
 ---
 
 Generate user-facing documentation from a completed rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [--out <path>]`.
+
+This skill is a thin shim over the `rdm-wf-document` Workflow (`.claude/workflows/rdm-wf-document.js`, provisioned automatically by `rdm agent-config claude --skills`), which does the headless work — validating all-done, gathering each phase's body + commit diff in parallel, and synthesizing the draft — and hands back the shell that writes it to disk (default `docs/<slug>.md`). The workflow produces an **artifact**, not a completion signal: it performs no approval step and mutates no rdm status. The terminal human approval below is this shim's one job, and it is never delegated back into the workflow.
 {principles}
 ## Steps
 
-1. **Parse arguments**: extract the roadmap slug and optional `--out <path>` from `$ARGUMENTS`. Default output path is `docs/<slug>.md`.
-2. **Read the roadmap**: `rdm roadmap show <slug> {proj_flag}` to get the overview and phase list.
-3. **Validate completion**: all phases must be `done`. If any phase is not done, abort with a clear message listing incomplete phases.
-4. **Read each phase**: `rdm phase show <stem> --roadmap <slug> {proj_flag} --format json` for each phase. Collect titles, bodies, and commit SHAs.
-5. **Gather code changes** from commit SHAs (the `commit` field in phase JSON):
-   - If SHAs are available: `git log --oneline <first_sha>~1..<last_sha>` and `git diff --stat <first_sha>~1..<last_sha>` in the source repo
-   - Single commit: `git show --stat <sha>`
-   - Missing SHAs: warn and fall back to phase descriptions only — do not abort
-6. **Cross-reference** phase descriptions with actual code changes to ensure accuracy.
-7. **Draft documentation** structured as:
-   - **Overview** — what the feature is
-   - **Motivation** — why it was built
-   - **Usage** — concrete examples (CLI commands, config options)
-   - **How it works** (optional) — architecture/internals for complex features; when it cites where something is implemented, use a pinned `rdm:src/<path>@<sha>[#Lline]` link (built from the same phase `commit` field gathered in step 4) rather than a bare SHA or `file:line` — the web UI and editor integrations resolve it to a permalink
-   - **Limitations** (optional) — known gaps
-8. **Write** the documentation to the output path.
-9. **Present the draft** to the user for review before considering done.
+1. Parse `$ARGUMENTS` into the roadmap slug and an optional `--out <path>`.
+2. Run the roadmap read yourself and pass it along. The workflow reads no rdm document — it dispatches only the per-phase gatherers and the synthesizer, both of which read and judge — so this is REQUIRED, not an optimization.
+   - `roadmapMeta` — the parsed object from `rdm roadmap show <slug> {proj_flag} --format json`, shaped as `{ found: true, slug, title, phases: [{ stem, title, status, commit }, …] }` with the phase records copied **verbatim**, never summarized. Without it the workflow refuses to run and hands back the exact command as `roadmapCommand`.
+3. Invoke the `rdm-wf-document` Workflow with `{ roadmap: <slug>, out: <path or omitted>, roadmapMeta, rdmBin: "rdm", project }`, where `project` is the project name used in `{proj_flag}`. `rdmBin` and `project` are what the per-phase gatherers and the synthesizer use to run `phase show` themselves. Pass `args` as a JSON object, never a stringified value.
+4. Branch on the result:
+   - **`result.aborted === true`**: report why and stop — this is a human decision, not a retry.
+     - `result.incompletePhases` non-empty: list each incomplete phase and its status; the roadmap isn't ready to document yet.
+     - `result.incompletePhases` empty (a fetch or synthesis failure): relay that the roadmap could not be read or drafted, and suggest checking the slug.
+   - **success**: run `result.writeScript` in Bash — it creates the parent directory and writes the draft through a quoted heredoc — then Read the file at `result.path` and present `result.draft` (or the file contents) to the user. Summarize what was generated and note any gaps the draft itself calls out (e.g., phases without commit SHAs, internal-only phases folded into "How it works"). When "How it works" cites an implementation location, it should be a pinned `rdm:src/<path>@<sha>[#Lline]` link (built from the phase's `commit` field) rather than a bare commit SHA or `file:line`, because the web UI and editor integrations resolve it to a permalink — flag any bare SHA to the user. **The task is not done until the user has reviewed and approved the documentation** — this is the workflow's only human touch, and it happens here, never inside the workflow.
 
-## Guidelines
+## Edge cases
 
-- Write for users, not developers — focus on what they can do
-- The Usage section is the most important — include real, working examples
-- Internal/refactoring phases: mention in "How it works" if relevant, omit from Usage
-- Derive content from both phase descriptions (intent) and code diffs (what shipped)
-- If phases lack commit SHAs, note which ones and rely on descriptions alone
-- When citing an implementation location, compose a pinned `rdm:src/<path>@<sha>[#Lline]` link (which the web UI and editor integrations resolve to a permalink) instead of writing a bare commit SHA or hash in the prose
+- **Roadmap not found**: the workflow reports `aborted: true` with an empty `incompletePhases` — relay the failure and stop.
+- **Phases without commit SHAs**: the workflow's per-phase gather step already fell back to phase body/title alone for those phases; the draft may call this out — pass that along to the user.

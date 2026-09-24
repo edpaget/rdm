@@ -6,15 +6,15 @@ allowed-tools:
   - Workflow
 ---
 
-Rate the difficulty of an rdm roadmap's phases by invoking the **`rdm-wf-estimate` Workflow** (`.claude/workflows/rdm-wf-estimate.js`, provisioned automatically by `rdm agent-config claude --skills`). This skill is a **thin shim**: it parses the invocation, hands off to the workflow, and prints the summary the workflow returns. All the loop logic — listing the phases, filtering to the unestimated ones, the parallel rating fan-out, and the difficulty writeback — lives in the workflow, not in this prose.
+Rate the difficulty of an rdm roadmap's phases by invoking the **`rdm-wf-estimate` Workflow** (`.claude/workflows/rdm-wf-estimate.js`, provisioned automatically by `rdm agent-config claude --skills`). This skill is a **thin shim**: it parses the invocation, hands off to the workflow, and prints the summary the workflow returns. All the loop logic — filtering to the unestimated phases, the parallel rating fan-out, and building the difficulty writeback — lives in the workflow, not in this prose.
 
 **IMPORTANT: This is the rdm source repo. Always run `cargo build` first, then use `./target/debug/rdm` — never bare `rdm`. If you modify any rdm source, `cargo build` again before running it.**
 
 ## Contract
 
-**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by a **phase number** to narrow the run to a single phase. If no slug is given, stop and say so.
+**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by a **phase number** to narrow the run to a single phase, and optionally `--rdm-bin <path>` / `--project <name>`. If no slug is given, stop and say so.
 
-The workflow rates only phases whose **difficulty is unset** and **skips** any phase that already has a difficulty (idempotent — re-running never re-rates or overwrites a human-set or previously-estimated value). The model **tier derives in rdm-core** from the difficulty (`Difficulty::model_tier`); the returned writeback sets `--difficulty` only, never `--model`. Estimation writes **nothing to the phase body** — there is no audit note, and no body is read, carried or rewritten anywhere in this lane.
+The workflow rates only phases whose **difficulty is unset** and **skips** any phase that already has a difficulty (idempotent — re-running never re-rates or overwrites a human-set or previously-estimated value). The model **tier derives in rdm-core** from the difficulty (`trivial`/`easy` → small, `moderate` → medium, `hard` → large); the returned writeback sets `--difficulty` only, never `--model`. Estimation writes **nothing to the phase body** — there is no audit note, and no body is read, carried or rewritten anywhere in this lane. To force a re-estimate, a human first clears the difficulty (`./target/debug/rdm phase update <phase> --clear-difficulty --no-edit --roadmap <slug> --project rdm`).
 
 This skill is **non-interactive**. Launch unattended runs with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so the workflow's dispatched agents and bash commands don't block on permission prompts.
 
@@ -23,11 +23,11 @@ This skill is **non-interactive**. Launch unattended runs with `--permission-mod
 1. **Parse `$ARGUMENTS`** into a config object:
    - `roadmap` — the required slug (the first positional argument).
    - `phase` — the positive integer phase number, when a second positional argument is present (omit otherwise, meaning "every unestimated phase").
-   - `rdmBin` — `"./target/debug/rdm"`, this repo's development build. The workflow names no rdm executable of its own.
-   - `project` — `"rdm"`, this repo's plan project.
+   - `rdmBin` — the value following `--rdm-bin`; when not supplied, `$RDM_BIN` if set (this repo's `.mise.toml` sets it to `./target/debug/rdm`), else a plain `rdm` on `PATH`. The workflow names no rdm executable of its own. Call the resolved executable `<rdmBin>`.
+   - `project` — the value following `--project` (this repo: `rdm`); omit it when not supplied, and rdm's own `RDM_PROJECT`/`default_project` chain applies. `<proj-flag>` below is ` --project <project>`, or nothing when omitted.
 2. **Run the phase list yourself and hand it to the workflow.** The workflow reads nothing — the rater is the only agent it dispatches — so this is REQUIRED, not an optimization.
-   - `phaseList` — the parsed array from `./target/debug/rdm phase list --roadmap <slug> --project rdm --format json`, passed through **verbatim**, never summarized. It feeds the unestimated filter, so a summarized list would silently skip or re-rate phases. Without it the workflow refuses to run and hands back the exact command as `listCommand`.
-3. **Invoke the `rdm-wf-estimate` workflow** via the Workflow tool with `{ roadmap, phase, phaseList, rdmBin: "./target/debug/rdm", project: "rdm" }` (omit `phase` when not supplied). Pass `args` as a JSON object, never a stringified value.
+   - `phaseList` — the parsed array from `<rdmBin> phase list --roadmap <slug><proj-flag> --format json`, passed through **verbatim**, never summarized. It feeds the unestimated filter, so a summarized list would silently skip or re-rate phases. Without it the workflow refuses to run and hands back the exact command as `listCommand`.
+3. **Invoke the `rdm-wf-estimate` workflow** via the Workflow tool with `{ roadmap, phase, phaseList, rdmBin, project }` (omit `phase` and `project` when not supplied). Pass `args` as a JSON object, never a stringified value.
 
-   `rdmBin` is optional and defaults to a plain `rdm` on `PATH` when omitted; an explicitly passed value always wins verbatim. Pass `./target/debug/rdm` here — which `.mise.toml` also exports as `RDM_BIN` — rather than relying on the default, per the development-build rule. See `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" for the canonical resolution order. `project` is optional and applies only to project-scoped subcommands; `rdm model resolve` never carries it.
+   `rdmBin` is optional and the workflow defaults it to a plain `rdm` on `PATH` when omitted; an explicitly passed value always wins verbatim. See `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" for the canonical resolution order. `project` is optional and applies only to project-scoped subcommands; `rdm model resolve` never carries it.
 4. **Run each returned writeback, then print the summary.** The workflow persists nothing: every rated phase comes back with `writebackCommands` / `writebackScript` — ONE `phase update --difficulty` command, which touches nothing else. Run each one in Bash, in order, **exactly as returned**: there is nothing to substitute, and no phase body is read, carried, or rewritten by you or by it. Report the exit status. Then print the returned summary verbatim — it lists each phase rated this run with its difficulty and one-line justification, plus the phases skipped because they were already estimated.

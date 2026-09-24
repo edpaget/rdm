@@ -106,6 +106,11 @@ The blocker named above — the `agentType`-downstream rule — was already gone
 pre-pass, now for a reason about cost rather than about resolvability, and a downstream
 consumer that wants tiers rated invokes the shipped engine (or the `rdm-estimate` shim) itself.
 
+**Superseded (`task/sync-dogfood-and-shipped-skills`, 2026-09-24): the distributed template runs the
+pre-pass.** The operator chose one behaviour for both surfaces over the cost argument, so
+`skill-autopilot-cli.md` now makes the same always-invoke `rdm-wf-estimate` call as the local copy,
+and `rdm-estimate`, `rdm-backlog` and `rdm-document` ship as thin shims over their engines.
+
 **Decided (`agent-orchestrated-dispatch` phase 6): omit the plan-review call downstream.**
 The per-phase driver moved to prose in that phase — `.claude/skills/rdm-dispatch-phase/SKILL.md`
 is now the orchestrator, loaded into the main session with `Skill`, and it invokes **two**
@@ -126,6 +131,11 @@ conventions are exactly what an automated plan reviewer has least access to. The
 distributed procedure is not a degraded variant of the gate, only a different author of the
 approving review. Shipping the plan-review engine downstream stays `ship-plan-review-workflow`'s
 job.
+
+**Superseded (`task/sync-dogfood-and-shipped-skills`, 2026-09-24): the distributed orchestrator
+makes the plan-review call.** The operator chose one behaviour for both surfaces: the shipped
+`skill-dispatch-phase-cli.md` now invokes `rdm-wf-plan-review` at step 6 exactly as the local copy
+does, and a human still owns the approval under `rdm-do`'s interactive mode.
 
 **How the prose orchestrator is validated.** By dogfooding, and improved iteratively from what
 a real drive surfaces (operator, 2026-09-20). No harness greps its prose: a test asserting that
@@ -150,7 +160,7 @@ those into `rdm-cli/tests/cli_phase.rs` and `rdm-cli/tests/cli_hook.rs` and dele
 | `rdm-wf-dispatch-phase.js` | two review stages — plan (4 dimensions) then code (up to 7, narrowed by diff signals) — each fanning `parallel()` over its findings | mechanism: fixed 4-stage plan → plan-review → implement → code-review | no | **retired (`agent-orchestrated-dispatch` phase 7)** — phase 6 replaced this engine with the prose `rdm-dispatch-phase` orchestrator and no lane called it any more; phase 7 deleted the file, `lib/dispatch-phase.mjs`, the shipped template, the plugin-tree copy and the emission registration. Retirement rests on the operator's design principle — Workflows are for extremely deterministic *mechanism* (the review-refute cycle); agent *judgment* above the review gate lives in prose — and on the replacement's **functional acceptance, not measured superiority**: no cost, speed, context-ceiling or performance-parity claim was produced or is implied. *(historical row — the file no longer exists)* |
 | `rdm-wf-review-refute-fix.js` | same review core: dimensions → findings | mechanism: find → refute → filter → verdict | no | **STAY** — the canonical review pipeline, already single-sourced in `lib/review.mjs` |
 | `rdm-wf-plan-review.js` | the review core **plus** an outer `parallel()` over phase units | mechanism | no | **STAY** — two nested levels of genuine fan-out |
-| `rdm-wf-estimate.js` | `parallel()` rate over unestimated phases | mechanism | no | **STAY** — the pre-pass fan-out, which the prose loop now depends on *newly* (in the local dogfood skill only — the distributed template drops the pre-pass, see "Decided (phase 4)" above), as a real `workflow()` call rather than autopilot's former stamped copy |
+| `rdm-wf-estimate.js` | `parallel()` rate over unestimated phases | mechanism | no | **STAY** — the pre-pass fan-out, which the prose loop now depends on *newly* (in both the local and the distributed skill since `task/sync-dogfood-and-shipped-skills`), as a real `workflow()` call rather than autopilot's former stamped copy |
 | `rdm-wf-backlog.js` | `parallel()` over ≤4 signal categories | mechanism; propose-only, zero mutation | no — the handoff to a human is terminal | **STAY** |
 | `rdm-wf-document.js` | `parallel()` git-gather over completed phases | mechanism; zero rdm mutation | no — approval is terminal | **STAY** |
 | `spike-agent-type.js` | none (its cases were dispatched sequentially on purpose) | neither — it was a spike artifact that exercised the Workflow runtime itself, not a lane | n/a | **DELETED** by `no-mechanical-agents-in-workflows`: its whole subject was `agentType`/`effort` on a mechanical call site, and there are none left. Its results stand in `docs/workflow-schemas.md` |

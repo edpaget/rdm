@@ -74,18 +74,20 @@ subagent forward on each notification until it converges — never assume the ca
 
 Resolve once, in step 1, and use everywhere after:
 
-- `<rdmBin>` — the rdm executable every command below invokes. An explicit `--rdm-bin` value wins
-  verbatim; with none given, use `$RDM_BIN`
-  (this repo's `.mise.toml` sets it to the local development build), and a plain `rdm` on `PATH` when
-  neither is set. `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" is the
-  canonical order; do not re-derive one here.
+- `<rdmBin>` — the rdm executable every command below invokes, and the `rdmBin` both Workflow calls
+  receive. An explicit `--rdm-bin` value wins verbatim; with none given, use `$RDM_BIN` (this repo's
+  `.mise.toml` sets it to the local development build), and a plain `rdm` on `PATH` when neither is
+  set. Never probe the filesystem to pick a binary. If a "Resolving `rdmBin`" section is appended to
+  this skill, it is the single authoritative resolution order — follow it and do not re-derive one
+  here.
 - `<proj-flag>` — ` --project <name>` when `--project` was given, otherwise nothing at all (never an
-  empty `--project` value).
+  empty `--project` value). `<project>` in the Workflow calls is that same name, omitted when
+  `<proj-flag>` is empty.
 - `<item>` — `phase/<roadmap>/<stem>` or `task/<slug>`. Every `--on`/`--implements` ref uses this
   exact string.
 
-**Output** — your final message is this object, the same OUTCOME shape the retired engine returned
-plus two fields, so `rdm-autopilot`'s advance/park handling needs no change:
+**Output** — your final message is this object, the shape `rdm-autopilot`'s advance/park handling
+reads:
 
 ```json
 {
@@ -108,17 +110,13 @@ no trailer is written by anyone in this flow.
 
 ## Run state
 
-Keep these in your own context for the whole run and carry them into every later step:
-
-- `identity` — the pinned checkout: `repository`, `path`, `branch`, `base`, `head`.
-- `models` — `{ plan, implement }`, the two model ids resolved in step 4 ("Pin the checkout
-  identity") from the item's `model` tier. Carried into the planner/implementer dispatches; never
-  re-resolved mid-run.
-- `planId` — `plan/<slug>`, and the chain of superseded predecessors on a re-plan.
-- `reviewIds` — **additive**. A rework pass keeps resolving comments on the review ids it already
-  has and appends any new one; it never starts a fresh review to "redo" a pass.
-- `planReviseCount`, `codeReworkCount` — against `--max-plan-revise` / `--max-code-rework`.
-- `verification` — `{ command, exitCode, tail }` from step 11.
+Keep these for the whole run: `identity` (the pinned checkout: `repository`, `path`, `branch`,
+`base`, `head`), `profiles` (`plan`, `implement`, `reviewFind`, `reviewVerify`, each a
+`{model, effort}` pair resolved once in step 4 and never re-resolved mid-run), `planId` plus any
+superseded predecessors, `reviewIds` (**additive** — a rework pass keeps resolving comments on the
+ids it already has and appends any new one; it never starts a fresh review to redo a pass),
+`planReviseCount` / `codeReworkCount`, and `verification` (`{ command, exitCode, tail }` from step
+11).
 
 ## Procedure
 
@@ -222,11 +220,11 @@ the real starting point from this same `identity.head`, immediately before the f
 dispatch. Either way the response's `baseNote` field names the fallback, so the gap is visible rather
 than silent.
 
-Then resolve the two dispatch **profiles** — a model plus a reasoning effort — from the item's tier. Read `model` from `phase show <phase>
---roadmap <slug><proj-flag> --format json` (task form: `task show <slug><proj-flag> --format
-json`) and call it `T`. **Record that same response's `body`** as `item.body` — steps 5 and 10 hand
-it to the planner and the implementer, and this is the read it comes from. Do not issue a second
-one.
+Then resolve the two dispatch **profiles** — a model plus a reasoning effort — from the item's tier.
+Read `model` from `phase show <phase> --roadmap <slug><proj-flag> --format json` (task form: `task
+show <slug><proj-flag> --format json`) and call it `T`. **Record that same response's `body`** as
+`item.body` — steps 5 and 10 hand it to the planner and the implementer, and this is the read it
+comes from. Do not issue a second one.
 
 ```bash
 # T non-empty (phase mode with a recorded tier):
@@ -244,15 +242,16 @@ Each prints `{"step", "host", "tier", "model", "effort"}`. Record the two result
 **How a profile reaches the planner and the implementer.** The `Agent` tool's `model` parameter
 carries the model, but it has no effort parameter; a custom agent definition's `effort:` frontmatter
 does (`docs/workflow-schemas.md` § "Planner/implementer effort route spike"). rdm ships one
-role-agnostic definition per effort level in `.claude/agents/` — `rdm-effort-low`,
-`rdm-effort-medium`, `rdm-effort-high`, `rdm-effort-xhigh`, `rdm-effort-max` — each a
-general-purpose agent with the full toolset and no model of its own. So the planner and the
-implementer are dispatched with `subagent_type: rdm-effort-<profile effort>` **and**
-`model: <profile model>`; the per-call model wins over the definition. **Fallback:** if that `Agent`
-call fails with "Agent type … not found" (for example, a session that started before
-`.claude/agents/` existed — Claude Code only watches agent directories that existed at session
-start), re-dispatch that one role as `general-purpose` with the model only, and **name the effort
-gap in the run report** — never silently.
+role-agnostic definition per effort level — `rdm-effort-low`, `rdm-effort-medium`,
+`rdm-effort-high`, `rdm-effort-xhigh`, `rdm-effort-max` — each a general-purpose agent with the
+full toolset and no model of its own (`rdm agent-config claude --skills` writes them to
+`.claude/agents/`; the `rdm` plugin carries them in its `agents/` directory). So the planner and
+the implementer are dispatched with `subagent_type: rdm-effort-<profile effort>` **and**
+`model: <profile model>`; the per-call model wins over the definition. **Fallback:** if that
+`Agent` call fails with "Agent type … not found" (for example, a session that started before the
+agent definitions were installed — Claude Code only watches agent directories that existed at
+session start), re-dispatch that one role as `general-purpose` with the model only, and **name the
+effort gap in the run report** — never silently.
 
 Then read what this session — and only this session — can supply. **The plan-review engine reads
 nothing:** every reviewer fetches the document it needs from the command its prompt names. What is
@@ -266,8 +265,8 @@ corpus, which no document records.
 <rdmBin> task list --tag plan-review --status wont-fix<proj-flag> --format json   # record each result's `title`
 ```
 
-Record the two results as `profiles.reviewFind` / `profiles.reviewVerify` (each `{model, effort}`) and the wont-fix titles as
-`wontFixedTitles`:
+Record the two results as `profiles.reviewFind` / `profiles.reviewVerify` (each `{model, effort}`)
+and the wont-fix titles as `wontFixedTitles`:
 
 - The two `model resolve` calls take **no `--tier`** — review-lane roles, not dispatch models. There
   is no mechanical model left to resolve and no bootstrap agent to pre-empt: each model and effort is
@@ -281,13 +280,12 @@ Record the two results as `profiles.reviewFind` / `profiles.reviewVerify` (each 
 
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, the two resolved
 `profiles.plan` / `profiles.implement` and the two resolved `profiles.reviewFind` /
-`profiles.reviewVerify` (model and effort each),
-and confirm you captured the item's `body`, the roadmap `body` (phase mode) and the wont-fix titles.
-If the worktree or identity command failed, escalate — never invent a checkout, and never let a
-subagent choose one. A failed **read** is different and not fatal, but say which one failed and
-state the consequence — it differs per value, and **no engine-side fallback exists for any of them**
-since the engine dispatches finder and refuter agents only, with nothing reachable to re-read what
-you omit:
+`profiles.reviewVerify` (model and effort each), and confirm you captured the item's `body`, the
+roadmap `body` (phase mode) and the wont-fix titles. If the worktree or identity command failed,
+escalate — never invent a checkout, and never let a subagent choose one. A failed **read** is
+different and not fatal, but say which one failed and state the consequence — it differs per value,
+and **no engine-side fallback exists for any of them** since the engine dispatches finder and
+refuter agents only, with nothing reachable to re-read what you omit:
 
 - item `body` feeds the planner (step 5) and implementer (step 10), never step 6 directly — if
   unreadable, escalate rather than dispatching a planner with no phase text.
@@ -324,15 +322,18 @@ subagent with `subagent_type: rdm-effort-<profiles.plan.effort>` and `model: <pr
   dispatch.verify` is an operator act, not something a dispatch writes.
 
 **Self-check before proceeding:** confirm the planner subagent returned and that `plan show
-<plan-slug> --format json` reports a real plan whose `implements` is `rdm:<item>`. No new command
+<plan-slug> --format json` reports a real plan whose `implements` link names `<item>`. No new command
 beyond that confirmation — step 6 never needs the plan body handed to it: it passes the slug, and
 each reviewer runs `plan show` itself. If you drafted the plan yourself instead of dispatching, you
 have inline-collapsed — stop and dispatch.
 
 ### 6. Invoke the plan review — in THIS session
 
-```
-Workflow({ scriptPath: '.claude/workflows/rdm-wf-plan-review.js', args: {
+Invoke the **`rdm-wf-plan-review` Workflow** (`.claude/workflows/rdm-wf-plan-review.js`) via the
+Workflow tool, passing `args` as a JSON object (never a stringified value):
+
+```js
+{
   implementationPlan: true,
   planSlug: '<plan-slug>',
   persist: { on: 'plan/<plan-slug>' },
@@ -346,7 +347,7 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-plan-review.js', args: {
   verifyEffort: '<profiles.reviewVerify.effort>',
   wontFixedTexts: [<wontFixedTitles>],
   rdmBin: '<rdmBin>', project: '<project>',
-} })
+}
 ```
 
 The plan document is what is **graded** here, not merely what the verdict is recorded on. The item's
@@ -362,18 +363,15 @@ yourself.** It is the one step a subagent physically cannot perform.
 - `roadmap` names the parent roadmap so the `intent-alignment` reviewer knows which document to read
   its `## Intent` from. Omit it in task mode.
 - `source` / `base` / `expectedHead` / `expectedBranch` — the SAME pinned checkout identity you
-  recorded in step 4, in the SAME flat shape step 12's code-review call already takes. Every
-  finder and refuter runs `rdm review source --on <item> --source ... --no-code --format json` and
-  verifies the checkout has not moved before reading any file the plan cites, out of that pinned
-  `path` at that pinned `head` — never out of whatever checkout the session that dispatched them
-  happens to be sitting in. This is what closed the observed failure mode: a plan review graded
-  against `main` while the plan targeted this roadmap's own unlanded worktree. `phase` (or `task`
-  in task mode) is **newly required alongside this pin** — the engine derives the pinned
-  `--on <item>` from it, the same identifiers `roadmap`/`phase`/`task` already name. **Omitting all
-  four is legal**: the engine falls back to reading from the invoking session's own working
-  directory, exactly as before this pin existed — the correct behavior for the standalone
-  `rdm-plan-review`/`rdm-wf-plan-review` surface run outside a dispatch worktree, which this pin
-  does not touch.
+  recorded in step 4, in the SAME flat shape step 12's code-review call takes. Every finder and
+  refuter runs `rdm review source --on <item> --source ... --no-code --format json` and verifies the
+  checkout has not moved before reading any file the plan cites, out of that pinned `path` at that
+  pinned `head` — never out of whatever checkout the dispatching session happens to be sitting in,
+  so a plan targeting an unlanded worktree is never graded against `main`. `phase` (or `task` in
+  task mode) is **required alongside this pin** — the engine derives the pinned `--on <item>` from
+  it. **Omitting all four is legal**: the engine then reads from the invoking session's own working
+  directory — the correct behavior for the standalone `rdm-plan-review` surface run outside a
+  dispatch worktree.
 - `reviewers` — **the reviewer set you are selecting.** Omitting the key entirely runs every plan
   reviewer, which is the safe default; naming a set runs exactly those. An unrecognised name is
   dropped silently and shows as a gap in the unit's `coverage.selected`/`coverage.ran` — nothing
@@ -394,9 +392,9 @@ yourself.** It is the one step a subagent physically cannot perform.
   Intent` section — the reviewer reads it out of the roadmap itself, so nothing is transcribed into
   this call. In task mode there is no parent roadmap, so omit it.
 - `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — the two judgment-site profiles'
-  `model` and `effort`, each independently optional. There is no mechanical model any more and no
-  bootstrap agent to skip; an omitted model just makes that agent inherit the session model, an
-  omitted effort its effort. An effort the engine does not accept is refused before any agent runs.
+  `model` and `effort`, each independently optional. An omitted model makes that agent inherit the
+  session model, an omitted effort its effort. An effort the engine does not accept is refused
+  before any agent runs.
 - `wontFixedTexts` — the wont-fix titles from step 4. An empty array is a legal, meaningful value
   (nothing to suppress) and is **not** the same as omitting the key. Omit it only if the `task
   list` call itself failed.
@@ -406,7 +404,7 @@ agents only. When it returns `persistCommands` / `persistScript`, **you** run th
 in one session, and report the exit status; it records the plan review on `plan/<plan-slug>` exactly
 as the code ladder records the change review.
 
-Because the engine no longer reviews the item document, this call does **not** clear a
+Because the engine does not review the item document, this call does **not** clear a
 `needs-plan-review` tag on the phase. That tag asserts the *item* was plan-reviewed and is cleared
 by the standalone `rdm-plan-review` surface or a manual sweep, not here.
 
@@ -426,11 +424,10 @@ Switch **only** on its `status` field:
 | `superseded` | re-plan (step 5) against the successor |
 
 **You MUST NOT** read the plan-review Workflow's return value to decide approval, and **you MUST
-NOT** inspect who authored the review. `rdm-core`'s `ops::reviews` flips plan status through
-`ops::plan::set_plan_status` on **any** `review submit` against a `plan/<slug>` target, so a
-workflow-persisted approve and a human's approve are the *same write* and this *same read* sees
-both. Adding an author or provenance check here would break the human/agent symmetry the whole
-roadmap exists for.
+NOT** inspect who authored the review. rdm flips plan status on **any** `review submit` against a
+`plan/<slug>` target, so a workflow-persisted approve and a human's approve are the *same write* and
+this *same read* sees both. An author or provenance check here would break the human/agent symmetry
+this design depends on.
 
 Poll with a bounded number of attempts, logging one visible line per attempt. On exhaustion park
 `blocked` with reason `[plan] plan approval not recorded on plan/<plan-slug>` — **never** proceed on
@@ -490,10 +487,9 @@ write (already recorded, or a resumed pass with prior commits), `identity.base` 
 
 **Declare** it, then dispatch **one** `Agent` subagent with
 `subagent_type: rdm-effort-<profiles.implement.effort>` and `model: <profiles.implement.model>` (see
-step 4 for the not-found fallback), the approved
-plan body verbatim, the item body, and `identity.path` as its working directory. Require it to
-commit in that worktree and return the commit SHA. Follow the `--permission-mode auto` rules below.
-**You MUST NOT** implement inline.
+step 4 for the not-found fallback), the approved plan body verbatim, the item body, and
+`identity.path` as its working directory. Require it to commit in that worktree and return the
+commit SHA. Follow the `--permission-mode auto` rules below. **You MUST NOT** implement inline.
 
 **Self-check before proceeding:** confirm the implementer returned, then re-run `review source --on
 <item>` and restate the pinned `path`/`branch`/`base`, comparing `base` against the **current**
@@ -532,8 +528,11 @@ so it reaches the persisted review.
 
 ### 12. Invoke the code review — in THIS session
 
-```
-Workflow({ scriptPath: '.claude/workflows/rdm-wf-review-refute-fix.js', args: {
+Invoke the **`rdm-wf-review-refute-fix` Workflow** (`.claude/workflows/rdm-wf-review-refute-fix.js`)
+via the Workflow tool, passing `args` as a JSON object (never a stringified value):
+
+```js
+{
   mode: 'code', roadmap: '<slug>', phase: '<phase>',     // or task: '<slug>'
   persist: true, implements: 'plan/<plan-slug>', gate: false,
   reviewers: [<the set you selected — see below>],
@@ -544,7 +543,7 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-review-refute-fix.js', args: {
   findEffort: '<profiles.reviewFind.effort>',
   verifyEffort: '<profiles.reviewVerify.effort>',
   rdmBin: '<rdmBin>', project: '<project>',
-} })
+}
 ```
 
 **The engine reads nothing and writes nothing.** You pass the identity you pinned in step 10 — a
@@ -655,9 +654,8 @@ Per comment, run this numbered checklist:
 2. **Classify and act:**
    - **SOURCE comment** (carries a `path` — a file-quote anchor into the diff): dispatch an
      implementer `Agent` subagent with `subagent_type: rdm-effort-<profiles.implement.effort>` and
-     `model: <profiles.implement.model>` in `identity.path` with the
-     comment body and its `source_link` permalink; require a commit and its SHA. **You MUST NOT
-     route a source comment to
+     `model: <profiles.implement.model>` in `identity.path` with the comment body and its
+     `source_link` permalink; require a commit and its SHA. **You MUST NOT route a source comment to
      `rdm-revise`**: that skill edits plan-repo document bodies and its `--applied-commit` is a
      plan-repo SHA, so it cannot carry source-commit provenance. (This split is the answer to
      `task/plan-dispatch-plan-change-rework-routing`.)
@@ -688,9 +686,9 @@ Per comment, run this numbered checklist:
 4. **Verify**: `review show <id> --format json` shows that comment with a terminal `status` and a
    non-empty `reply`.
 
-Under `--interactive`, **present each decision (1) for confirmation before running (3)**. Under
-`--auto`, apply them without pausing. Nothing else differs — **you MUST NOT** fork the triage
-procedure, skip a confirmation in `--interactive`, or add one in `--auto`.
+Under `--interactive`, **present each decision (1) for confirmation before running (3)**. Otherwise,
+apply them without pausing. Nothing else differs — **you MUST NOT** fork the triage procedure, skip a
+confirmation in `--interactive`, or add one without it.
 
 Close each review and land the batch:
 
@@ -796,8 +794,6 @@ mismatch as an escalation, not a success.
 ### 16. Return the OUTCOME
 
 Produce the object from the Contract above as your final message, `planId` and `reviewIds` included.
-This is the in-session result of a loaded skill rather than a Workflow return value; the fields are
-unchanged, so `rdm-autopilot`'s advance/park handling reads it exactly as before.
 
 ## Interactive mode (`rdm-do` without `--auto`)
 
@@ -822,9 +818,9 @@ it dispatches MUST follow these rules:
 - **Never run `git stash -u`, `git reset --hard`, or `git clean -fdx`.** They are classified as
   irreversible local destruction and denied. Per-roadmap worktree isolation makes whole-tree resets
   unnecessary; commit a `wip:` commit on the branch instead.
-- **Never run `rdm discard --force` in the shared plan repo.** It resets other sessions' uncommitted
-  work. Commit each batch immediately instead — the plan repo is shared, and any `rdm commit` sweeps
-  only your own session's changeset.
+- **Never run `rdm discard --force` in a shared plan repo.** It resets other sessions' uncommitted
+  work. Commit each batch immediately instead — any `rdm commit` sweeps only your own session's
+  changeset.
 
 ## Escalation protocol
 

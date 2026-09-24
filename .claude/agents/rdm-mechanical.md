@@ -57,9 +57,7 @@ Two deliberate choices:
   dispatch. Do not narrow the list further without re-proving the schema-return path — every
   threaded site depends on it.
 
-**This file is not distributed.** `rdm-core/src/agent_config.rs` exposes `generate_skills` and
-`generate_workflows` only; there is no `.claude/agents/` emission surface. An unresolvable
-`agentType` *raises* in the Workflow runtime rather than degrading silently, so no distributed
-workflow template may reference this agent until
-`ship-mechanical-agent-type-downstream` lands — `scripts/verify-workflow-review.sh` §2b
-enforces that.
+**This file is distributed.** `generate_agents()` in `rdm-core/src/agent_config.rs` emits it into
+every `rdm agent-config claude --skills` tree (the plugin tree omits it). No shipped workflow
+references it: an unresolvable `agentType` *raises* in the Workflow runtime rather than degrading
+silently, so a caller that names it must run where it is installed.

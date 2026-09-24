@@ -146,11 +146,8 @@ behavior since an already-approved review, which the procedure now permits the o
 override itself, under the four conditions its "terminal write" step spells out. Every other
 refusal is still escalated rather than bypassed.
 
-**Downstream divergence.** The distributed `skill-dispatch-phase-cli.md` omits the
-`rdm-wf-plan-review` Workflow call — `rdm-wf-plan-review.js` is not emitted downstream, so naming it would reference a
-missing file — and waits on a human-submitted approve review on the plan instead. It is the same
-single `plan show` read either way. See `docs/workflow-vs-prose-boundary.md`
-§ "Decided (`agent-orchestrated-dispatch` phase 6)".
+**No downstream divergence.** The distributed `skill-dispatch-phase-cli.md` makes the same
+`rdm-wf-plan-review` call as the local copy (since `task/sync-dogfood-and-shipped-skills`).
 
 **How it was accepted.** By dogfooding, and improved iteratively from what a real drive surfaces
 (operator, 2026-09-20). There is no smoke-run gate and no harness greps the prose; the real-binary

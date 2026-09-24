@@ -16,18 +16,20 @@ allowed-tools:
 ---
 
 Drive **one** rdm phase (or task) from its plan to a gated `reviewed`, and leave behind the trail
-that explains why it ended where it did: an approved `plan/<slug>`, a plan review approving it, a
+that explains why it ended where it did: an approved `plan/<slug>`, a persisted plan review, a
 persisted `change/<sha>` review, and one `addressed`/`wont-fix` resolution — each with a reasoned
-reply — for every comment on it. That trail is the archeology, and a human reads and writes it
-through exactly the same commands this procedure does.
+reply — for every comment on it. That trail is the archeology. A Workflow journal lives outside the
+plan repo and disappears; these records do not, and a human reads and writes them through exactly
+the same commands the orchestrator does.
 
 ## How this skill must be entered
 
-**You MUST be running this in the session that loaded it with the `Skill` tool** — the session that
-still holds `Workflow`. **You MUST NOT dispatch this skill to an `Agent` subagent.** An
-`Agent`-spawned subagent has no `Workflow` tool at all, so the code-review call below cannot even be
-formed there; the same-named Skill route inside a subagent returns only a shim carrying an
-unsatisfiable `Invoke: Workflow(...)` directive.
+**You MUST be running this in the session that loaded it with the `Skill` tool** — the main session,
+which still holds `Workflow`. **You MUST NOT dispatch this skill to an `Agent` subagent.** An
+`Agent`-spawned subagent has no `Workflow` tool at all (it is absent from both its loaded and its
+deferred tool lists, so the call cannot even be formed), and the same-named Skill route inside a
+subagent returns only a shim carrying an unsatisfiable `Invoke: Workflow(...)` directive. The two
+review-engine calls below can therefore only be made by a session that already holds the tool.
 
 ### Delegation boundary — fixed, not a preference
 
@@ -35,17 +37,18 @@ unsatisfiable `Invoke: Workflow(...)` directive.
 | --- | --- | --- |
 | Planner | dispatched `Agent` subagent | isolates planning context; makes no Workflow call |
 | Implementer | dispatched `Agent` subagent | isolates implementation context; makes no Workflow call |
+| Plan review | **this session**, `Workflow` | needs the `Workflow` tool |
 | Code review | **this session**, `Workflow` | needs the `Workflow` tool |
 | Verification, triage, every status write, every gate read | **this session**, `Bash` | judgment, and the tool is already here |
 
-**You MUST NOT** collapse the planner or the implementer into your own context ("inline-collapse"): a
-planner that also reviews its own plan, or an implementer that also decides whether its diff is
+**You MUST NOT** collapse the planner or the implementer into your own context ("inline-collapse"):
+a planner that also reviews its own plan, or an implementer that also decides whether its diff is
 acceptable, provides no independent check at all. **You MUST NOT** delegate a Workflow call, a gate
 read, or a status write to a subagent.
 
-`Agent` dispatch is **fire-and-forget**: the call returns a background-launch acknowledgement and the
-child's result arrives as a later notification. Every dispatch step below MUST drive its subagent
-forward on each notification until it converges — never assume the call blocked.
+`Agent` dispatch is **fire-and-forget**: the call returns a background-launch acknowledgement and
+the child's result arrives as a later notification. Every dispatch step below MUST drive its
+subagent forward on each notification until it converges — never assume the call blocked.
 
 ## Contract
 
@@ -53,24 +56,29 @@ forward on each notification until it converges — never assume the call blocke
 
 - `<roadmap-slug> <phase>` (stem or number) — phase mode; or `--task <slug>` — task mode.
 - `--interactive` — the human-in-the-loop mode `do` (without `--auto`) selects. It changes
-  exactly one thing here: step 12 presents each triage decision for confirmation before recording it.
-- `--plan-only` — stop once the plan is approved. Stamps nothing, implements nothing, writes no
+  exactly two things, named in step 7 and step 13. Nothing else.
+- `--plan-only` — stop after the plan is approved. Stamps nothing, implements nothing, writes no
   status, records no change review.
 - `--max-plan-revise N` (default 2) / `--max-code-rework N` (default 2). `0` is legal and distinct
   from unset: terminate on the first blocking review, no revise/rework round at all.
-- `rdmBin` — the rdm executable you invoke (e.g. `rdm` on PATH, or a repo-local build path); use the
-  same one for every command below and pass it to the Workflow call. **Optional**: omit it and a
-  plain `rdm` on `PATH` is used; an explicitly passed value always wins verbatim, and the literal
-  `"rdm"` requests `PATH` resolution deliberately. Never probe the filesystem to pick a binary. If a
-  "Resolving `rdmBin`" section is appended to this skill, it is the single authoritative resolution
-  order — follow it and do not re-derive one here.
-- `project` — the project name used in `--project <PROJECT>`. **Optional**, and appended only to
-  project-scoped commands; omit it to let rdm's own `RDM_PROJECT`/`default_project` chain apply.
+- `--rdm-bin <path>` / `--project <name>` — optional; they resolve the two placeholders below.
 
-`<item>` below means `phase/<roadmap>/<stem>` or `task/<slug>` — every `--on`/`--implements` ref uses
-that exact string.
+Resolve once, in step 1, and use everywhere after:
 
-**Output** — your final message is this object:
+- `<rdmBin>` — the rdm executable every command below invokes, and the `rdmBin` both Workflow calls
+  receive. An explicit `--rdm-bin` value wins verbatim; with none given, use `$RDM_BIN`, and a plain
+  `rdm` on `PATH` when neither is set. Never probe the filesystem to pick a binary. If a "Resolving
+  `rdmBin`" section is appended to this skill, it is the single authoritative resolution order —
+  follow it and do not re-derive one here.
+- `<proj-flag>` — ` --project <name>` when `--project` was given, otherwise ` --project <PROJECT>`, or
+  nothing at all when no project name applies and rdm's own `RDM_PROJECT`/`default_project` chain
+  should resolve it (never an empty `--project` value). `<project>` in the Workflow calls is that
+  same name, omitted when `<proj-flag>` is empty.
+- `<item>` — `phase/<roadmap>/<stem>` or `task/<slug>`. Every `--on`/`--implements` ref uses this
+  exact string.
+
+**Output** — your final message is this object, the shape `autopilot`'s advance/park handling
+reads:
 
 ```json
 {
@@ -94,142 +102,133 @@ no trailer is written by anyone in this flow.
 ## Run state
 
 Keep these for the whole run: `identity` (the pinned checkout: `repository`, `path`, `branch`,
-`base`, `head`), `models` (`{ plan, implement }`, the two model ids resolved in step 4 from the
-item's `model` tier, carried into the planner/implementer dispatches and never re-resolved
-mid-run), `planId` plus any superseded predecessors, `reviewIds` (**additive** — a rework pass
-keeps resolving comments on the ids it already has and never starts a fresh review to redo a pass),
-`planReviseCount` / `codeReworkCount`, and `verification` (`{ command, exitCode, tail }`).
+`base`, `head`), `profiles` (`plan`, `implement`, `reviewFind`, `reviewVerify`, each a
+`{model, effort}` pair resolved once in step 4 and never re-resolved mid-run), `planId` plus any
+superseded predecessors, `reviewIds` (**additive** — a rework pass keeps resolving comments on the
+ids it already has and appends any new one; it never starts a fresh review to redo a pass),
+`planReviseCount` / `codeReworkCount`, and `verification` (`{ command, exitCode, tail }` from step
+11).
 
 ## Procedure
 
-### 1. Parse `$ARGUMENTS`
+### 1. Parse `$ARGUMENTS` and resolve the placeholders
 
-Resolve the target, the mode flags, the two budgets, `rdmBin` and `project`. A missing target is a
-stop, not a guess: say so and return without invoking anything.
+Resolve `<rdmBin>`, `<proj-flag>`, `<item>`, the mode flags and the two budgets. A missing target is
+a stop, not a guess: say so and return without invoking anything.
 
 ### 2. Resume before planning — never discard work a prior pass recorded
 
-Read **the item's own review set** (defined once here; step 12 uses this same recipe, for both its
-work list and its completion check):
+Read **the item's own review set** (defined once here; step 13 uses this same recipe, for both its
+work list and its completion check) before doing anything else:
 
 ```bash
 # (a) the item's plans — the hub every other record hangs off
-rdm plan list --implements <item> --project <PROJECT> --format json
+<rdmBin> plan list --implements <item><proj-flag> --format json
 # (b) reviews of the item document itself
-rdm review list --on <item> --state submitted --verdict request-changes --project <PROJECT> --format json
+<rdmBin> review list --on <item> --state submitted --verdict request-changes<proj-flag> --format json
 # (c) per plan slug from (a): its plan reviews (`reviews[]`) and the change
 #     reviews implementing it (`change_reviews[]`)
-rdm plan show <plan-slug> --project <PROJECT> --no-body --format json
+<rdmBin> plan show <plan-slug><proj-flag> --no-body --format json
 ```
 
-**You MUST NOT** substitute `rdm review requests` for this. `review requests` is shorthand for
-`review list --state submitted --verdict request-changes` with **no target filter at all** — it has
-no `--on` flag and returns every pending review in the whole project, including reviews on other
-roadmaps, other tasks and other sessions' items. `review list --on <target>` is the same queue
-*scoped*, and (a)+(c) are what enumerate this item's targets — the item document, its `plan/<slug>`
-documents, and the `change/<sha>` heads recorded against them. Anything the item's review set does
-not contain belongs to another item and is **not yours to triage**: acting on it would dispatch a fix
-into this item's worktree for a change that lives somewhere else, record an `--applied-commit` from
-the wrong branch, and race any concurrent dispatch run reading the same global queue.
+**You MUST NOT** substitute `review requests` for this. `review requests` is shorthand for `review
+list --state submitted --verdict request-changes` with **no target filter at all** — it has no `--on`
+flag and returns every pending review in the whole project, including reviews on other roadmaps,
+other tasks and other sessions' items. `review list --on <target>` is the same queue *scoped*, and
+(a)+(c) are what enumerate this item's targets — the item document, its `plan/<slug>` documents, and
+the `change/<sha>` heads recorded against them. Anything the item's review set does not contain
+belongs to another item and is **not yours to triage**: acting on it would dispatch a fix into this
+item's worktree for a change that lives somewhere else, record an `--applied-commit` from the wrong
+branch, and race any concurrent dispatch run reading the same global queue.
 
 - An `approved` plan for `<item>` **and** an open review **in that set** → **resume at triage (step
-  12)** with those ids. Do not re-plan, do not create a second review, and do not re-ask a
+  13)** with those ids. Do not re-plan, do not create a second review, and do not re-ask a
   confirmation for a decision already recorded as a reply on a comment.
 - An `approved` plan and no open review in that set, with the implementation **not yet committed**
   (e.g. a `--plan-only` pass followed by a real dispatch, or a crash between plan approval and the
-  implementer's commit) → resume at **step 8** (record the start commit), then continue to step 9
+  implementer's commit) → resume at **step 9** (record the start commit), then continue to step 10
   (implement) as normal. No implementation commit exists yet, so this is the item's first implementer
-  dispatch in every sense that matters — step 8 MUST run here, not be skipped; its own read-back and
+  dispatch in every sense that matters — step 9 MUST run here, not be skipped; its own read-back and
   write-once refusal already make running it safe even if some earlier pass somehow recorded a value.
 - An `approved` plan and no open review in that set, with the implementation **already committed** →
-  resume directly at step 11 (code review). This resume skips step 8: it is not this item's first
+  resume directly at step 12 (code review). This resume skips step 9: it is not this item's first
   implementer dispatch, and recording a start now would wrongly exclude commits already made. `review
   source` falls back to the merge-base for such an item if it never got a recorded `started_head`,
   which is safe (wider, not narrower).
 - Nothing → continue to step 3.
 
+This is what makes a parked run resumable from the plan repo alone, with no session context.
+
 ### 3. Ensure the worktree exists, then stamp `in-progress`
 
 ```bash
-rdm worktree add <slug> --project <PROJECT>          # or: rdm worktree add task/<slug>
+<rdmBin> worktree add <slug><proj-flag>          # or: worktree add task/<slug>
 ```
 
 Always run this, **including under `--plan-only`** — step 4's identity pin needs the worktree to
 exist, whether or not this pass goes on to implement anything. One worktree per roadmap: every phase
-of a roadmap is implemented in place in the same checkout, so `worktree add` on a later phase returns
-the existing path. **You MUST NOT** create a phase-specific branch or fork off `main`.
+of a roadmap is implemented in place in the same checkout, so `worktree add` on a later phase simply
+returns the existing path. **You MUST NOT** create a phase-specific branch or fork off `main`.
 
 ```bash
-rdm phase update <phase> --status in-progress --no-edit --roadmap <slug> --project <PROJECT>
-rdm commit -m "chore(plan): start <item>"
+<rdmBin> phase update <phase> --status in-progress --no-edit --roadmap <slug><proj-flag>
+<rdmBin> commit -m "chore(plan): start <item>"
 ```
 
-(task form: `rdm task update <slug> --status in-progress …`). **Skip only these two lines under
+(task form: `task update <slug> --status in-progress …`). **Skip only these two lines under
 `--plan-only`** — a plan-only pass does no implementation, so stamping `in-progress` would misreport
 work that never happened. This status stamp records nothing about the item's starting commit — that
-is step 8's job, an explicit write independent of this one.
+is step 9's job, an explicit write independent of this one.
 
 ### 4. Pin the checkout identity
 
-`rdm review source` deliberately never creates or changes a worktree — step 3 already ensured it
-exists — so this step only resolves the identity. Pass `--no-code`:
+`review source` deliberately never creates or changes a worktree — step 3 already ensured it exists
+— so this step only resolves the identity. Pass `--no-code`:
 
 ```bash
-rdm review source --on <item> --project <PROJECT> --no-code --format json
+<rdmBin> review source --on <item><proj-flag> --no-code --format json
 ```
 
 This pin only needs `repository`/`path`/`branch`/`base`/`head`, never the diff itself. Pass
 `--no-code` always: a fresh item (no commits yet) has an empty committed range, and without
-`--no-code` `rdm review source` refuses with "empty committed range; declare --no-code only for
+`--no-code` `review source` refuses with "empty committed range; declare --no-code only for
 intentional no-code review" — which would stop the dispatch before planning starts, on exactly the
 case AC2 requires to work, for a fresh roadmap or task worktree regardless of whether `started_head`
 is recorded. `--no-code` only waives that refusal; it changes nothing about which `base`/`head` get
-resolved. Every later `review source` call runs without it, once real commits exist: step 9's
-self-check, each reviewer in step 11, and step 13's re-review.
+resolved. Every later `review source` call runs without it, once real commits exist: step 10's
+self-check, each reviewer in step 12, and step 14's re-review.
 
-Record `repository`, `path`, `branch`, `base`, `head` as `identity`. `identity.base` is the item's own
-**starting head**: `rdm review source` defaults it to the recorded `started_head`, not the merge-base
-with the default branch, once one exists. This matters because the roadmap worktree is shared — it
-carries every earlier phase's commits, including a parked one's — so without this default the review
-would re-find already-triaged earlier-phase changes and attribute them to this phase. On the item's
-true first pass nothing is recorded yet, so this pin falls back to the merge-base instead; step 8
-records the real starting point from this same `identity.head`, immediately before the first
-implementer dispatch. Either way the response's `baseNote` field names the fallback, so the gap is
-visible rather than silent.
+Record `repository`, `path`, `branch`, `base`, `head` as `identity`. Every later step uses this
+same `path` as its working directory and this same `base`/`head` on the terminal write.
 
-Then resolve the two dispatch **profiles** — a model plus a reasoning effort — from the item's
-tier. Read `model` from `rdm phase show <phase> --roadmap <slug> --project <PROJECT> --format json` (task
-form: `rdm task show <slug> --project <PROJECT> --format json`) and call it `T`.
+`identity.base` is the phase's (or task's) own **starting head**: `review source` defaults it to the
+recorded `started_head`, not the merge-base with the default branch, once one exists. This matters
+because the roadmap worktree is shared — it carries every earlier phase's commits, including a parked
+one's — so without this default the review (and the finders/refuters in steps 6 and 12) would re-find
+every earlier phase's already-triaged changes and attribute them to this phase. On the item's true
+first pass nothing is recorded yet, so this pin falls back to the merge-base instead; step 9 records
+the real starting point from this same `identity.head`, immediately before the first implementer
+dispatch. Either way the response's `baseNote` field names the fallback, so the gap is visible rather
+than silent.
+
+Then resolve the two dispatch **profiles** — a model plus a reasoning effort — from the item's tier.
+Read `model` from `phase show <phase> --roadmap <slug><proj-flag> --format json` (task form: `task
+show <slug><proj-flag> --format json`) and call it `T`. **Record that same response's `body`** as
+`item.body` — steps 5 and 10 hand it to the planner and the implementer, and this is the read it
+comes from. Do not issue a second one.
 
 ```bash
 # T non-empty (phase mode with a recorded tier):
-rdm model resolve plan --tier <T> --format json
-rdm model resolve implement --tier <T> --format json
+<rdmBin> model resolve plan --tier <T> --format json
+<rdmBin> model resolve implement --tier <T> --format json
 # T empty/missing, or task mode (a task carries no tier at all):
-rdm model resolve plan --format json
-rdm model resolve implement --format json
+<rdmBin> model resolve plan --format json
+<rdmBin> model resolve implement --format json
 ```
 
 Each prints `{"step", "host", "tier", "model", "effort"}`. Record the two results as
 `profiles.plan` / `profiles.implement` — each a `{model, effort}` pair, read from the one JSON call
 (never a second text call).
-
-Also resolve the two review-lane judgment profiles, used by the code-review Workflow call in step
-11. They take **no `--tier`** — they are review-lane roles, not dispatch models:
-
-```bash
-rdm model resolve review-find --format json
-rdm model resolve review-verify --format json
-```
-
-Record the two results as `profiles.reviewFind` / `profiles.reviewVerify`. Each field is
-independently optional downstream: an omitted model makes that judgment agent inherit the session
-model, and an omitted effort makes it run at the session's effort.
-
-**Self-check before proceeding:** state the pinned `path`, `branch`, `head`, and the four resolved
-`profiles.plan` / `profiles.implement` / `profiles.reviewFind` / `profiles.reviewVerify` (model and
-effort each) you just read. A failed command is an escalation — never invent a checkout, and never
-let a subagent choose one.
 
 **How a profile reaches the planner and the implementer.** The `Agent` tool's `model` parameter
 carries the model, but it has no effort parameter; a custom agent definition's `effort:` frontmatter
@@ -237,128 +236,263 @@ does. rdm ships one role-agnostic definition per effort level — `rdm:rdm-effor
 `rdm:rdm-effort-medium`, `rdm:rdm-effort-high`, `rdm:rdm-effort-xhigh`, `rdm:rdm-effort-max` — each a
 general-purpose agent with the full toolset and no model of its own (`rdm agent-config claude
 --skills` writes them to `.claude/agents/`; the `rdm` plugin carries them in its `agents/`
-directory). So the planner and the
-implementer are dispatched with `subagent_type: rdm:rdm-effort-<profile effort>` **and**
-`model: <profile model>`; the per-call model wins over the definition. **Fallback:** if that `Agent`
-call fails with "Agent type … not found" (for example, a session that started before the agent
-definitions were installed — Claude Code only watches agent directories that existed at session
-start), re-dispatch that one role as `general-purpose` with the model only, and **name the effort
-gap in the run report** — never silently.
+directory). So the planner and the implementer are dispatched with
+`subagent_type: rdm:rdm-effort-<profile effort>` **and** `model: <profile model>`; the per-call model
+wins over the definition. **Fallback:** if that `Agent` call fails with "Agent type … not found"
+(for example, a session that started before the agent definitions were installed — Claude Code only
+watches agent directories that existed at session start), re-dispatch that one role as
+`general-purpose` with the model only, and **name the effort gap in the run report** — never
+silently.
+
+Then read what this session — and only this session — can supply. **The plan-review engine reads
+nothing:** every reviewer fetches the document it needs from the command its prompt names. What is
+left to gather is the two judgment-site profiles, which are yours to resolve, and the wont-fix
+corpus, which no document records.
+
+```bash
+<rdmBin> roadmap show <slug><proj-flag> --format json    # for STEP 5's planner — SKIP in task mode
+<rdmBin> model resolve review-find --format json
+<rdmBin> model resolve review-verify --format json
+<rdmBin> task list --tag plan-review --status wont-fix<proj-flag> --format json   # record each result's `title`
+```
+
+Record the two results as `profiles.reviewFind` / `profiles.reviewVerify` (each `{model, effort}`)
+and the wont-fix titles as `wontFixedTitles`:
+
+- The two `model resolve` calls take **no `--tier`** — review-lane roles, not dispatch models. There
+  is no mechanical model left to resolve and no bootstrap agent to pre-empt: each model and effort is
+  independently optional, and an omitted one makes that judgment agent inherit the session's model
+  or effort.
+- The roadmap read is **step 5's**, listed here only because this is where reads are gathered: the
+  planner gets `## Intent` verbatim, while step 6's `intent-alignment` reviewer reads that section
+  itself, from the roadmap slug alone.
+- Use `task list`, **not** `rdm search`, for the wont-fix corpus: `search` truncates at its default
+  `--limit 20` and its JSON carries no `body` field.
+
+**Self-check before proceeding:** state the pinned `path`, `branch`, `head`, the two resolved
+`profiles.plan` / `profiles.implement` and the two resolved `profiles.reviewFind` /
+`profiles.reviewVerify` (model and effort each), and confirm you captured the item's `body`, the
+roadmap `body` (phase mode) and the wont-fix titles. If the worktree or identity command failed,
+escalate — never invent a checkout, and never let a subagent choose one. A failed **read** is
+different and not fatal, but say which one failed and state the consequence — it differs per value,
+and **no engine-side fallback exists for any of them** since the engine dispatches finder and
+refuter agents only, with nothing reachable to re-read what you omit:
+
+- item `body` feeds the planner (step 5) and implementer (step 10), never step 6 directly — if
+  unreadable, escalate rather than dispatching a planner with no phase text.
+- roadmap `body` likewise feeds only step 5's planner; if unreadable, the planner loses `## Intent`,
+  but `intent-alignment` is unaffected since it reads that section itself from the `roadmap` slug.
+- `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — each independently optional; an
+  omitted model makes that agent inherit the session model, an omitted effort its effort. One
+  resolved value plus one omitted one is perfectly legal.
+- `wontFixedTexts` — omitting it suppresses nothing, and there is no wont-fix search on this path,
+  so an already-dismissed finding can resurface and force a revise round. Pass `[]` only when the
+  corpus really is empty.
 
 ### 5. Dispatch the planner subagent
 
 **Declare** that you are dispatching the planner on `profiles.plan`, then dispatch **one** `Agent`
-subagent with `subagent_type: rdm:rdm-effort-<profiles.plan.effort>` and
-`model: <profiles.plan.model>` (see step 4 for the not-found fallback), the item body (`rdm phase show`/`rdm task show`), the
-parent roadmap's `## Intent` section verbatim, and the pinned `identity.path` as its working
-directory. Require it to write the plan through the CLI:
+subagent with `subagent_type: rdm:rdm-effort-<profiles.plan.effort>` and `model: <profiles.plan.model>`
+(see step 4 for the not-found fallback) and:
 
-```bash
-rdm plan create <plan-slug> --title "<title>" --implements <item> --body "<plan>" --no-edit --project <PROJECT>
-rdm commit -m "docs(plan): plan <item>"
-```
+- the item body (`phase show`/`task show`) and the parent roadmap's `## Intent` section verbatim;
+- the pinned `identity.path` as its working directory;
+- an explicit instruction to write the plan through the CLI:
 
-plus `--supersedes plan/<previous-slug>` on a re-plan — that flip is **load-bearing**, not cosmetic:
-the code-review engine's persist path requires **exactly one** `approved` plan implementing the item,
-and a stale second one makes it throw. The plan body MUST carry a `## Verification command` heading
-holding the project's verification command as **a single line**, discovered in this order:
-`.github/workflows/`, `docs/principles.md`, then `CLAUDE.md`/`AGENTS.md`. It goes in the plan,
-**never** into config — `rdm config set dispatch.verify` is an operator act, not something a dispatch
-writes.
+  ```bash
+  <rdmBin> plan create <plan-slug> --title "<title>" --implements <item> --body "<plan>" --no-edit<proj-flag>
+  <rdmBin> commit -m "docs(plan): plan <item>"
+  ```
 
-**Self-check before proceeding:** confirm the planner subagent returned and that
-`rdm plan show <plan-slug> --project <PROJECT> --format json` reports a real plan whose `implements` field
-names the item you are dispatching. If you drafted the plan yourself instead of dispatching, you
+  and, on a re-plan, `--supersedes plan/<previous-slug>` as well — that flip is **load-bearing**,
+  not cosmetic: the code-review engine's persist path requires **exactly one** `approved` plan
+  implementing the item, and a stale second one makes it throw.
+- a required `## Verification command` heading in the plan body holding the project's verification
+  command as **a single line**, discovered in this order: `.github/workflows/`, `docs/principles.md`,
+  then `CLAUDE.md`/`AGENTS.md`. It goes in the plan, **never** into config — `rdm config set
+  dispatch.verify` is an operator act, not something a dispatch writes.
+
+**Self-check before proceeding:** confirm the planner subagent returned and that `plan show
+<plan-slug> --format json` reports a real plan whose `implements` link names `<item>`. No new command
+beyond that confirmation — step 6 never needs the plan body handed to it: it passes the slug, and
+each reviewer runs `plan show` itself. If you drafted the plan yourself instead of dispatching, you
 have inline-collapsed — stop and dispatch.
 
-### 6. Wait for the plan approval — ONE origin-blind read
+### 6. Invoke the plan review — in THIS session
 
-```bash
-rdm plan show <plan-slug> --project <PROJECT> --format json
+Invoke the **`rdm:rdm-wf-plan-review` Workflow** (`rdm:rdm-wf-plan-review`, installed by the `rdm` plugin)
+via the Workflow tool, passing `args` as a JSON object (never a stringified value):
+
+```js
+{
+  implementationPlan: true,
+  planSlug: '<plan-slug>',
+  persist: { on: 'plan/<plan-slug>' },
+  reviewers: ['coherence', 'architectural-fit', 'restraint'],  // + 'intent-alignment' when the roadmap records `## Intent`
+  roadmap: '<slug>', phase: '<phase>',            // task mode: task: '<slug>' instead, and OMIT roadmap/phase
+  source: '<identity.path>', base: '<identity.base>',
+  expectedHead: '<identity.head>', expectedBranch: '<identity.branch>',
+  findModel: '<profiles.reviewFind.model>',
+  verifyModel: '<profiles.reviewVerify.model>',
+  findEffort: '<profiles.reviewFind.effort>',
+  verifyEffort: '<profiles.reviewVerify.effort>',
+  wontFixedTexts: [<wontFixedTitles>],
+  rdmBin: '<rdmBin>', project: '<project>',
+}
 ```
 
-Switch **only** on its `status` field: `approved` → step 7; `changes-requested` → the bounded revise
-loop below; `draft` → keep waiting; `superseded` → re-plan (step 5) against the successor.
+The plan document is what is **graded** here, not merely what the verdict is recorded on. The item's
+own document is never handed to the engine, so a finding about an inaccuracy in the phase body — one
+the plan does not inherit — cannot arise and cannot force a revise round. **You MUST make this call
+yourself.** It is the one step a subagent physically cannot perform.
 
-Print these commands and wait for a human to run them — a human-submitted approve review on the plan
-is the approval route on this surface:
+- `planSlug` names the document under review, and it is the ONLY way to name it: each reviewer is
+  told the `plan show <plan-slug> --format json` command and runs it itself, reading the body once
+  in its own context. There is no `planText`, no second verifying read, and nothing transcribed into
+  this call's arguments. A `planSlug` on a non-implementation-plan target, and a `persist.on` that is
+  not `plan/<plan-slug>`, each throw before any agent runs.
+- `roadmap` names the parent roadmap so the `intent-alignment` reviewer knows which document to read
+  its `## Intent` from. Omit it in task mode.
+- `source` / `base` / `expectedHead` / `expectedBranch` — the SAME pinned checkout identity you
+  recorded in step 4, in the SAME flat shape step 12's code-review call takes. Every finder and
+  refuter runs `rdm review source --on <item> --source ... --no-code --format json` and verifies the
+  checkout has not moved before reading any file the plan cites, out of that pinned `path` at that
+  pinned `head` — never out of whatever checkout the dispatching session happens to be sitting in,
+  so a plan targeting an unlanded worktree is never graded against `main`. `phase` (or `task` in
+  task mode) is **required alongside this pin** — the engine derives the pinned `--on <item>` from
+  it. **Omitting all four is legal**: the engine then reads from the invoking session's own working
+  directory — the correct behavior for the standalone `plan-review` surface run outside a
+  dispatch worktree.
+- `reviewers` — **the reviewer set you are selecting.** Omitting the key entirely runs every plan
+  reviewer, which is the safe default; naming a set runs exactly those. An unrecognised name is
+  dropped silently and shows as a gap in the unit's `coverage.selected`/`coverage.ran` — nothing
+  rejects a thin set, so under-review is your visible choice, not an error. A set in which **no**
+  name resolves is the one exception: it throws before any agent runs, rather than reporting a clean
+  review over an empty fleet. The plan reviewers are:
+
+  | reviewer | what it is for | include it when |
+  |---|---|---|
+  | `coherence` | is the plan internally consistent, concrete, actionable? | always |
+  | `architectural-fit` | does any step violate a stated project constraint? | always |
+  | `restraint` | has the plan over-specified what could be left to the implementer? | always |
+  | `unit-of-work` | is this independently deliverable and testable? | **only on a phase** — never on an implementation plan, a task, or a roadmap body |
+  | `intent-alignment` | does the plan serve the operator's recorded `## Intent`? | when the parent roadmap records one; it reads that section itself |
+
+  Here the target is an **implementation plan**, so `unit-of-work` is omitted: sizing was settled
+  when the phase was created. Add `'intent-alignment'` when the parent roadmap records an `##
+  Intent` section — the reviewer reads it out of the roadmap itself, so nothing is transcribed into
+  this call. In task mode there is no parent roadmap, so omit it.
+- `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — the two judgment-site profiles'
+  `model` and `effort`, each independently optional. An omitted model makes that agent inherit the
+  session model, an omitted effort its effort. An effort the engine does not accept is refused
+  before any agent runs.
+- `wontFixedTexts` — the wont-fix titles from step 4. An empty array is a legal, meaningful value
+  (nothing to suppress) and is **not** the same as omitting the key. Omit it only if the `task
+  list` call itself failed.
+
+**The plan engine reads nothing and writes nothing either** — it dispatches finder and refuter
+agents only. When it returns `persistCommands` / `persistScript`, **you** run that ladder in Bash,
+in one session, and report the exit status; it records the plan review on `plan/<plan-slug>` exactly
+as the code ladder records the change review.
+
+Because the engine does not review the item document, this call does **not** clear a
+`needs-plan-review` tag on the phase. That tag asserts the *item* was plan-reviewed and is cleared
+by the standalone `plan-review` surface or a manual sweep, not here.
+
+### 7. Wait for the plan approval — ONE origin-blind read
 
 ```bash
-rdm review start --on plan/<plan-slug> --no-edit --project <PROJECT>
-rdm review comment <id> --quote "<exact text>" --body "<feedback>" --no-edit --project <PROJECT>
-rdm review submit <id> --verdict approve --no-edit --project <PROJECT>
+<rdmBin> plan show <plan-slug><proj-flag> --format json
 ```
 
-**You MUST NOT** inspect who authored the review: rdm flips plan status on **any** `rdm review
-submit` against a `plan/<slug>` target, so a human's approve and a review-tool-recorded approve are
-the *same write* and this *same read* sees both. An author or provenance check here would break the
-human/agent symmetry this design depends on.
+Switch **only** on its `status` field:
+
+| `status` | next |
+| --- | --- |
+| `approved` | proceed to step 8 |
+| `changes-requested` | the bounded revise loop below |
+| `draft` | keep waiting |
+| `superseded` | re-plan (step 5) against the successor |
+
+**You MUST NOT** read the plan-review Workflow's return value to decide approval, and **you MUST
+NOT** inspect who authored the review. rdm flips plan status on **any** `review submit` against a
+`plan/<slug>` target, so a workflow-persisted approve and a human's approve are the *same write* and
+this *same read* sees both. An author or provenance check here would break the human/agent symmetry
+this design depends on.
 
 Poll with a bounded number of attempts, logging one visible line per attempt. On exhaustion park
 `blocked` with reason `[plan] plan approval not recorded on plan/<plan-slug>` — **never** proceed on
-an unapproved plan, and **never** treat `draft` as `changes-requested`.
+an unapproved plan.
 
-**`changes-requested` → revise:** if `planReviseCount` is below `--max-plan-revise`, increment it and
-run the `revise` loop against the plan review — a plan review's comments are plan-**document**
-comments, which is exactly what that skill is for — then re-read this same `rdm plan show`. On
-exhaustion park `blocked` with `[plan] plan-revise budget exhausted; open review(s): <ids>; plan:
-plan/<plan-slug>`.
+While waiting, print the commands a human uses to satisfy this wait (and under `--interactive`,
+**pause here** until they have):
 
-### 7. `--plan-only` ends here
+```bash
+<rdmBin> review start --on plan/<plan-slug> --no-edit<proj-flag>
+<rdmBin> review comment <id> --quote "<exact text>" --body "<feedback>" --no-edit<proj-flag>
+<rdmBin> review submit <id> --verdict approve --no-edit<proj-flag>
+```
+
+**`changes-requested` → revise:** if `planReviseCount < --max-plan-revise`, increment it and run the
+`revise` loop (`Skill({ skill: 'revise' })`) against the plan review — a plan review's
+comments are plan-**document** comments, which is exactly what that skill is for — then re-read this
+same `plan show`. On exhaustion park `blocked` with `[plan] plan-revise budget exhausted; open
+review(s): <ids>; plan: plan/<plan-slug>`.
+
+### 8. `--plan-only` ends here
 
 Report `outcome: 'reviewed'` with `writesCompletion: false`, having written **no** status and **no**
-change review.
+change review. A plan-only pass that stamps or writes status misreports work that never happened.
 
-### 8. Record the item's starting commit
+### 9. Record the item's starting commit
 
 **Skip this entire step under `--plan-only`** — a plan-only pass does no implementation, so there is
 nothing yet to scope a review to.
 
-Read the item back: `rdm phase show <phase> --roadmap <slug> --project <PROJECT> --format json` (task form:
-`rdm task show <slug> --project <PROJECT> --format json`). Skip the write below when either is true:
-`started_head` is already recorded (a resumed dispatch, or an item predating this field), or this
-run's own state shows this is a resume with prior implementation commits already on this item, not a
-fresh first pass (recording now would wrongly include that earlier pass's commits in the item's
-"starting" point). Otherwise:
+Read the item back (`<rdmBin> phase show <phase> --roadmap <slug><proj-flag> --format json` / task
+form: `<rdmBin> task show <slug><proj-flag> --format json`). Skip the write below when either is
+true: `started_head` is already recorded (a resumed dispatch, or an item predating this field), or
+this run's own state shows this is a resume with prior implementation commits already on this item,
+not a fresh first pass (recording now would wrongly include that earlier pass's commits in the
+item's "starting" point). Otherwise:
 
 ```bash
-rdm phase update <phase> --no-edit --start-commit <identity.head> --roadmap <slug> --project <PROJECT>
-rdm commit -m "chore(plan): record start commit for <item>"
+<rdmBin> phase update <phase> --no-edit --start-commit <identity.head> --roadmap <slug><proj-flag>
+<rdmBin> commit -m "chore(plan): record start commit for <item>"
 ```
 
-(task form: `rdm task update <slug> --no-edit --start-commit <identity.head> --project <PROJECT>`), using the
-head pinned in step 4 (`identity.head`) — the shared roadmap worktree's HEAD immediately before this
-item's first implementer dispatch, so it excludes every earlier phase's commits already on the
+(task form: `<rdmBin> task update <slug> --no-edit --start-commit <identity.head><proj-flag>`), using
+the head pinned in step 4 (`identity.head`) — the shared roadmap worktree's HEAD immediately before
+this item's first implementer dispatch, so it excludes every earlier phase's commits already on the
 branch. `--start-commit` is write-once and refuses to overwrite an existing value; a refusal here
 means it was already recorded by someone else between your read above and this write — re-read
 `started_head` rather than treating the refusal as a failure.
 
 When you DO record it, also set `identity.base` in your own run state to `identity.head` — the change
 step 4 anticipated, moving `base` off its merge-base fallback onto the item's real starting point, so
-step 9's self-check compares against the updated value and does not escalate. When you skip the write
-(already recorded, or a resumed pass with prior commits), `identity.base` stays exactly as step 4 (or
-an earlier pass) left it.
+step 10's self-check compares against the updated value and does not escalate. When you skip the
+write (already recorded, or a resumed pass with prior commits), `identity.base` stays exactly as step
+4 (or an earlier pass) left it.
 
-### 9. Dispatch the implementer subagent
+### 10. Dispatch the implementer subagent
 
 **Declare** it, then dispatch **one** `Agent` subagent with
 `subagent_type: rdm:rdm-effort-<profiles.implement.effort>` and `model: <profiles.implement.model>` (see
-step 4 for the not-found fallback), the approved
-plan body verbatim, the item body, and `identity.path` as its working directory. Require it to
-commit in that worktree and return the commit SHA. Follow the `--permission-mode auto` rules below.
-**You MUST NOT** implement inline.
+step 4 for the not-found fallback), the approved plan body verbatim, the item body, and
+`identity.path` as its working directory. Require it to commit in that worktree and return the
+commit SHA. Follow the `--permission-mode auto` rules below. **You MUST NOT** implement inline.
 
-**Self-check before proceeding:** confirm the implementer returned, then re-run `rdm review source
---on <item>` and restate the pinned `path`/`branch`/`base`, comparing `base` against the **current**
-`identity.base` in your run state — the value step 8 just set, or left unchanged — not the value step
+**Self-check before proceeding:** confirm the implementer returned, then re-run `review source --on
+<item>` and restate the pinned `path`/`branch`/`base`, comparing `base` against the **current**
+`identity.base` in your run state — the value step 9 just set, or left unchanged — not the value step
 4 originally read. Any change to `repository`, `path`, `branch`, or a `base` that no longer matches
 that current `identity.base`, is an **escalation**, never a retry. `head` is expected to have moved;
 record the new one.
 
-### 10. Verify in the pinned checkout
+### 11. Verify in the pinned checkout
 
-1. `rdm verify run --item <item> --project <PROJECT> --format json`
-   - exit **0** → pass; record `{ command, exitCode: 0, tail }`.
+1. `<rdmBin> verify run --item <item><proj-flag> --format json`
+   - exit **0** → pass. Record `{ command, exitCode: 0, tail }`.
    - exit **2** → `resolved: false`, i.e. no `dispatch.verify` is configured. **This is not a
      failure.** Fall through to 2.
    - exit **3** with the JSON payload showing `resolved: true` and `exit: null` → the item did not
@@ -369,46 +503,63 @@ record the new one.
    - any other nonzero exit — including a command that legitimately exits 3 itself, reported with a
      non-null `exit` in the payload — → a blocking **rework** finding (not an escalation). Key off the
      payload, not the process exit code, to tell this apart from the escalation above.
-2. Fallback: read the command from the **approved** plan (`rdm plan show --format json` → body → the
-   `## Verification command` heading). Refuse a multi-line value the way `rdm verify run` does. Then
-   run it directly through Bash with `cd <identity.path>`, recording `{ command, exitCode, tail }`
-   with the tail bounded to the last **4000** characters, so both routes report the same shape.
+2. Fallback: read the command from the **approved** plan (`plan show --format json` → body → the
+   `## Verification command` heading). Refuse a multi-line value the way `verify run` does. Then run
+   it directly through Bash with `cd <identity.path>`, and record `{ command, exitCode, tail }` with
+   the tail bounded to the last **4000** characters, so both routes report the same shape.
 3. Neither source supplies a command → **unresolved escalation**: park `blocked` with `[code] no
    verification command resolved from dispatch.verify or plan/<plan-slug>`. An unverified pass is
    never reported as a pass.
 
-A nonzero exit from the fallback route, or any other nonzero exit from `rdm verify run` (including
-the command's own exit code), is a blocking rework finding bounded by `--max-code-rework` — no new
-OUTCOME value. The one exception is exit 3 from `rdm verify run` whose JSON payload shows
-`resolved: true` and `exit: null`: that is the escalation above, never rework. Carry `verification`
-into the next step so it reaches the persisted review.
+A nonzero exit from the fallback route, or any other nonzero exit from `verify run` (including the
+command's own exit code), is a blocking rework finding bounded by `--max-code-rework` — no new
+OUTCOME value. The one exception is exit 3 from `verify run` whose JSON payload shows `resolved: true`
+and `exit: null`: that is the escalation above, never rework. Carry `verification` into the next step
+so it reaches the persisted review.
 
-### 11. Invoke the code review — in THIS session
+### 12. Invoke the code review — in THIS session
 
-Invoke the **`rdm:rdm-wf-review-refute-fix` Workflow**
-(`rdm:rdm-wf-review-refute-fix`, installed by the `rdm` plugin)
-via the Workflow tool with
-`{ mode: 'code', roadmap, phase, persist: true, implements: 'plan/<plan-slug>', gate: false, rdmBin,
-project }` (task mode: `task` in place of `roadmap`/`phase`); pass `args` as a JSON object, never a
-stringified value, and include the source identity you have pinned as of step 10 (`source`, `base`,
-`expectedHead`, `expectedBranch`) — a path, two SHAs and a branch name, which is everything the
-engine needs, because each reviewer runs `rdm review source` itself to reach the diff. Also include
-`findModel`/`verifyModel` and `findEffort`/`verifyEffort`, set to the `model` and `effort` of the
-`profiles.reviewFind`/`profiles.reviewVerify` resolved in step 4, so every finder and refuter runs at
-its resolved profile. Each is independently optional; an omitted model makes that judgment agent
-inherit the session model, and an omitted effort its effort. An effort the engine does not accept is
-refused before any agent runs.
+Invoke the **`rdm:rdm-wf-review-refute-fix` Workflow** (`rdm:rdm-wf-review-refute-fix`, installed by the `rdm` plugin)
+via the Workflow tool, passing `args` as a JSON object (never a stringified value):
 
-Block for its returned result. **The engine reads nothing and writes nothing**: it dispatches finder
-and refuter agents and no others. `persist: true` therefore returns the ladder as `persistCommands` /
-`persistScript` rather than writing anything — **you** run that Bash yourself, in one session, and
-report its exit status. It prints `reviewId=<id>`, then `anchorsDegraded=<all|partial|none>`, then
-`anchorsParkRequired=<yes|no>` on success. A path-anchored comment (one carrying both `--path` and
-`--quote`) that the real binary refuses at run time is retried **mechanically, by the ladder itself**
-— it lands whole-document, header-marked `anchor: degraded`, and is counted into the printed
-`anchorsDegraded=` line, so there is nothing for you to re-run by hand for that case. If `review start`
-itself is refused, park rather than choosing another target. `gate: false` keeps the status write here,
-in step 14, where a refusal can be surfaced.
+```js
+{
+  mode: 'code', roadmap: '<slug>', phase: '<phase>',     // or task: '<slug>'
+  persist: true, implements: 'plan/<plan-slug>', gate: false,
+  reviewers: [<the set you selected — see below>],
+  source: '<identity.path>', base: '<identity.base>',
+  expectedHead: '<identity.head>', expectedBranch: '<identity.branch>',
+  findModel: '<profiles.reviewFind.model>',
+  verifyModel: '<profiles.reviewVerify.model>',
+  findEffort: '<profiles.reviewFind.effort>',
+  verifyEffort: '<profiles.reviewVerify.effort>',
+  rdmBin: '<rdmBin>', project: '<project>',
+}
+```
+
+**The engine reads nothing and writes nothing.** You pass the identity you pinned in step 10 — a
+path, two SHAs and a branch name, nothing more — and each reviewer runs `rdm review source` itself
+to reach the diff. The engine dispatches finder and refuter agents and no others.
+
+- `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — the same two resolved
+  `profiles.reviewFind` / `profiles.reviewVerify` from step 4, mirroring step 6's plan-review call.
+  Each is independently optional; an omitted model makes that judgment agent inherit the session
+  model, an omitted effort its effort.
+
+`persist: true` therefore does **not** write a review. It returns the ladder as `persistCommands` /
+`persistScript`: ready-to-run Bash that records the review on `change/<head>`. **You run it**, in
+one Bash call, and report the exit status:
+
+```bash
+<paste result.persistScript verbatim>
+```
+
+It prints `reviewId=<id>`, then `anchorsDegraded=<all|partial|none>`, then `anchorsParkRequired=<yes|no>`
+on success — append the id to `reviewIds`. A path-anchored comment (one carrying both `--path` and
+`--quote`) that the real binary refuses at run time is retried **mechanically, by the ladder itself**:
+it lands whole-document, header-marked `anchor: degraded`, and is counted into the printed
+`anchorsDegraded=` line. There is nothing for you to re-run by hand for that case. If `review start`
+itself is refused, **park** — never invent a different target. A nonzero exit anywhere else is a park.
 
 **Check the ladder's own printed `anchorsParkRequired=<yes|no>` line before treating the run as
 ordinary persistence** — not `anchorsDegraded`, and not `result.persistDegraded` (a build-time-only
@@ -435,10 +586,12 @@ finding (a suggestion or concern) refused only for the benign cause above reads 
 or `partial` but `anchorsParkRequired=no`: goes to ordinary triage, and its reply notes the anchor did
 not resolve.
 
-Optionally add `reviewers: [...]` — **your** judgment about what this diff touches. Omit the key to
-run every code reviewer; that is the safe default and the right choice when you are unsure. An
-unrecognised name is dropped silently and shows as a gap in `reviewCoverage`; nothing rejects a thin
-set, so an under-reviewed diff is a visible choice rather than an error. The code reviewers are:
+`gate: false` keeps the status write here, in step 15, where the refusal can be surfaced.
+
+`reviewers` is **your** judgment about what this diff touches. Omit the key to run every code
+reviewer — the safe default, and the right choice when you are unsure. An unrecognised name is
+dropped silently and shows as a gap in `reviewCoverage`; nothing rejects a thin set, so an
+under-reviewed diff is your visible choice rather than an error. The code reviewers are:
 
 | reviewer | what it is for | include it when |
 |---|---|---|
@@ -460,32 +613,31 @@ Read the returned object and obey it:
 - `outcome: 'escalated'`, or a non-empty `failure` — including `'required review evidence is
   incomplete'` — is a **park**. **You
   MUST NOT** write `reviewed` on it.
-- The outcome is classified **before** the persist ladder is built and is never recomposed
-  afterwards — an anchor that will not land is not a verdict.
-- Append the `reviewId` the ladder printed to `reviewIds`.
+- The outcome is classified **before** the persist ladder is even built, and nothing recomposes it
+  afterwards. An anchor that would not land is not a verdict: fix it by re-running the one refused
+  line whole-document, or park, per the persist block above.
 
-### 12. Triage — ONE procedure, whatever the review's origin
+### 13. Triage — ONE procedure, whatever the review's origin
 
 Build the work list from **the item's review set** (step 2's recipe (a)+(b)+(c), re-read now)
-**plus** the ids the review returned, deduped by id. Every id on the list must trace back to
+**plus** the ids the engine returned, deduped by id. Every id on the list must trace back to
 `<item>` — its own document, one of its `plan/<slug>` documents, or a `change/<sha>` recorded in one
-of their `change_reviews[]`. **You MUST NOT** build this list from `rdm review requests`: that queue
-is project-wide and unfiltered, so a literal read of it hands you another item's comments and you
-would "fix" them in this item's worktree, under this item's pinned identity, with an
-`--applied-commit` that belongs to the wrong change. If an id's target does not resolve to `<item>`,
-**drop it** — the failure mode is "triaging another item's review". Then, per review, read it
-**once**:
+of their `change_reviews[]`. **You MUST NOT** build this list from `review requests`: that queue is
+project-wide and unfiltered, so a literal read of it hands you another item's comments and you would
+"fix" them in this item's worktree, under this item's pinned identity, with an `--applied-commit`
+that belongs to the wrong change. If an id's target does not resolve to `<item>`, **drop it** — the
+failure mode is "triaging another item's review". Then, for each review, read it **once**:
 
 ```bash
-rdm review show <id> --project <PROJECT> --format json
+<rdmBin> review show <id><proj-flag> --format json
 ```
 
-and drive **only** off its comment array — `anchor`, `path`, `source_link`, `resolution.state`. **You
-MUST NOT** add an author or provenance check. A human review created with `rdm review start --on
-change/<sha>`, `rdm review comment --path <p> --quote "<exact text>"` and `rdm review submit <id>
---verdict request-changes` produces the *same document shape* the review tool writes, so there is no
-second branch. (`--path` is required with `--quote` on a change target, and a path containing `@` or
-`#` is refused — the `rdm:src/<path>@<rev>#L<n>` grammar reserves both.)
+and drive **only** off its comment array — `anchor`, `path`, `source_link`, `resolution.state`.
+**You MUST NOT** add an author or provenance check. A human review created with `review start --on
+change/<sha>`, `review comment --path <p> --quote "<exact text>"` and `submit --verdict
+request-changes` produces the *same document shape* the engine's persist ladder writes, so there is
+no second branch to write. (`--path` is required with `--quote` on a change target, and a path
+containing `@` or `#` is refused — the `rdm:src/<path>@<rev>#L<n>` grammar reserves both.)
 
 Per comment, run this numbered checklist:
 
@@ -493,76 +645,84 @@ Per comment, run this numbered checklist:
 2. **Classify and act:**
    - **SOURCE comment** (carries a `path` — a file-quote anchor into the diff): dispatch an
      implementer `Agent` subagent with `subagent_type: rdm:rdm-effort-<profiles.implement.effort>` and
-     `model: <profiles.implement.model>` in `identity.path` with the
-     comment body and its `source_link` permalink; require a commit and its SHA. **You MUST NOT
-     route a source comment to `revise`**: that skill edits plan-repo document bodies and its
-     `--applied-commit` is a plan-repo SHA, so it cannot carry source-commit provenance.
+     `model: <profiles.implement.model>` in `identity.path` with the comment body and its
+     `source_link` permalink; require a commit and its SHA. **You MUST NOT route a source comment to
+     `revise`**: that skill edits plan-repo document bodies and its `--applied-commit` is a
+     plan-repo SHA, so it cannot carry source-commit provenance.
    - **PLAN-DOCUMENT comment** (on a plan-repo document target): run the `revise` loop, keeping
      its plan-repo `--applied-commit` semantics intact.
    - **`wont-fix`**: a reasoned `--reply` is mandatory, not optional.
    - **Ungraded finding** — the comment's header carries `unrefutedReason: budget`, meaning it was
      never refuted because the per-unit refutation budget ran out: its reply MUST say so explicitly
      and give your own reasoning for the decision taken, on either branch.
+   - **Out-of-scope finding** — the comment's header carries `inScope: false`, meaning a refuter
+     confirmed the finding but graded it outside the approved plan's scope (behaviour the plan did
+     not change, or whose only adequate fix reaches outside what the plan changed). This does not
+     gate and MUST NOT be routed as though it were an ordinary defect requiring a fix in this
+     dispatch. Route it `wont-fix` with a `--reply` that states it is deferred as future work —
+     optionally filing a task for it — never a silent drop. This is a confirmed defect, not an
+     unverified observation, so the reply must not read as a dismissal of the finding itself.
    - **Degraded anchor** — a comment that *carries* an anchor which no longer resolves is read as
      whole-document feedback and its reply MUST state that the anchor did not resolve; read the
-     reviewed-side body with `--at <created_commit>` before deciding. A comment authored deliberately
-     with **no** `--quote` carries no anchor at all: that is a valid whole-document comment, **not**
-     degradation, and MUST NOT be reported as anchor loss.
+     reviewed-side body with `--at <created_commit>` before deciding. A comment authored
+     deliberately with **no** `--quote` carries no anchor at all: that is a valid whole-document
+     comment, **not** degradation, and MUST NOT be reported as anchor loss.
 3. **Resolve**, with a reply on **both** branches:
    ```bash
-   rdm review update <id> --comment <n> --status addressed --applied-commit <sha> --reply "…" --project <PROJECT>
-   rdm review update <id> --comment <n> --status wont-fix --reply "<why>" --project <PROJECT>
+   <rdmBin> review update <id> --comment <n> --status addressed --applied-commit <sha> --reply "…"<proj-flag>
+   <rdmBin> review update <id> --comment <n> --status wont-fix --reply "<why>"<proj-flag>
    ```
    A SOURCE reply MUST embed the pinned permalink `rdm:src/<path>@<applied-commit>#L<line>`.
-4. **Verify**: `rdm review show <id> --format json` shows that comment with a terminal `status` and a
+4. **Verify**: `review show <id> --format json` shows that comment with a terminal `status` and a
    non-empty `reply`.
 
-Under `--interactive`, **present each decision (1) for confirmation before running (3)**; otherwise
+Under `--interactive`, **present each decision (1) for confirmation before running (3)**. Otherwise,
 apply them without pausing. Nothing else differs — **you MUST NOT** fork the triage procedure, skip a
 confirmation in `--interactive`, or add one without it.
 
 Close each review and land the batch:
 
 ```bash
-rdm review update <id> --state addressed --project <PROJECT>
-rdm link check --on <item> --project <PROJECT>
-rdm commit -m "chore(plan): triage review <id>"
+<rdmBin> review update <id> --state addressed<proj-flag>
+<rdmBin> link check --on <item><proj-flag>
+<rdmBin> commit -m "chore(plan): triage review <id>"
 ```
 
 Then confirm, from the records and not from memory: every comment terminal with a non-empty reply,
-each `addressed` one carrying an `applied_commit`, the review `addressed`, `rdm link check` exit 0,
-and **the item's review set** (step 2's recipe, re-read) holding **no** submitted request-changes
-review — i.e. every `rdm review list --on <target> --state submitted --verdict request-changes` over
-the item's own targets comes back empty. A non-empty result is a **refusal to proceed** to the
-terminal write, not a warning. Another item's pending review in the project-wide `rdm review
-requests` queue is **not** a reason to block this write.
+each `addressed` one carrying an `applied_commit`, the review `addressed`, `link check` exit 0, and
+**the item's review set** (step 2's recipe, re-read) holding **no** submitted request-changes review
+— i.e. every `review list --on <target> --state submitted --verdict request-changes` over the item's
+own targets comes back empty. A non-empty result is a **refusal to proceed** to the terminal write,
+not a warning. Another item's pending review in the project-wide `review requests` queue is **not**
+a reason to block this write.
 
 Bounded by `--max-code-rework`; on exhaustion park `blocked` with `[code] rework budget exhausted;
 unresolved comments on review <id>` so the review id is in the reason.
 
-### 13. Re-review at the post-triage HEAD
+### 14. Re-review at the post-triage HEAD
 
 Every source fix moves HEAD, and the core gate requires an **approving** change review recorded at
-the HEAD the write observes. Triage only moves a review to `addressed`; it never changes a verdict.
-So after the **last** source-touching act: re-run `rdm review source --on <item>`, restate the new
-pinned head, and re-run step 11. Writing `reviewed` off an `addressed` request-changes review is
-refused for want of an approving change review; writing it off an approve recorded at an older head
-is refused as stale, and that refusal names both SHAs.
+the HEAD the write observes. Triage only moves a review to `addressed`; it never changes a verdict,
+and the persist map sends `rework`/`escalated` to `request-changes`. So after the **last**
+source-touching act: re-run `review source --on <item>`, restate the new pinned head, and re-run
+step 12. Writing `reviewed` off an `addressed` `request-changes` review is refused as
+`GateNoApprovedChangeReview`; writing it off an approve recorded at an older head is refused as
+`GateStaleChangeReview`, which names both SHAs.
 
 Apply the same proportionate-reviewer judgment on this re-run: a re-review of a delta that changed
 nothing but documentation, comments, or CHANGELOG prose does not need the full fleet either.
 
-### 14. The terminal write — through the gate, never around it
+### 15. The terminal write — through the gate, never around it
 
 ```bash
-rdm phase update <phase> --status reviewed \
+<rdmBin> phase update <phase> --status reviewed \
   --source <identity.path> --base <identity.base> \
   --expected-head <identity.head> --expected-branch <identity.branch> \
-  --no-edit --roadmap <slug> --project <PROJECT>
-rdm commit -m "chore(plan): finalize <item>"
+  --no-edit --roadmap <slug><proj-flag>
+<rdmBin> commit -m "chore(plan): finalize <item>"
 ```
 
-(task form: `rdm task update <slug> --status reviewed …`.) The explicit `--source`/`--base`/
+(task form: `task update <slug> --status reviewed …`.) The explicit `--source`/`--base`/
 `--expected-head`/`--expected-branch` binding is required: run from a cwd that is not a distinct
 project repo and the worktree probe degrades to *no probe*, silently skipping the cleanliness
 precondition.
@@ -598,42 +758,44 @@ on any other refusal.
 When the four conditions hold:
 
 ```bash
-rdm phase update <phase> --status reviewed --override-gate "<reason>" \
+<rdmBin> phase update <phase> --status reviewed --override-gate "<reason>" \
   --source <identity.path> --base <identity.base> \
   --expected-head <identity.head> --expected-branch <identity.branch> \
-  --no-edit --roadmap <slug> --project <PROJECT>
-rdm commit -m "chore(plan): finalize <item>"
+  --no-edit --roadmap <slug><proj-flag>
+<rdmBin> commit -m "chore(plan): finalize <item>"
 ```
 
-On a nonzero exit, capture stderr **verbatim** — each refusal already names the missing record *and*
-the command that would create it — then park:
+On a nonzero exit, capture stderr **verbatim** — `GateNoApprovedPlan`, `GateNoApprovedChangeReview`,
+`GateStaleChangeReview`, `GateWorktreeDirty`, `GateWorktreeUnobservable` each already name the
+missing record *and* the command that would create it — then:
 
 ```bash
-rdm phase update <phase> --status blocked --reason "[code] reviewed-gate refused: <verbatim refusal>" --no-edit --roadmap <slug> --project <PROJECT>
+<rdmBin> phase update <phase> --status blocked --reason "[code] reviewed-gate refused: <verbatim refusal>" --no-edit --roadmap <slug><proj-flag>
 ```
 
-and return `outcome: 'escalated'` with that same text in `reason`. Surface a dirty-worktree refusal
-verbatim rather than cleaning the tree: worktrees are per-roadmap, so a sibling phase's uncommitted
-edit trips it even when this item is clean, and `git reset --hard`/`git clean -fdx`/`git stash -u`
-are denied under `--permission-mode auto` anyway.
+and return `outcome: 'escalated'` with that same text in `reason`. Surface a `GateWorktreeDirty`
+refusal verbatim rather than cleaning the tree: worktrees are per-roadmap, so a sibling phase's
+uncommitted edit trips it even when this item is clean, and `git reset --hard`/`git clean -fdx`/
+`git stash -u` are denied under `--permission-mode auto` anyway.
 
-On success, read the status back (`rdm phase show --format json` → `status` is the reviewed status)
-and treat a mismatch as an escalation, not a success.
+On success, read the status back (`phase show --format json` → `status == "reviewed"`) and treat a
+mismatch as an escalation, not a success.
 
-### 15. Return the OUTCOME
+### 16. Return the OUTCOME
 
 Produce the object from the Contract above as your final message, `planId` and `reviewIds` included.
 
-## Why there is no plan-review Workflow call here
+## Interactive mode (`do` without `--auto`)
 
-This surface's plan gate is the **human-submitted approve review** of step 6, not a workflow — a
-downstream repo's conventions are exactly what an automated plan reviewer has least access to.
-`rdm:rdm-wf-plan-review` IS emitted alongside this skill (`rdm agent-config claude --skills`/`--plugin`
-ships all five engines), so you may invoke it yourself for a second opinion: pass `source`, `base`,
-`expectedHead`, `expectedBranch` from the `identity` pinned in step 4, plus the item identifier, so it
-grades the actual checkout rather than whatever tree the invoking session sits in. What you may **not**
-do is treat its verdict as the gate — step 6's approve review is the whole gate, and it satisfies the
-same `rdm plan show` read a workflow-recorded approve would. See `docs/workflow-vs-prose-boundary.md`.
+Identical procedure, two differences only:
+
+1. **Step 7** prints the human plan-review commands and waits for a human-submitted approve review
+   instead of proceeding on the workflow-persisted one. An `--interactive` run abandoned at that
+   wait MUST park with a durable reason rather than spin, and the poll MUST NOT treat `draft` as
+   `changes-requested`.
+2. **Step 13** presents each triage decision for confirmation before replying.
+
+Both modes run the same commands and produce the same review-record shape.
 
 ## Safe operations under --permission-mode auto
 
@@ -641,13 +803,14 @@ Unattended runs (launched with `--permission-mode auto`, or `bypassPermissions` 
 forever if they trip the auto-mode destructive-action classifier. This procedure and every subagent
 it dispatches MUST follow these rules:
 
-- **Modify existing files with `Edit`, never `Write`.** A `Write` over an existing tracked file trips
-  the classifier. Reserve `Write` for new files.
+- **Modify existing files with `Edit`, never `Write`.** A `Write` over an existing tracked file
+  trips the classifier. Reserve `Write` for new files.
 - **Never run `git stash -u`, `git reset --hard`, or `git clean -fdx`.** They are classified as
   irreversible local destruction and denied. Per-roadmap worktree isolation makes whole-tree resets
   unnecessary; commit a `wip:` commit on the branch instead.
 - **Never run `rdm discard --force` in a shared plan repo.** It resets other sessions' uncommitted
-  work. Commit each batch immediately instead.
+  work. Commit each batch immediately instead — any `rdm commit` sweeps only your own session's
+  changeset.
 
 ## Escalation protocol
 
@@ -657,9 +820,9 @@ it dispatches MUST follow these rules:
   decision with no clear default, an exhausted plan-revise or rework budget, an unresolved
   verification command, a gate refusal, or a changed checkout identity.
 - **Park, don't interrupt.** Record the escalation by setting the item `blocked` with a stage-tagged
-  reason (`[plan]` or `[code]`) naming the open review ids and the plan, so a later session
+  reason (`[plan]` or `[code]`) that names the open review ids and the plan, so a later session
   reconstructs the pending work from the item's review set (step 2's recipe) alone. The user reviews
-  the whole cross-item queue at once with `rdm review blocked --project <PROJECT>`.
+  the whole cross-item queue at once with `<rdmBin> review blocked<proj-flag>`.
 
 ## Resolving `rdmBin` (plugin install)
 

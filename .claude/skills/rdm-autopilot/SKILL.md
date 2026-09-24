@@ -7,15 +7,15 @@ allowed-tools:
   - Skill
 ---
 
-Drive **one** rdm roadmap from `not-started` to `reviewed` with no per-phase human approval. This skill drives the loop **itself**, in prose — it is no longer a thin shim over a `.claude/workflows/autopilot.js` Workflow. The one Workflow-tool call it makes is `rdm-wf-estimate` (the difficulty pre-pass, a real parallel fan-out); each per-phase unit is entered with `Skill` into this same session as the `rdm-dispatch-phase` prose orchestrator, which replaced the `rdm-wf-dispatch-phase` engine (see step 4). Every other step — fetching `rdm next`, persisting an advance or a park, reading a write back to confirm it landed — is a plain Bash command this skill runs directly in its own context, because it is already a live agent with Bash access and the repo in context. That subagent elimination is the concrete point of this migration: those same steps used to cost a dedicated mechanical `agent()` subagent inside the headless workflow, which cannot run Bash itself; a prose skill already can, so that cost disappears entirely. See `docs/workflow-vs-prose-boundary.md` for why the drive loop specifically (a low-iteration sequential policy driver) moved while `rdm-wf-estimate` stayed a workflow (real fan-out over a fixed mechanism), and why the per-phase driver has since followed it into prose.
+Drive **one** rdm roadmap from `not-started` to `reviewed` with no per-phase human approval. This skill drives the loop **itself**, in prose. The one Workflow-tool call it makes is `rdm-wf-estimate` (the difficulty pre-pass, a real parallel fan-out); each per-phase unit is the `rdm-dispatch-phase` orchestrator, entered with the `Skill` tool into this same session (see step 4). Every other step — fetching `rdm next`, persisting an advance or a park, reading a write back to confirm it landed — is a plain Bash command this skill runs directly in its own context, because it is already a live agent with Bash access and the repo in context.
 
-**Why `Skill` and not `Agent` for the per-phase unit:** an `Agent`-spawned subagent has no `Workflow` tool at all (phase 1's reachability finding, `docs/workflow-schemas.md` § "Orchestrator / Workflow-reachability spike"), so the orchestrator's plan-review and code-review calls can only be made by the session that holds it. `Skill` loads the procedure into this turn; `Agent` would silently strand both calls.
+**Why `Skill` and not `Agent` for the per-phase unit:** an `Agent`-spawned subagent has no `Workflow` tool at all, so the orchestrator's code-review call could not be made there. `Skill` loads the procedure into this turn and keeps the tool; `Agent` would silently strand the call. See [`docs/workflow-vs-prose-boundary.md`](docs/workflow-vs-prose-boundary.md) for why the drive loop and the per-phase driver are both prose while `rdm-wf-estimate` and the review engine stay Workflow scripts (a fixed mechanism over a real fan-out).
 
-A phase that cannot be advanced is parked `blocked`, not raised as a mid-run question — parking is still non-interactive, so the run never stops to ask the user anything. But a park now **ends the run immediately**: the loop never dispatches a later phase on top of one already known to be defective on the shared `roadmap/<slug>` worktree. This was observed on 2026-09-22 — phase 28 escalated with real defects, and autopilot parked it and dispatched phase 29 on top of it anyway. See [`docs/autonomous-loop.md`](docs/autonomous-loop.md) § "Budgets and stop conditions" for the full rationale.
+A phase that cannot be advanced is parked `blocked`, not raised as a mid-run question — parking is still non-interactive, so the run never stops to ask the user anything. But a park now **ends the run immediately**: the loop never dispatches a later phase on top of one already known to be defective on the shared `roadmap/<slug>` worktree. This was observed on 2026-09-22 — a phase escalated with real defects, and autopilot parked it and dispatched the next phase on top of it anyway. See [`docs/autonomous-loop.md`](docs/autonomous-loop.md) § "Budgets and stop conditions" for the full rationale.
 
 ## Contract
 
-**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by `--rdm-bin <path>`, `--project <name>`, `--max-phases N`, `--plan-only`, `--max-plan-revise N`, and/or `--max-code-rework N`. The slug names the single roadmap this run drives. If no slug is given, stop before invoking anything and say so — do not attempt a partial estimate or drive-loop start. `--rdm-bin` is **optional** and has no pre-flight stop of its own; when it is not supplied, use `$RDM_BIN`, which this repo's `.mise.toml` sets to its local development build, so a bare invocation here still uses that build rather than a stale global one. `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" is the canonical resolution order — do not restate it here.
+**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by `--rdm-bin <path>`, `--project <name>`, `--max-phases N`, `--plan-only`, `--max-plan-revise N`, and/or `--max-code-rework N`. The slug names the single roadmap this run drives. If no slug is given, stop before invoking anything and say so — do not attempt a partial estimate or drive-loop start. `--rdm-bin` is **optional** and has no pre-flight stop of its own; when it is not supplied, use `$RDM_BIN` if it is set (this repo's `.mise.toml` sets it to the local development build, so a bare invocation here still uses that build rather than a stale global one), otherwise a plain `rdm` on `PATH`. `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" is the canonical resolution order — do not restate it here.
 
 Every Bash command and Workflow payload below is written against two placeholders resolved once in step 1: `<rdmBin>` — the executable resolved by that order — and `<proj-flag>` — ` --project <project>` when `--project` was given, or nothing at all when it was omitted (never an empty `--project` value).
 
@@ -24,7 +24,7 @@ Every Bash command and Workflow payload below is written against two placeholder
 1. **Single roadmap.** The loop never roams to another roadmap — choosing which roadmap to advance stays a human decision. Every `rdm next` / `rdm phase update` / `rdm phase show` command below is scoped with the **same fixed** `--roadmap <slug>` throughout this run; nothing ever substitutes a different one.
 2. **`main` is never touched.** Autopilot leaves every reviewed phase on the `roadmap/<slug>` branch; landing to `main` is the separate **`rdm-land`** skill. There is no `--land` flag here, and no Bash command in this loop ever runs `git checkout`/`merge`/`rebase` against `main`.
 3. **No `Done:` trailer.** This skill never emits a `Done:` line: its advance step only persists the status the OUTCOME carries, directly via `rdm phase update --status <status> --no-edit` (a status-only write — it never stages or writes a commit message). **`rdm-land` reads the same `writesCompletion: true` signal** and, after landing, marks the item `done` itself with the landed tip's commit — no trailer is written by anyone in this flow.
-4. **`--permission-mode auto` for unattended runs.** Launch with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so this skill's own Bash commands, the `rdm-wf-estimate` Workflow call, and the `rdm-dispatch-phase` orchestrator's own calls don't block on a permission prompt. It is now this skill's own calls that must not stall, not a dispatched workflow's.
+4. **`--permission-mode auto` for unattended runs.** Launch with `--permission-mode auto` (or `bypassPermissions` in a sandbox) so this skill's own Bash commands, the `rdm-wf-estimate` Workflow call, and the `rdm-dispatch-phase` orchestrator's own calls don't block on a permission prompt.
 
 This skill is **non-interactive**.
 
@@ -33,13 +33,13 @@ This skill is **non-interactive**.
 ### 1. Parse `$ARGUMENTS`
 
 - `roadmap` — the required slug (first positional argument). Missing → stop immediately, before step 2, and say so.
-- `rdmBin` — the **optional** executable path following `--rdm-bin`. There is **no** pre-flight stop for it: when it is not supplied, use `$RDM_BIN` (this repo's development build). The literal sentinel `rdm` requests `PATH` resolution deliberately, and the workflow's own default when the key is absent is a plain `rdm` on `PATH`; see `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" for the canonical order. This resolves the `<rdmBin>` placeholder used everywhere below.
-- `project` — the optional project name following `--project`. Omitted → the `<proj-flag>` placeholder used everywhere below renders as nothing (no `--project` flag at all, never an empty value).
+- `rdmBin` — the **optional** executable path following `--rdm-bin`. There is **no** pre-flight stop for it: when it is not supplied, use `$RDM_BIN` if set, else a plain `rdm` on `PATH`. The literal sentinel `rdm` requests `PATH` resolution deliberately. Never probe the filesystem to pick a binary. This resolves the `<rdmBin>` placeholder used everywhere below.
+- `project` — the optional project name following `--project` (this repo: `rdm`). Omitted → the `<proj-flag>` placeholder used everywhere below renders as nothing (no `--project` flag at all, never an empty value), and rdm's own `RDM_PROJECT`/`default_project` chain applies.
 - `maxPhases` — the positive integer following `--max-phases`, when present (omit otherwise — unbounded by phase count).
 - `planOnly` — `true` when `--plan-only` is present (omit otherwise).
 - `maxPlanRevise` — the non-negative integer following `--max-plan-revise`, when present (omit otherwise — `rdm-dispatch-phase` applies its own default of 2). `0` is legal and distinct from unset: it means "terminate on the first blocking plan review, no revise round at all".
 - `maxCodeRework` — the non-negative integer following `--max-code-rework`, when present (omit otherwise — same default of 2, same `0`-is-legal rule).
-- `globalBudget` — **not** a user-facing flag. It never was: the previous shim's own "Parse `$ARGUMENTS`" step listed only `roadmap`/`maxPhases`/`planOnly`/`maxPlanRevise`/`maxCodeRework`, before `--rdm-bin`/`--project` were added by this phase to close the loop's own binary/project literals. It stays an internal constant, `DEFAULT_GLOBAL_BUDGET = 50`, hardcoded in this loop (see step 3).
+- `globalBudget` — **not** a user-facing flag. It stays an internal constant, `DEFAULT_GLOBAL_BUDGET = 50`, hardcoded in this loop (see step 4).
 
 ### 2. Hoist the phase list
 
@@ -47,11 +47,11 @@ This skill is **non-interactive**.
 
 ### 3. Run the estimate pre-pass — one Workflow call, always
 
-Invoke the **`rdm-wf-estimate` Workflow** via the Workflow tool with `{ roadmap, phaseList, rdmBin, project }` (omit `phase` — autopilot always estimates the whole roadmap, never a single phase number). `rdmBin` and `project` are the same resolved values from step 1 — `rdm-wf-estimate.js`'s own `parseEstimateArgs` validates them via `resolveRdmBin`/`parseProjectArg`, so passing them here is what lets `rdm-wf-estimate` run against this loop's caller-supplied binary and project instead of an ambient default. Run this call **unconditionally**, even if `phaseList` shows zero unestimated phases — it is a cheap no-op fan-out in that case, the same always-invoke-and-let-it-no-op design the `rdm-estimate` skill itself uses; do not skip it as an optimization.
+Invoke the **`rdm-wf-estimate` Workflow** (`.claude/workflows/rdm-wf-estimate.js`) via the Workflow tool with `{ roadmap, phaseList, rdmBin, project }` as a JSON object (omit `phase` — autopilot always estimates the whole roadmap, never a single phase number; omit `project` when it was not given). `rdmBin` and `project` are the same resolved values from step 1, so the pre-pass runs against this loop's binary and project instead of an ambient default. Run this call **unconditionally**, even if `phaseList` shows zero unestimated phases — it is a cheap no-op fan-out in that case, the same always-invoke-and-let-it-no-op design the `rdm-estimate` skill itself uses; do not skip it as an optimization.
 
-Do not reimplement any part of the estimate pass in prose here — the filtering, the per-phase rating fan-out, and the persistence step all stay entirely inside `rdm-wf-estimate.js`'s own pipeline, untouched by this skill.
+Do not reimplement any part of the estimate pass in prose here — the filtering and the per-phase rating fan-out stay entirely inside the workflow. The workflow persists nothing: run each returned `writebackCommands` entry in Bash, in order, **exactly as returned** (each is one `phase update --difficulty` command).
 
-If the `rdm-wf-estimate` invocation itself errors or throws (e.g. it can't resolve its own model), log a warning and continue straight into the drive loop **non-fatally** — an unrated phase simply falls back to whatever tier `rdm next` reports (empty/medium) when it's dispatched. Do not let a failed pre-pass abort the run.
+If the `rdm-wf-estimate` invocation or a writeback errors, log a warning and continue straight into the drive loop **non-fatally** — an unrated phase simply falls back to whatever tier `rdm next` reports (empty/medium) when it's dispatched. Do not let a failed pre-pass abort the run.
 
 ### 4. Enter the drive loop
 
@@ -79,14 +79,11 @@ Loop:
      where `flags` forwards, as ARGUMENTS text and only when this run's `$ARGUMENTS` set them:
      `--plan-only`, `--max-plan-revise N`, `--max-code-rework N`, `--rdm-bin <rdmBin>`,
      `--project <project>`. **Never** enter it with `Agent` — see the reachability note above. There
-     is no `phaseMeta`/`taskMeta`/`alreadyInProgress`/`dispatch.verify` hoist to assemble any more:
-     those existed to spare a headless Workflow a Stage-0 subagent, and the orchestrator runs in this
-     same session with Bash, so it reads what it needs itself. The orchestrator stamps the phase
-     `in-progress` (skipped under `--plan-only`), pins the checkout identity, plans, reviews the plan,
-     implements, verifies, code-reviews, triages every comment, and performs the gated terminal
-     status write, then returns the OUTCOME below.
-   - The retired `rdm-wf-dispatch-phase` Workflow is **not** called here any more. Its script was
-     deleted in phase 7 of the `agent-orchestrated-dispatch` roadmap and no longer exists in the tree.
+     is no `phaseMeta`/`alreadyInProgress`/`dispatch.verify` hoist to assemble: the orchestrator
+     runs in this same session with Bash, so it reads what it needs itself. The orchestrator stamps
+     the phase `in-progress` (skipped under `--plan-only`), pins the checkout identity, plans, waits
+     for the plan approval, implements, verifies, code-reviews, triages every comment on the
+     persisted review, and performs the gated terminal status write, then returns the OUTCOME below.
    - Read the returned OUTCOME object's `outcome`, `status`, and `reason` fields.
    - **Interpret the outcome** (mirrors `interpretOutcome`):
      - `outcome: "reviewed"`, **not** plan-only → **advance**: run `<rdmBin> phase update S --status <OUTCOME.status || reviewed> --no-edit --roadmap <slug><proj-flag>`, then read it back with `<rdmBin> phase show S --roadmap <slug><proj-flag> --format json` and confirm `status` matches. Retry the write+read-back up to **2** times total (`DEFAULT_MAX_ADVANCE_ATTEMPTS`). On success: append `S` to `completed`, log `"phase S reviewed — advancing"`, continue the loop from step 1. On repeated failure: park `S` (below) with reason `"[code] advance to reviewed failed repeatedly"` — never report a false completion.
@@ -94,7 +91,7 @@ Loop:
      - `outcome: "rework"` → if this phase's own rework count so far is **<** `DEFAULT_MAX_REWORK = 1`, increment it and **retry**: dispatch the **same** stem `S` again (go back to the dispatch call above, still counting against the shared budget in step 1) — do not call `rdm next` again first. Once the count reaches 1, **park** with reason `"[code] rework budget exhausted"`.
      - `outcome: "escalated"` → **park** with `OUTCOME.reason` if present, else `"[plan] dispatch escalated at the plan gate"`.
      - Anything else (a corrupted or unrecognized OUTCOME value) → **park** with reason `"[code] unrecognized dispatch outcome: <value>"` — never silently advance or silently stop.
-   - **Park**: run `<rdmBin> phase update S --status blocked --reason "<reason>" --no-edit --roadmap <slug><proj-flag>`, then read it back and confirm `status: blocked`. Retry up to **2** times total (`DEFAULT_MAX_PARK_ATTEMPTS`). Whether or not the read-back ever confirms, append `{ stem: S, reason }` to `escalations`, set `stopReason: escalated`, and go to step 5 (stop) — do **not** continue the loop, regardless of whether the read-back confirmed. An unconfirmed park write must never abort the run before it can print its summary; log a loud warning in that case instead (the plan-repo status may not reflect the park, but the escalation is still recorded here). The parked phase's own commits stay right where they are, on the shared `roadmap/<slug>` branch; because this run stops here, nothing is dispatched on top of them in *this* run. A human who resolves the park and re-invokes autopilot (or `rdm-dispatch-phase` directly) resumes from `rdm next` exactly as before.
+   - **Park**: run `<rdmBin> phase update S --status blocked --reason "<reason>" --no-edit --roadmap <slug><proj-flag>`, then read it back with `<rdmBin> phase show S --roadmap <slug><proj-flag> --format json` and confirm `status: blocked`. Retry up to **2** times total (`DEFAULT_MAX_PARK_ATTEMPTS`). Whether or not the read-back ever confirms, append `{ stem: S, reason }` to `escalations`, set `stopReason: escalated`, and go to step 5 (stop) — do **not** continue the loop, regardless of whether the read-back confirmed. An unconfirmed park write must never abort the run before it can print its summary; log a loud warning in that case instead (the plan-repo status may not reflect the park, but the escalation is still recorded here). The parked phase's own commits stay right where they are, on the shared `roadmap/<slug>` branch; because this run stops here, nothing is dispatched on top of them in *this* run. A human who resolves the park and re-invokes autopilot (or `rdm-dispatch-phase` directly) resumes from `rdm next` exactly as before.
 5. **Stop.** Exit the loop and proceed to "Print the summary" below.
 
 ### 5. Print the summary
@@ -132,31 +129,33 @@ iteration, including the first, at zero subagent cost) and the triple-unwrap def
 `interpretNext` (it hedged against an intermediate agent re-encoding `rdm next` JSON as a string;
 that agent no longer exists, so such a payload now falls through to `unparseable` — see step 4.3).
 
+## Run modes
+
+- `--max-phases N` — bounded run: dispatch at most `N` phases this pass, then stop and summarize. Use it to take a roadmap a few phases at a time.
+- `--plan-only` — dry-run the planning half: each dispatch stops after its plan gate, so you get cheap plan vetting without writing any code.
+- `--max-plan-revise N` / `--max-code-rework N` — override the orchestrator's two **in-run** retry budgets, which are counted **independently** of each other and default to **2** each (budget N = N reworks after the original attempt, i.e. N + 1 attempts). `0` is legal and means "terminate on the first blocking review" — no revise/rework agent runs at all. These are distinct from autopilot's own roadmap-level rework re-dispatch budget (step 4, capped at 1 retry per phase) and its global step budget (step 4.1, default 50); see [`docs/escalation-protocol.md`](docs/escalation-protocol.md) § Budgets for all four.
+
 ## Recovering a crashed dispatch
 
-This skill's drive loop is itself prose, driven by plain Bash — it has no Workflow run of its own to resume, and neither does step 4: the per-phase unit is now a `Skill` loaded into this same session, so a stall there is recovered by re-entering it (the orchestrator's own step 2 resumes from `plan list --implements <item>` + `review requests`, without discarding recorded work). The one Workflow-tool call left is step 3's `rdm-wf-estimate` pre-pass, and it is a real `Workflow` run that can crash mid-flight. If it does, relaunch that same call with `resumeFromRunId` instead of re-invoking it fresh:
+This skill's drive loop is itself prose, driven by plain Bash, and so is the per-phase unit it enters with `Skill` — neither has a `Workflow` run of its own to resume. A unit that stalls is recovered by re-entering it: the orchestrator's own resume step reads `rdm plan list --implements <item>` and `rdm review requests` first and picks up at the pending work, so an approved plan and an open review are never discarded or duplicated.
 
-```
-Workflow({ scriptPath: '.claude/workflows/rdm-wf-estimate.js', resumeFromRunId: '<prior runId>' })      # step 3
-```
-
-Any `agent()` call inside that run whose `(prompt, opts)` are byte-unchanged from the crashed attempt replays its cached result instead of re-dispatching. Four caveats apply every time:
+Two `Workflow` runs remain in this lane: step 3's `rdm-wf-estimate` pre-pass and the code review the orchestrator invokes. If either crashes mid-flight, relaunch that same script with an added `resumeFromRunId: '<prior runId>'` argument instead of invoking it fresh; any `agent()` call whose `(prompt, opts)` are byte-unchanged replays its cached result. Four caveats apply every time:
 
 - **Stop the prior run first** — a still-running run cannot be resumed.
 - **Same-session only** — this only resumes within the current Claude Code session; a later session cannot resume a `runId` from an earlier one.
 - **A cached result can be empty** — if the crashed agent produced nothing before dying, the resume replays that emptiness; check the run's `journal.jsonl` before assuming there is something to recover.
 - **Conservative prefix** — resume replays only the longest unchanged prefix of the call sequence; the first edited-or-new call, and every call after it, run live. Do not plan around a specific savings figure.
 
-See [`docs/autonomous-loop.md`](docs/autonomous-loop.md) § "Recovering a crashed run" for the full contract and the measured evidence motivating it.
+See [`docs/autonomous-loop.md`](docs/autonomous-loop.md) § "Recovering a crashed run" for the full contract.
 
 ## Relation to the other lanes
 
 - **`rdm-land`** owns landing reviewed work to `main`; this skill never touches `main` (guardrail 2
   above). Run it after a run reaches `reviewed` if you want the work on `main`.
 - This skill is the **active driver**: every dispatched phase actively runs review (the orchestrator's
-  code review is the canonical pipeline, invoked through the `rdm-wf-review-refute-fix` Workflow and
-  stamped from `.claude/workflows/lib/review.mjs`) and triages every comment on the persisted review
-  before advancing, so nothing is left parked in `needs-review` and nothing is left unresolved.
+  code review is the canonical pipeline, invoked through the `rdm-wf-review-refute-fix` Workflow) and
+  triages every comment on the persisted review before advancing, so nothing is left parked in
+  `needs-review` and nothing is left unresolved.
 - No `Done:` line is ever written here (guardrail 3 above); `rdm-land` marks the item `done` itself, at
   land time, with the landed tip's commit.
 

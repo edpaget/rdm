@@ -9,13 +9,16 @@ allowed-tools:
   - Glob
   - Grep
   - Agent
+  - Workflow
 ---
 
 Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task.
 
 The review runs as a pipeline: **find → refute → filter → verdict → act → gate**. Findings of a **gating** severity are never surfaced, fixed, or acted on until a *separate* agent has tried to refute them; a non-gating `suggestion` is passed through marked `unrefuted: true` and acted on under the un-refuted disposition rule (§ Act). The agent that finds an issue is never the agent that confirms it.
 
-The specification of that pipeline — which dimensions run, how findings are graded, and what each outcome means — is **generated from the canonical review source** and is identical across every rdm surface (the interactive skill, `dispatch-phase`, and `autopilot`). It appears under "Review specification" below. The steps here wire it to the CLI.
+The specification of that pipeline — which dimensions run, how findings are graded, and what each outcome means — is **generated from the canonical review source** and is identical across every rdm surface (the interactive skill, `dispatch-phase`, and `autopilot`). It appears under "Review specification" below.
+
+The dimension-finding and per-finding-refuting mechanics (step 2 below) are performed deterministically by the `rdm:rdm-wf-review-refute-fix` Workflow (`rdm:rdm-wf-review-refute-fix`, installed by the `rdm` plugin) — this skill does not re-derive them by hand. It stays interactive: this skill, not the workflow, presents the report to you for discussion, decides how to act on findings, and owns the status gate. The workflow is invoked with `gate: false` — it is a read-only find/verdict pass; this skill performs the actual source-bound status write itself, in step 5 (Gate).
 
 ## Steps
 
@@ -28,47 +31,77 @@ The specification of that pipeline — which dimensions run, how findings are gr
    - For a phase: `rdm phase show <phase-number> --roadmap <slug> --project <PROJECT>`
    - For a task: `rdm task show <slug> --project <PROJECT>`
    Extract the acceptance criteria, steps, and any other requirements from the body.
-3. **Identify the implementation diff**: use `git log --oneline -20` and `git diff` to understand what was recently changed. Identify the commits and files relevant to this phase or task. Note the diff size, which modules it touches, and whether it changes public API, a security-sensitive surface (auth, input parsing or validation, path/file handling, subprocess or shell invocation, secrets, deserialization, network code), dependencies, or user-facing behavior — these are what tell you which reviewers to include (see Review specification § Reviewers).
+3. **Resolve the implementation source**:
 
-   From those same diff signals, derive a **tier hint** for step 2's fleet: `small` (localized, single module, no risky surface — a typo fix, a one-line log message), `medium` (an ordinary change — new logic in one module, a bugfix), or `large` (touches public API, a security-sensitive surface, spans multiple modules/crates, adds a dependency, or is user-facing). This is a read of the **diff's risk**, not the phase's own difficulty rating — a "hard" phase can still land a small, low-risk diff, and vice versa.
+   ```bash
+   rdm review source --on phase/<roadmap>/<stem> --project <PROJECT> --format json
+   # For a task intentionally implemented in a shared roadmap checkout:
+   rdm review source --on task/<slug> --source <shared-path> --base <base-sha> --expected-head <head-sha> --project <PROJECT> --format json
+   ```
 
-   Capture the diff's head SHA (`git rev-parse HEAD`) — steps 5 and 6 cite it in pinned `rdm:src/` links.
+   Resolution never creates worktrees. Phases require the existing shared roadmap checkout; obsolete phase checkouts are ignored. A task defaults to its existing task checkout; an explicit registered shared checkout requires a base. The result pins `item`, `repository`, `path`, `branch`, `base`, `head`, `changedFiles`, `diffText`, and `noCode`. The default base is resolved once from the configured default branch's merge base. Empty ranges fail unless deliberately declared with `--no-code`.
 
-### 2. Find — dispatch the review fleet (parallel)
+   Pass the resolved source path, base, expected head and branch into the workflow. A caller-supplied `diff` never bypasses resolution: authoritative committed content is reacquired. Use the returned head for pinned source links.
 
-**You select the reviewers.** Dispatch one **read-only** `Agent` per reviewer you select, per **Review specification § Reviewers** below, whose per-reviewer cues say when to include each one against the diff from step 1. Selecting none means running them all — the safe default when you are unsure. Nothing refuses a thin set, so an under-reviewed diff is a visible choice: state which reviewers you launched, and why, in the report.
+   From the resolved `changedFiles` and `diffText`, note the diff size, which modules it touches, and whether it changes public API, a security-sensitive surface (auth, input parsing or validation, path/file handling, subprocess or shell invocation, secrets, deserialization, network code), dependencies, or user-facing behavior — these tell you which reviewers to include (see Review specification § Reviewers). From those same signals derive a **tier hint**: `small` (localized, single module, no risky surface — a typo fix, a one-line log message), `medium` (an ordinary change — new logic in one module, a bugfix), or `large` (touches public API, a security-sensitive surface, spans multiple modules/crates, adds a dependency, or is user-facing). This is a read of the **diff's risk**, not the phase's own difficulty rating — a "hard" phase can still land a small, low-risk diff, and vice versa.
+4. **Resolve the two review profiles** — a model plus a reasoning effort each — so every finder and refuter runs on an explicitly resolved profile, never the inherited session model:
 
-**Model sizing.** Every dispatched agent in this step runs on an **explicitly resolved** profile — a model plus a reasoning effort — never the inherited session model. For each finder agent, resolve:
-```bash
-rdm model resolve review-find --tier <hint> --format json   # {"step","host","tier","model","effort"}
+   ```bash
+   rdm model resolve review-find --tier <hint> --format json   # {"step","host","tier","model","effort"}
+   rdm model resolve review-verify --format json               # default tier already floored to the top review tier
+   ```
+
+   Resolution reads the `[models]` config table (per-host profiles, review floor, and per-step overrides), falling back to the built-in profile table when unset — run `rdm model show` to see the effective table. The workflow applies them itself: it passes the model and effort into every finder and refuter agent it dispatches.
+
+### 2. Review — invoke the canonical pipeline (find → refute → verdict)
+
+Invoke the `rdm:rdm-wf-review-refute-fix` Workflow tool to run the reviewer-finding and per-finding-refuting mechanics — **Review specification § Reviewers / Find / Refute / Filter & consolidate / Verdict** below describe exactly what it does, so you can explain the result, but you do not perform those steps by hand:
+
 ```
-using the tier hint derived in step 1, and dispatch that agent with the `Agent` tool passing `model: <model>` and `subagent_type: rdm:rdm-effort-<effort>` — the `rdm:rdm-effort-<level>` agent definitions rdm installs carry the effort, which the `Agent` tool has no parameter for. If that agent type is not found (a session started before the definitions were installed), dispatch as `general-purpose` with the model only and say in the report that the effort was not applied. Purely mechanical checks (e.g. a scripted presence/lint check with no judgment involved) may instead resolve `rdm model resolve mechanical`, or run inline without a subagent at all. Resolution reads the `[models]` config table (per-host profiles, review floor, and per-step overrides), falling back to the built-in profile table when unset — run `rdm model show` to see the effective table (the defaults are listed in `docs/model-profiles.md`).
+Workflow: rdm:rdm-wf-review-refute-fix
+args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, rdmBin: "<rdm executable>", project: "<project>", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>" }
+# or, for a task:
+args: { mode: "code", task: "<slug>", gate: false, rdmBin: "<rdm executable>", project: "<project>", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>" }
+```
 
-### 3. Refute — per-finding refute pass (parallel)
+Pass `args` as a JSON object, never a stringified value. `findModel`/`findEffort` and `verifyModel`/`verifyEffort` are the `model` and `effort` fields of the two profiles resolved in step 1. Each is independently optional — an omitted model makes that judgment agent inherit the session model, an omitted effort its effort — and an effort the engine does not accept is refused before any agent runs.
 
-Dispatch a **fresh** `Agent` per **gating** finding (`blocking` / `concern`), per **Review specification § Refute**. Run these concurrently; the finder is never the refuter. A `suggestion` skips refutation — it gates nothing at any tier — and passes through marked `unrefuted: true`, still subject to the confidence floor.
+The engine **reads nothing and writes nothing**: it dispatches finder and refuter agents only. The
+`source`/`base`/`expectedHead`/`expectedBranch` values above are the identity you resolved in step 1
+— a path, two SHAs and a branch name — and each reviewer runs `rdm review source` itself to reach
+the diff. Adding `persist: true` returns the recording ladder as `persistCommands` / `persistScript`
+instead of writing it; **you** run that Bash in one session and report its exit status (it prints
+`reviewId=<id>`). If one `review comment` line is refused for its anchor, re-run that line with
+`--path`, `--quote` and `--occurrence` removed; if `review start` itself is refused, stop and
+escalate rather than choosing another target.
 
-The refute agent also runs on an explicitly resolved profile, never the inherited session model: resolve `rdm model resolve review-verify --format json` once (its default tier is already floored to the top review tier, so no `--tier` hint is needed) and dispatch each refute agent with its `model` and `subagent_type: rdm:rdm-effort-<effort>`, as in step 2.
+Add `reviewers: [...]` to select which reviewers run — **Review specification § Reviewers** below
+carries a per-reviewer cue for when to include each one. Omitting the key runs every code reviewer,
+which is the safe default when you are unsure what the diff touches. An unrecognised name is dropped
+silently and shows as a gap in `reviewCoverage`; nothing refuses a thin set, so an under-reviewed
+diff is a visible choice rather than an error. State which reviewers you selected, and why, in the report.
 
-### 4. Filter, consolidate & decide the outcome
+`rdmBin` is optional and defaults to a plain `rdm` on `PATH` when omitted; an explicitly passed value always wins verbatim. Pass the same rdm executable you use for every command in this skill. `project` is optional and applies only to project-scoped subcommands.
 
-Apply **Review specification § Filter & consolidate**, then **§ Verdict** to reach exactly one outcome: `reviewed`, `rework`, or `escalated`.
+Always pass `gate: false` (or omit `gate`) — this skill owns the gate (step 5 below), never the workflow's own mechanical status-persist path, which is reserved for headless/ad hoc callers. The workflow returns the dispatch-shaped OUTCOME: `{ roadmap, phase, outcome, status, writesCompletion, summary, reason, findings }` (or `{ task, ... }`), with `source`, `acTable`, `reviewCoverage`, `reviewBudget`, `outcome` ∈ `reviewed | rework | escalated`, and `findings` already ranked survivors. Missing required dimensions, invalid/absent AC results, unresolved refutation overflow and grading failures escalate; only a complete latest attempt can approve. Treat this as the one canonical review pass — do not additionally dispatch your own finder/refuter agents.
 
-### 5. Report
+### 3. Report
 
-Present a single structured report:
-- The AC table: each criterion with PASS / FAIL / PARTIAL and evidence.
-- Surviving findings grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation — cite the location as a pinned `rdm:src/<path>@<sha>#Lline` link, using the head SHA captured in step 1, when one is available so a reader can click through instead of a bare `file:line`.
-- The outcome: **reviewed**, **rework**, or **escalated**, and the one rule that decided it.
+Present a single structured report from the workflow's result:
+- The AC table: each criterion with PASS / FAIL / PARTIAL and evidence, from the returned structured `acTable`.
+- Surviving `findings` grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation — cite the location as a pinned `rdm:src/<path>@<sha>#Lline` link, using the head SHA captured in step 1, when one is available so a reader can click through instead of a bare `file:line`.
+- The `outcome` (**reviewed**, **rework**, or **escalated**), the one rule that decided it, and `summary`.
 
-### 6. Act
+### 4. Act
 
 Apply **Review specification § Act**. File large findings as tasks, citing the finding's location as a pinned `rdm:src/<path>@<sha>#Lline` link (the head SHA from step 1) in the body instead of a bare `file:line`:
 ```bash
 rdm task create <slug> --title "Review finding: description" --body "Details. See rdm:src/<path>@<sha>#Lline." --tags <tag1>,<tag2> --no-edit --project <PROJECT>
 ```
 
-### 7. Gate — transition by outcome
+### 5. Gate — transition by outcome
+
+Revalidate `review source` with the pinned path/base/expected head/branch before persistence and status writes. If the source changed, restart independent review. Persist a change review at the exact head with `--base` and `--implements`; never fall back to approving the item document. Run status commands in the resolved checkout with `--source`, `--base`, `--expected-head`, and `--expected-branch`, and verify their exit status plus readback. Source edits during Act require a fresh review of the changed head.
 
 This skill owns the `needs-review` → `reviewed` gate. Persist the status from **Review specification § Gate**, then land the plan-repo change:
 
@@ -245,6 +278,12 @@ in every mode, so it is carried in every finder prompt.
 
 ### Find — one read-only agent per applicable dimension, in parallel
 
+The `rdm:rdm-wf-review-refute-fix` Workflow invoked in step 2 above performs
+this section and § Refute deterministically: it dispatches every finder and
+refuter agent itself, each on the resolved `review-find` / `review-verify`
+model and reasoning effort you pass it, so you never dispatch them by hand.
+They are described here so you can explain its result.
+
 Each finder agent is told: you are a READ-ONLY reviewer, do not edit any
 files; review exactly one dimension; report only findings you can back with
 concrete evidence — **one strong finding beats five weak ones**; return an
@@ -337,6 +376,9 @@ one of these, and they are told apart by markers alone:
 | grading crashed | `refuterError: true`, and never `unrefuted` |
 
 ### Filter & consolidate
+
+The workflow already applies this before returning; it is recapped here so
+you can explain a result.
 
 - **Drop** any finding a refuter refuted, and any whose post-refutation
   confidence is below the confidence floor (70).
@@ -485,3 +527,13 @@ landing.
   than guessing intent.
 
 <!-- rdm:review-spec:end -->
+
+## Resolving `rdmBin` (plugin install)
+
+This skill was installed from the `rdm` plugin, so there is no repo-local build path to assume. Resolve the `rdmBin` argument in this order and use the first that exists:
+
+1. an explicitly supplied `--rdm-bin <path>`;
+2. the `RDM_BIN` environment variable;
+3. a plain `rdm` on `PATH`.
+
+If none resolves, stop and report: `rdm binary not found. Install rdm, then set RDM_BIN=/path/to/rdm, put rdm on your PATH, or pass --rdm-bin /path/to/rdm.` Never guess a path, and never invoke a workflow without one.

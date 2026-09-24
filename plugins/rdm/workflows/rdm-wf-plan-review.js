@@ -592,10 +592,15 @@ function reviewSourceCommand(item, pin, rdmBin, projFlag, opts) {
 }
 
 // Prompt for a finder agent reviewing a single dimension of `mode`.
-// >>> find-refute-verdict:begin (the default `//|` span below is swapped for the adjacent local-code-override block, defined right after this span's `:end` marker, only when scripts/gen-skill-review.sh runs with --target local --mode code — every other target/mode combination renders this span unchanged) <<<
 //|
 //| ### Find — one read-only agent per applicable dimension, in parallel
 //|
+//|code| The `rdm-wf-review-refute-fix` Workflow invoked in step 2 above performs
+//|code| this section and § Refute deterministically: it dispatches every finder and
+//|code| refuter agent itself, each on the resolved `review-find` / `review-verify`
+//|code| model and reasoning effort you pass it, so you never dispatch them by hand.
+//|code| They are described here so you can explain its result.
+//|code|
 //| Each finder agent is told: you are a READ-ONLY reviewer, do not edit any
 //| files; review exactly one dimension; report only findings you can back with
 //| concrete evidence — **one strong finding beats five weak ones**; return an
@@ -747,6 +752,9 @@ function findPrompt(mode, dim, context) {
 //|
 //| ### Filter & consolidate
 //|
+//|code| The workflow already applies this before returning; it is recapped here so
+//|code| you can explain a result.
+//|code|
 //| - **Drop** any finding a refuter refuted, and any whose post-refutation
 //|   confidence is below the confidence floor (70).
 //| - A refuter that *crashes* is not proof of refutation — keep such a finding as
@@ -851,102 +859,6 @@ function refutePrompt(mode, dim, finding, context) {
 //|code|    another round.
 //|plan| 2. **rework** — else if any surviving finding is `blocking`. The defect is
 //|plan|    fixable in place; the work goes back for another round.
-// >>> find-refute-verdict:end <<<
-// >>> find-refute-verdict:local-code-override:begin (skipped everywhere except --target local --mode code; scripts/gen-skill-review.sh's extract_region swaps THIS `//|` span in for the default one above only in that one combination) <<<
-//|
-//| ### Find & Refute — performed by the `rdm-wf-review-refute-fix` workflow
-//|
-//| The mechanics that used to live here — one **read-only** finder agent per
-//| applicable dimension, then a **fresh** read-only refuter per finding (the
-//| finder is never the refuter; the refuter's stance is *"this is NOT a real
-//| issue unless the code proves otherwise"*) — are now performed deterministically
-//| by the `rdm-wf-review-refute-fix` Workflow tool invoked in step 2 above. Each finding
-//| it returns carries `id`, `concern`, `location`, `path`, `severity`,
-//| `confidence`, `what_fails`, `why`, and `recommendation`.
-//|
-//| **Laundering guard.** The workflow's refuter may not dismiss a finding on the
-//| grounds that it is documented, known, or already accepted as scope, when it
-//| contradicts the target's stated goal or recorded intent — a recorded
-//| deferral is evidence the defect is REAL, not evidence it is not. Refutation
-//| is reserved for genuine technical uncertainty; the default-to-refuted stance
-//| for uncertain findings is unchanged.
-//|
-//| A refuter runs only where its verdict could change something. A `suggestion`
-//| gates nothing at any tier, so the workflow dispatches no refuter for one: it
-//| passes straight through, marked `unrefuted: true`, still subject to the
-//| confidence floor. `blocking` and `concern` are always refuted (measured over
-//| the recorded corpus, a `concern` is overturned *more* often than a `blocking`
-//| one — 50.4 % vs 38.1 %), and a finding whose severity is missing or
-//| unrecognized is refuted too.
-//|
-//| **Refutation budget.** The workflow grades at most **5** gating findings per
-//| review unit. It ranks the unit's gating candidates severity-then-confidence
-//| and refutes only the top 5; everything past the cut takes the SAME un-refuted
-//| pass-through, marked `unrefuted: true` with `unrefutedReason: 'budget'`.
-//| Non-gating `suggestion` findings never consume budget. The budget skips
-//| **grading**, never **filtering** — an over-budget finding faces the same
-//| confidence floor, and one that survives it still gates. The default of 5 is
-//| measured, not guessed: replaying this pipeline's own ranking over the recorded
-//| corpus (`docs/token-baseline.json` § `determiningFindingRank`) put the
-//| outcome-determining finding within the top 5 for **100 %** of determining
-//| units at the default tier and **98.2 %** at the `large` tier. It is
-//| overridable per run via `maxRefutations` (`0` is legal and means grade
-//| nothing); there is no "uncapped" sentinel — express that as a large N. When
-//| the bound is hit the workflow reports how many findings were produced, how
-//| many were graded, and how many were passed through for budget, so a bounded
-//| run is never read as complete coverage.
-//|
-//| **Four states, four markers.** Every finding the workflow returns is in
-//| exactly one of these, and they are told apart by markers alone:
-//|
-//| | State | Markers |
-//| |---|---|
-//| | graded and survived | no `unrefuted`, no `refuterError` |
-//| | skipped as non-gating | `unrefuted: true`, `unrefutedReason: 'non-gating'` |
-//| | passed over for budget | `unrefuted: true`, `unrefutedReason: 'budget'` |
-//| | grading crashed | `refuterError: true`, and never `unrefuted` |
-//|
-//| ### Filter & consolidate
-//|
-//| The workflow already applies this before returning; it is recapped here so you
-//| can explain a result:
-//|
-//| - **Drop** any finding a refuter refuted, and any whose post-refutation
-//|   confidence is below the confidence floor (70).
-//| - A refuter that *crashes* is not proof of refutation — keep such a finding as
-//|   un-refuted rather than silently dropping it. It is **not** marked
-//|   `unrefuted: true` — that marker means "deliberately never graded", not
-//|   "grading failed".
-//| - A **finder** that returns nothing is retried **once**. If the retry also
-//|   returns nothing, that dimension is recorded as **non-participating**: it
-//|   contributes no findings, and the reduced coverage is reported in the result
-//|   *and named in the summary*, so a 3-of-7 review never reads as a clean
-//|   7-of-7. Automatic approval requires every selected dimension. A transient API
-//|   blip leaves approval pending until a complete retry supplies the evidence. If
-//|   **every** dimension fails, the review throws rather than reporting a clean
-//|   result. A dimension that did not run produces **no AC table**, which is not
-//|   the same as a table with no FAIL/PARTIAL rows: the absent case is recorded
-//|   and named in the summary, and does **not** count as an AC gap.
-//| - A finding passed through un-refuted carries `unrefuted: true` and faces the
-//|   **same confidence floor** as everything else: the refuter is skipped, the
-//|   floor is not.
-//| - **Dedup** findings pointing at the same location / same root cause (the
-//|   fleet covers overlapping ground by design).
-//| - **Rank** survivors by severity, then confidence, then id.
-//| - Keep the AC table intact; surviving AC FAIL/PARTIAL items become findings.
-//|
-//| ### Verdict — one outcome vocabulary: `reviewed` | `rework` | `escalated`
-//|
-//| Determine the outcome in this strict order — the first matching rule wins:
-//|
-//| 1. **escalated** — a surviving blocker that needs a *human decision* rather
-//|    than a code change: the goal, approach, or scope is wrong, the work
-//|    violates a stated architectural constraint, or the acceptance criteria
-//|    themselves are missing, contradictory, or unimplementable as written.
-//| 2. **rework** — else if any surviving finding is `blocking`, or the AC table
-//|    contains any FAIL or PARTIAL criterion. The defect is fixable in place; the
-//|    work goes back for another round.
-// >>> find-refute-verdict:local-code-override:end <<<
 //| 3. **reviewed** — else. Clean, or clean after small fixes. Surviving
 //|    `concern` and `suggestion` findings are recorded and do **not** gate.
 //|

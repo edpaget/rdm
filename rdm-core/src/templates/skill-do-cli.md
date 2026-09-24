@@ -17,9 +17,10 @@ both modes — plan → plan review → implement → verify → code review →
 write, with the plan and every review persisted in the plan repo as the record of why the run ended
 where it did.
 {principles}
-The only difference between the two modes is **who submits the approve review on the plan** and
-whether each triage decision pauses for confirmation. The orchestrator waits for that approval record
-either way, so the commands and the resulting records are identical.
+The only difference between the two modes is **who submits the approve review on the plan** — a
+human or the plan-review workflow — and whether each triage decision pauses for confirmation. The
+orchestrator waits for that approval record either way, so the commands and the resulting records are
+identical.
 
 ## Run modes
 
@@ -27,14 +28,14 @@ either way, so the commands and the resulting records are identical.
 
 - **interactive** (default) → the orchestrator is entered with `--interactive`: it prints the
   `rdm review start --on plan/<slug>` … `rdm review submit <id> --verdict approve` commands, waits for
-  that approve review on the plan, and presents each triage decision for confirmation before
-  recording it.
-- **`--auto`** → the orchestrator is entered without `--interactive`: it applies its triage decisions
-  without pausing.
+  a human-submitted approve review on the plan, and presents each triage decision for confirmation
+  before recording it.
+- **`--auto`** → the orchestrator is entered without `--interactive`: it invokes the plan-review
+  workflow itself and applies its triage decisions without pausing.
 
 For unattended runs (no human present to approve permission prompts), launch with
 `--permission-mode auto` (or `bypassPermissions` in a sandbox) so the orchestrator's Bash commands and
-its Workflow call don't block on a prompt.
+Workflow calls don't block on a prompt.
 
 ## Argument forms
 
@@ -46,8 +47,9 @@ its Workflow call don't block on a prompt.
   rdm task list {proj_flag}
   ```
 
-`--plan-only`, `--max-plan-revise N` and `--max-code-rework N` are passed straight through, as are the
-`rdmBin` executable and the project name used in `{proj_flag}`.
+`--plan-only`, `--max-plan-revise N`, `--max-code-rework N`, `--rdm-bin <path>` and
+`--project <name>` are passed straight through — the orchestrator resolves the last two into its own
+`rdmBin` and `<proj-flag>` placeholders.
 
 ## What to do
 
@@ -65,11 +67,11 @@ its Workflow call don't block on a prompt.
    ```
 
    (task form: `args: '--task <slug>'` plus the same `--interactive` suffix.) It MUST be `Skill`: an
-   `Agent`-spawned subagent has no `Workflow` tool at all, so the orchestrator's code-review call
-   could not be made there. The orchestrator owns everything from that point: the worktree, the
-   in-progress stamp, the plan, the plan approval wait, the implementer, verification, the persisted
-   `change/<sha>` review, per-comment triage with reasoned replies, and the gated `--status reviewed`
-   write.
+   `Agent`-spawned subagent has no `Workflow` tool at all, so the orchestrator's two review-engine
+   calls could not be made there. The orchestrator owns everything from that point: the worktree,
+   the in-progress stamp, the plan, the plan review and its approval wait, the implementer,
+   verification, the persisted `change/<sha>` review, per-comment triage with reasoned replies, and
+   the gated `--status reviewed` write.
 
    The orchestrator runs its code review by invoking the **`rdm-wf-review-refute-fix` Workflow**
    (`.claude/workflows/rdm-wf-review-refute-fix.js`, provisioned automatically by `rdm agent-config claude --skills`)
@@ -106,4 +108,5 @@ rdm commit -m "chore(plan): file side-work task <slug>"  # land the batch
 
 Use lowercase kebab-case tags and prefer ones already present in the project (check with
 `rdm search "" --tag <candidate> {proj_flag}`). When you are inside a roadmap's worktree and the task
-body cites a file or behavior that only exists on that unlanded branch, say so in the body.
+body cites a file or behavior that only exists on that unlanded branch, tag it `depends-unlanded` and
+say so in the body.

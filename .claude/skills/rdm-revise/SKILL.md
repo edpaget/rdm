@@ -76,7 +76,7 @@ git -C "$RDM_ROOT" rev-parse HEAD
 ./target/debug/rdm review update <review-id> --comment <n> --status addressed --applied-commit <sha> --reply "What changed, and whether the anchor resolved (note drift if any)." --project rdm
 ```
 
-Always pass `--applied-commit` explicitly with the SHA captured in step 4 — never a later HEAD, which may be a review-file-only commit. When the reply cites a specific implementation location the comment was about, use a pinned `rdm:src/<path>@<sha>#Lline` link instead of a bare `file:line` — `<sha>` here is a **source-repo** revision (`git rev-parse HEAD` in this repo's checkout), not the plan-repo `<sha>` above, since `--applied-commit` and an `rdm:src/` link pin two different repositories; omit `@<sha>` to fall back to the item's own stamped `commit` field when you don't have a source-repo checkout at hand.
+Always pass `--applied-commit` explicitly with the SHA captured in step 4 — never a later HEAD, which may be a review-file-only commit. When the reply cites a specific implementation location the comment was about, use a pinned `rdm:src/<path>@<sha>#Lline` link instead of a bare `file:line` — `<sha>` here is a **source-repo** revision (`git rev-parse HEAD` in that checkout), not the plan-repo `<sha>` above, since `--applied-commit` and an `rdm:src/` link pin two different repositories; omit `@<sha>` to fall back to the item's own stamped `commit` field when you don't have a source-repo checkout at hand.
 
 ### 6. Ambiguous comment or anchor drifted beyond recovery
 

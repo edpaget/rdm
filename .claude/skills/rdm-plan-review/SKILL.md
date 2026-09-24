@@ -7,9 +7,13 @@ allowed-tools:
   - Glob
   - Grep
   - Agent
+  - Workflow
+  - AskUserQuestion
 ---
 
-Review the *plan* of an rdm roadmap, phase, or task — not its implementation. This skill is a thin shim over the **`rdm-wf-plan-review` Workflow** (`.claude/workflows/rdm-wf-plan-review.js`), which runs the whole pipeline end to end. Invoke that workflow and report its result; the domain notes below exist so a human reader understands what it does and can drive it interactively when the workflow is unavailable.
+Review the *plan* of an rdm roadmap, phase, or task — not its implementation. This skill is a thin shim over the **`rdm-wf-plan-review` Workflow** (`.claude/workflows/rdm-wf-plan-review.js`, provisioned automatically by `rdm agent-config claude --skills`), which runs the whole pipeline end to end. Invoke that workflow and report its result; the domain notes below exist so a human reader understands what it does and can drive it interactively when the workflow is unavailable.
+
+**IMPORTANT: This is the rdm source repo. Always run `cargo build` first, then use `./target/debug/rdm` — never bare `rdm`.**
 
 ## Invoke the workflow
 
@@ -61,10 +65,16 @@ never parsed out of the `$ARGUMENTS` flag string:
   plan-review --status wont-fix --type task --project rdm --format json`. Absent
   suppresses nothing, which is the safe direction.
 - **`reviewers`** — see the bullet above.
-- **`findModel` / `verifyModel`** — the ids printed by `./target/debug/rdm model
-  resolve review-find` and `... review-verify`. Each is independently optional; an
-  omitted one makes that agent inherit the session model. There is no mechanical
-  model any more and no bootstrap agent to skip.
+- **`findModel` / `findEffort`** and **`verifyModel` / `verifyEffort`** — the
+  `model` and `effort` fields printed by `./target/debug/rdm model resolve review-find
+  --format json` and `... review-verify --format json`; the workflow passes them
+  into every finder and refuter agent it dispatches. Each is independently
+  optional; an omitted model makes that agent inherit the session model, an
+  omitted effort its effort. There is no mechanical model any more and no
+  bootstrap agent to skip.
+- **`rdmBin`** / **`project`** — the rdm executable every reviewer's command
+  uses (optional; defaults to a plain `rdm` on `PATH`, and an explicit value
+  wins verbatim) and the project for project-scoped subcommands. In this repo pass `./target/debug/rdm` (`.mise.toml` exports it as `RDM_BIN`), per the development-build rule.
 
 **Writes it would make, it hands back.** Nothing in the workflow mutates the plan
 repo. Run these yourself, in order, and report each exit status:
@@ -80,7 +90,19 @@ repo. Run these yourself, in order, and report each exit status:
    `--body` back; file a large structural finding as a task with
    `--tags plan-review --no-plan-review`. This is yours because it is judgment plus
    a write. Findings marked `unrefuted: true` were reported, not verified — treat
-   them under the disposition rule in the Review specification below.
+   them under the disposition rule in the Review specification below. Skip
+   this step entirely in `--implementation-plan` mode — there is no persisted rdm
+   item to write to or file against.
+
+   ```bash
+   # small: write the whole modified body back (no patch/diff mechanism exists)
+   ./target/debug/rdm phase update <phase-number> --roadmap <slug> --body "<full updated body>" --no-edit --project rdm
+   # or: ./target/debug/rdm task update <slug> --body "<full updated body>" --no-edit --project rdm
+   # or: ./target/debug/rdm roadmap update <slug> --body "<full updated body>" --no-edit --project rdm
+   # large: file it; --no-plan-review keeps the gate's own output out of the gate
+   ./target/debug/rdm task create <slug> --title "Plan review finding: description" --body "Details." --tags plan-review --no-plan-review --no-edit --project rdm
+   ./target/debug/rdm commit -m "chore(plan): address plan review findings on <target>"
+   ```
 3. **Record the round** — a non-`reviewed` unit carries `roundNote`, the rendered
    `## Plan Review Round N — <outcome>` block. This is a **human-readable log
    only**: the engine never reads it back. The round-3 cap and repeat detection
@@ -117,8 +139,43 @@ un-plan-reviewed to every other surface. A unit with `tagsUnknown: true` reached
 `reviewed` but could not be given commands because you did not pass its tags; say
 so rather than clearing the tag from memory.
 
-Why the gate returns rather than writes — and why that is now unconditional rather
-than an escape hatch — is recorded in `docs/plan-review-gate-policy.md`.
+The gate returns its commands rather than writing them, unconditionally, so every tag write happens in your session where a refusal can be surfaced and reported. Why — and why that is no longer an escape hatch — is recorded in `docs/plan-review-gate-policy.md`.
+
+### Capture intent, if the target predates it
+
+Human-in-the-loop only. Skip this step entirely in `--implementation-plan` mode (there is no persisted item to write to) and for any headless run with no operator present.
+
+1. **Read the target's current intent.** A phase's intent lives on its roadmap, never on the phase itself, so under `<roadmap-slug> [phase-number]` or a single-phase target, read the roadmap's own body. Look for a `## Intent` section.
+2. **Skip silently** if the section already reads `(not captured)` — that is a deliberate prior opt-out, not an omission, and must never be re-prompted.
+3. **If the section is absent entirely**, the target predates the artifact. Run the same bounded interview used at roadmap-authoring time:
+   - Ask at most 3-5 questions, one at a time, selected by impact x uncertainty.
+   - Each question is closed-form: 2-4 mutually exclusive options with a recommended default, or a short answer with a suggested value. Use the question-asking tool available in your environment (e.g. `AskUserQuestion`, granted in this skill's `allowed-tools`).
+   - Cover, in priority order: the goal as an observable end state; what is explicitly NOT wanted; and one operator-testable "done looks like" signal. Stop as soon as all three are unambiguous.
+   - Terminate early the moment the operator signals they're finished ("done", "that's it", "no more").
+   - Record every answer **verbatim** under `Interview.`; put an unresolved high-impact question under `Open`, never guessed at.
+   - Structure the `## Intent` section using this canonical grammar — the labels are literal, filled in verbatim:
+     ```markdown
+     ## Intent
+
+     **Goal.** <the outcome wanted, as an observable end state — not the mechanism>
+
+     **Non-goals.**
+     - <explicitly out of scope>
+
+     **Done looks like.**
+     - <WHEN <situation> THEN <observable outcome>>
+
+     **Interview.** (captured YYYY-MM-DD)
+     - Q: <question asked> → A: <operator's answer, verbatim>
+     ```
+     `Non-goals`, `Interview`, and an optional `Open` list may be absent. `Goal` and `Done looks like` are what make a section count as captured rather than present-but-empty.
+   - If the operator does not engage, write `(not captured)` as the whole `## Intent` section rather than inventing intent.
+4. **Write the result back** by reading the current full body, splicing in the `## Intent` section, and writing the complete body back — bodies are whole-document-authoritative, there is no patch/diff mechanism:
+   ```bash
+   ./target/debug/rdm roadmap update <slug> --body "<full updated body>" --no-edit --project rdm
+   # or: ./target/debug/rdm task update <slug> --body "<full updated body>" --no-edit --project rdm
+   ./target/debug/rdm commit -m "chore(plan): capture intent on <target>"
+   ```
 
 ## What the workflow does (domain intent)
 
@@ -134,14 +191,16 @@ Key domain behaviors the workflow implements, worth knowing when reading its out
 
 ## Guidelines
 
-- Be objective, and cite evidence for every finding.
+- Be objective, and cite evidence (a location and a quote or paraphrase) for every finding.
 - The dispatched sub-agents only review and report — they never edit. Only the orchestrator applies small fixes (whole-`--body` writes) and files large findings as tasks, and only after refutation or under the un-refuted disposition rule.
 - Never guess intent when the target document is ambiguous or missing — report it as a finding instead.
+- `--body` is whole-document-authoritative: always read-modify-write the entire body, never assume a patch/diff mechanism exists. Do that read-modify-write in **Bash**, keeping the body in a shell variable — never route a document through your own output.
+- `--tags` replaces the whole list: never retype a tag list by hand — run the gate's `gateAction.commands`, whose `remainingTags` is the exact sibling-preserved list.
 - A surviving `blocking` finding yields `rework` or `escalated`; concerns and suggestions alone never hold the gate closed.
 
 ## Review specification
 
-The generated marker block below contains the plan-mode reviewer catalogue and its per-reviewer selection cues, refutation logic, filtering, verdict rules, and gate policy, rendered from the canonical review source via `scripts/gen-skill-review.sh --mode plan`. It documents exactly the pipeline `rdm-wf-plan-review.js` runs. Do not hand-edit it.
+The generated marker block below contains the plan-mode reviewer catalogue and its per-reviewer selection cues, refutation logic, filtering, verdict rules, and gate policy, rendered from rdm's canonical review source. It documents exactly the pipeline `rdm-wf-plan-review.js` runs. Regenerate it with `scripts/gen-skill-review.sh --mode plan --target local` after editing `.claude/workflows/lib/review.mjs`; do not hand-edit it.
 
 <!-- rdm:review-spec:begin (generated by scripts/gen-skill-review.sh --mode plan — edit .claude/workflows/lib/review.mjs, not this region) -->
 

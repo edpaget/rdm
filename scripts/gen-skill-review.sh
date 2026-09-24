@@ -38,16 +38,8 @@
 # is substituted per target after extraction — `rdm` for --target shipped,
 # `./target/debug/rdm` for --target local (this repo's own hard dev-build rule).
 # A leftover, unsubstituted `{rdm_bin}` literal in generated output is an error.
-#
-# find-refute-verdict local-code-override: `.claude/skills/rdm-review/SKILL.md`
-# (target=local, mode=code) is the ONE consumer whose review-spec content
-# deliberately diverges from the shared prose — it replaces the Find / Refute /
-# Verdict-point-2 span with a recap of the `review-refute-fix` Workflow
-# delegation. That divergent prose is single-sourced in review.mjs too, inside a
-# `find-refute-verdict:local-code-override` block immediately following the
-# default `find-refute-verdict` span it replaces. `extract_region` swaps the
-# override block in ONLY for target=local mode=code; every other (target, mode)
-# pair renders the default span and never sees the override block at all.
+# That substitution is the target's ONLY effect on the rendered prose: both
+# targets render the same spec text for a given mode.
 #
 # Its sibling `scripts/gen-workflow-review.sh` stamps the JS block from the same
 # source into the workflow-script consumers.
@@ -142,25 +134,11 @@ trap 'rm -f "$specfile"' EXIT INT HUP TERM
 # Extract the `//| ` prose from the review-spec region, then the review-gate-spec
 # region, in that order. Marker lines are matched only after the "// >>> "
 # comment prefix, so an incidental in-region mention cannot truncate extraction.
-#
-# Target-aware swap: the review-spec region nests a THIRD marker pair,
-# `find-refute-verdict` (the default Find/Refute/Verdict-point-2 span) and its
-# sibling `find-refute-verdict:local-code-override` (the rdm-review-only
-# replacement span). For target=local mode=code, the default span's `//|` lines
-# are skipped and the override span's are emitted instead; for every other
-# (target, mode) pair the default span is emitted and the override span is
-# always skipped, regardless.
 extract_region() {
-    awk -v b=">>> $1:begin" -v e=">>> $1:end" -v mode="$MODE" -v use_override="$2" '
+    awk -v b=">>> $1:begin" -v e=">>> $1:end" -v mode="$MODE" '
         index($0, b) { inregion = 1; next }
         index($0, e) { inregion = 0 }
-        inregion && index($0, "find-refute-verdict:local-code-override:begin") { in_override = 1; next }
-        inregion && index($0, "find-refute-verdict:local-code-override:end") { in_override = 0; next }
-        inregion && index($0, "find-refute-verdict:begin") { in_default_frv = 1; next }
-        inregion && index($0, "find-refute-verdict:end") { in_default_frv = 0; next }
         inregion && /^[[:space:]]*\/\/\|/ {
-            if (in_override && use_override != "1") next
-            if (!in_override && use_override == "1" && in_default_frv) next
             # Prose lines may be indented (they sit inside object literals).
             # Strip the indent AND the "//|" prefix; what remains may open with a
             # mode tag ("code|" / "plan|"), otherwise the line is shared.
@@ -178,15 +156,9 @@ extract_region() {
     ' "$SOURCE"
 }
 
-if [ "$TARGET" = "local" ] && [ "$MODE" = "code" ]; then
-    USE_OVERRIDE=1
-else
-    USE_OVERRIDE=0
-fi
-
 {
-    extract_region review-spec "$USE_OVERRIDE"
-    extract_region review-gate-spec "$USE_OVERRIDE"
+    extract_region review-spec
+    extract_region review-gate-spec
 } >"$specfile"
 
 if [ ! -s "$specfile" ]; then

@@ -2660,36 +2660,6 @@ mod tests {
     }
 
     #[test]
-    fn skill_backlog_documents_the_grooming_plan() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[10].content;
-        assert!(content.contains("name: rdm-backlog"));
-        assert!(content.contains("$ARGUMENTS"));
-        // Read-and-propose: runs backlog report, mutates nothing.
-        assert!(content.contains("rdm backlog report --format json"));
-        assert!(content.contains("Non-mutation guarantee"));
-        assert!(content.contains("never runs"));
-        // Each category maps to a literal proposed command.
-        assert!(content.contains("task update <slug> --status wont-fix"));
-        assert!(content.contains("task merge <survivor> --from"));
-        assert!(content.contains("promote <slug> --into <roadmap>"));
-        assert!(content.contains("roadmap archive <roadmap>"));
-        // Never force-archive; the candidates never need it.
-        assert!(content.contains("Never** add `--force`"));
-        // Ambiguity degrades to open questions, not blind actions.
-        assert!(content.contains("## Open questions"));
-        assert!(content.contains("file it as an open question instead"));
-        // Empty case is handled explicitly.
-        assert!(content.contains("Nothing to groom"));
-        // Autopilot-ready framing: proposed phase bodies carry the standard headings.
-        assert!(content.contains("## Context` / `## Steps` / `## Acceptance Criteria"));
-        assert!(content.contains("rdm-autopilot"));
-    }
-
-    #[test]
     fn skill_revise_reply_cites_pinned_code_links() {
         let skills = generate_skills(&SkillOptions {
             project: None,
@@ -2823,18 +2793,6 @@ mod tests {
         assert!(content.contains("--body"));
     }
 
-    #[test]
-    fn skill_plan_review_orchestrator_applies_fixes_not_subagents() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("never edits"));
-        assert!(content.contains("orchestrator"));
-        assert!(content.contains("only the orchestrator edits"));
-    }
-
     /// Suggested default tags paired with the leading fragment of each gloss.
     /// Bare tag names would match vacuously (`bug` already occurs ~10x per
     /// template), so assertions anchor to tag+gloss pairs.
@@ -2892,73 +2850,6 @@ mod tests {
     }
 
     #[test]
-    fn skill_plan_review_clears_tag_on_pass() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("needs-plan-review"));
-        assert!(content.contains("--format json"));
-        assert!(content.contains("--tags"));
-        assert!(content.contains(
-            "On **reviewed** — when the plan is clean or only has concerns/suggestions:"
-        ));
-        assert!(content.contains("Read the target's current tags"));
-        assert!(content.contains("| **reviewed** | cleared | none |"));
-        assert!(
-            content.contains("rdm commit -m \"chore(plan): clear needs-plan-review on <target>\"")
-        );
-    }
-
-    #[test]
-    fn skill_plan_review_implementation_plan_mode_skips_gate() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("--implementation-plan"));
-        assert!(content.contains("no tag-gate step"));
-        assert!(content.contains("skip the Gate step entirely for this mode"));
-        assert!(content.contains("Skip this step entirely in `--implementation-plan` mode"));
-        // The carve-out also survives in the generated gate spec, so it cannot
-        // be lost on regeneration.
-        assert!(content.contains("**`--implementation-plan`** — **no gate at all.**"));
-    }
-
-    #[test]
-    fn skill_plan_review_implementation_plan_mode_skips_step4_mutations() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("the *act* half is skipped entirely"));
-        assert!(content.contains("folding them back into the plan text is left to the caller"));
-        assert!(content.contains("skips the Act step's fix-application half the same way"));
-        assert!(content.contains(
-            "Skip this step's fix-application half entirely in `--implementation-plan` mode"
-        ));
-    }
-
-    #[test]
-    fn skill_plan_review_leaves_tag_on_rework() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[9].content;
-        assert!(content.contains("On **rework** or **escalated** — when changes are needed:"));
-        assert!(content.contains(
-            "Do **not** call `update --tags`. The `needs-plan-review` tag is left unchanged in place."
-        ));
-        // Backed by the generated gate spec so it survives regeneration.
-        assert!(content.contains("| **rework** | left in place | none |"));
-        assert!(content.contains("| **escalated** | left in place | none |"));
-    }
-
-    #[test]
     fn skill_plan_review_explains_tags_replace_semantics() {
         let skills = generate_skills(&SkillOptions {
             project: None,
@@ -2966,24 +2857,6 @@ mod tests {
         });
         let content = &skills[9].content;
         assert!(content.contains("`--tags` replaces the whole list"));
-    }
-
-    #[test]
-    fn skill_plan_review_gates_each_phase_individually_under_roadmap() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[9].content;
-        assert!(
-            content.contains("Under `--roadmap <slug>`, gate each phase **individually**"),
-            "per-phase roadmap gating missing from the hand-authored step"
-        );
-        // Backed by the generated gate spec so it survives regeneration.
-        assert!(
-            content.contains("gate each phase **individually**, and the roadmap"),
-            "per-phase roadmap gating missing from the generated gate spec"
-        );
     }
 
     #[test]
@@ -3299,7 +3172,7 @@ mod tests {
         assert!(content.contains("required roadmap slug"));
         assert!(content.contains("never roams to another roadmap"));
         assert!(content.contains("Workflow"));
-        assert!(content.contains("rdm next --roadmap <slug> --format json"));
+        assert!(content.contains("next --roadmap <slug><proj-flag> --format json"));
         // Composes the per-phase dispatch workflow rather than re-implementing it.
         assert!(content.contains("dispatch-phase"));
         // Bounded run: global step budget + budgets section + always-on summary.
@@ -3340,24 +3213,11 @@ mod tests {
         // The now-superseded Mandatory-dispatch / inline-collapse checklist is gone.
         assert!(!content.contains("Mandatory dispatch"));
         assert!(!content.contains("inline-collapse"));
-        // generate_workflows() ships neither an `autopilot.js` nor a
-        // `rdm-wf-dispatch-phase.js` (one file remains:
-        // rdm-wf-review-refute-fix.js), so this template
-        // must never instruct invoking a Workflow literally named
-        // "autopilot" — that call would target a file this same generator
-        // does not emit. The per-phase unit it composes downstream is the prose
-        // `rdm-dispatch-phase` skill, not a Workflow; the estimate pre-pass is
-        // intentionally dropped from this distributed template (see
-        // docs/workflow-vs-prose-boundary.md), so this template must never
-        // instruct invoking the estimate engine either, under EITHER its
-        // pre-rename bare name or its current `rdm-wf-` name.
+        // No Workflow literally named "autopilot" is emitted; the drive loop
+        // is prose, so the template must never instruct invoking one.
         assert!(!content.contains("Invoke the `autopilot`"));
         assert!(!content.contains("the `autopilot` workflow"));
         assert!(!content.contains(".claude/workflows/autopilot.js"));
-        assert!(!content.contains("Invoke the `estimate`"));
-        assert!(!content.contains("the `estimate` Workflow"));
-        assert!(!content.contains("Invoke the `rdm-wf-estimate`"));
-        assert!(!content.contains("the `rdm-wf-estimate` Workflow"));
     }
 
     #[test]
@@ -3948,31 +3808,6 @@ mod tests {
         assert!(content.contains("small"));
         assert!(content.contains("large"));
         assert!(content.contains("never the inherited session model"));
-    }
-
-    #[test]
-    fn skill_document_contains_rdm_commands() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[3].content;
-        assert!(content.contains("rdm roadmap show"));
-        assert!(content.contains("rdm phase show"));
-        assert!(content.contains("--format json"));
-        assert!(content.contains("git log"));
-        assert!(content.contains("git diff"));
-    }
-
-    #[test]
-    fn skill_document_has_write_edit_tools() {
-        let skills = generate_skills(&SkillOptions {
-            project: None,
-            principles_file: None,
-        });
-        let content = &skills[3].content;
-        assert!(content.contains("Write"));
-        assert!(content.contains("Edit"));
     }
 
     #[test]
@@ -4883,7 +4718,9 @@ mod tests {
             // the autopilot shim's single mention. That engine IS shipped now,
             // so the mention IS namespaced in plugin bodies — which is exactly
             // why it is the TOKEN count that is pinned here, not the spelling.
-            ("rdm-wf-estimate", 1),
+            // 1 -> 11: `sync-dogfood-and-shipped-skills` shipped autopilot's
+            // estimate pre-pass and turned `rdm-estimate` into a shim over it.
+            ("rdm-wf-estimate", 11),
             // 1 -> 0: the autopilot shim's only mention was inside a stale
             // rationale claiming `rdm-wf-estimate` resolves
             // `agentType: 'rdm-mechanical'` and that a downstream tree receives
@@ -5050,8 +4887,9 @@ mod tests {
             }
         }
         assert_eq!(
-            noted, 3,
-            "expected the 3 rdmBin-carrying shims (autopilot, dispatch-phase, do)"
+            noted, 8,
+            "expected the 8 rdmBin-carrying shims (autopilot, backlog, dispatch-phase, do, \
+             document, estimate, plan-review, review)"
         );
     }
 

@@ -29,7 +29,7 @@ the canonical schema contracts they exchange.
 > `--auto` section of `skill-do-cli.md`) are the user-facing autonomous
 > lane: `skill-autopilot-cli.md` is a **prose** skill that itself
 > drives the roadmap loop, entering the prose `rdm-dispatch-phase` orchestrator with
-> `Skill` and (locally) invoking `rdm-wf-estimate`
+> `Skill` and invoking `rdm-wf-estimate`
 > as an ordinary `Workflow` call rather than being a thin shim over a workflow
 > script of its own — see `docs/workflow-vs-prose-boundary.md` for why autopilot
 > was retired from `.claude/workflows/` in favor of prose. `skill-dispatch-phase-cli.md`
@@ -133,7 +133,7 @@ both generators and ~96 harness assertions for zero listing benefit:
 
 | Token | What it actually is |
 |---|---|
-| `>>> review-refute-fix:begin` / `:end`, `find-refute-verdict`, `review-spec`, `estimate-core`, `dispatch-outcome`, `plan-review-driver`, `backlog-groom`, `document-core` | **Region marker names.** Internal identifiers naming a stamped or byte-copied block, consumed by the generators and their drift gates. |
+| `>>> review-refute-fix:begin` / `:end`, `review-spec`, `estimate-core`, `dispatch-outcome`, `plan-review-driver`, `backlog-groom`, `document-core` | **Region marker names.** Internal identifiers naming a stamped or byte-copied block, consumed by the generators and their drift gates. |
 | `'review-refute-fix: …'` runtime error prefixes in `lib/review.mjs` | **Module-scoped error prefixes**, identifying which module raised — not a file path. |
 | `docs/token-baseline.json`'s bare per-engine record keys, and `docs/token-baseline.md`'s lane tables | **A frozen measurement corpus.** The figures are keyed to those names as recorded; rewriting them would invalidate `rdm-measure refuter-severity --audit` (gated by the `audit_committed_baseline_ok` test). |
 | `autopilot.js`, `lib/autopilot.mjs`, and the `autopilot` Workflow name | **Retired, with no successor.** `rdm-autopilot` survives as a prose skill with no engine behind it, so `autopilot` must never be prefixed — doing so would corrupt the one front door the rename must leave untouched. (The `scripts/verify-agent-config-distribution.sh` self-test that relied on `autopilot` naming a Workflow that does not resolve was a prose grep; it was retired with that script in `rust-test-suite-consolidation` phase 5.) |
@@ -2339,10 +2339,7 @@ and SCOPE GRADING clauses in `refutePrompt` it follows the same pattern as.
 
 The `rdm-dispatch-phase` skill's step 6 passes its step-4-pinned `identity` (`source`, `base`,
 `expectedHead`, `expectedBranch`) plus `phase`/`task` to the plan-review call, mirroring step 12's
-code-review call. The distributed skill template omits this call entirely — that surface's plan gate
-is a human-submitted approve review rather than a workflow verdict (see the template's own "Why there
-is no plan-review Workflow call here" section) — so it has no step 6 pin to add; the engine change
-still ships to it because `rdm-wf-plan-review.js` itself is emitted as-is to every downstream consumer.
+code-review call. The distributed skill template makes the same call with the same pin.
 
 **Every consumer of `runReview`/`d.review(...)` must destructure
 `{ survivors, acTable, budget }`** rather than treat the resolved value as a bare
@@ -2567,12 +2564,9 @@ into released binaries; `local` renders this repo's own dogfood skill copies,
 `.claude/skills/{rdm-review,rdm-plan-review}/SKILL.md` — nothing else
 re-stamps them, so without this target they drift silently behind the
 canonical source (as the plan-mode `restraint`/severity-calibration gap this
-axis was added to close in fact did). A third, innermost marker pair nested
-inside `review-spec` — `find-refute-verdict` and its sibling
-`find-refute-verdict:local-code-override` — lets `--target local --mode code`
-swap in `rdm-review`'s workflow-delegation recap in place of the default
-Find/Refute/Verdict-point-2 prose; every other `(target, mode)` pair renders
-the default span unchanged and never sees the override block. A `{rdm_bin}`
+axis was added to close in fact did). Both targets render the same prose;
+code-only lines (the `rdm-wf-review-refute-fix` delegation notes) carry the
+`//|code|` tag. A `{rdm_bin}`
 placeholder on example commands resolves to `rdm` for `shipped` and
 `./target/debug/rdm` for `local` (this repo's own hard dev-build rule) from
 the one substitution point in the generator. Both local targets are
@@ -3062,14 +3056,7 @@ the allow-list was asserted AS DATA by the same two harnesses' driven prompt cap
 real binary instead (for example `workflow_passes::estimate::engine_commands_use_injected_axes`
 and `workflow_review::plan_driver::injected_axes_reach_executed_commands`).
 
-**Bounded consequence, recorded rather than absorbed.** The prose
-`rdm-autopilot` skill's estimate pre-pass passes no `rdmBin` yet — that payload,
-and the loop's own literals, belong to the phase that parameterizes the prose
-loop — so that one call throws until it is threaded. It does **not** break the
-lane: the skill's own prose already says to log a warning and continue into the
-drive loop non-fatally on an estimate error, and unrated phases simply dispatch
-at whatever tier `rdm next` reports. Its `rdm-wf-dispatch-phase` payload was threaded
-above and is unaffected.
+The prose `rdm-autopilot` skill's estimate pre-pass passes its resolved `rdmBin` and `project`.
 
 ## Verify gate
 

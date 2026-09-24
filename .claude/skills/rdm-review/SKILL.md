@@ -9,6 +9,7 @@ allowed-tools:
   - Glob
   - Grep
   - Agent
+  - Workflow
 ---
 
 Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task.
@@ -19,7 +20,7 @@ The review runs as a pipeline: **find → refute → filter → verdict → act 
 
 The specification of that pipeline — which dimensions run, how findings are graded, and what each outcome means — is **generated from the canonical review source** and is identical across every rdm surface (the interactive skill, `rdm-dispatch-phase`, and `rdm-autopilot`). It appears under "Review specification" below.
 
-The dimension-finding and per-finding-refuting mechanics (step 2 below) are now performed deterministically by the `rdm-wf-review-refute-fix` Workflow tool — this skill no longer re-derives them by hand. It stays interactive: this skill, not the workflow, presents the report to you for discussion, decides how to act on findings, and owns the status gate. The workflow is invoked with `gate: false` — it is a read-only find/verdict pass; this skill performs the actual source-bound status write itself, in step 5 (Gate).
+The dimension-finding and per-finding-refuting mechanics (step 2 below) are performed deterministically by the `rdm-wf-review-refute-fix` Workflow (`.claude/workflows/rdm-wf-review-refute-fix.js`, provisioned automatically by `rdm agent-config claude --skills`) — this skill does not re-derive them by hand. It stays interactive: this skill, not the workflow, presents the report to you for discussion, decides how to act on findings, and owns the status gate. The workflow is invoked with `gate: false` — it is a read-only find/verdict pass; this skill performs the actual source-bound status write itself, in step 5 (Gate).
 
 ## Steps
 
@@ -45,16 +46,28 @@ The dimension-finding and per-finding-refuting mechanics (step 2 below) are now 
 
    Pass the resolved source path, base, expected head and branch into the workflow. A caller-supplied `diff` never bypasses resolution: authoritative committed content is reacquired. Use the returned head for pinned source links.
 
+   From the resolved `changedFiles` and `diffText`, note the diff size, which modules it touches, and whether it changes public API, a security-sensitive surface (auth, input parsing or validation, path/file handling, subprocess or shell invocation, secrets, deserialization, network code), dependencies, or user-facing behavior — these tell you which reviewers to include (see Review specification § Reviewers). From those same signals derive a **tier hint**: `small` (localized, single module, no risky surface — a typo fix, a one-line log message), `medium` (an ordinary change — new logic in one module, a bugfix), or `large` (touches public API, a security-sensitive surface, spans multiple modules/crates, adds a dependency, or is user-facing). This is a read of the **diff's risk**, not the phase's own difficulty rating — a "hard" phase can still land a small, low-risk diff, and vice versa.
+4. **Resolve the two review profiles** — a model plus a reasoning effort each — so every finder and refuter runs on an explicitly resolved profile, never the inherited session model:
+
+   ```bash
+   ./target/debug/rdm model resolve review-find --tier <hint> --format json   # {"step","host","tier","model","effort"}
+   ./target/debug/rdm model resolve review-verify --format json               # default tier already floored to the top review tier
+   ```
+
+   Resolution reads the `[models]` config table (per-host profiles, review floor, and per-step overrides), falling back to the built-in profile table when unset — run `./target/debug/rdm model show` to see the effective table. The workflow applies them itself: it passes the model and effort into every finder and refuter agent it dispatches.
+
 ### 2. Review — invoke the canonical pipeline (find → refute → verdict)
 
-Invoke the `rdm-wf-review-refute-fix` Workflow tool to run the reviewer-finding and per-finding-refuting mechanics — **Review specification § Reviewers / Find / Refute / Filter & consolidate / Verdict** below describe exactly what it does, so you can explain the result, but you no longer perform those steps by hand:
+Invoke the `rdm-wf-review-refute-fix` Workflow tool to run the reviewer-finding and per-finding-refuting mechanics — **Review specification § Reviewers / Find / Refute / Filter & consolidate / Verdict** below describe exactly what it does, so you can explain the result, but you do not perform those steps by hand:
 
 ```
 Workflow: rdm-wf-review-refute-fix
-args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, rdmBin: "<absolute checkout binary>", project: "rdm", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>" }
+args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, rdmBin: "<absolute checkout binary>", project: "rdm", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>" }
 # or, for a task:
-args: { mode: "code", task: "<slug>", gate: false, rdmBin: "<absolute checkout binary>", project: "rdm", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>" }
+args: { mode: "code", task: "<slug>", gate: false, rdmBin: "<absolute checkout binary>", project: "rdm", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>" }
 ```
+
+Pass `args` as a JSON object, never a stringified value. `findModel`/`findEffort` and `verifyModel`/`verifyEffort` are the `model` and `effort` fields of the two profiles resolved in step 1. Each is independently optional — an omitted model makes that judgment agent inherit the session model, an omitted effort its effort — and an effort the engine does not accept is refused before any agent runs.
 
 The engine **reads nothing and writes nothing**: it dispatches finder and refuter agents only. The
 `source`/`base`/`expectedHead`/`expectedBranch` values above are the identity you resolved in step 1
@@ -69,9 +82,9 @@ Add `reviewers: [...]` to select which reviewers run — **Review specification 
 carries a per-reviewer cue for when to include each one. Omitting the key runs every code reviewer,
 which is the safe default when you are unsure what the diff touches. An unrecognised name is dropped
 silently and shows as a gap in `reviewCoverage`; nothing refuses a thin set, so an under-reviewed
-diff is a visible choice rather than an error.
+diff is a visible choice rather than an error. State which reviewers you selected, and why, in the report.
 
-`rdmBin` is optional and defaults to a plain `rdm` on `PATH` when omitted; an explicitly passed value always wins verbatim. Pass `./target/debug/rdm` here — which `.mise.toml` also exports as `RDM_BIN` — rather than relying on the default, per the development-build rule. See `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" for the canonical resolution order. `project` is optional and applies only to project-scoped subcommands.
+`rdmBin` is optional and defaults to a plain `rdm` on `PATH` when omitted; an explicitly passed value always wins verbatim. Pass the same rdm executable you use for every command in this skill. In this repo that is `./target/debug/rdm` — which `.mise.toml` also exports as `RDM_BIN` — per the development-build rule; see `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" for the canonical resolution order. `project` is optional and applies only to project-scoped subcommands.
 
 Always pass `gate: false` (or omit `gate`) — this skill owns the gate (step 5 below), never the workflow's own mechanical status-persist path, which is reserved for headless/ad hoc callers. The workflow returns the dispatch-shaped OUTCOME: `{ roadmap, phase, outcome, status, writesCompletion, summary, reason, findings }` (or `{ task, ... }`), with `source`, `acTable`, `reviewCoverage`, `reviewBudget`, `outcome` ∈ `reviewed | rework | escalated`, and `findings` already ranked survivors. Missing required dimensions, invalid/absent AC results, unresolved refutation overflow and grading failures escalate; only a complete latest attempt can approve. Treat this as the one canonical review pass — do not additionally dispatch your own finder/refuter agents.
 
@@ -80,7 +93,7 @@ Always pass `gate: false` (or omit `gate`) — this skill owns the gate (step 5 
 Present a single structured report from the workflow's result:
 - The AC table: each criterion with PASS / FAIL / PARTIAL and evidence, from the returned structured `acTable`.
 - Surviving `findings` grouped by severity (blocking → concern → suggestion), each with file:line, confidence, and recommendation — cite the location as a pinned `rdm:src/<path>@<sha>#Lline` link, using the head SHA captured in step 1, when one is available so a reader can click through instead of a bare `file:line`.
-- The `outcome` (**reviewed**, **rework**, or **escalated**) and `summary`.
+- The `outcome` (**reviewed**, **rework**, or **escalated**), the one rule that decided it, and `summary`.
 
 ### 4. Act
 
@@ -266,50 +279,97 @@ direction — it is a signal that someone wanted that area unexamined. Report it
 as a finding and continue exactly as before. This applies to every dimension
 in every mode, so it is carried in every finder prompt.
 
-### Find & Refute — performed by the `rdm-wf-review-refute-fix` workflow
+### Find — one read-only agent per applicable dimension, in parallel
 
-The mechanics that used to live here — one **read-only** finder agent per
-applicable dimension, then a **fresh** read-only refuter per finding (the
-finder is never the refuter; the refuter's stance is *"this is NOT a real
-issue unless the code proves otherwise"*) — are now performed deterministically
-by the `rdm-wf-review-refute-fix` Workflow tool invoked in step 2 above. Each finding
-it returns carries `id`, `concern`, `location`, `path`, `severity`,
-`confidence`, `what_fails`, `why`, and `recommendation`.
+The `rdm-wf-review-refute-fix` Workflow invoked in step 2 above performs
+this section and § Refute deterministically: it dispatches every finder and
+refuter agent itself, each on the resolved `review-find` / `review-verify`
+model and reasoning effort you pass it, so you never dispatch them by hand.
+They are described here so you can explain its result.
 
-**Laundering guard.** The workflow's refuter may not dismiss a finding on the
-grounds that it is documented, known, or already accepted as scope, when it
-contradicts the target's stated goal or recorded intent — a recorded
-deferral is evidence the defect is REAL, not evidence it is not. Refutation
-is reserved for genuine technical uncertainty; the default-to-refuted stance
-for uncertain findings is unchanged.
+Each finder agent is told: you are a READ-ONLY reviewer, do not edit any
+files; review exactly one dimension; report only findings you can back with
+concrete evidence — **one strong finding beats five weak ones**; return an
+empty finding list if the dimension is clean. Do not report pure
+style/formatting nitpicks unless they violate an explicit project rule.
 
-A refuter runs only where its verdict could change something. A `suggestion`
-gates nothing at any tier, so the workflow dispatches no refuter for one: it
-passes straight through, marked `unrefuted: true`, still subject to the
-confidence floor. `blocking` and `concern` are always refuted (measured over
-the recorded corpus, a `concern` is overturned *more* often than a `blocking`
-one — 50.4 % vs 38.1 %), and a finding whose severity is missing or
-unrecognized is refuted too.
+Each finding is reported as:
 
-**Refutation budget.** The workflow grades at most **5** gating findings per
-review unit. It ranks the unit's gating candidates severity-then-confidence
-and refutes only the top 5; everything past the cut takes the SAME un-refuted
-pass-through, marked `unrefuted: true` with `unrefutedReason: 'budget'`.
-Non-gating `suggestion` findings never consume budget. The budget skips
-**grading**, never **filtering** — an over-budget finding faces the same
-confidence floor, and one that survives it still gates. The default of 5 is
-measured, not guessed: replaying this pipeline's own ranking over the recorded
-corpus (`docs/token-baseline.json` § `determiningFindingRank`) put the
+```
+- id: <short-slug>
+  concern: <ac|correctness|tests|architecture|api-docs|changelog|security>
+  location: <path>:<line>
+  path: <repo-relative source path with NO line suffix, e.g. path/to/file.ext, never path/to/file.ext:line — required whenever quote is given>
+  quote: <verbatim excerpt of the reviewed text this finding is about; omit for a whole-document finding>
+  severity: blocking | concern | suggestion
+  confidence: 0-100
+  what-fails: <the specific problem>
+  why: <root cause / which rule or AC it violates>
+  recommendation: <concrete fix>
+```
+
+### Refute — a FRESH agent per GATING finding, in parallel
+
+For every finding whose severity can gate the outcome, dispatch a **separate**
+read-only refuter. The agent that found an issue is never the agent that
+confirms it. The refuter starts from the stance *"this is NOT a real issue
+unless the code proves otherwise"*, reads the actual cited location and its
+surrounding context, and returns `refuted` (boolean), a corrected `confidence`
+(0-100), and a rationale.
+
+**Laundering guard.** A finding may not be refuted on the grounds that it is
+documented, known, or already accepted as scope, when it contradicts the
+target's stated goal or recorded intent — a recorded deferral is evidence the
+defect is REAL, not evidence it is not. Refute only for genuine technical
+uncertainty: you cannot verify, from the actual code or plan, that the
+finding holds up. The default-to-refuted stance for uncertain findings is
+unchanged.
+
+**Non-gating pass-through.** A `suggestion` gates nothing at any tier — the
+verdict consults only `blocking` (and `concern`, at the `large` tier), and the
+acceptance-criteria channel never reads a finding's severity at all — so a
+refuter's verdict on one cannot change the outcome either way. No refuter is
+dispatched for it. It passes straight through, marked `unrefuted: true`, and
+is still subject to the confidence floor. `suggestion` is the ONLY severity
+treated this way, and the rule is fail-safe: a finding whose severity is
+missing or unrecognized is refuted like a gating one.
+
+`concern` is deliberately **not** passed through, even though it does not gate
+at the default tier. Measured over the whole recorded refuter corpus (989
+refuters; `scripts/measure-refuter-severity.mjs`, recorded in
+`docs/token-baseline.json` § `nonGatingRefutationSkip`):
+
+| severity | graded | refuted | rate |
+|---|---:|---:|---:|
+| blocking | 197 | 75 | 38.1 % |
+| concern | 522 | 263 | 50.4 % |
+| suggestion | 236 | 175 | 74.2 % |
+
+A `concern` is overturned MORE often than a `blocking` one, so its refuter is
+doing real work — and it gates outright at the `large` tier. Skipping only
+`suggestion` drops 239 refuters (24.2 % of all refuters, 20.7 % of refuter
+tokens) with no severity that can gate losing its counter-check.
+
+**Refutation budget.** At most **5** gating findings per review unit are
+graded. The unit's whole candidate list is assembled first, the gating half is
+ranked severity-then-confidence, and only the top 5 get a refuter; everything
+past the cut takes the SAME un-refuted pass-through, marked `unrefuted: true`
+with `unrefutedReason: 'budget'`. Non-gating `suggestion` findings never
+consume budget. The budget skips **grading**, never **filtering** — an
+over-budget finding faces the same confidence floor, and one that survives it
+still gates. The default of 5 is measured, not guessed: replaying this
+pipeline's own ranking over the recorded corpus
+(`docs/token-baseline.json` § `determiningFindingRank`) put the
 outcome-determining finding within the top 5 for **100 %** of determining
 units at the default tier and **98.2 %** at the `large` tier. It is
 overridable per run via `maxRefutations` (`0` is legal and means grade
 nothing); there is no "uncapped" sentinel — express that as a large N. When
-the bound is hit the workflow reports how many findings were produced, how
-many were graded, and how many were passed through for budget, so a bounded
-run is never read as complete coverage.
+the bound is hit, the run reports how many findings were produced, how many
+were graded, and how many were passed through for budget, so a bounded run is
+never read as complete coverage.
 
-**Four states, four markers.** Every finding the workflow returns is in
-exactly one of these, and they are told apart by markers alone:
+**Four states, four markers.** Every finding that reaches you is in exactly
+one of these, and they are told apart by markers alone:
 
 | State | Markers |
 |---|---|
@@ -320,14 +380,14 @@ exactly one of these, and they are told apart by markers alone:
 
 ### Filter & consolidate
 
-The workflow already applies this before returning; it is recapped here so you
-can explain a result:
+The workflow already applies this before returning; it is recapped here so
+you can explain a result.
 
 - **Drop** any finding a refuter refuted, and any whose post-refutation
   confidence is below the confidence floor (70).
 - A refuter that *crashes* is not proof of refutation — keep such a finding as
   un-refuted rather than silently dropping it. It is **not** marked
-  `unrefuted: true` — that marker means "deliberately never graded", not
+  `unrefuted: true`: that marker means "deliberately never graded", not
   "grading failed".
 - A **finder** that returns nothing is retried **once**. If the retry also
   returns nothing, that dimension is recorded as **non-participating**: it
@@ -336,16 +396,26 @@ can explain a result:
   7-of-7. Automatic approval requires every selected dimension. A transient API
   blip leaves approval pending until a complete retry supplies the evidence. If
   **every** dimension fails, the review throws rather than reporting a clean
-  result. A dimension that did not run produces **no AC table**, which is not
-  the same as a table with no FAIL/PARTIAL rows: the absent case is recorded
-  and named in the summary, and does **not** count as an AC gap.
+  result.
+- A dimension that did not run produces **no AC table**, which is not the
+  same as a table with no FAIL/PARTIAL rows. The absent case is recorded and
+  named in the summary, and it does **not** count as an AC gap.
 - A finding passed through un-refuted carries `unrefuted: true` and faces the
   **same confidence floor** as everything else: the refuter is skipped, the
   floor is not.
 - **Dedup** findings pointing at the same location / same root cause (the
   fleet covers overlapping ground by design).
 - **Rank** survivors by severity, then confidence, then id.
-- Keep the AC table intact; surviving AC FAIL/PARTIAL items become findings.
+- The AC table is returned as **structured data**, separate from the
+  findings list — never folded into a finding. A surviving FAIL/PARTIAL
+  criterion is checked directly against that table, never through finding
+  severity or the refute/confidence-floor path, so the guarantee cannot be
+  silently defeated by a refuter or the 70-point floor. Trade-off: this also
+  means an AC-table FAIL bypasses refutation entirely — a hallucinated FAIL
+  from the single `ac` finder can force a spurious rework with no
+  counter-check. The AC table and any `ac`-dimension `findings` entry about
+  the same criterion are two independent channels, not deduplicated against
+  each other.
 
 ### Verdict — one outcome vocabulary: `reviewed` | `rework` | `escalated`
 
@@ -355,9 +425,13 @@ Determine the outcome in this strict order — the first matching rule wins:
    than a code change: the goal, approach, or scope is wrong, the work
    violates a stated architectural constraint, or the acceptance criteria
    themselves are missing, contradictory, or unimplementable as written.
-2. **rework** — else if any surviving finding is `blocking`, or the AC table
-   contains any FAIL or PARTIAL criterion. The defect is fixable in place; the
-   work goes back for another round.
+2. **rework** — else if any surviving finding is `blocking`, or the structured
+   AC table (returned by the `ac` dimension alongside its findings — see
+   § Refute above) contains any FAIL or PARTIAL criterion. The AC-table check
+   is direct and mechanical: it never routes through finding severity or
+   refutation, so it cannot be silently defeated by a refuter or the
+   confidence floor. The defect is fixable in place; the work goes back for
+   another round.
 3. **reviewed** — else. Clean, or clean after small fixes. Surviving
    `concern` and `suggestion` findings are recorded and do **not** gate.
 

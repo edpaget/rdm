@@ -140,12 +140,12 @@ explicit user task text, and host-managed approvals in the manual templates.
 | rdm-revise | Prose | Prose | Document revision with per-comment provenance |
 | rdm-land | Prose | Prose | Explicit reviewed landing |
 | rdm-review | Review workflow | Review workflow | Withheld; independent human/working host |
-| rdm-plan-review | Prose review recipe | Plan-review workflow | Withheld; independent human/working host |
-| rdm-estimate | Prose recipe | Estimate workflow | Withheld; inspect/estimate manually |
-| rdm-backlog | Prose recipe | Backlog workflow | Withheld; inspect and propose manually |
-| rdm-document | Prose recipe | Document workflow | Withheld; author docs manually |
-| rdm-dispatch-phase | Prose orchestrator (one Workflow call; the plan gate is a human approve review, since `rdm-wf-plan-review` is not shipped) | Prose orchestrator (two Workflow calls) | Withheld; one manual rdm-do item. The procedure is prose, but its code-review stage — and, locally, its plan-review stage too — are `Workflow` calls Codex has no runtime for. |
-| rdm-autopilot | Prose loop over the orchestrator | Estimate workflow + prose orchestrator | Withheld; one manual rdm-do item |
+| rdm-plan-review | Plan-review workflow | Plan-review workflow | Withheld; independent human/working host |
+| rdm-estimate | Estimate workflow | Estimate workflow | Withheld; inspect/estimate manually |
+| rdm-backlog | Backlog workflow | Backlog workflow | Withheld; inspect and propose manually |
+| rdm-document | Document workflow | Document workflow | Withheld; author docs manually |
+| rdm-dispatch-phase | Prose orchestrator (two Workflow calls) | Prose orchestrator (two Workflow calls) | Withheld; one manual rdm-do item. The procedure is prose, but its plan-review and code-review stages are `Workflow` calls Codex has no runtime for. |
+| rdm-autopilot | Estimate workflow + prose orchestrator | Estimate workflow + prose orchestrator | Withheld; one manual rdm-do item |
 
 Existing Pi generation is unchanged. Native Codex review, agent delegation,
 or external tools must not be represented as the unported canonical workflow.
