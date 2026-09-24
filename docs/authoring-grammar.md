@@ -130,6 +130,8 @@ An acceptance criterion is a statement of what success looks like. For a criteri
 
 **Why this matters:** A deferral first discovered at review time becomes a blocking finding under a contract the author never saw. The agent or reviewer asks, "What about X?" — and the phase is reopened, blocking landing. A gap written as a caveat inside the criterion itself ("except for X, deferred to Y") is graded as an unmet criterion by code-review agents, regardless of how clearly it is stated. The author must declare the gap *outside* the criterion, in scope-setting or follow-up language, so the criterion states exactly what the phase delivers.
 
+The code-mode `ac` review dimension (`.claude/workflows/lib/review.mjs`) honors this pattern: a deferral recorded in the phase or task's own body, before the work began, is treated as a scope decision that bounds the criterion rather than as an unmet gap. A deferral or caveat that first appears in the implementation diff or its commentary — with no antecedent in the body — still blocks, as does an in-criterion caveat like the problematic example below.
+
 **Failure mode:** An author writes "The search API supports all query operators except regex, deferred to phase 2" as the criterion. At review time, the agent marks the caveat as a known gap the phase does not close and reports it as a blocking finding. The deferral declaration does not prevent the block because it is framed as a caveat within the criterion. A second failure mode is an undeclared gap (the criterion silently omits it, or it surfaces during testing) — now the author faces a blocking finding with no foreknowledge.
 
 **Good example:**  

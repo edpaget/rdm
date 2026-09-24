@@ -3275,7 +3275,7 @@ const libPath = process.argv[2];
 const staticCheckMode = process.argv[3]; // 'expect-present' | 'expect-absent-focus' | 'expect-absent-findprompt'
 const { DIMENSIONS, findPrompt, buildReviewPipeline, classifyOutcome } = await import(pathToFileURL(libPath).href);
 
-const FOCUS_PHRASE = 'ships with acknowledged or known gaps has NOT been met';
+const FOCUS_PHRASE = 'has NOT been met, regardless of partial implementation';
 const FINDPROMPT_PHRASE = 'report it as a `blocking` findings-array entry';
 
 const acDim = DIMENSIONS.code.find((d) => d.key === 'ac');

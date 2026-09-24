@@ -120,16 +120,19 @@ const DIMENSIONS = {
     //|code|   the target states no acceptance criteria. For each acceptance criterion, rate PASS / FAIL /
     //|code|   PARTIAL with evidence (file:line, test name). Flag any criterion that is
     //|code|   unmet, ambiguous, or untestable. The per-criterion table is the contract
-    //|code|   and is reported intact. **Severity contract:** a criterion the target
-    //|code|   itself defers, caveats, or ships with acknowledged or known gaps has NOT
-    //|code|   been met, regardless of partial implementation — it MUST be reported as a
-    //|code|   `blocking` finding in the optional `findings` array, never as PASS in the
-    //|code|   `ac` table.
+    //|code|   and is reported intact. **Severity contract (code mode only):** a
+    //|code|   criterion the target's own body defers or bounds — a scope decision
+    //|code|   recorded before the work began, e.g. an Approach or Out-of-scope note —
+    //|code|   is not a gap; rate it PASS as scoped. A criterion caveated or deferred
+    //|code|   for the first time in the implementation diff or its commentary, with
+    //|code|   no antecedent in the body, has NOT been met, regardless of partial
+    //|code|   implementation — it MUST be reported as a `blocking` finding in the
+    //|code|   optional `findings` array, never as PASS in the `ac` table.
     {
       key: 'ac',
       title: 'AC compliance',
       focus:
-        'For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable. Severity contract: a criterion the target itself defers, caveats, or ships with acknowledged or known gaps has NOT been met, regardless of partial implementation — it MUST be reported as a `blocking` finding in the optional `findings` array, never as PASS in the `ac` table.',
+        "For each acceptance criterion in the target, rate PASS / FAIL / PARTIAL with evidence (file:line, test name). Flag any criterion that is unmet, ambiguous, or untestable. Severity contract (code mode only): a criterion the target's own body defers or bounds — a scope decision recorded before the work began, e.g. an Approach or Out-of-scope note — is not a gap; rate it PASS as scoped. A criterion caveated or deferred for the first time in the implementation diff or its commentary, with no antecedent in the body, has NOT been met, regardless of partial implementation — it MUST be reported as a `blocking` finding in the optional `findings` array, never as PASS in the `ac` table.",
     },
     //|code| - **correctness** — include it on every implementation review; there is no
     //|code|   diff shape that makes logic errors uninteresting. Logic bugs, edge cases, race conditions, and
@@ -589,7 +592,7 @@ function findPrompt(mode, dim, context) {
         "single criterion's status.",
       'Take the criterion identities from the target item\'s own acceptance-criteria section, verbatim, in the order they appear there — return exactly one `ac` row per criterion.',
       'Only leave `ac` empty if the target states no acceptance criteria at all — report that itself as a `findings` entry.',
-      'A criterion the target itself defers, caveats, or ships with known gaps is NOT met: report it as a `blocking` findings-array entry (concern: "ac"), never as PASS in the ac table, even if partially implemented.',
+      'Severity contract (code mode only): a criterion the target\'s own body defers or bounds — a scope decision recorded in the body you read above, before the work began — is not a gap; rate it PASS as scoped. A criterion caveated or deferred for the first time in the implementation diff or its commentary, with no antecedent in the body, is NOT met: report it as a `blocking` findings-array entry (concern: "ac"), never as PASS in the ac table, even if partially implemented.',
     ].join('\n');
   }
   const lines = [

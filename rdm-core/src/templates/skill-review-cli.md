@@ -132,11 +132,14 @@ Rank survivors most-severe first, then by confidence descending, then by id.
   the target states no acceptance criteria. For each acceptance criterion, rate PASS / FAIL /
   PARTIAL with evidence (file:line, test name). Flag any criterion that is
   unmet, ambiguous, or untestable. The per-criterion table is the contract
-  and is reported intact. **Severity contract:** a criterion the target
-  itself defers, caveats, or ships with acknowledged or known gaps has NOT
-  been met, regardless of partial implementation — it MUST be reported as a
-  `blocking` finding in the optional `findings` array, never as PASS in the
-  `ac` table.
+  and is reported intact. **Severity contract (code mode only):** a
+  criterion the target's own body defers or bounds — a scope decision
+  recorded before the work began, e.g. an Approach or Out-of-scope note —
+  is not a gap; rate it PASS as scoped. A criterion caveated or deferred
+  for the first time in the implementation diff or its commentary, with
+  no antecedent in the body, has NOT been met, regardless of partial
+  implementation — it MUST be reported as a `blocking` finding in the
+  optional `findings` array, never as PASS in the `ac` table.
 - **correctness** — include it on every implementation review; there is no
   diff shape that makes logic errors uninteresting. Logic bugs, edge cases, race conditions, and
   error paths, judged against the error-handling conventions the project
