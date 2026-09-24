@@ -115,7 +115,6 @@ cargo test
 cargo deny check                          # license & advisory audit
 shellcheck $(git ls-files '*.sh')         # shell lint
 shfmt -d $(git ls-files '*.sh')           # shell format check
-for f in scripts/verify-*.sh; do bash "$f"; done   # shell integration harnesses
 ```
 
 ## Agent Distribution

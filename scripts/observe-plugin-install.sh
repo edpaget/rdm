@@ -10,8 +10,8 @@
 # NOT a CI dependency, and the plugin-distribution roadmap deliberately does
 # not add one (adding `claude` to .mise.toml or .github/workflows/ci.yml is an
 # explicit non-goal). Per the convention scripts/observe-workflow-listing.sh
-# establishes, a client-dependent check is named `observe-*` so it falls
-# OUTSIDE ci.yml's `for f in scripts/verify-*.sh` glob.
+# establishes, a client-dependent check is named `observe-*` and is never
+# run by CI (whose deterministic tests all run under `cargo nextest run`).
 #
 #   *** THIS SCRIPT CARRIES NO CI COVERAGE. It is developer-run. ***
 #

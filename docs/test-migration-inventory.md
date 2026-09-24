@@ -21,7 +21,7 @@ or to an operator rule, never because a test uses a mocked host.
 
 ## 1. Verification scripts
 
-CI's `Shell harnesses` step (`.github/workflows/ci.yml`) runs `cargo build`, then every `scripts/verify-*.sh` in a loop, so every verify-* row is **required** unless the row says otherwise. `observe-*.sh` scripts are not in that loop and are **opt-in**.
+At phase 1, CI's `Shell harnesses` step (`.github/workflows/ci.yml`) ran `cargo build`, then every `scripts/verify-*.sh` in a loop, so every verify-* row was **required** unless the row says otherwise; `observe-*.sh` scripts were never in that loop and are **opt-in**. Phase 7 removed that step once the loop had no members: every row below is now owned by `cargo nextest run` (or the required `suite-hygiene` profile), and § 10 holds the consolidated map.
 
 In the Dependencies column, "rdm bin" means a prebuilt `target/debug/rdm` and "common" is defined per script. "Mutant build" means a `cargo build` of a scratch tree taken from `git archive HEAD` with one source line changed by `sed`.
 
@@ -251,22 +251,28 @@ Now: the `rdm-cli` nextest binary `cli_loops` (`rdm-cli/tests/cli_loops/`); the 
 | step 7 | Push the plan update to the bare origin | git | git | **phase 5 (done)** — § 8 | required (nextest) | Trivial; fold into 4–6 |
 | step 8 | `rdm review pending` lists only items finalized on the current branch | `review pending` scoping | rdm bin, git worktree | **phase 5 (done)** — § 8 | required (nextest) | Overlaps worktree-review B (the Stop hook it once drove is retired) |
 
-### verify-git-config-isolation.sh
-Destination corrected to phase 7 in phase 6: phase 5 did not take it and no phase body names it. It is a suite-hygiene meta-gate — a nested `cargo nextest run` of whole crates under a hostile `~/.gitconfig` (~143 s) — not session or commit behaviour, the same shape as the open task `canary-git-env-isolation-regression`, whose body already names phase 7.
+### verify-git-config-isolation.sh (deleted in phase 7)
+Destination corrected to phase 7 in phase 6: phase 5 did not take it and no phase body names it. It is a suite-hygiene meta-gate — a nested `cargo nextest run` of whole crates under a hostile `~/.gitconfig` — not session or commit behaviour. **Phase 7 (done):** the `rdm-cli` binary `suite_hygiene` (`rdm-cli/tests/suite_hygiene/`), run by the required `cargo nextest run --profile suite-hygiene`; P/D/R and reasons in § 10.
 
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| 1 | rdm-git and the cli_{worktree,gate,verify,review_change} suites give identical results under a clean and a hostile git config | `rdm-git/src/git_test_support.rs`, `rdm-cli/tests/git_test_support.rs`, `rdm-git/src/source.rs` `unified_diff_argv` | cargo nextest ×2, git ≥2.32 | 7 | required | — |
-| 1b | python3 strips the isolation from both support files in place; results must diverge; files restored and `cmp`-checked | same | cargo nextest rebuild, python3 | 7 | required | Edits tracked source; phase 7 can rebuild it on phase 6's working-tree mirror (`rdm-cli/tests/concurrency/mutant.rs`) |
-| 2 | No `*__worktrees` directory escapes into scratch TMPDIR in either run; fixture floor | `rdm-git/src/worktree.rs` | the §1 runs | 7 | required | Duplicates temp-hygiene §1 |
+| 1 (clean arm) | rdm-git and the cli_{worktree,gate,verify,review_change} suites pass under a clean git config | `rdm-git/src/git_test_support.rs`, `rdm-cli/tests/git_test_support.rs`, `rdm-git/src/source.rs` `unified_diff_argv` | cargo nextest, git ≥2.32 | **phase 7 (done)**: D `temp_hygiene::worktree_suites_leave_no_worktree_in_tmpdir` (a superset of crates, clean env) and the default `cargo nextest run` | required (suite-hygiene, nextest) | — |
+| 1 (hostile arm, identical results) | The same suites give the same results under a hostile git config | same | cargo nextest | **phase 7 (done)**: P `git_config::hostile_git_config_changes_no_result` (exit 0 ⇔ every selected test passes, which is the clean result set; also asserts the `diff.external` marker is absent) | required (suite-hygiene) | The per-test summary parse and `diff` are harness mechanics, retired |
+| 1 (no-results guard) | A run that parsed no results fails as broken | harness | — | **phase 7**: R | — | nextest's exit status replaces it: no tests run (4), a build failure (101) or a setup error is `Failure::Infra` in `suite_hygiene/nested.rs` |
+| 1b | python3 strips the isolation from both support files in place; results must diverge | same | cargo nextest rebuild, python3 | **phase 7 (done)**: P `mutants::stripped_git_config_isolation_fails_the_hostile_run` (M2, in a working-tree mirror; requires exit 100) | required (suite-hygiene) | — |
+| 1b (restore + `cmp`) | Files restored byte-for-byte | harness | — | **phase 7**: R | — | Moot: the mirror never writes the checkout |
+| 2 (hostile leak count) | No `*__worktrees` leak under the hostile config | `rdm-git/src/worktree.rs` | the §1 runs | **phase 7 (done)**: P, inside `git_config::hostile_git_config_changes_no_result` | required (suite-hygiene) | — |
+| 2 (clean leak count) | No leak under the clean config | same | the §1 runs | **phase 7 (done)**: D `temp_hygiene::worktree_suites_leave_no_worktree_in_tmpdir` | required (suite-hygiene) | — |
+| 2 (fixture floor) | The clean summary contains a test named `*worktree*` | harness | — | **phase 7**: R | — | Not behavioral coverage: a name grep over the result list; non-vacuity comes from M1 (`mutants::tempdir_rooted_fixture_leaks_a_worktree`) |
 
-### verify-worktree-temp-hygiene.sh
-Destination corrected to phase 7 in phase 6, for the reason given for `verify-git-config-isolation.sh` above (a nested `cargo nextest run` under a redirected `TMPDIR`, ~86 s).
+### verify-worktree-temp-hygiene.sh (deleted in phase 7)
+Destination corrected to phase 7 in phase 6, for the reason given for `verify-git-config-isolation.sh` above. **Phase 7 (done):** `rdm-cli/tests/suite_hygiene/`; § 10.
 
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| 1 | Full nextest of `-p rdm-git -p rdm-cli` with TMPDIR redirected leaves no `*__worktrees` | `rdm-git/src/worktree.rs` `worktree_path`/`add`; fixtures in `rdm-cli/tests/cli_{worktree,gate,verify}.rs`, `rdm-git/tests/worktree.rs` | cargo nextest (~86s) | 7 | required | — |
-| 1b | python3 re-roots a fixture at its TempDir; the leak must appear; file restored | same | cargo rebuild, python3 | 7 | required | Edits tracked source; phase 7 can rebuild it on phase 6's working-tree mirror |
+| 1 | Full nextest of `-p rdm-git -p rdm-cli` with TMPDIR redirected leaves no `*__worktrees` | `rdm-git/src/worktree.rs` `worktree_path`/`add`; fixtures in `rdm-cli/tests/cli_{worktree,gate,verify}.rs`, `rdm-git/tests/worktree.rs` | cargo nextest | **phase 7 (done)**: P `temp_hygiene::worktree_suites_leave_no_worktree_in_tmpdir` | required (suite-hygiene) | — |
+| 1b | python3 re-roots a fixture at its TempDir; the leak must appear | same | cargo rebuild, python3 | **phase 7 (done)**: P `mutants::tempdir_rooted_fixture_leaks_a_worktree` (M1, in a working-tree mirror, neutral git config) | required (suite-hygiene) | — |
+| 1b (restore + `cmp`) | File restored byte-for-byte | harness | — | **phase 7**: R | — | Moot: the mirror never writes the checkout |
 
 ### verify-review-revision-loop.sh (deleted in phase 5)
 Now: the `rdm-cli` nextest binary `cli_loops` (`rdm-cli/tests/cli_loops/`); the per-section map with final test names is § 8.
@@ -403,6 +409,7 @@ Dependencies ("common") for every row: rdm bin, git, POSIX sh, no network.
 | `scripts/lib/estimate-writeback.test.mjs` (deleted) | `rdm-cli/tests/workflow_estimate_writeback.rs` (deleted) | Real `phase list` JSON → `buildEstimatePipeline` → the returned `phase update --difficulty` commands run in a shell → difficulty and derived tier read back | **phase 3 (done)**: test 1 → `workflow_passes::estimate::writeback_sets_difficulty_and_core_tier`; test 2 → `estimate::estimated_phase_left_untouched`; test 3 → `estimate::second_pass_idempotent` (each seeds its own state) |
 | `scripts/lib/workflow-env-args.test.mjs` (deleted) | `rdm-core/tests/workflow_env_args.rs` (deleted) | Backlog and document engines' builders honour runtime `rdmBin`/`project` (no dogfood binary or project literals) | **phase 3 (done)**: case map in § 6 |
 | `scripts/verify-review-source.mjs` (deleted; was run by verify-workflow-review-outcome.sh) | none | `classifyOutcome` completeness (escalated on incomplete coverage, missing/invalid AC, budget pass-through, refuter error; reviewed on non-gating/`coverage.last`). Loads the engine as an `AsyncFunction` with fake primitives: the legacy survivors-only shape carries no outcome, and a mixed task+phase identity is rejected. Also string-structural asserts and byte-identity with the template | **phase 2 (done)**: behaviour ported to `rdm-cli/tests/workflow_review/{outcome,engine}.rs`. Its greps were retired; see the verify-workflow-review-outcome.sh table |
+| `scripts/lib/review-effort.test.mjs` (deleted; landed on main in `0f83454`, after this inventory was taken) | `rdm-core/tests/workflow_review_effort.rs` (deleted) | `buildReviewPipeline` in both modes and the plan-review driver with a recording agent: a supplied `findEffort`/`verifyEffort` reaches every finder, the retry and every refuter; absent adds no `effort` key; invalid is refused before any dispatch; `parsePlanArgs` normalises effort | **phase 7 (done)**: `rdm-cli/tests/workflow_review/effort.rs` (`effort::…`); case map in § 10 |
 | Heredocs in verify-workflow-review.sh §3–§15h (deleted) | `rdm-cli/tests/workflow_review/` | See the verify-workflow-review.sh table: pipeline, budget, non-gating, laundering, persist ladder, shell-injection | **phase 2 (done)** |
 | Heredoc `downstream.mjs` in verify-agent-config-distribution.sh §7b–7e | none | The emitted engine made importable; reviewer resolution and binary/project agnosticism; persist ladders executed against a foreign plan repo; mutants | 2 or 5 (ambiguous) |
 | Heredocs in verify-workflow-{backlog,document,estimate}.sh (deleted) | none | See those tables (`behavior.mjs`, `zero-mutation.mjs`, `test.mjs`, `test-real.mjs`, `real.mjs`, `paramz.mjs`, `rdmbin.mjs`, `node --check` parse gates) | **phase 3 (done)**: `rdm-cli/tests/workflow_passes/` |
@@ -412,7 +419,7 @@ Owner: the `codex-agent-support` roadmap (docs/codex-support.md, codex-runtime.m
 
 **How CI runs them.** A separate step runs `mise exec node -- node --test --test-concurrency=1 scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs` with no credentials. Those tests use fake codex stubs on PATH and the prebuilt `target/debug/rdm` passed through `RDM_BIN`.
 
-**Phase 4 ruling: the Codex runtime is out of scope here.** `scripts/rdm-codex.mjs`, `scripts/lib/codex-runtime*.mjs`, `codex-process.mjs`, `codex-spike-*.mjs` and `scripts/run-codex-orchestration-spike.mjs` are production Codex runtime code owned by `codex-agent-support` (on main they now ship under `rdm-core/src/templates/codex-runtime/`, and main's `docs/codex-test-migration.md` keeps four suites — `codex-spike-process`, `codex-runtime-state`, `codex-runtime-review-process`, `codex-runtime-queue` — in a "remaining legacy" CI step awaiting their owning migration). Phase 4 ports only the coexistence smoke check. The roadmap-level "no JavaScript test files" criterion stays tracked by rdm task `port-remaining-codex-runtime-process-suites`.
+**Phase 4 ruling: the Codex runtime is out of scope here.** `scripts/rdm-codex.mjs`, `scripts/lib/codex-runtime*.mjs`, `codex-process.mjs`, `codex-spike-*.mjs` and `scripts/run-codex-orchestration-spike.mjs` are production Codex runtime code owned by `codex-agent-support` (on main they now ship under `rdm-core/src/templates/codex-runtime/`, and main's `docs/codex-test-migration.md` keeps four suites — `codex-spike-process`, `codex-runtime-state`, `codex-runtime-review-process`, `codex-runtime-queue` — in a "remaining legacy" CI step awaiting their owning migration). Phase 4 ports only the coexistence smoke check. The roadmap-level "no JavaScript test files" criterion is owned by this roadmap's phase 8 (`phase-8-port-remaining-codex-runtime-process-suites`, folded in from the former task), which ports the four remaining suites and deletes their CI step (§ 10).
 
 | File | Role | Product vs tooling | Tests | Dest. |
 |---|---|---|---|---|
@@ -1706,3 +1713,357 @@ As in § 8, nextest intermittently reports a test here as `LEAK` (for example
 `scoped_commit::a_bare_shells_changeset_carries_across_processes`); every child
 a test spawns is reaped by `Proc` or `Command::output`, and the flag moves
 between tests run to run.
+
+## 10. Phase 7: nextest as the single runner, and the coverage audit
+
+`cargo nextest run` is the contributor acceptance command. The last two
+shells, `scripts/verify-{worktree-temp-hygiene,git-config-isolation}.sh`,
+are now the `rdm-cli` binary `suite_hygiene` (`rdm-cli/tests/suite_hygiene/`),
+which the default profile excludes (`default-filter` in `.config/nextest.toml`;
+nextest reports the binary as skipped) and the required `suite-hygiene` profile
+runs serially. The last standalone JavaScript test outside the Codex runtime,
+`scripts/lib/review-effort.test.mjs`, is now `workflow_review::effort`. CI's
+`Shell harnesses` step, `scripts/lib/mechanical-tier-check.sh` (sourced only
+by harnesses deleted in phases 2–3) and `rdm-core/tests/workflow_review_effort.rs`
+are deleted. Every mapping below was completed before the deletion commit.
+
+### Suite hygiene: layout and isolation
+
+| Module | Test | Nested run | Asserts |
+|---|---|---|---|
+| `temp_hygiene` | `worktree_suites_leave_no_worktree_in_tmpdir` | `-p rdm-git -p rdm-cli` (whole crates), invoking env | exit 0; no `*__worktrees` in the scratch `TMPDIR` (the message names the leaked dirs and the `dir.path().join("repo")` remedy) |
+| `git_config` | `hostile_git_config_changes_no_result` | the shell's `FILTER` over `-p rdm-git -p rdm-cli`; hostile `HOME` (`.gitconfig`: identity, `diff.relative`, `diff.external` driver writing a marker, `init.defaultBranch=weird`, `advice.detachedHead`, `core.pager=false`, `commit.gpgsign`), hostile `GIT_CONFIG_SYSTEM`, empty 0700 `GNUPGHOME`, `RUSTUP_HOME`/`CARGO_HOME` pinned | exit 0; marker absent; no leak |
+| `canary` | `hook_git_env_reaches_no_repository` | whole workspace, default profile, **without** the hk scrub: `GIT_DIR=<canary>/repo/.git/worktrees/wt`, `GIT_INDEX_FILE=<same>/index`, `GIT_PREFIX=`, `GIT_EDITOR=:` | exit 0; every file under `<canary>/repo/.git` and `<canary>/wt` byte-identical (differing paths named); `core.bare` reads `false` through a scrubbed git |
+| `canary` | `an_unscrubbed_git_init_flips_the_canary` | none | negative control: same fixture and hook env; one unscrubbed `git init <scratch>/victim` changes `<canary>/repo/.git/config` and `core.bare` reads `true` |
+| `mutants` | `tempdir_rooted_fixture_leaks_a_worktree` (M1) | in the mirror: `--frozen -p rdm-git --test worktree`, global and system git config `/dev/null` | exit 0; at least one leak (18 observed) |
+| `mutants` | `stripped_git_config_isolation_fails_the_hostile_run` (M2) | in the mirror: `--frozen -p rdm-git -p rdm-cli --lib --test worktree --test cli_{worktree,gate,verify,review_change} -E FILTER`, hostile env | exit **100** (tests ran and failed: gpg signing refused on fixture commits) |
+
+- **Nested runs** (`suite_hygiene/nested.rs`) spawn `$CARGO nextest run`
+  through `rdm_devtools::process::run_bounded` in a fresh process group, with a
+  25-minute inner deadline under the profile's 30-minute backstop
+  (`slow-timeout = { period = "300s", terminate-after = 6 }`), and the output in
+  a log file (`ProcessSpec::output_file`, added for this). The environment is
+  the invoking one minus every `RDM_*` except `RDM_TEST_NODE`, every
+  `NEXTEST_*`/`__NEXTEST_*`, `git_test_support::repo_redirect_removals()`, and
+  the per-test cargo variables; then `CARGO_TERM_COLOR=never`,
+  `TMPDIR=<test TempDir>/…/tmp`, and the scenario's overrides. Tests never
+  mutate their own environment.
+- **Classification is nextest's exit status**, never parsed text: 0 and 100
+  are results; anything else (101 build failed, 4 no tests, 96 setup error, a
+  signal, the deadline) is `Failure::Infra` with the log's tail.
+- **Mutants** plant three anchored, exactly-once edits (family
+  `suite-hygiene`): `FnBody` of `fn init_project_repo(` in
+  `rdm-git/tests/worktree.rs` (re-rooted at its `TempDir`), and a `Replace` of
+  the `GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL` isolation in both
+  `git_test_support.rs` copies. The mirror is phase 6's, extracted into
+  `rdm-cli/tests/common/mirror.rs` and shared with `concurrency` (whose 43
+  tests stayed green). Attribution: M1 runs under a neutral git config, so the
+  isolation strip is inert; M2 asserts only on test failures, which the
+  re-root (it leaks, but passes) never causes.
+- **Canary fixture**: `git init -b main repo`, one commit, `git worktree add
+  ../wt`, all inside the test's `TempDir`, built through the `Sandbox`; only
+  the one nested child (or the one `git init` in the control) carries the hook
+  variables.
+- **Deviation from the plan (M1)**: the plan named "a scratch `HOME`"; M1 sets
+  `GIT_CONFIG_GLOBAL=/dev/null` instead, which is neutral whatever
+  `XDG_CONFIG_HOME` holds and needs no Rust-home pin.
+
+**AC3 anchor demonstration** (a scratch copy, never the worktree): in the
+depth-1 clone below, the family definition was edited so the `FnBody` signature
+was absent — both controls failed as `negative control not run: infrastructure
+failure: mutant family suite-hygiene edit "fixture rooted at its TempDir" …
+not applied: 0 lines start with "fn init_project_repo_absent_anchor("` — and,
+with that restored, so the isolation anchor was absent — both failed as `… edit
+"rdm-git fixture git-config isolation stripped" … not applied: its anchor
+occurs 0 times`. Neither passed. The clone was then restored with `git
+checkout`.
+
+### `review-effort.test.mjs` → `workflow_review::effort`
+
+Real `buildReviewPipeline` / `runPlanReviewDriver` / `parsePlanArgs` (via
+`Lib::real`, the recording `Agent` and `Js`); expected values are per-scenario
+literals (each mode's dimension keys, the effort vocabulary).
+
+| JS case | Rust test(s) | P/D |
+|---|---|---|
+| 1 supplied effort reaches every finder (incl. retry) and refuter, × {code, plan} | `supplied_effort_reaches_every_finder_retry_and_refuter_{code,plan}` | P (the finder label set equals every dimension plus the first one's retry) |
+| 2 no effort → no `effort` key, × {code, plan} | `absent_effort_adds_no_key_{code,plan}` | P |
+| 3 invalid effort refused before any agent, × {code, plan} | `invalid_effort_refused_before_any_agent_{code,plan}` | P |
+| 4 every Claude effort level accepted | `every_claude_effort_level_accepted` | P |
+| 5 plan driver threads effort args to real finders/refuters | `plan_driver_effort_args_reach_real_finders_and_refuters` | P |
+| 6 plan driver without effort args adds no key | `plan_driver_without_effort_args_adds_no_key` | P |
+| 7 `parsePlanArgs` normalises effort like model | `parse_plan_args_normalises_effort_like_model` | P |
+
+None is D: `driver::find_and_verify_effort_reach_every_finder_and_refuter`
+covers the review *engine's* driver arm (code mode, no retry path), a
+different entry point, and stays as that arm's owner.
+
+### 1. Consolidated shell map
+
+The phase body's "27 original verification shells" are the 24
+`scripts/verify-*.sh`, the 2 `observe-*.sh` and `capture-golden.sh` present at
+base `b4a3782`. Two `verify-*.mjs` files there (`verify-review-source.mjs`,
+`verify-codex-coexistence.mjs`) and the four shells deleted before phase 3 are
+listed after them. P = ported (named test), D = demonstrated duplicate, R =
+retired with reason. Totals come from each owning section's case map; for
+phases 2–4, whose tables have no totals line, they are counted over the § 1
+rows (a row that ports the behaviour and retires only string sub-assertions
+counts as P).
+
+| Shell | Owner | Case map | P / D / R |
+|---|---|---|---|
+| verify-workflow-review.sh | phase 2 | § 1 (27 live sections) | 21 / 2 / 4 (16 in full, 5 split) |
+| verify-workflow-review-outcome.sh | phase 2 | § 1 | 1 / 1 / 1 |
+| verify-workflow-backlog.sh | phase 3 | § 1, § 6 | 8 / 1 / 1 |
+| verify-workflow-document.sh | phase 3 | § 1, § 6 | 5 / 0 / 0 (3 sections, 2 strengthened rows) |
+| verify-workflow-estimate.sh | phase 3 | § 1, § 6 | 8 / 1 / 1 |
+| verify-skill-autopilot.sh | phase 3 | § 1 | 2 / 1 / 1 |
+| verify-token-report.sh | phase 4 | § 1, § 7 | 6 / 0 / 1 |
+| verify-refuter-agreement.sh | phase 4 | § 1, § 7 | 12 / 0 / 2 |
+| verify-agent-config-distribution.sh | phase 5 | § 8 | 15 / 4 / 11 |
+| verify-plugin-distribution.sh | phase 5 | § 8 | 4 / 1 / 3 |
+| verify-plugin-install.sh | phase 5 | § 8 | 7 / 0 / 1 |
+| verify-plugin-loop.sh | phase 5 | § 8 | 3 / 1 / 0 |
+| verify-claude-code-web-loop.sh | phase 5 | § 8 | 1 / 1 / 0 |
+| verify-rdm-plan-fixture.sh | phase 5 | § 8 | 0 / 2 / 3 (tested shell test support only) |
+| verify-golden-json.sh, capture-golden.sh | phase 5 | § 8 | 4 / 0 / 1 |
+| verify-backlog-groom-loop.sh | phase 5 | § 8 | 6 / 0 / 0 |
+| verify-review-revision-loop.sh | phase 5 | § 8 | 6 / 0 / 0 |
+| verify-worktree-review-loop.sh | phase 5 | § 8 | 4 / 0 / 1 |
+| verify-session-identity.sh | phase 6 | § 9 | 19 / 2 / 1 |
+| verify-journal-truncation-race.sh | phase 6 | § 9 | 10 / 1 / 1 |
+| verify-lost-update.sh | phase 6 | § 9 | 9 / 1 / 3 |
+| verify-scoped-commit.sh | phase 6 | § 9 | 8 / 8 / 4 |
+| verify-worktree-temp-hygiene.sh | phase 7 | § 1, this section | 2 / 0 / 1 — §1 → P `temp_hygiene::…`; §1b mutation → P M1; §1b restore + `cmp` → R (moot: the mirror never writes the checkout) |
+| verify-git-config-isolation.sh | phase 7 | § 1, this section | 3 / 2 / 3 — §1 clean arm → D (`temp_hygiene::…`, a superset of crates, and the default run); §1 hostile arm + identical results → P `git_config::…`; §1 no-results guard → R (nextest's no-tests exit is `Infra`); §1b → P M2; §1b restore + `cmp` → R (moot); §2 hostile leak count → P (inside `git_config::…`); §2 clean leak count → D (`temp_hygiene::…`); §2 "summary contains `worktree`" floor → R (not behavioral coverage: a name grep; non-vacuity comes from M1) |
+| observe-plugin-install.sh | kept (live) | § 1, § 8 | exception: live observation, not run by CI |
+| observe-workflow-listing.sh | kept (live) | § 1 | exception: live observation, not run by CI |
+| verify-review-source.mjs | phase 2 | § 2(b) | ported to `workflow_review::{outcome,engine}` |
+| verify-codex-coexistence.mjs | phase 4 | § 2(c), § 7 | ported to `rdm-smoke codex-coexistence` |
+| verify-workflow-dispatch.sh, verify-workflow-do-auto.sh, verify-workflow-do-auto-task.sh, verify-skill-intent-interview.sh | deleted before phase 3 | § 6 "Shells already absent" | retired with their product, retained evidence named there |
+
+**New, with no shell ancestor**: `canary::hook_git_env_reaches_no_repository`
+and `canary::an_unscrubbed_git_init_flips_the_canary` (task
+`canary-git-env-isolation-regression`).
+
+### 2. Test inventory
+
+`cargo nextest list` (default profile): 3825 tests across 80 binaries, plus
+the `suite_hygiene` binary skipped by `profile.default.default-filter` and
+three `#[ignore]`d tests. The migrated binaries list their cases
+individually:
+
+| Binary | Tests | Migrated content |
+|---|---|---|
+| `rdm-cli::workflow_review` | 198 | real review/plan-review helpers and drivers, mocked-driver execution, mutant controls (phases 2–3), `effort::` (10, this phase) |
+| `rdm-cli::workflow_passes` | 47 | backlog/document/estimate helpers, drivers, generator drift controls (phase 3) |
+| `rdm-cli::distribution` | 29 | emission, plugin tree, downstream engine execution, corruption controls (phase 5) |
+| `rdm-cli::cli_loops` | 7 | plugin/web/backlog/revision/worktree-review loops (phase 5) |
+| `rdm-cli::golden_json` | 5 (+1 ignored `bless`) | golden JSON contract (phase 5) |
+| `rdm-cli::concurrency` | 43 | session, commit, race tests and 10 mutant controls (phase 6) |
+| `rdm-devtools::*` | 152 across the lib and 9 test binaries | process lifecycle, workflow host, measurement tools, smoke (phases 1, 4) |
+| `rdm-cli::suite_hygiene` | 6 (`--profile suite-hygiene` only) | this phase |
+
+`cargo nextest list --profile suite-hygiene` lists exactly the six tests
+above. No test is `#[ignore]`d to leave the default run.
+
+### 3. JavaScript ownership
+
+From `git ls-files '*.js' '*.mjs' '*.cjs'` (47 files):
+
+| Files | Owner / role | Disposition |
+|---|---|---|
+| `.claude/workflows/lib/{review,plan-review,estimate,backlog,document}.mjs` (5), `.claude/workflows/rdm-wf-*.js` (5), `rdm-core/src/templates/workflows/rdm-wf-*.js` (5), `plugins/rdm/workflows/rdm-wf-*.js` (5) | production Claude workflow code: canonical libraries, engines, embedded and plugin copies | kept |
+| `rdm-devtools/src/workflow_host.mjs` | test-side binding: a narrow generic runtime host (`include_str!` into `rdm_devtools::workflow`) with no cases, expected values or tool logic; not shipped (`rdm-devtools` is `publish = false`, `dist = false`) | kept |
+| `rdm-core/src/templates/codex-runtime/**` (8), `scripts/rdm-codex.mjs`, `scripts/gen-codex-runtime.mjs` (generator), `scripts/lib/codex-{process,runtime,runtime-estimate,runtime-state,spike-estimate,spike-process,spike-review}.mjs`, `scripts/run-codex-orchestration-spike.mjs` (opt-in research runner) | Codex production runtime code (`codex-agent-support`) | kept |
+| `rdm-cli/tests/support/codex-bridge.mjs` | Codex test transport: a narrow generic runtime binding (`docs/codex-test-migration.md`) | kept |
+| `scripts/lib/codex-{spike-process,runtime-state,runtime-review-process,runtime-queue}.test.mjs` and CI's `node --test` step | **pending phase 8** (`phase-8-port-remaining-codex-runtime-process-suites`), which ports them to Rust and deletes the step | temporary hand-off |
+| `rdm-server/assets/{edit,review-anchor,review-highlight}.js` | browser assets, product UI | recorded separately, outside this change |
+| `scripts/lib/review-effort.test.mjs` | — | removed this phase |
+
+No `package.json`, `node_modules`, npm test framework or JS tooling layer
+exists. **Roadmap condition status**: at the end of phase 7 the roadmap's
+"no JavaScript test files" and "runtime provisioning only for workflow-code
+tests" conditions are met **except for the phase-8 set above**; they are not
+claimed fully met.
+
+### 4. Hidden-suite audit (a review, not a test)
+
+A read of the Rust test sources for JavaScript embedded in strings and for
+programs a test writes at run time found no relocated suite:
+
+- `include_str!("workflow_host.mjs")` in `rdm_devtools::workflow`: the
+  generic host above.
+- Generated `#!/bin/sh` stubs, each a fixture, never an assertion carrier: a
+  pre-existing custom hook (`cli_hook.rs`), a no-network `curl` stub
+  (`cli_loops/claude_code_web.rs`), the external-diff marker driver
+  (`cli_review_change.rs`, `suite_hygiene/git_config.rs`), fake `rdm`/`codex`
+  binaries recording or refusing calls (`codex_runtime.rs`,
+  `workflow_review/driver.rs`), the fake `cargo` exec stub
+  (`distribution/codex.rs`), and the concurrency `ShellDriver` scripts (the
+  process topology under test, no waits or branches; § 9).
+- One-line JavaScript fixture files written as data (`codex_runtime.rs`
+  `a.js`, `distribution/plugin.rs` `stray.js`, `distribution/superseded.rs`
+  a tampered `autopilot.js`) and the emitted engine copied to `raw.mjs` to
+  prove it does not import (`distribution/downstream.rs`).
+- `codex_bridge` requests name production modules and exports, not test
+  logic.
+
+Rust smoke and measurement implementations (`rdm-smoke`, `rdm-measure`) have
+no JavaScript counterpart left: every file in § 2(d) is deleted.
+
+### 5. Exceptions to `cargo nextest run`
+
+- `cargo nextest run --profile suite-hygiene`: nested whole-suite runs, kept
+  out of the default profile for recursion and cost; CI-required.
+- `cargo test --doc --workspace`: nextest does not run doctests (30 today);
+  CI and the hk `cargo_doctest` step run them.
+- Live observations, which report non-execution distinctly:
+  `observe-plugin-install.sh`, `observe-workflow-listing.sh`,
+  `codex_coexistence_live` (`--run-ignored only`), the Codex spike runner.
+- Non-test gates: fmt, clippy (`--workspace --all-targets`), shellcheck,
+  shfmt, the feature-matrix `cargo check`s, the release build, `cargo deny`.
+- The Codex legacy `node --test` step: a **temporary hand-off owned by phase
+  8**, not a standing exception.
+- Deliberate `#[ignore]` writers, not regressions: `golden_json::bless`,
+  `rdm-core`'s `regenerate_raw_skills_baseline`.
+- Plain `cargo test` also runs the `suite_hygiene` binary (it is a normal
+  test target so `--all-targets` clippy covers it). That is correct — its
+  nested runs use nextest's default profile, so nothing recurses — just slow.
+
+### 6. Wall times (recorded evidence, not asserted)
+
+Host: macOS 27.0 (Darwin 27.0.0, arm64, Apple M5 Max, 18 cores), 2026-09-24,
+a shared machine (1-minute load average 1.7–16 across the runs, recorded per
+run from `uptime`). rustc 1.94.0, cargo-nextest 0.9.130, Node v24.18.0, git
+2.55.0. All "warm" runs had a built target dir.
+
+Before (the two shells, `bash scripts/verify-<name>.sh` in a scratch clone of
+`580973e` with its own warm target, so the in-place mutations never touched
+this worktree; three runs each):
+
+| Harness | Wall (s) |
+|---|---|
+| verify-worktree-temp-hygiene.sh | 28.65, 29.15, 28.14 (a first run, 61.33, overlapped an unrelated compile and is discarded) |
+| verify-git-config-isolation.sh | 13.23, 13.58, 13.58 |
+| **sum (one run each)** | **≈ 42** |
+
+Earlier figures for the same shells (78 s and 143 s before their repetition was
+removed) are in `docs/review-evidence-closeout.md`; per-phase shell timings for
+everything else are in §§ 4–9.
+
+After:
+
+| Run | Wall (s) |
+|---|---|
+| `cargo nextest run`, warm ×3 | 31.87, 33.09, 32.81 (summary 31.5, 32.7, 32.4; 3825 tests) |
+| `cargo nextest run --test-threads 2` (a 2-core stand-in) | 121.92 (summary 121.5) |
+| `--profile suite-hygiene`, warm ×2 | 67.81, 65.87 (summary 67.3, 65.6) |
+| `--profile suite-hygiene`, cold mutant cache (`rm -rf target/tmp/rdm-mutants/suite-hygiene`) | 76.61 (summary 76.3) |
+| `cargo test --doc --workspace` | 1.95 (30 doctests) |
+
+Per test (warm): canary whole-workspace run 32.0–33.9 s, `temp_hygiene` 25.2–26.1
+s, `git_config` 5.4–7.1 s, M2 0.4–1.0 s, M1 0.65–0.9 s, the canary control
+0.06 s. Cold mirror: M2's nested run including the family build 9.8 s, then M1
+4.1 s; mirror sync of 623 files. Nested runs do not rebuild: under the canary's
+hook environment and under a hostile `HOME`, the nested build step reports
+`Finished … in 0.11s` / `0.08s`.
+
+**Default-profile backstop.** The slowest default test under
+`--test-threads 2` was `rdm-devtools::process_lifecycle broken_cleanup_mutant_is_detected`
+at 9.04 s (next: 2.19 s). `[profile.default] slow-timeout = { period = "60s",
+terminate-after = 5 }` gives a 300 s backstop, over 30× that; the existing,
+more specific overrides (mutant builds 600 s, workflow and concurrency 120 s,
+rdm-devtools 60 s) keep precedence.
+
+**Bottlenecks.** The suite-hygiene profile is three nested whole-suite runs
+(canary ≈ 32 s, temp hygiene ≈ 25 s, the git-config filter ≈ 6 s): it is
+slower than the two shells it replaces (≈ 66 s against ≈ 42 s) only because it
+adds the canary's whole-workspace run, new coverage; without it the two ports
+take ≈ 34 s. Cold mutant builds cost ≈ 10 s here and scale with CI cores. The
+recurring nextest `LEAK` flag (§§ 8–9) still appears on the concurrency binary
+(1 leaky of 43 in one run); it is host noise, and nextest's default leak
+result is pass.
+
+### 7. Exact commands and results
+
+**AC2 — the checkout is unchanged by the suite-hygiene profile.** In the
+worktree (with this phase's docs edits uncommitted):
+
+```bash
+git status --porcelain=v1 -uall > status-before
+git ls-files -z --cached --others --exclude-standard | xargs -0 shasum -a 256 > sums-before   # 623 files
+mise exec node -- cargo nextest run --profile suite-hygiene     # 6 passed, 64.2 s
+git status --porcelain=v1 -uall > status-after
+git ls-files -z --cached --others --exclude-standard | xargs -0 shasum -a 256 > sums-after
+cmp status-before status-after && cmp sums-before sums-after     # identical
+```
+
+The primary checkout's `git status --porcelain=v1 -uall` was identical before
+and after, and `git config --get core.bare` read `false` in both the
+primary checkout and the worktree.
+
+**AC6 — every `ci.yml` `run:` command, in order**, from the worktree with
+`CARGO_TERM_COLOR=always`, `RUSTFLAGS="-D warnings"`, no `RDM_*`, and a fresh
+`CARGO_TARGET_DIR` (a cold cache, and no explicit `cargo build` anywhere).
+`ci.yml` parses with Python's PyYAML (`yaml.safe_load`) and Ruby's Psych to
+the 17 steps listed in the plan's D2 (checkout, toolchain, rust-cache,
+nextest, cargo-deny, mise, then the eleven below).
+
+| Step | Command | Exit | Wall |
+|---|---|---|---|
+| Check formatting | `cargo fmt --check` | 0 | 0 s |
+| Lint | `cargo clippy --workspace --all-targets -- -D warnings` | 0 | 8 s |
+| Shell lint | `mise exec shellcheck -- shellcheck $(git ls-files '*.sh')` | 0 | 0 s |
+| Shell format | `mise exec shfmt -- shfmt -d $(git ls-files '*.sh')` | 0 | 0 s |
+| Feature matrix | the four `cargo check` lines | 0 | 13 s |
+| Test | `mise exec node -- cargo nextest run` | 0 | 71 s (3825 passed) |
+| Doctests | `cargo test --doc --workspace` | 0 | 2 s |
+| Suite hygiene | `mise exec node -- cargo nextest run --profile suite-hygiene` | 0 | 89 s (6 passed; cold mutant cache) |
+| Build (release) | `cargo build --release` | 0 | 20 s |
+| Codex legacy | `mise exec node -- node --test --test-concurrency=1 scripts/lib/codex-{spike-process,runtime-state,runtime-review-process,runtime-queue}.test.mjs` | 0 | 63 s |
+| Audit | `cargo deny check` | 0 | 1 s |
+
+Finding 6, refined: the Codex step passes after only `cargo nextest run`,
+but nextest's build does not leave a `cargo run`-fresh dev `rdm` binary —
+`target/debug/rdm` was re-linked during the Codex step (its mtime falls inside
+that step), so the first `scripts/rdm-dev.sh` call compiled `rdm-cli`'s
+binary. A warm re-run of the step took 54 s against 63 s. Its calls allow
+120 s per `rdm` invocation, so this held here; on a 2-core runner the first
+call pays a single `rdm-cli` bin compile against that budget. Phase 8 deletes
+the step.
+
+**AC11 — shallow clone.** `git clone --depth 1 -b roadmap/rust-test-suite-consolidation
+file://<worktree>` of `0374796` (`git rev-parse --is-shallow-repository` →
+`true`), own target dir: `cargo nextest run` passed, 3825 tests, 71.4 s wall
+including the cold build; `cargo nextest run --profile suite-hygiene` passed, 6
+tests, 88.7 s. No test reads the checkout's history, so `ci.yml` drops
+`fetch-depth: 0` and returns to the default shallow checkout.
+
+**hk.** `hk validate` passes. The `cargo_nextest` step's glob was checked
+against what tests read: `include_str!` targets (`rdm-core/src/templates/**`,
+`rdm-server/assets/**`, `rdm-devtools/src/workflow_host.mjs`), paths joined to
+the repo root (`.claude/{workflows,skills,agents}`, `.agents/skills`,
+`.claude-plugin/plugin.json`, `plugins/rdm`, `scripts/lib`, `scripts/rdm-codex.mjs`,
+`tests/fixtures`, `tests/golden`, `templates/claude-code-web`,
+`docs/principles.md`, `docs/token-baseline.json`), plus `.config/nextest.toml`,
+`.mise.toml`, `Cargo.lock` and manifests; every crate directory is included
+whole (`rdm-*/**`). In a throwaway `git clone` (never this checkout), `hk check
+--plan` with only `.claude/workflows/lib/review.mjs` staged selects
+`cargo_nextest` alone; with only an `.rs` file staged it selects fmt, clippy,
+`cargo_nextest` and `cargo_doctest`; with only `CLAUDE.md` staged it selects
+none. The `env -u GIT_*` scrub prefix is unchanged, and `cargo_doctest` uses
+the same one.
+
+### 8. Evidence limits
+
+- Everything here is component or real-process evidence on one macOS host.
+  There is no Claude-host observation, and no pushed CI run is claimed.
+- Linux-specific paths were not exercised: the `/proc` zombie probe and signal
+  tests in `rdm-devtools`, the rustup-shim `HOME` pin that `nested::rust_home_pins`
+  carries over from the shell's CI fix (locally `cargo` is the rustup shim and
+  `RUSTUP_HOME` is set, so the pin was exercised only in its already-set form),
+  GNU vs BSD tool differences, and 2-core contention on real runners. No Linux
+  run was made: the Docker daemon was not running on the host.
+- The default-profile backstop is sized from a `--test-threads 2` run on a fast
+  host, not from a real 2-core runner.

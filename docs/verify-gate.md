@@ -99,7 +99,8 @@ rdm neither installs nor requires one.
 
 ### Phase-time: slow, once
 
-`hk`'s pre-commit here deliberately does **not** run the `scripts/verify-*.sh` harnesses,
+`hk`'s pre-commit here deliberately does **not** run the expensive `suite-hygiene` nextest
+profile (whole-suite nested runs; it replaced the retired `scripts/verify-*.sh` harnesses),
 because a minutes-long suite has no business in a per-commit gate. That is exactly how the
 `review-gate-intent` land-time failures got through: phases 4, 5 and 7 all passed code
 review, two harnesses were red at land time, and **every commit had passed the hook**.

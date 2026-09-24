@@ -32,8 +32,10 @@ bare `<roadmap>`) and runs:
    `.github/workflows/ci.yml`, is:
    ```bash
    cargo fmt --check
-   cargo clippy -- -D warnings
+   cargo clippy --workspace --all-targets -- -D warnings
    cargo nextest run
+   cargo test --doc --workspace
+   cargo nextest run --profile suite-hygiene
    ```
 5. **Fast-forward `main`** — advance `main` from the primary worktree where it is
    checked out: `git -C <primary> merge --ff-only <branch>`.
