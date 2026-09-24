@@ -254,17 +254,19 @@ const DIMENSIONS = {
     },
     //|code| - **changelog** — include it when the change is user-facing (a CLI
     //|code|   command, an API endpoint, a config option, or any observable
-    //|code|   behavior). A user-facing change MUST carry a changelog entry in the
-    //|code|   same commit; a missing entry is **blocking**. Read the project's
-    //|code|   principles document (`docs/principles.md` if present, otherwise
-    //|code|   `CLAUDE.md` / `AGENTS.md`) for the changelog file, its format, and its
-    //|code|   categories. The entry must read from a user's perspective, not describe
-    //|code|   internals.
+    //|code|   behavior). Grade the REVIEWED RANGE as a whole, not each commit in
+    //|code|   isolation: a user-facing change anywhere in the range with no
+    //|code|   accurate changelog entry at the range's head is **blocking**. An
+    //|code|   entry added or corrected by a later commit in the same range is not
+    //|code|   a finding. Read the project's principles document
+    //|code|   (`docs/principles.md` if present, otherwise `CLAUDE.md` / `AGENTS.md`)
+    //|code|   for the changelog file, its format, and its categories. The entry
+    //|code|   must read from a user's perspective, not describe internals.
     {
       key: 'changelog',
       title: 'Changelog',
       focus:
-        "A user-facing change (CLI command, API endpoint, config option, or observable behavior) MUST carry a changelog entry in the SAME commit — a missing entry is a `blocking` finding. Read the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for the changelog file, its format, and its categories. The entry must describe the change from a user's perspective, not internal implementation details.",
+        "A user-facing change (CLI command, API endpoint, config option, or observable behavior) MUST carry an accurate changelog entry by the head of the reviewed range — grade the range as a whole, not each commit in isolation. A missing entry at the range's head is a `blocking` finding; an entry added or corrected by a later commit in the same range is not a finding. Read the project's principles document (docs/principles.md if present, otherwise CLAUDE.md / AGENTS.md) for the changelog file, its format, and its categories. The entry must describe the change from a user's perspective, not internal implementation details.",
     },
     //|code| - **security** — include it when the change touches auth, input parsing or
     //|code|   validation, path/file handling, subprocess or shell invocation, secrets
@@ -1005,20 +1007,20 @@ const OUTCOMES = ['reviewed', 'rework', 'escalated'];
 // forked code path.
 //
 //   code — the post-implementation gate: persist an rdm status on the item
-//          (per kind) and, on `reviewed` only, permit the land-time completion
-//          directive. `clearsPlanReviewTag` is always false — the code gate has
-//          nothing to do with the pre-implementation tag.
+//          (per kind) and, on `reviewed` only, mark the item eligible for the
+//          land-time `done` write `rdm-land` performs directly.
+//          `clearsPlanReviewTag` is always false — the code gate has nothing
+//          to do with the pre-implementation tag.
 //   plan — the pre-implementation gate: a plan review NEVER persists an rdm
 //          status (`status` is an explicit `null`, never `undefined`, so a
 //          caller cannot round-trip it into an empty status), and instead
 //          clears the reserved `needs-plan-review` tag on `reviewed` only.
 //
-// The completion policy is expressed ONLY as the boolean `writesCompletion`,
-// never as the literal trailer string: this block is stamped verbatim into
-// workflow scripts, and scripts/verify-workflow-review.sh forbids that literal
-// anywhere inside the stamped region. The literal lives in the skill-only
-// `review-gate-spec` region below the stamped block, and the format string
-// itself lives in rdm-core (surfaced as `rdm hook done-line`).
+// The completion policy is expressed ONLY as the boolean `writesCompletion`:
+// `reviewed` means the item is eligible for the land-time `done` write
+// `rdm-land` performs directly, after a clean fast-forward onto `main`. No
+// completion directive or trailer literal is embedded anywhere in this
+// stamped block, or written by any surface that consumes it.
 const GATE_POLICY = {
   code: {
     reviewed: { phase: 'reviewed', task: 'reviewed', status: 'reviewed', writesCompletion: true, clearsPlanReviewTag: false },
@@ -1687,6 +1689,68 @@ const PERSIST_DEGRADED_REASONS = [
   'other',
 ];
 
+// ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS / isAnchorRefusalBenign(stderrText) —
+// phase-46 (anchor-degraded-park-by-cause), reworked per plan-review
+// 2026-09-23-1613-a415. A plain substring search for a shared marker (the
+// original approach: `stderrText.indexOf('not touch')`) is UNSAFE, because a
+// systemic refusal can ECHO caller-controlled text — the finder's own
+// `--quote`/`--path` value — back into its own message:
+// Error::QuoteNotFound prints `quote {quote:?} not found ...`,
+// Error::QuoteAmbiguous echoes the quote in its occurrence list, and
+// Error::ChangePathNotInRevision echoes the path. A finder whose quote
+// happens to contain the literal text "not touch" (plausible: "does not
+// touch the validation path" is an ordinary thing to write about code) but
+// that does not exist in the file at all — a genuinely SYSTEMIC refusal —
+// would misclassify as benign.
+//
+// Each pattern below instead requires a FIXED, rdm-authored substring that
+// is unique to one Display arm of Error::QuoteOutsideChangedHunks
+// (rdm-core/src/error.rs:877-886), anchored at END OF LINE (`$`), so it can
+// only match text rdm itself appends after every interpolated field:
+//
+//   - Some(nearest) arm: "...quote text inside a changed hunk (nearest:
+//     lines {hs}-{he}), or omit --path/--quote for a whole-change comment"
+//     — "quote text inside a changed hunk (nearest: lines " appears NOWHERE
+//     else in error.rs; {hs}/{he} are hunk line numbers rdm computes itself
+//     from real git hunk data (digits only, never finder text).
+//   - None arm: "...comment on a file the change modifies, or omit
+//     --path/--quote for a whole-change comment" — "comment on a file the
+//     change modifies" likewise appears nowhere else.
+//
+// Neither pattern is the shared trailing clause "or omit --path/--quote for
+// a whole-change comment" BY ITSELF — that clause is also how three
+// SYSTEMIC refusals this call site can produce end
+// (Error::ChangePathNotInRevision, Error::ChangePathNotAFile,
+// Error::ChangePathNotLinkable), so matching it alone would misclassify a
+// path absent at the reviewed head as benign, independent of any caller
+// data at all. Checked against every other refusal this call site can
+// produce (the three above, plus QuoteNotFound, QuoteAmbiguous,
+// QuoteOccurrenceOutOfRange and ChangeHeadNotInSource): none contain either
+// pattern.
+//
+// There is no structured error surface for `review comment` — every refusal
+// exits 1 through rdm-cli/src/main.rs's single `process::exit(1)`, and the
+// command supports no `--format json` error output at all — so this
+// stderr-pattern match is the only available machine-distinguishing signal
+// between the two benign cases above (a quote on an untouched line, or a
+// quote in a real, in-range file the change never modifies at all) and a
+// systemic one. This is a real limitation, not an oversight (see
+// docs/workflow-schemas.md); if rdm-core ever grows a structured error
+// surface for `review comment`, this classification should move onto it.
+//
+// Every pattern is POSIX-ERE-compatible (only a literal `(`/`)` escaped and
+// a `[0-9]+` class — no JS-only regex syntax), so this SAME array drives
+// both `isAnchorRefusalBenign` here AND the `grep -qE` alternation
+// `persistReviewCommands` emits below — the two cannot silently diverge.
+const ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS = [
+  'quote text inside a changed hunk \\(nearest: lines [0-9]+-[0-9]+\\), or omit --path/--quote for a whole-change comment$',
+  'comment on a file the change modifies, or omit --path/--quote for a whole-change comment$',
+];
+function isAnchorRefusalBenign(stderrText) {
+  if (typeof stderrText !== 'string') return false;
+  return new RegExp(ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS.join('|'), 'm').test(stderrText);
+}
+
 // The persist ACK round-trip is GONE, and with it PERSIST_ACK_SCHEMA,
 // buildPersistReviewPrompts, persistAccounting, classifyPersistOutcome and
 // degradationSummaryClause. Every one existed to read an agent's self-report
@@ -1715,10 +1779,18 @@ const PERSIST_HEADER_KEYS = ['severity', 'confidence', 'refuted', 'unrefutedReas
 // `anchor` reported as unknown, never guessed) rather than silently
 // misclassified as a human comment — which would defeat
 // `priorFindingsFromReviews`'s repeat-finding detection on every pre-existing
-// review. A SIX-key header (pre-dating `inScope`) is a separate, narrower
-// format and stays out of scope here — see
-// `docs/workflow-schemas.md` § "Persisted review comment body".
+// review.
 const LEGACY_PERSIST_HEADER_KEYS = PERSIST_HEADER_KEYS.slice(0, 7);
+
+// LEGACY_6KEY_PERSIST_HEADER_KEYS — the SIX-key header every comment this
+// pipeline wrote before `inScope` was added (phase 35). `parseCommentHeader`
+// falls back to this shape when both the eight-key and seven-key matches fail,
+// so a comment persisted before that change is still recognized as machine-written
+// (with `inScope` reported as null for unknown, and `anchor` as undefined, never
+// guessed) rather than silently misclassified as a human comment — which would
+// defeat `priorFindingsFromReviews`'s repeat-finding detection on every
+// pre-existing review.
+const LEGACY_6KEY_PERSIST_HEADER_KEYS = PERSIST_HEADER_KEYS.slice(0, 6);
 
 // persistHeaderValue(v) — collapse to a single line. A header value that spanned
 // lines would desynchronize the line-based parser for every key after it.
@@ -1802,8 +1874,8 @@ function tryParseHeaderKeys(lines, keys) {
 // Tries the current EIGHT-key header first; a body that only carries the
 // LEGACY seven (no trailing `anchor` line — see `LEGACY_PERSIST_HEADER_KEYS`)
 // still parses, with `anchor` reported as `undefined` (unknown), rather than
-// falling through to `null` and being mistaken for an unheadered human
-// comment.
+// falling through. Similarly, a LEGACY six-key body (pre-`inScope`) parses with
+// both `inScope` and `anchor` unknown.
 function parseCommentHeader(body) {
   const text = typeof body === 'string' ? body : '';
   const lines = text.split('\n');
@@ -1812,6 +1884,10 @@ function parseCommentHeader(body) {
   if (!values) {
     values = tryParseHeaderKeys(lines, LEGACY_PERSIST_HEADER_KEYS);
     headerLen = LEGACY_PERSIST_HEADER_KEYS.length;
+  }
+  if (!values) {
+    values = tryParseHeaderKeys(lines, LEGACY_6KEY_PERSIST_HEADER_KEYS);
+    headerLen = LEGACY_6KEY_PERSIST_HEADER_KEYS.length;
   }
   if (!values) return null;
   const rest = lines.slice(headerLen).join('\n');
@@ -1890,22 +1966,24 @@ function persistReviewSummary(result) {
   return String(r.outcome) + ': ' + base;
 }
 
-// persistHeredocTag(base, value) — a quoted-heredoc delimiter guaranteed not to
-// occur as a whole line inside `value`. Deterministic (no randomness — the
-// workflow runtime forbids it): extend with `X` until unique.
-function persistHeredocTag(base, value) {
-  let tag = base;
-  while (('\n' + String(value) + '\n').indexOf('\n' + tag + '\n') !== -1) tag = tag + 'X';
-  return tag;
-}
-
-// persistCapture(varName, base, value) — capture arbitrary text into a shell
-// variable through a QUOTED heredoc, which keeps backticks, `$`, double quotes,
-// em-dashes and newlines literal. Never interpolate a finding's text into a
-// command line directly.
-function persistCapture(varName, base, value) {
-  const tag = persistHeredocTag(base, value);
-  return varName + "=$(cat <<'" + tag + "'\n" + String(value) + '\n' + tag + '\n)';
+// persistCapture(varName, value) — capture arbitrary text into a shell
+// variable through a plain single-quoted assignment (`shellQuote`, defined
+// below), which keeps backticks, `$`, double quotes, em-dashes and embedded
+// newlines literal. Never interpolate a finding's text into a command line
+// directly.
+//
+// This used to be a QUOTED HEREDOC nested inside a `$(...)` command
+// substitution (`VAR=$(cat <<'TAG' ... TAG)`). macOS's system /bin/bash
+// (frozen at 3.2.57) cannot even PARSE that construct when the heredoc body
+// contains a literal apostrophe — the parser mis-tracks quote balance across
+// the nested heredoc while scanning for the matching `)`, so the script fails
+// before it ever runs (see task persist-capture-bash32-heredoc-apostrophe).
+// `shellQuote` sidesteps the whole defect class: there is no heredoc and no
+// nested `$(...)`, only a single-quoted string (which may itself span
+// multiple lines — a literal embedded newline inside single quotes is valid
+// POSIX shell).
+function persistCapture(varName, value) {
+  return varName + '=' + shellQuote(value);
 }
 
 // isRepoRelativePath(s) — the shared repo-relative-path validity check a
@@ -2227,7 +2305,7 @@ function persistReviewCommands(result, target, cfg, opts) {
   // template stays quoted for a TMPDIR containing a space.
   cmds.push('RDM_PERSIST_START_JSON=$(mktemp "${TMPDIR:-/tmp}/rdm-persist-start.XXXXXX") || exit 1');
   cmds.push(
-    persistCapture('RDM_PERSIST_SUMMARY', 'RDM_PERSIST_SUMMARY_EOF', summary) +
+    persistCapture('RDM_PERSIST_SUMMARY', summary) +
       '\n' +
       IND +
       bin +
@@ -2265,6 +2343,15 @@ function persistReviewCommands(result, target, cfg, opts) {
   // anchor is lost — a build-time-valid `--path`/`--quote` pair the real
   // binary refuses once the ladder actually runs (ac-1/correctness-1/arch-1).
   cmds.push('RDM_PERSIST_RUNTIME_DEGRADED=0');
+  // RDM_PERSIST_PARK_REQUIRED — phase-46 (anchor-degraded-park-by-cause): the
+  // running park-cause counter, distinct from RDM_PERSIST_RUNTIME_DEGRADED
+  // above (which counts every run-time-degraded anchor, benign or not).
+  // Seeded from the BUILD-TIME degradation count: any build-time-dropped
+  // anchor (no derivable path, or an empty reviewed range — see
+  // persistPreDegradedAnchors) is systemic by construction, so it always
+  // contributes to the park signal, exactly like a systemic run-time
+  // refusal does below.
+  cmds.push('RDM_PERSIST_PARK_REQUIRED=' + (persistPreDegradedAnchors(result, target, o).length > 0 ? '1' : '0'));
   for (let i = 0; i < survivors.length; i++) {
     const f = survivors[i] || {};
     // ONE decision, shared with the pre-degradation report and the comment
@@ -2279,9 +2366,9 @@ function persistReviewCommands(result, target, cfg, opts) {
     // pre-builds a `degraded` header variant for the runtime-fallback body,
     // since which one actually gets persisted is decided by the shell, not
     // by this function.
-    let cmd = persistCapture('RDM_PERSIST_BODY', 'RDM_PERSIST_BODY_EOF', formatCommentBody(f, persistAnchorState(f, target, o))) + '\n';
+    let cmd = persistCapture('RDM_PERSIST_BODY', formatCommentBody(f, persistAnchorState(f, target, o))) + '\n';
     if (anchor.quote) {
-      cmd += persistCapture('RDM_PERSIST_QUOTE', 'RDM_PERSIST_QUOTE_EOF', f.quote) + '\n';
+      cmd += persistCapture('RDM_PERSIST_QUOTE', f.quote) + '\n';
       if (anchorPath !== null) {
         // PATH-ANCHORED COMMENT, RETRIED AT RUN TIME. `persistAnchorFor`
         // already validated `anchorPath` at BUILD TIME, but only the real
@@ -2294,22 +2381,51 @@ function persistReviewCommands(result, target, cfg, opts) {
         // (RDM_PERSIST_BODY_DEGRADED), and tallied into
         // RDM_PERSIST_RUNTIME_DEGRADED so the tail `anchorsDegraded=` line
         // below reports the REAL result, not just the build-time one.
-        cmd += persistCapture('RDM_PERSIST_PATH', 'RDM_PERSIST_PATH_EOF', anchorPath) + '\n';
-        cmd += persistCapture('RDM_PERSIST_BODY_DEGRADED', 'RDM_PERSIST_BODY_DEGRADED_EOF', formatCommentBody(f, 'degraded')) + '\n';
+        cmd += persistCapture('RDM_PERSIST_PATH', anchorPath) + '\n';
+        cmd += persistCapture('RDM_PERSIST_BODY_DEGRADED', formatCommentBody(f, 'degraded')) + '\n';
+        // RDM_PERSIST_ANCHOR_STDERR — a per-finding mktemp scratch file (same
+        // hygiene as RDM_PERSIST_START_JSON above: created with `mktemp`,
+        // `|| exit 1`, removed after use), capturing this line's stderr so
+        // the refusal can be classified (phase-46: anchor-degraded-park-by-cause).
+        // `cat`ted back to stderr on refusal so nothing already visible to the
+        // operator is lost.
+        cmd += 'RDM_PERSIST_ANCHOR_STDERR=$(mktemp "${TMPDIR:-/tmp}/rdm-persist-anchor-stderr.XXXXXX") || exit 1\n';
         cmd +=
           'if ' +
           bin +
           ' review comment "$RDM_REVIEW_ID" --path "$RDM_PERSIST_PATH" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' +
           proj +
-          ' < /dev/null; then\n' +
+          ' < /dev/null 2>"$RDM_PERSIST_ANCHOR_STDERR"; then\n' +
+          'rm -f "$RDM_PERSIST_ANCHOR_STDERR"\n' +
           ':\n' +
           'else\n' +
+          'cat "$RDM_PERSIST_ANCHOR_STDERR" >&2\n' +
           IND +
           bin +
           ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY_DEGRADED" --no-edit' +
           proj +
-          ' < /dev/null || exit 1\n' +
+          ' < /dev/null || { rm -f "$RDM_PERSIST_ANCHOR_STDERR"; exit 1; }\n' +
           'RDM_PERSIST_RUNTIME_DEGRADED=$((RDM_PERSIST_RUNTIME_DEGRADED + 1))\n' +
+          // A `blocking` finding losing its anchor always requires a park,
+          // even for an otherwise-benign cause (a quote on an untouched
+          // line, or naming a real, in-range file the diff never modifies
+          // at all — both QuoteOutsideChangedHunks) — decided here at JS
+          // code-gen time (severity is known statically), not by a shell
+          // conditional. Everything else contributes to the park counter
+          // only when the captured stderr does NOT match either benign
+          // tail pattern — i.e. a systemic cause (a path absent at the
+          // reviewed head, a quote absent from the document entirely, or
+          // an ambiguous quote). `grep -qE` with the alternation of BOTH
+          // ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS entries, joined by `|` and
+          // shell-quoted as ONE argument — the exact same array
+          // isAnchorRefusalBenign tests against — so this emitted shell and
+          // isAnchorRefusalBenign cannot silently diverge.
+          (f.severity === 'blocking'
+            ? 'RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1))\n'
+            : 'if grep -qE ' +
+              shellQuote(ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS.join('|')) +
+              ' "$RDM_PERSIST_ANCHOR_STDERR"; then :; else RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1)); fi\n') +
+          'rm -f "$RDM_PERSIST_ANCHOR_STDERR"\n' +
           'fi';
       } else {
         cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' < /dev/null || exit 1';
@@ -2349,6 +2465,18 @@ function persistReviewCommands(result, target, cfg, opts) {
       'RDM_PERSIST_ANCHORS_DEGRADED=none\n' +
       'fi'
   );
+  // RDM_PERSIST_ANCHORS_PARK_REQUIRED — phase-46 (anchor-degraded-park-by-cause):
+  // buckets the running RDM_PERSIST_PARK_REQUIRED counter (seeded from the
+  // build-time degradation count above, then incremented per systemic
+  // run-time refusal or per `blocking` finding that lost its anchor for ANY
+  // reason — see the per-survivor loop) into a plain yes/no, distinct from
+  // (and no longer implied by) RDM_PERSIST_ANCHORS_DEGRADED above, which
+  // stays purely informational — the total whole-document-fallback volume,
+  // including every benign untouched-line refusal, never a park signal by
+  // itself. Read by persistDegradationGateLines() below and printed as the
+  // trailing `anchorsParkRequired=` line for the caller — see
+  // docs/workflow-schemas.md § "The anchor-degraded park signal (AC1)".
+  cmds.push('if [ "$RDM_PERSIST_PARK_REQUIRED" -gt 0 ]; then\n' + 'RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes\n' + 'else\n' + 'RDM_PERSIST_ANCHORS_PARK_REQUIRED=no\n' + 'fi');
   // correctness-1: a review whose REAL degraded total is nonzero must never
   // persist as ordinary clean persistence. The build-time-only
   // `persistDegradationClause` folded into `summary` above cannot see a
@@ -2359,11 +2487,14 @@ function persistReviewCommands(result, target, cfg, opts) {
   // `review submit`, while the review is still a draft), closes that gap: it
   // names the real total against the number requested, in the exact wording
   // `persistDegradationNoteBody` defines, with the run-time-only-known count
-  // filled in through `printf` rather than a quoted heredoc — a quoted
-  // heredoc cannot expand `$RDM_PERSIST_TOTAL_DEGRADED` at all, and `printf`
-  // also sidesteps the apostrophe-breaks-bash-3.2-heredocs defect entirely
-  // (moot here anyway, since this fixed text carries no apostrophe — see
-  // task persist-capture-bash32-heredoc-apostrophe).
+  // filled in through `printf` rather than `persistCapture` — `persistCapture`
+  // emits a static single-quoted string via `shellQuote` and cannot expand
+  // `$RDM_PERSIST_TOTAL_DEGRADED` at all, so this run-time interpolation needs
+  // `printf` regardless. Both this call site and `persistCapture` now share
+  // the same heredoc-free strategy (a quoted `shellQuote`/`printf` argument,
+  // never a heredoc nested in `$(...)`) — see task
+  // persist-capture-bash32-heredoc-apostrophe for the defect that motivated
+  // dropping heredocs from both.
   //
   // GATED ON `isChangeTarget(target)`, not merely appended unconditionally
   // behind its own runtime `if`: against a plan-repo document target
@@ -2398,6 +2529,10 @@ function persistReviewCommands(result, target, cfg, opts) {
   // AC4's caller-visible signal, printed once the computation above has
   // already run — see the block that sets RDM_PERSIST_ANCHORS_DEGRADED.
   cmds.push('printf \'anchorsDegraded=%s\\n\' "$RDM_PERSIST_ANCHORS_DEGRADED"');
+  // AC1's caller-visible park signal, printed once the block above has set
+  // RDM_PERSIST_ANCHORS_PARK_REQUIRED — the ONLY line a caller should key a
+  // park decision off of (phase-46: anchor-degraded-park-by-cause).
+  cmds.push('printf \'anchorsParkRequired=%s\\n\' "$RDM_PERSIST_ANCHORS_PARK_REQUIRED"');
   return cmds;
 }
 
@@ -2433,22 +2568,28 @@ function persistDegradationNoteBody(totalDegraded, requested) {
   );
 }
 
-// persistDegradationGateLines() — arch-1: the SINGLE definition of the "every
-// requested anchor degraded => refuse to write `reviewed`" gate policy, as
-// ready-to-append shell lines keyed off `RDM_PERSIST_ANCHORS_DEGRADED` (the
-// persist ladder's own printed run-time result — see `persistReviewCommands`'
-// trailing `anchorsDegraded=` line). A caller building a status-write ladder
-// appends this immediately before the write it wants to guard, and only when
-// it is also building a persist ladder for the SAME review (no persist
-// ladder in play means nothing ever sets the variable, and the `:-none`
-// default keeps an unrelated caller unaffected). Kept in the stamped block —
-// not the driver region — so every gate-building consumer references ONE
-// emitted artifact instead of hand-copying the policy; today that is
+// persistDegradationGateLines() — arch-1, keyed as of phase-46
+// (anchor-degraded-park-by-cause): the SINGLE definition of the "a park is
+// required => refuse to write `reviewed`" gate policy, as ready-to-append
+// shell lines keyed off `RDM_PERSIST_ANCHORS_PARK_REQUIRED` (the persist
+// ladder's own printed run-time result — see `persistReviewCommands`'
+// trailing `anchorsParkRequired=` line). The cause is either systemic (a
+// build-time-dropped anchor, or a run-time refusal whose stderr does not
+// match any ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS entry) or a `blocking` finding that lost its
+// anchor for any reason at all — never merely "every anchor degraded",
+// which `RDM_PERSIST_ANCHORS_DEGRADED` still tracks but which no longer by
+// itself implies a park. A caller building a status-write ladder appends
+// this immediately before the write it wants to guard, and only when it is
+// also building a persist ladder for the SAME review (no persist ladder in
+// play means nothing ever sets the variable, and the `:-no` default keeps
+// an unrelated caller unaffected). Kept in the stamped block — not the
+// driver region — so every gate-building consumer references ONE emitted
+// artifact instead of hand-copying the policy; today that is
 // `rdm-wf-review-refute-fix.js`'s `gateCommands` builder.
 function persistDegradationGateLines() {
   return [
-    'if [ "${RDM_PERSIST_ANCHORS_DEGRADED:-none}" = "all" ]; then',
-    '  echo "review-refute-fix: refusing to write reviewed - every requested comment anchor degraded to whole-document (RDM_PERSIST_ANCHORS_DEGRADED=all); park blocked and see the review own summary and each comment anchor header instead" >&2',
+    'if [ "${RDM_PERSIST_ANCHORS_PARK_REQUIRED:-no}" = "yes" ]; then',
+    '  echo "review-refute-fix: refusing to write reviewed - an anchor was lost for a systemic cause, or a blocking finding lost its anchor (RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes); park blocked and see the review own summary and each comment anchor header instead" >&2',
     '  exit 1',
     'fi',
   ].join('\n');
@@ -3085,32 +3226,25 @@ function buildReviewPipeline(mode, deps) {
 //|code| The review owns the `needs-review` → `reviewed` gate. Persist the status the
 //|code| outcome maps to, for the item's kind:
 //|code|
-//|code| | Outcome | When | Phase status | Task status | Completion trailer |
+//|code| | Outcome | When | Phase status | Task status | Marked done at landing |
 //|code| |---|---|---|---|---|
-//|code| | **reviewed** | clean at the independently reviewed head | `reviewed` | `reviewed` | eligible at landing |
-//|code| | **rework** | a fixable defect, or an unmet acceptance criterion | `in-progress` | `in-progress` | do **not** write it |
-//|code| | **escalated** | a blocker needing a human decision | `blocked` | `blocked` | do **not** write it |
+//|code| | **reviewed** | clean at the independently reviewed head | `reviewed` | `reviewed` | eligible |
+//|code| | **rework** | a fixable defect, or an unmet acceptance criterion | `in-progress` | `in-progress` | not eligible |
+//|code| | **escalated** | a blocker needing a human decision | `blocked` | `blocked` | not eligible |
 //|code|
 //|code| Tasks and phases map identically — `blocked` is a valid task status, so an
 //|code| escalated task is *not* downgraded to `in-progress`. On `escalated`, prefix
 //|code| the recorded reason with `[code]` so the blocked queue shows which gate
 //|code| escalated it.
 //|code|
-//|code| Never set the item to `done` directly — that flip is owned by the
-//|code| merge-to-main hook.
-//|code|
-//|code| **The completion trailer belongs to landing.** Do not amend the reviewed
-//|code| commit during this gate: an amendment changes its SHA and invalidates the
-//|code| source binding. Landing owns the completion directive; any changed head
-//|code| needs fresh review evidence before it can pass the source-bound gate.
-//|code| Obtain the directive from rdm rather than hand-typing its format:
-//|code|
-//|code| ```bash
-//|code| {rdm_bin} hook done-line --roadmap <slug> --phase <stem>   # prints: Done: <slug>/<stem>
-//|code| {rdm_bin} hook done-line --task <slug>                     # prints: Done: task/<slug>
-//|code| ```
-//|code|
-//|code| On `rework` and `escalated`, write **no** trailer.
+//|code| Never set the item to `done` directly from this gate, and never amend the
+//|code| reviewed commit: amending changes its SHA and invalidates the source
+//|code| binding, and any changed head needs fresh review evidence before it can
+//|code| pass the source-bound gate again. Marking the item `done` belongs to the
+//|code| separately authorized landing step (`rdm-land`), which marks every landed
+//|code| item `done` itself after a clean fast-forward onto `main`, recording the
+//|code| landed tip's own commit. There is no `Done:` trailer to write, here or at
+//|code| landing.
 //|plan|
 //|plan| ### Gate — clear or leave `needs-plan-review`
 //|plan|
@@ -3246,12 +3380,14 @@ export {
   persistVerdictFor,
   PERSIST_HEADER_KEYS,
   LEGACY_PERSIST_HEADER_KEYS,
+  LEGACY_6KEY_PERSIST_HEADER_KEYS,
   formatCommentBody,
   parseCommentHeader,
   pathFromLocation,
   stripPathLineSuffix,
   isRepoRelativePath,
   PERSIST_DEGRADED_REASONS,
+  isAnchorRefusalBenign,
   PERSIST_ANCHOR_STATES,
   persistAnchorState,
   isChangeTarget,
