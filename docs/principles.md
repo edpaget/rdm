@@ -211,7 +211,7 @@ A gate that only confirms a value already fetched or a guard keeping hand-writte
 
 - **One:** a second read across an agent boundary to confirm a value already fetched elsewhere. The value was authoritative at the first read. A concurrent change will expose the gap in the same way whether the check exists or not — it is pretense of protection rather than the real thing.
 - **Two:** a guard that keeps hand-written prose (comments, documentation, type annotations) in sync with code. Stale prose is accepted and the project learns from practice; a defect that results from it is a real bug and belongs in the backlog as a task, not hidden in a test.
-- **Exception:** regenerating a generated artifact (e.g. a skill template, a plugin tree, an `INDEX.md` snapshot) and comparing it to the committed copy is **not** this pattern. The regeneration runs the generator function — exercising behavior per §4 — and the comparison is the assertion, not the guard. A `--check` drift gate is valid.
+- **Exception:** regenerating a generated artifact (e.g. a skill template, a plugin tree, golden JSON snapshots in `tests/golden/`) and comparing it to the committed copy is **not** this pattern. The regeneration runs the generator function — exercising behavior per §4 — and the comparison is the assertion, not the guard. A `--check` drift gate is valid.
 
 ### Why
 
