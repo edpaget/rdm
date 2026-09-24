@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use common::{ReapGuard, fixture, gone_within, read_pid, wait_for_file};
 use rdm_devtools::process::{ProcessSpec, Session, SessionError};
-use rdm_devtools::workflow::{Host, HostConfig, MutantTree, WorkflowError, member};
+use rdm_devtools::workflow::{
+    Host, HostConfig, MutantTree, WorkflowError, helper_source, invert_helper_source, member,
+};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -403,4 +405,49 @@ fn concurrent_hosts_are_isolated() {
     for h in handles {
         h.join().expect("isolated host thread");
     }
+}
+
+/// Helper names the downstream distribution tests extract from the engine.
+const ENGINE_HELPERS: [&str; 3] = ["resolveReviewers", "persistReviewCommands", "meta"];
+
+fn review_engine() -> String {
+    std::fs::read_to_string(repo_root().join(".claude/workflows/rdm-wf-review-refute-fix.js"))
+        .expect("read the review engine")
+}
+
+#[test]
+fn invert_helper_source_round_trips_the_real_engine() {
+    let src = review_engine();
+    let transformed = helper_source(&src, &ENGINE_HELPERS).expect("transform");
+    assert_ne!(transformed, src, "the transform must change the text");
+    let back = invert_helper_source(&transformed, &ENGINE_HELPERS).expect("invert");
+    assert!(
+        back == src,
+        "the inverse must reproduce the engine byte for byte"
+    );
+}
+
+#[test]
+fn invert_helper_source_rejects_a_tampered_transform() {
+    let src = review_engine();
+    let transformed = helper_source(&src, &ENGINE_HELPERS).expect("transform");
+    // A different name list than the one injected.
+    let wrong_names = invert_helper_source(&transformed, &["resolveReviewers"]);
+    assert!(
+        matches!(wrong_names, Err(WorkflowError::Transform(_))),
+        "a mismatched injected line must be refused: {wrong_names:?}"
+    );
+    // The injected return removed by hand.
+    let injected = format!("return {{ {} }};\n", ENGINE_HELPERS.join(", "));
+    let stripped = transformed.replacen(&injected, "", 1);
+    assert!(matches!(
+        invert_helper_source(&stripped, &ENGINE_HELPERS),
+        Err(WorkflowError::Transform(_))
+    ));
+    // A second meta line planted after the transform.
+    let doubled = format!("const meta = {{}};\n{transformed}");
+    assert!(matches!(
+        invert_helper_source(&doubled, &ENGINE_HELPERS),
+        Err(WorkflowError::Transform(_))
+    ));
 }

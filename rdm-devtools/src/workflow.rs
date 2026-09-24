@@ -93,8 +93,10 @@
 //! - [`helper_source`] applies the same transform and injects
 //!   `return { <names> }` before the unique `// --- Driver` sentinel, so the
 //!   stamped helpers are returned and the driver never runs.
+//! - [`invert_helper_source`] is its exact inverse, so a test can show that
+//!   the helpers it executed came from the bytes it read.
 //!
-//! Both fail with [`WorkflowError::Transform`] when the meta line or the
+//! All three fail with [`WorkflowError::Transform`] when the meta line or the
 //! sentinel is missing or duplicated.
 //!
 //! # Mutants
@@ -889,6 +891,71 @@ pub fn helper_source(script: &str, names: &[&str]) -> Result<String, WorkflowErr
         _ => Err(WorkflowError::Transform(format!(
             "{} column-0 `{DRIVER_SENTINEL}` sentinel lines; expected exactly one",
             hits.len()
+        ))),
+    }
+}
+
+/// The exact inverse of [`helper_source`]: removes the injected
+/// `return { <names> };` line that sits immediately before the column-0
+/// [`DRIVER_SENTINEL`], and restores `export ` on the single column-0
+/// `const meta` line, so `invert_helper_source(helper_source(s, n)?, n)`
+/// reproduces `s` byte for byte. A caller uses it as provenance: the text it
+/// executed through [`Host::extract_helpers`] is the text it read.
+///
+/// # Errors
+///
+/// [`WorkflowError::Transform`] if the sentinel is missing or duplicated, the
+/// line before it is not the injected return for `names`, or the column-0
+/// `const meta` line is missing or duplicated.
+pub fn invert_helper_source(transformed: &str, names: &[&str]) -> Result<String, WorkflowError> {
+    let injected = format!("return {{ {} }};\n", names.join(", "));
+    let sentinels: Vec<usize> = line_starts(transformed)
+        .filter(|&i| transformed[i..].starts_with(DRIVER_SENTINEL))
+        .collect();
+    let at = match sentinels.as_slice() {
+        [at] => *at,
+        [] => {
+            return Err(WorkflowError::Transform(format!(
+                "no column-0 `{DRIVER_SENTINEL}` sentinel line to invert around"
+            )));
+        }
+        _ => {
+            return Err(WorkflowError::Transform(format!(
+                "{} column-0 `{DRIVER_SENTINEL}` sentinel lines; expected exactly one",
+                sentinels.len()
+            )));
+        }
+    };
+    let injected_here = at
+        .checked_sub(injected.len())
+        .filter(|&start| start == 0 || transformed.as_bytes()[start - 1] == b'\n')
+        .filter(|&start| transformed.get(start..at) == Some(injected.as_str()));
+    let Some(start) = injected_here else {
+        return Err(WorkflowError::Transform(format!(
+            "the line before the driver sentinel is not the injected {:?}",
+            injected.trim_end()
+        )));
+    };
+    let mut body = String::with_capacity(transformed.len());
+    body.push_str(&transformed[..start]);
+    body.push_str(&transformed[at..]);
+    let metas: Vec<usize> = line_starts(&body)
+        .filter(|&i| body[i..].starts_with("const meta"))
+        .collect();
+    match metas.as_slice() {
+        [m] => {
+            let mut out = String::with_capacity(body.len() + "export ".len());
+            out.push_str(&body[..*m]);
+            out.push_str("export ");
+            out.push_str(&body[*m..]);
+            Ok(out)
+        }
+        [] => Err(WorkflowError::Transform(
+            "no column-0 `const meta` line to restore `export` on".to_owned(),
+        )),
+        _ => Err(WorkflowError::Transform(format!(
+            "{} column-0 `const meta` lines; expected exactly one",
+            metas.len()
         ))),
     }
 }
