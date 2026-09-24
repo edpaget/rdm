@@ -286,7 +286,11 @@ fn run() -> Result<()> {
         )?,
 
         Command::Model { command } => {
-            commands::model::run(command, &repo_config, format)?;
+            // Strict: a rejected `[models]` table must fail loudly here, not
+            // resolve built-in defaults behind a warning.
+            let model_config =
+                paths::load_repo_config_strict(&root)?.with_global_defaults(&global_config);
+            commands::model::run(command, &model_config, format)?;
         }
 
         Command::Backlog { command } => {

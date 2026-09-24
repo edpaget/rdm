@@ -256,8 +256,13 @@ impl Difficulty {
 
 /// Model tier that should run a roadmap phase.
 ///
-/// Variants are ordered from smallest to largest: `Small < Medium < Large`.
-/// A concrete tier→model-id mapping, if ever needed, is left to later config.
+/// Variants are ordered from smallest to largest:
+/// `Small < Medium < Large < Frontier`. Each tier resolves, per host, to a
+/// model id plus a reasoning [`Effort`] through
+/// [`ModelPolicy`](crate::model_policy::ModelPolicy). `Frontier` is never
+/// produced by a built-in default or by [`Difficulty::model_tier`]; it is
+/// reached only when an operator writes it explicitly (a `--tier` hint, a
+/// phase `model`, `[models.steps]`, or `review_floor`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModelTier {
@@ -265,8 +270,10 @@ pub enum ModelTier {
     Small,
     /// Medium tier.
     Medium,
-    /// Large (most capable) tier.
+    /// Large tier.
     Large,
+    /// Frontier (most capable, most expensive) tier; opt-in only.
+    Frontier,
 }
 
 impl fmt::Display for ModelTier {
@@ -275,6 +282,7 @@ impl fmt::Display for ModelTier {
             ModelTier::Small => write!(f, "small"),
             ModelTier::Medium => write!(f, "medium"),
             ModelTier::Large => write!(f, "large"),
+            ModelTier::Frontier => write!(f, "frontier"),
         }
     }
 }
@@ -287,10 +295,70 @@ impl FromStr for ModelTier {
             "small" => Ok(ModelTier::Small),
             "medium" => Ok(ModelTier::Medium),
             "large" => Ok(ModelTier::Large),
+            "frontier" => Ok(ModelTier::Frontier),
             other => Err(ParseError::new(
                 "model tier",
                 other,
-                "small, medium, or large",
+                "small, medium, large, or frontier",
+            )),
+        }
+    }
+}
+
+/// Reasoning effort a model runs at.
+///
+/// The union of the effort levels both supported hosts' CLIs accept
+/// (`claude --effort`, `codex -c model_reasoning_effort`). Not every host
+/// accepts every level — see
+/// [`Host::valid_efforts`](crate::model_policy::Host::valid_efforts).
+/// Variants are ordered from least to most effort.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    /// Low effort.
+    Low,
+    /// Medium effort.
+    Medium,
+    /// High effort.
+    High,
+    /// Extra-high effort.
+    Xhigh,
+    /// Maximum effort.
+    Max,
+}
+
+impl fmt::Display for Effort {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Effort::Low => write!(f, "low"),
+            Effort::Medium => write!(f, "medium"),
+            Effort::High => write!(f, "high"),
+            Effort::Xhigh => write!(f, "xhigh"),
+            Effort::Max => write!(f, "max"),
+        }
+    }
+}
+
+impl FromStr for Effort {
+    type Err = ParseError;
+
+    /// Parses a lowercase reasoning-effort name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] if `s` is not one of `low`, `medium`, `high`,
+    /// `xhigh`, or `max`.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "low" => Ok(Effort::Low),
+            "medium" => Ok(Effort::Medium),
+            "high" => Ok(Effort::High),
+            "xhigh" => Ok(Effort::Xhigh),
+            "max" => Ok(Effort::Max),
+            other => Err(ParseError::new(
+                "reasoning effort",
+                other,
+                "low, medium, high, xhigh, or max",
             )),
         }
     }
@@ -1770,6 +1838,7 @@ comments: []
             (ModelTier::Small, "small"),
             (ModelTier::Medium, "medium"),
             (ModelTier::Large, "large"),
+            (ModelTier::Frontier, "frontier"),
         ];
         for (variant, expected) in variants {
             assert_eq!(variant.to_string(), expected);
@@ -1783,7 +1852,7 @@ comments: []
         let err = "xl".parse::<ModelTier>().unwrap_err();
         assert_eq!(
             err.to_string(),
-            "invalid model tier: 'xl' (expected small, medium, or large)"
+            "invalid model tier: 'xl' (expected small, medium, large, or frontier)"
         );
     }
 
@@ -1791,6 +1860,56 @@ comments: []
     fn model_tier_ordering() {
         assert!(ModelTier::Large > ModelTier::Medium);
         assert!(ModelTier::Medium > ModelTier::Small);
+        assert!(ModelTier::Frontier > ModelTier::Large);
+    }
+
+    #[test]
+    fn no_difficulty_maps_to_frontier() {
+        let expected = [
+            (Difficulty::Trivial, ModelTier::Small),
+            (Difficulty::Easy, ModelTier::Small),
+            (Difficulty::Moderate, ModelTier::Medium),
+            (Difficulty::Hard, ModelTier::Large),
+        ];
+        for (difficulty, tier) in expected {
+            assert_eq!(difficulty.model_tier(), tier);
+            assert_ne!(difficulty.model_tier(), ModelTier::Frontier);
+        }
+    }
+
+    #[test]
+    fn frontier_tier_yaml_round_trip() {
+        let yaml = serde_yaml::to_string(&ModelTier::Frontier).unwrap();
+        assert_eq!(yaml.trim(), "frontier");
+        let parsed: ModelTier = serde_yaml::from_str("frontier").unwrap();
+        assert_eq!(parsed, ModelTier::Frontier);
+    }
+
+    #[test]
+    fn effort_display_from_str_round_trip() {
+        let variants = [
+            (Effort::Low, "low"),
+            (Effort::Medium, "medium"),
+            (Effort::High, "high"),
+            (Effort::Xhigh, "xhigh"),
+            (Effort::Max, "max"),
+        ];
+        for (variant, expected) in variants {
+            assert_eq!(variant.to_string(), expected);
+            let parsed: Effort = expected.parse().unwrap();
+            assert_eq!(parsed, variant);
+            let json = serde_json::to_string(&variant).unwrap();
+            assert_eq!(json, format!("\"{expected}\""));
+        }
+    }
+
+    #[test]
+    fn effort_from_str_invalid_names_valid_values() {
+        let err = "ultra".parse::<Effort>().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "invalid reasoning effort: 'ultra' (expected low, medium, high, xhigh, or max)"
+        );
     }
 
     #[test]

@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
-use crate::model::ModelTier;
+use crate::model::{Effort, ModelTier};
+use crate::model_policy::Host;
 
 /// Valid values for the `default_format` config key.
 pub const VALID_FORMATS: &[&str] = &["human", "json", "table", "markdown"];
@@ -177,6 +178,80 @@ pub struct ModelsConfig {
     /// Per-step tier overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steps: Option<StepTiersConfig>,
+    /// Per-host, per-tier model + effort profiles
+    /// (`[models.profiles.<host>.<tier>]`).
+    ///
+    /// A profile's `model` takes precedence over the legacy
+    /// `small`/`medium`/`large` keys (which only ever set the `claude`
+    /// host's model); an unset field falls back to the built-in table in
+    /// [`crate::model_policy`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profiles: Option<ProfilesConfig>,
+}
+
+/// The `[models.profiles]` table: model + effort profiles keyed by host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProfilesConfig {
+    /// Profiles for the Claude Code host (`[models.profiles.claude]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude: Option<HostProfilesConfig>,
+    /// Profiles for the Codex host (`[models.profiles.codex]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<HostProfilesConfig>,
+}
+
+impl ProfilesConfig {
+    /// Returns the profiles configured for `host`, if any.
+    #[must_use]
+    pub fn for_host(&self, host: Host) -> Option<&HostProfilesConfig> {
+        match host {
+            Host::Claude => self.claude.as_ref(),
+            Host::Codex => self.codex.as_ref(),
+        }
+    }
+}
+
+/// One host's profiles, keyed by model tier (`[models.profiles.<host>]`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct HostProfilesConfig {
+    /// Profile for the small tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub small: Option<ProfileConfig>,
+    /// Profile for the medium tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub medium: Option<ProfileConfig>,
+    /// Profile for the large tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub large: Option<ProfileConfig>,
+    /// Profile for the opt-in frontier tier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontier: Option<ProfileConfig>,
+}
+
+impl HostProfilesConfig {
+    /// Returns the profile configured for `tier`, if any.
+    #[must_use]
+    pub fn for_tier(&self, tier: ModelTier) -> Option<&ProfileConfig> {
+        match tier {
+            ModelTier::Small => self.small.as_ref(),
+            ModelTier::Medium => self.medium.as_ref(),
+            ModelTier::Large => self.large.as_ref(),
+            ModelTier::Frontier => self.frontier.as_ref(),
+        }
+    }
+}
+
+/// A configured model + effort profile for one host and tier. Either field
+/// may be omitted to keep its fallback.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProfileConfig {
+    /// Model id this tier runs on for the host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// Reasoning effort this tier runs at for the host. Must be one of the
+    /// host's [`Host::valid_efforts`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
 }
 
 /// Global configuration stored at `~/.config/rdm/config.toml`.
@@ -251,9 +326,11 @@ impl GlobalConfig {
     /// # Errors
     ///
     /// Returns [`Error::InvalidConfigValue`] if `default_format` is set to an
-    /// unrecognized value.
+    /// unrecognized value, or if a `[models.profiles.<host>.<tier>]` effort
+    /// is not one the host accepts (see [`Host::valid_efforts`]).
     pub fn validate(&self) -> Result<()> {
-        validate_format(&self.default_format)
+        validate_format(&self.default_format)?;
+        validate_models(&self.models)
     }
 }
 
@@ -350,9 +427,11 @@ impl Config {
     /// # Errors
     ///
     /// Returns [`Error::InvalidConfigValue`] if `default_format` is set to an
-    /// unrecognized value.
+    /// unrecognized value, or if a `[models.profiles.<host>.<tier>]` effort
+    /// is not one the host accepts (see [`Host::valid_efforts`]).
     pub fn validate(&self) -> Result<()> {
-        validate_format(&self.default_format)
+        validate_format(&self.default_format)?;
+        validate_models(&self.models)
     }
 
     /// Returns a new `Config` where `None` fields are filled from the
@@ -538,6 +617,40 @@ pub fn reviewed_gate_enabled_at(plan_root: &Path) -> Result<bool> {
         std::env::var("RDM_REVIEWED_GATE").ok().as_deref(),
         config.as_ref(),
     )
+}
+
+/// Validates that every configured profile effort is accepted by its host.
+fn validate_models(models: &Option<ModelsConfig>) -> Result<()> {
+    let Some(profiles) = models.as_ref().and_then(|m| m.profiles.as_ref()) else {
+        return Ok(());
+    };
+    for host in Host::ALL {
+        let Some(host_profiles) = profiles.for_host(host) else {
+            continue;
+        };
+        for tier in [
+            ModelTier::Small,
+            ModelTier::Medium,
+            ModelTier::Large,
+            ModelTier::Frontier,
+        ] {
+            if let Some(effort) = host_profiles.for_tier(tier).and_then(|p| p.effort)
+                && !host.valid_efforts().contains(&effort)
+            {
+                return Err(Error::InvalidConfigValue {
+                    key: format!("models.profiles.{host}.{tier}.effort"),
+                    value: effort.to_string(),
+                    valid: host
+                        .valid_efforts()
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Validates that a `default_format` value (if present) is one of the known formats.
@@ -1018,6 +1131,7 @@ mechanical = "small"
                     review_verify: Some(ModelTier::Large),
                     mechanical: Some(ModelTier::Small),
                 }),
+                profiles: None,
             }),
             ..Default::default()
         };
@@ -1050,6 +1164,7 @@ mechanical = "small"
             large: Some("opus".to_string()),
             review_floor: Some(ModelTier::Medium),
             steps: None,
+            profiles: None,
         };
         let global = GlobalConfig {
             models: Some(global_models.clone()),
@@ -1067,6 +1182,7 @@ mechanical = "small"
             large: None,
             review_floor: None,
             steps: None,
+            profiles: None,
         };
         let global_models = ModelsConfig {
             small: Some("haiku".to_string()),
@@ -1074,6 +1190,7 @@ mechanical = "small"
             large: Some("opus".to_string()),
             review_floor: Some(ModelTier::Large),
             steps: None,
+            profiles: None,
         };
         let repo_config = Config {
             models: Some(repo_models.clone()),
@@ -1194,6 +1311,119 @@ mechanical = "small"
         assert_eq!(models.large, None);
         assert_eq!(models.review_floor, None);
         assert_eq!(models.steps, None);
+    }
+
+    // --- [models.profiles] config tests ---
+
+    #[test]
+    fn parse_config_with_model_profiles() {
+        let toml_str = r#"
+[models]
+small = "opus"
+[models.profiles.claude.large]
+effort = "xhigh"
+[models.profiles.claude.frontier]
+model = "opus"
+effort = "max"
+[models.profiles.codex.small]
+model = "gpt-6-sol"
+[models.profiles.codex.frontier]
+model = "gpt-6-astra"
+effort = "xhigh"
+"#;
+        let config = Config::from_toml(toml_str).unwrap();
+        let models = config.models.expect("models parsed");
+        assert_eq!(models.small, Some("opus".to_string()));
+        let profiles = models.profiles.expect("profiles parsed");
+        let claude = profiles.claude.expect("claude profiles");
+        assert_eq!(
+            claude.large,
+            Some(ProfileConfig {
+                model: None,
+                effort: Some(Effort::Xhigh)
+            })
+        );
+        assert_eq!(
+            claude.frontier,
+            Some(ProfileConfig {
+                model: Some("opus".to_string()),
+                effort: Some(Effort::Max)
+            })
+        );
+        assert_eq!(claude.small, None);
+        let codex = profiles.codex.expect("codex profiles");
+        assert_eq!(
+            codex.small,
+            Some(ProfileConfig {
+                model: Some("gpt-6-sol".to_string()),
+                effort: None
+            })
+        );
+        assert_eq!(
+            codex.frontier,
+            Some(ProfileConfig {
+                model: Some("gpt-6-astra".to_string()),
+                effort: Some(Effort::Xhigh)
+            })
+        );
+        // Round trip.
+        let config = Config::from_toml(toml_str).unwrap();
+        let again = Config::from_toml(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(again, config);
+    }
+
+    #[test]
+    fn unknown_effort_rejected_at_load_naming_valid_values() {
+        let toml_str = "[models.profiles.claude.small]\neffort = \"ultra\"\n";
+        for err in [
+            Config::from_toml(toml_str).unwrap_err(),
+            GlobalConfig::from_toml(toml_str).unwrap_err(),
+        ] {
+            assert!(
+                matches!(err, Error::ConfigParse(_)),
+                "expected ConfigParse, got {err:?}"
+            );
+            let msg = err.to_string();
+            assert!(msg.contains("ultra"), "{msg}");
+            for valid in ["low", "medium", "high", "xhigh", "max"] {
+                assert!(msg.contains(&format!("`{valid}`")), "{msg}");
+            }
+        }
+    }
+
+    #[test]
+    fn codex_max_effort_rejected_naming_key_and_valid_values() {
+        let toml_str = "[models.profiles.codex.small]\neffort = \"max\"\n";
+        for err in [
+            Config::from_toml(toml_str).unwrap_err(),
+            GlobalConfig::from_toml(toml_str).unwrap_err(),
+        ] {
+            match err {
+                Error::InvalidConfigValue { key, value, valid } => {
+                    assert_eq!(key, "models.profiles.codex.small.effort");
+                    assert_eq!(value, "max");
+                    assert_eq!(valid, "low, medium, high, xhigh");
+                }
+                other => panic!("expected InvalidConfigValue, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn claude_max_effort_accepted() {
+        let toml_str = "[models.profiles.claude.frontier]\neffort = \"max\"\n";
+        assert!(Config::from_toml(toml_str).is_ok());
+        assert!(GlobalConfig::from_toml(toml_str).is_ok());
+    }
+
+    #[test]
+    fn frontier_accepted_as_step_tier_and_review_floor() {
+        let toml_str =
+            "[models]\nreview_floor = \"frontier\"\n[models.steps]\nplan = \"frontier\"\n";
+        let config = Config::from_toml(toml_str).unwrap();
+        let models = config.models.unwrap();
+        assert_eq!(models.review_floor, Some(ModelTier::Frontier));
+        assert_eq!(models.steps.unwrap().plan, Some(ModelTier::Frontier));
     }
     #[test]
     fn dispatch_verify_toml_roundtrip() {

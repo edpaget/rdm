@@ -245,7 +245,7 @@ Tier→model resolution itself belongs to `rdm-core` (`rdm model resolve <step>
 when a tier is actually persisted: `resolve_tier` gives the caller hint top
 precedence, and `ReviewVerify.default_tier()` is `Large`, so passing a hint to
 `review-find`/`review-verify` can only ever *downgrade* the reviewer
-(`resolve review-verify` → opus, but `--tier medium` → sonnet). Review sizing is
+(`resolve review-verify` → opus @ high, but `--tier medium` → opus @ medium; see [`model-profiles.md`](model-profiles.md)). Review sizing is
 core's to own. Both rules are gated by `rdm-cli`'s `model resolve` tests; the
 retired `scripts/verify-workflow-dispatch.sh` also gated them (AC-MODEL, AC-TIER)
 over the engine's JS, with planted-mutation self-tests.

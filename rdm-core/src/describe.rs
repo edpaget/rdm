@@ -195,7 +195,7 @@ impl Describe for crate::model::Phase {
                     name: "model",
                     type_name: "enum",
                     required: false,
-                    enum_values: &["small", "medium", "large"],
+                    enum_values: &["small", "medium", "large", "frontier"],
                     description: "Model tier that should run the phase, if assigned.",
                 },
                 FieldInfo {

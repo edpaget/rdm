@@ -154,6 +154,33 @@ pub fn resolve_remote_name(
     bail!("no remote specified — pass a remote name or set remote.default in rdm.toml")
 }
 
+/// Loads the repo config from `<root>/rdm.toml` strictly: returns `Default`
+/// if the file is missing, but fails (rather than warning and falling back)
+/// when it is present and invalid.
+///
+/// Used by `rdm model`, whose `[models]` output feeds a host runtime
+/// directly — silently resolving built-in defaults over a rejected
+/// `[models]` table would hide the error naming the valid values.
+///
+/// # Errors
+///
+/// Returns an error if `rdm.toml` exists but cannot be read, parsed, or
+/// validated.
+pub fn load_repo_config_strict(root: &Path) -> Result<rdm_core::config::Config> {
+    let config_path = root.join("rdm.toml");
+    let contents = match std::fs::read_to_string(&config_path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(rdm_core::config::Config::default());
+        }
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to read {}", config_path.display()));
+        }
+    };
+    rdm_core::config::Config::from_toml(&contents)
+        .map_err(|e| anyhow::anyhow!("invalid config at {}: {e}", config_path.display()))
+}
+
 /// Loads the repo config from `<root>/rdm.toml`, returning `Default` if missing.
 ///
 /// Emits a warning to stderr if the config file contains invalid TOML.

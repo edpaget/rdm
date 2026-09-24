@@ -113,9 +113,12 @@ as `signal`; it cannot be represented in a JSON file.
 
 The runtime resolves `review-find`, `review-verify`, or estimation's `plan`
 step through `rdm model resolve <step> --format json`. Core returns
-`{step,tier,model}` and remains responsible for tier policy and the review
-floor. Plain CLI output remains unchanged. Codex then maps the resolved tier
-to `host.tiers`; shared Claude model preferences are not rewritten.
+`{step,host,tier,model,effort}` (`--host codex` selects the Codex profile
+table; see [`model-profiles.md`](model-profiles.md)) and remains responsible
+for tier policy, the plan floor and the review floor. Plain CLI output remains
+a bare model id. The runtime still reads only `{step,tier,model}` and maps the
+resolved tier to `host.tiers` until the lane threads the core profile through;
+shared Claude model preferences are not rewritten.
 
 An optional `tier` supplies a core hint (`small`, `medium`, `large`). For a
 phase code review, the item's model tier is used when present. An optional

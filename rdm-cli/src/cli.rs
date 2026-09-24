@@ -464,16 +464,24 @@ pub(crate) enum BacklogCommand {
 
 #[derive(Subcommand)]
 pub(crate) enum ModelCommand {
-    /// Resolve a dispatch step (plus optional tier hint) to a concrete model id.
+    /// Resolve a dispatch step (plus optional tier hint) to a concrete model id
+    /// (text) or a `{step, host, tier, model, effort}` profile (`--format json`).
     Resolve {
         /// Dispatch step: plan, implement, review-find, review-verify, or mechanical.
         step: String,
-        /// Caller tier hint (small, medium, large) overriding the step's configured/default tier.
+        /// Caller tier hint (small, medium, large, frontier) overriding the step's configured/default tier.
         #[arg(long)]
         tier: Option<String>,
+        /// Host whose profile table to resolve against: claude (default) or codex.
+        #[arg(long)]
+        host: Option<String>,
     },
-    /// Show the resolved model policy: tier bindings, review floor, and each step's no-hint model.
-    Show,
+    /// Show the resolved model policy for a host: tier profiles, review floor, and each step's no-hint profile.
+    Show {
+        /// Host whose profile table to show: claude (default) or codex.
+        #[arg(long)]
+        host: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -710,7 +718,7 @@ pub(crate) enum PhaseCommand {
         /// Estimated difficulty (trivial, easy, moderate, hard).
         #[arg(long)]
         difficulty: Option<Difficulty>,
-        /// Model tier that should run the phase (small, medium, large).
+        /// Model tier that should run the phase (small, medium, large, frontier).
         #[arg(long)]
         model: Option<ModelTier>,
         /// Body content for the phase. Accepts any text verbatim
@@ -778,7 +786,7 @@ pub(crate) enum PhaseCommand {
         /// Remove the difficulty from this phase.
         #[arg(long, conflicts_with = "difficulty")]
         clear_difficulty: bool,
-        /// New model tier (small, medium, large).
+        /// New model tier (small, medium, large, frontier).
         #[arg(long, conflicts_with = "clear_model")]
         model: Option<ModelTier>,
         /// Remove the model tier from this phase.
