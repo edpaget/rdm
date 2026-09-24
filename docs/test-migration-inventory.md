@@ -783,6 +783,7 @@ registered by `rdm worktree add`, and a pinned commit on each.
 | L1340 | `driver::no_ac_reviewer_escalates` | |
 | L1362 | `driver::unresolvable_source_escalates_without_dispatch` | five broken pins, zero agent calls |
 | L1379 | `driver::gate_false_writes_nothing` | seeds its own state; asserts a byte-identical plan-repo snapshot |
+| main `0f83454` (added after the port, carried over on the rebase onto main) | `driver::find_and_verify_effort_reach_every_finder_and_refuter` | effort args reach every finder/refuter; none dispatched without them |
 | L1390 | duplicate of `engine::mixed_task_phase_identity_rejected` | |
 | L1397 | duplicate of `engine::legacy_survivors_only_shape_{code,plan}` | |
 | L1417 | `driver::anchor_refusal_classification_uses_real_error_text` | each refusal text is `rdm_core::error::Error`'s own `Display`, not a hand-copied string; spoofed-quote negatives kept |

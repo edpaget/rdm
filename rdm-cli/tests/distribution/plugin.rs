@@ -39,6 +39,7 @@ fn emitted_plugin_layout_and_manifest() {
         entries(&root),
         BTreeSet::from([
             ".claude-plugin".to_owned(),
+            "agents".to_owned(),
             "skills".to_owned(),
             "workflows".to_owned()
         ])

@@ -451,6 +451,65 @@ fn gate_false_writes_nothing() {
     });
 }
 
+/// Ported from main's review-driver.test.mjs (0f83454): `findEffort` /
+/// `verifyEffort` reach every finder and refuter dispatch, and a run without
+/// them dispatches no `effort` key at all.
+#[test]
+fn find_and_verify_effort_reach_every_finder_and_refuter() {
+    run_real(|lib| {
+        let fx = fixture()?;
+        let blocker = || vec![finding("c-1", "blocking", json!({}))];
+        let (_, agent) = drive(
+            lib,
+            phase_args(
+                &fx,
+                "phase-1-clean",
+                json!({ "gate": false, "findModel": "m-find", "findEffort": "low",
+                        "verifyModel": "m-verify", "verifyEffort": "high" }),
+            ),
+            blocker(),
+        )?;
+        let (finds, refutes) = (agent.calls_with("find:"), agent.calls_with("refute:"));
+        check!(
+            !finds.is_empty() && !refutes.is_empty(),
+            "the engine dispatched finders and refuters: {:?}",
+            agent.labels()
+        );
+        for c in &finds {
+            check_eq!(
+                (c.opts["model"].clone(), c.opts["effort"].clone()),
+                (json!("m-find"), json!("low")),
+                "{}",
+                c.label
+            );
+        }
+        for c in &refutes {
+            check_eq!(
+                (c.opts["model"].clone(), c.opts["effort"].clone()),
+                (json!("m-verify"), json!("high")),
+                "{}",
+                c.label
+            );
+        }
+
+        let (_, bare) = drive(
+            lib,
+            phase_args(&fx, "phase-1-clean", json!({ "gate": false })),
+            blocker(),
+        )?;
+        check!(!bare.calls().is_empty(), "the bare run dispatched agents");
+        for c in bare.calls() {
+            check!(
+                c.opts.get("effort").is_none(),
+                "{} carries no effort key without effort args: {}",
+                c.label,
+                c.opts
+            );
+        }
+        Ok(())
+    });
+}
+
 // --- The persist ladder: anchors -------------------------------------------------
 
 #[test]

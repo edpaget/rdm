@@ -1,28 +1,58 @@
 {
-  "small": "haiku",
-  "medium": "sonnet",
+  "host": "claude",
+  "small": "opus",
+  "medium": "opus",
   "large": "opus",
+  "frontier": "opus",
   "review_floor": "medium",
+  "profiles": {
+    "small": {
+      "model": "opus",
+      "effort": "low"
+    },
+    "medium": {
+      "model": "opus",
+      "effort": "medium"
+    },
+    "large": {
+      "model": "opus",
+      "effort": "high"
+    },
+    "frontier": {
+      "model": "opus",
+      "effort": "xhigh"
+    }
+  },
   "steps": [
     {
       "step": "plan",
-      "model": "sonnet"
+      "tier": "medium",
+      "model": "opus",
+      "effort": "medium"
     },
     {
       "step": "implement",
-      "model": "sonnet"
+      "tier": "medium",
+      "model": "opus",
+      "effort": "medium"
     },
     {
       "step": "review-find",
-      "model": "sonnet"
+      "tier": "medium",
+      "model": "opus",
+      "effort": "medium"
     },
     {
       "step": "review-verify",
-      "model": "opus"
+      "tier": "large",
+      "model": "opus",
+      "effort": "high"
     },
     {
       "step": "mechanical",
-      "model": "haiku"
+      "tier": "small",
+      "model": "opus",
+      "effort": "low"
     }
   ]
 }

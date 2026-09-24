@@ -159,7 +159,8 @@
         "enum_values": [
           "small",
           "medium",
-          "large"
+          "large",
+          "frontier"
         ],
         "description": "Model tier that should run the phase, if assigned."
       },

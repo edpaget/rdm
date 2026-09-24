@@ -280,17 +280,28 @@ impl FakeCargo {
 fn local_skills_match_gen_codex_skills_output() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let scratch = tmp.path().join("scratch");
-    for rel in ["scripts/gen-codex-skills.sh", "docs/principles.md"] {
-        let to = scratch.join(rel);
-        std::fs::create_dir_all(to.parent().expect("a parent")).expect("mkdir");
-        std::fs::copy(repo_root().join(rel), &to).expect("copy into scratch");
+    std::fs::create_dir_all(scratch.join("docs")).expect("mkdir docs");
+    std::fs::copy(
+        repo_root().join("docs/principles.md"),
+        scratch.join("docs/principles.md"),
+    )
+    .expect("copy principles into scratch");
+    // gen-codex-skills.sh first runs gen-codex-runtime.mjs, which packages
+    // scripts/ and .claude/workflows/lib/ modules into rdm-core's templates.
+    for rel in ["scripts", ".claude/workflows/lib"] {
+        copy_tree(&repo_root().join(rel), &scratch.join(rel));
     }
+    let node = rdm_devtools::workflow::resolve_node().expect("node for gen-codex-runtime.mjs");
+    let node_dir = node.parent().expect("node has a parent dir");
     let cargo = FakeCargo::new(tmp.path());
     let sandbox = Sandbox::new(&tmp.path().join("user")).expect("sandbox");
     let out = sandbox
         .command("sh")
         .arg(scratch.join("scripts/gen-codex-skills.sh"))
-        .env("PATH", cargo.path())
+        .env(
+            "PATH",
+            format!("{}:{}", cargo.bin.display(), node_dir.display()) + ":/usr/bin:/bin",
+        )
         .current_dir(&scratch)
         .output()
         .expect("run gen-codex-skills.sh");
@@ -316,10 +327,12 @@ fn local_skills_match_gen_codex_skills_output() {
         entries(&scratch),
         BTreeSet::from([
             ".agents".to_owned(),
+            ".claude".to_owned(),
             "docs".to_owned(),
+            "rdm-core".to_owned(),
             "scripts".to_owned()
         ]),
-        "the generator writes only the skills tree into scratch"
+        "the generators write only the skills tree and the Codex runtime templates into scratch"
     );
     let drift = tree_diff(
         &tree(&repo_root().join(".agents/skills")),
@@ -432,4 +445,18 @@ fn dev_wrapper_refuses_missing_session_or_plan_repo() {
         "cargo is never invoked: {:?}",
         cargo.calls()
     );
+}
+
+/// Copies `from` recursively into `to`, preserving file modes.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("mkdir scratch subtree");
+    for entry in std::fs::read_dir(from).expect("read source dir") {
+        let entry = entry.expect("dir entry");
+        let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        if entry.file_type().expect("file type").is_dir() {
+            copy_tree(&src, &dst);
+        } else {
+            std::fs::copy(&src, &dst).expect("copy into scratch");
+        }
+    }
 }
