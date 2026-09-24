@@ -72,8 +72,9 @@ never parsed out of the `$ARGUMENTS` flag string:
   omitted effort its effort. There is no mechanical model any more and no
   bootstrap agent to skip.
 - **`rdmBin`** / **`project`** — the rdm executable every reviewer's command
-  uses (optional; defaults to a plain `rdm` on `PATH`, and an explicit value
-  wins verbatim) and the project for project-scoped subcommands.
+  uses — the value following `--rdm-bin`; when not supplied, `$RDM_BIN` if
+  set, else a plain `rdm` on `PATH` — and the project for project-scoped
+  subcommands (the supplied `--project`, else the name in `--project <PROJECT>`).
 
 **Writes it would make, it hands back.** Nothing in the workflow mutates the plan
 repo. Run these yourself, in order, and report each exit status:

@@ -4718,9 +4718,9 @@ mod tests {
             // the autopilot shim's single mention. That engine IS shipped now,
             // so the mention IS namespaced in plugin bodies — which is exactly
             // why it is the TOKEN count that is pinned here, not the spelling.
-            // 1 -> 11: `sync-dogfood-and-shipped-skills` shipped autopilot's
+            // 1 -> 12: `sync-dogfood-and-shipped-skills` shipped autopilot's
             // estimate pre-pass and turned `rdm-estimate` into a shim over it.
-            ("rdm-wf-estimate", 11),
+            ("rdm-wf-estimate", 12),
             // 1 -> 0: the autopilot shim's only mention was inside a stale
             // rationale claiming `rdm-wf-estimate` resolves
             // `agentType: 'rdm-mechanical'` and that a downstream tree receives
@@ -4838,7 +4838,9 @@ mod tests {
         // `rdm-dispatch-phase` twice more than before (once identifying the
         // authorized orchestrator, once in the reason-string's required
         // citation of the authorizing section).
-        let expected = 54;
+        // 54 -> 55: `sync-dogfood-and-shipped-skills` has autopilot forward
+        // its resolved project to `rdm-dispatch-phase` by name.
+        let expected = 55;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"

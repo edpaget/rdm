@@ -12,16 +12,16 @@ Run a batched **grooming pass** over the backlog by invoking the **`rdm-wf-backl
 
 ## Contract
 
-**Input** (`$ARGUMENTS`): all optional — `[--project <name>]`, `[--older-than <days>]`, `[--tag <tag>]`. There is no positional argument naming an item to change, because this skill changes nothing.
+**Input** (`$ARGUMENTS`): all optional — `[--rdm-bin <path>]`, `[--project <name>]`, `[--older-than <days>]`, `[--tag <tag>]`. There is no positional argument naming an item to change, because this skill changes nothing.
 
 ## What to do
 
 1. **Parse `$ARGUMENTS`** into a config object, omitting any field not supplied:
    - `project` — the supplied `--project` value, else the project name used in `--project rdm`.
    - `olderThan`, `tag` — the supplied `--older-than` / `--tag` values.
-   - `rdmBin` — `"./target/debug/rdm"`, the executable every command below invokes. The workflow names it in the report command and in every proposal it hands back.
+   - `rdmBin` — the value following `--rdm-bin`; when not supplied, `$RDM_BIN` if set, else a plain `rdm` on `PATH`; the executable every command below invokes (`<rdmBin>`). The workflow names it in the report command and in every proposal it hands back.
 2. **Run the report yourself and add it to that object.** The workflow reads nothing — it has no agent that can run a command — so this is REQUIRED, not a hoist. It does not weaken the propose-only contract: the command is read-only whoever runs it.
-   - `report` — the parsed object from `./target/debug/rdm backlog report --format json --project rdm` (substituting a supplied `--project`, and adding `--older-than <days>` / `--tag <tag>` when supplied), passed through **verbatim**, never summarized. It must carry all four signal arrays (`stale_tasks`, `duplicate_clusters`, `tag_clusters`, `archivable_roadmaps`); without it the workflow refuses to run and returns the exact command to use as `reportCommand`.
+   - `report` — the parsed object from `<rdmBin> backlog report --format json --project rdm` (substituting a supplied `--project`, and adding `--older-than <days>` / `--tag <tag>` when supplied), passed through **verbatim**, never summarized. It must carry all four signal arrays (`stale_tasks`, `duplicate_clusters`, `tag_clusters`, `archivable_roadmaps`); without it the workflow refuses to run and returns the exact command to use as `reportCommand`.
 3. **Invoke the `rdm-wf-backlog` workflow** via the Workflow tool with that object (`{ project, olderThan, tag, rdmBin, report }`). Pass `args` as a JSON object, never a stringified value. The workflow:
    - fans one READ-ONLY analyzer agent out per populated signal category (`stale_tasks`, `duplicate_clusters`, `tag_clusters`, `archivable_roadmaps`) in parallel;
    - consolidates the results into one ordered batch — a subsection per category that produced a proposal, plus a merged `## Open questions` section for anything it could not confidently resolve;

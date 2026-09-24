@@ -17,7 +17,7 @@ A phase that cannot be advanced is parked `blocked`, not raised as a mid-run que
 
 **Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by `--rdm-bin <path>`, `--project <name>`, `--max-phases N`, `--plan-only`, `--max-plan-revise N`, and/or `--max-code-rework N`. The slug names the single roadmap this run drives. If no slug is given, stop before invoking anything and say so — do not attempt a partial estimate or drive-loop start. `--rdm-bin` is **optional** and has no pre-flight stop of its own; when it is not supplied, use `$RDM_BIN` if it is set (this repo's `.mise.toml` sets it to the local development build, so a bare invocation here still uses that build rather than a stale global one), otherwise a plain `rdm` on `PATH`. `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" is the canonical resolution order — do not restate it here.
 
-Every Bash command and Workflow payload below is written against two placeholders resolved once in step 1: `<rdmBin>` — the executable resolved by that order — and `<proj-flag>` — ` --project <project>` when `--project` was given, or nothing at all when it was omitted (never an empty `--project` value).
+Every Bash command and Workflow payload below is written against two placeholders resolved once in step 1: `<rdmBin>` — the executable resolved by that order — and `<proj-flag>` — ` --project <project>` for the project resolved there (never an empty `--project` value).
 
 **The four guardrails, together, in one place:**
 
@@ -34,7 +34,7 @@ This skill is **non-interactive**.
 
 - `roadmap` — the required slug (first positional argument). Missing → stop immediately, before step 2, and say so.
 - `rdmBin` — the **optional** executable path following `--rdm-bin`. There is **no** pre-flight stop for it: when it is not supplied, use `$RDM_BIN` if set, else a plain `rdm` on `PATH`. The literal sentinel `rdm` requests `PATH` resolution deliberately. Never probe the filesystem to pick a binary. This resolves the `<rdmBin>` placeholder used everywhere below.
-- `project` — the optional project name following `--project` (this repo: `rdm`). Omitted → the `<proj-flag>` placeholder used everywhere below renders as nothing (no `--project` flag at all, never an empty value), and rdm's own `RDM_PROJECT`/`default_project` chain applies.
+- `project` — the name following `--project` when given, otherwise `rdm` (this repo's project). Only when no project name applies does the `<proj-flag>` placeholder render as nothing (never an empty `--project` value), leaving rdm's own `RDM_PROJECT`/`default_project` chain to resolve it. Forward this same `project` to `rdm-wf-estimate` and `rdm-dispatch-phase`, so the loop and every unit act on one project.
 - `maxPhases` — the positive integer following `--max-phases`, when present (omit otherwise — unbounded by phase count).
 - `planOnly` — `true` when `--plan-only` is present (omit otherwise).
 - `maxPlanRevise` — the non-negative integer following `--max-plan-revise`, when present (omit otherwise — `rdm-dispatch-phase` applies its own default of 2). `0` is legal and distinct from unset: it means "terminate on the first blocking plan review, no revise round at all".
@@ -47,7 +47,7 @@ This skill is **non-interactive**.
 
 ### 3. Run the estimate pre-pass — one Workflow call, always
 
-Invoke the **`rdm-wf-estimate` Workflow** (`.claude/workflows/rdm-wf-estimate.js`) via the Workflow tool with `{ roadmap, phaseList, rdmBin, project }` as a JSON object (omit `phase` — autopilot always estimates the whole roadmap, never a single phase number; omit `project` when it was not given). `rdmBin` and `project` are the same resolved values from step 1, so the pre-pass runs against this loop's binary and project instead of an ambient default. Run this call **unconditionally**, even if `phaseList` shows zero unestimated phases — it is a cheap no-op fan-out in that case, the same always-invoke-and-let-it-no-op design the `rdm-estimate` skill itself uses; do not skip it as an optimization.
+Invoke the **`rdm-wf-estimate` Workflow** (`.claude/workflows/rdm-wf-estimate.js`) via the Workflow tool with `{ roadmap, phaseList, rdmBin, project }` as a JSON object (omit `phase` — autopilot always estimates the whole roadmap, never a single phase number; omit `project` when no project name applies). `rdmBin` and `project` are the same resolved values from step 1, so the pre-pass runs against this loop's binary and project instead of an ambient default. Run this call **unconditionally**, even if `phaseList` shows zero unestimated phases — it is a cheap no-op fan-out in that case, the same always-invoke-and-let-it-no-op design the `rdm-estimate` skill itself uses; do not skip it as an optimization.
 
 Do not reimplement any part of the estimate pass in prose here — the filtering and the per-phase rating fan-out stay entirely inside the workflow. The workflow persists nothing: run each returned `writebackCommands` entry in Bash, in order, **exactly as returned** (each is one `phase update --difficulty` command).
 
