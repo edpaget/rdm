@@ -15,9 +15,14 @@ local linters = new Mapping<String, Step> {
     }
     // No cargo_nextest builtin — custom step matching CLAUDE.md's test command.
     // No workspace_indicator: run the whole workspace suite once (not per crate).
+    // git exports GIT_DIR/GIT_INDEX_FILE (a worktree's gitdir, under a worktree) to
+    // hooks; a test that spawns git without scrubbing them acts on this repository,
+    // and a bare `git init` there rewrites the shared config to core.bare=true.
+    // Strip every repository-locating variable for the test run only — hk itself
+    // still needs the hook's GIT_INDEX_FILE (e.g. `git commit <paths>`).
     ["cargo_nextest"] {
         glob = "**/*.rs"
-        check = "cargo nextest run"
+        check = "env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX -u GIT_CONFIG_PARAMETERS cargo nextest run"
         exclusive = true
     }
     ["shellcheck"] = Builtins.shellcheck
