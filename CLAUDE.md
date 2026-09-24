@@ -254,11 +254,6 @@ file in a new `agents` directory needs a restart before it resolves. Project def
 also discovered by walking up from the cwd, so a session rooted outside this repo will not see
 this one.
 
-No workflow script may pass `effort:`. The reason is *scope*, not mechanism —
-`effort: 'low'` at a call site **is** honored. The fidelity instrument that measured it lived in
-`spike-agent-type.js`, which was deleted with the mechanical lane; the recorded negative stands in
-`docs/token-baseline.json` § `mechanicalContextTrim.effortFidelity`.
-
 **When editing this file:** the project `CLAUDE.md` is loaded into every subagent, including a
 custom-`agentType` one, and cannot be suppressed per agent type — it was measured at 19320
 tokens (2.49 chars/token, against a 48207-char file). Every paragraph added here is paid for once

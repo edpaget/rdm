@@ -38,17 +38,17 @@ The specification of that pipeline — which dimensions run, how findings are gr
 
 **You select the reviewers.** Dispatch one **read-only** `Agent` per reviewer you select, per **Review specification § Reviewers** below, whose per-reviewer cues say when to include each one against the diff from step 1. Selecting none means running them all — the safe default when you are unsure. Nothing refuses a thin set, so an under-reviewed diff is a visible choice: state which reviewers you launched, and why, in the report.
 
-**Model sizing.** Every dispatched agent in this step runs on an **explicitly resolved** model — never the inherited session model. For each finder agent, resolve:
+**Model sizing.** Every dispatched agent in this step runs on an **explicitly resolved** profile — a model plus a reasoning effort — never the inherited session model. For each finder agent, resolve:
 ```bash
-model=$(rdm model resolve review-find --tier <hint>)
+rdm model resolve review-find --tier <hint> --format json   # {"step","host","tier","model","effort"}
 ```
-using the tier hint derived in step 1, and pass `model` explicitly when dispatching that agent with the `Agent` tool. Purely mechanical checks (e.g. a scripted presence/lint check with no judgment involved) may instead resolve `rdm model resolve mechanical`, or run inline without a subagent at all. Resolution reads the `[models]` config table (tier→model-id bindings, review floor, and per-step overrides), falling back to built-in defaults (`small`→opus, `medium`→sonnet, `large`→opus) when unset.
+using the tier hint derived in step 1, and dispatch that agent with the `Agent` tool passing `model: <model>` and `subagent_type: rdm:rdm-effort-<effort>` — the `rdm:rdm-effort-<level>` agent definitions rdm installs carry the effort, which the `Agent` tool has no parameter for. If that agent type is not found (a session started before the definitions were installed), dispatch as `general-purpose` with the model only and say in the report that the effort was not applied. Purely mechanical checks (e.g. a scripted presence/lint check with no judgment involved) may instead resolve `rdm model resolve mechanical`, or run inline without a subagent at all. Resolution reads the `[models]` config table (per-host profiles, review floor, and per-step overrides), falling back to the built-in profile table when unset — run `rdm model show` to see the effective table (the defaults are listed in `docs/model-profiles.md`).
 
 ### 3. Refute — per-finding refute pass (parallel)
 
 Dispatch a **fresh** `Agent` per **gating** finding (`blocking` / `concern`), per **Review specification § Refute**. Run these concurrently; the finder is never the refuter. A `suggestion` skips refutation — it gates nothing at any tier — and passes through marked `unrefuted: true`, still subject to the confidence floor.
 
-The refute agent also runs on an explicitly resolved model, never the inherited session model: resolve `model=$(rdm model resolve review-verify)` once (its default tier is already floored to the top review tier, so no `--tier` hint is needed) and pass `model` when dispatching each refute agent.
+The refute agent also runs on an explicitly resolved profile, never the inherited session model: resolve `rdm model resolve review-verify --format json` once (its default tier is already floored to the top review tier, so no `--tier` hint is needed) and dispatch each refute agent with its `model` and `subagent_type: rdm:rdm-effort-<effort>`, as in step 2.
 
 ### 4. Filter, consolidate & decide the outcome
 

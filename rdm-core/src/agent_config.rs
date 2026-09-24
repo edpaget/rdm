@@ -516,19 +516,53 @@ pub fn generate_workflows() -> Vec<WorkflowFile> {
 /// definitions, mirroring [`SHIPPED_WORKFLOWS`]'s "named in exactly one
 /// place" shape.
 ///
-/// Currently one entry: `rdm-mechanical`, the mechanical-transcription agent
-/// definition. **No shipped Workflow script references it** — the
-/// `no-mechanical-agents-in-workflows` phase removed every `agentType` call
-/// site from `.claude/workflows/`, so the emitted engines contain zero
-/// `agentType` occurrences. This table exists so a downstream tree has
-/// somewhere for such a reference to resolve, should a consumer add one; it is
-/// emitted on `--skills` (not on `--plugin`, which is manifest + skills +
-/// workflows only). See `docs/workflow-schemas.md` § "agentType / effort
-/// options spike".
-const SHIPPED_AGENTS: [(&str, &str); 1] = [(
-    "rdm-mechanical.md",
-    include_str!("templates/agents/rdm-mechanical.md"),
-)];
+/// Two kinds of entry:
+///
+/// - `rdm-mechanical`, the mechanical-transcription agent definition. **No
+///   shipped Workflow script references it** — the
+///   `no-mechanical-agents-in-workflows` phase removed every `agentType` call
+///   site from `.claude/workflows/`. It exists so a downstream tree has
+///   somewhere for such a reference to resolve, should a consumer add one, and
+///   is emitted on `--skills` only. See `docs/workflow-schemas.md` §
+///   "agentType / effort options spike".
+/// - The five `rdm-effort-<level>` definitions, one per Claude reasoning
+///   effort. Each is a role-agnostic general-purpose agent whose only job is
+///   to carry `effort:` frontmatter — the `Agent` tool has no effort
+///   parameter — so the dispatch skill runs its planner and implementer as
+///   `subagent_type: rdm-effort-<effort>` plus an explicit `model`. They are
+///   emitted on `--skills` **and**, via [`generate_plugin_agents`], on
+///   `--plugin`. See `docs/workflow-schemas.md` § "Planner/implementer effort
+///   route spike".
+const SHIPPED_AGENTS: [(&str, &str); 6] = [
+    (
+        "rdm-mechanical.md",
+        include_str!("templates/agents/rdm-mechanical.md"),
+    ),
+    (
+        "rdm-effort-low.md",
+        include_str!("templates/agents/rdm-effort-low.md"),
+    ),
+    (
+        "rdm-effort-medium.md",
+        include_str!("templates/agents/rdm-effort-medium.md"),
+    ),
+    (
+        "rdm-effort-high.md",
+        include_str!("templates/agents/rdm-effort-high.md"),
+    ),
+    (
+        "rdm-effort-xhigh.md",
+        include_str!("templates/agents/rdm-effort-xhigh.md"),
+    ),
+    (
+        "rdm-effort-max.md",
+        include_str!("templates/agents/rdm-effort-max.md"),
+    ),
+];
+
+/// File-name (and agent-name) prefix of the per-effort agent definitions in
+/// [`SHIPPED_AGENTS`] — the subset the plugin tree also ships.
+const EFFORT_AGENT_PREFIX: &str = "rdm-effort-";
 
 /// Returns the Claude Code custom-agent definitions that ship alongside the
 /// skills and Workflow-tool scripts.
@@ -545,8 +579,9 @@ const SHIPPED_AGENTS: [(&str, &str); 1] = [(
 /// use rdm_core::agent_config::generate_agents;
 ///
 /// let agents = generate_agents();
-/// assert_eq!(agents.len(), 1);
+/// assert_eq!(agents.len(), 6);
 /// assert_eq!(agents[0].relative_path, "rdm-mechanical.md");
+/// assert_eq!(agents[1].relative_path, "rdm-effort-low.md");
 /// ```
 pub fn generate_agents() -> Vec<AgentFile> {
     SHIPPED_AGENTS
@@ -1142,6 +1177,31 @@ fn rewrite_workflow_refs(body: &str) -> String {
     )
 }
 
+/// Namespaces every `rdm-effort-<level>` agent reference as
+/// `rdm:rdm-effort-<level>`.
+///
+/// Claude Code scopes a plugin's agents with the plugin name — an
+/// `agents/rdm-effort-high.md` whose frontmatter `name` is `rdm-effort-high`
+/// loads as `rdm:rdm-effort-high` (Claude Code plugins reference, "Agents") —
+/// so a plugin-installed skill must dispatch that scoped name. A reference
+/// already carrying the `rdm:` prefix is left alone, so the rewrite is
+/// idempotent.
+fn rewrite_effort_agent_refs(body: &str) -> String {
+    let namespaced = format!("{PLUGIN_NAME}:");
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while let Some(i) = rest.find(EFFORT_AGENT_PREFIX) {
+        out.push_str(&rest[..i]);
+        if !out.ends_with(&namespaced) {
+            out.push_str(&namespaced);
+        }
+        out.push_str(EFFORT_AGENT_PREFIX);
+        rest = &rest[i + EFFORT_AGENT_PREFIX.len()..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Appends [`PLUGIN_RDM_BIN_NOTE`] to `body` when it needs one.
 ///
 /// Applied last, after both renames, so its own `--rdm-bin` spelling is
@@ -1237,9 +1297,9 @@ pub fn generate_plugin_skills(opts: &SkillOptions) -> Vec<PluginFile> {
                          generate_skills and the plugin-name table have drifted"
                     )
                 });
-            let content = append_plugin_rdm_bin_note(rewrite_skill_names(&rewrite_workflow_refs(
-                &skill.content,
-            )));
+            let content = append_plugin_rdm_bin_note(rewrite_skill_names(
+                &rewrite_effort_agent_refs(&rewrite_workflow_refs(&skill.content)),
+            ));
             PluginFile {
                 relative_path: format!("skills/{plugin_name}/SKILL.md"),
                 content,
@@ -1283,9 +1343,38 @@ pub fn generate_plugin_workflows() -> Vec<PluginFile> {
         .collect()
 }
 
+/// Generates the plugin-layout agent definitions: the five
+/// `rdm-effort-<level>` definitions from [`generate_agents`], byte for byte,
+/// re-rooted under `agents/` at the plugin root (a sibling of `skills/` and
+/// `workflows/`, convention-discovered by Claude Code). `rdm-mechanical` is
+/// deliberately not included — it stays a `--skills`-only definition.
+///
+/// Claude Code loads these under the plugin-scoped names `rdm:rdm-effort-<level>`,
+/// which is what [`generate_plugin_skills`] rewrites skill references to.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::agent_config::generate_plugin_agents;
+///
+/// let agents = generate_plugin_agents();
+/// assert_eq!(agents.len(), 5);
+/// assert_eq!(agents[0].relative_path, "agents/rdm-effort-low.md");
+/// ```
+pub fn generate_plugin_agents() -> Vec<PluginFile> {
+    generate_agents()
+        .into_iter()
+        .filter(|agent| agent.relative_path.starts_with(EFFORT_AGENT_PREFIX))
+        .map(|agent| PluginFile {
+            relative_path: format!("agents/{}", agent.relative_path),
+            content: agent.content.to_string(),
+        })
+        .collect()
+}
+
 /// Generates the complete `rdm` plugin tree: the manifest, then the eleven
-/// plugin-layout skills, then the five workflow engines — 17 files, all paths
-/// relative to the plugin root.
+/// plugin-layout skills, then the five workflow engines, then the five
+/// effort agent definitions — 22 files, all paths relative to the plugin root.
 ///
 /// # Panics
 ///
@@ -1301,7 +1390,7 @@ pub fn generate_plugin_workflows() -> Vec<PluginFile> {
 ///     project: None,
 ///     principles_file: None,
 /// });
-/// assert_eq!(files.len(), 17);
+/// assert_eq!(files.len(), 22);
 /// assert_eq!(files[0].relative_path, ".claude-plugin/plugin.json");
 /// ```
 pub fn generate_plugin_files(opts: &SkillOptions) -> Vec<PluginFile> {
@@ -1311,6 +1400,7 @@ pub fn generate_plugin_files(opts: &SkillOptions) -> Vec<PluginFile> {
     }];
     files.extend(generate_plugin_skills(opts));
     files.extend(generate_plugin_workflows());
+    files.extend(generate_plugin_agents());
     files
 }
 
@@ -2033,10 +2123,148 @@ mod tests {
     // --- Agent-definition generation tests ---
 
     #[test]
-    fn generate_agents_returns_one_file() {
+    fn generate_agents_returns_six_files() {
         let agents = generate_agents();
-        assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].relative_path, "rdm-mechanical.md");
+        let paths: Vec<&str> = agents.iter().map(|a| a.relative_path).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "rdm-mechanical.md",
+                "rdm-effort-low.md",
+                "rdm-effort-medium.md",
+                "rdm-effort-high.md",
+                "rdm-effort-xhigh.md",
+                "rdm-effort-max.md",
+            ]
+        );
+    }
+
+    /// The value of a top-level `key:` line in a definition's YAML frontmatter.
+    fn frontmatter_value<'a>(content: &'a str, key: &str) -> Option<&'a str> {
+        let body = content.strip_prefix("---\n")?;
+        let end = body.find("\n---\n")?;
+        body[..end].lines().find_map(|line| {
+            line.strip_prefix(key)
+                .and_then(|rest| rest.strip_prefix(':'))
+                .map(str::trim)
+        })
+    }
+
+    #[test]
+    fn effort_agents_cover_every_claude_effort_and_name_their_file() {
+        use crate::model::Effort;
+        use crate::model_policy::Host;
+        let agents = generate_agents();
+        let effort_agents: Vec<&AgentFile> = agents
+            .iter()
+            .filter(|a| a.relative_path.starts_with(EFFORT_AGENT_PREFIX))
+            .collect();
+        let mut covered = Vec::new();
+        for agent in &effort_agents {
+            let stem = agent.relative_path.strip_suffix(".md").unwrap();
+            assert_eq!(
+                frontmatter_value(agent.content, "name"),
+                Some(stem),
+                "{stem}: frontmatter `name` must equal the file stem, or the type is not found"
+            );
+            let level = stem.strip_prefix(EFFORT_AGENT_PREFIX).unwrap();
+            let effort: Effort = frontmatter_value(agent.content, "effort")
+                .unwrap_or_else(|| panic!("{stem} declares no effort"))
+                .parse()
+                .unwrap_or_else(|e| panic!("{stem}: effort does not parse: {e}"));
+            assert_eq!(effort.to_string(), level, "{stem}: effort matches the stem");
+            assert_eq!(
+                frontmatter_value(agent.content, "model"),
+                None,
+                "{stem}: no model key"
+            );
+            assert_eq!(
+                frontmatter_value(agent.content, "tools"),
+                None,
+                "{stem}: no tools key"
+            );
+            covered.push(effort);
+        }
+        assert_eq!(covered, Host::Claude.valid_efforts().to_vec());
+    }
+
+    #[test]
+    fn plugin_agents_are_the_effort_agents_byte_for_byte() {
+        let raw: Vec<(String, &str)> = generate_agents()
+            .into_iter()
+            .filter(|a| a.relative_path.starts_with(EFFORT_AGENT_PREFIX))
+            .map(|a| (format!("agents/{}", a.relative_path), a.content))
+            .collect();
+        let plugin: Vec<(String, String)> = generate_plugin_agents()
+            .into_iter()
+            .map(|f| (f.relative_path, f.content))
+            .collect();
+        assert_eq!(plugin.len(), 5);
+        assert_eq!(
+            plugin,
+            raw.into_iter()
+                .map(|(p, c)| (p, c.to_string()))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            plugin.iter().all(|(p, _)| !p.contains("rdm-mechanical")),
+            "rdm-mechanical stays --skills-only"
+        );
+    }
+
+    #[test]
+    fn rewrite_effort_agent_refs_namespaces_agent_names_once() {
+        assert_eq!(
+            rewrite_effort_agent_refs("dispatch with `subagent_type: rdm-effort-high` and a model"),
+            "dispatch with `subagent_type: rdm:rdm-effort-high` and a model"
+        );
+        assert_eq!(
+            rewrite_effort_agent_refs("`rdm-effort-<profiles.plan.effort>`"),
+            "`rdm:rdm-effort-<profiles.plan.effort>`"
+        );
+        // Idempotent: an already-namespaced reference is left alone.
+        assert_eq!(
+            rewrite_effort_agent_refs("rdm:rdm-effort-low"),
+            "rdm:rdm-effort-low"
+        );
+        // Unrelated text is untouched.
+        let unrelated = "the `rdm-wf-review-refute-fix` engine and `rdm-mechanical` agent";
+        assert_eq!(rewrite_effort_agent_refs(unrelated), unrelated);
+    }
+
+    #[test]
+    fn plugin_dispatch_skill_names_effort_agents_the_plugin_emits() {
+        // Every effort-agent reference in a plugin skill body resolves to an
+        // agent the plugin tree emits, under its namespaced name.
+        let opts = plugin_test_opts();
+        let emitted: Vec<String> = generate_plugin_agents()
+            .iter()
+            .map(|f| {
+                let stem = f
+                    .relative_path
+                    .strip_prefix("agents/")
+                    .and_then(|p| p.strip_suffix(".md"))
+                    .unwrap();
+                format!("{PLUGIN_NAME}:{stem}")
+            })
+            .collect();
+        let dispatch = generate_plugin_skills(&opts)
+            .into_iter()
+            .find(|f| f.relative_path == "skills/dispatch-phase/SKILL.md")
+            .unwrap();
+        let refs = dispatch.content.matches("rdm-effort-").count();
+        assert!(refs > 0, "the dispatch skill names no effort agent");
+        assert_eq!(
+            dispatch.content.matches("rdm:rdm-effort-").count(),
+            refs,
+            "every effort-agent reference is namespaced"
+        );
+        for name in &emitted {
+            let stem = name.strip_prefix("rdm:").unwrap();
+            if dispatch.content.contains(stem) {
+                assert!(dispatch.content.contains(name.as_str()));
+            }
+        }
     }
 
     #[test]
@@ -4157,9 +4385,14 @@ mod tests {
                 "workflows/rdm-wf-estimate.js",
                 "workflows/rdm-wf-backlog.js",
                 "workflows/rdm-wf-document.js",
+                "agents/rdm-effort-low.md",
+                "agents/rdm-effort-medium.md",
+                "agents/rdm-effort-high.md",
+                "agents/rdm-effort-xhigh.md",
+                "agents/rdm-effort-max.md",
             ]
         );
-        assert_eq!(files.len(), 17);
+        assert_eq!(files.len(), 22);
 
         for path in &paths {
             let p = std::path::Path::new(path);
@@ -4295,16 +4528,34 @@ mod tests {
             // namespace that happens to share the `rdm:` prefix syntax
             // with engine invocation but is never rewritten (it names
             // plan-repo items and source files, not shipped engines).
+            // Plugin-scoped AGENT names (`rdm:rdm-effort-<level>`) are the
+            // third legitimate `rdm:` form: they must name an agent the plugin
+            // emits, or be the `rdm:rdm-effort-<…>` placeholder a skill fills
+            // in with a resolved effort.
             const LINK_SCHEME_KINDS: [&str; 4] = ["roadmap", "phase", "task", "src"];
+            let agent_stems: Vec<String> = generate_plugin_agents()
+                .iter()
+                .map(|f| {
+                    f.relative_path
+                        .trim_start_matches("agents/")
+                        .trim_end_matches(".md")
+                        .to_string()
+                })
+                .collect();
             for (idx, _) in joined.match_indices("`rdm:") {
                 let rest = &joined[idx + "`rdm:".len()..];
                 let end = rest
                     .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
                     .unwrap_or(rest.len());
                 let named = &rest[..end];
+                let effort_placeholder =
+                    named == EFFORT_AGENT_PREFIX && rest[end..].starts_with('<');
                 assert!(
-                    engine_stems.iter().any(|s| s == named) || LINK_SCHEME_KINDS.contains(&named),
-                    "`rdm:{named}` names no emitted engine and no known link-scheme kind"
+                    engine_stems.iter().any(|s| s == named)
+                        || agent_stems.iter().any(|s| s == named)
+                        || effort_placeholder
+                        || LINK_SCHEME_KINDS.contains(&named),
+                    "`rdm:{named}` names no emitted engine, no emitted agent and no known link-scheme kind"
                 );
             }
         }

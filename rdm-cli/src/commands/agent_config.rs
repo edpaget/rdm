@@ -435,17 +435,22 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "second");
     }
 
-    /// `write_skills` must emit `.claude/agents/rdm-mechanical.md`
-    /// byte-identical to `generate_agents()`'s content — mirroring the
-    /// workflow scripts' emission.
+    /// `write_skills` must emit every shipped agent definition — the
+    /// mechanical agent and the five `rdm-effort-<level>` ones — under
+    /// `.claude/agents/`, each byte-identical to `generate_agents()`'s content,
+    /// mirroring the workflow scripts' emission.
     #[test]
     fn write_skills_emits_agent_definitions() {
-        let agent_content = agent_config::generate_agents()
-            .into_iter()
-            .find(|a| a.relative_path == "rdm-mechanical.md")
-            .expect("rdm-mechanical.md must be a shipped agent definition")
-            .content
-            .to_string();
+        let agents = agent_config::generate_agents();
+        assert!(
+            agents
+                .iter()
+                .any(|a| a.relative_path == "rdm-mechanical.md")
+                && agents
+                    .iter()
+                    .any(|a| a.relative_path == "rdm-effort-high.md"),
+            "the mechanical and effort agents must both be shipped"
+        );
 
         let out_dir = tempfile::tempdir().unwrap();
         let out = out_dir.path().to_path_buf();
@@ -459,13 +464,16 @@ mod tests {
         )
         .unwrap();
 
-        let agent_path = out.join(".claude/agents/rdm-mechanical.md");
-        let written = std::fs::read_to_string(&agent_path)
-            .unwrap_or_else(|e| panic!("expected {} to be written: {e}", agent_path.display()));
-        assert_eq!(
-            written, agent_content,
-            "emitted rdm-mechanical.md must be byte-identical to generate_agents()"
-        );
+        for agent in agents {
+            let agent_path = out.join(".claude/agents").join(agent.relative_path);
+            let written = std::fs::read_to_string(&agent_path)
+                .unwrap_or_else(|e| panic!("expected {} to be written: {e}", agent_path.display()));
+            assert_eq!(
+                written, agent.content,
+                "emitted {} must be byte-identical to generate_agents()",
+                agent.relative_path
+            );
+        }
     }
 
     #[test]

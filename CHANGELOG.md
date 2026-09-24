@@ -81,6 +81,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The review Workflows (`rdm-wf-review-refute-fix`, `rdm-wf-plan-review`) accept `findEffort`/`verifyEffort` and run each finder and refuter at that reasoning effort; an invalid effort is rejected before any agent runs.
 
+- `rdm-dispatch-phase` now resolves full model + effort profiles and runs the planner, implementer, finders and refuters at their resolved effort. The planner and implementer are dispatched through new `rdm-effort-<level>` agent definitions, installed by `rdm agent-config claude --skills` and shipped in the `rdm` plugin.
+
 ### Changed
 
 - The shipped `rdm-dispatch-phase` skill now states up front that the orchestrator is authorized to invoke `--override-gate` for the narrow stale-review waiver case, instead of leading with "operator-only" and correcting it afterward — a framing that had caused a Claude Code auto-mode classifier to deny a legitimate, in-procedure override and force an unnecessary manual approval. The four conditions for the waiver are unchanged, and the audited `<reason>` string must now also cite the authorizing skill section (e.g. "per rdm-dispatch-phase § 'The terminal write' stale-review waiver"), not just the review id and both HEADs. Applies to `.claude/skills/rdm-dispatch-phase/SKILL.md`, the shipped CLI template, and the checked-in plugin tree at `plugins/rdm/skills/dispatch-phase/SKILL.md`.
@@ -322,6 +324,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `rdm-dispatch-phase`'s code-review stage now runs its finders and refuters on the resolved `review-find`/`review-verify` models instead of silently inheriting the orchestrating session's model — the same models the plan-review stage already used.
 
 - **A difficulty-only `phase update` no longer strands a stale auto-derived model tier.** Raising (or lowering) `--difficulty` without an explicit `--model` now re-derives the model tier when the previously recorded tier matches what the difficulty being replaced would itself have derived; a tier a human explicitly chose (that doesn't match its own difficulty's derive) is still preserved.
+
+- The shipped review skill no longer claims a `medium`→sonnet built-in default; it points at `rdm model show` and passes the resolved effort.
 
 ## [0.21.0] - 2026-09-03
 

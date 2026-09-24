@@ -457,14 +457,15 @@ fn agent_config_skills_generates_ten_files() {
         .arg(dir.path())
         .assert()
         .success()
-        // 11 skill files + 5 workflow files + 1 agent definition
-        // ("rdm-mechanical.md") emitted for Claude + --out. The workflow half
+        // 11 skill files + 5 workflow files + 6 agent definitions
+        // ("rdm-mechanical.md" and the five "rdm-effort-<level>.md") emitted
+        // for Claude + --out. The workflow half
         // grew from 1 to 5 when agent-orchestrated-dispatch phase 26 shipped
         // the four formerly local-only engines — see
         // agent_config_workflows_written_under_out,
         // agent_config_workflows_are_byte_identical_to_source, and
         // agent_config_agents_written_under_out below.
-        .stdout(predicate::str::contains("Wrote").count(17));
+        .stdout(predicate::str::contains("Wrote").count(22));
 
     let skills_dir = dir.path().join(".claude/skills");
     assert!(skills_dir.join("rdm-roadmap/SKILL.md").exists());
@@ -554,6 +555,9 @@ fn agent_config_agents_written_under_out() {
 
     let agents_dir = dir.path().join(".claude/agents");
     assert!(agents_dir.join("rdm-mechanical.md").exists());
+    for level in ["low", "medium", "high", "xhigh", "max"] {
+        assert!(agents_dir.join(format!("rdm-effort-{level}.md")).exists());
+    }
 }
 
 #[test]
@@ -1127,7 +1131,8 @@ fn agent_config_plugin_writes_manifest_skills_and_workflows() {
         .arg("distro-check")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Wrote").count(17));
+        // manifest + 11 skills + 5 workflows + 5 effort agent definitions.
+        .stdout(predicate::str::contains("Wrote").count(22));
 
     let manifest_path = dir.path().join(".claude-plugin/plugin.json");
     assert!(
@@ -1167,6 +1172,15 @@ fn agent_config_plugin_writes_manifest_skills_and_workflows() {
     assert!(workflows_dir.join("rdm-wf-document.js").exists());
     // The retired dispatch engine is emitted by nothing.
     assert!(!workflows_dir.join("rdm-wf-dispatch-phase.js").exists());
+
+    // The five effort agent definitions ship at the plugin root's `agents/`;
+    // the mechanical agent stays --skills-only.
+    let agents_dir = dir.path().join("agents");
+    for level in ["low", "medium", "high", "xhigh", "max"] {
+        let path = agents_dir.join(format!("rdm-effort-{level}.md"));
+        assert!(path.exists(), "expected {}", path.display());
+    }
+    assert!(!agents_dir.join("rdm-mechanical.md").exists());
 
     // Plugin skill directory names never carry the raw `rdm-` prefix.
     assert!(!skills_dir.join("rdm-roadmap").exists());

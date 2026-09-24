@@ -213,7 +213,25 @@ The following layout decisions were established in the roadmap's "Central constr
     revise/
   workflows/
     rdm-wf-review-refute-fix.js # Workflow engines (filenames: rdm-wf- prefix kept per Decision 2)
+  agents/
+    rdm-effort-low.md        # Per-effort agent definitions (low, medium, high, xhigh, max)
 ```
+
+### Agents
+
+`agents/` carries the five `rdm-effort-<level>` definitions — one per Claude reasoning effort,
+byte-identical to what `rdm agent-config claude --skills` writes to `.claude/agents/`. Each is a
+general-purpose agent whose only job is its `effort:` frontmatter: the `Agent` tool has no effort
+parameter, so `rdm:dispatch-phase` runs its planner and implementer as one of these plus an explicit
+`model` (see `docs/workflow-schemas.md` § "Planner/implementer effort route spike"). Like
+`workflows/`, the directory is convention-discovered, so the manifest has no `agents` key.
+
+Claude Code scopes a plugin's agents with the plugin name (plugins reference, "Agents": an agent
+loads as `<plugin>:<name>`, where `name` is the frontmatter `name`), so these load as
+`rdm:rdm-effort-<level>`. The plugin-mode skill transform (`rewrite_effort_agent_refs` in
+`rdm-core/src/agent_config.rs`) rewrites every `rdm-effort-` reference in an emitted skill to that
+scoped form. `rdm-mechanical.md` is **not** shipped in the plugin; it stays a `--skills`-only
+definition.
 
 ### Manifest Configuration
 
@@ -509,7 +527,7 @@ Invocation: the emitted skills invoke bare `rdm` (e.g., `./target/debug/rdm phas
 
 What **downstream consumers install** via `claude plugin marketplace add` and `claude plugin install`. Built by `rdm agent-config claude --plugin --out <dir>`, emitted to `plugins/rdm/` in this repo for release. Consumers never see the templates — they only see the installed plugin.
 
-**Layout:** 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, etc., with the `rdm-` prefix dropped per the naming decision) and 5 workflow engines (`rdm:rdm-wf-review-refute-fix`, `rdm:rdm-wf-plan-review`, `rdm:rdm-wf-estimate`, `rdm:rdm-wf-backlog`, `rdm:rdm-wf-document`, with the `rdm-wf-` prefix kept for disambiguation).
+**Layout:** 11 skills (`rdm:roadmap`, `rdm:dispatch-phase`, etc., with the `rdm-` prefix dropped per the naming decision) 5 workflow engines (`rdm:rdm-wf-review-refute-fix`, `rdm:rdm-wf-plan-review`, `rdm:rdm-wf-estimate`, `rdm:rdm-wf-backlog`, `rdm:rdm-wf-document`, with the `rdm-wf-` prefix kept for disambiguation), and 5 effort agent definitions (`rdm:rdm-effort-low` … `rdm:rdm-effort-max`) — 22 files with the manifest.
 
 **Invocation:** skills resolve as `rdm:<name>` (e.g., `rdm:roadmap`), and they invoke workflows via `Workflow({ name: "rdm:rdm-wf-review-refute-fix", … })`.
 

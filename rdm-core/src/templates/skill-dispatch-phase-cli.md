@@ -201,40 +201,59 @@ dispatch. `base` also falls back to the merge-base for an item that has never ma
 implementer dispatch with a resolvable worktree; either way the response's `baseNote` field names the
 fallback so the gap is visible rather than silent.
 
-Then resolve the two dispatch models from the item's tier. Read `model` from `rdm phase show
-<phase> --roadmap <slug> {proj_flag} --format json` (task form: `rdm task show <slug> {proj_flag}
---format json`) and call it `T`.
+Then resolve the two dispatch **profiles** — a model plus a reasoning effort — from the item's
+tier. Read `model` from `rdm phase show <phase> --roadmap <slug> {proj_flag} --format json` (task
+form: `rdm task show <slug> {proj_flag} --format json`) and call it `T`.
 
 ```bash
 # T non-empty (phase mode with a recorded tier):
-rdm model resolve plan --tier <T>
-rdm model resolve implement --tier <T>
+rdm model resolve plan --tier <T> --format json
+rdm model resolve implement --tier <T> --format json
 # T empty/missing, or task mode (a task carries no tier at all):
-rdm model resolve plan
-rdm model resolve implement
+rdm model resolve plan --format json
+rdm model resolve implement --format json
 ```
 
-Record the two resulting ids as `models.plan` / `models.implement`.
+Each prints `{"step", "host", "tier", "model", "effort"}`. Record the two results as
+`profiles.plan` / `profiles.implement` — each a `{model, effort}` pair, read from the one JSON call
+(never a second text call).
 
-Also resolve the two review-lane judgment models, used by the code-review Workflow call in step
+Also resolve the two review-lane judgment profiles, used by the code-review Workflow call in step
 11. They take **no `--tier`** — they are review-lane roles, not dispatch models:
 
 ```bash
-rdm model resolve review-find
-rdm model resolve review-verify
+rdm model resolve review-find --format json
+rdm model resolve review-verify --format json
 ```
 
-Record the two resulting ids as `models.reviewFind` / `models.reviewVerify`. Each is independently
-optional: an omitted id simply makes that judgment agent inherit the session model.
+Record the two results as `profiles.reviewFind` / `profiles.reviewVerify`. Each field is
+independently optional downstream: an omitted model makes that judgment agent inherit the session
+model, and an omitted effort makes it run at the session's effort.
 
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, and the four resolved
-`models.plan` / `models.implement` / `models.reviewFind` / `models.reviewVerify` you just read. A
-failed command is an escalation — never invent a checkout, and never let a subagent choose one.
+`profiles.plan` / `profiles.implement` / `profiles.reviewFind` / `profiles.reviewVerify` (model and
+effort each) you just read. A failed command is an escalation — never invent a checkout, and never
+let a subagent choose one.
+
+**How a profile reaches the planner and the implementer.** The `Agent` tool's `model` parameter
+carries the model, but it has no effort parameter; a custom agent definition's `effort:` frontmatter
+does. rdm ships one role-agnostic definition per effort level — `rdm-effort-low`,
+`rdm-effort-medium`, `rdm-effort-high`, `rdm-effort-xhigh`, `rdm-effort-max` — each a
+general-purpose agent with the full toolset and no model of its own (`rdm agent-config claude
+--skills` writes them to `.claude/agents/`; the `rdm` plugin carries them in its `agents/`
+directory). So the planner and the
+implementer are dispatched with `subagent_type: rdm-effort-<profile effort>` **and**
+`model: <profile model>`; the per-call model wins over the definition. **Fallback:** if that `Agent`
+call fails with "Agent type … not found" (for example, a session that started before the agent
+definitions were installed — Claude Code only watches agent directories that existed at session
+start), re-dispatch that one role as `general-purpose` with the model only, and **name the effort
+gap in the run report** — never silently.
 
 ### 5. Dispatch the planner subagent
 
-**Declare** that you are dispatching the planner on `model: <models.plan>`, then dispatch **one**
-`Agent` subagent with `model: <models.plan>`, the item body (`rdm phase show`/`rdm task show`), the
+**Declare** that you are dispatching the planner on `profiles.plan`, then dispatch **one** `Agent`
+subagent with `subagent_type: rdm-effort-<profiles.plan.effort>` and
+`model: <profiles.plan.model>` (see step 4 for the not-found fallback), the item body (`rdm phase show`/`rdm task show`), the
 parent roadmap's `## Intent` section verbatim, and the pinned `identity.path` as its working
 directory. Require it to write the plan through the CLI:
 
@@ -327,7 +346,9 @@ escalate. When you skip the write (already recorded, or a resumed pass with prio
 
 ### 9. Dispatch the implementer subagent
 
-**Declare** it, then dispatch **one** `Agent` subagent with `model: <models.implement>`, the approved
+**Declare** it, then dispatch **one** `Agent` subagent with
+`subagent_type: rdm-effort-<profiles.implement.effort>` and `model: <profiles.implement.model>` (see
+step 4 for the not-found fallback), the approved
 plan body verbatim, the item body, and `identity.path` as its working directory. Require it to
 commit in that worktree and return the commit SHA. Follow the `--permission-mode auto` rules below.
 **You MUST NOT** implement inline.
@@ -377,9 +398,11 @@ project }` (task mode: `task` in place of `roadmap`/`phase`); pass `args` as a J
 stringified value, and include the source identity you have pinned as of step 10 (`source`, `base`,
 `expectedHead`, `expectedBranch`) — a path, two SHAs and a branch name, which is everything the
 engine needs, because each reviewer runs `rdm review source` itself to reach the diff. Also include
-`findModel`/`verifyModel`, set to the `models.reviewFind`/`models.reviewVerify` ids resolved in step
-4 — the same two ids the plan-review call already used. Each is independently optional; an omitted
-id makes that judgment agent inherit the session model instead.
+`findModel`/`verifyModel` and `findEffort`/`verifyEffort`, set to the `model` and `effort` of the
+`profiles.reviewFind`/`profiles.reviewVerify` resolved in step 4, so every finder and refuter runs at
+its resolved profile. Each is independently optional; an omitted model makes that judgment agent
+inherit the session model, and an omitted effort its effort. An effort the engine does not accept is
+refused before any agent runs.
 
 Block for its returned result. **The engine reads nothing and writes nothing**: it dispatches finder
 and refuter agents and no others. `persist: true` therefore returns the ladder as `persistCommands` /
@@ -475,7 +498,8 @@ Per comment, run this numbered checklist:
 1. **Declare** the decision, the route, and the reply text you intend to record.
 2. **Classify and act:**
    - **SOURCE comment** (carries a `path` — a file-quote anchor into the diff): dispatch an
-     implementer `Agent` subagent with `model: <models.implement>` in `identity.path` with the
+     implementer `Agent` subagent with `subagent_type: rdm-effort-<profiles.implement.effort>` and
+     `model: <profiles.implement.model>` in `identity.path` with the
      comment body and its `source_link` permalink; require a commit and its SHA. **You MUST NOT
      route a source comment to `rdm-revise`**: that skill edits plan-repo document bodies and its
      `--applied-commit` is a plan-repo SHA, so it cannot carry source-commit provenance.

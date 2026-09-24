@@ -1143,6 +1143,23 @@ tool used, the delegation boundary, or the async dispatch-and-converge pattern.
 Routes 3 and 4 were not exercised (stop condition reached at Route 2, per the
 approved protocol).
 
+**Resolution (phase 6).** The earlier "no workflow script may pass `effort:`"
+rule is retired. The two review engines (`rdm-wf-review-refute-fix`,
+`rdm-wf-plan-review`) now take `findEffort`/`verifyEffort` next to
+`findModel`/`verifyModel` and pass `effort:` on every finder (including its
+retry) and refuter `agent()` call **only when one is supplied** — an absent
+effort adds no key, since `effort: undefined` was never measured inert — and
+refuse a value outside `low|medium|high|xhigh|max` before any agent runs
+(`scripts/lib/review-effort.test.mjs`). The planner and implementer take Route
+2 as five role-agnostic definitions, one per effort (`rdm-effort-low` …
+`rdm-effort-max`, each with `name:` and `effort:`, no `model:` and no `tools:`),
+dispatched as `subagent_type: rdm-effort-<effort>` plus the resolved `model:`.
+Per-effort rather than per-role×effort because effort is the only thing the
+definition must carry: the per-call `model` overrides a definition model. They
+ship on `--skills` (`.claude/agents/`) and in the plugin (`agents/`, loaded as
+`rdm:rdm-effort-<level>`). The other engines (`rdm-wf-estimate`, `-backlog`,
+`-document`) still pass no effort.
+
 ### Orchestrator / Workflow-reachability spike (can an Agent subagent drive the review workflows?)
 
 `agent-orchestrated-dispatch` phase 1. The whole roadmap assumed a prose per-phase

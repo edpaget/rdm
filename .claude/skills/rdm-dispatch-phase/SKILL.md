@@ -227,7 +227,7 @@ merge-base for an item that has never made that first implementer dispatch with 
 worktree; either way the response's `baseNote` field names the fallback so the gap is visible rather
 than silent.
 
-Then resolve the two dispatch models from the item's tier. Read `model` from `phase show <phase>
+Then resolve the two dispatch **profiles** — a model plus a reasoning effort — from the item's tier. Read `model` from `phase show <phase>
 --roadmap <slug><proj-flag> --format json` (task form: `task show <slug><proj-flag> --format
 json`) and call it `T`. **Record that same response's `body`** as `item.body` — steps 5 and 10 hand
 it to the planner and the implementer, and this is the read it comes from. Do not issue a second
@@ -235,34 +235,49 @@ one.
 
 ```bash
 # T non-empty (phase mode with a recorded tier):
-<rdmBin> model resolve plan --tier <T>
-<rdmBin> model resolve implement --tier <T>
+<rdmBin> model resolve plan --tier <T> --format json
+<rdmBin> model resolve implement --tier <T> --format json
 # T empty/missing, or task mode (a task carries no tier at all):
-<rdmBin> model resolve plan
-<rdmBin> model resolve implement
+<rdmBin> model resolve plan --format json
+<rdmBin> model resolve implement --format json
 ```
 
-Record the two resulting ids as `models.plan` / `models.implement`.
+Each prints `{"step", "host", "tier", "model", "effort"}`. Record the two results as
+`profiles.plan` / `profiles.implement` — each a `{model, effort}` pair, read from the one JSON call
+(never a second text call).
+
+**How a profile reaches the planner and the implementer.** The `Agent` tool's `model` parameter
+carries the model, but it has no effort parameter; a custom agent definition's `effort:` frontmatter
+does (`docs/workflow-schemas.md` § "Planner/implementer effort route spike"). rdm ships one
+role-agnostic definition per effort level in `.claude/agents/` — `rdm-effort-low`,
+`rdm-effort-medium`, `rdm-effort-high`, `rdm-effort-xhigh`, `rdm-effort-max` — each a
+general-purpose agent with the full toolset and no model of its own. So the planner and the
+implementer are dispatched with `subagent_type: rdm-effort-<profile effort>` **and**
+`model: <profile model>`; the per-call model wins over the definition. **Fallback:** if that `Agent`
+call fails with "Agent type … not found" (for example, a session that started before
+`.claude/agents/` existed — Claude Code only watches agent directories that existed at session
+start), re-dispatch that one role as `general-purpose` with the model only, and **name the effort
+gap in the run report** — never silently.
 
 Then read what this session — and only this session — can supply. **The plan-review engine reads
 nothing:** every reviewer fetches the document it needs from the command its prompt names. What is
-left to gather is the two judgment-site model ids, which are yours to resolve, and the wont-fix
+left to gather is the two judgment-site profiles, which are yours to resolve, and the wont-fix
 corpus, which no document records.
 
 ```bash
 <rdmBin> roadmap show <slug><proj-flag> --format json    # for STEP 5's planner — SKIP in task mode
-<rdmBin> model resolve review-find
-<rdmBin> model resolve review-verify
+<rdmBin> model resolve review-find --format json
+<rdmBin> model resolve review-verify --format json
 <rdmBin> task list --tag plan-review --status wont-fix<proj-flag> --format json   # record each result's `title`
 ```
 
-Record the two ids as `models.reviewFind` / `models.reviewVerify` and the wont-fix titles as
+Record the two results as `profiles.reviewFind` / `profiles.reviewVerify` (each `{model, effort}`) and the wont-fix titles as
 `wontFixedTitles`. Three notes on why these are the commands:
 
 - The two `model resolve` calls take **no `--tier`**. They are review-lane roles, not dispatch
-  models. There is no mechanical model left to resolve and no bootstrap agent to pre-empt: each id
-  is independently optional, and an omitted one simply makes that judgment agent inherit the
-  session model.
+  models. There is no mechanical model left to resolve and no bootstrap agent to pre-empt: each
+  model and effort is independently optional, and an omitted one simply makes that judgment agent
+  inherit the session's model or effort.
 - The roadmap read is **step 5's**, not step 6's. The planner is handed the roadmap's `## Intent`
   verbatim; the plan-review engine is not, because its `intent-alignment` reviewer reads that
   section out of the roadmap itself, given only the roadmap's slug. It is listed here because this
@@ -271,7 +286,8 @@ Record the two ids as `models.reviewFind` / `models.reviewVerify` and the wont-f
   `--limit 20` while the real corpus is larger, and its JSON carries no `body` field at all.
 
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, the two resolved
-`models.plan` / `models.implement` and the two resolved `models.reviewFind` / `models.reviewVerify`,
+`profiles.plan` / `profiles.implement` and the two resolved `profiles.reviewFind` /
+`profiles.reviewVerify` (model and effort each),
 and confirm you captured the item's `body`, the roadmap `body` (phase mode) and the wont-fix titles.
 If the worktree or identity command failed, escalate — never invent a checkout, and never let a
 subagent choose one. A failed **read** is different and not fatal, but say which one failed and
@@ -285,17 +301,18 @@ what you omit.
 - the roadmap `body` is likewise **not** a step-6 argument — it feeds step 5's planner. If it could
   not be read, the planner loses the recorded `## Intent`; the `intent-alignment` reviewer is
   unaffected, since it reads that section itself from the `roadmap` slug you pass in step 6.
-- `findModel` / `verifyModel` — each independently optional. An omitted id makes that judgment agent
-  inherit the session model. Nothing else changes, and one resolved id plus one omitted one is
-  perfectly legal.
+- `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — each independently optional. An
+  omitted model makes that judgment agent inherit the session model, an omitted effort its effort.
+  Nothing else changes, and one resolved value plus one omitted one is perfectly legal.
 - `wontFixedTexts` — omitting it suppresses nothing, and there is no wont-fix search on this path,
   so an already-dismissed finding can resurface and force a revise round. Pass `[]` only when the
   corpus really is empty.
 
 ### 5. Dispatch the planner subagent
 
-**Declare** that you are dispatching the planner on `model: <models.plan>`, then dispatch **one**
-`Agent` subagent with `model: <models.plan>` and:
+**Declare** that you are dispatching the planner on `profiles.plan`, then dispatch **one** `Agent`
+subagent with `subagent_type: rdm-effort-<profiles.plan.effort>` and `model: <profiles.plan.model>`
+(see step 4 for the not-found fallback) and:
 
 - the item body (`phase show`/`task show`) and the parent roadmap's `## Intent` section verbatim;
 - the pinned `identity.path` as its working directory;
@@ -331,8 +348,10 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-plan-review.js', args: {
   roadmap: '<slug>', phase: '<phase>',            // task mode: task: '<slug>' instead, and OMIT roadmap/phase
   source: '<identity.path>', base: '<identity.base>',
   expectedHead: '<identity.head>', expectedBranch: '<identity.branch>',
-  findModel: '<models.reviewFind>',
-  verifyModel: '<models.reviewVerify>',
+  findModel: '<profiles.reviewFind.model>',
+  verifyModel: '<profiles.reviewVerify.model>',
+  findEffort: '<profiles.reviewFind.effort>',
+  verifyEffort: '<profiles.reviewVerify.effort>',
   wontFixedTexts: [<wontFixedTitles>],
   rdmBin: '<rdmBin>', project: '<project>',
 } })
@@ -382,9 +401,10 @@ yourself.** It is the one step a subagent physically cannot perform.
   when the phase was created. Add `'intent-alignment'` when the parent roadmap records an `##
   Intent` section — the reviewer reads it out of the roadmap itself, so nothing is transcribed into
   this call. In task mode there is no parent roadmap, so omit it.
-- `findModel` / `verifyModel` — the two judgment-site ids, each independently optional. There is no
-  mechanical model any more and no bootstrap agent to skip; an omitted id just makes that agent
-  inherit the session model.
+- `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — the two judgment-site profiles'
+  `model` and `effort`, each independently optional. There is no mechanical model any more and no
+  bootstrap agent to skip; an omitted model just makes that agent inherit the session model, an
+  omitted effort its effort. An effort the engine does not accept is refused before any agent runs.
 - `wontFixedTexts` — the wont-fix titles from step 4. An empty array is a legal, meaningful value
   (nothing to suppress) and is **not** the same as omitting the key. Omit it only if the `task
   list` call itself failed.
@@ -477,7 +497,9 @@ escalate. When you skip the write (already recorded, or a resumed pass with prio
 
 ### 10. Dispatch the implementer subagent
 
-**Declare** it, then dispatch **one** `Agent` subagent with `model: <models.implement>`, the approved
+**Declare** it, then dispatch **one** `Agent` subagent with
+`subagent_type: rdm-effort-<profiles.implement.effort>` and `model: <profiles.implement.model>` (see
+step 4 for the not-found fallback), the approved
 plan body verbatim, the item body, and `identity.path` as its working directory. Require it to
 commit in that worktree and return the commit SHA. Follow the `--permission-mode auto` rules below.
 **You MUST NOT** implement inline.
@@ -526,8 +548,10 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-review-refute-fix.js', args: {
   reviewers: [<the set you selected — see below>],
   source: '<identity.path>', base: '<identity.base>',
   expectedHead: '<identity.head>', expectedBranch: '<identity.branch>',
-  findModel: '<models.reviewFind>',
-  verifyModel: '<models.reviewVerify>',
+  findModel: '<profiles.reviewFind.model>',
+  verifyModel: '<profiles.reviewVerify.model>',
+  findEffort: '<profiles.reviewFind.effort>',
+  verifyEffort: '<profiles.reviewVerify.effort>',
   rdmBin: '<rdmBin>', project: '<project>',
 } })
 ```
@@ -536,9 +560,10 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-review-refute-fix.js', args: {
 path, two SHAs and a branch name, nothing more — and each reviewer runs `rdm review source` itself
 to reach the diff. The engine dispatches finder and refuter agents and no others.
 
-- `findModel` / `verifyModel` — the same two resolved `models.reviewFind` / `models.reviewVerify`
-  ids from step 4, mirroring step 6's plan-review call. Each is independently optional; an omitted
-  id makes that judgment agent inherit the session model instead.
+- `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — the same two resolved
+  `profiles.reviewFind` / `profiles.reviewVerify` from step 4, mirroring step 6's plan-review call.
+  Each is independently optional; an omitted model makes that judgment agent inherit the session
+  model, an omitted effort its effort.
 
 `persist: true` therefore does **not** write a review. It returns the ladder as `persistCommands` /
 `persistScript`: ready-to-run Bash that records the review on `change/<head>`. **You run it**, in
@@ -639,7 +664,8 @@ Per comment, run this numbered checklist:
 1. **Declare** the decision, the route, and the reply text you intend to record.
 2. **Classify and act:**
    - **SOURCE comment** (carries a `path` — a file-quote anchor into the diff): dispatch an
-     implementer `Agent` subagent with `model: <models.implement>` in `identity.path` with the
+     implementer `Agent` subagent with `subagent_type: rdm-effort-<profiles.implement.effort>` and
+     `model: <profiles.implement.model>` in `identity.path` with the
      comment body and its `source_link` permalink; require a commit and its SHA. **You MUST NOT
      route a source comment to
      `rdm-revise`**: that skill edits plan-repo document bodies and its `--applied-commit` is a
