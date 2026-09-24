@@ -451,3 +451,98 @@ fn invert_helper_source_rejects_a_tampered_transform() {
         Err(WorkflowError::Transform(_))
     ));
 }
+
+// --- Generic extensions: construct / kept members / invoke, detached calls,
+// --- child-only environment. Built-ins and registered callbacks only.
+
+#[test]
+fn construct_get_ref_and_invoke_drive_a_real_abort_controller() {
+    let mut host = Host::start_default().expect("start host");
+    let controller = host
+        .construct("AbortController", Vec::new())
+        .expect("construct");
+    let signal = host.get_ref(&controller, "signal").expect("kept signal");
+    assert!(signal.get("$ref").is_some(), "a kept handle: {signal}");
+    assert_eq!(host.get(&signal, "aborted").unwrap(), json!(false));
+    let out = host.invoke(&controller, "abort", Vec::new()).unwrap();
+    assert!(rdm_devtools::workflow::is_undefined(&out), "{out}");
+    assert_eq!(
+        host.get(&signal, "aborted").unwrap(),
+        json!(true),
+        "invoke ran with its receiver, and the kept signal is the live object"
+    );
+    let err = host.construct("NoSuchGlobal", Vec::new()).unwrap_err();
+    assert!(err.as_js().is_some(), "{err:?}");
+    let err = host.invoke(&controller, "signal", Vec::new()).unwrap_err();
+    assert!(err.as_js().is_some(), "a non-function member: {err:?}");
+    host.shutdown().unwrap();
+}
+
+#[test]
+fn a_started_call_settles_only_after_its_held_reply() {
+    let mut host = Host::start_default().expect("start host");
+    let held = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&held);
+    let thunk = host.register(move |inv, _out| sink.borrow_mut().push(inv.call_id));
+    let call = host
+        .start_call(&Host::primitive("parallel"), vec![json!([thunk])])
+        .expect("start");
+    host.flush().expect("flush");
+    assert_eq!(held.borrow().len(), 1, "the thunk was invoked and held");
+    assert!(!host.is_settled(&call), "unsettled while its reply is held");
+    // A request made meanwhile still completes.
+    let controller = host.construct("AbortController", Vec::new()).unwrap();
+    assert!(controller.get("$ref").is_some());
+    let id = held.borrow()[0];
+    host.reply(id, Ok(json!(7))).expect("reply");
+    host.flush().expect("flush");
+    assert!(host.is_settled(&call), "the answer is buffered");
+    assert_eq!(host.await_call(call).unwrap(), json!([7]));
+    host.shutdown().unwrap();
+}
+
+/// `new Date(0).getTimezoneOffset()` in a host started with `config`: an
+/// observable of the child's `TZ` that needs no JavaScript source.
+fn epoch_offset(config: &HostConfig) -> Value {
+    let mut host = Host::start(config).expect("start host");
+    let date = host.construct("Date", vec![json!(0)]).unwrap();
+    let offset = host.invoke(&date, "getTimezoneOffset", Vec::new()).unwrap();
+    host.shutdown().unwrap();
+    offset
+}
+
+#[test]
+fn host_config_env_reaches_the_child_and_env_remove_cancels_it() {
+    // Etc/GMT-14 is UTC+14: an offset of -840 minutes, which no inherited
+    // local zone produces at the epoch.
+    let set = epoch_offset(&HostConfig::new().env("TZ", "Etc/GMT-14"));
+    assert_eq!(set, json!(-840), "the child saw TZ");
+    let inherited = epoch_offset(&HostConfig::new());
+    let removed = epoch_offset(&HostConfig::new().env("TZ", "Etc/GMT-14").env_remove("TZ"));
+    assert_ne!(inherited, json!(-840));
+    assert_eq!(removed, inherited, "env_remove cancelled the set");
+}
+
+#[test]
+fn a_result_for_an_unstarted_id_is_a_protocol_error() {
+    let dir = TempDir::new().unwrap();
+    let stray = dir.path().join("stray.jsonl");
+    std::fs::write(&stray, "{\"op\":\"ok\",\"id\":99,\"value\":null}\n").unwrap();
+    let config = HostConfig::new()
+        .runtime(fixture())
+        .runtime_args([std::ffi::OsString::from("cat"), stray.into_os_string()]);
+    let mut host = Host::start(&config).expect("start");
+    let pid = host.pid();
+    let err = host.import(&review_lib()).unwrap_err();
+    match &err {
+        WorkflowError::Protocol { line, .. } => {
+            assert_eq!(line, r#"{"op":"ok","id":99,"value":null}"#);
+        }
+        other => panic!("expected a protocol error, got {other:?}"),
+    }
+    assert!(gone_within(pid, Duration::from_secs(3)), "child reaped");
+    assert!(matches!(
+        host.import(&review_lib()),
+        Err(WorkflowError::Dead)
+    ));
+}

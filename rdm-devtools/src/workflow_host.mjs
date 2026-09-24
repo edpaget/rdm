@@ -4,9 +4,11 @@
 //
 // CONTRACT: this file holds no tests, no scenarios, no expected values, no
 // assertions, no branches on fixture content and no review logic. It only
-// imports modules, compiles function bodies, encodes/decodes values, keeps a
-// handle table, forwards callbacks and reports thrown errors. The one host
-// primitive it implements, `parallel`, is documented in the Rust module.
+// imports modules, compiles function bodies, constructs named globals, reads
+// and invokes members, encodes/decodes values, keeps a handle table, forwards
+// callbacks (settling them with a value, an `Error(message)` or a raw decoded
+// rejection), answers pings and reports thrown errors. The one host primitive
+// it implements, `parallel`, is documented in the Rust module.
 
 import { createInterface } from 'node:readline';
 import { pathToFileURL } from 'node:url';
@@ -123,8 +125,23 @@ async function handle(msg) {
       return { $ref: keep(await import(pathToFileURL(msg.path).href)) };
     case 'compile':
       return encode(new AsyncFunction(...msg.params, msg.source));
-    case 'get':
-      return encode(lookup(msg.handle)[msg.member]);
+    case 'get': {
+      const value = lookup(msg.handle)[msg.member];
+      return msg.keep ? { $ref: keep(value) } : encode(value);
+    }
+    case 'new': {
+      const ctor = globalThis[msg.global];
+      if (typeof ctor !== 'function') throw new TypeError('no global constructor named ' + String(msg.global));
+      return { $ref: keep(new ctor(...decode(msg.args))) };
+    }
+    case 'invoke': {
+      const receiver = lookup(msg.handle);
+      const method = receiver == null ? undefined : receiver[msg.member];
+      if (typeof method !== 'function') throw new TypeError('member ' + String(msg.member) + ' is not a function');
+      return encode(await method.apply(receiver, decode(msg.args)));
+    }
+    case 'ping':
+      return null;
     case 'call': {
       const target = decode(msg.target);
       if (typeof target !== 'function') throw new TypeError('call target is not a function');
@@ -144,6 +161,7 @@ input.on('line', (line) => {
     if (!waiter) throw new Error('reply for unknown callback ' + msg.callId);
     pendingCallbacks.delete(msg.callId);
     if (msg.error !== undefined) waiter.reject(new Error(String(msg.error)));
+    else if (Object.prototype.hasOwnProperty.call(msg, 'reject')) waiter.reject(decode(msg.reject));
     else waiter.resolve(decode(msg.value));
     return;
   }

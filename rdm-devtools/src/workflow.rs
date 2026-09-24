@@ -32,23 +32,46 @@
 //! - `{"op":"compile","id":n,"params":[…],"source":s}` — `new
 //!   AsyncFunction(...params, s)`; the reply is a `{"$fn":h}` handle.
 //! - `{"op":"get","id":n,"handle":h,"member":m}` — read one member of a
-//!   handle.
+//!   handle; with `"keep":true` the member is not encoded but kept, and the
+//!   reply is a `{"$ref":h}` handle to it (so a platform object such as an
+//!   `AbortSignal` can travel back into arguments by reference).
+//! - `{"op":"new","id":n,"global":name,"args":[…]}` — `new
+//!   globalThis[name](...args)`; the reply is a `{"$ref":h}` handle.
+//! - `{"op":"invoke","id":n,"handle":h,"member":m,"args":[…]}` — call method
+//!   `m` of a handle with the handle as its receiver, await and encode the
+//!   result.
 //! - `{"op":"call","id":n,"target":v,"args":[…]}` — call a function value and
 //!   await its result.
-//! - `{"op":"reply","callId":c,"value":v}` or `{"op":"reply","callId":c,"error":msg}`
-//!   — answer a callback; an `error` rejects the JavaScript promise with an
-//!   `Error(msg)`.
+//! - `{"op":"ping","id":n}` — answered with `null` (see [`Host::flush`]).
+//! - `{"op":"reply","callId":c,"value":v}`, `{"op":"reply","callId":c,"error":msg}`
+//!   or `{"op":"reply","callId":c,"reject":v}` — answer a callback; an
+//!   `error` rejects the JavaScript promise with an `Error(msg)`, a `reject`
+//!   rejects it with exactly the decoded value `v` (for example `null`).
 //! - `{"op":"shutdown"}` — exit.
 //!
 //! Node answers with `{"op":"ok","id":n,"value":v}`, `{"op":"err","id":n,"error":{name,message,stack}}`,
 //! or, while a request is outstanding, `{"op":"callback","callId":c,"fn":f,"args":[…]}`.
+//!
+//! # Detached calls
+//!
+//! [`Host::call`] waits for its result. [`Host::start_call`] only sends the
+//! call and returns a [`PendingCall`], so a test can act while it is in
+//! flight — hold callback replies, abort a signal, signal the runtime — and
+//! collect the result later with [`Host::await_call`]. While any request is
+//! outstanding, a result for a started call that is not being awaited is
+//! buffered ([`Host::is_settled`]); a result for an id that was never started
+//! is still a protocol error. [`Host::service`] handles one incoming message,
+//! [`Host::flush`] waits until JavaScript has drained everything the lines
+//! already sent set in motion (two consecutive pings, the second sent only
+//! after the first is answered, so it starts a fresh macrotask), and
+//! [`Host::reply`] answers a held invocation outside a handler.
 //!
 //! Values are JSON plus these single-key tagged forms:
 //!
 //! - `{"$fn":h}` — a JavaScript function held by the glue; pass it back as a
 //!   call target or inside arguments.
 //! - `{"$ref":h}` — any other opaque value held by the glue (a module
-//!   namespace).
+//!   namespace, a constructed object, a kept member).
 //! - `{"$callback":f}` — a Rust callback registered with [`Host::register`];
 //!   JavaScript sees an async function that emits `callback` and awaits the
 //!   `reply`.
@@ -106,7 +129,7 @@
 //! [`MutantTree::replace_once`] plants one logic change, refusing a missing or
 //! ambiguous anchor so an unapplied mutant can never report a pass.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::io;
@@ -314,6 +337,8 @@ pub struct HostConfig {
     runtime: Option<PathBuf>,
     runtime_args: Vec<OsString>,
     timeout: Duration,
+    env_set: Vec<(OsString, OsString)>,
+    env_remove: Vec<OsString>,
 }
 
 impl Default for HostConfig {
@@ -322,6 +347,8 @@ impl Default for HostConfig {
             runtime: None,
             runtime_args: Vec::new(),
             timeout: DEFAULT_HOST_TIMEOUT,
+            env_set: Vec::new(),
+            env_remove: Vec::new(),
         }
     }
 }
@@ -353,6 +380,28 @@ impl HostConfig {
         self.timeout = timeout;
         self
     }
+
+    /// Sets `key` in the runtime child's environment only. It is applied
+    /// after [`Host::start`]'s built-in removals (`NODE_OPTIONS`, every
+    /// `RDM_*`), so an explicit set wins; a later [`HostConfig::env_remove`]
+    /// of the same key cancels it. The calling process's environment is
+    /// never touched.
+    pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        let key = key.into();
+        self.env_set.retain(|(k, _)| *k != key);
+        self.env_remove.retain(|k| *k != key);
+        self.env_set.push((key, value.into()));
+        self
+    }
+
+    /// Removes `key` from the runtime child's environment only, cancelling
+    /// any earlier [`HostConfig::env`] of the same key.
+    pub fn env_remove(mut self, key: impl Into<OsString>) -> Self {
+        let key = key.into();
+        self.env_set.retain(|(k, _)| *k != key);
+        self.env_remove.push(key);
+        self
+    }
 }
 
 /// One callback invocation from JavaScript.
@@ -366,11 +415,40 @@ pub struct Invocation {
     pub args: Vec<Value>,
 }
 
+/// How a callback's JavaScript promise is settled.
+#[derive(Debug, Clone)]
+enum Settle {
+    /// Resolve with the decoded value.
+    Value(Value),
+    /// Reject with `Error(message)`.
+    Error(String),
+    /// Reject with exactly the decoded value.
+    Reject(Value),
+}
+
+impl Settle {
+    fn from_result(result: Result<Value, String>) -> Self {
+        match result {
+            Ok(value) => Self::Value(value),
+            Err(message) => Self::Error(message),
+        }
+    }
+
+    fn line(&self, call_id: u64) -> String {
+        match self {
+            Self::Value(value) => json!({ "op": "reply", "callId": call_id, "value": value }),
+            Self::Error(message) => json!({ "op": "reply", "callId": call_id, "error": message }),
+            Self::Reject(value) => json!({ "op": "reply", "callId": call_id, "reject": value }),
+        }
+        .to_string()
+    }
+}
+
 /// Replies a callback handler queues; the host sends them after the handler
 /// returns, in queue order.
 #[derive(Debug, Default)]
 pub struct Outbox {
-    replies: Vec<(u64, Result<Value, String>)>,
+    replies: Vec<(u64, Settle)>,
 }
 
 impl Outbox {
@@ -378,7 +456,28 @@ impl Outbox {
     /// the value, `Err` rejects it with `Error(message)`. A reply may answer
     /// an invocation delivered to an earlier handler call.
     pub fn reply(&mut self, call_id: u64, result: Result<Value, String>) {
-        self.replies.push((call_id, result));
+        self.replies.push((call_id, Settle::from_result(result)));
+    }
+
+    /// Rejects invocation `call_id` with exactly the decoded `value` — not an
+    /// `Error` — so a falsy rejection such as `null` reaches JavaScript as
+    /// itself.
+    pub fn reject_with(&mut self, call_id: u64, value: Value) {
+        self.replies.push((call_id, Settle::Reject(value)));
+    }
+}
+
+/// A call sent with [`Host::start_call`] whose result has not been collected.
+#[derive(Debug)]
+#[must_use = "a started call's result is collected with Host::await_call"]
+pub struct PendingCall {
+    id: u64,
+}
+
+impl PendingCall {
+    /// The request id the call was sent with.
+    pub fn id(&self) -> u64 {
+        self.id
     }
 }
 
@@ -394,6 +493,10 @@ pub struct Host {
     next_seq: usize,
     handlers: HashMap<u64, Handler>,
     next_callback: u64,
+    /// Request ids sent and not yet answered.
+    started: HashSet<u64>,
+    /// Answers received for started ids nobody was waiting on yet.
+    settled: HashMap<u64, Result<Value, JsError>>,
 }
 
 impl fmt::Debug for Host {
@@ -410,7 +513,8 @@ impl Host {
     ///
     /// The child runs with its private temp directory as working directory,
     /// with `NODE_OPTIONS` and every `RDM_*` variable removed from its
-    /// environment.
+    /// environment, and then `config`'s own [`HostConfig::env`] /
+    /// [`HostConfig::env_remove`] applied.
     ///
     /// # Errors
     ///
@@ -439,6 +543,15 @@ impl Host {
                 spec = spec.env_remove(key);
             }
         }
+        // ProcessSpec applies removals before sets, so an explicit set wins
+        // over the built-in removals above; HostConfig keeps its own set and
+        // remove lists disjoint.
+        for key in &config.env_remove {
+            spec = spec.env_remove(key);
+        }
+        for (key, value) in &config.env_set {
+            spec = spec.env(key, value);
+        }
         let session = Session::spawn(&spec).map_err(WorkflowError::Runtime)?;
         let pid = session.pid();
         let dir_path = dir.path().to_owned();
@@ -451,6 +564,8 @@ impl Host {
             next_seq: 0,
             handlers: HashMap::new(),
             next_callback: 1,
+            started: HashSet::new(),
+            settled: HashMap::new(),
         })
     }
 
@@ -612,6 +727,136 @@ impl Host {
         self.call(&f, args)
     }
 
+    /// Constructs `new globalThis[global](...args)` (for example an
+    /// `AbortController`), returning a `{"$ref":h}` handle.
+    ///
+    /// # Errors
+    ///
+    /// [`WorkflowError::Js`] if `global` is not a constructor or construction
+    /// throws; otherwise as for [`Host::import`].
+    pub fn construct(&mut self, global: &str, args: Vec<Value>) -> Result<Value, WorkflowError> {
+        self.request(
+            json!({ "op": "new", "global": global, "args": args }),
+            format!("construction of `{global}`"),
+        )
+    }
+
+    /// Reads `member` of a handle without encoding it, returning a
+    /// `{"$ref":h}` handle to the member itself, so an object that does not
+    /// survive JSON (an `AbortSignal`) can be passed back by reference.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Host::import`].
+    pub fn get_ref(&mut self, handle: &Value, member: &str) -> Result<Value, WorkflowError> {
+        let id = handle_id(handle)?;
+        self.request(
+            json!({ "op": "get", "handle": id, "member": member, "keep": true }),
+            format!("kept read of member `{member}`"),
+        )
+    }
+
+    /// Calls method `member` of a handle with the handle as its receiver,
+    /// servicing callbacks until it settles.
+    ///
+    /// # Errors
+    ///
+    /// [`WorkflowError::Js`] if the member is not a function or the call
+    /// throws; otherwise as for [`Host::import`].
+    pub fn invoke(
+        &mut self,
+        handle: &Value,
+        member: &str,
+        args: Vec<Value>,
+    ) -> Result<Value, WorkflowError> {
+        let id = handle_id(handle)?;
+        self.request(
+            json!({ "op": "invoke", "handle": id, "member": member, "args": args }),
+            format!("invocation of member `{member}`"),
+        )
+    }
+
+    /// Sends a call of `target` with `args` without waiting for it. Collect
+    /// its result with [`Host::await_call`]; meanwhile every other request,
+    /// [`Host::service`] and [`Host::flush`] keep delivering callbacks.
+    ///
+    /// # Errors
+    ///
+    /// [`WorkflowError::Dead`] or [`WorkflowError::Session`] if the line
+    /// cannot be sent (the host is torn down).
+    pub fn start_call(
+        &mut self,
+        target: &Value,
+        args: Vec<Value>,
+    ) -> Result<PendingCall, WorkflowError> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let line = json!({ "op": "call", "id": id, "target": target, "args": args }).to_string();
+        self.send_request(id, &line, &format!("request #{id} (a started call)"))?;
+        Ok(PendingCall { id })
+    }
+
+    /// Whether `call`'s result has already arrived (it is then returned by
+    /// [`Host::await_call`] without waiting).
+    pub fn is_settled(&self, call: &PendingCall) -> bool {
+        self.settled.contains_key(&call.id)
+    }
+
+    /// Waits for `call`'s result, servicing callbacks meanwhile.
+    ///
+    /// # Errors
+    ///
+    /// [`WorkflowError::Js`] if the call threw or rejected; otherwise as for
+    /// [`Host::import`].
+    pub fn await_call(&mut self, call: PendingCall) -> Result<Value, WorkflowError> {
+        let pending = format!("request #{} (a started call)", call.id);
+        self.wait_for(call.id, &pending)
+    }
+
+    /// Receives and handles one incoming message: a callback is dispatched to
+    /// its handler, a started call's result is buffered. Blocks until a
+    /// message arrives, bounded by the host's deadline — so call it only while
+    /// JavaScript has something outstanding that will emit one.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Host::import`].
+    pub fn service(&mut self) -> Result<(), WorkflowError> {
+        self.receive_one("the next message")
+    }
+
+    /// Returns once JavaScript has handled every line sent before it and
+    /// drained the promise work those lines set in motion: two `ping`s, the
+    /// second sent only after the first is answered, so it is read in a
+    /// fresh macrotask after every microtask the earlier lines queued.
+    /// Callbacks emitted meanwhile are dispatched to their handlers. Work
+    /// waiting on I/O or timers is not covered.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Host::import`].
+    pub fn flush(&mut self) -> Result<(), WorkflowError> {
+        for _ in 0..2 {
+            self.request(json!({ "op": "ping" }), "a flush ping".to_owned())?;
+        }
+        Ok(())
+    }
+
+    /// Answers a held callback invocation outside a handler, as
+    /// [`Outbox::reply`] does inside one.
+    ///
+    /// # Errors
+    ///
+    /// [`WorkflowError::Dead`] or [`WorkflowError::Session`] if the line
+    /// cannot be sent (the host is torn down).
+    pub fn reply(
+        &mut self,
+        call_id: u64,
+        result: Result<Value, String>,
+    ) -> Result<(), WorkflowError> {
+        self.send_settle(call_id, &Settle::from_result(result))
+    }
+
     /// Compiles a workflow script's whole body (see [`driver_source`]) with
     /// [`DRIVER_PARAMS`], returning the function to call with
     /// `[args, agent, pipeline, parallel, log]`.
@@ -682,52 +927,97 @@ impl Host {
     /// its reply arrives.
     fn exchange(&mut self, id: u64, line: &str, desc: &str) -> Result<Value, WorkflowError> {
         let pending = format!("request #{id} ({desc})");
+        self.send_request(id, line, &pending)?;
+        self.wait_for(id, &pending)
+    }
+
+    /// Sends request line `line` and records `id` as started.
+    fn send_request(&mut self, id: u64, line: &str, pending: &str) -> Result<(), WorkflowError> {
         let Some(session) = self.session.as_mut() else {
             return Err(WorkflowError::Dead);
         };
         if let Err(source) = session.send_line(line) {
             self.teardown();
-            return Err(WorkflowError::Session { pending, source });
+            return Err(WorkflowError::Session {
+                pending: pending.to_owned(),
+                source,
+            });
         }
+        self.started.insert(id);
+        Ok(())
+    }
+
+    /// Services messages until the result for started request `id` is in.
+    fn wait_for(&mut self, id: u64, pending: &str) -> Result<Value, WorkflowError> {
         loop {
-            let Some(session) = self.session.as_mut() else {
-                return Err(WorkflowError::Dead);
-            };
-            let line = match session.recv_line() {
-                Ok(line) => line,
-                Err(source) => {
-                    self.teardown();
-                    return Err(WorkflowError::Session { pending, source });
-                }
-            };
-            let msg: Value = match serde_json::from_str(&line) {
-                Ok(v @ Value::Object(_)) => v,
-                Ok(_) | Err(_) => {
-                    return Err(self.protocol_error("expected one JSON object per line", &line));
-                }
-            };
-            match msg.get("op").and_then(Value::as_str) {
-                Some("ok") if msg.get("id") == Some(&json!(id)) => {
-                    return Ok(msg.get("value").cloned().unwrap_or(Value::Null));
-                }
-                Some("err") if msg.get("id") == Some(&json!(id)) => {
-                    let e = msg.get("error").cloned().unwrap_or(Value::Null);
-                    let field = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
-                    return Err(WorkflowError::Js(JsError {
+            if let Some(result) = self.settled.remove(&id) {
+                return result.map_err(WorkflowError::Js);
+            }
+            if !self.started.contains(&id) {
+                return Err(WorkflowError::Transform(format!(
+                    "{pending} was never started on this host or was already collected"
+                )));
+            }
+            self.receive_one(pending)?;
+        }
+    }
+
+    /// Receives one message: dispatches a callback, or buffers the result of
+    /// a started request. Anything else is a protocol error.
+    fn receive_one(&mut self, pending: &str) -> Result<(), WorkflowError> {
+        let Some(session) = self.session.as_mut() else {
+            return Err(WorkflowError::Dead);
+        };
+        let line = match session.recv_line() {
+            Ok(line) => line,
+            Err(source) => {
+                self.teardown();
+                return Err(WorkflowError::Session {
+                    pending: pending.to_owned(),
+                    source,
+                });
+            }
+        };
+        let msg: Value = match serde_json::from_str(&line) {
+            Ok(v @ Value::Object(_)) => v,
+            Ok(_) | Err(_) => {
+                return Err(self.protocol_error("expected one JSON object per line", &line));
+            }
+        };
+        let op = msg.get("op").and_then(Value::as_str);
+        if op == Some("callback") {
+            return self.dispatch(&msg, &line);
+        }
+        let started = msg
+            .get("id")
+            .and_then(Value::as_u64)
+            .filter(|id| self.started.contains(id));
+        match (op, started) {
+            (Some("ok"), Some(id)) => {
+                self.started.remove(&id);
+                let value = msg.get("value").cloned().unwrap_or(Value::Null);
+                self.settled.insert(id, Ok(value));
+                Ok(())
+            }
+            (Some("err"), Some(id)) => {
+                self.started.remove(&id);
+                let e = msg.get("error").cloned().unwrap_or(Value::Null);
+                let field = |k: &str| e.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
+                self.settled.insert(
+                    id,
+                    Err(JsError {
                         name: field("name"),
                         message: field("message"),
                         stack: field("stack"),
                         file: field("file"),
-                    }));
-                }
-                Some("callback") => self.dispatch(&msg, &line)?,
-                _ => {
-                    return Err(self.protocol_error(
-                        &format!("unexpected message while waiting for {pending}"),
-                        &line,
-                    ));
-                }
+                    }),
+                );
+                Ok(())
             }
+            _ => Err(self.protocol_error(
+                &format!("unexpected message while waiting for {pending}"),
+                &line,
+            )),
         }
     }
 
@@ -753,21 +1043,23 @@ impl Host {
             Some(handler) => handler(&inv, &mut outbox),
             None => return Err(self.protocol_error("callback for an unregistered function", line)),
         }
+        for (call_id, settle) in outbox.replies {
+            self.send_settle(call_id, &settle)?;
+        }
+        Ok(())
+    }
+
+    /// Sends the reply that settles callback invocation `call_id`.
+    fn send_settle(&mut self, call_id: u64, settle: &Settle) -> Result<(), WorkflowError> {
         let Some(session) = self.session.as_mut() else {
             return Err(WorkflowError::Dead);
         };
-        for (call_id, result) in outbox.replies {
-            let reply = match result {
-                Ok(value) => json!({ "op": "reply", "callId": call_id, "value": value }),
-                Err(message) => json!({ "op": "reply", "callId": call_id, "error": message }),
-            };
-            if let Err(source) = session.send_line(&reply.to_string()) {
-                self.teardown();
-                return Err(WorkflowError::Session {
-                    pending: format!("reply to callback {call_id}"),
-                    source,
-                });
-            }
+        if let Err(source) = session.send_line(&settle.line(call_id)) {
+            self.teardown();
+            return Err(WorkflowError::Session {
+                pending: format!("reply to callback {call_id}"),
+                source,
+            });
         }
         Ok(())
     }
