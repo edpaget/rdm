@@ -1,5 +1,5 @@
-//! Repo-level gate for the plan-review driver's two copies and its hoist
-//! behavior, on `cargo nextest run`.
+//! Repo-level gate for the plan-review driver's two copies, on
+//! `cargo nextest run`.
 //!
 //! `.claude/workflows/lib/plan-review.mjs` is the single source of truth for
 //! the plan-review driver; `.claude/workflows/rdm-wf-plan-review.js` carries a
@@ -8,20 +8,18 @@
 //! those two drift, so an edit to the lib can silently leave the shipped engine
 //! on the old behavior.
 //!
-//! Neither test here greps a source file for a string it hopes to find as a
-//! proxy for behavior: the first compares two real artifacts for identity, and
-//! the second executes the driver (and the shipped engine) against fakes via
-//! `node --test`.
+//! The test compares the two real artifacts for identity; it greps neither
+//! file for a string it hopes to find. The driver's behaviour — the lib and
+//! the shipped engine, executed — is `rdm-cli/tests/workflow_review/`
+//! `plan_driver.rs` (`plan_driver::*`).
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const BEGIN_MARKER: &str = ">>> plan-review-driver:begin";
 const END_MARKER: &str = ">>> plan-review-driver:end";
 
 const LIB: &str = ".claude/workflows/lib/plan-review.mjs";
 const WORKFLOW: &str = ".claude/workflows/rdm-wf-plan-review.js";
-const NODE_TEST: &str = "scripts/lib/plan-review-hoist.test.mjs";
 
 /// The workspace root — the parent of `rdm-core/`.
 fn repo_root() -> PathBuf {
@@ -99,81 +97,6 @@ fn plan_review_driver_block_is_byte_identical() {
              generator-stamped.",
             lib_block.len(),
             wf_block.len(),
-        );
-    }
-
-    // The runtime entry belongs to the workflow only — if it ever appeared
-    // inside the copied block, the lib would try to run itself on import.
-    assert!(
-        wf_src.contains("return await runPlanReviewDriver"),
-        "{WORKFLOW} lost its top-level runtime entry"
-    );
-    assert!(
-        !lib_src.contains("return await runPlanReviewDriver"),
-        "{LIB} must not carry the workflow's runtime entry"
-    );
-
-    // The lib's Node-only export list must stay BELOW the end marker, or the
-    // next mirror would carry an `export` into a file that cannot have one.
-    let end_at = lib_src
-        .find(END_MARKER)
-        .expect("the lib carries an end marker");
-    let export_at = lib_src
-        .find("\nexport {")
-        .expect("the lib carries a Node-only export block");
-    assert!(
-        export_at > end_at,
-        "{LIB}: the `export {{ … }}` block moved ABOVE the plan-review-driver \
-         end marker — it would be mirrored into {WORKFLOW}, which cannot carry \
-         a top-level export inside the block"
-    );
-}
-
-/// Resolve a usable `node`: first on `PATH`, else through `mise exec` (the
-/// version pinned in `.mise.toml`). Never a silent skip — an unrunnable gate
-/// that reports success is worse than a red one.
-fn node_command() -> Command {
-    if Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-    {
-        return Command::new("node");
-    }
-    let mise_ok = Command::new("mise")
-        .args(["exec", "node", "--", "node", "--version"])
-        .current_dir(repo_root())
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-    if mise_ok {
-        let mut cmd = Command::new("mise");
-        cmd.args(["exec", "node", "--", "node"]);
-        return cmd;
-    }
-    panic!(
-        "no usable `node` found. This test executes {NODE_TEST}, which decides \
-         the plan-review hoist behavior. Install the pinned toolchain with \
-         `mise install` (node is pinned in .mise.toml) or put `node` on PATH."
-    );
-}
-
-#[test]
-fn plan_review_driver_hoist_behavior() {
-    let root = repo_root();
-    let output = node_command()
-        .args(["--test", NODE_TEST])
-        .current_dir(&root)
-        .output()
-        .unwrap_or_else(|e| panic!("failed to spawn node for {NODE_TEST}: {e}"));
-
-    if !output.status.success() {
-        panic!(
-            "`node --test {NODE_TEST}` failed ({}).\n--- stdout ---\n{}\n--- stderr ---\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
         );
     }
 }

@@ -1,187 +1,65 @@
 //! The persist writer: its pure helpers, and the command ladder it emits run
 //! under a real `sh` against the real `rdm` binary in a per-test plan repo.
 
-use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use serde_json::{Value, json};
-use tempfile::TempDir;
 
 use crate::git_test_support::git;
+use crate::plan_fixture::{PlanRepo, hermetic, rdm_bin};
 use crate::support::{Agent, Failure, Js, Lib, Outcome, REVIEW_LIB, Reply, run_mutant, run_real};
 
 const PROJECT: &str = "persist-verify";
 const TASK_BODY: &str = "Alpha opening line.\nThe retry backoff strategy is unspecified here.\nA repeated sentence.\nA repeated sentence.\nTrailing \"quoted\" $dollar `backtick` — em-dash line.";
 
-fn rdm_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_rdm")
-}
-
-/// Applies the hermetic environment every `rdm` (and ladder) process runs
-/// under: no inherited `RDM_*`, no real global/system git or rdm config.
-fn hermetic(cmd: &mut Command, root: &Path, session: &str) {
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("RDM_") {
-            cmd.env_remove(key);
-        }
-    }
-    cmd.env("RDM_ROOT", root)
-        .env("RDM_SESSION", session)
-        .env("XDG_CONFIG_HOME", "/dev/null/nonexistent")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE");
-}
-
-/// A seeded, committed plan repo in its own temp directory.
-struct PlanRepo {
-    dir: TempDir,
-    root: PathBuf,
-}
-
-impl PlanRepo {
-    fn new() -> Result<Self, Failure> {
-        let dir = TempDir::new().map_err(|e| Failure::Infra(e.to_string()))?;
-        let root = dir.path().join("plan");
-        std::fs::create_dir_all(&root).map_err(|e| Failure::Infra(e.to_string()))?;
-        let repo = Self { dir, root };
-        repo.ok("seed", &["init", "--default-project", PROJECT])?;
-        repo.ok(
-            "seed",
-            &[
-                "task",
-                "create",
-                "persist-target",
-                "--title",
-                "Persist target",
-                "--no-edit",
-                "--project",
-                PROJECT,
-                "--body",
-                TASK_BODY,
-            ],
-        )?;
-        repo.ok(
-            "seed",
-            &[
-                "roadmap",
-                "create",
-                "persist-rm",
-                "--title",
-                "Persist roadmap",
-                "--body",
-                "Roadmap body.",
-                "--no-edit",
-                "--project",
-                PROJECT,
-            ],
-        )?;
-        repo.ok(
-            "seed",
-            &[
-                "phase",
-                "create",
-                "target",
-                "--title",
-                "Target phase",
-                "--number",
-                "1",
-                "--body",
-                "Phase body with a unique phase sentence.",
-                "--no-edit",
-                "--roadmap",
-                "persist-rm",
-                "--project",
-                PROJECT,
-            ],
-        )?;
-        repo.ok("seed", &["commit", "-m", "chore(plan): seed"])?;
-        Ok(repo)
-    }
-
-    fn rdm(&self, session: &str, args: &[&str]) -> Result<Output, Failure> {
-        let mut cmd = Command::new(rdm_bin());
-        hermetic(&mut cmd, &self.root, session);
-        cmd.args(args)
-            .output()
-            .map_err(|e| Failure::Infra(format!("running rdm: {e}")))
-    }
-
-    fn ok(&self, session: &str, args: &[&str]) -> Result<String, Failure> {
-        let out = self.rdm(session, args)?;
-        if !out.status.success() {
-            return Err(Failure::Infra(format!(
-                "rdm {args:?} failed: {}",
-                String::from_utf8_lossy(&out.stderr)
-            )));
-        }
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    }
-
-    fn review(&self, id: &str) -> Result<Value, Failure> {
-        let text = self.ok(
-            "reader",
-            &[
-                "review",
-                "show",
-                id,
-                "--format",
-                "json",
-                "--project",
-                PROJECT,
-            ],
-        )?;
-        serde_json::from_str(&text)
-            .map_err(|e| Failure::Infra(format!("review show json: {e}: {text}")))
-    }
-
-    fn reviews_on(&self, target: &str) -> Result<Vec<Value>, Failure> {
-        let text = self.ok(
-            "reader",
-            &[
-                "review",
-                "list",
-                "--on",
-                target,
-                "--format",
-                "json",
-                "--project",
-                PROJECT,
-            ],
-        )?;
-        let v: Value = serde_json::from_str(&text)
-            .map_err(|e| Failure::Infra(format!("review list json: {e}: {text}")))?;
-        let list = v
-            .as_array()
-            .cloned()
-            .or_else(|| v["reviews"].as_array().cloned())
-            .unwrap_or_default();
-        list.iter()
-            .filter_map(|r| r["id"].as_str())
-            .map(|id| self.review(id))
-            .collect()
-    }
-
-    /// A fresh, empty directory to use as the ladder's `TMPDIR`.
-    fn tmpdir(&self, name: &str) -> Result<PathBuf, Failure> {
-        let p = self.dir.path().join(name);
-        std::fs::create_dir_all(&p).map_err(|e| Failure::Infra(e.to_string()))?;
-        Ok(p)
-    }
-
-    /// Runs `script` under `sh -c` with the hermetic environment.
-    fn sh(&self, script: &str, session: &str, tmpdir: &Path) -> Result<Output, Failure> {
-        let mut cmd = Command::new("sh");
-        hermetic(&mut cmd, &self.root, session);
-        cmd.arg("-c")
-            .arg(script)
-            .env("TMPDIR", tmpdir)
-            .current_dir(self.dir.path())
-            .output()
-            .map_err(|e| Failure::Infra(format!("running sh: {e}")))
-    }
+/// The persist fixture: [`PlanRepo`] with default project [`PROJECT`], a task
+/// whose body carries quotable, repeated and shell-hostile lines, and a
+/// roadmap with one phase.
+fn seeded() -> Result<PlanRepo, Failure> {
+    let repo = PlanRepo::init(PROJECT)?;
+    repo.seed(&[
+        &[
+            "task",
+            "create",
+            "persist-target",
+            "--title",
+            "Persist target",
+            "--no-edit",
+            "--project",
+            PROJECT,
+            "--body",
+            TASK_BODY,
+        ],
+        &[
+            "roadmap",
+            "create",
+            "persist-rm",
+            "--title",
+            "Persist roadmap",
+            "--body",
+            "Roadmap body.",
+            "--no-edit",
+            "--project",
+            PROJECT,
+        ],
+        &[
+            "phase",
+            "create",
+            "target",
+            "--title",
+            "Target phase",
+            "--number",
+            "1",
+            "--body",
+            "Phase body with a unique phase sentence.",
+            "--no-edit",
+            "--roadmap",
+            "persist-rm",
+            "--project",
+            PROJECT,
+        ],
+    ])?;
+    Ok(repo)
 }
 
 /// The ladder `persistReviewCommands` emits, as one script.
@@ -748,7 +626,7 @@ fn path_from_location_guards() {
 fn ladder_lands_anchored_whole_doc_and_cleared_comments() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let repo = PlanRepo::new()?;
+        let repo = seeded()?;
         let survivors = json!([
             { "id": "a1", "concern": "coherence", "severity": "blocking", "confidence": 90, "what_fails": "the backoff is unspecified",
               "why": "no rule", "recommendation": "state it", "quote": "The retry backoff strategy is unspecified here." },
@@ -757,7 +635,7 @@ fn ladder_lands_anchored_whole_doc_and_cleared_comments() {
         ]);
         let script = ladder(&mut js, "plan", "rework", survivors, "task/persist-target")?;
         let id = land(&repo, &script, "ladder")?;
-        let review = repo.review(&id)?;
+        let review = repo.review(PROJECT, &id)?;
         check_eq!(
             review["verdict"],
             json!("request-changes"),
@@ -837,7 +715,7 @@ fn ladder_lands_anchored_whole_doc_and_cleared_comments() {
 fn verdict_mapping_via_real_binary() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let repo = PlanRepo::new()?;
+        let repo = seeded()?;
         // Zero survivors still submits (the start body is never empty).
         let script = ladder(
             &mut js,
@@ -846,7 +724,7 @@ fn verdict_mapping_via_real_binary() {
             json!([]),
             "task/persist-target",
         )?;
-        let clean = repo.review(&land(&repo, &script, "clean")?)?;
+        let clean = repo.review(PROJECT, &land(&repo, &script, "clean")?)?;
         check_eq!(clean["verdict"], json!("approve"), "reviewed -> approve");
         check_eq!(
             clean["state"],
@@ -862,7 +740,7 @@ fn verdict_mapping_via_real_binary() {
             esc.clone(),
             "task/persist-target",
         )?;
-        let escalated = repo.review(&land(&repo, &script, "esc")?)?;
+        let escalated = repo.review(PROJECT, &land(&repo, &script, "esc")?)?;
         check_eq!(
             escalated["verdict"],
             json!("request-changes"),
@@ -874,14 +752,14 @@ fn verdict_mapping_via_real_binary() {
         );
 
         let script = ladder(&mut js, "code", "escalated", esc, "task/persist-target")?;
-        let code = repo.review(&land(&repo, &script, "esc-code")?)?;
+        let code = repo.review(PROJECT, &land(&repo, &script, "esc-code")?)?;
         check!(
             code.to_string().contains("[code] escalated"),
             "an escalated code review carries the [code] prefix"
         );
 
         let script = ladder(&mut js, "plan", "rework", json!([]), "task/persist-target")?;
-        let rework = repo.review(&land(&repo, &script, "rework")?)?;
+        let rework = repo.review(PROJECT, &land(&repo, &script, "rework")?)?;
         check_eq!(
             rework["verdict"],
             json!("request-changes"),
@@ -899,7 +777,7 @@ fn verdict_mapping_via_real_binary() {
 fn phase_stem_and_numeric_refs_resolve() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let repo = PlanRepo::new()?;
+        let repo = seeded()?;
         let survivors = json!([{ "id": "p1", "concern": "coherence", "severity": "blocking", "confidence": 90,
                                  "what_fails": "phase gap", "quote": "a unique phase sentence" }]);
         let script = ladder(
@@ -909,7 +787,7 @@ fn phase_stem_and_numeric_refs_resolve() {
             survivors,
             "phase/persist-rm/phase-1-target",
         )?;
-        let review = repo.review(&land(&repo, &script, "stem")?)?;
+        let review = repo.review(PROJECT, &land(&repo, &script, "stem")?)?;
         check_eq!(
             review["target"]["kind"],
             json!("phase"),
@@ -922,7 +800,7 @@ fn phase_stem_and_numeric_refs_resolve() {
             "the quote anchors in the phase body"
         );
         let script = ladder(&mut js, "plan", "reviewed", json!([]), "phase/persist-rm/1")?;
-        let numeric = repo.review(&land(&repo, &script, "numeric")?)?;
+        let numeric = repo.review(PROJECT, &land(&repo, &script, "numeric")?)?;
         check_eq!(
             numeric["target"]["kind"],
             json!("phase"),
@@ -936,7 +814,7 @@ fn phase_stem_and_numeric_refs_resolve() {
 fn bare_ref_rejected() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let repo = PlanRepo::new()?;
+        let repo = seeded()?;
         let script = ladder(
             &mut js,
             "plan",
@@ -952,7 +830,8 @@ fn bare_ref_rejected() {
         );
         check!(review_id(&out).is_none(), "no review id is reported");
         check_eq!(
-            repo.reviews_on("phase/persist-rm/phase-1-target")?.len(),
+            repo.reviews_on(PROJECT, "phase/persist-rm/phase-1-target")?
+                .len(),
             0,
             "nothing landed on the phase"
         );
@@ -964,7 +843,7 @@ fn bare_ref_rejected() {
 fn ambiguous_quote_not_silently_anchored() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let repo = PlanRepo::new()?;
+        let repo = seeded()?;
         let survivors = json!([{ "id": "amb", "concern": "coherence", "severity": "blocking", "confidence": 90,
                                  "what_fails": "ambiguous", "quote": "A repeated sentence." }]);
         let script = ladder(&mut js, "plan", "rework", survivors, "task/persist-target")?;
@@ -974,7 +853,7 @@ fn ambiguous_quote_not_silently_anchored() {
             !out.status.success(),
             "an ambiguous quote stops the ladder rather than guessing an occurrence"
         );
-        let reviews = repo.reviews_on("task/persist-target")?;
+        let reviews = repo.reviews_on(PROJECT, "task/persist-target")?;
         check_eq!(
             reviews.len(),
             1,
@@ -1000,7 +879,7 @@ fn ambiguous_quote_not_silently_anchored() {
 fn ladder_commits_only_its_own_changeset() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let repo = PlanRepo::new()?;
+        let repo = seeded()?;
         repo.ok(
             "other",
             &[
@@ -1059,7 +938,7 @@ fn ladder_commits_only_its_own_changeset() {
 
 fn injection_safe(lib: &Lib) -> Outcome {
     let mut js = Js::open(lib)?;
-    let repo = PlanRepo::new()?;
+    let repo = seeded()?;
     let marks = repo.tmpdir("marks")?;
     let m = |n: &str| marks.join(n);
     let target = format!(
@@ -1098,7 +977,7 @@ fn mutant_target_unquoted() {
 
 fn symlink_not_followed(lib: &Lib) -> Outcome {
     let mut js = Js::open(lib)?;
-    let repo = PlanRepo::new()?;
+    let repo = seeded()?;
     let victim = repo.dir.path().join("victim.txt");
     std::fs::write(&victim, "precious").map_err(|e| Failure::Infra(e.to_string()))?;
     let script = ladder(
@@ -1148,7 +1027,7 @@ fn mutant_scratch_path_predictable() {
 
 fn leaves_no_scratch(lib: &Lib) -> Outcome {
     let mut js = Js::open(lib)?;
-    let repo = PlanRepo::new()?;
+    let repo = seeded()?;
     let survivors = json!([{ "id": "f1", "concern": "coherence", "severity": "blocking", "confidence": 90, "what_fails": "x" }]);
     let script = ladder(&mut js, "plan", "rework", survivors, "task/persist-target")?;
     let tmp = repo.tmpdir("clean")?;
@@ -1195,7 +1074,7 @@ fn mutant_scratch_rm_removed() {
 fn concurrent_ladders_do_not_collide() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let repo = PlanRepo::new()?;
+        let repo = seeded()?;
         let tmp = repo.tmpdir("shared")?;
         let script = ladder(
             &mut js,
@@ -1236,7 +1115,7 @@ fn concurrent_ladders_do_not_collide() {
         );
         for id in [ida, idb].into_iter().flatten() {
             check_eq!(
-                repo.review(&id)?["state"],
+                repo.review(PROJECT, &id)?["state"],
                 json!("submitted"),
                 "review {id} is submitted"
             );

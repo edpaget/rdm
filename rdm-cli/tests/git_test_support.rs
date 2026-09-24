@@ -1,7 +1,8 @@
 //! Shared, isolated `git` test helper for `rdm-cli`'s integration tests that
 //! drive real project-repo git state: `cli_worktree.rs`, `cli_gate.rs`,
 //! `cli_verify.rs`, `cli_review_change.rs`, `cli_phase.rs`, `cli_task.rs`,
-//! and the `workflow_review/` test binary's persist cases. Included via
+//! and the `workflow_review/` and `workflow_passes/` test binaries (through
+//! `common/plan_fixture.rs`). Included via
 //! `#[path = "git_test_support.rs"] mod git_test_support;` from each — it is
 //! deliberately NOT shared with any other `cli_*.rs` file, and NOT exposed
 //! as a public API of `rdm-git` (see that crate's own copy at

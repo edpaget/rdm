@@ -33,20 +33,7 @@ fn run_driver(
     args: Value,
     agent: &Agent,
 ) -> Result<Result<Value, rdm_devtools::workflow::JsError>, Failure> {
-    let script = lib.read(REVIEW_ENGINE)?;
-    let mut host = Host::start_default()?;
-    let driver = crate::support::load(host.load_driver(&script))?;
-    let deps = agent.install(&mut host);
-    split(host.call(
-        &driver,
-        vec![
-            args,
-            deps["agent"].clone(),
-            deps["pipeline"].clone(),
-            deps["parallel"].clone(),
-            deps["log"].clone(),
-        ],
-    ))
+    crate::support::run_driver(lib, REVIEW_ENGINE, args, agent)
 }
 
 fn legacy_shape(lib: &Lib, mode: &str) -> crate::support::Outcome {
