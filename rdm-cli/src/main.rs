@@ -56,6 +56,20 @@ fn run() -> Result<()> {
         return commands::config::run(command, &cli.root, &global_config);
     }
 
+    // `cost` reads Claude Code transcripts, not the plan repo: it needs no
+    // root, no `rdm.toml` and no project.
+    if let Command::Cost {
+        session,
+        workflow_run,
+    } = cli.command
+    {
+        return commands::cost::run(
+            session,
+            workflow_run,
+            cli.format.unwrap_or(OutputFormat::Human),
+        );
+    }
+
     let root = paths::resolve_root(cli.root, &global_config)?;
     let root = paths::expand_root(root)?;
     let raw_repo_config = paths::load_repo_config(&root);
@@ -96,7 +110,7 @@ fn run() -> Result<()> {
     }
 
     match cli.command {
-        Command::Config { .. } => unreachable!("handled above"),
+        Command::Config { .. } | Command::Cost { .. } => unreachable!("handled above"),
         Command::Init {
             default_project,
             default_format,

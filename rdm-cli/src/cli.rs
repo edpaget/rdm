@@ -374,6 +374,24 @@ pub(crate) enum Command {
         #[arg(long)]
         project: Option<String>,
     },
+    /// Report the tokens a Claude Code session, or one Workflow run in it,
+    /// spent, per model and per token class, with a per-source breakdown.
+    ///
+    /// Reads the session transcripts under `$CLAUDE_CONFIG_DIR/projects`
+    /// (default `~/.claude/projects`). Local and read-only: it needs no plan
+    /// repo and never touches the network. Tokens only, no dollars. With no
+    /// selector it reports the session named by `CLAUDE_CODE_SESSION_ID`.
+    /// `--format json` prints the full report on stdout (warnings inside it);
+    /// `table` and `markdown` print the human rendering.
+    Cost {
+        /// The session uuid to report.
+        #[arg(long, value_name = "UUID", conflicts_with = "workflow_run")]
+        session: Option<String>,
+        /// A Workflow run id (`wf_…`, the prefix optional): report only that
+        /// run's agents.
+        #[arg(long, value_name = "WF_ID")]
+        workflow_run: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]

@@ -1,0 +1,19 @@
+{
+  "runId": "wf_R2",
+  "workflowName": "rdm-wf-estimate",
+  "status": "completed",
+  "startTime": 1790246400000,
+  "timestamp": "2026-09-24T10:41:00.000Z",
+  "totalTokens": 5555,
+  "workflowProgress": [
+    {
+      "type": "workflow_agent",
+      "label": "rate:phase-1",
+      "agentId": "x1",
+      "model": "claude-haiku-5",
+      "state": "done",
+      "cached": null,
+      "tokens": 5555
+    }
+  ]
+}

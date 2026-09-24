@@ -206,6 +206,17 @@ Rules:
 - Pin a code link with the revision from `git rev-parse HEAD` in the source repo, or omit `@rev` inside a phase or task body to let it fall back to that item's own stamped `commit` field once one is recorded.
 - Before finalizing a body edit, run `rdm link check --on <ref> {proj_flag}` (e.g. `--on task/<slug>` or `--on phase/<roadmap-slug>/<stem>`) and treat a nonzero exit as a blocking issue — a dangling item link or a code link whose path doesn't exist at its pinned revision — to fix before proceeding.
 
+## Token spend
+
+`rdm cost` reports the tokens a Claude Code session spent, per model and per token class, with a per-source breakdown (main session, `Agent` subagents, Workflow agents). It reads Claude Code's local transcripts under `$CLAUDE_CONFIG_DIR/projects` (default `~/.claude/projects`), is read-only, needs no plan repo or `--project`, and reports tokens only.
+
+```bash
+rdm cost --session <uuid>                 # one session
+rdm cost --workflow-run <wf_id>           # only that Workflow run's agents
+rdm cost                                  # the current session (CLAUDE_CODE_SESSION_ID)
+rdm cost --session <uuid> --format json   # the full report; warnings are inside it
+```
+
 ## Planning workflow
 
 ### Before starting work

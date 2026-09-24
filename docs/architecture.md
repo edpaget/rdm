@@ -10,7 +10,8 @@ rdm (workspace)
 ├── rdm-cli/          # binary: CLI porcelain over rdm-core (clap)
 ├── rdm-server/       # binary: REST API over rdm-core (axum)
 ├── rdm-store-fs/     # library: filesystem Store implementation (atomic writes)
-└── rdm-store-git/    # library: git-backed Store implementation (wraps rdm-store-fs)
+├── rdm-store-git/    # library: git-backed Store implementation (wraps rdm-store-fs)
+└── rdm-transcript/   # library: filesystem TranscriptSource over Claude Code session transcripts
 ```
 
 ## Core Is the Source of Truth

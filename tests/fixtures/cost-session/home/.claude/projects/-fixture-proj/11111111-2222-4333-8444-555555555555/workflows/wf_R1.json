@@ -1,0 +1,37 @@
+{
+  "runId": "wf_R1",
+  "workflowName": "rdm-wf-review-refute-fix",
+  "status": "completed",
+  "startTime": 1790244601000,
+  "timestamp": "2026-09-24T10:15:00.000Z",
+  "totalTokens": 424242,
+  "workflowProgress": [
+    {
+      "type": "workflow_agent",
+      "label": "find:code:ac",
+      "agentId": "w1",
+      "model": "claude-sonnet-5",
+      "state": "done",
+      "cached": null,
+      "tokens": 11111
+    },
+    {
+      "type": "workflow_agent",
+      "label": "refute:1",
+      "agentId": "w2",
+      "model": "claude-sonnet-5",
+      "state": "error",
+      "cached": null,
+      "tokens": 22222
+    },
+    {
+      "type": "workflow_agent",
+      "label": "fetch:phase-meta",
+      "agentId": "w3",
+      "model": "claude-haiku-5",
+      "state": "done",
+      "cached": true,
+      "tokens": null
+    }
+  ]
+}

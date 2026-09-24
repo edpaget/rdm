@@ -1,0 +1,35 @@
+--- stdout ---
+Session 11111111-2222-4333-8444-555555555555 (project -fixture-proj)
+Scope: whole session
+
+Tokens by model
+  model            requests  input  output  cache_write_5m  cache_write_1h  cache_read  total
+  claude-haiku-5          5    442     405             800               0        1800   3447
+  claude-opus-5           7     17     850            2200            5500       14200  22767
+  claude-sonnet-5         4     25     635            5100               0        3000   8760
+  total                  16    484    1890            8100            5500       19000  34974
+
+Sources
+  kind            id                                    label                                        anchor                flags          requests  total
+  main            11111111-2222-4333-8444-555555555555  main session                                 2026-09-24T10:00:00Z  -                     6  12540
+  agent           a1                                    Survey the parser module [Explore]           2026-09-24T10:01:00Z  1 dup dropped         2   1905
+  agent           a2                                    Implement the widget [general-purpose]       2026-09-24T10:05:00Z  -                     2  10657
+  agent           a3                                    Review the widget change [general-purpose]   2026-09-24T10:05:00Z  -                     1   1026
+  agent           a4                                    Orphaned background check [general-purpose]  unanchored            -                     1    332
+  workflow_agent  w1                                    rdm-wf-review-refute-fix / find:code:ac      2026-09-24T10:10:01Z  -                     2   6510
+  workflow_agent  w2                                    rdm-wf-review-refute-fix / refute:1          2026-09-24T10:10:01Z  errored               1   1224
+  workflow_agent  w3                                    rdm-wf-review-refute-fix / fetch:phase-meta  2026-09-24T10:10:01Z  cached                0      0
+  workflow_agent  x1                                    rdm-wf-estimate / rate:phase-1               unanchored            -                     1    780
+
+Unanchored
+  agent a4: Orphaned background check
+  workflow_run wf_R2: rdm-wf-estimate
+
+Workflow runs
+  wf_R1 rdm-wf-review-refute-fix: anchored 2026-09-24T10:10:01Z, 3 agent(s), sidecar totalTokens (not the cost basis): 424242
+  wf_R2 rdm-wf-estimate: unanchored, 1 agent(s), sidecar totalTokens (not the cost basis): 5555
+--- stderr ---
+warning: agent a1 (Survey the parser module): request req_a1_zero (model <synthetic>) reported all-zero usage; excluded as unmeasured
+warning: skipped Workflow sidecar <CLAUDE_CONFIG_DIR>/projects/-fixture-proj/11111111-2222-4333-8444-555555555555/workflows/wf_bad.json: it has no string runId
+warning: agent a1 (Survey the parser module): dropped 1 request(s) already counted by main transcript
+warning: workflow-nested agents unverified: an agent spawned below a Workflow agent has never been observed on disk, so any spend it made is not located or counted

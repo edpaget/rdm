@@ -1,0 +1,7 @@
+{
+  "agentType": "Plan",
+  "description": "Plan the demo phase",
+  "toolUseId": "toolu_fixture_b1",
+  "spawnDepth": 1,
+  "model": "sonnet"
+}

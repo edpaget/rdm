@@ -1,0 +1,7 @@
+{
+  "agentType": "general-purpose",
+  "description": "Orphaned background check",
+  "toolUseId": "toolu_fixture_missing",
+  "spawnDepth": 1,
+  "model": "haiku"
+}

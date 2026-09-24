@@ -1,0 +1,7 @@
+{
+  "agentType": "Explore",
+  "description": "Survey the parser module",
+  "toolUseId": "toolu_fixture_a1",
+  "spawnDepth": 1,
+  "model": "haiku"
+}

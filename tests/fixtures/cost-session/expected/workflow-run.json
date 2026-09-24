@@ -1,0 +1,142 @@
+{
+  "session_id": "11111111-2222-4333-8444-555555555555",
+  "project_slug": "-fixture-proj",
+  "scope": {
+    "kind": "workflow_run",
+    "run_id": "wf_R1"
+  },
+  "totals": {
+    "requests": 3,
+    "input": 19,
+    "output": 515,
+    "cache_write_5m": 4200,
+    "cache_write_1h": 0,
+    "cache_read": 3000,
+    "total": 7734
+  },
+  "models": [
+    {
+      "model": "claude-sonnet-5",
+      "requests": 3,
+      "input": 19,
+      "output": 515,
+      "cache_write_5m": 4200,
+      "cache_write_1h": 0,
+      "cache_read": 3000,
+      "total": 7734
+    }
+  ],
+  "sources": [
+    {
+      "kind": "workflow_agent",
+      "id": "w1",
+      "label": "rdm-wf-review-refute-fix / find:code:ac",
+      "agent_type": null,
+      "parent_agent_id": null,
+      "spawn_depth": null,
+      "run_id": "wf_R1",
+      "workflow_name": "rdm-wf-review-refute-fix",
+      "anchor": "2026-09-24T10:10:01Z",
+      "anchored": true,
+      "errored": false,
+      "cached": false,
+      "duplicates_dropped": 0,
+      "totals": {
+        "requests": 2,
+        "input": 10,
+        "output": 500,
+        "cache_write_5m": 3000,
+        "cache_write_1h": 0,
+        "cache_read": 3000,
+        "total": 6510
+      },
+      "models": [
+        {
+          "model": "claude-sonnet-5",
+          "requests": 2,
+          "input": 10,
+          "output": 500,
+          "cache_write_5m": 3000,
+          "cache_write_1h": 0,
+          "cache_read": 3000,
+          "total": 6510
+        }
+      ]
+    },
+    {
+      "kind": "workflow_agent",
+      "id": "w2",
+      "label": "rdm-wf-review-refute-fix / refute:1",
+      "agent_type": null,
+      "parent_agent_id": null,
+      "spawn_depth": null,
+      "run_id": "wf_R1",
+      "workflow_name": "rdm-wf-review-refute-fix",
+      "anchor": "2026-09-24T10:10:01Z",
+      "anchored": true,
+      "errored": true,
+      "cached": false,
+      "duplicates_dropped": 0,
+      "totals": {
+        "requests": 1,
+        "input": 9,
+        "output": 15,
+        "cache_write_5m": 1200,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 1224
+      },
+      "models": [
+        {
+          "model": "claude-sonnet-5",
+          "requests": 1,
+          "input": 9,
+          "output": 15,
+          "cache_write_5m": 1200,
+          "cache_write_1h": 0,
+          "cache_read": 0,
+          "total": 1224
+        }
+      ]
+    },
+    {
+      "kind": "workflow_agent",
+      "id": "w3",
+      "label": "rdm-wf-review-refute-fix / fetch:phase-meta",
+      "agent_type": null,
+      "parent_agent_id": null,
+      "spawn_depth": null,
+      "run_id": "wf_R1",
+      "workflow_name": "rdm-wf-review-refute-fix",
+      "anchor": "2026-09-24T10:10:01Z",
+      "anchored": true,
+      "errored": false,
+      "cached": true,
+      "duplicates_dropped": 0,
+      "totals": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "models": []
+    }
+  ],
+  "unanchored": [],
+  "workflow_runs": [
+    {
+      "run_id": "wf_R1",
+      "workflow_name": "rdm-wf-review-refute-fix",
+      "anchor": "2026-09-24T10:10:01Z",
+      "anchored": true,
+      "agent_count": 3,
+      "sidecar_total_tokens": 424242
+    }
+  ],
+  "warnings": [
+    "workflow-nested agents unverified: an agent spawned below a Workflow agent has never been observed on disk, so any spend it made is not located or counted"
+  ]
+}

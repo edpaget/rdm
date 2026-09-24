@@ -82,7 +82,7 @@ pub const UNKNOWN_MODEL: &str = "unknown";
 /// assert_eq!(sum.total(), 10 + 12 + 120 + 1000);
 /// assert_eq!(a + b, sum);
 /// ```
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
 pub struct TokenUsage {
     /// Uncached input tokens (`input_tokens`).
     pub input: u64,

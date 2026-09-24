@@ -20,6 +20,7 @@ pub mod agent_config;
 pub mod backlinks;
 pub mod backlog;
 pub mod config;
+pub mod cost;
 pub mod describe;
 pub mod info;
 pub mod init;

@@ -2831,6 +2831,7 @@ dependencies = [
  "rdm-server",
  "rdm-store-fs",
  "rdm-store-git",
+ "rdm-transcript",
  "regex",
  "serde",
  "serde_json",
@@ -2922,6 +2923,14 @@ dependencies = [
  "rdm-git",
  "rdm-store-fs",
  "static_assertions",
+ "tempfile",
+]
+
+[[package]]
+name = "rdm-transcript"
+version = "0.1.0"
+dependencies = [
+ "rdm-core",
  "tempfile",
 ]
 

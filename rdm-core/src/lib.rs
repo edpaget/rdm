@@ -65,6 +65,9 @@ pub mod source_select;
 pub mod store;
 /// Reserved-tag primitives (e.g. the `needs-plan-review` sentinel).
 pub mod tags;
+/// Locating a Claude Code session on disk and building its anchored token
+/// ledger, behind the read-only `TranscriptSource` port.
+pub mod transcript;
 /// Hierarchical tree view of plan repo contents.
 pub mod tree;
 /// Per-model, per-token-class token accounting over already-read transcript
@@ -75,6 +78,13 @@ pub mod usage;
 /// parser and an in-memory double for tests.
 pub mod worktree;
 
+pub use transcript::{
+    EntryKind, MemoryTranscriptSource, ModelRow, ReportScope, ReportWarning, SessionLocation,
+    SessionReport, SourceKind, SourceReport, TranscriptEntry, TranscriptError, TranscriptPath,
+    TranscriptSource, UnanchoredEntry, UnanchoredKind, UsageSummary, WarningScope,
+    WorkflowRunLocation, WorkflowRunReport, locate_session, locate_workflow_run, reap_session,
+    reap_workflow_run,
+};
 pub use usage::{
     ModelUsage, ParsedTranscript, RequestUsage, TokenUsage, UsageLedger, UsageWarning,
     parse_transcript,

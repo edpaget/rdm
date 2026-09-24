@@ -1,0 +1,7 @@
+{
+  "agentType": "general-purpose",
+  "description": "Implement the widget",
+  "toolUseId": "toolu_fixture_a2",
+  "spawnDepth": 1,
+  "model": "opus"
+}

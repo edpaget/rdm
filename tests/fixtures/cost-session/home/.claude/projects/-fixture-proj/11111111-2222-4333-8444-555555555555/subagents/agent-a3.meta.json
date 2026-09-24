@@ -1,0 +1,8 @@
+{
+  "agentType": "general-purpose",
+  "description": "Review the widget change",
+  "toolUseId": "toolu_fixture_a3",
+  "parentAgentId": "a2",
+  "spawnDepth": 2,
+  "model": "sonnet"
+}

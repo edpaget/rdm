@@ -1,0 +1,3 @@
+{"type":"user","timestamp":"2026-09-24T12:00:00.000Z"}
+{"type":"assistant","requestId":"req_s2_1","timestamp":"2026-09-24T12:00:03.000Z","message":{"model":"claude-opus-5","content":[{"type":"tool_use","id":"toolu_fixture_b1","name":"Agent","input":{"description":"Plan the demo phase","subagent_type":"Plan","model":"sonnet"}}],"usage":{"input_tokens":5,"output_tokens":90,"cache_creation_input_tokens":1000,"cache_read_input_tokens":0}}}
+{"type":"assistant","requestId":"req_s2_2","timestamp":"2026-09-24T12:03:00.000Z","message":{"model":"claude-opus-5","usage":{"input_tokens":2,"output_tokens":40,"cache_creation_input_tokens":0,"cache_read_input_tokens":1000}}}
