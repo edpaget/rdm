@@ -66,9 +66,10 @@
 #   shipped (default) — rdm-core/src/templates/skill-{review,plan-review}-cli.md
 #   local              — .claude/skills/{rdm-review,rdm-plan-review}/SKILL.md
 #
-# `--check` is what scripts/verify-workflow-review.sh and CI use to prove no
-# template was hand-edited out of sync with the source of truth. BOTH modes and
-# BOTH targets are `--check`-gated there.
+# `--check` is what the Rust `workflow_review` tests
+# (rdm-cli/tests/workflow_review/generators.rs) run under `cargo nextest run`
+# to prove no template was hand-edited out of sync with the source of truth.
+# BOTH modes and BOTH targets are `--check`-gated there.
 
 set -eu
 

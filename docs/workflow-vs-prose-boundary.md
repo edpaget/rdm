@@ -133,7 +133,7 @@ particular strings are present in a static file is not evidence that the procedu
 `scripts/verify-skill-dispatch.sh` is deliberately not written, and there is **no
 live-smoke-run gate** anywhere in this lane. What does gate it is real-binary machinery —
 `scripts/verify-agent-config-distribution.sh` and `scripts/verify-plugin-install.sh` over the
-emitted templates, `scripts/verify-workflow-review.sh` over the review engines, and
+emitted templates, the Rust `workflow_review` tests over the review engines, and
 `cargo nextest run` over the plan, review and gate surfaces the prose drives. The same phase
 deleted `scripts/verify-workflow-do-auto.sh` and `scripts/verify-workflow-do-auto-task.sh`
 (their subject, the `--auto` → engine wiring inside `rdm-do`'s prose, no longer exists) and
@@ -201,9 +201,9 @@ Read any of these back with `rdm review show <id> --project rdm`, and the plan w
 static-invariant net (greps over prose and templates) along with the engine it tested. Every
 *behavioral* protection it carried survives elsewhere — wrong-checkout selection and gate
 override in `rdm-core/tests/gate.rs` + `rdm-cli/tests/cli_gate.rs`,
-required review coverage in `scripts/verify-workflow-review.sh` §3c, persist-side anchor
-accounting in `scripts/verify-workflow-review-outcome.sh` (and `scripts/verify-workflow-review.sh`
-§ 9a), the verification gate in `rdm-cli/tests/cli_verify.rs`,
+required review coverage in `rdm-cli/tests/workflow_review/coverage.rs`, persist-side
+anchor accounting in `scripts/lib/review-driver.test.mjs` and
+`rdm-cli/tests/workflow_review/persist.rs`, the verification gate in `rdm-cli/tests/cli_verify.rs`,
 and the no-completion-trailer-before-land rule in `scripts/verify-skill-autopilot.sh`. The
 grep-only half was dropped deliberately; that class is owned by
 `task/retire-static-grep-harnesses`, which this phase does not close.

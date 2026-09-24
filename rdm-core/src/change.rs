@@ -2191,8 +2191,7 @@ mod tests {
     /// The other half of the same rule, and the reason the guard is scoped:
     /// an EXPLICIT `--base` equal to the head is a supported shape (the
     /// `--no-code` review, and the root commit of an orphan branch), which
-    /// `scripts/verify-review-source.mjs` and `cli_review_change.rs` both
-    /// depend on. An unconditional refusal would retract it.
+    /// `cli_review_change.rs` depends on. An unconditional refusal would retract it.
     #[test]
     fn resolve_change_target_allows_an_explicit_base_equal_to_the_head() {
         let head = "a".repeat(40);

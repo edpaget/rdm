@@ -2,8 +2,10 @@
 
 Owner: `.claude/workflows/lib/plan-review.mjs`'s `plan-review-driver` block (and its
 byte-identical copy in `.claude/workflows/rdm-wf-plan-review.js`).
-Gated by: `scripts/verify-workflow-review.sh` §§ 5b-drift, 5b-mechanical, 5b-exec,
-5b-gate-evidence, 5b-gate-action, 5b-gate-return, 5b-gate-loud, 5b-mut, 6.
+Gated by: `rdm-core/tests/workflow_plan_review_driver.rs` (the driver block's byte
+identity, and `scripts/lib/plan-review-hoist.test.mjs` executing the real driver) and
+`rdm-cli/tests/workflow_review/plan.rs` (the gate helpers). The
+`scripts/verify-workflow-review.sh` sections this line used to name are deleted.
 
 This document records a decision that was previously implicit: **may a plan review clear
 the `needs-plan-review` gate tag on an item the same session authored?** It exists because
@@ -375,8 +377,8 @@ non-hermetic run against a phase that legitimately reaches `reviewed`, since no 
 substitute for it.
 
 **Status: not yet observed.** The change landed with the hermetic gates green
-(`scripts/verify-workflow-review.sh` §§ 5b-gate-evidence / 5b-gate-action / 5b-gate-return /
-5b-gate-loud, plus the existing 5b-drift, 5b-mechanical, 5b-exec, 5b-mut).
+(the since-deleted `scripts/verify-workflow-review.sh` §§ 5b-gate-evidence / 5b-gate-action /
+5b-gate-return / 5b-gate-loud, plus the then-existing 5b-drift, 5b-mechanical, 5b-exec, 5b-mut).
 
 The reason it is still pending is structural, not an oversight: the observation requires
 dispatching the real `rdm-wf-plan-review` Workflow, and the implementing session had no

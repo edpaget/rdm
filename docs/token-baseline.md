@@ -964,8 +964,9 @@ have arrived there on an ungraded finding. The AC table is never budgeted, so
 step 1 through the same monotone `hasBlocking`, so `escalated` is likewise only
 ever reachable more often.
 
-This is encoded EXECUTABLY, not only here: `scripts/verify-workflow-review.sh`
-§ 9 runs an exhaustive property test over every refuted-subset × N × tier
+This is encoded EXECUTABLY, not only here: `rdm-cli/tests/workflow_review/budget.rs`
+(`budget_ranking_deterministic_and_monotone`, `over_budget_blockers_still_gate`)
+runs an exhaustive property test over every refuted-subset × N × tier
 combination of a planted candidate set, plus the named rank-7 scenario and the
 below-floor inverse.
 

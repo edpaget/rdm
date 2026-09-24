@@ -65,8 +65,9 @@ grepped for `Date.now(` / `Math.random(` by its own harness and must come
 back clean. The reason is determinism of the pipeline GENERALLY, not any one
 downstream consumer of it: `verify-workflow-backlog.sh` states the rule
 plainly ("the pipeline must be deterministic"), and
-`verify-workflow-review.sh` asserts byte-identical output on identical
-input as its own reproducibility contract. Resume-cache validity (see
+the Rust `workflow_review` tests (`pipeline::output_deterministic_{code,plan}`,
+`engine::driver_deterministic_and_emits_no_done_trailer`) assert byte-identical
+output on identical input as its own reproducibility contract. Resume-cache validity (see
 [`docs/autonomous-loop.md`](autonomous-loop.md) § "Recovering a crashed
 run") is ONE consequence of that determinism, not the sole or primary
 reason for the rule: a call whose `(prompt, opts)` pair is not reproducible
@@ -87,9 +88,10 @@ which is untouched in this pass.
 The prefix only pays off if the **rendered** listing shows it, and that listing
 is produced by the Claude Code client from `.claude/`, not by anything in this
 repo — so no hermetic check here can confirm it. What this repo gates
-hermetically (`verify-workflow-review.sh` § 2d) is that the tree declares the
-`rdm-wf-*.js` engine filename set and that the shipped template copies stay
-byte-identical to the local engines. Confirming the client agrees is a
+hermetically (`rdm-cli/tests/workflow_review/generators.rs`,
+`shipped_workflow_templates_match_local_engines`) is that the shipped template
+copies stay byte-identical to the local engines; the old filename-set listing
+check went with `verify-workflow-review.sh`. Confirming the client agrees is a
 separate, deliberate step:
 
 ```sh
@@ -116,7 +118,7 @@ against a pinned pre-rename listing rather than a real capture — no `claude`
 CLI, no network, nothing real involved. It was retired by the operator
 amendment to the `retire-static-grep-harnesses` plan (2026-09-23), which
 extended grep-only-harness retirement to workflow JS/skill-template source;
-`verify-workflow-review.sh` § 2d no longer invokes it.
+the since-deleted `verify-workflow-review.sh` § 2d stopped invoking it.
 
 A stale listing is not evidence of a failed rename: a client only watches
 directories that existed at *its* session start, so a long-running session can
@@ -266,8 +268,8 @@ is authored once in `lib/review.mjs` — the **canonical review source** — bet
 `review-refute-fix:begin` / `review-refute-fix:end` marker comments.
 `scripts/gen-workflow-review.sh` extracts that block and stamps it **verbatim**
 into each consumer between matching markers; `--check` mode asserts no consumer
-drifted from the source, and `scripts/verify-workflow-review.sh` (and CI) run that
-check. Editing happens in the lib; consumers are regenerated, never hand-edited.
+drifted from the source, and the Rust `workflow_review` generator tests
+(`cargo nextest run`, and so CI) run that check. Editing happens in the lib; consumers are regenerated, never hand-edited.
 
 This is distinct from a cross-`workflow()` call: sharing is a **compile-time copy**
 of a helper block, not a runtime sub-workflow invocation, so it does not consume
@@ -629,7 +631,7 @@ silently runs at `high`. So a typo'd `effort` degrades to the status quo — the
 opposite of `agentType`, where a typo takes the lane down.
 
 **The guard stays, but its rationale changes.** `scripts/verify-workflow-review.sh`
-§2b still forbids `effort:` anywhere under `.claude/workflows/` except the spike —
+§2b (since deleted) forbade `effort:` anywhere under `.claude/workflows/` except the spike —
 now **not** because the option is inert (it demonstrably is not), but because
 threading it is outside this phase's scope: the phase body's step 4 says "do not
 thread `effort:` anywhere", and it says so on the strength of the definition-side
@@ -817,7 +819,7 @@ source of `rdm-wf-plan-review.js`'s `plan-review-driver` block):
 
 It is written as a plain literal at each site, never a module-level constant,
 because the source text is byte-copied across files with different scopes.
-`scripts/verify-workflow-review.sh` §2c asserts this **bidirectionally** — every
+`scripts/verify-workflow-review.sh` §2c (since deleted) asserted this **bidirectionally** — every
 mechanical site carries it, no judgment site does — with planted-mutation
 self-tests in both directions and a completeness sweep that fails if a site is
 added or removed without updating the asserted list, or if any `agentType` other
@@ -955,8 +957,8 @@ possible gate-agent pairs have overlapping execution windows.
 So exactly one mechanical call site in the tree is dispatched through
 `parallel()`: `gather:<stem>` in `rdm-wf-document.js`, via
 `parallel(phases.map((p) => () => gatherPhase(p)))`. That set is now
-machine-checked — `scripts/verify-workflow-review.sh` §2c(v) pins it and fails if
-it changes, so a future refactor cannot silently move a mechanical site into a
+machine-checked — `scripts/verify-workflow-review.sh` §2c(v) (since deleted) pinned it and failed if
+it changed, so a future refactor cannot silently move a mechanical site into a
 fan-out, and the next reader cannot repeat the mis-selection.
 
 Dispatching *that* lane answers the question. Two `rdm-wf-document` runs against
@@ -1035,7 +1037,7 @@ moved between binary and subcommand, and every shape gained the same explicit
 instruction. §2b-fid check (7) now gates the flag placement, with its own
 planted-mutation self-test, so this class of instrument bug cannot recur silently.
 
-`scripts/verify-workflow-review.sh` §2b-fid gates that the instrument stays
+`scripts/verify-workflow-review.sh` §2b-fid (since deleted) gated that the instrument stayed
 correctly *built* — coverage, pairing, discrimination (each write shape carries
 an instance whose correct answer is `ok: false`, so a constant-answer guess
 cannot score a false pass), throwaway roots required rather than defaulted since
@@ -1326,7 +1328,7 @@ self-inflicted formatting slip.
 
 The code-mode `ac` dimension's prompt deliberately says nothing about `quote`.
 It returns early from its own `AC_REVIEW_SCHEMA` branch and never reaches the
-shared FINDINGS-schema prompt line, its prompt text is byte-pinned by
+shared FINDINGS-schema prompt line, its prompt text was byte-pinned by the since-deleted
 `scripts/verify-workflow-review.sh`'s `CODE_PROMPT_BASELINE.ac`, and its
 `findings` array is narrative-only. Structurally `quote` is still accepted there,
 because `AC_REVIEW_SCHEMA.properties.findings` aliases the same sub-schema. See
@@ -1531,8 +1533,8 @@ per-kind branching, no prefixing, and a throw on a ref with no `/`. That is what
 lets a future target kind reuse it unchanged.
 
 **The writer's optional fourth argument, `opts`.** Every field is DEFAULT-OFF,
-so a caller that passes no `opts` gets byte-identical commands to before (pinned
-by `scripts/verify-workflow-review.sh` § 15). The consumer decides; the writer
+so a caller that passes no `opts` gets the plain document-target ladder that
+`rdm-cli/tests/workflow_review/persist.rs` runs against the real binary. The consumer decides; the writer
 still branches on nothing:
 
 | `opts` field | effect |
@@ -2279,8 +2281,9 @@ in the survivor set: the budgeted survivors are always a SUPERSET of the
 unbudgeted ones, and since `hasBlocking` is an existential over that set, the
 budget can only ever move `reviewed → rework`, never `rework → reviewed`. The AC
 table is never budgeted, so `classifyOutcome` step 2 is bit-identical under every
-N including 0. `scripts/verify-workflow-review.sh` § 9 encodes this as an
-exhaustive subset property test, not only as prose.
+N including 0. `rdm-cli/tests/workflow_review/budget.rs`
+(`budget_ranking_deterministic_and_monotone`) encodes this as an exhaustive
+subset property test, not only as prose.
 
 `context.target` (and any other fields) is threaded into every finder and refuter
 prompt, so the review material reaches the agents. `deps` (`{ agent, pipeline,
@@ -2392,7 +2395,7 @@ emit-time substitution would break the byte-identity gates. Retargeting the
 reviewer at a different project therefore requires no code change at all.
 
 **No carve-out remains, and the empty set is enforced.**
-`scripts/verify-workflow-review.sh` § AC2b asserts that the set of code
+`scripts/verify-workflow-review.sh` § AC2b (retired with that script as a prose-string check under the operator's no-grep rule) asserted that the set of code
 dimensions whose title or focus still carries a language-specific idiom is
 **exactly `[]`** — the assertion is kept rather than deleted precisely so the
 carve-out cannot silently re-open. The same section asserts both halves of the
@@ -2520,8 +2523,10 @@ entirely: an AC-table `FAIL` forces `rework` even when zero findings survived.
 throw on an unknown outcome or item kind rather than returning `undefined`. The
 land-time completion trailer is expressed here **only** as the boolean
 `writesCompletion` — never as the literal string — because the stamped block is
-copied into workflow scripts, where `verify-workflow-review.sh`'s hygiene grep forbids
-that literal. The trailer's format string lives in `rdm-core`
+copied into workflow scripts, where the since-deleted `verify-workflow-review.sh`
+hygiene grep forbade that literal (the Rust
+`engine::driver_deterministic_and_emits_no_done_trailer` now checks the driver's
+returned commands carry no such directive). The trailer's format string lives in `rdm-core`
 (`rdm_core::hook::format_done_directive`, surfaced as `rdm hook done-line`), and
 is written only by non-stamped code: the interactive skill's gate step and
 `rdm-land`'s land-time synthesis.
@@ -2549,10 +2554,8 @@ and renders in every mode, a `code|`-tagged line renders only under
 recognized only as that literal text immediately after `//|`, so shared prose
 must never begin with it. There is no second region, no second generator, and no
 second consumer list — the tag is the whole mechanism. Mode-isolation greps in
-`scripts/verify-workflow-review.sh` (code dimension names and the trailer
-literal must be absent from the plan render; `needs-plan-review` and
-`unit-of-work` absent from the code render) are the detector for a mistagged
-line leaking across.
+the since-deleted `scripts/verify-workflow-review.sh` were the detector for a
+mistagged line leaking across; they were already gone before that script was.
 
 `gen-skill-review.sh` also carries an orthogonal **`--target shipped|local`**
 axis (default `shipped`), independent of `--mode`: `shipped` renders the
@@ -2570,8 +2573,8 @@ the default span unchanged and never sees the override block. A `{rdm_bin}`
 placeholder on example commands resolves to `rdm` for `shipped` and
 `./target/debug/rdm` for `local` (this repo's own hard dev-build rule) from
 the one substitution point in the generator. Both local targets are
-`--check`-gated in `scripts/verify-workflow-review.sh` § 1g alongside the
-shipped ones in § 1c/1d.
+`--check`-gated by `rdm-cli/tests/workflow_review/generators.rs`
+(`local_skill_projection_in_sync_{code,plan}`) alongside the shipped ones.
 
 The gate itself is likewise mode-dispatched data rather than a fork:
 `GATE_POLICY[mode][outcome]` yields `{ status, writesCompletion,
@@ -2637,8 +2640,8 @@ blocks that forced it remain in
 Everything else inside the stamped block is **machinery** (JSON schemas,
 `survives`/`rankFindings`/`resolveReviewers`, the classifier and
 the gate policy) and is never rendered into a skill. Both generators are
-`--check`-gated by `scripts/verify-workflow-review.sh` — the skill generator in
-BOTH modes — which CI runs.
+`--check`-gated by `rdm-cli/tests/workflow_review/generators.rs` — the skill
+generator in BOTH modes — under `cargo nextest run`, which CI runs.
 
 ## dispatch-phase contracts
 
@@ -2752,7 +2755,7 @@ from the canonical `statusFor` / `writesCompletion` in `lib/review.mjs`, so
 consumers (autopilot's advance/park, `rdm-do --auto`, `rdm-land`) read the policy
 off the OUTCOME instead of restating the mapping. `writesCompletion` is a
 **boolean, never the trailer literal** — the stamped block may not contain that
-string (`verify-workflow-review.sh`'s hygiene grep). `rdm-land` reads
+string. `rdm-land` reads
 `writesCompletion: true` and synthesizes the real trailer at land time via
 `rdm hook done-line`, amending it **before** the rebase, so an autonomously
 produced branch never needs a manual rebase to gain it.
@@ -2882,9 +2885,9 @@ owned by the rework/status machinery, per "never fix large changes inline".
 `rdm-wf-review-refute-fix.js`'s stamped `buildReviewPipeline('code')` — there is no
 independent code-review logic anywhere — fed the caller's reviewer set (see
 `resolveReviewers(mode, reviewers)` above; omitting it runs them all).
-`verify-workflow-review-outcome.sh` pins both halves over that engine's driver
-region: exactly one `buildReviewPipeline('code')` binding site and one
-`classifyOutcome(` call.
+The since-deleted `verify-workflow-review-outcome.sh` counted those two call
+sites in the driver's source; the Rust `workflow_review` engine tests now
+execute the driver instead.
 
 ### Environment args: `rdmBin` and `project`
 
@@ -3036,7 +3039,7 @@ shapes (`mode: 'plan'`, and `mode: 'code'` with no item identifiers) emit
 **zero** rdm invocations, so there is no binary for the fail-closed rule to
 guard, and requiring the arg there would break a documented
 backward-compatible shape for no safety gain.
-`verify-workflow-review-outcome.sh` § 6c pins both directions: the standalone
+The since-deleted `verify-workflow-review-outcome.sh` § 6c pinned both directions: the standalone
 path throws without `rdmBin` before any `agent()` call, while both legacy shapes
 still succeed without it and still return `{ mode, survivors, budget }`.
 
@@ -3047,7 +3050,7 @@ Rewired callers: `.claude/skills/rdm-review` (the only caller of
 `lib/review.mjs` is never opened) and `.claude/skills/rdm-estimate` (the only
 caller of `rdm-wf-estimate.js`; `skill-estimate-cli.md` remains the `{proj_flag}`
 prose rating loop and needs no change). Asserted per-shim by
-`verify-workflow-review-outcome.sh` § 4 and `verify-workflow-estimate.sh`'s
+the since-deleted `verify-workflow-review-outcome.sh` § 4 and `verify-workflow-estimate.sh`'s
 HOIST-SHIM section, each with a planted-typo self-test; the allow-list is
 asserted AS DATA by the same two harnesses' driven prompt captures (§ 6b / § 9b).
 
@@ -3145,12 +3148,14 @@ new nested `workflow()` call.
 
 ## Testing convention
 
-`scripts/verify-workflow-review.sh` is the hermetic gate. It uses **Node standard
-library only** — no `package.json`, no `node_modules`, no third-party packages;
-the reference `pipeline`/`parallel` implementations and assertions are written
-inline with `node:assert`. It resolves `node` via the `.mise.toml`-pinned
-toolchain (bare `node`, else `mise exec node --`) and fails hard if node is truly
-absent, matching the sibling harnesses' tool-guard convention.
+The review core's hermetic gate is the Rust `workflow_review` test binary
+(`rdm-cli/tests/workflow_review/`), run by `cargo nextest run`. It executes the
+real JavaScript under Node through `rdm_devtools::workflow`, whose only
+test-side JavaScript is generic execution glue: every scenario, scripted
+fake-agent reply and assertion is Rust, and the fake `parallel` primitive is
+documented in that module. Node is resolved from `RDM_TEST_NODE`, `PATH`, or
+`mise which node`, and a missing runtime fails the run rather than skipping it.
+See `docs/test-migration-inventory.md` § "Phase 2".
 
 ## Optional caller-supplied args (mechanical-agent hoists)
 
@@ -3327,7 +3332,7 @@ discussed above. A failing check triggers ONE bounded retry (a fresh,
 independent `agent()` call) before falling into the existing fail-closed
 `fetchFailed` path; see `docs/mechanical-agent-inventory.md` § "The hoist with
 a recorded correctness failure" for the full account and
-`scripts/verify-workflow-review.sh` §7g/§7h for the regression coverage
+the since-deleted `scripts/verify-workflow-review.sh` §7g/§7h for the regression coverage
 (both recorded corruption payloads replayed as negatives, a retry-recovery
 positive, the empty-phases/body-text-mimicry non-tripping cases, and a
 four-target-type sweep).
@@ -3388,7 +3393,7 @@ themselves for what gets written. The still-accurate claim above stands
 unchanged: content validation of the **caller-hoisted** `fetched` payload
 remains explicitly out of scope — only the agent-fetch path's write mechanics
 changed. See `docs/mechanical-agent-inventory.md`'s matching update (same
-heading) for the full account and `scripts/verify-workflow-review.sh`
+heading) for the full account and the since-deleted `scripts/verify-workflow-review.sh`
 §5b-cache / §5b-exec / §5b-mut(ix) for the regression coverage.
 
 ### `rdm-wf-dispatch-phase` absorbs its diff instead of hoisting it

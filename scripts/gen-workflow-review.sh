@@ -28,8 +28,9 @@
 #   scripts/gen-workflow-review.sh           # rewrite consumers in place
 #   scripts/gen-workflow-review.sh --check   # exit non-zero if anything drifted
 #
-# The `--check` mode is what scripts/verify-workflow-review.sh and CI use to
-# prove no consumer or embedded copy was hand-edited out of sync with the
+# The `--check` mode is what the Rust `workflow_review` tests
+# (rdm-cli/tests/workflow_review/generators.rs) run under `cargo nextest run`
+# to prove no consumer or embedded copy was hand-edited out of sync with the
 # source of truth.
 
 set -eu

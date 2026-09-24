@@ -437,6 +437,7 @@ directory).
 Integration coverage: `rdm-cli/tests/cli_review_change.rs` (real temp git
 source repo + real temp plan repo), `rdm-server/tests/change_reviews.rs` (the
 REST and HTML surfaces against a real temp source repo, including the
-never-`unresolved`-with-a-null-note invariant) and § 7 of
-`scripts/verify-workflow-review-outcome.sh` (the workflow lane's persist path
-executed verbatim against the real binary).
+never-`unresolved`-with-a-null-note invariant) and `rdm-cli/tests/workflow_review/persist.rs`
+(the review core's emitted persist ladder run under a real shell against the
+real binary, for document targets; the change-target ladder is exercised by
+`scripts/lib/review-driver.test.mjs`).

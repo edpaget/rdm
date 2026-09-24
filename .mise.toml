@@ -8,7 +8,8 @@ hk = "1.45"
 pkl = "latest"
 shellcheck = "latest"
 shfmt = "latest"
-# Node executes production JS for Rust-owned Codex tests and legacy workflows.
+# Node executes production JS for Rust-owned Codex tests and the workflow
+# component tests (rdm_devtools::workflow, driven by `cargo nextest run`).
 # Ordinary binary-only CLI use does not require it; the optional Codex runtime does.
 node = "24"
 

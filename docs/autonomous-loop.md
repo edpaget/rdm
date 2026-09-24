@@ -155,7 +155,7 @@ single `plan show` read either way. See `docs/workflow-vs-prose-boundary.md`
 **How it was accepted.** By dogfooding, and improved iteratively from what a real drive surfaces
 (operator, 2026-09-20). There is no smoke-run gate and no harness greps the prose; the real-binary
 gates around it (`verify-agent-config-distribution.sh`, `verify-plugin-install.sh`,
-`verify-workflow-review.sh`, `cargo nextest run`) are what protect the lane.
+`cargo nextest run`, which includes the Rust review workflow tests) are what protect the lane.
 
 ## End-to-end flow
 

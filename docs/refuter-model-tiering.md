@@ -429,7 +429,7 @@ agents are left unpinned" cannot mean "judgment sites must carry no model" — i
 means "this commit did not pin them to the **mechanical** tier". Reading it as a
 general prohibition contradicts the commit's own diff.
 
-**`scripts/verify-workflow-review.sh` §5b-mechanical.** Its negative assertion is:
+**`scripts/verify-workflow-review.sh` §5b-mechanical (since deleted).** Its negative assertion was:
 
 ```
 assert_label_not_model "$TMP/mech-blocks" 'act:' '_mechanicalModel'
