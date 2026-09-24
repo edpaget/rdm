@@ -60,6 +60,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::ops::Add;
 
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Serializer};
@@ -610,6 +611,18 @@ impl From<ModelUsage> for UsageSummary {
     }
 }
 
+impl Add for UsageSummary {
+    type Output = UsageSummary;
+
+    fn add(self, rhs: UsageSummary) -> UsageSummary {
+        UsageSummary {
+            requests: self.requests.saturating_add(rhs.requests),
+            usage: self.usage + rhs.usage,
+            total: self.total.saturating_add(rhs.total),
+        }
+    }
+}
+
 /// One model's row of a per-model breakdown.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModelRow {
@@ -620,7 +633,7 @@ pub struct ModelRow {
     pub usage: UsageSummary,
 }
 
-fn model_rows(ledger: &UsageLedger) -> Vec<ModelRow> {
+pub(crate) fn model_rows(ledger: &UsageLedger) -> Vec<ModelRow> {
     ledger
         .iter()
         .map(|(model, m)| ModelRow {
@@ -2122,11 +2135,7 @@ mod tests {
         let summed = run
             .models
             .iter()
-            .fold(UsageSummary::default(), |acc, m| UsageSummary {
-                requests: acc.requests + m.usage.requests,
-                usage: acc.usage + m.usage.usage,
-                total: acc.total + m.usage.total,
-            });
+            .fold(UsageSummary::default(), |acc, m| acc + m.usage);
         assert_eq!(summed, run.totals, "narrowed models sum to narrowed totals");
         assert_eq!(run.workflow_runs.len(), 1);
         assert!(run.unanchored.is_empty(), "wf_r1 is anchored");

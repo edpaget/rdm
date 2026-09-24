@@ -54,7 +54,7 @@ use serde::Serialize;
 use crate::model::{Run, RunDriver, RunStatus, RunUnit};
 use crate::transcript::{
     ModelRow, SessionReport, SourceKind, SourceReport, TranscriptError, TranscriptSource,
-    UsageSummary, locate_session, reap_session,
+    UsageSummary, locate_session, model_rows, reap_session,
 };
 use crate::usage::{RequestUsage, UsageLedger};
 
@@ -346,16 +346,6 @@ fn millis(start: DateTime<Utc>, end: DateTime<Utc>) -> u64 {
 
 fn summary(ledger: &UsageLedger) -> UsageSummary {
     ledger.total().into()
-}
-
-fn model_rows(ledger: &UsageLedger) -> Vec<ModelRow> {
-    ledger
-        .iter()
-        .map(|(model, m)| ModelRow {
-            model: model.to_owned(),
-            usage: (*m).into(),
-        })
-        .collect()
 }
 
 fn ledger_of(requests: &[RequestUsage]) -> UsageLedger {
@@ -853,7 +843,7 @@ pub fn cost_report<S: TranscriptSource + ?Sized>(
         .fold(ExcludedCost::default(), |acc, s| ExcludedCost {
             sources: acc.sources.saturating_add(s.excluded.sources),
             main_requests: acc.main_requests.saturating_add(s.excluded.main_requests),
-            usage: add_summary(acc.usage, s.excluded.usage),
+            usage: acc.usage + s.excluded.usage,
         });
 
     // Runs, phases and counts.
@@ -989,14 +979,6 @@ pub fn cost_report<S: TranscriptSource + ?Sized>(
     }
 }
 
-fn add_summary(a: UsageSummary, b: UsageSummary) -> UsageSummary {
-    UsageSummary {
-        requests: a.requests.saturating_add(b.requests),
-        usage: a.usage + b.usage,
-        total: a.total.saturating_add(b.total),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -1113,7 +1095,7 @@ mod tests {
         parts
             .iter()
             .copied()
-            .fold(UsageSummary::default(), add_summary)
+            .fold(UsageSummary::default(), |a, b| a + b)
     }
 
     fn assert_run_identity(r: &RunCost) {

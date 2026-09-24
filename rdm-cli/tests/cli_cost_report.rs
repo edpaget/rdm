@@ -390,6 +390,18 @@ fn a_roadmap_with_no_runs_reports_so_and_succeeds() {
     let report: Value = serde_json::from_str(&r.stdout).expect("JSON");
     assert_eq!(report["counts"]["runs"], 0);
     assert!(array(&report, "runs").is_empty());
+
+    let human = run(repo
+        .rdm()
+        .args(["cost", "report", "--roadmap", "elsewhere"]));
+    assert!(human.ok, "{}", human.stderr);
+    assert!(
+        human
+            .stdout
+            .contains("No runs recorded for this roadmap.\n"),
+        "{}",
+        human.stdout
+    );
 }
 
 #[test]
