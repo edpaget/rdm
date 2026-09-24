@@ -33,7 +33,6 @@ See [`docs/principles.md`](docs/principles.md) §13 for commit and changelog rul
 
 See [`docs/principles.md`](docs/principles.md) §4 for testing principles. Run tests with `cargo nextest run`. Run specific crate tests with `cargo nextest run -p rdm-core`, etc. Use `cargo watch -x 'nextest run'` for continuous testing during development.
 
-
 ### Public API Docs
 
 See [`docs/principles.md`](docs/principles.md) §8.

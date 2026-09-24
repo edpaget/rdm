@@ -195,6 +195,7 @@ Every commit follows the [Conventional Commits](https://www.conventionalcommits.
 - **Changelog follows Keep a Changelog.** An `[Unreleased]` section collects pending changes. Categories: Added, Changed, Deprecated, Removed, Fixed, Security. Entries move to a versioned section on release.
 - **The entry lands in the same commit as the change.** A user-facing change and its changelog entry are one commit — entries are never deferred to a follow-up or batched at release time.
 - **Commits tell *why*, not *what*.** The diff shows what changed. The commit message explains the motivation.
+- **Entries describe changes from a user's perspective.** What can users now do? What was fixed? Describe outcomes, not implementation details.
 - **No test, harness, or CI step may assert on `CHANGELOG.md`.** Never assert that `[Unreleased]` contains a word, names a file, or describes a feature; never assert it is co-staged with a code change; never write a planted-mutation self-test over the changelog body. Release automation moves the whole `[Unreleased]` body into a versioned section, so any such check goes red on `main` the moment a release lands. The changelog rule is enforced by review, not by a gate. Assert on the code or the emitted artifact, never on the prose describing it.
 
 ### Why
