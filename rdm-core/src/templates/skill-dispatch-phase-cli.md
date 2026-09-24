@@ -214,13 +214,22 @@ rdm model resolve plan
 rdm model resolve implement
 ```
 
-Record the two resulting ids as `models.plan` / `models.implement`. The code-review Workflow
-call's own `findModel`/`verifyModel` gap is out of scope for this phase (tracked by
-`task/thread-code-review-judgment-models`).
+Record the two resulting ids as `models.plan` / `models.implement`.
 
-**Self-check before proceeding:** state the pinned `path`, `branch`, `head`, and the two resolved
-`models.plan` / `models.implement` you just read. A failed command is an escalation — never invent
-a checkout, and never let a subagent choose one.
+Also resolve the two review-lane judgment models, used by the code-review Workflow call in step
+11. They take **no `--tier`** — they are review-lane roles, not dispatch models:
+
+```bash
+rdm model resolve review-find
+rdm model resolve review-verify
+```
+
+Record the two resulting ids as `models.reviewFind` / `models.reviewVerify`. Each is independently
+optional: an omitted id simply makes that judgment agent inherit the session model.
+
+**Self-check before proceeding:** state the pinned `path`, `branch`, `head`, and the four resolved
+`models.plan` / `models.implement` / `models.reviewFind` / `models.reviewVerify` you just read. A
+failed command is an escalation — never invent a checkout, and never let a subagent choose one.
 
 ### 5. Dispatch the planner subagent
 
@@ -367,7 +376,10 @@ via the Workflow tool with
 project }` (task mode: `task` in place of `roadmap`/`phase`); pass `args` as a JSON object, never a
 stringified value, and include the source identity you have pinned as of step 10 (`source`, `base`,
 `expectedHead`, `expectedBranch`) — a path, two SHAs and a branch name, which is everything the
-engine needs, because each reviewer runs `rdm review source` itself to reach the diff.
+engine needs, because each reviewer runs `rdm review source` itself to reach the diff. Also include
+`findModel`/`verifyModel`, set to the `models.reviewFind`/`models.reviewVerify` ids resolved in step
+4 — the same two ids the plan-review call already used. Each is independently optional; an omitted
+id makes that judgment agent inherit the session model instead.
 
 Block for its returned result. **The engine reads nothing and writes nothing**: it dispatches finder
 and refuter agents and no others. `persist: true` therefore returns the ladder as `persistCommands` /

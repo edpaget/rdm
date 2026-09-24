@@ -270,9 +270,6 @@ Record the two ids as `models.reviewFind` / `models.reviewVerify` and the wont-f
 - Use `task list`, **not** `rdm search`, for the wont-fix corpus: `search` truncates at its default
   `--limit 20` while the real corpus is larger, and its JSON carries no `body` field at all.
 
-The code-review Workflow call's own `findModel`/`verifyModel` gap is out of scope for this phase
-(tracked by `task/thread-code-review-judgment-models`) and is not touched by this step.
-
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, the two resolved
 `models.plan` / `models.implement` and the two resolved `models.reviewFind` / `models.reviewVerify`,
 and confirm you captured the item's `body`, the roadmap `body` (phase mode) and the wont-fix titles.
@@ -529,6 +526,8 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-review-refute-fix.js', args: {
   reviewers: [<the set you selected — see below>],
   source: '<identity.path>', base: '<identity.base>',
   expectedHead: '<identity.head>', expectedBranch: '<identity.branch>',
+  findModel: '<models.reviewFind>',
+  verifyModel: '<models.reviewVerify>',
   rdmBin: '<rdmBin>', project: '<project>',
 } })
 ```
@@ -536,6 +535,10 @@ Workflow({ scriptPath: '.claude/workflows/rdm-wf-review-refute-fix.js', args: {
 **The engine reads nothing and writes nothing.** You pass the identity you pinned in step 10 — a
 path, two SHAs and a branch name, nothing more — and each reviewer runs `rdm review source` itself
 to reach the diff. The engine dispatches finder and refuter agents and no others.
+
+- `findModel` / `verifyModel` — the same two resolved `models.reviewFind` / `models.reviewVerify`
+  ids from step 4, mirroring step 6's plan-review call. Each is independently optional; an omitted
+  id makes that judgment agent inherit the session model instead.
 
 `persist: true` therefore does **not** write a review. It returns the ladder as `persistCommands` /
 `persistScript`: ready-to-run Bash that records the review on `change/<head>`. **You run it**, in
