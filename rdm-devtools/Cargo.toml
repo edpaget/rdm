@@ -26,6 +26,7 @@ path = "src/bin/rdm-devtools-fixture/main.rs"
 [dependencies]
 chrono = { workspace = true }
 clap = { workspace = true }
+rdm-core = { path = "../rdm-core" }
 rustix = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -2861,6 +2861,7 @@ version = "0.22.1"
 dependencies = [
  "chrono",
  "clap",
+ "rdm-core",
  "rustix",
  "serde",
  "serde_json",

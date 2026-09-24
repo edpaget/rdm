@@ -17,9 +17,10 @@
 //!   **last write wins**, keeping the request's first position.
 //! - `user` lines carry no `requestId`/`usage` and are skipped.
 //!
-//! Token-class accounting lives here, not in `rdm-core`: core has no token
-//! accounting API yet. The `autopilot-run-accounting` roadmap's phase 1
-//! ("Token accounting and pricing in core") is the future owner of these types.
+//! Transcript parsing, `requestId` dedupe and the all-zero-usage exclusion are
+//! owned by [`rdm_core::usage`]; this module reads the file and only adapts the
+//! core's five integer token classes to the four `f64` report classes
+//! (`cache_write` is the core's 5m + 1h cache write).
 //!
 //! Directory listings are sorted by name, so warnings and "first/last"
 //! selections never depend on filesystem enumeration order.
@@ -27,6 +28,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use rdm_core::{ParsedTranscript, TokenUsage};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -333,31 +335,6 @@ pub fn transcript_path_for(session_dir: &Path, run_id: &str, agent_id: &str) -> 
         .join(format!("agent-{agent_id}.jsonl"))
 }
 
-/// One request's usage, split into the four token classes.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Usage {
-    /// `output_tokens`.
-    pub output: f64,
-    /// `input_tokens` (uncached input).
-    pub uncached_input: f64,
-    /// `cache_creation_input_tokens`.
-    pub cache_write: f64,
-    /// `cache_read_input_tokens`.
-    pub cache_read: f64,
-}
-
-/// A transcript's usage, deduped by `requestId` (last write wins, first
-/// position kept).
-#[derive(Debug, Clone, Default)]
-pub struct Transcript {
-    /// `(requestId key, usage)` in first-appearance order.
-    pub per_request: Vec<(String, Usage)>,
-}
-
-fn usage_field(usage: &Value, key: &str) -> f64 {
-    usage.get(key).and_then(Value::as_f64).unwrap_or(0.0)
-}
-
 /// Splits a transcript into its non-blank, JSON-parseable lines.
 pub fn transcript_entries(raw: &str) -> impl Iterator<Item = Value> + '_ {
     raw.split('\n').filter_map(|line| {
@@ -379,39 +356,16 @@ pub fn read_text(path: &Path) -> std::io::Result<String> {
     fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
-/// Parses one `agent-*.jsonl` transcript. Malformed lines, non-`assistant`
-/// lines and lines without a truthy `requestId` and a `message.usage` object
-/// are skipped.
+/// Reads and parses one `agent-*.jsonl` transcript with
+/// [`rdm_core::parse_transcript`]: deduped requests (last write wins, first
+/// position kept), with all-zero requests excluded and reported as warnings.
 ///
 /// # Errors
 ///
 /// The read error's message when the file cannot be read.
-pub fn parse_agent_transcript(path: &Path) -> Result<Transcript, String> {
+pub fn parse_agent_transcript(path: &Path) -> Result<ParsedTranscript, String> {
     let raw = read_text(path).map_err(|e| io_message(&e))?;
-    let mut t = Transcript::default();
-    for entry in transcript_entries(&raw) {
-        if entry.get("type").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        let request_id = entry.get("requestId");
-        let usage = entry.get("message").and_then(|m| m.get("usage"));
-        let (true, Some(usage)) = (truthy(request_id), usage.filter(|u| truthy(Some(u)))) else {
-            continue;
-        };
-        // Distinguish a string id from a numeric one, as a JS Map would.
-        let key = request_id.map(Value::to_string).unwrap_or_default();
-        let u = Usage {
-            output: usage_field(usage, "output_tokens"),
-            uncached_input: usage_field(usage, "input_tokens"),
-            cache_write: usage_field(usage, "cache_creation_input_tokens"),
-            cache_read: usage_field(usage, "cache_read_input_tokens"),
-        };
-        match t.per_request.iter_mut().find(|(k, _)| *k == key) {
-            Some(slot) => slot.1 = u,
-            None => t.per_request.push((key, u)),
-        }
-    }
-    Ok(t)
+    Ok(rdm_core::parse_transcript(&raw))
 }
 
 /// One agent of one run, joined with its transcript's deduped usage.
@@ -521,20 +475,33 @@ pub fn build_records(runs: &[RunFile], warn: &mut dyn FnMut(String)) -> Vec<Agen
                 .as_deref()
                 .filter(|p| p.exists())
                 .map(parse_agent_transcript);
+            if let (Some(id), Some(Ok(t))) = (&agent_id, &transcript) {
+                for w in &t.warnings {
+                    warn(format!(
+                        "transcript for agent {id} in run {}: {w}",
+                        run.run_id
+                    ));
+                }
+            }
             match &transcript {
-                Some(Ok(t)) if !t.per_request.is_empty() => {
-                    let first = t.per_request[0].1;
-                    rec.first_request_tokens =
-                        Some(first.uncached_input + first.cache_write + first.cache_read);
-                    for (_, u) in &t.per_request {
-                        rec.output += u.output;
-                        rec.uncached_input += u.uncached_input;
-                        rec.cache_write += u.cache_write;
-                        rec.cache_read += u.cache_read;
-                    }
+                Some(Ok(t)) if !t.requests.is_empty() => {
+                    let first = t.requests[0].usage;
+                    let sum: TokenUsage = t.requests.iter().map(|r| r.usage).sum();
+                    // u64 -> f64 is exact below 2^53, far above any token count.
                     #[allow(clippy::cast_precision_loss)]
                     {
-                        rec.deduped_request_count = t.per_request.len() as f64;
+                        rec.first_request_tokens = Some(
+                            first
+                                .input
+                                .saturating_add(first.cache_write())
+                                .saturating_add(first.cache_read)
+                                as f64,
+                        );
+                        rec.output = sum.output as f64;
+                        rec.uncached_input = sum.input as f64;
+                        rec.cache_write = sum.cache_write() as f64;
+                        rec.cache_read = sum.cache_read as f64;
+                        rec.deduped_request_count = t.requests.len() as f64;
                     }
                 }
                 _ => {
@@ -744,19 +711,19 @@ mod tests {
         );
         let t = parse_agent_transcript(&path).unwrap_or_default();
         assert_eq!(
-            t.per_request.len(),
+            t.requests.len(),
             2,
             "two distinct requestIds, not three lines"
         );
         assert_eq!(
-            t.per_request[0].0, "\"req-A\"",
+            t.requests[0].request_id, "req-A",
             "req-A keeps its first position"
         );
         assert_eq!(
-            t.per_request[0].1.output, 50.0,
+            t.requests[0].usage.output, 50,
             "req-A resolves to the LAST line's output (50), not the first (10) or a sum (60)"
         );
-        assert_eq!(t.per_request[1].1.output, 120.0);
+        assert_eq!(t.requests[1].usage.output, 120);
     }
 
     fn run(session_dir: &Path, agents: Value) -> RunFile {
@@ -824,6 +791,43 @@ mod tests {
             distinct.len(),
             4,
             "each degraded case has its own wording: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn all_zero_only_transcript_falls_back_to_sidecar_tokens() {
+        let dir = tempfile::tempdir().unwrap_or_else(|e| panic!("tempdir: {e}"));
+        let tdir = dir.path().join("subagents/workflows/run-synth");
+        write(
+            &tdir.join("agent-zero.jsonl"),
+            concat!(
+                r#"{"type":"assistant","requestId":"z1","message":{"model":"m","usage":{"input_tokens":0,"output_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}"#,
+                "\n",
+                r#"{"type":"assistant","requestId":"z2","message":{"model":"<synthetic>","usage":{}}}"#,
+                "\n"
+            ),
+        );
+        let runs = [run(
+            dir.path(),
+            serde_json::json!([
+                {"label": "find:zero", "agentId": "zero", "model": "m", "tokens": 42}
+            ]),
+        )];
+        let mut warnings = Vec::new();
+        let records = build_records(&runs, &mut |w| warnings.push(w));
+        assert_eq!(records.len(), 1);
+        assert!(records[0].sidecar_only, "no measured request: sidecar-only");
+        assert_eq!(records[0].output, 42.0, "falls back to the sidecar tokens");
+        assert_eq!(records[0].first_request_tokens, None);
+        assert_eq!(records[0].deduped_request_count, 0.0);
+        assert!(
+            warnings.iter().any(|w| w.contains("empty transcript")),
+            "{warnings:?}"
+        );
+        assert_eq!(
+            warnings.iter().filter(|w| w.contains("all-zero")).count(),
+            2,
+            "each all-zero request is reported: {warnings:?}"
         );
     }
 

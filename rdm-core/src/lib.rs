@@ -67,9 +67,16 @@ pub mod store;
 pub mod tags;
 /// Hierarchical tree view of plan repo contents.
 pub mod tree;
+/// Per-model, per-token-class token accounting over already-read transcript
+/// text.
+pub mod usage;
 /// The read-only worktree port the `reviewed` transition gate's cleanliness
 /// precondition reads through, plus a fail-closed `git status --porcelain`
 /// parser and an in-memory double for tests.
 pub mod worktree;
 
+pub use usage::{
+    ModelUsage, ParsedTranscript, RequestUsage, TokenUsage, UsageLedger, UsageWarning,
+    parse_transcript,
+};
 pub use worktree::{ReviewSource, ReviewSourceRequest, resolve_review_source};
