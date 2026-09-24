@@ -19,7 +19,9 @@
 //! signal when it was killed by a signal); 124 timeout; 125 stdout cap
 //! exceeded; 127 the program could not be started; 128 + signal (130 SIGINT,
 //! 143 SIGTERM) when rdm-smoke itself was interrupted; 71 the private copy
-//! could not be prepared; 74 cleanup failed; 70 any other runner failure.
+//! could not be prepared; 73 an output log could not be created (not reachable
+//! from `run`, which captures stdout itself; kept for the runner's full error
+//! set); 74 cleanup failed; 70 any other runner failure.
 //!
 //! ```text
 //! rdm-smoke codex-coexistence --rdm <path> --codex <path> [--copy-auth-from <auth.json>]
@@ -201,6 +203,7 @@ fn run(args: RunArgs) -> ExitCode {
                 RunError::Spawn(_) => ExitCode::from(127),
                 RunError::Interrupted(sig) => exit_code(128 + sig),
                 RunError::Prepare(_) => ExitCode::from(71),
+                RunError::OutputFile(..) => ExitCode::from(73),
                 RunError::Cleanup(_) => ExitCode::from(74),
                 _ => ExitCode::from(70),
             }

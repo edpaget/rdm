@@ -198,6 +198,10 @@ impl ProcessSpec {
     /// survives a non-zero exit, a timeout or an interruption for the caller
     /// to read. [`RunOutput::stdout`] is then empty and the stdout cap does
     /// not apply. [`run_bounded`] only; a [`Session`] ignores it.
+    ///
+    /// The file is opened just before spawning; if it cannot be created (for
+    /// example its directory does not exist) the run fails with
+    /// [`RunError::OutputFile`] and nothing is spawned.
     pub fn output_file(mut self, path: impl AsRef<Path>) -> Self {
         self.output_file = Some(path.as_ref().to_owned());
         self
@@ -294,6 +298,9 @@ pub enum RunError {
     Prepare(io::Error),
     /// The program could not be spawned.
     Spawn(io::Error),
+    /// The [`ProcessSpec::output_file`] log at the given path could not be
+    /// created or duplicated for the child's stderr; nothing was spawned.
+    OutputFile(PathBuf, io::Error),
     /// Polling or reaping the child failed.
     Wait(io::Error),
     /// The child exited unsuccessfully (`code` is `None` if it was killed by
@@ -324,6 +331,11 @@ impl fmt::Display for RunError {
             Self::Spawn(e) => write!(
                 f,
                 "could not start the program: {e}; check the path and that it is executable"
+            ),
+            Self::OutputFile(path, e) => write!(
+                f,
+                "could not open the output log {}: {e}; check that its directory exists and is writable",
+                path.display()
             ),
             Self::Wait(e) => write!(f, "waiting for the child failed: {e}"),
             Self::NonZeroExit {
@@ -357,7 +369,7 @@ impl std::error::Error for RunError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Signals(e) | Self::Prepare(e) | Self::Spawn(e) | Self::Wait(e) => Some(e),
-            Self::Cleanup(e) => Some(e),
+            Self::OutputFile(_, e) | Self::Cleanup(e) => Some(e),
             _ => None,
         }
     }
@@ -411,6 +423,8 @@ fn interrupted(flag: &AtomicUsize) -> Option<i32> {
 ///   (no hook runs).
 /// - [`RunError::Prepare`] if the `prepare` hook fails.
 /// - [`RunError::Interrupted`] if SIGINT or SIGTERM arrives during the run.
+/// - [`RunError::OutputFile`] if the [`ProcessSpec::output_file`] log cannot
+///   be created (nothing is spawned).
 /// - [`RunError::Spawn`] if the program cannot be started.
 /// - [`RunError::Wait`] if polling or reaping the child fails.
 /// - [`RunError::TimedOut`] if the timeout elapses.
@@ -470,8 +484,9 @@ fn run_inner(
 
     let mut cmd = spec.command(Stdio::null());
     if let Some(path) = &spec.output_file {
-        let file = std::fs::File::create(path).map_err(RunError::Spawn)?;
-        let err = file.try_clone().map_err(RunError::Spawn)?;
+        let output_error = |e| RunError::OutputFile(path.clone(), e);
+        let file = std::fs::File::create(path).map_err(output_error)?;
+        let err = file.try_clone().map_err(output_error)?;
         cmd.stdout(file).stderr(err);
     }
     let mut child = cmd.spawn().map_err(RunError::Spawn)?;

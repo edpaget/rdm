@@ -390,3 +390,27 @@ fn output_file_keeps_both_streams_past_a_nonzero_exit() {
         "the file is truncated per run and holds stderr"
     );
 }
+
+#[test]
+fn unwritable_output_file_is_reported_as_such_and_never_spawns() {
+    let dir = TempDir::new().unwrap();
+    let m = marker(&dir);
+    let log = dir.path().join("no-such-dir").join("out.log");
+    let spawned = Cell::new(false);
+    let err = run_bounded(
+        &spec(&["print", "never"]).output_file(&log),
+        Hooks::new()
+            .cleanup(remove(&m))
+            .on_spawn(|_| spawned.set(true)),
+    )
+    .unwrap_err();
+    match &err {
+        RunError::OutputFile(path, e) => {
+            assert_eq!(path, &log);
+            assert_eq!(e.kind(), io::ErrorKind::NotFound, "{e}");
+        }
+        other => panic!("expected RunError::OutputFile, got {other:?}"),
+    }
+    assert!(!spawned.get(), "an unopenable log must not spawn the child");
+    check_teardown(&m, &[]).unwrap();
+}
