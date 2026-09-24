@@ -122,6 +122,8 @@ Located at `projects/<project>/roadmaps/<roadmap>/phase-<N>-<slug>.md`. Created 
 
 The filename encodes the phase number and slug: `phase-1-core-valuation.md`.
 
+For the complete specification of phase body grammar and the acceptance-criteria rubric, see [`docs/authoring-grammar.md`](authoring-grammar.md).
+
 ```yaml
 ---
 phase: 1
@@ -135,10 +137,11 @@ commit: a1b2c3d
 
 The current valuation engine treats pitchers and hitters as separate entities...
 
-## Steps
+## Approach
 
-1. Add a `PlayerType::TwoWay` variant
-2. Merge pitching and hitting projections in the valuation service
+Add a `PlayerType::TwoWay` variant and merge pitching and hitting projections in the
+valuation service. This consolidates dual-position players into a single row while
+preserving the accuracy of their combined positional value.
 
 ## Acceptance Criteria
 
