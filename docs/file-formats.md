@@ -145,8 +145,8 @@ preserving the accuracy of their combined positional value.
 
 ## Acceptance Criteria
 
-- Two-way players appear as a single row in rankings
-- Combined WAR accounts for both pitching and hitting value
+- [ ] Two-way players appear as a single row in rankings
+- [ ] Combined WAR accounts for both pitching and hitting value
 ```
 
 | Field | Required | Type | Description |

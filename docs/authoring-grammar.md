@@ -55,18 +55,27 @@ This section replaces the deprecated `## Steps` section. It is a description of 
 
 ### `## Acceptance Criteria` Section (Required)
 
-Three bullet-point statements of what success looks like. Each criterion must follow the AC rubric specified below.
+One or more bullet-point statements of what success looks like. Each criterion must follow the AC rubric specified below.
 
-## Sections Appended by Skills and Workflows
+## Sections Written by Skills and Workflows
 
-As a phase moves through implementation and review, other skills and workflows may append sections to the phase body. These sections are always appended *after* the Acceptance Criteria and are authored by their respective tools, not by the person implementing the phase.
+### Roadmap-body sections
+
+Roadmaps include a required `## Intent` section written by the rdm-roadmap skill at creation time.
 
 | Section | Written By | Purpose |
 |---------|-----------|---------|
-| `## Intent` | rdm-roadmap skill (roadmaps only) | Captured during roadmap creation via interview |
+| `## Intent` | rdm-roadmap skill | Captured during roadmap creation via interview; contains Goal, Non-goals, Done looks like, Interview answers, and Open questions |
+
+### Phase-body sections appended during implementation and review
+
+As a phase moves through implementation and review, skills and workflows may append sections to the phase body after the Acceptance Criteria. These are authored by their respective tools, not by the person implementing the phase.
+
+| Section | Written By | Purpose |
+|---------|-----------|---------|
 | `## Key code` | rdm-do skill (optional) | Pinned `rdm:src/` links to touched files recorded at finalize; links resolve to a specific commit for permanence |
-| `## Estimate` | Current versions write difficulty field; older phases may carry `## Estimate` note written by rdm-wf-estimate | Provides a brief justification of the difficulty rating. This section is optional and found only on phases worked on with earlier versions of the estimate workflow |
-| Plan-review round block | rdm-wf-plan-review workflow | Recorded during the plan-review gate; shows reviewer verdict and any feedback on the plan before implementation began |
+| `## Estimate` | rdm-wf-estimate (legacy) | Older phases may carry `## Estimate` note with a brief justification of the difficulty rating. Current versions write the difficulty field directly |
+| `## Plan Review Round <N> — <outcome>` | rdm-plan-review skill (when gated) | Appended by the rdm-plan-review skill for non-`reviewed` units (rework or escalated outcomes); rendered from rdm-wf-plan-review's `roundNote` return value; shows the plan-review verdict and feedback |
 | Change-review records | rdm-wf-review-refute-fix workflow | Recorded in separate `change/<sha>` review documents, not appended to the phase body |
 
 Readers can distinguish author-written content (Context, Approach, Acceptance Criteria) from machine-appended content by these boundaries.
@@ -111,25 +120,26 @@ An acceptance criterion is a statement of what success looks like. For a criteri
 - Unbounded: "fast" is relative and requires interpretation
 - No agent can mark it done without knowing the implicit threshold
 
-### 3. Declared Deferral at Authoring Time
+### 3. Scope Bounded Without Caveats
 
-**Rule:** If the author knows a gap will exist when implementation is done, state it explicitly using language like "except for X" or "initial implementation omits Y".
+**Rule:** Each criterion must state its scope explicitly. Do not use caveat language like "except for X" or "deferred to Y" — such caveats and deferrals are graded as incomplete by code-review agents, regardless of how clearly they are stated. Instead, narrow the criterion's scope so known gaps fall outside it. Record deferred work as a separate task or phase.
 
-**Why this matters:** An agent's code-review `ac` dimension treats any deferred or caveated criterion as a blocking finding if that deferral is not declared *when the phase is authored*. A deferral discovered during implementation becomes a hard blocker. A deferral declared up front is honored — the phase can land with a known limitation.
+**Why this matters:** When an agent reviews acceptance criteria, any criterion that defers or caveats a known gap is treated as unmet and must be reported as a blocking finding. The way to address a known limitation is not to declare it within the criterion, but to frame the criterion to match what the phase delivers.
 
-**Failure mode:** An author writes "The API supports all query operators" but doesn't mention that regex operators are deferred. At review time, the agent finds the regex support missing and marks it as an AC gap. The phase cannot land. If the deferral had been declared ("... except for regex operators, deferred to phase 2"), the agent honors it and the phase lands.
+**Failure mode:** An author writes "The search API supports all query operators except regex, deferred to phase 2". At review time, the agent marks the caveat as a gap the phase does not close and cannot land. The deferral declaration does not protect the phase.
 
 **Good example:**  
-"The search API supports all query operators except regex, deferred to phase 2"  
-- Observable: supported operators are listed
-- Scoped: exception is named
-- Deferral: explicit ("deferred to phase 2")
+"The search API supports equality and range operators"  
+- Observable: operators are listed
+- Scoped: limited to two operator types
+- No caveats: the criterion covers exactly what the phase delivers
+- Deferred work (regex support) is recorded separately in a task or phase
 
 **Problematic example:**  
-"The search API supports all query operators"  
-- Incomplete: omits the known limitation
-- At review: agent finds the missing regex support, blocks the phase
-- The criterion was only true "in spirit" — a tacit deferral, not a declared one
+"The search API supports all query operators except regex, deferred to phase 2"  
+- Caveat language: declares an exception
+- At review: agent marks this as unmet, blocks the phase
+- The deferral declaration does not prevent the block
 
 ## Example: A Complete Phase Body
 
@@ -150,12 +160,12 @@ Twilio contract already in use for password resets.
 ## Acceptance Criteria
 
 - [ ] SMS codes are sent via Twilio within 100ms of signup form submission
-- [ ] Verification codes are valid for exactly 10 minutes and are single-use, except SMS resend within the same session reissues a new code
-- [ ] Code verification fails after 3 incorrect attempts in a single session; the user must restart signup, except existing verified users who fail phone verification are deferred to a manual support workflow in phase 2
+- [ ] Verification codes are valid for exactly 10 minutes and are single-use; SMS resend within the same session reissues a new code
+- [ ] Code verification fails after 3 incorrect attempts in a single session; new users must restart signup
 ```
 
-Each criterion is observable (codes are sent, valid for a duration, fail after N attempts), scoped (timing bounds, attempt limits), and deferrals are declared (resend behavior is clear, manual workflow for existing users is deferred).
+Each criterion is observable (codes are sent, valid for a duration, fail after N attempts) and scoped (timing bounds, attempt limits, audience scope of new users).
 
 ## Verification
 
-This spec is a reference document. No automated gate verifies that phase bodies conform to the grammar — that is a human review responsibility. The `rdm link check` command validates only the `rdm:` links in plan documents, not the grammar itself. Future phases may wire the AC rubric into the code-review workflow to automatically grade criteria for observable outcomes and declared deferrals.
+This spec is a reference document. No automated gate verifies that phase bodies conform to the grammar — that is a human review responsibility. The `rdm link check` command validates only the `rdm:` links in plan documents, not the grammar itself. Future phases may wire the AC rubric into the code-review workflow to automatically grade criteria for observable outcomes and proper scoping.
