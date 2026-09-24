@@ -1,17 +1,23 @@
 //! Model-tier sizing policy resolution for dispatch steps.
 //!
 //! This is the single source of truth for turning a dispatch step (plus an
-//! optional caller tier hint) into a concrete [`Profile`] — a model id and a
-//! reasoning [`Effort`] — for a given [`Host`], applying the `[models]`
-//! policy from [`crate::config`] with the built-in [`default_profile`] table
-//! layered underneath. CLI and skill consumers should call
-//! [`ModelPolicy::resolve`] rather than re-implementing this table.
+//! optional caller tier hint) into a concrete
+//! [`Profile`](crate::model_policy::Profile) — a model id and a reasoning
+//! [`Effort`](crate::model::Effort) — for a given
+//! [`Host`](crate::model_policy::Host), applying the `[models]` policy from
+//! [`crate::config`] with the built-in
+//! [`default_profile`](crate::model_policy::default_profile) table layered
+//! underneath. CLI and skill consumers should call
+//! [`ModelPolicy::resolve`](crate::model_policy::ModelPolicy::resolve) rather
+//! than re-implementing this table.
 //!
-//! Resolution runs in two stages: [`ModelPolicy::resolve_tier`] picks a
-//! [`ModelTier`] (caller hint → `[models.steps]` → step default, then a
-//! per-step floor), and [`ModelPolicy::profile`] maps that tier to the
-//! host's configured-or-default profile. No built-in default ever resolves to
-//! [`ModelTier::Frontier`].
+//! Resolution runs in two stages:
+//! [`ModelPolicy::resolve_tier`](crate::model_policy::ModelPolicy::resolve_tier)
+//! picks a [`ModelTier`](crate::model::ModelTier) (caller hint →
+//! `[models.steps]` → step default, then a per-step floor), and
+//! [`ModelPolicy::profile`](crate::model_policy::ModelPolicy::profile) maps
+//! that tier to the host's configured-or-default profile. No built-in default
+//! ever resolves to [`ModelTier::Frontier`](crate::model::ModelTier::Frontier).
 
 use std::fmt;
 use std::str::FromStr;
