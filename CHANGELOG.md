@@ -149,6 +149,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **Breaking for direct `rdm-store-git` library consumers:** `GitRepo::git_status` is replaced by `GitRepo::git_status_report`, which returns a `StatusReport` carrying the contract "gate on `is_clean()`/`total()`, report on `user`". The raw unfiltered walk is now `pub(crate) git_status_all` — deliberately unreachable from outside the crate, so no future call site can silently reacquire a list that conflates one session's dirt with another's. *(The report also briefly carried a `derived` bucket backed by `rdm_core::paths::is_derived_path`; both were removed later in this same unreleased cycle.)* `StatusReport` also owns the summary wording every interface prints — `commit_summary()` and `discard_summary()` — so `rdm commit` / `rdm discard` render the same report identically by construction rather than by convention.
 
+- The built-in `small` model tier now resolves to `opus` instead of `haiku` when no `[models] small = …` override is configured — Haiku is no longer reachable anywhere in the default dispatch lane (`rdm model resolve plan|implement --tier small` now print `opus`). An explicit `small` override in `[models]` is unaffected.
 
 ### Deprecated
 

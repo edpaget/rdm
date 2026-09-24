@@ -37,7 +37,7 @@ fn resolve_json_exposes_default_step_tier_and_model() {
         ("implement", "medium", "sonnet"),
         ("review-find", "medium", "sonnet"),
         ("review-verify", "large", "opus"),
-        ("mechanical", "small", "haiku"),
+        ("mechanical", "small", "opus"),
     ] {
         assert_eq!(
             resolve_json(&dir, &[step]),
@@ -124,7 +124,7 @@ fn resolve_review_find_hint_large_prints_opus() {
 }
 
 #[test]
-fn resolve_mechanical_no_hint_prints_haiku() {
+fn resolve_mechanical_no_hint_prints_opus() {
     let dir = TempDir::new().unwrap();
     rdm()
         .arg("--root")
@@ -132,7 +132,7 @@ fn resolve_mechanical_no_hint_prints_haiku() {
         .args(["model", "resolve", "mechanical"])
         .assert()
         .success()
-        .stdout("haiku\n");
+        .stdout("opus\n");
 }
 
 #[test]
@@ -242,12 +242,12 @@ fn show_human_lists_bindings_floor_and_steps() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("small: haiku")
+            predicate::str::contains("small: opus")
                 .and(predicate::str::contains("medium: sonnet"))
                 .and(predicate::str::contains("large: opus"))
                 .and(predicate::str::contains("review_floor: medium"))
                 .and(predicate::str::contains("review-verify: opus"))
-                .and(predicate::str::contains("mechanical: haiku")),
+                .and(predicate::str::contains("mechanical: opus")),
         );
 }
 
@@ -263,7 +263,7 @@ fn show_json_is_structured() {
     let output = assert.get_output();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let value: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(value["small"], "haiku");
+    assert_eq!(value["small"], "opus");
     assert_eq!(value["review_floor"], "medium");
     let steps = value["steps"].as_array().unwrap();
     assert_eq!(steps.len(), 5);

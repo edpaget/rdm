@@ -14,7 +14,7 @@ use crate::model::{ModelTier, ParseError};
 
 /// Built-in model id bound to [`ModelTier::Small`] when `[models]` does not
 /// override it.
-pub const DEFAULT_SMALL_MODEL: &str = "haiku";
+pub const DEFAULT_SMALL_MODEL: &str = "opus";
 /// Built-in model id bound to [`ModelTier::Medium`] when `[models]` does not
 /// override it.
 pub const DEFAULT_MEDIUM_MODEL: &str = "sonnet";
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn zero_config_tier_bindings_and_floor() {
         let policy = ModelPolicy::from_config(&Config::default());
-        assert_eq!(policy.model_for_tier(ModelTier::Small), "haiku");
+        assert_eq!(policy.model_for_tier(ModelTier::Small), "opus");
         assert_eq!(policy.model_for_tier(ModelTier::Medium), "sonnet");
         assert_eq!(policy.model_for_tier(ModelTier::Large), "opus");
         assert_eq!(policy.review_floor(), ModelTier::Medium);
@@ -255,7 +255,7 @@ mod tests {
         let policy = ModelPolicy::from_config(&Config::default());
         assert_eq!(
             policy.resolve(DispatchStep::Mechanical, Some(ModelTier::Small)),
-            "haiku"
+            "opus"
         );
     }
 
@@ -297,7 +297,44 @@ mod tests {
             ..Default::default()
         };
         let policy = ModelPolicy::from_config(&config);
-        assert_eq!(policy.resolve(DispatchStep::Implement, None), "haiku");
+        assert_eq!(policy.resolve(DispatchStep::Implement, None), "opus");
+    }
+
+    #[test]
+    fn small_tier_hint_resolves_to_opus_for_plan_and_implement() {
+        let policy = ModelPolicy::from_config(&Config::default());
+        assert_eq!(
+            policy.resolve(DispatchStep::Plan, Some(ModelTier::Small)),
+            "opus"
+        );
+        assert_eq!(
+            policy.resolve(DispatchStep::Implement, Some(ModelTier::Small)),
+            "opus"
+        );
+    }
+
+    #[test]
+    fn small_tier_hint_never_resolves_to_haiku_for_any_step() {
+        let policy = ModelPolicy::from_config(&Config::default());
+        // review-floored steps (review-find, review-verify) clamp a small
+        // hint up to the medium tier (sonnet); the rest resolve straight
+        // through to the small tier's built-in binding (opus). Haiku is not
+        // reachable from any step at the small tier any more.
+        let expectations = [
+            (DispatchStep::Plan, "opus"),
+            (DispatchStep::Implement, "opus"),
+            (DispatchStep::ReviewFind, "sonnet"),
+            (DispatchStep::ReviewVerify, "sonnet"),
+            (DispatchStep::Mechanical, "opus"),
+        ];
+        for (step, expected) in expectations {
+            let resolved = policy.resolve(step, Some(ModelTier::Small));
+            assert_eq!(resolved, expected, "step {step} at small tier hint");
+            assert_ne!(
+                resolved, "haiku",
+                "step {step} at small tier hint must never resolve to haiku"
+            );
+        }
     }
 
     #[test]

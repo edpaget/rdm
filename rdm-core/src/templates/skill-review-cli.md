@@ -42,7 +42,7 @@ The specification of that pipeline — which dimensions run, how findings are gr
 ```bash
 model=$(rdm model resolve review-find --tier <hint>)
 ```
-using the tier hint derived in step 1, and pass `model` explicitly when dispatching that agent with the `Agent` tool. Purely mechanical checks (e.g. a scripted presence/lint check with no judgment involved) may instead resolve `rdm model resolve mechanical`, or run inline without a subagent at all. Resolution reads the `[models]` config table (tier→model-id bindings, review floor, and per-step overrides), falling back to built-in defaults (`small`→haiku, `medium`→sonnet, `large`→opus) when unset.
+using the tier hint derived in step 1, and pass `model` explicitly when dispatching that agent with the `Agent` tool. Purely mechanical checks (e.g. a scripted presence/lint check with no judgment involved) may instead resolve `rdm model resolve mechanical`, or run inline without a subagent at all. Resolution reads the `[models]` config table (tier→model-id bindings, review floor, and per-step overrides), falling back to built-in defaults (`small`→opus, `medium`→sonnet, `large`→opus) when unset.
 
 ### 3. Refute — per-finding refute pass (parallel)
 

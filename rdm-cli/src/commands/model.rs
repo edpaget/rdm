@@ -129,7 +129,7 @@ mod tests {
     fn build_view_reflects_default_bindings_and_all_five_steps() {
         let policy = ModelPolicy::from_config(&Config::default());
         let view = build_view(&policy);
-        assert_eq!(view.small, "haiku");
+        assert_eq!(view.small, "opus");
         assert_eq!(view.medium, "sonnet");
         assert_eq!(view.large, "opus");
         assert_eq!(view.review_floor, "medium");
@@ -141,6 +141,6 @@ mod tests {
         assert_eq!(view.steps[3].step, "review-verify");
         assert_eq!(view.steps[3].model, "opus");
         assert_eq!(view.steps[4].step, "mechanical");
-        assert_eq!(view.steps[4].model, "haiku");
+        assert_eq!(view.steps[4].model, "opus");
     }
 }
