@@ -849,16 +849,6 @@ fn run_time(at: chrono::DateTime<chrono::Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-/// A run's status for list and detail output: an `open` run is labelled
-/// incomplete, since it was never closed.
-fn run_status_label(run: &Run) -> String {
-    if run.is_complete() {
-        run.status.to_string()
-    } else {
-        format!("{} (incomplete)", run.status)
-    }
-}
-
 /// One unit entry as a single line: `<unit> (attempt N): <start> → <end> — <outcome>`,
 /// or `… → — incomplete` for a unit that never ended.
 fn run_unit_line(u: &RunUnit) -> String {
@@ -986,7 +976,7 @@ fn build_run_list(runs: &[(String, Document<Run>)], flavor: RenderFlavor) -> ast
                 vec![ast::Inline::Text(id.clone())],
                 vec![ast::Inline::Text(fm.driver.to_string())],
                 vec![ast::Inline::Text(fm.target.label())],
-                vec![ast::Inline::Text(run_status_label(fm))],
+                vec![ast::Inline::Text(fm.status_label())],
                 vec![ast::Inline::Text(run_time(fm.started))],
                 vec![ast::Inline::Text(fm.units.len().to_string())],
             ]

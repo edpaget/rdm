@@ -135,16 +135,11 @@ pub fn format_run_table(runs: &[(String, Document<Run>)]) -> String {
         .iter()
         .map(|(id, doc)| {
             let fm = &doc.frontmatter;
-            let status = if fm.is_complete() {
-                fm.status.to_string()
-            } else {
-                format!("{} (incomplete)", fm.status)
-            };
             vec![
                 id.clone(),
                 fm.driver.to_string(),
                 fm.target.label(),
-                status,
+                fm.status_label(),
                 fm.started
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 fm.units.len().to_string(),

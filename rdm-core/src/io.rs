@@ -174,6 +174,22 @@ pub fn load_review(store: &impl Store, project: &str, review_id: &str) -> Result
     Ok(doc)
 }
 
+/// Builds a run file's path from a caller-supplied id, refusing any id that
+/// is not a single path component.
+///
+/// A run id is user input (`rdm run show <id>`), so an id such as `../x`
+/// must surface as [`Error::RunNotFound`] — no run can carry it — rather
+/// than reach [`crate::paths::run_path`], which panics on a path-escaping
+/// component.
+fn run_file_path(project: &str, run_id: &str) -> Result<crate::store::RelPath> {
+    let single_component =
+        !run_id.is_empty() && !run_id.contains(['/', '\\']) && run_id != "." && run_id != "..";
+    if !single_component {
+        return Err(Error::RunNotFound(run_id.to_string()));
+    }
+    Ok(crate::paths::run_path(project, run_id))
+}
+
 /// Loads and parses a run record from the store.
 ///
 /// It does not check target existence: a run whose roadmap or task has
@@ -181,12 +197,13 @@ pub fn load_review(store: &impl Store, project: &str, review_id: &str) -> Result
 ///
 /// # Errors
 ///
-/// Returns [`Error::RunNotFound`] if the run file does not exist,
-/// [`Error::Io`] on read failure, or
-/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
-/// YAML is invalid.
+/// Returns [`Error::RunNotFound`] if the run file does not exist or
+/// `run_id` is not a single path component (it contains `/` or `\\`, is
+/// empty, or is `.`/`..`) and so can never name a run, [`Error::Io`] on
+/// read failure, or [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`]
+/// if the YAML is invalid.
 pub fn load_run(store: &impl Store, project: &str, run_id: &str) -> Result<Document<Run>> {
-    let path = crate::paths::run_path(project, run_id);
+    let path = run_file_path(project, run_id)?;
     if !store.exists(&path) {
         return Err(Error::RunNotFound(run_id.to_string()));
     }
@@ -419,7 +436,8 @@ pub fn write_review(
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if writing fails, or
+/// Returns [`Error::RunNotFound`] if `run_id` is not a single path
+/// component (see [`load_run`]), [`Error::Io`] if writing fails, or
 /// [`Error::FrontmatterParse`] if the frontmatter cannot be serialized.
 pub fn write_run(
     store: &mut impl Store,
@@ -427,7 +445,7 @@ pub fn write_run(
     run_id: &str,
     doc: &Document<Run>,
 ) -> Result<()> {
-    let path = crate::paths::run_path(project, run_id);
+    let path = run_file_path(project, run_id)?;
     let content = doc.render()?;
     store.write(&path, content)?;
     Ok(())

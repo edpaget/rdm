@@ -1801,6 +1801,20 @@ impl Run {
     pub fn is_complete(&self) -> bool {
         self.status.is_terminal()
     }
+
+    /// The run's status as list and detail output render it: an incomplete
+    /// (still `open`) run reads `open (incomplete)`, a finished run its bare
+    /// status.
+    ///
+    /// The single label rule shared by the core renderers and the CLI table.
+    #[must_use]
+    pub fn status_label(&self) -> String {
+        if self.is_complete() {
+            self.status.to_string()
+        } else {
+            format!("{} (incomplete)", self.status)
+        }
+    }
 }
 
 #[cfg(test)]

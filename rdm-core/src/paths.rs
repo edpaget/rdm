@@ -151,11 +151,23 @@ pub fn review_path(project: &str, review_id: &str) -> RelPath {
 }
 
 /// Returns the path to a project's run-records directory.
+///
+/// # Panics
+///
+/// Panics if `project` contains a `.` or `..` path component or a `\\`, or
+/// starts with `/` — callers pass a resolved project name.
 pub fn runs_dir(project: &str) -> RelPath {
     RelPath::new(&format!("projects/{project}/runs")).expect("valid path")
 }
 
 /// Returns the path to a run-record file.
+///
+/// # Panics
+///
+/// Panics if `project` or `run_id` contains a `.` or `..` path component or
+/// a `\\`, or `project` starts with `/`. A `run_id` taken from user input
+/// must be validated first; the public run operations do so and return
+/// [`Error::RunNotFound`](crate::error::Error::RunNotFound) instead.
 pub fn run_path(project: &str, run_id: &str) -> RelPath {
     RelPath::new(&format!("projects/{project}/runs/{run_id}.md")).expect("valid path")
 }

@@ -104,11 +104,9 @@ pub fn create_run(store: &mut impl Store, req: CreateRun<'_>) -> Result<Document
         }
     }
 
-    let id = crate::ops::id::next_available_id(
-        |id| store.exists(&crate::paths::run_path(project, id)),
-        || crate::ops::id::generate_timestamp_id(now),
-        Error::RunIdExhausted,
-    )?;
+    let id = next_available_run_id(store, project, || {
+        crate::ops::id::generate_timestamp_id(now)
+    })?;
     let non_empty = |s: Option<&str>| s.filter(|v| !v.is_empty()).map(str::to_string);
     let doc = Document {
         frontmatter: Run {
@@ -130,13 +128,30 @@ pub fn create_run(store: &mut impl Store, req: CreateRun<'_>) -> Result<Document
     Ok(doc)
 }
 
+/// Returns the first candidate id that does not collide with an existing
+/// run file, retrying up to
+/// [`MAX_ID_ATTEMPTS`](crate::ops::id::MAX_ID_ATTEMPTS) times.
+fn next_available_run_id(
+    store: &impl Store,
+    project: &str,
+    candidate: impl FnMut() -> String,
+) -> Result<String> {
+    crate::ops::id::next_available_id(
+        |id| store.exists(&crate::paths::run_path(project, id)),
+        candidate,
+        Error::RunIdExhausted,
+    )
+}
+
 /// Loads a single run by id.
 ///
 /// # Errors
 ///
-/// Returns [`Error::RunNotFound`] if the run doesn't exist, [`Error::Io`] on
-/// read failure, or [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`]
-/// on a malformed run file.
+/// Returns [`Error::RunNotFound`] if the run doesn't exist — including an
+/// id that can never name a run because it is not a single path component
+/// (such as `../x`) — [`Error::Io`] on read failure, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] on a malformed
+/// run file.
 pub fn get_run(store: &impl Store, project: &str, run_id: &str) -> Result<Document<Run>> {
     crate::io::load_run(store, project, run_id)
 }
@@ -454,18 +469,14 @@ mod tests {
         let mut store = setup_store();
         let taken = record(&mut store, alpha(), t(30, 0));
         let mut calls = 0;
-        let id = crate::ops::id::next_available_id(
-            |id| store.exists(&crate::paths::run_path("test", id)),
-            || {
-                calls += 1;
-                if calls == 1 {
-                    taken.clone()
-                } else {
-                    "free".to_string()
-                }
-            },
-            Error::RunIdExhausted,
-        )
+        let id = next_available_run_id(&store, "test", || {
+            calls += 1;
+            if calls == 1 {
+                taken.clone()
+            } else {
+                "free".to_string()
+            }
+        })
         .unwrap();
         assert_eq!(id, "free");
         assert_eq!(calls, 2);
@@ -476,14 +487,10 @@ mod tests {
         let mut store = setup_store();
         let stuck = record(&mut store, alpha(), t(30, 0));
         let mut calls = 0;
-        let result = crate::ops::id::next_available_id(
-            |id| store.exists(&crate::paths::run_path("test", id)),
-            || {
-                calls += 1;
-                stuck.clone()
-            },
-            Error::RunIdExhausted,
-        );
+        let result = next_available_run_id(&store, "test", || {
+            calls += 1;
+            stuck.clone()
+        });
         assert!(matches!(result, Err(Error::RunIdExhausted)));
         assert_eq!(calls, MAX_ID_ATTEMPTS);
     }
@@ -623,6 +630,44 @@ mod tests {
         assert_eq!(doc.frontmatter.target, alpha());
         assert!(matches!(
             get_run(&store, "test", "missing"),
+            Err(Error::RunNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn a_path_escaping_run_id_is_not_found_rather_than_a_panic() {
+        let mut store = setup_store();
+        for bad in ["../x", "./x", "a/../b", "..", ".", "", "a\\b", "x/y"] {
+            assert!(
+                matches!(get_run(&store, "test", bad), Err(Error::RunNotFound(ref id)) if id == bad),
+                "get_run {bad:?}"
+            );
+            assert!(
+                matches!(
+                    start_unit(&mut store, "test", bad, "1", t(31, 0)),
+                    Err(Error::RunNotFound(_))
+                ),
+                "start_unit {bad:?}"
+            );
+            assert!(
+                matches!(
+                    end_unit(&mut store, "test", bad, "reviewed", t(31, 0)),
+                    Err(Error::RunNotFound(_))
+                ),
+                "end_unit {bad:?}"
+            );
+            assert!(
+                matches!(
+                    close_run(&mut store, "test", bad, RunEnd::Closed, "done", t(31, 0)),
+                    Err(Error::RunNotFound(_))
+                ),
+                "close_run {bad:?}"
+            );
+        }
+        let id = record(&mut store, alpha(), t(30, 0));
+        let doc = get_run(&store, "test", &id).unwrap();
+        assert!(matches!(
+            crate::io::write_run(&mut store, "test", "../x", &doc),
             Err(Error::RunNotFound(_))
         ));
     }

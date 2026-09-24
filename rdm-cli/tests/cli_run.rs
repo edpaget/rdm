@@ -447,6 +447,28 @@ fn a_run_whose_roadmap_was_deleted_still_loads() {
 }
 
 #[test]
+fn a_path_escaping_run_id_is_reported_not_found_without_a_panic() {
+    let repo = Repo::new();
+    for args in [
+        vec!["run", "show", "../x"],
+        vec!["run", "unit-start", "../x", "--unit", "1"],
+        vec!["run", "unit-end", "../x", "--outcome", "reviewed"],
+        vec!["run", "close", "../x", "--stop-reason", "done"],
+    ] {
+        let mut full = args.clone();
+        full.extend(["--project", "test"]);
+        let out = repo.run_with(Session::Unset, &full);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "rdm {full:?}: {stderr}");
+        assert!(!stderr.contains("panicked"), "rdm {full:?}: {stderr}");
+        assert!(
+            stderr.contains("run not found: ../x") && stderr.contains("rdm run list"),
+            "rdm {full:?}: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn unit_errors_name_the_next_command() {
     let repo = Repo::new();
     let id = repo.record(Session::Unset, &["--roadmap", "alpha"]);
