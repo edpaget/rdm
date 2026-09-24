@@ -19,7 +19,8 @@ fn describe_lists_all_entities() {
         .stdout(predicate::str::contains("roadmap"))
         .stdout(predicate::str::contains("phase"))
         .stdout(predicate::str::contains("task"))
-        .stdout(predicate::str::contains("review"));
+        .stdout(predicate::str::contains("review"))
+        .stdout(predicate::str::contains("run"));
 }
 
 #[test]
@@ -44,7 +45,7 @@ fn describe_unknown_entity_errors() {
         .failure()
         .stderr(predicate::str::contains("unknown entity 'foo'"))
         .stderr(predicate::str::contains(
-            "project, roadmap, phase, task, review",
+            "project, roadmap, phase, task, review, run",
         ));
 }
 
@@ -57,9 +58,12 @@ fn describe_json_format() {
     assert!(output.status.success());
     let json: Value = serde_json::from_slice(&output.stdout).unwrap();
     let arr = json.as_array().unwrap();
-    assert_eq!(arr.len(), 5);
+    assert_eq!(arr.len(), 6);
     let names: Vec<&str> = arr.iter().map(|e| e["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["project", "roadmap", "phase", "task", "review"]);
+    assert_eq!(
+        names,
+        vec!["project", "roadmap", "phase", "task", "review", "run"]
+    );
 }
 
 #[test]
@@ -124,4 +128,24 @@ fn describe_review_entity_shows_lifecycle_fields() {
         ))
         .stdout(predicate::str::contains("created_commit"))
         .stdout(predicate::str::contains("comments"));
+}
+
+#[test]
+fn describe_run_entity_json_has_fields() {
+    let output = rdm()
+        .args(["describe", "run", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["name"].as_str().unwrap(), "run");
+    let fields = json["fields"].as_array().unwrap();
+    assert!(!fields.is_empty());
+    let field_names: Vec<&str> = fields.iter().map(|f| f["name"].as_str().unwrap()).collect();
+    for name in ["session_uuid", "status", "units"] {
+        assert!(
+            field_names.contains(&name),
+            "missing {name}: {field_names:?}"
+        );
+    }
 }

@@ -63,6 +63,34 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("review not found: {id}")),
                 instance: None,
             },
+            // Runs, like plans, are CLI-only for now — rdm-server exposes no
+            // run routes — so these can only surface via a shared code path.
+            // A missing run is 404; a write against a run whose state forbids
+            // it is 409 (the `ReviewClosed` shape); a request the run can
+            // never accept as given is 422.
+            Error::RunNotFound(_) => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Not Found".to_string(),
+                status: 404,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
+            Error::RunNotOpen { .. } | Error::RunUnitAlreadyOpen { .. } | Error::RunNoOpenUnit(_) => {
+                ProblemDetail {
+                    problem_type: "about:blank".to_string(),
+                    title: "Conflict".to_string(),
+                    status: 409,
+                    detail: Some(err.to_string()),
+                    instance: None,
+                }
+            }
+            Error::RunUnitMismatch { .. } | Error::RunOutcomeEmpty => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Unprocessable Content".to_string(),
+                status: 422,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
             // Plans are a CLI-only document kind for now — rdm-server exposes
             // no plan routes, so these can only surface via a shared code
             // path. Map them to the same shapes their task/roadmap siblings
@@ -413,6 +441,7 @@ impl From<&Error> for ProblemDetail {
             }
             // Internal errors: no detail leak
             Error::ReviewIdExhausted
+            | Error::RunIdExhausted
             | Error::Io(_)
             | Error::InvalidStoredChangeRevision { .. }
             | Error::FrontmatterParse(_)
@@ -543,6 +572,59 @@ mod tests {
         assert_eq!(pd.status, 400);
         assert_eq!(pd.title, "Bad Request");
         assert!(pd.detail.as_ref().unwrap().contains("abc123"));
+    }
+
+    #[test]
+    fn from_run_not_found() {
+        let pd = ProblemDetail::from(&Error::RunNotFound("2026-09-24-1530-a1b2".to_string()));
+        assert_eq!(pd.status, 404);
+        assert_eq!(pd.title, "Not Found");
+        assert!(pd.detail.unwrap().contains("2026-09-24-1530-a1b2"));
+    }
+
+    #[test]
+    fn from_run_state_conflicts() {
+        for err in [
+            Error::RunNotOpen {
+                run_id: "r1".to_string(),
+                status: rdm_core::model::RunStatus::Closed,
+            },
+            Error::RunUnitAlreadyOpen {
+                run_id: "r1".to_string(),
+                unit: "phase-1-one".to_string(),
+                attempt: 1,
+            },
+            Error::RunNoOpenUnit("r1".to_string()),
+        ] {
+            let pd = ProblemDetail::from(&err);
+            assert_eq!(pd.status, 409, "{err}");
+            assert_eq!(pd.title, "Conflict");
+            assert!(pd.detail.unwrap().contains("r1"));
+        }
+    }
+
+    #[test]
+    fn from_run_unprocessable_requests() {
+        for err in [
+            Error::RunUnitMismatch {
+                run_id: "r1".to_string(),
+                unit: "other".to_string(),
+                expected: "fix-bug".to_string(),
+            },
+            Error::RunOutcomeEmpty,
+        ] {
+            let pd = ProblemDetail::from(&err);
+            assert_eq!(pd.status, 422, "{err}");
+            assert_eq!(pd.title, "Unprocessable Content");
+            assert!(pd.detail.is_some());
+        }
+    }
+
+    #[test]
+    fn from_run_id_exhausted_is_internal() {
+        let pd = ProblemDetail::from(&Error::RunIdExhausted);
+        assert_eq!(pd.status, 500);
+        assert!(pd.detail.is_none());
     }
 
     #[test]

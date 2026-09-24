@@ -7,7 +7,7 @@
 use crate::config::Config;
 use crate::document::Document;
 use crate::error::{Error, Result};
-use crate::model::{Phase, Plan, Project, Review, Roadmap, Task};
+use crate::model::{Phase, Plan, Project, Review, Roadmap, Run, Task};
 use crate::store::{Store, VersionedStore};
 
 /// Loads and parses `rdm.toml` from the plan repo root.
@@ -172,6 +172,26 @@ pub fn load_review(store: &impl Store, project: &str, review_id: &str) -> Result
     let doc: Document<Review> = Document::parse(&content)?;
     doc.frontmatter.target.validate_stored_identity()?;
     Ok(doc)
+}
+
+/// Loads and parses a run record from the store.
+///
+/// It does not check target existence: a run whose roadmap or task has
+/// since been deleted or archived (a dangling target) still loads.
+///
+/// # Errors
+///
+/// Returns [`Error::RunNotFound`] if the run file does not exist,
+/// [`Error::Io`] on read failure, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+/// YAML is invalid.
+pub fn load_run(store: &impl Store, project: &str, run_id: &str) -> Result<Document<Run>> {
+    let path = crate::paths::run_path(project, run_id);
+    if !store.exists(&path) {
+        return Err(Error::RunNotFound(run_id.to_string()));
+    }
+    let content = store.read(&path)?;
+    Document::parse(&content)
 }
 
 /// Loads and parses an archived roadmap document from the store.
@@ -395,6 +415,24 @@ pub fn write_review(
     Ok(())
 }
 
+/// Writes a run record to the store.
+///
+/// # Errors
+///
+/// Returns [`Error::Io`] if writing fails, or
+/// [`Error::FrontmatterParse`] if the frontmatter cannot be serialized.
+pub fn write_run(
+    store: &mut impl Store,
+    project: &str,
+    run_id: &str,
+    doc: &Document<Run>,
+) -> Result<()> {
+    let path = crate::paths::run_path(project, run_id);
+    let content = doc.render()?;
+    store.write(&path, content)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -606,6 +644,94 @@ mod tests {
         let loaded = load_review(&store, "test", "2026-07-01-1430-a1b2").unwrap();
         assert_eq!(loaded.frontmatter, doc.frontmatter);
         assert_eq!(loaded.body, "Review summary.\n");
+    }
+
+    fn run_time(s: &str) -> chrono::DateTime<chrono::Utc> {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    }
+
+    #[test]
+    fn write_and_load_run_round_trip() {
+        use crate::model::{RunDriver, RunStatus, RunTarget, RunUnit};
+        let mut store = setup_store();
+        let id = "2026-09-24-1530-a1b2";
+        let doc = Document {
+            frontmatter: Run {
+                id: id.to_string(),
+                project: "test".to_string(),
+                driver: RunDriver::Autopilot,
+                target: RunTarget::Roadmap("alpha".to_string()),
+                session_uuid: Some("0f3c9a1e-1111-4222-8333-444455556666".to_string()),
+                args: Some("alpha --max 3".to_string()),
+                status: RunStatus::Closed,
+                started: run_time("2026-09-24T15:30:12.345Z"),
+                ended: Some(run_time("2026-09-24T16:40:00.001Z")),
+                stop_reason: Some("all phases reviewed".to_string()),
+                units: vec![
+                    RunUnit {
+                        unit: "phase-1-one".to_string(),
+                        attempt: 1,
+                        started: run_time("2026-09-24T15:31:00.000Z"),
+                        ended: Some(run_time("2026-09-24T15:58:10.250Z")),
+                        outcome: Some("reviewed".to_string()),
+                    },
+                    RunUnit {
+                        unit: "phase-2-two".to_string(),
+                        attempt: 1,
+                        started: run_time("2026-09-24T15:59:00.000Z"),
+                        ended: None,
+                        outcome: None,
+                    },
+                ],
+            },
+            body: String::new(),
+        };
+        write_run(&mut store, "test", id, &doc).unwrap();
+        assert!(store.exists(&crate::paths::run_path("test", id)));
+        let loaded = load_run(&store, "test", id).unwrap();
+        assert_eq!(loaded.frontmatter, doc.frontmatter);
+        assert_eq!(loaded.body, "");
+    }
+
+    #[test]
+    fn minimal_run_round_trips_without_absent_keys() {
+        use crate::model::{RunDriver, RunStatus, RunTarget};
+        let mut store = setup_store();
+        let id = "2026-09-24-1530-ffff";
+        let doc = Document {
+            frontmatter: Run {
+                id: id.to_string(),
+                project: "test".to_string(),
+                driver: RunDriver::DispatchPhase,
+                target: RunTarget::Task("fix-bug".to_string()),
+                session_uuid: None,
+                args: None,
+                status: RunStatus::Open,
+                started: run_time("2026-09-24T15:30:12.345Z"),
+                ended: None,
+                stop_reason: None,
+                units: vec![],
+            },
+            body: String::new(),
+        };
+        write_run(&mut store, "test", id, &doc).unwrap();
+        let raw = store.read(&crate::paths::run_path("test", id)).unwrap();
+        for absent in ["session_uuid", "args", "ended", "stop_reason", "roadmap"] {
+            assert!(!raw.contains(absent), "{absent} must not be emitted: {raw}");
+        }
+        let loaded = load_run(&store, "test", id).unwrap();
+        assert_eq!(loaded.frontmatter, doc.frontmatter);
+    }
+
+    #[test]
+    fn load_run_not_found() {
+        let store = setup_store();
+        assert!(matches!(
+            load_run(&store, "test", "nonexistent"),
+            Err(Error::RunNotFound(_))
+        ));
     }
 
     #[test]

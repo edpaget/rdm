@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
 use rdm_core::model::{
-    Difficulty, ModelTier, PhaseStatus, PlanStatus, Priority, RoadmapSort, TaskStatus,
+    Difficulty, ModelTier, PhaseStatus, PlanStatus, Priority, RoadmapSort, RunDriver, TaskStatus,
     TaskStatusFilter,
 };
 #[cfg(feature = "git")]
@@ -117,6 +117,12 @@ pub(crate) enum Command {
     Plan {
         #[command(subcommand)]
         command: PlanCommand,
+    },
+    /// Record what an autonomous-lane run drove, in which session, and each
+    /// dispatched unit's time window and outcome.
+    Run {
+        #[command(subcommand)]
+        command: RunCommand,
     },
     /// Promote a task to a new roadmap, or consolidate it into an existing one.
     Promote {
@@ -957,6 +963,123 @@ pub(crate) enum PlanCommand {
         #[arg(long)]
         force: bool,
     },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum RunCommand {
+    /// Record a new open run and print its id.
+    ///
+    /// The human output is the bare id on its own line, so
+    /// `id=$(rdm run record ...)` captures it. The session uuid is
+    /// `--session-uuid` if given, else the raw `CLAUDE_CODE_SESSION_ID`,
+    /// else none (the run then cannot be joined to spend).
+    #[command(group(
+        clap::ArgGroup::new("target")
+            .required(true)
+            .args(["roadmap", "task"])
+    ))]
+    Record {
+        /// Which lane driver is opening the run: `autopilot` or
+        /// `dispatch-phase`.
+        #[arg(long)]
+        driver: RunDriver,
+        /// The roadmap the run drives.
+        #[arg(long)]
+        roadmap: Option<String>,
+        /// The task the run drives.
+        #[arg(long)]
+        task: Option<String>,
+        /// The Claude Code session uuid to record (overrides
+        /// `CLAUDE_CODE_SESSION_ID`).
+        #[arg(long, value_name = "UUID")]
+        session_uuid: Option<String>,
+        /// Free-form invocation arguments of the driver.
+        #[arg(long, value_name = "TEXT", allow_hyphen_values = true)]
+        args: Option<String>,
+        /// Project the run belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Start a unit entry on an open run.
+    ///
+    /// Refused while another unit of the run is still open. A second start
+    /// of the same unit records the next attempt.
+    UnitStart {
+        /// Run id.
+        id: String,
+        /// Phase stem or number on a roadmap run; the task slug on a task
+        /// run.
+        #[arg(long)]
+        unit: String,
+        /// Project the run belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// End the run's open unit entry with an outcome.
+    UnitEnd {
+        /// Run id.
+        id: String,
+        /// The unit's outcome (free-form, e.g. reviewed, rework, escalated).
+        #[arg(long)]
+        outcome: String,
+        /// Project the run belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Close an open run with a stop reason.
+    Close {
+        /// Run id.
+        id: String,
+        /// Why the run stopped.
+        #[arg(long, allow_hyphen_values = true)]
+        stop_reason: String,
+        /// Terminal status: `closed` (default) or `abandoned` for an
+        /// interrupted run.
+        #[arg(long, default_value = "closed")]
+        status: RunEndArg,
+        /// Project the run belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// List runs, oldest first.
+    List {
+        /// Only runs driving this roadmap.
+        #[arg(long)]
+        roadmap: Option<String>,
+        /// Only runs driving this task.
+        #[arg(long)]
+        task: Option<String>,
+        /// Project to list runs for.
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Show a run and its unit entries.
+    Show {
+        /// Run id.
+        id: String,
+        /// Project the run belongs to.
+        #[arg(long)]
+        project: Option<String>,
+    },
+}
+
+/// Terminal statuses accepted by `rdm run close --status`; `open` is
+/// deliberately unrepresentable.
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum RunEndArg {
+    /// The driver finished.
+    Closed,
+    /// The driver was interrupted.
+    Abandoned,
+}
+
+impl From<RunEndArg> for rdm_core::ops::runs::RunEnd {
+    fn from(arg: RunEndArg) -> Self {
+        match arg {
+            RunEndArg::Closed => Self::Closed,
+            RunEndArg::Abandoned => Self::Abandoned,
+        }
+    }
 }
 
 #[derive(Subcommand)]

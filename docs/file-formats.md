@@ -22,6 +22,12 @@ my-plans/
         ├── plans/
         │   ├── <plan-slug>.md          # implementation plans
         │   └── ...
+        ├── reviews/
+        │   ├── <review-id>.md          # document and change reviews
+        │   └── ...
+        ├── runs/
+        │   ├── <run-id>.md             # autonomous-lane run records
+        │   └── ...
         └── archive/
             └── roadmaps/
                 └── <roadmap-slug>/    # archived roadmaps (same structure)
@@ -372,6 +378,100 @@ present.
 The full model — hunk-restricted anchoring, resolved/drifted/unresolved
 detection, the `implements` inference rules, and the never-write-the-source-repo
 invariant — is recorded in [`change-reviews.md`](change-reviews.md).
+
+## Run Files
+
+Located at `projects/<project>/runs/<id>.md`. Created by `rdm run record`, and
+updated by `rdm run unit-start`, `rdm run unit-end` and `rdm run close`. A run
+records **what ran, where, when**: which lane driver drove which roadmap or
+task, in which Claude Code session, and — per dispatched unit — over which time
+window with what outcome. Everything lives in the frontmatter; the body is
+always empty.
+
+```yaml
+---
+id: 2026-09-24-1530-a1b2
+project: rdm
+driver: autopilot
+roadmap: autopilot-run-accounting
+session_uuid: 0f3c9a1e-1111-4222-8333-444455556666
+args: autopilot-run-accounting --max 3
+status: closed
+started: 2026-09-24T15:30:12.345Z
+ended: 2026-09-24T16:40:00.001Z
+stop_reason: all phases reviewed
+units:
+- unit: phase-3-run-artifact
+  attempt: 1
+  started: 2026-09-24T15:31:00Z
+  ended: 2026-09-24T15:58:10Z
+  outcome: rework
+- unit: phase-3-run-artifact
+  attempt: 2
+  started: 2026-09-24T15:59:02Z
+  ended: 2026-09-24T16:20:44Z
+  outcome: reviewed
+---
+```
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `id` | yes | string | `YYYY-MM-DD-HHMM-xxxx`, minted from the record time with a collision-probed suffix (the review-id contract); also the file stem |
+| `project` | yes | string | Project the run belongs to |
+| `driver` | yes | string | `autopilot` or `dispatch-phase` |
+| `roadmap` / `task` | exactly one | string | Slug of the roadmap or task the run drives |
+| `session_uuid` | no | string | Raw Claude Code session uuid (see below). Absent when none was captured |
+| `args` | no | string | Free-form invocation arguments of the driver |
+| `status` | yes | string | `open`, `closed` or `abandoned` |
+| `started` | yes | datetime | When the run was recorded (RFC 3339, sub-second precision kept) |
+| `ended` | no | datetime | When the run was closed or abandoned |
+| `stop_reason` | no | string | Why the run stopped, set by `rdm run close --stop-reason` |
+| `units` | yes | list | Unit entries in start order: `unit` (phase stem, or the task slug on a task run), `attempt`, `started`, and once ended `ended` and a free-form non-empty `outcome` |
+
+### Status and completeness
+
+`status` starts `open` and moves once, via `rdm run close`, to `closed`
+(the default) or `abandoned` (`--status abandoned`, for an interrupted run).
+Both are terminal: a closed or abandoned run refuses further unit and close
+writes.
+
+- A run still `open` is **incomplete** — in flight, or left behind by a
+  session that died before closing it. It still loads, and `rdm run show` /
+  `rdm run list` label it incomplete.
+- A unit entry with no `ended` is **incomplete**. At most one unit is open at a
+  time: `unit-start` is refused while another unit is open, and `unit-end`
+  always ends that one. Closing a run with a unit still open is allowed; that
+  unit simply stays incomplete.
+
+### Attempt ordinals
+
+On a roadmap run, `--unit` accepts a phase stem or number and is stored as the
+resolved stem; on a task run it must be the run's task slug. A unit's `attempt`
+is one more than the number of entries this run already has for that unit, so a
+rework re-dispatch appends a second entry (`attempt: 2`) rather than changing
+the first.
+
+### Session capture
+
+`rdm run record` stores `--session-uuid` when given, else the raw value of
+`CLAUDE_CODE_SESSION_ID` when it is set and non-empty, else nothing. It never
+stores the hashed changeset session id and consults no other harness variable,
+because only the raw Claude Code uuid names a transcript directory. A run with
+no `session_uuid` cannot be joined to spend, and `rdm run record` says so on
+stderr. Every timestamp is the CLI's own clock at the moment of the call.
+
+### Dangling targets
+
+The `roadmap` / `task` target is checked only when the run is recorded. A run
+whose roadmap or task was later deleted or archived still loads, and
+`rdm run list --roadmap <slug>` still finds it by the recorded slug.
+
+### Not searchable
+
+Runs are deliberately left out of `rdm search` and its `--type` filter: they
+have no prose body, and their fields are ids and timestamps, which fuzzy text
+search has nothing useful to match. Find them with
+`rdm run list --roadmap <slug>` (or `--task <slug>`) instead.
 
 ## `INDEX.md`
 

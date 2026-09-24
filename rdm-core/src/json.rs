@@ -11,8 +11,8 @@ use crate::document::Document;
 use crate::link::{BacklinkEntry, DocRef, Resolved};
 use crate::model::{
     Anchor, CommentDoc, Difficulty, GateOverride, ModelTier, Phase, PhaseStatus, Plan, PlanStatus,
-    Priority, Project, Review, ReviewCommentStatus, ReviewState, ReviewTarget, Roadmap, Task,
-    TaskStatus, Verdict,
+    Priority, Project, Review, ReviewCommentStatus, ReviewState, ReviewTarget, Roadmap, Run,
+    RunDriver, RunStatus, Task, TaskStatus, Verdict,
 };
 use crate::search::{ItemKind, SearchResult};
 
@@ -651,6 +651,95 @@ pub fn plan_ref_to_json(slug: &str, doc: &Document<Plan>) -> PlanRefJson {
         slug: slug.to_string(),
         title: doc.frontmatter.title.clone(),
         status: doc.frontmatter.status,
+    }
+}
+
+/// One unit entry of a run, in JSON.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunUnitJson {
+    /// Phase stem, or the task slug for a task run.
+    pub unit: String,
+    /// 1-based attempt ordinal for this unit within the run.
+    pub attempt: u32,
+    /// When the unit started (RFC 3339).
+    pub started: DateTime<Utc>,
+    /// When the unit ended (RFC 3339); absent until it ends.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended: Option<DateTime<Utc>>,
+    /// The lane's outcome for the unit; absent until it ends.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    /// Whether the unit has ended ([`crate::model::RunUnit::is_complete`]).
+    pub complete: bool,
+}
+
+/// A run record, in JSON: every frontmatter field plus derived
+/// completeness, so consumers need not re-derive it.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunJson {
+    /// Run id (also the file stem under `runs/`).
+    pub id: String,
+    /// Project the run belongs to.
+    pub project: String,
+    /// Which lane driver opened the run.
+    pub driver: RunDriver,
+    /// The roadmap the run drives, when it drives one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roadmap: Option<String>,
+    /// The task the run drives, when it drives one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// Raw Claude Code session uuid; absent when none was captured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_uuid: Option<String>,
+    /// Free-form invocation arguments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    /// Lifecycle status.
+    pub status: RunStatus,
+    /// When the run was recorded (RFC 3339).
+    pub started: DateTime<Utc>,
+    /// When the run was closed or abandoned (RFC 3339); absent while open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ended: Option<DateTime<Utc>>,
+    /// Why the run stopped; absent while open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    /// Whether the run has been closed or abandoned
+    /// ([`crate::model::Run::is_complete`]).
+    pub complete: bool,
+    /// Dispatched units, in start order.
+    pub units: Vec<RunUnitJson>,
+}
+
+/// Build a [`RunJson`] from a run document.
+pub fn run_to_json(doc: &Document<Run>) -> RunJson {
+    let fm = &doc.frontmatter;
+    RunJson {
+        id: fm.id.clone(),
+        project: fm.project.clone(),
+        driver: fm.driver,
+        roadmap: fm.target.roadmap().map(str::to_string),
+        task: fm.target.task().map(str::to_string),
+        session_uuid: fm.session_uuid.clone(),
+        args: fm.args.clone(),
+        status: fm.status,
+        started: fm.started,
+        ended: fm.ended,
+        stop_reason: fm.stop_reason.clone(),
+        complete: fm.is_complete(),
+        units: fm
+            .units
+            .iter()
+            .map(|u| RunUnitJson {
+                unit: u.unit.clone(),
+                attempt: u.attempt,
+                started: u.started,
+                ended: u.ended,
+                outcome: u.outcome.clone(),
+                complete: u.is_complete(),
+            })
+            .collect(),
     }
 }
 
@@ -1785,5 +1874,58 @@ mod tests {
         assert_eq!(v["diagnostics"][0]["uri"], "rdm:foo/bar");
         assert_eq!(v["dangling"], serde_json::json!([]));
         assert_eq!(v["missing_at_rev"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn run_to_json_carries_target_keys_and_derived_completeness() {
+        use crate::model::{RunTarget, RunUnit};
+        let at = |s: &str| {
+            chrono::DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&Utc)
+        };
+        let doc = Document {
+            frontmatter: Run {
+                id: "2026-09-24-1530-a1b2".to_string(),
+                project: "rdm".to_string(),
+                driver: RunDriver::Autopilot,
+                target: RunTarget::Roadmap("alpha".to_string()),
+                session_uuid: None,
+                args: None,
+                status: RunStatus::Open,
+                started: at("2026-09-24T15:30:12.345Z"),
+                ended: None,
+                stop_reason: None,
+                units: vec![
+                    RunUnit {
+                        unit: "phase-1-one".to_string(),
+                        attempt: 1,
+                        started: at("2026-09-24T15:31:00Z"),
+                        ended: Some(at("2026-09-24T15:40:00Z")),
+                        outcome: Some("reviewed".to_string()),
+                    },
+                    RunUnit {
+                        unit: "phase-2-two".to_string(),
+                        attempt: 1,
+                        started: at("2026-09-24T15:41:00Z"),
+                        ended: None,
+                        outcome: None,
+                    },
+                ],
+            },
+            body: String::new(),
+        };
+        let v = serde_json::to_value(run_to_json(&doc)).unwrap();
+        assert_eq!(v["roadmap"], "alpha");
+        assert!(v.get("task").is_none());
+        assert!(v.get("session_uuid").is_none());
+        assert_eq!(v["status"], "open");
+        assert_eq!(v["driver"], "autopilot");
+        assert_eq!(v["complete"], false);
+        assert_eq!(v["started"], "2026-09-24T15:30:12.345Z");
+        assert_eq!(v["units"][0]["complete"], true);
+        assert_eq!(v["units"][0]["outcome"], "reviewed");
+        assert_eq!(v["units"][1]["complete"], false);
+        assert!(v["units"][1].get("ended").is_none());
     }
 }

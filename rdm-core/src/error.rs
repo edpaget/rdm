@@ -1,4 +1,4 @@
-use crate::model::ReviewState;
+use crate::model::{ReviewState, RunStatus};
 
 /// Errors that can occur in rdm-core operations.
 #[derive(Debug)]
@@ -164,6 +164,42 @@ pub enum Error {
     /// Repeated review-id generation attempts all collided with existing
     /// review files.
     ReviewIdExhausted,
+    /// The specified run record was not found.
+    RunNotFound(String),
+    /// Repeated run-id generation attempts all collided with existing run
+    /// files.
+    RunIdExhausted,
+    /// A unit or close write targeted a run that is already closed or
+    /// abandoned.
+    RunNotOpen {
+        /// The terminal run.
+        run_id: String,
+        /// Its current (terminal) status.
+        status: RunStatus,
+    },
+    /// `unit-start` was called while another unit entry of the run is still
+    /// open; a run's unit windows never overlap.
+    RunUnitAlreadyOpen {
+        /// The run.
+        run_id: String,
+        /// The unit whose entry is still open.
+        unit: String,
+        /// That entry's attempt ordinal.
+        attempt: u32,
+    },
+    /// `unit-end` was called on a run with no open unit entry.
+    RunNoOpenUnit(String),
+    /// A task run's unit named something other than the run's task.
+    RunUnitMismatch {
+        /// The run.
+        run_id: String,
+        /// The unit that was named.
+        unit: String,
+        /// The task slug the run drives, which is the only valid unit.
+        expected: String,
+    },
+    /// A unit's outcome was empty.
+    RunOutcomeEmpty,
     /// The operation requires the review to be a draft (comment structure
     /// changes, submission, and un-forced deletion are draft-only).
     ReviewNotDraft(String),
@@ -772,6 +808,53 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "failed to generate a unique review id after repeated attempts — try again"
+                )
+            }
+            Error::RunNotFound(id) => {
+                write!(f, "run not found: {id} — list runs with `rdm run list`")
+            }
+            Error::RunIdExhausted => {
+                write!(
+                    f,
+                    "failed to generate a unique run id after repeated attempts — re-run `rdm run record`"
+                )
+            }
+            Error::RunNotOpen { run_id, status } => {
+                write!(
+                    f,
+                    "run '{run_id}' is {status} — a closed or abandoned run accepts no further unit or close writes; record a new one with `rdm run record`"
+                )
+            }
+            Error::RunUnitAlreadyOpen {
+                run_id,
+                unit,
+                attempt,
+            } => {
+                write!(
+                    f,
+                    "run '{run_id}' still has unit '{unit}' (attempt {attempt}) open — end it with `rdm run unit-end {run_id} --outcome <outcome>` before starting another"
+                )
+            }
+            Error::RunNoOpenUnit(run_id) => {
+                write!(
+                    f,
+                    "run '{run_id}' has no open unit to end — start one with `rdm run unit-start {run_id} --unit <stem-or-number>`"
+                )
+            }
+            Error::RunUnitMismatch {
+                run_id,
+                unit,
+                expected,
+            } => {
+                write!(
+                    f,
+                    "unit '{unit}' is not part of run '{run_id}', which drives task '{expected}' — pass `--unit {expected}`"
+                )
+            }
+            Error::RunOutcomeEmpty => {
+                write!(
+                    f,
+                    "a unit outcome cannot be empty — pass a non-empty `--outcome` (e.g. reviewed, rework, escalated)"
                 )
             }
             Error::ReviewNotDraft(id) => {

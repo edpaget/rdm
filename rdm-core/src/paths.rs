@@ -32,6 +32,7 @@ pub fn project_path(project: &str) -> RelPath {
 /// - `projects/<p>/roadmaps/<r>/roadmap.md` → `roadmap/<r>`
 /// - `projects/<p>/roadmaps/<r>/<stem>.md` → `phase/<r>/<stem>`
 /// - `projects/<p>/reviews/<id>.md` → `review/<id>`
+/// - `projects/<p>/runs/<id>.md` → `run/<id>`
 ///
 /// Archived variants (`projects/<p>/archive/roadmaps/…`) map to the same
 /// roadmap/phase spellings — an archived roadmap is still that roadmap.
@@ -81,6 +82,7 @@ pub fn describe_path(path: &str) -> String {
         ["tasks", file] => file.strip_suffix(".md").map(|s| format!("task/{s}")),
         ["plans", file] => file.strip_suffix(".md").map(|s| format!("plan/{s}")),
         ["reviews", file] => file.strip_suffix(".md").map(|s| format!("review/{s}")),
+        ["runs", file] => file.strip_suffix(".md").map(|s| format!("run/{s}")),
         ["roadmaps", roadmap, "roadmap.md"] => Some(format!("roadmap/{roadmap}")),
         ["roadmaps", roadmap, file] => file
             .strip_suffix(".md")
@@ -148,6 +150,16 @@ pub fn review_path(project: &str, review_id: &str) -> RelPath {
     RelPath::new(&format!("projects/{project}/reviews/{review_id}.md")).expect("valid path")
 }
 
+/// Returns the path to a project's run-records directory.
+pub fn runs_dir(project: &str) -> RelPath {
+    RelPath::new(&format!("projects/{project}/runs")).expect("valid path")
+}
+
+/// Returns the path to a run-record file.
+pub fn run_path(project: &str, run_id: &str) -> RelPath {
+    RelPath::new(&format!("projects/{project}/runs/{run_id}.md")).expect("valid path")
+}
+
 /// Returns the path to a project's archived roadmaps directory.
 pub fn archived_roadmaps_dir(project: &str) -> RelPath {
     RelPath::new(&format!("projects/{project}/archive/roadmaps")).expect("valid path")
@@ -211,6 +223,10 @@ mod tests {
         assert_eq!(
             describe_path(plan_path("rdm", "impl-auth-v2").as_str()),
             "plan/impl-auth-v2"
+        );
+        assert_eq!(
+            describe_path(run_path("rdm", "2026-09-24-1530-a1b2").as_str()),
+            "run/2026-09-24-1530-a1b2"
         );
 
         // The spellings must match `ReviewTarget::label` exactly, or the CLI
@@ -336,6 +352,19 @@ mod tests {
         assert_eq!(
             review_path("fbm", "2026-07-01-1430-a1b2").as_str(),
             "projects/fbm/reviews/2026-07-01-1430-a1b2.md"
+        );
+    }
+
+    #[test]
+    fn runs_dir_is_correct() {
+        assert_eq!(runs_dir("fbm").as_str(), "projects/fbm/runs");
+    }
+
+    #[test]
+    fn run_path_is_correct() {
+        assert_eq!(
+            run_path("fbm", "2026-09-24-1530-a1b2").as_str(),
+            "projects/fbm/runs/2026-09-24-1530-a1b2.md"
         );
     }
 

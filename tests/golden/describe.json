@@ -345,5 +345,102 @@
         "description": "Inline comments: id, optional doc scope (roadmap reviews only), status (open | addressed | wont-fix), optional applied_commit, optional text-quote anchor (quote/prefix/suffix), body, and optional reply."
       }
     ]
+  },
+  {
+    "name": "run",
+    "description": "A record of one autonomous-lane run: which driver drove which roadmap or task, in which session, and each dispatched unit's time window and outcome.",
+    "fields": [
+      {
+        "name": "id",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Timestamp-based identifier, unique within the project (also the file stem under runs/)."
+      },
+      {
+        "name": "project",
+        "type_name": "string",
+        "required": true,
+        "enum_values": [],
+        "description": "Project this run belongs to."
+      },
+      {
+        "name": "driver",
+        "type_name": "enum",
+        "required": true,
+        "enum_values": [
+          "autopilot",
+          "dispatch-phase"
+        ],
+        "description": "Which lane driver opened the run."
+      },
+      {
+        "name": "roadmap",
+        "type_name": "string",
+        "required": false,
+        "enum_values": [],
+        "description": "Slug of the roadmap the run drives. Exactly one of roadmap / task is present; not validated on load, so a run whose roadmap was deleted still loads."
+      },
+      {
+        "name": "task",
+        "type_name": "string",
+        "required": false,
+        "enum_values": [],
+        "description": "Slug of the task the run drives. Exactly one of roadmap / task is present."
+      },
+      {
+        "name": "session_uuid",
+        "type_name": "string",
+        "required": false,
+        "enum_values": [],
+        "description": "Raw Claude Code session uuid (from --session-uuid, else CLAUDE_CODE_SESSION_ID). Absent when neither was set; such a run cannot be joined to spend."
+      },
+      {
+        "name": "args",
+        "type_name": "string",
+        "required": false,
+        "enum_values": [],
+        "description": "Free-form invocation arguments of the driver."
+      },
+      {
+        "name": "status",
+        "type_name": "enum",
+        "required": true,
+        "enum_values": [
+          "open",
+          "closed",
+          "abandoned"
+        ],
+        "description": "Lifecycle status. A run is open until closed or abandoned; an open run is reported as incomplete."
+      },
+      {
+        "name": "started",
+        "type_name": "datetime (RFC 3339)",
+        "required": true,
+        "enum_values": [],
+        "description": "When the run was recorded."
+      },
+      {
+        "name": "ended",
+        "type_name": "datetime (RFC 3339)",
+        "required": false,
+        "enum_values": [],
+        "description": "When the run was closed or abandoned; absent while open."
+      },
+      {
+        "name": "stop_reason",
+        "type_name": "string",
+        "required": false,
+        "enum_values": [],
+        "description": "Why the run stopped; absent while open."
+      },
+      {
+        "name": "units",
+        "type_name": "list of {unit, attempt, started, ended, outcome}",
+        "required": true,
+        "enum_values": [],
+        "description": "Dispatched units in start order: phase stem (or task slug), 1-based attempt ordinal per unit, start time, and — once ended — end time and free-form outcome. A unit without an end time is incomplete."
+      }
+    ]
   }
 ]

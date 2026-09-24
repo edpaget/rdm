@@ -410,12 +410,15 @@ fn describe_returns_schema_for_all_entities() {
     assert!(output.status.success());
     let entities: Value = serde_json::from_slice(&output.stdout).unwrap();
     let arr = entities.as_array().unwrap();
-    assert_eq!(arr.len(), 5, "should have 5 entity types");
+    assert_eq!(arr.len(), 6, "should have 6 entity types");
     let names: Vec<&str> = arr.iter().map(|e| e["name"].as_str().unwrap()).collect();
-    assert_eq!(names, vec!["project", "roadmap", "phase", "task", "review"]);
+    assert_eq!(
+        names,
+        vec!["project", "roadmap", "phase", "task", "review", "run"]
+    );
 
     // Each entity has non-empty fields
-    for name in &["project", "roadmap", "phase", "task", "review"] {
+    for name in &["project", "roadmap", "phase", "task", "review", "run"] {
         let output = rdm()
             .args(["describe", name, "--format", "json"])
             .output()

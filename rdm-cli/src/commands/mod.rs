@@ -33,6 +33,7 @@ pub mod plan;
 pub mod project;
 pub mod promote;
 pub mod roadmap;
+pub mod run;
 pub mod search;
 pub mod session;
 pub mod tag;
@@ -66,6 +67,13 @@ pub mod worktree;
 
 #[cfg(feature = "server")]
 pub mod serve;
+
+/// The environment variable Claude Code sets to the running session's uuid.
+///
+/// Read raw by `rdm cost` (its default session) and `rdm run record` (the
+/// session a run is recorded against); neither hashes it or consults any
+/// other harness variable.
+pub const CLAUDE_SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
 
 /// Parses a status string into an `ItemStatus`, using the `--type` hint if available.
 pub fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatus> {

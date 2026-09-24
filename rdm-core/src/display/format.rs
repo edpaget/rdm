@@ -9,7 +9,7 @@ use crate::anchor::{Resolution, ResolvedComment};
 use crate::ast;
 use crate::display::truncate_snippet;
 use crate::document::Document;
-use crate::model::{Phase, Plan, Review, Roadmap, Task};
+use crate::model::{Phase, Plan, Review, Roadmap, Run, RunUnit, Task};
 use crate::search::SearchResult;
 
 /// A roadmap document paired with its phases (stem + phase document).
@@ -842,6 +842,175 @@ pub fn format_plan_list(plans: &[(String, Document<Plan>)]) -> String {
 #[must_use]
 pub fn format_plan_list_md(plans: &[(String, Document<Plan>)]) -> String {
     build_plan_list(plans, RenderFlavor::Markdown).to_string()
+}
+
+/// Renders a run timestamp as RFC 3339 with millisecond precision.
+fn run_time(at: chrono::DateTime<chrono::Utc>) -> String {
+    at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// A run's status for list and detail output: an `open` run is labelled
+/// incomplete, since it was never closed.
+fn run_status_label(run: &Run) -> String {
+    if run.is_complete() {
+        run.status.to_string()
+    } else {
+        format!("{} (incomplete)", run.status)
+    }
+}
+
+/// One unit entry as a single line: `<unit> (attempt N): <start> → <end> — <outcome>`,
+/// or `… → — incomplete` for a unit that never ended.
+fn run_unit_line(u: &RunUnit) -> String {
+    match (u.ended, u.outcome.as_deref()) {
+        (Some(ended), outcome) => format!(
+            "{} (attempt {}): {} → {} — {}",
+            u.unit,
+            u.attempt,
+            run_time(u.started),
+            run_time(ended),
+            outcome.unwrap_or("(no outcome)")
+        ),
+        (None, _) => format!(
+            "{} (attempt {}): {} → — incomplete",
+            u.unit,
+            u.attempt,
+            run_time(u.started)
+        ),
+    }
+}
+
+/// Builds a run detail document: header fields, then one line per unit.
+fn build_run_detail(doc: &Document<Run>, flavor: RenderFlavor) -> ast::Document {
+    let fm = &doc.frontmatter;
+    let mut d = ast::Document::new();
+    let status = if fm.is_complete() {
+        fm.status.to_string()
+    } else {
+        format!("{} — incomplete (never closed)", fm.status)
+    };
+    let session = fm
+        .session_uuid
+        .clone()
+        .unwrap_or_else(|| "none (cannot be joined to spend)".to_string());
+    let mut fields: Vec<(&str, String)> = vec![
+        ("Run", fm.id.clone()),
+        ("Driver", fm.driver.to_string()),
+        ("Target", fm.target.label()),
+        ("Session", session),
+    ];
+    if let Some(args) = &fm.args {
+        fields.push(("Args", args.clone()));
+    }
+    fields.push(("Status", status));
+    fields.push(("Started", run_time(fm.started)));
+    if let Some(ended) = fm.ended {
+        fields.push(("Ended", run_time(ended)));
+    }
+    if let Some(reason) = &fm.stop_reason {
+        fields.push(("Stop reason", reason.clone()));
+    }
+    let units: Vec<String> = fm.units.iter().map(run_unit_line).collect();
+    match flavor {
+        RenderFlavor::Markdown => {
+            d.heading(2, &format!("Run {}", fm.id));
+            d.push(ast::Block::BlankLine);
+            d.push(ast::Block::UnorderedList {
+                items: fields
+                    .iter()
+                    .skip(1)
+                    .map(|(label, value)| meta_bullet(label, value))
+                    .collect(),
+            });
+            d.push(ast::Block::BlankLine);
+            d.heading(3, "Units");
+            d.push(ast::Block::BlankLine);
+            if units.is_empty() {
+                d.paragraph("No units.");
+            } else {
+                d.push(ast::Block::UnorderedList {
+                    items: units.iter().map(|u| vec![ast::Inline::text(u)]).collect(),
+                });
+            }
+        }
+        RenderFlavor::Terminal => {
+            let mut out = String::new();
+            for (label, value) in &fields {
+                out.push_str(&format!("{label}: {value}\n"));
+            }
+            if units.is_empty() {
+                out.push_str("Units: none\n");
+            } else {
+                out.push_str("Units:\n");
+                for u in &units {
+                    out.push_str(&format!("  {u}\n"));
+                }
+            }
+            d.raw(&out);
+        }
+    }
+    d
+}
+
+/// Formats a run record for the terminal: header fields (an `open` run is
+/// labelled incomplete), then one line per unit with its attempt, window and
+/// outcome.
+#[must_use]
+pub fn format_run_detail(doc: &Document<Run>) -> String {
+    build_run_detail(doc, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a run record as Markdown: bullet metadata and a unit list.
+#[must_use]
+pub fn format_run_detail_md(doc: &Document<Run>) -> String {
+    build_run_detail(doc, RenderFlavor::Markdown).to_string()
+}
+
+/// Builds a run list document (table of id, driver, target, status,
+/// started, unit count).
+fn build_run_list(runs: &[(String, Document<Run>)], flavor: RenderFlavor) -> ast::Document {
+    let mut d = ast::Document::new();
+    if runs.is_empty() {
+        d.paragraph("No runs found.");
+        return d;
+    }
+    if flavor == RenderFlavor::Markdown {
+        d.heading(2, "Runs");
+        d.push(ast::Block::BlankLine);
+    }
+    let rows = runs
+        .iter()
+        .map(|(id, rd)| {
+            let fm = &rd.frontmatter;
+            vec![
+                vec![ast::Inline::Text(id.clone())],
+                vec![ast::Inline::Text(fm.driver.to_string())],
+                vec![ast::Inline::Text(fm.target.label())],
+                vec![ast::Inline::Text(run_status_label(fm))],
+                vec![ast::Inline::Text(run_time(fm.started))],
+                vec![ast::Inline::Text(fm.units.len().to_string())],
+            ]
+        })
+        .collect();
+    d.push(ast::Block::Table {
+        headers: header_cells(&["ID", "Driver", "Target", "Status", "Started", "Units"]),
+        rows,
+        aligns: vec![],
+    });
+    d
+}
+
+/// Formats a list of runs as a table; an `open` run's status reads
+/// `open (incomplete)`.
+#[must_use]
+pub fn format_run_list(runs: &[(String, Document<Run>)]) -> String {
+    build_run_list(runs, RenderFlavor::Terminal).to_string()
+}
+
+/// Formats a list of runs as a Markdown table under a `## Runs` heading.
+#[must_use]
+pub fn format_run_list_md(runs: &[(String, Document<Run>)]) -> String {
+    build_run_list(runs, RenderFlavor::Markdown).to_string()
 }
 
 /// Formats a dependency graph as a human-readable list.
@@ -2701,5 +2870,83 @@ mod tests {
             populated.contains("- **Plans:** design-auth (draft), design-auth-v2 (superseded)"),
             "{populated}"
         );
+    }
+
+    fn sample_run_doc(status: crate::model::RunStatus) -> Document<Run> {
+        use crate::model::{RunDriver, RunTarget};
+        let at = |s: &str| {
+            DateTime::parse_from_rfc3339(s)
+                .unwrap()
+                .with_timezone(&chrono::Utc)
+        };
+        Document {
+            frontmatter: Run {
+                id: "2026-09-24-1530-a1b2".to_string(),
+                project: "rdm".to_string(),
+                driver: RunDriver::Autopilot,
+                target: RunTarget::Roadmap("alpha".to_string()),
+                session_uuid: None,
+                args: None,
+                status,
+                started: at("2026-09-24T15:30:12.345Z"),
+                ended: None,
+                stop_reason: None,
+                units: vec![
+                    RunUnit {
+                        unit: "phase-1-one".to_string(),
+                        attempt: 1,
+                        started: at("2026-09-24T15:31:00Z"),
+                        ended: Some(at("2026-09-24T15:40:00Z")),
+                        outcome: Some("reviewed".to_string()),
+                    },
+                    RunUnit {
+                        unit: "phase-1-one".to_string(),
+                        attempt: 2,
+                        started: at("2026-09-24T15:41:00Z"),
+                        ended: None,
+                        outcome: None,
+                    },
+                ],
+            },
+            body: String::new(),
+        }
+    }
+
+    #[test]
+    fn run_detail_labels_an_open_run_and_its_open_unit_incomplete() {
+        let out = format_run_detail(&sample_run_doc(crate::model::RunStatus::Open));
+        assert!(
+            out.contains("Status: open — incomplete (never closed)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("Session: none (cannot be joined to spend)"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "phase-1-one (attempt 1): 2026-09-24T15:31:00.000Z → 2026-09-24T15:40:00.000Z — reviewed"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("phase-1-one (attempt 2): 2026-09-24T15:41:00.000Z → — incomplete"),
+            "{out}"
+        );
+        let closed = format_run_detail(&sample_run_doc(crate::model::RunStatus::Closed));
+        assert!(closed.contains("Status: closed\n"), "{closed}");
+    }
+
+    #[test]
+    fn run_list_marks_open_runs_incomplete() {
+        let runs = vec![(
+            "2026-09-24-1530-a1b2".to_string(),
+            sample_run_doc(crate::model::RunStatus::Open),
+        )];
+        let out = format_run_list(&runs);
+        assert!(out.contains("open (incomplete)"), "{out}");
+        assert!(out.contains("roadmap/alpha"), "{out}");
+        assert!(format_run_list_md(&runs).contains("## Runs"));
+        assert!(format_run_list(&[]).contains("No runs found."));
     }
 }

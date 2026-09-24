@@ -10,6 +10,8 @@ pub mod backlog;
 /// The write-time `reviewed` transition gate: approved plan, approving change
 /// review, clean worktree.
 pub mod gate;
+/// Shared timestamp-id generation and collision probing (reviews, runs).
+pub(crate) mod id;
 /// Plan repo initialization.
 pub mod init;
 /// Resolution of parsed `rdm:` links (item existence, code-link rev/URL)
@@ -31,6 +33,8 @@ pub mod review;
 pub mod reviews;
 /// Roadmap operations: create, update, delete, list, archive, split, dependencies.
 pub mod roadmap;
+/// Run-record operations: record, unit start/end, close, list.
+pub mod runs;
 /// Tag inventory: tags in use across a project's roadmaps and tasks, with
 /// counts.
 pub mod tag;
@@ -47,6 +51,7 @@ pub use phase::CreatePhase;
 pub use plan::CreatePlan;
 pub use reviews::CreateReview;
 pub use roadmap::CreateRoadmap;
+pub use runs::CreateRun;
 pub use task::CreateTask;
 pub use update::{
     BodyUpdate, DifficultyUpdate, GateOverrideUpdate, ModelTierUpdate, PriorityUpdate,

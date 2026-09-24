@@ -1565,6 +1565,244 @@ pub struct Review {
     pub comments: Vec<ReviewComment>,
 }
 
+/// Which lane driver opened a [`Run`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RunDriver {
+    /// The `rdm-autopilot` drive loop, advancing a roadmap phase by phase.
+    Autopilot,
+    /// A single `rdm-dispatch-phase` dispatch of one phase or task.
+    DispatchPhase,
+}
+
+impl fmt::Display for RunDriver {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RunDriver::Autopilot => write!(f, "autopilot"),
+            RunDriver::DispatchPhase => write!(f, "dispatch-phase"),
+        }
+    }
+}
+
+impl FromStr for RunDriver {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "autopilot" => Ok(RunDriver::Autopilot),
+            "dispatch-phase" => Ok(RunDriver::DispatchPhase),
+            other => Err(ParseError::new(
+                "run driver",
+                other,
+                "autopilot or dispatch-phase",
+            )),
+        }
+    }
+}
+
+/// Lifecycle status of a [`Run`].
+///
+/// A run is `open` from the moment it is recorded and moves to `closed`
+/// (the driver finished and said why) or `abandoned` (the driver was
+/// interrupted). A run left `open` — its session died before closing it —
+/// still loads and is reported as incomplete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RunStatus {
+    /// Recorded and not yet closed.
+    Open,
+    /// Closed by its driver with a stop reason. Terminal.
+    Closed,
+    /// Marked interrupted by its driver or an operator. Terminal.
+    Abandoned,
+}
+
+impl RunStatus {
+    /// Returns `true` for terminal states (`Closed` or `Abandoned`).
+    ///
+    /// A terminal run accepts no further unit or close writes. Mirrors
+    /// [`ReviewState::is_terminal`].
+    #[must_use]
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, RunStatus::Closed | RunStatus::Abandoned)
+    }
+}
+
+impl fmt::Display for RunStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RunStatus::Open => write!(f, "open"),
+            RunStatus::Closed => write!(f, "closed"),
+            RunStatus::Abandoned => write!(f, "abandoned"),
+        }
+    }
+}
+
+impl FromStr for RunStatus {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(RunStatus::Open),
+            "closed" => Ok(RunStatus::Closed),
+            "abandoned" => Ok(RunStatus::Abandoned),
+            other => Err(ParseError::new(
+                "run status",
+                other,
+                "open, closed, or abandoned",
+            )),
+        }
+    }
+}
+
+/// The plan item a [`Run`] drives: exactly one roadmap or one task.
+///
+/// Flattened into the run's frontmatter as a single `roadmap: <slug>` or
+/// `task: <slug>` key. Existence is checked when a run is *recorded*, never
+/// when it is loaded, so a run whose roadmap was later deleted or archived
+/// still loads — the same dangling-target policy as [`ReviewTarget`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RunTarget {
+    /// A roadmap, driven phase by phase.
+    Roadmap(String),
+    /// A standalone task.
+    Task(String),
+}
+
+impl RunTarget {
+    /// The roadmap slug, when this target is a roadmap.
+    #[must_use]
+    pub fn roadmap(&self) -> Option<&str> {
+        match self {
+            RunTarget::Roadmap(slug) => Some(slug),
+            RunTarget::Task(_) => None,
+        }
+    }
+
+    /// The task slug, when this target is a task.
+    #[must_use]
+    pub fn task(&self) -> Option<&str> {
+        match self {
+            RunTarget::Task(slug) => Some(slug),
+            RunTarget::Roadmap(_) => None,
+        }
+    }
+
+    /// The target in the CLI's item vocabulary: `roadmap/<slug>` or
+    /// `task/<slug>`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rdm_core::model::RunTarget;
+    ///
+    /// assert_eq!(RunTarget::Roadmap("auth".into()).label(), "roadmap/auth");
+    /// assert_eq!(RunTarget::Task("fix-bug".into()).label(), "task/fix-bug");
+    /// ```
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            RunTarget::Roadmap(slug) => format!("roadmap/{slug}"),
+            RunTarget::Task(slug) => format!("task/{slug}"),
+        }
+    }
+}
+
+impl fmt::Display for RunTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label())
+    }
+}
+
+/// One dispatched unit of work within a [`Run`]: a phase (by stem) on a
+/// roadmap run, or the task itself on a task run.
+///
+/// A rework re-dispatch of the same unit is a *new* entry with the next
+/// `attempt` ordinal, never a mutation of the earlier one. An entry with no
+/// `ended` timestamp is incomplete (see [`RunUnit::is_complete`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunUnit {
+    /// Phase stem, or the task slug for a task run.
+    pub unit: String,
+    /// 1-based ordinal of this entry among the run's entries for `unit`.
+    pub attempt: u32,
+    /// When the unit's dispatch started.
+    pub started: DateTime<Utc>,
+    /// When the unit's dispatch ended; absent until `unit-end`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<DateTime<Utc>>,
+    /// The lane's outcome for the unit (free-form, e.g. `reviewed`,
+    /// `rework`, `escalated`); absent until `unit-end`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+}
+
+impl RunUnit {
+    /// Returns `true` once the unit has an end timestamp.
+    ///
+    /// The single definition of a finished unit, shared by CLI rendering and
+    /// the spend join.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.ended.is_some()
+    }
+}
+
+/// Frontmatter for a run record (`runs/<id>.md`).
+///
+/// A run records **what ran, where, when**: which driver drove which
+/// roadmap or task, in which Claude Code session, and — per dispatched unit
+/// — over which time window with what outcome. It carries no prose: the
+/// body is always empty. Timestamps keep sub-second precision, because
+/// spend is attributed to units by time window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Run {
+    /// Timestamp-based identifier, unique within the project (e.g.
+    /// `2026-09-24-1530-a1b2`); also the file stem.
+    pub id: String,
+    /// Project this run belongs to.
+    pub project: String,
+    /// Which lane driver opened the run.
+    pub driver: RunDriver,
+    /// The roadmap or task the run drives (a `roadmap:` or `task:` key).
+    #[serde(flatten)]
+    pub target: RunTarget,
+    /// The raw Claude Code session uuid the run executed in, when known.
+    /// Absent when neither `--session-uuid` nor `CLAUDE_CODE_SESSION_ID`
+    /// supplied one — such a run cannot be joined to spend.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_uuid: Option<String>,
+    /// Free-form invocation arguments of the driver, when given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    /// Lifecycle status.
+    pub status: RunStatus,
+    /// When the run was recorded.
+    pub started: DateTime<Utc>,
+    /// When the run was closed or abandoned; absent while open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended: Option<DateTime<Utc>>,
+    /// Why the run stopped; absent while open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
+    /// Dispatched units, in the order they started.
+    #[serde(default)]
+    pub units: Vec<RunUnit>,
+}
+
+impl Run {
+    /// Returns `true` once the run has been closed or abandoned.
+    ///
+    /// A run still `open` is incomplete — either in flight or left behind by
+    /// an interrupted session. The single definition shared by CLI rendering
+    /// and the spend join.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.status.is_terminal()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2888,5 +3126,83 @@ title: Fantasy Baseball Manager
         for (s, name) in all.iter().zip(names.iter()) {
             assert_eq!(s.to_string(), *name);
         }
+    }
+
+    #[test]
+    fn run_driver_and_status_display_from_str_round_trip() {
+        for d in [RunDriver::Autopilot, RunDriver::DispatchPhase] {
+            assert_eq!(d.to_string().parse::<RunDriver>().unwrap(), d);
+            let yaml = serde_yaml::to_string(&d).unwrap();
+            assert_eq!(yaml.trim(), d.to_string());
+        }
+        for s in [RunStatus::Open, RunStatus::Closed, RunStatus::Abandoned] {
+            assert_eq!(s.to_string().parse::<RunStatus>().unwrap(), s);
+            let yaml = serde_yaml::to_string(&s).unwrap();
+            assert_eq!(yaml.trim(), s.to_string());
+        }
+        assert!("paused".parse::<RunStatus>().is_err());
+        assert!("manual".parse::<RunDriver>().is_err());
+        assert!(!RunStatus::Open.is_terminal());
+        assert!(RunStatus::Closed.is_terminal());
+        assert!(RunStatus::Abandoned.is_terminal());
+    }
+
+    fn sample_run(target: RunTarget) -> Run {
+        Run {
+            id: "2026-09-24-1530-a1b2".to_string(),
+            project: "rdm".to_string(),
+            driver: RunDriver::Autopilot,
+            target,
+            session_uuid: None,
+            args: None,
+            status: RunStatus::Open,
+            started: DateTime::parse_from_rfc3339("2026-09-24T15:30:12.345Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            ended: None,
+            stop_reason: None,
+            units: vec![],
+        }
+    }
+
+    #[test]
+    fn run_target_serializes_as_a_single_roadmap_or_task_key() {
+        let run = sample_run(RunTarget::Roadmap("auth".to_string()));
+        let yaml = serde_yaml::to_string(&run).unwrap();
+        assert!(yaml.contains("roadmap: auth"), "{yaml}");
+        assert!(!yaml.contains("task:"), "{yaml}");
+        assert_eq!(serde_yaml::from_str::<Run>(&yaml).unwrap(), run);
+
+        let run = sample_run(RunTarget::Task("fix-bug".to_string()));
+        let yaml = serde_yaml::to_string(&run).unwrap();
+        assert!(yaml.contains("task: fix-bug"), "{yaml}");
+        assert!(!yaml.contains("roadmap:"), "{yaml}");
+        assert_eq!(serde_yaml::from_str::<Run>(&yaml).unwrap(), run);
+    }
+
+    #[test]
+    fn run_timestamps_keep_sub_second_precision() {
+        let run = sample_run(RunTarget::Roadmap("auth".to_string()));
+        let yaml = serde_yaml::to_string(&run).unwrap();
+        let back: Run = serde_yaml::from_str(&yaml).unwrap();
+        assert_eq!(back.started.timestamp_subsec_millis(), 345);
+    }
+
+    #[test]
+    fn run_and_unit_completeness() {
+        let mut run = sample_run(RunTarget::Roadmap("auth".to_string()));
+        assert!(!run.is_complete());
+        run.status = RunStatus::Abandoned;
+        assert!(run.is_complete());
+        let mut unit = RunUnit {
+            unit: "phase-1-design".to_string(),
+            attempt: 1,
+            started: run.started,
+            ended: None,
+            outcome: None,
+        };
+        assert!(!unit.is_complete());
+        unit.ended = Some(run.started);
+        assert!(unit.is_complete());
     }
 }

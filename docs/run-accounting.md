@@ -128,6 +128,20 @@ report. `warnings` is filtered the same way. It keeps the warnings about the ses
 about this run or its agents. It drops the ones about the main transcript, `Agent` subagents,
 other runs and unreadable sidecars.
 
+## Run records
+
+`rdm cost` answers "what did this session spend"; a **run record** answers "what ran in it, and
+when". `rdm run record` mints a `projects/<project>/runs/<id>.md` file naming the driver, the
+roadmap or task, and the raw `CLAUDE_CODE_SESSION_ID`; `rdm run unit-start` / `rdm run unit-end`
+bracket each dispatched unit with timestamps and an outcome; `rdm run close` ends the run. The
+format, lifecycle and session-capture rule are in
+[`file-formats.md` § Run Files](file-formats.md#run-files).
+
+A later phase joins a run to its session's spend by **unit time window**: a spend source anchored
+between a unit's `started` and `ended` is attributed to that unit. That is why unit windows never
+overlap and why timestamps keep sub-second precision. A run with no `session_uuid`, or one still
+`open`, is reported as unjoinable or incomplete rather than joined silently.
+
 ## Historical provenance
 
 The following figures were measured manually, once, before this command existed. No test checks

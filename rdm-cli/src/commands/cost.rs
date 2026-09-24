@@ -12,10 +12,8 @@ use rdm_core::transcript::{
 };
 use rdm_transcript::FsTranscriptSource;
 
+use super::CLAUDE_SESSION_ENV as SESSION_ENV;
 use crate::OutputFormat;
-
-/// The environment variable Claude Code sets to the running session's uuid.
-const SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
 
 enum Selector {
     Session(String),

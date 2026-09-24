@@ -2,7 +2,7 @@ use rdm_core::display::RoadmapWithPhases;
 use rdm_core::document::Document;
 #[cfg(feature = "git")]
 use rdm_core::model::Review;
-use rdm_core::model::{Phase, Plan, Task};
+use rdm_core::model::{Phase, Plan, Run, Task};
 use rdm_core::search::SearchResult;
 use tabled::builder::Builder;
 use tabled::settings::peaker::Priority;
@@ -124,6 +124,37 @@ pub fn format_plan_table(plans: &[(String, Document<Plan>)]) -> String {
         })
         .collect();
     build_table_dyn(vec!["Slug", "Title", "Status", "Implements"], rows)
+}
+
+/// Renders runs as a table; an `open` run's status reads `open (incomplete)`.
+pub fn format_run_table(runs: &[(String, Document<Run>)]) -> String {
+    if runs.is_empty() {
+        return "No runs found.\n".to_string();
+    }
+    let rows = runs
+        .iter()
+        .map(|(id, doc)| {
+            let fm = &doc.frontmatter;
+            let status = if fm.is_complete() {
+                fm.status.to_string()
+            } else {
+                format!("{} (incomplete)", fm.status)
+            };
+            vec![
+                id.clone(),
+                fm.driver.to_string(),
+                fm.target.label(),
+                status,
+                fm.started
+                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                fm.units.len().to_string(),
+            ]
+        })
+        .collect();
+    build_table_dyn(
+        vec!["ID", "Driver", "Target", "Status", "Started", "Units"],
+        rows,
+    )
 }
 
 #[cfg(feature = "git")]

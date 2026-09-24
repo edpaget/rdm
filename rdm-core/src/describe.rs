@@ -379,16 +379,112 @@ impl Describe for crate::model::Review {
     }
 }
 
+impl Describe for crate::model::Run {
+    fn describe() -> EntityInfo {
+        EntityInfo {
+            name: "run",
+            description: "A record of one autonomous-lane run: which driver drove which roadmap or task, in which session, and each dispatched unit's time window and outcome.",
+            fields: vec![
+                FieldInfo {
+                    name: "id",
+                    type_name: "string",
+                    required: true,
+                    enum_values: &[],
+                    description: "Timestamp-based identifier, unique within the project (also the file stem under runs/).",
+                },
+                FieldInfo {
+                    name: "project",
+                    type_name: "string",
+                    required: true,
+                    enum_values: &[],
+                    description: "Project this run belongs to.",
+                },
+                FieldInfo {
+                    name: "driver",
+                    type_name: "enum",
+                    required: true,
+                    enum_values: &["autopilot", "dispatch-phase"],
+                    description: "Which lane driver opened the run.",
+                },
+                FieldInfo {
+                    name: "roadmap",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &[],
+                    description: "Slug of the roadmap the run drives. Exactly one of roadmap / task is present; not validated on load, so a run whose roadmap was deleted still loads.",
+                },
+                FieldInfo {
+                    name: "task",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &[],
+                    description: "Slug of the task the run drives. Exactly one of roadmap / task is present.",
+                },
+                FieldInfo {
+                    name: "session_uuid",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &[],
+                    description: "Raw Claude Code session uuid (from --session-uuid, else CLAUDE_CODE_SESSION_ID). Absent when neither was set; such a run cannot be joined to spend.",
+                },
+                FieldInfo {
+                    name: "args",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &[],
+                    description: "Free-form invocation arguments of the driver.",
+                },
+                FieldInfo {
+                    name: "status",
+                    type_name: "enum",
+                    required: true,
+                    enum_values: &["open", "closed", "abandoned"],
+                    description: "Lifecycle status. A run is open until closed or abandoned; an open run is reported as incomplete.",
+                },
+                FieldInfo {
+                    name: "started",
+                    type_name: "datetime (RFC 3339)",
+                    required: true,
+                    enum_values: &[],
+                    description: "When the run was recorded.",
+                },
+                FieldInfo {
+                    name: "ended",
+                    type_name: "datetime (RFC 3339)",
+                    required: false,
+                    enum_values: &[],
+                    description: "When the run was closed or abandoned; absent while open.",
+                },
+                FieldInfo {
+                    name: "stop_reason",
+                    type_name: "string",
+                    required: false,
+                    enum_values: &[],
+                    description: "Why the run stopped; absent while open.",
+                },
+                FieldInfo {
+                    name: "units",
+                    type_name: "list of {unit, attempt, started, ended, outcome}",
+                    required: true,
+                    enum_values: &[],
+                    description: "Dispatched units in start order: phase stem (or task slug), 1-based attempt ordinal per unit, start time, and — once ended — end time and free-form outcome. A unit without an end time is incomplete.",
+                },
+            ],
+        }
+    }
+}
+
 /// Returns entity descriptions for all model types.
 #[must_use]
 pub fn all_entities() -> Vec<EntityInfo> {
-    use crate::model::{Phase, Project, Review, Roadmap, Task};
+    use crate::model::{Phase, Project, Review, Roadmap, Run, Task};
     vec![
         Project::describe(),
         Roadmap::describe(),
         Phase::describe(),
         Task::describe(),
         Review::describe(),
+        Run::describe(),
     ]
 }
 
@@ -587,11 +683,49 @@ mod tests {
     }
 
     #[test]
-    fn all_entities_returns_five() {
+    fn describe_run_fields_match() {
+        // `roadmap` and `task` are mutually exclusive keys, so one sample of
+        // each target kind together covers every described field.
+        let sample = |target| crate::model::Run {
+            id: "2026-09-24-1530-a1b2".to_string(),
+            project: "test".to_string(),
+            driver: crate::model::RunDriver::Autopilot,
+            target,
+            session_uuid: Some("sess".to_string()),
+            args: Some("alpha".to_string()),
+            status: crate::model::RunStatus::Closed,
+            started: chrono::Utc::now(),
+            ended: Some(chrono::Utc::now()),
+            stop_reason: Some("done".to_string()),
+            units: vec![],
+        };
+        let mut serde_keys = HashSet::new();
+        for target in [
+            crate::model::RunTarget::Roadmap("alpha".to_string()),
+            crate::model::RunTarget::Task("fix".to_string()),
+        ] {
+            let value = serde_yaml::to_value(sample(target)).unwrap();
+            for k in value.as_mapping().unwrap().keys() {
+                serde_keys.insert(k.as_str().unwrap().to_string());
+            }
+        }
+        let describe_keys: HashSet<String> = crate::model::Run::describe()
+            .fields
+            .iter()
+            .map(|f| f.name.to_string())
+            .collect();
+        assert_eq!(serde_keys, describe_keys);
+    }
+
+    #[test]
+    fn all_entities_returns_six() {
         let entities = all_entities();
-        assert_eq!(entities.len(), 5);
+        assert_eq!(entities.len(), 6);
         let names: Vec<&str> = entities.iter().map(|e| e.name).collect();
-        assert_eq!(names, vec!["project", "roadmap", "phase", "task", "review"]);
+        assert_eq!(
+            names,
+            vec!["project", "roadmap", "phase", "task", "review", "run"]
+        );
     }
 
     #[test]

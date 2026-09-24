@@ -217,6 +217,21 @@ rdm cost                                  # the current session (CLAUDE_CODE_SES
 rdm cost --session <uuid> --format json   # the full report; warnings are inside it
 ```
 
+## Run records
+
+A run record (`projects/<project>/runs/<id>.md`) notes what an autonomous-lane run drove, in which Claude Code session, and each dispatched unit's time window and outcome. `rdm run record` prints only the new id, so capture it; it stores the raw `CLAUDE_CODE_SESSION_ID` (or `--session-uuid`) and the CLI's own timestamps.
+
+```bash
+id=$(rdm run record --driver autopilot --roadmap <slug> {proj_flag})   # or --driver dispatch-phase, --task <slug>
+rdm run unit-start "$id" --unit <stem-or-number> {proj_flag}           # before dispatching a unit (task runs: --unit <task-slug>)
+rdm run unit-end "$id" --outcome reviewed {proj_flag}                 # after it returns; pairs with the open unit-start
+rdm run close "$id" --stop-reason "all phases reviewed" {proj_flag}   # --status abandoned marks an interrupted run
+rdm run list --roadmap <slug> {proj_flag}                             # a roadmap's runs; open ones show as incomplete
+rdm run show "$id" --format json {proj_flag}                          # units, attempts, windows, outcomes
+```
+
+Only one unit is open at a time; re-dispatching a unit records its next attempt. Runs are not searchable with `rdm search` — use `rdm run list`.
+
 ## Planning workflow
 
 ### Before starting work

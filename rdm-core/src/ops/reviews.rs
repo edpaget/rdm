@@ -6,8 +6,6 @@
 //! items awaiting review (the needs-review queue). This module operates on
 //! the [`Review`] documents stored under a project's `reviews/` directory.
 
-use std::sync::atomic::{AtomicU32, Ordering};
-
 use chrono::{DateTime, Utc};
 
 use crate::document::Document;
@@ -116,42 +114,25 @@ pub fn parse_comment_doc_ref(
     })
 }
 
-/// Maximum attempts to find a non-colliding review id before giving up.
-const MAX_ID_ATTEMPTS: u32 = 20;
-
-/// Process-local counter mixed into review-id suffixes so two ids generated
-/// at the same instant within one process still differ.
-static ID_COUNTER: AtomicU32 = AtomicU32::new(0);
-
-/// Generates a timestamp-based review id: `YYYY-MM-DD-HHMM-xxxx` where
-/// `xxxx` is a 4-hex-digit suffix derived from the timestamp, a
-/// process-local counter, and the process id.
+/// Generates a timestamp-based review id (`YYYY-MM-DD-HHMM-xxxx`) through
+/// the shared [`generate_timestamp_id`](crate::ops::id::generate_timestamp_id).
 fn generate_review_id(now: DateTime<Utc>) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    now.timestamp_nanos_opt()
-        .unwrap_or_default()
-        .hash(&mut hasher);
-    ID_COUNTER.fetch_add(1, Ordering::Relaxed).hash(&mut hasher);
-    std::process::id().hash(&mut hasher);
-    let suffix = (hasher.finish() & 0xffff) as u16;
-    format!("{}-{suffix:04x}", now.format("%Y-%m-%d-%H%M"))
+    crate::ops::id::generate_timestamp_id(now)
 }
 
 /// Returns the first candidate id that does not collide with an existing
-/// review file, retrying up to [`MAX_ID_ATTEMPTS`] times.
+/// review file, retrying up to
+/// [`MAX_ID_ATTEMPTS`](crate::ops::id::MAX_ID_ATTEMPTS) times.
 fn next_available_review_id(
     store: &impl Store,
     project: &str,
-    mut candidate: impl FnMut() -> String,
+    candidate: impl FnMut() -> String,
 ) -> Result<String> {
-    for _ in 0..MAX_ID_ATTEMPTS {
-        let id = candidate();
-        if !store.exists(&crate::paths::review_path(project, &id)) {
-            return Ok(id);
-        }
-    }
-    Err(Error::ReviewIdExhausted)
+    crate::ops::id::next_available_id(
+        |id| store.exists(&crate::paths::review_path(project, id)),
+        candidate,
+        Error::ReviewIdExhausted,
+    )
 }
 
 /// Validates that a review target currently exists in the plan repo.
@@ -1043,6 +1024,7 @@ pub fn count_open_reviews_in(reviews: &[(String, Document<Review>)]) -> OpenRevi
 mod tests {
     use super::*;
     use crate::model::{Project, ReviewState, ReviewTarget};
+    use crate::ops::id::MAX_ID_ATTEMPTS;
     use crate::store::MemoryStore;
     use chrono::TimeZone;
 
