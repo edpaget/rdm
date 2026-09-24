@@ -41,7 +41,7 @@ This skill is **non-interactive**.
 
 - Run `rdm next --roadmap <slug> --format json {proj_flag}` and take the parsed object verbatim as `next`. This loop consumes this **one-shot, on the first loop iteration only**; every later iteration re-reads live state via the same command directly, because `rdm next` is what steps the cursor forward once a phase's status is persisted. Fetch it fresh at invocation time and never cache it across runs.
 
-**Why no estimate pre-pass here:** unlike the local dogfood `rdm-autopilot` skill, this shipped template never invokes an `rdm-wf-estimate` Workflow before dispatching phases. The engine itself IS emitted alongside this skill (`rdm agent-config claude --skills`/`--plugin` ships all five engines, and each takes the rdm executable and project as runtime arguments), so a shim could invoke it — this loop deliberately does not. Rating every unestimated phase before the first dispatch spends judgment tokens on phases the loop may never reach, and a downstream consumer that wants tiers rated can run the `rdm-estimate` shim itself, once, before starting the loop. Every phase this loop dispatches therefore runs at whatever tier `next.model` already reports (default `medium`), never freshly rated first — a deliberate divergence from the local dogfood skill. See [`docs/workflow-vs-prose-boundary.md`](docs/workflow-vs-prose-boundary.md) for the full decision record.
+**Why no estimate pre-pass here:** unlike the local dogfood `rdm-autopilot` skill, this shipped template never invokes an `rdm-wf-estimate` Workflow before dispatching phases — rating every unestimated phase up front spends judgment tokens on phases the loop may never reach. A downstream consumer that wants tiers rated can run the `rdm-estimate` shim itself, once, before starting the loop; every phase this loop dispatches runs at whatever tier `next.model` already reports (default `medium`), never freshly rated first. See [`docs/workflow-vs-prose-boundary.md`](docs/workflow-vs-prose-boundary.md) for the full decision record.
 
 ### 3. Enter the drive loop
 
@@ -126,8 +126,13 @@ The one `Workflow` run left in this lane is the code review the orchestrator inv
 
 ## Relation to the other lanes
 
-- **`rdm-land`** owns landing reviewed work to `main` (rebase + `merge --ff-only`); this skill never does. Run it after a run reaches `reviewed` if you want the work on `main`.
-- This skill is the **active driver**: every dispatched phase actively runs review (the orchestrator's code review is the canonical pipeline, invoked through the `rdm-wf-review-refute-fix` Workflow) and triages every comment on the persisted review before advancing, so nothing is left parked in `needs-review` and nothing is left unresolved.
-- No `Done:` line is ever written here — this skill's advance step only persists the status the OUTCOME carries, directly via Bash. **`rdm-land` reads the same `writesCompletion: true` signal**: after landing, it marks the item `done` itself with the landed tip's commit. No pre-step is required.
+- **`rdm-land`** owns landing reviewed work to `main`; this skill never touches `main` (guardrail 2
+  above). Run it after a run reaches `reviewed` if you want the work on `main`.
+- This skill is the **active driver**: every dispatched phase actively runs review (the orchestrator's
+  code review is the canonical pipeline, invoked through the `rdm-wf-review-refute-fix` Workflow) and
+  triages every comment on the persisted review before advancing, so nothing is left parked in
+  `needs-review` and nothing is left unresolved.
+- No `Done:` line is ever written here (guardrail 3 above); `rdm-land` marks the item `done` itself, at
+  land time, with the landed tip's commit.
 
 See [`docs/autonomous-loop.md`](docs/autonomous-loop.md), [`docs/workflow-schemas.md`](docs/workflow-schemas.md), and [`docs/workflow-vs-prose-boundary.md`](docs/workflow-vs-prose-boundary.md) for the full contract and the reasoning behind this migration.

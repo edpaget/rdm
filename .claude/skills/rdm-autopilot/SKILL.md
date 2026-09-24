@@ -49,8 +49,6 @@ This skill is **non-interactive**.
 
 Invoke the **`rdm-wf-estimate` Workflow** via the Workflow tool with `{ roadmap, phaseList, rdmBin, project }` (omit `phase` — autopilot always estimates the whole roadmap, never a single phase number). `rdmBin` and `project` are the same resolved values from step 1 — `rdm-wf-estimate.js`'s own `parseEstimateArgs` validates them via `resolveRdmBin`/`parseProjectArg`, so passing them here is what lets `rdm-wf-estimate` run against this loop's caller-supplied binary and project instead of an ambient default. Run this call **unconditionally**, even if `phaseList` shows zero unestimated phases — it is a cheap no-op fan-out in that case, the same always-invoke-and-let-it-no-op design the `rdm-estimate` skill itself uses; do not skip it as an optimization.
 
-This is a **genuinely new call path**, not a relocation: the retired `autopilot.js` reached the same rating fan-out only through a stamped `estimate-core` copy embedded in `lib/autopilot.mjs`, never a real nested `workflow()` call to the rating engine. This skill is the first caller to invoke `rdm-wf-estimate` for real from the autopilot lane.
-
 Do not reimplement any part of the estimate pass in prose here — the filtering, the per-phase rating fan-out, and the persistence step all stay entirely inside `rdm-wf-estimate.js`'s own pipeline, untouched by this skill.
 
 If the `rdm-wf-estimate` invocation itself errors or throws (e.g. it can't resolve its own model), log a warning and continue straight into the drive loop **non-fatally** — an unrated phase simply falls back to whatever tier `rdm next` reports (empty/medium) when it's dispatched. Do not let a failed pre-pass abort the run.
@@ -65,7 +63,7 @@ Loop:
 2. **Fetch the next phase.** Run `<rdmBin> next --roadmap <slug><proj-flag> --format json` directly via Bash and read its JSON output yourself — there is no fetch subagent.
 3. **Classify the result** (mirrors `interpretNext`):
    - `result: "phase"` with a non-empty `stem` → work it (go to 4).
-   - `result: "phase"` **missing** `stem` → this is malformed. Stop with `stopReason: unparseable` — **never** treat a malformed or unrecognized payload as `"nothing"` (that reason is reserved for a genuine, well-formed "no actionable phase" answer). Record a summary-only escalation `{ stem: "(fetch:next)", reason: "[fetch] unparseable rdm-next payload: <bounded description of the raw output>" }` — since no phase stem is known at this point, this entry is never parked via `rdm phase update` and will **not** appear in `rdm review blocked`; it only ever appears in this run's printed summary. (Dropped defense, explicitly: the JS loop also defensively unwrapped up to 3 levels of a JSON-string-encoded `result` field, a hedge against an intermediate schema-constrained agent re-transcribing `rdm next`'s output as a string. That intermediate agent no longer exists — this skill reads Bash stdout directly — so that unwrap layer is deliberately not reproduced here; a malformed payload of that shape now falls straight through to `unparseable`, which is still the fail-closed, never-silently-"nothing" outcome the dropped defense existed to guarantee.)
+   - `result: "phase"` **missing** `stem` → this is malformed. Stop with `stopReason: unparseable` — **never** treat a malformed or unrecognized payload as `"nothing"` (that reason is reserved for a genuine, well-formed "no actionable phase" answer). Record a summary-only escalation `{ stem: "(fetch:next)", reason: "[fetch] unparseable rdm-next payload: <bounded description of the raw output>" }` — since no phase stem is known at this point, this entry is never parked via `rdm phase update` and will **not** appear in `rdm review blocked`; it only ever appears in this run's printed summary. (The old triple-unwrap defense for a JSON-string-encoded `result` field is deliberately not reproduced — see "Removed / changed from the workflow version" below.)
    - `result: "blocked-on-dependencies"` → stop with `stopReason: blocked-on-dependencies` (well-formed, known-good).
    - `result: "nothing"` → stop with `stopReason: nothing` (well-formed, known-good).
    - Go to step 5 for any stop.
@@ -123,15 +121,15 @@ reviewed work is left on the roadmap/<slug> branch; main is never touched.
 
 ## Removed / changed from the workflow version
 
-Every input `parseAutopilotArgs` accepted, with its disposition here:
-
-- **`roadmap` / `maxPhases` / `planOnly` / `maxPlanRevise` / `maxCodeRework`** — **kept**, identical parsing rules and defaults (2 each inside the `rdm-dispatch-phase` orchestrator when omitted; `0` is legal and distinct from unset).
-- **`globalBudget`** — **kept**, internal-only, `DEFAULT_GLOBAL_BUDGET = 50`, never a flag — the previous shim never exposed one either.
-- **`mechanicalModel` hoist** — **removed**. The mechanical tier now resolves to the same built-in default as every other step at that tier (`rdm model resolve mechanical` is no longer a distinct value autopilot needs), so there is nothing left to hoist or forward into the `rdm-wf-estimate` Workflow call.
-- **`phaseList` hoist** — **kept, repurposed**, for the same reason: it now feeds the `rdm-wf-estimate` Workflow call directly instead of an inline JS pre-pass.
-- **`next` hoist** — **removed**. In the JS loop this existed purely to save the *first* iteration's dedicated `fetchNext` agent dispatch. Since this skill reads `rdm next` via a direct Bash call on every iteration — including the first — at zero subagent cost, there is nothing left to economize by hoisting it, so the caller-supplied shortcut is dropped entirely.
-- **`mechanical-model-unresolved` as a loop-level stop reason** — **removed**. With the `mechanicalModel` hoist gone, there is nothing left that can fail to resolve a mechanical model on this loop's behalf, so the stop reason and its allowlist entry are gone with it.
-- **The triple-unwrap defense inside `interpretNext`** (an internal helper, not a top-level input, but recorded here in the same spirit) — **deliberately dropped**. It hedged against an intermediate agent re-encoding `rdm next`'s JSON as a string; that intermediate agent no longer exists once this skill reads Bash stdout directly, so a payload of that shape now falls straight through to the fail-closed `unparseable` stop instead of being unwrapped and recovered.
+Kept unchanged: `roadmap`/`maxPhases`/`planOnly`/`maxPlanRevise`/`maxCodeRework` parsing; the
+internal-only `globalBudget` constant. Kept but repurposed: the `phaseList` hoist no longer feeds
+an inline JS pre-pass — it feeds the `rdm-wf-estimate` call in step 3 directly. Dropped: the
+`mechanicalModel` hoist and its `mechanical-model-unresolved` stop reason (the mechanical tier now
+resolves to the same built-in default as every other step at that tier, so there is nothing to
+hoist, forward, or fail to resolve); the `next` hoist (it saved only the old loop's
+first-iteration `fetchNext` subagent dispatch; this skill reads `rdm next` via Bash on every
+iteration, including the first, at zero subagent cost) and the triple-unwrap defense inside
+`interpretNext` (see step 4.3).
 
 ## Recovering a crashed dispatch
 
@@ -152,8 +150,13 @@ See [`docs/autonomous-loop.md`](docs/autonomous-loop.md) § "Recovering a crashe
 
 ## Relation to the other lanes
 
-- **`rdm-land`** owns landing reviewed work to `main` (rebase + `merge --ff-only`); this skill never does. Run it after a run reaches `reviewed` if you want the work on `main`.
-- This skill is the **active driver**: every dispatched phase actively runs review (the orchestrator's code review is the canonical pipeline, invoked through the `rdm-wf-review-refute-fix` Workflow and stamped from `.claude/workflows/lib/review.mjs`) and triages every comment on the persisted review before advancing, so nothing is left parked in `needs-review` and nothing is left unresolved.
-- No `Done:` line is ever written here — this skill's advance step only persists the status the OUTCOME carries, directly via Bash. **`rdm-land` reads the same `writesCompletion: true` signal**: after landing, it marks the item `done` itself with the landed tip's commit. No pre-step is required.
+- **`rdm-land`** owns landing reviewed work to `main`; this skill never touches `main` (guardrail 2
+  above). Run it after a run reaches `reviewed` if you want the work on `main`.
+- This skill is the **active driver**: every dispatched phase actively runs review (the orchestrator's
+  code review is the canonical pipeline, invoked through the `rdm-wf-review-refute-fix` Workflow and
+  stamped from `.claude/workflows/lib/review.mjs`) and triages every comment on the persisted review
+  before advancing, so nothing is left parked in `needs-review` and nothing is left unresolved.
+- No `Done:` line is ever written here (guardrail 3 above); `rdm-land` marks the item `done` itself, at
+  land time, with the landed tip's commit.
 
 See [`docs/autonomous-loop.md`](docs/autonomous-loop.md), [`docs/workflow-schemas.md`](docs/workflow-schemas.md), and [`docs/workflow-vs-prose-boundary.md`](docs/workflow-vs-prose-boundary.md) for the full contract and the reasoning behind this migration.

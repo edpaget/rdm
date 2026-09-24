@@ -178,28 +178,24 @@ exists — so this step only resolves the identity. Pass `--no-code`:
 rdm review source --on <item> {proj_flag} --no-code --format json
 ```
 
-This pin only needs `repository`/`path`/`branch`/`base`/`head` — never the diff itself — and on a
-genuinely fresh item (no commits at all yet, so HEAD still equals the default branch) the merge-base
-equals HEAD, so the committed range really is empty. Without `--no-code`, `rdm review source` refuses
-that with "empty committed range; declare --no-code only for intentional no-code review", which would
-stop the dispatch here, before planning even starts, on exactly the "phase with no commits yet" AC2
-requires to work — this holds for the first phase of a fresh roadmap and for any fresh task worktree,
-regardless of whether `started_head` is recorded. `--no-code` only waives that refusal; it changes
-nothing about which `base`/`head` get resolved. Every later `review source` call that needs the real
-diff runs without it, because by then real commits exist: step 9's self-check (after the implementer
-has committed), each code reviewer inside step 11, and step 13's re-review.
+This pin only needs `repository`/`path`/`branch`/`base`/`head`, never the diff itself. Pass
+`--no-code` always: a fresh item (no commits yet) has an empty committed range, and without
+`--no-code` `rdm review source` refuses with "empty committed range; declare --no-code only for
+intentional no-code review" — which would stop the dispatch before planning starts, on exactly the
+case AC2 requires to work, for a fresh roadmap or task worktree regardless of whether `started_head`
+is recorded. `--no-code` only waives that refusal; it changes nothing about which `base`/`head` get
+resolved. Every later `review source` call runs without it, once real commits exist: step 9's
+self-check, each reviewer in step 11, and step 13's re-review.
 
-Record `repository`, `path`, `branch`, `base`, `head` as `identity`. `identity.base` is the item's
-own **starting head** — `rdm review source` defaults it to the item's recorded `started_head`, not
-the merge-base with the default branch, once one is recorded. This matters because the roadmap
-worktree is shared: it carries every earlier phase's commits, including a parked (`blocked`) one's,
-so without this default the review would re-find already-triaged earlier-phase changes and attribute
-them to this phase. On the item's true first pass nothing has been recorded yet, so this pin safely
-falls back to the merge-base with the default branch instead. Step 8 below records the item's actual
-starting point from this same pinned `identity.head`, immediately before the first implementer
-dispatch. `base` also falls back to the merge-base for an item that has never made that first
-implementer dispatch with a resolvable worktree; either way the response's `baseNote` field names the
-fallback so the gap is visible rather than silent.
+Record `repository`, `path`, `branch`, `base`, `head` as `identity`. `identity.base` is the item's own
+**starting head**: `rdm review source` defaults it to the recorded `started_head`, not the merge-base
+with the default branch, once one exists. This matters because the roadmap worktree is shared — it
+carries every earlier phase's commits, including a parked one's — so without this default the review
+would re-find already-triaged earlier-phase changes and attribute them to this phase. On the item's
+true first pass nothing is recorded yet, so this pin falls back to the merge-base instead; step 8
+records the real starting point from this same `identity.head`, immediately before the first
+implementer dispatch. Either way the response's `baseNote` field names the fallback, so the gap is
+visible rather than silent.
 
 Then resolve the two dispatch **profiles** — a model plus a reasoning effort — from the item's
 tier. Read `model` from `rdm phase show <phase> --roadmap <slug> {proj_flag} --format json` (task
@@ -337,12 +333,11 @@ branch. `--start-commit` is write-once and refuses to overwrite an existing valu
 means it was already recorded by someone else between your read above and this write — re-read
 `started_head` rather than treating the refusal as a failure.
 
-When you DO record it, also set `identity.base` in your own run state to this same value
-(`identity.head`) — the one expected change to `base` on a first pass, moving it from step 4's
-merge-base fallback to the item's real starting point. Step 9's self-check below then compares
-against this updated `identity.base`, so it sees the very value this step just recorded and does not
-escalate. When you skip the write (already recorded, or a resumed pass with prior commits), leave
-`identity.base` exactly as step 4 (or an earlier pass) left it.
+When you DO record it, also set `identity.base` in your own run state to `identity.head` — the change
+step 4 anticipated, moving `base` off its merge-base fallback onto the item's real starting point, so
+step 9's self-check compares against the updated value and does not escalate. When you skip the write
+(already recorded, or a resumed pass with prior commits), `identity.base` stays exactly as step 4 (or
+an earlier pass) left it.
 
 ### 9. Dispatch the implementer subagent
 
@@ -416,18 +411,17 @@ itself is refused, park rather than choosing another target. `gate: false` keeps
 in step 14, where a refusal can be surfaced.
 
 **Check the ladder's own printed `anchorsParkRequired=<yes|no>` line before treating the run as
-ordinary persistence — not `anchorsDegraded`, and not `result.persistDegraded`, which is a
-build-time-only preview and can under-report a run whose anchors degraded at run time.** When that
-printed line reads `anchorsParkRequired=yes` — an anchor was lost for a systemic cause, or a
-`blocking` finding lost its anchor for any reason, including the benign one below — **park** `blocked`
-with `[code] a comment anchor was lost for a systemic cause, or a blocking finding lost its anchor;
-see the review's own note comment and each comment's \`anchor\` header`, even though the ladder itself
-exited 0. The persist ladder itself now records this in the review: whenever any anchor degrades, it
-appends one whole-document note comment stating how many of how many requested anchors could not be
-placed, so the review can never read as clean persistence merely because `outcome`/`classifyOutcome`
-stay independent of anchor plumbing (see `docs/workflow-schemas.md` § "Persisting a review"). Checking
-`anchorsParkRequired` is still a **separate step you take yourself** after running the ladder — the
-write it gates has already happened by the time you read it.
+ordinary persistence** — not `anchorsDegraded`, and not `result.persistDegraded` (a build-time-only
+preview that can under-report a run whose anchors degraded at run time). When `anchorsParkRequired=yes`
+— an anchor was lost for a systemic cause, or a `blocking` finding lost its anchor for any reason,
+including the benign one below — **park** `blocked` with `[code] a comment anchor was lost for a
+systemic cause, or a blocking finding lost its anchor; see the review's own note comment and each
+comment's \`anchor\` header`, even though the ladder itself exited 0. Whenever any anchor degrades, the
+persist ladder appends one whole-document note comment stating how many of how many requested anchors
+could not be placed, so the review can never read as clean persistence merely because
+`outcome`/`classifyOutcome` stay independent of anchor plumbing (see `docs/workflow-schemas.md` §
+"Persisting a review"). Checking `anchorsParkRequired` is a **separate step you take yourself** after
+running the ladder — the write it gates has already happened by the time you read it.
 
 **Benign vs. systemic, for a run-time refusal of a `--path`+`--quote` line:** a quote sitting on a
 line the diff did not touch, or naming a real, in-range file the diff never modifies at all, is
@@ -435,11 +429,11 @@ BENIGN — "you missed an edit here" (or "you missed editing this file entirely"
 finding as one about a touched line, and the ladder's whole-document fallback loses nothing. A path
 that does not exist at the reviewed head at all, a quote that does not exist anywhere in the document,
 or an ambiguous quote (occurs more than once) is SYSTEMIC — the finder was probably not looking at the
-right code. `anchorsDegraded` stays purely informational now — the total whole-document-fallback
-volume, still worth noting in a reply, but **never a park signal by itself**. A non-`blocking` finding
-(a suggestion or concern) refused only for the benign cause above reads `anchorsDegraded=all` or
-`partial` but `anchorsParkRequired=no`: goes to ordinary triage, and its reply notes the anchor did not
-resolve. `anchorsDegraded=partial` was never a park signal and still is not.
+right code. `anchorsDegraded` stays purely informational — the total whole-document-fallback volume,
+worth noting in a reply, but never a park signal by itself, including at `partial`. A non-`blocking`
+finding (a suggestion or concern) refused only for the benign cause above reads `anchorsDegraded=all`
+or `partial` but `anchorsParkRequired=no`: goes to ordinary triage, and its reply notes the anchor did
+not resolve.
 
 Optionally add `reviewers: [...]` — **your** judgment about what this diff touches. Omit the key to
 run every code reviewer; that is the safe default and the right choice when you are unsure. An
@@ -632,19 +626,14 @@ Produce the object from the Contract above as your final message, `planId` and `
 
 ## Why there is no plan-review Workflow call here
 
-This surface's plan gate is the **human-submitted approve review** of step 6, not a workflow. That is
-a choice about *who* gates, not a limitation: `rdm-wf-plan-review` IS emitted alongside this skill
-(`rdm agent-config claude --skills`/`--plugin` ships all five engines), so you may invoke it yourself
-for a second opinion on the plan. If you do, pass `source`, `base`, `expectedHead`, and
-`expectedBranch` from the `identity` you pinned in step 4 (`identity.path`, `identity.base`,
-`identity.head`, `identity.branch`), plus the same `phase`/`task` identifier you are dispatching —
-an unpinned call would grade the plan's file claims against whatever tree the invoking session
-happens to be sitting in, not the checkout the plan actually describes, which is the defect this
-worktree-source fix exists to close. What you may **not** do is treat its verdict as the gate. On this
-surface a human owns the decision to let implementation begin, because a downstream repo's
-conventions are exactly what an automated plan reviewer has least access to. Step 6's human approve
-review is therefore the whole gate, and it satisfies the same single `rdm plan show` read a
-workflow-recorded approve would. See `docs/workflow-vs-prose-boundary.md`.
+This surface's plan gate is the **human-submitted approve review** of step 6, not a workflow — a
+downstream repo's conventions are exactly what an automated plan reviewer has least access to.
+`rdm-wf-plan-review` IS emitted alongside this skill (`rdm agent-config claude --skills`/`--plugin`
+ships all five engines), so you may invoke it yourself for a second opinion: pass `source`, `base`,
+`expectedHead`, `expectedBranch` from the `identity` pinned in step 4, plus the item identifier, so it
+grades the actual checkout rather than whatever tree the invoking session sits in. What you may **not**
+do is treat its verdict as the gate — step 6's approve review is the whole gate, and it satisfies the
+same `rdm plan show` read a workflow-recorded approve would. See `docs/workflow-vs-prose-boundary.md`.
 
 ## Safe operations under --permission-mode auto
 

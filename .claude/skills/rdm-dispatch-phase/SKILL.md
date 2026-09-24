@@ -200,31 +200,26 @@ is step 9's job, an explicit write independent of this one.
 <rdmBin> review source --on <item><proj-flag> --no-code --format json
 ```
 
-This pin only needs `repository`/`path`/`branch`/`base`/`head` — never the diff itself — and on a
-genuinely fresh item (no commits at all yet, so HEAD still equals the default branch) the merge-base
-equals HEAD, so the committed range really is empty. Without `--no-code`, `review source` refuses
-that with "empty committed range; declare --no-code only for intentional no-code review", which would
-stop the dispatch here, before planning even starts, on exactly the "phase with no commits yet" AC2
-requires to work — this holds for the first phase of a fresh roadmap and for any fresh task worktree,
-regardless of whether `started_head` is recorded. `--no-code` only waives that refusal; it changes
-nothing about which `base`/`head` get resolved. Every later `review source` call that needs the real
-diff runs without it, because by then real commits exist: step 10's self-check (after the implementer
-has committed), each code reviewer inside step 12, and step 14's re-review.
+This pin only needs `repository`/`path`/`branch`/`base`/`head`, never the diff itself. Pass
+`--no-code` always: a fresh item (no commits yet) has an empty committed range, and without
+`--no-code` `review source` refuses with "empty committed range; declare --no-code only for
+intentional no-code review" — which would stop the dispatch before planning starts, on exactly the
+case AC2 requires to work, for a fresh roadmap or task worktree regardless of whether `started_head`
+is recorded. `--no-code` only waives that refusal; it changes nothing about which `base`/`head` get
+resolved. Every later `review source` call runs without it, once real commits exist: step 10's
+self-check, each reviewer in step 12, and step 14's re-review.
 
 Record `repository`, `path`, `branch`, `base`, `head` as `identity`. Every later step uses this
 same `path` as its working directory and this same `base`/`head` on the terminal write.
 
-`identity.base` is the phase's (or task's) own **starting head** — `review source` defaults it to
-the item's recorded `started_head`, not the merge-base with the default branch, once one is
-recorded. This matters because the roadmap worktree is shared: it carries every earlier phase's
-commits, including a parked (`blocked`) one's. Without this default, `identity.base` would be the
-merge-base, and this phase's review (and the finders/refuters in steps 6 and 12) would re-find every
-earlier phase's already-triaged changes and attribute them to this phase. On the item's true first
-pass nothing has been recorded yet, so this pin safely falls back to the merge-base with the default
-branch instead. Step 9 below records the item's actual starting point from this same pinned
-`identity.head`, immediately before the first implementer dispatch. `base` also falls back to the
-merge-base for an item that has never made that first implementer dispatch with a resolvable
-worktree; either way the response's `baseNote` field names the fallback so the gap is visible rather
+`identity.base` is the phase's (or task's) own **starting head**: `review source` defaults it to the
+recorded `started_head`, not the merge-base with the default branch, once one exists. This matters
+because the roadmap worktree is shared — it carries every earlier phase's commits, including a parked
+one's — so without this default the review (and the finders/refuters in steps 6 and 12) would re-find
+every earlier phase's already-triaged changes and attribute them to this phase. On the item's true
+first pass nothing is recorded yet, so this pin falls back to the merge-base instead; step 9 records
+the real starting point from this same `identity.head`, immediately before the first implementer
+dispatch. Either way the response's `baseNote` field names the fallback, so the gap is visible rather
 than silent.
 
 Then resolve the two dispatch **profiles** — a model plus a reasoning effort — from the item's tier. Read `model` from `phase show <phase>
@@ -272,18 +267,17 @@ corpus, which no document records.
 ```
 
 Record the two results as `profiles.reviewFind` / `profiles.reviewVerify` (each `{model, effort}`) and the wont-fix titles as
-`wontFixedTitles`. Three notes on why these are the commands:
+`wontFixedTitles`:
 
-- The two `model resolve` calls take **no `--tier`**. They are review-lane roles, not dispatch
-  models. There is no mechanical model left to resolve and no bootstrap agent to pre-empt: each
-  model and effort is independently optional, and an omitted one simply makes that judgment agent
-  inherit the session's model or effort.
-- The roadmap read is **step 5's**, not step 6's. The planner is handed the roadmap's `## Intent`
-  verbatim; the plan-review engine is not, because its `intent-alignment` reviewer reads that
-  section out of the roadmap itself, given only the roadmap's slug. It is listed here because this
-  is where the session gathers its reads, not because the engine wants it.
+- The two `model resolve` calls take **no `--tier`** — review-lane roles, not dispatch models. There
+  is no mechanical model left to resolve and no bootstrap agent to pre-empt: each model and effort is
+  independently optional, and an omitted one makes that judgment agent inherit the session's model
+  or effort.
+- The roadmap read is **step 5's**, listed here only because this is where reads are gathered: the
+  planner gets `## Intent` verbatim, while step 6's `intent-alignment` reviewer reads that section
+  itself, from the roadmap slug alone.
 - Use `task list`, **not** `rdm search`, for the wont-fix corpus: `search` truncates at its default
-  `--limit 20` while the real corpus is larger, and its JSON carries no `body` field at all.
+  `--limit 20` and its JSON carries no `body` field.
 
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, the two resolved
 `profiles.plan` / `profiles.implement` and the two resolved `profiles.reviewFind` /
@@ -291,19 +285,17 @@ Record the two results as `profiles.reviewFind` / `profiles.reviewVerify` (each 
 and confirm you captured the item's `body`, the roadmap `body` (phase mode) and the wont-fix titles.
 If the worktree or identity command failed, escalate — never invent a checkout, and never let a
 subagent choose one. A failed **read** is different and not fatal, but say which one failed and
-state the consequence, because it differs per value and **no engine-side fallback exists for any of
-them**: the engine dispatches finder and refuter agents only, so nothing is reachable to re-read
-what you omit.
+state the consequence — it differs per value, and **no engine-side fallback exists for any of them**
+since the engine dispatches finder and refuter agents only, with nothing reachable to re-read what
+you omit:
 
-- the item's `body` is **not** a step-6 argument at all — it feeds the planner (step 5) and the
-  implementer (step 10). If it could not be read, escalate rather than dispatching a planner with no
-  phase text.
-- the roadmap `body` is likewise **not** a step-6 argument — it feeds step 5's planner. If it could
-  not be read, the planner loses the recorded `## Intent`; the `intent-alignment` reviewer is
-  unaffected, since it reads that section itself from the `roadmap` slug you pass in step 6.
-- `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — each independently optional. An
-  omitted model makes that judgment agent inherit the session model, an omitted effort its effort.
-  Nothing else changes, and one resolved value plus one omitted one is perfectly legal.
+- item `body` feeds the planner (step 5) and implementer (step 10), never step 6 directly — if
+  unreadable, escalate rather than dispatching a planner with no phase text.
+- roadmap `body` likewise feeds only step 5's planner; if unreadable, the planner loses `## Intent`,
+  but `intent-alignment` is unaffected since it reads that section itself from the `roadmap` slug.
+- `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — each independently optional; an
+  omitted model makes that agent inherit the session model, an omitted effort its effort. One
+  resolved value plus one omitted one is perfectly legal.
 - `wontFixedTexts` — omitting it suppresses nothing, and there is no wont-fix search on this path,
   so an already-dismissed finding can resurface and force a revise round. Pass `[]` only when the
   corpus really is empty.
@@ -488,12 +480,11 @@ branch. `--start-commit` is write-once and refuses to overwrite an existing valu
 means it was already recorded by someone else between your read above and this write — re-read
 `started_head` rather than treating the refusal as a failure.
 
-When you DO record it, also set `identity.base` in your own run state to this same value
-(`identity.head`) — the one expected change to `base` on a first pass, moving it from step 4's
-merge-base fallback to the item's real starting point. Step 10's self-check below then compares
-against this updated `identity.base`, so it sees the very value this step just recorded and does not
-escalate. When you skip the write (already recorded, or a resumed pass with prior commits), leave
-`identity.base` exactly as step 4 (or an earlier pass) left it.
+When you DO record it, also set `identity.base` in your own run state to `identity.head` — the change
+step 4 anticipated, moving `base` off its merge-base fallback onto the item's real starting point, so
+step 10's self-check compares against the updated value and does not escalate. When you skip the
+write (already recorded, or a resumed pass with prior commits), `identity.base` stays exactly as step
+4 (or an earlier pass) left it.
 
 ### 10. Dispatch the implementer subagent
 
@@ -581,18 +572,17 @@ it lands whole-document, header-marked `anchor: degraded`, and is counted into t
 itself is refused, **park** — never invent a different target. A nonzero exit anywhere else is a park.
 
 **Check the ladder's own printed `anchorsParkRequired=<yes|no>` line before treating the run as
-ordinary persistence — not `anchorsDegraded`, and not `result.persistDegraded`, which is a
-build-time-only preview and can under-report a run whose anchors degraded at run time.** When that
-printed line reads `anchorsParkRequired=yes` — an anchor was lost for a systemic cause, or a
-`blocking` finding lost its anchor for any reason, including the benign one below — **park** `blocked`
-with `[code] a comment anchor was lost for a systemic cause, or a blocking finding lost its anchor;
-see the review's own note comment and each comment's \`anchor\` header`, even though the ladder itself
-exited 0. The persist ladder itself now records this in the review: whenever any anchor degrades, it
-appends one whole-document note comment stating how many of how many requested anchors could not be
-placed, so the review can never read as clean persistence merely because `outcome`/`classifyOutcome`
-stay independent of anchor plumbing (see `docs/workflow-schemas.md` § "Persisting a review"). Checking
-`anchorsParkRequired` is still a **separate step you take yourself** after running the ladder — the
-write it gates has already happened by the time you read it.
+ordinary persistence** — not `anchorsDegraded`, and not `result.persistDegraded` (a build-time-only
+preview that can under-report a run whose anchors degraded at run time). When `anchorsParkRequired=yes`
+— an anchor was lost for a systemic cause, or a `blocking` finding lost its anchor for any reason,
+including the benign one below — **park** `blocked` with `[code] a comment anchor was lost for a
+systemic cause, or a blocking finding lost its anchor; see the review's own note comment and each
+comment's \`anchor\` header`, even though the ladder itself exited 0. Whenever any anchor degrades, the
+persist ladder appends one whole-document note comment stating how many of how many requested anchors
+could not be placed, so the review can never read as clean persistence merely because
+`outcome`/`classifyOutcome` stay independent of anchor plumbing (see `docs/workflow-schemas.md` §
+"Persisting a review"). Checking `anchorsParkRequired` is a **separate step you take yourself** after
+running the ladder — the write it gates has already happened by the time you read it.
 
 **Benign vs. systemic, for a run-time refusal of a `--path`+`--quote` line:** a quote sitting on a
 line the diff did not touch, or naming a real, in-range file the diff never modifies at all, is
@@ -600,11 +590,11 @@ BENIGN — "you missed an edit here" (or "you missed editing this file entirely"
 finding as one about a touched line, and the ladder's whole-document fallback loses nothing. A path
 that does not exist at the reviewed head at all, a quote that does not exist anywhere in the document,
 or an ambiguous quote (occurs more than once) is SYSTEMIC — the finder was probably not looking at the
-right code. `anchorsDegraded` stays purely informational now — the total whole-document-fallback
-volume, still worth noting in a reply, but **never a park signal by itself**. A non-`blocking` finding
-(a suggestion or concern) refused only for the benign cause above reads `anchorsDegraded=all` or
-`partial` but `anchorsParkRequired=no`: goes to ordinary triage, and its reply notes the anchor did not
-resolve. `anchorsDegraded=partial` was never a park signal and still is not.
+right code. `anchorsDegraded` stays purely informational — the total whole-document-fallback volume,
+worth noting in a reply, but never a park signal by itself, including at `partial`. A non-`blocking`
+finding (a suggestion or concern) refused only for the benign cause above reads `anchorsDegraded=all`
+or `partial` but `anchorsParkRequired=no`: goes to ordinary triage, and its reply notes the anchor did
+not resolve.
 
 `gate: false` keeps the status write here, in step 15, where the refusal can be surfaced.
 
