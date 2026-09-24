@@ -1905,6 +1905,175 @@ mod tests {
         assert!(report.sources.len() > 1);
     }
 
+    fn warnings_naming<'a>(report: &'a SessionReport, path: &str) -> Vec<&'a ReportWarning> {
+        report
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains(path))
+            .collect()
+    }
+
+    #[test]
+    fn a_second_sidecar_declaring_the_same_run_id_is_skipped() {
+        let report = reap(
+            &MemoryTranscriptSource::new()
+                .with_file(
+                    "-p/sess-1.jsonl",
+                    main_with(&[run_result("2026-01-01T01:00:00Z", "wf_r1")]),
+                )
+                .with_file(
+                    "-p/sess-1/workflows/wf_a.json",
+                    r#"{"runId":"wf_r1","workflowName":"first","totalTokens":11,"workflowProgress":[
+                        {"type":"workflow_agent","label":"find","agentId":"w1","state":"done"}
+                    ]}"#,
+                )
+                .with_file(
+                    "-p/sess-1/workflows/wf_b.json",
+                    r#"{"runId":"wf_r1","workflowName":"second","totalTokens":22,"workflowProgress":[
+                        {"type":"workflow_agent","label":"other","agentId":"w1","state":"error"}
+                    ]}"#,
+                )
+                .with_file(
+                    "-p/sess-1/subagents/workflows/wf_r1/agent-w1.jsonl",
+                    asst("w1r", "sonnet", 40),
+                ),
+        );
+        let skipped = warnings_naming(&report, "memory:/-p/sess-1/workflows/wf_b.json");
+        assert_eq!(skipped.len(), 1, "{:?}", report.warnings);
+        assert_eq!(
+            skipped[0].message,
+            "skipped Workflow sidecar memory:/-p/sess-1/workflows/wf_b.json: another sidecar already declares runId wf_r1"
+        );
+        assert_eq!(skipped[0].scope, WarningScope::Source);
+        assert!(warnings_naming(&report, "wf_a.json").is_empty());
+        // The first sidecar's run and progress are kept, not overwritten.
+        assert_eq!(report.workflow_runs.len(), 1);
+        let run = &report.workflow_runs[0];
+        assert_eq!(run.workflow_name.as_deref(), Some("first"));
+        assert_eq!(run.sidecar_total_tokens, Some(11));
+        assert_eq!(run.agent_count, 1);
+        let w1 = source(&report, "w1");
+        assert_eq!(w1.label, "first / find");
+        assert!(!w1.errored);
+        assert_eq!(report.totals.usage.output, 10 + 40);
+    }
+
+    #[test]
+    fn a_sidecar_with_a_path_escaping_run_id_is_skipped() {
+        let report = reap(
+            &MemoryTranscriptSource::new()
+                .with_file("-p/sess-1.jsonl", main_with(&[]))
+                .with_file(
+                    "-p/sess-1/workflows/wf_esc.json",
+                    r#"{"runId":"../x","workflowName":"escape","workflowProgress":[
+                        {"type":"workflow_agent","label":"e","agentId":"e1","state":"done"}
+                    ]}"#,
+                )
+                .with_file(
+                    "-p/sess-1/subagents/x/agent-e1.jsonl",
+                    asst("e1r", "opus", 5),
+                ),
+        );
+        let skipped = warnings_naming(&report, "memory:/-p/sess-1/workflows/wf_esc.json");
+        assert_eq!(skipped.len(), 1, "{:?}", report.warnings);
+        assert_eq!(
+            skipped[0].message,
+            r#"skipped Workflow sidecar memory:/-p/sess-1/workflows/wf_esc.json: its runId "../x" is not a usable id"#
+        );
+        assert_eq!(skipped[0].scope, WarningScope::Source);
+        // No run, source, or path is built from the escaping id.
+        assert!(report.workflow_runs.is_empty());
+        assert!(
+            report
+                .sources
+                .iter()
+                .all(|s| s.kind == SourceKind::Main && s.run_id.is_none()),
+            "{:?}",
+            report.sources
+        );
+        assert!(!has_warning(&report, "e1"));
+        assert!(!has_warning(&report, WORKFLOW_NESTED_UNVERIFIED));
+        assert_eq!(report.totals.usage.output, 10);
+    }
+
+    #[test]
+    fn an_invalid_agent_meta_warns_and_the_agent_is_still_counted() {
+        let report = reap(
+            &MemoryTranscriptSource::new()
+                .with_file(
+                    "-p/sess-1.jsonl",
+                    main_with(&[tool_use("2026-01-01T00:05:00Z", "tu-b")]),
+                )
+                .with_file("-p/sess-1/subagents/agent-a.meta.json", "not json")
+                .with_file("-p/sess-1/subagents/agent-a.jsonl", asst("a1", "haiku", 3))
+                .with_file(
+                    "-p/sess-1/subagents/agent-b.meta.json",
+                    meta("tu-b", None, "the b agent"),
+                )
+                .with_file("-p/sess-1/subagents/agent-b.jsonl", asst("b1", "opus", 7)),
+        );
+        let path = "memory:/-p/sess-1/subagents/agent-a.meta.json";
+        let bad = warnings_naming(&report, path);
+        assert_eq!(bad.len(), 1, "{:?}", report.warnings);
+        assert!(
+            bad[0]
+                .message
+                .starts_with(&format!("agent a: could not read {path}: ")),
+            "{}",
+            bad[0].message
+        );
+        assert_eq!(bad[0].scope, WarningScope::Source);
+        // Agent a is counted, labelled by id, and unanchored.
+        let a = source(&report, "a");
+        assert_eq!(a.label, "a");
+        assert_eq!(a.totals.usage.output, 3);
+        assert!(!a.anchored);
+        assert_eq!(a.agent_type, None);
+        // Agent b's valid meta is unaffected.
+        let b = source(&report, "b");
+        assert_eq!(b.label, "the b agent");
+        assert_eq!(b.anchor, Some(ts("2026-01-01T00:05:00Z")));
+        assert!(warnings_naming(&report, "agent-b.meta.json").is_empty());
+        assert_eq!(report.totals.usage.output, 10 + 3 + 7);
+    }
+
+    #[test]
+    fn locate_workflow_run_in_several_sessions_picks_first_and_warns() {
+        let sidecar = |name: &str| {
+            format!(r#"{{"runId":"wf_r","workflowName":"{name}","workflowProgress":[]}}"#)
+        };
+        let src = MemoryTranscriptSource::new()
+            .with_file("-p/s2/workflows/wf_r.json", sidecar("second"))
+            .with_file("-p/s1/workflows/wf_r.json", sidecar("first"))
+            .with_file("-q/s3/workflows/wf_r.json", sidecar("third"))
+            .with_file("-p/s4/workflows/wf_other.json", sidecar("other"));
+        let loc = locate_workflow_run(&src, "r").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(loc.run_id, "wf_r");
+        assert_eq!(
+            (
+                loc.session.project_slug.as_str(),
+                loc.session.session_id.as_str()
+            ),
+            ("-p", "s1")
+        );
+        assert_eq!(
+            loc.session.warnings,
+            [
+                "Workflow run wf_r is present in several sessions; using -p/s1, ignoring -p/s2, -q/s3"
+            ]
+        );
+        let report = reap_workflow_run(&src, &loc).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(report.session_id, "s1");
+        assert_eq!(report.workflow_runs.len(), 1);
+        assert_eq!(
+            report.workflow_runs[0].workflow_name.as_deref(),
+            Some("first")
+        );
+        let located = warnings_naming(&report, "ignoring -p/s2, -q/s3");
+        assert_eq!(located.len(), 1, "{:?}", report.warnings);
+        assert_eq!(located[0].scope, WarningScope::Session);
+    }
+
     #[test]
     fn nested_unverified_warning_iff_a_workflow_run_exists() {
         let with = reap(&workflow_src());
