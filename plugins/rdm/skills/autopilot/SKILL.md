@@ -43,6 +43,15 @@ This skill is **non-interactive**.
 
 ### 2. Hoist the phase list
 
+- **Open the run record first**, before anything else this run does (so before step 3's estimate pre-pass):
+
+  ```bash
+  runId=$(<rdmBin> run record --driver autopilot --roadmap <slug><proj-flag>)
+  ```
+
+  Capture the printed id as `runId` and keep it in this run's working context for the whole run. It is staged and is committed by the close commit in step 5. The session uuid comes from `CLAUDE_CODE_SESSION_ID` by itself, so pass no `--session-uuid`.
+
+  **Run accounting is best-effort.** Every `rdm run …` call and every `chore(plan): close run <id>` commit is observation only. If one exits nonzero, log a one-line warning naming the command and its stderr and carry on exactly as if it had succeeded. Never park, stop, retry or change an outcome because of one. If `run record` itself failed, there is no id: skip every later `rdm run` call and the close commit for this run, and say so once in the warning.
 - Run `<rdmBin> phase list --roadmap <slug><proj-flag> --format json` and take the parsed array verbatim as `phaseList`. It feeds the `rdm:rdm-wf-estimate` Workflow's unestimated-phase filter directly (mirroring `estimate`'s own contract) — do not filter or summarize it yourself.
 
 ### 3. Run the estimate pre-pass — one Workflow call, always
@@ -55,7 +64,7 @@ If the `rdm:rdm-wf-estimate` invocation or a writeback errors, log a warning and
 
 ### 4. Enter the drive loop
 
-Maintain, in this skill's own working context (nothing here is persisted by rdm): `dispatchCount = 0`, `completed = []` (ordered), `escalations = []` (ordered), and — **only when `planOnly` is set** — a `planOnlySeen` set of stems already plan-vetted this run. There is no "seen" tracking in normal mode; normal-mode progress is driven purely by the persisted phase status that an advance/park write changes, which `rdm next` reads to step forward.
+Maintain, in this skill's own working context (nothing here is persisted by rdm): `runId` (from step 2, when captured), `dispatchCount = 0`, `completed = []` (ordered), `escalations = []` (ordered), and — **only when `planOnly` is set** — a `planOnlySeen` set of stems already plan-vetted this run. There is no "seen" tracking in normal mode; normal-mode progress is driven purely by the persisted phase status that an advance/park write changes, which `rdm next` reads to step forward.
 
 Loop:
 
@@ -78,7 +87,8 @@ Loop:
 
      where `flags` forwards, as ARGUMENTS text and only when this run's `$ARGUMENTS` set them:
      `--plan-only`, `--max-plan-revise N`, `--max-code-rework N`, `--rdm-bin <rdmBin>`,
-     `--project <project>`. **Never** enter it with `Agent` — see the reachability note above. There
+     `--project <project>`, and, whenever `runId` was captured, **always** `--run <runId>`, including
+     on a rework re-dispatch. **Never** enter it with `Agent` — see the reachability note above. There
      is no `phaseMeta`/`alreadyInProgress`/`dispatch.verify` hoist to assemble: the orchestrator
      runs in this same session with Bash, so it reads what it needs itself. The orchestrator stamps
      the phase `in-progress` (skipped under `--plan-only`), pins the checkout identity, plans, waits
@@ -88,13 +98,22 @@ Loop:
    - **Interpret the outcome** (mirrors `interpretOutcome`):
      - `outcome: "reviewed"`, **not** plan-only → **advance**: run `<rdmBin> phase update S --status <OUTCOME.status || reviewed> --no-edit --roadmap <slug><proj-flag>`, then read it back with `<rdmBin> phase show S --roadmap <slug><proj-flag> --format json` and confirm `status` matches. Retry the write+read-back up to **2** times total (`DEFAULT_MAX_ADVANCE_ATTEMPTS`). On success: append `S` to `completed`, log `"phase S reviewed — advancing"`, continue the loop from step 1. On repeated failure: park `S` (below) with reason `"[code] advance to reviewed failed repeatedly"` — never report a false completion.
      - `outcome: "reviewed"`, plan-only → **noop-vetted**: add `S` to `planOnlySeen`, append `S` to `completed` (a plan-only pass records a vetted phase as completed, same bucket), log `"plan-only vetted S"`, continue the loop from step 1.
-     - `outcome: "rework"` → if this phase's own rework count so far is **<** `DEFAULT_MAX_REWORK = 1`, increment it and **retry**: dispatch the **same** stem `S` again (go back to the dispatch call above, still counting against the shared budget in step 1) — do not call `rdm next` again first. Once the count reaches 1, **park** with reason `"[code] rework budget exhausted"`.
+     - `outcome: "rework"` → if this phase's own rework count so far is **<** `DEFAULT_MAX_REWORK = 1`, increment it and **retry**: dispatch the **same** stem `S` again (go back to the dispatch call above, still counting against the shared budget in step 1) — do not call `rdm next` again first. Once the count reaches 1, **park** with reason `"[code] rework budget exhausted"`. The re-dispatch reuses the same `--run <runId>`, so the orchestrator's `unit-start` on the same stem records **attempt 2** by itself; this loop tracks no attempt number.
      - `outcome: "escalated"` → **park** with `OUTCOME.reason` if present, else `"[plan] dispatch escalated at the plan gate"`.
      - Anything else (a corrupted or unrecognized OUTCOME value) → **park** with reason `"[code] unrecognized dispatch outcome: <value>"` — never silently advance or silently stop.
    - **Park**: run `<rdmBin> phase update S --status blocked --reason "<reason>" --no-edit --roadmap <slug><proj-flag>`, then read it back with `<rdmBin> phase show S --roadmap <slug><proj-flag> --format json` and confirm `status: blocked`. Retry up to **2** times total (`DEFAULT_MAX_PARK_ATTEMPTS`). Whether or not the read-back ever confirms, append `{ stem: S, reason }` to `escalations`, set `stopReason: escalated`, and go to step 5 (stop) — do **not** continue the loop, regardless of whether the read-back confirmed. An unconfirmed park write must never abort the run before it can print its summary; log a loud warning in that case instead (the plan-repo status may not reflect the park, but the escalation is still recorded here). The parked phase's own commits stay right where they are, on the shared `roadmap/<slug>` branch; because this run stops here, nothing is dispatched on top of them in *this* run. A human who resolves the park and re-invokes autopilot (or `dispatch-phase` directly) resumes from `rdm next` exactly as before.
 5. **Stop.** Exit the loop and proceed to "Print the summary" below.
 
 ### 5. Print the summary
+
+Every stop path lands here, so first close the run record and commit it:
+
+```bash
+<rdmBin> run close <runId> --stop-reason "<stop reason>"<proj-flag>
+<rdmBin> commit -m "chore(plan): close run <runId>"
+```
+
+`<stop reason>` is the `stopReason` value exactly as the summary's stop-reason line renders it, with `escalated (<stem>)` for an escalation stop. This is the run's last plan-repo write. The commit also picks up the staged unit-end the final dispatch wrote, plus the park or advance status this loop staged. It stays best-effort (step 2): a failed close or commit is a warning, and the summary below is still printed.
 
 Compose this yourself, in this exact structure (mirrors `buildSummary`), and print it verbatim as your final message — do not paraphrase or truncate it:
 

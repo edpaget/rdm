@@ -61,6 +61,10 @@ subagent forward on each notification until it converges — never assume the ca
   status, records no change review.
 - `--max-plan-revise N` (default 2) / `--max-code-rework N` (default 2). `0` is legal and distinct
   from unset: terminate on the first blocking review, no revise/rework round at all.
+- `--run <id>` — optional. The id of an open run record, passed by the autopilot driver. With it, this
+  unit writes its `unit-start`/`unit-end` entries into that record and never opens or closes a run of
+  its own. Without it (standalone, or entered through the do shim), this unit opens a single-unit run in
+  step 1 and closes it in its final step.
 - `--rdm-bin <path>` / `--project <name>` — optional; they resolve the two placeholders below.
 
 Resolve once, in step 1, and use everywhere after:
@@ -106,8 +110,9 @@ Keep these for the whole run: `identity` (the pinned checkout: `repository`, `pa
 `{model, effort}` pair resolved once in step 4 and never re-resolved mid-run), `planId` plus any
 superseded predecessors, `reviewIds` (**additive** — a rework pass keeps resolving comments on the
 ids it already has and appends any new one; it never starts a fresh review to redo a pass),
-`planReviseCount` / `codeReworkCount`, and `verification` (`{ command, exitCode, tail }` from step
-11).
+`planReviseCount` / `codeReworkCount`, `verification` (`{ command, exitCode, tail }` from step
+11), `runId` (the run record this unit writes into: the `--run` value, or the id step 1 recorded), and
+`ownsRun` (`true` only when this unit recorded the run itself, i.e. no `--run` was given).
 
 ## Procedure
 
@@ -115,6 +120,26 @@ ids it already has and appends any new one; it never starts a fresh review to re
 
 Resolve `<rdmBin>`, `<proj-flag>`, `<item>`, the mode flags and the two budgets. A missing target is
 a stop, not a guess: say so and return without invoking anything.
+
+Then open this unit's run entry, before step 2's resume reads, so they fall inside the unit window:
+
+```bash
+# only when no --run was given (ownsRun = true):
+runId=$(<rdmBin> run record --driver dispatch-phase --roadmap <slug><proj-flag>)   # task mode: --task <slug>
+# always, when runId is known:
+<rdmBin> run unit-start <runId> --unit <phase><proj-flag>                          # task mode: --unit <slug>
+```
+
+The entry is staged and lands in the **first commit this unit makes**: on a fresh pass that is step
+3's `chore(plan): start <item>`, which comes right after. On a pass that skips step 3's commit (under
+`--plan-only`, or when a resume jumps straight to triage or code review), it lands in the next commit
+this procedure makes or in the closing commit of step 16.
+
+**Run accounting is best-effort.** Every `rdm run …` call and every `chore(plan): close run <id>`
+commit is observation only. If one exits nonzero, log a one-line warning naming the command and its
+stderr and carry on exactly as if it had succeeded. Never park, stop, retry or change an outcome
+because of one. If `run record` itself failed, there is no id: skip every later `rdm run` call and
+the close commit for this run, and say so once in the warning.
 
 ### 2. Resume before planning — never discard work a prior pass recorded
 
@@ -175,7 +200,8 @@ returns the existing path. **You MUST NOT** create a phase-specific branch or fo
 <rdmBin> commit -m "chore(plan): start <item>"
 ```
 
-(task form: `task update <slug> --status in-progress …`). **Skip only these two lines under
+(task form: `task update <slug> --status in-progress …`); the `unit-start` staged in step 1 lands in
+this commit. **Skip only these two lines under
 `--plan-only`** — a plan-only pass does no implementation, so stamping `in-progress` would misreport
 work that never happened. This status stamp records nothing about the item's starting commit — that
 is step 9's job, an explicit write independent of this one.
@@ -722,6 +748,10 @@ nothing but documentation, comments, or CHANGELOG prose does not need the full f
   --source <identity.path> --base <identity.base> \
   --expected-head <identity.head> --expected-branch <identity.branch> \
   --no-edit --roadmap <slug><proj-flag>
+# read-back — the staged status is readable before it is committed:
+<rdmBin> phase show <phase> --roadmap <slug><proj-flag> --format json   # status == "reviewed"
+# only when the write exited 0 AND the read-back confirmed "reviewed":
+<rdmBin> run unit-end <runId> --outcome reviewed<proj-flag>
 <rdmBin> commit -m "chore(plan): finalize <item>"
 ```
 
@@ -765,6 +795,10 @@ When the four conditions hold:
   --source <identity.path> --base <identity.base> \
   --expected-head <identity.head> --expected-branch <identity.branch> \
   --no-edit --roadmap <slug><proj-flag>
+# read-back — the staged status is readable before it is committed:
+<rdmBin> phase show <phase> --roadmap <slug><proj-flag> --format json   # status == "reviewed"
+# only when the write exited 0 AND the read-back confirmed "reviewed":
+<rdmBin> run unit-end <runId> --outcome reviewed<proj-flag>
 <rdmBin> commit -m "chore(plan): finalize <item>"
 ```
 
@@ -782,9 +816,38 @@ uncommitted edit trips it even when this item is clean, and `git reset --hard`/`
 `git stash -u` are denied under `--permission-mode auto` anyway.
 
 On success, read the status back (`phase show --format json` → `status == "reviewed"`) and treat a
-mismatch as an escalation, not a success.
+mismatch as an escalation, not a success. In both blocks above that read-back runs immediately after
+the status write and **before** the finalize commit, and the `reviewed` unit-end is written only when
+the write exited 0 **and** the read-back confirmed `reviewed`, so it lands in the finalize commit. On
+a gate refusal or a read-back mismatch write no `reviewed` unit-end: that path escalates, and step 16
+ends the unit with the final `escalated` outcome, so the record never says `reviewed` for a parked
+unit.
 
 ### 16. Return the OUTCOME
+
+Every return passes through here. That covers step 15's reviewed return (already ended there), the
+`--plan-only` return (step 8), and every park: plan approval or revise exhausted, verification
+unresolved or unresolvable, code-review escalation or `anchorsParkRequired=yes`, rework exhausted,
+gate refusal, and a changed checkout identity. It also covers a `rework` return. If the unit entry is
+not yet ended, end it now with the OUTCOME's `outcome` field:
+
+```bash
+<rdmBin> run unit-end <runId> --outcome <OUTCOME.outcome><proj-flag>
+```
+
+For a `--plan-only` return, pass `--outcome plan-only-vetted`, which keeps it distinct from a real
+`reviewed`.
+
+**When `ownsRun`** (no `--run` was given), close the single-unit run and commit:
+
+```bash
+<rdmBin> run close <runId> --stop-reason "<OUTCOME.outcome>"<proj-flag>
+<rdmBin> commit -m "chore(plan): close run <runId>"
+```
+
+That commit also lands any park status this procedure staged. **Under `--run`**, do not close or
+commit here. The entry stays staged and lands in the caller's next commit: the next dispatch's start
+commit, or autopilot's `chore(plan): close run <id>` commit, which always follows a park or stop.
 
 Produce the object from the Contract above as your final message, `planId` and `reviewIds` included.
 
