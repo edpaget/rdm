@@ -824,7 +824,7 @@ fn check_from_a_linked_worktree_of_the_configured_source_still_verifies() {
     set_project_source(plan.path(), "demo", &src.path().to_string_lossy());
 
     // The worktree lives inside the test's own TempDir, never the system
-    // temp dir — see `scripts/verify-worktree-temp-hygiene.sh`.
+    // temp dir — see the `suite_hygiene::temp_hygiene` test.
     let workspace = TempDir::new().unwrap();
     let linked = workspace.path().join("linked");
     git(

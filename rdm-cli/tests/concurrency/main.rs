@@ -5,7 +5,7 @@
 //! concurrent writers ([`journal_race`]), content-checked flushes, commits and
 //! deletes ([`lost_update`]), session-scoped commit/status/discard
 //! ([`scoped_commit`]), and one negative control per planted regression
-//! ([`mutants`], built by [`mutant`]).
+//! ([`mutants`], built by [`mutant`] in a working-tree [`mirror`]).
 //!
 //! Rust owns every fixture, spawn, barrier release, wait, assertion and
 //! teardown ([`support`]); `sh` appears only as the modelled process topology.
@@ -22,6 +22,9 @@ mod git_test_support;
 
 #[path = "../common/plan_fixture.rs"]
 mod plan_fixture;
+
+#[path = "../common/mirror.rs"]
+mod mirror;
 
 mod journal_race;
 mod lost_update;

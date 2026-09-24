@@ -1,3 +1,24 @@
+# The `suite_hygiene` binary (rdm-cli/tests/suite_hygiene/) runs whole-suite
+# nested `cargo nextest run`s, so the default profile excludes it (nextest
+# reports its tests as skipped) and a nested run, which uses this default
+# profile, can never recurse into it. It runs in the `suite-hygiene` profile
+# below, which CI requires. `--ignore-default-filter` overrides the exclusion.
+[profile.default]
+default-filter = "not (package(rdm-cli) & binary(suite_hygiene))"
+# A profile-wide backstop for any test the overrides below do not bound: a
+# hung test fails the run instead of hanging it. Sized from the slowest test
+# of a `--test-threads 2` run (a stand-in for a 2-core CI runner) with ample
+# headroom; docs/test-migration-inventory.md § 10 records the measurement.
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+# Each test is a whole-suite nested run: serial, so runs never contend for the
+# target-dir lock or multiply CPU, with a backstop above the nested run's own
+# 25-minute deadline (rdm-cli/tests/suite_hygiene/nested.rs).
+[profile.suite-hygiene]
+default-filter = "package(rdm-cli) & binary(suite_hygiene)"
+test-threads = 1
+slow-timeout = { period = "300s", terminate-after = 6 }
+
 [test-groups.server-integration]
 max-threads = 4
 

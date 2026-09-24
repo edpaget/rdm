@@ -53,8 +53,9 @@
 //! this by rooting every repo one level down (`dir.path().join("repo")`), so
 //! the sibling lands inside the `TempDir` and is swept away with it; this
 //! module does not change that shape, it only isolates the `git` calls those
-//! fixtures already made. See `scripts/verify-worktree-temp-hygiene.sh` for
-//! the regression harness that pins it.
+//! fixtures already made. See `rdm-cli/tests/suite_hygiene/`
+//! (`temp_hygiene` and `git_config`, run by `cargo nextest run --profile
+//! suite-hygiene`) for the regression tests that pin both.
 
 #![allow(dead_code)]
 

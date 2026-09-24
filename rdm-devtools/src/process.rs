@@ -116,6 +116,7 @@ pub struct ProcessSpec {
     env_remove: Vec<OsString>,
     timeout: Duration,
     stdout_cap: usize,
+    output_file: Option<PathBuf>,
     teardown: Teardown,
 }
 
@@ -132,6 +133,7 @@ impl ProcessSpec {
             env_remove: Vec::new(),
             timeout: DEFAULT_TIMEOUT,
             stdout_cap: DEFAULT_STDOUT_CAP,
+            output_file: None,
             teardown: Teardown::Correct,
         }
     }
@@ -188,6 +190,16 @@ impl ProcessSpec {
     /// Sets the stdout cap in bytes. Output beyond it terminates the run.
     pub fn stdout_cap(mut self, bytes: usize) -> Self {
         self.stdout_cap = bytes;
+        self
+    }
+
+    /// Sends the child's stdout and stderr, interleaved, to the file at
+    /// `path` (created or truncated) instead of capturing them, so the output
+    /// survives a non-zero exit, a timeout or an interruption for the caller
+    /// to read. [`RunOutput::stdout`] is then empty and the stdout cap does
+    /// not apply. [`run_bounded`] only; a [`Session`] ignores it.
+    pub fn output_file(mut self, path: impl AsRef<Path>) -> Self {
+        self.output_file = Some(path.as_ref().to_owned());
         self
     }
 
@@ -456,10 +468,13 @@ fn run_inner(
         return Err(RunError::Interrupted(sig));
     }
 
-    let mut child = spec
-        .command(Stdio::null())
-        .spawn()
-        .map_err(RunError::Spawn)?;
+    let mut cmd = spec.command(Stdio::null());
+    if let Some(path) = &spec.output_file {
+        let file = std::fs::File::create(path).map_err(RunError::Spawn)?;
+        let err = file.try_clone().map_err(RunError::Spawn)?;
+        cmd.stdout(file).stderr(err);
+    }
+    let mut child = cmd.spawn().map_err(RunError::Spawn)?;
     let pid = child.id();
 
     let over_cap = Arc::new(AtomicBool::new(false));

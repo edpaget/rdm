@@ -355,3 +355,38 @@ fn broken_cleanup_mutant_is_detected() {
     let msg = verdict.expect_err("a skipped cleanup must be detected");
     assert!(msg.contains("not-a-credential"), "{msg}");
 }
+
+#[test]
+fn output_file_keeps_both_streams_past_a_nonzero_exit() {
+    let dir = TempDir::new().unwrap();
+    let log = dir.path().join("out.log");
+
+    let out =
+        run_bounded(&spec(&["print", "hello"]).output_file(&log), Hooks::new()).expect("success");
+    assert!(
+        out.stdout.is_empty(),
+        "stdout goes to the file, not the buffer"
+    );
+    assert_eq!(std::fs::read_to_string(&log).unwrap(), "hello\n");
+
+    let err = run_bounded(
+        &spec(&["stderr-exit", "boom", "100"]).output_file(&log),
+        Hooks::new(),
+    )
+    .expect_err("a non-zero exit is an error");
+    assert!(
+        matches!(
+            err,
+            RunError::NonZeroExit {
+                code: Some(100),
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap(),
+        "boom\n",
+        "the file is truncated per run and holds stderr"
+    );
+}

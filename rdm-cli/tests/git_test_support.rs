@@ -9,8 +9,9 @@
 //! as a public API of `rdm-git` (see that crate's own copy at
 //! `rdm-git/src/git_test_support.rs`), since a cross-crate boundary means
 //! this side cannot import the other's `cfg(test)` module. The two copies
-//! are an accepted, documented duplication rather than a defect — see
-//! `CLAUDE.md`'s Dogfooding entry for `scripts/verify-git-config-isolation.sh`.
+//! are an accepted, documented duplication rather than a defect; the
+//! `suite_hygiene::git_config` test (`cargo nextest run --profile
+//! suite-hygiene`) exercises both under a hostile git config.
 //!
 //! # Why ambient global/system git config is isolated by default
 //!
@@ -44,7 +45,7 @@
 //! sibling in the system temp directory, where `TempDir::drop` never reaches
 //! it — `c647ab0` fixed this by rooting every repo one level down. This
 //! module does not change that shape, only the isolation of the `git` calls
-//! those fixtures make. See `scripts/verify-worktree-temp-hygiene.sh`.
+//! those fixtures make. See the `suite_hygiene::temp_hygiene` test.
 
 #![allow(dead_code)]
 

@@ -2049,7 +2049,7 @@ fn change_review_in_a_linked_worktree_pins_that_worktrees_head_not_main() {
     create_plan(plan.path(), "design-plan", true);
 
     // The worktree lives inside the test's own TempDir, never the system
-    // temp dir — see `scripts/verify-worktree-temp-hygiene.sh`.
+    // temp dir — see the `suite_hygiene::temp_hygiene` test.
     let workspace = TempDir::new().unwrap();
     let linked = workspace.path().join("linked");
     git(
