@@ -486,7 +486,7 @@ const SHIPPED_WORKFLOWS: [(&str, &str); 5] = [
 /// both arrive as runtime arguments (`rdmBin`, defaulting to a plain `rdm` on
 /// PATH; `project`, optional and applied only to project-scoped subcommands),
 /// so the emitted bytes work unmodified in an arbitrary downstream target repo.
-/// `scripts/verify-agent-config-distribution.sh` § 7
+/// The `rdm-cli` test binary `distribution` (module `downstream`)
 /// gates that claim by emitting into a hermetic non-rdm, non-Rust fixture and
 /// executing the emitted engine's pipeline logic and built commands there.
 /// `lib/*.mjs` (the canonical source modules the scripts are stamped from) is

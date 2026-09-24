@@ -3,9 +3,9 @@
 This directory freezes rdm's machine-facing `--format json` contract as
 committed golden files — one JSON file per command, captured against a
 deterministic fixture plan repo and redacted so it stays reproducible across
-machines and days. `scripts/verify-golden-json.sh` re-captures and diffs
-against these files on every CI run (it matches the `scripts/verify-*.sh`
-glob CI already runs), so a change to rdm's JSON shape turns into a red test
+machines and days. The `golden_json` nextest binary
+(`rdm-cli/tests/golden_json/`) re-captures and compares against these files
+byte for byte on every `cargo nextest run`, so a change to rdm's JSON shape turns into a red test
 at the source instead of a silent contract break for anything consuming this
 CLI's `--format json` output (an editor plugin, a script, a REST client).
 
@@ -13,16 +13,16 @@ CLI's `--format json` output (an editor plugin, a script, a REST client).
 
 Each command below is captured with `--format json` (or the bare form,
 noted) against a hermetic fixture plan repo built by
-`scripts/lib/rdm-plan-fixture.sh`, with one submitted `request-changes`
+`rdm-cli/tests/common/seeded_plan.rs` (in a sandboxed temp `HOME`/XDG), with one submitted `request-changes`
 review (authored by the fixed `fixture-bot` identity, matching the
 fixture's own `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` convention, so the
 `author` field is reproducible across machines without needing redaction),
 one worktree, and one implementation plan seeded on top of the standard
-fixture seed. The plan is seeded inside `golden_capture_all` rather than in
-the shared `scripts/lib/rdm-plan-fixture.sh`, so only the golden lane
-changes and `scripts/verify-plugin-loop.sh` (which drives the same fixture)
-is unaffected. See
-`scripts/lib/golden-capture.sh` for the exact invocation of each.
+fixture seed. The review, worktree and plan are seeded by the golden capture
+itself rather than by the shared seeded fixture, so only the golden lane
+changes and `cli_loops::plugin_loop` (which drives the same fixture) is
+unaffected. See `rdm-cli/tests/golden_json/capture.rs` for the exact
+invocation of each.
 
 | Golden file | Command |
 | --- | --- |
@@ -66,8 +66,8 @@ follow-up task instead of captured as a fake-JSON golden:
 
 ## Redaction
 
-`golden_redact` (in `scripts/lib/golden-capture.sh`) applies exactly these
-six rules to every captured file, so two captures — on the same machine or
+`Redactor` (in `rdm-cli/tests/golden_json/redact.rs`) applies exactly these
+six rules, as regular expressions over the raw text so every other byte is preserved, to every captured file, so two captures — on the same machine or
 different ones, on the same day or months apart — are byte-identical:
 
 1. **Absolute temp paths** — the fixture's temp root, in both its raw
@@ -94,35 +94,36 @@ different ones, on the same day or months apart — are byte-identical:
    drift the next, which is how it actually broke: `phase-show.json`'s
    `estimate_snapshot` changed with no shape change and no behavior change.
    The rule is scoped to the field name, and
-   `scripts/verify-golden-json.sh` section 2b still asserts the field is
+   `golden_json::digest_fields_are_redacted_not_frozen` still asserts the field is
    present and was 64-hex before redaction — only the day-volatile *value* is
    dropped, not the contract that the field exists.
 
-This extends the volatile-field set `scripts/lib/rdm-plan-fixture.sh`
-documents (temp paths, dates, commit SHAs) with three categories found
-load-bearing but undocumented there: review IDs, review RFC3339 datetimes,
-and digests taken *over* already-redacted volatile content. If
-`scripts/lib/golden-capture.sh`'s header comment and this README ever appear
-to disagree, trust the header comment — it is authoritative.
+These six rules cover the volatile fields of the seeded fixture (temp paths,
+dates, commit SHAs) plus three categories found load-bearing: review IDs,
+review RFC3339 datetimes, and digests taken *over* already-redacted volatile
+content. If `rdm-cli/tests/golden_json/redact.rs`'s module comment and this
+README ever appear to disagree, trust the code — it is authoritative.
 
 ## Re-blessing after an intentional shape change
 
 Run:
 
 ```
-scripts/capture-golden.sh
+cargo nextest run -p rdm-cli --test golden_json --run-ignored only -E 'test(=bless)'
 git diff tests/golden/
 ```
 
+`bless` is an ignored test: the normal run never writes into the checkout.
 Review the diff to confirm every changed field is intentional and, if
 volatile, correctly redacted — then commit the updated goldens.
 
 **An *additive* field change still fails the drift check.** Appending a new
 key to an existing JSON object is a shape change like any other:
-`scripts/verify-golden-json.sh` diffs byte-for-byte, so a new field must be
+`golden_json::capture_matches_committed_goldens` compares byte for byte, so a new field must be
 re-blessed deliberately with the workflow above — it is never treated as
 automatically safe just because nothing existing was removed or renamed.
 
-`scripts/verify-golden-json.sh` is the CI-enforced gate (it matches the
-`scripts/verify-*.sh` glob CI already runs on every PR) that fails when a
-fresh capture no longer matches the files in this directory.
+`golden_json::capture_matches_committed_goldens` is the CI-enforced gate (it
+runs under `cargo nextest run` on every PR) that fails when a fresh capture no
+longer matches the files in this directory, naming every drifted or missing
+file and the bless command.

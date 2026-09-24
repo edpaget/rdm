@@ -152,51 +152,57 @@ Was: node, plus sed for the mutants; no real claude or network. Now: `rdm-devtoo
 | 9 (9a–9t) | About 20 planted mutants prove the sections above can fail | all three | node, sed | **phase 4 (done)**: see § 7 mutant map | required (nextest) | The sed form is retired |
 | 10, 11 | (removed) | — | — | — | — | Already deleted (10: CHANGELOG assert, a8b4284; 11: AC9 XOR, phase 34) |
 
-### verify-agent-config-distribution.sh
+### verify-agent-config-distribution.sh (deleted in phase 5)
+Now: the `rdm-cli` nextest binary `distribution` (`rdm-cli/tests/distribution/`); the per-section map with final test names is § 8.
+
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| 0 / 8 | Repo `git status --porcelain` unchanged across the run | harness | git, rdm bin | 5 | required | — |
-| 1 | `agent-config claude --skills --out` emits a tree | `rdm-core/src/agent_config.rs` (`generate_skills`/`_workflows`/`_agents`), rdm-cli `--out` | rdm bin | 5 | required | — |
-| 2 / 2b | 11 skills, 1 workflow and 1 agent exist with valid frontmatter; no unsubstituted `{proj_flag}`-style placeholders | agent_config.rs `render_skill`, `templates/skill-*.md` | rdm bin | 5 | required | — |
-| 3 / 3a | Emitted workflow and agent are byte-identical to `.claude/workflows`/`.claude/agents` | agent_config.rs, templates/workflows | rdm bin | 5 | required | — |
-| 3b | Re-emit is idempotent and leaves an unrelated user file alone | agent_config.rs `SUPERSEDED_WORKFLOWS` cleanup | rdm bin, shasum | 5 | required | — |
-| 3c (i–iii) | Every emitted `agentType:` resolves to an emitted agent; count floor; 3 planted self-tests | agent_config.rs `generate_agents` | rdm bin | 5 | required | No workflow threads `agentType` any more; retirement candidate |
-| 4 | Every `.claude/workflows/<name>.js` reference and "invoke the X Workflow" instruction in a skill resolves (floors ≥2) | `templates/skill-*.md` | rdm bin | 5 | required | Prose-grep (no-grep rule) |
-| 5a–5f | Planted self-tests: corrupted byte, typo'd shim, planted placeholder, bogus invocation, bare pre-rename name | as §2b–4 | rdm bin | 5 | required | 5d/5f pin the finished `rdm-wf-` rename and the retired `autopilot.js` |
-| 5g | This repo's `.claude/skills/` directory set equals the 11 names | dogfood tree | — | 5 | required | Rename guard over the dogfood tree; candidate |
+| 0 / 8 | Repo `git status --porcelain` unchanged across the run | harness | git, rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 1 | `agent-config claude --skills --out` emits a tree | `rdm-core/src/agent_config.rs` (`generate_skills`/`_workflows`/`_agents`), rdm-cli `--out` | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 2 / 2b | 11 skills, 1 workflow and 1 agent exist with valid frontmatter; no unsubstituted `{proj_flag}`-style placeholders | agent_config.rs `render_skill`, `templates/skill-*.md` | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 3 / 3a | Emitted workflow and agent are byte-identical to `.claude/workflows`/`.claude/agents` | agent_config.rs, templates/workflows | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 3b | Re-emit is idempotent and leaves an unrelated user file alone | agent_config.rs `SUPERSEDED_WORKFLOWS` cleanup | rdm bin, shasum | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 3c (i–iii) | Every emitted `agentType:` resolves to an emitted agent; count floor; 3 planted self-tests | agent_config.rs `generate_agents` | rdm bin | **phase 5 (done)**: retired — § 8 | — | No workflow threads `agentType` any more; retirement candidate |
+| 4 | Every `.claude/workflows/<name>.js` reference and "invoke the X Workflow" instruction in a skill resolves (floors ≥2) | `templates/skill-*.md` | rdm bin | **phase 5 (done)**: retired — § 8 | — | Prose-grep (no-grep rule) |
+| 5a–5f | Planted self-tests: corrupted byte, typo'd shim, planted placeholder, bogus invocation, bare pre-rename name | as §2b–4 | rdm bin | **phase 5 (done)**: retired — § 8 | — | 5d/5f pin the finished `rdm-wf-` rename and the retired `autopilot.js` |
+| 5g | This repo's `.claude/skills/` directory set equals the 11 names | dogfood tree | — | **phase 5 (done)**: retired — § 8 | — | Rename guard over the dogfood tree; candidate |
 | 5h / 5i | (gaps) | — | — | — | — | Already deleted (include_str count; CHANGELOG assert) |
-| 5j / 5k | A stale downstream tree seeded from real pre-removal engine bodies (git history) is cleaned on re-emit via both `--skills` and `--plugin`; user files survive; re-plant self-test | agent_config.rs fingerprint cleanup, `generate_plugin_*` | rdm bin, git | 5 | required | — |
-| 6a–6c | pi `--skills` writes no `.claude/workflows`; `claude --skills --user` writes no workflows; emission works with a missing `RDM_ROOT` | agent_config.rs platform/scope gates | rdm bin | 5 | required | — |
-| 7a | Builds a non-Rust fixture repo, an `rdm init` plan repo (`acme-web`), a relocated rdm binary; resolves node | fixture | git, rdm bin, node | 5 | required | — |
-| 7b | Heredoc `downstream.mjs extract`: the emitted engine becomes importable and the inverse transform is byte-identical; `meta.name` equals the file stem; imports stay in scratch | emitted `rdm-wf-review-refute-fix.js` | node, rdm bin | 5 | required | — |
-| 7c | `downstream.mjs logic`: `resolveReviewers` on the emitted engine; ≥8 built commands name the fixture binary; `--project acme-web` threading; `resolveRdmBin`/`projectFlag` | review.mjs (stamped, emitted) | node | 2 or 5 (ambiguous) | required | Header still names the removed `deriveSignals`/`selectDimensions` |
-| 7d | `downstream.mjs exec`: two engine-built persist ladders run against the fixture plan repo; the review reads back submitted/request-changes with one resolved anchored comment; a ladder with `--verdict` dropped fails | review.mjs persist, `rdm review` CLI | node, rdm bin, git | 2 or 5 (ambiguous) | required | — |
-| 7e | Three sed mutants of the emitted engine turn §7c red | review.mjs | node, sed | 2 or 5 | required | Mutant D already deleted |
-| 7g / 7h | Emitted instruction/skill text: no retired whole-tree staging sentence, "changeset" present, every quoted flag is accepted by the real binary, no pointers into this repo's docs; self-tests | templates, rdm-cli arg surface | rdm bin | 5 | required | Mostly prose-grep; only flag acceptance is behavioural |
-| 7i (Codex distribution) | `agent-config codex` (+`--skills`/`--user`): AGENTS.md, 4 skills under `.agents/skills`, 7 withheld with a notice, `CODEX_HOME` placement, `--plugin` rejected; emitted `roadmap list`/`phase update` run against the fixture (`needs-review` stamped); local `.agents/skills` equals generator output | agent_config.rs Codex adapter, `scripts/gen-codex-skills.sh` | rdm bin, git | 5 | required | — |
-| 7i (`rdm-dev.sh`) | `scripts/rdm-dev.sh session id` from a foreign cwd keeps an explicit `RDM_SESSION`; refuses a missing session or plan repo | `scripts/rdm-dev.sh`, rdm session | rdm bin (wrapper may cargo build) | 5 (or 6; ambiguous) | required | — |
+| 5j / 5k | A stale downstream tree seeded from real pre-removal engine bodies (git history) is cleaned on re-emit via both `--skills` and `--plugin`; user files survive; re-plant self-test | agent_config.rs fingerprint cleanup, `generate_plugin_*` | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 6a–6c | pi `--skills` writes no `.claude/workflows`; `claude --skills --user` writes no workflows; emission works with a missing `RDM_ROOT` | agent_config.rs platform/scope gates | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 7a | Builds a non-Rust fixture repo, an `rdm init` plan repo (`acme-web`), a relocated rdm binary; resolves node | fixture | git, rdm bin, node | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 7b | Heredoc `downstream.mjs extract`: the emitted engine becomes importable and the inverse transform is byte-identical; `meta.name` equals the file stem; imports stay in scratch | emitted `rdm-wf-review-refute-fix.js` | node, rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 7c | `downstream.mjs logic`: `resolveReviewers` on the emitted engine; ≥8 built commands name the fixture binary; `--project acme-web` threading; `resolveRdmBin`/`projectFlag` | review.mjs (stamped, emitted) | node | **phase 5 (done)** — § 8 | required (nextest) | Header still names the removed `deriveSignals`/`selectDimensions` |
+| 7d | `downstream.mjs exec`: two engine-built persist ladders run against the fixture plan repo; the review reads back submitted/request-changes with one resolved anchored comment; a ladder with `--verdict` dropped fails | review.mjs persist, `rdm review` CLI | node, rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 7e | Three sed mutants of the emitted engine turn §7c red | review.mjs | node, sed | **phase 5 (done)** — § 8 | required (nextest) | Mutant D already deleted |
+| 7g / 7h | Emitted instruction/skill text: no retired whole-tree staging sentence, "changeset" present, every quoted flag is accepted by the real binary, no pointers into this repo's docs; self-tests | templates, rdm-cli arg surface | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | Mostly prose-grep; only flag acceptance is behavioural |
+| 7i (Codex distribution) | `agent-config codex` (+`--skills`/`--user`): AGENTS.md, 4 skills under `.agents/skills`, 7 withheld with a notice, `CODEX_HOME` placement, `--plugin` rejected; emitted `roadmap list`/`phase update` run against the fixture (`needs-review` stamped); local `.agents/skills` equals generator output | agent_config.rs Codex adapter, `scripts/gen-codex-skills.sh` | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 7i (`rdm-dev.sh`) | `scripts/rdm-dev.sh session id` from a foreign cwd keeps an explicit `RDM_SESSION`; refuses a missing session or plan repo | `scripts/rdm-dev.sh`, rdm session | rdm bin (wrapper may cargo build) | **phase 5 (done)** — § 8 | required (nextest) | — |
 | 7i (`node --test scripts/lib/codex-smoke-process.test.mjs`) | Codex smoke-process lifecycle and cleanup tests | `scripts/lib/codex-smoke-process.mjs` | node | **phase 1 (done)** | removed | Deleted with the JS helper; replaced by the `rdm-devtools` nextest tests (see §4) |
 | 7i (Codex coexistence) | Real Codex coexistence run in an isolated temp home | was `scripts/verify-codex-coexistence.mjs`; now `rdm_devtools::codex_coexistence` behind `rdm-smoke codex-coexistence` | codex CLI, optional auth/network | **phase 4 (done)**: the arm runs `cargo run -p rdm-devtools --bin rdm-smoke -- codex-coexistence`; hermetic coverage in `rdm-devtools/tests/codex_coexistence.rs` (§ 7) | **opt-in: only when `RDM_CODEX_BIN` is set** (`RDM_CODEX_AUTH_FILE` optional) | — |
 
-### verify-plugin-distribution.sh
-| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
-|---|---|---|---|---|---|---|
-| 1 / 1b / 7 | Hermeticity baseline; `--plugin --out` emit; status unchanged | agent_config.rs `generate_plugin_*`, rdm-cli `--plugin` | git, rdm bin | 5 | required | — |
-| 2 | Manifest fields present and no `workflows` key; 11 skills and 5 workflows laid out correctly; `.claude-plugin/` holds only the manifest | `generate_plugin_manifest` | rdm bin | 5 | required | — |
-| 3 | Naming transform: skill dirs drop `rdm-`, engines keep `rdm-wf-` (hardcoded lists) | `PLUGIN_SKILL_NAMES` | rdm bin | 5 | required | — |
-| 4 | Every `rdm:<engine>` reference resolves (floor ≥5) | skill templates (plugin render) | rdm bin | 5 | required | Prose-grep |
-| 5a–5d, 5f, 5g | Each rejected flag combination has its own distinct message; positive control `--skills --user` | rdm-cli agent-config validation | rdm bin | 5 | required | — |
-| 6a–6e | Planted self-tests for §§2–5 | harness | — | 5 | required | — |
+### verify-plugin-distribution.sh (deleted in phase 5)
+Now: the `rdm-cli` nextest binary `distribution` (`rdm-cli/tests/distribution/`); the per-section map with final test names is § 8.
 
-### verify-plugin-install.sh
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| 1 / 1b / 8 | Hermeticity; fresh `--plugin` emit with no `--project` | agent_config.rs | git, rdm bin | 5 | required | — |
-| 2 | Checked-in `plugins/rdm/` equals fresh output, version normalized on both sides | `plugins/rdm/`, agent_config.rs | rdm bin | 5 | required | — |
-| 3 | Fresh manifest version equals the Cargo.toml crate version | manifest, Cargo.toml | rdm bin | 5 | required | — |
-| 4 / 4b | `marketplace.json` shape, non-empty entries, each `source` resolves to a plugin | `.claude-plugin/marketplace.json` | — | 5 | required | — |
-| 5 / 6 | Workflows byte-identical and name sets equal; skill inventory and frontmatter | `plugins/rdm/{workflows,skills}` | rdm bin | 5 | required | — |
-| 7a–7l | Planted self-tests: dangling source, empty entries, renamed skill, stripped frontmatter, mutated workflow, version bump, stray file, blank fields, isolated floors | harness | — | 5 | required | — |
+| 1 / 1b / 7 | Hermeticity baseline; `--plugin --out` emit; status unchanged | agent_config.rs `generate_plugin_*`, rdm-cli `--plugin` | git, rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 2 | Manifest fields present and no `workflows` key; 11 skills and 5 workflows laid out correctly; `.claude-plugin/` holds only the manifest | `generate_plugin_manifest` | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 3 | Naming transform: skill dirs drop `rdm-`, engines keep `rdm-wf-` (hardcoded lists) | `PLUGIN_SKILL_NAMES` | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 4 | Every `rdm:<engine>` reference resolves (floor ≥5) | skill templates (plugin render) | rdm bin | **phase 5 (done)**: retired — § 8 | — | Prose-grep |
+| 5a–5d, 5f, 5g | Each rejected flag combination has its own distinct message; positive control `--skills --user` | rdm-cli agent-config validation | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 6a–6e | Planted self-tests for §§2–5 | harness | — | **phase 5 (done)**: retired — § 8 | — | — |
+
+### verify-plugin-install.sh (deleted in phase 5)
+Now: the `rdm-cli` nextest binary `distribution` (`rdm-cli/tests/distribution/`); the per-section map with final test names is § 8.
+
+| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
+|---|---|---|---|---|---|---|
+| 1 / 1b / 8 | Hermeticity; fresh `--plugin` emit with no `--project` | agent_config.rs | git, rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 2 | Checked-in `plugins/rdm/` equals fresh output, version normalized on both sides | `plugins/rdm/`, agent_config.rs | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 3 | Fresh manifest version equals the Cargo.toml crate version | manifest, Cargo.toml | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 4 / 4b | `marketplace.json` shape, non-empty entries, each `source` resolves to a plugin | `.claude-plugin/marketplace.json` | — | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 5 / 6 | Workflows byte-identical and name sets equal; skill inventory and frontmatter | `plugins/rdm/{workflows,skills}` | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 7a–7l | Planted self-tests: dangling source, empty entries, renamed skill, stripped frontmatter, mutated workflow, version bump, stray file, blank fields, isolated floors | harness | — | **phase 5 (done)** — § 8 | required (nextest) | — |
 
 ### observe-plugin-install.sh (not in CI)
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
@@ -213,31 +219,37 @@ Was: node, plus sed for the mutants; no real claude or network. Now: `rdm-devtoo
 |---|---|---|---|---|---|---|
 | (whole) | A live `claude -p` rooted at the repo lists Skill entries; asserts every engine and `rdm-*` front door renders, no bare pre-rename name, no double prefix | `.claude/workflows/*.js` meta, `.claude/skills` frontmatter | claude CLI (authenticated), network | 5 or 7 (ambiguous) | opt-in | Only guards the finished `rdm-wf-` rename; its hermetic half was retired 2026-09-23; candidate for full retirement |
 
-### verify-golden-json.sh
-| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
-|---|---|---|---|---|---|---|
-| 1 | Fresh capture of the 20-command `--format json` inventory, redacted and diffed byte-for-byte against `tests/golden/*.json` | rdm-cli JSON surfaces; `scripts/lib/golden-capture.sh`, `scripts/lib/rdm-plan-fixture.sh` | rdm bin, git | 5 | required | — |
-| 2 | Two independent same-day captures match after redaction; no raw `/tmp` path leaks | redaction rules | rdm bin, git | 5 | required | — |
-| 2b | `estimate_snapshot` digest is redacted with the key kept; no bare 64-hex; planted self-test | rdm-core `content_digest`, phase show JSON | rdm bin | 5 | required | — |
-| 3 / 4 | A mutated golden copy trips the drift detector; the real goldens re-diff clean | harness | sh | 5 | required | — |
+### verify-golden-json.sh (deleted in phase 5)
+Now: the `rdm-cli` nextest binary `golden_json` (`rdm-cli/tests/golden_json/`); the per-section map with final test names is § 8.
 
-### verify-plugin-loop.sh
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| 1 | task create (stdin body) → list → update → show → fuzzy-typo search → `info --format json` | rdm-cli task/search/info | rdm bin, git | 5 | required | — |
-| 2 | `--body` beats stdin; update never reads stdin; `--body ""` is refused; `--clear-body` works | rdm-cli `resolve_body`/`map_body_clobber` | rdm bin | 5 | required | Already duplicated by the `rdm-cli/tests/cli_task.rs` body tests |
-| 3 | FIFO watchdog: `create` blocks on stdin until EOF, then returns promptly; `</dev/null` returns at once | rdm-cli create stdin path | rdm bin, mkfifo | 5 | required | — |
-| 4 | Bad slug: non-zero exit, actionable stderr, empty stdout; `needs_review_warning` goes to stderr only and JSON stdout stays clean | rdm-cli error mapping, `commands/{task,phase}.rs` | rdm bin, git | 5 | required | — |
+| 1 | Fresh capture of the 20-command `--format json` inventory, redacted and diffed byte-for-byte against `tests/golden/*.json` | rdm-cli JSON surfaces; `scripts/lib/golden-capture.sh`, `scripts/lib/rdm-plan-fixture.sh` | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 2 | Two independent same-day captures match after redaction; no raw `/tmp` path leaks | redaction rules | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 2b | `estimate_snapshot` digest is redacted with the key kept; no bare 64-hex; planted self-test | rdm-core `content_digest`, phase show JSON | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 3 / 4 | A mutated golden copy trips the drift detector; the real goldens re-diff clean | harness | sh | **phase 5 (done)** — § 8 | required (nextest) | — |
 
-### verify-claude-code-web-loop.sh
+### verify-plugin-loop.sh (deleted in phase 5)
+Now: the `rdm-cli` nextest binary `cli_loops` (`rdm-cli/tests/cli_loops/`); the per-section map with final test names is § 8.
+
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| step 1 | Seed a plan repo and bare-clone it as the fake remote | rdm create/commit | rdm bin, git | 5 | required | — |
-| step 2 | `templates/claude-code-web/.claude/hooks/SessionStart.sh` in a fake sandbox clones the repo and sets the global `root` | SessionStart template, `rdm bootstrap` | rdm bin, git, bash (`file://`, no network) | 5 | required | — |
-| step 3 | `roadmap list`/`phase show` work against the bootstrapped clone | rdm read path | rdm bin | 5 | required | — |
-| steps 4–6 | Source commit with a `Done:` line → `rdm hook post-commit` → phase done with the SHA | `rdm hook post-commit` | rdm bin, git | 5 | required | — |
-| step 7 | Push the plan update to the bare origin | git | git | 5 | required | Trivial; fold into 4–6 |
-| step 8 | `rdm review pending` lists only items finalized on the current branch | `review pending` scoping | rdm bin, git worktree | 5 | required | Overlaps worktree-review B (the Stop hook it once drove is retired) |
+| 1 | task create (stdin body) → list → update → show → fuzzy-typo search → `info --format json` | rdm-cli task/search/info | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 2 | `--body` beats stdin; update never reads stdin; `--body ""` is refused; `--clear-body` works | rdm-cli `resolve_body`/`map_body_clobber` | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | Already duplicated by the `rdm-cli/tests/cli_task.rs` body tests |
+| 3 | FIFO watchdog: `create` blocks on stdin until EOF, then returns promptly; `</dev/null` returns at once | rdm-cli create stdin path | rdm bin, mkfifo | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 4 | Bad slug: non-zero exit, actionable stderr, empty stdout; `needs_review_warning` goes to stderr only and JSON stdout stays clean | rdm-cli error mapping, `commands/{task,phase}.rs` | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+
+### verify-claude-code-web-loop.sh (deleted in phase 5)
+Now: the `rdm-cli` nextest binary `cli_loops` (`rdm-cli/tests/cli_loops/`); the per-section map with final test names is § 8.
+
+| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
+|---|---|---|---|---|---|---|
+| step 1 | Seed a plan repo and bare-clone it as the fake remote | rdm create/commit | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| step 2 | `templates/claude-code-web/.claude/hooks/SessionStart.sh` in a fake sandbox clones the repo and sets the global `root` | SessionStart template, `rdm bootstrap` | rdm bin, git, bash (`file://`, no network) | **phase 5 (done)** — § 8 | required (nextest) | — |
+| step 3 | `roadmap list`/`phase show` work against the bootstrapped clone | rdm read path | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| steps 4–6 | Source commit with a `Done:` line → `rdm hook post-commit` → phase done with the SHA | `rdm hook post-commit` | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| step 7 | Push the plan update to the bare origin | git | git | **phase 5 (done)** — § 8 | required (nextest) | Trivial; fold into 4–6 |
+| step 8 | `rdm review pending` lists only items finalized on the current branch | `review pending` scoping | rdm bin, git worktree | **phase 5 (done)** — § 8 | required (nextest) | Overlaps worktree-review B (the Stop hook it once drove is retired) |
 
 ### verify-git-config-isolation.sh
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
@@ -252,43 +264,51 @@ Was: node, plus sed for the mutants; no real claude or network. Now: `rdm-devtoo
 | 1 | Full nextest of `-p rdm-git -p rdm-cli` with TMPDIR redirected leaves no `*__worktrees` | `rdm-git/src/worktree.rs` `worktree_path`/`add`; fixtures in `rdm-cli/tests/cli_{worktree,gate,verify}.rs`, `rdm-git/tests/worktree.rs` | cargo nextest (~86s) | 5 | required | — |
 | 1b | python3 re-roots a fixture at its TempDir; the leak must appear; file restored | same | cargo rebuild, python3 | 5 | required | Edits tracked source |
 
-### verify-review-revision-loop.sh
-| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
-|---|---|---|---|---|---|---|
-| setup | Submitted request-changes review with 4 comments; comment 3's span reworded after submit | `rdm-core/src/ops/reviews.rs` | rdm bin, git | 5 | required | — |
-| A | Resolved anchor → `--status addressed --applied-commit` recorded | reviews.rs update, anchor resolution | rdm bin, git | 5 | required | — |
-| B | Whole-document comment reports `unresolved` and is addressed | reviews.rs | rdm bin | 5 | required | — |
-| C | `drifted` anchor; a clarification reply keeps it open; `--state addressed` is refused | reviews.rs drift and close guard | rdm bin, git | 5 | required | — |
-| D | wont-fix with a reply and no applied commit | reviews.rs | rdm bin | 5 | required | — |
-| E | Close to `addressed`; the review leaves `review requests` | reviews.rs, `review requests` | rdm bin | 5 | required | — |
+### verify-review-revision-loop.sh (deleted in phase 5)
+Now: the `rdm-cli` nextest binary `cli_loops` (`rdm-cli/tests/cli_loops/`); the per-section map with final test names is § 8.
 
-### verify-backlog-groom-loop.sh
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| setup | Seeds a duplicate pair, tag cluster, stale task, consolidate target and terminal roadmap | rdm create | rdm bin, git | 5 | required | — |
-| 1 | `rdm backlog report` shows all four signal kinds | `rdm-core/src/ops/backlog.rs` | rdm bin | 5 | required | — |
-| 2 | `promote --into` folds a task into a roadmap as a phase | `ops/task.rs` `consolidate_task_into_roadmap` | rdm bin | 5 | required | — |
-| 3 | `task merge` folds dup-b into dup-a | `ops/task.rs` `merge_tasks` | rdm bin | 5 | required | — |
-| 4 | `task update --status wont-fix --reason` | task update | rdm bin | 5 | required | — |
-| 5 | `roadmap archive` on the terminal roadmap | roadmap archive | rdm bin | 5 | required | — |
+| setup | Submitted request-changes review with 4 comments; comment 3's span reworded after submit | `rdm-core/src/ops/reviews.rs` | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| A | Resolved anchor → `--status addressed --applied-commit` recorded | reviews.rs update, anchor resolution | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| B | Whole-document comment reports `unresolved` and is addressed | reviews.rs | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| C | `drifted` anchor; a clarification reply keeps it open; `--state addressed` is refused | reviews.rs drift and close guard | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| D | wont-fix with a reply and no applied commit | reviews.rs | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| E | Close to `addressed`; the review leaves `review requests` | reviews.rs, `review requests` | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
 
-### verify-worktree-review-loop.sh
-| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
-|---|---|---|---|---|---|---|
-| setup | Two roadmaps, `rdm worktree add` for each, phases finalized to needs-review (branch and SHA stamped) | `rdm worktree`, needs-review stamping | rdm bin, git worktree | 5 | required | — |
-| A | Replays the retired Pi `agent_end` inject rule in sh over `review pending --format json` | `review pending` | rdm bin, git | 5 | required | Models the retired Pi review-on-finalize extension (unify-code-review phases 6–7); B covers the live scoping, so drop |
-| B | Each worktree's `review pending` lists only its own roadmap | branch-scoped `review pending` | rdm bin, git worktree | 5 | required | — |
-| C | Pending is empty from `main`; the query still exits cleanly after the worktree and branch are removed | same | rdm bin, git | 5 | required | — |
-| D | `rdm review restamp` after an amend updates `review_sha`, is idempotent, and the item stays in scope | `review restamp` | rdm bin, git | 5 | required | — |
+### verify-backlog-groom-loop.sh (deleted in phase 5)
+Now: the `rdm-cli` nextest binary `cli_loops` (`rdm-cli/tests/cli_loops/`); the per-section map with final test names is § 8.
 
-### verify-rdm-plan-fixture.sh
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| AC1 | `fixture_setup`/`fixture_code_repo`/`fixture_teardown` build and remove an isolated plan repo and code repo with the documented seeds | `scripts/lib/rdm-plan-fixture.sh` | rdm bin, git | 5 | required | Tests shell test-support only; retires when golden-json and plugin-loop move to a Rust fixture |
-| AC1b–e | Guard clauses; HOME/XDG preserved and restored exactly; caller `RDM_*` never leaks in; a failing seed fails loudly | fixture lib | rdm bin | 5 | required | Same (carry the env-scrub into the Rust fixture) |
-| AC2 | Two same-day runs are byte-identical after documented redactions | fixture lib, rdm JSON | rdm bin, git | 5 | required | Overlaps golden-json §2 |
-| AC3 | A stand-in real `RDM_ROOT` stays byte- and mtime-unchanged; plus a static grep that the lib never names it | fixture lib | rdm bin, stat | 5 | required | Static grep breaks the no-grep rule: keep the sentinel only |
-| AC4 | Optional shellcheck/shfmt over the lib and harness | — | shellcheck, shfmt (optional) | 7 | required (skips if absent) | Duplicates CI's blanket shellcheck/shfmt |
+| setup | Seeds a duplicate pair, tag cluster, stale task, consolidate target and terminal roadmap | rdm create | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 1 | `rdm backlog report` shows all four signal kinds | `rdm-core/src/ops/backlog.rs` | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 2 | `promote --into` folds a task into a roadmap as a phase | `ops/task.rs` `consolidate_task_into_roadmap` | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 3 | `task merge` folds dup-b into dup-a | `ops/task.rs` `merge_tasks` | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 4 | `task update --status wont-fix --reason` | task update | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+| 5 | `roadmap archive` on the terminal roadmap | roadmap archive | rdm bin | **phase 5 (done)** — § 8 | required (nextest) | — |
+
+### verify-worktree-review-loop.sh (deleted in phase 5)
+Now: the `rdm-cli` nextest binary `cli_loops` (`rdm-cli/tests/cli_loops/`); the per-section map with final test names is § 8.
+
+| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
+|---|---|---|---|---|---|---|
+| setup | Two roadmaps, `rdm worktree add` for each, phases finalized to needs-review (branch and SHA stamped) | `rdm worktree`, needs-review stamping | rdm bin, git worktree | **phase 5 (done)** — § 8 | required (nextest) | — |
+| A | Replays the retired Pi `agent_end` inject rule in sh over `review pending --format json` | `review pending` | rdm bin, git | **phase 5 (done)**: retired — § 8 | — | Models the retired Pi review-on-finalize extension (unify-code-review phases 6–7); B covers the live scoping, so drop |
+| B | Each worktree's `review pending` lists only its own roadmap | branch-scoped `review pending` | rdm bin, git worktree | **phase 5 (done)** — § 8 | required (nextest) | — |
+| C | Pending is empty from `main`; the query still exits cleanly after the worktree and branch are removed | same | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+| D | `rdm review restamp` after an amend updates `review_sha`, is idempotent, and the item stays in scope | `review restamp` | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | — |
+
+### verify-rdm-plan-fixture.sh (deleted in phase 5)
+Now: the `rdm-cli` nextest binary `golden_json` (`rdm-cli/tests/golden_json/`); the per-section map with final test names is § 8. `common/seeded_plan.rs` replaces its shell library.
+
+| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
+|---|---|---|---|---|---|---|
+| AC1 | `fixture_setup`/`fixture_code_repo`/`fixture_teardown` build and remove an isolated plan repo and code repo with the documented seeds | `scripts/lib/rdm-plan-fixture.sh` | rdm bin, git | **phase 5 (done)**: retired — § 8 | — | Tests shell test-support only; retires when golden-json and plugin-loop move to a Rust fixture |
+| AC1b–e | Guard clauses; HOME/XDG preserved and restored exactly; caller `RDM_*` never leaks in; a failing seed fails loudly | fixture lib | rdm bin | **phase 5 (done)**: retired — § 8 | — | Same (carry the env-scrub into the Rust fixture) |
+| AC2 | Two same-day runs are byte-identical after documented redactions | fixture lib, rdm JSON | rdm bin, git | **phase 5 (done)** — § 8 | required (nextest) | Overlaps golden-json §2 |
+| AC3 | A stand-in real `RDM_ROOT` stays byte- and mtime-unchanged; plus a static grep that the lib never names it | fixture lib | rdm bin, stat | **phase 5 (done)**: retired — § 8 | — | Static grep breaks the no-grep rule: keep the sentinel only |
+| AC4 | Optional shellcheck/shfmt over the lib and harness | — | shellcheck, shfmt (optional) | **phase 5 (done)** — § 8 | required (nextest) | Duplicates CI's blanket shellcheck/shfmt |
 
 ### verify-session-identity.sh
 Dependencies ("common") for every row: rdm bin, git, POSIX sh, no network.
@@ -1070,3 +1090,291 @@ Slowest new tests: `concurrency_does_not_change_output_order` 1.45 s (its fake
 `discovery_timeout_kills_and_reaps_app_server` and
 `exec_timeout_kills_group_and_removes_auth_copy` 1.3 s each (1 s deadlines);
 everything else is under 0.35 s.
+
+## 8. Phase 5: distribution and CLI shell verification
+
+The ten phase-5 harnesses and the three shell helpers that served only them are
+deleted: `scripts/verify-{agent-config-distribution,plugin-distribution,plugin-install,plugin-loop,claude-code-web-loop,rdm-plan-fixture,golden-json,backlog-groom-loop,review-revision-loop,worktree-review-loop}.sh`,
+`scripts/lib/rdm-plan-fixture.sh`, `scripts/lib/golden-capture.sh` and
+`scripts/capture-golden.sh`. Rust owns every fixture, command sequence,
+assertion and teardown. The only scripts a test executes are products, each
+from a scratch or sandbox context: `scripts/gen-codex-skills.sh` (a scratch
+copy), `scripts/rdm-dev.sh` (in place; it writes nothing) and
+`templates/claude-code-web/.claude/hooks/SessionStart.sh` (sandbox `HOME`). The
+live observers `scripts/observe-{plugin-install,workflow-listing}.sh` are
+untouched and stay distinct from the hermetic tests.
+
+### Layout
+
+| Binary | Modules | Tests | Needs Node | Filter |
+|---|---|---|---|---|
+| `rdm-cli/tests/distribution/` | `support`, `claude_skills`, `superseded`, `plugin`, `codex`, `downstream` | 29 | `downstream` only (through `rdm_devtools::workflow`; a missing Node is an actionable error, never a skip) | `cargo nextest run -p rdm-cli --test distribution` |
+| `rdm-cli/tests/cli_loops/` | `plugin_loop`, `claude_code_web`, `backlog_groom`, `review_revision`, `worktree_review` | 7 | none | `cargo nextest run -p rdm-cli --test cli_loops` |
+| `rdm-cli/tests/golden_json/` | `capture`, `redact` | 5 (+1 ignored: `bless`) | none | `cargo nextest run -p rdm-cli --test golden_json` |
+
+Shared support: `rdm-cli/tests/common/seeded_plan.rs` (new; the port of
+`rdm-plan-fixture.sh`: project `fixture-proj`, `sample-roadmap` with three
+phases done/in-progress/not-started, `fixture-task-{open,active,done}`, one
+seed commit, an optional code repo at `<TempDir>/code`, identity
+`fixture-bot <fixture@example.invalid>`, a failed step naming its command);
+`plan_fixture::Sandbox` (new); `workflow_support::{Lib::at, Lib::mutant_at}`
+(new) and `run_real`/`run_mutant`/`mutant_verdict` generalized to closures;
+`rdm_devtools::workflow::invert_helper_source` (new, tested by
+`workflow_host::{invert_helper_source_round_trips_the_real_engine,
+invert_helper_source_rejects_a_tampered_transform}`). `.config/nextest.toml`
+adds `binary(distribution)` to the workflow slow-timeout override; `rdm-cli`
+gains the dev-dependency `regex` (already in `Cargo.lock`).
+
+### Isolation rules
+
+- Every process runs under `plan_fixture::Sandbox`: temp `HOME` and
+  `XDG_{CONFIG,DATA,STATE}_HOME` under the test's `TempDir`; every inherited
+  `RDM_*`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `CLAUDE_CODE_SESSION_ID`
+  removed; `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM=/dev/null`; a fixed git
+  identity. Tests never call `std::env::set_var`.
+- Every emission goes to `--out <TempDir>`; every `--user` emission lands in
+  the sandbox `HOME`.
+- Generators run only from a scratch copy: `gen-codex-skills.sh` and
+  `docs/principles.md` are copied to `<TempDir>/scratch/{scripts,docs}` and run
+  with `cwd` there, a fake `cargo` first on `PATH` and `PATH` otherwise
+  `/usr/bin:/bin`. The script derives its output root from its own location, so
+  it can only write into scratch; the test also asserts the recorded
+  `--manifest-path` is the scratch copy and that scratch holds nothing else.
+- No test writes into the source checkout; the one exception is the ignored
+  `golden_json::bless`, run deliberately.
+- The checkout-wide `git status` before/after check (§0/§8, §1/§7, §1/§8 of the
+  three distribution harnesses) is dropped: it is racy under parallel nextest
+  and would red-light a developer's own edits. It is replaced by construction
+  (the rules above) and by per-test output-location assertions
+  (`claude_skills::emitted_skills_and_agent_have_structured_frontmatter`,
+  `plugin::emitted_plugin_layout_and_manifest`,
+  `codex::local_skills_match_gen_codex_skills_output`,
+  `plugin::rejection_messages_are_pairwise_distinct`).
+- Commands a test executes run with `Run::bare()` (`PATH=/usr/bin:/bin`) plus
+  explicit additions, and the downstream plan repo's default project is a
+  decoy, so a dropped `rdmBin` or `--project` fails by behaviour.
+
+### The fake `cargo`
+
+`gen-codex-skills.sh` and `rdm-dev.sh` end in `cargo run … -- <args>`. The plan
+called for a `cargo` role in `rdm-devtools-fixture`; implemented, it turned out
+to be unreachable from `rdm-cli`'s tests, because Cargo exposes
+`CARGO_BIN_EXE_*` only for the test's own package, and locating the fixture
+next to `CARGO_BIN_EXE_rdm` would be a hard-coded target layout that can also
+run a stale binary under `cargo test -p rdm-cli`. `codex.rs` instead writes a
+two-line exec stub into the test's temp tree that records the call (cwd and
+argv) and execs `CARGO_BIN_EXE_rdm` on the arguments after `--`. It holds no
+assertions; the role was not kept, since nothing would use it.
+
+### Deleted-template fixture strategy (§5j/§5k)
+
+Provenance-documented fixtures; no test reads git history, so a shallow clone
+runs them. The cleanup is fingerprint-gated (`SUPERSEDED_WORKFLOWS` in
+`rdm-core/src/agent_config.rs`), so one genuine historical body per retired
+name is committed under `tests/fixtures/superseded-workflows/`, extracted once
+with `git show <commit>:<path>`:
+
+| Fixture | Source commit:path | Bytes | sha256 |
+|---|---|---|---|
+| `dispatch-phase.js.body` | `0fb2bcaf07c3f5a05aa753a28eaf66833760a452:rdm-core/src/templates/workflows/dispatch-phase.js` | 80823 | `e7644f1718c9f6690cd8136bbf668c26cc19fd7b6a2a93fd97add25a27604522` |
+| `review-refute-fix.js.body` | `0fb2bcaf07c3f5a05aa753a28eaf66833760a452:rdm-core/src/templates/workflows/review-refute-fix.js` | 41803 | `032ffd9ea22dee0eeef54ea8433b9bf25955174bf564094e65f33e80ba72229a` |
+| `autopilot.js.body` | `0fb2bcaf07c3f5a05aa753a28eaf66833760a452:rdm-core/src/templates/workflows/autopilot.js` | 35572 | `817c8ecde65ba7d614620927cc86bc9743b10511b4a85e3249ede7d0324be7e4` |
+| `rdm-wf-dispatch-phase.js.body` | `0868c2a10c3fd2ca3c31c33248db0813e04fd1ff:rdm-core/src/templates/workflows/rdm-wf-dispatch-phase.js` | 170545 | `e6b506a97a54504aee6194aa7f381d8524d1a56100ccdc11359e4e71617dbd75` |
+
+This table is documentation, not a test: no test re-checks a fixture against
+`SUPERSEDED_WORKFLOWS` (that would be a guard over something else still being
+true). A fixture that were not a genuine body would survive the re-emit and
+fail the removal assertion, and `superseded::a_tampered_superseded_body_survives_the_cleanup`
+plants a genuine body with one byte appended under a retired name and requires
+it to survive (fingerprint gating, not name gating). A new
+`SUPERSEDED_WORKFLOWS` entry needs its body added here the same way.
+
+### Downstream evidence (§7)
+
+`distribution::downstream` builds one foreign fixture (`Downstream::new`): a
+Python/TypeScript repo on `feature/checkout`, its own plan repo (default
+project a decoy, project `acme-web`, roadmap `checkout-revamp` with
+`checkout-form`/`order-summary`, task `tidy-cli`), its own rdm path
+`tools/acme-rdm` (a symlink to `CARGO_BIN_EXE_rdm`), and the lane that binary
+emits into the repo. Three layers, kept apart:
+
+1. **Helper extraction that bypasses the driver**: the emitted engine's helpers
+   are compiled out of the emitted bytes (`helper_source`, proven byte-exact by
+   `invert_helper_source`); the raw emitted file fails to import with a
+   `SyntaxError`; the resolver, the environment guards and the persist ladders
+   the helpers build are executed, the ladders against the fixture plan under
+   the bare `PATH`.
+2. **Mocked-driver execution**: the emitted engine's driver runs under a
+   Rust-scripted clean fleet with item identity `{ task }` and the pinned source
+   fields, `persist: true`; its `persistScript` runs against the fixture plan
+   and the review is read back. Two additions to the documented shape come from
+   the real binary, not the engine: the pinned source is the task's
+   `rdm worktree add` checkout (a change review binds to a registered
+   checkout), and `implements` names a plan seeded for the task (a change
+   review records the plan it implements).
+3. **Planted corruptions in the emitted bytes**: mutants A (binary literal), B
+   (project literal) and C (reviewer selection ignored), each through
+   `Lib::mutant_at` and each caught by a failed check or a JavaScript throw,
+   never by an infrastructure failure.
+
+These are component tests: real emitted JavaScript under Node with a fake host,
+real rdm and real git. No Claude host is observed;
+`scripts/observe-workflow-listing.sh` remains the live observer.
+
+### Golden JSON
+
+`golden_json::capture_matches_committed_goldens` reproduces all 24 committed
+`tests/golden/*.json` byte for byte (they are unchanged in this phase), naming
+every drifted, missing or uncaptured file and the bless command. The six
+redaction rules are ported to `regex` over the raw text. Re-bless:
+`cargo nextest run -p rdm-cli --test golden_json --run-ignored only -E 'test(=bless)'`.
+
+### Case map
+
+P = ported (named test), D = duplicate of an existing test, R = retired (with
+reason). Totals: **P 50, D 9, R 20** (rows counted as grouped below).
+
+**verify-agent-config-distribution.sh** (P 15 / D 4 / R 11)
+
+| § | Disposition |
+|---|---|
+| 0/8 checkout status unchanged | P: by construction (isolation rules) plus per-test output-location assertions |
+| 1 emit | P: fixture of the `claude_skills::*` tests |
+| 2 inventory + frontmatter | P `claude_skills::emitted_skills_and_agent_have_structured_frontmatter` |
+| 2b placeholders | R: string-presence check (operator no-grep rule) |
+| 3 workflow byte identity | D `cli_agent_config::agent_config_workflows_are_byte_identical_to_source`, rdm-core `generate_workflows_are_byte_identical_to_source` |
+| 3a agent byte identity | D `cli_agent_config::agent_config_agents_are_byte_identical_to_source` |
+| 3b re-emit idempotent | P `claude_skills::reemit_is_idempotent_and_spares_user_files` |
+| 3c (i–iii) agentType resolution | R: guards a reference set that is empty today (no emitted workflow passes `agentType`), and its sweep is a grep over emitted JS |
+| 4 shim/invocation references | R: prose grep over emitted skill text |
+| 5a byte-corruption self-test | R: harness-internal self-test; Rust `assert_eq!` cannot be vacuous |
+| 5b, 5c, 5d, 5e, 5f | R: self-tests of the retired §2b/§4 greps |
+| 5g dogfood `.claude/skills` set | R: guard over the deliberately divergent local lane; the shipped inventory is §2 |
+| 5j | P `superseded::skills_reemit_removes_fingerprinted_orphans`; negative control `superseded::a_tampered_superseded_body_survives_the_cleanup` replaces the re-plant self-test |
+| 5k | P `superseded::plugin_reemit_removes_fingerprinted_orphans` (seeds all four bodies, not just the retired dispatch engine) |
+| 6a, 6b | P `claude_skills::pi_and_user_emissions_write_no_runtime_and_run_no_cleanup` (directory absence also D `agent_config_pi_skills_does_not_write_workflows`/`agent_config_user_skills_does_not_write_workflows`) |
+| 6c | P `claude_skills::skills_emission_ignores_a_missing_rdm_root` |
+| 7a fixture | P `downstream::Downstream::new` (the docs-only/CHANGELOG-only branches and the Rust-token scan served the retired `deriveSignals`/`selectDimensions`) |
+| 7b | P `downstream::{emitted_engine_helpers_round_trip_to_the_emitted_bytes, raw_emitted_engine_does_not_import}`; its shim/invocation re-checks R (no-grep) |
+| 7c | P `downstream::emitted_resolvers_and_env_guards_execute`; the prompt-text tokenizer R (prompt-text grep), replaced by execution under the bare `PATH` and decoy project |
+| 7d | P `downstream::{emitted_persist_ladders_run_against_the_foreign_plan, emitted_engine_driver_persists_through_the_foreign_fixture}`; the dropped-`--verdict` string-edit control R, replaced by mutants A and B |
+| 7e A/B/C | P `downstream::{mutant_a_hardcoded_binary_is_caught, mutant_b_hardcoded_project_is_caught, mutant_c_ignored_reviewer_selection_is_caught}` |
+| 7g/7h emitted instruction text | R: prose greps; the quoted-flag acceptance half is D `cli_commit.rs` (`--changeset`, `--all`), `cli_status.rs` (`status --all`), `cli_session.rs` (`session id/list/journal`) |
+| 7i Codex distribution | D `cli_agent_config::codex_{project_emits_instructions_and_supported_skills,user_paths_separate_config_and_skills,plugin_rejection_names_the_supported_channel}`; P `codex::{every_withheld_skill_is_named_in_the_notice, emitted_commands_execute_against_a_foreign_plan, local_skills_match_gen_codex_skills_output}` |
+| 7i `rdm-dev.sh` | P `codex::{dev_wrapper_runs_from_a_foreign_cwd_and_keeps_the_session, dev_wrapper_refuses_missing_session_or_plan_repo}` |
+| 7i codex-smoke-process / coexistence arm | D: phase 1 `rdm-devtools` lifecycle tests; phase 4 `codex_coexistence.rs` plus the ignored `codex_coexistence_live` |
+
+**verify-plugin-distribution.sh** (P 4 / D 1 / R 3)
+
+| § | Disposition |
+|---|---|
+| 1/1b/7 | P: by construction |
+| 2 | P `plugin::emitted_plugin_layout_and_manifest` |
+| 3 naming transform | P `plugin::naming_transform_relates_to_the_skills_emission` (both sides from real emissions) |
+| 4 `rdm:<engine>` refs | R: prose grep |
+| 5a–5d, 5f | D `cli_agent_config::agent_config_plugin_{and_skills_conflict,requires_out,and_user_rejected_with_distinct_message,rejected_on_agents_md,rejected_on_cursor,rejected_on_copilot,rejected_on_pi}`, `agent_config_skills_and_user_still_works_unaffected_by_plugin` |
+| 5g distinct messages | P `plugin::rejection_messages_are_pairwise_distinct` (the `--skills` destination error is read from the CLI, not hard-coded) |
+| 6a–6d | R: harness-internal checker self-tests (6b/6c test a retired grep) |
+| 6e | R: self-test of a comparator Rust expresses as `assert_ne!` |
+
+**verify-plugin-install.sh** (P 7 / D 0 / R 1)
+
+| § | Disposition |
+|---|---|
+| 1/1b/8 | P: by construction (fresh emission, every `RDM_*` removed, no `--project`) |
+| 2 drift, version-normalized | P `plugin::checked_in_tree_matches_the_generator` (full recursive set-and-byte comparison; only the manifest `version` value, read from parsed JSON, is normalized) |
+| 3 version | P `plugin::fresh_manifest_version_is_the_crate_version` |
+| 4/4b marketplace | P `plugin::marketplace_shape_and_sources_resolve` |
+| 5/6 workflow identity + skill inventory | P: §2's set-and-byte drift plus `plugin::skill_frontmatter_names_match_their_dirs` |
+| 7a–7c, 7k | P `plugin::marketplace_checker_rejects_planted_corruptions` |
+| 7g–7j | P `plugin::drift_normalization_is_surgical` |
+| 7d–7f, 7l | R: floor/vacuity self-tests, superseded by exact set equality against a fresh emission |
+
+**verify-plugin-loop.sh** (P 3 / D 1 / R 0)
+
+| § | Disposition |
+|---|---|
+| 1 | P `plugin_loop::editor_round_trip` |
+| 2 | D `cli_task::{body_flag_beats_stdin, task_update_body_flag_beats_stdin, task_update_tags_ignores_stdin, task_update_status_ignores_stdin, task_update_empty_body_refuses_clobber, task_update_clear_body_succeeds}` (each checked: same property, including the `--clear-body` pointer and the untouched body) |
+| 3 | P `plugin_loop::create_waits_for_stdin_eof` |
+| 4 | P `plugin_loop::errors_and_warnings_stay_on_stderr` |
+
+**verify-claude-code-web-loop.sh** (P 1 / D 1 / R 0)
+
+| § | Disposition |
+|---|---|
+| steps 1–7 | P `claude_code_web::session_start_bootstraps_and_done_line_completes_the_phase` |
+| step 8 | D `cli_review::pending_scopes_to_current_branch_and_fails_open`, plus `worktree_review::roadmap_worktrees_scope_pending_and_restamp` |
+
+**verify-rdm-plan-fixture.sh** (P 0 / D 2 / R 3) — it tested shell test support only.
+
+| § | Disposition |
+|---|---|
+| AC1, AC1b, AC1c | R: the shell library is deleted; `common/seeded_plan.rs` replaces it |
+| AC1d, AC3 | R: isolation holds by construction (explicit `--root`, `hermetic_removals`, `Sandbox`); AC3's static grep is also a no-grep violation |
+| AC1e | R: a failed seed step returns a `Failure` naming the command |
+| AC2 | D `golden_json::same_day_captures_are_identical_and_leak_no_temp_path` |
+| AC4 | D: CI shellcheck/shfmt (and the linted file is deleted) |
+
+**verify-golden-json.sh** (P 4 / D 0 / R 1)
+
+| § | Disposition |
+|---|---|
+| 1 | P `golden_json::capture_matches_committed_goldens` |
+| 2 | P `golden_json::same_day_captures_are_identical_and_leak_no_temp_path` |
+| 2b | P `golden_json::digest_fields_are_redacted_not_frozen` |
+| 3 | P `golden_json::{comparator_names_a_mutated_golden, redactor_redacts_a_planted_digest_and_every_volatile_field}` |
+| 4 heal after self-test | R: harness-internal; no Rust test mutates the real goldens |
+
+**verify-backlog-groom-loop.sh** (P 6 / D 0 / R 0): setup and §1–5 are one
+sequential scenario, `backlog_groom::groom_loop_end_to_end`, reading parsed
+`--format json` fields; the four confirmation lines stay CLI-stdout checks.
+
+**verify-review-revision-loop.sh** (P 6 / D 0 / R 0): setup and A–E are one
+sequential scenario, `review_revision::revision_loop_end_to_end`. Fidelity
+fix: the shell read the plan HEAD before committing, so every
+`applied_commit` it recorded was the seed commit; the port commits each body
+edit and asserts each comment records that edit's own commit.
+
+**verify-worktree-review-loop.sh** (P 4 / D 0 / R 1)
+
+| § | Disposition |
+|---|---|
+| setup, B, C, D | P `worktree_review::roadmap_worktrees_scope_pending_and_restamp` |
+| A | R: models the retired Pi `agent_end` review-on-finalize extension (unify-code-review phases 6–7); B covers the live scoping |
+
+### Timings (recorded evidence, not asserted)
+
+Host: macOS 27.0 (Darwin 27.0.0, arm64, Apple M5 Max, 18 cores), 2026-09-24,
+warm build, a shared machine under concurrent load (so run-to-run variance is
+high).
+
+Before (the shells, `sh scripts/verify-<name>.sh` with `target/debug/rdm`
+built; three warm runs each):
+
+| Harness | Wall (s) |
+|---|---|
+| verify-agent-config-distribution.sh (with Node) | 3.15, 3.06, 3.05 |
+| verify-plugin-distribution.sh | 0.78, 0.36, 0.36 |
+| verify-plugin-install.sh | 1.15, 1.16, 1.15 |
+| verify-plugin-loop.sh | 2.64, 2.63, 2.63 |
+| verify-claude-code-web-loop.sh | 0.52, 0.51, 0.51 |
+| verify-rdm-plan-fixture.sh | 2.25, 2.21, 2.23 |
+| verify-golden-json.sh | 2.04, 2.06, 2.05 |
+| verify-backlog-groom-loop.sh | 0.44, 0.44, 0.44 |
+| verify-review-revision-loop.sh | 0.81, 0.81, 0.81 |
+| verify-worktree-review-loop.sh | 0.50, 0.50, 0.50 |
+| **sum (one run each, serial)** | **≈ 14.3** |
+
+After (nextest summary time, three warm runs, then `--test-threads 1` once):
+
+| Binary | Parallel (s) | Serial (s) |
+|---|---|---|
+| `distribution` (29 tests) | 1.26, 1.67, 3.99 | 7.74 |
+| `cli_loops` (7 tests) | 1.82, 2.65, 2.77 | 6.00 |
+| `golden_json` (5 tests, 1 ignored) | 1.66, 5.17, 2.73 | 2.48 |
+| `rdm-devtools --test workflow_host` (14 tests, 2 new) | 0.82, 0.82, 0.82 | — |
+
+nextest intermittently reports a test as `LEAK` on this host, including
+`golden_json::comparator_names_a_mutated_golden`, which spawns no process at
+all; it is host noise, not a leaked child.

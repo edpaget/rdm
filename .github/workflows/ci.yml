@@ -17,11 +17,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # Full history, not the default depth-1 shallow clone: the shell
-          # harnesses read bodies out of git history. verify-agent-config-
-          # distribution.sh § 5j recovers the pre-removal superseded workflow
-          # templates from the parent of the commit that deleted each path,
-          # which resolves to nothing in a shallow clone.
+          # Full history. Since rust-test-suite-consolidation phase 5 no test
+          # reads git history (the superseded-workflow cleanup test runs from
+          # committed fixtures under tests/fixtures/superseded-workflows/);
+          # the rust-test-suite-consolidation phase 7 audit decides whether
+          # this can return to the default shallow clone.
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@master

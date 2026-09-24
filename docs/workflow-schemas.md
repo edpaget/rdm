@@ -14,9 +14,10 @@ the canonical schema contracts they exchange.
 > particular rdm project, because both arrive as runtime arguments (see
 > § "Environment args: `rdmBin` and `project`"). Byte-identity with this repo's
 > copy is a CONSEQUENCE of that design, not a limitation of it, and
-> `scripts/verify-agent-config-distribution.sh` § 7 gates the claim by emitting
-> into a hermetic non-rdm, non-Rust fixture repo and then executing the emitted
-> engine's pipeline logic — and the rdm command ladders it builds — there.
+> the `rdm-cli` nextest binary `distribution` (module `downstream`) gates the
+> claim by emitting into a hermetic non-rdm, non-Rust fixture repo and then
+> executing the emitted engine's helpers, its driver under a scripted fake
+> fleet, and the rdm command ladders it builds — there.
 > `rdm-wf-dispatch-phase.js` was a second emitted engine until
 > `agent-orchestrated-dispatch` phase 7 retired it (see
 > `docs/workflow-vs-prose-boundary.md` § "Retirement record"); every reference to
@@ -135,7 +136,7 @@ both generators and ~96 harness assertions for zero listing benefit:
 | `>>> review-refute-fix:begin` / `:end`, `find-refute-verdict`, `review-spec`, `estimate-core`, `dispatch-outcome`, `plan-review-driver`, `backlog-groom`, `document-core` | **Region marker names.** Internal identifiers naming a stamped or byte-copied block, consumed by the generators and their drift gates. |
 | `'review-refute-fix: …'` runtime error prefixes in `lib/review.mjs` | **Module-scoped error prefixes**, identifying which module raised — not a file path. |
 | `docs/token-baseline.json`'s bare per-engine record keys, and `docs/token-baseline.md`'s lane tables | **A frozen measurement corpus.** The figures are keyed to those names as recorded; rewriting them would invalidate `rdm-measure refuter-severity --audit` (gated by the `audit_committed_baseline_ok` test). |
-| `autopilot.js`, `lib/autopilot.mjs`, and the `autopilot` Workflow name | **Retired, with no successor.** `rdm-autopilot` survives as a prose skill with no engine behind it, so `autopilot` must never be prefixed — doing so would corrupt the one front door the rename must leave untouched. `scripts/verify-agent-config-distribution.sh`'s self-test D depends on `autopilot` naming a Workflow that does not resolve. |
+| `autopilot.js`, `lib/autopilot.mjs`, and the `autopilot` Workflow name | **Retired, with no successor.** `rdm-autopilot` survives as a prose skill with no engine behind it, so `autopilot` must never be prefixed — doing so would corrupt the one front door the rename must leave untouched. (The `scripts/verify-agent-config-distribution.sh` self-test that relied on `autopilot` naming a Workflow that does not resolve was a prose grep; it was retired with that script in `rust-test-suite-consolidation` phase 5.) |
 | Historical `CHANGELOG.md` entries | Descriptions of the pre-rename world; correct as written. |
 
 `scripts/verify-workflow-review.sh` § 2e used to run the seven anchored
@@ -764,9 +765,9 @@ and adding one was out of scope for this phase by decision. Had
 `rdm-core/src/templates/workflows/`, every downstream repo running
 `rdm agent-config claude --skills --out <dir>` would have received workflows
 that **hard-fail on first dispatch** — not a "known-degraded surface", a broken
-lane. `scripts/verify-agent-config-distribution.sh`'s semantic check greps only
-for literal `.claude/workflows/<name>.js` references and would not have caught
-it.
+lane. The then-current `scripts/verify-agent-config-distribution.sh` semantic
+check grepped only for literal `.claude/workflows/<name>.js` references and
+would not have caught it.
 
 This was a blocking reason not to thread the two distributed files until the
 follow-up task `ship-mechanical-agent-type-downstream` landed an emission
@@ -775,8 +776,8 @@ distribution self-consistency, and did not introduce a distributed dangling
 reference either — it declined to create one.** `ship-mechanical-agent-type-downstream`
 has since landed that surface (`generate_agents()`, shipping
 `.claude/agents/rdm-mechanical.md` into every downstream tree) and its
-reference-resolution gate (`scripts/verify-agent-config-distribution.sh` § 3c) —
-see the follow-up bullet below. Neither distributed template threads
+reference-resolution gate (`scripts/verify-agent-config-distribution.sh` § 3c,
+since retired — see § Disposition below) — see the follow-up bullet below. Neither distributed template threads
 `agentType` yet; that remains separate, not-yet-landed work.
 
 #### Disposition
@@ -837,12 +838,14 @@ measured one.
    since landed the missing emission surface (§ Distribution):
    `generate_agents()` now ships `.claude/agents/rdm-mechanical.md` into every
    downstream tree, and `scripts/verify-agent-config-distribution.sh` § 3c
-   resolves any emitted `agentType` reference against it — the successor to the
-   removed `scripts/verify-workflow-review.sh` §2b(ii). Neither distributed
-   template threads `agentType` yet; that remains a separate follow-up. The
-   distributed reference count is zero at landing time, so § 3c's non-vacuity
-   comes from an emitted-definition floor plus planted-corruption self-tests,
-   not a real-reference occurrence floor.
+   resolved any emitted `agentType` reference against it — the successor to the
+   removed `scripts/verify-workflow-review.sh` §2b(ii) — until
+   `rust-test-suite-consolidation` phase 5 retired that sweep: no emitted
+   workflow passes `agentType`, so it guarded a future edit rather than current
+   behaviour, and it was a grep over the emitted JavaScript (the operator's
+   no-grep rule). Neither distributed template threads `agentType` yet; that
+   remains a separate follow-up, and whoever threads it owns the resolution
+   check.
 2. **Every judgment site** — finders, refuters, planners, implementers,
    `synthesize:draft`, `analyze:*`, `estimate:rate:*` and plan-review's `act:*`.
    `rdm-mechanical` is a transcribe-only agent with a two-tool allowlist; giving
@@ -885,8 +888,9 @@ and it is 42 % of a mechanical agent's floor. What remains is carried by two tas
   nowhere, §2b(i) unchanged.
 - `ship-mechanical-agent-type-downstream` — **DONE.** Landed the `.claude/agents/`
   emission surface (`generate_agents()`) and its reference-resolution gate
-  (`scripts/verify-agent-config-distribution.sh` § 3c), which lifted the
-  now-removed §2b(ii). Its "hard failure on first dispatch" premise was
+  (`scripts/verify-agent-config-distribution.sh` § 3c, itself retired in
+  `rust-test-suite-consolidation` phase 5), which lifted the now-removed
+  §2b(ii). Its "hard failure on first dispatch" premise was
   observed rather than inferred (§ Distribution above). The emission surface
   ships the definition into every downstream tree; threading an `agentType`
   into either distributed workflow template remains separate, not-yet-landed
@@ -2920,12 +2924,12 @@ only. These subcommands reject `--project` outright and must carry NO flag:
 Every other subcommand this lane emits is project-scoped and takes the flag:
 `phase list/show/update`, `task list/show/create/update`, `worktree add`,
 `next`, `search`. A blanket append would produce commands that fail at runtime
-while still satisfying a naive whole-file grep, which is why
-`scripts/verify-agent-config-distribution.sh` § 7c drives the real emitted engine under a
-capturing fake agent, tokenizes every emitted `rdm <subcommand>` occurrence, and
-checks each against the allow-list expressed **as data** — flag present iff the
-subcommand is not on the list, and zero `--project` occurrences at all when no
-project was configured.
+while still satisfying a naive whole-file grep, which is why the `distribution`
+nextest binary's `downstream` module *executes* the ladders the emitted engine
+builds, from a foreign repo under `PATH=/usr/bin:/bin`, against a fixture plan
+repo whose default project is a decoy: a dropped `rdmBin` cannot run and a
+dropped `--project` lands in the decoy, so either fails by behaviour. (The
+retired shell's § 7c tokenized the built prompt text instead.)
 
 #### Why `rdmBin` defaults to `rdm`, and how this repo overrides it
 

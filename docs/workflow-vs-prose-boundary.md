@@ -132,8 +132,8 @@ a real drive surfaces (operator, 2026-09-20). No harness greps its prose: a test
 particular strings are present in a static file is not evidence that the procedure behaves, so
 `scripts/verify-skill-dispatch.sh` is deliberately not written, and there is **no
 live-smoke-run gate** anywhere in this lane. What does gate it is real-binary machinery —
-`scripts/verify-agent-config-distribution.sh` and `scripts/verify-plugin-install.sh` over the
-emitted templates, the Rust `workflow_review` tests over the review engines, and
+the Rust `distribution` tests (`cargo nextest run -p rdm-cli --test distribution`) over the
+emitted templates and the checked-in plugin tree, the Rust `workflow_review` tests over the review engines, and
 `cargo nextest run` over the plan, review and gate surfaces the prose drives. The same phase
 deleted `scripts/verify-workflow-do-auto.sh` and `scripts/verify-workflow-do-auto-task.sh`
 (their subject, the `--auto` → engine wiring inside `rdm-do`'s prose, no longer exists) and

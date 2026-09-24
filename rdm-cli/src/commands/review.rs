@@ -193,8 +193,8 @@ pub fn run(
                                 // Deliberately UNGATED: the `rdm review restamp`
                                 // path writes `NeedsReview`, which the `reviewed`
                                 // gate never guards. Gating it would be inert and
-                                // would put `scripts/verify-worktree-review-loop.sh`
-                                // at risk.
+                                // would put the `cli_loops::worktree_review`
+                                // test at risk.
                                 rdm_core::ops::phase::update_phase(
                                     s,
                                     &project,

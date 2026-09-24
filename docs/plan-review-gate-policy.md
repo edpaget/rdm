@@ -208,7 +208,7 @@ test-visible act rather than a silent one:
   variant fails to compile at the match first, then fails the assertion — and
   both failure messages point back at this section.
 - `tests/golden/describe.json` enumerates the same seven `enum_values` for
-  `phase.status` and `task.status`, gated by `scripts/verify-golden-json.sh`.
+  `phase.status` and `task.status`, gated by the `golden_json` nextest binary.
 
 (No test asserts on this document's prose. The decision is enforced by the code;
 the reasoning is enforced by review.)

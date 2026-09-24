@@ -53,5 +53,5 @@ run `sh scripts/gen-codex-skills.sh`. Do not hand-maintain a second policy copy.
 Runtime templates are generated from canonical production modules by
 `node scripts/gen-codex-runtime.mjs` (also run by the skill generator).
 After generation changes run `cargo nextest run -p rdm-core -E 'test(codex)'`
-and `cargo nextest run -p rdm-cli --test cli_agent_config --test codex_distribution`.
+and `cargo nextest run -p rdm-cli --test cli_agent_config --test codex_distribution --test distribution`.
 Codex acceptance uses Rust-owned tests, not standalone `verify-*.sh` harnesses.

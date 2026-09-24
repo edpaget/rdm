@@ -133,22 +133,23 @@ install-then-bootstrap sequence during container creation and start.
 
 ## End-to-end verification
 
-### Automated harness
+### Automated test
 
-Run the shipped harness to confirm the template, bootstrap, and source-repo
+Run the nextest case to confirm the template, bootstrap, and source-repo
 `Done:` → plan-repo phase update all work together. Uses temp dirs and bare
 clones in place of GitHub, so it needs no network and no credentials:
 
 ```bash
 # From a checkout of the rdm repo:
-cargo build
-bash scripts/verify-claude-code-web-loop.sh
+cargo nextest run -p rdm-cli --test cli_loops -E 'test(/^claude_code_web::/)'
 ```
 
-The script seeds a throwaway plan repo with a `verify-demo/phase-1-ping`
-phase, runs the SessionStart template against a fake sandbox `$HOME`, makes
+The test seeds a throwaway plan repo with a `verify-demo/phase-1-ping`
+phase, runs the SessionStart template against a fake sandbox `$HOME` (with
+`rdm` already on `PATH` and a `curl` stub that fails loudly), makes
 a source-repo commit with the right `Done:` footer, and confirms the plan
-repo phase flips to `done` with the source commit SHA recorded. Any
+repo phase flips to `done` with the source commit SHA recorded, then pushes
+the update back to the bare remote. Any
 regression in bootstrap, the SessionStart template, or `rdm hook post-commit`
 will fail it.
 

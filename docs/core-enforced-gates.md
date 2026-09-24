@@ -344,7 +344,7 @@ None can ever write `reviewed`:
 
 | Site | Status written | Why |
 |---|---|---|
-| `rdm-cli/src/commands/review.rs` ×2 | `NeedsReview` | the `rdm review restamp` path; gating it would be inert and would put `scripts/verify-worktree-review-loop.sh` at risk |
+| `rdm-cli/src/commands/review.rs` ×2 | `NeedsReview` | the `rdm review restamp` path; gating it would be inert and would put the `cli_loops::worktree_review` test at risk |
 | `rdm-cli/src/commands/mod.rs` ×2 | `Done` | the `Done:` post-merge/post-commit hook path, contractually exit-0 and bounded — it must never acquire a failure mode |
 | `rdm-core/src/ops/task.rs` ×3 | `Done` / `WontFix` / `None` | `consolidate_task_into_roadmap` and `merge_tasks`, core-internal |
 

@@ -341,7 +341,7 @@ Two details are load-bearing:
 
 Emission is deterministic — two runs are byte-identical — and needs no plan repo.
 
-This adds a **third** in-repo copy of each shipped Workflow engine script, alongside `.claude/workflows/` and `rdm-core/src/templates/workflows/`. Unlike the skill markdown and manifest, this third copy does not depend on this full-tree command staying in sync: each `scripts/gen-workflow-*.sh` generator also whole-file-syncs `plugins/rdm/workflows/<engine>.js` directly, in the same run that syncs the embedded `rdm-core/src/templates/workflows/` copy (see "Generated with hand-maintained code outside the markers" below), so an engine-only edit needs no separate `--plugin` regeneration. This full-tree command remains the one way to refresh the skill markdown and the manifest, and is still the right thing to run after any change under `plugins/rdm/`'s scope. After regenerating, re-run `scripts/verify-agent-config-distribution.sh` and `cargo nextest run -p rdm-cli --test workflow_review` as well as the two harnesses below.
+This adds a **third** in-repo copy of each shipped Workflow engine script, alongside `.claude/workflows/` and `rdm-core/src/templates/workflows/`. Unlike the skill markdown and manifest, this third copy does not depend on this full-tree command staying in sync: each `scripts/gen-workflow-*.sh` generator also whole-file-syncs `plugins/rdm/workflows/<engine>.js` directly, in the same run that syncs the embedded `rdm-core/src/templates/workflows/` copy (see "Generated with hand-maintained code outside the markers" below), so an engine-only edit needs no separate `--plugin` regeneration. This full-tree command remains the one way to refresh the skill markdown and the manifest, and is still the right thing to run after any change under `plugins/rdm/`'s scope. After regenerating, re-run `cargo nextest run -p rdm-cli --test distribution` and `cargo nextest run -p rdm-cli --test workflow_review`, plus the live observer below when you want a real install.
 
 ### Why the Drift Gate is Version-Normalized
 
@@ -349,13 +349,13 @@ The plugin manifest's `version` comes from `env!("CARGO_PKG_VERSION")`, which in
 
 A naive byte-identity gate over a version-bearing checked-in tree would therefore go red on `main` the moment a release lands. That is the same failure class as asserting on `CHANGELOG.md` prose, and it is what blocked v0.18.1 (CI run 30815546603).
 
-The resolution, implemented in `scripts/verify-plugin-install.sh`:
+The resolution, implemented in `rdm-cli/tests/distribution/plugin.rs`:
 
 - The checked-in tree is treated as **version-agnostic**. The drift gate replaces the manifest `version` value with a fixed placeholder on **both** sides before diffing, so a crate-version bump can never move the diff. Everything else — every other manifest field, every `SKILL.md` byte, every workflow byte, and the file set itself — stays under exact byte-identity.
 - Version currency is asserted **only against freshly generated output**, never against committed bytes.
-- The expected version is read from `Cargo.toml`'s `[workspace.package] version`. Note that **`rdm --version` does not exist** (clap rejects the flag), so Cargo.toml is the source of truth.
+- The expected version is `rdm-cli`'s `CARGO_PKG_VERSION`, which inherits `Cargo.toml`'s `[workspace.package] version`. Note that **`rdm --version` does not exist** (clap rejects the flag), so Cargo.toml is the source of truth.
 
-A paired self-test proves both halves: a planted `99.99.99` bump leaves the drift gate green while turning the runtime version assertion red, and a mutated non-version manifest field turns the drift gate red (proving the normalization is surgical rather than a blanket neuter).
+`plugin::drift_normalization_is_surgical` proves the normalization is surgical rather than a blanket neuter: on scratch copies of a fresh emission, a planted `99.99.99` bump alone is not drift, while a changed non-version manifest field, one changed `SKILL.md` byte and a stray file each are. `plugin::fresh_manifest_version_is_the_crate_version` is the runtime half.
 
 ### Consumer Installation
 
@@ -366,20 +366,20 @@ claude plugin install rdm@rdm
 
 This installs the 11 `rdm:<name>` skills and the two `rdm:rdm-wf-<engine>` Workflow engines. A local checkout can be installed the same way by pointing `marketplace add` at the repo directory.
 
-### The Two Harnesses
+### The Hermetic Tests and the Live Observer
 
-| Script | Hermetic? | Run by CI? |
+| Check | Hermetic? | Run by CI? |
 |--------|-----------|------------|
-| `scripts/verify-plugin-install.sh` | Yes — pure POSIX shell + coreutils, no `python3`/`node`/`jq`/`claude` | **Yes**, via `.github/workflows/ci.yml`'s `for f in scripts/verify-*.sh` glob |
+| `cargo nextest run -p rdm-cli --test distribution -E 'test(/^plugin::/)'` | Yes — Rust, every emission sandboxed into a temp tree; no `claude` | **Yes**, as part of `cargo nextest run` |
 | `scripts/observe-plugin-install.sh` | No — requires the `claude` CLI | **No.** The `observe-` name keeps it outside the glob; it is developer-run |
 
-`verify-plugin-install.sh` gates the version-normalized drift of `plugins/rdm/` against generator output, the runtime manifest-version assertion (fresh output only), marketplace shape plus `source` resolution with a non-empty-entry floor, workflow byte-identity, and the 11-skill inventory with frontmatter validity — each behind a planted-corruption self-test proving it is non-vacuous.
+The `plugin::` tests gate the version-normalized drift of `plugins/rdm/` against generator output (a full recursive set-and-byte comparison, so workflow bytes and the skill inventory are covered too), the runtime manifest-version assertion (fresh output only), the emitted layout and manifest fields, skill frontmatter, the naming relation to the `--skills` emission, pairwise-distinct `--plugin` rejection messages, and marketplace shape plus `source` resolution (`marketplace_checker_rejects_planted_corruptions` plants a dangling source, an empty list, a name mismatch and each missing field). The retired `scripts/verify-plugin-install.sh` and `scripts/verify-plugin-distribution.sh` are mapped section by section in `docs/test-migration-inventory.md` § 8.
 
 `observe-plugin-install.sh` performs a real offline install (`validate --strict` → `marketplace add` → `install rdm@rdm` → assert the installed tree) into an mktemp'd `CLAUDE_CONFIG_DIR`, and proves the invoking user's real `~/.claude` is byte-unchanged. It exits **2** with a NOTICE — deliberately distinguishable from both pass (0) and fail (1) — when `claude` is absent from `PATH`.
 
 Two CLI gaps shape that split, both verified against `claude` 2.1.220:
 
-1. `claude plugin validate --strict` **false-passes** a marketplace whose plugin `source` points at a nonexistent directory (exit 0 on `"source": "./does-not-exist"`, with all other warnings cleared). Source resolution is therefore owned by our own harness, with a non-empty-entry floor so "every entry resolves" cannot be vacuously true of an empty list.
+1. `claude plugin validate --strict` **false-passes** a marketplace whose plugin `source` points at a nonexistent directory (exit 0 on `"source": "./does-not-exist"`, with all other warnings cleared). Source resolution is therefore owned by our own tests, with a non-empty-entry check so "every entry resolves" cannot be vacuously true of an empty list.
 2. `claude plugin details` reports Skills / Agents / Hooks / MCP servers / LSP servers and has **no Workflows category at all** — confirmed against the official `claude-security` plugin, which ships workflows and shows none. Workflows *are* fully supported by the runtime; the inventory simply does not enumerate them. So workflow presence is asserted **on the filesystem**, never via `plugin details`.
 
 ## Next Steps for Later Phases
@@ -397,7 +397,7 @@ Landing evidence for the real-install half. Captured 2026-08-03 on macOS (darwin
 
 What it proves: the committed plugin manifest and the marketplace manifest both pass `claude plugin validate --strict`; the marketplace adds and the plugin installs cleanly into an isolated `CLAUDE_CONFIG_DIR`; `plugin list --json` reports exactly one entry, `id=rdm@rdm`, `enabled=true`, at the crate version; the installed tree carries all 11 skills and both Workflow engines byte-identical to the emitted bytes; and the invoking user's real `~/.claude` config is byte-unchanged with no `rdm` cache or marketplace directory created.
 
-This script is **developer-run and carries no CI coverage** — CI runs only `scripts/verify-plugin-install.sh`.
+This script is **developer-run and carries no CI coverage** — CI runs only the hermetic half, `cargo nextest run -p rdm-cli --test distribution -E 'test(/^plugin::/)'`. (The observer's own NOTICE text below still names the retired `scripts/verify-plugin-install.sh`; the observer was deliberately left untouched in phase 5.)
 
 ```
 
