@@ -5,7 +5,8 @@
 //! identity-precedence assertions pin `RDM_SESSION` so they never depend on
 //! the test runner's process tree; the rung-chain behavior below rung 1 is
 //! covered hermetically by `rdm-core`'s unit tests and end-to-end across real
-//! processes by `scripts/verify-session-identity.sh`.
+//! processes by the `concurrency` test binary
+//! (`tests/concurrency/session_identity.rs`).
 
 use std::collections::BTreeSet;
 

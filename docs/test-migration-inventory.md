@@ -252,17 +252,21 @@ Now: the `rdm-cli` nextest binary `cli_loops` (`rdm-cli/tests/cli_loops/`); the 
 | step 8 | `rdm review pending` lists only items finalized on the current branch | `review pending` scoping | rdm bin, git worktree | **phase 5 (done)** — § 8 | required (nextest) | Overlaps worktree-review B (the Stop hook it once drove is retired) |
 
 ### verify-git-config-isolation.sh
+Destination corrected to phase 7 in phase 6: phase 5 did not take it and no phase body names it. It is a suite-hygiene meta-gate — a nested `cargo nextest run` of whole crates under a hostile `~/.gitconfig` (~143 s) — not session or commit behaviour, the same shape as the open task `canary-git-env-isolation-regression`, whose body already names phase 7.
+
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| 1 | rdm-git and the cli_{worktree,gate,verify,review_change} suites give identical results under a clean and a hostile git config | `rdm-git/src/git_test_support.rs`, `rdm-cli/tests/git_test_support.rs`, `rdm-git/src/source.rs` `unified_diff_argv` | cargo nextest ×2, git ≥2.32 | 5 | required | — |
-| 1b | python3 strips the isolation from both support files in place; results must diverge; files restored and `cmp`-checked | same | cargo nextest rebuild, python3 | 5 | required | Edits tracked source; needs a different mechanism in Rust |
-| 2 | No `*__worktrees` directory escapes into scratch TMPDIR in either run; fixture floor | `rdm-git/src/worktree.rs` | the §1 runs | 5 | required | Duplicates temp-hygiene §1 |
+| 1 | rdm-git and the cli_{worktree,gate,verify,review_change} suites give identical results under a clean and a hostile git config | `rdm-git/src/git_test_support.rs`, `rdm-cli/tests/git_test_support.rs`, `rdm-git/src/source.rs` `unified_diff_argv` | cargo nextest ×2, git ≥2.32 | 7 | required | — |
+| 1b | python3 strips the isolation from both support files in place; results must diverge; files restored and `cmp`-checked | same | cargo nextest rebuild, python3 | 7 | required | Edits tracked source; phase 7 can rebuild it on phase 6's working-tree mirror (`rdm-cli/tests/concurrency/mutant.rs`) |
+| 2 | No `*__worktrees` directory escapes into scratch TMPDIR in either run; fixture floor | `rdm-git/src/worktree.rs` | the §1 runs | 7 | required | Duplicates temp-hygiene §1 |
 
 ### verify-worktree-temp-hygiene.sh
+Destination corrected to phase 7 in phase 6, for the reason given for `verify-git-config-isolation.sh` above (a nested `cargo nextest run` under a redirected `TMPDIR`, ~86 s).
+
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| 1 | Full nextest of `-p rdm-git -p rdm-cli` with TMPDIR redirected leaves no `*__worktrees` | `rdm-git/src/worktree.rs` `worktree_path`/`add`; fixtures in `rdm-cli/tests/cli_{worktree,gate,verify}.rs`, `rdm-git/tests/worktree.rs` | cargo nextest (~86s) | 5 | required | — |
-| 1b | python3 re-roots a fixture at its TempDir; the leak must appear; file restored | same | cargo rebuild, python3 | 5 | required | Edits tracked source |
+| 1 | Full nextest of `-p rdm-git -p rdm-cli` with TMPDIR redirected leaves no `*__worktrees` | `rdm-git/src/worktree.rs` `worktree_path`/`add`; fixtures in `rdm-cli/tests/cli_{worktree,gate,verify}.rs`, `rdm-git/tests/worktree.rs` | cargo nextest (~86s) | 7 | required | — |
+| 1b | python3 re-roots a fixture at its TempDir; the leak must appear; file restored | same | cargo rebuild, python3 | 7 | required | Edits tracked source; phase 7 can rebuild it on phase 6's working-tree mirror |
 
 ### verify-review-revision-loop.sh (deleted in phase 5)
 Now: the `rdm-cli` nextest binary `cli_loops` (`rdm-cli/tests/cli_loops/`); the per-section map with final test names is § 8.
@@ -310,65 +314,69 @@ Now: the `rdm-cli` nextest binary `golden_json` (`rdm-cli/tests/golden_json/`); 
 | AC3 | A stand-in real `RDM_ROOT` stays byte- and mtime-unchanged; plus a static grep that the lib never names it | fixture lib | rdm bin, stat | **phase 5 (done)**: retired — § 8 | — | Static grep breaks the no-grep rule: keep the sentinel only |
 | AC4 | Optional shellcheck/shfmt over the lib and harness | — | shellcheck, shfmt (optional) | **phase 5 (done)** — § 8 | required (nextest) | Duplicates CI's blanket shellcheck/shfmt |
 
-### verify-session-identity.sh
+### verify-session-identity.sh (deleted in phase 6)
+Now: the `rdm-cli` nextest binary `concurrency` (`rdm-cli/tests/concurrency/`); the per-section map with final test names is § 9.
 Dependencies ("common") for every row: rdm bin, git, POSIX sh, no network.
 
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| A | Same session id within a session, different ids across two sessions (real processes) | `rdm-core/src/session/{mod,lease,process}.rs`, `rdm-cli/src/commands/session.rs` | common | 6 | required | — |
-| B | Bare env resolves at rung 2 (parent-pid lease) and writes a lease file | `session/lease.rs`, `process.rs` | common | 6 | required | — |
-| C | `RDM_SESSION` overrides everything; rung 3 (`CLAUDE_CODE_SESSION_ID`) writes no lease | `session/mod.rs` | common | 6 | required | — |
-| D | Lease for a live pid with a stale start time is not adopted | `lease.rs`, `process.rs` | common, sh wrapper | 6 | required | — |
-| E / F | Journal holds exactly the session's paths; concurrent sessions' journals are disjoint | `session/journal.rs`, rdm-store-git wiring | common | 6 | required | — |
-| G | Session state stays out of `rdm status` and a whole-tree commit; decoy self-test | journal.rs, `commands/status.rs`, `rdm-store-git/src/commit.rs` | common | 6 | required | — |
-| H / H2 | Max resolve cost over 20 runs stays under 250 ms; real `hook post-commit` finishes within `hook_timeout_secs` | `session/mod.rs`, rdm-core hook | common | 6 | required | — |
-| J (+self-test) | A harness-published id beats an inherited ancestor lease; a mutant restores the merge bug | `session/mod.rs`, `lease.rs` | common, **mutant build** (~15s) | 6 | required | — |
-| K0–K5 | Per-call `sh -c` wrappers under a long-lived driver: fragmentation happens; `rdm commit` exits 0 and names the cause and remedy; dead leases are swept and bounded; two drivers never merge; `RDM_HARNESS_SESSION_ID` yields one changeset | `lease.rs` create-path sweep, `commands/commit.rs` advisory | common, background drivers | 6 | required | — |
-| K self-tests 1–2 | Mutants with the advisory silenced or the sweep removed fail K2 and K3 | same | **mutant builds** | 6 | required | — |
+| A | Same session id within a session, different ids across two sessions (real processes) | `rdm-core/src/session/{mod,lease,process}.rs`, `rdm-cli/src/commands/session.rs` | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| B | Bare env resolves at rung 2 (parent-pid lease) and writes a lease file | `session/lease.rs`, `process.rs` | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| C | `RDM_SESSION` overrides everything; rung 3 (`CLAUDE_CODE_SESSION_ID`) writes no lease | `session/mod.rs` | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| D | Lease for a live pid with a stale start time is not adopted | `lease.rs`, `process.rs` | common, sh wrapper | **phase 6 (done)** — § 9 | required (nextest) | — |
+| E / F | Journal holds exactly the session's paths; concurrent sessions' journals are disjoint | `session/journal.rs`, rdm-store-git wiring | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| G | Session state stays out of `rdm status` and a whole-tree commit; decoy self-test | journal.rs, `commands/status.rs`, `rdm-store-git/src/commit.rs` | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| H / H2 | Max resolve cost over 20 runs stays under 250 ms; real `hook post-commit` finishes within `hook_timeout_secs` | `session/mod.rs`, rdm-core hook | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| J (+self-test) | A harness-published id beats an inherited ancestor lease; a mutant restores the merge bug | `session/mod.rs`, `lease.rs` | common, **mutant build** (~15s) | **phase 6 (done)** — § 9 | required (nextest) | — |
+| K0–K5 | Per-call `sh -c` wrappers under a long-lived driver: fragmentation happens; `rdm commit` exits 0 and names the cause and remedy; dead leases are swept and bounded; two drivers never merge; `RDM_HARNESS_SESSION_ID` yields one changeset | `lease.rs` create-path sweep, `commands/commit.rs` advisory | common, background drivers | **phase 6 (done)** — § 9 | required (nextest) | — |
+| K self-tests 1–2 | Mutants with the advisory silenced or the sweep removed fail K2 and K3 | same | **mutant builds** | **phase 6 (done)** — § 9 | required (nextest) | — |
 
-### verify-journal-truncation-race.sh
+### verify-journal-truncation-race.sh (deleted in phase 6)
+Now: the `rdm-cli` nextest binary `concurrency` (`rdm-cli/tests/concurrency/`); the per-section map with final test names is § 9.
 Dependencies ("common") for every row: rdm bin, git, POSIX sh, no network. One shared mutant `cargo build` (~1–2 min cold) serves §§1b, 2b, 5b, 6b and 7b.
 
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| 1 | 40 parallel mutations and 6 concurrent commits under one `RDM_SESSION`: nothing stranded, journal folds to empty | `session/journal.rs` `record`/`truncate`, rdm-store-git `commit_changeset_id` | common | 6 | required | — |
-| 1b | The same fan-out with a commit pinned at the barrier: clean under the fix, stranded under the mutant | journal.rs `truncate` | `RDM_HARNESS_JOURNAL_BARRIER`, shared mutant | 6 | required | — |
-| 2 / 2b | Commit parked inside `truncate` while create/update land; records survive, including a rewrite of a path being landed; the read-modify-write mutant loses them | journal.rs, store-git commit | `RDM_HARNESS_JOURNAL_BARRIER`, **shared mutant build** | 6 | required | — |
-| 3 | Planted corruptions prove the grep, cleanliness and emptiness assertions can fail | harness | common | 6 | required | — |
-| 4 | "Empty" is judged by `read_journal` folding to zero entries, not by file absence | journal.rs `read_journal` | common | 6 | required | — |
-| 5 / 5b | `session gc` from an unrelated process is excluded while an append holds the shared lock; the lockless mutant loses the record | journal.rs `lock_journal`/`compact`/`gc_changesets` | `RDM_HARNESS_APPEND_BARRIER`, shared mutant | 6 | required | — |
-| 6 / 6b | An append arriving while gc is parked between its compare-and-swap and its rename waits and lands in the rewritten journal; the mutant loses it | journal.rs `compact` | `RDM_HARNESS_COMPACT_BARRIER`, shared mutant | 6 | required | — |
-| 7 / 7b | A record appended during a parked `session discard --force` survives; the bare `remove_file` mutant loses it | journal.rs `discard_changeset` | `RDM_HARNESS_JOURNAL_BARRIER`, shared mutant | 6 | required | — |
+| 1 | 40 parallel mutations and 6 concurrent commits under one `RDM_SESSION`: nothing stranded, journal folds to empty | `session/journal.rs` `record`/`truncate`, rdm-store-git `commit_changeset_id` | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 1b | The same fan-out with a commit pinned at the barrier: clean under the fix, stranded under the mutant | journal.rs `truncate` | `RDM_HARNESS_JOURNAL_BARRIER`, shared mutant | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 2 / 2b | Commit parked inside `truncate` while create/update land; records survive, including a rewrite of a path being landed; the read-modify-write mutant loses them | journal.rs, store-git commit | `RDM_HARNESS_JOURNAL_BARRIER`, **shared mutant build** | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 3 | Planted corruptions prove the grep, cleanliness and emptiness assertions can fail | harness | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 4 | "Empty" is judged by `read_journal` folding to zero entries, not by file absence | journal.rs `read_journal` | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 5 / 5b | `session gc` from an unrelated process is excluded while an append holds the shared lock; the lockless mutant loses the record | journal.rs `lock_journal`/`compact`/`gc_changesets` | `RDM_HARNESS_APPEND_BARRIER`, shared mutant | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 6 / 6b | An append arriving while gc is parked between its compare-and-swap and its rename waits and lands in the rewritten journal; the mutant loses it | journal.rs `compact` | `RDM_HARNESS_COMPACT_BARRIER`, shared mutant | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 7 / 7b | A record appended during a parked `session discard --force` survives; the bare `remove_file` mutant loses it | journal.rs `discard_changeset` | `RDM_HARNESS_JOURNAL_BARRIER`, shared mutant | **phase 6 (done)** — § 9 | required (nextest) | — |
 
-### verify-scoped-commit.sh
+### verify-scoped-commit.sh (deleted in phase 6)
+Now: the `rdm-cli` nextest binary `concurrency` (`rdm-cli/tests/concurrency/`); the per-section map with final test names is § 9.
 Dependencies ("common") for every row: rdm bin, git, POSIX sh, no network.
 
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| A / B / B2 | Two sessions produce disjoint commits, with and without a session id; a rung-2 changeset continues across processes in one shell | `rdm-store-git/src/{commit,lib}.rs`, `commands/commit.rs`, `lease.rs` | common | 6 | required | — |
-| B3 | Rung-4: an unattributable dirty tree is reported, never swept | store-git status/commit | common | 6 | required | — |
-| C | The `Done:` hook commits only its own changeset; whole-tree stand-in self-test | rdm-core hook, store-git commit | common | 6 | required | — |
-| E1 / E2 / E2b / E3 | `init --remote` lands its commit; a legacy repo gets no rdm dirt and `.git/config` is untouched; a server-shaped write is attributable | `rdm-store-git/src/{remote,repo}.rs`, rdm-server | common, bare remote | 6 | required | — |
-| F | A scoped commit holds exactly its authored paths; `commit --all` self-test | store-git commit | common | 6 | required | Partial: the seeded-`INDEX.md` sub-assert targets the retired generated index |
-| G / G3 / G4 | Scoped discard leaves another session's work intact and skips paths another session overwrote or recreated; stand-in self-tests | store-git discard digest guard | common | 6 | required | — (G5/G6 already retired with `rdm index`) |
-| H | Reads are shared across sessions | rdm-store-fs | common | 6 | required | — |
-| I | B commits under a project A created but never committed; converges | store-git commit | common | 6 | required | Partial: the dangling-row and orphan-index checks guard the retired `INDEX.md`; the convergence property is still live |
+| A / B / B2 | Two sessions produce disjoint commits, with and without a session id; a rung-2 changeset continues across processes in one shell | `rdm-store-git/src/{commit,lib}.rs`, `commands/commit.rs`, `lease.rs` | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| B3 | Rung-4: an unattributable dirty tree is reported, never swept | store-git status/commit | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| C | The `Done:` hook commits only its own changeset; whole-tree stand-in self-test | rdm-core hook, store-git commit | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| E1 / E2 / E2b / E3 | `init --remote` lands its commit; a legacy repo gets no rdm dirt and `.git/config` is untouched; a server-shaped write is attributable | `rdm-store-git/src/{remote,repo}.rs`, rdm-server | common, bare remote | **phase 6 (done)** — § 9 | required (nextest) | — |
+| F | A scoped commit holds exactly its authored paths; `commit --all` self-test | store-git commit | common | **phase 6 (done)** — § 9 | required (nextest) | Partial: the seeded-`INDEX.md` sub-assert targets the retired generated index |
+| G / G3 / G4 | Scoped discard leaves another session's work intact and skips paths another session overwrote or recreated; stand-in self-tests | store-git discard digest guard | common | **phase 6 (done)** — § 9 | required (nextest) | — (G5/G6 already retired with `rdm index`) |
+| H | Reads are shared across sessions | rdm-store-fs | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| I | B commits under a project A created but never committed; converges | store-git commit | common | **phase 6 (done)** — § 9 | required (nextest) | Partial: the dangling-row and orphan-index checks guard the retired `INDEX.md`; the convergence property is still live |
 
-### verify-lost-update.sh
+### verify-lost-update.sh (deleted in phase 6)
+Now: the `rdm-cli` nextest binary `concurrency` (`rdm-cli/tests/concurrency/`); the per-section map with final test names is § 9.
 Dependencies ("common") for every row: rdm bin, git, POSIX sh, no network.
 
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
 | 1 | (static grep) | — | — | — | — | Already retired (2026-09-23); §6 covers it |
-| 2 / 2b | Two processes interleaved mid-flush: the loser is refused, with and without `RDM_SESSION` | `rdm-store-fs/src/lib.rs` baseline/flush precondition | `RDM_HARNESS_FLUSH_BARRIER` | 6 | required | — |
-| 2c | Mutant with the baseline check neutered brings the lost update back | same | **mutant build**, barrier | 6 | required | — |
-| 3 / 3b / 3c | A session's own sequential writes, and a two-directive `Done:` flush, never trip the check; self-test | rdm-store-fs, hook | common | 6 | required | — |
-| 4 | Committing a path another session overwrote is refused (`ChangesetPathOverwritten`) | store-git `create_scoped_commit`, `JournalEntry::digest`, `rdm_core::paths::describe_path` | common | 6 | required | — |
-| 5 | Hook-path rejection is logged and exits 0 | hook, store-git | common | 6 | required | — |
-| 6 / 6b / 6c | A delayed delete of a path another session recreated is refused and the file survives; no-recreate control; short-circuit mutant | store-git `build_changeset_tree` delete guard | common, **mutant build** | 6 | required | — |
+| 2 / 2b | Two processes interleaved mid-flush: the loser is refused, with and without `RDM_SESSION` | `rdm-store-fs/src/lib.rs` baseline/flush precondition | `RDM_HARNESS_FLUSH_BARRIER` | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 2c | Mutant with the baseline check neutered brings the lost update back | same | **mutant build**, barrier | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 3 / 3b / 3c | A session's own sequential writes, and a two-directive `Done:` flush, never trip the check; self-test | rdm-store-fs, hook | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 4 | Committing a path another session overwrote is refused (`ChangesetPathOverwritten`) | store-git `create_scoped_commit`, `JournalEntry::digest`, `rdm_core::paths::describe_path` | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 5 | Hook-path rejection is logged and exits 0 | hook, store-git | common | **phase 6 (done)** — § 9 | required (nextest) | — |
+| 6 / 6b / 6c | A delayed delete of a path another session recreated is refused and the file survives; no-recreate control; short-circuit mutant | store-git `build_changeset_tree` delete guard | common, **mutant build** | **phase 6 (done)** — § 9 | required (nextest) | — |
 
 **Cross-cutting notes for sections 1 and 2**
-- **Phase 6 mutant arms.** Every mutant arm builds from `git archive HEAD`, overlays working-tree files, then `sed`-patches a named source line, with a guard that fails if that line has moved. That guard is a source-grep. A Rust port needs a cfg- or feature-gated fault-injection seam instead of a literal port.
+- **Phase 6 mutant arms.** Decided in phase 6 (§ 9): no cfg- or feature-gated fault seam, which would put test-only alternate implementations in production source. Each negative control rebuilds `rdm` from an isolated mirror of the working tree (`git ls-files --cached --others --exclude-standard`, read-only) under `$CARGO_TARGET_TMPDIR`, with its family's anchored exactly-once edits applied in memory; an anchor that has moved fails the control as not-run (fixture construction, like `MutantTree::replace_once`), never as a pass.
 - **Tracked-file edits.** git-config §1b and temp-hygiene §1b edit tracked `.rs` files in place.
 - **Stale headers:**
   - verify-skill-autopilot.sh (§1), verify-workflow-estimate.sh (§1b): deleted in phase 3
@@ -1379,3 +1387,322 @@ After (nextest summary time, three warm runs, then `--test-threads 1` once):
 nextest intermittently reports a test as `LEAK` on this host, including
 `golden_json::comparator_names_a_mutated_golden`, which spawns no process at
 all; it is host noise, not a leaked child.
+
+## 9. Phase 6: session, commit and race harnesses
+
+`scripts/verify-{session-identity,scoped-commit,lost-update,journal-truncation-race}.sh`
+are deleted. Every behavioural section is a Rust test in the `rdm-cli` nextest
+binary `concurrency` (`rdm-cli/tests/concurrency/`), or a demonstrated
+duplicate of an existing test. The tests run real, separate `rdm` processes —
+`CARGO_BIN_EXE_rdm`, or an isolated mutant build of it — against per-test temp
+plan repos. Rust owns every fixture, spawn, barrier release, wait, assertion
+and teardown; `sh` appears only as the process topology under test (the
+long-lived parent that anchors a rung-2 lease, and the per-call wrapper). The
+scripts had no helper libraries and no caller but CI's `scripts/verify-*.sh`
+loop, which keeps running the two remaining scripts, so `ci.yml` and
+`CLAUDE.md` are unchanged.
+
+### Layout
+
+| Module | Owns | Tests |
+|---|---|---|
+| `support` | `Plan` (repo + `Sandbox` + binary), `Proc` (guarded child), `Parked`, `ShellDriver`/`Driver`, readers | — |
+| `mutant` | working-tree mirror, anchored edits, locked isolated builds | — |
+| `session_identity` | rung 1–3, leases, § G/H/H2, § J, § K; scenario functions shared with `mutants` | 13 |
+| `journal_race` | the fan-out and the four journal interleavings; scenario functions | 6 |
+| `lost_update` | the flush and commit content checks; scenario functions | 7 |
+| `scoped_commit` | session-scoped commit/status/discard | 7 |
+| `mutants` | one negative control per planted regression | 10 |
+
+Filter: `cargo nextest run -p rdm-cli --test concurrency`. No new crate
+dependency: the build lock is `std::fs::File::lock` (stable since 1.89; MSRV
+1.94). One existing test gained an assertion:
+`cli_commit::the_owning_changeset_lands_its_manifest_and_nothing_else` now also
+requires `rdm status --all` to report no changed path after both commits (the
+convergence half of the scoped-commit harness's § I).
+
+### Isolation rules
+
+- `git_test_support::REPO_REDIRECT_VARS` (new) names every git variable that
+  would redirect a child away from the repo a fixture names: `GIT_DIR`,
+  `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`,
+  `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_PREFIX`, `GIT_NAMESPACE`,
+  `GIT_CONFIG`, `GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`;
+  `repo_redirect_removals()` adds any inherited numbered
+  `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>`. `git_test_support::git` (which
+  removed only the first three) and `plan_fixture::hermetic_removals` — hence
+  `Sandbox::removals` — now remove the full list, strengthening every binary
+  that uses them. `Sandbox::removals` also removes `CLAUDE_SESSION_ID` (it is
+  in `HARNESS_SESSION_VARS`; an inherited value would silently move a rung-2
+  case to rung 3).
+- Every `rdm`, `git` and `sh` child is built from the `Sandbox`. Tests never
+  mutate their own environment. Driver scripts run with `PATH=/usr/bin:/bin`
+  and name the binary by absolute path, so no ambient `rdm` can resolve.
+- Every test has its own `Plan` (its own temp repo and sandbox) and
+  test-unique session ids. Invocations pin `RDM_SESSION` unless a test
+  deliberately takes rung 2 from its own process (`Plan::run_bare`): a bare call
+  leases the test's pid in that repo, and every later driver in the repo would
+  ascend to it. The only shared identities (the journal tests'
+  `shared-changeset`, lost-update § 2b's common parent, § J's planted ancestor
+  lease) exist inside the one test about them.
+- `Proc` sends output to files, stays in the test's process group, and kills
+  and reaps its child on drop, so every assertion or panic path tears parked
+  children down; scenario structs own finished results, never live children.
+  Confirmed on the pinned nextest (0.9.130) with a deliberately hung test in a
+  scratch crate: on `terminate-after` nextest killed the test, a `sleep 300`
+  child it had spawned, and a `sh -c 'sleep 300 & wait'` grandchild.
+- Waits are events with deadlines — a readiness file, a product-written file,
+  a driver's step-status file, or a process exit — never a sleep taken as proof.
+  The shells' "still alive after N sleeps" park checks and journal § 6's
+  `sleep 1` are gone.
+- Mutant state lives under `$CARGO_TARGET_TMPDIR/rdm-mutants/<family>/` and
+  the checkout is only read (below).
+
+### Barrier readiness (the one production change)
+
+The four seams (`RDM_HARNESS_FLUSH_BARRIER` in `rdm-store-fs`;
+`RDM_HARNESS_JOURNAL_BARRIER`, `RDM_HARNESS_APPEND_BARRIER`,
+`RDM_HARNESS_COMPACT_BARRIER` in `rdm-core/src/session/journal.rs`) now share
+one documented `pub fn rdm_core::session::harness_barrier(var)`, with the 60 s
+ceiling kept (`HARNESS_BARRIER_CEILING`). When `var` names a non-empty path
+`<m>`, it first creates the empty sibling `<m>.parked`
+(`HARNESS_BARRIER_PARKED_SUFFIX`; best effort — a failed write changes
+nothing) and then polls for `<m>` exactly as before. `journal.rs` imports it
+under the same name, so its call sites and the mutant bodies are unchanged;
+`FsStore`'s private barrier calls it with `HARNESS_FLUSH_BARRIER`, removing the
+duplicate loop. The append and compaction seams park with the journal lock
+already held (shared; exclusive, after the compare-and-swap), so there the
+readiness file also means "the lock is held". No new variable, no bypass,
+inert when unset. The raw-write audit
+(`rdm-core/tests/no_raw_fs_write_audit.rs`) gained a reasoned allowlist entry
+for the readiness write. No unit test: the seam reads the process environment,
+which tests may not mutate, and every parked scenario exercises it end to end —
+a broken readiness file fails them at the 30 s park deadline.
+
+### Mutant builds
+
+Nine planted regressions, three builds (the shells built six, paying a cold
+dependency graph for most of them on every run):
+
+| Family | Edits (anchored, exactly once) | Negative controls |
+|---|---|---|
+| `session` | `session/mod.rs`: `if let Some((var, raw)) = active_harness_var(env) {` → `… && false {`; `continuity_advisory`'s `Some(lines.join("\n"))` → `let _ = lines; None`; `session/lease.rs`: the create-path `gc(paths, procs);` removed | `mutants::session_harness_check_removed_merges_children_onto_the_ancestor_lease` (§ J), `mutants::session_advisory_silenced_drops_the_remedy` (§ K self-test 1), `mutants::session_create_sweep_removed_leaks_leases` (§ K self-test 2) |
+| `journal` | `journal.rs`: `truncate` body → the pre-fix read-modify-write body with the barrier inside the read → write window; `LockMode::Shared => file.try_lock_shared(),` and `LockMode::Exclusive => file.try_lock(),` → `Ok(())`; `discard_changeset` body → barrier + bare `remove_file` (bodies as in the shell) | `mutants::journal_rmw_truncate_strands_the_parked_fanout` (§ 1b), `mutants::journal_rmw_truncate_loses_appends_made_while_parked` (§ 2b), `mutants::journal_lockless_gc_rewrites_under_a_parked_append` (§ 5b), `mutants::journal_lockless_append_lands_in_the_doomed_inode` (§ 6b), `mutants::journal_unlinking_discard_loses_a_concurrent_append` (§ 7b) |
+| `lost-update` | `rdm-store-fs/src/lib.rs`: `if &current != baseline {` → `if false && &current != baseline {`; `rdm-store-git/src/commit.rs`: `self.root.join(path).exists()` → `false` | `mutants::lost_update_neutered_flush_check_loses_the_update` (§ 2c), `mutants::lost_update_short_circuited_delete_guard_destroys_the_recreated_file` (§ 6c) |
+
+**Attribution.** Within a family each negative scenario exercises exactly one
+edit; the others are inert there:
+
+- `session_harness_check_removed_…` sets a harness variable and makes no commit
+  (the advisory is irrelevant), and its children adopt the planted lease rather
+  than creating one (the sweep is irrelevant).
+- `session_advisory_silenced_…` checks only commit output; it sets no harness
+  variable and counts no lease.
+- `session_create_sweep_removed_…` sets no harness variable and makes no
+  commit.
+- `lost_update_neutered_flush_check_…` commits nothing, so the delete guard is
+  never consulted.
+- `lost_update_short_circuited_delete_guard_…`: B's recreate flushes over an
+  absent/absent baseline, so the neutered flush check changes nothing.
+- The journal family repeats the shell's own combination: every journal control
+  was already one shared build there.
+
+Each control also asserts its "inconclusive" guards, as the shells did — the
+processes it relies on exited 0, the mutant's gc really compacted — so it can
+fail as not-run but never pass without exercising its regression.
+
+**Mechanics** (`mutant.rs`).
+
+1. *Mirror.* The source list is `git ls-files -z --cached --others
+   --exclude-standard`, run read-only in the checkout (`GIT_OPTIONAL_LOCKS=0`,
+   under the sandbox), so uncommitted and untracked-unignored work builds too.
+   It is mirrored into `$CARGO_TARGET_TMPDIR/rdm-mutants/<family>/src`, writing
+   a file only when its bytes differ (mtimes preserved, so cargo rebuilds
+   incrementally) and deleting mirror files no longer listed. The checkout is
+   never written, not even transiently.
+2. *Edits* are applied in memory before the write: `Replace` requires exactly
+   one occurrence; `FnBody` anchors on a column-0 signature prefix occurring
+   once and replaces the body up to the next line that is exactly `}`. A miss is
+   `Failure::Infra` naming the family and the edit, so the control fails as
+   not-run. This is fixture construction, like `MutantTree::replace_once`, not
+   an assertion about source text. The inventory's phase-1 suggestion, a
+   cfg-gated fault seam, is rejected: it would put test-only alternate
+   implementations in production source.
+3. *Build.* Under an exclusive `File::lock` on `<family>/build.lock`:
+   `$CARGO build -p rdm-cli --bin rdm --frozen
+   --message-format=json-render-diagnostics` in the mirror, with
+   `CARGO_TARGET_DIR=<family>/target`, `RUSTFLAGS=""` (a planted edit may warn;
+   the caller's `-D warnings` must not turn that into a not-run control),
+   `CARGO_PROFILE_DEV_DEBUG=0` (added in implementation: debuginfo was most of
+   each family's 1.1 GB target; without it a family is ~680 MB and builds ~1 s
+   faster; a mutant is only executed), and every `RDM_*`, repo-redirecting git
+   variable, `CARGO_ENCODED_RUSTFLAGS`, `CARGO_BUILD_RUSTFLAGS`,
+   `CARGO_BUILD_TARGET_DIR` and jobserver variable removed; `HOME`/`CARGO_HOME`
+   are kept for the offline registry. The binary path is read from the
+   `compiler-artifact` message's `executable` field and, still under the lock,
+   hard-linked (copied if linking fails) into the test's `TempDir`, so a later
+   rebuild cannot swap the inode under a running test.
+4. *Sharing.* Per-family target dirs, because the uplifted `rdm` path would
+   collide across families. The lock serialises concurrent runs, including two
+   nextest runs in one checkout and plain `cargo test` threads (verified:
+   `cargo test -p rdm-cli --test concurrency` passes, all 43 tests, 2.2 s warm).
+
+**The `rdm-mutant-builds` group** (`.config/nextest.toml`, `max-threads = 1`,
+`slow-timeout = 60s × 10`; the rest of the binary gets `30s × 4`). Reason,
+recorded in the TOML comment too: a family build is a full `rdm-cli` cargo
+build, so several at once multiply peak CPU and memory against the rest of the
+parallel suite, and group members would otherwise only block on the family
+lock while holding nextest slots and burning their slow-timeout. Everything
+else in the binary stays fully parallel. Measured: a cold family build is
+8.5–8.6 s here (below), and the serialised group adds ~5 s warm (10 controls ×
+~0.6 s) to the binary's wall time.
+
+**The controls stay in the default `cargo nextest run`**, so CI's existing
+`Test` step keeps them required with no new profile or job. Cost: one cold
+build per family per fresh target dir, ~0.1 s when warm — which does not
+justify a separate profile. On CI the cold cost is not measured here; the
+shells' own record (~82 s of CPU for one cold build on a 2-core runner)
+suggests roughly 1–1.5 min per family, 3–4 min serialised, against the ~130 s
+the four shells cost on every run regardless of cache. Disk: ~2 GB for the three
+target dirs.
+
+### Case map
+
+P = ported (named test in `concurrency` unless another binary is named),
+D = demonstrated duplicate of an existing test, R = retired (reason). Totals:
+**P 46, D 12, R 9** — P counts section rows, and one test can cover several.
+That is 33 default-run tests and 10 negative controls, 43 in all.
+
+**verify-session-identity.sh** (P 19 / D 2 / R 1)
+
+| § | Disposition |
+|---|---|
+| A, B | P `session_identity::bare_shells_are_stable_within_and_distinct_between` (two concurrent bare drivers × 3 direct `session id`: stable within, distinct between, all rung 2, exactly two `<driver pid>.lease` files each recording its driver's id; the shell's A was already bare, so A and B are one scenario) |
+| B (degenerate parent) | P `session_identity::a_direct_invocation_still_resolves` |
+| C | P `session_identity::harness_variable_is_leaseless_rung3_and_rdm_session_wins` |
+| D | P `session_identity::stale_lease_on_a_live_parent_is_neither_adopted_nor_kept` (a gated driver; Rust plants `<driver pid>.lease` with a bogus `start_time`, then opens the gate) |
+| E | D `cli_session::journal_lists_exactly_the_mutations_paths` (whole-set equality; the property is id-agnostic) |
+| F | D `cli_session::concurrent_journals_never_contain_each_others_paths`; rung-2 identity scoping itself is A/B |
+| G | P `session_identity::whole_tree_commit_never_sweeps_session_state` |
+| G self-test (decoy `.jsonl`) | R: a vacuity self-test of a shell `grep`; Rust asserts over a parsed tree listing |
+| H | P `session_identity::resolution_cost_stays_far_under_the_hook_deadline` (the 250 000 µs bound holds under the normal parallel run) |
+| H2 | P `session_identity::hook_post_commit_resolves_identity_and_lands_its_batch` |
+| J (a–d) | P `session_identity::harness_id_beats_an_inherited_ancestor_lease` |
+| J self-test | P `mutants::session_harness_check_removed_merges_children_onto_the_ancestor_lease` |
+| K0 | P, folded into K1 as its precondition (wrapper pids pairwise distinct, every wrapper's parent the one driver) |
+| K1 | P `session_identity::wrapper_calls_fragment_into_bootstrapped_rung2_changesets` |
+| K2 | P `session_identity::fragmented_commit_names_cause_and_remedy_and_stays_recoverable` |
+| K3, K3b | P `session_identity::dead_wrapper_leases_are_swept_and_bounded` (7 wrapped calls in its own repo; the observed lease's pid is one of that finished driver's recorded wrapper pids, so it is dead by construction) |
+| K4 | P `session_identity::concurrent_wrapper_drivers_never_share_an_id` |
+| K5 | P `session_identity::harness_adoption_var_gives_wrappers_one_changeset` |
+| K self-test 1 | P `mutants::session_advisory_silenced_drops_the_remedy` |
+| K self-test 2 | P `mutants::session_create_sweep_removed_leaks_leases` |
+
+**verify-journal-truncation-race.sh** (P 10 / D 1 / R 1)
+
+| § | Disposition |
+|---|---|
+| 1 | P `journal_race::stress_fanout_strands_nothing` (all 40 tasks at HEAD, porcelain empty immediately, empty fold, `session list` omits the changeset, clean no-op final commit) |
+| 1b | P `journal_race::parked_commit_fanout_keeps_every_record` and `mutants::journal_rmw_truncate_strands_the_parked_fanout` |
+| 2 | P `journal_race::records_appended_during_a_parked_truncate_survive` |
+| 2b | P `mutants::journal_rmw_truncate_loses_appends_made_while_parked` |
+| 3 | R: planted corruptions of the shell's own `grep`/`git status` checks; the positive-claim reader is exercised by the presence assertions of §§ 2 and 5 |
+| 4 | D `cli_session::gc_sweeps_a_journal_whose_changeset_is_fully_committed` and `cli_session::gc_runs_and_reports_without_touching_journals` |
+| 5 | P `journal_race::gc_is_excluded_by_a_parked_append` |
+| 5b | P `mutants::journal_lockless_gc_rewrites_under_a_parked_append` |
+| 6 | P `journal_race::append_waits_out_a_parked_compaction` (the wait before releasing the sweep: B's task file exists — its flush is done, so its append is next — and B is still running, which it cannot stop being while the sweep holds the lock exclusively) |
+| 6b | P `mutants::journal_lockless_append_lands_in_the_doomed_inode` (same steps, but the wait before releasing the sweep is B's exit: without the lock B writes blind and exits while the sweep is parked — the old interleaving made deterministic) |
+| 7 | P `journal_race::discard_keeps_a_concurrent_append` |
+| 7b | P `mutants::journal_unlinking_discard_loses_a_concurrent_append` |
+
+**verify-lost-update.sh** (P 9 / D 1 / R 3)
+
+| § | Disposition |
+|---|---|
+| 1 | R: already retired 2026-09-23 (static grep); § 6 covers the behaviour |
+| 2 | P `lost_update::concurrent_flush_loser_is_refused` |
+| 2b | P `lost_update::concurrent_flush_loser_is_refused_without_a_session_id` (both bare from the test process, so they share one rung-2 parent exactly as the shell's `sh -c exec` did) |
+| 2c (i) | P `mutants::lost_update_neutered_flush_check_loses_the_update` |
+| 2c (ii) | R: a vacuity self-test of the shell's item-name `grep` |
+| 3 | P `lost_update::a_sessions_sequential_writes_never_trip_the_check` |
+| 3b | D `cli_hook::hook_post_commit_batches_multiple_directives_in_one_message_into_one_commit` |
+| 3c | R: a self-test of the shell's exit-status predicate |
+| 4 | P `lost_update::commit_refuses_a_path_another_session_overwrote` (control: the same commit on a second repo without the overwrite lands) |
+| 5 | P `lost_update::hook_logs_a_refused_flush_and_exits_zero` |
+| 6 | P `lost_update::delayed_delete_of_a_recreated_path_is_refused` |
+| 6b | P `lost_update::delayed_delete_without_a_recreate_lands` |
+| 6c | P `mutants::lost_update_short_circuited_delete_guard_destroys_the_recreated_file` |
+
+**verify-scoped-commit.sh** (P 8 / D 8 / R 4)
+
+| § | Disposition |
+|---|---|
+| A | P `scoped_commit::explicit_sessions_land_disjoint_exact_commits` |
+| B | P `scoped_commit::bare_shells_land_disjoint_exact_commits` (each bare driver is gated between its create and its commit, so the first commit runs while the other shell's work is on disk — stronger than the shell's sequential run) |
+| B2 | P `scoped_commit::a_bare_shells_changeset_carries_across_processes` |
+| B3 | D `cli_commit::commit_reports_unattributed_dirt_instead_of_sweeping_or_going_quiet`; the `--all` recovery is D `cli_commit::commit_all_is_the_whole_tree_opt_in` |
+| C | P `scoped_commit::done_hook_commits_only_its_own_changeset` |
+| C self-test | R: a `commit --all` stand-in whose sweep is D `cli_commit::commit_all_is_the_whole_tree_opt_in` |
+| E1 | D `cli_commit::init_remote_still_lands_its_config_commit`, `cli_init::init_remote_sets_default_remote` |
+| E2 | P `scoped_commit::legacy_repo_commit_carries_only_the_authored_path` |
+| E2b | D `cli_status::no_command_touches_the_merge_driver_config` |
+| E3 | D `cli_commit::commit_by_changeset_id_is_the_orphan_recovery_path`, `cli_commit::status_defaults_to_the_callers_changeset_and_all_shows_everything`; the HTTP half is `rdm-server/tests/mutation_policy.rs` |
+| F | P, folded into A (exact per-commit path sets, B's file byte-identical after A commits); the inherited-`INDEX.md` sub-assert is R — `rdm index` and index generation are retired (`retire-generated-index`), so no mutation can write one |
+| F self-test | R: a `commit --all` stand-in, as for C |
+| G | P `scoped_commit::scoped_discard_spares_another_sessions_work` |
+| G `--all` arm | D `cli_commit::discard_all_is_the_whole_tree_opt_in_and_still_needs_force` |
+| G3 | D `cli_commit::discard_leaves_a_path_another_changeset_overwrote_since` |
+| G4 | D `cli_commit::discard_leaves_a_path_another_changeset_recreated_after_a_delete` |
+| G3/G4 self-tests | R: `discard --all` stand-ins; the unconditional restore is shown by the G `--all` D |
+| H | P `scoped_commit::reads_cross_the_session_boundary` |
+| I | D `cli_commit::commit_lands_under_a_project_another_changeset_has_not_committed` and `cli_commit::the_owning_changeset_lands_its_manifest_and_nothing_else`, the latter extended with the convergence half (`rdm status --all` reports no changed path after both commits); the dangling-row and orphan-project-index checks are R (retired `INDEX.md`) |
+| I self-tests (2) | R: vacuity self-tests of retired index checkers |
+
+### Timings (recorded evidence, not asserted)
+
+Host: macOS 27.0 (Darwin 27.0.0, arm64, Apple M5 Max, 18 cores), 2026-09-24,
+a shared machine under concurrent load (1-minute load average 2–21 across the
+runs).
+
+Before (the shells, `sh scripts/verify-<name>.sh` with `target/debug/rdm`
+built; three runs each; every run rebuilds its mutants cold in a scratch
+target):
+
+| Harness | Mutant builds per run | Wall (s) |
+|---|---|---|
+| verify-lost-update.sh | 2 (separate targets) | 37.17, 37.38, 37.42 |
+| verify-session-identity.sh | 3 (one shared target) | 26.36, 26.45, 26.48 |
+| verify-scoped-commit.sh | 0 | 2.79, 2.79, 2.79 |
+| verify-journal-truncation-race.sh | 1 | 63.84, 63.57, 63.78 |
+| **sum (one run each, serial)** | 6 | **≈ 130.2** |
+
+After (`cargo nextest run -p rdm-cli --test concurrency`, nextest summary
+time):
+
+| Run | Wall (s) |
+|---|---|
+| cold mutant cache (`rm -rf target/tmp/rdm-mutants`), ×3 | 32.30, 33.50, 34.08 |
+| warm, ×3 | 7.43, 7.30, 7.18 |
+| warm, `--test-threads 1` | 14.01 |
+
+Per-family build, as logged by `mutant::build`: cold 8.48–8.60 s (9.55–9.68 s
+before debuginfo was dropped); warm no-op (cargo's fresh check plus the
+mirror sync) 0.12–0.14 s; after a one-line change to
+`rdm-core/src/session/journal.rs` reaches the mirror, 1.51–1.54 s per family.
+
+Five slowest tests (warm): `lost_update::a_sessions_sequential_writes_never_trip_the_check`
+1.49 s, `journal_race::gc_is_excluded_by_a_parked_append` 1.36 s,
+`journal_race::stress_fanout_strands_nothing` 1.24 s,
+`journal_race::parked_commit_fanout_keeps_every_record` 1.21 s,
+`lost_update::commit_refuses_a_path_another_session_overwrote` 1.13 s.
+
+Full default `cargo nextest run` (build already warm): before 31.03 s real
+(3772 tests); after 32.38 s and 33.04 s with warm mutants (3815 tests), 56.89 s
+with a cold mutant cache (the three family builds contending with the rest of
+the suite). `session_identity::resolution_cost_stays_far_under_the_hook_deadline`
+passed in every parallel run.
+
+As in § 8, nextest intermittently reports a test here as `LEAK` (for example
+`scoped_commit::a_bare_shells_changeset_carries_across_processes`); every child
+a test spawns is reaped by `Proc` or `Command::output`, and the flag moves
+between tests run to run.

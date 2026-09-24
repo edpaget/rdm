@@ -16,3 +16,25 @@ slow-timeout = { period = "20s", terminate-after = 3 }
 [[profile.default.overrides]]
 filter = "package(rdm-cli) & (binary(workflow_review) | binary(workflow_passes) | binary(distribution))"
 slow-timeout = { period = "30s", terminate-after = 4 }
+
+# Phase-6 negative controls: each first ensures an isolated mutant build of
+# `rdm` (rdm-cli/tests/concurrency/mutant.rs) — a full `rdm-cli` cargo build
+# when cold. Serialised because several concurrent builds multiply peak CPU and
+# memory against the rest of the parallel suite, and because group members
+# would otherwise only block on the per-family build lock while holding
+# nextest slots and burning their slow-timeout. Everything else in the binary
+# stays fully parallel. Measured costs: docs/test-migration-inventory.md § 9.
+# More specific override first.
+[test-groups.rdm-mutant-builds]
+max-threads = 1
+
+[[profile.default.overrides]]
+filter = "package(rdm-cli) & binary(concurrency) & test(/^mutants::/)"
+test-group = "rdm-mutant-builds"
+slow-timeout = { period = "60s", terminate-after = 10 }
+
+# The rest of the concurrency binary parks real processes at harness
+# barriers; a hung child must fail the run rather than hang it.
+[[profile.default.overrides]]
+filter = "package(rdm-cli) & binary(concurrency)"
+slow-timeout = { period = "30s", terminate-after = 4 }

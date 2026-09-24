@@ -342,28 +342,41 @@ harness is not.
 `FsStore::commit` blocks at its top until that file appears. It follows the
 existing `RDM_HARNESS_SESSION_ID` precedent: a documented harness variable,
 inert when unset, and **bounded** when set — 60 s, then it proceeds regardless
-— so it can never wedge a real run even if a harness dies holding it.
+— so it can never wedge a real run even if a harness dies holding it. A parked
+process first creates the empty sibling `<file>.parked`
+(`rdm_core::session::harness_barrier`, shared with the journal barriers), so a
+harness waits for that readiness file instead of inferring "parked" from a
+process still being alive after a sleep.
 
-**The gate.** `scripts/verify-lost-update.sh` parks process A at the barrier
+**The gate.** The `rdm-cli` `concurrency` test binary's `lost_update` module
+(`cargo nextest run -p rdm-cli --test concurrency`).
+`lost_update::concurrent_flush_loser_is_refused` parks process A at the barrier
 mid-`task update --tags`, drives process B to completion, releases A, and
 asserts A is refused, A's message names the item, and B's tags survive intact.
-It repeats the scenario with no session id set (proving the mechanism is
-content-keyed, not identity-keyed), gates the sequential-writes-never-trip
-property with real back-to-back invocations, gates the commit-time half, checks
-the `Done:` hook path still exits 0, and carries planted-mutation self-tests
-proving each section can fail.
+`concurrent_flush_loser_is_refused_without_a_session_id` repeats the scenario
+with no session id set (proving the mechanism is content-keyed, not
+identity-keyed); `a_sessions_sequential_writes_never_trip_the_check` gates the
+sequential-writes-never-trip property with real back-to-back invocations;
+`commit_refuses_a_path_another_session_overwrote` gates the commit-time half;
+and `hook_logs_a_refused_flush_and_exits_zero` checks the `Done:` hook path
+still exits 0. The negative control
+`mutants::lost_update_neutered_flush_check_loses_the_update` rebuilds `rdm`
+with the precondition neutered and shows the lost update reappear.
 
-Its **section 6** gates the commit-time *delete* guard through the same
+`lost_update::delayed_delete_of_a_recreated_path_is_refused` gates the
+commit-time *delete* guard through the same
 two-real-process discipline, and needs no barrier because the window it targets
 is the naturally wide gap between staging and `rdm commit`: session A runs `rdm
 promote` (whose `store.delete` is the CLI-drivable delete) and does not commit;
 session B recreates a task at that same slug and lands its own commit first; A's
 delayed `rdm commit` must be refused by name, and B's bytes must still be at
-HEAD. Two self-tests bracket it — the same sequence *without* B's recreate must
-commit cleanly and genuinely remove the path from HEAD, and a mutant binary with
-the guard neutered must reproduce the lost update.
+HEAD. Two controls bracket it — the same sequence *without* B's recreate must
+commit cleanly and genuinely remove the path from HEAD
+(`delayed_delete_without_a_recreate_lands`), and a mutant binary with the guard
+neutered must reproduce the lost update
+(`mutants::lost_update_short_circuited_delete_guard_destroys_the_recreated_file`).
 
-**What the shell gate structurally cannot reach.** Every invocation it drives is
+**What the multi-process gate structurally cannot reach.** Every invocation it drives is
 a fresh `rdm` process with a brand-new store, so it can never exercise a store
 that outlives one flush — the shape the baseline lifetime above exists for. That
 is gated in Rust instead, at both layers: `rdm-store-fs`'s

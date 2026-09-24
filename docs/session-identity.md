@@ -11,15 +11,15 @@ lifecycle, the CLI surface, and the measured cost.
 
 **Boundary note: commit behavior is now built on this.** Through phase 4 it was
 not — nothing routed a committer through the journal, and
-`scripts/verify-session-identity.sh` § I gated that `rdm-store-git/src/commit.rs`
-stayed uncoupled. The *scoped commit choke point* phase is that later work, and
+the since-deleted `scripts/verify-session-identity.sh` § I gated that
+`rdm-store-git/src/commit.rs` stayed uncoupled. The *scoped commit choke point* phase is that later work, and
 it inverted the boundary: `GitRepo::create_git_commit` now takes an explicit
 commit scope, `commit_now` is gone in favor of `GitStore::commit_changeset` /
 `commit_whole_tree`, `git_status` is now the three-bucket `git_status_report`,
 and all four committers — `rdm commit`, `apply_done_directives` (the `Done:`
 hooks), `bootstrap`, and `init` — build their tree
 from a changeset. The coupling *is* present, and `commit.rs` still resolves no
-session identity of its own — `scripts/verify-session-identity.sh` § I, which
+session identity of its own — that harness's § I, which
 statically gated that, was itself retired by the operator amendment to the
 `retire-static-grep-harnesses` plan (2026-09-23; grep-only-harness retirement
 extended to Rust-source greps as well as prose). What
@@ -68,7 +68,10 @@ its own harness-derived id. This is exactly the "stopping too HIGH" merging
 failure the decision record's stopping-rule asymmetry names as unacceptable,
 just reached through rung ordering rather than ancestor depth. Reproduced
 2026-09-01 and fixed by phase 10 of the `plan-repo-concurrency` roadmap; see
-`scripts/verify-session-identity.sh` § J for the real-process regression.
+`session_identity::harness_id_beats_an_inherited_ancestor_lease` in the
+`rdm-cli` `concurrency` test binary for the real-process regression, and
+`mutants::session_harness_check_removed_merges_children_onto_the_ancestor_lease`
+for its negative control.
 
 The fix: a harness-published session id is an **explicit statement of session
 membership** and must outrank an inherited on-disk artifact that predates it.
@@ -105,9 +108,10 @@ re-derive it.
 Under an agent harness that exports none of `HARNESS_SESSION_VARS` and runs
 each tool call in a fresh wrapper shell, every `rdm` invocation is its own
 changeset. Reproduced 2026-09-08 on darwin with a long-lived non-shell driver
-spawning one `bash -c 'eval "$CMD"; :'` wrapper per call (§ K of the harness
-builds the same shape with `sh -c`; the `eval` and the trailing `:` are what
-stop the shell exec'ing rdm in place and collapsing the wrapper away):
+spawning one `bash -c 'eval "$CMD"; :'` wrapper per call (the `concurrency`
+test binary's `ShellDriver` builds the same shape with `sh -c`, passing the
+command as positional parameters instead of through `eval`; the trailing `:` is
+what stops the shell exec'ing rdm in place and collapsing the wrapper away):
 
 ```
 call 1  rdm session id   ->  s-5beab50f628730c2   rung 2
@@ -129,8 +133,8 @@ stopping rule](#the-shipped-stopping-rule)) and under this topology depth 1
 
 The decision rule was fixed before measuring: ancestor-minting would ship only
 if (i) a per-process command name **and** a session-boundary signal were both
-obtainable on Linux and darwin, (ii) the added cost stayed inside § H's
-250 000 µs bound, and (iii) an enumerated topology table showed no shape in
+obtainable on Linux and darwin, (ii) the added cost stayed inside the
+resolution-cost test's 250 000 µs bound, and (iii) an enumerated topology table showed no shape in
 which two concurrent sessions select the same anchor.
 
 **(a) Mint the lease at the nearest non-shell ancestor — REJECTED.** It fails
@@ -177,7 +181,8 @@ No new variable was invented. `RDM_HARNESS_SESSION_ID` already exists as the
 universal adoption path, and no Pi-published session variable was observable to
 add (the rule was to add nothing rather than guess a name). What this phase adds
 is the documented, verified path below, gated by
-`scripts/verify-session-identity.sh` § K5: the same wrapper topology with
+`session_identity::harness_adoption_var_gives_wrappers_one_changeset`: the same
+wrapper topology with
 `RDM_HARNESS_SESSION_ID` exported resolves **one** id at rung 3 across all
 calls, `rdm commit` lands the previous call's mutation, and **zero** leases are
 written.
@@ -224,8 +229,9 @@ failures cannot both be avoided: stopping too high merges concurrent sessions
 and loses work irrecoverably; stopping too low splits one session's batch,
 which is visible, non-destructive, and recoverable via `rdm commit --changeset
 <id>` — a route the same advisory prints. Phase 10's no-merge invariant is
-untouched because no ascent was added, and § K4 re-asserts it under the wrapper
-topology specifically.
+untouched because no ascent was added, and
+`session_identity::concurrent_wrapper_drivers_never_share_an_id` re-asserts it
+under the wrapper topology specifically.
 
 ### Which harnesses get continuity, and how
 
@@ -273,9 +279,10 @@ invisible to a whole-tree commit and to `rdm status` without changing either
 walk.
 
 **Any future refactor of those two walks must preserve the `.git` skip**, or
-session state starts landing in commits. `scripts/verify-session-identity.sh`
-§ G gates this end to end, including a planted-decoy self-test proving the
-`git ls-tree` assertion is not vacuous.
+session state starts landing in commits.
+`session_identity::whole_tree_commit_never_sweeps_session_state` gates this end
+to end, asserting over the parsed `git ls-tree` listing of a real
+`commit --all`.
 
 A linked worktree is fine: `git_dir()` then points at
 `<main>/.git/worktrees/<name>`, possibly outside `$RDM_ROOT`, which the walks
@@ -369,9 +376,9 @@ processes a hot shared path to contend on* — with 40 parallel creates plus 6
 concurrent commits under one `RDM_SESSION`: all 40 tasks landed, but both
 `INDEX.md` files were left dirty, the changeset reported zero journaled paths,
 and the next `rdm commit` disowned the indexes as belonging to another
-changeset. Mutations write no index now, so
-`scripts/verify-journal-truncation-race.sh` reproduces the same loss at a
-pinned barrier seam rather than by relying on that contention.
+changeset. Mutations write no index now, so the negative control
+`mutants::journal_rmw_truncate_strands_the_parked_fanout` reproduces the same
+loss at a pinned barrier seam rather than by relying on that contention.
 
 Making truncation an append closes it structurally rather than narrowing it:
 two single-line `O_APPEND` writes cannot destroy each other, so the window is
@@ -533,9 +540,10 @@ only if that session wrote it. Since `retire-generated-index` phase 5 deleted
 `rdm index` and the post-merge / post-pull reconciliation that used to call
 it (see [`index-removal.md`](index-removal.md)), nothing in rdm writes an
 INDEX.md any longer, so no session's journal can name one. A mutation
-journals only the paths it authored, so `scripts/verify-session-identity.sh`
-§ F asserts neither of two concurrent mutations' journals may name an
-`INDEX.md` at all.
+journals only the paths it authored, so
+`cli_session::concurrent_journals_never_contain_each_others_paths` and
+`cli_session::journal_lists_exactly_the_mutations_paths` assert each journal
+names exactly its own mutation's paths — no `INDEX.md` at all.
 
 *Historically* the two indexes landed in **every** session's journal, because
 `ops::mutate` regenerated them on every mutation. `retire-generated-index`
@@ -572,8 +580,8 @@ holds the directory at roughly one entry instead of one per invocation.
 Sweeping happens *before* minting, never after — the entry just written names a
 live pid by construction. It cannot disturb a concurrent session, because a
 live session's parent is present in the same system-wide table and therefore
-never looks stale; `scripts/verify-session-identity.sh` § K3/§ K3b gate the
-bound, and `lease.rs`'s
+never looks stale; `session_identity::dead_wrapper_leases_are_swept_and_bounded`
+gates the bound, and `lease.rs`'s
 `creating_a_lease_never_sweeps_a_live_concurrent_sessions_lease` gates the
 limit on it.
 
@@ -638,9 +646,18 @@ It names a file. When set, `FsStore::commit` blocks at the top of the flush
 until that file exists, or 60 seconds pass — whichever comes first. It exists
 because the read → write window inside one `rdm` invocation is sub-millisecond,
 so two racing processes cannot be made to interleave at it by timing alone, and
-the lost-update gate (`scripts/verify-lost-update.sh`) needs a *deterministic*
-interleave of two real processes. See
+the lost-update tests (`lost_update::*` in the `concurrency` test binary) need
+a *deterministic* interleave of two real processes. See
 [`lost-update-evaluation.md`](lost-update-evaluation.md) § "Harness design".
+
+**Readiness.** All four barriers share one implementation,
+`rdm_core::session::harness_barrier`. Before it starts polling for `<file>`, a
+parked process creates the empty sibling `<file>.parked`; a harness waits for
+that file instead of inferring "parked" from a process still being alive after
+a sleep. The append and compaction barriers create it with the journal lock
+already held (shared and exclusive respectively), so for them it also means
+"the lock is held". Creating it is best effort — a failed write changes
+nothing — and nothing is created when the variable is unset or empty.
 
 ### `RDM_HARNESS_JOURNAL_BARRIER`
 
@@ -650,18 +667,21 @@ ceiling when set), same reason (the window a commit opens over its journal is
 also confined to one invocation).
 
 It names a file. When set, `journal::truncate` blocks until that file exists,
-which lets `scripts/verify-journal-truncation-race.sh` park a real `rdm commit`
-there, drive a full `rdm task create` in a second real process to completion,
-and only then release the first. In the shipped code the barrier sits just
-before truncation's single append, because there is no read → write window left
-to sit inside; that harness's mutant-binary self-test rebuilds the old
+which lets `journal_race::records_appended_during_a_parked_truncate_survive`
+park a real `rdm commit` there, drive a full `rdm task create` in a second real
+process to completion, and only then release the first. In the shipped code the
+barrier sits just before truncation's single append, because there is no read →
+write window left to sit inside; the negative control
+`mutants::journal_rmw_truncate_loses_appends_made_while_parked` rebuilds the old
 read-modify-write `truncate` with the barrier planted *inside* that window and
 asserts the loss reappears.
 
 `journal::discard_changeset` routes through `truncate`, so the same barrier
 parks a real `rdm session discard --force` between reading what a changeset
-claims and retiring it — which is what § 7 of that harness drives, against its
-own mutant restoring the bare `remove_file`.
+claims and retiring it — which is what
+`journal_race::discard_keeps_a_concurrent_append` drives, against its control
+`mutants::journal_unlinking_discard_loses_a_concurrent_append` restoring the
+bare `remove_file`.
 
 ### `RDM_HARNESS_APPEND_BARRIER`
 
@@ -674,13 +694,14 @@ It names a file. When set, an append blocks between *opening* the journal and
 window in which a concurrent `compact` would have to `rename` over or
 `remove_file` the inode the open descriptor names. That window is one
 `write_all`'s worth of work, far below anything a harness could hit by timing,
-so `scripts/verify-journal-truncation-race.sh` § 5 parks a real `rdm task
+so `journal_race::gc_is_excluded_by_a_parked_append` parks a real `rdm task
 create` there, runs `rdm session gc` from a second real process under a
 *different* session id (which shares no lease with the appender, and cannot,
 since rung 1 creates none), and asserts that the sweep left the journal
-exactly as it found it before releasing the appender. Its § 5b mutant rebuilds
-the binary with the lock stripped from both sides and asserts the sweep
-rewrites the journal under the parked append and the record is lost, so § 5
+exactly as it found it before releasing the appender. Its control,
+`mutants::journal_lockless_gc_rewrites_under_a_parked_append`, rebuilds the
+binary with the lock stripped from both sides and asserts the sweep rewrites
+the journal under the parked append and the record is lost, so the fixed test
 cannot pass vacuously.
 
 ### `RDM_HARNESS_COMPACT_BARRIER`
@@ -693,14 +714,17 @@ set.
 It names a file. When set, `compact` blocks after all its checks have passed
 and before it does anything irreversible — after its length compare-and-swap,
 before its `rename` — holding the journal lock exclusively the whole time.
-`scripts/verify-journal-truncation-race.sh` § 6 parks a real `rdm session gc`
-there, starts a real `rdm task create` under the changeset being compacted,
-gives it a full second in which to write, and only then releases the sweep.
-The append must have waited: the rewritten journal must hold exactly the
-compacted line followed by the appended record, and the record must commit
-normally. Its § 6b mutant — the same lock-stripped binary — has the append
-land in the inode the parked sweep is about to rename over, and asserts the
-record is lost, so § 6 cannot pass vacuously.
+`journal_race::append_waits_out_a_parked_compaction` parks a real
+`rdm session gc` there, starts a real `rdm task create` under the changeset
+being compacted, waits until that process has flushed its task file (so its
+append is next) and asserts it is still running — it cannot finish while the
+sweep holds the lock — and only then releases the sweep. The append must have
+waited: the rewritten journal must hold exactly the compacted line followed by
+the appended record, and the record must commit normally. Its control,
+`mutants::journal_lockless_append_lands_in_the_doomed_inode` — the same
+lock-stripped binary — waits instead for the appender to *exit* while the sweep
+is parked, so the append lands in the inode the sweep is about to rename over,
+and asserts the record is lost, so the fixed test cannot pass vacuously.
 
 ## Degradation
 
@@ -763,12 +787,14 @@ phase 11 *did* add to the lease-creation path is a single `read_dir` plus at
 most `MAX_GC_ENTRIES` small file reads, and it runs only on a rung-2 bootstrap,
 not on adoption.
 
-`scripts/verify-session-identity.sh` § H prints the observed maximum and
-asserts it under 250 000 µs — a bound, not an exact figure. That is three
-orders of magnitude under the 30 s default `hook_timeout_secs`, so identity
-resolution cannot put the unattended hook path near its deadline. § H2 runs a
-real `Done:`-bearing `rdm hook post-commit` end to end and asserts it exits 0,
-applies its directive, and journals its own writes.
+`session_identity::resolution_cost_stays_far_under_the_hook_deadline` prints
+the observed maximum and asserts it under 250 000 µs — a bound, not an exact
+figure, and it holds under the normal parallel `cargo nextest run`. That is
+three orders of magnitude under the 30 s default `hook_timeout_secs`, so
+identity resolution cannot put the unattended hook path near its deadline.
+`session_identity::hook_post_commit_resolves_identity_and_lands_its_batch` runs
+a real `Done:`-bearing `rdm hook post-commit` end to end and asserts it exits
+0, applies its directive, and journals its own writes.
 
 ## CLI surface
 
@@ -933,29 +959,22 @@ applies to what a *write* action lands or destroys, never to what you can see.
   exactness, scoped-commit/discard behavior and determinism, and
   `rdm-cli/tests/cli_session.rs` / `cli_commit.rs` end to end against the real
   binary.
-- `bash scripts/verify-session-identity.sh` — the identity harness: sections
-  A–K as described above (§ I, a structural grep over
-  `rdm-store-git/src/commit.rs`, was retired by the operator amendment to the
-  `retire-static-grep-harnesses` plan (2026-09-23), which extended
-  grep-only-harness retirement to Rust-source greps as well as prose — the
-  coupling it checked is unchanged, just no longer statically gated). § J
-  (phase 10) gates the harness-id-beats-inherited-lease rule. § K (phase 11)
-  drives real per-call `sh -c 'eval …; :'` wrapper shells under a long-lived
-  non-shell driver and gates this section's outcome: the wrappers are
-  genuinely distinct live processes (K0), each call fragments (K1),
-  `rdm commit` exits 0 and names both the cause and the remedy while the
-  work stays recoverable (K2), the lease set stays bounded with the dead
-  wrapper's entry swept (K3/K3b), two concurrent drivers never merge (K4),
-  and the documented `RDM_HARNESS_SESSION_ID` remedy really does yield one
-  changeset, a landing commit and zero leases (K5). Two planted-mutation
-  self-tests rebuild a mutant in a scratch `CARGO_TARGET_DIR` and prove neither
-  half is vacuous: silencing `continuity_advisory` must break K2, and removing
-  the create-path sweep must break K3.
-- `bash scripts/verify-scoped-commit.sh` — the multi-process scoping harness:
-  disjoint concurrent commits (A), the same with no session id set plus
-  rung-2 continuity and rung-4 degradation (B/B2/B3), the `Done:` hook path
-  (C, distinct — every other section can pass while the hook still sweeps),
-  `init --remote` / the legacy repos / server reconciliation (E),
-  committed-index reconciliation (F), scoped discard (G), and shared reads
-  (H). Its commit-primitive call-site allowlist (D) was retired by the same
-  operator amendment.
+- `cargo nextest run -p rdm-cli --test concurrency` — real, separate `rdm`
+  processes against per-test temp plan repos, with every fixture, spawn,
+  barrier release, wait and teardown in Rust:
+  `session_identity` (rung-2 lease sharing and distinctness, rung 1/3
+  precedence, stale-lease rejection, invisibility to `rdm status` and a
+  whole-tree commit, resolution cost, the `Done:` hook path, the
+  harness-id-beats-inherited-lease rule, and the per-call wrapper topology:
+  fragmentation, the named cause and remedy, the bounded and swept lease set,
+  no merging between drivers, and the `RDM_HARNESS_SESSION_ID` remedy);
+  `scoped_commit` (disjoint exact commits with explicit ids and from bare
+  shells, rung-2 continuity, the `Done:` hook's scoping, a legacy repo, scoped
+  discard, shared reads); `journal_race` and `lost_update` (the barrier
+  interleavings); and `mutants`, one negative control per planted regression —
+  silencing `continuity_advisory`, removing the create-path sweep, skipping the
+  harness check, and the journal and lost-update regressions — each rebuilt in
+  an isolated mirror of the working tree. The scoped-commit sections the
+  retired `scripts/verify-scoped-commit.sh` shared with `cli_commit.rs`,
+  `cli_status.rs` and `cli_init.rs` stay there; the full case map is
+  [`test-migration-inventory.md`](test-migration-inventory.md) § 9.

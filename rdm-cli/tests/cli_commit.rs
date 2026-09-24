@@ -511,6 +511,13 @@ fn the_owning_changeset_lands_its_manifest_and_nothing_else() {
         !tree.iter().any(|p| p.ends_with("INDEX.md")),
         "neither commit may add an INDEX.md HEAD did not already have: {tree:?}"
     );
+    // And the tree converges: once both owners have committed, nothing is
+    // left changed anywhere, in either session's changeset or outside both.
+    rdm_as("cs-a", &dir)
+        .args(["status", "--all"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No uncommitted changes."));
 }
 
 #[test]
