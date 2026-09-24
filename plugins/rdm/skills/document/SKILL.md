@@ -10,7 +10,7 @@ allowed-tools:
 
 Generate user-facing documentation from a completed rdm roadmap. `$ARGUMENTS` should be `<roadmap-slug> [--out <path>] [--rdm-bin <path>] [--project <name>]`.
 
-This skill is a thin shim over the `rdm:rdm-wf-document` Workflow (`rdm:rdm-wf-document`, installed by the `rdm` plugin), which does the headless work — validating all-done, gathering each phase's body + commit diff in parallel, and synthesizing the draft — and hands back the shell that writes it to disk (default `docs/<slug>.md`). The workflow produces an **artifact**, not a completion signal: it performs no approval step and mutates no rdm status. The terminal human approval below is this shim's one job, and it is never delegated back into the workflow.
+This skill is a thin shim over the `rdm:rdm-wf-document` Workflow (`rdm:rdm-wf-document`, installed by the `rdm` plugin), which does the headless work — validating all-done, gathering each phase's body + commit diff in parallel, and synthesizing the draft — and hands back the draft and its output path (default `docs/<slug>.md`), which this shim writes. The workflow produces an **artifact**, not a completion signal: it performs no approval step and mutates no rdm status. The terminal human approval below is this shim's one job, and it is never delegated back into the workflow.
 
 ## Steps
 

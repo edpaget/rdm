@@ -56,7 +56,7 @@ subagent forward on each notification until it converges — never assume the ca
 
 - `<roadmap-slug> <phase>` (stem or number) — phase mode; or `--task <slug>` — task mode.
 - `--interactive` — the human-in-the-loop mode `do` (without `--auto`) selects. It changes
-  exactly two things, named in step 7 and step 13. Nothing else.
+  exactly three things, named in step 6, step 7 and step 13 (see "Interactive mode"). Nothing else.
 - `--plan-only` — stop after the plan is approved. Stamps nothing, implements nothing, writes no
   status, records no change review.
 - `--max-plan-revise N` (default 2) / `--max-code-rework N` (default 2). `0` is legal and distinct
@@ -799,7 +799,8 @@ Identical procedure, three differences only:
    `changes-requested`.
 3. **Step 13** presents each triage decision for confirmation before replying.
 
-Both modes run the same commands and produce the same review-record shape.
+Apart from step 6's skipped plan-review Workflow, both modes run the same commands and produce the
+same review-record shape.
 
 ## Safe operations under --permission-mode auto
 

@@ -126,7 +126,7 @@ reviewed work is left on the roadmap/<slug> branch; main is never touched.
 
 This skill's drive loop is itself prose, driven by plain Bash, and so is the per-phase unit it enters with `Skill` — neither has a `Workflow` run of its own to resume. A unit that stalls is recovered by re-entering it: the orchestrator's own resume step reads `rdm plan list --implements <item>` and `rdm review requests` first and picks up at the pending work, so an approved plan and an open review are never discarded or duplicated.
 
-Two `Workflow` runs remain in this lane: step 3's `rdm-wf-estimate` pre-pass and the code review the orchestrator invokes. If either crashes mid-flight, relaunch that same script with an added `resumeFromRunId: '<prior runId>'` argument instead of invoking it fresh; any `agent()` call whose `(prompt, opts)` are byte-unchanged replays its cached result. Four caveats apply every time:
+Three `Workflow` runs remain in this lane: step 3's `rdm-wf-estimate` pre-pass, and the plan review and code review the orchestrator invokes. If any crashes mid-flight, relaunch that same script with an added `resumeFromRunId: '<prior runId>'` argument instead of invoking it fresh; any `agent()` call whose `(prompt, opts)` are byte-unchanged replays its cached result. Four caveats apply every time:
 
 - **Stop the prior run first** — a still-running run cannot be resumed.
 - **Same-session only** — this only resumes within the current Claude Code session; a later session cannot resume a `runId` from an earlier one.
