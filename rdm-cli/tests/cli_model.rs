@@ -448,6 +448,30 @@ fn resolve_rejects_invalid_effort_config() {
 }
 
 #[test]
+fn resolve_rejects_invalid_effort_in_global_config() {
+    let dir = TempDir::new().unwrap();
+    let xdg = TempDir::new().unwrap();
+    std::fs::create_dir_all(xdg.path().join("rdm")).unwrap();
+    std::fs::write(
+        xdg.path().join("rdm").join("config.toml"),
+        "[models.profiles.codex.large]\neffort = \"max\"\n",
+    )
+    .unwrap();
+    rdm()
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .arg("--root")
+        .arg(dir.path())
+        .args(["model", "resolve", "plan", "--host", "codex"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("gpt").not())
+        .stderr(
+            predicate::str::contains("models.profiles.codex.large.effort")
+                .and(predicate::str::contains("low, medium, high, xhigh")),
+        );
+}
+
+#[test]
 fn resolve_rejects_codex_max_effort_config() {
     let dir = TempDir::new().unwrap();
     std::fs::write(

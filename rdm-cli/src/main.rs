@@ -286,10 +286,12 @@ fn run() -> Result<()> {
         )?,
 
         Command::Model { command } => {
-            // Strict: a rejected `[models]` table must fail loudly here, not
-            // resolve built-in defaults behind a warning.
+            // Strict: a rejected `[models]` table — in the repo `rdm.toml` or
+            // the global config — must fail loudly here, not resolve built-in
+            // defaults behind a warning.
+            let strict_global = paths::load_global_config_strict()?;
             let model_config =
-                paths::load_repo_config_strict(&root)?.with_global_defaults(&global_config);
+                paths::load_repo_config_strict(&root)?.with_global_defaults(&strict_global);
             commands::model::run(command, &model_config, format)?;
         }
 

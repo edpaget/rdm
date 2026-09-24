@@ -44,6 +44,32 @@ pub fn load_global_config() -> GlobalConfig {
     }
 }
 
+/// Loads the global config strictly: a missing file is `Default`, but a file
+/// that cannot be read, parsed, or validated is an error.
+///
+/// Used by `rdm model`, parallel to [`load_repo_config_strict`] — a rejected
+/// global `[models]` table must fail loudly rather than resolve built-in
+/// defaults behind a warning.
+///
+/// # Errors
+///
+/// Returns an error if the global config file exists but cannot be read,
+/// parsed, or validated.
+pub fn load_global_config_strict() -> Result<GlobalConfig> {
+    let Some(path) = rdm_core::root::global_config_path() else {
+        return Ok(GlobalConfig::default());
+    };
+    // `exists()` is false for any unreachable path (e.g. a parent that is
+    // not a directory), which, like `NotFound`, means "no global config".
+    if !path.exists() {
+        return Ok(GlobalConfig::default());
+    }
+    let contents = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    GlobalConfig::from_toml(&contents)
+        .map_err(|e| anyhow::anyhow!("invalid config at {}: {e}", path.display()))
+}
+
 /// Resolves the plan repo root using the priority chain:
 ///
 /// 1. `--root` CLI flag / `RDM_ROOT` env var (passed as `cli_root`)
