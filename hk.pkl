@@ -20,9 +20,39 @@ local linters = new Mapping<String, Step> {
     // and a bare `git init` there rewrites the shared config to core.bare=true.
     // Strip every repository-locating variable for the test run only — hk itself
     // still needs the hook's GIT_INDEX_FILE (e.g. `git commit <paths>`).
+    //
+    // The glob is every test input, not just Rust: tests execute the workflow
+    // sources, templates, plugin tree, fixtures and generator scripts, and read
+    // docs/principles.md and docs/token-baseline.json, so a change to any of
+    // them must re-run the suite. Over-inclusion is harmless; an omitted input
+    // lets a red suite through. Audit: docs/test-migration-inventory.md § 10.
     ["cargo_nextest"] {
-        glob = "**/*.rs"
+        glob = List(
+            "**/*.rs",
+            "**/Cargo.toml",
+            "Cargo.lock",
+            ".config/nextest.toml",
+            ".mise.toml",
+            "rdm-*/**",
+            ".claude/**",
+            ".agents/**",
+            ".claude-plugin/**",
+            "plugins/**",
+            "templates/**",
+            "scripts/**",
+            "tests/**",
+            "docs/principles.md",
+            "docs/token-baseline.json"
+        )
         check = "env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX -u GIT_CONFIG_PARAMETERS cargo nextest run"
+        exclusive = true
+    }
+    // nextest does not run doctests; same repository-variable scrub. (The
+    // `suite-hygiene` nextest profile is deliberately not a hook step: it takes
+    // minutes. CI requires it; docs/dev-harnesses.md says when to run it.)
+    ["cargo_doctest"] {
+        glob = "**/*.rs"
+        check = "env -u GIT_DIR -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY -u GIT_ALTERNATE_OBJECT_DIRECTORIES -u GIT_PREFIX -u GIT_CONFIG_PARAMETERS cargo test --doc --workspace"
         exclusive = true
     }
     ["shellcheck"] = Builtins.shellcheck
