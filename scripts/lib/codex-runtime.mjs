@@ -8,22 +8,33 @@ import {runEstimate} from './codex-runtime-estimate.mjs';
 import {buildReviewPipeline, classifyOutcome, shellQuote, resolveReviewers} from '../../.claude/workflows/lib/review.mjs';
 import {runPlanReviewDriver} from '../../.claude/workflows/lib/plan-review.mjs';
 const hash = text => createHash('sha256').update(text).digest('hex');
-const tiers = ['small','medium','large'];
+const tiers = ['small','medium','large','frontier'];
+// The efforts the Codex process guard (codex-process.mjs) will run. Core never
+// resolves `max` for the codex host; this list re-checks the boundary anyway.
+const codexEfforts = ['low','medium','high','xhigh'];
 
-/** Resolve core policy first, then choose explicitly declared Codex capabilities. */
+/**
+ * Resolve each step's model AND reasoning effort from core — `rdm model resolve
+ * <step> --host codex --format json` — and bind the profile directly. The host
+ * spec no longer binds models: `host.tiers` / `host.steps` are refused so a
+ * stale spec cannot silently override the operator's `[models]` policy.
+ * `host.capabilities`, when present, stays a guard: a resolved model/effort it
+ * does not list is refused.
+ */
 export async function resolveModels(ctx, host, steps, tier) {
-  if (!host || typeof host !== 'object') throw new Error('Explicit host model configuration required');
+  if (host !== undefined && host !== null && typeof host !== 'object') throw new Error('host must be an object when supplied');
+  for (const key of ['tiers','steps']) {
+    if (host?.[key] !== undefined) throw new Error(`host.${key} is no longer supported: model/effort now come from \`rdm model resolve --host codex\`; configure [models.profiles.codex.<tier>] / [models.steps] instead`);
+  }
   const result = {};
   for (const step of steps) {
-    const resolved = await ctx.rdm(['model','resolve',step,...(tier ? ['--tier',tier] : []),'--format','json'],{json:true});
-    if (resolved.step !== step || !tiers.includes(resolved.tier)) throw new Error('Invalid core model resolution');
-    const override = host.steps?.[step];
-    if (override && override.tier !== resolved.tier) throw new Error(`Step ${step} override must retain core tier ${resolved.tier}`);
-    const binding = override ?? host.tiers?.[resolved.tier];
-    if (!binding || typeof binding.model !== 'string' || /^(haiku|sonnet|opus)(-|$)/i.test(binding.model) ||
-        !Array.isArray(host.capabilities?.[binding.model]) || !host.capabilities[binding.model].includes(binding.effort) ||
-        !['minimal','low','medium','high','xhigh'].includes(binding.effort)) throw new Error(`Unsupported model/effort for ${step}/${resolved.tier}`);
-    result[step] = {...binding,tier:resolved.tier};
+    const resolved = await ctx.rdm(['model','resolve',step,...(tier ? ['--tier',tier] : []),'--host','codex','--format','json'],{json:true});
+    if (resolved.step !== step || !tiers.includes(resolved.tier) || (resolved.host !== undefined && resolved.host !== 'codex')) throw new Error('Invalid core model resolution');
+    const {model, effort} = resolved;
+    if (typeof model !== 'string' || !model || /^(haiku|sonnet|opus|fable)(-|$)/i.test(model) || !codexEfforts.includes(effort) ||
+        (host?.capabilities !== undefined && !(Array.isArray(host.capabilities[model]) && host.capabilities[model].includes(effort))))
+      throw new Error(`Unsupported model/effort for ${step}/${resolved.tier}`);
+    result[step] = {model,effort,tier:resolved.tier};
     ctx.record('model-resolved',{step,core:resolved,host:result[step]});
   }
   return result;

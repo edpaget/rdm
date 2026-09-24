@@ -246,8 +246,7 @@ fn interruption(boundary: &str) {
     );
     let initial_head = f.head();
     let mut spec = json!({"operation":"estimate","sourceDir":f.source().canonicalize().unwrap(),"planRoot":f.plans().canonicalize().unwrap(),
-        "rdmBin":fixture_binary.canonicalize().unwrap(),"project":"fixture","session":"parent","roadmap":"example","apply":true,"runDir":f.root.path().canonicalize().unwrap().join("run"),"rdmTimeoutMs":60000,
-        "host":{"capabilities":{"gpt-fixture":["medium"]},"tiers":{"small":{"model":"gpt-fixture","effort":"medium"},"medium":{"model":"gpt-fixture","effort":"medium"},"large":{"model":"gpt-fixture","effort":"medium"}}}});
+        "rdmBin":fixture_binary.canonicalize().unwrap(),"project":"fixture","session":"parent","roadmap":"example","apply":true,"runDir":f.root.path().canonicalize().unwrap().join("run"),"rdmTimeoutMs":60000});
     let spec_file = f.root.path().join("spec.json");
     std::fs::write(&spec_file, spec.to_string()).unwrap();
     let runner = checkout.join("scripts/rdm-codex.mjs");

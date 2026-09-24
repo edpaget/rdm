@@ -10,7 +10,7 @@ const checkout = fileURLToPath(new URL('../../', import.meta.url));
 const realBin = path.join(checkout, 'scripts/rdm-dev.sh');
 const records = file => fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
 
-function fixture(t, operation, invalid) {
+function fixture(t, operation, invalid, profileConfig = '') {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'runtime-review-process-')));
   const source = path.join(root, 'source'), plans = path.join(root, 'plans'), bin = path.join(root, 'bin');
   for (const dir of [source, plans, bin]) fs.mkdirSync(dir);
@@ -37,6 +37,16 @@ function fixture(t, operation, invalid) {
   exec('git', ['config', 'user.name', 'Fixture'], plans); exec('git', ['config', 'user.email', 'fixture@example.invalid'], plans);
   rdm(['roadmap', 'create', 'example', '--title', 'Example', '--body', 'Review fixture.', '--no-edit', '--project', 'fixture']);
   rdm(['commit', '-m', 'test: seed reviews']);
+  // An operator's Codex profile override, committed into the fixture plan
+  // repo's own rdm.toml (the key has no `rdm config set` surface).
+  if (profileConfig) {
+    fs.appendFileSync(path.join(plans, 'rdm.toml'), profileConfig);
+    exec('git', ['commit', '-qam', 'test: codex profile'], plans);
+  }
+  // What core resolves for each review step on the codex host — the runtime
+  // must run each judgment at exactly this model and effort.
+  const expected = Object.fromEntries(['review-find', 'review-verify'].map(step =>
+    [step, JSON.parse(rdm(['model', 'resolve', step, '--host', 'codex', '--format', 'json']))]));
   const planHead = exec('git', ['rev-parse', 'HEAD'], plans);
   const planFile = path.join(root, 'implementation-plan.md');
   fs.writeFileSync(planFile, 'Implement add(a,b) using subtraction. Acceptance criterion: add(2,3) returns 5. Add a test and run node --test.');
@@ -71,12 +81,9 @@ setTimeout(()=>{
   }
   const spec = { operation, sourceDir: source, planRoot: plans, rdmBin: realBin, project: 'fixture', session: 'parent', runDir: path.join(root, 'run'), concurrency: 2,
     ...(operation === 'code-review' ? {base, head} : {}),
-    target: 'Acceptance criteria: add(2,3) returns 5.', planFile,
-    host: { capabilities: { 'gpt-fixture-find': ['medium'], 'gpt-fixture-verify': ['high'] }, tiers: {
-      small: { model: 'gpt-fixture-find', effort: 'medium' }, medium: { model: 'gpt-fixture-find', effort: 'medium' }, large: { model: 'gpt-fixture-verify', effort: 'high' },
-    } } };
+    target: 'Acceptance criteria: add(2,3) returns 5.', planFile };
   return {
-    spec, events,
+    spec, events, expected,
     async run() {
       const specFile = path.join(root, 'spec.json'); fs.writeFileSync(specFile, JSON.stringify(spec));
       let stdout = '', stderr = '';
@@ -108,8 +115,9 @@ for (const operation of ['code-review', 'plan-review']) {
     const firstRefuter = events.findIndex(event => event.type === 'start' && event.role === 'refuter');
     assert.equal(events.slice(0, firstRefuter).filter(event => event.type === 'end' && event.role === 'finder').length, finders.length);
     for (const call of starts) {
-      assert.equal(call.args[call.args.indexOf('-m') + 1], call.role === 'finder' ? 'gpt-fixture-find' : 'gpt-fixture-verify');
-      assert.ok(call.args.includes(`model_reasoning_effort="${call.role === 'finder' ? 'medium' : 'high'}"`));
+      const profile = f.expected[call.role === 'finder' ? 'review-find' : 'review-verify'];
+      assert.equal(call.args[call.args.indexOf('-m') + 1], profile.model);
+      assert.ok(call.args.includes(`model_reasoning_effort="${profile.effort}"`), call.args.join(' '));
       assert.equal(call.args[call.args.indexOf('--sandbox') + 1], 'read-only'); assert.ok(call.args.includes('--ephemeral')); assert.equal(call.args.includes('resume'), false);
       assert.ok(call.schema.properties); assert.ok(call.prompt.length > 100);
     }
@@ -119,6 +127,16 @@ for (const operation of ['code-review', 'plan-review']) {
     assert.equal(resolved.find(event => event.data.step === 'review-verify').data.core.tier, 'large');
     assert.equal(journal.filter(event => event.type === 'agent-completed').length, starts.length);
     assert.equal(JSON.parse(fs.readFileSync(path.join(f.spec.runDir, 'manifest.json'))).status, 'completed');
+    f.assertNoWrites();
+  });
+  test(`full ${operation} runner takes the finder effort from a configured codex profile`, { timeout: 180000 }, async t => {
+    const f = fixture(t, operation, false, '\n[models.profiles.codex.medium]\neffort = "low"\n');
+    assert.equal(f.expected['review-find'].effort, 'low', 'the profile override reached core resolution');
+    const run = await f.run();
+    assert.equal(run.status, 0, run.stderr);
+    const finders = records(f.events).filter(event => event.type === 'start' && event.role === 'finder');
+    assert.ok(finders.length > 0);
+    for (const call of finders) assert.ok(call.args.includes('model_reasoning_effort="low"'), call.args.join(' '));
     f.assertNoWrites();
   });
   test(`full ${operation} runner rejects malformed independent refuter JSON`, { timeout: 180000 }, async t => {

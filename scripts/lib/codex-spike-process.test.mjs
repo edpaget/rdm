@@ -50,7 +50,7 @@ writeFileSync(args[args.indexOf('-o')+1], JSON.stringify(mode === 'invalid' ? {o
 if (mode !== 'truncated') emit({type:'turn.completed', usage:{input_tokens:10,cached_input_tokens:2,output_tokens:3}});
 }
 `, {mode: 0o700});
-  return {bin, cwd, prompt: 'Say ok', schema, model: 'test-model', env: {...process.env, FAKE_MODE: mode}};
+  return {bin, cwd, prompt: 'Say ok', schema, model: 'test-model', effort: 'medium', env: {...process.env, FAKE_MODE: mode}};
 }
 
 test('validates canonical subset and fails closed on unknown keywords', () => {

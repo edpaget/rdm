@@ -59,9 +59,8 @@ node scripts/rdm-codex.mjs /absolute/path/to/run-spec.json
 ```
 
 The runner prints a JSON result on success and exits nonzero on runtime failure.
-This example reviews an implementation plan. Model identifiers below are
-placeholders: supply exact supported identifiers and the efforts available to
-your account; the runtime makes no provider availability discovery or fallback.
+This example reviews an implementation plan. The model and effort each judgment
+runs at come from core (see "Model policy" below), not from this file.
 
 ```json
 {
@@ -75,15 +74,7 @@ your account; the runtime makes no provider availability discovery or fallback.
   "planFile": "/absolute/path/to/implementation-plan.md",
   "concurrency": 3,
   "agentTimeoutMs": 180000,
-  "rdmTimeoutMs": 120000,
-  "host": {
-    "capabilities": { "your-supported-model-id": ["medium", "high"] },
-    "tiers": {
-      "small": { "model": "your-supported-model-id", "effort": "medium" },
-      "medium": { "model": "your-supported-model-id", "effort": "high" },
-      "large": { "model": "your-supported-model-id", "effort": "high" }
-    }
-  }
+  "rdmTimeoutMs": 120000
 }
 ```
 
@@ -112,27 +103,32 @@ as `signal`; it cannot be represented in a JSON file.
 ### Model policy
 
 The runtime resolves `review-find`, `review-verify`, or estimation's `plan`
-step through `rdm model resolve <step> --format json`. Core returns
-`{step,host,tier,model,effort}` (`--host codex` selects the Codex profile
-table; see [`model-profiles.md`](model-profiles.md)) and remains responsible
-for tier policy, the plan floor and the review floor. Plain CLI output remains
-a bare model id. The runtime still reads only `{step,tier,model}` and maps the
-resolved tier to `host.tiers` until the lane threads the core profile through;
-shared Claude model preferences are not rewritten.
+step through `rdm model resolve <step> --host codex --format json` and runs
+each judgment at exactly the returned `{model, effort}` — `-m <model>` and
+`model_reasoning_effort="<effort>"`. Core owns the whole policy: tier policy,
+the plan floor, the review floor, and the per-host profile table
+([`model-profiles.md`](model-profiles.md)). To change what Codex runs, configure
+`[models.profiles.codex.<tier>]` (model and/or effort) or `[models.steps]` in
+`rdm.toml`; `rdm model show --host codex` prints the effective table. There is
+no fixed default effort in the runtime.
 
-An optional `tier` supplies a core hint (`small`, `medium`, `large`). For a
-phase code review, the item's model tier is used when present. An optional
-`host.steps` binding can select a different model/effort for one step, but
-must declare the same effective core tier:
+An optional `tier` supplies a core hint (`small`, `medium`, `large`,
+`frontier`). For a phase code review, the item's model tier is used when
+present.
+
+`host` is optional. `host.tiers` and `host.steps` — the runtime's former
+model bindings — are **refused** with an error naming the `[models]` keys to
+use instead, so an old spec cannot silently override core policy. When
+`host.capabilities` is present it remains a guard: the resolved model must be
+listed there with the resolved effort, or the run stops:
 
 ```json
-{"steps":{"review-verify":{"tier":"large","model":"your-supported-model-id","effort":"high"}}}
+{"host":{"capabilities":{"gpt-6-astra":["medium","high","xhigh"],"gpt-6-sol":["medium","high"]}}}
 ```
 
-The selected model must be in `capabilities` and list the requested effort.
-Recognized efforts are `minimal`, `low`, `medium`, `high`, and `xhigh`. Claude
-aliases are rejected. Missing bindings, unsupported combinations and account
-errors stop the run; there is no silent model substitution.
+Claude aliases are rejected, as is any effort outside `low`, `medium`, `high`
+and `xhigh`. Unsupported combinations and account errors stop the run; there is
+no silent model substitution.
 
 ### Review targets
 

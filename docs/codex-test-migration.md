@@ -27,7 +27,7 @@ evidence stays dated and is not refreshed by these deterministic tests.
 
 | Previous case | Rust test(s) |
 | --- | --- |
-| Core effective tiers; host floor/capability validation | `models_preserve_core_floor_and_independent_host_efforts`, `models_reject_tier_downgrades_and_unsupported_capabilities` |
+| Core effective tiers; host floor/capability validation | `models_take_model_and_effort_from_the_core_codex_profile`, `models_need_no_host_configuration`, `models_refuse_host_tiers_and_steps_with_the_core_remedy`, `models_reject_unusable_core_profiles_and_undeclared_capabilities` |
 | Mechanical/unknown role rejection | `judgment_rejects_mechanical_and_unknown_roles_without_processes` |
 | Arbitrary plan and content drift | `plan_review_pins_content_and_detects_drift` |
 | Clean range, wrong HEAD, option-like revision, AC and source drift | `code_review_clean_range_has_ac_coverage`, `code_review_rejects_wrong_head_before_judgment`, `code_review_rejects_revision_options`, `code_review_selected_ac_requires_evidence`, `code_review_rejects_dirty_source_after_judgment` |

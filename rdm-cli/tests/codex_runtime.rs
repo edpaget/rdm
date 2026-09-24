@@ -297,28 +297,34 @@ fn spike_rejects_budget_errors_and_empty_ac() {
 }
 
 fn host() -> Value {
-    json!({"capabilities":{"gpt-6-astra":["medium","high"]},"tiers":{"small":{"model":"gpt-6-astra","effort":"medium"},"medium":{"model":"gpt-6-astra","effort":"medium"},"large":{"model":"gpt-6-astra","effort":"high"}}})
+    json!({"capabilities":{"gpt-6-astra":["medium","high"]}})
+}
+/// A core `rdm model resolve --host codex --format json` reply for `step`.
+fn codex_profile(step: &Value, tier: &str, model: &str, effort: &str) -> Value {
+    json!({"step":step,"host":"codex","tier":tier,"model":model,"effort":effort})
 }
 #[test]
-fn models_preserve_core_floor_and_independent_host_efforts() {
+fn models_take_model_and_effort_from_the_core_codex_profile() {
     let fixture = Fixture::new();
     let mut calls = Vec::new();
-    let mut configured = host();
-    configured["steps"] =
-        json!({"review-find":{"tier":"large","model":"gpt-6-astra","effort":"medium"}});
     let result = bridge::invoke(
         RUNTIME,
         "resolveModels",
         json!([
             fixture.ctx(),
-            configured,
+            host(),
             ["review-find", "review-verify"],
             "small"
         ]),
         |name, args| {
             assert_eq!(name, "rdm");
             calls.push(args[0].clone());
-            Ok(json!({"step":args[0][2],"tier":"large","model":"opus"}))
+            let effort = if args[0][2] == "review-find" {
+                "medium"
+            } else {
+                "high"
+            };
+            Ok(codex_profile(&args[0][2], "large", "gpt-6-astra", effort))
         },
     )
     .unwrap();
@@ -326,46 +332,121 @@ fn models_preserve_core_floor_and_independent_host_efforts() {
     for call in calls {
         assert_eq!(call[3], "--tier");
         assert_eq!(call[4], "small");
+        let argv: Vec<&str> = call
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(
+            argv.windows(2).any(|w| w == ["--host", "codex"]),
+            "resolution must ask core for the codex host: {argv:?}"
+        );
     }
     assert_eq!(result["review-find"]["tier"], "large");
+    assert_eq!(result["review-find"]["model"], "gpt-6-astra");
     assert_eq!(result["review-find"]["effort"], "medium");
     assert_eq!(result["review-verify"]["effort"], "high");
 }
 #[test]
-fn models_reject_tier_downgrades_and_unsupported_capabilities() {
+fn models_need_no_host_configuration() {
     let fixture = Fixture::new();
-    for binding in [
-        json!({"tier":"small","model":"gpt-6-astra","effort":"medium"}),
-        json!({"tier":"large","model":"gpt-6-astra","effort":"low"}),
-        json!({"tier":"large","model":"opus","effort":"high"}),
-        json!({"tier":"large","model":"missing-model","effort":"high"}),
+    let result = bridge::invoke(
+        RUNTIME,
+        "resolveModels",
+        json!([fixture.ctx(), null, ["plan"], "frontier"]),
+        |_, args| {
+            Ok(codex_profile(
+                &args[0][2],
+                "frontier",
+                "gpt-6-astra",
+                "xhigh",
+            ))
+        },
+    )
+    .unwrap();
+    assert_eq!(result["plan"]["tier"], "frontier");
+    assert_eq!(result["plan"]["effort"], "xhigh");
+}
+#[test]
+fn models_refuse_host_tiers_and_steps_with_the_core_remedy() {
+    let fixture = Fixture::new();
+    for (key, value) in [
+        (
+            "tiers",
+            json!({"large":{"model":"gpt-6-astra","effort":"high"}}),
+        ),
+        (
+            "steps",
+            json!({"review-find":{"tier":"large","model":"gpt-6-astra","effort":"high"}}),
+        ),
     ] {
         let mut configured = host();
-        configured["steps"] = json!({"review-find":binding});
+        configured[key] = value;
         let error = bridge::invoke(
             RUNTIME,
             "resolveModels",
             json!([fixture.ctx(), configured, ["review-find"]]),
-            |_, _| Ok(json!({"step":"review-find","tier":"large","model":"opus"})),
+            |_, _| panic!("a refused host config must not reach core resolution"),
         )
         .unwrap_err();
-        assert!(
-            error.contains("tier") || error.contains("Unsupported"),
-            "{error}"
-        );
+        assert!(error.contains(&format!("host.{key}")), "{error}");
+        assert!(error.contains("rdm model resolve --host codex"), "{error}");
+        assert!(error.contains("[models.profiles.codex."), "{error}");
     }
-    let mut configured = host();
-    configured["tiers"] = json!({});
-    assert!(
-        bridge::invoke(
+}
+#[test]
+fn models_reject_unusable_core_profiles_and_undeclared_capabilities() {
+    let fixture = Fixture::new();
+    for (reply, configured) in [
+        // A Claude alias can never reach a Codex process.
+        (
+            json!({"tier":"large","model":"opus","effort":"high"}),
+            Value::Null,
+        ),
+        // `max` is a Claude-only effort the Codex process guard refuses.
+        (
+            json!({"tier":"large","model":"gpt-6-astra","effort":"max"}),
+            Value::Null,
+        ),
+        // No effort at all.
+        (json!({"tier":"large","model":"gpt-6-astra"}), Value::Null),
+        // A declared capability list that omits the resolved effort / model.
+        (
+            json!({"tier":"large","model":"gpt-6-astra","effort":"low"}),
+            host(),
+        ),
+        (
+            json!({"tier":"large","model":"gpt-6-sol","effort":"high"}),
+            host(),
+        ),
+    ] {
+        let error = bridge::invoke(
             RUNTIME,
             "resolveModels",
             json!([fixture.ctx(), configured, ["review-find"]]),
-            |_, _| Ok(json!({"step":"review-find","tier":"large","model":"opus"}))
+            |_, _| {
+                let mut profile = reply.clone();
+                profile["step"] = json!("review-find");
+                profile["host"] = json!("codex");
+                Ok(profile)
+            },
         )
-        .unwrap_err()
-        .contains("Unsupported")
-    );
+        .unwrap_err();
+        assert!(error.contains("Unsupported"), "{error}");
+    }
+}
+#[test]
+fn run_codex_requires_an_explicit_effort() {
+    let fixture = Fixture::new();
+    let error = bridge::invoke(
+        "scripts/lib/codex-process.mjs",
+        "runCodex",
+        json!([{"bin":"/nonexistent-codex","cwd":fixture.root,"prompt":"fixture","schema":{"type":"object","properties":{},"required":[],"additionalProperties":false},"model":"fixture-model"}]),
+        |_, _| panic!(),
+    )
+    .unwrap_err();
+    assert!(error.contains("effort"), "{error}");
 }
 #[test]
 fn judgment_rejects_mechanical_and_unknown_roles_without_processes() {
@@ -667,7 +748,7 @@ fn runtime_model_resolution_process_cannot_change_phase_policy_silently() {
     ] {
         fs::write(plan.root.join(name), value.to_string()).unwrap();
     }
-    fs::write(&binary,"#!/bin/sh\ncase \"$1\" in\nphase) if test -f \"$RDM_ROOT/policy-changed\"; then cat \"$RDM_ROOT/changed.json\"; else cat \"$RDM_ROOT/initial.json\"; fi;;\nworktree) cat \"$RDM_ROOT/worktrees.json\";;\nmodel) touch \"$RDM_ROOT/policy-changed\"; printf '{\"step\":\"%s\",\"tier\":\"medium\",\"model\":\"sonnet\"}\\n' \"$3\";;\n*) exit 1;;\nesac\n").unwrap();
+    fs::write(&binary,"#!/bin/sh\ncase \"$1\" in\nphase) if test -f \"$RDM_ROOT/policy-changed\"; then cat \"$RDM_ROOT/changed.json\"; else cat \"$RDM_ROOT/initial.json\"; fi;;\nworktree) cat \"$RDM_ROOT/worktrees.json\";;\nmodel) touch \"$RDM_ROOT/policy-changed\"; printf '{\"step\":\"%s\",\"host\":\"codex\",\"tier\":\"medium\",\"model\":\"gpt-6-astra\",\"effort\":\"medium\"}\\n' \"$3\";;\n*) exit 1;;\nesac\n").unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
     let codex = plan.root.join("codex");
     fs::write(&codex, "#!/bin/sh\ntouch unexpected-agent\nexit 99\n").unwrap();
@@ -702,7 +783,7 @@ fn process_timeout_reaps_descendants_before_late_effects() {
     let binary = fixture.root.join("fake-codex");
     fs::write(&binary,"#!/bin/sh\ncat >/dev/null\n(sleep 1; touch late-effect) &\necho $! > descendant-pid\nwait\n").unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
-    let error=bridge::invoke("scripts/lib/codex-process.mjs","runCodex",json!([{"bin":binary,"cwd":fixture.root,"prompt":"fixture","schema":{"type":"object","properties":{},"required":[],"additionalProperties":false},"model":"fixture-model","timeoutMs":100}]),|_,_|panic!()).unwrap_err();
+    let error=bridge::invoke("scripts/lib/codex-process.mjs","runCodex",json!([{"bin":binary,"cwd":fixture.root,"prompt":"fixture","schema":{"type":"object","properties":{},"required":[],"additionalProperties":false},"model":"fixture-model","effort":"medium","timeoutMs":100}]),|_,_|panic!()).unwrap_err();
     assert!(error.contains("timed out"), "{error}");
     assert!(fixture.root.join("descendant-pid").exists());
     std::thread::sleep(std::time::Duration::from_millis(1100));

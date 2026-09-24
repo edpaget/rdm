@@ -74,8 +74,7 @@ else setTimeout(()=>{
     runner = path.join(root, 'mutated-runner.mjs');
     fs.writeFileSync(runner, `import fs from 'node:fs';import {runRuntime} from ${JSON.stringify(pathToFileURL(copy).href)};try {console.log(JSON.stringify(await runRuntime(JSON.parse(fs.readFileSync(process.argv[2],'utf8')))));}catch(error){console.error(error.message);process.exitCode=1;}`);
   }
-  const spec = { operation: 'estimate', sourceDir: source, planRoot: plans, rdmBin: realBin, project: 'fixture', session: 'parent', roadmap: 'example', apply: false, concurrency: 2, runDir: path.join(root, 'run'), rdmTimeoutMs: 120000,
-    host: { capabilities: { 'gpt-fixture': ['medium'] }, tiers: Object.fromEntries(['small', 'medium', 'large'].map(tier => [tier, { model: 'gpt-fixture', effort: 'medium' }])) } };
+  const spec = { operation: 'estimate', sourceDir: source, planRoot: plans, rdmBin: realBin, project: 'fixture', session: 'parent', roadmap: 'example', apply: false, concurrency: 2, runDir: path.join(root, 'run'), rdmTimeoutMs: 120000 };
   return {
     events, spec,
     launch(cancel) {

@@ -7,7 +7,9 @@ plus a reasoning effort, for one host. The policy lives in
 Where the effort is consumed: `rdm-dispatch-phase` resolves every role with
 `--format json` and runs the planner and implementer as the `rdm-effort-<effort>`
 agent definitions plus the resolved model, and passes `findEffort`/`verifyEffort`
-to the review engines' finders and refuters.
+to the review engines' finders and refuters; the Codex runtime runs every
+judgment at the `--host codex` profile's model and effort
+([`codex-runtime.md`](codex-runtime.md)).
 
 ## Tiers
 

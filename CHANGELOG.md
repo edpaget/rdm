@@ -157,6 +157,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The built-in `small` model tier now resolves to `opus` instead of `haiku` when no `[models] small = …` override is configured — Haiku is no longer reachable anywhere in the default dispatch lane (`rdm model resolve plan|implement --tier small` now print `opus`). An explicit `small` override in `[models]` is unaffected.
 
+- The Codex runtime takes both model and reasoning effort from `rdm model resolve --host codex` instead of its own `host.tiers` bindings and a fixed `medium` effort, and accepts the `frontier` tier. `host.tiers`/`host.steps` are now refused; configure `[models.profiles.codex.<tier>]` / `[models.steps]` instead. `host.capabilities` remains an optional guard.
+
 ### Deprecated
 
 - `--no-index` is still accepted but has no effect, since mutations no longer regenerate an index. Passing it prints a one-line deprecation warning on stderr (never on stdout, so `--format json` output stays clean) and is otherwise ignored. It will be removed in a future release.

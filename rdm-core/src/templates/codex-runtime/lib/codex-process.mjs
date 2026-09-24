@@ -88,11 +88,14 @@ function removeOptionalNulls(value, schema) {
 }
 
 /** Run fresh read-only Codex execution; reject incomplete/error streams and invalid responses. */
-export async function runCodex({bin = 'codex', cwd, prompt, schema, model, effort = 'medium',
+export async function runCodex({bin = 'codex', cwd, prompt, schema, model, effort,
   timeoutMs = 120000, signal, env = process.env, evidenceDir, label = 'call', resumeThreadId,
   persistSession = false}) {
   checkSchema(schema);
   if (!model || typeof model !== 'string') throw Error('Explicit model is required');
+  // No default: the effort is the caller's resolved profile (`rdm model resolve
+  // --host codex`), so a missing one is a caller bug, never a silent `medium`.
+  if (effort === undefined || effort === null) throw Error('Explicit reasoning effort is required');
   if (!['minimal', 'low', 'medium', 'high', 'xhigh'].includes(effort)) throw Error('Unsupported reasoning effort');
   if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw Error('Positive timeout is required');
   if (typeof prompt !== 'string') throw Error('Prompt must be a string');

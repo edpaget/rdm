@@ -98,12 +98,7 @@ fn codex_emitted_runtime_executes_foreign_project_without_source_checkout_assets
             "module": module, "export": "runRuntime", "args": [{
                 "operation": "estimate", "sourceDir": source, "planRoot": plan,
                 "rdmBin": env!("CARGO_BIN_EXE_rdm"), "project": "foreign",
-                "session": "foreign-parent", "runDir": root.join("evidence"), "roadmap": "delivery",
-                "host": {"capabilities": {"fixture-model": ["high"]}, "tiers": {
-                    "small": {"model": "fixture-model", "effort": "high"},
-                    "medium": {"model": "fixture-model", "effort": "high"},
-                    "large": {"model": "fixture-model", "effort": "high"}
-                }}
+                "session": "foreign-parent", "runDir": root.join("evidence"), "roadmap": "delivery"
             }]
         }),
         |name, _| panic!("empty roadmap must not invoke a host: {name}"),
