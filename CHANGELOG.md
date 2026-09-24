@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-09-24
+
 ### Changed
 
 - **The distributed Claude skills (`rdm agent-config claude --skills` and the plugin) now run the same Workflow engines rdm's own repo does.** `rdm-autopilot` rates unestimated phases with an `rdm-wf-estimate` pre-pass before its drive loop. `rdm-dispatch-phase` (and `rdm-do --auto`) reviews the plan with `rdm-wf-plan-review` instead of waiting for an external approve review; `rdm-do`'s interactive mode still waits for a human. `rdm-review` now reviews only the committed range of the item's existing registered worktree (resolved with `rdm review source` and pinned by base and head — uncommitted changes and the current checkout's history are no longer reviewed, and its `reviewed` gate needs an approved `plan/<slug>`), and delegates find/refute to `rdm-wf-review-refute-fix`, passing the resolved `review-find`/`review-verify` model and effort. `rdm-plan-review`, `rdm-estimate`, `rdm-backlog` and `rdm-document` are thin shims over their shipped engines. Every one of these skills takes optional `--rdm-bin`/`--project` arguments: the binary falls back to `$RDM_BIN`, then `rdm` on `PATH`, and the project falls back to the one given to `agent-config --project`, then rdm's own `RDM_PROJECT`/`default_project` chain. Previously these behaviours existed only in rdm's own `.claude/skills/` copies.
