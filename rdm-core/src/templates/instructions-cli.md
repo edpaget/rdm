@@ -51,7 +51,7 @@ rdm search "" --tag bug {proj_flag}          # list every item carrying tag "bug
 rdm search auth --tag bug --tag ui {proj_flag}  # ANDs across tags — must carry every listed tag
 ```
 
-Available filters: `--type` (roadmap|phase|task), `--status` (e.g., done, in-progress, open), `--tag <name>` (repeatable, AND), `--limit` (default 20), `--format` (text|json).
+Available filters: `--type` (roadmap|phase|task|review), `--status` (e.g., done, in-progress, open), `--tag <name>` (repeatable, AND), `--limit` (default 20), `--format` (text|json).
 
 ## Updating status
 
