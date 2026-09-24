@@ -294,29 +294,3 @@ fn local_override_does_not_leak_into_shipped_render() {
         "the override never leaks into the shipped render"
     );
 }
-
-#[test]
-fn shipped_workflow_templates_match_local_engines() {
-    let root = repo_root();
-    let dir = root.join("rdm-core/src/templates/workflows");
-    let mut seen = 0;
-    for entry in std::fs::read_dir(&dir).expect("templates/workflows") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().is_none_or(|e| e != "js") {
-            continue;
-        }
-        let name = path.file_name().expect("file name");
-        let local = root.join(".claude/workflows").join(name);
-        assert_eq!(
-            std::fs::read(&path).expect("read shipped"),
-            std::fs::read(&local).unwrap_or_else(|e| panic!("{}: {e}", local.display())),
-            "{} drifted from its local engine",
-            name.to_string_lossy()
-        );
-        seen += 1;
-    }
-    assert!(
-        seen >= 1,
-        "the shipped template directory holds at least one engine"
-    );
-}

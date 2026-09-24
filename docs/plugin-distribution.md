@@ -255,8 +255,8 @@ The naming decisions above are **plugin-mode transformations applied at emission
 
 ### Source-Tree Gates (Unchanged)
 
-`rdm-cli/tests/workflow_review/generators.rs`
-(`shipped_workflow_templates_match_local_engines`) asserts byte-identity of the
+`rdm-core/src/agent_config.rs`
+(`generate_workflows_are_byte_identical_to_source`) asserts byte-identity of the
 shipped template copies against the source tree, and `scripts/observe-workflow-listing.sh` runs `claude -p` to
 capture the real listing (non-hermetic, run deliberately, not CI-run). Both
 inspect the raw surface, not plugin-mode emission output. Two prior gates

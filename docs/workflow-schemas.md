@@ -88,8 +88,8 @@ which is untouched in this pass.
 The prefix only pays off if the **rendered** listing shows it, and that listing
 is produced by the Claude Code client from `.claude/`, not by anything in this
 repo — so no hermetic check here can confirm it. What this repo gates
-hermetically (`rdm-cli/tests/workflow_review/generators.rs`,
-`shipped_workflow_templates_match_local_engines`) is that the shipped template
+hermetically (`rdm-core/src/agent_config.rs`,
+`generate_workflows_are_byte_identical_to_source`) is that the shipped template
 copies stay byte-identical to the local engines; the old filename-set listing
 check went with `verify-workflow-review.sh`. Confirming the client agrees is a
 separate, deliberate step:
