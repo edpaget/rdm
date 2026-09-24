@@ -191,8 +191,15 @@ the user skill, plugin source/cache, marketplace, and repository skill bytes
 were preserved. Fixtures and non-secret evidence remain in the printed temp
 directory; the private login copy is deleted even when the live check fails.
 Catchable interrupts (SIGINT/SIGTERM) and the two-minute timeout stop the child
-process and delete the copy too; deterministic tests exercise those paths with
-non-secret markers. SIGKILL or machine failure cannot guarantee cleanup: if
+process group and delete the copy too. The live `codex exec` call runs under the
+repository-only Rust runner `rdm-smoke` (crate `rdm-devtools`, never shipped),
+which creates the copy (mode 0600) just before spawning and removes it on every
+catchable path; `cargo nextest run -p rdm-devtools` exercises success, non-zero
+exit, timeout, output cap, SIGINT and SIGTERM with real fixture processes and
+non-secret markers. The script builds `rdm-smoke` with cargo on demand; set
+`RDM_SMOKE_BIN` to use a prebuilt one. Standalone invocation:
+`cargo run -q -p rdm-devtools --bin rdm-smoke -- run --timeout-secs 120 --private-copy SRC:DEST -- <program> <args>`.
+SIGKILL or machine failure cannot guarantee cleanup: if
 that occurs, remove only `config/auth.json` inside the printed test directory
 before keeping or sharing the evidence. The temporary root is private.
 No real user/plugin installation is modified.

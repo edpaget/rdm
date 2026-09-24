@@ -2,10 +2,24 @@
 // Opt-in real Codex check. All installations and logs belong to a fresh temp home.
 import assert from 'node:assert/strict';
 import {execFileSync, spawn} from 'node:child_process';
-import {copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync} from 'node:fs';
+import {mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {dirname, join, relative, resolve} from 'node:path';
-import {runSmokeProcess} from './lib/codex-smoke-process.mjs';
+import {fileURLToPath} from 'node:url';
+
+// Bounded live-process runner (timeout, process-group kill, private auth copy
+// removed on every catchable path) lives in the Rust `rdm-smoke` entrypoint.
+// RDM_SMOKE_BIN overrides; otherwise it is built with the caller's real env.
+function smokeBin() {
+  if (process.env.RDM_SMOKE_BIN) return resolve(process.env.RDM_SMOKE_BIN);
+  const manifest = join(dirname(fileURLToPath(import.meta.url)), '..', 'Cargo.toml');
+  const messages = execFileSync('cargo', ['build', '-q', '--manifest-path', manifest, '-p', 'rdm-devtools',
+    '--bin', 'rdm-smoke', '--message-format=json'], {encoding: 'utf8', maxBuffer: 64 * 1024 * 1024});
+  const built = messages.split('\n').filter(Boolean).map(line => JSON.parse(line))
+    .find(m => m.reason === 'compiler-artifact' && m.target?.name === 'rdm-smoke' && m.executable);
+  assert(built, 'cargo build did not report the rdm-smoke executable');
+  return built.executable;
+}
 
 const args = process.argv.slice(2);
 assert(args.length === 2 || args.length === 3,
@@ -111,13 +125,14 @@ try {
       selected_path: {type: 'string'}, plan_gate: {type: 'string'},
     }});
     const prompt = `Use $rdm-roadmap specifically from ${repositorySkill}, not the user or plugin copy. This is an inspection-only smoke test: read the selected skill, identify its absolute path and the required plan-review gate, then stop. Do not run rdm, create plans, edit files, invoke agents, or use the network. Do not treat an alternative copy as selected merely because its name matches.`;
-    const events = await runSmokeProcess(codex, ['exec', '--ephemeral', '--sandbox', 'read-only', '--json', '--cd', source,
+    const eventsPath = join(root, 'events.jsonl');
+    execFileSync(smokeBin(), ['run', '--timeout-secs', '120', '--cwd', source,
+      '--private-copy', `${auth}:${authCopy}`, '--stdout-file', eventsPath, '--',
+      codex, 'exec', '--ephemeral', '--sandbox', 'read-only', '--json', '--cd', source,
       '--output-schema', schema, '--output-last-message', output, prompt], {
-      env, cwd: source,
-      prepare: () => { put(authCopy, ''); copyFileSync(auth, authCopy); },
-      cleanup: () => rmSync(authCopy, {force: true}),
+      env, cwd: source, stdio: ['ignore', 'ignore', 'inherit'],
     });
-    put(join(root, 'events.jsonl'), events);
+    const events = readFileSync(eventsPath, 'utf8');
     const readObserved = events.trim().split('\n').map(line => JSON.parse(line)).some(event =>
       event.type === 'item.completed' && event.item?.type === 'command_execution' &&
       event.item.exit_code === 0 && event.item.command.includes(repositorySkill) &&

@@ -1,0 +1,28 @@
+[package]
+name = "rdm-devtools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Repository-only developer tooling for rdm (bounded smoke-process runner); not published or distributed"
+publish = false
+
+[package.metadata.dist]
+dist = false
+
+[[bin]]
+name = "rdm-smoke"
+path = "src/bin/rdm-smoke.rs"
+
+[[bin]]
+name = "rdm-devtools-fixture"
+path = "src/bin/rdm-devtools-fixture.rs"
+
+[dependencies]
+clap = { workspace = true }
+rustix = { workspace = true }
+signal-hook = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

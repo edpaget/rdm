@@ -1,5 +1,5 @@
 [workspace]
-members = ["rdm-core", "rdm-cli", "rdm-server", "rdm-store-fs", "rdm-git", "rdm-store-git", "rdm-tui"]
+members = ["rdm-core", "rdm-cli", "rdm-server", "rdm-store-fs", "rdm-git", "rdm-store-git", "rdm-tui", "rdm-devtools"]
 resolver = "2"
 
 [workspace.package]
@@ -36,6 +36,8 @@ terminal_size = "0.4"
 tracing = "0.1"
 ratatui = "0.30.1"
 sha2 = "0.10"
+signal-hook = "0.3"
+rustix = { version = "1", features = ["process"] }
 
 # The profile that 'dist' will build with
 [profile.dist]

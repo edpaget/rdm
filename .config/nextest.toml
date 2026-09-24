@@ -4,3 +4,9 @@ max-threads = 4
 [[profile.default.overrides]]
 filter = "package(rdm-server) & kind(test)"
 test-group = "server-integration"
+
+# rdm-devtools lifecycle tests spawn real process groups; a teardown regression
+# must fail the run rather than hang it.
+[[profile.default.overrides]]
+filter = "package(rdm-devtools)"
+slow-timeout = { period = "20s", terminate-after = 3 }

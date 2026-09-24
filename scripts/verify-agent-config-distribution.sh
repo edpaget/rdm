@@ -1762,7 +1762,6 @@ fi
 pass 'Development wrapper rebuilds from foreign cwd, preserves cross-shell identity, and rejects missing setup'
 
 # Optional real Codex integration. No account/network dependency in the default harness.
-run_node --test "$SCRIPT_DIR/lib/codex-smoke-process.test.mjs"
 if [ -n "${RDM_CODEX_BIN:-}" ]; then
     if [ -n "${RDM_CODEX_AUTH_FILE:-}" ]; then
         run_node "$SCRIPT_DIR/verify-codex-coexistence.mjs" "$RDM_BIN" "$RDM_CODEX_BIN" "$RDM_CODEX_AUTH_FILE"
