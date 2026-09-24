@@ -542,6 +542,21 @@ mod tests {
             ledger.get("m").map(|m| (m.requests, m.usage.output)),
             Some((2, 170))
         );
+
+        // A later line for the same requestId also replaces the model.
+        let raw = lines(&[
+            r#"{"type":"assistant","requestId":"req-M","message":{"model":"<synthetic>","usage":{"output_tokens":5}}}"#,
+            r#"{"type":"assistant","requestId":"req-M","message":{"model":"claude-opus","usage":{"output_tokens":7}}}"#,
+        ]);
+        let parsed = parse_transcript(&raw);
+        assert_eq!(parsed.requests.len(), 1);
+        assert_eq!(parsed.requests[0].model, "claude-opus", "later model wins");
+        let ledger = UsageLedger::from_requests(&parsed.requests);
+        let booked: Vec<(&str, u64, u64)> = ledger
+            .iter()
+            .map(|(model, m)| (model, m.requests, m.usage.output))
+            .collect();
+        assert_eq!(booked, [("claude-opus", 1, 7)]);
     }
 
     #[test]
@@ -594,9 +609,19 @@ mod tests {
         assert_eq!(parsed.requests[0].request_id, "real");
         let ledger = UsageLedger::from_requests(&parsed.requests);
         assert_eq!(ledger.get("m").map(|m| m.requests), Some(1));
-        assert_eq!(parsed.warnings.len(), 2);
-        assert!(parsed.warnings[0].to_string().contains("zero"));
-        assert!(parsed.warnings[1].to_string().contains("empty"));
+        assert_eq!(
+            parsed.warnings,
+            [
+                UsageWarning::AllZeroUsage {
+                    request_id: "zero".to_owned(),
+                    model: "m".to_owned(),
+                },
+                UsageWarning::AllZeroUsage {
+                    request_id: "empty".to_owned(),
+                    model: "m".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]
@@ -610,7 +635,13 @@ mod tests {
         let parsed = parse_transcript(&raw);
         assert_eq!(parsed.requests.len(), 1);
         assert_eq!(parsed.requests[0].request_id, "r");
-        assert_eq!(parsed.warnings.len(), 1);
+        assert_eq!(
+            parsed.warnings,
+            [UsageWarning::AllZeroUsage {
+                request_id: "s".to_owned(),
+                model: "m".to_owned(),
+            }]
+        );
     }
 
     #[test]
