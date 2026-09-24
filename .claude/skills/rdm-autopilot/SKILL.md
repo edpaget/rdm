@@ -46,10 +46,10 @@ This skill is **non-interactive**.
 - **Open the run record first**, before anything else this run does (so before step 3's estimate pre-pass):
 
   ```bash
-  runId=$(<rdmBin> run record --driver autopilot --roadmap <slug><proj-flag>)
+  <rdmBin> run record --driver autopilot --roadmap <slug><proj-flag>
   ```
 
-  Capture the printed id as `runId` and keep it in this run's working context for the whole run. It is staged and is committed by the close commit in step 5. The session uuid comes from `CLAUDE_CODE_SESSION_ID` by itself, so pass no `--session-uuid`.
+  Read the id it prints and keep that literal id in your working context as `runId` for the whole run; substitute the literal id wherever `<runId>` appears in later commands (shell variables do not survive between Bash calls). It is staged and is committed by the close commit in step 5. The session uuid comes from `CLAUDE_CODE_SESSION_ID` by itself, so pass no `--session-uuid`.
 
   **Run accounting is best-effort.** Every `rdm run …` call and every `chore(plan): close run <id>` commit is observation only. If one exits nonzero, log a one-line warning naming the command and its stderr and carry on exactly as if it had succeeded. Never park, stop, retry or change an outcome because of one. If `run record` itself failed, there is no id: skip every later `rdm run` call and the close commit for this run, and say so once in the warning.
 - Run `<rdmBin> phase list --roadmap <slug><proj-flag> --format json` and take the parsed array verbatim as `phaseList`. It feeds the `rdm-wf-estimate` Workflow's unestimated-phase filter directly (mirroring `rdm-estimate`'s own contract) — do not filter or summarize it yourself.

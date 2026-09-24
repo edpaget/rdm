@@ -135,10 +135,12 @@ Then open this unit's run entry, before step 2's resume reads, so they fall insi
 
 ```bash
 # only when no --run was given (ownsRun = true):
-runId=$(<rdmBin> run record --driver dispatch-phase --roadmap <slug><proj-flag>)   # task mode: --task <slug>
+<rdmBin> run record --driver dispatch-phase --roadmap <slug><proj-flag>          # task mode: --task <slug>
 # always, when runId is known:
 <rdmBin> run unit-start <runId> --unit <phase><proj-flag>                          # task mode: --unit <slug>
 ```
+
+Read the id `run record` prints and keep that literal id in your working context as `runId`; substitute the literal id wherever `<runId>` appears in later commands (shell variables do not survive between Bash calls).
 
 The entry is staged and lands in the **first commit this unit makes**: on a fresh pass that is step
 3's `chore(plan): start <item>`, which comes right after. On a pass that skips step 3's commit (under
