@@ -314,8 +314,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`rdm review start`/`comment`/`submit` no longer hang reading stdin under a non-interactive caller** (e.g. an agent holding stdin open as a never-closing pipe) when `--body` is omitted. They previously blocked on a stdin read before `--no-edit` was even consulted, so `--no-edit` could not save you; they now read a body only from `--body`, or interactively from `$EDITOR`/`$VISUAL` on a real terminal without `--no-edit`. This was deadlocking the very first `review submit` in every persist ladder `rdm-wf-plan-review`/`rdm-wf-review-refute-fix` emit. Independently, every `rdm` line those ladders emit (including `lib/plan-review.mjs`'s tag-clear gate) now redirects stdin from `/dev/null` too, for defense in depth.
 
-### Fixed
-
 - `rdm-dispatch-phase`'s code-review stage now runs its finders and refuters on the resolved `review-find`/`review-verify` models instead of silently inheriting the orchestrating session's model — the same models the plan-review stage already used.
 
 ## [0.21.0] - 2026-09-03
