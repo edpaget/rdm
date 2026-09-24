@@ -8,7 +8,8 @@
 //! mutant copy of it). Persistence and gates run against the real `rdm`
 //! binary. See `docs/test-migration-inventory.md` § "Phase 2" and § "Phase 3"
 //! for the mapping from the retired shell suites and JavaScript tests
-//! (`driver` and `plan_driver` are phase 3's).
+//! (`driver` and `plan_driver` are phase 3's; `effort` is phase 7's port of
+//! `scripts/lib/review-effort.test.mjs`).
 
 #[macro_use]
 #[path = "../common/workflow_support.rs"]
@@ -25,6 +26,7 @@ mod plan_fixture;
 mod budget;
 mod coverage;
 mod driver;
+mod effort;
 mod engine;
 mod generators;
 mod outcome;

@@ -1155,7 +1155,7 @@ rule is retired. The two review engines (`rdm-wf-review-refute-fix`,
 retry) and refuter `agent()` call **only when one is supplied** — an absent
 effort adds no key, since `effort: undefined` was never measured inert — and
 refuse a value outside `low|medium|high|xhigh|max` before any agent runs
-(`scripts/lib/review-effort.test.mjs`). The planner and implementer take Route
+(`workflow_review::effort`, `rdm-cli/tests/workflow_review/effort.rs`). The planner and implementer take Route
 2 as five role-agnostic definitions, one per effort (`rdm-effort-low` …
 `rdm-effort-max`, each with `name:` and `effort:`, no `model:` and no `tools:`),
 dispatched as `subagent_type: rdm-effort-<effort>` plus the resolved `model:`.
