@@ -12,12 +12,12 @@ rdm-cli/        # binary: CLI porcelain over rdm-core
 rdm-server/     # binary: REST API over rdm-core
 ```
 
-Core is the source of truth. CLI and server are thin layers. New interfaces (TUI, WASM module) should call core, not duplicate logic.
+See [`docs/principles.md`](docs/principles.md) §1–2 for architecture principles.
 
 ### Key Concepts
 
 - **Plan repo**: a git-managed directory (`RDM_ROOT`) containing markdown files for roadmaps and tasks
-- rdm generates no derived index file; use `rdm list --format markdown` for a browsable snapshot (see [`docs/index-removal.md`](docs/index-removal.md))
+- See [`docs/principles.md`](docs/principles.md) §6 for data storage and indexing.
 - **Roadmaps** contain ordered **phases** (not-started | in-progress | needs-review | reviewed | done | blocked | wont-fix)
 - **Tasks** are standalone work items (open | in-progress | needs-review | reviewed | done | wont-fix)
 - Agent integration: `rdm agent-config` generates config for AI agents to interact via CLI
@@ -43,11 +43,11 @@ See [`docs/principles.md`](docs/principles.md) §10.
 
 ### Error Handling
 
-See [`docs/principles.md`](docs/principles.md) §5 for core error design. CLI and server layers use `anyhow` with `.context()` for readable error chains; add it only when context chaining becomes useful (start with `Box<dyn Error>` if not).
+See [`docs/principles.md`](docs/principles.md) §5.
 
 ### Feature Flags
 
-If `rdm-server` becomes optional, gate it behind a cargo feature flag so users who only need the CLI can skip it.
+See [`docs/principles.md`](docs/principles.md) §12.
 
 ### Edition & MSRV
 

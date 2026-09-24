@@ -56,9 +56,9 @@ Keeping I/O out of the library makes core a pure-logic crate: no filesystem assu
 
 ## 4. Tests Observe Behavior; Be Honest About Gaps
 
-Every behavior must be covered by automated tests. A test runs the code and observes what it does. Tests never assert that a string is present in or absent from a source, template, prose, or `CHANGELOG.md` file — planted-mutation self-tests do not make such a check evidence of behavior. Regenerating a generated artifact and comparing it to a committed copy is not a text check. A test that breaks on a correct refactor is a defect.
+Every behavior a test can observe must be covered by automated tests. A test runs the code and observes what it does. Tests never assert that a string is present in or absent from a source, template, prose, or `CHANGELOG.md` file — planted-mutation self-tests do not make such a check evidence of behavior. Regenerating a generated artifact and comparing it to a committed copy is not a text check. A test that breaks on a correct refactor is a defect.
 
-When a behavior cannot be exercised (a model following a prompt, the real Claude host runtime, a live account), state the gap where the item's review will see it — e.g. "verified by dogfooding" or "not covered". Do not cover it with a vacuous test.
+When behavior cannot be exercised (a model following a prompt, the real Claude host runtime, a live account), state the gap where the item's review will see it — e.g. "verified by dogfooding" or "not covered" — rather than writing a vacuous test.
 
 - **Follow TDD.** Write a failing test first, then the minimum code to make it pass, then refactor.
 - **Unit tests live next to the code.** Use `#[cfg(test)] mod tests` in the same file. Test internal logic through the module's public interface.
@@ -79,6 +79,7 @@ Tests are the primary defense against regressions. A test that asserts file text
 - **Each error variant is a domain concept.** `Error::ProjectNotFound`, `Error::DuplicateSlug`, `Error::FrontmatterParse` — each variant represents a specific failure mode that callers can match on and handle differently.
 - **Display messages are user-facing.** The `Display` impl for each variant produces an actionable message: what went wrong and what the user can do about it. No raw debug output, no backtraces, no implementation details.
 - **Consumers add context, not core.** CLI and server crates may wrap core errors with `anyhow::Context` to add interaction-layer details (e.g., "while processing the `roadmap show` command"). Core itself does not use `anyhow`.
+- **User-facing errors are actionable.** CLI and server error output must state what went wrong and what the user can do about it. Never surface raw debug output or backtraces by default.
 - **HTTP status mapping is mechanical.** The server crate maps each error variant to an HTTP status code and RFC 9457 Problem Details response. This mapping is exhaustive — adding a new variant to the core enum forces the server to handle it.
 
 ### Why
