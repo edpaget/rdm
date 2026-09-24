@@ -68,7 +68,7 @@ git config core.hooksPath .githooks   # point git at the shared hooks
 mise install                          # provision hk + shellcheck + shfmt + cargo tools
 ```
 
-`.githooks/pre-commit` is a thin shim that delegates to [`hk`](https://hk.jdx.dev/) (`exec hk run pre-commit`); the gate itself is declared in `hk.pkl`. It runs `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo nextest run`, plus `shellcheck` and `shfmt` over staged shell scripts (`.shellcheckrc` and `.editorconfig` are the shared config). It is check-only — it never rewrites files. `post-commit` / `post-merge` (the rdm `Done:`-convention hooks below) are left untouched.
+`.githooks/pre-commit` is a thin shim that delegates to [`hk`](https://hk.jdx.dev/) (`exec hk run pre-commit`); the gate itself is declared in `hk.pkl`. It runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo nextest run` and `cargo test --doc --workspace` (both test steps with git's hook-exported `GIT_DIR`/`GIT_INDEX_FILE`/… unset, so no test can act on this repository), plus `shellcheck` and `shfmt` over staged shell scripts (`.shellcheckrc` and `.editorconfig` are the shared config). It is check-only — it never rewrites files. `post-commit` / `post-merge` (the rdm `Done:`-convention hooks below) are left untouched.
 
 ### Post-merge & post-commit: `Done:` convention
 
@@ -110,8 +110,10 @@ All of the following must pass before merging:
 
 ```bash
 cargo fmt --check
-cargo clippy -- -D warnings
-cargo test
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run                         # the contributor acceptance command
+cargo test --doc --workspace              # nextest does not run doctests
+cargo nextest run --profile suite-hygiene # nested whole-suite runs (canary, temp/git-config hygiene)
 cargo deny check                          # license & advisory audit
 shellcheck $(git ls-files '*.sh')         # shell lint
 shfmt -d $(git ls-files '*.sh')           # shell format check
