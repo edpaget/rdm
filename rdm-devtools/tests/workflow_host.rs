@@ -523,6 +523,58 @@ fn host_config_env_reaches_the_child_and_env_remove_cancels_it() {
     assert_eq!(removed, inherited, "env_remove cancelled the set");
 }
 
+/// `process.env[key]` in a host started with `config`, `None` when unset.
+fn child_env(config: &HostConfig, key: &str) -> Option<String> {
+    let mut host = Host::start(config).expect("start host");
+    let read = host
+        .compile(&["key"], "return process.env[key] ?? null;")
+        .unwrap();
+    let value = host.call(&read, vec![json!(key)]).unwrap();
+    host.shutdown().unwrap();
+    value.as_str().map(str::to_owned)
+}
+
+#[test]
+fn env_remove_strips_a_variable_the_child_would_only_inherit() {
+    // Cargo and nextest both set CARGO_MANIFEST_DIR in the test process, so
+    // it reaches the child by inheritance alone — no `env()` call, and this
+    // test never mutates its own environment. Only `Host::start`'s
+    // `env_remove` loop can take it away.
+    const KEY: &str = "CARGO_MANIFEST_DIR";
+    let ours = std::env::var(KEY).expect("the test runner sets CARGO_MANIFEST_DIR");
+    assert_eq!(
+        child_env(&HostConfig::new(), KEY).as_deref(),
+        Some(ours.as_str()),
+        "the child inherits the variable"
+    );
+    assert_eq!(
+        child_env(&HostConfig::new().env_remove(KEY), KEY),
+        None,
+        "env_remove stripped the inherited variable from the child"
+    );
+    assert_eq!(std::env::var(KEY).ok(), Some(ours), "our own env untouched");
+}
+
+#[test]
+fn service_dispatches_a_callback_then_buffers_the_started_calls_result() {
+    let mut host = Host::start_default().expect("start host");
+    let held = Rc::new(RefCell::new(Vec::new()));
+    let sink = Rc::clone(&held);
+    let thunk = host.register(move |inv, _out| sink.borrow_mut().push(inv.call_id));
+    let call = host
+        .start_call(&Host::primitive("parallel"), vec![json!([thunk])])
+        .expect("start");
+    host.service().expect("service the callback");
+    assert_eq!(held.borrow().len(), 1, "service dispatched the callback");
+    assert!(!host.is_settled(&call), "unsettled while its reply is held");
+    let id = held.borrow()[0];
+    host.reply(id, Ok(json!("done"))).expect("reply");
+    host.service().expect("service the result");
+    assert!(host.is_settled(&call), "service buffered the result");
+    assert_eq!(host.await_call(call).unwrap(), json!(["done"]));
+    host.shutdown().unwrap();
+}
+
 #[test]
 fn a_result_for_an_unstarted_id_is_a_protocol_error() {
     let dir = TempDir::new().unwrap();
