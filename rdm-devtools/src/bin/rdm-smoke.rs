@@ -20,6 +20,19 @@
 //! exceeded; 127 the program could not be started; 128 + signal (130 SIGINT,
 //! 143 SIGTERM) when rdm-smoke itself was interrupted; 71 the private copy
 //! could not be prepared; 74 cleanup failed; 70 any other runner failure.
+//!
+//! ```text
+//! rdm-smoke codex-coexistence --rdm <path> --codex <path> [--copy-auth-from <auth.json>]
+//!                             [--discovery-timeout-secs 30] [--exec-timeout-secs 120]
+//! ```
+//!
+//! The opt-in live Codex coexistence check (see
+//! `rdm_devtools::codex_coexistence`), in a private temporary installation.
+//! `--copy-auth-from` is the explicit consent to copy a login file (mode 0600,
+//! removed on every catchable path) for the live `codex exec`; without it the
+//! live invocation is reported NOT RUN. The evidence root is printed first and
+//! again on the final line. Exit codes: 0 pass; 1 a check failed; 124 a
+//! deadline passed; 130/143 interrupted; 2 bad arguments.
 
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
@@ -30,6 +43,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use clap::{Parser, Subcommand};
+use rdm_devtools::codex_coexistence as coexistence;
 use rdm_devtools::process::{Hooks, ProcessSpec, RunError, run_bounded};
 
 #[derive(Parser)]
@@ -46,6 +60,30 @@ struct Cli {
 enum Cmd {
     /// Run one program.
     Run(RunArgs),
+    /// Prove rdm's repository skills coexist with user and plugin copies in
+    /// Codex, in a private temporary installation (opt-in live check).
+    CodexCoexistence(CoexistenceArgs),
+}
+
+#[derive(clap::Args)]
+struct CoexistenceArgs {
+    /// The rdm binary under test.
+    #[arg(long)]
+    rdm: PathBuf,
+    /// The Codex binary.
+    #[arg(long)]
+    codex: PathBuf,
+    /// Explicit consent to copy this login file privately for the live
+    /// `codex exec` (removed on every catchable path). Without it the live
+    /// invocation is NOT RUN.
+    #[arg(long, value_name = "AUTH_JSON")]
+    copy_auth_from: Option<PathBuf>,
+    /// Skill-discovery deadline in seconds.
+    #[arg(long, default_value_t = 30)]
+    discovery_timeout_secs: u64,
+    /// Live-exec deadline in seconds.
+    #[arg(long, default_value_t = 120)]
+    exec_timeout_secs: u64,
 }
 
 #[derive(clap::Args)]
@@ -170,9 +208,53 @@ fn run(args: RunArgs) -> ExitCode {
     }
 }
 
+fn absolute(p: &Path) -> PathBuf {
+    std::path::absolute(p).unwrap_or_else(|_| p.to_owned())
+}
+
+fn codex_coexistence(args: CoexistenceArgs) -> ExitCode {
+    let layout = match coexistence::create_layout() {
+        Ok(l) => l,
+        Err(e) => {
+            say!("rdm-smoke: could not create the private evidence root: {e}");
+            return ExitCode::from(70);
+        }
+    };
+    let _ = writeln!(
+        io::stdout(),
+        "Coexistence fixture: {}",
+        layout.root.display()
+    );
+    let options = coexistence::Options {
+        rdm: absolute(&args.rdm),
+        codex: absolute(&args.codex),
+        copy_auth_from: args.copy_auth_from.as_deref().map(absolute),
+        discovery_timeout: Duration::from_secs(args.discovery_timeout_secs),
+        exec_timeout: Duration::from_secs(args.exec_timeout_secs),
+    };
+    match coexistence::run(&options, &layout) {
+        Ok(outcome) => {
+            let _ = writeln!(
+                io::stdout(),
+                "{}",
+                coexistence::pass_line(&outcome, &layout)
+            );
+            ExitCode::SUCCESS
+        }
+        Err(failure) => {
+            say!(
+                "rdm-smoke: codex-coexistence FAILED: {failure}. Evidence: {}",
+                layout.root.display()
+            );
+            ExitCode::from(failure.exit_code())
+        }
+    }
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Cmd::Run(args) => run(args),
+        Cmd::CodexCoexistence(args) => codex_coexistence(args),
     }
 }

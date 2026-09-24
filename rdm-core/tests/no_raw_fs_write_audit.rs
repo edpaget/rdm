@@ -47,6 +47,14 @@ const ALLOWED: &[(&str, &str)] = &[
         "repository-only measurement tool writes operator-named --out report files (lane-tokens, mine-refuter-corpus), never $RDM_ROOT",
     ),
     (
+        "rdm-devtools/src/bin/rdm-devtools-fixture/codex.rs",
+        "repository-only test fixture: the fake codex writes pidfiles, answers and a planted tamper into a test's private temp installation, never $RDM_ROOT",
+    ),
+    (
+        "rdm-devtools/src/bin/rdm-devtools-fixture/rdm.rs",
+        "repository-only test fixture: the fake rdm writes one skill into a test's private temp source tree, never $RDM_ROOT",
+    ),
+    (
         "rdm-devtools/src/measure/refuter_agreement/mod.rs",
         "repository-only measurement tool writes an operator-named --out results file, never $RDM_ROOT",
     ),

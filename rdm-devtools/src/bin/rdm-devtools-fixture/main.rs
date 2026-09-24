@@ -23,8 +23,12 @@
 //! `DEVTOOLS_FAKE_SCENARIO`:
 //!
 //! - `claude` — the paid-dispatch CLI (see `claude.rs`)
+//! - `codex` — the Codex CLI and app-server (see `codex.rs`)
+//! - `rdm` — rdm's skill emission (see `rdm.rs`)
 
 mod claude;
+mod codex;
+mod rdm;
 mod scenario;
 
 use std::io::Write;
@@ -73,8 +77,11 @@ fn argv0_name() -> String {
 }
 
 fn main() -> ExitCode {
-    if argv0_name() == "claude" {
-        return claude::run();
+    match argv0_name().as_str() {
+        "claude" => return claude::run(),
+        "codex" => return codex::run(),
+        "rdm" => return rdm::run(),
+        _ => {}
     }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mode = args.first().map(String::as_str).unwrap_or("");

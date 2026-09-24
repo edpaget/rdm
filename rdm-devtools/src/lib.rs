@@ -8,8 +8,9 @@
 //! private file copy is removed, on every catchable exit path;
 //! [`workflow`], a repository-only binding (tests and measurement tools) that
 //! executes the real Claude Workflow JavaScript sources under Node so Rust can
-//! drive them; and [`measure`], the token/refuter measurement and corpus tools
-//! behind the `rdm-measure` binary.
+//! drive them; [`measure`], the token/refuter measurement and corpus tools
+//! behind the `rdm-measure` binary; and [`codex_coexistence`], the opt-in live
+//! Codex coexistence smoke flow behind `rdm-smoke codex-coexistence`.
 
 #![warn(missing_docs)]
 
@@ -18,6 +19,7 @@ compile_error!(
     "rdm-devtools process support requires a unix target (process groups and SIGINT/SIGTERM)"
 );
 
+pub mod codex_coexistence;
 pub mod measure;
 pub mod process;
 pub mod workflow;

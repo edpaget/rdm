@@ -1764,9 +1764,11 @@ pass 'Development wrapper rebuilds from foreign cwd, preserves cross-shell ident
 # Optional real Codex integration. No account/network dependency in the default harness.
 if [ -n "${RDM_CODEX_BIN:-}" ]; then
     if [ -n "${RDM_CODEX_AUTH_FILE:-}" ]; then
-        run_node "$SCRIPT_DIR/verify-codex-coexistence.mjs" "$RDM_BIN" "$RDM_CODEX_BIN" "$RDM_CODEX_AUTH_FILE"
+        cargo run -q --manifest-path "$REPO_ROOT/Cargo.toml" -p rdm-devtools --bin rdm-smoke -- \
+            codex-coexistence --rdm "$RDM_BIN" --codex "$RDM_CODEX_BIN" --copy-auth-from "$RDM_CODEX_AUTH_FILE"
     else
-        run_node "$SCRIPT_DIR/verify-codex-coexistence.mjs" "$RDM_BIN" "$RDM_CODEX_BIN"
+        cargo run -q --manifest-path "$REPO_ROOT/Cargo.toml" -p rdm-devtools --bin rdm-smoke -- \
+            codex-coexistence --rdm "$RDM_BIN" --codex "$RDM_CODEX_BIN"
     fi
 fi
 
