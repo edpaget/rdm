@@ -389,7 +389,14 @@ pub(crate) enum Command {
     /// selector it reports the session named by `CLAUDE_CODE_SESSION_ID`.
     /// `--format json` prints the full report on stdout (warnings inside it);
     /// `table` and `markdown` print the human rendering.
+    ///
+    /// `rdm cost report --roadmap <slug>` instead joins the roadmap's run
+    /// records to their sessions' spend by time window: tokens per roadmap
+    /// and per phase. Unlike bare `rdm cost`, it reads the plan repo.
+    #[command(args_conflicts_with_subcommands = true)]
     Cost {
+        #[command(subcommand)]
+        command: Option<CostCommand>,
         /// The session uuid to report.
         #[arg(long, value_name = "UUID", conflicts_with = "workflow_run")]
         session: Option<String>,
@@ -397,6 +404,28 @@ pub(crate) enum Command {
         /// run's agents.
         #[arg(long, value_name = "WF_ID")]
         workflow_run: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum CostCommand {
+    /// What a roadmap's recorded runs spent: roadmap totals, a per-phase
+    /// breakdown (tokens by class, attempts, wall clock), run overhead,
+    /// itemised unattributed spend and an excluded count.
+    ///
+    /// Joins every run record targeting the roadmap to its Claude Code
+    /// session by time window. A source launched inside a unit's window
+    /// counts toward that phase; main-session turns count by their own
+    /// timestamps. A run whose session is gone is reported as missing, and
+    /// the rest of the report still prints. Tokens only. `--format json`
+    /// prints the full report on stdout (warnings inside it).
+    Report {
+        /// The roadmap to report.
+        #[arg(long)]
+        roadmap: String,
+        /// Project the roadmap belongs to.
+        #[arg(long)]
+        project: Option<String>,
     },
 }
 

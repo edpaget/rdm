@@ -16,6 +16,9 @@ pub mod change;
 pub mod config;
 /// Conflict classification for merge conflict paths.
 pub mod conflict;
+/// Joining run records to session spend by time window: tokens per roadmap
+/// and per phase.
+pub mod cost_report;
 /// Model introspection: discover what rdm tracks and the shape of each entity.
 pub mod describe;
 /// Display formatting functions for roadmaps, phases, and projects.

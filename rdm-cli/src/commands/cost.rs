@@ -74,7 +74,7 @@ fn anchor_text(anchor: Option<DateTime<Utc>>) -> String {
 
 /// Pads `rows` into aligned columns; columns from `numeric_from` on are
 /// right-aligned.
-fn table(headers: &[&str], rows: &[Vec<String>], numeric_from: usize) -> String {
+pub(super) fn table(headers: &[&str], rows: &[Vec<String>], numeric_from: usize) -> String {
     let mut widths: Vec<usize> = headers.iter().map(|h| h.chars().count()).collect();
     for row in rows {
         for (w, cell) in widths.iter_mut().zip(row) {
@@ -103,7 +103,7 @@ fn table(headers: &[&str], rows: &[Vec<String>], numeric_from: usize) -> String 
     out
 }
 
-fn usage_cells(u: &UsageSummary) -> Vec<String> {
+pub(super) fn usage_cells(u: &UsageSummary) -> Vec<String> {
     [
         u.requests,
         u.usage.input,

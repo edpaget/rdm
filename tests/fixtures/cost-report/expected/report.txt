@@ -1,0 +1,58 @@
+--- stdout ---
+Roadmap demo (project fixture)
+Runs: 5 (3 joined, 1 missing, 1 unjoinable; 1 open (incomplete))
+
+Tokens by model
+  model            requests  input  output  cache_write_5m  cache_write_1h  cache_read  total
+  claude-haiku-5          4     42     375             800               0        1800   3017
+  claude-opus-5           9     24     980            3200            5500       15200  24904
+  claude-sonnet-5         5     29     745            5700               0        3000   9474
+  total                  18     95    2100            9700            5500       20000  37395
+
+Buckets
+  bucket                   requests  input  output  cache_write_5m  cache_write_1h  cache_read  total
+  phases                         10     42    1230            3900            5000       12500  22672
+  run overhead                    2      5     220            1500             500        1000   3225
+  unattributed (runs)             4     21     565            4300               0        5500  10386
+  unattributed (sessions)         2     27      85               0               0        1000   1112
+  total                          18     95    2100            9700            5500       20000  37395
+
+Phases, by total tokens
+  phase           attempts  wall_clock  requests  input  output  cache_write_5m  cache_write_1h  cache_read  total
+  phase-1-parser         2       6m00s         8     33    1030            2300            5000       12500  20863
+  phase-3-docs           1       1m59s         2      9     200            1600               0           0   1809
+  phase-2-widget         1         0s*         0      0       0               0               0           0      0
+  * an attempt never ended: its wall clock is partial and its spend is unattributed
+
+Unattributed in runs
+  run                   kind            id                                    label                                        cause                                       requests  total
+  2026-09-24-1009-bbbb  main            11111111-2222-4333-8444-555555555555  main session                                 unit-incomplete (phase-2-widget attempt 1)         1   2652
+  2026-09-24-1009-bbbb  workflow_agent  w1                                    rdm-wf-review-refute-fix / find:code:ac      unit-incomplete (phase-2-widget attempt 1)         2   6510
+  2026-09-24-1009-bbbb  workflow_agent  w2                                    rdm-wf-review-refute-fix / refute:1          errored                                            1   1224
+  2026-09-24-1009-bbbb  workflow_agent  w3                                    rdm-wf-review-refute-fix / fetch:phase-meta  unit-incomplete (phase-2-widget attempt 1)         0      0
+
+Unattributed in sessions (no anchor or timestamp; counted once per session)
+  session                               kind            id  label                           cause       requests  total
+  11111111-2222-4333-8444-555555555555  agent           a4  Orphaned background check       unanchored         1    332
+  11111111-2222-4333-8444-555555555555  workflow_agent  x1  rdm-wf-estimate / rate:phase-1  unanchored         1    780
+
+Excluded (outside this roadmap's runs; not in any total): 0 source(s), 1 main request(s), 430 tokens
+
+Runs
+  id                    driver          status             session                               join        started               ended                 wall_clock  total
+  2026-09-24-1000-aaaa  autopilot       closed             11111111-2222-4333-8444-555555555555  joined      2026-09-24T10:00:00Z  2026-09-24T10:09:30Z       9m30s  23046
+  2026-09-24-1009-bbbb  autopilot       abandoned          11111111-2222-4333-8444-555555555555  joined      2026-09-24T10:09:45Z  2026-09-24T10:15:00Z       5m15s  10386
+  2026-09-24-1200-cccc  autopilot       open (incomplete)  aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee  joined      2026-09-24T12:00:00Z  -                              -   2851
+  2026-09-24-1300-dddd  autopilot       closed             99999999-0000-4000-8000-000000000000  missing     2026-09-24T13:00:00Z  2026-09-24T13:05:00Z       5m00s      0
+  2026-09-24-1400-eeee  dispatch-phase  closed             -                                     unjoinable  2026-09-24T14:00:00Z  2026-09-24T14:10:00Z      10m00s      0
+
+Missing sessions
+  2026-09-24-1300-dddd: session 99999999-0000-4000-8000-000000000000 was not found; searched 2 project directories under <CLAUDE_CONFIG_DIR>/projects:
+      -fixture-proj
+      -fixture-proj--worktrees-roadmap-demo
+    check the id, or set CLAUDE_CONFIG_DIR if Claude Code keeps its data somewhere other than ~/.claude
+--- stderr ---
+warning: 11111111-2222-4333-8444-555555555555: agent a1 (Survey the parser module): request req_a1_zero (model <synthetic>) reported all-zero usage; excluded as unmeasured
+warning: 11111111-2222-4333-8444-555555555555: skipped Workflow sidecar <CLAUDE_CONFIG_DIR>/projects/-fixture-proj/11111111-2222-4333-8444-555555555555/workflows/wf_bad.json: it has no string runId
+warning: 11111111-2222-4333-8444-555555555555: agent a1 (Survey the parser module): dropped 1 request(s) already counted by main transcript
+warning: 11111111-2222-4333-8444-555555555555: workflow-nested agents unverified: an agent spawned below a Workflow agent has never been observed on disk, so any spend it made is not located or counted

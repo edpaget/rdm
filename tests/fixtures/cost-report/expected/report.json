@@ -1,0 +1,855 @@
+{
+  "project": "fixture",
+  "roadmap": "demo",
+  "counts": {
+    "runs": 5,
+    "joined": 3,
+    "missing": 1,
+    "unjoinable": 1,
+    "incomplete": 1
+  },
+  "totals": {
+    "requests": 18,
+    "input": 95,
+    "output": 2100,
+    "cache_write_5m": 9700,
+    "cache_write_1h": 5500,
+    "cache_read": 20000,
+    "total": 37395
+  },
+  "models": [
+    {
+      "model": "claude-haiku-5",
+      "requests": 4,
+      "input": 42,
+      "output": 375,
+      "cache_write_5m": 800,
+      "cache_write_1h": 0,
+      "cache_read": 1800,
+      "total": 3017
+    },
+    {
+      "model": "claude-opus-5",
+      "requests": 9,
+      "input": 24,
+      "output": 980,
+      "cache_write_5m": 3200,
+      "cache_write_1h": 5500,
+      "cache_read": 15200,
+      "total": 24904
+    },
+    {
+      "model": "claude-sonnet-5",
+      "requests": 5,
+      "input": 29,
+      "output": 745,
+      "cache_write_5m": 5700,
+      "cache_write_1h": 0,
+      "cache_read": 3000,
+      "total": 9474
+    }
+  ],
+  "buckets": {
+    "phases": {
+      "requests": 10,
+      "input": 42,
+      "output": 1230,
+      "cache_write_5m": 3900,
+      "cache_write_1h": 5000,
+      "cache_read": 12500,
+      "total": 22672
+    },
+    "overhead": {
+      "requests": 2,
+      "input": 5,
+      "output": 220,
+      "cache_write_5m": 1500,
+      "cache_write_1h": 500,
+      "cache_read": 1000,
+      "total": 3225
+    },
+    "unattributed": {
+      "requests": 4,
+      "input": 21,
+      "output": 565,
+      "cache_write_5m": 4300,
+      "cache_write_1h": 0,
+      "cache_read": 5500,
+      "total": 10386
+    },
+    "session_unattributed": {
+      "requests": 2,
+      "input": 27,
+      "output": 85,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "cache_read": 1000,
+      "total": 1112
+    }
+  },
+  "phases": [
+    {
+      "stem": "phase-1-parser",
+      "attempts": 2,
+      "wall_clock_ms": 360000,
+      "has_incomplete_attempt": false,
+      "usage": {
+        "requests": 8,
+        "input": 33,
+        "output": 1030,
+        "cache_write_5m": 2300,
+        "cache_write_1h": 5000,
+        "cache_read": 12500,
+        "total": 20863
+      },
+      "models": [
+        {
+          "model": "claude-haiku-5",
+          "requests": 2,
+          "input": 15,
+          "output": 290,
+          "cache_write_5m": 800,
+          "cache_write_1h": 0,
+          "cache_read": 800,
+          "total": 1905
+        },
+        {
+          "model": "claude-opus-5",
+          "requests": 5,
+          "input": 12,
+          "output": 620,
+          "cache_write_5m": 600,
+          "cache_write_1h": 5000,
+          "cache_read": 11700,
+          "total": 17932
+        },
+        {
+          "model": "claude-sonnet-5",
+          "requests": 1,
+          "input": 6,
+          "output": 120,
+          "cache_write_5m": 900,
+          "cache_write_1h": 0,
+          "cache_read": 0,
+          "total": 1026
+        }
+      ]
+    },
+    {
+      "stem": "phase-3-docs",
+      "attempts": 1,
+      "wall_clock_ms": 119000,
+      "has_incomplete_attempt": false,
+      "usage": {
+        "requests": 2,
+        "input": 9,
+        "output": 200,
+        "cache_write_5m": 1600,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 1809
+      },
+      "models": [
+        {
+          "model": "claude-opus-5",
+          "requests": 1,
+          "input": 5,
+          "output": 90,
+          "cache_write_5m": 1000,
+          "cache_write_1h": 0,
+          "cache_read": 0,
+          "total": 1095
+        },
+        {
+          "model": "claude-sonnet-5",
+          "requests": 1,
+          "input": 4,
+          "output": 110,
+          "cache_write_5m": 600,
+          "cache_write_1h": 0,
+          "cache_read": 0,
+          "total": 714
+        }
+      ]
+    },
+    {
+      "stem": "phase-2-widget",
+      "attempts": 1,
+      "wall_clock_ms": 0,
+      "has_incomplete_attempt": true,
+      "usage": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "models": []
+    }
+  ],
+  "unattributed": [
+    {
+      "run_id": "2026-09-24-1009-bbbb",
+      "session_uuid": "11111111-2222-4333-8444-555555555555",
+      "kind": "main",
+      "id": "11111111-2222-4333-8444-555555555555",
+      "label": "main session",
+      "workflow_run_id": null,
+      "timestamp": "2026-09-24T10:10:00Z",
+      "cause": {
+        "kind": "unit-incomplete",
+        "unit": "phase-2-widget",
+        "attempt": 1
+      },
+      "usage": {
+        "requests": 1,
+        "input": 2,
+        "output": 50,
+        "cache_write_5m": 100,
+        "cache_write_1h": 0,
+        "cache_read": 2500,
+        "total": 2652
+      }
+    },
+    {
+      "run_id": "2026-09-24-1009-bbbb",
+      "session_uuid": "11111111-2222-4333-8444-555555555555",
+      "kind": "workflow_agent",
+      "id": "w1",
+      "label": "rdm-wf-review-refute-fix / find:code:ac",
+      "workflow_run_id": "wf_R1",
+      "timestamp": "2026-09-24T10:10:01Z",
+      "cause": {
+        "kind": "unit-incomplete",
+        "unit": "phase-2-widget",
+        "attempt": 1
+      },
+      "usage": {
+        "requests": 2,
+        "input": 10,
+        "output": 500,
+        "cache_write_5m": 3000,
+        "cache_write_1h": 0,
+        "cache_read": 3000,
+        "total": 6510
+      }
+    },
+    {
+      "run_id": "2026-09-24-1009-bbbb",
+      "session_uuid": "11111111-2222-4333-8444-555555555555",
+      "kind": "workflow_agent",
+      "id": "w2",
+      "label": "rdm-wf-review-refute-fix / refute:1",
+      "workflow_run_id": "wf_R1",
+      "timestamp": "2026-09-24T10:10:01Z",
+      "cause": {
+        "kind": "errored"
+      },
+      "usage": {
+        "requests": 1,
+        "input": 9,
+        "output": 15,
+        "cache_write_5m": 1200,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 1224
+      }
+    },
+    {
+      "run_id": "2026-09-24-1009-bbbb",
+      "session_uuid": "11111111-2222-4333-8444-555555555555",
+      "kind": "workflow_agent",
+      "id": "w3",
+      "label": "rdm-wf-review-refute-fix / fetch:phase-meta",
+      "workflow_run_id": "wf_R1",
+      "timestamp": "2026-09-24T10:10:01Z",
+      "cause": {
+        "kind": "unit-incomplete",
+        "unit": "phase-2-widget",
+        "attempt": 1
+      },
+      "usage": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      }
+    }
+  ],
+  "session_unattributed": [
+    {
+      "session_uuid": "11111111-2222-4333-8444-555555555555",
+      "kind": "agent",
+      "id": "a4",
+      "label": "Orphaned background check",
+      "workflow_run_id": null,
+      "cause": {
+        "kind": "unanchored"
+      },
+      "usage": {
+        "requests": 1,
+        "input": 7,
+        "output": 25,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 300,
+        "total": 332
+      }
+    },
+    {
+      "session_uuid": "11111111-2222-4333-8444-555555555555",
+      "kind": "workflow_agent",
+      "id": "x1",
+      "label": "rdm-wf-estimate / rate:phase-1",
+      "workflow_run_id": "wf_R2",
+      "cause": {
+        "kind": "unanchored"
+      },
+      "usage": {
+        "requests": 1,
+        "input": 20,
+        "output": 60,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 700,
+        "total": 780
+      }
+    }
+  ],
+  "excluded": {
+    "sources": 0,
+    "main_requests": 1,
+    "usage": {
+      "requests": 1,
+      "input": 400,
+      "output": 30,
+      "cache_write_5m": 0,
+      "cache_write_1h": 0,
+      "cache_read": 0,
+      "total": 430
+    }
+  },
+  "runs": [
+    {
+      "id": "2026-09-24-1000-aaaa",
+      "driver": "autopilot",
+      "status": "closed",
+      "status_label": "closed",
+      "complete": true,
+      "session_uuid": "11111111-2222-4333-8444-555555555555",
+      "join": {
+        "state": "joined"
+      },
+      "started": "2026-09-24T10:00:00Z",
+      "ended": "2026-09-24T10:09:30Z",
+      "window_end": "2026-09-24T10:09:30Z",
+      "wall_clock_ms": 570000,
+      "totals": {
+        "requests": 9,
+        "input": 36,
+        "output": 1210,
+        "cache_write_5m": 3800,
+        "cache_write_1h": 5500,
+        "cache_read": 12500,
+        "total": 23046
+      },
+      "models": [
+        {
+          "model": "claude-haiku-5",
+          "requests": 2,
+          "input": 15,
+          "output": 290,
+          "cache_write_5m": 800,
+          "cache_write_1h": 0,
+          "cache_read": 800,
+          "total": 1905
+        },
+        {
+          "model": "claude-opus-5",
+          "requests": 6,
+          "input": 15,
+          "output": 800,
+          "cache_write_5m": 2100,
+          "cache_write_1h": 5500,
+          "cache_read": 11700,
+          "total": 20115
+        },
+        {
+          "model": "claude-sonnet-5",
+          "requests": 1,
+          "input": 6,
+          "output": 120,
+          "cache_write_5m": 900,
+          "cache_write_1h": 0,
+          "cache_read": 0,
+          "total": 1026
+        }
+      ],
+      "overhead": {
+        "requests": 1,
+        "input": 3,
+        "output": 180,
+        "cache_write_5m": 1500,
+        "cache_write_1h": 500,
+        "cache_read": 0,
+        "total": 2183
+      },
+      "unattributed": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "units": [
+        {
+          "unit": "phase-1-parser",
+          "attempt": 1,
+          "started": "2026-09-24T10:00:30Z",
+          "ended": "2026-09-24T10:02:00Z",
+          "window_end": "2026-09-24T10:02:00Z",
+          "complete": true,
+          "outcome": "rework",
+          "wall_clock_ms": 90000,
+          "usage": {
+            "requests": 4,
+            "input": 18,
+            "output": 390,
+            "cache_write_5m": 1100,
+            "cache_write_1h": 0,
+            "cache_read": 5100,
+            "total": 6608
+          }
+        },
+        {
+          "unit": "phase-1-parser",
+          "attempt": 2,
+          "started": "2026-09-24T10:04:30Z",
+          "ended": "2026-09-24T10:09:00Z",
+          "window_end": "2026-09-24T10:09:00Z",
+          "complete": true,
+          "outcome": "reviewed",
+          "wall_clock_ms": 270000,
+          "usage": {
+            "requests": 4,
+            "input": 15,
+            "output": 640,
+            "cache_write_5m": 1200,
+            "cache_write_1h": 5000,
+            "cache_read": 7400,
+            "total": 14255
+          }
+        }
+      ]
+    },
+    {
+      "id": "2026-09-24-1009-bbbb",
+      "driver": "autopilot",
+      "status": "abandoned",
+      "status_label": "abandoned",
+      "complete": true,
+      "session_uuid": "11111111-2222-4333-8444-555555555555",
+      "join": {
+        "state": "joined"
+      },
+      "started": "2026-09-24T10:09:45Z",
+      "ended": "2026-09-24T10:15:00Z",
+      "window_end": "2026-09-24T10:15:00Z",
+      "wall_clock_ms": 315000,
+      "totals": {
+        "requests": 4,
+        "input": 21,
+        "output": 565,
+        "cache_write_5m": 4300,
+        "cache_write_1h": 0,
+        "cache_read": 5500,
+        "total": 10386
+      },
+      "models": [
+        {
+          "model": "claude-opus-5",
+          "requests": 1,
+          "input": 2,
+          "output": 50,
+          "cache_write_5m": 100,
+          "cache_write_1h": 0,
+          "cache_read": 2500,
+          "total": 2652
+        },
+        {
+          "model": "claude-sonnet-5",
+          "requests": 3,
+          "input": 19,
+          "output": 515,
+          "cache_write_5m": 4200,
+          "cache_write_1h": 0,
+          "cache_read": 3000,
+          "total": 7734
+        }
+      ],
+      "overhead": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "unattributed": {
+        "requests": 4,
+        "input": 21,
+        "output": 565,
+        "cache_write_5m": 4300,
+        "cache_write_1h": 0,
+        "cache_read": 5500,
+        "total": 10386
+      },
+      "units": [
+        {
+          "unit": "phase-2-widget",
+          "attempt": 1,
+          "started": "2026-09-24T10:09:50Z",
+          "ended": null,
+          "window_end": "2026-09-24T10:15:00Z",
+          "complete": false,
+          "outcome": null,
+          "wall_clock_ms": null,
+          "usage": {
+            "requests": 0,
+            "input": 0,
+            "output": 0,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "cache_read": 0,
+            "total": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "2026-09-24-1200-cccc",
+      "driver": "autopilot",
+      "status": "open",
+      "status_label": "open (incomplete)",
+      "complete": false,
+      "session_uuid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "join": {
+        "state": "joined"
+      },
+      "started": "2026-09-24T12:00:00Z",
+      "ended": null,
+      "window_end": null,
+      "wall_clock_ms": null,
+      "totals": {
+        "requests": 3,
+        "input": 11,
+        "output": 240,
+        "cache_write_5m": 1600,
+        "cache_write_1h": 0,
+        "cache_read": 1000,
+        "total": 2851
+      },
+      "models": [
+        {
+          "model": "claude-opus-5",
+          "requests": 2,
+          "input": 7,
+          "output": 130,
+          "cache_write_5m": 1000,
+          "cache_write_1h": 0,
+          "cache_read": 1000,
+          "total": 2137
+        },
+        {
+          "model": "claude-sonnet-5",
+          "requests": 1,
+          "input": 4,
+          "output": 110,
+          "cache_write_5m": 600,
+          "cache_write_1h": 0,
+          "cache_read": 0,
+          "total": 714
+        }
+      ],
+      "overhead": {
+        "requests": 1,
+        "input": 2,
+        "output": 40,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 1000,
+        "total": 1042
+      },
+      "unattributed": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "units": [
+        {
+          "unit": "phase-3-docs",
+          "attempt": 1,
+          "started": "2026-09-24T12:00:01Z",
+          "ended": "2026-09-24T12:02:00Z",
+          "window_end": "2026-09-24T12:02:00Z",
+          "complete": true,
+          "outcome": "reviewed",
+          "wall_clock_ms": 119000,
+          "usage": {
+            "requests": 2,
+            "input": 9,
+            "output": 200,
+            "cache_write_5m": 1600,
+            "cache_write_1h": 0,
+            "cache_read": 0,
+            "total": 1809
+          }
+        }
+      ]
+    },
+    {
+      "id": "2026-09-24-1300-dddd",
+      "driver": "autopilot",
+      "status": "closed",
+      "status_label": "closed",
+      "complete": true,
+      "session_uuid": "99999999-0000-4000-8000-000000000000",
+      "join": {
+        "state": "missing",
+        "reason": "session 99999999-0000-4000-8000-000000000000 was not found; searched 2 project directories under <CLAUDE_CONFIG_DIR>/projects:\n  -fixture-proj\n  -fixture-proj--worktrees-roadmap-demo\ncheck the id, or set CLAUDE_CONFIG_DIR if Claude Code keeps its data somewhere other than ~/.claude"
+      },
+      "started": "2026-09-24T13:00:00Z",
+      "ended": "2026-09-24T13:05:00Z",
+      "window_end": "2026-09-24T13:05:00Z",
+      "wall_clock_ms": 300000,
+      "totals": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "models": [],
+      "overhead": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "unattributed": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "units": [
+        {
+          "unit": "phase-4-release",
+          "attempt": 1,
+          "started": "2026-09-24T13:01:00Z",
+          "ended": "2026-09-24T13:04:00Z",
+          "window_end": "2026-09-24T13:04:00Z",
+          "complete": true,
+          "outcome": "reviewed",
+          "wall_clock_ms": 180000,
+          "usage": {
+            "requests": 0,
+            "input": 0,
+            "output": 0,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "cache_read": 0,
+            "total": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "2026-09-24-1400-eeee",
+      "driver": "dispatch-phase",
+      "status": "closed",
+      "status_label": "closed",
+      "complete": true,
+      "session_uuid": null,
+      "join": {
+        "state": "unjoinable"
+      },
+      "started": "2026-09-24T14:00:00Z",
+      "ended": "2026-09-24T14:10:00Z",
+      "window_end": "2026-09-24T14:10:00Z",
+      "wall_clock_ms": 600000,
+      "totals": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "models": [],
+      "overhead": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "unattributed": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "units": [
+        {
+          "unit": "phase-5-cleanup",
+          "attempt": 1,
+          "started": "2026-09-24T14:00:05Z",
+          "ended": "2026-09-24T14:09:00Z",
+          "window_end": "2026-09-24T14:09:00Z",
+          "complete": true,
+          "outcome": "reviewed",
+          "wall_clock_ms": 535000,
+          "usage": {
+            "requests": 0,
+            "input": 0,
+            "output": 0,
+            "cache_write_5m": 0,
+            "cache_write_1h": 0,
+            "cache_read": 0,
+            "total": 0
+          }
+        }
+      ]
+    }
+  ],
+  "sessions": [
+    {
+      "session_uuid": "11111111-2222-4333-8444-555555555555",
+      "project_slug": "-fixture-proj",
+      "run_ids": [
+        "2026-09-24-1000-aaaa",
+        "2026-09-24-1009-bbbb"
+      ],
+      "totals": {
+        "requests": 16,
+        "input": 484,
+        "output": 1890,
+        "cache_write_5m": 8100,
+        "cache_write_1h": 5500,
+        "cache_read": 19000,
+        "total": 34974
+      },
+      "attributed_to_runs": {
+        "requests": 13,
+        "input": 57,
+        "output": 1775,
+        "cache_write_5m": 8100,
+        "cache_write_1h": 5500,
+        "cache_read": 18000,
+        "total": 33432
+      },
+      "unattributed": {
+        "requests": 2,
+        "input": 27,
+        "output": 85,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 1000,
+        "total": 1112
+      },
+      "excluded": {
+        "sources": 0,
+        "main_requests": 1,
+        "usage": {
+          "requests": 1,
+          "input": 400,
+          "output": 30,
+          "cache_write_5m": 0,
+          "cache_write_1h": 0,
+          "cache_read": 0,
+          "total": 430
+        }
+      }
+    },
+    {
+      "session_uuid": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "project_slug": "-fixture-proj--worktrees-roadmap-demo",
+      "run_ids": [
+        "2026-09-24-1200-cccc"
+      ],
+      "totals": {
+        "requests": 3,
+        "input": 11,
+        "output": 240,
+        "cache_write_5m": 1600,
+        "cache_write_1h": 0,
+        "cache_read": 1000,
+        "total": 2851
+      },
+      "attributed_to_runs": {
+        "requests": 3,
+        "input": 11,
+        "output": 240,
+        "cache_write_5m": 1600,
+        "cache_write_1h": 0,
+        "cache_read": 1000,
+        "total": 2851
+      },
+      "unattributed": {
+        "requests": 0,
+        "input": 0,
+        "output": 0,
+        "cache_write_5m": 0,
+        "cache_write_1h": 0,
+        "cache_read": 0,
+        "total": 0
+      },
+      "excluded": {
+        "sources": 0,
+        "main_requests": 0,
+        "usage": {
+          "requests": 0,
+          "input": 0,
+          "output": 0,
+          "cache_write_5m": 0,
+          "cache_write_1h": 0,
+          "cache_read": 0,
+          "total": 0
+        }
+      }
+    }
+  ],
+  "warnings": [
+    "11111111-2222-4333-8444-555555555555: agent a1 (Survey the parser module): request req_a1_zero (model <synthetic>) reported all-zero usage; excluded as unmeasured",
+    "11111111-2222-4333-8444-555555555555: skipped Workflow sidecar <CLAUDE_CONFIG_DIR>/projects/-fixture-proj/11111111-2222-4333-8444-555555555555/workflows/wf_bad.json: it has no string runId",
+    "11111111-2222-4333-8444-555555555555: agent a1 (Survey the parser module): dropped 1 request(s) already counted by main transcript",
+    "11111111-2222-4333-8444-555555555555: workflow-nested agents unverified: an agent spawned below a Workflow agent has never been observed on disk, so any spend it made is not located or counted"
+  ]
+}

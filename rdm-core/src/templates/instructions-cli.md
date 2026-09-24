@@ -215,7 +215,10 @@ rdm cost --session <uuid>                 # one session
 rdm cost --workflow-run <wf_id>           # only that Workflow run's agents
 rdm cost                                  # the current session (CLAUDE_CODE_SESSION_ID)
 rdm cost --session <uuid> --format json   # the full report; warnings are inside it
+rdm cost report --roadmap <slug> {proj_flag}   # a roadmap's runs joined to spend: per phase, overhead, unattributed
 ```
+
+Unlike bare `rdm cost`, `rdm cost report` reads the plan repo: it joins the roadmap's run records (below) to their sessions by time window and reports totals, tokens by class, attempts and wall clock per phase, run overhead, itemised unattributed spend, and missing or unjoinable runs.
 
 ## Run records
 

@@ -56,9 +56,11 @@ fn run() -> Result<()> {
         return commands::config::run(command, &cli.root, &global_config);
     }
 
-    // `cost` reads Claude Code transcripts, not the plan repo: it needs no
-    // root, no `rdm.toml` and no project.
+    // Bare `cost` reads Claude Code transcripts, not the plan repo: it needs
+    // no root, no `rdm.toml` and no project. `cost report` reads run records,
+    // so it resolves the plan repo like any other command.
     if let Command::Cost {
+        command: None,
         session,
         workflow_run,
     } = cli.command
@@ -110,7 +112,16 @@ fn run() -> Result<()> {
     }
 
     match cli.command {
-        Command::Config { .. } | Command::Cost { .. } => unreachable!("handled above"),
+        Command::Config { .. } | Command::Cost { command: None, .. } => {
+            unreachable!("handled above")
+        }
+        Command::Cost {
+            command: Some(CostCommand::Report { roadmap, project }),
+            ..
+        } => {
+            let store = commands::make_store(&root)?;
+            commands::cost_report::run(&store, &repo_config, &roadmap, project, format)?;
+        }
         Command::Init {
             default_project,
             default_format,

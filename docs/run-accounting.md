@@ -9,11 +9,13 @@ rdm cost --session <uuid>              # one session
 rdm cost --workflow-run <wf_id>        # one Workflow run in a session (the `wf_` prefix is optional)
 rdm cost                               # the session named by CLAUDE_CODE_SESSION_ID
 rdm cost --session <uuid> --format json
+rdm cost report --roadmap <slug> --project <p>   # a roadmap's runs, joined to spend (needs the plan repo)
 ```
 
 The rules live in `rdm-core` (`rdm_core::transcript`, over the pure token accounting in
-`rdm_core::usage`). The filesystem reader is the `rdm-transcript` crate. Later phases of the
-`autopilot-run-accounting` roadmap extend this document with run records and time windows.
+`rdm_core::usage`). The filesystem reader is the `rdm-transcript` crate. [Run records](#run-records)
+say what ran when, and [`rdm cost report`](#cost-report-joining-runs-to-spend)
+(`rdm_core::cost_report`) joins them to spend by time window.
 
 ## Where the data is
 
@@ -137,10 +139,109 @@ bracket each dispatched unit with timestamps and an outcome; `rdm run close` end
 format, lifecycle and session-capture rule are in
 [`file-formats.md` § Run Files](file-formats.md#run-files).
 
-A later phase joins a run to its session's spend by **unit time window**: a spend source anchored
-between a unit's `started` and `ended` is attributed to that unit. That is why unit windows never
-overlap and why timestamps keep sub-second precision. A run with no `session_uuid`, or one still
-`open`, is reported as unjoinable or incomplete rather than joined silently.
+`rdm cost report` joins a run to its session's spend by **unit time window** (next section). That
+is why unit windows never overlap and why timestamps keep sub-second precision. A run with no
+`session_uuid` is reported as unjoinable, and one still `open` is joined but labelled incomplete.
+
+## Cost report: joining runs to spend
+
+`rdm cost report --roadmap <slug>` answers what a roadmap cost and which phases dominated. It
+loads every run record of the project, keeps the runs whose target is the roadmap, locates and
+reaps each distinct session they name **once**, and attributes every spend source of those
+sessions by time. Unlike bare `rdm cost` it reads the plan repo, so it resolves the project like
+any other command (`--project` > `RDM_PROJECT` > `default_project`). It exits 0 even when some
+sessions are missing, and prints a one-line report when no run targets the roadmap.
+
+The join lives in `rdm_core::cost_report`, which reads transcripts only through the
+`TranscriptSource` port. The CLI loads the runs, builds the filesystem source and renders.
+
+### Identifier spaces
+
+| identifier | names | joins |
+| --- | --- | --- |
+| run id (`2026-09-24-1530-a1b2`) | one run record | nothing; it only labels the run |
+| session uuid (`session_uuid`) | one Claude Code session | a run to the transcripts it spent through |
+| unit stem + `attempt` | one unit entry of a run | a phase row; every attempt of a stem sums into it |
+| source kind + id | one spend source (`main` + session uuid, `agent` + agent id, `workflow_agent` + agent id) | a source to one bucket |
+| Workflow `runId` (`wf_…`) | one Workflow run in a session | its agents to their anchor (the `tool_result` naming it) |
+| `requestId` | one API request | dedupe within and across a session's sources (see [What is counted](#what-is-counted)) |
+
+The join itself uses only the session uuid and timestamps. No label, ordinal or `requestId` crosses
+a session boundary.
+
+### What is placed, by which timestamp
+
+- **`agent` and `workflow_agent` sources are placed whole, by their anchor**: the main-transcript
+  line that launched the source (the `Agent` `tool_use`) or returned it (the Workflow
+  `tool_result`). The orchestrator dispatches units one at a time and waits for each, so that
+  line falls inside the window of the unit that spent it. A subagent's own line timestamps are not
+  main-transcript time and are not used. Keeping a subagent whole also makes it one labelled line
+  in the output.
+- **The `main` source is split per request, by each request's own timestamp.** Main spans the whole
+  session and carries the orchestrator's own turns, the backbone of every phase in the prose lane.
+  Placing it by its anchor (the session's first line) would put all of that spend in one bucket,
+  and per-phase figures would leave out the orchestrator. With the split, the orchestrator's turns
+  inside a unit window count toward that unit, and the turns between units count as overhead.
+
+### Windows
+
+Every window is half-open, `start <= ts < end`.
+
+- **Run window**: `[started, ended)`. A run with no `ended` (an `open` run) ends at the `started` of
+  the next run, of **any** target, recorded in the same session, and is unbounded if there is none.
+- **Unit window**: `[started, ended)`. A unit entry with no `ended` is **incomplete**; its window
+  ends at the next unit entry's `started` in the same run, or else at the run window's end.
+- **Ownership**: an item belongs to the run with the latest `started <= ts` among the session's
+  runs of every target, and counts only if `ts` is also inside that run's window. The same rule
+  picks among a run's unit entries. Each item has at most one owner, even when two runs share a
+  session or bad data makes windows overlap, so nothing is counted twice.
+
+### Buckets
+
+| bucket | contents |
+| --- | --- |
+| **per-phase** | inside a complete unit entry's window, and not an errored Workflow agent; summed per phase stem across entries and runs, so a rework pair lands on one stem |
+| **run overhead** | inside the run window but outside every unit window, and not errored: the estimate pre-pass, `rdm next`, advance and park writes, and the orchestrator's turns between units |
+| **unattributed (runs)**, itemised | inside the run window and either an errored Workflow agent (cause `errored`, taking precedence over the two buckets above) or inside an incomplete unit entry (cause `unit-incomplete`, naming the stem and attempt). Main requests here are aggregated into one `main session` item per run and unit entry |
+| **unattributed (sessions)**, itemised | an unanchored `agent` or Workflow agent (cause `unanchored`), and main requests with no timestamp (cause `untimestamped`). They cannot be placed in any window and two runs may share the session, so they are listed once per session, never inside a run |
+| **excluded** | placed, but owned by no run of this roadmap: before or after every run, between runs, or inside another target's run. Reported as a count of sources, a count of main requests and their tokens, and never part of any total |
+
+Every figure carries the five token classes plus requests and their total, per model where a
+model breakdown is shown. Three identities hold per token class:
+
+- per run: `Σ per-unit + overhead + unattributed == run total`;
+- per joined session: `Σ this roadmap's run totals + session-unattributed + excluded == session
+  total`, so nothing is dropped;
+- per roadmap: `total == Σ joined run totals + Σ session-unattributed`, each session counted once.
+
+### Per-phase rows
+
+One row per phase stem that has a unit entry in a joined run, ordered by total tokens descending
+and then by stem. Each row gives the tokens by class, `attempts` (unit entries for the stem,
+incomplete ones included) and wall clock (the sum of `ended − started` over complete entries).
+A row with an incomplete entry is flagged: its wall clock is partial and that entry's spend is in
+the unattributed bucket. JSON durations are `wall_clock_ms`.
+
+### Missing, unjoinable, open and copied
+
+- **Missing**: the run names a session that cannot be located or read, typically because it was
+  pruned from disk. The run is listed with the error as its reason; its units add no tokens,
+  attempts or wall clock; the other runs are still reported.
+- **Unjoinable**: the run has no `session_uuid`. It is listed and contributes nothing.
+- **Open**: joined normally with the window above, labelled `open (incomplete)`.
+- **Cross-session copies**: a resumed or forked session that copies earlier lines keeps their
+  original timestamps, so they fall outside the new session's run windows and are excluded there.
+  No cross-session `requestId` dedupe is done.
+
+### Output
+
+The human view prints a header with run counts by join state, tokens by model, the bucket table
+(its `run overhead` row is the overhead line), the per-phase table, itemised run and session
+unattributed items, the excluded line, the runs table and the reason for each missing session.
+Reap warnings go to stderr as `warning: <session>: …`. `--format json` prints the same data on
+stdout with the warnings inside `warnings[]`, and stderr stays empty. `--format table` and
+`--format markdown` print the human view. The checked-in fixture is
+`tests/fixtures/cost-report/`, whose plan repo is joined to the `cost-session` transcripts.
 
 ## Historical provenance
 

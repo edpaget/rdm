@@ -21,6 +21,7 @@ pub mod backlinks;
 pub mod backlog;
 pub mod config;
 pub mod cost;
+pub mod cost_report;
 pub mod describe;
 pub mod info;
 pub mod init;
