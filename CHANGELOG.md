@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-24
+
 ### Security
 
 - **A configured external diff driver or `textconv` filter can no longer be executed by rdm, nor make a modified file read as untouched.** `diff.external` (or a `.gitattributes` `diff=<driver>` filter's `textconv` program) replaces git's own diff machinery, so the change-review diff read used to *run* the operator's script during an operation rdm documents as read-only — and, because such a script rarely prints git's unified format, the hunk set came back empty and `rdm review comment --path` refused a genuinely modified file as "not touched by `<base>..<head>`". The diff read now passes `--no-ext-diff --no-textconv`, and rdm's git subprocesses additionally scrub `GIT_EXTERNAL_DIFF` and `GIT_CONFIG_PARAMETERS` from the child environment — the two configuration layers a command-line flag cannot reach.
