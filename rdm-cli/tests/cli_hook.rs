@@ -2469,3 +2469,136 @@ fn done_line_rejects_reserved_task_roadmap_slug() {
         .failure()
         .stderr(predicate::str::contains("reserved prefix"));
 }
+
+/// The land-time trailer path `rdm-land` documents: a reviewed phase's
+/// trailer-less branch tip gains `rdm hook done-line`'s output by an amend
+/// (the parent is unchanged, so no rebase), fast-forwards onto `main`, and
+/// `rdm hook post-commit` then completes the phase with the landed SHA.
+/// Ported from the retired `scripts/verify-skill-autopilot.sh` § 4; its
+/// negative cases are `done_line_rejects_roadmap_without_phase` and
+/// `done_line_rejects_task_combined_with_phase` above.
+#[test]
+fn done_line_amended_onto_branch_tip_completes_after_ff_merge() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-my-phase",
+            "--status",
+            "reviewed",
+            "--no-edit",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args(["commit", "-m", "chore(plan): phase reviewed"])
+        .assert()
+        .success();
+
+    init_project_repo(&project_dir);
+    let src = project_dir.path();
+    let git = |args: &[&str]| -> String {
+        let out = git_cmd()
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_EDITOR", "true")
+            .args(args)
+            .current_dir(src)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    git(&["checkout", "-q", "-b", "roadmap/my-roadmap"]);
+    fs::write(src.join("feature.txt"), "work\n").unwrap();
+    git(&["add", "feature.txt"]);
+    git(&["commit", "-q", "-m", "feat: implement the phase"]);
+    let parent = git(&["rev-parse", "HEAD~1"]);
+
+    let out = rdm()
+        .args([
+            "hook",
+            "done-line",
+            "--roadmap",
+            "my-roadmap",
+            "--phase",
+            "phase-1-my-phase",
+        ])
+        .assert()
+        .success();
+    let done_line = String::from_utf8_lossy(&out.get_output().stdout)
+        .trim()
+        .to_owned();
+    assert!(!done_line.is_empty(), "done-line printed a trailer");
+    let message = format!("{}\n\n{done_line}\n", git(&["log", "-1", "--format=%B"]));
+    let msg_file = project_dir.path().join("amend-msg");
+    fs::write(&msg_file, message).unwrap();
+    git(&["commit", "-q", "--amend", "-F", msg_file.to_str().unwrap()]);
+    fs::remove_file(&msg_file).unwrap();
+
+    assert!(
+        git(&["log", "-1", "--format=%B"]).contains(&done_line),
+        "the tip carries the trailer"
+    );
+    assert_eq!(
+        git(&["rev-parse", "HEAD~1"]),
+        parent,
+        "the amend kept the parent: no rebase"
+    );
+    assert_eq!(git(&["rev-list", "--count", "main..HEAD"]), "1");
+    assert!(
+        !src.join(".git/rebase-merge").exists() && !src.join(".git/rebase-apply").exists(),
+        "no rebase was started"
+    );
+
+    git(&["checkout", "-q", "main"]);
+    git(&["merge", "-q", "--ff-only", "roadmap/my-roadmap"]);
+    let landed = git(&["rev-parse", "HEAD"]);
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(src)
+        .assert()
+        .success();
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+            "--format",
+            "json",
+            "--no-body",
+        ])
+        .assert()
+        .success();
+    let phase: serde_json::Value = serde_json::from_slice(&out.get_output().stdout).unwrap();
+    assert_eq!(
+        phase["status"], "done",
+        "the landed trailer completed the phase"
+    );
+    assert_eq!(phase["commit"], landed.as_str(), "with the landed SHA");
+}

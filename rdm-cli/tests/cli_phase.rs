@@ -2511,3 +2511,58 @@ fn start_commit_resolution_failures_are_hard_errors_and_write_nothing() {
         "no --start-commit resolution failure may write a partial value: {json}"
     );
 }
+
+/// The advance/park outcome writes the prose autopilot loop performs: on a
+/// plan repo with no `gates.reviewed` key (the gate ships off), `--status
+/// reviewed` lands and reads back, and `--status blocked --reason …` records
+/// a `blocked_reason` that `phase show --format json` returns. Ported from
+/// the retired `scripts/verify-skill-autopilot.sh` § 2.
+#[test]
+fn reviewed_and_blocked_reason_read_back_as_json() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "a", "Phase A");
+    create_phase(&dir, "b", "Phase B");
+    let update = |stem: &str, extra: &[&str]| {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args(["phase", "update", stem])
+            .args(extra)
+            .args(["--no-edit", "--roadmap", "two-way", "--project", "fbm"])
+            .assert()
+            .success();
+    };
+    let show = |stem: &str| -> serde_json::Value {
+        let out = rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args([
+                "phase",
+                "show",
+                stem,
+                "--roadmap",
+                "two-way",
+                "--project",
+                "fbm",
+                "--format",
+                "json",
+                "--no-body",
+            ])
+            .assert()
+            .success();
+        serde_json::from_slice(&out.get_output().stdout).unwrap()
+    };
+    for stem in ["phase-1-a", "phase-2-b"] {
+        update(stem, &["--status", "in-progress"]);
+    }
+
+    update("phase-1-a", &["--status", "reviewed"]);
+    assert_eq!(show("phase-1-a")["status"], "reviewed");
+
+    let reason = "[code] rework budget exhausted";
+    update("phase-2-b", &["--status", "blocked", "--reason", reason]);
+    let parked = show("phase-2-b");
+    assert_eq!(parked["status"], "blocked");
+    assert_eq!(parked["blocked_reason"], reason);
+}

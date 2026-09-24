@@ -11,8 +11,8 @@ test-group = "server-integration"
 filter = "package(rdm-devtools)"
 slow-timeout = { period = "20s", terminate-after = 3 }
 
-# The review workflow component tests drive a Node child per test through
+# The workflow component tests drive a Node child per test through
 # rdm_devtools::workflow; a hung host must fail the run rather than hang it.
 [[profile.default.overrides]]
-filter = "package(rdm-cli) & binary(workflow_review)"
+filter = "package(rdm-cli) & (binary(workflow_review) | binary(workflow_passes))"
 slow-timeout = { period = "30s", terminate-after = 4 }
