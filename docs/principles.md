@@ -197,3 +197,9 @@ Every commit follows the [Conventional Commits](https://www.conventionalcommits.
 ### Why
 
 Structured commits enable automated changelog generation, semantic versioning, and bisect-friendly history. A developer reading `git log` can quickly understand the intent behind each change without reading the diff.
+
+---
+
+## Pending: verbatim principle input from `CLAUDE.md` (input for phase 6, not yet reworded into house style)
+
+**FORBIDDEN, categorically: no test, harness, or CI step may assert on `CHANGELOG.md`.** Not that `[Unreleased]` contains a word, names a file, or describes a feature; not that it is co-staged with a code change; and not a planted-mutation self-test over the changelog body. Release automation moves the whole `[Unreleased]` body into a versioned section, so any such check goes red on `main` the moment a release lands — this blocked v0.18.1. The changelog rule above is enforced by review, not by a gate. Assert on the code or the emitted artifact, never on the prose describing it.

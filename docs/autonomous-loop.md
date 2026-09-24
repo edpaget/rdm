@@ -369,9 +369,11 @@ once dispatch-phase returns, and interactive `rdm-do`'s finalize invokes
 `rdm-review` (the generated projection of the same canonical source) after the
 human confirm gate. With nothing left unreviewed, the once-passive needs-review
 Stop hook (Claude Code) and Pi `agent_end` extension — which only re-prompted
-when an item was *left* in `needs-review` — have been retired as redundant; see
-[`CLAUDE.md`](../CLAUDE.md)'s "Hook reconciliation" note for the harness
-evidence. The autopilot lane never emits a `Done:` line — the orchestrator's
+when an item was *left* in `needs-review` — have been retired as redundant;
+`scripts/verify-worktree-review-loop.sh` drives the real hook scripts /
+`rdm review pending` off directly-set rdm state (status/tags), never off a
+specific driver, showing the scoping the retired hook depended on is
+agnostic to whatever set that state, workflow or skill. The autopilot lane never emits a `Done:` line — the orchestrator's
 review is an inline pipeline (not the `rdm-review` skill), and autopilot's
 advance step writes only `--status reviewed`. The `Done:` line is supplied later
 by `rdm-review` or at landing.

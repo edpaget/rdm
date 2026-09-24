@@ -833,7 +833,17 @@
       "implicationForAttribution": "agentContextFloor.attribution uses chars/4 and is left UNCHANGED as the recorded phase-2 figure, but it is now known to understate this file by 60%. At the measured 2.49 chars/token, claudeMdSubtotal's 61247 chars price at roughly 24600 tokens rather than 15312, and remainderToolSchemasSystemPrompt (23526) is overstated by the same amount since it is derived as floor minus that subtotal.",
       "avoidable": false,
       "avoidabilityEvidence": "The runtime's agent-definition frontmatter schema accepts description, tools, disallowedTools, prompt, model, effort, permissionMode, mcpServers, hooks, maxTurns, color, background, memory, isolation, observer, observerMessage, observeSubagents -- none suppresses CLAUDE.md. `memory` is E.enum([\"user\",\"project\",\"local\"]) scoping auto-loading of ~/.claude/agent-memory/ files, i.e. it ADDS context. The only suppression switches are process-global: CLAUDE_CODE_DISABLE_CLAUDE_MDS, and --bare / CLAUDE_CODE_SIMPLE=1 (which also strips hooks, LSP and auth).",
-      "disposition": "Per the phase body: recorded as a finding, and not pursued further. No CLAUDE.md restructuring was attempted or is proposed. The measurement only reprices the option -- a hypothetical 30% CLAUDE.md reduction would be worth ~5800 tokens per agent, not the ~3600 the chars/4 estimate implied."
+      "disposition": "Per the phase body: recorded as a finding, and not pursued further. No CLAUDE.md restructuring was attempted or is proposed. The measurement only reprices the option -- a hypothetical 30% CLAUDE.md reduction would be worth ~5800 tokens per agent, not the ~3600 the chars/4 estimate implied.",
+      "afterAuthoringGrammarAndContextDiet": {
+        "measurementDate": "2026-09-23",
+        "chars": 36994,
+        "measuredTokens": 12981,
+        "measuredCharsPerToken": 2.85,
+        "basis": "measured",
+        "method": "Live claude -p 'Run the command: echo RESOLUTION_PROBE_OK' run twice in this worktree (session default agent, project CLAUDE.md moved aside then restored), reading firstRequestTokens (input + cache_creation + cache_read on the first assistant record) off each run's transcript -- same instrument as docs/workflow-schemas.md's 'The measurement (2x2, live, this repo)' section, default-agent cell only (not the full 2x2). measuredTokens is the with-minus-without delta (42238 - 29257), directly comparable to measuredTrim2x2.claudeMdCostTokens.inDefaultAgent (19309) above.",
+        "percentReductionVsBaseline": 32.81,
+        "note": "authoring-grammar-and-context-diet phase 4 split CLAUDE.md into directives (kept), reference (moved to docs/ behind a citation), and history (deleted): 543 lines / 48207 chars (original baseline) -> 486 lines / 36994 chars (this worktree's pre-phase-4 state was 542 lines / 74119 chars, already grown since the baseline). measuredTokens (12981) is smaller than both pre-diet figures it is comparable to: claudeMdCostTokens.inDefaultAgent (19309) and claudeMdFinding.measuredTokens (19320, the custom-agentType row)."
+      }
     },
     "corroborationCrossProject": {
       "description": "Independent corroboration from the existing on-disk corpus: per-agent-class median firstRequestTokens grouped by project slug, for two repos whose CLAUDE.md files differ by 31144 chars (rdm 48207, bowling-app 17063) and which share the same user-global copy.",
