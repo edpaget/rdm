@@ -92,9 +92,13 @@ An acceptance criterion is a statement of what success looks like. For a criteri
 
 **Failure mode:** An implementer reads "avoid race conditions" and doesn't know whether the criterion is satisfied by adding locks, by using a language feature, by refactoring the architecture, or by accepting serialization costs. The agent marks the criterion incomplete because no observable state confirms success. This blocks landing.
 
-**Good example:**  
-"The search index contains all user-visible records and is updated within 5 seconds of any record mutation"  
-- Observable: presence of all records in the index, latency bound
+**Good examples:**  
+"The search index contains all user-visible records"  
+- Observable: presence of all records in the index
+- Positive form: states what the system *does*, not what it *avoids*
+
+"The search index is updated within 5 seconds of any record mutation"  
+- Observable: latency bound
 - Positive form: states what the system *does*, not what it *avoids*
 
 **Problematic example:**  
@@ -160,11 +164,14 @@ Twilio contract already in use for password resets.
 ## Acceptance Criteria
 
 - [ ] SMS codes are sent via Twilio within 100ms of signup form submission
-- [ ] Verification codes are valid for exactly 10 minutes and are single-use; SMS resend within the same session reissues a new code
-- [ ] Code verification fails after 3 incorrect attempts in a single session; new users must restart signup
+- [ ] Verification codes are valid for exactly 10 minutes
+- [ ] Verification codes are single-use
+- [ ] SMS resend within the same session reissues a new code
+- [ ] Code verification fails after 3 incorrect attempts in a single session
+- [ ] New users must restart signup after 3 failed verification attempts
 ```
 
-Each criterion is observable (codes are sent, valid for a duration, fail after N attempts) and scoped (timing bounds, attempt limits, audience scope of new users).
+Each criterion names exactly one observable outcome: codes are sent (with a timing bound), codes are valid (with a duration), codes are single-use, resend behavior, verification failure (with an attempt limit), and restart requirement. All are scoped with timing bounds, attempt limits, or audience constraints.
 
 ## Verification
 
