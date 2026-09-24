@@ -397,7 +397,7 @@ Landing evidence for the real-install half. Captured 2026-08-03 on macOS (darwin
 
 What it proves: the committed plugin manifest and the marketplace manifest both pass `claude plugin validate --strict`; the marketplace adds and the plugin installs cleanly into an isolated `CLAUDE_CONFIG_DIR`; `plugin list --json` reports exactly one entry, `id=rdm@rdm`, `enabled=true`, at the crate version; the installed tree carries all 11 skills and both Workflow engines byte-identical to the emitted bytes; and the invoking user's real `~/.claude` config is byte-unchanged with no `rdm` cache or marketplace directory created.
 
-This script is **developer-run and carries no CI coverage** — CI runs only the hermetic half, `cargo nextest run -p rdm-cli --test distribution -E 'test(/^plugin::/)'`. (The observer's own NOTICE text below still names the retired `scripts/verify-plugin-install.sh`; the observer was deliberately left untouched in phase 5.)
+This script is **developer-run and carries no CI coverage** — CI runs only the hermetic half, `cargo nextest run -p rdm-cli --test distribution -E 'test(/^plugin::/)'`, which is also the command the observer's NOTICE prints when `claude` is absent.
 
 ```
 
@@ -505,7 +505,8 @@ The missing-`claude` path is likewise exercised locally:
 $ env PATH=/usr/bin:/bin sh scripts/observe-plugin-install.sh; echo "EXIT=$?"
 [NOTICE] claude was not found on PATH — the real-install observation was SKIPPED.
           This is NOT a pass. Install the Claude Code CLI and re-run to observe.
-          The hermetic half (scripts/verify-plugin-install.sh) covers everything CI gates.
+          The hermetic half covers everything CI gates; run it with:
+            cargo nextest run -p rdm-cli --test distribution -E "test(/^plugin::/)"
 EXIT=2
 ```
 

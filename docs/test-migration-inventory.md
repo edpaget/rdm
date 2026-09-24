@@ -878,8 +878,8 @@ scripted draft verbatim, quotes and `$` included).
 - Stamped block, embedded template copy and plugin copy for backlog, document and estimate: `workflow_passes::{backlog,document,estimate}::generator_*`.
 - Review and plan-review stamped blocks: `workflow_review::generators::*` (phase 2).
 - Plan-review driver block: `rdm-core/tests/workflow_plan_review_driver.rs::plan_review_driver_block_is_byte_identical`.
-- Emitted-engine downstream behaviour, including estimate § 9's cited § 7c contract for the review engine: phase 5, currently `verify-agent-config-distribution.sh` § 7.
-- Superseded-engine removal downstream: phase 5 (§ 5j), plus the `agent_config.rs` unit tests above.
+- Emitted-engine downstream behaviour, including estimate § 9's cited § 7c contract for the review engine: `distribution::downstream::*` in the `rdm-cli` nextest binary `distribution` (phase 5; § 8 maps each section).
+- Superseded-engine removal downstream: `distribution::superseded::*` (phase 5, § 5j/5k), plus the `agent_config.rs` unit tests above.
 
 ### Negative controls and provenance kept
 

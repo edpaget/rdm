@@ -3,8 +3,10 @@
 # `plugin validate --strict` -> `marketplace add` -> `install rdm@rdm` ->
 # assert the installed tree.
 #
-# Why this exists as its own script rather than a section of
-# scripts/verify-plugin-install.sh: this half needs the `claude` CLI, which is
+# Why this exists as its own script rather than a test in the hermetic
+# `plugin::` suite (rdm-cli/tests/distribution/plugin.rs, run by
+# `cargo nextest run -p rdm-cli --test distribution -E 'test(/^plugin::/)'`):
+# this half needs the `claude` CLI, which is
 # NOT a CI dependency, and the plugin-distribution roadmap deliberately does
 # not add one (adding `claude` to .mise.toml or .github/workflows/ci.yml is an
 # explicit non-goal). Per the convention scripts/observe-workflow-listing.sh
@@ -16,7 +18,9 @@
 # Everything the repo CAN check hermetically — that plugins/rdm/ matches
 # generator output modulo the manifest version, that the marketplace entry's
 # `source` resolves, that the workflow bytes and the 11-skill inventory are
-# intact — is gated unconditionally by scripts/verify-plugin-install.sh.
+# intact — is gated unconditionally by the `plugin::` tests in the rdm-cli
+# nextest binary `distribution` (rdm-cli/tests/distribution/plugin.rs), which
+# CI runs as part of `cargo nextest run`.
 # This script closes the remaining gap: that the packaged artifact actually
 # INSTALLS, offline, and that what lands on disk is what we emitted.
 #
@@ -25,7 +29,8 @@
 #   1. `claude plugin validate --strict` FALSE-PASSES a marketplace whose
 #      plugin `source` points at a nonexistent directory (exit 0 on
 #      "source": "./does-not-exist"). Source resolution is therefore owned by
-#      verify-plugin-install.sh, not delegated to the CLI.
+#      the Rust test plugin::marketplace_shape_and_sources_resolve, not
+#      delegated to the CLI.
 #
 #   2. `claude plugin details` reports Skills / Agents / Hooks / MCP servers /
 #      LSP servers and has NO Workflows category at all (confirmed against the
@@ -76,7 +81,8 @@ pass() { printf '\033[1;32m[ok]\033[0m %s\n' "$*"; }
 if ! command -v claude >/dev/null 2>&1; then
     printf '\n\033[1;33m[NOTICE]\033[0m claude was not found on PATH — the real-install observation was SKIPPED.\n' >&2
     printf '          This is NOT a pass. Install the Claude Code CLI and re-run to observe.\n' >&2
-    printf '          The hermetic half (scripts/verify-plugin-install.sh) covers everything CI gates.\n' >&2
+    printf '          The hermetic half covers everything CI gates; run it with:\n' >&2
+    printf '            cargo nextest run -p rdm-cli --test distribution -E "test(/^plugin::/)"\n' >&2
     exit 2
 fi
 
@@ -191,7 +197,8 @@ cp "$REPO_ROOT/.claude-plugin/marketplace.json" "$MKT/.claude-plugin/marketplace
 # copy of plugins/rdm. Rationale: the install asserts `plugin list`'s version
 # equals the crate version, and prepare-release.yml bumps Cargo.toml without
 # regenerating, so the committed manifest is legitimately stale right after a
-# release. Nothing is lost — verify-plugin-install.sh separately proves the
+# release. Nothing is lost — the Rust test
+# plugin::checked_in_tree_matches_the_generator separately proves the
 # committed tree equals fresh output modulo exactly that version field.
 "$RDM_BIN" agent-config claude --plugin --out "$MKT/plugins/rdm" >/dev/null
 EMITTED="$MKT/plugins/rdm"

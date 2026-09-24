@@ -138,9 +138,11 @@ assert_listing() {
     # 4. No double-prefixed entry — the specific corruption an unanchored
     #    s/<name>/rdm-wf-<name>/ produces in a name that already starts `rdm-`.
     #    The two patterns are COMPOSED from a prefix variable rather than
-    #    spelled out, so this script's own source can never trip the repo-wide
-    #    version of the same check (verify-agent-config-distribution.sh § 5g),
-    #    which greps every tracked file for exactly these two shapes.
+    #    spelled out, so this script's own source never contains either shape
+    #    literally. (A repo-wide grep of every tracked file for these two
+    #    shapes once existed; it was retired as a prose grep and has no
+    #    successor — the Rust distribution tests, `cargo nextest run -p
+    #    rdm-cli --test distribution`, gate the emitted names behaviourally.)
     ns=rdm-
     if grep -nE "${ns}${ns}|${ns}wf-${ns}" "$listing" >&2; then
         echo "  double-prefixed listing entry (see above)" >&2
