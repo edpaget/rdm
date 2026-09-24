@@ -84,7 +84,9 @@ impl From<&Error> for ProblemDetail {
                     instance: None,
                 }
             }
-            Error::RunUnitMismatch { .. } | Error::RunOutcomeEmpty => ProblemDetail {
+            Error::RunUnitMismatch { .. }
+            | Error::RunOutcomeEmpty
+            | Error::RunStopReasonEmpty => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Unprocessable Content".to_string(),
                 status: 422,
@@ -612,6 +614,7 @@ mod tests {
                 expected: "fix-bug".to_string(),
             },
             Error::RunOutcomeEmpty,
+            Error::RunStopReasonEmpty,
         ] {
             let pd = ProblemDetail::from(&err);
             assert_eq!(pd.status, 422, "{err}");

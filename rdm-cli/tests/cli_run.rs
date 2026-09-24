@@ -469,6 +469,119 @@ fn a_path_escaping_run_id_is_reported_not_found_without_a_panic() {
 }
 
 #[test]
+fn a_path_escaping_unit_is_rejected_without_a_panic() {
+    let repo = Repo::new();
+    let roadmap_run = repo.record(Session::Unset, &["--roadmap", "alpha"]);
+    let task_run = repo.record(Session::Unset, &["--task", "fix-bug"]);
+    for (id, expected) in [
+        (&roadmap_run, "phase not found"),
+        (&task_run, "is not part of run"),
+    ] {
+        let args = [
+            "run",
+            "unit-start",
+            id.as_str(),
+            "--unit",
+            "../x",
+            "--project",
+            "test",
+        ];
+        let out = repo.run_with(Session::Unset, &args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "rdm {args:?}: {stderr}");
+        assert!(!stderr.contains("panicked"), "rdm {args:?}: {stderr}");
+        assert!(
+            stderr.to_lowercase().contains(expected),
+            "rdm {args:?}: {stderr}"
+        );
+        assert!(repo.show(id)["units"].as_array().unwrap().is_empty());
+    }
+}
+
+#[test]
+fn close_rejects_an_empty_stop_reason() {
+    let repo = Repo::new();
+    let id = repo.record(Session::Unset, &["--roadmap", "alpha"]);
+    for reason in ["", "   "] {
+        let args = [
+            "run",
+            "close",
+            id.as_str(),
+            "--stop-reason",
+            reason,
+            "--project",
+            "test",
+        ];
+        let out = repo.run_with(Session::Unset, &args);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "rdm {args:?}: {stderr}");
+        assert!(
+            stderr.contains("stop reason cannot be empty") && stderr.contains("--stop-reason"),
+            "rdm {args:?}: {stderr}"
+        );
+    }
+    let run = repo.show(&id);
+    assert_eq!(run["status"], "open");
+    assert!(run.get("stop_reason").is_none(), "{run}");
+}
+
+#[test]
+fn list_as_a_table_labels_open_runs_incomplete_and_show_refuses_table() {
+    let repo = Repo::new();
+    let open = repo.record(Session::Unset, &["--roadmap", "alpha"]);
+    let closed = repo.record(Session::Unset, &["--task", "fix-bug"]);
+    repo.ok(&[
+        "run",
+        "close",
+        &closed,
+        "--stop-reason",
+        "done",
+        "--project",
+        "test",
+    ]);
+
+    let table = repo.ok(&["run", "list", "--format", "table", "--project", "test"]);
+    let header = table
+        .lines()
+        .find(|l| l.contains("ID"))
+        .unwrap_or_else(|| panic!("no header row: {table}"));
+    for column in ["ID", "Driver", "Target", "Status", "Started", "Units"] {
+        assert!(header.contains(column), "missing {column}: {table}");
+    }
+    let row = |id: &str| {
+        table
+            .lines()
+            .find(|l| l.contains(id))
+            .unwrap_or_else(|| panic!("no row for {id}: {table}"))
+            .to_string()
+    };
+    let open_row = row(&open);
+    assert!(open_row.contains("open (incomplete)"), "{open_row}");
+    let closed_row = row(&closed);
+    assert!(closed_row.contains("closed"), "{closed_row}");
+    assert!(!closed_row.contains("incomplete"), "{closed_row}");
+
+    let out = repo.run_with(
+        Session::Unset,
+        &[
+            "run",
+            "show",
+            &open,
+            "--format",
+            "table",
+            "--project",
+            "test",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("--format table is not supported for 'run show'"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn unit_errors_name_the_next_command() {
     let repo = Repo::new();
     let id = repo.record(Session::Unset, &["--roadmap", "alpha"]);

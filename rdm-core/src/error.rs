@@ -200,6 +200,8 @@ pub enum Error {
     },
     /// A unit's outcome was empty.
     RunOutcomeEmpty,
+    /// A run's stop reason was empty or whitespace-only.
+    RunStopReasonEmpty,
     /// The operation requires the review to be a draft (comment structure
     /// changes, submission, and un-forced deletion are draft-only).
     ReviewNotDraft(String),
@@ -855,6 +857,12 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "a unit outcome cannot be empty — pass a non-empty `--outcome` (e.g. reviewed, rework, escalated)"
+                )
+            }
+            Error::RunStopReasonEmpty => {
+                write!(
+                    f,
+                    "a run's stop reason cannot be empty — pass a non-empty `--stop-reason` saying why the run stopped (e.g. done, blocked, interrupted)"
                 )
             }
             Error::ReviewNotDraft(id) => {

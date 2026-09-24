@@ -252,7 +252,8 @@ fn load_open_run(store: &impl Store, project: &str, run_id: &str) -> Result<Docu
 /// [`Error::RunNotOpen`] if it is closed or abandoned,
 /// [`Error::RunUnitAlreadyOpen`] while another unit entry is still open,
 /// [`Error::PhaseNotFound`] / [`Error::RoadmapNotFound`] if a roadmap run's
-/// unit does not resolve to an existing phase, [`Error::RunUnitMismatch`] if
+/// unit does not resolve to an existing phase — including a unit that is not
+/// a single path component (such as `../x`) — [`Error::RunUnitMismatch`] if
 /// a task run's unit is not its task, or [`Error::Io`] /
 /// [`Error::FrontmatterParse`] on read or write failure.
 pub fn start_unit(
@@ -273,7 +274,11 @@ pub fn start_unit(
     let resolved = match &doc.frontmatter.target {
         RunTarget::Roadmap(roadmap) => {
             let stem = crate::ops::phase::resolve_phase_stem(store, project, roadmap, unit)?;
-            if !store.exists(&crate::paths::phase_path(project, roadmap, &stem)) {
+            // A stem that is not a single path component (`../x`) can never
+            // name a phase, and would panic in `phase_path`.
+            if !crate::paths::is_single_component(&stem)
+                || !store.exists(&crate::paths::phase_path(project, roadmap, &stem))
+            {
                 return Err(Error::PhaseNotFound(unit.to_string()));
             }
             stem
@@ -370,8 +375,9 @@ impl From<RunEnd> for RunStatus {
 /// # Errors
 ///
 /// Returns [`Error::RunNotFound`] if the run doesn't exist,
-/// [`Error::RunNotOpen`] if it is already closed or abandoned, or
-/// [`Error::Io`] / [`Error::FrontmatterParse`] on read or write failure.
+/// [`Error::RunNotOpen`] if it is already closed or abandoned,
+/// [`Error::RunStopReasonEmpty`] if `stop_reason` is empty or whitespace,
+/// or [`Error::Io`] / [`Error::FrontmatterParse`] on read or write failure.
 pub fn close_run(
     store: &mut impl Store,
     project: &str,
@@ -381,6 +387,9 @@ pub fn close_run(
     now: DateTime<Utc>,
 ) -> Result<Document<Run>> {
     let mut doc = load_open_run(store, project, run_id)?;
+    if stop_reason.trim().is_empty() {
+        return Err(Error::RunStopReasonEmpty);
+    }
     doc.frontmatter.status = end.into();
     doc.frontmatter.ended = Some(now);
     doc.frontmatter.stop_reason = Some(stop_reason.to_string());
@@ -672,6 +681,38 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn a_path_escaping_unit_is_not_found_rather_than_a_panic() {
+        let mut store = setup_store();
+        let roadmap_run = record(&mut store, alpha(), t(30, 0));
+        let task_run = record(&mut store, RunTarget::Task("fix-bug".to_string()), t(30, 0));
+        for bad in ["../x", "./x", "a/../b", "..", ".", "", "a\\b", "x/y"] {
+            assert!(
+                matches!(
+                    start_unit(&mut store, "test", &roadmap_run, bad, t(31, 0)),
+                    Err(Error::PhaseNotFound(ref u)) if u == bad
+                ),
+                "roadmap run {bad:?}"
+            );
+            assert!(
+                matches!(
+                    start_unit(&mut store, "test", &task_run, bad, t(31, 0)),
+                    Err(Error::RunUnitMismatch { ref unit, .. }) if unit == bad
+                ),
+                "task run {bad:?}"
+            );
+        }
+        for id in [&roadmap_run, &task_run] {
+            assert!(
+                get_run(&store, "test", id)
+                    .unwrap()
+                    .frontmatter
+                    .units
+                    .is_empty()
+            );
+        }
+    }
+
     // -- units --
 
     #[test]
@@ -783,6 +824,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(doc.frontmatter.status, RunStatus::Abandoned);
+    }
+
+    #[test]
+    fn close_run_rejects_an_empty_stop_reason() {
+        let mut store = setup_store();
+        let id = record(&mut store, alpha(), t(30, 0));
+        for end in [RunEnd::Closed, RunEnd::Abandoned] {
+            for bad in ["", "   ", "\t\n"] {
+                assert!(
+                    matches!(
+                        close_run(&mut store, "test", &id, end, bad, t(50, 0)),
+                        Err(Error::RunStopReasonEmpty)
+                    ),
+                    "{end:?} {bad:?}"
+                );
+            }
+        }
+        let doc = get_run(&store, "test", &id).unwrap();
+        assert_eq!(doc.frontmatter.status, RunStatus::Open);
+        assert_eq!(doc.frontmatter.stop_reason, None);
+        assert_eq!(doc.frontmatter.ended, None);
     }
 
     #[test]

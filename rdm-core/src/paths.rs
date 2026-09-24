@@ -160,6 +160,16 @@ pub fn runs_dir(project: &str) -> RelPath {
     RelPath::new(&format!("projects/{project}/runs")).expect("valid path")
 }
 
+/// Returns whether `name` is a single, non-escaping path component — not
+/// empty, not `.`/`..`, and free of `/` and `\\`.
+///
+/// A caller-supplied name (a run id, a phase stem) that fails this check can
+/// never name a stored file, so callers map it to their not-found error
+/// before handing it to a path builder that would otherwise panic.
+pub(crate) fn is_single_component(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['/', '\\']) && name != "." && name != ".."
+}
+
 /// Returns the path to a run-record file.
 ///
 /// # Panics

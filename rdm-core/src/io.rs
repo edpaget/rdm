@@ -182,9 +182,7 @@ pub fn load_review(store: &impl Store, project: &str, review_id: &str) -> Result
 /// than reach [`crate::paths::run_path`], which panics on a path-escaping
 /// component.
 fn run_file_path(project: &str, run_id: &str) -> Result<crate::store::RelPath> {
-    let single_component =
-        !run_id.is_empty() && !run_id.contains(['/', '\\']) && run_id != "." && run_id != "..";
-    if !single_component {
+    if !crate::paths::is_single_component(run_id) {
         return Err(Error::RunNotFound(run_id.to_string()));
     }
     Ok(crate::paths::run_path(project, run_id))
