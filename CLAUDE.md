@@ -211,7 +211,7 @@ The dispatch also stamps the target phase/task `in-progress` itself, best-effort
 cargo build   # ALWAYS run this before any rdm command
 ```
 
-`.mise.toml` sets `$RDM_BIN` to the checkout the session started in, which stays wrong inside a roadmap or task worktree — `$RDM_BIN` must always name the build of the checkout you're editing. After `cd`-ing into a worktree, rebind it (`export RDM_BIN="$PWD/target/debug/rdm"`, mirroring `AGENTS.md`'s "rebind `RDM_BIN` to the returned checkout"), or just run that checkout's `./target/debug/rdm` directly. Run every rdm command as `"$RDM_BIN" <command>` (or `"${RDM_BIN:-rdm}"`), never a bare `rdm`, which risks a stale global install. If you modify any rdm source code, `cargo build` again before running further rdm commands.
+`.mise.toml` sets `$RDM_BIN` to the checkout the session started in, which stays wrong inside a roadmap or task worktree — `$RDM_BIN` must always name the build of the checkout you're editing. After `cd`-ing into a worktree, rebind it (`export RDM_BIN="$PWD/target/debug/rdm"`, mirroring `AGENTS.md`'s "rebind `RDM_BIN` to the returned checkout"), or just run that checkout's `./target/debug/rdm` directly. Run every rdm command as `"$RDM_BIN" <command>`, never a bare `rdm`, which risks a stale global install. If you modify any rdm source code, `cargo build` again before running further rdm commands.
 
 ### Hard rule — no direct access to the plan repo
 
@@ -225,7 +225,7 @@ This repo also enables `plan_review` (see "Plan review" below) and `gates.review
 
 ### Plan review
 
-A second, earlier gate than the document-review flow above: it reviews a roadmap/phase/task's **plan** before implementation begins, rather than the diff after implementation. Controlled by the `plan_review` config flag (`"$RDM_BIN" config set plan_review true`, `RDM_PLAN_REVIEW` env override, default `false`) — enabled for this repo's own plan data. While the flag is on, `roadmap create` / `phase create` / `task create` automatically stamp a reserved `needs-plan-review` tag onto every new item, alongside any user-supplied `--tags`.
+A second, earlier gate than the document-review flow described in the generated CLI guide's "Document reviews" section: it reviews a roadmap/phase/task's **plan** before implementation begins, rather than the diff after implementation. Controlled by the `plan_review` config flag (`"$RDM_BIN" config set plan_review true`, `RDM_PLAN_REVIEW` env override, default `false`) — enabled for this repo's own plan data. While the flag is on, `roadmap create` / `phase create` / `task create` automatically stamp a reserved `needs-plan-review` tag onto every new item, alongside any user-supplied `--tags`.
 
 List pending items with:
 
@@ -237,5 +237,5 @@ Run the `rdm-plan-review` skill against a pending item to review it: it dispatch
 
 The gate's self-review decision (may a session clear the tag on a plan it authored? — yes, because the verdict comes from independent finders/refuters, with a stated boundary), and the three recorded classifier blocks behind it, live in [`docs/plan-review-gate-policy.md`](docs/plan-review-gate-policy.md). `rdm-wf-plan-review` never writes the tag — it always returns `gateAction.commands` and the caller runs them, which is what `gateMode: 'return'` used to opt into. A unit still awaiting that write carries a `[gate pending: …]` clause on its summary and is counted by `gatePendingCount`; one whose current tag list the caller did not supply carries `tagsUnknown: true` and no commands, because `--tags` replaces the whole list.
 
-This gate composes with, and is independent from, the existing `needs-review` gate above: `plan_review`/`needs-plan-review` gates **before** implementation begins (on the plan document), while `rdm-review`/`needs-review` gates **after** implementation (on the diff). Neither the plan-review Stop hook (`rdm-plan-review-on-create.sh`) nor the needs-review Stop hook (`rdm-review-on-finalize.sh`) is active in this repo any longer.
+This gate composes with, and is independent from, the `needs-review` gate described in the generated CLI guide: `plan_review`/`needs-plan-review` gates **before** implementation begins (on the plan document), while `rdm-review`/`needs-review` gates **after** implementation (on the diff). Neither the plan-review Stop hook (`rdm-plan-review-on-create.sh`) nor the needs-review Stop hook (`rdm-review-on-finalize.sh`) is active in this repo any longer.
 

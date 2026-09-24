@@ -846,13 +846,13 @@
       },
       "afterDedupeCliGuide": {
         "measurementDate": "2026-09-24",
-        "chars": 20392,
-        "measuredTokens": 6881,
-        "measuredCharsPerToken": 2.96,
+        "chars": 20449,
+        "measuredTokens": 6891,
+        "measuredCharsPerToken": 2.97,
         "basis": "measured",
-        "method": "Live claude -p 'Run the command: echo RESOLUTION_PROBE_OK' run twice in this worktree (session default agent, project CLAUDE.md present vs. moved aside then restored), reading firstRequestTokens (input + cache_creation + cache_read on the first assistant record) off each run's transcript -- same instrument as afterAuthoringGrammarAndContextDiet above and docs/workflow-schemas.md's 'The measurement (2x2, live, this repo)' section, default-agent cell only. measuredTokens is the with-minus-without delta (36119 - 29238).",
-        "percentReductionVsBaseline": 57.7,
-        "note": "authoring-grammar-and-context-diet phase 7 removed the CLAUDE.md sections that restated rdm's generated CLI usage guide (Discovering work, Reading details, Searching, Updating status, Document reviews, Linking, Creating items, Planning workflow, Status transitions, Workflow), replacing them with a short citation to `rdm agent-config claude` / `rdm-core/src/templates/instructions-cli.md`, and switched the kept dev-only directives from a hardcoded `./target/debug/rdm` path to the `$RDM_BIN` convention: 486 lines / 36994 chars (afterAuthoringGrammarAndContextDiet, post phase 4, pre phase 6) -> 246 lines / 20392 chars (this phase, post phase 6's principles work, re-measured after the code-review fix-up commits: the CHANGELOG/instructions-cli.md correction and the worktree-safe RDM_BIN directive, a78de3e). measuredTokens (6881) is well below afterAuthoringGrammarAndContextDiet's 12981, consistent with the file having lost roughly half its remaining bytes to the citation."
+        "method": "Live claude -p 'Run the command: echo RESOLUTION_PROBE_OK' run twice in this worktree (session default agent, project CLAUDE.md present vs. moved aside then restored), reading firstRequestTokens (input + cache_creation + cache_read on the first assistant record) off each run's transcript -- same instrument as afterAuthoringGrammarAndContextDiet above and docs/workflow-schemas.md's 'The measurement (2x2, live, this repo)' section, default-agent cell only. measuredTokens is the with-minus-without delta (36199 - 29308).",
+        "percentReductionVsBaseline": 57.58,
+        "note": "authoring-grammar-and-context-diet phase 7 removed the CLAUDE.md sections that restated rdm's generated CLI usage guide (Discovering work, Reading details, Searching, Updating status, Document reviews, Linking, Creating items, Planning workflow, Status transitions, Workflow), replacing them with a short citation to `rdm agent-config claude` / `rdm-core/src/templates/instructions-cli.md`, and switched the kept dev-only directives from a hardcoded `./target/debug/rdm` path to the `$RDM_BIN` convention: 486 lines / 36994 chars (afterAuthoringGrammarAndContextDiet, post phase 4, pre phase 6) -> 246 lines / 20449 chars (this phase, post phase 6's principles work, re-measured after two rounds of code-review fix-ups: a78de3e — the CHANGELOG/instructions-cli.md correction and the worktree-safe RDM_BIN directive — and the final round upstreaming the remaining dropped guide lines, fixing the CHANGELOG's --user overwrite warning, removing RDM_BIN's stale-binary fallback, and fixing the Plan review section's dangling cross-references). measuredTokens (6891) is well below afterAuthoringGrammarAndContextDiet's 12981, consistent with the file having lost roughly half its remaining bytes to the citation."
       }
     },
     "corroborationCrossProject": {
