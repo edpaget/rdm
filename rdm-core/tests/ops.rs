@@ -2043,6 +2043,48 @@ fn set_phase_estimate_preserves_existing_model_on_difficulty_change() {
 }
 
 #[test]
+fn set_phase_estimate_rederives_stale_tier_on_repeated_difficulty_change() {
+    let mut store = setup_with_roadmap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "two-way",
+            slug: "core",
+            title: "Core",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    // First difficulty-only update derives Small from Easy.
+    rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Easy),
+        rdm_core::ops::ModelTierUpdate::Keep,
+    )
+    .unwrap();
+
+    // A later difficulty-only update whose recorded model still looks
+    // derived from the difficulty being replaced must re-derive, not strand
+    // the stale tier.
+    let doc = rdm_core::ops::phase::set_phase_estimate(
+        &mut store,
+        "fbm",
+        "two-way",
+        "phase-1-core",
+        rdm_core::ops::DifficultyUpdate::Set(Difficulty::Hard),
+        rdm_core::ops::ModelTierUpdate::Keep,
+    )
+    .unwrap();
+    assert_eq!(doc.frontmatter.difficulty, Some(Difficulty::Hard));
+    assert_eq!(doc.frontmatter.model, Some(ModelTier::Large));
+}
+
+#[test]
 fn set_phase_estimate_clear_model_prevents_derive() {
     let mut store = setup_with_roadmap();
     rdm_core::ops::phase::create_phase(

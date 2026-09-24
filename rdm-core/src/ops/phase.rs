@@ -697,8 +697,11 @@ pub fn apply_unset_phase_estimate(
 /// when `difficulty` is [`DifficultyUpdate::Set`], `model` is
 /// [`ModelTierUpdate::Keep`], and no model is already recorded, the model tier
 /// is derived from the difficulty. An explicit [`ModelTierUpdate::Set`] or
-/// [`ModelTierUpdate::Clear`] always wins, and a previously set model is never
-/// overwritten by the derive — so a human override is respected.
+/// [`ModelTierUpdate::Clear`] always wins. A previously set model is preserved
+/// *unless* it matches what the difficulty being replaced would itself have
+/// derived — in that case it looks auto-derived rather than explicitly
+/// chosen, so it is treated as stale and re-derived from the new difficulty
+/// instead of being stranded.
 ///
 /// # Errors
 ///
@@ -732,24 +735,35 @@ pub fn set_phase_estimate(
 /// [`create_phase`] and [`update_phase_with_estimate`] can apply
 /// the estimate as part of their single write. The difficulty→tier auto-derive
 /// rule is exactly the one documented on [`set_phase_estimate`]: when
-/// `difficulty` is [`DifficultyUpdate::Set`], `model` is
-/// [`ModelTierUpdate::Keep`], and no model is already recorded, the model tier
-/// is derived from the difficulty; an explicit model or a pre-existing model
-/// always wins.
+/// `difficulty` is [`DifficultyUpdate::Set`] and `model` is
+/// [`ModelTierUpdate::Keep`], the model tier is derived from the difficulty
+/// unless a pre-existing model is recorded and doesn't match what the
+/// difficulty being replaced would itself have derived — that model is an
+/// explicit choice and is preserved; an explicit model update always wins
+/// regardless.
 fn apply_phase_estimate(
     doc: &mut Document<Phase>,
     difficulty: DifficultyUpdate,
     model: ModelTierUpdate,
 ) {
+    let previous_difficulty = doc.frontmatter.difficulty;
     difficulty.apply(&mut doc.frontmatter.difficulty);
     model.apply(&mut doc.frontmatter.model);
     // Auto-derive the model tier from the difficulty when the caller set a
-    // difficulty but left the model untouched and none is already recorded.
-    // An explicit Set/Clear model (applied above) or a pre-existing model wins.
-    if let (DifficultyUpdate::Set(d), ModelTierUpdate::Keep) = (difficulty, model)
-        && doc.frontmatter.model.is_none()
-    {
-        doc.frontmatter.model = Some(d.model_tier());
+    // difficulty but left the model untouched. An explicit Set/Clear model
+    // (applied above) always wins. A pre-existing model is preserved unless
+    // it looks derived from the difficulty being replaced — i.e. it equals
+    // what `previous_difficulty` itself would have derived — in which case
+    // it is stale and re-derived from the new difficulty instead of
+    // stranding the old tier.
+    if let (DifficultyUpdate::Set(d), ModelTierUpdate::Keep) = (difficulty, model) {
+        let stale = match doc.frontmatter.model {
+            None => true,
+            Some(existing) => previous_difficulty.is_some_and(|prev| prev.model_tier() == existing),
+        };
+        if stale {
+            doc.frontmatter.model = Some(d.model_tier());
+        }
     }
 }
 

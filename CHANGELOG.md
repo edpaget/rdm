@@ -316,6 +316,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `rdm-dispatch-phase`'s code-review stage now runs its finders and refuters on the resolved `review-find`/`review-verify` models instead of silently inheriting the orchestrating session's model — the same models the plan-review stage already used.
 
+- **A difficulty-only `phase update` no longer strands a stale auto-derived model tier.** Raising (or lowering) `--difficulty` without an explicit `--model` now re-derives the model tier when the previously recorded tier matches what the difficulty being replaced would itself have derived; a tier a human explicitly chose (that doesn't match its own difficulty's derive) is still preserved.
+
 ## [0.21.0] - 2026-09-03
 
 ### Added

@@ -655,6 +655,133 @@ fn phase_update_sets_and_clears_difficulty_and_model() {
 }
 
 #[test]
+fn phase_update_repeated_difficulty_change_rederives_stale_model() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    // Difficulty-only update derives "small" from "easy".
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--difficulty",
+            "easy",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // A later difficulty-only update (still no --model) must re-derive the
+    // stale "small" tier to "large" rather than stranding it.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--difficulty",
+            "hard",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"model\": \"large\""));
+}
+
+#[test]
+fn phase_update_repeated_difficulty_change_preserves_explicit_model() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    create_phase(&dir, "core", "Core Valuation");
+
+    // Explicit model, no difficulty set yet.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--model",
+            "small",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    // Difficulty-only update must not clobber the explicitly chosen model.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "phase-1-core",
+            "--difficulty",
+            "hard",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-core",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"model\": \"small\""));
+}
+
+#[test]
 fn phase_update_status_and_estimate_in_one_invocation() {
     let dir = TempDir::new().unwrap();
     init_with_roadmap(&dir);
