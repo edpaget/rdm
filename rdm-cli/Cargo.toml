@@ -41,6 +41,8 @@ assert_cmd = "2"
 # stripped on publish.
 rdm-devtools = { path = "../rdm-devtools" }
 predicates = "3"
+# Golden JSON redaction (`tests/golden_json`).
+regex = "1"
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 gix = { version = "0.87", default-features = false, features = ["basic", "sha1"] }

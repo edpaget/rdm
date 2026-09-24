@@ -1,9 +1,12 @@
 //! Real-binary fixtures for the workflow component tests: a per-test plan
 //! repo seeded through `CARGO_BIN_EXE_rdm`, a source repo with registered
-//! worktrees, and a shell runner for the commands a workflow hands back.
+//! worktrees, a shell runner for the commands a workflow hands back, and the
+//! isolated user context ([`Sandbox`]) every distribution and CLI-loop
+//! process runs in.
 //!
 //! Included with `#[path = "../common/plan_fixture.rs"] mod plan_fixture;` by
-//! the `workflow_review` and `workflow_passes` binaries, each of which also
+//! the `workflow_review`, `workflow_passes`, `distribution`, `cli_loops` and
+//! `golden_json` binaries, each of which also
 //! includes `common/workflow_support.rs` and `git_test_support.rs` (this file
 //! names both through `crate::`, which is why it is under `tests/common/`
 //! and not a test target of its own).
@@ -101,6 +104,117 @@ pub fn hermetic_vars(root: &Path, session: &str) -> Vec<(&'static str, OsString)
         ("GIT_COMMITTER_NAME", "test".into()),
         ("GIT_COMMITTER_EMAIL", "test@test.com".into()),
     ]
+}
+
+/// The fixed git identity sandboxed processes commit as.
+pub const SANDBOX_GIT_NAME: &str = "fixture-bot";
+/// The fixed git email sandboxed processes commit as.
+pub const SANDBOX_GIT_EMAIL: &str = "fixture@example.invalid";
+
+/// An isolated user context for a process a test spawns: its own `HOME` and
+/// `XDG_{CONFIG,DATA,STATE}_HOME` under the test's temp directory, no
+/// inherited `RDM_*`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` or
+/// `CLAUDE_CODE_SESSION_ID`, global/system git config pointed at
+/// `/dev/null`, and a fixed git identity. Everything goes on the child
+/// [`Command`]; the test process's own environment is never touched.
+#[derive(Clone, Debug)]
+pub struct Sandbox {
+    /// `HOME`.
+    pub home: PathBuf,
+    /// `XDG_CONFIG_HOME`.
+    pub xdg_config: PathBuf,
+    /// `XDG_DATA_HOME`.
+    pub xdg_data: PathBuf,
+    /// `XDG_STATE_HOME`.
+    pub xdg_state: PathBuf,
+}
+
+impl Sandbox {
+    /// Creates `home`, `xdg-config`, `xdg-data` and `xdg-state` under
+    /// `parent` (a directory the test owns).
+    pub fn new(parent: &Path) -> Result<Self, Failure> {
+        let sandbox = Self {
+            home: parent.join("home"),
+            xdg_config: parent.join("xdg-config"),
+            xdg_data: parent.join("xdg-data"),
+            xdg_state: parent.join("xdg-state"),
+        };
+        for dir in [
+            &sandbox.home,
+            &sandbox.xdg_config,
+            &sandbox.xdg_data,
+            &sandbox.xdg_state,
+        ] {
+            std::fs::create_dir_all(dir).map_err(infra)?;
+        }
+        Ok(sandbox)
+    }
+
+    /// The variables [`Sandbox::apply`] removes.
+    pub fn removals() -> Vec<OsString> {
+        let mut keys = hermetic_removals();
+        keys.extend(
+            ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_SESSION_ID"].map(OsString::from),
+        );
+        keys
+    }
+
+    /// The variables [`Sandbox::apply`] sets.
+    pub fn vars(&self) -> Vec<(&'static str, OsString)> {
+        vec![
+            ("HOME", self.home.clone().into()),
+            ("XDG_CONFIG_HOME", self.xdg_config.clone().into()),
+            ("XDG_DATA_HOME", self.xdg_data.clone().into()),
+            ("XDG_STATE_HOME", self.xdg_state.clone().into()),
+            ("GIT_CONFIG_GLOBAL", "/dev/null".into()),
+            ("GIT_CONFIG_SYSTEM", "/dev/null".into()),
+            ("GIT_AUTHOR_NAME", SANDBOX_GIT_NAME.into()),
+            ("GIT_AUTHOR_EMAIL", SANDBOX_GIT_EMAIL.into()),
+            ("GIT_COMMITTER_NAME", SANDBOX_GIT_NAME.into()),
+            ("GIT_COMMITTER_EMAIL", SANDBOX_GIT_EMAIL.into()),
+        ]
+    }
+
+    /// Applies the sandbox to `cmd`.
+    pub fn apply<'c>(&self, cmd: &'c mut Command) -> &'c mut Command {
+        for key in Self::removals() {
+            cmd.env_remove(key);
+        }
+        for (key, value) in self.vars() {
+            cmd.env(key, value);
+        }
+        cmd
+    }
+
+    /// `program` under the sandbox.
+    pub fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut cmd = Command::new(program);
+        self.apply(&mut cmd);
+        cmd
+    }
+
+    /// The binary under test under the sandbox.
+    pub fn rdm(&self) -> Command {
+        self.command(rdm_bin())
+    }
+
+    /// `git` under the sandbox in `dir`, requiring success; returns stdout.
+    pub fn git(&self, dir: &Path, args: &[&str]) -> Result<String, Failure> {
+        let out = self
+            .command("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .map_err(infra)?;
+        if !out.status.success() {
+            return Err(Failure::Infra(format!(
+                "git {args:?} in {} failed: {}",
+                dir.display(),
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
 }
 
 /// Which shell runs a script.

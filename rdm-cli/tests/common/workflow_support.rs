@@ -1,7 +1,10 @@
 //! Generic scaffolding shared by the Rust-driven workflow component-test
-//! binaries (`workflow_review`, `workflow_passes`): where the real sources
-//! live, how a scenario reports failure, mutant libraries, loading a workflow
-//! driver, and a recording fake agent whose replies are scripted in Rust.
+//! binaries (`workflow_review`, `workflow_passes`, `distribution`; the
+//! `cli_loops` and `golden_json` binaries use only its failure model): where
+//! the real sources live — this checkout, or a tree `rdm agent-config`
+//! emitted ([`Lib::at`]) — how a scenario reports failure, mutant libraries,
+//! loading a workflow driver, and a recording fake agent whose replies are
+//! scripted in Rust.
 //!
 //! Included with `#[macro_use] #[path = "../common/workflow_support.rs"] mod
 //! workflow_support;` from each binary's `main.rs`. It lives under
@@ -10,7 +13,7 @@
 //! builds every top-level `tests/*.rs` as a test target of its own. Nothing
 //! here is specific to one workflow.
 //!
-//! A scenario is a `fn(&Lib) -> Outcome`. The normal test runs it against the
+//! A scenario is a function or closure `(&Lib) -> Outcome`. The normal test runs it against the
 //! real sources and requires `Ok`; a mutant test runs it against an isolated
 //! copy with one planted logic change and requires a *behavioural* failure
 //! (a failed check or a JavaScript exception thrown while the scenario
@@ -93,6 +96,7 @@ pub fn infra(e: impl fmt::Display) -> Failure {
 }
 
 /// Fails the scenario unless `cond` holds.
+#[allow(unused_macros)]
 macro_rules! check {
     ($cond:expr, $($msg:tt)+) => {
         if !$cond {
@@ -102,6 +106,7 @@ macro_rules! check {
 }
 
 /// Fails the scenario unless `left == right`.
+#[allow(unused_macros)]
 macro_rules! check_eq {
     ($left:expr, $right:expr, $($msg:tt)+) => {{
         let (l, r) = (&$left, &$right);
@@ -140,7 +145,32 @@ impl Lib {
     /// If a file cannot be copied or an anchor does not occur exactly once —
     /// a mutant that was not planted must fail its test, not pass it.
     pub fn mutant_of(name: &str, files: &[&str], edits: &[(&str, &str, &str)]) -> Self {
-        let tree = MutantTree::copy(&repo_root(), files)
+        Self::mutant_at(&repo_root(), name, files, edits)
+    }
+
+    /// Sources rooted at `root` instead of this checkout — for example a
+    /// tree `rdm agent-config` emitted into a test's temp directory (read
+    /// only).
+    pub fn at(root: &Path) -> Self {
+        Self {
+            root: root.to_owned(),
+            _tree: None,
+        }
+    }
+
+    /// Like [`Lib::mutant_of`], copying `files` from `root` instead of this
+    /// checkout, so a mutant can be planted in emitted bytes.
+    ///
+    /// # Panics
+    ///
+    /// As for [`Lib::mutant_of`].
+    pub fn mutant_at(
+        root: &Path,
+        name: &str,
+        files: &[&str],
+        edits: &[(&str, &str, &str)],
+    ) -> Self {
+        let tree = MutantTree::copy(root, files)
             .unwrap_or_else(|e| panic!("mutant `{name}`: setup failed: {e}"));
         for (file, from, to) in edits {
             tree.replace_once(file, name, from, to)
@@ -165,7 +195,7 @@ impl Lib {
 }
 
 /// Runs `scenario` against the real sources and panics with its failure.
-pub fn run_real(scenario: fn(&Lib) -> Outcome) {
+pub fn run_real(scenario: impl FnOnce(&Lib) -> Outcome) {
     if let Err(f) = scenario(&Lib::real()) {
         panic!("{f}");
     }
@@ -187,7 +217,7 @@ pub enum MutantVerdict {
 /// check or a throw during the scenario counts as caught; an infrastructure
 /// or load failure (the mutated source did not even import or compile) does
 /// not.
-pub fn mutant_verdict(lib: &Lib, scenario: fn(&Lib) -> Outcome) -> MutantVerdict {
+pub fn mutant_verdict(lib: &Lib, scenario: impl FnOnce(&Lib) -> Outcome) -> MutantVerdict {
     match scenario(lib) {
         Ok(()) => MutantVerdict::Survived,
         Err(f @ (Failure::Infra(_) | Failure::Load(_))) => MutantVerdict::NotRun(f),
@@ -196,7 +226,7 @@ pub fn mutant_verdict(lib: &Lib, scenario: fn(&Lib) -> Outcome) -> MutantVerdict
 }
 
 /// Runs `scenario` against a mutant and requires a behavioural failure.
-pub fn run_mutant(lib: Lib, scenario: fn(&Lib) -> Outcome) {
+pub fn run_mutant(lib: Lib, scenario: impl FnOnce(&Lib) -> Outcome) {
     match mutant_verdict(&lib, scenario) {
         MutantVerdict::Survived => {
             panic!("the planted mutant survived: the scenario passed against mutated sources")
