@@ -8,8 +8,10 @@
 //! `NodeReviewRules`): `corpus_prompts_regenerate_as_recorded`,
 //! `mined_prompts_exceed_sidecar_preview_length`,
 //! `refute_prompt_edit_is_reported_as_drift`,
-//! `dry_run_matches_golden_and_dispatches_nothing`, `fake_claude_drives_full_path`
-//! and `concurrency_does_not_change_output_order`. Node resolves from
+//! `dry_run_matches_golden_and_dispatches_nothing`, `fake_claude_drives_full_path`,
+//! `concurrency_does_not_change_output_order`, and the final CLI arm of
+//! `claude_dispatch_ok_fail_garbage_empty_enoent` (a real run that stops at the
+//! missing binary). Node resolves from
 //! `RDM_TEST_NODE` or `PATH`; a missing runtime fails them.
 //!
 //! Every other test needs no JavaScript runtime (several run the binary with an

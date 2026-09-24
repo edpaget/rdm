@@ -2,9 +2,10 @@
 
 Sibling of [`refuter-model-tiering.md`](refuter-model-tiering.md): that document
 A/Bs the refuter's **model**, this one A/Bs its **shape**. Both run on the same
-instrument (`scripts/lib/refuter-agreement.mjs` +
-`scripts/run-refuter-agreement.mjs`) over the same adjudicated finding corpus,
-and both are gated by `scripts/verify-refuter-agreement.sh`.
+instrument (`rdm-measure refuter-agreement`, crate `rdm-devtools`; originally
+`scripts/lib/refuter-agreement.mjs` + `scripts/run-refuter-agreement.mjs`) over
+the same adjudicated finding corpus, and both are gated by
+`cargo nextest run -p rdm-devtools --test measure_refuter_agreement`.
 
 ## The question
 
@@ -34,7 +35,7 @@ batches for anchoring to be observable at all. That analysis is a first-class,
 zero-spend step of the instrument:
 
 ```bash
-node scripts/run-refuter-agreement.mjs --batch-power
+cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-agreement --batch-power
 ```
 
 **The grouping key must carry the review-unit identity.**
@@ -55,11 +56,10 @@ accepted only if it passes phase 1's plausibility rule (non-empty, contains no
 `--implementation-plan` shape is raw pretty-printed JSON and is **rejected**, its
 item excluded and counted, never bucketed into a fake unit. This is the identical
 policy `refuterFanout.refuterCountsByUnit` used, so the two measurements stay
-comparable. (The predicate is deliberately restated inside
-`scripts/lib/refuter-agreement.mjs` rather than imported from
-`scripts/measure-refuter-severity.mjs`, which is a CLI and would invert the
-dependency; § 2c-equivalence of the harness imports **both** and asserts they
-agree on every committed item, so the two copies cannot drift.)
+comparable. (Both instruments now call the one Rust predicate,
+`rdm_devtools::measure::refuter_severity::extract::unit_ident`, so there is no
+second copy to drift; `batch_power_under_unit_scoped_key_matches_golden` and
+`json_target_is_not_a_unit_identity` pin its behavior.)
 
 Three exclusions are applied before grouping, each separately counted:
 
@@ -137,7 +137,8 @@ pinned window the sibling section uses (`--until 2026-07-29T00:00:00Z`, 953
 recovered refuters), the miner's new unit-scoped grouping reports:
 
 ```bash
-node scripts/mine-refuter-corpus.mjs --until 2026-07-29T00:00:00Z --min-group-size 3 \
+cargo run -q -p rdm-devtools --bin rdm-measure -- mine-refuter-corpus \
+  --until 2026-07-29T00:00:00Z --min-group-size 3 \
   --exclude-corpus tests/fixtures/refuter-agreement/corpus.jsonl \
   --format json --out /tmp/batch-candidates.json
 ```
@@ -263,13 +264,11 @@ reported as one rather than as a pass."*
 
 The durable output is the **instrument**: the unit-scoped grouping and power
 analysis, the batched prompt/trial/expansion/scoring/anchoring code, the two
-miner flags, `provenance.agentIndex` stamping, and the harness sections and
-planted mutations that gate all of it. `scripts/verify-refuter-agreement.sh`
-additionally enforces the decision/pipeline XOR: while
-`refuterBatching.decision !== 'ship-batched'`,
-`.claude/workflows/lib/review.mjs` must contain neither `batchRefutePrompt` nor
-`BATCH_VERDICT_SCHEMA`, so a half-landed pipeline change cannot coexist with a
-no-ship decision.
+miner flags, `provenance.agentIndex` stamping, and the named
+`measure_refuter_agreement` tests that gate all of it. While
+`refuterBatching.decision !== 'ship-batched'`, `.claude/workflows/lib/review.mjs`
+carries no batched refuter prompt or verdict schema; that is a review
+expectation, not a source-grep gate (those were retired).
 
 ## Limitations
 
@@ -284,8 +283,8 @@ no-ship decision.
   0–1 findings and max 3, so a code-mode batch is frequently size 1 and saves
   nothing. Any future write-up must say this rather than quoting a blended
   per-finding saving.
-- **Post-ship runs become unminable.** `scripts/measure-refuter-severity.mjs` and
-  `scripts/mine-refuter-corpus.mjs` recover dimension, severity **and** unit
+- **Post-ship runs become unminable.** `rdm-measure refuter-severity` and
+  `rdm-measure mine-refuter-corpus` recover dimension, severity **and** unit
   identity by parsing a SINGLE-finding prompt header. If batching ever ships,
   both `nonGatingRefutationSkip` and `refuterFanout` lose their per-finding basis
   for new runs, and the corpus stops growing from production. Tracked as rdm task
@@ -307,7 +306,7 @@ no-ship decision.
   ground truth. Growing the corpus also invalidates
   `refuterModelTiering.corpus`'s counts and derived shares, the Composition table
   in [`refuter-model-tiering.md`](refuter-model-tiering.md), and the composition
-  floors in `scripts/verify-refuter-agreement.sh` § 2 — all of which must be
+  floors `corpus_loads_with_floors_enums_and_adjudication_commits` checks — all of which must be
   regenerated in the same commit. The `tiers` rows are per-item trial figures and
   must not be recomputed. Tracked as rdm task `complete-refuter-batching-ab`,
   which carries the exact 8-item target and the bounded run command.

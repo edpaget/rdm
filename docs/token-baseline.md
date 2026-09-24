@@ -1,7 +1,7 @@
 # Token baseline — `workflow-token-reduction` phase 2
 
 **Measurement date:** 2026-07-26
-**Measured by:** `scripts/measure-lane-tokens.mjs` (over `scripts/lib/token-report.mjs`), phase 1 of this roadmap.
+**Measured by:** `scripts/measure-lane-tokens.mjs` (over `scripts/lib/token-report.mjs`), phase 1 of this roadmap — since ported to `rdm-measure lane-tokens` (see [Tool renames](#tool-renames)).
 **Companion machine-readable file:** [`docs/token-baseline.json`](token-baseline.json).
 
 This is the committed "before" reading. Phases 3-7 of this roadmap must diff their
@@ -16,6 +16,30 @@ token-saving claims against this snapshot, using the comparison unit named in
 > The `dispatch-phase` rows below are therefore a **dated record**, not a description of a lane
 > you can re-measure, and the command above will no longer resolve those two workflow names.
 > Nothing here is re-baselined: a frozen baseline that moved would be worthless as a baseline.
+
+## Tool renames
+
+The JavaScript instruments this document (and `docs/token-baseline.json`, which
+stays byte-unchanged as the frozen record) names were ported to the
+repository-only Rust binary `rdm-measure` (crate `rdm-devtools`, never shipped).
+Flags and report schemas are unchanged except that each report's `instrument`
+field now names the Rust command, and `run-refuter-agreement.mjs --dispatch-stub
+<module>` became `--claude-bin <path>`. Read every recorded command through this
+table:
+
+| Recorded command | Current equivalent |
+|---|---|
+| `node scripts/measure-lane-tokens.mjs …` | `cargo run -q -p rdm-devtools --bin rdm-measure -- lane-tokens …` |
+| `node scripts/measure-refuter-severity.mjs …` (incl. `--check`/`--audit`) | `cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-severity …` |
+| `node scripts/mine-refuter-corpus.mjs …` | `cargo run -q -p rdm-devtools --bin rdm-measure -- mine-refuter-corpus …` |
+| `node scripts/run-refuter-agreement.mjs …` | `cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-agreement …` |
+| `scripts/verify-token-report.sh` | `cargo nextest run -p rdm-devtools --test measure_lane_tokens --test measure_refuter_severity` (plus the in-crate `measure::` unit tests) |
+| `scripts/verify-refuter-agreement.sh` | `cargo nextest run -p rdm-devtools --test measure_refuter_agreement` |
+
+`--audit`, `--score-only`, `--batch-power` and `mine-refuter-corpus` need no
+JavaScript runtime; measuring (`refuter-severity` without `--audit`) and
+`refuter-agreement --dry-run`/real runs call the canonical `review.mjs` decisions
+through the workflow binding and need Node.
 
 ## Methodology
 
@@ -37,6 +61,8 @@ node scripts/measure-lane-tokens.mjs --format json \
   --workflow autopilot --workflow dispatch-phase --workflow plan-review \
   --workflow backlog --workflow estimate --workflow document
 ```
+
+(Today the same flags go to `rdm-measure lane-tokens`; see [Tool renames](#tool-renames).)
 
 against the default root (`~/.claude/projects`), at git SHA `9ec1d881142cf95e4ff370c153940a2c3182f724`
 (the commit that landed the phase-1 instrument on this roadmap's branch — not
@@ -377,7 +403,7 @@ measured `buildRecords` record, and `floorByAgentClass` aggregates it — n,
 min, p10, median, mean — **per agent class** instead of across the whole
 corpus. `cached`/sidecar-only-fallback records (no per-class split
 recoverable) are excluded from the population entirely, not counted as zero.
-It is surfaced by `scripts/measure-lane-tokens.mjs` in both `--format json`
+It is surfaced by `rdm-measure lane-tokens` (originally `scripts/measure-lane-tokens.mjs`) in both `--format json`
 and `--format text`, and regenerates exactly via this document's own
 `regenerateCommand` (see `docs/token-baseline.json`'s `methodology` block).
 
@@ -609,9 +635,9 @@ Two caveats, the same shape as phase 3's:
   run: the `suggestion` row should go to zero agents.
 
 Gating: every figure above is `--check`-gated against the real corpus
-(`node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json`,
-run by hand since it needs the sidecars) and, corpus-free, `--audit`-gated by
-`scripts/verify-token-report.sh` on any machine. The prose framing (the caveats,
+(`cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-severity --check docs/token-baseline.json`,
+run by hand since it needs the sidecars) and, corpus-free, `--audit`-gated on
+any machine by the `audit_committed_baseline_ok` nextest test. The prose framing (the caveats,
 the decision rationale) is provenance-only.
 
 ## Phase 1: review fanout
@@ -706,9 +732,9 @@ Two caveats:
   at least as high as reported here.
 
 Gating: every figure above is `--check`-gated against the real corpus
-(`node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json`)
-and, corpus-free, `--audit`-gated by `scripts/verify-token-report.sh` on any
-machine. The prose framing (this section's caveats and method paragraph) is
+(`cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-severity --check docs/token-baseline.json`)
+and, corpus-free, `--audit`-gated on any machine by the
+`audit_committed_baseline_ok` nextest test. The prose framing (this section's caveats and method paragraph) is
 provenance-only.
 
 **Continued in § "Phase 2: rank of the determining finding"**, immediately
@@ -729,9 +755,10 @@ real signal if the rank is spread out.
 A **determining finding** is the highest-ranked candidate that both survives
 its refutation (`survives`) and makes `hasBlocking` true — the one finding
 that carried the unit's outcome. The ranking and the gating rule are not
-reimplemented here: `scripts/measure-refuter-severity.mjs` **imports**
-`rankFindings` / `survives` / `hasBlocking` directly from
-[`.claude/workflows/lib/review.mjs`](../.claude/workflows/lib/review.mjs), so
+reimplemented here: the instrument (originally `scripts/measure-refuter-severity.mjs`,
+now `rdm-measure refuter-severity`) **calls** `rankFindings` / `survives` /
+`hasBlocking` in [`.claude/workflows/lib/review.mjs`](../.claude/workflows/lib/review.mjs)
+directly (through the workflow binding), so
 the measurement cannot drift from the behavior it is predicting. Same window
 as § "Phase 1: review fanout" and § "Phase 6": **48 runs ending
 2026-07-29T00:00:00Z, 2,208 agent records** — all three sections are
@@ -891,9 +918,9 @@ imported read-only. The cap this measurement informs is phase 4's to build;
 immediately below.**
 
 Gating: every figure above is `--check`-gated against the real corpus
-(`node scripts/measure-refuter-severity.mjs --check docs/token-baseline.json`)
-and, corpus-free, `--audit`-gated by `scripts/verify-token-report.sh` section 7
-on any machine — including the supports/kills verdict, which `--audit`
+(`cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-severity --check docs/token-baseline.json`)
+and, corpus-free, `--audit`-gated on any machine by the
+`audit_committed_baseline_ok` nextest test — including the supports/kills verdict, which `--audit`
 re-derives from the doc's own numbers. The prose framing is provenance-only.
 
 ## Phase 4: the chosen refutation budget
@@ -999,7 +1026,7 @@ tables, the self-consistency flip rates, the answer to the `rdm-wf-plan-review.j
 model-omission question, and the decision itself are in
 [`refuter-model-tiering.md`](refuter-model-tiering.md). Machine-readable figures
 live in `docs/token-baseline.json` § `refuterModelTiering` and are audited
-corpus-free by `node scripts/run-refuter-agreement.mjs --audit
+corpus-free by `cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-agreement --audit
 docs/token-baseline.json`. Tables are not restated here.
 
 ## Refuter batching — one refuter per dimension, or one per finding?
@@ -1026,11 +1053,10 @@ different review units). See the doc's § Corpus power for the correction.
 Reproduce the power analysis with zero spend:
 
 ```bash
-node scripts/run-refuter-agreement.mjs --batch-power
+cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-agreement --batch-power
 ```
 
 Machine-readable figures live in `docs/token-baseline.json` § `refuterBatching`
 (including the superseded naive-key histogram and the mining headroom a future
-attempt must buy) and are audited corpus-free by `node
-scripts/run-refuter-agreement.mjs --audit docs/token-baseline.json
---audit-section refuterBatching`. Tables are not restated here.
+attempt must buy) and are audited corpus-free by `cargo run -q -p rdm-devtools --bin rdm-measure --
+refuter-agreement --audit docs/token-baseline.json --audit-section refuterBatching`. Tables are not restated here.

@@ -134,7 +134,7 @@ both generators and ~96 harness assertions for zero listing benefit:
 |---|---|
 | `>>> review-refute-fix:begin` / `:end`, `find-refute-verdict`, `review-spec`, `estimate-core`, `dispatch-outcome`, `plan-review-driver`, `backlog-groom`, `document-core` | **Region marker names.** Internal identifiers naming a stamped or byte-copied block, consumed by the generators and their drift gates. |
 | `'review-refute-fix: …'` runtime error prefixes in `lib/review.mjs` | **Module-scoped error prefixes**, identifying which module raised — not a file path. |
-| `docs/token-baseline.json`'s bare per-engine record keys, and `docs/token-baseline.md`'s lane tables | **A frozen measurement corpus.** The figures are keyed to those names as recorded; rewriting them would invalidate `scripts/verify-token-report.sh --audit`. |
+| `docs/token-baseline.json`'s bare per-engine record keys, and `docs/token-baseline.md`'s lane tables | **A frozen measurement corpus.** The figures are keyed to those names as recorded; rewriting them would invalidate `rdm-measure refuter-severity --audit` (gated by the `audit_committed_baseline_ok` test). |
 | `autopilot.js`, `lib/autopilot.mjs`, and the `autopilot` Workflow name | **Retired, with no successor.** `rdm-autopilot` survives as a prose skill with no engine behind it, so `autopilot` must never be prefixed — doing so would corrupt the one front door the rename must leave untouched. `scripts/verify-agent-config-distribution.sh`'s self-test D depends on `autopilot` naming a Workflow that does not resolve. |
 | Historical `CHANGELOG.md` entries | Descriptions of the pre-rename world; correct as written. |
 
@@ -402,7 +402,7 @@ four times in this worktree on `claude-opus-5`. Two factors, crossed:
 
 Cell values are `firstRequestTokens` — `input + cache_creation + cache_read` on
 the session's first assistant record, the same quantity
-`scripts/lib/token-report.mjs` computes per agent, so it is directly comparable to
+the lane-token measurement (`rdm_devtools::measure::sidecar`, originally `scripts/lib/token-report.mjs`) computes per agent, so it is directly comparable to
 `floorByAgentClass`. It is cache-placement-independent by construction (the three
 classes are summed), which is why the numbers are stable despite the four runs
 warming each other's caches.
@@ -2048,10 +2048,10 @@ findings against a pre-registered floor of 6 batches / 18 findings, so the A/B
 returned `no-measurement` rather than a decision. Method, figures, decision rule
 and limitations: [`docs/refuter-batching.md`](refuter-batching.md). The
 experiment's batched prompt, verdict parsing and anchoring scorer live in
-`scripts/lib/refuter-agreement.mjs`, deliberately **not** in
-`.claude/workflows/lib/review.mjs` — `scripts/verify-refuter-agreement.sh`
-asserts the pipeline carries no batched symbols while the recorded decision is
-anything other than `ship-batched`.
+`rdm_devtools::measure::refuter_agreement` (the `rdm-measure refuter-agreement`
+instrument), deliberately **not** in `.claude/workflows/lib/review.mjs`, which
+carries no batched symbols while the recorded decision is anything other than
+`ship-batched`.
 
 ### `OUTCOME` (review pipeline)
 
@@ -2325,7 +2325,7 @@ expected, legitimate case, never a caller mistake the way it is in code mode.
 args makes every prompt render byte-identical to before this capability existed, reading from the
 invoking session's own working directory — the correct behavior for the standalone
 `rdm-plan-review`/`rdm-wf-plan-review` surface run outside a dispatch worktree. This is load-bearing
-for `scripts/verify-refuter-agreement.sh`'s 56-item adjudicated finding corpus, which regenerates
+for the refuter-agreement instrument's 56-item adjudicated finding corpus, whose `corpus_prompts_regenerate_as_recorded` test (`rdm-devtools`) regenerates
 every recorded prompt through the real `findPrompt`/`refutePrompt` with `context = { target:
 item.target }` only (no `sourceCommand`, for both `code` and `plan` mode items) and asserts the
 recorded `promptSha256` is unchanged — there is no supported way to re-baseline it wholesale (see

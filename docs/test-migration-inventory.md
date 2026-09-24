@@ -119,38 +119,38 @@ In the Dependencies column, "rdm bin" means a prebuilt `target/debug/rdm` and "c
 | 3 | Runs `verify-workflow-estimate.sh` as a sibling gate | Retired as a duplicate: the estimate family runs directly under nextest | — | — |
 | 4 | `hook done-line` amended onto a trailer-less tip, no rebase, ff-merge, `hook post-commit` → done with the landed SHA; malformed `done-line` requests rejected | `rdm-cli/tests/cli_hook.rs::done_line_amended_onto_branch_tip_completes_after_ff_merge` (new). The negatives are duplicates of `cli_hook::done_line_rejects_roadmap_without_phase` and `cli_hook::done_line_rejects_task_combined_with_phase` | nextest | — |
 
-### verify-token-report.sh
-Dependencies for every row: node, plus sed for the mutants. No rdm bin, claude or network.
+### verify-token-report.sh (deleted in phase 4)
+Was: node, plus sed for the mutants; no rdm bin, claude or network. Now: `rdm-devtools` nextest tests (§ 7); none needs Node except those marked [node] there.
 
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| 1 | `node --check` on the lib and CLI; no `package.json`/`node_modules` under `scripts/` | `scripts/lib/token-report.mjs`, `scripts/measure-lane-tokens.mjs` | node | 4 | required | The stdlib-only guard is moot once the tool is in Rust |
-| 2 | CLI over `tests/fixtures/token-sidecar`: per-class and per-group totals vs `expected-totals.json`; `--worktrees-` slug; discrepancy line; first-request floor | same plus fixture | node | 4 | required | — |
-| 3 | Lib direct: `requestId` dedupe is last-write-wins; unreadable/empty transcripts give distinct warnings; `locateSessionDirs` handles worktree slugs; `firstRequestTokens` is null for cached/sidecarOnly | `token-report.mjs` | node | 4 | required | — |
-| 4 | CLI rejects a missing flag value, a flag taken as a value, and `--out` into a missing directory | `measure-lane-tokens.mjs` | node | 4 | required | — |
-| 5 | Four planted mutants each fail §2 | `token-report.mjs` | node, sed | 4 | required | — |
-| 6 | `measure-refuter-severity.mjs` over `tests/fixtures/token-refuter-severity`: severity counts, verdicts, token classes, fanout distributions; `--check`; corpus-free `--audit` of `docs/token-baseline.json` (`nonGatingRefutationSkip`, `refuterFanout`); `--until`; six mutants | `scripts/measure-refuter-severity.mjs`, `token-report.mjs`, imports `review.mjs` | node, sed | 4 | required | `refuterFanout` backs the unadopted batching shape (trim candidate) |
-| 7 | Determining-finding rank over `tests/fixtures/token-determining-rank`: deep block compare, `unitIdent` parity, closed reason vocabulary, the four `deriveCapVerdict` branches, `--check`/`--audit`, a prose-twin check of `docs/token-baseline.md`; mutants (a)–(l) | `measure-refuter-severity.mjs`, review.mjs `rankFindings`, `docs/token-baseline.{json,md}` | node, git, sed | 4 | required | The prose-twin `.md` string check asserts on doc text; drop it |
+| 1 | `node --check` on the lib and CLI; no `package.json`/`node_modules` under `scripts/` | `scripts/lib/token-report.mjs`, `scripts/measure-lane-tokens.mjs` | node | **phase 4**: retired | — | Moot: the tool is Rust |
+| 2 | CLI over `tests/fixtures/token-sidecar`: per-class and per-group totals vs `expected-totals.json`; `--worktrees-` slug; discrepancy line; first-request floor | same plus fixture | node | **phase 4 (done)**: `measure_lane_tokens::{fixture_totals_match_hand_computed, json_matches_golden, text_matches_golden, worktree_slug_sessions_included, discrepancy_reported_never_reconciled, floor_by_agent_class_excludes_cached_and_omits_empty}` | required (nextest) | — |
+| 3 | Lib direct: `requestId` dedupe is last-write-wins; unreadable/empty transcripts give distinct warnings; `locateSessionDirs` handles worktree slugs; `firstRequestTokens` is null for cached/sidecarOnly | `token-report.mjs` | node | **phase 4 (done)**: unit `measure::sidecar::tests::{request_id_dedupe_last_write_wins, unreadable_and_empty_transcripts_warn_distinctly, first_request_tokens_null_for_cached_and_sidecar_only, floor_interpolates_across_a_multi_record_class}`, `measure::jsnum::tests::percentile_linear_interpolation`; `measure_lane_tokens::worktree_slug_sessions_included` | required (nextest) | — |
+| 4 | CLI rejects a missing flag value, a flag taken as a value, and `--out` into a missing directory | `measure-lane-tokens.mjs` | node | **phase 4 (done)**: `measure_lane_tokens::{missing_flag_value_rejected, flag_taken_as_value_rejected, out_into_missing_directory_fails, unknown_argument_and_bad_format_rejected}` | required (nextest) | — |
+| 5 | Four planted mutants each fail §2 | `token-report.mjs` | node, sed | **phase 4 (done)**: see § 7 mutant map | required (nextest) | The sed form is retired; each mutant maps to a named discriminating test |
+| 6 | `measure-refuter-severity.mjs` over `tests/fixtures/token-refuter-severity`: severity counts, verdicts, token classes, fanout distributions; `--check`; corpus-free `--audit` of `docs/token-baseline.json` (`nonGatingRefutationSkip`, `refuterFanout`); `--until`; six mutants | `scripts/measure-refuter-severity.mjs`, `token-report.mjs`, imports `review.mjs` | node, sed | **phase 4 (done)**: `measure_refuter_severity::{severity_counts_verdicts_and_token_classes_match_fixture, fanout_distributions_match_fixture, check_accepts_fixture_doc, audit_committed_baseline_ok, until_pins_run_set_at_both_edges, until_rejects_unparseable_date, check_applies_doc_window_and_until_overrides}` | required (nextest) | — |
+| 7 | Determining-finding rank over `tests/fixtures/token-determining-rank`: deep block compare, `unitIdent` parity, closed reason vocabulary, the four `deriveCapVerdict` branches, `--check`/`--audit`, a prose-twin check of `docs/token-baseline.md`; mutants (a)–(l) | `measure-refuter-severity.mjs`, review.mjs `rankFindings`, `docs/token-baseline.{json,md}` | node, git, sed | **phase 4 (done)**: `measure_refuter_severity::determining_rank_block_matches_fixture` plus the unit tests in § 7; the prose twin is retired | required (nextest) | Prose-twin `.md` string check: not behavioural coverage |
 
-### verify-refuter-agreement.sh
-Dependencies for every row: node, plus sed for the mutants. No real claude or network.
+### verify-refuter-agreement.sh (deleted in phase 4)
+Was: node, plus sed for the mutants; no real claude or network. Now: `rdm-devtools/tests/measure_refuter_agreement.rs` plus in-crate unit tests (§ 7).
 
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
 |---|---|---|---|---|---|---|
-| 1 | `node --check` on the three scripts; `--help` documents every flag and carries the cost warning | `scripts/lib/refuter-agreement.mjs`, `scripts/mine-refuter-corpus.mjs`, `scripts/run-refuter-agreement.mjs` | node | 4 | required | Help-text grep is a string assert |
-| 2 | Corpus loads cleanly; size/divergence/mined/authoritative floors; enum checks; adjudication commit on each item | `refuter-agreement.mjs`, `tests/fixtures/refuter-agreement/corpus.jsonl` | node | 4 | required | — |
-| 2c (+equivalence, guard) | Batch-group power under the unit-scoped key; the unit-identity check matches the canonical rule; an underpowered arm throws or forces NO MEASUREMENT | `refuter-agreement.mjs`, `run-refuter-agreement.mjs`, `measure-refuter-severity.mjs` | node | 4 | required | Batching recorded as no-measurement (`docs/refuter-batching.md`); retirement candidate |
-| 3 | Every item regenerates through the REAL `refutePrompt` with a matching `promptSha256`/`promptDrift` | `refuter-agreement.mjs`, review.mjs `refutePrompt` | node | 4 | required | — (goes red on any `refutePrompt` edit) |
-| 4 / 4b | Miner over the `mine-sidecars` fixture: 6 degradation paths, no silent drops, slug filter; CLI `--severity`/`--until`/`--limit`/`--out`/bad-argument messages | `mine-refuter-corpus.mjs` | node | 4 | required | — |
-| 5 | Scorer over `trials-sample.json`: separate FN/FP denominators, ungraded bucket, flip rate, per-class and authoritative splits, token/tool columns | `refuter-agreement.mjs` | node | 4 | required | — |
-| 5c | Batched scoring: batched prompt, id expansion, arm buckets, dispatch counting | `refuter-agreement.mjs`, review.mjs | node | 4 | required | Batching retirement candidate |
-| 6 | No blended accuracy field anywhere in JSON or text output | both | node | 4 | required | — |
-| 7 | `--dry-run` dispatches nothing; `--dispatch-stub` drives the full path | `run-refuter-agreement.mjs` | node | 4 | required | — |
-| 7b | Pure parsers; `claudeDispatch` against fake `claude` stubs on PATH (ok, fail, garbage, empty, ENOENT) | `run-refuter-agreement.mjs` | node, fake claude stubs | 4 | required | — |
-| 7c | `parseClaudeBatchResult`: unknown ids, non-boolean verdicts, missing array | same | node | 4 | required | Batching retirement candidate |
-| 8 / 8b | `--audit` arithmetic of the committed tiering figures; `--audit-section refuterBatching` | same, `docs/token-baseline.json` | node | 4 | required | 8b: batching candidate |
-| 9 (9a–9t) | About 20 planted mutants prove the sections above can fail | all three | node, sed | 4 | required | — |
-| 10, 11 | (removed) | — | — | — | — | Already deleted (10: CHANGELOG assert, a8b4284; 11: AC9 XOR, phase 34). The header still lists them |
+| 1 | `node --check` on the three scripts; `--help` documents every flag and carries the cost warning | `scripts/lib/refuter-agreement.mjs`, `scripts/mine-refuter-corpus.mjs`, `scripts/run-refuter-agreement.mjs` | node | **phase 4**: retired | — | `node --check` is moot; the help-text grep is not behavioural coverage |
+| 2 | Corpus loads cleanly; size/divergence/mined/authoritative floors; enum checks; adjudication commit on each item | `refuter-agreement.mjs`, `tests/fixtures/refuter-agreement/corpus.jsonl` | node | **phase 4 (done)**: `corpus_loads_with_floors_enums_and_adjudication_commits`, `invalid_corpus_items_rejected_with_named_errors` | required (nextest) | — |
+| 2c (+equivalence, guard) | Batch-group power under the unit-scoped key; the unit-identity check matches the canonical rule; an underpowered arm throws or forces NO MEASUREMENT | `refuter-agreement.mjs`, `run-refuter-agreement.mjs`, `measure-refuter-severity.mjs` | node | **phase 4 (done)**: `batch_power_under_unit_scoped_key_matches_golden`, `batch_power_dispatches_nothing`, `underpowered_batched_arm_throws_or_forces_no_measurement`; 2c-equivalence retired as moot (one Rust `refuter_severity::extract::unit_ident` serves both tools, pinned by `json_target_is_not_a_unit_identity`) | required (nextest) | Batching arm kept (`no-measurement` is a result, not a retirement) |
+| 3 | Every item regenerates through the REAL `refutePrompt` with a matching `promptSha256`/`promptDrift` | `refuter-agreement.mjs`, review.mjs `refutePrompt` | node | **phase 4 (done)** [node]: `corpus_prompts_regenerate_as_recorded`, `mined_prompts_exceed_sidecar_preview_length`, `refute_prompt_edit_is_reported_as_drift` | required (nextest) | — (goes red on any `refutePrompt` edit, by design) |
+| 4 / 4b | Miner over the `mine-sidecars` fixture: 6 degradation paths, no silent drops, slug filter; CLI `--severity`/`--until`/`--limit`/`--out`/bad-argument messages | `mine-refuter-corpus.mjs` | node | **phase 4 (done)**: `miner_matches_goldens`, `miner_six_skip_reasons_and_accounting_identity`, `miner_slug_filter_excludes_foreign_project`, `miner_severity_until_limit_out_flags`, `miner_min_group_size_and_exclude_corpus`, `miner_bad_arguments_rejected` | required (nextest) | Help grep retired |
+| 5 | Scorer over `trials-sample.json`: separate FN/FP denominators, ungraded bucket, flip rate, per-class and authoritative splits, token/tool columns | `refuter-agreement.mjs` | node | **phase 4 (done)**: `score_sample_matches_goldens`, `fn_fp_on_separate_denominators_with_ungraded_bucket`, `flip_rate_per_class_and_authoritative_splits`, `token_and_tool_columns` | required (nextest) | — |
+| 5c | Batched scoring: batched prompt, id expansion, arm buckets, dispatch counting | `refuter-agreement.mjs`, review.mjs | node | **phase 4 (done)**: `batched_scoring_expansion_arm_buckets_and_dispatch_count`, `anchoring_over_qualifying_groups_only` | required (nextest) | — |
+| 6 | No blended accuracy field anywhere in JSON or text output | both | node | **phase 4 (done)**: `no_blended_accuracy_key_in_any_report` | required (nextest) | — |
+| 7 | `--dry-run` dispatches nothing; `--dispatch-stub` drives the full path | `run-refuter-agreement.mjs` | node | **phase 4 (done)** [node]: `dry_run_matches_golden_and_dispatches_nothing`, `fake_claude_drives_full_path` (`--dispatch-stub` became `--claude-bin` + a fake `claude`) | required (nextest) | — |
+| 7b | Pure parsers; `claudeDispatch` against fake `claude` stubs on PATH (ok, fail, garbage, empty, ENOENT) | `run-refuter-agreement.mjs` | node, fake claude stubs | **phase 4 (done)**: unit `parse_claude_result_last_structured_output_wins_fenced_bare_and_non_boolean_ungraded`, `slug_and_tool_recount`; `claude_dispatch_ok_fail_garbage_empty_enoent`; [node] `concurrency_does_not_change_output_order` | required (nextest) | — |
+| 7c | `parseClaudeBatchResult`: unknown ids, non-boolean verdicts, missing array | same | node | **phase 4 (done)**: unit `parse_claude_batch_result_unknown_ids_non_boolean_missing_array` | required (nextest) | — |
+| 8 / 8b | `--audit` arithmetic of the committed tiering figures; `--audit-section refuterBatching` | same, `docs/token-baseline.json` | node | **phase 4 (done)**: `audit_committed_tiering_ok`, `audit_committed_batching_ok`, `audit_rejects_edited_tiering_figure`, `audit_rejects_edited_batching_figure` | required (nextest) | — |
+| 9 (9a–9t) | About 20 planted mutants prove the sections above can fail | all three | node, sed | **phase 4 (done)**: see § 7 mutant map | required (nextest) | The sed form is retired |
+| 10, 11 | (removed) | — | — | — | — | Already deleted (10: CHANGELOG assert, a8b4284; 11: AC9 XOR, phase 34) |
 
 ### verify-agent-config-distribution.sh
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
@@ -176,7 +176,7 @@ Dependencies for every row: node, plus sed for the mutants. No real claude or ne
 | 7i (Codex distribution) | `agent-config codex` (+`--skills`/`--user`): AGENTS.md, 4 skills under `.agents/skills`, 7 withheld with a notice, `CODEX_HOME` placement, `--plugin` rejected; emitted `roadmap list`/`phase update` run against the fixture (`needs-review` stamped); local `.agents/skills` equals generator output | agent_config.rs Codex adapter, `scripts/gen-codex-skills.sh` | rdm bin, git | 5 | required | — |
 | 7i (`rdm-dev.sh`) | `scripts/rdm-dev.sh session id` from a foreign cwd keeps an explicit `RDM_SESSION`; refuses a missing session or plan repo | `scripts/rdm-dev.sh`, rdm session | rdm bin (wrapper may cargo build) | 5 (or 6; ambiguous) | required | — |
 | 7i (`node --test scripts/lib/codex-smoke-process.test.mjs`) | Codex smoke-process lifecycle and cleanup tests | `scripts/lib/codex-smoke-process.mjs` | node | **phase 1 (done)** | removed | Deleted with the JS helper; replaced by the `rdm-devtools` nextest tests (see §4) |
-| 7i (`verify-codex-coexistence.mjs`) | Real Codex coexistence run in an isolated temp home | `scripts/verify-codex-coexistence.mjs` | node, codex CLI, optional auth/network | 4 | **opt-in: only when `RDM_CODEX_BIN` is set** (`RDM_CODEX_AUTH_FILE` optional) | — |
+| 7i (Codex coexistence) | Real Codex coexistence run in an isolated temp home | was `scripts/verify-codex-coexistence.mjs`; now `rdm_devtools::codex_coexistence` behind `rdm-smoke codex-coexistence` | codex CLI, optional auth/network | **phase 4 (done)**: the arm runs `cargo run -p rdm-devtools --bin rdm-smoke -- codex-coexistence`; hermetic coverage in `rdm-devtools/tests/codex_coexistence.rs` (§ 7) | **opt-in: only when `RDM_CODEX_BIN` is set** (`RDM_CODEX_AUTH_FILE` optional) | — |
 
 ### verify-plugin-distribution.sh
 | Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
@@ -352,7 +352,6 @@ Dependencies ("common") for every row: rdm bin, git, POSIX sh, no network.
 - **Tracked-file edits.** git-config §1b and temp-hygiene §1b edit tracked `.rs` files in place.
 - **Stale headers:**
   - verify-skill-autopilot.sh (§1), verify-workflow-estimate.sh (§1b): deleted in phase 3
-  - verify-refuter-agreement.sh (§§10–11)
   - verify-rdm-plan-fixture.sh ("no consumer yet" is false: golden-json and plugin-loop use it)
   - verify-agent-config-distribution.sh §7c (names the removed `deriveSignals`/`selectDimensions`)
 - **Generator/drift gates** (review §1/1b/1c/1g/2d/5b-drift, backlog §3, document §2, estimate §2, outcome shim). Decided: phase 2 ported the review ones to `workflow_review::generators::*`; phase 3 ported backlog/document/estimate to `workflow_passes::{backlog,document,estimate}::generator_*`, each running the real generator's `--check` plus a scratch-tree drift → red → heal control.
@@ -383,7 +382,9 @@ Dependencies ("common") for every row: rdm bin, git, POSIX sh, no network.
 ### (c) Codex runtime/spike code and tests
 Owner: the `codex-agent-support` roadmap (docs/codex-support.md, codex-runtime.md, codex-orchestration-spike.md).
 
-**How CI runs them.** A separate step runs `mise exec node -- node --test --test-concurrency=1 scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs` with no credentials. Those tests use fake codex stubs on PATH and the prebuilt `target/debug/rdm` passed through `RDM_BIN`. `codex-smoke-process.test.mjs` is NOT in that step; it runs from verify-agent-config-distribution §7i.
+**How CI runs them.** A separate step runs `mise exec node -- node --test --test-concurrency=1 scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs` with no credentials. Those tests use fake codex stubs on PATH and the prebuilt `target/debug/rdm` passed through `RDM_BIN`.
+
+**Phase 4 ruling: the Codex runtime is out of scope here.** `scripts/rdm-codex.mjs`, `scripts/lib/codex-runtime*.mjs`, `codex-process.mjs`, `codex-spike-*.mjs` and `scripts/run-codex-orchestration-spike.mjs` are production Codex runtime code owned by `codex-agent-support` (on main they now ship under `rdm-core/src/templates/codex-runtime/`, and main's `docs/codex-test-migration.md` keeps four suites — `codex-spike-process`, `codex-runtime-state`, `codex-runtime-review-process`, `codex-runtime-queue` — in a "remaining legacy" CI step awaiting their owning migration). Phase 4 ports only the coexistence smoke check. The roadmap-level "no JavaScript test files" criterion stays tracked by rdm task `port-remaining-codex-runtime-process-suites`.
 
 | File | Role | Product vs tooling | Tests | Dest. |
 |---|---|---|---|---|
@@ -395,19 +396,21 @@ Owner: the `codex-agent-support` roadmap (docs/codex-support.md, codex-runtime.m
 | `scripts/run-codex-orchestration-spike.mjs` | Opt-in research runner that uses saved Codex auth | Tooling / experimental | none | 4 |
 | `scripts/lib/codex-spike-estimate.mjs`, `codex-spike-review.mjs`, `codex-spike-process.mjs` (2-line re-export) | Phase-2 spike host adapters | Experimental tooling | `codex-spike-estimate.test.mjs` (real CLI; skips done phases), `codex-spike-review.test.mjs` (4), `codex-spike-process.test.mjs` | 4 |
 | `scripts/lib/codex-smoke-process.mjs` + `.test.mjs` | Test-only live-process lifecycle and cleanup | Tooling | run by verify-agent-config-distribution §7i | **phase 1 (done)**: deleted; replaced by `rdm-devtools` (`process` module, `rdm-smoke` entrypoint, nextest tests) |
-| `scripts/verify-codex-coexistence.mjs` | Opt-in real-Codex coexistence check in a temp home; since phase 1 its live `codex exec` call runs under the Rust `rdm-smoke` entrypoint (`RDM_SMOKE_BIN` or a cargo build) | Tooling | self | 4 (port the whole flow to Rust and delete the .mjs) |
+| `scripts/verify-codex-coexistence.mjs` (deleted) | Opt-in real-Codex coexistence check in a temp home | Tooling | now `rdm-devtools/tests/codex_coexistence.rs` | **phase 4 (done)**: whole flow ported to `rdm-smoke codex-coexistence` (§ 7) |
 
-### (d) Measurement, corpus and evaluation tooling: phase 4
-| File | What it does |
-|---|---|
-| `scripts/lib/token-report.mjs` | Reads Workflow sidecars and agent transcripts; `requestId` dedupe; token-class breakdown; grouping; first-request floor |
-| `scripts/measure-lane-tokens.mjs` | CLI over token-report |
-| `scripts/measure-refuter-severity.mjs` | Refuter spend by graded severity; refuter fanout; determining-finding rank; `--check`/`--audit` of `docs/token-baseline.json` |
-| `scripts/lib/refuter-agreement.mjs` | Corpus loading, `refutePrompt` replay and drift check, FN/FP scoring, batching power analysis |
-| `scripts/mine-refuter-corpus.mjs` | Mines historical refuter findings verbatim from transcripts |
-| `scripts/run-refuter-agreement.mjs` | Dispatches the corpus through the real refuter prompt on multiple tiers (via the `claude` CLI); scoring and audits |
-| `scripts/verify-review-source.mjs` | Listed here by the phase body, but it was a review-driver test. Ported and deleted in phase 2; see (b) |
-| `scripts/verify-codex-coexistence.mjs` | See (c) |
+### (d) Measurement, corpus and evaluation tooling: phase 4 (done)
+All deleted; each is replaced by a subcommand of the repository-only `rdm-measure` binary (crate `rdm-devtools`). See § 7.
+
+| File (deleted) | What it did | Replacement |
+|---|---|---|
+| `scripts/lib/token-report.mjs` | Reads Workflow sidecars and agent transcripts; `requestId` dedupe; token-class breakdown; grouping; first-request floor | `rdm_devtools::measure::sidecar` |
+| `scripts/measure-lane-tokens.mjs` | CLI over token-report | `rdm-measure lane-tokens` (`measure::lane_tokens`) |
+| `scripts/measure-refuter-severity.mjs` | Refuter spend by graded severity; refuter fanout; determining-finding rank; `--check`/`--audit` of `docs/token-baseline.json` | `rdm-measure refuter-severity` (`measure::refuter_severity`) |
+| `scripts/lib/refuter-agreement.mjs` | Corpus loading, `refutePrompt` replay and drift check, FN/FP scoring, batching power analysis | `measure::refuter_agreement::{corpus, prompt, trials, score, report, audit, dispatch}` |
+| `scripts/mine-refuter-corpus.mjs` | Mines historical refuter findings verbatim from transcripts | `rdm-measure mine-refuter-corpus` (`measure::refuter_agreement::miner`) |
+| `scripts/run-refuter-agreement.mjs` | Dispatches the corpus through the real refuter prompt on multiple tiers (via the `claude` CLI); scoring and audits | `rdm-measure refuter-agreement` |
+| `scripts/verify-review-source.mjs` | Listed here by the phase body, but it was a review-driver test. Ported and deleted in phase 2; see (b) | — |
+| `scripts/verify-codex-coexistence.mjs` | See (c) | `rdm-smoke codex-coexistence` |
 
 ### (e) Browser assets: out of scope
 - `rdm-server/assets/edit.js`, `review-anchor.js` and `review-highlight.js` (466 lines in total).
@@ -445,8 +448,9 @@ Two kinds of workflow evidence exist and neither substitutes for the other.
   meaningful coverage and must be preserved (phases 2–3 move their scenarios
   and assertions into Rust while still executing the real JS).
 - **Actual host observations** — `observe-plugin-install.sh`,
-  `observe-workflow-listing.sh`, the `RDM_CODEX_BIN` arm of
-  `verify-codex-coexistence.mjs`, and the opt-in Codex spike runner. They prove
+  `observe-workflow-listing.sh`, the `RDM_CODEX_BIN` arm running
+  `rdm-smoke codex-coexistence` (and its ignored `codex_coexistence_live`
+  test), and the opt-in Codex spike runner. They prove
   what a real Claude Code or Codex host does with the shipped artefacts (plugin
   install, skill listing, skill selection, live model invocation). They need
   the host CLI, sometimes an account and network, stay opt-in, and report
@@ -469,7 +473,9 @@ by the non-published `rdm-devtools` workspace crate (`publish = false`,
   stderr drained, group `SIGKILL` on every post-spawn path, reap, `cleanup`
   exactly once.
 - `rdm-smoke` — entrypoint used by `verify-codex-coexistence.mjs`
-  (`RDM_SMOKE_BIN` overrides the on-demand cargo build).
+  (`RDM_SMOKE_BIN` overrides the on-demand cargo build). Since phase 4 the
+  whole coexistence flow is the `rdm-smoke codex-coexistence` subcommand and
+  the `.mjs` is deleted (§ 7).
 - `rdm-devtools-fixture` — interpreter-free fixture executable driving the
   tests.
 - `rdm-devtools/tests/process_lifecycle.rs`, `tests/smoke_cli.rs` and
@@ -899,3 +905,168 @@ primitive), and the real `rdm` binary and real git for every executed command.
 **No Claude-host observation** was made or claimed in this phase.
 `observe-workflow-listing.sh` and `observe-plugin-install.sh` stay opt-in and
 untouched.
+
+## 7. Phase 4: measurement, corpus and Codex coexistence tooling
+
+Every in-scope JavaScript tool and assertion entrypoint is deleted and replaced
+by Rust in the repository-only `rdm-devtools` crate (nothing is added to the
+shipped `rdm` binary):
+
+| Deleted | Replacement |
+|---|---|
+| `scripts/lib/token-report.mjs`, `scripts/measure-lane-tokens.mjs` | `rdm-measure lane-tokens` (`measure::{sidecar, lane_tokens}`) |
+| `scripts/measure-refuter-severity.mjs` | `rdm-measure refuter-severity` (`measure::refuter_severity`) |
+| `scripts/mine-refuter-corpus.mjs` | `rdm-measure mine-refuter-corpus` (`measure::refuter_agreement::miner`) |
+| `scripts/lib/refuter-agreement.mjs`, `scripts/run-refuter-agreement.mjs` | `rdm-measure refuter-agreement` (`measure::refuter_agreement`) |
+| `scripts/verify-codex-coexistence.mjs` | `rdm-smoke codex-coexistence` (`codex_coexistence`) |
+| `scripts/verify-token-report.sh`, `scripts/verify-refuter-agreement.sh` | named nextest tests (tables in § 1 and the mutant map below) |
+
+Already retired before this phase and not resurrected: the finder-collapse
+family (b89cedf) and `scripts/measure-hoist-delta.mjs` (533f4f5); see 2(f).
+
+**Canonical versus measurement-owned.** Measurement logic (sidecar and
+transcript parsing, the unit-identity rule, aggregation, percentiles, the joins,
+dispositions, the cap-verdict rule, the doc check/audit arithmetic, the corpus
+schema, scorer, anchoring, batching power, the experiment's own batched prompt,
+the `claude -p` result parsers, the miner) is Rust. The canonical workflow
+decisions a measurement replays — `rankFindings`, `survives`, `hasBlocking`,
+`acTableHasGap`, `refutePrompt`, `DIMENSIONS` and `NON_GATING_SEVERITIES` — stay
+in `.claude/workflows/lib/review.mjs` and are called through the phase-2 binding
+behind the `measure::review_rules::ReviewRules` trait (`NodeReviewRules`, one
+long-lived host; `--review-lib` points it at another copy, which is how the
+mutant tests run). No Rust clone of a canonical function exists, which also
+retires the JS tool's `NON_GATING_SEVERITIES` "copy drift" pin: there is no copy.
+`measure::{jsnum, jsjson, jsdate}` reproduce JavaScript number printing,
+`toFixed`/`toLocaleString`, `Math.round`, JSON key order and `Date.parse`, and
+the workflow binding gained `Host::call_with_json_args` so a finding's key order
+reaches `refutePrompt` intact.
+
+**JavaScript runtime.** `--audit`, `--score-only`, `--batch-power`,
+`lane-tokens`, `mine-refuter-corpus` and `rdm-smoke codex-coexistence` need none
+(several tests run the binary with an empty `PATH` to prove it). Measuring
+(`refuter-severity` without `--audit`) and `refuter-agreement --dry-run`/real
+runs need Node, reached only through the binding.
+
+**Golden evidence.** Commit 9ed3c11 ran each JS tool once over the checked-in
+fixtures before deletion and committed the outputs (absolute fixture paths as
+`<ROOT>`): `tests/fixtures/token-sidecar/expected/`,
+`tests/fixtures/token-refuter-severity/expected/`,
+`tests/fixtures/token-determining-rank/expected/` and
+`tests/fixtures/refuter-agreement/expected/` (miner JSONL/JSON variants and its
+stderr accounting line, `--score-only` over both trial files, `--batch-power`,
+both dry runs), plus `tests/fixtures/refuter-agreement/exclude-one.jsonl`. The
+Rust output is compared structurally for JSON (the `instrument` field
+normalized) and byte for byte for text and JSONL; every golden matched the Rust
+port byte for byte apart from `instrument`. The hand-computed files
+(`expected-totals.json`, `expected-nonGatingRefutationSkip.json`,
+`expected-determiningFindingRank.json`, `trials-*.json`) stay as independent
+ground truth.
+
+### Tests
+
+| File | Tests | Needs Node |
+|---|---|---|
+| `rdm-devtools/tests/measure_lane_tokens.rs` | 13 | none |
+| `rdm-devtools/tests/measure_refuter_severity.rs` | 12 | every test that measures a corpus (listed in the file's header); not `audit_committed_baseline_ok`, `until_rejects_unparseable_date` |
+| `rdm-devtools/tests/measure_refuter_agreement.rs` | 31 | `corpus_prompts_regenerate_as_recorded`, `mined_prompts_exceed_sidecar_preview_length`, `refute_prompt_edit_is_reported_as_drift`, `dry_run_matches_golden_and_dispatches_nothing`, `fake_claude_drives_full_path`, `concurrency_does_not_change_output_order`, and the CLI arm of `claude_dispatch_ok_fail_garbage_empty_enoent` (a real run that stops at the missing binary) |
+| `rdm-devtools/tests/codex_coexistence.rs` | 18 + 1 ignored (`codex_coexistence_live`) | none |
+| in-crate `measure::` unit tests | 40 | `refuter_severity::rank::tests::{inert_candidate_cannot_decide_unit, unknown_disposition_is_never_imputed}` |
+
+`claude`, `codex` and `rdm` are never real in the default suite: the
+`rdm-devtools-fixture` binary plays each when started under that name (tests
+symlink it), answering from a scenario file beside the symlink and recording
+argv, cwd and environment names. The real Codex check is `codex_coexistence_live`
+(`#[ignore]`; set `RDM_CODEX_BIN` and `RDM_BIN`, optionally
+`RDM_CODEX_AUTH_FILE`, run with `--run-ignored only`), which fails rather than
+passing when its prerequisites are missing.
+
+### Mutant map
+
+Each sed mutant of the deleted harnesses is replaced by a named test that feeds
+the input exercising the branch the mutant broke, so the same regression in the
+Rust code fails that test.
+
+| Harness mutant | Regression | Failing Rust test |
+|---|---|---|
+| token-report §5 #1 | requestId dedupe → first-write-wins | `measure::sidecar::tests::request_id_dedupe_last_write_wins`; `measure_lane_tokens::json_matches_golden` (the fixture plants the duplicate) |
+| token-report §5 #2 | discrepancy delta reconciled to 0 | `discrepancy_reported_never_reconciled` |
+| token-report §5 #3 | floor read from the LAST request | `first_request_tokens_null_for_cached_and_sidecar_only`; `floor_by_agent_class_excludes_cached_and_omits_empty` |
+| token-report §5 #4 | cached/sidecar-only floor as 0, not null | `first_request_tokens_null_for_cached_and_sidecar_only`; `floor_by_agent_class_excludes_cached_and_omits_empty` |
+| token-report §6 window | `--until` comparison inverted | `until_pins_run_set_at_both_edges` |
+| token-report §6 (a) | edited `projected` doc figure | `check_and_audit_reject_edited_severity_figure` |
+| token-report §6 (b) | sentinel search never matches | `finding_extraction_requires_sentinel_anchor` |
+| token-report §6 (c) | header marker never matches | `unit_and_dimension_come_from_prompt_header` |
+| token-report §6 (d) | refutersDispatched joined on the label | `refuters_join_on_prompt_dimension_not_label` |
+| token-report §7 (a) | edited `units.determining` | `check_and_audit_reject_edited_rank_figure` |
+| token-report §7 (b) | identity ranking instead of `rankFindings` | `rank_uses_canonical_rank_findings` (a `MutantTree` of the real `review.mjs`) |
+| token-report §7 (c) | unknown disposition imputed as not-refuted | `unknown_disposition_is_never_imputed` |
+| token-report §7 (d) | a `CAP_VERDICT_RULE` threshold mutated | `cap_verdict_four_branches_and_thresholds`; `measure::refuter_severity::doc::tests::committed_verdict_rederives_only_under_the_real_rule` |
+| token-report §7 (e) | JSON target captured as a unit | `json_target_is_not_a_unit_identity`; `determining_rank_block_matches_fixture` |
+| token-report §7 (f) | run-wide orphan reason accepted | `run_wide_orphan_reason_refused_by_audit` |
+| token-report §7 (g) | precedence chain reordered | `reason_vocabulary_is_closed_and_precedence_holds` |
+| token-report §7 (h) | ambiguous-join detection dropped | `ambiguous_finding_join_is_unrecoverable` |
+| token-report §7 (i) | unreadable finder transcript read as empty | `unreadable_finder_transcript_is_not_empty` |
+| token-report §7 (j) | a retry counted as a second round | `retry_is_not_a_second_round` |
+| token-report §7 (k) | disposition read before eligibility | `inert_candidate_cannot_decide_unit` |
+| token-report §7 (l) | kills-cap comparison inverted | `cap_verdict_four_branches_and_thresholds` |
+| refuter-agreement 9a | divergence class relabelled away | `corpus_loads_with_floors_enums_and_adjudication_commits` |
+| refuter-agreement 9b | illegal authority | `invalid_corpus_items_rejected_with_named_errors` |
+| refuter-agreement 9c | uncited authoritative evidence | `invalid_corpus_items_rejected_with_named_errors`; `corpus::tests::authoritative_evidence_matches_the_js_rule` |
+| refuter-agreement 9d | corrupted `promptSha256` | `corpus_prompts_regenerate_as_recorded` |
+| refuter-agreement 9e | FN/FP denominators swapped | `fn_fp_on_separate_denominators_with_ungraded_bucket` |
+| refuter-agreement 9f | blended accuracy field | `no_blended_accuracy_key_in_any_report` |
+| refuter-agreement 9g | miner not reading the transcript | `miner_matches_goldens` (edits a fixture finding and requires the mined record to move) |
+| refuter-agreement 9h | first StructuredOutput wins | `parse_claude_result_last_structured_output_wins_fenced_bare_and_non_boolean_ungraded` |
+| refuter-agreement 9i | non-boolean `refuted` coerced | same |
+| refuter-agreement 9j | tool calls miscounted | same; `fake_claude_drives_full_path` |
+| refuter-agreement 9k | `unrecoverable-mode` guard dropped | `miner_six_skip_reasons_and_accounting_identity`; `miner_matches_goldens` |
+| refuter-agreement 9l | `--severity` made inert | `miner_severity_until_limit_out_flags` |
+| refuter-agreement 9m | grouping key lost the unit identity | `batch_power_under_unit_scoped_key_matches_golden` |
+| refuter-agreement 9n | always SUFFICIENT | `batch_power_under_unit_scoped_key_matches_golden`; `underpowered_batched_arm_throws_or_forces_no_measurement` |
+| refuter-agreement 9o | constructed items grouped | `batch_power_under_unit_scoped_key_matches_golden` |
+| refuter-agreement 9p | omitted id coerced to `refuted: false` | `batched_scoring_expansion_arm_buckets_and_dispatch_count` |
+| refuter-agreement 9q | expanded rows counted as dispatches | same |
+| refuter-agreement 9r | blended field inside the anchoring block | `no_blended_accuracy_key_in_any_report` |
+| refuter-agreement 9s | batch parser accepts an unknown id | `parse_claude_batch_result_unknown_ids_non_boolean_missing_array` |
+| refuter-agreement 9t | missing `verdicts` read as a clean grade | same |
+
+### Intentional CLI and schema changes
+
+1. Entrypoints: `node scripts/<tool>.mjs …` → `cargo run -q -p rdm-devtools --bin rdm-measure -- <lane-tokens|refuter-severity|mine-refuter-corpus|refuter-agreement> …`, and `rdm-smoke codex-coexistence`.
+2. The JSON `instrument` field names the Rust command (`rdm-measure refuter-severity`, `rdm-measure mine-refuter-corpus`, `rdm-measure refuter-agreement`). Everything else in the report, miner and results schemas is unchanged.
+3. `refuter-agreement --dispatch-stub <module>` is removed (an injected JS module is a JS extension point); `--claude-bin <path>` (default `claude` on `PATH`) replaces it.
+4. Coexistence positionals `<rdm> <codex> [auth.json]` → `--rdm`/`--codex`/`--copy-auth-from`; timeouts are `--discovery-timeout-secs` (30) and `--exec-timeout-secs` (120); exit codes 0/1/124/130/143. Children also lose `GIT_DIR`-style repository variables, so the private `git init` works when invoked from a git hook.
+5. Argument errors still exit 1, but clap generates the wording (it always names the flag). A value starting with `-` is refused except for `--project-slug` (slugs start with `-`), which still refuses a `--flag`.
+6. `--review-lib <path>` and `--host-timeout-secs` (default 600) are new; `NON_GATING_SEVERITIES` and the always-on `DIMENSIONS` are read from `review.mjs` at run time.
+7. `refuter-severity --audit` re-derives the projected drop with the severity set the doc records under `projected.severities` (the JS audit re-read the live constant, which would need a JavaScript runtime).
+8. `Date.parse` accepts the ECMAScript date-time forms V8 parses (plus V8's space separator and colon-less offset); V8's legacy fallback formats (`"Jul 24 2026"`) are refused as unparseable.
+9. A sidecar missing `runId` no longer crashes the report (the JS crashed; tracked as `measure-lane-tokens-missing-runid-crash`): the run id reads `undefined` and its agents degrade to sidecar-only with a warning.
+10. Unreadable-transcript warnings carry the OS error text rather than Node's `EACCES: …` wording.
+
+Experiment retirements: none. The batching arm, the tiering arm,
+`refuterFanout` and `determiningFindingRank` are all kept.
+
+### JavaScript left in the tree
+
+`git ls-files '*.js' '*.mjs' '*.cjs'` after this phase lists only: the Claude
+workflow code of 2(a); `rdm-devtools/src/workflow_host.mjs` (the binding glue);
+the browser assets of 2(e); and the Codex runtime/spike files and their
+`.test.mjs` suites, which are out of scope (2(c) ruling; follow-up task
+`port-remaining-codex-runtime-process-suites`). This phase added no `.js`/`.mjs`
+file, and no JavaScript source is embedded in a Rust string.
+
+### Timings (recorded evidence, not asserted)
+
+Host: macOS (Darwin 27.0.0, arm64), 2026-09-24, warm build.
+
+| Suite | Wall | Notes |
+|---|---|---|
+| `cargo nextest run -p rdm-devtools` | 11.90 s, 9.84 s (nextest summary 9.70 s, 9.63 s) | 149 tests (+1 skipped); the phase-1 process tests dominate |
+| the four new integration binaries | summary 1.80 s | 74 tests (+1 ignored) |
+| in-crate unit tests | summary 0.06 s | 40 tests |
+
+Slowest new tests: `concurrency_does_not_change_output_order` 1.45 s (its fake
+`claude` sleeps up to 240 ms per trial, serially and at `--concurrency 4`),
+`discovery_timeout_kills_and_reaps_app_server` and
+`exec_timeout_kills_group_and_removes_auth_copy` 1.3 s each (1 s deadlines);
+everything else is under 0.35 s.

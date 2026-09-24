@@ -181,35 +181,50 @@ runtime parity.
 
 ### Reproducing the coexistence check
 
-The opt-in `scripts/verify-codex-coexistence.mjs` creates an isolated temporary
-HOME and CODEX_HOME, installs a local skills-only plugin, seeds a distinguishable
-same-name user skill, and emits the real repository skill. It asks Codex's
-actual skill catalog to confirm all three enabled copies, then (when given a
-login file) starts a fresh read-only CLI session that explicitly selects the
-repository path. It verifies the selected path and plan-review gate, and checks
-the user skill, plugin source/cache, marketplace, and repository skill bytes
-were preserved. Fixtures and non-secret evidence remain in the printed temp
-directory; the private login copy is deleted even when the live check fails.
-Catchable interrupts (SIGINT/SIGTERM) and the two-minute timeout stop the child
-process group and delete the copy too. The live `codex exec` call runs under the
-repository-only Rust runner `rdm-smoke` (crate `rdm-devtools`, never shipped),
-which creates the copy (mode 0600) just before spawning and removes it on every
-catchable path; `cargo nextest run -p rdm-devtools` exercises success, non-zero
-exit, timeout, output cap, SIGINT and SIGTERM with real fixture processes and
-non-secret markers. The script builds `rdm-smoke` with cargo on demand; set
-`RDM_SMOKE_BIN` to use a prebuilt one. Standalone invocation:
-`cargo run -q -p rdm-devtools --bin rdm-smoke -- run --timeout-secs 120 --private-copy SRC:DEST -- <program> <args>`.
-SIGKILL or machine failure cannot guarantee cleanup: if
-that occurs, remove only `config/auth.json` inside the printed test directory
-before keeping or sharing the evidence. The temporary root is private.
-No real user/plugin installation is modified.
+The opt-in `rdm-smoke codex-coexistence` (repository-only crate `rdm-devtools`,
+never shipped) creates an isolated temporary HOME and CODEX_HOME, installs a
+local skills-only plugin, seeds a distinguishable same-name user skill, and
+emits the real repository skill. It asks Codex's actual skill catalog (the
+`initialize` / `initialized` / `skills/list` protocol over
+`codex app-server --stdio`) to confirm all three enabled copies, then — only
+with `--copy-auth-from <login file>`, the explicit credentials consent — starts a
+fresh read-only CLI session that explicitly selects the repository path. It
+verifies the selected path and plan-review gate, and checks the user skill,
+plugin source/cache, marketplace, and repository skill bytes were preserved (on
+success and on failure alike). Children see only the temporary HOME/CODEX_HOME,
+`/dev/null` git config, and no `RDM_*` variable. Fixtures and non-secret
+evidence remain in the printed temp directory (mode 0700; evidence files 0600);
+the private login copy (mode 0600) is deleted even when the live check fails,
+and catchable interrupts (SIGINT/SIGTERM) and the exec deadline stop the child
+process group and delete the copy too. Without `--copy-auth-from` the live
+invocation is reported **NOT RUN**, never as passed, and `result.json` records
+`liveInvocation: false`. Exit codes: 0 pass, 1 a check failed, 124 a deadline
+passed, 130/143 interrupted. SIGKILL or machine failure cannot guarantee
+cleanup: if that occurs, remove only `config/auth.json` inside the printed test
+directory before keeping or sharing the evidence. No real user/plugin
+installation is modified.
 
 ```sh
 # Discovery/preservation only; no login copied and no live model invocation:
-node scripts/verify-codex-coexistence.mjs /absolute/path/to/rdm /absolute/path/to/codex
+cargo run -q -p rdm-devtools --bin rdm-smoke -- codex-coexistence \
+    --rdm /absolute/path/to/rdm --codex /absolute/path/to/codex
 # Full live check: explicitly opt in to copying this login into the temp config:
-node scripts/verify-codex-coexistence.mjs /absolute/path/to/rdm /absolute/path/to/codex /absolute/path/to/auth.json
+cargo run -q -p rdm-devtools --bin rdm-smoke -- codex-coexistence \
+    --rdm /absolute/path/to/rdm --codex /absolute/path/to/codex \
+    --copy-auth-from /absolute/path/to/auth.json
+# Deadlines (defaults shown): --discovery-timeout-secs 30 --exec-timeout-secs 120
 ```
+
+`cargo nextest run -p rdm-devtools --test codex_coexistence` exercises the
+whole flow hermetically — catalog failures, a discovery timeout, a wrong or
+competing live answer, a protected-byte change, the exec timeout, SIGINT and
+SIGTERM — against fake `codex`/`rdm` roles of the `rdm-devtools-fixture`
+binary and a non-secret login marker, with no Codex, account or network. The
+real check is the ignored `codex_coexistence_live` test (set `RDM_CODEX_BIN` and
+`RDM_BIN`, optionally `RDM_CODEX_AUTH_FILE`, and run it with
+`--run-ignored only`); it fails rather than passing when its prerequisites are
+missing. The general-purpose bounded runner stays available as
+`cargo run -q -p rdm-devtools --bin rdm-smoke -- run --timeout-secs 120 --private-copy SRC:DEST -- <program> <args>`.
 
 This is also an optional arm of the existing distribution harness: set
 `RDM_CODEX_BIN` to the Codex executable and optionally `RDM_CODEX_AUTH_FILE`
@@ -219,7 +234,9 @@ not as passed. The default hermetic harness needs neither Codex nor an account.
 The full check passed with Codex CLI 0.154.0 on 2026-09-15: the real catalog
 contained the enabled repository, user, and installed-plugin copies; a fresh
 session read the requested repository SKILL.md, reported its independent
-plan-review gate, and left all protected bytes unchanged. The helper retains
+plan-review gate, and left all protected bytes unchanged (recorded with the
+earlier JavaScript helper, whose flow `rdm-smoke codex-coexistence` ports
+unchanged). The check retains
 `catalog.json`, `events.jsonl`, `answer.json`, and `result.json` for inspection.
 This verifies the explicit-path CLI recipe, not automatic precedence or app/IDE
 selection behavior. Fixture manifests follow the official

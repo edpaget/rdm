@@ -36,9 +36,10 @@ The corpus is `tests/fixtures/refuter-agreement/corpus.jsonl` — 56 items, one
 JSON object per line.
 
 **Mined items (44, 78.6 %) are the primary source.**
-`scripts/mine-refuter-corpus.mjs` walks the session sidecars with phase 1's
-parser (`defaultProjectsRoot` / `locateSessionDirs` / `findWorkflowRunFiles` /
-`buildRecords` / `transcriptPathFor` from `scripts/lib/token-report.mjs`),
+The miner (then `scripts/mine-refuter-corpus.mjs`, now
+`rdm-measure mine-refuter-corpus`) walks the session sidecars with phase 1's
+parser (then `scripts/lib/token-report.mjs`, now
+`rdm_devtools::measure::sidecar`),
 filters to `agentClass === 'refute'` over the same six lane workflows
 `docs/token-baseline.json`'s `runSet` uses, and reads each refuter's
 **full-fidelity `subagents/workflows/<runId>/agent-*.jsonl` transcript**. The
@@ -48,17 +49,18 @@ replayable **verbatim**.
 
 > The 401-character hard truncation applies only to the `promptPreview` /
 > `resultPreview` fields of the `wf_*.json` sidecars. It does **not** apply to
-> the transcripts. `scripts/verify-refuter-agreement.sh` §3 asserts every mined
-> prompt exceeds 401 characters precisely to prove the transcript, not the
-> preview, was the source. The median mined prompt is ~9.4k characters.
+> the transcripts. The `mined_prompts_exceed_sidecar_preview_length` test asserts
+> every mined prompt exceeds 401 characters precisely to prove the transcript, not
+> the preview, was the source. The median mined prompt is ~9.4k characters.
 
 Over the mining window, 987 refuter records yielded **953 recoverable** ones; 26
 had no readable transcript and 8 returned no recoverable verdict. Those 34 are
 bucketed with counts and contribute to nothing.
 
-Recovery reuses the already-exported, brace-matched, sentinel-anchored
-`matchBrace` / `extractFinding` from `scripts/measure-refuter-severity.mjs`
-rather than re-implementing them, so the two instruments cannot drift. This
+Recovery reuses the brace-matched, sentinel-anchored `match_brace` /
+`extract_finding` of the refuter-severity instrument
+(`rdm_devtools::measure::refuter_severity::extract`) rather than re-implementing
+them, so the two instruments cannot drift. This
 matters: `refutePrompt` interpolates the target **inline** on the header line,
 and the `--implementation-plan` plan-review target is itself a pretty-printed
 JSON document — so a naive `indexOf('{')` finds the *target*, and reading "the
@@ -96,7 +98,7 @@ finding that was a real defect when raised and has since been fixed is therefore
 reading this tree. Fifteen items are exactly that.
 
 The closed class set (`GROUND_TRUTH_CLASSES` in
-`scripts/lib/refuter-agreement.mjs`):
+`rdm_devtools::measure::refuter_agreement::corpus`):
 
 | class | meaning |
 |---|---|
@@ -149,8 +151,9 @@ again and no tiering decision can affect them.
 
 ### Replay
 
-`scripts/run-refuter-agreement.mjs` regenerates every prompt through the **real**
-`refutePrompt` imported from `.claude/workflows/lib/review.mjs` and compares the
+`rdm-measure refuter-agreement` regenerates every prompt through the **real**
+`refutePrompt` in `.claude/workflows/lib/review.mjs` (called through the workflow
+binding, never copied) and compares the
 result against the item's recorded `promptSha256`. A mismatch sets
 `promptDrift` and is reported rather than silently accepted — that is what
 catches a later `refutePrompt` edit invalidating the corpus. At the recorded
@@ -216,7 +219,8 @@ Recorded run: label `bounded-8x2x2`, tiers `opus` (baseline) and `sonnet`,
 > [Limitations](#limitations)). Reproduce or extend with:
 >
 > ```
-> node scripts/run-refuter-agreement.mjs --tiers opus,sonnet --replicates 2 \
+> cargo run -q -p rdm-devtools --bin rdm-measure -- refuter-agreement \
+>   --tiers opus,sonnet --replicates 2 \
 >   --concurrency 8 --out tests/fixtures/refuter-agreement/results-full.json
 > ```
 
@@ -297,18 +301,18 @@ What that does and does not invalidate:
 - Nothing here re-establishes the tiering result under the new prompt. When
   citing a tier comparison from this corpus, say that it was measured before the
   laundering guard.
-- A re-run of `run-refuter-agreement.mjs` under the current prompt would settle
+- A re-run of `rdm-measure refuter-agreement` under the current prompt would settle
   it; that has not been done.
 
 **Maintenance gap this exposed.** There is no supported command to re-baseline
-the corpus after a deliberate `refutePrompt` change. `mine-refuter-corpus.mjs`
-only mines NEW candidates from session sidecars, and
-`scripts/verify-refuter-agreement.sh` § 3 asserts each recorded
+the corpus after a deliberate `refutePrompt` change. `mine-refuter-corpus`
+only mines NEW candidates from session sidecars, and the
+`corpus_prompts_regenerate_as_recorded` test asserts each recorded
 `promptSha256` still regenerates — so any edit to `refutePrompt` turns that gate
 red with no documented way to clear it. Flipping `promptDrift` to `true`
-wholesale is NOT that way: § 9d plants a corrupted `promptSha256` and asserts
-§ 3 catches it, and an all-drifted corpus makes that check vacuous (verified —
-the self-test fails). The re-baseline above was therefore done directly through
+wholesale is NOT that way: the same test plants a corrupted `promptSha256` and
+asserts it is reported as drift, and an all-drifted corpus makes that check
+vacuous. The re-baseline above was therefore done directly through
 the module's own `checkPromptFidelity`. A first-class re-baseline path is worth
 adding.
 
@@ -538,9 +542,10 @@ omission fix described below, `lib/plan-review.mjs` (and its byte-identical
 `runPlanReview({...})` call sites, and `scripts/verify-workflow-review.sh`
 gained the `5b-models` criterion §11's XOR was waiting on — its
 §5b-mechanical pointer comment now points at §5b-models instead of claiming
-no binding changed. `scripts/verify-refuter-agreement.sh` §11 takes the
-`BINDING_CHANGED=1` branch and passes on the "gated" side of the XOR, not the
-"pointer" side.
+no binding changed. `scripts/verify-refuter-agreement.sh` §11 then took the
+`BINDING_CHANGED=1` branch and passed on the "gated" side of the XOR, not the
+"pointer" side (that section, and later the whole script, have since been
+retired).
 
 **What is NOT closed by this decision — and has since landed separately.** The
 `rdm-wf-plan-review.js` model omission was a separate question with a separate
@@ -566,51 +571,60 @@ corpus yields exactly 1 qualifying group of 3 items against a pre-registered
 floor of 6 groups / 18 items, so no A/B was run and the pipeline is unchanged.
 Growing this corpus is what unblocks it — see that document's § Mining headroom,
 and note that any growth also invalidates the Composition figures above and the
-composition floors in `scripts/verify-refuter-agreement.sh` § 2.
+composition floors the `corpus_loads_with_floors_enums_and_adjudication_commits`
+test checks.
 
 ## Refuter-agreement harness
 
-The harness is **on-demand only**. It lives entirely under `scripts/` and
-`tests/fixtures/`; it imports *from* `.claude/workflows/lib/review.mjs` and
-nothing under `.claude/workflows/` imports it back. `scripts/verify-refuter-agreement.sh`
-asserts that directionally with a grep, so it can never be wired into the lane's
-hot path.
+The harness is **on-demand only**. It lives in the repository-only crate
+`rdm-devtools` (binary `rdm-measure`, never shipped) and `tests/fixtures/`; it
+calls *into* `.claude/workflows/lib/review.mjs` (for `refutePrompt` only, through
+the workflow binding) and nothing under `.claude/workflows/` depends on it, so it
+can never be wired into the lane's hot path.
 
 > **Cost warning.** A real run dispatches **paid agents** — one per corpus item
-> per tier per replicate. `--dry-run`, `--dispatch-stub` and `--score-only`
-> spend nothing. The gate never dispatches.
+> per tier per replicate — and happens only on an explicit run with `--tiers`
+> and without `--dry-run`. `--dry-run`, `--score-only`, `--audit` and
+> `--batch-power` spend nothing; the tests dispatch only through a fake `claude`
+> passed as `--claude-bin`.
 
-### The three scripts
+### The tool
 
-| script | role |
+| subcommand / module | role |
 |---|---|
-| `scripts/lib/refuter-agreement.mjs` | canonical stdlib-only module: corpus schema and validation, prompt reconstruction, trial construction, the scorer, the renderer, and the `--audit` arithmetic |
-| `scripts/mine-refuter-corpus.mjs` | mines real historical findings verbatim from `agent-*.jsonl` transcripts; emits `groundTruth: null` always |
-| `scripts/run-refuter-agreement.mjs` | regenerates prompts through the real `refutePrompt`, dispatches trials per tier, scores, renders, and audits |
+| `rdm_devtools::measure::refuter_agreement` (`corpus`, `prompt`, `trials`, `score`, `report`, `audit`, `dispatch`) | corpus schema and validation, prompt reconstruction, trial construction and batch power, the scorer, the renderer, the `--audit` arithmetic, and the bounded `claude -p` dispatch pool |
+| `rdm-measure mine-refuter-corpus` (`refuter_agreement::miner`) | mines real historical findings verbatim from `agent-*.jsonl` transcripts; emits `groundTruth: null` always; needs no JavaScript runtime |
+| `rdm-measure refuter-agreement` | regenerates prompts through the real `refutePrompt` (Node, via the workflow binding), dispatches trials per tier, scores, renders, and audits |
+
+These replace `scripts/lib/refuter-agreement.mjs`, `scripts/mine-refuter-corpus.mjs`
+and `scripts/run-refuter-agreement.mjs`; flags are unchanged except
+`--dispatch-stub <module>`, which became `--claude-bin <path>`.
 
 ### Mine → adjudicate → run → score → audit
 
 ```bash
+M="cargo run -q -p rdm-devtools --bin rdm-measure --"
+
 # 1. MINE candidates from the real corpus (restricted to this repo's own slugs).
-node scripts/mine-refuter-corpus.mjs --until 2026-07-29T00:00:00Z --out candidates.jsonl
+$M mine-refuter-corpus --until 2026-07-29T00:00:00Z --out candidates.jsonl
 
 # 2. ADJUDICATE by hand: for each candidate, read the cited location and fill in
 #    groundTruth {defect, class, authority, evidence, adjudicatedAgainstCommit}.
 #    The miner never does this — the historical verdict is circular.
 
 # 3. RUN (dispatches paid agents). --dry-run first to see the plan and spend nothing.
-node scripts/run-refuter-agreement.mjs --tiers opus,sonnet --replicates 2 --dry-run
-node scripts/run-refuter-agreement.mjs --tiers opus,sonnet --replicates 2 \
+$M refuter-agreement --tiers opus,sonnet --replicates 2 --dry-run
+$M refuter-agreement --tiers opus,sonnet --replicates 2 \
   --concurrency 8 --out tests/fixtures/refuter-agreement/results-<label>.json
 
 # 4. SCORE a saved run again without dispatching anything.
-node scripts/run-refuter-agreement.mjs --score-only tests/fixtures/refuter-agreement/results-<label>.json
+$M refuter-agreement --score-only tests/fixtures/refuter-agreement/results-<label>.json
 
 # 5. AUDIT the committed figures, corpus-free, on any machine.
-node scripts/run-refuter-agreement.mjs --audit docs/token-baseline.json
+$M refuter-agreement --audit docs/token-baseline.json
 
-# 6. GATE everything.
-bash scripts/verify-refuter-agreement.sh
+# 6. GATE everything (the corpus-prompt, dry-run and dispatch-path tests need Node).
+cargo nextest run -p rdm-devtools --test measure_refuter_agreement
 ```
 
 ### Corpus schema
@@ -639,36 +653,39 @@ so a typo'd hand edit cannot pass silently.
   trials) and rendered as two separate labelled blocks with their consequences
   spelled out inline. `findBlendedAccuracyKeys` walks the report recursively and
   the harness asserts **no** key matching `/accuracy|overallCorrect|combinedRate/i`
-  exists at any depth — the mechanical form of "never averaged together".
+  exists at any depth — the mechanical form of "never averaged together"
+  (`no_blended_accuracy_key_in_any_report`).
 - **Three parallel rate sets** per tier: `authoritativeOnly` (rendered first and
   labelled decision-grade), `judgementCallOnly`, and `all`. They partition
   exactly, which the harness checks field by field.
 - **Cost sits on the agreement row.** Each tier's four token classes, mean tokens
   per trial, and mean tool calls per trial are rendered on the *same* table row
   as its FN figures, so agreement and cost cannot be read apart.
-- **Determinism.** No `Date.now(`, no `Math.random(`, no network in the module or
-  the miner. The run label defaults to the corpus sha, never the clock.
-- **The paid-dispatch path is unit-tested with zero spend.** `--dry-run` and
-  `--dispatch-stub` deliberately *bypass* `claudeDispatch`/`parseClaudeResult`,
-  yet those are exactly the branches that produced the verdicts and the
-  token/tool-call figures the DECISION above was computed from. So
-  `scripts/verify-refuter-agreement.sh` §7b drives them directly.
-  `parseClaudeResult` is a pure function of a response body and is asserted
-  against synthetic `claude -p --output-format json` bodies covering: the
-  StructuredOutput shape; **several** StructuredOutput blocks, where the *last*
-  must win; a bare-JSON `result` string; a prose/fence-wrapped one (exercising
-  `tryParseEmbeddedJson`'s string-aware brace matching); a missing `usage`
-  object; the `num_tool_uses` fallback-not-override; and — critically — a
-  non-boolean or absent `refuted`, which must bucket as `ungraded` rather than
-  coerce to `false` and silently inflate the false-positive rate.
-  `countSessionToolUses`/`projectSlugFor` run against a scratch transcript with
-  interleaved non-`tool_use` blocks, a user turn, and a malformed line. And
-  `claudeDispatch` runs against **PATH-shadowed fake `claude` binaries** — PATH
-  is replaced wholesale rather than prepended, so a real `claude` stays
-  unreachable — covering the success, non-zero-exit, non-JSON-body, and
-  missing-binary branches. §9h–9j plant the three regressions this exists to
-  catch (first-block-wins, non-boolean coercion, tool-call miscount) and assert
-  §7b fails on each, so the coverage is not vacuous.
+- **Determinism.** No clock, no RNG, no network in the scorer or the miner. The
+  run label defaults to the corpus sha, never the clock, and the dispatch pool's
+  concurrency never changes the recorded order
+  (`concurrency_does_not_change_output_order`).
+- **The paid-dispatch path is tested with zero spend.** `--dry-run` never
+  reaches the dispatcher, yet the dispatch and parse branches are exactly the ones
+  that produced the verdicts and the token/tool-call figures the DECISION above
+  was computed from, so they are driven directly. The response parser is a pure
+  function of a `claude -p --output-format json` body, asserted
+  (`parse_claude_result_last_structured_output_wins_fenced_bare_and_non_boolean_ungraded`)
+  over the StructuredOutput shape; **several** StructuredOutput blocks, where the
+  *last* must win; a bare-JSON `result` string; a prose/fence-wrapped one (string-
+  aware brace matching); a missing `usage` object; the `num_tool_uses`
+  fallback-not-override; and — critically — a non-boolean or absent `refuted`,
+  which must bucket as `ungraded` rather than coerce to `false` and silently
+  inflate the false-positive rate. Its batched sibling has its own test
+  (`parse_claude_batch_result_unknown_ids_non_boolean_missing_array`). The real
+  spawn path runs against a **fake `claude`** (the `rdm-devtools-fixture` binary
+  under that name, answering from a scenario file) passed as `--claude-bin`, so a
+  real `claude` is never reachable: success, non-zero exit, non-JSON and empty
+  bodies, and the missing-binary branch
+  (`claude_dispatch_ok_fail_garbage_empty_enoent`), and the full run including
+  the session-transcript tool-call recount and a two-arm `--shape both` run
+  (`fake_claude_drives_full_path`). The first-block-wins, non-boolean-coercion and
+  tool-call-miscount regressions each fail one of these named tests.
 - **The miner's skip branches decide the corpus size, so they are gated too.**
   How many historical refuters reach the corpus at all is a function of six
   degradation branches (`no-transcript`, `no-prompt`, `unparseable-finding`,
@@ -676,11 +693,13 @@ so a typo'd hand edit cannot pass silently.
   one of them fire on healthy transcripts would silently shrink the mined
   majority without failing anything.
   `tests/fixtures/refuter-agreement/mine-sidecars` therefore carries one
-  transcript per branch, and §4 asserts each bucket's exact count *plus* an
-  accounting identity — `recovered + skipped == refuter records` — so no branch
-  can become a silent drop. §4b drives the rest of the miner's CLI (`--severity`
-  singly and as a comma-set, `--until` in both directions, `--limit`, `--out`,
-  `--help`, and every argument-validation error, each of which must be an
-  actionable named message rather than a stack trace). §9k–9l plant the two
-  regressions those sections exist to catch — a dropped `unrecoverable-mode`
-  guard and an inert `--severity` filter — and assert §4 and §4b fail on each.
+  transcript per branch, and `miner_six_skip_reasons_and_accounting_identity`
+  asserts each bucket's exact count *plus* an accounting identity —
+  `recovered + skipped == refuter records` — so no branch can become a silent
+  drop. `miner_severity_until_limit_out_flags`, `miner_min_group_size_and_exclude_corpus`
+  and `miner_bad_arguments_rejected` drive the rest of the miner's CLI
+  (`--severity` singly and as a comma-set, `--until` in both directions,
+  `--limit`, `--out`, and every argument-validation error, each of which must be
+  an actionable named message), and `miner_matches_goldens` compares the output
+  byte for byte with the goldens captured from the JavaScript miner. A dropped
+  `unrecoverable-mode` guard or an inert `--severity` filter fails those tests.
