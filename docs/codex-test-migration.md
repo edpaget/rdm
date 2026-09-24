@@ -7,6 +7,7 @@ test suite. Missing Node fails with an installation instruction; it never skips.
 
 ```sh
 cargo nextest run -p rdm-cli --test codex_runtime --test codex_estimate --test codex_estimate_interruption --test codex_distribution --test cli_agent_config
+cargo nextest run -p rdm-cli --test codex_process
 cargo nextest run -p rdm-core -E 'test(codex_)'
 ```
 
@@ -16,6 +17,17 @@ process cleanup. `rdm-cli/tests/support/codex-bridge.mjs` only loads/invokes mod
 hydrates callback/host primitives, and transports JSON replies/errors. The
 interruption tests compile a test-only Rust host fixture; no live model,
 authentication, globally installed RDM, or user configuration is involved.
+
+The `codex_process` binary (`rust-test-suite-consolidation` phase 8) drives the
+production modules through the repository-only `rdm_devtools::workflow` host
+instead of `codex-bridge.mjs`. The bridge answers one request per process, so a
+test cannot act while a call is in flight; the process and state cases need
+exactly that — abort a real `AbortController` after a fake reports readiness,
+hold `boundedParallel` thunk replies, race `finish`/`fail` against an active
+command, send SIGTERM to a running runtime. The host's detached calls, held
+replies and constructed globals are generic transport with no cases of their
+own. The fake `codex`/`rdm` binaries are POSIX `sh` that record each call and
+replay a response Rust wrote.
 
 ## Retired JavaScript cases
 
@@ -110,16 +122,41 @@ removed spike `planText` input, then caught omitted-AC handling, lost reviewer/
 parent context, missing approved-plan scope and leaked judgment identity before
 the corresponding production repairs.
 
-## Deliberately retained legacy coverage
+## Process, run-state, runner and queue suites → `codex_process`
 
-CI explicitly lists `codex-spike-process.test.mjs`, `codex-runtime-state.test.mjs`,
-`codex-runtime-review-process.test.mjs`, and `codex-runtime-queue.test.mjs` in a
-**remaining legacy** step. Those complete case sets have not yet moved to Rust;
-the new minimal process/session slice is not a claim of full equivalence. Remove
-that step only when the owning migration accounts for every remaining case.
-The retained review-process fixture supplies base/head only for code reviews;
-plan source pins now require an explicit phase item, covered by
-`plan_review_rejects_source_revisions_without_item`.
-The older smoke/dev-wrapper checks and unrelated repository shell harnesses
-also remain outside this phase's migration. No new Codex acceptance depends on
-running or wrapping `verify-*.sh`, and none is run to validate this phase.
+`rust-test-suite-consolidation` phase 8 moved the last four suites, deleted them
+and deleted CI's separate `node --test` step. Every case is a named Rust test (P)
+or a documented duplicate of an existing one (D); none was retired. The full
+per-case table, the negative controls and timings are in
+`docs/test-migration-inventory.md` § 11.
+
+| Previous suite | Cases | Rust module | P / D |
+| --- | --- | --- | --- |
+| `codex-spike-process.test.mjs` | 26 | `codex_process::transport` (25 tests) | 23 / 3 |
+| `codex-runtime-state.test.mjs` | 16 | `codex_process::state` (15 tests) | 15 / 1 |
+| `codex-runtime-review-process.test.mjs` | 6 | `codex_process::runner` | 6 / 0 |
+| `codex-runtime-queue.test.mjs` | 2 | `codex_process::runner` | 2 / 0 |
+
+The duplicates: the legacy `rate`, `unknown-model` and `nonzero` rejections ran
+the fake's single provider-failure branch (same stderr, exit 1) as `auth`, so
+`run_codex_rejects_nonzero_exit_without_diagnostics` owns all four; the
+state suite's "write intent is durable; failure prevents success" case is
+`codex_runtime::session_uncertain_write_prevents_success_and_records_recovery_evidence`.
+Two combined cases keep one half as a new test and the other half as the existing
+owner: `--all` and `--root` rejection are
+`codex_runtime::session_forbids_all_session_commit_and_identity_overrides`.
+The spike entrypoint's re-export identity check became a behavioural test,
+`spike_entrypoint_runs_the_runtime_transport`, which imports
+`codex-spike-process.mjs` and drives `runCodex` and `boundedParallel` through it.
+
+The two opt-in mutation modes (`CODEX_QUEUE_TEST_MUTATION`,
+`CODEX_REVIEW_TEST_MUTATION`) are always-on negative controls in
+`codex_process::mutants`, each planting its edit in a private temp copy of the
+runtime's import closure.
+
+The review fixture supplies base/head only for code reviews; plan source pins
+require an explicit phase item, covered by
+`plan_review_rejects_source_revisions_without_item`. The runner tests seed their
+plan repo with the Cargo-built binary under test rather than the legacy suites'
+`scripts/rdm-dev.sh`, which rebuilt on every call. No Codex acceptance depends on
+running or wrapping `verify-*.sh`.

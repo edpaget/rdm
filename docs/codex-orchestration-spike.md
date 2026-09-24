@@ -156,12 +156,14 @@ and performs model calls; the test command does not.
 
 ```sh
 cargo nextest run -p rdm-cli --test codex_runtime --test codex_estimate
-node --test scripts/lib/codex-spike-process.test.mjs
+cargo nextest run -p rdm-cli --test codex_process
 node scripts/run-codex-orchestration-spike.mjs gpt-6-astra medium
 ```
 
-The review/estimate tests moved to Rust in phase 4; the legacy process suite
-remains visible pending its migration. See the [case map](codex-test-migration.md).
+The review/estimate tests moved to Rust in phase 4, and the process transport,
+run-state, whole-runner and queue suites in `rust-test-suite-consolidation`
+phase 8 (`codex_process`, including one run through this spike's
+`codex-spike-process.mjs` entrypoint). See the [case map](codex-test-migration.md).
 The live results below remain historical evidence, not a claim of a new live run.
 
 The runner prints its temporary evidence directory and leaves fixtures for

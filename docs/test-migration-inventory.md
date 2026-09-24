@@ -11,7 +11,8 @@ Destinations: phase 2 — Rust-driven workflow execution tests and review
 coverage; phase 3 — remaining Claude workflow coverage; phase 4 — measurement,
 corpus and Codex coexistence tooling; phase 5 — distribution and CLI shell
 verification; phase 6 — session, commit and race harnesses; phase 7 — nextest
-as the single runner and the final coverage audit.
+as the single runner and the final coverage audit; phase 8 — the remaining
+Codex runtime process suites (§ 11).
 
 The "Retirement rationale" column also records *candidates* the survey
 noticed (duplicates, prose/source greps that the operator's no-grep rule would
@@ -417,7 +418,7 @@ Dependencies ("common") for every row: rdm bin, git, POSIX sh, no network.
 ### (c) Codex runtime/spike code and tests
 Owner: the `codex-agent-support` roadmap (docs/codex-support.md, codex-runtime.md, codex-orchestration-spike.md).
 
-**How CI runs them.** A separate step runs `mise exec node -- node --test --test-concurrency=1 scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs` with no credentials. Those tests use fake codex stubs on PATH and the prebuilt `target/debug/rdm` passed through `RDM_BIN`.
+**How CI runs them.** At inventory time a separate step ran `mise exec node -- node --test --test-concurrency=1 scripts/lib/codex-spike-*.test.mjs scripts/lib/codex-runtime*.test.mjs` with no credentials, using fake codex stubs on PATH and `scripts/rdm-dev.sh` as `RDM_BIN`. Phase 4 (on main) moved the review/estimate/spike suites to Rust; phase 8 moved the last four (`codex-spike-process`, `codex-runtime-state`, `codex-runtime-review-process`, `codex-runtime-queue`) to the `rdm-cli` binary `codex_process` and deleted the step (§ 11). Every Codex runtime test now runs in `mise exec node -- cargo nextest run`, with no credentials.
 
 **Phase 4 ruling: the Codex runtime is out of scope here.** `scripts/rdm-codex.mjs`, `scripts/lib/codex-runtime*.mjs`, `codex-process.mjs`, `codex-spike-*.mjs` and `scripts/run-codex-orchestration-spike.mjs` are production Codex runtime code owned by `codex-agent-support` (on main they now ship under `rdm-core/src/templates/codex-runtime/`, and main's `docs/codex-test-migration.md` keeps four suites — `codex-spike-process`, `codex-runtime-state`, `codex-runtime-review-process`, `codex-runtime-queue` — in a "remaining legacy" CI step awaiting their owning migration). Phase 4 ports only the coexistence smoke check. The roadmap-level "no JavaScript test files" criterion is owned by this roadmap's phase 8 (`phase-8-port-remaining-codex-runtime-process-suites`, folded in from the former task), which ports the four remaining suites and deletes their CI step (§ 10).
 
@@ -425,11 +426,11 @@ Owner: the `codex-agent-support` roadmap (docs/codex-support.md, codex-runtime.m
 |---|---|---|---|---|
 | `scripts/rdm-codex.mjs` | 9-line CLI: `node scripts/rdm-codex.mjs run-spec.json` → `runRuntime` | Product surface (phase-3 Codex runtime, documented entrypoint in `docs/codex-runtime.md`) | via `codex-runtime.test.mjs` (CLI invalid specs) | 4 (phase body says "codex tooling"; ambiguous because it is a documented, if repo-only, product entrypoint) |
 | `scripts/lib/codex-runtime.mjs` | Explicit Codex host: plan-review, code-review and estimate over the canonical `review.mjs`/`plan-review.mjs`; model resolution through `rdm model resolve` | Product (runtime) | `codex-runtime.test.mjs` (14): tier bindings, role rejection, drift/HEAD/phase-body rejection, incomplete coverage | 4 |
-| `scripts/lib/codex-runtime-state.mjs` | Run manifest, owned session, direct-argv mutations, `safeGit` | Product (runtime) | `codex-runtime-state.test.mjs` (16): durable intent, uncertainty, cancellation reaping, output limits, git-override isolation | 4 |
-| `scripts/lib/codex-runtime-estimate.mjs` | Estimate preview/apply over `lib/estimate.mjs` with an atomic precondition and scoped commit | Product (runtime) | `codex-runtime-estimate.test.mjs` (11, includes a real plan repo); `codex-runtime-estimate-interruption.test.mjs` (SIGTERM after update/commit, reconciliation); `codex-runtime-queue.test.mjs` (bounded concurrency, cancellation); `codex-runtime-review-process.test.mjs` (finder barrier, refuter JSON rejection) | 4 |
-| `scripts/lib/codex-process.mjs` | Shared Codex subprocess transport (read-only sandbox, ignore user config, bounded parallel) | Product (runtime transport) | `codex-spike-process.test.mjs` (12) | 4 |
+| `scripts/lib/codex-runtime-state.mjs` | Run manifest, owned session, direct-argv mutations, `safeGit` | Product (runtime) | `codex-runtime-state.test.mjs` (16): durable intent, uncertainty, cancellation reaping, output limits, git-override isolation — now `codex_process::state` | 4; **phase 8 (done)** for the suite (§ 11) |
+| `scripts/lib/codex-runtime-estimate.mjs` | Estimate preview/apply over `lib/estimate.mjs` with an atomic precondition and scoped commit | Product (runtime) | `codex-runtime-estimate.test.mjs` (11, includes a real plan repo); `codex-runtime-estimate-interruption.test.mjs` (SIGTERM after update/commit, reconciliation); `codex-runtime-queue.test.mjs` (bounded concurrency, cancellation); `codex-runtime-review-process.test.mjs` (finder barrier, refuter JSON rejection) — the last two now `codex_process::runner` | 4; **phase 8 (done)** for the queue and review-process suites (§ 11) |
+| `scripts/lib/codex-process.mjs` | Shared Codex subprocess transport (read-only sandbox, ignore user config, bounded parallel) | Product (runtime transport) | `codex-spike-process.test.mjs` (12 test declarations, 26 cases with the parameterised rejections) — now `codex_process::transport` | 4; **phase 8 (done)** for the suite (§ 11) |
 | `scripts/run-codex-orchestration-spike.mjs` | Opt-in research runner that uses saved Codex auth | Tooling / experimental | none | 4 |
-| `scripts/lib/codex-spike-estimate.mjs`, `codex-spike-review.mjs`, `codex-spike-process.mjs` (2-line re-export) | Phase-2 spike host adapters | Experimental tooling | `codex-spike-estimate.test.mjs` (real CLI; skips done phases), `codex-spike-review.test.mjs` (4), `codex-spike-process.test.mjs` | 4 |
+| `scripts/lib/codex-spike-estimate.mjs`, `codex-spike-review.mjs`, `codex-spike-process.mjs` (2-line re-export) | Phase-2 spike host adapters | Experimental tooling | `codex-spike-estimate.test.mjs` (real CLI; skips done phases), `codex-spike-review.test.mjs` (4), `codex-spike-process.test.mjs` (the re-export: now `codex_process::transport::spike_entrypoint_runs_the_runtime_transport`, phase 8) | 4 |
 | `scripts/lib/codex-smoke-process.mjs` + `.test.mjs` | Test-only live-process lifecycle and cleanup | Tooling | run by verify-agent-config-distribution §7i | **phase 1 (done)**: deleted; replaced by `rdm-devtools` (`process` module, `rdm-smoke` entrypoint, nextest tests) |
 | `scripts/verify-codex-coexistence.mjs` (deleted) | Opt-in real-Codex coexistence check in a temp home | Tooling | now `rdm-devtools/tests/codex_coexistence.rs` | **phase 4 (done)**: whole flow ported to `rdm-smoke codex-coexistence` (§ 7) |
 
@@ -1863,6 +1864,7 @@ individually:
 | `rdm-cli::concurrency` | 43 | session, commit, race tests and 10 mutant controls (phase 6) |
 | `rdm-devtools::*` | 152 across the lib and 9 test binaries | process lifecycle, workflow host, measurement tools, smoke (phases 1, 4) |
 | `rdm-cli::suite_hygiene` | 6 (`--profile suite-hygiene` only) | this phase |
+| `rdm-cli::codex_process` | 50 | Codex runtime transport, run state, whole runner and queue, 2 mutant controls (phase 8, § 11; the default-profile total is then 3880) |
 
 `cargo nextest list --profile suite-hygiene` lists exactly the six tests
 above. No test is `#[ignore]`d to leave the default run.
@@ -1877,15 +1879,17 @@ From `git ls-files '*.js' '*.mjs' '*.cjs'` (47 files):
 | `rdm-devtools/src/workflow_host.mjs` | test-side binding: a narrow generic runtime host (`include_str!` into `rdm_devtools::workflow`) with no cases, expected values or tool logic; not shipped (`rdm-devtools` is `publish = false`, `dist = false`) | kept |
 | `rdm-core/src/templates/codex-runtime/**` (8), `scripts/rdm-codex.mjs`, `scripts/gen-codex-runtime.mjs` (generator), `scripts/lib/codex-{process,runtime,runtime-estimate,runtime-state,spike-estimate,spike-process,spike-review}.mjs`, `scripts/run-codex-orchestration-spike.mjs` (opt-in research runner) | Codex production runtime code (`codex-agent-support`) | kept |
 | `rdm-cli/tests/support/codex-bridge.mjs` | Codex test transport: a narrow generic runtime binding (`docs/codex-test-migration.md`) | kept |
-| `scripts/lib/codex-{spike-process,runtime-state,runtime-review-process,runtime-queue}.test.mjs` and CI's `node --test` step | **pending phase 8** (`phase-8-port-remaining-codex-runtime-process-suites`), which ports them to Rust and deletes the step | temporary hand-off |
+| `scripts/lib/codex-{spike-process,runtime-state,runtime-review-process,runtime-queue}.test.mjs` and CI's `node --test` step | ported to the `rdm-cli` binary `codex_process` (§ 11) | **phase 8 (done)**: deleted, with the step |
 | `rdm-server/assets/{edit,review-anchor,review-highlight}.js` | browser assets, product UI | recorded separately, outside this change |
 | `scripts/lib/review-effort.test.mjs` | — | removed this phase |
 
 No `package.json`, `node_modules`, npm test framework or JS tooling layer
-exists. **Roadmap condition status**: at the end of phase 7 the roadmap's
-"no JavaScript test files" and "runtime provisioning only for workflow-code
-tests" conditions are met **except for the phase-8 set above**; they are not
-claimed fully met.
+exists. **Roadmap condition status**: with phase 8 the roadmap's "no
+JavaScript test files" and "runtime provisioning only for executing production
+JavaScript" conditions are **fully met**: `git ls-files '*.test.mjs'` prints
+nothing, and Node is provisioned (`mise exec node --`) only for `cargo nextest
+run` (and the suite-hygiene profile's nested runs of it), where it executes
+the production workflow and Codex runtime modules for Rust-owned tests.
 
 ### 4. Hidden-suite audit (a review, not a test)
 
@@ -1908,6 +1912,13 @@ programs a test writes at run time found no relocated suite:
   prove it does not import (`distribution/downstream.rs`).
 - `codex_bridge` requests name production modules and exports, not test
   logic.
+- Phase 8: the `codex_process` fakes (`FAKE_CODEX`, `FAKE_RDM`,
+  `FAKE_RUNNER_CODEX` in `codex_process/support.rs`) are `#!/bin/sh` stubs
+  that record each call and replay a Rust-written response; the only branches
+  are on the argument the runtime passes, the schema/prompt role marker and
+  Rust-written behaviour files — no assertion, no expected value. The glue
+  gained generic ops only (`new`, a kept `get`, `invoke`, `ping`, a raw
+  `reject` reply; § 11), and still holds no case or fixture branch.
 
 Rust smoke and measurement implementations (`rdm-smoke`, `rdm-measure`) have
 no JavaScript counterpart left: every file in § 2(d) is deleted.
@@ -1923,8 +1934,6 @@ no JavaScript counterpart left: every file in § 2(d) is deleted.
   `codex_coexistence_live` (`--run-ignored only`), the Codex spike runner.
 - Non-test gates: fmt, clippy (`--workspace --all-targets`), shellcheck,
   shfmt, the feature-matrix `cargo check`s, the release build, `cargo deny`.
-- The Codex legacy `node --test` step: a **temporary hand-off owned by phase
-  8**, not a standing exception.
 - Deliberate `#[ignore]` writers, not regressions: `golden_json::bless`,
   `rdm-core`'s `regenerate_raw_skills_baseline`.
 - Plain `cargo test` also runs the `suite_hygiene` binary (it is a normal
@@ -2067,3 +2076,215 @@ the same one.
   run was made: the Docker daemon was not running on the host.
 - The default-profile backstop is sized from a `--test-threads 2` run on a fast
   host, not from a real 2-core runner.
+
+## 11. Phase 8: the remaining Codex runtime process suites
+
+The four `node --test` suites CI still ran in its "Remaining legacy Codex
+process contracts" step — `scripts/lib/codex-spike-process.test.mjs`,
+`codex-runtime-state.test.mjs`, `codex-runtime-review-process.test.mjs` and
+`codex-runtime-queue.test.mjs`, 50 cases — are now the `rdm-cli` test binary
+`codex_process`. The suites and the step are deleted; `git ls-files
+'*.test.mjs'` prints nothing (§ 10.3). Node still executes the real production
+modules (`scripts/lib/codex-process.mjs`, `codex-runtime-state.mjs`,
+`codex-runtime.mjs`, `scripts/rdm-codex.mjs`); Rust owns every fixture, fake
+script, response, wait, assertion and teardown. No production module or
+generated template copy changed, so `scripts/gen-codex-runtime.mjs` was not
+run.
+
+### Layout
+
+| Module | Production JS | Tests |
+|---|---|---|
+| `codex_process/transport.rs` | `codex-process.mjs` (and one run through `codex-spike-process.mjs`) | 25 |
+| `codex_process/state.rs` | `codex-runtime-state.mjs` (`createRun`) | 15 |
+| `codex_process/runner.rs` | `codex-runtime.mjs` (`runRuntime`) and the CLI `rdm-codex.mjs` | 8 |
+| `codex_process/mutants.rs` | a private temp copy of the runtime's import closure | 2 |
+| `codex_process/support.rs` | — (roots, host config, fakes, `Reaper`, readers) | — |
+
+`main.rs` includes `common/workflow_support.rs`, `git_test_support.rs` and
+`common/plan_fixture.rs` as `concurrency/main.rs` does. `.config/nextest.toml`
+adds `binary(codex_process)` to the Node-hosted 30 s × 4 slow-timeout
+override.
+
+- **Roots.** Each test owns a canonical `TempDir` with its own `Sandbox`; every
+  `git`/`rdm` child the test spawns goes through it. The Node host's child
+  environment is the sandbox's (its removals — every inherited `RDM_*`,
+  `REPO_REDIRECT_VARS`, `CODEX_HOME`, harness session ids — and its
+  `HOME`/XDG/`/dev/null` git config/identity) plus `TMPDIR=<root>/tmp`, so the
+  runtime's own `mkdtemp` stays in the root. Tests never set their own
+  environment.
+- **Fakes.** `FAKE_CODEX` (transport), `FAKE_RDM` (state) and
+  `FAKE_RUNNER_CODEX` (runner) are POSIX `sh` written 0700 into the root. Each
+  records pid, argv, stdin, `pwd -P` and environment under `calls/<pid>/` and
+  replays a response Rust wrote; the runner fake also appends `start`/`end`
+  lines (O_APPEND) for barrier and concurrency evidence. Their only branches are
+  on the argument the code under test passes, the schema/prompt role marker, or
+  Rust-written behaviour files (`hang`, `kill-self`, `spawn-and-hang`, delays).
+- **Reaping.** Production spawns every fake `detached` (pid = pgid). The
+  `Reaper` kills every recorded group and descendant on drop, on every path;
+  `Host`/`Session` teardown kills and reaps the Node group; waits are bounded
+  readiness polls. The only fixed sleeps are the state tests' 1.5 s "no late
+  effect" windows (the fake's 1 s delay plus 0.5 s).
+- **Runner plan repos** are seeded with `CARGO_BIN_EXE_rdm` under the sandbox
+  (the legacy suites ran `scripts/rdm-dev.sh`, a `cargo run` per call), so the
+  runtime's `rdmBin` is the binary under test, and the expected models and
+  efforts come from its `rdm model resolve <step> --host codex --format json`.
+
+### The binding extension (repository-only tooling)
+
+`codex_runtime.rs` drives production JS through `tests/support/codex-bridge.mjs`,
+which answers one request per process and cannot act while a call is in flight.
+These cases must: abort a real `AbortController` after a fake reports
+readiness, hold `boundedParallel` thunk replies, race `finish`/`fail` against an
+active command, and SIGTERM a running runtime. Phase 2's
+`rdm_devtools::workflow::Host` gained generic transport for that — no cases,
+expected values or fixture branches — each with its own test in
+`rdm-devtools/tests/workflow_host.rs`:
+
+| Addition | Test |
+|---|---|
+| glue `new`, kept `get`, `invoke`; `Host::{construct, get_ref, invoke}` | `construct_get_ref_and_invoke_drive_a_real_abort_controller` |
+| `Host::{start_call, is_settled, await_call, service, flush, reply}`; glue `ping` | `a_started_call_settles_only_after_its_held_reply` |
+| `HostConfig::{env, env_remove}` (child only, after the built-in removals) | `host_config_env_reaches_the_child_and_env_remove_cancels_it` |
+| a result for an id never started is still a protocol error | `a_result_for_an_unstarted_id_is_a_protocol_error` |
+| `Outbox::reject_with` / glue `reject` reply | exercised by `codex_process::transport::bounded_parallel_falsy_rejection_is_a_failure` |
+
+`flush` sends two pings, the second only after the first is answered, so it is
+read in a fresh macrotask after every microtask the earlier lines queued.
+`codex-bridge.mjs` is unchanged and still serves `codex_runtime.rs`.
+
+### Case map
+
+P = named Rust test, D = duplicate of an existing Rust test. No case is
+retired: the plan's one retirement (the spike re-export identity check) became
+a behavioural P test on plan review.
+
+**`codex-spike-process.test.mjs` (26) → `codex_process::transport`**
+
+| Legacy case | Rust test | |
+|---|---|---|
+| spike entrypoint re-exports the runtime transport | `spike_entrypoint_runs_the_runtime_transport` | P: imports `codex-spike-process.mjs` and drives `runCodex` (one fake call, read-only sandbox, stdin prompt) and `boundedParallel` through it |
+| validates canonical subset, fails closed on unknown keywords | `validate_schema_accepts_the_closed_subset_and_fails_closed` | P |
+| fresh subprocess: strict nullable schema, stdin, safe argv | `run_codex_uses_strict_nullable_schema_stdin_and_safe_argv` | P (every property required, compared as a set: serde_json sorts the keys the runtime receives) |
+| judgment subprocess disables optional capabilities/escalation | `run_codex_disables_optional_capabilities_and_escalation` | P |
+| completed turn recovers from a failed exploratory command | `run_codex_accepts_a_recovered_nonzero_shell_command` | P |
+| rejects command-inconsistent, command-interrupted, tool-failed, death, malformed, error, failed, duplicate, truncated, invalid, flood (11) | `run_codex_rejects_{inconsistent_command,interrupted_command,failed_tool,killed_child,malformed_stream,error_event,failed_turn,duplicate_thread,truncated_stream,invalid_response,output_flood}_without_diagnostics` | P ×11 (message contains neither `secret` nor `sensitive`) |
+| rejects auth | `run_codex_rejects_nonzero_exit_without_diagnostics` | P |
+| rejects rate, unknown-model, nonzero (3) | → the auth test | D: the legacy fake ran one identical branch for all four |
+| timeout and abort await shutdown | `run_codex_timeout_rejects_a_hung_child`, `run_codex_abort_rejects_a_hung_child` | P ×2 (the fake's pid is dead afterwards; abort after its pid file exists; the timeout is 1 s, not 150 ms, so the fake has recorded itself) |
+| resume requires matching thread identity | `run_codex_resume_requires_the_same_thread` | P (also: `resume <id>` in argv, no `--ephemeral`) |
+| canonical labels; private, redacted diagnostics | `run_codex_failure_evidence_is_private_and_redacted` | P (dir 0700, file 0600, `[REDACTED]` present, token absent) |
+| bounded parallel: order, limit, waits for in-flight failure cleanup | `bounded_parallel_preserves_order_under_the_limit`, `bounded_parallel_failure_waits_for_in_flight_work` | P ×2 (held replies: never more than 2 pending, 2 reached, answered newest-first; after the failing reply and `flush` the call is unsettled until the in-flight thunk is answered) |
+| falsy rejection cannot succeed | `bounded_parallel_falsy_rejection_is_a_failure` | P (`reject_with(null)`; the rejection surfaces as `null`) |
+| cancellation stops descendants | `run_codex_cancellation_kills_descendants` | P |
+
+Totals: 23 P, 3 D; 25 tests.
+
+**`codex-runtime-state.test.mjs` (16) → `codex_process::state`**
+
+| Legacy case | Rust test | |
+|---|---|---|
+| explicit identity, private evidence, owned session, direct argv | `create_run_binds_explicit_identity_and_direct_argv` | P (argv reaches the fake verbatim and no shell ran; session/cwd/root/project from the recorded environment; 0700 run dir; completed manifest; reuse and post-finish `rdm` refused) |
+| rejects implicit paths/sessions, nested checkout, symlinked evidence parent | `create_run_rejects_implicit_identity_nested_checkout_and_symlinked_evidence` | P |
+| write intent durable before execution; failure prevents success | → `codex_runtime::session_uncertain_write_prevents_success_and_records_recovery_evidence` | D |
+| `--all` rejected; JSON decode failure poisons mutations | `json_decode_failure_poisons_later_mutations` | P for the decode half (plus a later mutation refused and never run); the `--all` half is D → `codex_runtime::session_forbids_all_session_commit_and_identity_overrides` |
+| acknowledged writes capture plan HEAD and can finish | `acknowledged_write_records_plan_head_and_finishes` | P (`data.planHead` equals the plan repo's HEAD) |
+| identity overrides and unjournaled commits fail before execution | `changeset_override_and_unjournaled_commit_fail_before_execution` | P for `--changeset=…` and bare `commit`, no fake invocation; the `--root` half is D → the same existing test |
+| bounded mutation timeout is uncertain, forbids retry | `mutation_timeout_is_uncertain_and_forbids_retry` | P (also: the journaled `rdm-started` pid is dead) |
+| inherited GIT_DIR cannot redirect source identity | `inherited_git_dir_cannot_redirect_source_identity` | P (`GIT_DIR` on the Node child only) |
+| adapter readback uncertainty persists in the failed manifest | `adapter_readback_uncertainty_persists_in_failed_manifest` | P |
+| caller RDM overrides and harness knobs don't enter direct commands | `caller_rdm_overrides_do_not_reach_direct_commands` | P (`RDM_CHANGESET` on the Node child; the fake's `RDM_*` keys are exactly BIN/PROJECT/ROOT/SESSION) |
+| manifest records runner identity | `manifest_records_runner_identity` | P (pid = the host, ppid = the test process, executable and argv = the resolved Node and the host's glue path, ISO-8601 start) |
+| cancellation stops mutation descendants, cannot report completion | `cancellation_kills_mutation_descendants_and_blocks_completion` | P (real `AbortController`, aborted after the fake records its descendant) |
+| preaborted run cannot start a mutation or finish | `preaborted_run_starts_no_mutation_and_cannot_finish` | P |
+| direct process exit reaps the leftover group | `exited_command_group_is_reaped_before_return` | P |
+| output limit fails mutations conservatively | `output_limit_fails_mutation_conservatively` | P |
+| active command cannot race finalization | `active_command_blocks_finish_and_fail` | P |
+
+Totals: 15 P, 1 D; 15 tests.
+
+**`codex-runtime-review-process.test.mjs` (6) and `codex-runtime-queue.test.mjs` (2) → `codex_process::runner`**
+
+| Legacy case | Rust test(s) | |
+|---|---|---|
+| full runner maps models, fresh contexts, finder barrier before planted refutation (× code, plan) | `{code,plan}_review_runner_maps_models_and_keeps_the_finder_barrier` | P ×2 (every finder `end` precedes the one refuter `start`; distinct pids; `--sandbox read-only`, `--ephemeral`, no `resume`; `-m`/effort per role from real `rdm model resolve`; journal tiers medium/large; one `agent-completed` per call; completed manifest; neither repo written) |
+| finder effort from a configured codex profile (× code, plan) | `{code,plan}_review_runner_takes_finder_effort_from_the_codex_profile` | P ×2 |
+| malformed refuter JSON rejected (× code, plan) | `{code,plan}_review_runner_rejects_malformed_refuter_json` | P ×2 |
+| preview bounds five Codex children to two and completes all | `estimate_preview_bounds_five_codex_children_to_two` | P, through the CLI under `run_bounded` (5 proposals, peak 2, 5 distinct stems, every child group dead, completed manifest, no writes) |
+| cancellation kills active judgments, never launches the queued three | `estimate_cancellation_launches_no_queued_judgment` | P, `runRuntime` on a `Host`, SIGTERM to the host pid (exactly 2 starts, groups dead, 2 `agent-started`, no `run-completed`, failed manifest, no writes) |
+
+Totals: 8 P; 8 tests. The CLI's failure-path stderr stays owned by
+`codex_runtime::runtime_cli_invalid_specs_have_no_success_output_or_run_evidence`.
+
+**All suites: 50 cases = 46 P + 4 D + 0 R**, as 48 case tests plus the 2
+negative controls below — 50 tests (`cargo nextest list -p rdm-cli --test
+codex_process`).
+
+### Mutant map
+
+The legacy opt-in `CODEX_QUEUE_TEST_MUTATION` / `CODEX_REVIEW_TEST_MUTATION`
+modes are behavioural, so they are kept, always on. `MutantTree::copy` copies
+`scripts/rdm-codex.mjs`, `scripts/lib/codex-{runtime,runtime-state,process,runtime-estimate}.mjs`
+and `.claude/workflows/lib/{review,plan-review,estimate}.mjs` into a private
+temp dir (relative imports resolve inside the copy; the checkout is never
+written); `replace_once` plants one edit; a missing or ambiguous anchor panics
+as "negative control not run".
+
+| Test | Planted edit in `codex-runtime.mjs` | Path | Not-run guard | Caught by |
+|---|---|---|---|---|
+| `mutants::unbounded_agent_semaphore_exceeds_two` | `if(active>=concurrency)await new Promise(r=>queue.push(r));else active++;` → `active++;` | the queue-preview CLI (mutant `scripts/rdm-codex.mjs`) | the run exits 0 with 5 proposals and 5 starts | `runner::check_bounded` fails; observed peak 5 |
+| `mutants::refuter_mapped_to_review_find_is_detected` | `role === 'refuter' ? 'review-verify'` → `role === 'refuter' ? 'review-find'` | a code-review `runRuntime` on a `Host` | `review-find` and `review-verify` resolve to different profiles (here `gpt-6-sol`/high vs `gpt-6-astra`/medium); exactly one refuter call | `runner::check_models` fails; the refuter ran on the `review-find` model and effort |
+
+Anchor demonstration (the worktree file edited, run, then restored byte for
+byte from a scratch copy): with both anchors replaced by absent strings, both
+tests failed in 0.017 s with `negative control not run: infrastructure
+failure: mutant `…` not applied: its anchor occurs 0 times in
+scripts/lib/codex-runtime.mjs (expected exactly once)`. Neither passed.
+
+### Timings (recorded evidence, not asserted)
+
+Host: macOS 27.0 (Darwin 27.0.0, arm64, Apple M5 Max, 18 cores), 2026-09-24,
+rustc 1.94.0, cargo-nextest 0.9.130, Node v24.18.0, git 2.55.0; warm target.
+
+Before (from the plan, same host: `node --test --test-concurrency=1`, `RDM_*`
+unset, load 1.1–1.7):
+
+| Suite | Tests | Wall |
+|---|---|---|
+| spike-process | 26 | 2.14 s |
+| runtime-state | 16 | 4.36 s |
+| review-process | 6 | 26.87 s |
+| queue | 2 | 20.23 s |
+| **Total** | **50** | **≈ 53.6 s** |
+
+Most of the review and queue time was `scripts/rdm-dev.sh`'s `cargo run` per
+`rdm` call.
+
+After:
+
+| Run | Wall | Load (1/5/15 min) |
+|---|---|---|
+| `cargo nextest run -p rdm-cli --test codex_process`, warm ×3 | 4.97, 4.97, 5.01 s (summary 4.72, 4.72, 4.76 s; 50 tests) | 3.9 / 5.8 / 4.0 |
+| `cargo nextest run` (whole workspace), warm | summary 34.3–35.1 s over four runs; 3880 tests (3830 with `codex_process` filtered out: 32.3–32.9 s) | 3.3 / 5.5 / 4.0 |
+
+Slowest tests: `runner::estimate_preview_bounds_five_codex_children_to_two`
+≈ 3.2 s alone (three 0.75 s rounds), 4.9 s under the binary's own
+parallelism; the review runs and the refuter control 1.1–1.8 s alone, ≈ 2.9 s
+in parallel; everything else under 2.2 s (the state tests with a 1.5 s
+late-effect window).
+
+### Evidence limits
+
+- One macOS host; no Linux run. The fakes use only POSIX `sh`, `sleep` with
+  fractional seconds, `head -c`, `tr`, `sed -n`, `grep -q` and `kill`, which
+  GNU coreutils/dash provide, but that was not exercised here.
+- nextest's `LEAK` flag appeared on 0–2 `codex_process` tests per run, as it
+  does on the existing `codex_estimate` binary on this host (1–2 per run in the
+  same session) — the host noise §§ 8–10 record; nextest's default leak result
+  is pass. No test left a process behind (every fake group is killed by the
+  `Reaper`, every host by `Session`).
+- A pre-existing race surfaced: `codex_runtime::process_timeout_reaps_descendants_before_late_effects`
+  (a 100 ms `runCodex` timeout against a `sh` fake that must first write a pid
+  file) failed in 2 of ~9 whole-suite runs with this binary present (0 of 3
+  with it filtered out). It is filed as task
+  `codex-runtime-timeout-test-startup-race`, not fixed here.

@@ -32,5 +32,4 @@ These harnesses were ported to Rust by the `rust-test-suite-consolidation` roadm
 - `cargo test --doc --workspace`: nextest does not run doctests; CI and the hk pre-commit hook run it.
 - Live observations that need a real client and report non-execution distinctly: `scripts/observe-plugin-install.sh`, `scripts/observe-workflow-listing.sh`, `rdm-smoke codex-coexistence` (the ignored `codex_coexistence_live` test), and the opt-in Codex spike runner.
 - Non-test gates: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `shellcheck`, `shfmt`, the feature-matrix `cargo check`s, the release build and `cargo deny check`.
-- Temporary hand-off: CI's `node --test` step over the four `scripts/lib/codex-*.test.mjs` suites, owned by `rust-test-suite-consolidation` phase 8, which ports them and deletes the step.
 - Deliberate `#[ignore]` writers, not regressions: `golden_json::bless` and `rdm-core`'s `regenerate_raw_skills_baseline`.

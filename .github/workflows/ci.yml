@@ -77,17 +77,5 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
-      - name: Remaining legacy Codex process contracts (no credentials)
-        # Temporary hand-off: rust-test-suite-consolidation phase 8
-        # (phase-8-port-remaining-codex-runtime-process-suites) ports these
-        # four suites to Rust and deletes this step. Review/model/estimate/
-        # spike acceptance already runs in nextest above.
-        run: >-
-          mise exec node -- node --test --test-concurrency=1
-          scripts/lib/codex-spike-process.test.mjs
-          scripts/lib/codex-runtime-state.test.mjs
-          scripts/lib/codex-runtime-review-process.test.mjs
-          scripts/lib/codex-runtime-queue.test.mjs
-
       - name: Audit dependencies
         run: cargo deny check
