@@ -39,6 +39,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "truncate writes changeset-journal bookkeeping under $RDM_ROOT/.git/rdm/, deliberately untracked — it records what the Store should commit, so routing it through the Store would be circular",
     ),
     (
+        "rdm-core/src/session/mod.rs",
+        "harness_barrier writes the empty <marker>.parked readiness file beside a harness-named RDM_HARNESS_*_BARRIER path, only when a test harness sets that variable, never $RDM_ROOT",
+    ),
+    (
         "rdm-core/src/session/lease.rs",
         "create_exclusive/repoint_parent_lease write session lease bookkeeping under $RDM_ROOT/.git/rdm/, deliberately untracked for the same reason as the journal above",
     ),

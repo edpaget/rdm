@@ -64,11 +64,10 @@ const FLUSH_LOCK_STALE_AFTER: Duration = Duration::from_secs(30);
 /// this is set, a flush blocks until the named file appears, letting a harness
 /// park one process mid-flush and drive another to completion. Documented
 /// alongside `RDM_HARNESS_SESSION_ID`, whose precedent it follows: inert when
-/// unset, and bounded when set, so it can never wedge a real run.
+/// unset, announces parking by creating `<marker>.parked`, and bounded when
+/// set, so it can never wedge a real run. The contract is
+/// [`rdm_core::session::harness_barrier`]'s, shared with the journal seams.
 const HARNESS_FLUSH_BARRIER: &str = "RDM_HARNESS_FLUSH_BARRIER";
-
-/// How long the harness barrier waits before proceeding regardless.
-const HARNESS_BARRIER_CEILING: Duration = Duration::from_secs(60);
 
 /// A [`Store`] backed by the local filesystem with in-memory staging.
 ///
@@ -204,23 +203,13 @@ impl FsStore {
         }
     }
 
-    /// Blocks until the harness barrier file appears, or the ceiling elapses.
+    /// Parks at [`HARNESS_FLUSH_BARRIER`] when a harness sets it.
     ///
-    /// Inert unless [`HARNESS_FLUSH_BARRIER`] is set. Bounded unconditionally:
-    /// a harness that dies without releasing the barrier delays this flush by
-    /// at most [`HARNESS_BARRIER_CEILING`], it does not wedge it.
+    /// Inert unless the variable is set; see
+    /// [`rdm_core::session::harness_barrier`] for the readiness file and the
+    /// ceiling that keeps an abandoned harness from wedging this flush.
     fn harness_barrier() {
-        let Ok(marker) = std::env::var(HARNESS_FLUSH_BARRIER) else {
-            return;
-        };
-        if marker.is_empty() {
-            return;
-        }
-        let marker = std::path::PathBuf::from(marker);
-        let deadline = std::time::Instant::now() + HARNESS_BARRIER_CEILING;
-        while !marker.exists() && std::time::Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        rdm_core::session::harness_barrier(HARNESS_FLUSH_BARRIER);
     }
 
     /// Verifies every staged path still matches the baseline this process

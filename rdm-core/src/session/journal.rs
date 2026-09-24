@@ -80,7 +80,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::process::ProcessTable;
-use super::{SessionId, SessionPaths, lease};
+use super::{SessionId, SessionPaths, harness_barrier, lease};
 use crate::error::{Error, Result};
 
 /// Whether a journaled path was written or deleted by its batch.
@@ -198,13 +198,11 @@ struct TombstoneLine {
 /// real processes at it by racing them. When this is set, [`truncate`] blocks
 /// until the named file appears, letting a harness park a committing process
 /// there and drive a second process's mutation to completion before releasing
-/// it. It follows `RDM_HARNESS_FLUSH_BARRIER`'s contract exactly: inert when
-/// unset or empty, and bounded when set, so an abandoned harness can delay a
-/// real run but never wedge it.
+/// it. It follows `RDM_HARNESS_FLUSH_BARRIER`'s contract exactly (see
+/// [`harness_barrier`]): inert when unset or empty, announces parking by
+/// creating `<marker>.parked`, and bounded when set, so an abandoned harness
+/// can delay a real run but never wedge it.
 const HARNESS_JOURNAL_BARRIER: &str = "RDM_HARNESS_JOURNAL_BARRIER";
-
-/// How long the harness barrier waits before proceeding regardless.
-const HARNESS_BARRIER_CEILING: Duration = Duration::from_secs(60);
 
 /// How long compaction waits for the journal lock before giving up.
 ///
@@ -245,8 +243,10 @@ const LOCK_POLL: Duration = Duration::from_millis(10);
 /// timing alone, so driving it needs a seam, exactly as
 /// [`HARNESS_JOURNAL_BARRIER`] does for truncation. Parking there is what lets
 /// a harness prove that a real `rdm session gc` from another process is
-/// excluded rather than raced. Same contract: inert when unset or empty,
-/// bounded by [`HARNESS_BARRIER_CEILING`] when set.
+/// excluded rather than raced. Same contract ([`harness_barrier`]): inert when
+/// unset or empty, `<marker>.parked` created on parking — with the shared lock
+/// already held — and bounded by
+/// [`HARNESS_BARRIER_CEILING`](super::HARNESS_BARRIER_CEILING) when set.
 const HARNESS_APPEND_BARRIER: &str = "RDM_HARNESS_APPEND_BARRIER";
 
 /// The environment variable naming a harness barrier file for compaction.
@@ -256,31 +256,12 @@ const HARNESS_APPEND_BARRIER: &str = "RDM_HARNESS_APPEND_BARRIER";
 /// time. That is the window in which an append made *without* the lock would
 /// land in the inode compaction is about to replace and be renamed away, and
 /// it opens and closes inside one `rdm session gc` invocation, so driving it
-/// across two real processes needs a seam. Same contract as the other two:
-/// inert when unset or empty, bounded by [`HARNESS_BARRIER_CEILING`] when set.
+/// across two real processes needs a seam. Same contract as the other two
+/// ([`harness_barrier`]): inert when unset or empty, `<marker>.parked` created
+/// on parking — after the compare-and-swap, with the exclusive lock already
+/// held — and bounded by
+/// [`HARNESS_BARRIER_CEILING`](super::HARNESS_BARRIER_CEILING) when set.
 const HARNESS_COMPACT_BARRIER: &str = "RDM_HARNESS_COMPACT_BARRIER";
-
-/// Blocks until the barrier file named by `var` appears, or the ceiling
-/// elapses.
-///
-/// Inert unless `var` is set to a non-empty value. Shared by all three seams —
-/// [`HARNESS_JOURNAL_BARRIER`] around truncation (and so around the discard
-/// that now routes through it), [`HARNESS_APPEND_BARRIER`] inside the append,
-/// and [`HARNESS_COMPACT_BARRIER`] inside compaction — so their contract is
-/// written once.
-fn harness_barrier(var: &str) {
-    let Ok(marker) = std::env::var(var) else {
-        return;
-    };
-    if marker.is_empty() {
-        return;
-    }
-    let marker = PathBuf::from(marker);
-    let deadline = std::time::Instant::now() + HARNESS_BARRIER_CEILING;
-    while !marker.exists() && std::time::Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-}
 
 /// Appends one complete line to the journal at `path`, holding the journal
 /// lock shared so that no [`compact`] can replace or unlink the file while the

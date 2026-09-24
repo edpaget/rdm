@@ -86,6 +86,50 @@ pub const HARNESS_SESSION_VARS: &[&str] = &[
     HARNESS_ADOPTION_VAR,
 ];
 
+/// How long a harness barrier waits for its release file before proceeding
+/// regardless.
+pub const HARNESS_BARRIER_CEILING: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The suffix [`harness_barrier`] appends to a barrier path to announce that a
+/// process has parked there.
+pub const HARNESS_BARRIER_PARKED_SUFFIX: &str = ".parked";
+
+/// Parks at the harness barrier named by the environment variable `var`.
+///
+/// The single implementation behind every `RDM_HARNESS_*_BARRIER` seam: the
+/// flush barrier in `rdm-store-fs` and the journal, append and compaction
+/// barriers in [`journal`]. A barrier lets a harness hold one real `rdm`
+/// process inside a window that opens and closes within one invocation, and
+/// drive a second process to completion before releasing it.
+///
+/// Inert unless `var` is set to a non-empty path `<m>`. When it is, the
+/// process first creates the sibling file `<m>.parked` (see
+/// [`HARNESS_BARRIER_PARKED_SUFFIX`]) — the readiness signal a harness waits
+/// for instead of guessing from elapsed time — and then polls until `<m>`
+/// exists. The append and compaction seams park with the journal lock
+/// already held (shared and exclusive respectively), so there the readiness
+/// file also means "the lock is held". Creating it is best effort: a failed
+/// write is ignored and never changes what the process does next.
+///
+/// Bounded unconditionally: a harness that never creates `<m>` delays the
+/// process by at most [`HARNESS_BARRIER_CEILING`], it never wedges it.
+pub fn harness_barrier(var: &str) {
+    let Ok(marker) = std::env::var(var) else {
+        return;
+    };
+    if marker.is_empty() {
+        return;
+    }
+    let marker = PathBuf::from(marker);
+    let mut parked = marker.clone().into_os_string();
+    parked.push(HARNESS_BARRIER_PARKED_SUFFIX);
+    let _ = std::fs::write(PathBuf::from(parked), b"");
+    let deadline = Instant::now() + HARNESS_BARRIER_CEILING;
+    while !marker.exists() && Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 /// Maximum length, in bytes, of a session id.
 pub const MAX_SESSION_ID_LEN: usize = 64;
 
