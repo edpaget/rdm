@@ -73,7 +73,7 @@ As a phase moves through implementation and review, skills and workflows may app
 
 | Section | Written By | Purpose |
 |---------|-----------|---------|
-| `## Key code` | rdm-do skill (optional) | Pinned `rdm:src/` links to touched files recorded at finalize; links resolve to a specific commit for permanence |
+| `## Key code` | rdm-do (Codex instructions); legacy on other surfaces | Pinned `rdm:src/` links to touched files recorded at finalize; links resolve to a specific commit for permanence. Only the Codex rdm-do template requests this section; the Claude rdm-do skill no longer appends it. Older phases may carry this section |
 | `## Estimate` | rdm-wf-estimate (legacy) | Older phases may carry `## Estimate` note with a brief justification of the difficulty rating. Current versions write the difficulty field directly |
 | `## Plan Review Round <N> — <outcome>` | rdm-plan-review skill (when gated) | Appended by the rdm-plan-review skill for non-`reviewed` units (rework or escalated outcomes); rendered from rdm-wf-plan-review's `roundNote` return value; shows the plan-review verdict and feedback |
 | Change-review records | rdm-wf-review-refute-fix workflow | Recorded in separate `change/<sha>` review documents, not appended to the phase body |
@@ -108,7 +108,7 @@ An acceptance criterion is a statement of what success looks like. For a criteri
 
 **Why this matters:** An agent needs to know when a criterion is *done*, not when more context might appear. "The search works" could mean "returns results in 100ms" or "handles typos" or "works on mobile" — none of these are stated. An unbounded criterion cannot transition from "in-progress" to "done" without either guessing or asking for clarification. Under an agent workflow, this becomes a blocking finding.
 
-**Failure mode:** An implementer reads "improve search performance" and ships a 50ms implementation. The agent or reviewer asks, "Is that fast enough?" — now it's a blocking question. The criterion, which should have been done, is reopened. The deferral should have been declared up front.
+**Failure mode:** An implementer reads "improve search performance" and ships a 50ms implementation. The agent or reviewer asks, "Is that fast enough?" — now it's a blocking question. The criterion, which should have been done, is reopened. A known threshold should have been named in the criterion itself (not deferred).
 
 **Good example:**  
 "The search index is queried in under 100ms for any query matching 10,000+ records"  
@@ -120,26 +120,26 @@ An acceptance criterion is a statement of what success looks like. For a criteri
 - Unbounded: "fast" is relative and requires interpretation
 - No agent can mark it done without knowing the implicit threshold
 
-### 3. Scope Bounded Without Caveats
+### 3. Declared Deferral at Authoring Time
 
-**Rule:** Each criterion must state its scope explicitly. Do not use caveat language like "except for X" or "deferred to Y" — such caveats and deferrals are graded as incomplete by code-review agents, regardless of how clearly they are stated. Instead, narrow the criterion's scope so known gaps fall outside it. Record deferred work as a separate task or phase.
+**Rule:** When the author already knows about a gap, they declare it at authoring time — not when it surfaces in review. They declare it by (1) bounding the criterion's scope so the gap falls outside it, and (2) naming the deferred work explicitly in the Approach section (or another section of the phase body) as a follow-up item or task.
 
-**Why this matters:** When an agent reviews acceptance criteria, any criterion that defers or caveats a known gap is treated as unmet and must be reported as a blocking finding. The way to address a known limitation is not to declare it within the criterion, but to frame the criterion to match what the phase delivers.
+**Why this matters:** A deferral first discovered at review time becomes a blocking finding under a contract the author never saw. The agent or reviewer asks, "What about X?" — and the phase is reopened, blocking landing. A gap written as a caveat inside the criterion itself ("except for X, deferred to Y") is graded as an unmet criterion by code-review agents, regardless of how clearly it is stated. The author must declare the gap *outside* the criterion, in scope-setting or follow-up language, so the criterion states exactly what the phase delivers.
 
-**Failure mode:** An author writes "The search API supports all query operators except regex, deferred to phase 2". At review time, the agent marks the caveat as a gap the phase does not close and cannot land. The deferral declaration does not protect the phase.
+**Failure mode:** An author writes "The search API supports all query operators except regex, deferred to phase 2" as the criterion. At review time, the agent marks the caveat as a known gap the phase does not close and reports it as a blocking finding. The deferral declaration does not prevent the block because it is framed as a caveat within the criterion. A second failure mode is an undeclared gap (the criterion silently omits it, or it surfaces during testing) — now the author faces a blocking finding with no foreknowledge.
 
 **Good example:**  
 "The search API supports equality and range operators"  
 - Observable: operators are listed
 - Scoped: limited to two operator types
-- No caveats: the criterion covers exactly what the phase delivers
-- Deferred work (regex support) is recorded separately in a task or phase
+- Declared deferral: the Approach section includes "Out of scope: regex operators, tracked by task/regex-operators" or a similar follow-up line
+- The criterion covers exactly what the phase delivers, and the deferred work is named upfront
 
 **Problematic example:**  
 "The search API supports all query operators except regex, deferred to phase 2"  
-- Caveat language: declares an exception
-- At review: agent marks this as unmet, blocks the phase
-- The deferral declaration does not prevent the block
+- Caveat language: declares an exception within the criterion
+- At review: agent marks this as an unmet criterion, blocks the phase
+- The deferral was declared, but in the wrong place — inside the criterion rather than as separate follow-up work in the phase body
 
 ## Example: A Complete Phase Body
 
@@ -168,4 +168,4 @@ Each criterion is observable (codes are sent, valid for a duration, fail after N
 
 ## Verification
 
-This spec is a reference document. No automated gate verifies that phase bodies conform to the grammar — that is a human review responsibility. The `rdm link check` command validates only the `rdm:` links in plan documents, not the grammar itself. Future phases may wire the AC rubric into the code-review workflow to automatically grade criteria for observable outcomes and proper scoping.
+This spec is a reference document. No automated gate verifies that phase bodies conform to the grammar — that is a human review responsibility. The `rdm link check` command validates only the `rdm:` links in plan documents, not the grammar itself. Future phases may wire the AC rubric into the code-review workflow to automatically grade criteria for observable outcomes, proper scoping, and declared deferrals.
