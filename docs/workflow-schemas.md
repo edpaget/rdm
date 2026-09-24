@@ -60,14 +60,14 @@ spike artifact; it was deleted along with the mechanical lane it probed, so ever
 Every `.claude/workflows/*.js` script — all five of them, every one now
 shipped downstream (`agent-orchestrated-dispatch` phase 26 registered
 `rdm-wf-backlog.js`, `rdm-wf-document.js`, `rdm-wf-estimate.js` and
-`rdm-wf-plan-review.js` alongside `rdm-wf-review-refute-fix.js`) — is
-grepped for `Date.now(` / `Math.random(` by its own harness and must come
-back clean. The reason is determinism of the pipeline GENERALLY, not any one
-downstream consumer of it: `verify-workflow-backlog.sh` states the rule
-plainly ("the pipeline must be deterministic"), and
-the Rust `workflow_review` tests (`pipeline::output_deterministic_{code,plan}`,
-`engine::driver_deterministic_and_emits_no_done_trailer`) assert byte-identical
-output on identical input as its own reproducibility contract. Resume-cache validity (see
+`rdm-wf-plan-review.js` alongside `rdm-wf-review-refute-fix.js`) — must not
+call `Date.now()` / `Math.random()`. The reason is determinism of the pipeline
+GENERALLY, not any one downstream consumer of it: the Rust workflow tests
+(`workflow_review`'s `pipeline::output_deterministic_{code,plan}` and
+`engine::driver_deterministic_and_emits_no_done_trailer`; `workflow_passes`'
+`backlog::output_deterministic` and `estimate::engine_output_deterministic`)
+assert byte-identical output on identical input as its own reproducibility
+contract. Resume-cache validity (see
 [`docs/autonomous-loop.md`](autonomous-loop.md) § "Recovering a crashed
 run") is ONE consequence of that determinism, not the sole or primary
 reason for the rule: a call whose `(prompt, opts)` pair is not reproducible
@@ -75,13 +75,12 @@ can never safely replay from a cached result, but the rule exists to keep
 every workflow's output reproducible — and its harnesses' byte-identical
 assertions meaningful — even in scripts no resume attempt ever touches.
 
-This is a **repo convention enforced by grep-based harness checks, not a
-runtime restriction** — the global-scope table above lists `Date` and
-`Math` as present in the isolate; nothing in the runtime itself stops a
-script from calling `Date.now()`. `scripts/verify-workflow-estimate.sh`'s
-own inline comment ("the runtime forbids them") is therefore inaccurate;
-this section records the correct framing rather than editing that harness,
-which is untouched in this pass.
+This is a **repo convention, not a runtime restriction** — the global-scope
+table above lists `Date` and `Math` as present in the isolate; nothing in the
+runtime itself stops a script from calling `Date.now()`. The grep-based harness
+checks that once enforced it were retired with those harnesses
+(`rust-test-suite-consolidation` phase 3); the determinism tests above are the
+behavioural form.
 
 ### Observing the rendered listing
 
@@ -3015,9 +3014,11 @@ drive-loop prose has since been de-literalized too (phase 10 of
 (there is no pre-flight stop for it — the missing-roadmap-slug stop is unrelated
 and stays) and an optional `--project <name>`, and threads them through every
 Bash step it runs itself, as well as into both the `rdm-wf-estimate` and
-`rdm-wf-dispatch-phase` payloads. `verify-skill-autopilot.sh` bounds both
-directions — it asserts each payload carries `rdmBin`, and asserts the skill
-carries zero binary/project literals of its own.
+`rdm-wf-dispatch-phase` payloads. `verify-skill-autopilot.sh` used to bound both
+directions with static greps over the skill (each payload carries `rdmBin`; the skill
+carries zero binary/project literals of its own); those greps were retired as not
+behavioral coverage, and the script itself was deleted by
+`rust-test-suite-consolidation` phase 3.
 
 #### The other two engines: `rdm-wf-review-refute-fix` and `rdm-wf-estimate`
 
@@ -3050,9 +3051,12 @@ Rewired callers: `.claude/skills/rdm-review` (the only caller of
 `lib/review.mjs` is never opened) and `.claude/skills/rdm-estimate` (the only
 caller of `rdm-wf-estimate.js`; `skill-estimate-cli.md` remains the `{proj_flag}`
 prose rating loop and needs no change). Asserted per-shim by
-the since-deleted `verify-workflow-review-outcome.sh` § 4 and `verify-workflow-estimate.sh`'s
-HOIST-SHIM section, each with a planted-typo self-test; the allow-list is
-asserted AS DATA by the same two harnesses' driven prompt captures (§ 6b / § 9b).
+the since-deleted `verify-workflow-review-outcome.sh` § 4 and the since-deleted
+`verify-workflow-estimate.sh`'s HOIST-SHIM section, each with a planted-typo self-test;
+the allow-list was asserted AS DATA by the same two harnesses' driven prompt captures
+(§ 6b / § 9b). Their behavioural successors execute the returned commands against the
+real binary instead (for example `workflow_passes::estimate::engine_commands_use_injected_axes`
+and `workflow_review::plan_driver::injected_axes_reach_executed_commands`).
 
 **Bounded consequence, recorded rather than absorbed.** The prose
 `rdm-autopilot` skill's estimate pre-pass passes no `rdmBin` yet — that payload,

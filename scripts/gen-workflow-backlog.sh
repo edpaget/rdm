@@ -23,11 +23,11 @@
 #   scripts/gen-workflow-backlog.sh           # rewrite the consumer in place
 #   scripts/gen-workflow-backlog.sh --check   # exit non-zero if anything drifted
 #
-# Nothing currently runs `--check` automatically: scripts/verify-workflow-backlog.sh
-# has its own separate byte-identity check on the stamped block and does not
-# invoke this script, and no CI step calls it either. Run `--check` by hand
-# after editing lib/backlog.mjs to confirm the consumer and both its embedded
-# and plugin copies are in sync with the source of truth.
+# `--check` runs under `cargo nextest run` as
+# rdm-cli/tests/workflow_passes/backlog.rs `backlog::generator_in_sync`, with a
+# scratch-tree drift → red → heal control (`backlog::generator_drift_detected_then_healed`).
+# Run it by hand after editing lib/backlog.mjs to confirm the consumer and both
+# its embedded and plugin copies are in sync with the source of truth.
 
 set -eu
 

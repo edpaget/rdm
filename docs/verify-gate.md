@@ -124,7 +124,9 @@ the untouched classifier resolves it. That means:
   counter — and an exhausted budget returns `rework` (rdm status `in-progress`).
 - The `blocked` **park** is written by the invoking loop's existing
   rework-retry-once-then-park policy (the prose `rdm-autopilot` skill's advance/park
-  steps, gated by `scripts/verify-skill-autopilot.sh`), not by dispatch itself.
+  steps, whose status writes are covered by
+  `rdm-cli/tests/cli_phase.rs::reviewed_and_blocked_reason_read_back_as_json`), not by
+  dispatch itself.
 
 This is the only reading that keeps `maxCodeRework: 0` correct: with a zero budget a
 single failing attempt must still be `rework`, never `escalated`.

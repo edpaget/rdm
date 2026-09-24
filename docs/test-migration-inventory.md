@@ -54,7 +54,7 @@ In the Dependencies column, "rdm bin" means a prebuilt `target/debug/rdm` and "c
 | 15b | Real-binary round trip | review.mjs persist; `rdm review` CLI | `persist::ladder_lands_anchored_whole_doc_and_cleared_comments`, `persist::verdict_mapping_via_real_binary` (reviewed, rework, escalated, and the `[plan]`/`[code]` prefixes), `persist::phase_stem_and_numeric_refs_resolve`, `persist::bare_ref_rejected` (now through the emitted ladder). All run against `CARGO_BIN_EXE_rdm` in a per-test plan repo | nextest | The direct CLI stale-quote and `--occurrence 1` probes are covered by the named equivalents `rdm-cli/tests/cli_review.rs::review_comment_quote_not_found_names_created_commit` and `::review_comment_ambiguous_quote_lists_occurrences_then_occurrence_selects` |
 | 15d-path | `pathFromLocation` guards | review.mjs | `persist::path_from_location_guards` | nextest | — |
 | 15g | Crafted target is shell-injection safe; reverting the quoting fires a marker | review.mjs `shellQuote(target)` | `persist::ladder_is_shell_injection_safe`, `persist::mutant_target_unquoted` (run under `sh` against the real binary) | nextest | — |
-| 15h / 15h-mut | Scratch-file hygiene | review.mjs persist ladder | Rewritten as behaviour, running the emitted ladder under `sh` against the real binary with a per-test `TMPDIR`: `persist::ladder_scratch_file_not_at_predictable_path` (a symlink planted at `$TMPDIR/rdm-persist-start.$$.json` by the ladder's own shell; the victim is untouched), `persist::concurrent_ladders_do_not_collide`, `persist::ladder_leaves_no_scratch_file`; mutants `persist::mutant_scratch_path_predictable` (victim clobbered) and `persist::mutant_scratch_rm_removed` (file left) | nextest | Regexes over the ladder text (mktemp template, no `$$`, no `/tmp` redirect, rm in the same entry). R-grep, replaced by the executed checks. The change-target ladder shape is not run here; it needs a real source checkout and is exercised by `scripts/lib/review-driver.test.mjs` (phase 3) |
+| 15h / 15h-mut | Scratch-file hygiene | review.mjs persist ladder | Rewritten as behaviour, running the emitted ladder under `sh` against the real binary with a per-test `TMPDIR`: `persist::ladder_scratch_file_not_at_predictable_path` (a symlink planted at `$TMPDIR/rdm-persist-start.$$.json` by the ladder's own shell; the victim is untouched), `persist::concurrent_ladders_do_not_collide`, `persist::ladder_leaves_no_scratch_file`; mutants `persist::mutant_scratch_path_predictable` (victim clobbered) and `persist::mutant_scratch_rm_removed` (file left) | nextest | Regexes over the ladder text (mktemp template, no `$$`, no `/tmp` redirect, rm in the same entry). R-grep, replaced by the executed checks. The change-target ladder shape is not run here; it needs a real source checkout and is owned by `driver::persist_ladder_records_change_review_anchors` (phase 3) |
 | (named gaps) | §§2a, 2b-fid, 2c, 2c(v), 5b-exec | — | Already deleted before phase 2 | — | — |
 
 **Totals over the 27 live sections.** 16 ported in full: 1, 1b, 1c, 1g, 3c, 3c-mut, 5, 5f, 8c, 9, 9c, 15b, 15d-path, 15g, 15h, 15h-mut. 5 split, with the behaviour ported and the string checks retired: 1e, 3, 8, 14, 15. 4 retired in full as string checks: 4, 4a, 4a-guard, 13. 2 retired as duplicates with a named equivalent: 2d (its filename-set listings retired as string checks), 5b-drift.
@@ -66,39 +66,58 @@ In the Dependencies column, "rdm bin" means a prebuilt `target/debug/rdm` and "c
 | `verify-review-source.mjs` (deleted) | `classifyOutcome` completeness; engine driver legacy shapes; mixed identity; source and template checks | Ported: `outcome::classify_outcome_completeness_cases` (all nine inputs), `engine::legacy_survivors_only_shape_{code,plan}` and `engine::mixed_task_phase_identity_rejected` (both execute the driver). New: `engine::emitted_template_helpers_run_without_driver` (extraction from `rdm-core/src/templates/workflows/rdm-wf-review-refute-fix.js`). Rewritten: `engine::driver_deterministic_and_emits_no_done_trailer` replaces the `Done:\|Date.now\|Math.random` source-absence check by running the source-bound driver twice and checking its returned commands | nextest | The driver-region counts of `classifyOutcome(` and `buildReviewPipeline('code')`. R-grep. Engine/template byte identity is covered by `rdm-core/src/agent_config.rs::generate_workflows_are_byte_identical_to_source` |
 | Five `gen-*` `--check` calls | Generator drift | Duplicates of `generators::review_block_in_sync_in_every_consumer`, `generators::skill_projection_in_sync_{code,plan}` and `generators::local_skill_projection_in_sync_{code,plan}` | nextest | — |
 
-### verify-workflow-backlog.sh
-| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
-|---|---|---|---|---|---|---|
-| 1 / 1b | Heredoc `behavior.mjs`: `parseBacklogArgs`, category order, schema, `parseBacklogReport`, `selectCategories`, analyzer prompt rules, `normalizeAnalysis`, `consolidateBatch`. Driven `buildBacklogPipeline`: an empty report makes 0 analyzer calls, a full report gives 4 subsections, a fetch error propagates, a crashed analyzer degrades, output is deterministic | `.claude/workflows/lib/backlog.mjs` | node, rdm bin (checked at start) | 3 | required | — |
-| 2 | Heredoc `zero-mutation.mjs`: real `rdm backlog report` JSON from a seeded repo drives the pipeline to 4 subsections; HEAD, status and file checksums unchanged | `lib/backlog.mjs`, `rdm-core/src/ops/backlog.rs` | node, rdm bin, git, shasum | 3 | required | — |
-| 3 / 3b | `backlog-groom` region is byte-identical between the lib and `rdm-wf-backlog.js`; planted-sed self-test | `lib/backlog.mjs`, `rdm-wf-backlog.js` | awk, diff | 3 | required | Copy-drift guard (the no-guards rule may retire it) |
-| 5 / 5b | `node --check --input-type=module` parses the engine; a planted duplicate-`meta` self-test | `rdm-wf-backlog.js` | node | 3 | required | — |
+### verify-workflow-backlog.sh (deleted in phase 3)
+**Phase 3 (done).** Every row names its Rust equivalent in `rdm-cli/tests/workflow_passes/backlog.rs` (`backlog::…`, filter `-E 'binary(workflow_passes) and test(/^backlog::/)'`) or records its retirement. "NR" means *not behavioral coverage (operator no-grep rule, 2026-09-23)*.
 
-### verify-workflow-document.sh
-| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
-|---|---|---|---|---|---|---|
-| 2 / 2b | `document-core` region is byte-identical between the lib and the engine; planted-drift self-test | `lib/document.mjs`, `rdm-wf-document.js` | awk, diff | 3 | required | Copy-drift guard |
-| 3 | Heredoc `test.mjs`: `parseDocumentArgs` (`rdmBin`/`project`), `defaultOutPath`/`resolveOutPath`, `computeIncompletePhases`, `buildGitRangeCommands` with and without a SHA | `lib/document.mjs` | node | 3 | required | — |
-| 4 (4a–4c) | Heredoc `test-real.mjs`: real `roadmap`/`phase show --format json` output from three seeded roadmaps (done with SHAs, incomplete, done without a commit) plus real commits, fed through the same functions | `lib/document.mjs`; rdm-core show JSON | node, git, rdm bin | 3 | required | — |
+| Script § | Actual behaviour exercised | Dest. (named Rust tests) | CI | Retired sub-assertions |
+|---|---|---|---|---|
+| 1 | `parseBacklogArgs` (`olderThan: 0`, empty tag, string/`'null'` payloads, refusals) | `backlog::parse_backlog_args` | nextest | — |
+| 1 | `CATEGORY` order, `ANALYSIS_SCHEMA` | `backlog::category_order_and_schema` | nextest | — |
+| 1 | `parseBacklogReport`, `selectCategories`, `normalizeAnalysis`, `consolidateBatch` | `backlog::{parse_backlog_report, select_categories, normalize_analysis, consolidate_batch}` | nextest | — |
+| 1 | `backlogReportCommand` text | Rewritten, executed (rule 2): `backlog::report_command_executes_with_threaded_filters`. The returned command runs under a bare `PATH` on a decoy-default repo and equals a direct `rdm backlog report` with the same filters; the tag filter is shown to change the report; an empty tag gives the unfiltered report; the omitted-axes arm runs a plain `rdm` through the `PATH` shim on the default project | nextest | `includes('--older-than 0')`-style text checks, replaced by execution |
+| 1 | Analyzer prompt grooming rules | Retired | — | NR: "READ-ONLY", "NEVER execute", `--status wont-fix`, `--roadmap-slug`, `--into`, "task merge", "survivor", "roadmap list", "mutually exclusive", "roadmap archive", "Never add --force" |
+| 1b | Driven `buildBacklogPipeline` | `backlog::{empty_report_short_circuits, full_report_one_analyzer_per_category, fetch_error_propagates, crashed_analyzer_degrades, output_deterministic, missing_fetch_report_throws}`: zero calls on an empty report; four labels, each with `opts.schema` equal to `ANALYSIS_SCHEMA`; each analyzer's proposal and question consolidated into the returned batch; the rejection message; the crashed category becoming an open question | nextest | — |
+| 2 | Zero mutation over a real report | Strengthened: `backlog::engine_zero_mutation_over_real_report` runs the real `rdm-wf-backlog.js` driver (the shell drove the lib pipeline only). With no `report` it dispatches nothing and returns `fetchError` plus `reportCommand`; that command is executed and its JSON fed back; four subsections, every analyzer in the declared `Analyze` phase; the plan repo's HEAD, status and every file are identical before and after | nextest | — |
+| 3 / 3b | Block byte identity (private awk diff) and its sed self-test | `backlog::generator_in_sync` (real `gen-workflow-backlog.sh --check`), `backlog::generator_drift_detected_then_healed` (scratch tree: drift inside the engine's block, and in the template and plugin copies the awk diff never checked, each goes red and heals byte-exact) | nextest | The private awk extraction, superseded by the generator's own check |
+| 5 | Module parse | Duplicate of `backlog::engine_zero_mutation_over_real_report` (loading the driver compiles it) | nextest | — |
+| 5b | Planted duplicate-`meta` self-test | `backlog::engine_duplicate_meta_fails_to_load` (negative control: `load_driver` fails with a `SyntaxError`) | nextest | — |
 
-### verify-workflow-estimate.sh
-| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
-|---|---|---|---|---|---|---|
-| 1 | Heredoc `behavior.mjs`: `parseEstimateArgs`, `selectUnestimated`, list-command text, estimator prompt requires a justification, writeback is `--difficulty` only (no `--model`, no body), no land/merge directive, summary text, determinism | `.claude/workflows/lib/estimate.mjs` | node, rdm bin (checked at start) | 3 | required | (§1b driven pipeline already deleted, phase 34) |
-| 2 / 2b | `gen-workflow-estimate.sh --check`; a planted sed edit of the engine goes red, then is restored | `scripts/gen-workflow-estimate.sh`, `rdm-wf-estimate.js` | sh | 3 | required | Drift gate |
-| 3 | `node --check` parses the engine as a module | `rdm-wf-estimate.js` | node | 3 | required | — |
-| 5 | Heredoc `real.mjs`: real `phase list --format json` output (3 phases, one pre-estimated) → `selectUnestimated` picks 1 and 3 | `lib/estimate.mjs`; rdm-core phase-list JSON | node, rdm bin, git | 3 | required | — |
-| 9 | Banner only | — | — | — | — | §9a grep and §9d already retired |
-| 9b | Heredoc `paramz.mjs`: the whole engine is wrapped and driven with a capturing fake agent; every emitted `rdm` call uses the injected `rdmBin`; `--project` is threaded per the allow-list | `rdm-wf-estimate.js`, `lib/estimate.mjs` | node | 3 | required | — |
-| 9c | Heredoc `rdmbin.mjs`: `resolveRdmBin` defaults and fails closed on a bad type; `projectFlag`/`parseProjectArg` on both lib and engine | same | node | 3 | required | — |
+### verify-workflow-document.sh (deleted in phase 3)
+**Phase 3 (done).** Rust tests are in `rdm-cli/tests/workflow_passes/document.rs` (`document::…`).
 
-### verify-skill-autopilot.sh
-| Script § | Actual behaviour exercised | Owning code | Dependencies | Dest. | CI | Retirement rationale |
-|---|---|---|---|---|---|---|
-| 1 | (header only) | — | — | — | — | Retired in adfd31a (static-grep); stale header remains |
-| 2 (2a–2c) | Hermetic plan repo: `phase update --status reviewed` reads back; `--status blocked --reason …` reads back `blocked_reason` | rdm-cli/rdm-core `phase update`/`show` | rdm bin, git | 3 (arguably 5; no JS) | required | — |
-| 3 | Runs `bash verify-workflow-estimate.sh` as a sibling gate | as that script | bash, node, rdm bin | 3 | required | Pure duplication; drop |
-| 4 | `rdm hook done-line` is amended onto a trailer-less branch tip; after an ff-merge, `rdm hook post-commit` marks the phase done with the landed SHA; `done-line` rejects both-or-neither of `--phase`/`--task` | `rdm_core::hook` (`format_done_directive`, post-commit), rdm-cli `hook` | rdm bin, git | 3 (arguably 5) | required | — |
+| Script § | Actual behaviour exercised | Dest. (named Rust tests) | CI | Retired sub-assertions |
+|---|---|---|---|---|
+| 2 / 2b | Block byte identity and planted-drift self-test | `document::generator_in_sync`, `document::generator_drift_detected_then_healed` (as for backlog, including the template and plugin copies) | nextest | The private awk extraction |
+| 3 | `parseDocumentArgs`, `defaultOutPath`/`resolveOutPath`, `computeIncompletePhases`, `buildGitRangeCommands` | `document::{parse_document_args, out_path_resolution, compute_incomplete_phases, git_range_commands}` | nextest | The exact command text for a fabricated `abc123`, replaced by execution (next rows) |
+| 4 (4a–4c) | Real `roadmap`/`phase show` JSON from three seeded roadmaps through the functions | `document::real_roadmap_json_drives_decisions` | nextest | — |
+| 4 (strengthened) | — | `document::git_range_commands_execute_in_source_repo`: the returned `log`/`diffStat` run in the real source repo and name exactly the phase's commit and file | nextest | — |
+| (new) | The shell never ran the driver | `document::engine_aborts_incomplete_before_any_agent`, `document::engine_gathers_then_synthesizes_and_writes` (see § 6) | nextest | — |
+
+### verify-workflow-estimate.sh (deleted in phase 3)
+**Phase 3 (done).** Rust tests are in `rdm-cli/tests/workflow_passes/estimate.rs` (`estimate::…`).
+
+| Script § | Actual behaviour exercised | Dest. (named Rust tests) | CI | Retired sub-assertions |
+|---|---|---|---|---|
+| 1 | `parseEstimateArgs`, `selectUnestimated`, summary text | `estimate::{parse_estimate_args, select_unestimated, summary_text}` | nextest | — |
+| 1 | `estimateListCommand` text | Rewritten, executed: `estimate::list_command_executes` (bare `PATH`, decoy default; returns the three seeded phases; omitted-axes arm through the `PATH` shim) | nextest | Text equality, replaced by execution |
+| 1 | Estimator prompt | `estimate::estimator_prompt_embeds_phase_body` (propagation of an injected body) | nextest | NR: the difficulty vocabulary and justification wording |
+| 1 | Writeback: one command, `--difficulty`, no `--model`, `--roadmap`; no land/merge/`Done:` directive, with a detector self-test | Rewritten, executed: `estimate::writeback_sets_difficulty_and_core_tier`. Real `phase list` JSON goes into `buildEstimatePipeline`; exactly one command per phase is executed; the read-back shows `difficulty` and the core-derived `model` for two difficulties (easy → small, moderate → medium), an untouched body, and an unchanged plan-repo HEAD (the writeback commits nothing) | nextest | NR: the "no `--model`" and forbidden-directive text scans and their detector self-test; the read-back and unchanged HEAD are the behavioural form |
+| 2 / 2b | `gen-workflow-estimate.sh --check`; a planted edit of the **real** engine goes red, then is restored | `estimate::generator_in_sync`, `estimate::generator_drift_detected_then_healed` (in a scratch tree: the real tree is never edited) | nextest | — |
+| 3 | Module parse | Duplicate of `estimate::engine_commands_use_injected_axes` (loading the driver compiles it) | nextest | — |
+| 5 | Real `phase list` JSON → `selectUnestimated` | `estimate::real_phase_list_selects_unestimated` | nextest | — |
+| 9 | Banner only | — | — | — |
+| 9b | Driven engine capture: injected binary and project on every emitted invocation, allow-list, determinism | Rewritten, executed: `estimate::engine_commands_use_injected_axes` (the engine's own `listCommand` is executed and fed back; the returned writebacks run under a bare `PATH` on the decoy repo and the phases read back as estimated; the rater prompt carries the injected binary and its stem), `estimate::engine_output_deterministic` | nextest | NR: the prompt invocation-token scan and allow-list regex |
+| 9c | `rdmBin` defaults and refusals; project validation; the engine with no `rdmBin` | `estimate::rdm_bin_resolution_and_refusals`, `estimate::project_arg_validation`, `estimate::engine_without_rdm_bin_uses_plain_rdm` (the returned commands fail under a bare `PATH` and succeed through the `PATH` shim, so a leaked repo-local path could not resolve) | nextest | NR: the "no `./target/debug/rdm` in any prompt" absence scan |
+
+### verify-skill-autopilot.sh (deleted in phase 3)
+**Phase 3 (done).** No JavaScript was left in it; its surviving sections were plain `rdm` CLI round trips and moved to CLI tests.
+
+| Script § | Actual behaviour exercised | Dest. (named Rust tests) | CI | Retired sub-assertions |
+|---|---|---|---|---|
+| 1 | (header only) | Retired with the file | — | Its assertions were retired as static greps in `adfd31a` |
+| 2 (2a–2c) | Keyless repo: `--status reviewed` reads back; `--status blocked --reason …` reads back `blocked_reason` | `rdm-cli/tests/cli_phase.rs::reviewed_and_blocked_reason_read_back_as_json` (new; `cli_gate::the_gate_is_off_by_default` sets the key explicitly, so it did not cover the keyless case) | nextest | — |
+| 3 | Runs `verify-workflow-estimate.sh` as a sibling gate | Retired as a duplicate: the estimate family runs directly under nextest | — | — |
+| 4 | `hook done-line` amended onto a trailer-less tip, no rebase, ff-merge, `hook post-commit` → done with the landed SHA; malformed `done-line` requests rejected | `rdm-cli/tests/cli_hook.rs::done_line_amended_onto_branch_tip_completes_after_ff_merge` (new). The negatives are duplicates of `cli_hook::done_line_rejects_roadmap_without_phase` and `cli_hook::done_line_rejects_task_combined_with_phase` | nextest | — |
 
 ### verify-token-report.sh
 Dependencies for every row: node, plus sed for the mutants. No rdm bin, claude or network.
@@ -332,12 +351,11 @@ Dependencies ("common") for every row: rdm bin, git, POSIX sh, no network.
 - **Phase 6 mutant arms.** Every mutant arm builds from `git archive HEAD`, overlays working-tree files, then `sed`-patches a named source line, with a guard that fails if that line has moved. That guard is a source-grep. A Rust port needs a cfg- or feature-gated fault-injection seam instead of a literal port.
 - **Tracked-file edits.** git-config §1b and temp-hygiene §1b edit tracked `.rs` files in place.
 - **Stale headers:**
-  - verify-skill-autopilot.sh (§1)
-  - verify-workflow-estimate.sh (§1b)
+  - verify-skill-autopilot.sh (§1), verify-workflow-estimate.sh (§1b): deleted in phase 3
   - verify-refuter-agreement.sh (§§10–11)
   - verify-rdm-plan-fixture.sh ("no consumer yet" is false: golden-json and plugin-loop use it)
   - verify-agent-config-distribution.sh §7c (names the removed `deriveSignals`/`selectDimensions`)
-- **Generator/drift gates** (review §1/1b/1c/1g/2d/5b-drift, backlog §3, document §2, estimate §2, outcome shim). Phase 2 or 3 must decide: port each to nextest, or drop it under the operator's no-guards/no-grep rules.
+- **Generator/drift gates** (review §1/1b/1c/1g/2d/5b-drift, backlog §3, document §2, estimate §2, outcome shim). Decided: phase 2 ported the review ones to `workflow_review::generators::*`; phase 3 ported backlog/document/estimate to `workflow_passes::{backlog,document,estimate}::generator_*`, each running the real generator's `--check` plus a scratch-tree drift → red → heal control.
 
 ## 2. JavaScript inventory
 
@@ -352,15 +370,15 @@ Dependencies ("common") for every row: rdm bin, git, POSIX sh, no network.
 ### (b) Workflow behavioural tests with mocked host primitives: preserved
 | Test | Rust runner (nextest) | What it proves | Dest. |
 |---|---|---|---|
-| `scripts/lib/review-driver.test.mjs` | `rdm-cli/tests/workflow_review_driver.rs` | Drives the real `rdm-wf-review-refute-fix.js` code path under a fake reviewer fleet against real worktrees. It executes the returned `gateCommands`/`persistScript` with the built binary, then asserts on plan state (status per outcome, anchored `--path` comments, each survivor persisted once) | **3**. Phase 2 deferred it: it is already nextest-gated, it already executes the real engine, and the phase-2 body names only the two shell suites. Phase 3 rewrites it on the `rdm_devtools::workflow` binding |
+| `scripts/lib/review-driver.test.mjs` (deleted) | `rdm-cli/tests/workflow_review_driver.rs` (deleted) | Drives the real `rdm-wf-review-refute-fix.js` code path under a fake reviewer fleet against real worktrees. It executes the returned `gateCommands`/`persistScript` with the built binary, then asserts on plan state (status per outcome, anchored `--path` comments, each survivor persisted once) | **phase 3 (done)**: `rdm-cli/tests/workflow_review/driver.rs` (`driver::…`); case map in § 6 |
 | `scripts/lib/review-changelog-range.test.mjs` (deleted) | `rdm-core/tests/workflow_review_changelog_range.rs` (deleted) | `buildReviewPipeline('code')` with a recording agent; the `changelog` finder prompt grades the range, not each commit | **phase 2 (done)**: retired with its wrapper. Its assertions were regexes over fixed prompt wording, so they are not behavioral coverage: a string-presence check (operator no-grep rule) |
-| `scripts/lib/plan-review-hoist.test.mjs` | `rdm-core/tests/workflow_plan_review_driver.rs` (`plan_review_driver_hoist_behavior`, plus the Rust byte-identity test `plan_review_driver_block_is_byte_identical`) | Suites A–E: `runPlanReviewDriver` and the shipped engine dispatch only finder/refuter labels for every target kind; implementation-plan path; caller reviewer set against `DIMENSIONS`; env-arg half | **3**. Same rationale as `review-driver.test.mjs`: already individually nextest-gated and executing the real driver, so phase 3 rewrites it on the phase-2 binding |
-| `scripts/lib/estimate-writeback.test.mjs` | `rdm-cli/tests/workflow_estimate_writeback.rs` | Real `phase list` JSON → `buildEstimatePipeline` → the returned `phase update --difficulty` commands run in a shell → difficulty and derived tier read back | 3 |
-| `scripts/lib/workflow-env-args.test.mjs` | `rdm-core/tests/workflow_env_args.rs` | Backlog and document engines' builders honour runtime `rdmBin`/`project` (no dogfood binary or project literals) | 3 |
+| `scripts/lib/plan-review-hoist.test.mjs` (deleted) | `rdm-core/tests/workflow_plan_review_driver.rs` (`plan_review_driver_hoist_behavior` deleted; the byte-identity test `plan_review_driver_block_is_byte_identical` kept) | Suites A–F: `runPlanReviewDriver` and the shipped engine dispatch only finder/refuter labels for every target kind; implementation-plan path; caller reviewer set against `DIMENSIONS`; env-arg half; source pin | **phase 3 (done)**: `rdm-cli/tests/workflow_review/plan_driver.rs` (`plan_driver::…`); case map in § 6 |
+| `scripts/lib/estimate-writeback.test.mjs` (deleted) | `rdm-cli/tests/workflow_estimate_writeback.rs` (deleted) | Real `phase list` JSON → `buildEstimatePipeline` → the returned `phase update --difficulty` commands run in a shell → difficulty and derived tier read back | **phase 3 (done)**: test 1 → `workflow_passes::estimate::writeback_sets_difficulty_and_core_tier`; test 2 → `estimate::estimated_phase_left_untouched`; test 3 → `estimate::second_pass_idempotent` (each seeds its own state) |
+| `scripts/lib/workflow-env-args.test.mjs` (deleted) | `rdm-core/tests/workflow_env_args.rs` (deleted) | Backlog and document engines' builders honour runtime `rdmBin`/`project` (no dogfood binary or project literals) | **phase 3 (done)**: case map in § 6 |
 | `scripts/verify-review-source.mjs` (deleted; was run by verify-workflow-review-outcome.sh) | none | `classifyOutcome` completeness (escalated on incomplete coverage, missing/invalid AC, budget pass-through, refuter error; reviewed on non-gating/`coverage.last`). Loads the engine as an `AsyncFunction` with fake primitives: the legacy survivors-only shape carries no outcome, and a mixed task+phase identity is rejected. Also string-structural asserts and byte-identity with the template | **phase 2 (done)**: behaviour ported to `rdm-cli/tests/workflow_review/{outcome,engine}.rs`. Its greps were retired; see the verify-workflow-review-outcome.sh table |
 | Heredocs in verify-workflow-review.sh §3–§15h (deleted) | `rdm-cli/tests/workflow_review/` | See the verify-workflow-review.sh table: pipeline, budget, non-gating, laundering, persist ladder, shell-injection | **phase 2 (done)** |
 | Heredoc `downstream.mjs` in verify-agent-config-distribution.sh §7b–7e | none | The emitted engine made importable; reviewer resolution and binary/project agnosticism; persist ladders executed against a foreign plan repo; mutants | 2 or 5 (ambiguous) |
-| Heredocs in verify-workflow-{backlog,document,estimate}.sh | none | See those tables (`behavior.mjs`, `zero-mutation.mjs`, `test.mjs`, `test-real.mjs`, `real.mjs`, `paramz.mjs`, `rdmbin.mjs`, `node --check` parse gates) | 3 |
+| Heredocs in verify-workflow-{backlog,document,estimate}.sh (deleted) | none | See those tables (`behavior.mjs`, `zero-mutation.mjs`, `test.mjs`, `test-real.mjs`, `real.mjs`, `paramz.mjs`, `rdmbin.mjs`, `node --check` parse gates) | **phase 3 (done)**: `rdm-cli/tests/workflow_passes/` |
 
 ### (c) Codex runtime/spike code and tests
 Owner: the `codex-agent-support` roadmap (docs/codex-support.md, codex-runtime.md, codex-orchestration-spike.md).
@@ -413,10 +431,11 @@ None. Every file from `git ls-files '*.js' '*.mjs' '*.cjs'` is covered in (a)–
 
 Two kinds of workflow evidence exist and neither substitutes for the other.
 
-- **Workflow unit/component tests with mocked host primitives** — the
-  `scripts/lib/*.test.mjs` suites run by nextest, the Node heredocs in
-  `verify-workflow-*.sh`, the Rust `workflow_review` tests (phase 2), and the
-  emitted-engine `downstream.mjs` arm. They execute the *actual* workflow code (canonical
+- **Workflow unit/component tests with mocked host primitives** — the Rust
+  `workflow_review` (phases 2–3) and `workflow_passes` (phase 3) tests, the
+  remaining `codex-*` `.test.mjs` suites (phase 4), and the emitted-engine
+  `downstream.mjs` arm. (The other `scripts/lib/*.test.mjs` suites and the
+  `verify-workflow-*.sh` Node heredocs were retired in phases 2–3.) They execute the *actual* workflow code (canonical
   `lib/*.mjs` modules, stamped engines, or emitted copies) against scripted
   `agent`/`pipeline`/`parallel` primitives, and some run the commands the
   workflow returns against a real rdm binary and plan repo. They prove the
@@ -601,7 +620,7 @@ then `mise which node`. A missing runtime is an error naming `mise install`,
   `pipeline::code_mode_drops_refuted_and_low_confidence_findings` with its
   floor-comparison mutant.
 - **Deferred to phase 3**, both already individually nextest-gated and both
-  already executing the real engines:
+  already executing the real engines, and ported there (§ 6):
   - `scripts/lib/review-driver.test.mjs`
   - `scripts/lib/plan-review-hoist.test.mjs`
 
@@ -622,3 +641,261 @@ macOS, nextest occasionally marks one of those phase-1 tests "leaky": the test
 passes, but its output pipe took longer than the leak timeout to close. This
 never happened with `workflow_host` excluded, or under unrelated CPU load.
 Phase 2 did not investigate it further; nothing fails.
+
+## 6. Phase 3: remaining workflow tests
+
+Deleted: `scripts/verify-workflow-{backlog,document,estimate}.sh`,
+`scripts/verify-skill-autopilot.sh`,
+`scripts/lib/{review-driver,plan-review-hoist,estimate-writeback,workflow-env-args}.test.mjs`,
+`rdm-cli/tests/workflow_review_driver.rs`,
+`rdm-cli/tests/workflow_estimate_writeback.rs`,
+`rdm-core/tests/workflow_env_args.rs`, and the Node runner plus three source
+string asserts in `rdm-core/tests/workflow_plan_review_driver.rs` (its
+byte-identity half is kept). `git ls-files 'scripts/lib/*.test.mjs'` now lists
+only `codex-*` files (phase 4). No `.js`/`.mjs` file was added, and
+`rdm-devtools/src/workflow_host.mjs` is unchanged: no case calls `pipeline()`,
+so phase 2's throw-if-called placeholder suffices.
+
+### Classification rules (applied uniformly)
+
+1. **Behavioural, ported**: assertions on values a workflow function or driver
+   returns (including rendered summary, batch or round-note text whose content
+   comes from the scenario's inputs); thrown errors; the recorded agent call
+   sequence, labels and `opts`; and the effect of executing a returned command
+   against the real binary.
+2. **Generated CLI commands are executed wherever they are meant to be run.**
+   The command runs under `sh` (or `/bin/bash`) with `PATH=/usr/bin:/bin`, so no
+   ambient `rdm` resolves, against a per-test plan repo whose default project is
+   a decoy; the resulting state is read back. A dropped `rdmBin` fails to
+   resolve and a dropped `--project` hits the decoy, so the fixture is its own
+   negative control (both were confirmed by temporarily dropping each axis from
+   the driver and plan-driver arguments: the executing tests go red). The
+   omitted-axes arms run with a per-test `bin/` directory holding an `rdm`
+   symlink to `CARGO_BIN_EXE_rdm`, on a repo whose default project is the target.
+3. **Prompt text counts only as input propagation**: a test-chosen sentinel
+   supplied as input must reach the dispatched prompt. Checks for fixed wording
+   written in source are retired as *not behavioral coverage (operator no-grep
+   rule, 2026-09-23)* — "READ-ONLY", "NEVER execute", the plan/code source-pin
+   sentences, vocabulary lists, forbidden-directive lists, absence scans for
+   hard-coded binaries or projects in prompt prose, and source-text checks such
+   as "no import/require".
+4. **Byte identity through regenerate-and-compare is kept**
+   (`gen-workflow-*.sh --check` plus a scratch-tree drift → red → heal
+   control). No new drift guard was added.
+5. **No Rust mirror**: expected values are literals per scenario; no workflow
+   decision is recomputed in Rust.
+
+### Layout
+
+| Family | Binary / module | Filter | Tests |
+|---|---|---|---|
+| review driver | `rdm-cli/tests/workflow_review/driver.rs` | `-E 'binary(workflow_review) and test(/^driver::/)'` | 33 |
+| plan-review driver | `rdm-cli/tests/workflow_review/plan_driver.rs` | `-E 'binary(workflow_review) and test(/^plan_driver::/)'` | 45 |
+| backlog | `rdm-cli/tests/workflow_passes/backlog.rs` | `-E 'binary(workflow_passes) and test(/^backlog::/)'` | 19 |
+| document | `rdm-cli/tests/workflow_passes/document.rs` | `-E 'binary(workflow_passes) and test(/^document::/)'` | 12 |
+| estimate | `rdm-cli/tests/workflow_passes/estimate.rs` | `-E 'binary(workflow_passes) and test(/^estimate::/)'` | 16 |
+| autopilot's CLI round trips | `rdm-cli/tests/cli_phase.rs`, `rdm-cli/tests/cli_hook.rs` | `-E 'test(=reviewed_and_blocked_reason_read_back_as_json) \| test(=done_line_amended_onto_branch_tip_completes_after_ff_merge)'` | 2 |
+
+Each module's rustdoc names the file it executes: the canonical
+`.claude/workflows/lib/*.mjs` module, or the `.claude/workflows/rdm-wf-*.js`
+engine loaded with `Host::load_driver`. Nothing loads a JavaScript file a test
+wrote. `workflow_passes` has the same nextest slow-timeout override as
+`workflow_review`.
+
+**Shared support**, extracted from phase 2 and included with `#[path]` by both
+workflow binaries:
+
+- `rdm-cli/tests/common/workflow_support.rs`: the generic half of
+  `workflow_review/support.rs` (`Failure`, `Outcome`, `check!`/`check_eq!`,
+  `load`, `split`, `Lib::real`/`Lib::mutant_of`, `run_real`, `mutant_verdict`,
+  `run_mutant`, the recording scripted `Agent` with `install`), plus `Module`
+  (one imported module) and `run_driver` (moved from `engine.rs`).
+  `workflow_review/support.rs` keeps the review-specific part (`Js`,
+  `Agent::planted`, label parsing, survivor lookups, `Lib::mutant`) and
+  re-exports the rest.
+- `rdm-cli/tests/common/plan_fixture.rs`: `hermetic()` and `PlanRepo` moved out
+  of `workflow_review/persist.rs` (which now uses them), generalised with the
+  decoy-default seed, `run` (explicit shell, `PATH`, `TMPDIR`, extra env),
+  `run_open_stdin`, `rdm_on_path`, `snapshot` (HEAD, porcelain status, every
+  non-`.git` file's bytes), and `SourceRepo` (`git init -b main` at
+  `<TempDir>/src`, so `src__worktrees/` stays inside the `TempDir`, plus
+  `add_worktree` through `rdm worktree add` and `pin`). All git calls go
+  through `git_test_support.rs`.
+- Both live under `rdm-cli/tests/common/`, not beside `git_test_support.rs`:
+  cargo builds every top-level `tests/*.rs` as its own test target, and these
+  two files are not self-contained (they name `crate::…`).
+
+**Isolation and bounds.** Every test owns its `TempDir`, plan repo and `Host`;
+no state is shared, which removes `review-driver.test.mjs`'s ordering
+dependence (L1263 and L1379 relied on earlier cases). The two held-open-stdin
+cases run through `rdm_devtools::process::Session` (stdin piped and never
+written, one overall deadline of 8 s, or 1.5 s for the mutant, process group
+swept on every exit path); no timeout is hand-rolled.
+
+### Case map: `scripts/lib/review-driver.test.mjs` → `workflow_review::driver`
+
+Fixture per test: plan repo (default `decoy`, project `rev-verify`, roadmap
+`rm-rev` with `phase-1-clean`/`phase-2-dirty`, task `standalone-task`, plan
+`rev-verify-plan`), a source repo with the roadmap and task worktrees
+registered by `rdm worktree add`, and a pinned commit on each.
+
+| JS case | Rust test | Notes |
+|---|---|---|
+| L366 | `driver::clean_review_gates_phase_to_reviewed` | `not-started` before, `reviewed` after the executed gate |
+| L383 | `driver::rework_gates_phase_to_in_progress` | |
+| L399 | `driver::task_target_gates_via_task_update` | |
+| L411 | `driver::refused_gate_write_fails_plain_shell` | fault injection kept (HEAD moved on); also reads back that nothing stamped `reviewed` |
+| L435 | `driver::persist_ladder_records_change_review_anchors` | owner of phase 2's § 15h change-target ladder shape: `target.kind = change`, file-quote anchor, degraded anchor, whole-document finding, note body, `persistDegraded`, `anchorsDegraded=` |
+| L554 | `driver::apostrophe_finding_runs_under_system_bash` | `/bin/bash` (3.2 on macOS) |
+| L591 | `driver::path_with_line_suffix_lands_anchor` | |
+| L652, L752, L822, L876, L935, L1005 | `driver::runtime_refusal_{outside_hunk_blocking_parks, outside_hunk_suggestion_no_park, quote_not_found_parks, spoofed_does_not_touch_parks, unmodified_file_benign, path_absent_at_head_parks}` | spoofed-quote negative kept |
+| L1059 | `driver::mixed_anchor_run_reports_partial` | |
+| L1156 | `driver::whole_document_by_design_never_degrades` | its absence-of-clause check on the persisted body is the negative control for L435's clause |
+| L1204 | `driver::all_anchors_degraded_sets_all` | |
+| L1263 | `driver::gate_refuses_reviewed_when_park_required`, `driver::park_guard_is_what_refuses` | yes/no/unset executed; guard-strip control kept. Retired: the `gateScript` contains-variable and contains-guard checks (NR); the stdout "no `status: reviewed`" check is subsumed by the status read-back |
+| L1318 | `driver::refused_review_start_fails_persist_plain_shell` | stub-rdm fault injection kept |
+| L1340 | `driver::no_ac_reviewer_escalates` | |
+| L1362 | `driver::unresolvable_source_escalates_without_dispatch` | five broken pins, zero agent calls |
+| L1379 | `driver::gate_false_writes_nothing` | seeds its own state; asserts a byte-identical plan-repo snapshot |
+| L1390 | duplicate of `engine::mixed_task_phase_identity_rejected` | |
+| L1397 | duplicate of `engine::legacy_survivors_only_shape_{code,plan}` | |
+| L1417 | `driver::anchor_refusal_classification_uses_real_error_text` | each refusal text is `rdm_core::error::Error`'s own `Display`, not a hand-copied string; spoofed-quote negatives kept |
+| L1513 | `driver::has_blocking_in_scope_matrix` | |
+| L1535 | `driver::refute_prompt_plan_command_follows_mode` | propagation: an injected `planCommand` sentinel reaches the code refuter; absent/undefined/`''` give byte-identical prompts; supplying a plan adds lines in both modes, and code mode adds strictly more (the scope clause). The fixed "IN SCOPE" phrase check is NR |
+| L1572 | `driver::out_of_scope_blocker_reviewed_in_scope_reworks` | |
+| L1623 | `driver::comment_header_in_scope_round_trip` | the header-line regexes are NR; the parse round trip is the behaviour |
+| L1639, L1678 | `driver::parse_comment_header_legacy_{seven,six}_key` | |
+| L1708, L1740 | `driver::persist_anchor_invalid_path_falls_back`, `driver::persist_anchor_strips_slashed_suffix` | no-fallback negative kept |
+| L1758 | `driver::persist_ladder_completes_under_open_stdin` | through `Session` |
+| L1787 | `driver::dev_null_redirects_prevent_stdin_hang` | stub `cat`-first rdm; redirect-strip mutant: the `Session` deadline expires and the group is killed |
+
+(34 cases: 32 ported into 33 tests, 2 duplicates.)
+
+### Case map: `scripts/lib/plan-review-hoist.test.mjs` → `workflow_review::plan_driver`
+
+Three drives: LIB (the real `runPlanReviewDriver` with a Rust `runPlanReview`
+that records every context), REAL (over the real `buildReviewPipeline('plan')`),
+SHIP (the real `rdm-wf-plan-review.js` driver). Executed commands run against a
+decoy-default repo with project `prv` (roadmap `r` with `phase-1-x`/`phase-2-y`,
+task `t`, plan `p`).
+
+| JS case(s) | Rust test | Notes |
+|---|---|---|
+| A1 | `plan_driver::every_target_dispatches_only_finders_and_refuters` | four target kinds, non-empty floor |
+| A2 | retired | NR: absence of fixed wording in prompts |
+| A3 | `plan_driver::unit_commands_read_their_own_document` | `itemCommand`/`roadmapCommand` executed, returning the named item's JSON |
+| A4 | `plan_driver::roadmap_sweep_reviews_caller_named_stems` | |
+| A5 | `plan_driver::terminal_stems_skipped_and_reported` | |
+| A6 | `plan_driver::gate_commands_clear_only_the_plan_review_tag` | executed: tags read back `["depends-unlanded"]`; HEAD advances by exactly one commit |
+| A7 | `plan_driver::gate_without_tags_refuses_visibly` | |
+| A8 | `plan_driver::rework_keeps_tag_and_renders_round_note` | |
+| A9, A9b | `plan_driver::round_from_caller_prior_reviews` | persist off and on |
+| A9c | `plan_driver::repeat_detection_reads_prior_comments` | |
+| A9d | `plan_driver::absent_vs_empty_prior_reviews` | |
+| A10 | `plan_driver::persist_ladder_lands_unit_review` | executed: a submitted review on `phase/r/phase-1-x` is read back; the persist-off arm also asserts no `persistScript` |
+| A11 | `plan_driver::wont_fix_texts_suppress_matching_finding` | |
+| A12 | `plan_driver::build_review_units_is_pure` | |
+| B0, B1, B1b | `plan_driver::shipped_engine_dispatches_only_finders_and_refuters`, `plan_driver::shipped_engine_string_payload_equivalent` | `compileWorkflow`'s source checks (no import/require, no leftover `export`) are NR; `load_driver` compiling and running is the behaviour |
+| B2 | retired | file existence; every SHIP test loads the file |
+| C1 | `plan_driver::implementation_plan_grades_plan_by_slug` | `plan show p` executed |
+| C2 | `plan_driver::plan_slug_persists_to_plan_target` | the ladder is executed and a review on `plan/p` read back; the free-form arm logs `persist ignored` |
+| C2b | `plan_driver::free_form_plan_read_by_quoted_path` | the returned `cat --` command runs on a real file whose path contains an apostrophe and prints it verbatim |
+| C2c | `plan_driver::free_form_path_reaches_every_reviewer` | propagation of a sentinel path |
+| C2d, C2e, C3, C4, C5 | `plan_driver::{implementation_plan_without_document_refused_before_agents, plan_naming_modes_mutually_exclusive, implementation_plan_is_report_only, parse_plan_args_refusals, retired_transport_keys_not_parsed}` | |
+| D1–D4, D7 | `plan_driver::reviewer_set_{absent_runs_all, declaration_order, unknown_dropped, only_empty_refused, no_selection_predicate}` | keys read from `DIMENSIONS`, never transcribed |
+| D5, D6, D8, D9, D10 | `plan_driver::{caller_set_reaches_pipeline, caller_set_narrows_real_finders, empty_set_refused_every_target, refusal_before_any_agent, failed_unit_named_not_dropped}` | |
+| E1, E2, E3 | `plan_driver::{injected_axes_reach_executed_commands, omitted_axes_use_plain_rdm_and_default_project, gate_ladder_executes_for_every_item_kind}` | executed under rule 2 (every read, gate and persist command of every target kind); the invocation-token scans over command text are replaced |
+| E4, E5 | `plan_driver::{invalid_axes_refused_at_parse, axes_not_read_from_flag_string}` | |
+| F1, F1b, F2, F3 | `plan_driver::source_pin_{task_form_reaches_every_prompt, phase_form_binds_phase, sweep_binds_each_unit, single_target_binds_itself}` | propagation of the injected pin values (source path, SHAs, branch); each unit binds its own item and never a sibling's; the roadmap unit carries none; at least one refuter ran. The mode-wording helpers are NR |
+| F1c, F1d | retired | NR: fixed prompt wording |
+| F4 | `plan_driver::unpinned_prompts_deterministic` | the absence-of-wording half is NR |
+| F5 | `plan_driver::malformed_source_pin_refused_before_agents` | |
+
+`rdm-core/tests/workflow_plan_review_driver.rs`: `plan_review_driver_block_is_byte_identical`
+is kept for its byte-identity half; its three source string asserts (the
+`return await runPlanReviewDriver` presence in the engine, its absence in the
+lib, the `export {` offset) are deleted as NR; `plan_review_driver_hoist_behavior`
+and `node_command()` are deleted.
+
+### Case map: `scripts/lib/workflow-env-args.test.mjs`
+
+| JS test | Rust test | Notes |
+|---|---|---|
+| 1 (backlog: axes reach the report command and every analyzer prompt) | report half → `workflow_passes::backlog::report_command_executes_with_threaded_filters` (executed); prompt half → `backlog::analyzer_prompts_carry_injected_axes_and_items` (propagation of the sentinel binary, `--project demo` and each report item slug) | the invocation-token scans and floors are NR |
+| 2 (backlog: omitted axes) | the omitted-axes arm of `backlog::report_command_executes_with_threaded_filters` | the prompt absence arm is NR |
+| 3 (backlog: invalid axes) | `backlog::invalid_axes_refused_at_parse` | |
+| 4, 5 (document: both read commands, with and without axes) | `workflow_passes::document::read_commands_execute_with_injected_axes` | executed under rule 2, plus the omitted-axes arm |
+| 6 (document: invalid axes) | `document::invalid_axes_refused_at_parse` | |
+
+The estimate-writeback case map is in § 2(b). The two document engine cases
+the shells never had: `document::engine_aborts_incomplete_before_any_agent`
+(real `roadmap show` JSON as `roadmapMeta`, obtained by executing the engine's
+own `roadmapCommand`; zero agent calls; `incompletePhases` returned) and
+`document::engine_gathers_then_synthesizes_and_writes` (every `gather:<stem>`
+precedes `synthesize:draft`; a thrown gather still hands the synthesizer that
+phase's read command, which is executed; the gathered account reaches the
+synthesizer; the returned `writeScript` is executed and the file holds the
+scripted draft verbatim, quotes and `$` included).
+
+### Shells already absent at phase 3: retirement with evidence
+
+| Shell | Deleting commit | Product retired | Retained replacement evidence |
+|---|---|---|---|
+| `verify-workflow-dispatch.sh` | `533f4f5` | The `rdm-wf-dispatch-phase` engine, `lib/dispatch-phase.mjs`, and their template and plugin copies (agent-orchestrated-dispatch phase 7; `docs/workflow-vs-prose-boundary.md` § "Retirement record") | The prose `rdm-dispatch-phase` skill (validated by dogfooding, deliberately no grep harness); its gated terminal write, `rdm-cli/tests/cli_gate.rs`; the review engine it invokes, `workflow_review::*`; downstream orphan removal, `rdm-core/src/agent_config.rs::{superseded_workflows_table_names_the_renamed_and_retired_engines, resolve_superseded_workflows_removes_fingerprint_match}` |
+| `verify-workflow-do-auto.sh`, `verify-workflow-do-auto-task.sh` | `b3946da` | The `rdm-do --auto` → engine wiring; `buildTaskOutcome` went with the engine in `533f4f5` | § 1 was static greps: NR. § 2 was the phase/task outcome → status write plus read-back, retained as CLI behaviour: `cli_phase::reviewed_and_blocked_reason_read_back_as_json` (new), `cli_review::blocked_lists_parked_phases_with_recorded_reasons`, `cli_task::{task_update_wont_fix_reason_shown, task_update_clear_reason}`. § 3 was a sibling gate, gone with the engine |
+| `verify-skill-intent-interview.sh` | `e4716a8` | None: the whole file was prose/template greps, including its § 3 greps over the `agent-config` emission | NR. Its sibling gate is a duplicate of the phase-2 review tests |
+
+### Shared distribution cases: named owners
+
+- Engine and template byte identity: `rdm-core/src/agent_config.rs::generate_workflows_are_byte_identical_to_source`.
+- Stamped block, embedded template copy and plugin copy for backlog, document and estimate: `workflow_passes::{backlog,document,estimate}::generator_*`.
+- Review and plan-review stamped blocks: `workflow_review::generators::*` (phase 2).
+- Plan-review driver block: `rdm-core/tests/workflow_plan_review_driver.rs::plan_review_driver_block_is_byte_identical`.
+- Emitted-engine downstream behaviour, including estimate § 9's cited § 7c contract for the review engine: phase 5, currently `verify-agent-config-distribution.sh` § 7.
+- Superseded-engine removal downstream: phase 5 (§ 5j), plus the `agent_config.rs` unit tests above.
+
+### Negative controls and provenance kept
+
+- Review driver: the L1263 guard-strip mutant, the L1787 redirect-strip mutant
+  (now killed by the `Session` deadline), the L411 and L1318 fault injections,
+  the L876 and L1417 spoofed quotes, the L1156 no-degradation negative, the
+  L1708 no-fallback arm.
+- Generators: backlog/document/estimate drift → red → heal, each in its own
+  scratch tree, now also covering the template and plugin copies.
+- Load failure: `backlog::engine_duplicate_meta_fails_to_load`.
+- Fixtures: the decoy default project and bare-`PATH` design (rule 2) replace
+  the retired string-scan floors.
+
+### Timings (recorded evidence, not asserted)
+
+Host: macOS (Darwin 27.0.0, arm64), 2026-09-23/24, Node v24.18.0, warm build.
+
+| Suite | Runs | Notes |
+|---|---|---|
+| `sh scripts/verify-workflow-backlog.sh`, before deletion | 0.98, 0.53, 0.53 s wall | |
+| `sh scripts/verify-workflow-document.sh`, before deletion | 0.43, 0.42, 0.41 s wall | |
+| `sh scripts/verify-workflow-estimate.sh`, before deletion | 0.46, 0.37, 0.37 s wall | |
+| `sh scripts/verify-skill-autopilot.sh`, before deletion | 0.86, 0.86, 0.87 s wall | includes its nested estimate run |
+| `cargo nextest run --test workflow_review_driver`, before deletion | summary 8.33, 8.22, 8.76 s | one test wrapping 34 serial `node --test` cases |
+| `cargo nextest run --test workflow_estimate_writeback`, before deletion | summary 0.61, 0.62, 0.62 s | |
+| `cargo nextest run --test workflow_env_args`, before deletion | summary 0.07, 0.07, 0.07 s | |
+| `cargo nextest run --test workflow_plan_review_driver`, before | summary 0.085, 0.086, 0.086 s | two tests (byte identity plus the `node --test` wrapper) |
+| `cargo nextest run -p rdm-cli -E 'binary(workflow_passes)'`, after | summary 3.09 (first, cold host start), 1.51, 1.45 s | 47 cases; backlog 0.83 s, document 1.12 s, estimate 0.78 s alone |
+| same, `--test-threads 1` | summary 7.23 s | serial |
+| `-E 'binary(workflow_review) and test(/^driver::/)'`, after | summary 3.41, 3.30, 3.27 s | 33 cases; `--test-threads 1`: 17.69 s |
+| `-E 'binary(workflow_review) and test(/^plan_driver::/)'`, after | summary 1.54, 1.55, 1.58 s | 45 cases; `--test-threads 1`: 4.93 s |
+| `cargo nextest run -p rdm-cli --test workflow_review`, after | summary 4.10 s | 187 cases (109 phase 2 + 78 phase 3) |
+| the two autopilot CLI tests, after | summary 0.65 s | |
+
+As in phase 2, nextest occasionally marks a passing case "leaky" (its output
+pipe closed after the leak timeout); seen on 1 of 3 `driver::` runs and 1 of 3
+`plan_driver::` runs. Nothing failed.
+
+### Evidence statement
+
+Everything in this phase is **component-test evidence**: the real workflow
+JavaScript under Node with a fake host (scripted agents, the phase-2 `parallel`
+primitive), and the real `rdm` binary and real git for every executed command.
+**No Claude-host observation** was made or claimed in this phase.
+`observe-workflow-listing.sh` and `observe-plugin-install.sh` stay opt-in and
+untouched.

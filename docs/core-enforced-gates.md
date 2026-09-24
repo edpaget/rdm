@@ -197,7 +197,9 @@ harnesses green with comment-only edits: their seeded repos set no
 `gates.reviewed` key, so the gate is `NotApplicable` there. (The two
 `verify-workflow-do-auto*` harnesses that used to be named here were deleted by
 `agent-orchestrated-dispatch` phase 6 along with the `--auto` → engine wiring
-they asserted; `verify-skill-autopilot.sh` still seeds its own keyless repo.)
+they asserted; `rdm-cli/tests/cli_phase.rs::reviewed_and_blocked_reason_read_back_as_json`,
+which replaced `verify-skill-autopilot.sh`'s advance/park section, still seeds its own
+keyless repo.)
 
 **Enabled for rdm's own plan data (dogfooding, `agent-orchestrated-dispatch`
 phase 6).** `gates.reviewed = true` is set in rdm's plan repo, so every

@@ -23,9 +23,10 @@
 #   scripts/gen-workflow-estimate.sh           # rewrite consumers in place
 #   scripts/gen-workflow-estimate.sh --check   # exit non-zero if anything drifted
 #
-# The `--check` mode is what scripts/verify-workflow-estimate.sh and CI use to
-# prove no consumer or embedded copy was hand-edited out of sync with the
-# source of truth.
+# The `--check` mode is what `cargo nextest run` uses
+# (rdm-cli/tests/workflow_passes/estimate.rs `estimate::generator_in_sync`, plus a
+# scratch-tree drift → red → heal control) to prove no consumer or embedded copy
+# was hand-edited out of sync with the source of truth.
 
 set -eu
 

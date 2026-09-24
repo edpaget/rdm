@@ -3,8 +3,9 @@
 Owner: `.claude/workflows/lib/plan-review.mjs`'s `plan-review-driver` block (and its
 byte-identical copy in `.claude/workflows/rdm-wf-plan-review.js`).
 Gated by: `rdm-core/tests/workflow_plan_review_driver.rs` (the driver block's byte
-identity, and `scripts/lib/plan-review-hoist.test.mjs` executing the real driver) and
-`rdm-cli/tests/workflow_review/plan.rs` (the gate helpers). The
+identity), `rdm-cli/tests/workflow_review/plan_driver.rs` (the real driver and the
+shipped engine, executed, with the returned gate commands run against the real binary)
+and `rdm-cli/tests/workflow_review/plan.rs` (the gate helpers). The
 `scripts/verify-workflow-review.sh` sections this line used to name are deleted.
 
 This document records a decision that was previously implicit: **may a plan review clear

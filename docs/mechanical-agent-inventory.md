@@ -145,10 +145,12 @@ makes the five failures above impossible rather than unlikely.
 
 ## How this is enforced
 
-Not by a grep. `scripts/lib/plan-review-hoist.test.mjs` (run under
-`cargo nextest run` via `rdm-core/tests/workflow_plan_review_driver.rs`) drives
-the real plan-review driver over every target kind against a recording fake agent
-and asserts the **dispatched label set contains only finder and refuter labels**.
+Not by a grep. `rdm-cli/tests/workflow_review/plan_driver.rs` (under
+`cargo nextest run`) drives the real plan-review driver, and the shipped
+`rdm-wf-plan-review.js` engine, over every target kind against a recording fake agent
+and asserts the **dispatched label set contains only finder and refuter labels**
+(`plan_driver::every_target_dispatches_only_finders_and_refuters`,
+`plan_driver::shipped_engine_dispatches_only_finders_and_refuters`).
 The equivalent claim for the code engine is decidable from its diff — it is a
 top-level script with no importable surface, and adding a harness for it was
 deliberately declined.

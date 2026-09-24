@@ -1707,7 +1707,7 @@ fi
 # the model-hoist apparatus. A deletion comment mentioning `5b-models` would
 # satisfy it, which makes it vacuous rather than merely stale. The judgment-site
 # model threading it stood in for is now proved by execution in
-# scripts/lib/plan-review-hoist.test.mjs, under cargo nextest run.
+# rdm-cli/tests/workflow_review/plan_driver.rs, under cargo nextest run.
 
 # ---------------------------------------------------------------------------
 printf '\n'

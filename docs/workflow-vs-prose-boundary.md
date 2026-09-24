@@ -140,8 +140,9 @@ deleted `scripts/verify-workflow-do-auto.sh` and `scripts/verify-workflow-do-aut
 narrowed `scripts/verify-skill-autopilot.sh` to its real-binary sections plus the one
 `Skill`-entry contract nothing else covered. `task/retire-static-grep-harnesses` then retired
 that `Skill`-entry contract itself (2026-09-23, along with the `--override-gate` guard) — it
-was a static grep, not a real-binary section — so `scripts/verify-skill-autopilot.sh` now
-covers only real-binary sections.
+was a static grep, not a real-binary section — so `scripts/verify-skill-autopilot.sh`
+covered only real-binary sections, until `rust-test-suite-consolidation` phase 3 moved
+those into `rdm-cli/tests/cli_phase.rs` and `rdm-cli/tests/cli_hook.rs` and deleted it.
 
 | Script | Fan-out | Shape | Mid-run gate | Disposition |
 |---|---|---|---|---|
@@ -202,9 +203,10 @@ static-invariant net (greps over prose and templates) along with the engine it t
 *behavioral* protection it carried survives elsewhere — wrong-checkout selection and gate
 override in `rdm-core/tests/gate.rs` + `rdm-cli/tests/cli_gate.rs`,
 required review coverage in `rdm-cli/tests/workflow_review/coverage.rs`, persist-side
-anchor accounting in `scripts/lib/review-driver.test.mjs` and
+anchor accounting in `rdm-cli/tests/workflow_review/driver.rs` and
 `rdm-cli/tests/workflow_review/persist.rs`, the verification gate in `rdm-cli/tests/cli_verify.rs`,
-and the no-completion-trailer-before-land rule in `scripts/verify-skill-autopilot.sh`. The
+and the no-completion-trailer-before-land rule in
+`rdm-cli/tests/cli_hook.rs::done_line_amended_onto_branch_tip_completes_after_ff_merge`. The
 grep-only half was dropped deliberately; that class is owned by
 `task/retire-static-grep-harnesses`, which this phase does not close.
 
@@ -239,14 +241,18 @@ deciding what of that coverage survived (and in what form) was a first-class pha
 `prose-autopilot-orchestration` — phase 3 — not a cleanup afterthought. Criterion 5 above
 cuts both ways: the loop was a poor fit for a hermetic harness, but "poor fit" is not
 "zero value", so what it caught was replaced rather than dropped: phase 3 landed
-`scripts/verify-skill-autopilot.sh`, which gates a dynamic advance/park write+read-back
+`scripts/verify-skill-autopilot.sh`, which gated a dynamic advance/park write+read-back
 contract against the real binary, the `rdm-wf-estimate` sibling-harness gate, and the
 land-time completion-trailer contract — there is no `lib/autopilot.mjs` anymore, so there
 is no byte-identical-copy drift gate to run. (Its "static text invariants for the
 surviving loop policies" — the loop-policy prose greps and the Skill-entry contract —
 were removed by phase 6 and by `task/retire-static-grep-harnesses` (2026-09-23)
-respectively; see `CLAUDE.md`'s Autopilot harness bullet for what the harness asserts
-today.)
+respectively. `rust-test-suite-consolidation` phase 3 then deleted the harness: its
+advance/park section is `rdm-cli/tests/cli_phase.rs::reviewed_and_blocked_reason_read_back_as_json`,
+its land-time section is
+`rdm-cli/tests/cli_hook.rs::done_line_amended_onto_branch_tip_completes_after_ff_merge`, and
+its sibling gate became a duplicate once the estimate tests ran directly under
+`cargo nextest run`.)
 
 ## Coupling
 
