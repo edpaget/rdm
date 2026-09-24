@@ -10,6 +10,8 @@
 //! - `stderr-flood <bytes>` — write `bytes` to stderr, then `done` to stdout, exit 0
 //! - `spawn-grandchild <pidfile>` — start a long-lived grandchild in the same
 //!   process group (its stdio detached), write its pid to `pidfile`, then sleep
+//! - `spawn-grandchild-then-exit <pidfile> <code>` — the same grandchild and
+//!   pidfile, then exit with `code` at once, leaving the grandchild behind
 //! - `print-env <VAR>...` — print `VAR=value` (or `VAR unset`) per name, exit 0
 //! - `ready-then-sleep` — print `ready`, then sleep until killed
 //! - `cat <path>` — print the bytes of `path` and exit 0 (exit 4 if unreadable)
@@ -22,6 +24,29 @@ fn sleep_forever() -> ! {
     loop {
         std::thread::sleep(Duration::from_secs(3600));
     }
+}
+
+/// Starts a long-lived `sleep` grandchild in this process's group and writes
+/// its pid to `pidfile` atomically. Returns whether both steps succeeded.
+fn spawn_grandchild(pidfile: &str) -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    // Inherits this process's group; stdio detached so a leaked grandchild
+    // never holds the runner's pipes.
+    let Ok(grandchild) = Command::new(exe)
+        .arg("sleep")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let tmp = format!("{pidfile}.tmp");
+    let written = std::fs::File::create(&tmp)
+        .and_then(|mut f| f.write_all(grandchild.id().to_string().as_bytes()));
+    written.is_ok() && std::fs::rename(&tmp, pidfile).is_ok()
 }
 
 fn main() -> ExitCode {
@@ -63,32 +88,19 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "spawn-grandchild" => {
-            let Some(pidfile) = rest.first() else {
-                return ExitCode::from(2);
-            };
-            let Ok(exe) = std::env::current_exe() else {
-                return ExitCode::from(2);
-            };
-            // Inherits this process's group; stdio detached so a leaked
-            // grandchild never holds the runner's pipes.
-            let Ok(grandchild) = Command::new(exe)
-                .arg("sleep")
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            else {
-                return ExitCode::from(2);
-            };
-            let tmp = format!("{pidfile}.tmp");
-            let written = std::fs::File::create(&tmp)
-                .and_then(|mut f| f.write_all(grandchild.id().to_string().as_bytes()));
-            if written.is_err() || std::fs::rename(&tmp, pidfile).is_err() {
+            if rest.first().is_none_or(|p| !spawn_grandchild(p)) {
                 return ExitCode::from(2);
             }
             let _ = writeln!(stdout, "ready");
             let _ = stdout.flush();
             sleep_forever()
+        }
+        "spawn-grandchild-then-exit" => {
+            let code = rest.get(1).and_then(|c| c.parse::<u8>().ok());
+            match (rest.first(), code) {
+                (Some(pidfile), Some(code)) if spawn_grandchild(pidfile) => ExitCode::from(code),
+                _ => ExitCode::from(2),
+            }
         }
         "print-env" => {
             for name in rest {

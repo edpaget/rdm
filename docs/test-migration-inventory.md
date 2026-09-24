@@ -440,7 +440,7 @@ by the non-published `rdm-devtools` workspace crate (`publish = false`,
 
 - `rdm_devtools::process::run_bounded` — bounded runner: SIGINT/SIGTERM
   interception, `prepare`, spawn in a new process group, 8 MiB stdout cap,
-  stderr drained, group `SIGKILL` on every failure path, reap, `cleanup`
+  stderr drained, group `SIGKILL` on every post-spawn path, reap, `cleanup`
   exactly once.
 - `rdm-smoke` — entrypoint used by `verify-codex-coexistence.mjs`
   (`RDM_SMOKE_BIN` overrides the on-demand cargo build).

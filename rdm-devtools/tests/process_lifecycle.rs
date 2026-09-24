@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{ReapGuard, check_teardown, fixture, read_pid, wait_for_file};
-use rdm_devtools::process::{Hooks, ProcessSpec, RunError, Teardown, run_bounded};
+use rdm_devtools::process::{Hooks, ProcessSpec, RunError, RunOutput, Teardown, run_bounded};
+use signal_hook::consts::SIGINT;
 use tempfile::TempDir;
 
 /// A non-secret marker file that the run's cleanup hook removes.
@@ -97,6 +98,79 @@ fn timeout_kills_group_reaps_and_runs_cleanup() {
     assert!(matches!(err, RunError::TimedOut(_)), "{err:?}");
     check_teardown(&m, &pids).unwrap();
     guard.clear();
+}
+
+/// Runs `spawn-grandchild-then-exit` with exit `code` under `teardown`: the
+/// direct child exits on its own, leaving a grandchild in its group. Returns
+/// the run's result and the child/grandchild pids (tracked in `guard`).
+fn exit_scenario(
+    dir: &TempDir,
+    m: &Path,
+    code: &str,
+    teardown: Teardown,
+    guard: &mut ReapGuard,
+) -> (Result<RunOutput, RunError>, Vec<u32>) {
+    let pidfile = dir.path().join("grandchild.pid");
+    let child = Cell::new(0);
+    let result = run_bounded(
+        &spec(&[
+            "spawn-grandchild-then-exit",
+            pidfile.to_str().unwrap(),
+            code,
+        ])
+        .teardown(teardown),
+        Hooks::new().cleanup(remove(m)).on_spawn(|p| child.set(p)),
+    );
+    guard.track(child.get());
+    let grandchild = read_pid(&pidfile).expect("fixture writes the pid before exiting");
+    guard.track(grandchild);
+    (result, vec![child.get(), grandchild])
+}
+
+#[test]
+fn nonzero_exit_kills_group_reaps_and_runs_cleanup() {
+    let dir = TempDir::new().unwrap();
+    let m = marker(&dir);
+    let mut guard = ReapGuard::default();
+    let (result, pids) = exit_scenario(&dir, &m, "3", Teardown::Correct, &mut guard);
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, RunError::NonZeroExit { code: Some(3), .. }),
+        "{err:?}"
+    );
+    check_teardown(&m, &pids).unwrap();
+    guard.clear();
+}
+
+#[test]
+fn success_sweeps_group_left_behind() {
+    let dir = TempDir::new().unwrap();
+    let m = marker(&dir);
+    let mut guard = ReapGuard::default();
+    let (result, pids) = exit_scenario(&dir, &m, "0", Teardown::Correct, &mut guard);
+    assert!(result.expect("success").status.success());
+    check_teardown(&m, &pids).unwrap();
+    guard.clear();
+}
+
+#[test]
+fn signal_during_prepare_never_spawns_and_runs_cleanup() {
+    // nextest runs each test in its own process, so raising a signal here
+    // reaches only this run's interception.
+    let dir = TempDir::new().unwrap();
+    let m = marker(&dir);
+    let spawned = Cell::new(false);
+    let err = run_bounded(
+        &spec(&["print", "never"]),
+        Hooks::new()
+            .prepare(|| signal_hook::low_level::raise(SIGINT))
+            .cleanup(remove(&m))
+            .on_spawn(|_| spawned.set(true)),
+    )
+    .unwrap_err();
+    assert!(matches!(err, RunError::Interrupted(SIGINT)), "{err:?}");
+    assert!(!spawned.get(), "a signal during prepare must not spawn");
+    check_teardown(&m, &[]).unwrap();
 }
 
 #[test]
@@ -226,6 +300,21 @@ fn broken_cleanup_mutant_is_detected() {
     let verdict = check_teardown(&m, &pids);
     guard.kill_all();
     let msg = verdict.expect_err("a leaked grandchild must be detected");
+    assert!(msg.contains(&pids[1].to_string()), "{msg}");
+
+    // The same leak when the child exits non-zero on its own.
+    let dir = TempDir::new().unwrap();
+    let m = marker(&dir);
+    let mut guard = ReapGuard::default();
+    let (result, pids) = exit_scenario(&dir, &m, "3", Teardown::SkipGroupKill, &mut guard);
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, RunError::NonZeroExit { code: Some(3), .. }),
+        "{err:?}"
+    );
+    let verdict = check_teardown(&m, &pids);
+    guard.kill_all();
+    let msg = verdict.expect_err("a grandchild leaked after a non-zero exit must be detected");
     assert!(msg.contains(&pids[1].to_string()), "{msg}");
 
     // Skipping cleanup on the failure path: the checker must name the marker.

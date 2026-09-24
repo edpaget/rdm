@@ -11,8 +11,12 @@
 //!    anything is spawned.
 //! 3. The program is spawned in a fresh process group, stdin closed, stdout
 //!    captured up to a cap and stderr drained and discarded.
-//! 4. On any non-success path the whole process group is sent `SIGKILL`.
-//! 5. The direct child is always reaped with `wait`.
+//! 4. Once the child has been spawned, its whole process group is sent
+//!    `SIGKILL` on every path — success and non-zero exit included — so no
+//!    descendant left in the group outlives the run. The child's exit is only
+//!    *observed* (`waitid` with `WNOWAIT`), not reaped, before this sweep, so
+//!    its pid still names its own group and cannot have been recycled.
+//! 5. The direct child is then always reaped with `wait`.
 //! 6. The caller's `cleanup` hook runs exactly once, whatever happened — a
 //!    cleanup failure supersedes the run's own result.
 //! 7. The signal interception is removed.
@@ -40,7 +44,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rustix::process::{Pid, Signal, kill_process_group};
+use rustix::process::{Pid, Signal, WaitId, WaitIdOptions, kill_process_group, waitid};
 use signal_hook::SigId;
 use signal_hook::consts::{SIGINT, SIGTERM};
 
@@ -58,7 +62,7 @@ const READER_GRACE: Duration = Duration::from_secs(2);
 /// Interval between liveness polls of the child.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-/// Failure-path teardown policy.
+/// Teardown policy applied once the child has been spawned.
 ///
 /// Only [`Teardown::Correct`] is a real behaviour. The other variants are
 /// deliberately broken implementations of the teardown step, kept so tests can
@@ -459,9 +463,9 @@ fn run_inner(
 
     let deadline = Instant::now() + spec.timeout;
     let outcome = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) => {}
+        match exited_unreaped(pid) {
+            Ok(true) => break Ok(()),
+            Ok(false) => {}
             Err(e) => break Err(RunError::Wait(e)),
         }
         if over_cap.load(Ordering::SeqCst) {
@@ -476,19 +480,17 @@ fn run_inner(
         thread::sleep(POLL_INTERVAL);
     };
 
-    let outcome = match outcome {
-        Ok(status) => Ok(status),
-        Err(e) => {
-            // The child is still unreaped here, so its pid names its own
-            // process group and cannot have been recycled.
-            let kill_err = terminate(&mut child, pid, spec.teardown);
-            let reap_err = child.wait().err();
-            match (kill_err, reap_err) {
-                (Some(k), _) => Err(RunError::Wait(k)),
-                (None, Some(r)) if !matches!(e, RunError::Wait(_)) => Err(RunError::Wait(r)),
-                _ => Err(e),
-            }
-        }
+    // Sweep the group on every path, success included. The child is still
+    // unreaped here (its exit, if any, was only observed with WNOWAIT), so
+    // its pid names its own process group and cannot have been recycled.
+    let kill_err = terminate(&mut child, pid, outcome.is_ok(), spec.teardown);
+    let reaped = child.wait();
+    let outcome = match (outcome, kill_err, reaped) {
+        (_, Some(k), _) => Err(RunError::Wait(k)),
+        (Err(e @ RunError::Wait(_)), None, _) => Err(e),
+        (_, None, Err(r)) => Err(RunError::Wait(r)),
+        (Err(e), None, Ok(_)) => Err(e),
+        (Ok(()), None, Ok(status)) => Ok(status),
     };
 
     // Bounded wait for the pipes to drain; a descendant that escaped the
@@ -518,10 +520,37 @@ fn run_inner(
     Ok(RunOutput { stdout, status })
 }
 
+/// Whether the child `pid` has exited, observed without reaping it
+/// (`waitid(P_PID, pid, WEXITED | WNOWAIT | WNOHANG)`): the zombie keeps its
+/// pid, and therefore its process-group id, reserved until [`Child::wait`].
+fn exited_unreaped(pid: u32) -> io::Result<bool> {
+    let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+        return Err(io::Error::other("child pid out of range"));
+    };
+    let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT | WaitIdOptions::NOHANG;
+    loop {
+        match waitid(WaitId::Pid(pid), options) {
+            Ok(status) => return Ok(status.is_some()),
+            Err(e) if e == rustix::io::Errno::INTR => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 /// Kills the child's process group (or, under the broken
 /// [`Teardown::SkipGroupKill`] policy, only the child). Returns an error only
 /// for failures other than "no such process".
-fn terminate(child: &mut Child, pid: u32, teardown: Teardown) -> Option<io::Error> {
+///
+/// `child_exited` says the direct child has already exited (it is a zombie
+/// awaiting [`Child::wait`]). Darwin reports `EPERM`, not `ESRCH`, for a
+/// group whose only remaining member is that zombie, so in that case `EPERM`
+/// means "nothing left to kill" and is not an error.
+fn terminate(
+    child: &mut Child,
+    pid: u32,
+    child_exited: bool,
+    teardown: Teardown,
+) -> Option<io::Error> {
     if teardown == Teardown::SkipGroupKill {
         return child.kill().err();
     }
@@ -531,6 +560,7 @@ fn terminate(child: &mut Child, pid: u32, teardown: Teardown) -> Option<io::Erro
     match kill_process_group(pgid, Signal::KILL) {
         Ok(()) => None,
         Err(e) if e == rustix::io::Errno::SRCH => None,
+        Err(e) if child_exited && e == rustix::io::Errno::PERM => None,
         Err(e) => Some(e.into()),
     }
 }
