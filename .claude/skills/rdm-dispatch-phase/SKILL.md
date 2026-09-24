@@ -847,7 +847,7 @@ greps this file. A test asserting that particular strings are present in static 
 evidence that the procedure behaves, so `scripts/verify-skill-dispatch.sh` is deliberately **not**
 written (operator, 2026-09-20), and there is no live-smoke-run gate. What does gate this lane is the
 real-binary machinery it stands on: the `rdm-cli` nextest binary `distribution` over the emitted
-templates and the checked-in plugin tree, `scripts/verify-workflow-review.sh`
+templates and the checked-in plugin tree, the `workflow_review` nextest binary
 over the two review engines, and `cargo nextest run` over the gate, plan and review surfaces this
 prose drives. See [`docs/workflow-vs-prose-boundary.md`](docs/workflow-vs-prose-boundary.md) and
 [`docs/autonomous-loop.md`](docs/autonomous-loop.md).
