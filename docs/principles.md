@@ -199,7 +199,7 @@ Every commit follows the [Conventional Commits](https://www.conventionalcommits.
 
 ### Why
 
-Structured commits enable automated changelog generation, semantic versioning, and bisect-friendly history. A developer reading `git log` can quickly understand the intent behind each change without reading the diff. Entries must be kept current by convention — a vacuous test guarding them is cheaper than a release blocker.
+Structured commits enable automated changelog generation, semantic versioning, and bisect-friendly history. A developer reading `git log` can quickly understand the intent behind each change without reading the diff. Entries are kept current by review and developer discipline. A test over changelog prose goes red on `main` the moment a release moves `[Unreleased]` into a versioned section, blocking the release — the very failure this rule exists to prevent.
 
 ---
 
@@ -229,7 +229,7 @@ An AC that requires a human to follow steps after the work lands is a hidden acc
 
 ## 16. Nothing Is Built for the rdm Repo Alone
 
-If it isn't shipped in the same unit of work, it isn't built. This covers local-only test harnesses, dogfood-only workflows, unpublished skill or agent definitions, and development tools that don't appear in the distributed binary.
+If it isn't shipped in the same unit of work, it isn't built. This applies to features the repo uses but does not ship: dogfood-only workflows, unpublished skill or agent definitions, and autonomous-lane engines. **Tests, generators, and CI verification harnesses that exercise the shipped code are not covered by this rule.**
 
 ### Why
 

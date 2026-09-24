@@ -27,47 +27,16 @@ Core is the source of truth. CLI and server are thin layers. New interfaces (TUI
 
 ### Commits
 
-Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/). Format:
-
-```
-<type>(<scope>): <description>
-
-[optional body]
-
-[optional footer(s)]
-```
-
-Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`.
-Scopes: `core`, `cli`, `server`, or omit for cross-cutting changes.
+See [`docs/principles.md`](docs/principles.md) §13 for commit and changelog rules.
 
 ### TDD
 
 See [`docs/principles.md`](docs/principles.md) §4 for testing principles. Run tests with `cargo nextest run`. Run specific crate tests with `cargo nextest run -p rdm-core`, etc. Use `cargo watch -x 'nextest run'` for continuous testing during development.
 
-### Changelog
-
-Maintain a `CHANGELOG.md` following [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format:
-
-- Keep an `[Unreleased]` section at the top for pending changes
-- Categories: Added, Changed, Deprecated, Removed, Fixed, Security
-- Move entries from Unreleased to a versioned section on release
-- **Every commit with a user-facing change MUST include a corresponding `CHANGELOG.md` update in the same commit.** Do not defer changelog entries to a later commit or batch them up. If you are making a `feat`, `fix`, or any change that affects CLI commands, API endpoints, config options, or observable behavior, add the entry before committing.
-- Entries should describe the change from a user's perspective (what they can now do, what was fixed) rather than internal implementation details
-
-**FORBIDDEN, categorically: no test, harness, or CI step may assert on `CHANGELOG.md`.** See [`docs/principles.md`](docs/principles.md) §13.
 
 ### Public API Docs
 
-`rdm-core` must have `#![warn(missing_docs)]`. All public types and functions in the core library require doc comments. Use `///` for items and `//!` for module-level docs. Content is Markdown.
-
-Include these rustdoc sections where applicable:
-
-- **`# Errors`** — required on any function returning `Result`. List each error variant and when it occurs.
-- **`# Panics`** — required if the function can panic. Describe the conditions.
-- **`# Examples`** — encouraged for public API entry points. Examples are compiled and run by `cargo test`.
-- **`# Safety`** — required on any `unsafe fn`. Document the invariants the caller must uphold.
-
-Optional sections (`# Arguments`, `# Returns`) are fine but not required — prefer making signatures self-documenting with descriptive parameter names and types.
+See [`docs/principles.md`](docs/principles.md) §8.
 
 ### Unsafe Policy
 
@@ -75,9 +44,7 @@ See [`docs/principles.md`](docs/principles.md) §10.
 
 ### Error Handling
 
-- **`rdm-core`**: hand-written error enums implementing `std::error::Error` + `Display`. Keep errors matchable — no `anyhow` or type erasure in the library.
-- **`rdm-cli` / `rdm-server`**: use `anyhow` with `.context()` for readable error chains. Add `anyhow` only when context chaining becomes useful; `Box<dyn Error>` is fine to start.
-- User-facing CLI errors must be actionable: state what went wrong and what the user can do about it. Do not surface raw debug output or backtraces by default.
+See [`docs/principles.md`](docs/principles.md) §5 for core error design. CLI and server layers use `anyhow` with `.context()` for readable error chains; add it only when context chaining becomes useful (start with `Box<dyn Error>` if not).
 
 ### Feature Flags
 
