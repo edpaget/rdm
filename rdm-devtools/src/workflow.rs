@@ -1,6 +1,9 @@
-//! Test-only binding that executes the real Claude Workflow JavaScript sources
-//! under Node, so Rust tests own the scenarios, fake-agent responses and
-//! assertions while the code under test is the shipped JavaScript itself.
+//! Repository-only binding (tests and measurement tools) that executes the real
+//! Claude Workflow JavaScript sources under Node, so Rust tests own the
+//! scenarios, fake-agent responses and assertions while the code under test is
+//! the shipped JavaScript itself, and so the measurement tools in
+//! [`measure`](crate::measure) can call canonical workflow decisions instead of
+//! copying them.
 //!
 //! # Mechanism
 //!
@@ -557,6 +560,41 @@ impl Host {
         )
     }
 
+    /// Calls a function value with arguments given as JSON text (an array).
+    ///
+    /// The text is spliced into the request verbatim, so object key order
+    /// survives to JavaScript exactly as written — which a `serde_json::Value`
+    /// argument (sorted keys) cannot guarantee. Use this when the callee's
+    /// output depends on key order (for example `JSON.stringify` of an
+    /// argument). The tagged forms (`$fn`, `$undefined`, …) are decoded as for
+    /// [`Host::call`].
+    ///
+    /// # Errors
+    ///
+    /// [`WorkflowError::Transform`] when `args_json` is not a JSON array, or as
+    /// for [`Host::call`].
+    pub fn call_with_json_args(
+        &mut self,
+        target: &Value,
+        args_json: &str,
+    ) -> Result<Value, WorkflowError> {
+        // One request per line: compact JSON never needs a raw line break.
+        if args_json.contains(['\n', '\r'])
+            || !matches!(
+                serde_json::from_str::<Value>(args_json),
+                Ok(Value::Array(_))
+            )
+        {
+            return Err(WorkflowError::Transform(
+                "call arguments must be a single-line JSON array".to_owned(),
+            ));
+        }
+        let id = self.next_id;
+        self.next_id += 1;
+        let line = format!(r#"{{"op":"call","id":{id},"target":{target},"args":{args_json}}}"#);
+        self.exchange(id, &line, "a function call")
+    }
+
     /// Calls export `name` of a module handle.
     ///
     /// # Errors
@@ -635,11 +673,17 @@ impl Host {
         let id = self.next_id;
         self.next_id += 1;
         req["id"] = json!(id);
+        self.exchange(id, &req.to_string(), &desc)
+    }
+
+    /// Sends request line `line` (carrying `id`) and services callbacks until
+    /// its reply arrives.
+    fn exchange(&mut self, id: u64, line: &str, desc: &str) -> Result<Value, WorkflowError> {
         let pending = format!("request #{id} ({desc})");
         let Some(session) = self.session.as_mut() else {
             return Err(WorkflowError::Dead);
         };
-        if let Err(source) = session.send_line(&req.to_string()) {
+        if let Err(source) = session.send_line(line) {
             self.teardown();
             return Err(WorkflowError::Session { pending, source });
         }

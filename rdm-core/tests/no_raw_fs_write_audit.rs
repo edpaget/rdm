@@ -43,6 +43,10 @@ const ALLOWED: &[(&str, &str)] = &[
         "create_exclusive/repoint_parent_lease write session lease bookkeeping under $RDM_ROOT/.git/rdm/, deliberately untracked for the same reason as the journal above",
     ),
     (
+        "rdm-devtools/src/bin/rdm-measure.rs",
+        "repository-only measurement tool writes an operator-named --out report file, never $RDM_ROOT",
+    ),
+    (
         "rdm-devtools/src/workflow.rs",
         "repository-only test tooling writes its own private temp directories (the workflow host glue, mutant source copies), never $RDM_ROOT",
     ),

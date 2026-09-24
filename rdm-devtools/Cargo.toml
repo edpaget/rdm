@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Repository-only developer tooling for rdm (bounded process runner and workflow test binding); not published or distributed"
+description = "Repository-only developer tooling for rdm (bounded process runner, workflow binding, measurement and smoke tools); not published or distributed"
 publish = false
 
 [package.metadata.dist]
@@ -16,12 +16,18 @@ name = "rdm-smoke"
 path = "src/bin/rdm-smoke.rs"
 
 [[bin]]
+name = "rdm-measure"
+path = "src/bin/rdm-measure.rs"
+
+[[bin]]
 name = "rdm-devtools-fixture"
 path = "src/bin/rdm-devtools-fixture.rs"
 
 [dependencies]
+chrono = { workspace = true }
 clap = { workspace = true }
 rustix = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 signal-hook = { workspace = true }
 tempfile = { workspace = true }
