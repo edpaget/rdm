@@ -5,7 +5,9 @@
 //! shipped `rdm` binary. Today that is [`process`], a bounded process runner
 //! used by live smoke checks (for example the opt-in Codex coexistence check)
 //! to guarantee that a child process group is terminated and reaped, and that a
-//! private file copy is removed, on every catchable exit path.
+//! private file copy is removed, on every catchable exit path, and
+//! [`workflow`], a test-only binding that executes the real Claude Workflow
+//! JavaScript sources under Node so Rust tests can drive them.
 
 #![warn(missing_docs)]
 
@@ -15,3 +17,4 @@ compile_error!(
 );
 
 pub mod process;
+pub mod workflow;

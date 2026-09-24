@@ -1,5 +1,11 @@
 //! Bounded, cleanup-guaranteeing child process runner.
 //!
+//! Two entry points share one spawn/signal/teardown path: [`run_bounded`] for
+//! a single run whose stdout is collected, and [`Session`] for a line-framed
+//! conversation over the child's stdin/stdout (see its own docs). The
+//! guarantees below are stated for [`run_bounded`]; [`Session`] keeps the
+//! same group-kill-then-reap order on every exit path.
+//!
 //! [`run_bounded`] runs one program under a hard wall-clock limit and an
 //! output cap, in its own process group, and guarantees the following order on
 //! every path it can observe (success, non-zero exit, spawn failure, prepare
@@ -192,7 +198,9 @@ impl ProcessSpec {
         self
     }
 
-    fn command(&self) -> Command {
+    /// The child [`Command`]: a fresh process group, the given stdin, and
+    /// piped stdout/stderr. Shared by [`run_bounded`] and [`Session`].
+    fn command(&self, stdin: Stdio) -> Command {
         let mut cmd = Command::new(&self.program);
         cmd.args(&self.args);
         if let Some(dir) = &self.cwd {
@@ -208,7 +216,7 @@ impl ProcessSpec {
             cmd.env(key, value);
         }
         cmd.process_group(0)
-            .stdin(Stdio::null())
+            .stdin(stdin)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         cmd
@@ -448,7 +456,10 @@ fn run_inner(
         return Err(RunError::Interrupted(sig));
     }
 
-    let mut child = spec.command().spawn().map_err(RunError::Spawn)?;
+    let mut child = spec
+        .command(Stdio::null())
+        .spawn()
+        .map_err(RunError::Spawn)?;
     let pid = child.id();
 
     let over_cap = Arc::new(AtomicBool::new(false));
@@ -606,6 +617,559 @@ fn read_capped(mut out: impl Read, buf: &Mutex<Vec<u8>>, over: &AtomicBool, cap:
                 }
                 if let Ok(mut b) = buf.lock() {
                     b.extend_from_slice(&chunk[..n]);
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return,
+        }
+    }
+}
+
+// --- Interactive sessions -----------------------------------------------------
+
+/// Default cap on one line read from a [`Session`]'s stdout: 16 MiB.
+pub const DEFAULT_LINE_CAP: usize = 16 * 1024 * 1024;
+
+/// How many trailing bytes of a [`Session`] child's stderr are kept for
+/// diagnostics.
+pub const STDERR_TAIL_BYTES: usize = 8 * 1024;
+
+/// How long [`Session::shutdown`] waits for the child to exit on its own after
+/// its stdin is closed, before the group sweep kills it.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+
+/// Upper bound on one blocking wait inside [`Session::recv_line`], so signal
+/// interception and the deadline are re-checked promptly.
+const RECV_SLICE: Duration = Duration::from_millis(25);
+
+/// One event from a session's stdout reader thread.
+enum LineEvent {
+    Line(String),
+    TooLong,
+    Eof,
+    Failed(io::Error),
+}
+
+/// Why an interactive [`Session`] failed.
+///
+/// Every variant except [`SessionError::Signals`] and [`SessionError::Spawn`]
+/// is produced *after* the session has already torn its child down: the
+/// process group is killed, the child reaped, and `stderr` holds the last
+/// [`STDERR_TAIL_BYTES`] bytes the child wrote to stderr.
+#[derive(Debug)]
+pub enum SessionError {
+    /// Installing SIGINT/SIGTERM interception failed; nothing was spawned.
+    Signals(io::Error),
+    /// The program could not be spawned.
+    Spawn {
+        /// The program that failed to start.
+        program: OsString,
+        /// The underlying spawn error.
+        source: io::Error,
+    },
+    /// The session was already torn down by an earlier failure or shutdown.
+    Closed,
+    /// The child closed its stdout (usually: it exited) before sending the
+    /// line the caller was waiting for.
+    Exited {
+        /// The tail of the child's stderr.
+        stderr: String,
+    },
+    /// The session's deadline passed while waiting for a line.
+    TimedOut {
+        /// The session's overall time limit.
+        timeout: Duration,
+        /// The tail of the child's stderr.
+        stderr: String,
+    },
+    /// SIGINT or SIGTERM arrived while the session was running.
+    Interrupted(i32),
+    /// The child wrote a single line longer than the session's line cap.
+    LineTooLong {
+        /// The cap in bytes.
+        cap: usize,
+        /// The tail of the child's stderr.
+        stderr: String,
+    },
+    /// Reading the child's stdout, polling, killing or reaping it failed.
+    Io {
+        /// The tail of the child's stderr.
+        stderr: String,
+        /// The underlying error.
+        source: io::Error,
+    },
+    /// After [`Session::shutdown`] the child exited unsuccessfully.
+    Status {
+        /// Exit code, when the child exited normally.
+        code: Option<i32>,
+        /// Terminating signal, when it was killed by one.
+        signal: Option<i32>,
+        /// The tail of the child's stderr.
+        stderr: String,
+    },
+}
+
+impl SessionError {
+    /// The tail of the child's stderr carried by this error, if any.
+    pub fn stderr(&self) -> Option<&str> {
+        match self {
+            Self::Exited { stderr }
+            | Self::TimedOut { stderr, .. }
+            | Self::LineTooLong { stderr, .. }
+            | Self::Io { stderr, .. }
+            | Self::Status { stderr, .. } => Some(stderr),
+            _ => None,
+        }
+    }
+}
+
+fn stderr_suffix(stderr: &str) -> String {
+    let trimmed = stderr.trim_end();
+    if trimmed.is_empty() {
+        "; the child wrote nothing to stderr".to_owned()
+    } else {
+        format!("; child stderr (tail):\n{trimmed}")
+    }
+}
+
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Signals(e) => write!(f, "could not install SIGINT/SIGTERM handling: {e}"),
+            Self::Spawn { program, source } => write!(
+                f,
+                "could not start {}: {source}; check the path and that it is executable",
+                Path::new(program).display()
+            ),
+            Self::Closed => write!(f, "the session was already shut down"),
+            Self::Exited { stderr } => write!(
+                f,
+                "the child closed its output before replying (it probably exited){}",
+                stderr_suffix(stderr)
+            ),
+            Self::TimedOut { timeout, stderr } => write!(
+                f,
+                "no reply within the session's {}s limit; the child was killed{}",
+                timeout.as_secs_f64(),
+                stderr_suffix(stderr)
+            ),
+            Self::Interrupted(sig) => {
+                write!(f, "interrupted by signal {sig}; the child was killed")
+            }
+            Self::LineTooLong { cap, stderr } => write!(
+                f,
+                "the child wrote a line longer than {cap} bytes and was killed{}",
+                stderr_suffix(stderr)
+            ),
+            Self::Io { stderr, source } => write!(
+                f,
+                "talking to the child failed: {source}{}",
+                stderr_suffix(stderr)
+            ),
+            Self::Status {
+                code: Some(code),
+                stderr,
+                ..
+            } => write!(
+                f,
+                "the child exited with code {code}{}",
+                stderr_suffix(stderr)
+            ),
+            Self::Status {
+                signal: Some(sig),
+                stderr,
+                ..
+            } => write!(
+                f,
+                "the child was killed by signal {sig}{}",
+                stderr_suffix(stderr)
+            ),
+            Self::Status { stderr, .. } => write!(
+                f,
+                "the child exited unsuccessfully{}",
+                stderr_suffix(stderr)
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Signals(e) | Self::Spawn { source: e, .. } | Self::Io { source: e, .. } => {
+                Some(e)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// A bounded, line-framed conversation with one child process.
+///
+/// The interactive sibling of [`run_bounded`], built from the same pieces: the
+/// child is spawned by the same [`ProcessSpec`] in a fresh process group, the
+/// same SIGINT/SIGTERM interception is installed for the session's lifetime,
+/// and teardown is the same group `SIGKILL` followed by a reap — on every
+/// exit path, including [`Drop`] and every error this type returns. In
+/// addition to [`run_bounded`]'s contract:
+///
+/// - stdin is piped; [`Session::send_line`] queues a line to a writer thread,
+///   so a child that stops reading can never block the caller;
+/// - stdout is split into lines, each capped at the session's line cap
+///   ([`DEFAULT_LINE_CAP`] unless set with [`Session::spawn_with_line_cap`]);
+/// - the last [`STDERR_TAIL_BYTES`] of stderr are retained and attached to
+///   every error, so a failure names what the child said;
+/// - the spec's timeout is one overall deadline for the whole session,
+///   enforced on every [`Session::recv_line`].
+///
+/// A session never mutates the calling process's environment.
+pub struct Session {
+    child: Child,
+    pid: u32,
+    stdin: Option<mpsc::Sender<Vec<u8>>>,
+    lines: mpsc::Receiver<LineEvent>,
+    stderr_tail: Arc<Mutex<Vec<u8>>>,
+    stderr_done: mpsc::Receiver<()>,
+    deadline: Instant,
+    timeout: Duration,
+    line_cap: usize,
+    flag: Arc<AtomicUsize>,
+    guard: Option<SignalGuard>,
+    torn_down: bool,
+    teardown: Teardown,
+}
+
+impl fmt::Debug for Session {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Session")
+            .field("pid", &self.pid)
+            .field("torn_down", &self.torn_down)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Session {
+    /// Spawns `spec` as an interactive session with [`DEFAULT_LINE_CAP`].
+    ///
+    /// The spec's timeout becomes the whole session's deadline; its stdout cap
+    /// is not used (lines are capped individually instead).
+    ///
+    /// # Errors
+    ///
+    /// - [`SessionError::Signals`] if signal interception cannot be installed.
+    /// - [`SessionError::Spawn`] if the program cannot be started.
+    pub fn spawn(spec: &ProcessSpec) -> Result<Self, SessionError> {
+        Self::spawn_with_line_cap(spec, DEFAULT_LINE_CAP)
+    }
+
+    /// Like [`Session::spawn`], with an explicit per-line cap in bytes.
+    ///
+    /// # Errors
+    ///
+    /// As for [`Session::spawn`].
+    pub fn spawn_with_line_cap(spec: &ProcessSpec, line_cap: usize) -> Result<Self, SessionError> {
+        let flag = Arc::new(AtomicUsize::new(0));
+        let guard = SignalGuard::install(&flag).map_err(SessionError::Signals)?;
+        let mut child =
+            spec.command(Stdio::piped())
+                .spawn()
+                .map_err(|source| SessionError::Spawn {
+                    program: spec.program.clone(),
+                    source,
+                })?;
+        let pid = child.id();
+
+        let (line_tx, lines) = mpsc::channel();
+        if let Some(out) = child.stdout.take() {
+            thread::spawn(move || read_lines(out, &line_tx, line_cap));
+        }
+        let stderr_tail = Arc::new(Mutex::new(Vec::new()));
+        let (done_tx, stderr_done) = mpsc::channel();
+        if let Some(err) = child.stderr.take() {
+            let tail = Arc::clone(&stderr_tail);
+            thread::spawn(move || {
+                read_tail(err, &tail);
+                let _ = done_tx.send(());
+            });
+        }
+        let stdin = child.stdin.take().map(|mut input| {
+            let (tx, rx) = mpsc::channel::<Vec<u8>>();
+            thread::spawn(move || {
+                use std::io::Write;
+                for chunk in rx {
+                    if input
+                        .write_all(&chunk)
+                        .and_then(|()| input.flush())
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            });
+            tx
+        });
+
+        Ok(Self {
+            child,
+            pid,
+            stdin,
+            lines,
+            stderr_tail,
+            stderr_done,
+            deadline: Instant::now() + spec.timeout,
+            timeout: spec.timeout,
+            line_cap,
+            flag,
+            guard: Some(guard),
+            torn_down: false,
+            teardown: spec.teardown,
+        })
+    }
+
+    /// The child's pid (also its process-group id).
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Whether the session has been torn down.
+    pub fn is_closed(&self) -> bool {
+        self.torn_down
+    }
+
+    /// Queues `line` (a trailing newline is added) for the child's stdin.
+    ///
+    /// Never blocks: a writer thread owns the pipe. A child that has exited
+    /// is detected by the next [`Session::recv_line`].
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Closed`] if the session was already torn down.
+    pub fn send_line(&mut self, line: &str) -> Result<(), SessionError> {
+        if self.torn_down {
+            return Err(SessionError::Closed);
+        }
+        let mut bytes = Vec::with_capacity(line.len() + 1);
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+        if let Some(tx) = &self.stdin {
+            // A send error means the writer already hit a closed pipe; the
+            // child's exit surfaces on the next receive.
+            let _ = tx.send(bytes);
+        }
+        Ok(())
+    }
+
+    /// Waits for the next stdout line (without its newline), bounded by the
+    /// session deadline.
+    ///
+    /// # Errors
+    ///
+    /// Every error tears the session down first (group killed, child reaped):
+    /// [`SessionError::TimedOut`], [`SessionError::Interrupted`],
+    /// [`SessionError::Exited`] (stdout closed), [`SessionError::LineTooLong`],
+    /// [`SessionError::Io`], or [`SessionError::Closed`] if the session was
+    /// already torn down.
+    pub fn recv_line(&mut self) -> Result<String, SessionError> {
+        if self.torn_down {
+            return Err(SessionError::Closed);
+        }
+        loop {
+            if let Some(sig) = interrupted(&self.flag) {
+                self.teardown_now();
+                return Err(SessionError::Interrupted(sig));
+            }
+            let now = Instant::now();
+            if now >= self.deadline {
+                let stderr = self.teardown_now();
+                return Err(SessionError::TimedOut {
+                    timeout: self.timeout,
+                    stderr,
+                });
+            }
+            let wait = RECV_SLICE.min(self.deadline - now);
+            match self.lines.recv_timeout(wait) {
+                Ok(LineEvent::Line(line)) => return Ok(line),
+                Ok(LineEvent::TooLong) => {
+                    let stderr = self.teardown_now();
+                    return Err(SessionError::LineTooLong {
+                        cap: self.line_cap,
+                        stderr,
+                    });
+                }
+                Ok(LineEvent::Failed(source)) => {
+                    let stderr = self.teardown_now();
+                    return Err(SessionError::Io { stderr, source });
+                }
+                Ok(LineEvent::Eof) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    let stderr = self.teardown_now();
+                    return Err(SessionError::Exited { stderr });
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+        }
+    }
+
+    /// The tail of the child's stderr captured so far.
+    pub fn stderr_tail(&self) -> String {
+        tail_string(&self.stderr_tail)
+    }
+
+    /// Kills the group, reaps the child and returns the stderr tail. Used
+    /// when a caller above the line protocol (for example a protocol parser)
+    /// decides the conversation cannot continue. Idempotent.
+    pub fn abort(&mut self) -> String {
+        self.teardown_now()
+    }
+
+    /// Ends the session gracefully: closes the child's stdin, gives it a
+    /// short grace period to exit on its own, then sweeps its process group
+    /// and reaps it exactly as every other path does.
+    ///
+    /// # Errors
+    ///
+    /// - [`SessionError::Closed`] if the session was already torn down.
+    /// - [`SessionError::Status`] if the child exited unsuccessfully (or had
+    ///   to be killed because it did not exit within the grace period).
+    /// - [`SessionError::Io`] if polling, killing or reaping failed.
+    pub fn shutdown(mut self) -> Result<ExitStatus, SessionError> {
+        if self.torn_down {
+            return Err(SessionError::Closed);
+        }
+        self.stdin = None;
+        let grace_end = Instant::now() + SHUTDOWN_GRACE;
+        let mut exited = false;
+        while Instant::now() < grace_end {
+            match exited_unreaped(self.pid) {
+                Ok(true) => {
+                    exited = true;
+                    break;
+                }
+                Ok(false) => thread::sleep(POLL_INTERVAL),
+                Err(_) => break,
+            }
+        }
+        let kill_err = terminate(&mut self.child, self.pid, exited, self.teardown);
+        let reaped = self.child.wait();
+        self.torn_down = true;
+        let stderr = self.collect_stderr();
+        self.guard = None;
+        if let Some(source) = kill_err {
+            return Err(SessionError::Io { stderr, source });
+        }
+        let status = reaped.map_err(|source| SessionError::Io {
+            stderr: stderr.clone(),
+            source,
+        })?;
+        if status.success() {
+            Ok(status)
+        } else {
+            Err(SessionError::Status {
+                code: status.code(),
+                signal: status.signal(),
+                stderr,
+            })
+        }
+    }
+
+    /// Kills the process group, reaps the child and returns the stderr tail.
+    /// Idempotent.
+    fn teardown_now(&mut self) -> String {
+        if !self.torn_down {
+            self.stdin = None;
+            let exited = exited_unreaped(self.pid).unwrap_or(false);
+            // Errors are ignored: this runs on paths that are already
+            // reporting a failure, and the reap below is what matters.
+            let _ = terminate(&mut self.child, self.pid, exited, self.teardown);
+            let _ = self.child.wait();
+            self.torn_down = true;
+            self.guard = None;
+        }
+        self.collect_stderr()
+    }
+
+    /// Waits (bounded) for the stderr reader to reach end-of-file, then
+    /// returns the tail.
+    fn collect_stderr(&self) -> String {
+        let _ = self.stderr_done.recv_timeout(READER_GRACE);
+        tail_string(&self.stderr_tail)
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if !self.torn_down {
+            self.stdin = None;
+            let exited = exited_unreaped(self.pid).unwrap_or(false);
+            let _ = terminate(&mut self.child, self.pid, exited, self.teardown);
+            let _ = self.child.wait();
+            self.torn_down = true;
+        }
+    }
+}
+
+fn tail_string(tail: &Mutex<Vec<u8>>) -> String {
+    let bytes = match tail.lock() {
+        Ok(b) => b.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Splits `out` into lines, sending each (or a cap/EOF/error event) on `tx`.
+fn read_lines(out: impl Read, tx: &mpsc::Sender<LineEvent>, cap: usize) {
+    use std::io::BufRead;
+    let mut reader = io::BufReader::new(out);
+    let mut line: Vec<u8> = Vec::new();
+    loop {
+        let buf = match reader.fill_buf() {
+            Ok(buf) => buf,
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            Err(e) => {
+                let _ = tx.send(LineEvent::Failed(e));
+                return;
+            }
+        };
+        if buf.is_empty() {
+            if !line.is_empty() {
+                let _ = tx.send(LineEvent::Line(String::from_utf8_lossy(&line).into_owned()));
+            }
+            let _ = tx.send(LineEvent::Eof);
+            return;
+        }
+        let (take, complete) = match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => (i, true),
+            None => (buf.len(), false),
+        };
+        line.extend_from_slice(&buf[..take]);
+        let consumed = if complete { take + 1 } else { take };
+        reader.consume(consumed);
+        if line.len() > cap {
+            let _ = tx.send(LineEvent::TooLong);
+            return;
+        }
+        if complete {
+            let text = String::from_utf8_lossy(&line).into_owned();
+            line.clear();
+            if tx.send(LineEvent::Line(text)).is_err() {
+                return;
+            }
+        }
+    }
+}
+
+/// Drains `err`, keeping only the last [`STDERR_TAIL_BYTES`] bytes.
+fn read_tail(mut err: impl Read, tail: &Mutex<Vec<u8>>) {
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        match err.read(&mut chunk) {
+            Ok(0) => return,
+            Ok(n) => {
+                if let Ok(mut t) = tail.lock() {
+                    t.extend_from_slice(&chunk[..n]);
+                    if t.len() > STDERR_TAIL_BYTES {
+                        let excess = t.len() - STDERR_TAIL_BYTES;
+                        t.drain(..excess);
+                    }
                 }
             }
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
