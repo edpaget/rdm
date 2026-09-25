@@ -221,6 +221,14 @@ but not a historical `--at' view of the phase nor another roadmap's view."
     (should-not (seq-find (lambda (argv) (equal (cadr argv) "update"))
                           (rdm-transient-test--argvs log)))))
 
+(ert-deftest rdm-transient/tags-noop-on-tagless ()
+  "An edit adding nothing to an item with no tags is a quiet no-op."
+  (rdm-transient-test--with-stub (list :tags "[]")
+    (should-not (rdm-edit-tags rdm-transient-test--task nil nil))
+    (should-not (rdm-edit-tags rdm-transient-test--task '("  ") '("bug")))
+    (should-not (seq-find (lambda (argv) (equal (cadr argv) "update"))
+                          (rdm-transient-test--argvs log)))))
+
 ;;;; Plan repo
 
 (ert-deftest rdm-transient/plan-repo-argv ()

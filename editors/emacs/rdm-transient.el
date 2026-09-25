@@ -116,11 +116,11 @@ Returns the new tag list."
                                  (seq-remove #'string-empty-p
                                              (mapcar #'string-trim add))))))
     (cond
-     ((null tags)
-      (user-error "rdm: refusing to remove every tag from %s"
-                  (rdm-item-identifier item)))
      ((equal tags current)
       (message "rdm: tags of %s unchanged" (rdm-item-identifier item)))
+     ((null tags)
+      (user-error "rdm: cannot clear a tag list; keep at least one tag on %s"
+                  (rdm-item-identifier item)))
      (t
       (apply #'rdm-call-sync
              (append (rdm--update-args item)
