@@ -17,7 +17,11 @@
 ;;   q    quit the window
 ;;   y    copy the identifier of the item at point
 ;;   gd   copy the item's `Done:' commit line
-;;   x    the `rdm-dispatch' transient (status, tags, commit)
+;;   x    the `rdm-dispatch' transient (status, tags, body, create, commit)
+;;
+;; `rdm-compose-mode' (rdm-compose.el) starts in insert state; in normal
+;; state `ZZ' submits the buffer and `ZQ' aborts it, as in evil-collection's
+;; `git-commit' bindings.
 ;;
 ;; Later phases add their evil bindings here.
 
@@ -25,6 +29,7 @@
 
 (require 'rdm-view)
 (require 'rdm-transient)
+(require 'rdm-compose)
 
 (declare-function evil-set-initial-state "ext:evil-core" (mode state))
 (declare-function evil-define-key* "ext:evil-core" (state keymap key def &rest bindings))
@@ -38,7 +43,11 @@
     (kbd "q") #'quit-window
     (kbd "y") #'rdm-view-copy-identifier
     (kbd "gd") #'rdm-view-copy-done-line
-    (kbd "x") #'rdm-dispatch))
+    (kbd "x") #'rdm-dispatch)
+  (evil-set-initial-state 'rdm-compose-mode 'insert)
+  (evil-define-key* 'normal rdm-compose-mode-map
+    (kbd "ZZ") #'rdm-compose-submit
+    (kbd "ZQ") #'rdm-compose-abort))
 
 (with-eval-after-load 'evil
   (rdm-evil-setup))

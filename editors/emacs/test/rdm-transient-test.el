@@ -18,82 +18,10 @@
 (require 'rdm-transient)
 (require 'rdm-evil)
 (require 'rdm-test-helpers)
+(require 'rdm-transient-stub)
 
 (defvar evil-state)
 (declare-function evil-local-mode "ext:evil-core" (&optional arg))
-
-;;;; Stub
-
-(defconst rdm-transient-test--statuses
-  "\"not-started\",\"in-progress\",\"done\",\"blocked\",\"wont-fix\""
-  "The status values the stub's `describe' declares, as JSON list items.")
-
-(defun rdm-transient-test--stub (log root &rest opts)
-  "An rdm stub logging to LOG and resolving ROOT, shaped by OPTS.
-OPTS: `:tags' (the JSON tag array every `show' reports, default
-\"[\\\"bug\\\"]\"), `:extra' (JSON list items appended to the declared
-statuses) and `:refuse' (a line every update prints on stderr before
-exiting 1).  Each call appends RDM_SESSION and the argv, tab-separated."
-  (rdm-test-stub
-   (format "{ printf '%%s' \"$RDM_SESSION\"; for a in \"$@\"; do printf '\\t%%s' \"$a\"; done; printf '\\n'; } >> '%s'
-case \"$1 $2\" in
-  'info '*) printf '{\"root\":\"%s\",\"project\":\"p\",\"default_branch\":\"main\"}\\n' ;;
-  'describe '*) printf '{\"name\":\"%%s\",\"fields\":[{\"name\":\"title\",\"enum_values\":[]},{\"name\":\"status\",\"enum_values\":[%s%s]}]}\\n' \"$2\" ;;
-  *' show') printf '{\"slug\":\"t1\",\"title\":\"T\",\"status\":\"open\",\"tags\":%s,\"body\":\"B\"}\\n' ;;
-  *' update')
-    if [ -n '%s' ]; then echo '%s' >&2; exit 1; fi
-    echo \"Updated $1 '$3'\" ;;
-  'status '*) echo 'Uncommitted changes:' ;;
-  'commit '*) echo 'Committed 1 file(s).' ;;
-  'discard '*) echo 'Discarded.' ;;
-  *) echo \"unexpected $*\" >&2; exit 9 ;;
-esac"
-           log root rdm-transient-test--statuses
-           (or (plist-get opts :extra) "")
-           (or (plist-get opts :tags) "[\"bug\"]")
-           (or (plist-get opts :refuse) "")
-           (or (plist-get opts :refuse) ""))))
-
-(defun rdm-transient-test--calls (log)
-  "The logged calls in LOG, oldest first, each (SESSION . ARGV)."
-  (when (file-exists-p log)
-    (with-temp-buffer
-      (insert-file-contents log)
-      (mapcar (lambda (line) (let ((parts (split-string line "\t")))
-                               (cons (car parts) (cdr parts))))
-              (split-string (buffer-string) "\n" t)))))
-
-(defun rdm-transient-test--argvs (log)
-  "The argvs in LOG other than `info', oldest first."
-  (seq-remove (lambda (argv) (equal (car argv) "info"))
-              (mapcar #'cdr (rdm-transient-test--calls log))))
-
-(defmacro rdm-transient-test--with-stub (opts &rest body)
-  "Run BODY against an rdm stub shaped by OPTS (see `rdm-transient-test--stub').
-Binds `log'.  The environment inherits a foreign RDM_SESSION, and
-`rdm-session' is nil; detail buffers are killed afterwards."
-  (declare (indent 1) (debug t))
-  `(let* ((default-directory (file-name-as-directory (make-temp-file "rdm-cwd" t)))
-          (root (make-temp-file "rdm-root" t))
-          (log (make-temp-file "rdm-log"))
-          (stub (apply #'rdm-transient-test--stub log root ,opts))
-          (rdm-session nil)
-          (rdm-item--lookup (make-hash-table :test #'equal)))
-     (rdm-test-with-env (list (concat "RDM_BIN=" stub)
-                              "RDM_SESSION=inherited-other")
-       (unwind-protect (progn ,@body)
-         (dolist (b (buffer-list))
-           (when (eq (buffer-local-value 'major-mode b) 'rdm-view-mode)
-             (kill-buffer b)))))))
-
-(defconst rdm-transient-test--phase
-  '(:kind phase :roadmap "r1" :stem "phase-2-two"))
-
-(defconst rdm-transient-test--task '(:kind task :slug "t1"))
-
-(defun rdm-transient-test--refuse-prompts ()
-  "Fail on any prompt: the code under test must not read input here."
-  (error "Unexpected prompt"))
 
 ;;;; Status
 
