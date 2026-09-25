@@ -239,6 +239,25 @@ no detail buffer can open, is dropped."
                      '("r1" "r1/phase-2-two" "t1")))
       (should-not (rdm-item-from "2026-09-25-0000-abcd")))))
 
+(ert-deftest rdm-pick/search-disambiguates-duplicate-identifiers ()
+  "A search hit sharing an identifier with an earlier hit of another kind
+is offered as `IDENTIFIER (KIND)', and the property-less string still
+recovers that second hit's item."
+  (let ((rdm-item--lookup (make-hash-table :test #'equal)))
+    (cl-letf (((symbol-function 'rdm-call-sync)
+               (lambda (&rest _)
+                 (vector (list :kind "roadmap" :identifier "dup" :project "p"
+                               :title "Dup roadmap" :score 10)
+                         (list :kind "task" :identifier "dup" :project "p"
+                               :title "Dup task" :score 9)))))
+      (let ((hits (rdm-pick-search-candidates "dup")))
+        (should (equal (mapcar #'substring-no-properties hits)
+                       '("dup" "dup (task)")))
+        (should (eq (plist-get (rdm-item-from "dup") :kind) 'roadmap))
+        (let ((item (rdm-item-from (substring-no-properties "dup (task)"))))
+          (should (eq (plist-get item :kind) 'task))
+          (should (equal (plist-get item :slug) "dup")))))))
+
 (ert-deftest rdm-view/identifier-falls-back ()
   "An item of another kind copies its `:identifier'."
   (let ((kill-ring nil))
@@ -325,6 +344,60 @@ worktree falls back to the roadmap picker."
                                                  (window-buffer))
                              :kind)
                   'phase)))))
+
+(ert-deftest rdm-view/inherits-source-context ()
+  "A detail buffer inherits its source buffer's buffer-local context
+\(`rdm-project' and a mise.el-style `process-environment'), and `g' and
+RET on a phase row resolve that same context rather than the global one."
+  (let ((calls nil)
+        (rdm-item--lookup (make-hash-table :test #'equal))
+        (rdm-project "global-proj")
+        (process-environment (cons "RDM_ROOT=/global-root"
+                                   (rdm-test-clean-environment)))
+        (source (generate-new-buffer " *rdm-source*")))
+    (cl-letf (((symbol-function 'rdm-context)
+               (lambda () (list :root (getenv "RDM_ROOT") :project rdm-project
+                                :rdm-bin "rdm")))
+              ((symbol-function 'rdm-run-sync)
+               (lambda (command &rest keys)
+                 (push (list (cdr command) (plist-get keys :env)) calls)
+                 (rdm-ui-test--reply (cdr command)))))
+      (unwind-protect
+          (let* ((env (cons "RDM_ROOT=/src-root" (rdm-test-clean-environment)))
+                 (view (with-current-buffer source
+                         (setq-local rdm-project "src-proj")
+                         (setq-local process-environment env)
+                         (rdm-open-item '(:kind roadmap :roadmap "r1"))))
+                 (expected (lambda (&rest words)
+                             (list (append words '("--project" "src-proj"
+                                                   "--format" "json"))
+                                   '("RDM_ROOT=/src-root")))))
+            (should (equal (car calls) (funcall expected "roadmap" "show" "r1")))
+            (should (local-variable-p 'rdm-project view))
+            (should (equal (buffer-local-value 'rdm-project view) "src-proj"))
+            (should (local-variable-p 'process-environment view))
+            (should (equal (buffer-local-value 'process-environment view) env))
+            (with-current-buffer view
+              (setq calls nil)
+              (revert-buffer)
+              (should (equal calls
+                             (list (funcall expected "roadmap" "show" "r1"))))
+              (goto-char (point-min))
+              (search-forward "phase-2-two")
+              (call-interactively (key-binding (kbd "RET"))))
+            (should (equal (car calls)
+                           (funcall expected "phase" "show" "phase-2-two"
+                                    "--roadmap=r1")))
+            (let ((phase (window-buffer)))
+              (should (eq (plist-get (buffer-local-value 'rdm-view--item phase)
+                                     :kind)
+                          'phase))
+              (should (equal (buffer-local-value 'rdm-project phase)
+                             "src-proj"))
+              (should (equal (buffer-local-value 'process-environment phase)
+                             env))))
+        (kill-buffer source)
+        (rdm-ui-test--kill-views)))))
 
 (ert-deftest rdm-view/at-threads-revision ()
   "`rdm-view-at' threads `--at' and shows the revision in the header."
