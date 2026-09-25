@@ -218,20 +218,26 @@ rdm info runs with the env-resolved RDM_ROOT / RDM_PROJECT."
       (should (eq (and (member "--project" argv) t) scoped))))
   (should (equal (rdm-argv 'task-update "fixture-task-open"
                            :status "done" :project "p")
-                 '(("task" "update" "fixture-task-open" "--status" "done"
+                 '(("task" "update" "fixture-task-open" "--status=done"
                     "--project" "p" "--no-edit"))))
   (should (equal (rdm-argv 'task-show "t" :project "p")
                  '(("task" "show" "t" "--project" "p" "--format" "json"))))
   (should (equal (rdm-argv 'task-create "t" :title "T" :stdin "body\n"
                            :project "p")
-                 '(("task" "create" "t" "--title" "T" "--project" "p"
+                 '(("task" "create" "t" "--title=T" "--project" "p"
                     "--no-edit")
                    . "body\n")))
   (should (equal (rdm-argv 'task-update "t" :body "b" :project "p")
-                 '(("task" "update" "t" "--body" "b" "--project" "p"
+                 '(("task" "update" "t" "--body=b" "--project" "p"
                     "--no-edit"))))
+  ;; Values starting with `-' stay attached to their flag, so clap never
+  ;; reads them as options.
+  (should (equal (rdm-argv 'task-update "t" :title "-T" :body "- item\n"
+                           :project "p")
+                 '(("task" "update" "t" "--title=-T" "--body=- item\n"
+                    "--project" "p" "--no-edit"))))
   (should (equal (rdm-argv 'task-list :status "all" :project "p")
-                 '(("task" "list" "--status" "all" "--project" "p"
+                 '(("task" "list" "--status=all" "--project" "p"
                     "--format" "json"))))
   (should (equal (rdm-argv 'status) '(("status" "--format" "json")))))
 
@@ -378,6 +384,21 @@ resolver signals the actionable error: rdm never resolves a root from cwd."
     (should (equal (plist-get (rdm-call-sync 'task-show "fixture-task-active")
                               :status)
                    "open"))))
+
+(ert-deftest rdm-run/real-write-dash-values ()
+  "A title and a body starting with `-' reach the real binary intact."
+  (rdm-core-test--with-real
+    (setq process-environment
+          (append (list (concat "RDM_ROOT=" root) (concat "RDM_PROJECT=" project)
+                        "EDITOR=false" "VISUAL=false")
+                  process-environment))
+    (setq rdm-bin bin)
+    (rdm-call-sync 'task-update "fixture-task-open"
+                   :title "-dash title" :body "- item one\n- item two")
+    (let ((task (rdm-call-sync 'task-show "fixture-task-open")))
+      (should (equal (plist-get task :title) "-dash title"))
+      (should (string-match-p "\\`- item one\n- item two"
+                              (plist-get task :body))))))
 
 ;;;; Soft dependency proof
 

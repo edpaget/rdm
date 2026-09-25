@@ -240,9 +240,11 @@ and `:project' nil for commands that take no `--project'.")
   "Build the rdm argv for ACTION with ARGS; return (ARGV . STDIN).
 ARGS are positional strings followed by keyword/value pairs.  `:project'
 names the project (required unless the action takes none), `:body' is
-passed as `--body' and `:stdin' becomes STDIN (not both); any other
-`:key' becomes `--key VALUE', or a bare `--key' when VALUE is t, and is
-dropped when VALUE is nil.  Reads get `--format json', writes `--no-edit'.
+passed as `--body=BODY' and `:stdin' becomes STDIN (not both); any
+other `:key' becomes `--key=VALUE', or a bare `--key' when VALUE is t,
+and is dropped when VALUE is nil.  Values are joined to their flag so
+one starting with `-' (a Markdown list, say) is never read as an
+option.  Reads get `--format json', writes `--no-edit'.
 ARGV excludes the rdm program itself."
   (let* ((row (rdm--action action))
          (read (eq (plist-get row :kind) 'read))
@@ -261,8 +263,9 @@ ARGV excludes the rdm program itself."
                                               (list (concat "--" (substring (symbol-name a) 1))))))
                          (v
                           (setq flags (append flags
-                                              (list (concat "--" (substring (symbol-name a) 1))
-                                                    (format "%s" v)))))))))
+                                              (list (format "--%s=%s"
+                                                            (substring (symbol-name a) 1)
+                                                            v)))))))))
           (push a positional))))
     (when (and body stdin)
       (error "rdm: %s given both :body and :stdin" action))
@@ -271,7 +274,7 @@ ARGV excludes the rdm program itself."
     (cons (append (plist-get row :argv)
                   (nreverse positional)
                   flags
-                  (when body (list "--body" body))
+                  (when body (list (concat "--body=" body)))
                   (when scoped (list "--project" project))
                   (if read '("--format" "json") '("--no-edit")))
           stdin)))
