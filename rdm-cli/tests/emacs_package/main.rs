@@ -9,11 +9,13 @@
 //! `RDM_TEST_PROJECT`; `EDITOR`/`VISUAL` are `false`.
 //!
 //! - [`emacs_suite_bare`] runs `emacs -Q`: every test tagged for a soft
-//!   dependency (evil, magit, consult, embark) must be skipped.
+//!   dependency (evil, magit, consult, embark, markdown-mode) must be
+//!   skipped.
 //! - [`emacs_suite_with_init_dir`] runs with `--init-directory
 //!   $RDM_EMACS_INIT_DIR` (built from `editors/emacs/test/ci-init/init.el`),
 //!   loading its `init.el` first: every soft-dependency-tagged test must
-//!   run and pass, and evil, consult and embark must each have one.
+//!   run and pass, and evil, consult, embark and markdown-mode must each
+//!   have one.
 //!
 //! `emacs` is `$RDM_EMACS`, else the first `emacs` on `PATH`. Without one,
 //! or without `RDM_EMACS_INIT_DIR` for the second pass, a test prints a skip
@@ -47,11 +49,11 @@ use crate::workflow_support::repo_root;
 const PASS_DEADLINE: Duration = Duration::from_secs(120);
 
 /// The soft dependencies whose tagged tests the passes police.
-const SOFT_DEPS: &[&str] = &["evil", "magit", "consult", "embark"];
+const SOFT_DEPS: &[&str] = &["evil", "magit", "consult", "embark", "markdown-mode"];
 
 /// The soft dependencies the suite already has tagged tests for; the
 /// init-directory pass requires at least one of each to run.
-const TESTED_SOFT_DEPS: &[&str] = &["evil", "consult", "embark"];
+const TESTED_SOFT_DEPS: &[&str] = &["evil", "consult", "embark", "markdown-mode"];
 
 /// Whether a missing `emacs` or init directory fails instead of skipping.
 fn required() -> bool {

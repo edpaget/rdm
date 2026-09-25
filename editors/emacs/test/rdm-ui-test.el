@@ -6,7 +6,8 @@
 ;; the runner (`rdm-run-sync') and the context resolver, capturing every
 ;; argv; the `real-' tests run against the binary under test and the
 ;; seeded plan repo (see `rdm-test-with-real').  Tests tagged `evil',
-;; `consult' or `embark' run only where that package is loaded.
+;; `consult', `embark' or `markdown-mode' run only where that package is
+;; loaded.
 
 ;;; Code:
 
@@ -320,6 +321,40 @@ no detail buffer can open, is dropped."
     (should (eq (key-binding (kbd "g")) #'revert-buffer))
     (should (eq (key-binding (kbd "q")) #'quit-window))
     (should (eq (key-binding (kbd "RET")) #'rdm-view-open-at-point))))
+
+(ert-deftest rdm-view/markdown-faces ()
+  "Under markdown-mode, the body keeps its text and carries markdown's
+faces: a heading and a **bold** span are fontified on exactly their
+characters."
+  :tags '(markdown-mode)
+  (rdm-test-with-soft-dep 'markdown-mode
+    (rdm-ui-test--mocked
+      (cl-letf* ((reply (symbol-function 'rdm-ui-test--reply))
+                 ((symbol-function 'rdm-ui-test--reply)
+                  (lambda (argv)
+                    (let ((data (funcall reply argv)))
+                      (plist-put data :body "# Heading\n\nsome **bold** text\n")))))
+        (with-current-buffer (rdm-open-item '(:kind task :slug "t1"))
+          (should (string-match-p "# Heading\n\nsome \\*\\*bold\\*\\* text\n"
+                                  (buffer-string)))
+          (goto-char (point-min))
+          (search-forward "# Heading")
+          (let ((h (- (point) (length "Heading"))))
+            (should (memq 'markdown-header-face-1
+                          (ensure-list (get-text-property h 'font-lock-face))))
+            (should (memq 'markdown-header-face-1
+                          (ensure-list (get-text-property (1- (point))
+                                                          'font-lock-face)))))
+          (search-forward "some **bold**")
+          (let ((b (- (point) (length "bold**"))))
+            (should (memq 'markdown-bold-face
+                          (ensure-list (get-text-property b 'font-lock-face))))
+            (should (memq 'markdown-bold-face
+                          (ensure-list (get-text-property (+ b 3)
+                                                          'font-lock-face))))
+            (should-not (memq 'markdown-bold-face
+                              (ensure-list (get-text-property
+                                            (- b 4) 'font-lock-face))))))))))
 
 ;;;; Embark
 

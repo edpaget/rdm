@@ -3,8 +3,8 @@
 ;;; Commentary:
 
 ;; Provides the optional packages the rdm package integrates with (evil,
-;; magit, consult, embark) so the suite's second pass can run the tests
-;; tagged for them.  Copy this file into an empty directory DIR and run
+;; magit, consult, embark, markdown-mode) so the suite's second pass can
+;; run the tests tagged for them.  Copy this file into an empty directory DIR and run
 ;;
 ;;   emacs --batch --init-directory DIR -l DIR/init.el
 ;;
@@ -24,7 +24,7 @@
         ("melpa" . "https://melpa.org/packages/")))
 (package-initialize)
 
-(defconst rdm-ci-init-packages '(evil magit consult embark)
+(defconst rdm-ci-init-packages '(evil magit consult embark markdown-mode)
   "The soft dependencies the suite's second pass provides.")
 
 (let ((missing (cl-remove-if #'package-installed-p rdm-ci-init-packages)))
