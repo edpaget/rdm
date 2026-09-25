@@ -8,12 +8,16 @@ use serde::Serialize;
 use crate::{ModelCommand, OutputFormat};
 
 /// Every dispatch step, in canonical display order for `rdm model show`.
-const ALL_STEPS: [DispatchStep; 5] = [
+///
+/// `ReviewConsolidate` is appended last so the earlier steps keep their
+/// indices.
+const ALL_STEPS: [DispatchStep; 6] = [
     DispatchStep::Plan,
     DispatchStep::Implement,
     DispatchStep::ReviewFind,
     DispatchStep::ReviewVerify,
     DispatchStep::Mechanical,
+    DispatchStep::ReviewConsolidate,
 ];
 
 /// Runs the `rdm model` command family: resolving a dispatch step to a
@@ -182,7 +186,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_view_reflects_default_bindings_and_all_five_steps() {
+    fn build_view_reflects_default_bindings_and_all_six_steps() {
         let policy = ModelPolicy::from_config(&Config::default());
         let view = build_view(&policy, Host::Claude);
         assert_eq!(view.host, "claude");
@@ -192,7 +196,7 @@ mod tests {
         assert_eq!(view.frontier, "opus");
         assert_eq!(view.profiles.frontier.effort.to_string(), "xhigh");
         assert_eq!(view.review_floor, "medium");
-        assert_eq!(view.steps.len(), 5);
+        assert_eq!(view.steps.len(), 6);
         assert_eq!(view.steps[0].step, "plan");
         assert_eq!(view.steps[0].effort, "medium");
         assert_eq!(view.steps[1].step, "implement");
@@ -205,6 +209,9 @@ mod tests {
         assert_eq!(view.steps[4].step, "mechanical");
         assert_eq!(view.steps[4].model, "opus");
         assert_eq!(view.steps[4].effort, "low");
+        assert_eq!(view.steps[5].step, "review-consolidate");
+        assert_eq!(view.steps[5].model, "opus");
+        assert_eq!(view.steps[5].effort, "high");
     }
 
     #[test]

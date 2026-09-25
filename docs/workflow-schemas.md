@@ -1275,6 +1275,9 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | `unrefutedReason` | `'non-gating'` \| `'budget'` (post-pipeline only) | present iff `unrefuted` is; WHY it went ungraded |
 | `refuterError`  | `true` (post-pipeline only)              | a refuter was dispatched and CRASHED; never combined with `unrefuted` |
 | `inScope`       | boolean (post-pipeline only)             | folded from the refuter's `VERDICT.inScope` when it graded one; absent on every finding never graded for scope (plan mode, no associated plan, non-gating, over-budget, or refuter-crashed) |
+| `concerns`      | string[] (post-pipeline only)            | present only on a MERGED unit (see § Consolidation): the ordered union of every member's dimension |
+| `mergedFrom`    | string[] (post-pipeline only)            | present only on a merged unit: the member pipeline ids (`c<order>`), in flattened order |
+| `clusterWhy`    | string (post-pipeline only)              | present only on a merged unit: the consolidator's one-line reason for the cluster |
 
 **`category` is additive, optional, and read by nobody.** It exists because
 `FINDINGS_SCHEMA` is `additionalProperties: false`: the `security` dimension's
@@ -2075,8 +2078,16 @@ mapping" below) checks `acTable` directly via `acTableHasGap`, independent of
 `rework` — never `escalated`.
 
 The third field, **`budget`**, records what the per-unit refutation budget did:
-`{ max, produced, gating, graded, passedThroughNonGating, passedThroughBudget,
-refuterErrors, hit }`. It describes the **pipeline**, not any consumer-side
+`{ max, produced, consolidated, collapsed, gating, graded,
+passedThroughNonGating, passedThroughBudget, refuterErrors, hit, clustering }`.
+`produced` is the RAW candidate count the finders emitted; `consolidated` is the
+unit count after consolidation and `collapsed` the candidates removed by merging
+(see § Consolidation); `gating` / `graded` / `passedThroughBudget` count UNITS.
+`clustering` is `{ ran, retried, failedOpen, reason }`: `ran: false` with
+`reason: 'skipped'` below two candidates; `failedOpen: true` with `reason` one of
+`null` / `threw` (after one retry) or `invalid-shape` / `unknown-id` /
+`duplicate-id` / `missing-id` (no retry) when the pipeline fell back to
+singletons; `reason: null` on a valid partition. It describes the **pipeline**, not any consumer-side
 post-filtering — plan-review's `suppressWontFixed`
 run afterwards and may drop a survivor that consumed budget. Consumers project
 it onto their own shape with the two shared helpers in the same stamped block:
@@ -2221,7 +2232,7 @@ ascending as a stable tiebreaker.
 ## `buildReviewPipeline(mode, deps?)`
 
 Returns an async `runReview(context)` that composes
-`parallel(finders)` → **barrier** → budget cut → `parallel(refuters)`:
+`parallel(finders)` → **barrier** → consolidate → budget cut → `parallel(refuters)`:
 
 0. **Select** — the deterministic pre-step `resolveReviewers(mode, reviewers)`
    decides which dimensions actually run (see below).
@@ -2230,9 +2241,10 @@ Returns an async `runReview(context)` that composes
    dimension's finder is forced to satisfy `AC_REVIEW_SCHEMA` instead of
    `FINDINGS_SCHEMA`, and the first `ac` array it resolves is captured into the
    run's `acTable`.
-2. **Barrier + budget cut** — every finder settles, then all dimensions' findings
-   are flattened into ONE unit-wide candidate list, partitioned by
-   `needsRefutation`, and the gating half is ranked by `rankBudgetCandidates` and
+2. **Barrier + consolidate + budget cut** — every finder settles, then all
+   dimensions' findings are flattened into ONE unit-wide candidate list, the
+   consolidator clusters duplicates into merged units (see § Consolidation), the
+   units are partitioned by `needsRefutation`, and the gating half is ranked by `rankBudgetCandidates` and
    cut at the refutation budget (see below). The cut is taken BEFORE any refuter
    is dispatched, so it can never depend on agent-completion order.
 3. **Refute** — a **fresh** refuter `agent()` per finding in the top N, in
@@ -2249,6 +2261,25 @@ structurally cannot do. `parallel()`'s thrown-thunk → null degradation is
 identical to `pipeline()`'s thrown-stage → null, so the per-dimension crash
 behavior is unchanged, and it makes no assumption about a minimum `pipeline()`
 stage count.
+
+### Consolidation
+
+One consolidator `agent()` (label `consolidate:<mode>`, phase `Consolidate`, on
+the `review-consolidate` model step — `context.consolidateModel` /
+`context.consolidateEffort`) reads the whole candidate list and returns cluster
+ASSIGNMENTS over pipeline ids (`c<order>`), never finding content:
+`{ clusters: [{ ids: string[], why: string }] }`. Pure code then checks the
+reply is a TOTAL partition (every id in exactly one cluster; none invented,
+repeated or omitted) and assembles each merged unit from the original findings:
+the highest-confidence member (ties to the lowest order) is the representative
+and supplies the unit's `concern`, narrative, `quote`/`path`, and the `raw`
+finding its single refuter is prompted with; the unit takes the most severe
+member's severity and the max member confidence (corroboration never raises
+it); it carries `concerns` / `mergedFrom` / `clusterWhy`. A singleton passes
+through unchanged. Fewer than two candidates skip the agent; a null or thrown
+reply is retried once; any failure falls back to all singletons (today's
+behaviour) and is recorded in `budget.clustering`. A refuted unit drops every
+member; a crashed unit refuter keeps it (`refuterError: true`).
 
 ### Refutation budget
 

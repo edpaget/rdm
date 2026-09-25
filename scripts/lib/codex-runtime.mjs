@@ -46,9 +46,9 @@ export function createJudgmentAgent(ctx, models, spec) {
   return async (prompt, opts = {}) => {
     if (spec.signal?.aborted) throw new Error('Codex judgment cancelled');
     const label = opts.label ?? '';
-    const role = opts.agentType ?? (label.startsWith('find:') ? 'finder' : label.startsWith('refute:') ? 'refuter' : undefined);
-    if (!['finder','refuter','estimator'].includes(role)) throw new Error('Unsupported judgment role');
-    const step = role === 'finder' ? 'review-find' : role === 'refuter' ? 'review-verify' : 'plan';
+    const role = opts.agentType ?? (label.startsWith('find:') ? 'finder' : label.startsWith('refute:') ? 'refuter' : label.startsWith('consolidate:') ? 'consolidator' : undefined);
+    if (!['finder','refuter','consolidator','estimator'].includes(role)) throw new Error('Unsupported judgment role');
+    const step = role === 'finder' ? 'review-find' : role === 'refuter' ? 'review-verify' : role === 'consolidator' ? 'review-consolidate' : 'plan';
     const binding = models[step];
     if (!binding) throw new Error(`Missing model configuration for ${step}`);
     const id = ++call;
@@ -108,7 +108,8 @@ export async function reviewPlan(ctx, spec, deps, models) {
   // hash above and the re-read below still pin the exact bytes that were graded.
   const result = await runPlanReviewDriver({implementationPlan:true,planFile:spec.planFile,
     reviewers, roadmap, ...pin, rdmBin:shellQuote(ctx.identity.rdmBin ?? 'rdm'), project:ctx.identity.project,
-    findModel:models['review-find']?.model,verifyModel:models['review-verify']?.model},
+    findModel:models['review-find']?.model,verifyModel:models['review-verify']?.model,
+    consolidateModel:models['review-consolidate']?.model},
     {...deps,runPlanReview:buildReviewPipeline('plan',deps)});
   if (fs.readFileSync(spec.planFile,'utf8') !== planText) throw new Error('Implementation plan changed during review');
   if (item && (safeGit(pin.source,['rev-parse','HEAD']) !== pin.expectedHead ||
@@ -160,7 +161,7 @@ export async function reviewCode(ctx, spec, deps, models, tier, initialItem) {
   const target=`Review source ${root}, exact range ${base}..${head}. Read relevant files in this checkout.\n\n${body}\n\nDiff:\n${diff}`;
   ctx.record('code-snapshot',{base,head,changedFiles,targetHash:hash(target),item,plan});
   const planCommand = plan ? `${shellQuote(ctx.identity.rdmBin ?? 'rdm')} plan show ${shellQuote(spec.planSlug)} --project ${shellQuote(ctx.identity.project)} --format json` : null;
-  const result=await buildReviewPipeline('code',deps)({target,reviewers,planCommand,findModel:models['review-find']?.model,verifyModel:models['review-verify']?.model});
+  const result=await buildReviewPipeline('code',deps)({target,reviewers,planCommand,findModel:models['review-find']?.model,verifyModel:models['review-verify']?.model,consolidateModel:models['review-consolidate']?.model});
   clean(root);
   if (safeGit(root,['rev-parse','HEAD']) !== head || (item && JSON.stringify(await readItem(ctx,spec.item)) !== JSON.stringify(item))) throw new Error('Review target changed during review');
   if (plan && JSON.stringify(await readApprovedPlan(ctx,spec.planSlug,spec.item,item)) !== JSON.stringify(plan)) throw new Error('Approved plan changed during review');
@@ -184,7 +185,7 @@ export async function runRuntime(spec) {
     const item=spec.operation==='code-review' && spec.item ? await readItem(ctx,spec.item) : null;
     const tier=item?.model ?? spec.tier;
     if (tier !== undefined && !tiers.includes(tier)) throw new Error('Invalid core tier hint');
-    const models=await resolveModels(ctx,spec.host,spec.operation==='estimate'?['plan']:['review-find','review-verify'],tier);
+    const models=await resolveModels(ctx,spec.host,spec.operation==='estimate'?['plan']:['review-find','review-verify','review-consolidate'],tier);
     const rawAgent=createJudgmentAgent(ctx,models,{...spec,signal});
     // Every canonical parallel boundary shares the configured bound. Estimate uses
     // its own Promise.all, so the agent itself also uses this FIFO semaphore.

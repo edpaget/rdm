@@ -106,7 +106,7 @@ no trailer is written by anyone in this flow.
 ## Run state
 
 Keep these for the whole run: `identity` (the pinned checkout: `repository`, `path`, `branch`,
-`base`, `head`), `profiles` (`plan`, `implement`, `reviewFind`, `reviewVerify`, each a
+`base`, `head`), `profiles` (`plan`, `implement`, `reviewFind`, `reviewVerify`, `reviewConsolidate`, each a
 `{model, effort}` pair resolved once in step 4 and never re-resolved mid-run), `planId` plus any
 superseded predecessors, `reviewIds` (**additive** — a rework pass keeps resolving comments on the
 ids it already has and appends any new one; it never starts a fresh review to redo a pass),
@@ -274,20 +274,22 @@ silently.
 
 Then read what this session — and only this session — can supply. **The plan-review engine reads
 nothing:** every reviewer fetches the document it needs from the command its prompt names. What is
-left to gather is the two judgment-site profiles, which are yours to resolve, and the wont-fix
+left to gather is the three judgment-site profiles, which are yours to resolve, and the wont-fix
 corpus, which no document records.
 
 ```bash
 <rdmBin> roadmap show <slug><proj-flag> --format json    # for STEP 5's planner — SKIP in task mode
 <rdmBin> model resolve review-find --format json
 <rdmBin> model resolve review-verify --format json
+<rdmBin> model resolve review-consolidate --format json
 <rdmBin> task list --tag plan-review --status wont-fix<proj-flag> --format json   # record each result's `title`
 ```
 
-Record the two results as `profiles.reviewFind` / `profiles.reviewVerify` (each `{model, effort}`)
+Record the three results as `profiles.reviewFind` / `profiles.reviewVerify` /
+`profiles.reviewConsolidate` (each `{model, effort}`)
 and the wont-fix titles as `wontFixedTitles`:
 
-- The two `model resolve` calls take **no `--tier`** — review-lane roles, not dispatch models. There
+- The three `model resolve` calls take **no `--tier`** — review-lane roles, not dispatch models. There
   is no mechanical model left to resolve and no bootstrap agent to pre-empt: each model and effort is
   independently optional, and an omitted one makes that judgment agent inherit the session's model
   or effort.
@@ -298,8 +300,8 @@ and the wont-fix titles as `wontFixedTitles`:
   `--limit 20` and its JSON carries no `body` field.
 
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, the two resolved
-`profiles.plan` / `profiles.implement` and the two resolved `profiles.reviewFind` /
-`profiles.reviewVerify` (model and effort each), and confirm you captured the item's `body`, the
+`profiles.plan` / `profiles.implement` and the three resolved `profiles.reviewFind` /
+`profiles.reviewVerify` / `profiles.reviewConsolidate` (model and effort each), and confirm you captured the item's `body`, the
 roadmap `body` (phase mode) and the wont-fix titles. If the worktree or identity command failed,
 escalate — never invent a checkout, and never let a subagent choose one. A failed **read** is
 different and not fatal, but say which one failed and state the consequence — it differs per value,
@@ -310,7 +312,8 @@ refuter agents only, with nothing reachable to re-read what you omit:
   unreadable, escalate rather than dispatching a planner with no phase text.
 - roadmap `body` likewise feeds only step 5's planner; if unreadable, the planner loses `## Intent`,
   but `intent-alignment` is unaffected since it reads that section itself from the `roadmap` slug.
-- `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — each independently optional; an
+- `findModel` / `verifyModel` / `consolidateModel` and `findEffort` / `verifyEffort` /
+  `consolidateEffort` — each independently optional; an
   omitted model makes that agent inherit the session model, an omitted effort its effort. One
   resolved value plus one omitted one is perfectly legal.
 - `wontFixedTexts` — omitting it suppresses nothing, and there is no wont-fix search on this path,
@@ -367,6 +370,8 @@ via the Workflow tool, passing `args` as a JSON object (never a stringified valu
   verifyModel: '<profiles.reviewVerify.model>',
   findEffort: '<profiles.reviewFind.effort>',
   verifyEffort: '<profiles.reviewVerify.effort>',
+  consolidateModel: '<profiles.reviewConsolidate.model>',
+  consolidateEffort: '<profiles.reviewConsolidate.effort>',
   wontFixedTexts: [<wontFixedTitles>],
   rdmBin: '<rdmBin>', project: '<project>',
 }
@@ -413,7 +418,8 @@ yourself.** It is the one step a subagent physically cannot perform.
   when the phase was created. Add `'intent-alignment'` when the parent roadmap records an `##
   Intent` section — the reviewer reads it out of the roadmap itself, so nothing is transcribed into
   this call. In task mode there is no parent roadmap, so omit it.
-- `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — the two judgment-site profiles'
+- `findModel` / `verifyModel` / `consolidateModel` and `findEffort` / `verifyEffort` /
+  `consolidateEffort` — the three judgment-site profiles'
   `model` and `effort`, each independently optional. An omitted model makes that agent inherit the
   session model, an omitted effort its effort. An effort the engine does not accept is refused
   before any agent runs.
@@ -564,6 +570,8 @@ via the Workflow tool, passing `args` as a JSON object (never a stringified valu
   verifyModel: '<profiles.reviewVerify.model>',
   findEffort: '<profiles.reviewFind.effort>',
   verifyEffort: '<profiles.reviewVerify.effort>',
+  consolidateModel: '<profiles.reviewConsolidate.model>',
+  consolidateEffort: '<profiles.reviewConsolidate.effort>',
   rdmBin: '<rdmBin>', project: '<project>',
 }
 ```
@@ -572,8 +580,9 @@ via the Workflow tool, passing `args` as a JSON object (never a stringified valu
 path, two SHAs and a branch name, nothing more — and each reviewer runs `rdm review source` itself
 to reach the diff. The engine dispatches finder and refuter agents and no others.
 
-- `findModel` / `verifyModel` and `findEffort` / `verifyEffort` — the same two resolved
-  `profiles.reviewFind` / `profiles.reviewVerify` from step 4, mirroring step 6's plan-review call.
+- `findModel` / `verifyModel` / `consolidateModel` and `findEffort` / `verifyEffort` /
+  `consolidateEffort` — the same three resolved `profiles.reviewFind` / `profiles.reviewVerify` /
+  `profiles.reviewConsolidate` from step 4, mirroring step 6's plan-review call.
   Each is independently optional; an omitted model makes that judgment agent inherit the session
   model, an omitted effort its effort.
 

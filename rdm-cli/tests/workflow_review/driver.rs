@@ -177,8 +177,9 @@ fn persist_args(pin: &Pin) -> Value {
 }
 
 /// A fleet whose `ac` finder reports one PASS row, whose other finders each
-/// plant the next of `findings` (spread across [`DIMS`]), and whose refuters
-/// never refute.
+/// plant the next of `findings` (spread across [`DIMS`]), whose refuters
+/// never refute, and whose consolidator resolves `null` (so the pipeline
+/// fails open to singletons, the pre-consolidation behaviour).
 fn fleet(findings: Vec<Value>) -> Agent {
     Agent::scripted(move |call| {
         let label = call.label.as_str();
@@ -195,6 +196,9 @@ fn fleet(findings: Vec<Value>) -> Agent {
         }
         if label.starts_with("refute:") {
             return Reply::Value(json!({ "refuted": false, "confidence": 95 }));
+        }
+        if label.starts_with("consolidate:") {
+            return Reply::Null;
         }
         Reply::Value(json!({ "findings": [] }))
     })
@@ -458,23 +462,39 @@ fn gate_false_writes_nothing() {
 fn find_and_verify_effort_reach_every_finder_and_refuter() {
     run_real(|lib| {
         let fx = fixture()?;
-        let blocker = || vec![finding("c-1", "blocking", json!({}))];
+        // Two findings, so the consolidator is dispatched too.
+        let blocker = || {
+            vec![
+                finding("c-1", "blocking", json!({})),
+                finding("c-2", "blocking", json!({})),
+            ]
+        };
         let (_, agent) = drive(
             lib,
             phase_args(
                 &fx,
                 "phase-1-clean",
                 json!({ "gate": false, "findModel": "m-find", "findEffort": "low",
-                        "verifyModel": "m-verify", "verifyEffort": "high" }),
+                        "verifyModel": "m-verify", "verifyEffort": "high",
+                        "consolidateModel": "m-consolidate", "consolidateEffort": "medium" }),
             ),
             blocker(),
         )?;
         let (finds, refutes) = (agent.calls_with("find:"), agent.calls_with("refute:"));
+        let consolidates = agent.calls_with("consolidate:");
         check!(
-            !finds.is_empty() && !refutes.is_empty(),
-            "the engine dispatched finders and refuters: {:?}",
+            !finds.is_empty() && !refutes.is_empty() && !consolidates.is_empty(),
+            "the engine dispatched finders, refuters and the consolidator: {:?}",
             agent.labels()
         );
+        for c in &consolidates {
+            check_eq!(
+                (c.opts["model"].clone(), c.opts["effort"].clone()),
+                (json!("m-consolidate"), json!("medium")),
+                "{}",
+                c.label
+            );
+        }
         for c in &finds {
             check_eq!(
                 (c.opts["model"].clone(), c.opts["effort"].clone()),

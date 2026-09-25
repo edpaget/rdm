@@ -102,8 +102,8 @@ as `signal`; it cannot be represented in a JSON file.
 
 ### Model policy
 
-The runtime resolves `review-find`, `review-verify`, or estimation's `plan`
-step through `rdm model resolve <step> --host codex --format json` and runs
+The runtime resolves `review-find`, `review-verify`, `review-consolidate`, or
+estimation's `plan` step through `rdm model resolve <step> --host codex --format json` and runs
 each judgment at exactly the returned `{model, effort}` — `-m <model>` and
 `model_reasoning_effort="<effort>"`. Core owns the whole policy: tier policy,
 the plan floor, the review floor, and the per-host profile table

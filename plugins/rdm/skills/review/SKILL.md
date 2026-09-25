@@ -44,11 +44,12 @@ The dimension-finding and per-finding-refuting mechanics (step 2 below) are perf
    Pass the resolved source path, base, expected head and branch into the workflow. A caller-supplied `diff` never bypasses resolution: authoritative committed content is reacquired. Use the returned head for pinned source links.
 
    From the resolved `changedFiles` and `diffText`, note the diff size, which modules it touches, and whether it changes public API, a security-sensitive surface (auth, input parsing or validation, path/file handling, subprocess or shell invocation, secrets, deserialization, network code), dependencies, or user-facing behavior — these tell you which reviewers to include (see Review specification § Reviewers). From those same signals derive a **tier hint**: `small` (localized, single module, no risky surface — a typo fix, a one-line log message), `medium` (an ordinary change — new logic in one module, a bugfix), or `large` (touches public API, a security-sensitive surface, spans multiple modules/crates, adds a dependency, or is user-facing). This is a read of the **diff's risk**, not the phase's own difficulty rating — a "hard" phase can still land a small, low-risk diff, and vice versa.
-4. **Resolve the two review profiles** — a model plus a reasoning effort each — so every finder and refuter runs on an explicitly resolved profile, never the inherited session model:
+4. **Resolve the three review profiles** — a model plus a reasoning effort each — so every finder, refuter and the consolidator runs on an explicitly resolved profile, never the inherited session model:
 
    ```bash
    rdm model resolve review-find --tier <hint> --format json   # {"step","host","tier","model","effort"}
    rdm model resolve review-verify --format json               # default tier already floored to the top review tier
+   rdm model resolve review-consolidate --format json          # default tier already floored to the top review tier
    ```
 
    Resolution reads the `[models]` config table (per-host profiles, review floor, and per-step overrides), falling back to the built-in profile table when unset — run `rdm model show` to see the effective table. The workflow applies them itself: it passes the model and effort into every finder and refuter agent it dispatches.
@@ -59,12 +60,12 @@ Invoke the `rdm:rdm-wf-review-refute-fix` Workflow tool to run the reviewer-find
 
 ```
 Workflow: rdm:rdm-wf-review-refute-fix
-args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, rdmBin: "<rdm executable>", project: "<project>", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>" }
+args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, rdmBin: "<rdm executable>", project: "<project>", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>", consolidateModel: "<review-consolidate model>", consolidateEffort: "<review-consolidate effort>" }
 # or, for a task:
-args: { mode: "code", task: "<slug>", gate: false, rdmBin: "<rdm executable>", project: "<project>", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>" }
+args: { mode: "code", task: "<slug>", gate: false, rdmBin: "<rdm executable>", project: "<project>", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>", consolidateModel: "<review-consolidate model>", consolidateEffort: "<review-consolidate effort>" }
 ```
 
-Pass `args` as a JSON object, never a stringified value. `findModel`/`findEffort` and `verifyModel`/`verifyEffort` are the `model` and `effort` fields of the two profiles resolved in step 1. Each is independently optional — an omitted model makes that judgment agent inherit the session model, an omitted effort its effort — and an effort the engine does not accept is refused before any agent runs.
+Pass `args` as a JSON object, never a stringified value. `findModel`/`findEffort`, `verifyModel`/`verifyEffort` and `consolidateModel`/`consolidateEffort` are the `model` and `effort` fields of the three profiles resolved in step 1. Each is independently optional — an omitted model makes that judgment agent inherit the session model, an omitted effort its effort — and an effort the engine does not accept is refused before any agent runs.
 
 The engine **reads nothing and writes nothing**: it dispatches finder and refuter agents only. The
 `source`/`base`/`expectedHead`/`expectedBranch` values above are the identity you resolved in step 1

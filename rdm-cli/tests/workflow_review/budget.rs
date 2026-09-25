@@ -381,7 +381,7 @@ fn under_at_over(lib: &Lib) -> Outcome {
     );
     check_eq!(
         out["budget"],
-        json!({ "max": 5, "produced": 3, "gating": 3, "graded": 3, "passedThroughNonGating": 0, "passedThroughBudget": 0, "refuterErrors": 0, "hit": false }),
+        json!({ "max": 5, "produced": 3, "consolidated": 3, "collapsed": 0, "gating": 3, "graded": 3, "passedThroughNonGating": 0, "passedThroughBudget": 0, "refuterErrors": 0, "hit": false, "clustering": { "ran": true, "retried": true, "failedOpen": true, "reason": "null" } }),
         "under budget: exact accounting"
     );
     check_eq!(
@@ -447,7 +447,7 @@ fn under_at_over(lib: &Lib) -> Outcome {
     );
     check_eq!(
         out["budget"],
-        json!({ "max": 5, "produced": 13, "gating": 13, "graded": 5, "passedThroughNonGating": 0, "passedThroughBudget": 8, "refuterErrors": 0, "hit": true }),
+        json!({ "max": 5, "produced": 13, "consolidated": 13, "collapsed": 0, "gating": 13, "graded": 5, "passedThroughNonGating": 0, "passedThroughBudget": 8, "refuterErrors": 0, "hit": true, "clustering": { "ran": true, "retried": true, "failedOpen": true, "reason": "null" } }),
         "over budget: exact accounting"
     );
     let overflow: Vec<&Value> = out["survivors"]

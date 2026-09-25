@@ -403,7 +403,8 @@ cat "$CODEX_FIXTURE_DIR/reply"
 /// records the call and `start`/`end` event lines, then replays
 /// `$CODEX_FIXTURE_DIR/responses/<key>` and `$CODEX_FIXTURE_DIR/stream`.
 /// The key follows from what the runtime sent: an estimator prompt's
-/// `Phase stem:` line, the refuter schema (`refuted`), the AC schema (`ac`),
+/// `Phase stem:` line, the consolidator schema (`clusters`), the refuter
+/// schema (`refuted`), the AC schema (`ac`),
 /// or the finder prompt's dimension (falling back to `finder`). Optional
 /// Rust-written files: `delay-<role>` (seconds before answering) and
 /// `spawn-descendant`; `FIXTURE_HOLD=1` holds the call on its descendant.
@@ -428,6 +429,7 @@ cp "$schema" "$call/schema.json"
 stem=$(sed -n 's/^Phase stem: \([^ ]*\).*$/\1/p' "$call/prompt" | head -n 1)
 dimension=$(sed -n 's/^Your single dimension is [^(]*(\([^)]*\))\..*$/\1/p' "$call/prompt" | head -n 1)
 if [ -n "$stem" ]; then role=estimator; key="estimate-$stem"
+elif grep -q '"clusters"' "$call/schema.json"; then role=consolidator; key=consolidator
 elif grep -q '"refuted"' "$call/schema.json"; then role=refuter; key=refuter
 elif grep -q '"ac"' "$call/schema.json"; then role=finder; key=ac
 else role=finder; key="finder-$dimension"; [ -f "$F/responses/$key" ] || key=finder
@@ -449,7 +451,7 @@ pub struct Event {
     pub kind: String,
     /// The fake's pid.
     pub pid: u32,
-    /// `finder`, `refuter` or `estimator`.
+    /// `finder`, `consolidator`, `refuter` or `estimator`.
     pub role: String,
 }
 

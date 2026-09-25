@@ -228,9 +228,9 @@ fn drive_ship(lib: &Lib, args: Value) -> Result<(Value, Agent), Failure> {
 }
 
 fn judgment_only(labels: &[String]) -> bool {
-    labels
-        .iter()
-        .all(|l| l.starts_with("find:") || l.starts_with("refute:"))
+    labels.iter().all(|l| {
+        l.starts_with("find:") || l.starts_with("refute:") || l.starts_with("consolidate:")
+    })
 }
 
 fn blocking(what: &str) -> Value {

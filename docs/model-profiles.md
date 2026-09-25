@@ -97,9 +97,10 @@ no legacy key for `frontier`.
 
 1. The caller's `--tier` hint, else the `[models.steps]` override, else the
    step's default (`plan`/`implement`/`review-find` medium, `review-verify`
-   large, `mechanical` small).
+   and `review-consolidate` large, `mechanical` small).
 2. Clamp up to the step's floor: `plan` to **medium** (built in, not
    configurable — the planner is never sized below medium);
-   `review-find`/`review-verify` to `review_floor` (default medium);
+   `review-find`/`review-verify`/`review-consolidate` to `review_floor`
+   (default medium);
    `implement` follows the item tier and `mechanical` is unfloored.
 3. Map the tier to the host's profile.

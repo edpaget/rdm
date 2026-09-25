@@ -520,7 +520,7 @@ pub(crate) enum ModelCommand {
     /// Resolve a dispatch step (plus optional tier hint) to a concrete model id
     /// (text) or a `{step, host, tier, model, effort}` profile (`--format json`).
     Resolve {
-        /// Dispatch step: plan, implement, review-find, review-verify, or mechanical.
+        /// Dispatch step: plan, implement, review-find, review-verify, review-consolidate, or mechanical.
         step: String,
         /// Caller tier hint (small, medium, large, frontier) overriding the step's configured/default tier.
         #[arg(long)]

@@ -24,6 +24,7 @@ mod git_test_support;
 mod plan_fixture;
 
 mod budget;
+mod consolidate;
 mod coverage;
 mod driver;
 mod effort;

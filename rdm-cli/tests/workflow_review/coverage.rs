@@ -35,6 +35,7 @@ fn scripted(attempts: Vec<(&str, Vec<Option<Value>>)>) -> Agent {
             }
         },
         Label::Refute { .. } => Reply::Value(json!({ "refuted": false, "confidence": 95 })),
+        Label::Consolidate { .. } => Reply::Null,
         Label::Other => Reply::Throw(format!("unexpected label: {}", call.label)),
     })
 }

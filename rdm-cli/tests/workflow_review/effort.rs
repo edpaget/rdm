@@ -1,8 +1,9 @@
 //! Reasoning-effort threading through the review pipeline: the dispatch lane
-//! resolves `rdm model resolve review-find|review-verify` into a
-//! `{model, effort}` profile and hands the pair to the review engines as
-//! `findModel`/`findEffort` and `verifyModel`/`verifyEffort`. Supplied, the
-//! effort reaches every finder (including its one retry) and every refuter
+//! resolves `rdm model resolve review-find|review-verify|review-consolidate`
+//! into a `{model, effort}` profile and hands the pair to the review engines
+//! as `findModel`/`findEffort`, `verifyModel`/`verifyEffort` and
+//! `consolidateModel`/`consolidateEffort`. Supplied, the effort reaches every
+//! finder (including its one retry), every refuter and every consolidator
 //! `agent()` call; not supplied, no call carries an `effort` key at all;
 //! invalid, it is refused before any agent is dispatched. Decided by executing
 //! the real `buildReviewPipeline` (both modes) and the real plan-review driver
@@ -39,14 +40,19 @@ fn dims(mode: &str) -> &'static [&'static str] {
 }
 
 /// Every finder returns one gating finding (so a refuter is dispatched for
-/// it), every refuter a non-refuting verdict, and the first dimension's first
-/// finder call returns `null` so the pipeline's single retry runs too.
+/// it), every refuter a non-refuting verdict, the consolidator `null` (so it
+/// is retried once and then fails open to singletons, leaving one refuter per
+/// finding), and the first dimension's first finder call returns `null` so
+/// the pipeline's single finder retry runs too.
 fn recording(mode: &'static str) -> Agent {
     let first = format!("find:{mode}:{}", dims(mode)[0]);
     let mut nulled = false;
     Agent::scripted(move |call: &AgentCall| {
         if call.label.starts_with("refute:") {
             return Reply::Value(json!({ "refuted": false, "confidence": 95 }));
+        }
+        if call.label.starts_with("consolidate:") {
+            return Reply::Null;
         }
         if !nulled && call.label == first {
             nulled = true;
@@ -80,7 +86,9 @@ fn supplied_effort_reaches_every_call(lib: &Lib, mode: &'static str) -> Outcome 
         &agent,
         json!({
             "target": "x", "findModel": "m-find", "findEffort": "low",
-            "verifyModel": "m-verify", "verifyEffort": "xhigh", "maxRefutations": 50,
+            "verifyModel": "m-verify", "verifyEffort": "xhigh",
+            "consolidateModel": "m-consolidate", "consolidateEffort": "high",
+            "maxRefutations": 50,
         }),
     )?;
     let mut expected: Vec<String> = dims(mode)
@@ -119,6 +127,16 @@ fn supplied_effort_reaches_every_call(lib: &Lib, mode: &'static str) -> Outcome 
             c.label
         );
     }
+    let consolidators = agent.calls_with("consolidate:");
+    check_eq!(consolidators.len(), 2, "the consolidator and its one retry");
+    for c in &consolidators {
+        check_eq!(
+            (c.opts["model"].clone(), c.opts["effort"].clone()),
+            (json!("m-consolidate"), json!("high")),
+            "{} carries consolidateModel/consolidateEffort",
+            c.label
+        );
+    }
     Ok(())
 }
 
@@ -126,7 +144,7 @@ fn absent_effort_adds_no_key(lib: &Lib, mode: &'static str) -> Outcome {
     let mut js = Js::open(lib)?;
     for ctx in [
         json!({ "target": "x", "maxRefutations": 50 }),
-        json!({ "target": "x", "findEffort": "", "verifyEffort": null, "maxRefutations": 50 }),
+        json!({ "target": "x", "findEffort": "", "verifyEffort": null, "consolidateEffort": "", "maxRefutations": 50 }),
     ] {
         let agent = recording(mode);
         js.review_ok(mode, &agent, ctx.clone())?;
@@ -151,6 +169,7 @@ fn invalid_effort_refused_before_any_agent(lib: &Lib, mode: &'static str) -> Out
     for extra in [
         json!({ "findEffort": "turbo" }),
         json!({ "verifyEffort": "turbo" }),
+        json!({ "consolidateEffort": "turbo" }),
     ] {
         let mut ctx = json!({ "target": "x" });
         for (k, v) in extra.as_object().into_iter().flatten() {
@@ -210,7 +229,10 @@ fn every_claude_effort_level_accepted() {
             js.review_ok(
                 "plan",
                 &agent,
-                json!({ "target": "x", "findEffort": effort, "verifyEffort": effort }),
+                json!({
+                    "target": "x", "findEffort": effort, "verifyEffort": effort,
+                    "consolidateEffort": effort,
+                }),
             )?;
             check!(!agent.calls().is_empty(), "{effort}: no agent dispatched");
             for c in agent.calls() {
@@ -244,7 +266,9 @@ fn plan_driver_effort_args_reach_real_finders_and_refuters() {
             &mut js,
             json!({
                 "task": "t", "tags": [], "findModel": "m-find", "findEffort": "medium",
-                "verifyModel": "m-verify", "verifyEffort": "high", "maxRefutations": 50,
+                "verifyModel": "m-verify", "verifyEffort": "high",
+                "consolidateModel": "m-consolidate", "consolidateEffort": "low",
+                "maxRefutations": 50,
             }),
             &agent,
         )?;
@@ -259,6 +283,20 @@ fn plan_driver_effort_args_reach_real_finders_and_refuters() {
         }
         for c in &refuters {
             check_eq!(c.opts.get("effort"), Some(&json!("high")), "{}", c.label);
+        }
+        let consolidators = agent.calls_with("consolidate:");
+        check!(
+            !consolidators.is_empty(),
+            "the run dispatched the consolidator: {:?}",
+            agent.labels()
+        );
+        for c in &consolidators {
+            check_eq!(
+                (c.opts.get("model"), c.opts.get("effort")),
+                (Some(&json!("m-consolidate")), Some(&json!("low"))),
+                "{}",
+                c.label
+            );
         }
         Ok(())
     });
@@ -284,21 +322,43 @@ fn parse_plan_args_normalises_effort_like_model() {
         let mut js = Js::open(lib)?;
         let p = js.plan_call(
             "parsePlanArgs",
-            vec![json!({ "task": "t", "findEffort": "  low ", "verifyEffort": "max" })],
+            vec![json!({
+                "task": "t", "findEffort": "  low ", "verifyEffort": "max",
+                "consolidateModel": " m-c ", "consolidateEffort": " high",
+            })],
         )?;
         check_eq!(
             (p["findEffort"].clone(), p["verifyEffort"].clone()),
             (json!("low"), json!("max")),
             "surrounding whitespace is trimmed"
         );
+        check_eq!(
+            (
+                p["consolidateModel"].clone(),
+                p["consolidateEffort"].clone()
+            ),
+            (json!("m-c"), json!("high")),
+            "the consolidator pair is trimmed like the others"
+        );
         let q = js.plan_call(
             "parsePlanArgs",
-            vec![json!({ "task": "t", "findEffort": "   ", "verifyEffort": 7 })],
+            vec![json!({
+                "task": "t", "findEffort": "   ", "verifyEffort": 7,
+                "consolidateModel": "  ", "consolidateEffort": 3,
+            })],
         )?;
         check_eq!(
             (q["findEffort"].clone(), q["verifyEffort"].clone()),
             (Value::Null, Value::Null),
             "blank and non-string efforts normalise to null"
+        );
+        check_eq!(
+            (
+                q["consolidateModel"].clone(),
+                q["consolidateEffort"].clone()
+            ),
+            (Value::Null, Value::Null),
+            "a blank consolidator model and a non-string effort normalise to null"
         );
         Ok(())
     });

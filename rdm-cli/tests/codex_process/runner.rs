@@ -109,7 +109,7 @@ impl Fixture {
             Self::git(&root, &plans, &["commit", "-qam", "test: codex profile"])?;
         }
         let mut expected = BTreeMap::new();
-        for step in ["review-find", "review-verify", "plan"] {
+        for step in ["review-find", "review-verify", "review-consolidate", "plan"] {
             let text = Self::rdm(
                 &root,
                 &plans,
@@ -156,8 +156,12 @@ impl Fixture {
 
     /// A code- or plan-review fixture: `sum.mjs` changed from addition to
     /// subtraction, a planted blocking finding on `correctness` (code) and
-    /// `coherence` (plan), a refuter that upholds it (or answers malformed
-    /// JSON), and an optional `rdm.toml` profile override.
+    /// `coherence` (plan), a lower-confidence DUPLICATE of it on `tests`
+    /// (code) and `architectural-fit` (plan), a consolidator that merges the
+    /// two (pipeline ids `c0`/`c1`: each operation's first selected finding
+    /// dimension yields the planted finding, the next the duplicate), a
+    /// refuter that upholds the merged unit (or answers malformed JSON), and
+    /// an optional `rdm.toml` profile override.
     pub fn review(
         operation: &str,
         malformed_refuter: bool,
@@ -206,6 +210,19 @@ impl Fixture {
                 .to_string(),
             )?;
         }
+        for dimension in ["tests", "architectural-fit"] {
+            fx.respond(
+                &format!("finder-{dimension}"),
+                &json!({"findings":[{"id":format!("{PLANTED}-dup"),"concern":dimension,"severity":"blocking","confidence":90,
+                    "what_fails":"add() subtracts instead of adding.","location":"sum.mjs:1"}]})
+                .to_string(),
+            )?;
+        }
+        fx.respond(
+            "consolidator",
+            &json!({"clusters":[{"ids":["c0","c1"],"why":"both report the subtraction in add()"}]})
+                .to_string(),
+        )?;
         fx.respond("finder", &json!({"findings":[]}).to_string())?;
         fx.respond(
             "ac",
@@ -420,14 +437,15 @@ fn call_of(run: &RuntimeRun, pid: u32) -> Result<&Call, Failure> {
 }
 
 /// Each judgment ran at exactly the model and effort core resolves for its
-/// role: finders at `review-find`, the refuter at `review-verify`.
+/// role: finders at `review-find`, the refuter at `review-verify`, the
+/// consolidator at `review-consolidate`.
 pub fn check_models(fx: &Fixture, run: &RuntimeRun) -> Outcome {
     for start in starts(&run.events, None) {
         let call = call_of(run, start.pid)?;
-        let step = if start.role == "refuter" {
-            "review-verify"
-        } else {
-            "review-find"
+        let step = match start.role.as_str() {
+            "refuter" => "review-verify",
+            "consolidator" => "review-consolidate",
+            _ => "review-find",
         };
         let profile = &fx.expected[step];
         check_eq!(
@@ -486,7 +504,19 @@ pub fn check_review(fx: &Fixture, run: &RuntimeRun, operation: &str) -> Outcome 
     let finders = starts(&run.events, Some("finder"));
     let refuters = starts(&run.events, Some("refuter"));
     check!(finders.len() >= 3, "only {} finders ran", finders.len());
+    // The planted finding and its duplicate were merged into one unit, so
+    // the duplicate cost no refuter of its own.
     check_eq!(refuters.len(), 1, "exactly one independent refuter");
+    check_eq!(
+        starts(&run.events, Some("consolidator")).len(),
+        1,
+        "exactly one consolidator"
+    );
+    check_eq!(
+        report["budget"]["collapsed"],
+        json!(1),
+        "the duplicate was merged: {report}"
+    );
     let mut pids: Vec<u32> = all.iter().map(|e| e.pid).collect();
     pids.sort_unstable();
     pids.dedup();
@@ -539,6 +569,11 @@ pub fn check_review(fx: &Fixture, run: &RuntimeRun, operation: &str) -> Outcome 
     };
     check_eq!(tier("review-find"), Some(json!("medium")), "finder tier");
     check_eq!(tier("review-verify"), Some(json!("large")), "refuter tier");
+    check_eq!(
+        tier("review-consolidate"),
+        Some(json!("large")),
+        "consolidator tier"
+    );
     check_eq!(
         records(&run.journal, "agent-completed").len(),
         all.len(),

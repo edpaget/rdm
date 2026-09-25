@@ -237,6 +237,14 @@ pub struct StepTiersConfig {
         rename = "review-verify"
     )]
     pub review_verify: Option<ModelTier>,
+    /// Model tier for the review-consolidate step (clustering duplicate
+    /// findings before refutation).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "review-consolidate"
+    )]
+    pub review_consolidate: Option<ModelTier>,
     /// Model tier for mechanical (non-LLM-judgment) steps.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mechanical: Option<ModelTier>,
@@ -1449,6 +1457,7 @@ plan = "medium"
 implement = "large"
 review-find = "medium"
 review-verify = "large"
+review-consolidate = "frontier"
 mechanical = "small"
 "#;
         let config = Config::from_toml(toml_str).unwrap();
@@ -1463,6 +1472,7 @@ mechanical = "small"
         assert_eq!(steps.implement, Some(ModelTier::Large));
         assert_eq!(steps.review_find, Some(ModelTier::Medium));
         assert_eq!(steps.review_verify, Some(ModelTier::Large));
+        assert_eq!(steps.review_consolidate, Some(ModelTier::Frontier));
         assert_eq!(steps.mechanical, Some(ModelTier::Small));
     }
 
@@ -1479,6 +1489,7 @@ mechanical = "small"
                     implement: Some(ModelTier::Large),
                     review_find: Some(ModelTier::Medium),
                     review_verify: Some(ModelTier::Large),
+                    review_consolidate: Some(ModelTier::Large),
                     mechanical: Some(ModelTier::Small),
                 }),
                 profiles: None,
@@ -1490,6 +1501,8 @@ mechanical = "small"
         assert!(toml_str.contains("review-verify"));
         assert!(!toml_str.contains("review_find"));
         assert!(!toml_str.contains("review_verify"));
+        assert!(toml_str.contains("review-consolidate"));
+        assert!(!toml_str.contains("review_consolidate"));
 
         let parsed = Config::from_toml(&toml_str).unwrap();
         assert_eq!(parsed, config);

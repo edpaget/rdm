@@ -82,7 +82,10 @@ fn code_mode_drops_refuted_and_low_confidence(lib: &Lib) -> Outcome {
         "refuter prompts differ from finder prompts"
     );
     check!(
-        agent.calls().iter().all(|c| c.prompt.contains(CTX_TARGET)),
+        finders
+            .iter()
+            .chain(refuters.iter())
+            .all(|c| c.prompt.contains(CTX_TARGET)),
         "context.target is threaded into every finder and refuter prompt"
     );
     let survivor = find(&out, "survivors", "real-bug")
@@ -278,8 +281,12 @@ fn plan_mode_battery() {
             "a fresh refuter per GATING plan finding"
         );
         check!(
-            agent.calls().iter().all(|c| c.prompt.contains(CTX_TARGET)),
-            "context.target is threaded into every plan prompt"
+            agent
+                .calls()
+                .iter()
+                .filter(|c| !c.label.starts_with("consolidate:"))
+                .all(|c| c.prompt.contains(CTX_TARGET)),
+            "context.target is threaded into every plan finder and refuter prompt"
         );
         Ok(())
     });

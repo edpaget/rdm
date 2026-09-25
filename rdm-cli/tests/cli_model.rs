@@ -38,6 +38,7 @@ fn resolve_json_exposes_default_step_tier_and_model() {
         ("review-find", "medium", "opus", "medium"),
         ("review-verify", "large", "opus", "high"),
         ("mechanical", "small", "opus", "low"),
+        ("review-consolidate", "large", "opus", "high"),
     ] {
         assert_eq!(
             resolve_json(&dir, &[step]),
@@ -267,7 +268,8 @@ fn show_human_lists_bindings_floor_and_steps() {
                 .and(predicate::str::contains("review_floor: medium"))
                 .and(predicate::str::contains("plan: opus @ medium"))
                 .and(predicate::str::contains("review-verify: opus @ high"))
-                .and(predicate::str::contains("mechanical: opus @ low")),
+                .and(predicate::str::contains("mechanical: opus @ low"))
+                .and(predicate::str::contains("review-consolidate: opus @ high")),
         );
 }
 
@@ -299,11 +301,18 @@ fn show_json_is_structured() {
         })
     );
     let steps = value["steps"].as_array().unwrap();
-    assert_eq!(steps.len(), 5);
+    assert_eq!(steps.len(), 6);
     let review_verify = steps.iter().find(|s| s["step"] == "review-verify").unwrap();
     assert_eq!(review_verify["model"], "opus");
     assert_eq!(review_verify["tier"], "large");
     assert_eq!(review_verify["effort"], "high");
+    let review_consolidate = steps
+        .iter()
+        .find(|s| s["step"] == "review-consolidate")
+        .unwrap();
+    assert_eq!(review_consolidate["model"], "opus");
+    assert_eq!(review_consolidate["tier"], "large");
+    assert_eq!(review_consolidate["effort"], "high");
 }
 
 #[test]
@@ -342,6 +351,7 @@ fn resolve_json_covers_every_step_and_tier() {
             "implement",
             "review-find",
             "review-verify",
+            "review-consolidate",
             "mechanical",
         ] {
             for tier in [

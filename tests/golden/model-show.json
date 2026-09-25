@@ -53,6 +53,12 @@
       "tier": "small",
       "model": "opus",
       "effort": "low"
+    },
+    {
+      "step": "review-consolidate",
+      "tier": "large",
+      "model": "opus",
+      "effort": "high"
     }
   ]
 }

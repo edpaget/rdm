@@ -157,6 +157,10 @@ pub fn planted_reply(findings: &Value, verdicts: &Value, call: &AgentCall) -> Re
                 .cloned()
                 .unwrap_or_else(|| json!({ "refuted": false, "confidence": 90 })),
         ),
+        // No consolidator scripted → the pipeline fails open to singletons,
+        // i.e. the pre-consolidation behaviour, so every existing scenario
+        // keeps its survivors.
+        Label::Consolidate { .. } => Reply::Null,
         Label::Other => Reply::Throw(format!("unexpected agent label: {}", call.label)),
     }
 }
@@ -175,6 +179,11 @@ pub enum Label {
         /// The finding id (may contain `:`).
         id: String,
     },
+    /// `consolidate:<mode>[:retry]`.
+    Consolidate {
+        /// Whether this is the `:retry` attempt.
+        retry: bool,
+    },
     /// Anything else.
     Other,
 }
@@ -192,6 +201,8 @@ pub fn parse_label(label: &str) -> Label {
             retry: true,
         },
         ["refute", _mode, rest @ ..] if !rest.is_empty() => Label::Refute { id: rest.join(":") },
+        ["consolidate", _mode] => Label::Consolidate { retry: false },
+        ["consolidate", _mode, "retry"] => Label::Consolidate { retry: true },
         _ => Label::Other,
     }
 }

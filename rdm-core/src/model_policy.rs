@@ -158,6 +158,9 @@ pub enum DispatchStep {
     ReviewFind,
     /// Verifying found issues are real before reporting them (reasoning-heavy).
     ReviewVerify,
+    /// Clustering duplicate review findings before refutation (reasoning-heavy:
+    /// a false merge drops a real defect, so precision outranks cost).
+    ReviewConsolidate,
     /// Mechanical, non-judgment work (e.g. formatting, rote transforms).
     Mechanical,
 }
@@ -172,6 +175,7 @@ impl DispatchStep {
             DispatchStep::Implement => ModelTier::Medium,
             DispatchStep::ReviewFind => ModelTier::Medium,
             DispatchStep::ReviewVerify => ModelTier::Large,
+            DispatchStep::ReviewConsolidate => ModelTier::Large,
             DispatchStep::Mechanical => ModelTier::Small,
         }
     }
@@ -180,14 +184,17 @@ impl DispatchStep {
     /// if any.
     ///
     /// `Plan` is floored at [`PLAN_FLOOR`] (planner ≥ implementer);
-    /// `ReviewFind` and `ReviewVerify` at the configured `review_floor`;
+    /// `ReviewFind`, `ReviewVerify` and `ReviewConsolidate` at the configured
+    /// `review_floor`;
     /// `Implement` follows the item tier and `Mechanical` is exempt so rote
     /// work can still run cheap.
     #[must_use]
     pub fn floor(&self, review_floor: ModelTier) -> Option<ModelTier> {
         match self {
             DispatchStep::Plan => Some(PLAN_FLOOR),
-            DispatchStep::ReviewFind | DispatchStep::ReviewVerify => Some(review_floor),
+            DispatchStep::ReviewFind
+            | DispatchStep::ReviewVerify
+            | DispatchStep::ReviewConsolidate => Some(review_floor),
             DispatchStep::Implement | DispatchStep::Mechanical => None,
         }
     }
@@ -200,6 +207,7 @@ impl fmt::Display for DispatchStep {
             DispatchStep::Implement => write!(f, "implement"),
             DispatchStep::ReviewFind => write!(f, "review-find"),
             DispatchStep::ReviewVerify => write!(f, "review-verify"),
+            DispatchStep::ReviewConsolidate => write!(f, "review-consolidate"),
             DispatchStep::Mechanical => write!(f, "mechanical"),
         }
     }
@@ -213,18 +221,19 @@ impl FromStr for DispatchStep {
     /// # Errors
     ///
     /// Returns [`ParseError`] if `s` is not one of `plan`, `implement`,
-    /// `review-find`, `review-verify`, or `mechanical`.
+    /// `review-find`, `review-verify`, `review-consolidate`, or `mechanical`.
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "plan" => Ok(DispatchStep::Plan),
             "implement" => Ok(DispatchStep::Implement),
             "review-find" => Ok(DispatchStep::ReviewFind),
             "review-verify" => Ok(DispatchStep::ReviewVerify),
+            "review-consolidate" => Ok(DispatchStep::ReviewConsolidate),
             "mechanical" => Ok(DispatchStep::Mechanical),
             other => Err(ParseError::new(
                 "dispatch step",
                 other,
-                "plan, implement, review-find, review-verify, or mechanical",
+                "plan, implement, review-find, review-verify, review-consolidate, or mechanical",
             )),
         }
     }
@@ -339,6 +348,7 @@ impl ModelPolicy {
             DispatchStep::Implement => self.steps.implement,
             DispatchStep::ReviewFind => self.steps.review_find,
             DispatchStep::ReviewVerify => self.steps.review_verify,
+            DispatchStep::ReviewConsolidate => self.steps.review_consolidate,
             DispatchStep::Mechanical => self.steps.mechanical,
         }
     }
@@ -378,11 +388,12 @@ mod tests {
     use crate::model::{Effort, ModelTier};
     use crate::model_policy::{DispatchStep, Host, ModelPolicy, PLAN_FLOOR, default_profile};
 
-    const ALL_STEPS: [DispatchStep; 5] = [
+    const ALL_STEPS: [DispatchStep; 6] = [
         DispatchStep::Plan,
         DispatchStep::Implement,
         DispatchStep::ReviewFind,
         DispatchStep::ReviewVerify,
+        DispatchStep::ReviewConsolidate,
         DispatchStep::Mechanical,
     ];
     const ALL_TIERS: [ModelTier; 4] = [
@@ -653,6 +664,62 @@ mod tests {
     }
 
     #[test]
+    fn review_consolidate_default_tier_is_large() {
+        let policy = default_policy();
+        assert_eq!(
+            DispatchStep::ReviewConsolidate.default_tier(),
+            ModelTier::Large
+        );
+        assert_eq!(
+            resolved(&policy, DispatchStep::ReviewConsolidate, None, Host::Claude),
+            o("opus", Effort::High)
+        );
+    }
+
+    #[test]
+    fn review_consolidate_is_lifted_by_the_review_floor() {
+        let policy = ModelPolicy::from_config(&models(ModelsConfig {
+            review_floor: Some(ModelTier::Frontier),
+            ..Default::default()
+        }));
+        assert_eq!(
+            policy.resolve_tier(DispatchStep::ReviewConsolidate, None),
+            ModelTier::Frontier
+        );
+    }
+
+    #[test]
+    fn review_consolidate_step_override_is_floored_to_review_floor() {
+        let policy = ModelPolicy::from_config(&models(ModelsConfig {
+            steps: Some(StepTiersConfig {
+                review_consolidate: Some(ModelTier::Small),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        // Default review floor is Medium; a `small` override is lifted to it.
+        assert_eq!(
+            policy.resolve_tier(DispatchStep::ReviewConsolidate, None),
+            ModelTier::Medium
+        );
+    }
+
+    #[test]
+    fn review_consolidate_step_override_is_honoured() {
+        let policy = ModelPolicy::from_config(&models(ModelsConfig {
+            steps: Some(StepTiersConfig {
+                review_consolidate: Some(ModelTier::Frontier),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+        assert_eq!(
+            policy.resolve_tier(DispatchStep::ReviewConsolidate, None),
+            ModelTier::Frontier
+        );
+    }
+
+    #[test]
     fn caller_hint_overrides_configured_step_tier_upward() {
         let policy = ModelPolicy::from_config(&models(ModelsConfig {
             steps: Some(StepTiersConfig {
@@ -817,6 +884,7 @@ mod tests {
             (DispatchStep::Implement, "implement"),
             (DispatchStep::ReviewFind, "review-find"),
             (DispatchStep::ReviewVerify, "review-verify"),
+            (DispatchStep::ReviewConsolidate, "review-consolidate"),
             (DispatchStep::Mechanical, "mechanical"),
         ];
         for (variant, expected) in variants {

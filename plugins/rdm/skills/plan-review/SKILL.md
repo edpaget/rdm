@@ -64,12 +64,13 @@ never parsed out of the `$ARGUMENTS` flag string:
   plan-review --status wont-fix --type task --project <PROJECT> --format json`. Absent
   suppresses nothing, which is the safe direction.
 - **`reviewers`** — see the bullet above.
-- **`findModel` / `findEffort`** and **`verifyModel` / `verifyEffort`** — the
-  `model` and `effort` fields printed by `rdm model resolve review-find
-  --format json` and `... review-verify --format json`; the workflow passes them
-  into every finder and refuter agent it dispatches. Each is independently
-  optional; an omitted model makes that agent inherit the session model, an
-  omitted effort its effort. There is no mechanical model any more and no
+- **`findModel` / `findEffort`**, **`verifyModel` / `verifyEffort`** and
+  **`consolidateModel` / `consolidateEffort`** — the `model` and `effort` fields
+  printed by `rdm model resolve review-find --format json`, `... review-verify
+  --format json` and `... review-consolidate --format json`; the workflow passes
+  them into every finder, refuter and consolidator agent it dispatches. Each is
+  independently optional; an omitted model makes that agent inherit the session
+  model, an omitted effort its effort. There is no mechanical model any more and no
   bootstrap agent to skip.
 - **`rdmBin`** / **`project`** — the rdm executable every reviewer's command
   uses — the value following `--rdm-bin`; when not supplied, `$RDM_BIN` if
