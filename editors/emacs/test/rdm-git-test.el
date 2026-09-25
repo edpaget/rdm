@@ -209,5 +209,26 @@ magit or with-editor commit binding already owns."
                 (should-not (eq (key-binding (kbd k)) #'rdm-insert-done-line))))
           (kill-buffer (car res)))))))
 
+(ert-deftest rdm-git/offer-autoloaded ()
+  "Installing the package is enough: the generated loaddefs register the
+commit-buffer offer once git-commit loads, without requiring rdm-git."
+  (let* ((dir (file-name-directory (locate-library "rdm-git")))
+         (form `(let ((out (make-temp-file "rdm-loaddefs" nil ".el")))
+                  (delete-file out)
+                  (let ((inhibit-message t))
+                    (loaddefs-generate ,dir out))
+                  (load out nil t)
+                  (provide 'git-commit)
+                  (princ (format "%s %s"
+                                 (and (memq 'rdm-git-commit-setup
+                                            (bound-and-true-p git-commit-setup-hook))
+                                      t)
+                                 (featurep 'rdm-git)))))
+         (emacs (expand-file-name invocation-name invocation-directory)))
+    (with-temp-buffer
+      (should (eq 0 (call-process emacs nil t nil "-Q" "--batch"
+                                  "--eval" (prin1-to-string form))))
+      (should (string-suffix-p "t nil" (string-trim (buffer-string)))))))
+
 (provide 'rdm-git-test)
 ;;; rdm-git-test.el ends here

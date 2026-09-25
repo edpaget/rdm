@@ -193,12 +193,14 @@ item is the default.  Warns when not on the default branch."
       rdm-git-commit-evil-key
     rdm-git-commit-key))
 
+;;;###autoload
 (defun rdm-git-commit-setup ()
   "Offer a Done: trailer in this commit buffer; insert nothing."
   (rdm-git-commit-mode 1)
   (when (fboundp 'evil-normalize-keymaps) (evil-normalize-keymaps))
   (message "rdm: %s inserts a Done: line" (rdm-git-commit-offer-key)))
 
+;;;###autoload
 (with-eval-after-load 'git-commit
   (add-hook 'git-commit-setup-hook #'rdm-git-commit-setup))
 
