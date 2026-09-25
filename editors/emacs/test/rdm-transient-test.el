@@ -158,7 +158,9 @@ one included, read once per kind; a roadmap has none."
     (should-not (rdm-dispatch--status-specs '(:kind roadmap :roadmap "r1")))))
 
 (ert-deftest rdm-transient/refreshes-view ()
-  "A successful write re-fetches the detail buffer showing the item."
+  "A successful write re-fetches the detail buffer showing the item; a
+phase write also re-fetches its roadmap's view (which lists the phase),
+but not a historical `--at' view of the phase nor another roadmap's view."
   (rdm-transient-test--with-stub nil
     (let ((buf (rdm-open-item rdm-transient-test--task)))
       (should (buffer-live-p buf))
@@ -167,7 +169,31 @@ one included, read once per kind; a roadmap has none."
                      '(("task" "update" "t1" "--status=in-progress"
                         "--project" "p" "--no-edit")
                        ("task" "show" "t1" "--project" "p"
-                        "--format" "json")))))))
+                        "--format" "json")))))
+    (rdm-open-item '(:kind roadmap :roadmap "r1"))
+    (rdm-open-item '(:kind roadmap :roadmap "r2"))
+    (rdm-open-item rdm-transient-test--phase)
+    (rdm-open-item rdm-transient-test--phase "abc123")
+    (should (seq-find (lambda (argv) (member "--at=abc123" argv))
+                      (rdm-transient-test--argvs log)))
+    (let ((before (length (rdm-transient-test--argvs log))))
+      (rdm-set-status rdm-transient-test--phase "in-progress")
+      (let* ((after (nthcdr before (rdm-transient-test--argvs log)))
+             (shows (cdr after)))
+        (should (equal (car after)
+                       '("phase" "update" "phase-2-two" "--roadmap=r1"
+                         "--status=in-progress" "--project" "p" "--no-edit")))
+        (should (member '("roadmap" "show" "r1" "--project" "p"
+                          "--format" "json")
+                        shows))
+        (should (member '("phase" "show" "phase-2-two" "--roadmap=r1"
+                          "--project" "p" "--format" "json")
+                        shows))
+        (should-not (seq-find (lambda (argv) (member "r2" argv)) shows))
+        (should-not (seq-find (lambda (argv)
+                                (seq-find (lambda (a) (string-prefix-p "--at" a))
+                                          argv))
+                              shows))))))
 
 ;;;; Tags
 
