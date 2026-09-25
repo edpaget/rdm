@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Per-project config overrides.** `rdm.toml` accepts `[projects.<name>]` tables that override `dispatch.verify`, `gates.reviewed`, `plan_review` and `default_branch` for one project, in the same shape as the top-level keys (e.g. `[projects.web.dispatch] verify = "npm test"`). `rdm config set <key> <value> --project <name>` writes one, and `rdm config get <key> --project <name>` / `rdm config list --project <name>` report the value resolved for that project with its source (`project config` when the override applies). Resolution order is the environment override, then the project table, then the plan-repo-wide value, then the global config where the key allows it. Any other key with `--project` is refused with an error naming the four project-scopable keys, and `--project` with `--global` is refused. `--project` is never inferred from `RDM_PROJECT` or `default_project`, so a plain `rdm config set` still writes the plan-repo-wide value. This release adds the layer only; the consumers of these keys do not read it yet.
+
+### Changed
+
+- **`rdm config get gates.reviewed` and `rdm config list` now report `RDM_REVIEWED_GATE`**, the environment variable the `reviewed` gate actually honors, with source `environment variable` — previously they reported only `RDM_GATES_REVIEWED`, so they could disagree with the gate. `RDM_GATES_REVIEWED` still wins when both are set. An invalid `RDM_REVIEWED_GATE` value (anything but `true`/`false`) makes `config get gates.reviewed` fail with an error naming the variable; `config list` instead shows the error on the `gates.reviewed` row and still lists every other key.
+
 ## [0.22.1] - 2026-09-24
 
 ### Changed

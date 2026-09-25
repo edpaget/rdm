@@ -1796,6 +1796,12 @@ pub(crate) enum ConfigCommand {
         /// agents that consume the value verbatim.
         #[arg(long)]
         raw: bool,
+        /// Resolve the key for this project, reporting a `[projects.<name>]`
+        /// override when one is set. Only the project-scopable keys
+        /// (dispatch.verify, gates.reviewed, plan_review, default_branch) are
+        /// accepted. Never taken from RDM_PROJECT or default_project.
+        #[arg(long)]
+        project: Option<String>,
     },
     /// Set a config key.
     Set {
@@ -1809,9 +1815,22 @@ pub(crate) enum ConfigCommand {
         /// Write to global config instead of repo config.
         #[arg(long)]
         global: bool,
+        /// Write a per-project override to `[projects.<name>]` in the repo
+        /// config instead of the plan-repo-wide value. Only the
+        /// project-scopable keys (dispatch.verify, gates.reviewed,
+        /// plan_review, default_branch) are accepted. Never taken from
+        /// RDM_PROJECT or default_project.
+        #[arg(long, conflicts_with = "global")]
+        project: Option<String>,
     },
     /// List all config keys with their resolved values and sources.
-    List,
+    List {
+        /// List only the project-scopable keys (dispatch.verify,
+        /// gates.reviewed, plan_review, default_branch), each resolved for
+        /// this project. Never taken from RDM_PROJECT or default_project.
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 /// Item type argument for `--type` flag.

@@ -57,6 +57,9 @@ default = "origin"             # default git remote for push/pull
 
 [gates]
 reviewed = true                # enforce the `reviewed` transition gate
+
+[projects.web.dispatch]
+verify = "npm test"            # per-project override of dispatch.verify
 ```
 
 | Field | Type | Default | Description |
@@ -66,6 +69,9 @@ reviewed = true                # enforce the `reviewed` transition gate
 | `stage` | bool | `false` | When `true`, mutations write files but skip the git commit until you run `rdm commit` |
 | `remote.default` | string | *(none)* | Default git remote name |
 | `gates.reviewed` | bool | `false` | When `true`, `phase update --status reviewed` / `task update --status reviewed` refuse unless an approved plan, an approving `change/` review naming it, and a clean worktree all exist. Repo-only. See [`core-enforced-gates.md`](core-enforced-gates.md) |
+| `projects.<name>` | table | *(none)* | Per-project overrides of the project-scopable keys (`dispatch.verify`, `gates.reviewed`, `plan_review`, `default_branch`), in the same shape as the top-level fields (e.g. `[projects.web.dispatch] verify = "..."`). Repo-only. Set with `rdm config set <key> <value> --project <name>` |
+
+A project-scopable key resolves for a project in this order: its environment override (`RDM_<KEY>`, e.g. `RDM_DISPATCH_VERIFY`, and for `gates.reviewed` also `RDM_REVIEWED_GATE`), then `[projects.<name>]`, then the plan-repo-wide value, then the global config (only for `plan_review` and `default_branch`, which are not repo-only), then the default. `rdm config get <key> --project <name>` and `rdm config list --project <name>` report the resolved value and its source; `--project` on `config` is always explicit and is never taken from `RDM_PROJECT` or `default_project`.
 
 A global config file at `~/.config/rdm/config.toml` supports the same fields plus `root` (path to the plan repo). Repo-level settings in `rdm.toml` override global settings. The `--project` flag, `RDM_PROJECT` env var, and `default_project` config form a resolution chain (flag wins).
 

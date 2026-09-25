@@ -1,4 +1,5 @@
 /// Plan repo configuration (`rdm.toml`) and global configuration.
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -31,6 +32,19 @@ pub const GLOBAL_ONLY_KEYS: &[&str] = &["root"];
 /// Keys that may only be set in the repo config (not in the global config).
 pub const REPO_ONLY_KEYS: &[&str] = &["server.quick_filters", "dispatch.verify", "gates.reviewed"];
 
+/// Keys that may be overridden per project in a `[projects.<name>]` table of
+/// the repo `rdm.toml`.
+///
+/// This is the only allowlist: a key not listed here is refused by
+/// [`resolve_scoped_value`] with [`Error::KeyNotProjectScopable`], so no key
+/// becomes project-scopable by accident.
+pub const PROJECT_SCOPABLE_KEYS: &[&str] = &[
+    "dispatch.verify",
+    "gates.reviewed",
+    "plan_review",
+    "default_branch",
+];
+
 /// Where a configuration value was resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigSource {
@@ -38,6 +52,9 @@ pub enum ConfigSource {
     Flag,
     /// Provided via an environment variable.
     Env,
+    /// Read from a `[projects.<name>]` override table in the repo-level
+    /// `rdm.toml`.
+    Project,
     /// Read from the repo-level `rdm.toml`.
     Repo,
     /// Read from the global config file.
@@ -51,6 +68,7 @@ impl fmt::Display for ConfigSource {
         match self {
             ConfigSource::Flag => write!(f, "CLI flag"),
             ConfigSource::Env => write!(f, "environment variable"),
+            ConfigSource::Project => write!(f, "project config"),
             ConfigSource::Repo => write!(f, "repo config"),
             ConfigSource::Global => write!(f, "global config"),
             ConfigSource::Default => write!(f, "default"),
@@ -129,6 +147,71 @@ pub struct GatesConfig {
     /// behavior on upgrade. See `docs/core-enforced-gates.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reviewed: Option<bool>,
+}
+
+/// Per-project overrides of the project-scopable keys (`[projects.<name>]`).
+///
+/// Has the same TOML shape as the matching [`Config`] fields, so
+/// `[projects.a.dispatch] verify = "..."` mirrors `[dispatch] verify = "..."`.
+/// Only the keys in [`PROJECT_SCOPABLE_KEYS`] have a field here. Like
+/// [`Config`], unknown keys are ignored rather than rejected: a repo config
+/// that fails to parse falls back to the default config, so a strict mode
+/// would turn one typo into silently dropping the whole file.
+///
+/// Repo-only: the global config has no project layer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ProjectOverrides {
+    /// Per-project override of [`Config::default_branch`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_branch: Option<String>,
+    /// Per-project override of [`Config::plan_review`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_review: Option<bool>,
+    /// Per-project override of [`Config::dispatch`] (`[projects.<name>.dispatch]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch: Option<DispatchConfig>,
+    /// Per-project override of [`Config::gates`] (`[projects.<name>.gates]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gates: Option<GatesConfig>,
+}
+
+impl ProjectOverrides {
+    /// Returns this project's override for a project-scopable `key`, in the
+    /// string form `rdm config get` prints (booleans as `true`/`false`).
+    ///
+    /// Returns `None` when the key is not overridden, or is not one of
+    /// [`PROJECT_SCOPABLE_KEYS`].
+    #[must_use]
+    pub fn value(&self, key: &str) -> Option<String> {
+        scopable_field(
+            key,
+            &self.default_branch,
+            self.plan_review,
+            &self.dispatch,
+            &self.gates,
+        )
+    }
+}
+
+/// Reads one project-scopable key out of the four fields [`Config`] and
+/// [`ProjectOverrides`] share, so both accessors print identical forms.
+fn scopable_field(
+    key: &str,
+    default_branch: &Option<String>,
+    plan_review: Option<bool>,
+    dispatch: &Option<DispatchConfig>,
+    gates: &Option<GatesConfig>,
+) -> Option<String> {
+    match key {
+        "default_branch" => default_branch.clone(),
+        "plan_review" => plan_review.map(|b| b.to_string()),
+        "dispatch.verify" => dispatch.as_ref().and_then(|d| d.verify.clone()),
+        "gates.reviewed" => gates
+            .as_ref()
+            .and_then(|g| g.reviewed)
+            .map(|b| b.to_string()),
+        _ => None,
+    }
 }
 
 /// Per-step model tier overrides within `[models.steps]`.
@@ -397,6 +480,16 @@ pub struct Config {
     /// fallback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gates: Option<GatesConfig>,
+
+    /// Per-project overrides of the project-scopable keys, keyed by project
+    /// name (`[projects.<name>]` tables).
+    ///
+    /// Repo-only, and carried through [`Config::with_global_defaults`]
+    /// unchanged. Resolve a value through [`resolve_scoped_value`] rather than
+    /// reading this map directly, so every consumer applies the same
+    /// precedence.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub projects: BTreeMap<String, ProjectOverrides>,
 }
 
 impl Config {
@@ -460,8 +553,133 @@ impl Config {
             // Repo-only: no global fallback exists to fall back TO.
             dispatch: self.dispatch.clone(),
             gates: self.gates.clone(),
+            // The global config has no project layer.
+            projects: self.projects.clone(),
         }
     }
+
+    /// Returns the plan-repo-wide value of a project-scopable `key`, in the
+    /// string form `rdm config get` prints (booleans as `true`/`false`).
+    ///
+    /// Returns `None` when the key is unset, or is not one of
+    /// [`PROJECT_SCOPABLE_KEYS`].
+    #[must_use]
+    pub fn scopable_value(&self, key: &str) -> Option<String> {
+        scopable_field(
+            key,
+            &self.default_branch,
+            self.plan_review,
+            &self.dispatch,
+            &self.gates,
+        )
+    }
+}
+
+/// Resolves a project-scopable `key` for `project`, returning the value and
+/// where it came from.
+///
+/// This is the single project-aware resolution rule: `rdm config get`/`list`
+/// and every consumer of a project-scopable key read through it, so what
+/// `config get` reports and what a consumer does never disagree.
+///
+/// Precedence:
+///
+/// 1. The environment: the generic `RDM_<KEY>` (dots become underscores, e.g.
+///    `RDM_DISPATCH_VERIFY`), returned raw; then, for `gates.reviewed` only,
+///    `RDM_REVIEWED_GATE`, validated through [`parse_reviewed_gate_env`].
+/// 2. `repo.projects[project]`, when `project` is `Some`.
+/// 3. The plan-repo-wide value in `repo`.
+/// 4. `global`, only for keys not in [`REPO_ONLY_KEYS`].
+/// 5. `None` — typed defaults belong to the consumer.
+///
+/// `repo` must be the repo config as read from `rdm.toml`, not one already
+/// merged with the global config, or step 4's repo-only rule is bypassed.
+/// `env` is injected so the rule stays a pure function; pass
+/// `|k| std::env::var(k).ok()` for the process environment.
+///
+/// # Errors
+///
+/// Returns [`Error::KeyNotProjectScopable`] if `key` is not one of
+/// [`PROJECT_SCOPABLE_KEYS`], and [`Error::InvalidConfigValue`] if
+/// `RDM_REVIEWED_GATE` supplies `gates.reviewed` with anything other than the
+/// literal `"true"` or `"false"`.
+pub fn resolve_scoped_value(
+    key: &str,
+    project: Option<&str>,
+    repo: &Config,
+    global: &GlobalConfig,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<ResolvedValue<String>>> {
+    if !PROJECT_SCOPABLE_KEYS.contains(&key) {
+        return Err(Error::KeyNotProjectScopable {
+            key: key.to_string(),
+        });
+    }
+    let found = |value: String, source: ConfigSource| Ok(Some(ResolvedValue { value, source }));
+
+    let generic_env = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
+    if let Some(v) = env(&generic_env) {
+        return found(v, ConfigSource::Env);
+    }
+    if key == "gates.reviewed"
+        && let Some(v) = env("RDM_REVIEWED_GATE")
+    {
+        return found(parse_reviewed_gate_env(&v)?.to_string(), ConfigSource::Env);
+    }
+    if let Some(v) = project
+        .and_then(|p| repo.projects.get(p))
+        .and_then(|o| o.value(key))
+    {
+        return found(v, ConfigSource::Project);
+    }
+    if let Some(v) = repo.scopable_value(key) {
+        return found(v, ConfigSource::Repo);
+    }
+    if !REPO_ONLY_KEYS.contains(&key) {
+        let global_value = match key {
+            "plan_review" => global.plan_review.map(|b| b.to_string()),
+            "default_branch" => global.default_branch.clone(),
+            _ => None,
+        };
+        if let Some(v) = global_value {
+            return found(v, ConfigSource::Global);
+        }
+    }
+    Ok(None)
+}
+
+/// Loads `<plan_root>/rdm.toml` and resolves a project-scopable `key` for
+/// `project` through [`resolve_scoped_value`], reading the process
+/// environment.
+///
+/// The entry point for callers that hold a plan root but no already-loaded
+/// [`Config`], such as the HTTP server. A missing or malformed `rdm.toml`
+/// counts as the default config.
+///
+/// # Errors
+///
+/// Returns the same errors as [`resolve_scoped_value`].
+pub fn resolve_scoped_value_at(
+    plan_root: &Path,
+    global: &GlobalConfig,
+    key: &str,
+    project: Option<&str>,
+) -> Result<Option<ResolvedValue<String>>> {
+    resolve_scoped_value_at_with_env(plan_root, global, key, project, |k| std::env::var(k).ok())
+}
+
+fn resolve_scoped_value_at_with_env(
+    plan_root: &Path,
+    global: &GlobalConfig,
+    key: &str,
+    project: Option<&str>,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<ResolvedValue<String>>> {
+    let config = std::fs::read_to_string(plan_root.join(REPO_CONFIG_FILE))
+        .ok()
+        .and_then(|c| Config::from_toml(&c).ok())
+        .unwrap_or_default();
+    resolve_scoped_value(key, project, &config, global, env)
 }
 
 /// Parses the `RDM_SERVER_QUICK_FILTERS` env var into a list of [`QuickFilter`].
@@ -1081,6 +1299,7 @@ auto_init = true
         assert_eq!(ConfigSource::Repo.to_string(), "repo config");
         assert_eq!(ConfigSource::Global.to_string(), "global config");
         assert_eq!(ConfigSource::Default.to_string(), "default");
+        assert_eq!(ConfigSource::Project.to_string(), "project config");
     }
 
     // --- [models] config tests ---
@@ -1597,5 +1816,349 @@ effort = "xhigh"
         )
         .unwrap();
         assert!(!reviewed_gate_enabled_at(dir.path()).unwrap());
+    }
+
+    // --- [projects.<name>] override layer ---
+
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
+    fn env_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |k| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == k)
+                .map(|(_, v)| (*v).to_string())
+        }
+    }
+
+    /// A repo config with `value` set plan-repo-wide for every scopable key,
+    /// and `[projects.a]` overriding every one of them with `a-value`.
+    fn layered_config() -> Config {
+        Config::from_toml(
+            r#"
+default_branch = "repo-branch"
+plan_review = false
+
+[dispatch]
+verify = "repo-verify"
+
+[gates]
+reviewed = false
+
+[projects.a]
+default_branch = "a-branch"
+plan_review = true
+
+[projects.a.dispatch]
+verify = "a-verify"
+
+[projects.a.gates]
+reviewed = true
+"#,
+        )
+        .unwrap()
+    }
+
+    fn global_with_scopables() -> GlobalConfig {
+        GlobalConfig {
+            default_branch: Some("global-branch".to_string()),
+            plan_review: Some(true),
+            ..Default::default()
+        }
+    }
+
+    fn resolved(value: &str, source: ConfigSource) -> Option<ResolvedValue<String>> {
+        Some(ResolvedValue {
+            value: value.to_string(),
+            source,
+        })
+    }
+
+    #[test]
+    fn project_scopable_keys_are_the_four_known_keys() {
+        assert_eq!(
+            PROJECT_SCOPABLE_KEYS,
+            &[
+                "dispatch.verify",
+                "gates.reviewed",
+                "plan_review",
+                "default_branch"
+            ]
+        );
+        for key in PROJECT_SCOPABLE_KEYS {
+            assert!(KNOWN_KEYS.contains(key), "{key} must be a known key");
+        }
+    }
+
+    #[test]
+    fn projects_table_round_trips() {
+        let config = layered_config();
+        let a = config.projects.get("a").expect("[projects.a] parsed");
+        assert_eq!(
+            a.dispatch.as_ref().and_then(|d| d.verify.as_deref()),
+            Some("a-verify")
+        );
+        let back = Config::from_toml(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(back, config);
+    }
+
+    #[test]
+    fn config_without_projects_serializes_no_projects_table() {
+        let config = Config {
+            default_project: Some("fbm".to_string()),
+            ..Default::default()
+        };
+        let toml_str = config.to_toml().unwrap();
+        assert!(
+            !toml_str.contains("projects"),
+            "an untouched repo config must gain no [projects] table: {toml_str}"
+        );
+    }
+
+    #[test]
+    fn projects_survive_the_global_merge_unchanged() {
+        let config = layered_config();
+        let merged = config.with_global_defaults(&global_with_scopables());
+        assert_eq!(merged.projects, config.projects);
+    }
+
+    #[test]
+    fn scopable_value_reads_each_key_in_the_config_get_string_form() {
+        let config = layered_config();
+        assert_eq!(
+            config.scopable_value("dispatch.verify").as_deref(),
+            Some("repo-verify")
+        );
+        assert_eq!(
+            config.scopable_value("gates.reviewed").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            config.scopable_value("plan_review").as_deref(),
+            Some("false")
+        );
+        assert_eq!(
+            config.scopable_value("default_branch").as_deref(),
+            Some("repo-branch")
+        );
+        assert_eq!(config.scopable_value("remote.default"), None);
+        let a = &config.projects["a"];
+        assert_eq!(a.value("dispatch.verify").as_deref(), Some("a-verify"));
+        assert_eq!(a.value("gates.reviewed").as_deref(), Some("true"));
+        assert_eq!(a.value("plan_review").as_deref(), Some("true"));
+        assert_eq!(a.value("default_branch").as_deref(), Some("a-branch"));
+        assert_eq!(ProjectOverrides::default().value("plan_review"), None);
+    }
+
+    #[test]
+    fn resolver_env_beats_project_for_every_key() {
+        let config = layered_config();
+        let global = global_with_scopables();
+        let env = env_of(&[
+            ("RDM_DISPATCH_VERIFY", "env-verify"),
+            ("RDM_GATES_REVIEWED", "env-gate"),
+            ("RDM_PLAN_REVIEW", "env-plan"),
+            ("RDM_DEFAULT_BRANCH", "env-branch"),
+        ]);
+        for (key, want) in [
+            ("dispatch.verify", "env-verify"),
+            ("gates.reviewed", "env-gate"),
+            ("plan_review", "env-plan"),
+            ("default_branch", "env-branch"),
+        ] {
+            assert_eq!(
+                resolve_scoped_value(key, Some("a"), &config, &global, &env).unwrap(),
+                resolved(want, ConfigSource::Env),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolver_project_beats_repo_for_every_key() {
+        let config = layered_config();
+        let global = global_with_scopables();
+        for (key, want) in [
+            ("dispatch.verify", "a-verify"),
+            ("gates.reviewed", "true"),
+            ("plan_review", "true"),
+            ("default_branch", "a-branch"),
+        ] {
+            assert_eq!(
+                resolve_scoped_value(key, Some("a"), &config, &global, no_env).unwrap(),
+                resolved(want, ConfigSource::Project),
+                "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolver_unknown_project_and_no_project_fall_through_to_repo() {
+        let config = layered_config();
+        let global = global_with_scopables();
+        for project in [Some("b"), None] {
+            for (key, want) in [
+                ("dispatch.verify", "repo-verify"),
+                ("gates.reviewed", "false"),
+                ("plan_review", "false"),
+                ("default_branch", "repo-branch"),
+            ] {
+                assert_eq!(
+                    resolve_scoped_value(key, project, &config, &global, no_env).unwrap(),
+                    resolved(want, ConfigSource::Repo),
+                    "{key} for {project:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resolver_falls_back_to_global_only_where_the_key_allows_it() {
+        let config = Config::default();
+        let global = global_with_scopables();
+        assert_eq!(
+            resolve_scoped_value("plan_review", Some("a"), &config, &global, no_env).unwrap(),
+            resolved("true", ConfigSource::Global)
+        );
+        assert_eq!(
+            resolve_scoped_value("default_branch", Some("a"), &config, &global, no_env).unwrap(),
+            resolved("global-branch", ConfigSource::Global)
+        );
+        for key in ["dispatch.verify", "gates.reviewed"] {
+            assert_eq!(
+                resolve_scoped_value(key, Some("a"), &config, &global, no_env).unwrap(),
+                None,
+                "{key} is repo-only and must never resolve from global config"
+            );
+        }
+    }
+
+    #[test]
+    fn resolver_honors_rdm_reviewed_gate_for_gates_reviewed() {
+        let config = layered_config();
+        let global = GlobalConfig::default();
+        assert_eq!(
+            resolve_scoped_value(
+                "gates.reviewed",
+                Some("a"),
+                &config,
+                &global,
+                env_of(&[("RDM_REVIEWED_GATE", "false")])
+            )
+            .unwrap(),
+            resolved("false", ConfigSource::Env)
+        );
+        // The generic name wins when both are set.
+        assert_eq!(
+            resolve_scoped_value(
+                "gates.reviewed",
+                None,
+                &config,
+                &global,
+                env_of(&[
+                    ("RDM_REVIEWED_GATE", "false"),
+                    ("RDM_GATES_REVIEWED", "true")
+                ])
+            )
+            .unwrap(),
+            resolved("true", ConfigSource::Env)
+        );
+        // RDM_REVIEWED_GATE applies to gates.reviewed only.
+        assert_eq!(
+            resolve_scoped_value(
+                "plan_review",
+                None,
+                &config,
+                &global,
+                env_of(&[("RDM_REVIEWED_GATE", "true")])
+            )
+            .unwrap(),
+            resolved("false", ConfigSource::Repo)
+        );
+    }
+
+    #[test]
+    fn resolver_rejects_an_invalid_rdm_reviewed_gate() {
+        let err = resolve_scoped_value(
+            "gates.reviewed",
+            None,
+            &Config::default(),
+            &GlobalConfig::default(),
+            env_of(&[("RDM_REVIEWED_GATE", "yes")]),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidConfigValue { key, .. } if key == "RDM_REVIEWED_GATE"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn resolver_refuses_a_non_scopable_key_naming_the_scopable_ones() {
+        let err = resolve_scoped_value(
+            "remote.default",
+            Some("a"),
+            &Config::default(),
+            &GlobalConfig::default(),
+            no_env,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::KeyNotProjectScopable { key } if key == "remote.default"),
+            "got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("remote.default"), "{msg}");
+        for key in PROJECT_SCOPABLE_KEYS {
+            assert!(msg.contains(key), "{key} missing from: {msg}");
+        }
+    }
+
+    #[test]
+    fn resolve_scoped_value_at_reads_the_plan_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let global = GlobalConfig::default();
+        // A missing rdm.toml resolves like a default config.
+        assert_eq!(
+            resolve_scoped_value_at_with_env(
+                dir.path(),
+                &global,
+                "dispatch.verify",
+                Some("a"),
+                no_env
+            )
+            .unwrap(),
+            None
+        );
+        std::fs::write(
+            dir.path().join(REPO_CONFIG_FILE),
+            layered_config().to_toml().unwrap(),
+        )
+        .unwrap();
+        for project in [Some("a"), Some("b"), None] {
+            for key in PROJECT_SCOPABLE_KEYS {
+                assert_eq!(
+                    resolve_scoped_value_at_with_env(dir.path(), &global, key, project, no_env)
+                        .unwrap(),
+                    resolve_scoped_value(key, project, &layered_config(), &global, no_env).unwrap(),
+                    "{key} for {project:?}"
+                );
+            }
+        }
+        // A malformed rdm.toml also counts as default.
+        std::fs::write(dir.path().join(REPO_CONFIG_FILE), "not = = toml [[[").unwrap();
+        assert_eq!(
+            resolve_scoped_value_at_with_env(
+                dir.path(),
+                &global,
+                "dispatch.verify",
+                Some("a"),
+                no_env
+            )
+            .unwrap(),
+            None
+        );
     }
 }

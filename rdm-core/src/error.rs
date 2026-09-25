@@ -424,6 +424,13 @@ pub enum Error {
         /// A description of the valid values.
         valid: String,
     },
+    /// A key was used with a project scope (`[projects.<name>]`,
+    /// `rdm config ... --project`) but is not one of
+    /// [`crate::config::PROJECT_SCOPABLE_KEYS`].
+    KeyNotProjectScopable {
+        /// The configuration key.
+        key: String,
+    },
     /// A git operation failed.
     Git(String),
     /// The revision exists, but the requested path is not present in that
@@ -1121,6 +1128,11 @@ impl std::fmt::Display for Error {
                     "invalid value '{value}' for '{key}' — valid values: {valid}"
                 )
             }
+            Error::KeyNotProjectScopable { key } => write!(
+                f,
+                "'{key}' cannot be set per project — project-scopable keys: {}",
+                crate::config::PROJECT_SCOPABLE_KEYS.join(", ")
+            ),
             Error::Git(msg) => write!(f, "git error: {msg}"),
             Error::BodyAtRevisionMissing { path, sha } => {
                 write!(f, "path '{path}' is not present at revision {sha}")

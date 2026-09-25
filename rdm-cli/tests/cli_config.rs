@@ -1099,3 +1099,319 @@ fn config_set_against_an_uninitialized_root_fails_actionably() {
     // And no git-less rdm.toml was silently written.
     assert!(!root_dir.path().join("rdm.toml").exists());
 }
+
+// --- [projects.<name>] override layer: `config get|set|list --project` ---
+
+/// An `rdm` command against `setup_repo`'s plan repo with every env override
+/// of a project-scopable key removed, so each test controls the environment.
+fn scoped(config_dir: &TempDir) -> Command {
+    let mut cmd = rdm();
+    cmd.env("XDG_CONFIG_HOME", config_dir.path());
+    for var in [
+        "RDM_ROOT",
+        "RDM_PROJECT",
+        "RDM_FORMAT",
+        "RDM_DISPATCH_VERIFY",
+        "RDM_GATES_REVIEWED",
+        "RDM_REVIEWED_GATE",
+        "RDM_PLAN_REVIEW",
+        "RDM_DEFAULT_BRANCH",
+    ] {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
+fn read_repo_config(root_dir: &TempDir) -> rdm_core::config::Config {
+    let text = std::fs::read_to_string(root_dir.path().join("rdm.toml")).unwrap();
+    rdm_core::config::Config::from_toml(&text).unwrap()
+}
+
+/// Sets `dispatch.verify` plan-repo-wide to `repo-cmd` and for project `a` to `X`.
+fn set_repo_and_project_verify(config_dir: &TempDir) {
+    scoped(config_dir)
+        .args(["config", "set", "dispatch.verify", "repo-cmd"])
+        .assert()
+        .success();
+    scoped(config_dir)
+        .args(["config", "set", "dispatch.verify", "X", "--project", "a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("project config for 'a'"));
+}
+
+#[test]
+fn config_set_project_writes_the_project_table_and_leaves_repo_value() {
+    let (config_dir, root_dir) = setup_repo();
+    set_repo_and_project_verify(&config_dir);
+
+    let config = read_repo_config(&root_dir);
+    assert_eq!(
+        config.projects["a"]
+            .dispatch
+            .as_ref()
+            .and_then(|d| d.verify.as_deref()),
+        Some("X")
+    );
+    assert_eq!(
+        config.dispatch.as_ref().and_then(|d| d.verify.as_deref()),
+        Some("repo-cmd")
+    );
+
+    scoped(&config_dir)
+        .args(["config", "get", "dispatch.verify"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("repo-cmd  (source: repo config)\n"));
+}
+
+#[test]
+fn config_get_project_reports_project_then_repo() {
+    let (config_dir, _root_dir) = setup_repo();
+    set_repo_and_project_verify(&config_dir);
+
+    scoped(&config_dir)
+        .args(["config", "get", "dispatch.verify", "--project", "a"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("X  (source: project config)\n"));
+    scoped(&config_dir)
+        .args(["config", "get", "dispatch.verify", "--project", "b"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("repo-cmd  (source: repo config)\n"));
+    scoped(&config_dir)
+        .args([
+            "config",
+            "get",
+            "dispatch.verify",
+            "--raw",
+            "--project",
+            "a",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::eq("X\n"));
+}
+
+#[test]
+fn config_list_project_lists_exactly_the_scopable_keys() {
+    let (config_dir, _root_dir) = setup_repo();
+    set_repo_and_project_verify(&config_dir);
+
+    let out = scoped(&config_dir)
+        .args(["config", "list", "--project", "a"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let out = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = out.lines().collect();
+    let keys: Vec<&str> = lines
+        .iter()
+        .map(|l| l.split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(
+        keys,
+        [
+            "dispatch.verify",
+            "gates.reviewed",
+            "plan_review",
+            "default_branch"
+        ],
+        "{out}"
+    );
+    let line = |key: &str| {
+        *lines
+            .iter()
+            .find(|l| l.split_whitespace().next() == Some(key))
+            .unwrap()
+    };
+    assert!(
+        line("dispatch.verify").contains("X  (source: project config)"),
+        "{out}"
+    );
+    assert!(line("gates.reviewed").contains("(not set)"), "{out}");
+    assert!(line("default_branch").contains("(not set)"), "{out}");
+}
+
+#[test]
+fn config_set_non_scopable_key_with_project_is_refused() {
+    let (config_dir, root_dir) = setup_repo();
+    let before = std::fs::read_to_string(root_dir.path().join("rdm.toml")).unwrap();
+
+    let assert = scoped(&config_dir)
+        .args([
+            "config",
+            "set",
+            "remote.default",
+            "origin",
+            "--project",
+            "a",
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    for key in [
+        "dispatch.verify",
+        "gates.reviewed",
+        "plan_review",
+        "default_branch",
+    ] {
+        assert!(stderr.contains(key), "{key} missing from: {stderr}");
+    }
+    assert_eq!(
+        std::fs::read_to_string(root_dir.path().join("rdm.toml")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn config_get_non_scopable_key_with_project_is_refused() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    let assert = scoped(&config_dir)
+        .args(["config", "get", "remote.default", "--project", "a"])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    for key in [
+        "dispatch.verify",
+        "gates.reviewed",
+        "plan_review",
+        "default_branch",
+    ] {
+        assert!(stderr.contains(key), "{key} missing from: {stderr}");
+    }
+}
+
+#[test]
+fn config_set_project_with_global_is_refused() {
+    let (config_dir, root_dir) = setup_repo();
+    let before_repo = std::fs::read_to_string(root_dir.path().join("rdm.toml")).unwrap();
+    let global_path = config_dir.path().join("rdm").join("config.toml");
+    let before_global = std::fs::read_to_string(&global_path).unwrap();
+
+    scoped(&config_dir)
+        .args([
+            "config",
+            "set",
+            "plan_review",
+            "true",
+            "--project",
+            "a",
+            "--global",
+        ])
+        .assert()
+        .failure();
+
+    assert_eq!(
+        std::fs::read_to_string(root_dir.path().join("rdm.toml")).unwrap(),
+        before_repo
+    );
+    assert_eq!(
+        std::fs::read_to_string(&global_path).unwrap(),
+        before_global
+    );
+}
+
+#[test]
+fn config_get_project_env_override_wins() {
+    let (config_dir, _root_dir) = setup_repo();
+    set_repo_and_project_verify(&config_dir);
+
+    scoped(&config_dir)
+        .env("RDM_DISPATCH_VERIFY", "E")
+        .args(["config", "get", "dispatch.verify", "--project", "a"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("E  (source: environment variable)\n"));
+}
+
+#[test]
+fn config_set_scope_never_comes_from_rdm_project() {
+    let (config_dir, root_dir) = setup_repo();
+
+    scoped(&config_dir)
+        .env("RDM_PROJECT", "b")
+        .args(["config", "set", "dispatch.verify", "X", "--project", "a"])
+        .assert()
+        .success();
+    scoped(&config_dir)
+        .env("RDM_PROJECT", "a")
+        .args(["config", "set", "dispatch.verify", "repo-cmd"])
+        .assert()
+        .success();
+
+    let config = read_repo_config(&root_dir);
+    assert_eq!(
+        config.projects.keys().collect::<Vec<_>>(),
+        ["a"],
+        "only the explicit --project may name a project table"
+    );
+    assert_eq!(
+        config.projects["a"]
+            .dispatch
+            .as_ref()
+            .and_then(|d| d.verify.as_deref()),
+        Some("X")
+    );
+    assert_eq!(
+        config.dispatch.as_ref().and_then(|d| d.verify.as_deref()),
+        Some("repo-cmd")
+    );
+}
+
+#[test]
+fn config_get_gates_reviewed_reports_rdm_reviewed_gate() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    scoped(&config_dir)
+        .env("RDM_REVIEWED_GATE", "true")
+        .args(["config", "get", "gates.reviewed"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("true  (source: environment variable)\n"));
+    scoped(&config_dir)
+        .env("RDM_REVIEWED_GATE", "yes")
+        .args(["config", "get", "gates.reviewed"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("RDM_REVIEWED_GATE"));
+}
+
+#[test]
+fn config_list_reports_a_bad_key_inline_and_lists_the_rest() {
+    let (config_dir, _root_dir) = setup_repo();
+    scoped(&config_dir)
+        .args(["config", "set", "dispatch.verify", "repo-cmd"])
+        .assert()
+        .success();
+
+    for extra in [&[][..], &["--project", "a"][..]] {
+        let out = scoped(&config_dir)
+            .env("RDM_REVIEWED_GATE", "yes")
+            .args(["config", "list"])
+            .args(extra)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let out = String::from_utf8(out).unwrap();
+        let gate = out
+            .lines()
+            .find(|l| l.starts_with("gates.reviewed"))
+            .unwrap_or_else(|| panic!("no gates.reviewed row: {out}"));
+        assert!(
+            gate.contains("(error:") && gate.contains("RDM_REVIEWED_GATE"),
+            "{out}"
+        );
+        assert!(
+            out.lines()
+                .any(|l| l.starts_with("dispatch.verify") && l.contains("repo-cmd")),
+            "the other keys must still be listed: {out}"
+        );
+    }
+}

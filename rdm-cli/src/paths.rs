@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use rdm_core::config::{
-    ConfigSource, GLOBAL_ONLY_KEYS, GlobalConfig, KNOWN_KEYS, REPO_ONLY_KEYS, ResolvedValue,
-    format_quick_filters, parse_plan_review_env, parse_quick_filters_env,
+    ConfigSource, GLOBAL_ONLY_KEYS, GlobalConfig, KNOWN_KEYS, ProjectOverrides, REPO_ONLY_KEYS,
+    ResolvedValue, format_quick_filters, parse_plan_review_env, parse_quick_filters_env,
 };
 
 /// Returns the path to the global config file.
@@ -363,15 +363,10 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
         "default_project" => config.default_project.clone(),
         "default_format" => config.default_format.clone(),
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
-        "default_branch" => config.default_branch.clone(),
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
-        "plan_review" => config.plan_review.map(|b| b.to_string()),
-        "dispatch.verify" => config.dispatch.as_ref().and_then(|d| d.verify.clone()),
-        "gates.reviewed" => config
-            .gates
-            .as_ref()
-            .and_then(|g| g.reviewed)
-            .map(|b| b.to_string()),
+        "default_branch" | "plan_review" | "dispatch.verify" | "gates.reviewed" => {
+            config.scopable_value(key)
+        }
         // NOTE: a malformed RDM_SERVER_QUICK_FILTERS env value is echoed
         // back raw with "(source: environment variable)" by the generic
         // resolution chain in commands/config.rs — a pre-existing quirk of
@@ -439,17 +434,8 @@ pub fn set_config_field(
                 .quick_filters = filters;
         }
         "dispatch.verify" => {
-            let cmd = value.trim();
-            if cmd.is_empty() {
-                bail!(
-                    "'dispatch.verify' requires a non-empty command — it is run once per \
-                     implementation attempt and its exit code gates the phase, so an empty \
-                     value would silently disable verification. Pass the single command to \
-                     run (e.g. 'bash scripts/ci.sh'), or delete the 'dispatch.verify' line \
-                     from rdm.toml to remove the setting."
-                );
-            }
-            config.dispatch.get_or_insert_with(Default::default).verify = Some(cmd.to_string());
+            config.dispatch.get_or_insert_with(Default::default).verify =
+                Some(validate_verify_command(value)?);
         }
         "gates.reviewed" => {
             config.gates.get_or_insert_with(Default::default).reviewed = Some(parse_bool(value)?);
@@ -461,6 +447,58 @@ pub fn set_config_field(
         ),
     }
     Ok(())
+}
+
+/// Sets a field on one project's `[projects.<name>]` overrides, with the same
+/// validation [`set_config_field`] applies to the plan-repo-wide value.
+///
+/// # Errors
+///
+/// Returns an error if the key is not project-scopable (naming the
+/// project-scopable keys) or the value is invalid.
+pub fn set_project_config_field(
+    overrides: &mut ProjectOverrides,
+    key: &str,
+    value: &str,
+) -> Result<()> {
+    match key {
+        "default_branch" => overrides.default_branch = Some(value.to_string()),
+        "plan_review" => overrides.plan_review = Some(parse_bool(value)?),
+        "dispatch.verify" => {
+            overrides
+                .dispatch
+                .get_or_insert_with(Default::default)
+                .verify = Some(validate_verify_command(value)?);
+        }
+        "gates.reviewed" => {
+            overrides
+                .gates
+                .get_or_insert_with(Default::default)
+                .reviewed = Some(parse_bool(value)?);
+        }
+        _ => {
+            return Err(rdm_core::error::Error::KeyNotProjectScopable {
+                key: key.to_string(),
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
+/// Validates a `dispatch.verify` value, returning the trimmed command.
+fn validate_verify_command(value: &str) -> Result<String> {
+    let cmd = value.trim();
+    if cmd.is_empty() {
+        bail!(
+            "'dispatch.verify' requires a non-empty command — it is run once per \
+             implementation attempt and its exit code gates the phase, so an empty \
+             value would silently disable verification. Pass the single command to \
+             run (e.g. 'bash scripts/ci.sh'), or delete the 'dispatch.verify' line \
+             from rdm.toml to remove the setting."
+        );
+    }
+    Ok(cmd.to_string())
 }
 
 /// Sets a field on a global config by key name, with validation.

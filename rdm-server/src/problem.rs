@@ -429,6 +429,13 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(format!("cannot set both '{field}' and 'clear_{field}'")),
                 instance: None,
             },
+            Error::KeyNotProjectScopable { .. } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Bad Request".to_string(),
+                status: 400,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
             // Both are malformed source-update requests: the caller named no
             // change at all, or named a default branch with no repository for
             // it to belong to.
@@ -602,6 +609,21 @@ mod tests {
             assert_eq!(pd.status, 409, "{err}");
             assert_eq!(pd.title, "Conflict");
             assert!(pd.detail.unwrap().contains("r1"));
+        }
+    }
+
+    #[test]
+    fn from_key_not_project_scopable() {
+        let err = Error::KeyNotProjectScopable {
+            key: "remote.default".to_string(),
+        };
+        let pd = ProblemDetail::from(&err);
+        assert_eq!(pd.status, 400);
+        assert_eq!(pd.title, "Bad Request");
+        let detail = pd.detail.unwrap();
+        assert!(detail.contains("remote.default"));
+        for key in rdm_core::config::PROJECT_SCOPABLE_KEYS {
+            assert!(detail.contains(key), "{key} missing from: {detail}");
         }
     }
 
