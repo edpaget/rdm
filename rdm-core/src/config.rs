@@ -584,9 +584,13 @@ impl Config {
 ///
 /// Precedence:
 ///
-/// 1. The environment: the generic `RDM_<KEY>` (dots become underscores, e.g.
-///    `RDM_DISPATCH_VERIFY`), returned raw; then, for `gates.reviewed` only,
-///    `RDM_REVIEWED_GATE`, validated through [`parse_reviewed_gate_env`].
+/// 1. The environment: for `gates.reviewed` only, `RDM_REVIEWED_GATE` — the
+///    variable the `reviewed` gate itself honors, so it comes first and the
+///    resolver never disagrees with [`resolve_reviewed_gate`]; then the
+///    generic `RDM_<KEY>` (dots become underscores, e.g.
+///    `RDM_DISPATCH_VERIFY`). Every value of a boolean key (`gates.reviewed`,
+///    `plan_review`) must be the literal `"true"` or `"false"`; other keys'
+///    values are returned raw.
 /// 2. `repo.projects[project]`, when `project` is `Some`.
 /// 3. The plan-repo-wide value in `repo`.
 /// 4. `global`, only for keys not in [`REPO_ONLY_KEYS`].
@@ -600,9 +604,9 @@ impl Config {
 /// # Errors
 ///
 /// Returns [`Error::KeyNotProjectScopable`] if `key` is not one of
-/// [`PROJECT_SCOPABLE_KEYS`], and [`Error::InvalidConfigValue`] if
-/// `RDM_REVIEWED_GATE` supplies `gates.reviewed` with anything other than the
-/// literal `"true"` or `"false"`.
+/// [`PROJECT_SCOPABLE_KEYS`], and [`Error::InvalidConfigValue`] (naming the
+/// variable) if an environment override of a boolean key is anything other
+/// than the literal `"true"` or `"false"`.
 pub fn resolve_scoped_value(
     key: &str,
     project: Option<&str>,
@@ -617,14 +621,18 @@ pub fn resolve_scoped_value(
     }
     let found = |value: String, source: ConfigSource| Ok(Some(ResolvedValue { value, source }));
 
-    let generic_env = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
-    if let Some(v) = env(&generic_env) {
-        return found(v, ConfigSource::Env);
-    }
     if key == "gates.reviewed"
         && let Some(v) = env("RDM_REVIEWED_GATE")
     {
         return found(parse_reviewed_gate_env(&v)?.to_string(), ConfigSource::Env);
+    }
+    let generic_env = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
+    if let Some(v) = env(&generic_env) {
+        let v = match key {
+            "gates.reviewed" | "plan_review" => parse_bool_env(&generic_env, &v)?.to_string(),
+            _ => v,
+        };
+        return found(v, ConfigSource::Env);
     }
     if let Some(v) = project
         .and_then(|p| repo.projects.get(p))
@@ -747,11 +755,17 @@ pub fn format_quick_filters(filters: &[QuickFilter]) -> String {
 /// Returns [`Error::InvalidConfigValue`] if `value` is anything other than
 /// `"true"` or `"false"`.
 pub fn parse_plan_review_env(value: &str) -> Result<bool> {
+    parse_bool_env("RDM_PLAN_REVIEW", value)
+}
+
+/// Parses a boolean env var override that accepts only the literal `"true"`
+/// or `"false"`, naming `var` in the error.
+fn parse_bool_env(var: &str, value: &str) -> Result<bool> {
     match value {
         "true" => Ok(true),
         "false" => Ok(false),
         other => Err(Error::InvalidConfigValue {
-            key: "RDM_PLAN_REVIEW".to_string(),
+            key: var.to_string(),
             value: other.to_string(),
             valid: "true or false".to_string(),
         }),
@@ -770,15 +784,7 @@ pub fn parse_plan_review_env(value: &str) -> Result<bool> {
 /// Returns [`Error::InvalidConfigValue`] if `value` is anything other than
 /// `"true"` or `"false"`.
 pub fn parse_reviewed_gate_env(value: &str) -> Result<bool> {
-    match value {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        other => Err(Error::InvalidConfigValue {
-            key: "RDM_REVIEWED_GATE".to_string(),
-            value: other.to_string(),
-            valid: "true or false".to_string(),
-        }),
-    }
+    parse_bool_env("RDM_REVIEWED_GATE", value)
 }
 
 /// The name of the repo-level config file at a plan root.
@@ -1958,14 +1964,14 @@ reviewed = true
         let global = global_with_scopables();
         let env = env_of(&[
             ("RDM_DISPATCH_VERIFY", "env-verify"),
-            ("RDM_GATES_REVIEWED", "env-gate"),
-            ("RDM_PLAN_REVIEW", "env-plan"),
+            ("RDM_GATES_REVIEWED", "false"),
+            ("RDM_PLAN_REVIEW", "false"),
             ("RDM_DEFAULT_BRANCH", "env-branch"),
         ]);
         for (key, want) in [
             ("dispatch.verify", "env-verify"),
-            ("gates.reviewed", "env-gate"),
-            ("plan_review", "env-plan"),
+            ("gates.reviewed", "false"),
+            ("plan_review", "false"),
             ("default_branch", "env-branch"),
         ] {
             assert_eq!(
@@ -2050,21 +2056,26 @@ reviewed = true
             .unwrap(),
             resolved("false", ConfigSource::Env)
         );
-        // The generic name wins when both are set.
-        assert_eq!(
-            resolve_scoped_value(
-                "gates.reviewed",
-                None,
-                &config,
-                &global,
-                env_of(&[
-                    ("RDM_REVIEWED_GATE", "false"),
-                    ("RDM_GATES_REVIEWED", "true")
-                ])
-            )
-            .unwrap(),
-            resolved("true", ConfigSource::Env)
-        );
+        // RDM_REVIEWED_GATE — the variable the gate itself honors — wins
+        // when both are set, so the resolver agrees with the gate.
+        const GATE_ON: &[(&str, &str)] = &[
+            ("RDM_REVIEWED_GATE", "true"),
+            ("RDM_GATES_REVIEWED", "false"),
+        ];
+        const GATE_OFF: &[(&str, &str)] = &[
+            ("RDM_REVIEWED_GATE", "false"),
+            ("RDM_GATES_REVIEWED", "true"),
+        ];
+        for (pairs, gate) in [(GATE_ON, "true"), (GATE_OFF, "false")] {
+            let both = env_of(pairs);
+            let gate_decision =
+                resolve_reviewed_gate(both("RDM_REVIEWED_GATE").as_deref(), Some(&config)).unwrap();
+            assert_eq!(
+                resolve_scoped_value("gates.reviewed", None, &config, &global, &both).unwrap(),
+                resolved(&gate_decision.to_string(), ConfigSource::Env)
+            );
+            assert_eq!(gate_decision.to_string(), gate);
+        }
         // RDM_REVIEWED_GATE applies to gates.reviewed only.
         assert_eq!(
             resolve_scoped_value(
@@ -2093,6 +2104,30 @@ reviewed = true
             matches!(&err, Error::InvalidConfigValue { key, .. } if key == "RDM_REVIEWED_GATE"),
             "got {err:?}"
         );
+    }
+
+    #[test]
+    fn resolver_rejects_an_invalid_generic_boolean_env_value() {
+        for (key, var) in [
+            ("gates.reviewed", "RDM_GATES_REVIEWED"),
+            ("plan_review", "RDM_PLAN_REVIEW"),
+        ] {
+            for bad in ["yes", "True", "1", ""] {
+                let err = resolve_scoped_value(
+                    key,
+                    None,
+                    &Config::default(),
+                    &GlobalConfig::default(),
+                    |k: &str| (k == var).then(|| bad.to_string()),
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(&err, Error::InvalidConfigValue { key, value, .. }
+                        if key == var && value == bad),
+                    "{var}={bad:?}: got {err:?}"
+                );
+            }
+        }
     }
 
     #[test]

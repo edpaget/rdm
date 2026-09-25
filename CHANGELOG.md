@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **`rdm config get gates.reviewed` and `rdm config list` now report `RDM_REVIEWED_GATE`**, the environment variable the `reviewed` gate actually honors, with source `environment variable` — previously they reported only `RDM_GATES_REVIEWED`, so they could disagree with the gate. `RDM_GATES_REVIEWED` still wins when both are set. An invalid `RDM_REVIEWED_GATE` value (anything but `true`/`false`) makes `config get gates.reviewed` fail with an error naming the variable; `config list` instead shows the error on the `gates.reviewed` row and still lists every other key.
+- **`rdm config get gates.reviewed` and `rdm config list` now report `RDM_REVIEWED_GATE`**, the environment variable the `reviewed` gate actually honors, with source `environment variable` — previously they reported only `RDM_GATES_REVIEWED`, so they could disagree with the gate. `RDM_REVIEWED_GATE` now wins over `RDM_GATES_REVIEWED` when both are set, so `config get` always reports what the gate enforces. `RDM_GATES_REVIEWED` and `RDM_PLAN_REVIEW` are now validated too: an invalid value of any of the three (anything but `true`/`false`) makes `config get` of that key fail with an error naming the variable; `config list` instead shows the error on that key's row and still lists every other key.
 
 ## [0.22.1] - 2026-09-24
 

@@ -1415,3 +1415,73 @@ fn config_list_reports_a_bad_key_inline_and_lists_the_rest() {
         );
     }
 }
+
+#[test]
+fn config_set_project_writes_every_scopable_key_to_the_project_table() {
+    let (config_dir, root_dir) = setup_repo();
+    for (key, value) in [
+        ("plan_review", "true"),
+        ("gates.reviewed", "true"),
+        ("default_branch", "trunk"),
+    ] {
+        scoped(&config_dir)
+            .args(["config", "set", key, value, "--project", "a"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("project config for 'a'"));
+    }
+
+    let config = read_repo_config(&root_dir);
+    let a = &config.projects["a"];
+    assert_eq!(a.plan_review, Some(true));
+    assert_eq!(a.gates.as_ref().and_then(|g| g.reviewed), Some(true));
+    assert_eq!(a.default_branch.as_deref(), Some("trunk"));
+    assert_eq!(config.plan_review, None);
+    assert!(config.gates.as_ref().and_then(|g| g.reviewed).is_none());
+    assert_eq!(config.default_branch, None);
+}
+
+#[test]
+fn config_set_invalid_values_are_refused_and_leave_rdm_toml_unchanged() {
+    let (config_dir, root_dir) = setup_repo();
+    let before = std::fs::read_to_string(root_dir.path().join("rdm.toml")).unwrap();
+
+    for (key, value, project) in [
+        ("dispatch.verify", "  ", Some("a")),
+        ("plan_review", "maybe", Some("a")),
+        ("gates.reviewed", "maybe", Some("a")),
+        ("dispatch.verify", "  ", None),
+        ("dispatch.verify", "", None),
+    ] {
+        let mut cmd = scoped(&config_dir);
+        cmd.args(["config", "set", key, value]);
+        if let Some(p) = project {
+            cmd.args(["--project", p]);
+        }
+        cmd.assert().failure();
+        assert_eq!(
+            std::fs::read_to_string(root_dir.path().join("rdm.toml")).unwrap(),
+            before,
+            "{key}={value:?} --project {project:?} changed rdm.toml"
+        );
+    }
+}
+
+#[test]
+fn config_get_gates_reviewed_prefers_rdm_reviewed_gate_and_validates_the_generic_name() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    scoped(&config_dir)
+        .env("RDM_REVIEWED_GATE", "true")
+        .env("RDM_GATES_REVIEWED", "false")
+        .args(["config", "get", "gates.reviewed"])
+        .assert()
+        .success()
+        .stdout(predicate::eq("true  (source: environment variable)\n"));
+    scoped(&config_dir)
+        .env("RDM_GATES_REVIEWED", "yes")
+        .args(["config", "get", "gates.reviewed"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("RDM_GATES_REVIEWED"));
+}
