@@ -23,6 +23,9 @@
 ;; state `ZZ' submits the buffer and `ZQ' aborts it, as in evil-collection's
 ;; `git-commit' bindings.
 ;;
+;; In a commit message buffer (`rdm-git-commit-mode', rdm-git.el), `gd'
+;; in normal state inserts a `Done:' trailer, like vanilla `C-c C-x d'.
+;;
 ;; Later phases add their evil bindings here.
 
 ;;; Code:
@@ -30,6 +33,7 @@
 (require 'rdm-view)
 (require 'rdm-transient)
 (require 'rdm-compose)
+(require 'rdm-git)
 
 (declare-function evil-set-initial-state "ext:evil-core" (mode state))
 (declare-function evil-define-key* "ext:evil-core" (state keymap key def &rest bindings))
@@ -47,7 +51,9 @@
   (evil-set-initial-state 'rdm-compose-mode 'insert)
   (evil-define-key* 'normal rdm-compose-mode-map
     (kbd "ZZ") #'rdm-compose-submit
-    (kbd "ZQ") #'rdm-compose-abort))
+    (kbd "ZQ") #'rdm-compose-abort)
+  (evil-define-key* 'normal rdm-git-commit-mode-map
+    (kbd rdm-git-commit-evil-key) #'rdm-insert-done-line))
 
 (with-eval-after-load 'evil
   (rdm-evil-setup))

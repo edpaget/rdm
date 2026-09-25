@@ -53,7 +53,7 @@ const SOFT_DEPS: &[&str] = &["evil", "magit", "consult", "embark", "markdown-mod
 
 /// The soft dependencies the suite already has tagged tests for; the
 /// init-directory pass requires at least one of each to run.
-const TESTED_SOFT_DEPS: &[&str] = &["evil", "consult", "embark", "markdown-mode"];
+const TESTED_SOFT_DEPS: &[&str] = &["evil", "magit", "consult", "embark", "markdown-mode"];
 
 /// Whether a missing `emacs` or init directory fails instead of skipping.
 fn required() -> bool {

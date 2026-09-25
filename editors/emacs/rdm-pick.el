@@ -138,11 +138,13 @@ Only hits of `rdm-pick-search-kinds' are offered."
                    (annotation-function . rdm-pick-annotate))
       (complete-with-action action candidates string pred))))
 
-(defun rdm-pick-read (prompt candidates)
-  "Read one of CANDIDATES with PROMPT; return its item."
+(defun rdm-pick-read (prompt candidates &optional default)
+  "Read one of CANDIDATES with PROMPT; return its item.
+DEFAULT, when non-nil, is the candidate offered as `completing-read's
+default."
   (unless candidates (user-error "rdm: nothing to pick"))
   (rdm-item--require
-   (completing-read prompt (rdm-pick-table candidates) nil t)))
+   (completing-read prompt (rdm-pick-table candidates) nil t nil nil default)))
 
 (defun rdm-pick-read-roadmap (&optional prompt)
   "Read a roadmap with PROMPT; return its slug."
