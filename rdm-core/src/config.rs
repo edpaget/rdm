@@ -588,14 +588,17 @@ impl Config {
 ///    variable the `reviewed` gate itself honors, so it comes first and the
 ///    resolver never disagrees with [`resolve_reviewed_gate`]; then the
 ///    generic `RDM_<KEY>` (dots become underscores, e.g.
-///    `RDM_DISPATCH_VERIFY`; a blank `RDM_DISPATCH_VERIFY` is trimmed and
-///    treated as unset). Every value of a boolean key (`gates.reviewed`,
+///    `RDM_DISPATCH_VERIFY`). Every value of a boolean key (`gates.reviewed`,
 ///    `plan_review`) must be the literal `"true"` or `"false"`; other keys'
 ///    values are returned raw.
 /// 2. `repo.projects[project]`, when `project` is `Some`.
 /// 3. The plan-repo-wide value in `repo`.
 /// 4. `global`, only for keys not in [`REPO_ONLY_KEYS`].
 /// 5. `None` — typed defaults belong to the consumer.
+///
+/// `dispatch.verify` is trimmed at every layer (environment, project, repo),
+/// and a blank value at any layer counts as unset, so resolution falls
+/// through to the next layer; blank everywhere resolves to `None`.
 ///
 /// `repo` must be the repo config as read from `rdm.toml`, not one already
 /// merged with the global config, or step 4's repo-only rule is bypassed.
@@ -628,16 +631,17 @@ pub fn resolve_scoped_value(
         return found(parse_reviewed_gate_env(&v)?.to_string(), ConfigSource::Env);
     }
     let generic_env = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
-    // A blank `dispatch.verify` override is unset, exactly as a blank
-    // configured value is: honoring it would resolve to "" and let a
-    // verification gate pass without running anything.
-    let generic = env(&generic_env).and_then(|v| match key {
+    // Every layer's value passes through `present`: a blank `dispatch.verify`
+    // at any layer is unset, so it falls through to the next layer instead of
+    // letting a verification gate pass without running anything.
+    let present = |v: String| match key {
         "dispatch.verify" => {
             let t = v.trim();
             (!t.is_empty()).then(|| t.to_string())
         }
         _ => Some(v),
-    });
+    };
+    let generic = env(&generic_env).and_then(present);
     if let Some(v) = generic {
         let v = match key {
             "gates.reviewed" | "plan_review" => parse_bool_env(&generic_env, &v)?.to_string(),
@@ -648,10 +652,11 @@ pub fn resolve_scoped_value(
     if let Some(v) = project
         .and_then(|p| repo.projects.get(p))
         .and_then(|o| o.value(key))
+        .and_then(present)
     {
         return found(v, ConfigSource::Project);
     }
-    if let Some(v) = repo.scopable_value(key) {
+    if let Some(v) = repo.scopable_value(key).and_then(present) {
         return found(v, ConfigSource::Repo);
     }
     if !REPO_ONLY_KEYS.contains(&key) {
@@ -2011,6 +2016,33 @@ reviewed = true
                 "{blank:?}"
             );
         }
+    }
+
+    #[test]
+    fn resolver_treats_a_blank_verify_as_unset_at_every_layer() {
+        let global = global_with_scopables();
+        let blank_env = |k: &str| (k == "RDM_DISPATCH_VERIFY").then(|| "  ".to_string());
+        let toml =
+            "[dispatch]\nverify = \"  echo repo  \"\n[projects.a.dispatch]\nverify = \"  \"\n";
+        let config = Config::from_toml(toml).unwrap();
+        assert_eq!(
+            resolve_scoped_value("dispatch.verify", Some("a"), &config, &global, blank_env)
+                .unwrap(),
+            resolved("echo repo", ConfigSource::Repo)
+        );
+        let blank_repo = Config::from_toml("[dispatch]\nverify = \" \t \"\n").unwrap();
+        assert_eq!(
+            resolve_scoped_value("dispatch.verify", None, &blank_repo, &global, no_env).unwrap(),
+            None
+        );
+        let all_blank =
+            Config::from_toml("[dispatch]\nverify = \"\"\n[projects.a.dispatch]\nverify = \" \"\n")
+                .unwrap();
+        assert_eq!(
+            resolve_scoped_value("dispatch.verify", Some("a"), &all_blank, &global, blank_env)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]

@@ -62,8 +62,10 @@ shows the plan-repo-wide value, because `config`'s `--project` is never inferred
 ## 2. Resolution precedence
 
 `RDM_DISPATCH_VERIFY`, when set, overrides every configured source below for that process;
-it is a process-level override, not a declared source. Its value is trimmed, and an empty or
-whitespace-only value counts as unset, so resolution falls through to the sources below.
+it is a process-level override, not a declared source. At every layer — this variable, the
+project override, and the plan-repo-wide key — the value is trimmed, and an empty or
+whitespace-only value counts as unset, so resolution falls through to the next layer; blank
+everywhere means nothing is resolved.
 
 1. The declared `dispatch.verify` key, when set, used verbatim. In order:
    1. the project override `[projects.<p>.dispatch] verify` for the project being

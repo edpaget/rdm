@@ -1429,3 +1429,51 @@ fn verify_run_executes_a_single_line_env_override() {
     assert_eq!(j["exit"], 0);
     assert!(j["tail"].as_str().unwrap().contains("env-ran"));
 }
+
+#[test]
+fn verify_blank_project_override_falls_through_to_the_repo_wide_command() {
+    let plan = init_multi_project_plan_repo();
+    let cwd = init_source_repo();
+    let toml_path = plan.path().join("rdm.toml");
+    let mut toml = std::fs::read_to_string(&toml_path).unwrap();
+    toml.push_str(
+        "\n[dispatch]\nverify = \"echo repo-wide\"\n\n[projects.a.dispatch]\nverify = \"  \"\n",
+    );
+    std::fs::write(&toml_path, toml).unwrap();
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .env_remove("RDM_DISPATCH_VERIFY")
+        .args(["verify", "run", "--format", "json", "--project", "a"])
+        .current_dir(cwd.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let j = json_of(&String::from_utf8_lossy(&out));
+    assert!(j["tail"].as_str().unwrap().contains("repo-wide"));
+}
+
+#[test]
+fn verify_blank_everywhere_is_unresolved() {
+    let plan = init_multi_project_plan_repo();
+    let cwd = init_source_repo();
+    let toml_path = plan.path().join("rdm.toml");
+    let mut toml = std::fs::read_to_string(&toml_path).unwrap();
+    toml.push_str("\n[dispatch]\nverify = \" \"\n\n[projects.a.dispatch]\nverify = \"  \"\n");
+    std::fs::write(&toml_path, toml).unwrap();
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .env("RDM_DISPATCH_VERIFY", " ")
+        .args(["verify", "run", "--format", "json", "--project", "a"])
+        .current_dir(cwd.path())
+        .assert()
+        .code(2)
+        .get_output()
+        .stdout
+        .clone();
+    let j = json_of(&String::from_utf8_lossy(&out));
+    assert_eq!(j["resolved"], false);
+}

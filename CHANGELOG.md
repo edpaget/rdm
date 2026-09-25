@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- **`rdm verify resolve` and `rdm verify run` now use the project's own `dispatch.verify` override** when one is set, falling back to the plan-repo-wide value, and now honor `RDM_DISPATCH_VERIFY` ahead of both (an empty or whitespace-only `RDM_DISPATCH_VERIFY` counts as unset rather than a command that passes without running anything). For a multi-line project override, the refusal suggests the `--project` form of `rdm config set`.
+- **`rdm verify resolve` and `rdm verify run` now use the project's own `dispatch.verify` override** when one is set, falling back to the plan-repo-wide value, and now honor `RDM_DISPATCH_VERIFY` ahead of both (an empty or whitespace-only value — in `RDM_DISPATCH_VERIFY`, a project override, or the plan-repo-wide key — counts as unset and falls through to the next layer, rather than a command that passes without running anything). For a multi-line project override, the refusal suggests the `--project` form of `rdm config set`.
 
 - **`rdm config get gates.reviewed` and `rdm config list` now report `RDM_REVIEWED_GATE`**, the environment variable the `reviewed` gate actually honors, with source `environment variable` — previously they reported only `RDM_GATES_REVIEWED`, so they could disagree with the gate. `RDM_REVIEWED_GATE` now wins over `RDM_GATES_REVIEWED` when both are set, so `config get` always reports what the gate enforces. `RDM_GATES_REVIEWED` and `RDM_PLAN_REVIEW` are now validated too: an invalid value of any of the three (anything but `true`/`false`) makes `config get` of that key fail with an error naming the variable; `config list` instead shows the error on that key's row and still lists every other key.
 
