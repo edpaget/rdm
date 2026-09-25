@@ -86,8 +86,13 @@
                      :project "p" :title "Review of t1" :snippet "Task"
                      :score 7)))
       (`("next" . ,_)
-       (list :result "phase" :roadmap "r1" :number 2 :stem "phase-2-two"
-             :status "in-progress"))
+       (pcase (rdm-ui-test--flag argv "roadmap")
+         ("blocked"
+          (list :result "blocked-on-dependencies" :roadmap "blocked"
+                :unmet (vector "r0" (list :roadmap "r9"))))
+         ("empty" (list :result "nothing" :roadmap "empty"))
+         (_ (list :result "phase" :roadmap "r1" :number 2 :stem "phase-2-two"
+                  :status "in-progress"))))
       (`("hook" "done-line" . ,_)
        (if-let* ((task (rdm-ui-test--flag argv "task")))
            (format "Done: task/%s\n" task)
@@ -241,6 +246,42 @@ no detail buffer can open, is dropped."
                     '(:kind review :identifier "2026-09-25-0000-abcd"))
                    "2026-09-25-0000-abcd"))
     (should-error (rdm-item-identifier '(:kind review)) :type 'user-error)))
+
+(ert-deftest rdm-pick/next-blocked ()
+  "A roadmap blocked on dependencies is a `user-error' naming every unmet
+dependency, non-string entries included."
+  (rdm-ui-test--mocked
+    (let ((err (should-error (rdm-next "blocked") :type 'user-error)))
+      (should (equal (cadr err)
+                     "rdm: blocked is blocked on r0, (:roadmap \"r9\")")))
+    (should (equal calls (list (rdm-ui-test--show "next" "--roadmap=blocked"))))))
+
+(ert-deftest rdm-pick/next-nothing ()
+  "A roadmap with nothing actionable returns nil and opens nothing."
+  (rdm-ui-test--mocked
+    (should-not (rdm-next "empty"))
+    (should (equal calls (list (rdm-ui-test--show "next" "--roadmap=empty"))))))
+
+(ert-deftest rdm-pick/next-worktree-roadmap ()
+  "Interactively, a roadmap or phase worktree names the roadmap; a task
+worktree falls back to the roadmap picker."
+  (dolist (wt '("r1" "r1/phase-2-two"))
+    (rdm-ui-test--mocked
+      (cl-letf (((symbol-function 'rdm-worktree-item)
+                 (lambda () (list :item wt)))
+                ((symbol-function 'completing-read)
+                 (lambda (&rest _) (error "Unexpected prompt"))))
+        (call-interactively #'rdm-next))
+      (should (equal (cadr calls) (rdm-ui-test--show "next" "--roadmap=r1")))
+      (should-not (member (rdm-ui-test--show "roadmap" "list") calls))))
+  (rdm-ui-test--mocked
+    (cl-letf (((symbol-function 'rdm-worktree-item)
+               (lambda () (list :item "task/t1"))))
+      (rdm-ui-test--answers '("r1")
+        (call-interactively #'rdm-next)))
+    (should (equal (reverse (cdr calls))
+                   (list (rdm-ui-test--show "roadmap" "list")
+                         (rdm-ui-test--show "next" "--roadmap=r1"))))))
 
 ;;;; Detail buffer
 
