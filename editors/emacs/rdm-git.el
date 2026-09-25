@@ -114,13 +114,15 @@ The first paragraph (the subject) never is."
                    (split-string (buffer-substring (+ (point) 2) end) "\n")))))
 
 (defun rdm-git-insert-trailer (line)
-  "Insert LINE (no trailing newline) at the commit message's trailer position."
+  "Insert LINE (no trailing newline) at the commit message's trailer position.
+An empty message keeps line 1 empty for the subject: LINE follows a
+blank line, and point stays on line 1."
   (save-excursion
     (let* ((limit (rdm-git--message-end))
            (end (progn (goto-char limit)
                        (skip-chars-backward " \t\n")
                        (point)))
-           (sep (cond ((= end (point-min)) "")
+           (sep (cond ((= end (point-min)) "\n\n")
                       ((rdm-git--trailer-block-p (point-min) end) "\n")
                       (t "\n\n"))))
       (delete-region end limit)

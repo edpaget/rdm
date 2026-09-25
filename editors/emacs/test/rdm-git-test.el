@@ -122,6 +122,24 @@ candidate."
   (should (equal (rdm-git-test--insert-into "feat: x\n" (list :item "task/t1"))
                  "feat: x\n\nDone: task/t1\n")))
 
+(ert-deftest rdm-git/empty-message-keeps-subject-line ()
+  "On a fresh commit buffer the subject typed at point stays on line 1."
+  (with-temp-buffer
+    (rdm-git-test-commit-mode)
+    (insert "\n" rdm-git-test--comments)
+    (goto-char (point-min))
+    (rdm-git-test--mocked (list :item "r1/phase-2-two") "main"
+      (rdm-insert-done-line))
+    (insert "fix: subject")
+    (let ((lines (split-string (buffer-string) "\n")))
+      (should (equal (nth 0 lines) "fix: subject"))
+      (should (equal (nth 1 lines) ""))
+      (should (equal (nth 2 lines) "Done: r1/phase-2-two"))
+      (should (string-prefix-p "#" (seq-find (lambda (l) (string-prefix-p "#" l))
+                                             (nthcdr 3 lines))))
+      (should (< (string-search "Done:" (buffer-string))
+                 (string-search "# Please" (buffer-string)))))))
+
 (ert-deftest rdm-git/preselect ()
   "`worktree current' drives the picker's default and order."
   (let ((all '("r0/phase-1-a" "r1/phase-2-two" "task/t1")))
