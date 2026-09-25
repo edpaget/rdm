@@ -90,10 +90,16 @@ pub fn run(
             .map(|resolved| resolved.source)
     };
 
-    let default_branch = repo_config.default_branch.as_deref().unwrap_or("main");
-    let default_branch_source =
-        paths::resolve_config_value("default_branch", raw_repo_config, global_config)
-            .map_or(ConfigSource::Default, |resolved| resolved.source);
+    let rdm_core::config::ResolvedValue {
+        value: default_branch,
+        source: default_branch_source,
+    } = rdm_core::config::resolve_default_branch(
+        project.as_deref(),
+        raw_repo_config,
+        global_config,
+        |k| std::env::var(k).ok(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // The global `--format` flag does double duty here: it selects info's
     // own rendering AND supplies the "flag" source/value for the reported
@@ -124,7 +130,7 @@ pub fn run(
         },
         InfoField {
             key: "default_branch",
-            value: Some(default_branch.to_string()),
+            value: Some(default_branch.clone()),
             source: Some(default_branch_source),
         },
         InfoField {
@@ -139,7 +145,7 @@ pub fn run(
             let info = InfoJson {
                 root: root_str,
                 project,
-                default_branch: default_branch.to_string(),
+                default_branch,
                 default_format,
             };
             println!(

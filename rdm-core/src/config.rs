@@ -872,6 +872,55 @@ pub fn resolve_plan_review(
     resolve_scoped_bool("plan_review", project, repo, global, env)
 }
 
+/// Resolves the default (trunk) branch name for `project`, with its source.
+///
+/// A projection of [`resolve_scoped_value`] for `default_branch`, so the
+/// precedence is that function's: `RDM_DEFAULT_BRANCH` →
+/// `[projects.<project>] default_branch` → the plan-repo-wide
+/// `default_branch` → the global `default_branch` → `"main"` (reported as
+/// [`ConfigSource::Default`]). A `None` project skips the project table.
+///
+/// `repo` must be the repo config as read from `rdm.toml`, not one already
+/// merged with `global`. `env` is injected so the rule stays a pure function;
+/// pass `|k| std::env::var(k).ok()` for the process environment.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::config::{resolve_default_branch, Config, ConfigSource, GlobalConfig};
+///
+/// let repo = Config::from_toml("[projects.a]\ndefault_branch = \"develop\"\n").unwrap();
+/// let global = GlobalConfig::default();
+///
+/// let a = resolve_default_branch(Some("a"), &repo, &global, |_| None).unwrap();
+/// assert_eq!(a.value, "develop");
+/// assert_eq!(a.source, ConfigSource::Project);
+///
+/// let b = resolve_default_branch(Some("b"), &repo, &global, |_| None).unwrap();
+/// assert_eq!(b.value, "main");
+/// assert_eq!(b.source, ConfigSource::Default);
+/// ```
+///
+/// # Errors
+///
+/// Returns the same errors as [`resolve_scoped_value`]; for `default_branch`
+/// none of its error conditions apply.
+pub fn resolve_default_branch(
+    project: Option<&str>,
+    repo: &Config,
+    global: &GlobalConfig,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<ResolvedValue<String>> {
+    Ok(
+        resolve_scoped_value("default_branch", project, repo, global, env)?.unwrap_or_else(|| {
+            ResolvedValue {
+                value: "main".to_string(),
+                source: ConfigSource::Default,
+            }
+        }),
+    )
+}
+
 /// Resolves a boolean project-scopable key, mapping "unset everywhere" to
 /// `false`.
 ///
@@ -2000,6 +2049,64 @@ effort = "xhigh"
                 env_of(&[("RDM_PLAN_REVIEW", "false")])
             )
             .unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_default_branch_defaults_to_main() {
+        let resolved = resolve_default_branch(
+            Some("a"),
+            &Config::default(),
+            &GlobalConfig::default(),
+            no_env,
+        )
+        .unwrap();
+        assert_eq!(resolved.value, "main");
+        assert_eq!(resolved.source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn resolve_default_branch_precedence() {
+        let config = Config::from_toml(
+            "default_branch = \"repo-branch\"\n\n[projects.a]\ndefault_branch = \"a-branch\"\n",
+        )
+        .unwrap();
+        let global = GlobalConfig {
+            default_branch: Some("global-branch".to_string()),
+            ..Default::default()
+        };
+        // Project override beats the plan-repo-wide value.
+        let a = resolve_default_branch(Some("a"), &config, &global, no_env).unwrap();
+        assert_eq!(
+            (a.value.as_str(), a.source),
+            ("a-branch", ConfigSource::Project)
+        );
+        // A project without an override falls back to the plan-repo-wide value.
+        let b = resolve_default_branch(Some("b"), &config, &global, no_env).unwrap();
+        assert_eq!(
+            (b.value.as_str(), b.source),
+            ("repo-branch", ConfigSource::Repo)
+        );
+        // `None` skips the project table.
+        let none = resolve_default_branch(None, &config, &global, no_env).unwrap();
+        assert_eq!(none.value, "repo-branch");
+        // The plan-repo-wide value beats global; global applies when it is unset.
+        let g = resolve_default_branch(Some("b"), &Config::default(), &global, no_env).unwrap();
+        assert_eq!(
+            (g.value.as_str(), g.source),
+            ("global-branch", ConfigSource::Global)
+        );
+        // The environment beats a project override.
+        let e = resolve_default_branch(
+            Some("a"),
+            &config,
+            &global,
+            env_of(&[("RDM_DEFAULT_BRANCH", "env-branch")]),
+        )
+        .unwrap();
+        assert_eq!(
+            (e.value.as_str(), e.source),
+            ("env-branch", ConfigSource::Env)
         );
     }
 

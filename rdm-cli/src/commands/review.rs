@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use rdm_core::anchor::ResolvedComment;
-use rdm_core::config::Config;
+use rdm_core::config::{Config, GlobalConfig};
 use rdm_core::document::Document;
 use rdm_core::model::{PhaseStatus, Review, ReviewState, ReviewTarget, TaskStatus};
 use rdm_core::ops::review::{PendingReviewItem, PendingReviewKind};
@@ -63,6 +63,8 @@ pub fn run(
     store: &mut AppStore,
     root: &Path,
     repo_config: &Config,
+    raw_repo_config: &Config,
+    global_config: &GlobalConfig,
     format: OutputFormat,
 ) -> Result<()> {
     match command {
@@ -82,7 +84,7 @@ pub fn run(
                 &project,
                 &source,
                 &item,
-                repo_config.default_branch.as_deref().unwrap_or("main"),
+                &project_default_branch(&project, raw_repo_config, global_config)?,
                 None,
             )?;
             println!("{}", serde_json::to_string_pretty(&identity)?);
@@ -340,7 +342,14 @@ pub fn run(
                 }
             }
             let (target, change_branch) = if is_change {
-                resolve_change_target(store, &project, repo_config, &parsed, base.as_deref())?
+                resolve_change_target(
+                    store,
+                    &project,
+                    raw_repo_config,
+                    global_config,
+                    &parsed,
+                    base.as_deref(),
+                )?
             } else {
                 (parsed, None)
             };
@@ -780,13 +789,14 @@ fn unresolved_comments(review: &Review) -> Vec<ResolvedComment> {
 fn resolve_change_target(
     store: &AppStore,
     project: &str,
-    repo_config: &Config,
+    raw_repo_config: &Config,
+    global_config: &GlobalConfig,
     parsed: &ReviewTarget,
     base: Option<&str>,
 ) -> Result<(ReviewTarget, Option<String>)> {
     #[cfg(not(feature = "git"))]
     {
-        let _ = (store, project, repo_config, parsed, base);
+        let _ = (store, project, raw_repo_config, global_config, parsed, base);
         bail!("this build has no git support — `change/` reviews require the `git` feature");
     }
     #[cfg(feature = "git")]
@@ -795,11 +805,11 @@ fn resolve_change_target(
             bail!("internal: resolve_change_target called on a non-change target");
         };
         let source = crate::source_repo::discover_source_repo(store, project)?;
-        let default_branch = rdm_core::ops::reviews::source_default_branch(
-            store,
-            project,
-            repo_config.default_branch.as_deref(),
-        );
+        // The frontmatter `source.default_branch` still wins; the
+        // project-resolved config value is the fallback beneath it.
+        let config_default = project_default_branch(project, raw_repo_config, global_config)?;
+        let default_branch =
+            rdm_core::ops::reviews::source_default_branch(store, project, Some(&config_default));
         Ok(rdm_core::change::resolve_change_target(
             &source,
             rev,
@@ -807,6 +817,23 @@ fn resolve_change_target(
             &default_branch,
         )?)
     }
+}
+
+/// Resolves `default_branch` for `project` from the process environment and
+/// the raw repo and global configs.
+fn project_default_branch(
+    project: &str,
+    raw_repo_config: &Config,
+    global_config: &GlobalConfig,
+) -> Result<String> {
+    Ok(rdm_core::config::resolve_default_branch(
+        Some(project),
+        raw_repo_config,
+        global_config,
+        |k| std::env::var(k).ok(),
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?
+    .value)
 }
 
 /// Resolves `--implements` for a `change/` review: the explicit reference

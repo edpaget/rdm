@@ -2602,3 +2602,180 @@ fn done_line_amended_onto_branch_tip_completes_after_ff_merge() {
     );
     assert_eq!(phase["commit"], landed.as_str(), "with the landed SHA");
 }
+
+// -- per-project default_branch --
+
+/// Appends `extra` to the plan repo's `rdm.toml`, first stripping any
+/// `default_project` line so the hook's project comes only from the env.
+fn write_plan_config(plan_dir: &TempDir, extra: &str) {
+    let path = plan_dir.path().join("rdm.toml");
+    let existing = fs::read_to_string(&path).unwrap_or_default();
+    let kept: String = existing
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("default_project"))
+        .map(|l| format!("{l}\n"))
+        .collect();
+    fs::write(&path, format!("{extra}\n{kept}")).unwrap();
+}
+
+/// Commits a fresh file on the project repo's current branch with `message`.
+fn commit_in_project(project_dir: &TempDir, file: &str, message: &str) {
+    fs::write(project_dir.path().join(file), file).unwrap();
+    let out = git_cmd()
+        .args(["add", file])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git add failed");
+    let out = git_cmd()
+        .args(["commit", "-m", message])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git commit failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn my_phase_status(plan_dir: &TempDir) -> String {
+    let out = rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    v["status"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn hook_post_commit_filters_on_the_projects_default_branch() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+    // Only the project table sets `default_branch`; the plan-repo-wide value
+    // is unset.
+    write_plan_config(
+        &plan_dir,
+        "[projects.test-proj]\ndefault_branch = \"develop\"\n",
+    );
+
+    commit_in_project(
+        &project_dir,
+        "on-main.txt",
+        "feat: on main\n\nDone: my-roadmap/phase-1-my-phase",
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+    assert_eq!(my_phase_status(&plan_dir), "not-started");
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("skip-branch branch=main default=develop"),
+        "log missing skip-branch: {log}"
+    );
+
+    git_cmd()
+        .args(["checkout", "-b", "develop"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    commit_in_project(
+        &project_dir,
+        "on-develop.txt",
+        "feat: on develop\n\nDone: my-roadmap/phase-1-my-phase",
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+    assert_eq!(my_phase_status(&plan_dir), "done");
+}
+
+#[test]
+fn hook_post_commit_without_a_project_still_skips_a_feature_branch() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+    write_plan_config(
+        &plan_dir,
+        "[projects.test-proj]\ndefault_branch = \"develop\"\n",
+    );
+
+    git_cmd()
+        .args(["checkout", "-b", "feature-x"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    commit_in_project(
+        &project_dir,
+        "feat.txt",
+        "feat: x\n\nDone: my-roadmap/phase-1-my-phase",
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env_remove("RDM_PROJECT")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("skip-branch branch=feature-x default=main"),
+        "log missing skip-branch: {log}"
+    );
+    assert_eq!(my_phase_status(&plan_dir), "not-started");
+}
+
+#[test]
+fn hook_post_commit_without_a_project_uses_the_plan_repo_wide_default_branch() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+    write_plan_config(&plan_dir, "default_branch = \"develop\"\n");
+
+    commit_in_project(
+        &project_dir,
+        "on-main.txt",
+        "feat: on main\n\nDone: my-roadmap/phase-1-my-phase",
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env_remove("RDM_PROJECT")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+    let log = read_log(&project_dir);
+    assert!(
+        log.contains("skip-branch branch=main default=develop"),
+        "log missing skip-branch: {log}"
+    );
+}

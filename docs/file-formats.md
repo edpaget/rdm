@@ -73,6 +73,8 @@ verify = "npm test"            # per-project override of dispatch.verify
 
 A project-scopable key resolves for a project in this order: its environment override (for `gates.reviewed`, `RDM_REVIEWED_GATE` first, the variable the gate itself honors; then `RDM_<KEY>`, e.g. `RDM_DISPATCH_VERIFY`; a boolean key's override must be the literal `true` or `false`, or resolution fails naming the variable), then `[projects.<name>]`, then the plan-repo-wide value, then the global config (only for `plan_review` and `default_branch`, which are not repo-only), then the default. `rdm config get <key> --project <name>` and `rdm config list --project <name>` report the resolved value and its source; `--project` on `config` is always explicit and is never taken from `RDM_PROJECT` or `default_project`.
 
+`default_branch` is resolved this way for the command's project by every consumer, with `RDM_DEFAULT_BRANCH` overriding it: the `Done:` post-commit hook's branch filter (its project comes from `RDM_PROJECT`, then `default_project`; with neither, the plan-repo-wide value applies), the `phase update`/`task update` needs-review "nothing to review" warning, `--source` and `rdm review source` binding, the `change/` review merge-base (beneath the project frontmatter's `source.default_branch`, which still wins where it is set), and `rdm info`.
+
 A global config file at `~/.config/rdm/config.toml` supports the same fields plus `root` (path to the plan repo). Repo-level settings in `rdm.toml` override global settings. The `--project` flag, `RDM_PROJECT` env var, and `default_project` config form a resolution chain (flag wins).
 
 ## `project.md`

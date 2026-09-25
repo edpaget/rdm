@@ -971,8 +971,12 @@ pub fn run_post_merge_hook(root: &Path, since: Option<&str>) -> Result<()> {
 /// Runs the post-commit hook logic: on the default branch, parse `Done:`
 /// directives from HEAD and mark matching phases/tasks done.
 ///
-/// Skips processing if the current branch is not the default branch
-/// (configured via `default_branch` in config, falling back to `"main"`).
+/// Skips processing if the current branch is not the default branch: the
+/// `default_branch` resolved for the hook's project (`RDM_PROJECT`, then
+/// `default_project` — the hook takes no `--project` flag) through
+/// `RDM_DEFAULT_BRANCH` → `[projects.<p>]` → `rdm.toml` → global → `"main"`.
+/// When no project resolves, the project table is skipped and the
+/// plan-repo-wide value applies.
 ///
 /// All errors are intentionally swallowed by the caller — this must never
 /// block a git commit. Execution is additionally bounded by
@@ -1030,15 +1034,39 @@ pub fn run_post_commit_hook(root: &Path) -> Result<()> {
         }
     };
     let hook_global_config = paths::load_global_config();
-    let hook_repo_config = paths::load_repo_config(root).with_global_defaults(&hook_global_config);
-    let default_branch = hook_repo_config.default_branch.as_deref().unwrap_or("main");
+    let hook_raw_repo_config = paths::load_repo_config(root);
+    let hook_repo_config = hook_raw_repo_config
+        .clone()
+        .with_global_defaults(&hook_global_config);
+    // Filter on the resolved project's `default_branch`. A resolution failure
+    // is not reported here: the branch check falls back to the plan-repo-wide
+    // value, and the failure surfaces on the default-branch path, where
+    // `apply_done_directives` resolves the project again.
+    let hook_project = paths::resolve_project(None, &hook_repo_config).ok();
+    let default_branch = match rdm_core::config::resolve_default_branch(
+        hook_project.as_deref(),
+        &hook_raw_repo_config,
+        &hook_global_config,
+        |k| std::env::var(k).ok(),
+    ) {
+        Ok(resolved) => resolved.value,
+        Err(e) => {
+            let msg = format!("{e}");
+            logger.log(hook, "config-error", &[("error", msg.as_str())]);
+            logger.log(hook, "exit", &[("ok", "false")]);
+            return Err(anyhow::anyhow!("{e}"));
+        }
+    };
     match current_branch.as_deref() {
-        Some(branch) if branch == default_branch => {}
+        Some(branch) if branch == default_branch.as_str() => {}
         other => {
             logger.log(
                 hook,
                 "skip-branch",
-                &[("branch", other.unwrap_or("")), ("default", default_branch)],
+                &[
+                    ("branch", other.unwrap_or("")),
+                    ("default", default_branch.as_str()),
+                ],
             );
             logger.log(hook, "exit", &[("ok", "true")]);
             return Ok(());

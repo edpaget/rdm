@@ -2986,3 +2986,88 @@ fn change_review_applied_commit_unknown_short_sha_hints_at_ambiguity() {
         "must hint that an abbreviated SHA may be ambiguous: {text}"
     );
 }
+
+// --- per-project default_branch feeds the change/ merge-base ---
+
+/// A source repo whose `develop` and `main` diverge: `develop` carries one
+/// commit beyond the shared root, `topic` branches from `develop`, and `main`
+/// then gains its own commit. The merge-bases of `topic` with `main` and with
+/// `develop` therefore differ.
+fn init_diverged_source_repo() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+    git(p, &["init", "-b", "main"]);
+    std::fs::create_dir_all(p.join("src")).unwrap();
+    std::fs::write(p.join("src/lib.rs"), BASE_FILE).unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "base"]);
+    git(p, &["checkout", "-b", "develop"]);
+    std::fs::write(p.join("develop.txt"), "develop\n").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "develop work"]);
+    git(p, &["checkout", "-b", "topic"]);
+    std::fs::write(p.join("src/lib.rs"), HEAD_FILE).unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "rename two"]);
+    git(p, &["checkout", "main"]);
+    std::fs::write(p.join("main.txt"), "main\n").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "main work"]);
+    git(p, &["checkout", "topic"]);
+    dir
+}
+
+fn set_project_default_branch(plan: &Path, project: &str, branch: &str) {
+    let path = plan.join("rdm.toml");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    std::fs::write(
+        &path,
+        format!("{existing}\n[projects.{project}]\ndefault_branch = \"{branch}\"\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn change_review_base_follows_the_projects_default_branch() {
+    let src = init_diverged_source_repo();
+    let plan = init_plan_repo(src.path());
+    set_project_default_branch(plan.path(), "demo", "develop");
+    create_plan(plan.path(), "design-plan", true);
+    let develop_base = git_out(src.path(), &["merge-base", "develop", "topic"]);
+    let main_base = git_out(src.path(), &["merge-base", "main", "topic"]);
+    assert_ne!(develop_base, main_base, "the fixture branches must diverge");
+
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["target"]["base"], develop_base);
+}
+
+#[test]
+fn change_review_frontmatter_default_branch_wins_over_the_projects_config() {
+    let src = init_diverged_source_repo();
+    let plan = init_plan_repo(src.path());
+    set_project_default_branch(plan.path(), "demo", "develop");
+    create_plan(plan.path(), "design-plan", true);
+    let project_path = plan.path().join("projects/demo/project.md");
+    let mut project = rdm_core::document::Document::<rdm_core::model::Project>::parse(
+        &std::fs::read_to_string(&project_path).unwrap(),
+    )
+    .unwrap();
+    project.frontmatter.source.as_mut().unwrap().default_branch = Some("main".to_string());
+    std::fs::write(project_path, project.render().unwrap()).unwrap();
+    let main_base = git_out(src.path(), &["merge-base", "main", "topic"]);
+
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["target"]["base"], main_base);
+}

@@ -337,7 +337,7 @@ fn table_format_rejected_with_actionable_message() {
 }
 
 // ---------------------------------------------------------------------------
-// default_branch precedence — repo > global > built-in default, NO env layer
+// default_branch precedence — env > project > repo > global > built-in default
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -375,25 +375,53 @@ fn default_branch_global_config_used_when_repo_unset() {
         ));
 }
 
-/// `default_branch` has no env-var layer in real resolution (unlike
-/// `default_project`/`default_format`) — `RDM_DEFAULT_BRANCH` must be
-/// ignored by `rdm info`, mirroring the `RDM_DEFAULT_PROJECT` mismatch this
-/// phase fixes for `project`.
+/// `default_branch` resolves through `RDM_DEFAULT_BRANCH` like every
+/// project-scopable key, so `rdm info` reports the env value and its source.
 #[test]
-fn default_branch_ignores_rdm_default_branch_env() {
+fn default_branch_honors_rdm_default_branch_env() {
     let root = bare_dir();
+    write_repo_config(&root, "default_branch = \"repo-branch\"\n");
 
     rdm()
-        .env("RDM_DEFAULT_BRANCH", "should-not-win")
+        .env("RDM_DEFAULT_BRANCH", "env-branch")
         .arg("--root")
         .arg(root.path())
         .arg("info")
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "default_branch: main  (source: default)",
-        ))
-        .stdout(predicate::str::contains("should-not-win").not());
+            "default_branch: env-branch  (source: environment variable)",
+        ));
+}
+
+#[test]
+fn default_branch_is_resolved_for_the_project() {
+    let root = bare_dir();
+    write_repo_config(&root, "[projects.a]\ndefault_branch = \"develop\"\n");
+
+    rdm()
+        .arg("--root")
+        .arg(root.path())
+        .args(["info", "--project", "a", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"default_branch\": \"develop\""));
+    rdm()
+        .arg("--root")
+        .arg(root.path())
+        .args(["info", "--project", "b", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"default_branch\": \"main\""));
+    rdm()
+        .arg("--root")
+        .arg(root.path())
+        .args(["info", "--project", "a"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "default_branch: develop  (source: project config)",
+        ));
 }
 
 // ---------------------------------------------------------------------------

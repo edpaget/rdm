@@ -23,8 +23,9 @@ rdm review start --on change/HEAD    --project <p>   # from inside a checkout
   would make two reviews of the same commit look like different targets.
 - **`base`** is the other end of the reviewed range: `--base <rev>` when
   given, otherwise the merge-base of `head` with the project's default branch
-  (`project.source.default_branch` → the plan repo's `rdm.toml`
-  `default_branch` → `main`). **No merge-base is an error naming `--base`**,
+  (`project.source.default_branch` → `default_branch` resolved for the
+  project: `RDM_DEFAULT_BRANCH` → `[projects.<p>]` → `rdm.toml` → global
+  → `main`). **No merge-base is an error naming `--base`**,
   never a silent fallback to the root commit or to `head` itself — either
   would produce an empty diff and make every quote out-of-hunk.
 - **`base` is provenance, not identity.** The reference grammar is

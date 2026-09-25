@@ -2077,3 +2077,59 @@ fn a_project_scoped_gate_refuses_only_that_projects_task_reviewed_write() {
     assert_eq!(status("a"), "needs-review");
     assert_eq!(status("b"), "reviewed");
 }
+
+// ---------------------------------------------------------------------------
+// `review source` defaults its base to the merge-base with the project's
+// `default_branch`: `[projects.<p>] default_branch`
+// ---------------------------------------------------------------------------
+
+#[test]
+fn review_source_base_follows_the_projects_default_branch() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let path = plan.path().join("rdm.toml");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    std::fs::write(
+        &path,
+        format!("{existing}\n[projects.demo]\ndefault_branch = \"develop\"\n"),
+    )
+    .unwrap();
+
+    // `develop` gains a commit and `main` then advances on its own; the
+    // roadmap worktree branches from `develop`, so its merge-bases with the
+    // two branches differ.
+    let p = src.path();
+    git(p, &["checkout", "-b", "develop"]);
+    std::fs::write(p.join("develop.txt"), "develop\n").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "develop work"]);
+    git(p, &["checkout", "main"]);
+    std::fs::write(p.join("main.txt"), "main\n").unwrap();
+    git(p, &["add", "."]);
+    git(p, &["commit", "-m", "main work"]);
+    git(p, &["checkout", "develop"]);
+    let wt = add_worktree(plan.path(), p);
+    let develop_base = rev_parse(&wt, "develop");
+    let main_base = rev_parse(&wt, "main~1");
+    assert_ne!(develop_base, main_base, "the fixture branches must diverge");
+
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "source",
+            "--on",
+            "phase/auth/phase-1-design",
+            "--project",
+            "demo",
+        ])
+        .current_dir(p)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let source: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(source["base"], develop_base);
+}

@@ -328,6 +328,33 @@ fn phase_update_respects_custom_default_branch() {
         );
 }
 
+/// Set `default_branch` for project `demo` only, leaving the plan-repo-wide
+/// value unset.
+fn set_project_default_branch(plan: &TempDir, branch: &str) {
+    let path = plan.path().join("rdm.toml");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    std::fs::write(
+        &path,
+        format!("{existing}\n[projects.demo]\ndefault_branch = \"{branch}\"\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn phase_update_respects_a_per_project_default_branch() {
+    let src = init_source_repo("develop");
+    git(src.path(), &["checkout", "-b", "roadmap/rm"]); // no new commit
+
+    let plan = init_plan_repo();
+    set_project_default_branch(&plan, "develop");
+
+    finalize_phase(&plan, src.path(), "phase-1-one")
+        .success()
+        .stderr(
+            predicate::str::contains("nothing to review").and(predicate::str::contains("develop")),
+        );
+}
+
 // ---------------------------------------------------------------------------
 // Task tests (no siblings → always the default-branch fallback).
 // ---------------------------------------------------------------------------
@@ -353,4 +380,17 @@ fn task_update_with_new_commit_emits_no_warning() {
     finalize_task(&plan, src.path(), "solo")
         .success()
         .stderr(predicate::str::contains("nothing to review").not());
+}
+
+#[test]
+fn task_update_respects_a_per_project_default_branch() {
+    let src = init_source_repo("develop");
+    git(src.path(), &["checkout", "-b", "feature"]); // no new commit beyond develop
+
+    let plan = init_plan_repo();
+    set_project_default_branch(&plan, "develop");
+
+    finalize_task(&plan, src.path(), "solo").success().stderr(
+        predicate::str::contains("nothing to review").and(predicate::str::contains("develop")),
+    );
 }

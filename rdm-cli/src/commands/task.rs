@@ -161,6 +161,17 @@ pub fn run(
             if explicit_source {
                 anyhow::bail!("explicit source binding requires git support");
             }
+            // This project's `default_branch`, shared by the `--source`
+            // binding and the needs-review warning below.
+            #[cfg(feature = "git")]
+            let default_branch = rdm_core::config::resolve_default_branch(
+                Some(&project),
+                raw_repo_config,
+                global_config,
+                |k| std::env::var(k).ok(),
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .value;
             #[cfg(feature = "git")]
             let source_binding = if explicit_source {
                 Some(commands::resolve_source_args(
@@ -168,7 +179,7 @@ pub fn run(
                     &project,
                     &source,
                     &rdm_core::link::ItemRef::Task { slug: slug.clone() },
-                    repo_config.default_branch.as_deref().unwrap_or("main"),
+                    &default_branch,
                     Some(root),
                 )?)
             } else {
@@ -248,7 +259,7 @@ pub fn run(
             // Tasks have no sibling phases, so they always use this baseline.
             #[cfg(feature = "git")]
             let needs_review_warning: Option<String> = review_sha.as_deref().and_then(|sha| {
-                let default_branch = repo_config.default_branch.as_deref().unwrap_or("main");
+                let default_branch = default_branch.as_str();
                 if review_branch.as_deref() == Some(default_branch) {
                     return None;
                 }
