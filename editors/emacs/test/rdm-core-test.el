@@ -199,6 +199,13 @@ rdm info runs with the env-resolved RDM_ROOT / RDM_PROJECT."
       (rdm-test-with-env (list (concat "RDM_BIN=" stub))
         (should (null (rdm-worktree-item)))))))
 
+(ert-deftest rdm-context/bin-not-dir-local-safe ()
+  "A directory-local `rdm-bin' names a program to run, so it is not safe;
+the root and project are only passed to rdm and stay safe."
+  (should-not (safe-local-variable-p 'rdm-bin "/tmp/x"))
+  (should (safe-local-variable-p 'rdm-root "/tmp/plan"))
+  (should (safe-local-variable-p 'rdm-project "p")))
+
 ;;;; Argv builder
 
 (ert-deftest rdm-argv/golden ()

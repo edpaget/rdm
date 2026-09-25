@@ -14,8 +14,8 @@
 ;;
 ;; - `rdm-context' maps the current buffer to the plan repo root, project,
 ;;   default branch and `rdm' binary it should act on.  Precedence is per
-;;   key: the buffer-local `rdm-root' / `rdm-project' / `rdm-bin' (dir-locals
-;;   safe), then the buffer's `process-environment' (`RDM_ROOT',
+;;   key: the buffer-local `rdm-root' / `rdm-project' (dir-locals safe) /
+;;   `rdm-bin' (not dir-locals safe: it names a program to run), then the buffer's `process-environment' (`RDM_ROOT',
 ;;   `RDM_PROJECT', `RDM_BIN', which mise.el populates per buffer from
 ;;   `.mise.toml'), then `rdm info --format json'.  The default branch comes
 ;;   only from `rdm info'.
@@ -55,9 +55,10 @@ When nil, `RDM_PROJECT' from the buffer's environment is used, then
 (defcustom rdm-bin nil
   "The `rdm' executable for this buffer, or nil to resolve it.
 When nil, `RDM_BIN' from the buffer's environment is used, then
-`executable-find'.  Safe as a directory-local variable."
-  :type '(choice (const :tag "Resolve" nil) file)
-  :safe #'string-or-null-p)
+`executable-find'.  Not marked safe as a directory-local variable: it
+names a program to run, so a cloned repo's .dir-locals.el must not
+set it silently."
+  :type '(choice (const :tag "Resolve" nil) file))
 
 (defcustom rdm-sync-timeout 30
   "Seconds `rdm-run-sync' waits for rdm before giving up."
