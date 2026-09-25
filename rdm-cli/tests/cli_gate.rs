@@ -1866,3 +1866,126 @@ fn task_started_head_scopes_review_source_to_the_tasks_own_commit() {
     assert_eq!(source["base"], base_head);
     assert_eq!(source["head"], task_head);
 }
+
+// ---------------------------------------------------------------------------
+// The gate resolves per project: `[projects.<p>] gates.reviewed`
+// ---------------------------------------------------------------------------
+
+/// Runs `rdm --root <plan>` with every gate env override removed, so only the
+/// config decides.
+fn rdm_at(plan: &Path) -> Command {
+    let mut cmd = rdm();
+    cmd.env_remove("RDM_GATES_REVIEWED").arg("--root").arg(plan);
+    cmd
+}
+
+#[test]
+fn a_project_scoped_gate_refuses_only_that_projects_reviewed_write() {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+    rdm_at(p).arg("init").assert().success();
+    for project in ["a", "b"] {
+        rdm_at(p)
+            .args(["project", "create", project])
+            .assert()
+            .success();
+        rdm_at(p)
+            .args([
+                "roadmap",
+                "create",
+                "auth",
+                "--title",
+                "Auth",
+                "--no-edit",
+                "--project",
+                project,
+            ])
+            .assert()
+            .success();
+        rdm_at(p)
+            .args([
+                "phase",
+                "create",
+                "design",
+                "--title",
+                "Design",
+                "--number",
+                "1",
+                "--no-edit",
+                "--roadmap",
+                "auth",
+                "--project",
+                project,
+            ])
+            .assert()
+            .success();
+        rdm_at(p)
+            .args([
+                "phase",
+                "update",
+                "phase-1-design",
+                "--status",
+                "needs-review",
+                "--no-edit",
+                "--roadmap",
+                "auth",
+                "--project",
+                project,
+            ])
+            .assert()
+            .success();
+    }
+    // Project `a` opts in; there is no plan-repo-wide `[gates]` table.
+    rdm_at(p)
+        .args(["config", "set", "gates.reviewed", "true", "--project", "a"])
+        .assert()
+        .success();
+
+    let mark = |project: &str| {
+        rdm_at(p)
+            .args([
+                "phase",
+                "update",
+                "phase-1-design",
+                "--status",
+                "reviewed",
+                "--no-edit",
+                "--roadmap",
+                "auth",
+                "--project",
+                project,
+            ])
+            .current_dir(p)
+            .assert()
+    };
+
+    let err = stderr_of(mark("a").failure());
+    assert!(
+        err.contains("rdm plan create"),
+        "project a's gate refuses with its first precondition: {err}"
+    );
+    mark("b").success();
+
+    let status = |project: &str| -> Value {
+        let out = rdm_at(p)
+            .args([
+                "phase",
+                "show",
+                "phase-1-design",
+                "--format",
+                "json",
+                "--roadmap",
+                "auth",
+                "--project",
+                project,
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice::<Value>(&out).unwrap()["status"].clone()
+    };
+    assert_eq!(status("a"), "needs-review");
+    assert_eq!(status("b"), "reviewed");
+}

@@ -585,8 +585,8 @@ impl Config {
 /// Precedence:
 ///
 /// 1. The environment: for `gates.reviewed` only, `RDM_REVIEWED_GATE` — the
-///    variable the `reviewed` gate itself honors, so it comes first and the
-///    resolver never disagrees with [`resolve_reviewed_gate`]; then the
+///    variable the `reviewed` gate has always honored, so it comes first;
+///    then the
 ///    generic `RDM_<KEY>` (dots become underscores, e.g.
 ///    `RDM_DISPATCH_VERIFY`). Every value of a boolean key (`gates.reviewed`,
 ///    `plan_review`) must be the literal `"true"` or `"false"`; other keys'
@@ -628,7 +628,7 @@ pub fn resolve_scoped_value(
     if key == "gates.reviewed"
         && let Some(v) = env("RDM_REVIEWED_GATE")
     {
-        return found(parse_reviewed_gate_env(&v)?.to_string(), ConfigSource::Env);
+        return found(parse_reviewed_env_of(&v)?.to_string(), ConfigSource::Env);
     }
     let generic_env = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
     // Every layer's value passes through `present`: a blank `dispatch.verify`
@@ -799,64 +799,124 @@ fn parse_bool_env(var: &str, value: &str) -> Result<bool> {
 ///
 /// Returns [`Error::InvalidConfigValue`] if `value` is anything other than
 /// `"true"` or `"false"`.
-pub fn parse_reviewed_gate_env(value: &str) -> Result<bool> {
+pub fn parse_reviewed_env_of(value: &str) -> Result<bool> {
     parse_bool_env("RDM_REVIEWED_GATE", value)
 }
 
 /// The name of the repo-level config file at a plan root.
 pub const REPO_CONFIG_FILE: &str = "rdm.toml";
 
-/// Resolves whether the core-enforced `reviewed` transition gate is enforcing.
+/// Resolves whether the core-enforced `reviewed` transition gate is enforcing
+/// for `project`.
 ///
 /// This is the **single rule** every interface shares. `rdm-cli`, `rdm-server`
-/// and any future front end call it rather than re-deriving the precedence,
-/// so the surfaces can never disagree about when the gate is on: an operator
-/// who sets `RDM_REVIEWED_GATE=true` gets the same answer from `rdm phase
-/// update` and from a `PATCH /phases/{id}`.
+/// and any future front end call it (or [`reviewed_gate_enabled_at`]) rather
+/// than re-deriving the precedence, so the surfaces can never disagree about
+/// when the gate is on: an operator who sets `RDM_REVIEWED_GATE=true` gets the
+/// same answer from `rdm phase update` and from a `PATCH /phases/{id}`.
 ///
-/// Precedence: `RDM_REVIEWED_GATE` (passed in as `env_value`, so the rule
-/// itself stays a pure function) → the config's `gates.reviewed` → `false`.
+/// It is a boolean projection of [`resolve_scoped_value`] for
+/// `gates.reviewed`, so the precedence is that function's: `RDM_REVIEWED_GATE`
+/// → the generic `RDM_GATES_REVIEWED` → `[projects.<project>] gates.reviewed`
+/// → the plan-repo-wide `gates.reviewed` → `false`. `gates.reviewed` is
+/// repo-only, so the global config is never read.
 ///
 /// Defaulting to `false` is load-bearing: the gate is opt-in, so no existing
 /// plan repo changes behavior on upgrade.
 ///
+/// `repo` must be the repo config as read from `rdm.toml`, not one already
+/// merged with the global config. `env` is injected so the rule stays a pure
+/// function; pass `|k| std::env::var(k).ok()` for the process environment.
+///
 /// # Errors
 ///
-/// Returns [`Error::InvalidConfigValue`] if `env_value` is anything other than
+/// Returns [`Error::InvalidConfigValue`] (naming the variable) if
+/// `RDM_REVIEWED_GATE` or `RDM_GATES_REVIEWED` is set to anything other than
 /// the literal `"true"` or `"false"` — a typo disables nothing silently.
-pub fn resolve_reviewed_gate(env_value: Option<&str>, config: Option<&Config>) -> Result<bool> {
-    if let Some(v) = env_value {
-        return parse_reviewed_gate_env(v);
-    }
-    Ok(config
-        .and_then(|c| c.gates.as_ref())
-        .and_then(|g| g.reviewed)
-        .unwrap_or(false))
+pub fn resolve_reviewed_gate(
+    project: Option<&str>,
+    repo: &Config,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<bool> {
+    resolve_scoped_bool(
+        "gates.reviewed",
+        project,
+        repo,
+        &GlobalConfig::default(),
+        env,
+    )
 }
 
-/// Loads `<plan_root>/rdm.toml` and resolves the `reviewed`-gate flag through
-/// [`resolve_reviewed_gate`], reading `RDM_REVIEWED_GATE` from the process
+/// Resolves whether `roadmap|phase|task create` stamps the reserved
+/// `needs-plan-review` tag for `project`.
+///
+/// A boolean projection of [`resolve_scoped_value`] for `plan_review`, so the
+/// precedence is that function's: `RDM_PLAN_REVIEW` → `[projects.<project>]
+/// plan_review` → the plan-repo-wide `plan_review` → the global
+/// `plan_review` → `false`.
+///
+/// `repo` must be the repo config as read from `rdm.toml`, not one already
+/// merged with `global`. `env` is injected so the rule stays a pure function;
+/// pass `|k| std::env::var(k).ok()` for the process environment.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidConfigValue`] if `RDM_PLAN_REVIEW` is set to
+/// anything other than the literal `"true"` or `"false"`.
+pub fn resolve_plan_review(
+    project: Option<&str>,
+    repo: &Config,
+    global: &GlobalConfig,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<bool> {
+    resolve_scoped_bool("plan_review", project, repo, global, env)
+}
+
+/// Resolves a boolean project-scopable key, mapping "unset everywhere" to
+/// `false`.
+///
+/// Config layers come from typed `bool` fields and env values were already
+/// validated by [`resolve_scoped_value`], so the resolved string is always
+/// `"true"` or `"false"`.
+fn resolve_scoped_bool(
+    key: &str,
+    project: Option<&str>,
+    repo: &Config,
+    global: &GlobalConfig,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<bool> {
+    Ok(resolve_scoped_value(key, project, repo, global, env)?
+        .is_some_and(|resolved| resolved.value == "true"))
+}
+
+/// Loads `<plan_root>/rdm.toml` and resolves the `reviewed`-gate flag for
+/// `project` through [`resolve_reviewed_gate`], reading the process
 /// environment.
 ///
 /// This is the entry point for callers that hold a plan root but no
-/// already-merged [`Config`] — the HTTP server, which re-reads the key on each
+/// already-loaded [`Config`] — the HTTP server, which re-reads the key on each
 /// mutation so an operator toggling the gate need not restart a long-lived
-/// process. A missing or malformed `rdm.toml` resolves to `false` rather than
-/// erroring: the gate is opt-in, and an unreadable config must never be the
-/// thing that turns it on.
+/// process. A missing or malformed `rdm.toml` resolves as the default config,
+/// so it never enables the gate: the gate is opt-in, and an unreadable config
+/// must never be the thing that turns it on.
 ///
 /// # Errors
 ///
-/// Returns [`Error::InvalidConfigValue`] if `RDM_REVIEWED_GATE` is set to
-/// anything other than the literal `"true"` or `"false"`.
-pub fn reviewed_gate_enabled_at(plan_root: &Path) -> Result<bool> {
+/// Returns the same errors as [`resolve_reviewed_gate`].
+pub fn reviewed_gate_enabled_at(plan_root: &Path, project: &str) -> Result<bool> {
+    reviewed_gate_enabled_at_with_env(plan_root, project, |k| std::env::var(k).ok())
+}
+
+fn reviewed_gate_enabled_at_with_env(
+    plan_root: &Path,
+    project: &str,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<bool> {
     let config = std::fs::read_to_string(plan_root.join(REPO_CONFIG_FILE))
         .ok()
-        .and_then(|c| Config::from_toml(&c).ok());
-    resolve_reviewed_gate(
-        std::env::var("RDM_REVIEWED_GATE").ok().as_deref(),
-        config.as_ref(),
-    )
+        .and_then(|c| Config::from_toml(&c).ok())
+        .unwrap_or_default();
+    resolve_reviewed_gate(Some(project), &config, env)
 }
 
 /// Validates that every configured profile effort is accepted by its host.
@@ -1716,14 +1776,14 @@ effort = "xhigh"
 
     #[test]
     fn parse_reviewed_gate_env_true_and_false() {
-        assert!(parse_reviewed_gate_env("true").unwrap());
-        assert!(!parse_reviewed_gate_env("false").unwrap());
+        assert!(parse_reviewed_env_of("true").unwrap());
+        assert!(!parse_reviewed_env_of("false").unwrap());
     }
 
     #[test]
     fn parse_reviewed_gate_env_invalid_rejected() {
         for bad in ["1", "yes", "True", "", "on"] {
-            let err = parse_reviewed_gate_env(bad).unwrap_err();
+            let err = parse_reviewed_env_of(bad).unwrap_err();
             assert!(
                 err.to_string().contains("RDM_REVIEWED_GATE"),
                 "expected the key named in: {err}"
@@ -1784,23 +1844,28 @@ effort = "xhigh"
     fn resolve_reviewed_gate_env_wins_over_config_in_both_directions() {
         let on = gates_config(Some(true));
         let off = gates_config(Some(false));
-        assert!(!resolve_reviewed_gate(Some("false"), Some(&on)).unwrap());
-        assert!(resolve_reviewed_gate(Some("true"), Some(&off)).unwrap());
+        let env_false = env_of(&[("RDM_REVIEWED_GATE", "false")]);
+        let env_true = env_of(&[("RDM_REVIEWED_GATE", "true")]);
+        assert!(!resolve_reviewed_gate(None, &on, &env_false).unwrap());
+        assert!(resolve_reviewed_gate(None, &off, &env_true).unwrap());
     }
 
     #[test]
     fn resolve_reviewed_gate_falls_back_to_config_then_false() {
-        assert!(resolve_reviewed_gate(None, Some(&gates_config(Some(true)))).unwrap());
-        assert!(!resolve_reviewed_gate(None, Some(&gates_config(Some(false)))).unwrap());
-        assert!(!resolve_reviewed_gate(None, Some(&gates_config(None))).unwrap());
-        assert!(!resolve_reviewed_gate(None, Some(&Config::default())).unwrap());
-        // No config at all — the server's missing-`rdm.toml` case.
-        assert!(!resolve_reviewed_gate(None, None).unwrap());
+        assert!(resolve_reviewed_gate(None, &gates_config(Some(true)), no_env).unwrap());
+        assert!(!resolve_reviewed_gate(None, &gates_config(Some(false)), no_env).unwrap());
+        assert!(!resolve_reviewed_gate(None, &gates_config(None), no_env).unwrap());
+        assert!(!resolve_reviewed_gate(None, &Config::default(), no_env).unwrap());
     }
 
     #[test]
     fn resolve_reviewed_gate_rejects_a_junk_env_value() {
-        let err = resolve_reviewed_gate(Some("yes"), Some(&gates_config(Some(true)))).unwrap_err();
+        let err = resolve_reviewed_gate(
+            None,
+            &gates_config(Some(true)),
+            env_of(&[("RDM_REVIEWED_GATE", "yes")]),
+        )
+        .unwrap_err();
         assert!(
             err.to_string().contains("RDM_REVIEWED_GATE"),
             "expected the key named in: {err}"
@@ -1808,24 +1873,177 @@ effort = "xhigh"
     }
 
     #[test]
+    fn resolve_reviewed_gate_honors_the_generic_rdm_gates_reviewed() {
+        // The generic `RDM_<KEY>` layer is a second env override the gate
+        // enforces: it enables the gate over an unset config...
+        let enabled = resolve_reviewed_gate(
+            None,
+            &Config::default(),
+            env_of(&[("RDM_GATES_REVIEWED", "true")]),
+        )
+        .unwrap();
+        assert!(enabled);
+        // ...disables it over an enabling one...
+        assert!(
+            !resolve_reviewed_gate(
+                None,
+                &gates_config(Some(true)),
+                env_of(&[("RDM_GATES_REVIEWED", "false")]),
+            )
+            .unwrap()
+        );
+        // ...but RDM_REVIEWED_GATE wins when both are set, in both directions.
+        let both_on = env_of(&[
+            ("RDM_REVIEWED_GATE", "true"),
+            ("RDM_GATES_REVIEWED", "false"),
+        ]);
+        let both_off = env_of(&[
+            ("RDM_REVIEWED_GATE", "false"),
+            ("RDM_GATES_REVIEWED", "true"),
+        ]);
+        assert!(resolve_reviewed_gate(None, &Config::default(), both_on).unwrap());
+        assert!(!resolve_reviewed_gate(None, &Config::default(), both_off).unwrap());
+        // An invalid value is a loud error naming the variable.
+        let err = resolve_reviewed_gate(
+            None,
+            &Config::default(),
+            env_of(&[("RDM_GATES_REVIEWED", "yes")]),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidConfigValue { key, .. } if key == "RDM_GATES_REVIEWED"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_reviewed_gate_honors_a_project_override() {
+        let config = Config::from_toml(
+            "[gates]\nreviewed = false\n\n[projects.a.gates]\nreviewed = true\n\n[projects.b]\nplan_review = true\n",
+        )
+        .unwrap();
+        // The project override beats the plan-repo-wide value...
+        assert!(resolve_reviewed_gate(Some("a"), &config, no_env).unwrap());
+        // ...and a project without one (or no project) reads the repo value.
+        assert!(!resolve_reviewed_gate(Some("b"), &config, no_env).unwrap());
+        assert!(!resolve_reviewed_gate(Some("c"), &config, no_env).unwrap());
+        assert!(!resolve_reviewed_gate(None, &config, no_env).unwrap());
+        // A project override that disables it beats an enabling repo value.
+        let config =
+            Config::from_toml("[gates]\nreviewed = true\n\n[projects.a.gates]\nreviewed = false\n")
+                .unwrap();
+        assert!(!resolve_reviewed_gate(Some("a"), &config, no_env).unwrap());
+        assert!(resolve_reviewed_gate(Some("b"), &config, no_env).unwrap());
+        // The env still wins over a project override.
+        assert!(
+            resolve_reviewed_gate(Some("a"), &config, env_of(&[("RDM_REVIEWED_GATE", "true")]))
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_plan_review_precedence() {
+        let global = GlobalConfig::default();
+        // Default false.
+        assert!(!resolve_plan_review(None, &Config::default(), &global, no_env).unwrap());
+        // Repo fallback.
+        let repo_on = Config {
+            plan_review: Some(true),
+            ..Default::default()
+        };
+        assert!(resolve_plan_review(Some("a"), &repo_on, &global, no_env).unwrap());
+        // Global applies when the repo is silent.
+        let global_on = GlobalConfig {
+            plan_review: Some(true),
+            ..Default::default()
+        };
+        assert!(resolve_plan_review(Some("a"), &Config::default(), &global_on, no_env).unwrap());
+        // The repo beats global.
+        let repo_off = Config {
+            plan_review: Some(false),
+            ..Default::default()
+        };
+        assert!(!resolve_plan_review(Some("a"), &repo_off, &global_on, no_env).unwrap());
+    }
+
+    #[test]
+    fn resolve_plan_review_honors_a_project_override() {
+        let config =
+            Config::from_toml("plan_review = true\n\n[projects.b]\nplan_review = false\n").unwrap();
+        let global = GlobalConfig::default();
+        assert!(resolve_plan_review(Some("a"), &config, &global, no_env).unwrap());
+        assert!(!resolve_plan_review(Some("b"), &config, &global, no_env).unwrap());
+        assert!(resolve_plan_review(None, &config, &global, no_env).unwrap());
+    }
+
+    #[test]
+    fn resolve_plan_review_env_wins_over_a_project_override_in_both_directions() {
+        let config = Config::from_toml(
+            "[projects.a]\nplan_review = true\n\n[projects.b]\nplan_review = false\n",
+        )
+        .unwrap();
+        let global = GlobalConfig::default();
+        assert!(
+            resolve_plan_review(
+                Some("b"),
+                &config,
+                &global,
+                env_of(&[("RDM_PLAN_REVIEW", "true")])
+            )
+            .unwrap()
+        );
+        assert!(
+            !resolve_plan_review(
+                Some("a"),
+                &config,
+                &global,
+                env_of(&[("RDM_PLAN_REVIEW", "false")])
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn resolve_plan_review_rejects_a_junk_env_value() {
+        let err = resolve_plan_review(
+            None,
+            &Config::default(),
+            &GlobalConfig::default(),
+            env_of(&[("RDM_PLAN_REVIEW", "yes")]),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("RDM_PLAN_REVIEW"), "{err}");
+    }
+
+    #[test]
     fn reviewed_gate_enabled_at_reads_the_repo_config() {
         let dir = tempfile::tempdir().unwrap();
+        let at = |p: &str| reviewed_gate_enabled_at_with_env(dir.path(), p, no_env).unwrap();
         // No rdm.toml at all — opt-in means off, never an error.
-        assert!(!reviewed_gate_enabled_at(dir.path()).unwrap());
+        assert!(!at("demo"));
 
         std::fs::write(
             dir.path().join(REPO_CONFIG_FILE),
             "[gates]\nreviewed = true\n",
         )
         .unwrap();
-        assert!(reviewed_gate_enabled_at(dir.path()).unwrap());
+        assert!(at("demo"));
 
         std::fs::write(
             dir.path().join(REPO_CONFIG_FILE),
             "[gates]\nreviewed = false\n",
         )
         .unwrap();
-        assert!(!reviewed_gate_enabled_at(dir.path()).unwrap());
+        assert!(!at("demo"));
+
+        // A project override is read for that project only.
+        std::fs::write(
+            dir.path().join(REPO_CONFIG_FILE),
+            "[projects.a.gates]\nreviewed = true\n",
+        )
+        .unwrap();
+        assert!(at("a"));
+        assert!(!at("b"));
     }
 
     #[test]
@@ -1837,7 +2055,7 @@ effort = "xhigh"
             "this is not = = toml [[[",
         )
         .unwrap();
-        assert!(!reviewed_gate_enabled_at(dir.path()).unwrap());
+        assert!(!reviewed_gate_enabled_at_with_env(dir.path(), "demo", no_env).unwrap());
     }
 
     // --- [projects.<name>] override layer ---
@@ -2131,8 +2349,7 @@ reviewed = true
         ];
         for (pairs, gate) in [(GATE_ON, "true"), (GATE_OFF, "false")] {
             let both = env_of(pairs);
-            let gate_decision =
-                resolve_reviewed_gate(both("RDM_REVIEWED_GATE").as_deref(), Some(&config)).unwrap();
+            let gate_decision = resolve_reviewed_gate(None, &config, &both).unwrap();
             assert_eq!(
                 resolve_scoped_value("gates.reviewed", None, &config, &global, &both).unwrap(),
                 resolved(&gate_decision.to_string(), ConfigSource::Env)

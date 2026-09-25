@@ -364,20 +364,118 @@ async fn an_enforcing_gate_does_not_block_other_transitions() {
 fn reviewed_gate_enabled_reads_the_repo_only_key() {
     let dir = TempDir::new().unwrap();
     // No rdm.toml at all: opt-in means off, and never an error.
-    assert!(!rdm_server::state::reviewed_gate_enabled(dir.path()).unwrap());
+    assert!(!rdm_server::state::reviewed_gate_enabled(dir.path(), PROJECT).unwrap());
 
     std::fs::write(dir.path().join("rdm.toml"), "[gates]\nreviewed = true\n").unwrap();
-    assert!(rdm_server::state::reviewed_gate_enabled(dir.path()).unwrap());
+    assert!(rdm_server::state::reviewed_gate_enabled(dir.path(), PROJECT).unwrap());
 
     std::fs::write(dir.path().join("rdm.toml"), "[gates]\nreviewed = false\n").unwrap();
-    assert!(!rdm_server::state::reviewed_gate_enabled(dir.path()).unwrap());
+    assert!(!rdm_server::state::reviewed_gate_enabled(dir.path(), PROJECT).unwrap());
 
     // A neighbouring key must not be mistaken for it, and a malformed config
     // must never be the thing that turns a gate on.
     std::fs::write(dir.path().join("rdm.toml"), "plan_review = true\n").unwrap();
-    assert!(!rdm_server::state::reviewed_gate_enabled(dir.path()).unwrap());
+    assert!(!rdm_server::state::reviewed_gate_enabled(dir.path(), PROJECT).unwrap());
     std::fs::write(dir.path().join("rdm.toml"), "not = = toml [[[").unwrap();
-    assert!(!rdm_server::state::reviewed_gate_enabled(dir.path()).unwrap());
+    assert!(!rdm_server::state::reviewed_gate_enabled(dir.path(), PROJECT).unwrap());
+
+    // A `[projects.<p>]` override is read for that project only.
+    std::fs::write(
+        dir.path().join("rdm.toml"),
+        "[gates]\nreviewed = false\n\n[projects.a.gates]\nreviewed = true\n",
+    )
+    .unwrap();
+    assert!(rdm_server::state::reviewed_gate_enabled(dir.path(), "a").unwrap());
+    assert!(!rdm_server::state::reviewed_gate_enabled(dir.path(), "b").unwrap());
+}
+
+// ---------------------------------------------------------------------------
+// The gate resolves per project: `[projects.<p>] gates.reviewed`
+// ---------------------------------------------------------------------------
+
+/// A plan repo with projects `a` and `b`, each holding roadmap `auth` with
+/// `phase-1-design` parked at `needs-review`, and an `rdm.toml` that enables
+/// the gate for project `a` only — no plan-repo-wide `[gates]` table.
+fn seed_two_project_repo() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let mut store = store_at(dir.path());
+    rdm_core::ops::init::init(&mut store).unwrap();
+    for project in ["a", "b"] {
+        rdm_core::ops::project::create_project(&mut store, project, project).unwrap();
+        rdm_core::ops::roadmap::create_roadmap(
+            &mut store,
+            rdm_core::ops::roadmap::CreateRoadmap {
+                project,
+                slug: ROADMAP,
+                title: "Auth",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::phase::create_phase(
+            &mut store,
+            rdm_core::ops::phase::CreatePhase {
+                project,
+                roadmap: ROADMAP,
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::phase::update_phase(
+            &mut store,
+            project,
+            ROADMAP,
+            STEM,
+            Some(PhaseStatus::NeedsReview),
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
+            None,
+            None,
+            None,
+            None,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
+        .unwrap();
+    }
+    flush(&mut store);
+    std::fs::write(
+        dir.path().join("rdm.toml"),
+        "[projects.a.gates]\nreviewed = true\n",
+    )
+    .unwrap();
+    dir
+}
+
+#[tokio::test]
+async fn a_project_scoped_gate_refuses_only_that_projects_reviewed_write() {
+    let dir = seed_two_project_repo();
+    let (addr, client) = spawn(dir.path()).await;
+
+    let (code, body) = patch_status(
+        &client,
+        addr,
+        &format!("/projects/a/roadmaps/{ROADMAP}/phases/{STEM}"),
+        "reviewed",
+    )
+    .await;
+    assert_eq!(code, 409, "project a is gated: {body}");
+    assert!(
+        detail(&body).contains("rdm plan create"),
+        "a gate refusal, not some other conflict: {body}"
+    );
+
+    let (code, body) = patch_status(
+        &client,
+        addr,
+        &format!("/projects/b/roadmaps/{ROADMAP}/phases/{STEM}"),
+        "reviewed",
+    )
+    .await;
+    assert_eq!(code, 200, "project b is not gated: {body}");
+    assert_eq!(body["status"], "reviewed");
 }
 
 // ---------------------------------------------------------------------------

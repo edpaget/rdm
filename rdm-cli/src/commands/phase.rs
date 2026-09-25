@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use rdm_core::config::Config;
+use rdm_core::config::{Config, GlobalConfig};
 use rdm_core::display;
 use rdm_core::json;
 use rdm_core::ops::{
@@ -182,6 +182,8 @@ pub fn run(
     store: &mut AppStore,
     root: &std::path::Path,
     repo_config: &Config,
+    raw_repo_config: &Config,
+    global_config: &GlobalConfig,
     format: OutputFormat,
 ) -> Result<()> {
     match command {
@@ -202,7 +204,13 @@ pub fn run(
             let body = resolve_body(body, no_edit)?;
             let difficulty_update = DifficultyUpdate::from_args(difficulty, false)?;
             let model_update = ModelTierUpdate::from_args(model, false)?;
-            let plan_review = paths::resolve_plan_review(repo_config)?;
+            let plan_review = rdm_core::config::resolve_plan_review(
+                Some(&project),
+                raw_repo_config,
+                global_config,
+                |k| std::env::var(k).ok(),
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
             let tags = rdm_core::tags::stamp_plan_review_tag(tags, plan_review);
             let doc = commit_mutation(store, "failed to create phase", |s| {
                 rdm_core::ops::phase::create_phase(
@@ -519,7 +527,11 @@ pub fn run(
             // Build the `reviewed` transition gate BEFORE the needs-review
             // warning is consumed below, so a gate refusal can never change
             // whether that warning was computed.
-            let gate_enabled = paths::resolve_reviewed_gate(repo_config)?;
+            let gate_enabled =
+                rdm_core::config::resolve_reviewed_gate(Some(&project), raw_repo_config, |k| {
+                    std::env::var(k).ok()
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let gate_actor = if override_gate.is_some() {
                 Some(paths::resolve_review_author(None)?)
             } else {

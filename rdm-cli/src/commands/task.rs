@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use rdm_core::config::Config;
+use rdm_core::config::{Config, GlobalConfig};
 use rdm_core::display;
 use rdm_core::json;
 use rdm_core::ops::{BodyUpdate, ReasonUpdate, TagsUpdate, TitleUpdate};
@@ -15,6 +15,8 @@ pub fn run(
     store: &mut AppStore,
     root: &std::path::Path,
     repo_config: &Config,
+    raw_repo_config: &Config,
+    global_config: &GlobalConfig,
     format: OutputFormat,
 ) -> Result<()> {
     match command {
@@ -31,7 +33,13 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
-            let plan_review = paths::resolve_plan_review(repo_config)?;
+            let plan_review = rdm_core::config::resolve_plan_review(
+                Some(&project),
+                raw_repo_config,
+                global_config,
+                |k| std::env::var(k).ok(),
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
             let tags = rdm_core::tags::stamp_plan_review_tag(tags, plan_review && !no_plan_review);
             commit_mutation(store, "failed to create task", |s| {
                 rdm_core::ops::task::create_task(
@@ -257,7 +265,11 @@ pub fn run(
             // Build the `reviewed` transition gate ABOVE the mutation, and
             // after the needs-review warning is computed, so a refusal cannot
             // change whether that warning exists.
-            let gate_enabled = paths::resolve_reviewed_gate(repo_config)?;
+            let gate_enabled =
+                rdm_core::config::resolve_reviewed_gate(Some(&project), raw_repo_config, |k| {
+                    std::env::var(k).ok()
+                })
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
             let gate_actor = if override_gate.is_some() {
                 Some(paths::resolve_review_author(None)?)
             } else {

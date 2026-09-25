@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, bail};
-use rdm_core::config::Config;
+use rdm_core::config::{Config, GlobalConfig};
 use rdm_core::display;
 use rdm_core::json;
 use rdm_core::ops::{BodyUpdate, PriorityUpdate, TagsUpdate, TitleUpdate};
@@ -15,6 +15,8 @@ pub fn run(
     command: RoadmapCommand,
     store: &mut AppStore,
     repo_config: &Config,
+    raw_repo_config: &Config,
+    global_config: &GlobalConfig,
     format: OutputFormat,
 ) -> Result<()> {
     match command {
@@ -30,7 +32,13 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let title = title.as_deref().unwrap_or(&slug);
             let body = resolve_body(body, no_edit)?;
-            let plan_review = paths::resolve_plan_review(repo_config)?;
+            let plan_review = rdm_core::config::resolve_plan_review(
+                Some(&project),
+                raw_repo_config,
+                global_config,
+                |k| std::env::var(k).ok(),
+            )
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
             let tags = rdm_core::tags::stamp_plan_review_tag(tags, plan_review);
             commit_mutation(store, "failed to create roadmap", |s| {
                 rdm_core::ops::roadmap::create_roadmap(

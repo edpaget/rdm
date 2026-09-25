@@ -13,6 +13,11 @@ the `needs-plan-review` gate tag on an item the same session authored?** It exis
 the question was forced by three production blocks, and because "make the classifier
 quieter" is not an acceptable answer to it.
 
+The tag itself is stamped by `roadmap|phase|task create` when `plan_review` resolves to
+true for the project the item is created in: `RDM_PLAN_REVIEW` → `[projects.<p>]
+plan_review` → the plan-repo-wide `plan_review` → the global `plan_review` → `false`
+(`rdm_core::config::resolve_plan_review`).
+
 ---
 
 ## The decision

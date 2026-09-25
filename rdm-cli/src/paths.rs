@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use rdm_core::config::{
     ConfigSource, GLOBAL_ONLY_KEYS, GlobalConfig, KNOWN_KEYS, ProjectOverrides, REPO_ONLY_KEYS,
-    ResolvedValue, format_quick_filters, parse_plan_review_env, parse_quick_filters_env,
+    ResolvedValue, format_quick_filters, parse_quick_filters_env,
 };
 
 /// Returns the path to the global config file.
@@ -226,60 +226,6 @@ pub fn load_repo_config(root: &Path) -> rdm_core::config::Config {
             rdm_core::config::Config::default()
         }
     }
-}
-
-/// Resolves whether plan-review tag stamping is enabled, from the
-/// `RDM_PLAN_REVIEW` env var and config.
-///
-/// The `config` should already have global defaults merged via
-/// [`rdm_core::config::Config::with_global_defaults`]. Priority: env →
-/// config `plan_review` → `false`.
-///
-/// # Errors
-///
-/// Returns an error if `RDM_PLAN_REVIEW` is set to a value other than the
-/// literal `"true"` or `"false"`.
-pub fn resolve_plan_review(config: &rdm_core::config::Config) -> Result<bool> {
-    resolve_plan_review_inner(std::env::var("RDM_PLAN_REVIEW").ok(), config)
-}
-
-fn resolve_plan_review_inner(
-    env_value: Option<String>,
-    config: &rdm_core::config::Config,
-) -> Result<bool> {
-    if let Some(v) = env_value {
-        return parse_plan_review_env(&v).map_err(|e| anyhow::anyhow!("{e}"));
-    }
-    Ok(config.plan_review.unwrap_or(false))
-}
-
-/// Resolves whether the core-enforced `reviewed` transition gate is enabled,
-/// from the `RDM_REVIEWED_GATE` env var and config.
-///
-/// The `config` should already have global defaults merged via
-/// [`rdm_core::config::Config::with_global_defaults`]. Priority: env → config
-/// `gates.reviewed` → `false`.
-///
-/// Defaulting to `false` is load-bearing: the gate is opt-in, so no existing
-/// plan repo — and none of rdm's own hermetic harnesses — changes behavior
-/// until a project deliberately sets `gates.reviewed`.
-///
-/// # Errors
-///
-/// Returns an error if `RDM_REVIEWED_GATE` is set to a value other than the
-/// literal `"true"` or `"false"`.
-pub fn resolve_reviewed_gate(config: &rdm_core::config::Config) -> Result<bool> {
-    resolve_reviewed_gate_inner(std::env::var("RDM_REVIEWED_GATE").ok(), config)
-}
-
-fn resolve_reviewed_gate_inner(
-    env_value: Option<String>,
-    config: &rdm_core::config::Config,
-) -> Result<bool> {
-    // The precedence rule itself lives in core, so this CLI, the HTTP server
-    // and any later front end cannot drift apart about when the gate is on.
-    rdm_core::config::resolve_reviewed_gate(env_value.as_deref(), Some(config))
-        .map_err(|e| anyhow::anyhow!("{e}"))
 }
 
 /// Resolves the output format from the CLI flag, `RDM_FORMAT` env var, and config.
@@ -752,98 +698,6 @@ mod tests {
         // Nothing available → actionable error.
         let err = resolve_review_author_inner(None, None, None).unwrap_err();
         assert!(err.to_string().contains("--author"));
-    }
-
-    #[test]
-    fn resolve_plan_review_env_true_wins_over_config() {
-        let config = rdm_core::config::Config {
-            plan_review: Some(false),
-            ..Default::default()
-        };
-        let result = resolve_plan_review_inner(Some("true".to_string()), &config).unwrap();
-        assert!(result);
-    }
-
-    #[test]
-    fn resolve_plan_review_env_false_wins_over_config() {
-        let config = rdm_core::config::Config {
-            plan_review: Some(true),
-            ..Default::default()
-        };
-        let result = resolve_plan_review_inner(Some("false".to_string()), &config).unwrap();
-        assert!(!result);
-    }
-
-    #[test]
-    fn resolve_plan_review_config_fallback() {
-        let config = rdm_core::config::Config {
-            plan_review: Some(true),
-            ..Default::default()
-        };
-        let result = resolve_plan_review_inner(None, &config).unwrap();
-        assert!(result);
-    }
-
-    #[test]
-    fn resolve_plan_review_default_false() {
-        let config = rdm_core::config::Config::default();
-        let result = resolve_plan_review_inner(None, &config).unwrap();
-        assert!(!result);
-    }
-
-    #[test]
-    fn resolve_plan_review_env_invalid_errors() {
-        let config = rdm_core::config::Config::default();
-        let err = resolve_plan_review_inner(Some("yes".to_string()), &config).unwrap_err();
-        assert!(err.to_string().contains("RDM_PLAN_REVIEW"));
-    }
-
-    // --- reviewed gate: the same five cases as its `plan_review` sibling ---
-
-    fn gate_config(reviewed: Option<bool>) -> rdm_core::config::Config {
-        rdm_core::config::Config {
-            gates: Some(rdm_core::config::GatesConfig { reviewed }),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn resolve_reviewed_gate_env_true_wins_over_config() {
-        let result =
-            resolve_reviewed_gate_inner(Some("true".to_string()), &gate_config(Some(false)))
-                .unwrap();
-        assert!(result);
-    }
-
-    #[test]
-    fn resolve_reviewed_gate_env_false_wins_over_config() {
-        // The direction that matters most: an operator must be able to turn a
-        // repo-enabled gate off for one invocation without editing rdm.toml.
-        let result =
-            resolve_reviewed_gate_inner(Some("false".to_string()), &gate_config(Some(true)))
-                .unwrap();
-        assert!(!result);
-    }
-
-    #[test]
-    fn resolve_reviewed_gate_config_fallback() {
-        let result = resolve_reviewed_gate_inner(None, &gate_config(Some(true))).unwrap();
-        assert!(result);
-    }
-
-    #[test]
-    fn resolve_reviewed_gate_default_false() {
-        // Opt-in: neither an absent `[gates]` table nor a present-but-empty
-        // one may enable the gate.
-        assert!(!resolve_reviewed_gate_inner(None, &rdm_core::config::Config::default()).unwrap());
-        assert!(!resolve_reviewed_gate_inner(None, &gate_config(None)).unwrap());
-    }
-
-    #[test]
-    fn resolve_reviewed_gate_env_invalid_errors() {
-        let err = resolve_reviewed_gate_inner(Some("yes".to_string()), &gate_config(Some(true)))
-            .unwrap_err();
-        assert!(err.to_string().contains("RDM_REVIEWED_GATE"));
     }
 
     #[test]

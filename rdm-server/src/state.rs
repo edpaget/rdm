@@ -27,13 +27,16 @@ use crate::templates::{QuickFilterView, quick_filter_views};
 pub type StoreFactory =
     Arc<dyn Fn(&Path, Option<&SessionId>) -> Box<dyn VersionedStore + Send + Sync> + Send + Sync>;
 
-/// Whether this plan repo enforces the core `reviewed` transition gate.
+/// Whether this plan repo enforces the core `reviewed` transition gate for
+/// `project`.
 ///
 /// A one-line delegation to [`rdm_core::config::reviewed_gate_enabled_at`],
-/// which owns the rule: `RDM_REVIEWED_GATE` → the repo-only `gates.reviewed`
-/// key → `false`. Core is the source of truth here deliberately — the CLI
-/// resolves the same flag through the same function, so the two surfaces
-/// cannot drift apart about when the gate is enforcing.
+/// which owns the rule: `RDM_REVIEWED_GATE` → `RDM_GATES_REVIEWED` →
+/// `[projects.<project>] gates.reviewed` → the plan-repo-wide `gates.reviewed`
+/// → `false`. Core is the source of truth here deliberately — the CLI
+/// resolves the same flag through the same rule
+/// ([`rdm_core::config::resolve_reviewed_gate`]), so the two surfaces cannot
+/// drift apart about when the gate is enforcing.
 ///
 /// It is read on each mutation rather than cached at boot, so an operator
 /// toggling the gate does not have to restart a long-lived server.
@@ -45,11 +48,15 @@ pub type StoreFactory =
 /// # Errors
 ///
 /// Returns [`rdm_core::error::Error::InvalidConfigValue`] if
-/// `RDM_REVIEWED_GATE` is set to anything other than `"true"` or `"false"`. A
+/// `RDM_REVIEWED_GATE` or `RDM_GATES_REVIEWED` is set to anything other than
+/// `"true"` or `"false"`. A
 /// missing or malformed `rdm.toml` is not an error — it resolves to `false`,
 /// because an unreadable config must never be the thing that enables a gate.
-pub fn reviewed_gate_enabled(plan_root: &std::path::Path) -> rdm_core::error::Result<bool> {
-    rdm_core::config::reviewed_gate_enabled_at(plan_root)
+pub fn reviewed_gate_enabled(
+    plan_root: &std::path::Path,
+    project: &str,
+) -> rdm_core::error::Result<bool> {
+    rdm_core::config::reviewed_gate_enabled_at(plan_root, project)
 }
 
 /// Shared application state for the rdm server.

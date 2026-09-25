@@ -406,7 +406,7 @@ pub async fn update_phase(
     // and must go through the gated entry. No worktree probe: an HTTP request
     // carries no project checkout, so the gate's cleanliness precondition is a
     // documented skip here — (a) and (b) still apply.
-    let gate = if crate::state::reviewed_gate_enabled(&state.plan_root)
+    let gate = if crate::state::reviewed_gate_enabled(&state.plan_root, &project)
         .map_err(|e| error_response(e, format))?
     {
         rdm_core::ops::ReviewedGate::enforcing(None)

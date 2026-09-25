@@ -156,17 +156,40 @@ fn run() -> Result<()> {
 
         Command::Roadmap { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::roadmap::run(command, &mut store, &repo_config, format)?;
+            commands::roadmap::run(
+                command,
+                &mut store,
+                &repo_config,
+                &raw_repo_config,
+                &global_config,
+                format,
+            )?;
         }
 
         Command::Phase { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::phase::run(command, &mut store, &root, &repo_config, format)?;
+            commands::phase::run(
+                command,
+                &mut store,
+                &root,
+                &repo_config,
+                &raw_repo_config,
+                &global_config,
+                format,
+            )?;
         }
 
         Command::Task { command } => {
             let mut store = commands::make_store(&root)?;
-            commands::task::run(command, &mut store, &root, &repo_config, format)?;
+            commands::task::run(
+                command,
+                &mut store,
+                &root,
+                &repo_config,
+                &raw_repo_config,
+                &global_config,
+                format,
+            )?;
         }
 
         Command::Plan { command } => {

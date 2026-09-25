@@ -453,3 +453,103 @@ fn search_tag_needs_plan_review_empty_when_plan_review_disabled() {
     let stdout = String::from_utf8(output).unwrap();
     assert_eq!(stdout.trim(), "[]");
 }
+
+// ---------------------------------------------------------------------------
+// `plan_review` resolves per project: `[projects.<p>] plan_review` overrides
+// the plan-repo-wide value, and `RDM_PLAN_REVIEW` overrides both.
+// ---------------------------------------------------------------------------
+
+/// A plan repo with projects `a` and `b`.
+fn init_two_projects() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("init")
+        .assert()
+        .success();
+    for project in ["a", "b"] {
+        rdm()
+            .arg("--root")
+            .arg(dir.path())
+            .args(["project", "create", project])
+            .assert()
+            .success();
+    }
+    dir
+}
+
+fn set_project_plan_review(dir: &TempDir, project: &str, value: &str) {
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["config", "set", "plan_review", value, "--project", project])
+        .assert()
+        .success();
+}
+
+/// Creates task `slug` in `project` (with `env` applied) and reports whether
+/// it was stamped with `needs-plan-review`.
+fn task_create_stamps(dir: &TempDir, project: &str, slug: &str, env: Option<&str>) -> bool {
+    let mut cmd = rdm();
+    cmd.env_remove("RDM_PLAN_REVIEW");
+    if let Some(v) = env {
+        cmd.env("RDM_PLAN_REVIEW", v);
+    }
+    cmd.arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            slug,
+            "--title",
+            "A task",
+            "--project",
+            project,
+            "--no-edit",
+        ])
+        .assert()
+        .success();
+    let out = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["task", "show", slug, "--project", project, "--no-body"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8_lossy(&out).contains("needs-plan-review")
+}
+
+#[test]
+fn task_create_honors_a_project_scoped_plan_review() {
+    let dir = init_two_projects();
+    enable_plan_review(&dir);
+    set_project_plan_review(&dir, "b", "false");
+
+    assert!(
+        task_create_stamps(&dir, "a", "in-a", None),
+        "project a inherits the plan-repo-wide plan_review = true"
+    );
+    assert!(
+        !task_create_stamps(&dir, "b", "in-b", None),
+        "project b's override turns the stamp off"
+    );
+}
+
+#[test]
+fn rdm_plan_review_env_overrides_a_project_scoped_value_in_both_directions() {
+    let dir = init_two_projects();
+    set_project_plan_review(&dir, "a", "true");
+    set_project_plan_review(&dir, "b", "false");
+
+    assert!(
+        task_create_stamps(&dir, "b", "env-on", Some("true")),
+        "RDM_PLAN_REVIEW=true must beat [projects.b] plan_review = false"
+    );
+    assert!(
+        !task_create_stamps(&dir, "a", "env-off", Some("false")),
+        "RDM_PLAN_REVIEW=false must beat [projects.a] plan_review = true"
+    );
+}

@@ -164,23 +164,32 @@ operator can tell instantly that the dirt was not theirs.
 
 ## Opt-in: `gates.reviewed`
 
-The gate is **off by default** and enabled per plan repo:
+The gate is **off by default** and enabled per plan repo, or per project:
 
 ```bash
-rdm config set gates.reviewed true     # repo-only; --global is refused
+rdm config set gates.reviewed true                  # repo-only; --global is refused
+rdm config set gates.reviewed true --project <p>    # this project only
 ```
 
-Resolution: `RDM_REVIEWED_GATE` env → `gates.reviewed` in `rdm.toml` → `false`.
-The env var is a loud override, not a fuzzy boolean: `"1"`, `"yes"`, `"True"`
-and `""` all error rather than silently resolving to `false` and quietly
-disabling the gate — mirroring `RDM_PLAN_REVIEW`.
+Resolution, for the project being written to: `RDM_REVIEWED_GATE` env →
+`RDM_GATES_REVIEWED` env → `[projects.<p>] gates.reviewed` in `rdm.toml` → the
+plan-repo-wide `gates.reviewed` → `false`. Both env vars are loud overrides,
+not fuzzy booleans: `"1"`, `"yes"`, `"True"` and `""` all error rather than
+silently resolving to `false` and quietly disabling the gate — mirroring
+`RDM_PLAN_REVIEW`. `RDM_REVIEWED_GATE` wins when both are set.
+`RDM_GATES_REVIEWED` (the generic `RDM_<KEY>` form `rdm config get` reports)
+is enforced by the gate itself since per-project resolution landed; before
+that only `RDM_REVIEWED_GATE` was.
 
-**That rule lives in core, once.** `rdm_core::config::resolve_reviewed_gate`
-(env value + config → bool) is the whole precedence, and
-`rdm_core::config::reviewed_gate_enabled_at` is the plan-root convenience over
-it for callers that hold no merged `Config`. `rdm-cli`'s
-`paths::resolve_reviewed_gate` and `rdm-server`'s
-`state::reviewed_gate_enabled` are both one-line delegations to those. This is
+**That rule lives in core, once.** `rdm_core::config::resolve_scoped_value`
+is the whole precedence for every project-scopable key;
+`rdm_core::config::resolve_reviewed_gate(project, repo, env)` is its boolean
+projection for `gates.reviewed`, and
+`rdm_core::config::reviewed_gate_enabled_at(plan_root, project)` is the
+plan-root convenience over it for callers that hold no loaded `Config`.
+`rdm-cli`'s `phase update`/`task update` call `resolve_reviewed_gate`, and
+`rdm-server`'s `state::reviewed_gate_enabled` is a one-line delegation to
+`reviewed_gate_enabled_at`. This is
 CLAUDE.md's layering contract applied to a config key: two interfaces
 re-deriving "is the gate on?" would drift — and the first draft of this phase
 proved it, because the server-side copy silently lacked the
@@ -189,7 +198,7 @@ now happens in exactly one place.
 
 A missing or malformed `rdm.toml` resolves to `false` rather than erroring: an
 unreadable config must never be the thing that *enables* a gate. An invalid
-`RDM_REVIEWED_GATE` still errors, on every surface.
+`RDM_REVIEWED_GATE` or `RDM_GATES_REVIEWED` still errors, on every surface.
 
 Defaulting off is not timidity. It is what lets the gate ship without changing
 behavior for a single existing plan repo, and what keeps rdm's own hermetic
@@ -208,7 +217,7 @@ orchestrator's terminal write — goes through the three preconditions for real.
 Two consequences worth stating plainly:
 
 - The hermetic harnesses are unaffected. Each seeds its own plan repo with no
-  `gates.reviewed` key, and resolution is per plan root, so they keep seeing
+  `gates.reviewed` key, and resolution is per plan root and project, so they keep seeing
   `NotApplicable`. Nothing about turning it on here leaks into a fixture.
 - The orchestrator surfaces a refusal **verbatim** and parks the item
   `blocked` with that text in its reason — except for one narrow case: a
