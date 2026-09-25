@@ -1989,3 +1989,91 @@ fn a_project_scoped_gate_refuses_only_that_projects_reviewed_write() {
     assert_eq!(status("a"), "needs-review");
     assert_eq!(status("b"), "reviewed");
 }
+
+#[test]
+fn a_project_scoped_gate_refuses_only_that_projects_task_reviewed_write() {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+    rdm_at(p).arg("init").assert().success();
+    for project in ["a", "b"] {
+        rdm_at(p)
+            .args(["project", "create", project])
+            .assert()
+            .success();
+        rdm_at(p)
+            .args([
+                "task",
+                "create",
+                "solo",
+                "--title",
+                "Solo",
+                "--no-edit",
+                "--project",
+                project,
+            ])
+            .assert()
+            .success();
+        rdm_at(p)
+            .args([
+                "task",
+                "update",
+                "solo",
+                "--status",
+                "needs-review",
+                "--no-edit",
+                "--project",
+                project,
+            ])
+            .assert()
+            .success();
+    }
+    // Project `a` opts in; there is no plan-repo-wide `[gates]` table.
+    rdm_at(p)
+        .args(["config", "set", "gates.reviewed", "true", "--project", "a"])
+        .assert()
+        .success();
+
+    let mark = |project: &str| {
+        rdm_at(p)
+            .args([
+                "task",
+                "update",
+                "solo",
+                "--status",
+                "reviewed",
+                "--no-edit",
+                "--project",
+                project,
+            ])
+            .current_dir(p)
+            .assert()
+    };
+
+    let err = stderr_of(mark("a").failure());
+    assert!(
+        err.contains("rdm plan create"),
+        "project a's gate refuses with its first precondition: {err}"
+    );
+    mark("b").success();
+
+    let status = |project: &str| -> Value {
+        let out = rdm_at(p)
+            .args([
+                "task",
+                "show",
+                "solo",
+                "--format",
+                "json",
+                "--project",
+                project,
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        serde_json::from_slice::<Value>(&out).unwrap()["status"].clone()
+    };
+    assert_eq!(status("a"), "needs-review");
+    assert_eq!(status("b"), "reviewed");
+}

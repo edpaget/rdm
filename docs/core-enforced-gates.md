@@ -198,7 +198,10 @@ now happens in exactly one place.
 
 A missing or malformed `rdm.toml` resolves to `false` rather than erroring: an
 unreadable config must never be the thing that *enables* a gate. An invalid
-`RDM_REVIEWED_GATE` or `RDM_GATES_REVIEWED` still errors, on every surface.
+`RDM_REVIEWED_GATE` or `RDM_GATES_REVIEWED` still errors, on every surface —
+and because the gate is resolved on every update, not only on a `reviewed`
+write, it fails **every** phase/task update on the CLI (`phase update`,
+`task update`) and on rdm-server (`PATCH`), whatever status is requested.
 
 Defaulting off is not timidity. It is what lets the gate ship without changing
 behavior for a single existing plan repo, and what keeps rdm's own hermetic

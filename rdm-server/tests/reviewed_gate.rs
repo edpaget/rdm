@@ -394,7 +394,7 @@ fn reviewed_gate_enabled_reads_the_repo_only_key() {
 // ---------------------------------------------------------------------------
 
 /// A plan repo with projects `a` and `b`, each holding roadmap `auth` with
-/// `phase-1-design` parked at `needs-review`, and an `rdm.toml` that enables
+/// `phase-1-design` and task `solo` parked at `needs-review`, and an `rdm.toml` that enables
 /// the gate for project `a` only — no plan-repo-wide `[gates]` table.
 fn seed_two_project_repo() -> TempDir {
     let dir = TempDir::new().unwrap();
@@ -439,6 +439,32 @@ fn seed_two_project_repo() -> TempDir {
             rdm_core::ops::TitleUpdate::Keep,
         )
         .unwrap();
+        rdm_core::ops::task::create_task(
+            &mut store,
+            rdm_core::ops::task::CreateTask {
+                project,
+                slug: TASK,
+                title: "Solo",
+                priority: Priority::Medium,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::task::update_task(
+            &mut store,
+            project,
+            TASK,
+            Some(TaskStatus::NeedsReview),
+            None,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
+            None,
+            None,
+            None,
+            None,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
+        .unwrap();
     }
     flush(&mut store);
     std::fs::write(
@@ -471,6 +497,35 @@ async fn a_project_scoped_gate_refuses_only_that_projects_reviewed_write() {
         &client,
         addr,
         &format!("/projects/b/roadmaps/{ROADMAP}/phases/{STEM}"),
+        "reviewed",
+    )
+    .await;
+    assert_eq!(code, 200, "project b is not gated: {body}");
+    assert_eq!(body["status"], "reviewed");
+}
+
+#[tokio::test]
+async fn a_project_scoped_gate_refuses_only_that_projects_task_reviewed_write() {
+    let dir = seed_two_project_repo();
+    let (addr, client) = spawn(dir.path()).await;
+
+    let (code, body) = patch_status(
+        &client,
+        addr,
+        &format!("/projects/a/tasks/{TASK}"),
+        "reviewed",
+    )
+    .await;
+    assert_eq!(code, 409, "project a is gated: {body}");
+    assert!(
+        detail(&body).contains("rdm plan create"),
+        "a gate refusal, not some other conflict: {body}"
+    );
+
+    let (code, body) = patch_status(
+        &client,
+        addr,
+        &format!("/projects/b/tasks/{TASK}"),
         "reviewed",
     )
     .await;
