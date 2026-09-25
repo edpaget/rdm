@@ -72,10 +72,11 @@ set it silently."
 
 (defcustom rdm-session nil
   "The rdm session id every rdm process this package runs carries.
-nil means one id generated per Emacs instance.  A string must consist
-of the characters A-Z, a-z, 0-9, `.', `_' and `-', at most 64 bytes,
-with at least one letter or digit: rdm would silently ignore anything
-else and fall back to another session."
+nil means one id generated per Emacs instance.  A string is passed to
+rdm as `RDM_SESSION' unchanged; rdm itself sanitizes it (trims it, drops
+characters outside A-Z, a-z, 0-9, `.', `_' and `-', and keeps the first
+64 bytes), and a value with nothing usable left, or only dots, falls
+through to rdm's next identity rung.  See docs/session-identity.md."
   :type '(choice (const :tag "One per Emacs instance" nil) string))
 
 (defvar rdm--context-cache (make-hash-table :test #'equal)
@@ -105,25 +106,13 @@ plan repo%s"
 (defvar rdm--generated-session nil
   "The session id generated for this Emacs instance, once needed.")
 
-(defun rdm--session-valid-p (id)
-  "Non-nil when ID is a session id rdm uses unchanged."
-  (and (stringp id)
-       (<= (string-bytes id) 64)
-       (string-match-p "\\`[A-Za-z0-9._-]+\\'" id)
-       (string-match-p "[A-Za-z0-9]" id)))
-
 (defun rdm-session-id ()
   "The `RDM_SESSION' value for rdm processes: `rdm-session' or a generated id.
-Signals a `user-error' when `rdm-session' is not a usable id."
-  (let ((id (or rdm-session
-                rdm--generated-session
-                (setq rdm--generated-session
-                      (format "emacs-%d-%06x" (emacs-pid)
-                              (random #x1000000))))))
-    (unless (rdm--session-valid-p id)
-      (user-error "rdm: `rdm-session' %S is not a usable session id: use \
-up to 64 of A-Z a-z 0-9 . _ -, including a letter or digit" id))
-    id))
+The value is passed through as given; rdm sanitizes it."
+  (or rdm-session
+      rdm--generated-session
+      (setq rdm--generated-session
+            (format "emacs-%d-%06x" (emacs-pid) (random #x1000000)))))
 
 ;;;; Runner
 

@@ -231,15 +231,15 @@ not the inherited one; a set `rdm-session' is used as given."
       (should (equal (car (car (last (rdm-transient-test--calls log))))
                      "my-session.1")))))
 
-(ert-deftest rdm-transient/session-rejects-unusable ()
-  "An `rdm-session' rdm would not use unchanged is refused before spawning."
+(ert-deftest rdm-transient/session-passed-verbatim ()
+  "A set `rdm-session' reaches rdm unchanged, even one rdm will sanitize:
+the package leaves session-id rules to core."
   (rdm-transient-test--with-stub nil
-    (dolist (bad '("bad id" "..." "-_-" ""))
-      (let ((rdm-session bad))
-        (should-error (rdm-plan-status) :type 'user-error)))
-    (let ((rdm-session (make-string 65 ?a)))
-      (should-error (rdm-plan-status) :type 'user-error))
-    (should-not (rdm-transient-test--calls log))))
+    (let ((rdm-session "my session"))
+      (rdm-plan-status))
+    (let ((calls (rdm-transient-test--calls log)))
+      (should calls)
+      (dolist (c calls) (should (equal (car c) "my session"))))))
 
 ;;;; Entry points
 
