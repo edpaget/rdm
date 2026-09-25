@@ -209,19 +209,27 @@ the root and project are only passed to rdm and stay safe."
 ;;;; Argv builder
 
 (ert-deftest rdm-argv/golden ()
-  "Every read has --format json, every write --no-edit, never both."
+  "Reads get --format json, writes --no-edit, text actions neither."
   (dolist (row rdm--actions)
     (let* ((action (car row))
            (argv (car (rdm-argv action "x" :project "p")))
            (scoped (if (plist-member (cdr row) :project)
                        (plist-get (cdr row) :project)
                      t)))
-      (if (rdm-action-read-p action)
-          (progn
-            (should (equal (last argv 2) '("--format" "json")))
-            (should-not (member "--no-edit" argv)))
-        (should (equal (last argv) '("--no-edit")))
-        (should-not (member "--format" argv)))
+      (pcase (plist-get (cdr row) :kind)
+        ('read
+         (should (rdm-action-read-p action))
+         (should (equal (last argv 2) '("--format" "json")))
+         (should-not (member "--no-edit" argv)))
+        ('write
+         (should-not (rdm-action-read-p action))
+         (should (equal (last argv) '("--no-edit")))
+         (should-not (member "--format" argv)))
+        ('text
+         (should-not (rdm-action-read-p action))
+         (should-not (member "--no-edit" argv))
+         (should-not (member "--format" argv)))
+        (kind (ert-fail (format "%s has unknown kind %s" action kind))))
       (should (eq (and (member "--project" argv) t) scoped))))
   (should (equal (rdm-argv 'task-update "fixture-task-open"
                            :status "done" :project "p")
@@ -256,7 +264,12 @@ the root and project are only passed to rdm and stay safe."
   (should (equal (rdm-argv 'task-list :status "all" :project "p")
                  '(("task" "list" "--status=all" "--project" "p"
                     "--format" "json"))))
-  (should (equal (rdm-argv 'status) '(("status" "--format" "json")))))
+  (should (equal (rdm-argv 'status) '(("status" "--format" "json"))))
+  ;; `hook done-line' prints plain text and rejects --project.
+  (should (equal (rdm-argv 'done-line :task "t" :project "p")
+                 '(("hook" "done-line" "--task=t"))))
+  (should (equal (rdm-argv 'done-line :roadmap "r" :phase "phase-1-x")
+                 '(("hook" "done-line" "--roadmap=r" "--phase=phase-1-x")))))
 
 (ert-deftest rdm-argv/body-stdin-exclusive ()
   "Both :body and :stdin, a missing project or an unknown action errors."
@@ -334,23 +347,9 @@ else echo '{\"tty\":false}'; fi")))
 
 ;;;; Against the real binary
 
-(defmacro rdm-core-test--with-real (&rest body)
-  "Run BODY against the binary and fixture the suite driver supplies.
-Binds `bin', `root' and `project'; `default-directory' is the plan repo.
-The environment keeps RDM_SESSION and drops every other `RDM_' variable."
-  (declare (indent 0) (debug t))
-  `(let ((bin (getenv "RDM_TEST_BIN"))
-         (root (getenv "RDM_TEST_ROOT"))
-         (project (getenv "RDM_TEST_PROJECT"))
-         (session (getenv "RDM_SESSION")))
-     (skip-unless (and bin root project))
-     (let ((default-directory (file-name-as-directory root)))
-       (rdm-test-with-env (when session (list (concat "RDM_SESSION=" session)))
-         ,@body))))
-
 (ert-deftest rdm-context/real-info ()
   "With RDM_ROOT / RDM_PROJECT in the environment, rdm info supplies the branch."
-  (rdm-core-test--with-real
+  (rdm-test-with-real
     (setq process-environment
           (append (list (concat "RDM_ROOT=" root) (concat "RDM_PROJECT=" project))
                   process-environment))
@@ -364,7 +363,7 @@ The environment keeps RDM_SESSION and drops every other `RDM_' variable."
 (ert-deftest rdm-context/real-no-env ()
   "With no RDM_* and no global config, even inside the plan repo, the
 resolver signals the actionable error: rdm never resolves a root from cwd."
-  (rdm-core-test--with-real
+  (rdm-test-with-real
     (let ((process-environment
            (cons (concat "XDG_CONFIG_HOME=" (make-temp-file "rdm-xdg" t))
                  process-environment)))
@@ -375,7 +374,7 @@ resolver signals the actionable error: rdm never resolves a root from cwd."
 
 (ert-deftest rdm-context/real-global-config ()
   "With no RDM_*, a global config naming the plan resolves everything via rdm info."
-  (rdm-core-test--with-real
+  (rdm-test-with-real
     (let* ((xdg (make-temp-file "rdm-xdg" t))
            (process-environment (cons (concat "XDG_CONFIG_HOME=" xdg)
                                       process-environment)))
@@ -390,7 +389,7 @@ resolver signals the actionable error: rdm never resolves a root from cwd."
 
 (ert-deftest rdm-run/real-read ()
   "A real read parses to a plist, despite rdm's stderr hints."
-  (rdm-core-test--with-real
+  (rdm-test-with-real
     (setq process-environment
           (append (list (concat "RDM_ROOT=" root) (concat "RDM_PROJECT=" project))
                   process-environment))
@@ -400,7 +399,7 @@ resolver signals the actionable error: rdm never resolves a root from cwd."
 
 (ert-deftest rdm-run/real-write ()
   "A real write goes through --no-edit with stdin closed and EDITOR=false."
-  (rdm-core-test--with-real
+  (rdm-test-with-real
     (setq process-environment
           (append (list (concat "RDM_ROOT=" root) (concat "RDM_PROJECT=" project)
                         "EDITOR=false" "VISUAL=false")
@@ -415,7 +414,7 @@ resolver signals the actionable error: rdm never resolves a root from cwd."
 
 (ert-deftest rdm-run/real-write-dash-values ()
   "A title and a body starting with `-' reach the real binary intact."
-  (rdm-core-test--with-real
+  (rdm-test-with-real
     (setq process-environment
           (append (list (concat "RDM_ROOT=" root) (concat "RDM_PROJECT=" project)
                         "EDITOR=false" "VISUAL=false")

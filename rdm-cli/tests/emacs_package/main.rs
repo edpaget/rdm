@@ -12,8 +12,8 @@
 //!   dependency (evil, magit, consult, embark) must be skipped.
 //! - [`emacs_suite_with_init_dir`] runs with `--init-directory
 //!   $RDM_EMACS_INIT_DIR` (built from `editors/emacs/test/ci-init/init.el`),
-//!   loading its `init.el` first: a tagged test whose package is then loaded
-//!   must run, not skip.
+//!   loading its `init.el` first: every soft-dependency-tagged test must
+//!   run and pass, and evil, consult and embark must each have one.
 //!
 //! `emacs` is `$RDM_EMACS`, else the first `emacs` on `PATH`. Without one,
 //! or without `RDM_EMACS_INIT_DIR` for the second pass, a test prints a skip
@@ -48,6 +48,10 @@ const PASS_DEADLINE: Duration = Duration::from_secs(120);
 
 /// The soft dependencies whose tagged tests the passes police.
 const SOFT_DEPS: &[&str] = &["evil", "magit", "consult", "embark"];
+
+/// The soft dependencies the suite already has tagged tests for; the
+/// init-directory pass requires at least one of each to run.
+const TESTED_SOFT_DEPS: &[&str] = &["evil", "consult", "embark"];
 
 /// Whether a missing `emacs` or init directory fails instead of skipping.
 fn required() -> bool {
@@ -226,13 +230,19 @@ fn emacs_suite_with_init_dir() {
         &["-q", "--init-directory", &dir_arg],
         init.is_file().then_some(init.as_path()),
     );
-    let evil = tagged(&records, "evil");
-    assert!(!evil.is_empty(), "no evil-tagged test in the suite");
-    for r in evil {
-        assert_eq!(
-            r.result, "passed",
-            "{} is tagged evil and must run with RDM_EMACS_INIT_DIR",
-            r.name
+    for dep in TESTED_SOFT_DEPS {
+        assert!(
+            !tagged(&records, dep).is_empty(),
+            "no {dep}-tagged test in the suite"
         );
+    }
+    for dep in SOFT_DEPS {
+        for r in tagged(&records, dep) {
+            assert_eq!(
+                r.result, "passed",
+                "{} is tagged {dep} and must run with RDM_EMACS_INIT_DIR",
+                r.name
+            );
+        }
     }
 }

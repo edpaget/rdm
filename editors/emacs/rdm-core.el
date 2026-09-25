@@ -20,7 +20,8 @@
 ;;   `.mise.toml'), then `rdm info --format json'.  The default branch comes
 ;;   only from `rdm info'.
 ;; - `rdm-argv' turns an action from `rdm--actions' plus arguments into an
-;;   argv: every read carries `--format json', every write `--no-edit'.
+;;   argv: every read carries `--format json', every write `--no-edit';
+;;   a text action (`hook done-line') carries neither.
 ;; - `rdm-run' / `rdm-run-sync' run rdm over pipes (never a pty), always
 ;;   close stdin, keep stderr out of the JSON stream, parse reads as JSON and
 ;;   return a write's stdout as text.  A non-zero exit is a `user-error'
@@ -231,9 +232,12 @@ process and signals an error.  Errors are re-signalled."
     (phase-create     :argv ("phase" "create")   :kind write)
     (phase-update     :argv ("phase" "update")   :kind write)
     (task-create      :argv ("task" "create")    :kind write)
-    (task-update      :argv ("task" "update")    :kind write))
-  "rdm actions: symbol, then the subcommand words, `:kind' read or write,
-and `:project' nil for commands that take no `--project'.")
+    (task-update      :argv ("task" "update")    :kind write)
+    (done-line        :argv ("hook" "done-line") :kind text :project nil))
+  "rdm actions: symbol, then the subcommand words, `:kind' and `:project'.
+`:kind' is `read' (JSON output, `--format json'), `write' (`--no-edit',
+text output) or `text' (no suffix flag, text output).  `:project' nil
+marks a command that takes no `--project'.")
 
 (defun rdm--action (action)
   "The `rdm--actions' row for ACTION, or an error."
@@ -252,10 +256,11 @@ passed as `--body=BODY' and `:stdin' becomes STDIN (not both); any
 other `:key' becomes `--key=VALUE', or a bare `--key' when VALUE is t,
 and is dropped when VALUE is nil.  Values are joined to their flag so
 one starting with `-' (a Markdown list, say) is never read as an
-option.  Reads get `--format json', writes `--no-edit'.
+option.  Reads get `--format json', writes `--no-edit', text actions
+neither.
 ARGV excludes the rdm program itself."
   (let* ((row (rdm--action action))
-         (read (eq (plist-get row :kind) 'read))
+         (kind (plist-get row :kind))
          (scoped (if (plist-member row :project) (plist-get row :project) t))
          positional flags project body stdin)
     (while args
@@ -284,7 +289,9 @@ ARGV excludes the rdm program itself."
                   flags
                   (when body (list (concat "--body=" body)))
                   (when scoped (list "--project" project))
-                  (if read '("--format" "json") '("--no-edit")))
+                  (pcase kind
+                    ('read '("--format" "json"))
+                    ('write '("--no-edit"))))
           stdin)))
 
 ;;;; Context resolver

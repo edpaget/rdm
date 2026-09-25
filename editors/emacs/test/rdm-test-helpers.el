@@ -42,6 +42,22 @@ both before and after BODY."
   "JSON text for a canned `rdm info' reply from plist FIELDS."
   (json-serialize (or fields '(:default_branch "main"))))
 
+(defmacro rdm-test-with-real (&rest body)
+  "Run BODY against the binary and fixture the suite driver supplies.
+Binds `bin', `root' and `project'; `default-directory' is the plan repo.
+The environment keeps RDM_SESSION and drops every other `RDM_' variable.
+Skips the test unless the suite driver supplies RDM_TEST_BIN,
+RDM_TEST_ROOT and RDM_TEST_PROJECT."
+  (declare (indent 0) (debug t))
+  `(let ((bin (getenv "RDM_TEST_BIN"))
+         (root (getenv "RDM_TEST_ROOT"))
+         (project (getenv "RDM_TEST_PROJECT"))
+         (session (getenv "RDM_SESSION")))
+     (skip-unless (and bin root project))
+     (let ((default-directory (file-name-as-directory root)))
+       (rdm-test-with-env (when session (list (concat "RDM_SESSION=" session)))
+         ,@body))))
+
 (defmacro rdm-test-with-soft-dep (feature &rest body)
   "Run BODY when FEATURE is loaded, else skip the test.
 Tag the test with FEATURE's name so the suite can tell a skip in the
