@@ -628,7 +628,7 @@ pub fn resolve_scoped_value(
     if key == "gates.reviewed"
         && let Some(v) = env("RDM_REVIEWED_GATE")
     {
-        return found(parse_reviewed_env_of(&v)?.to_string(), ConfigSource::Env);
+        return found(parse_reviewed_gate_env(&v)?.to_string(), ConfigSource::Env);
     }
     let generic_env = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
     // Every layer's value passes through `present`: a blank `dispatch.verify`
@@ -799,7 +799,7 @@ fn parse_bool_env(var: &str, value: &str) -> Result<bool> {
 ///
 /// Returns [`Error::InvalidConfigValue`] if `value` is anything other than
 /// `"true"` or `"false"`.
-pub fn parse_reviewed_env_of(value: &str) -> Result<bool> {
+pub fn parse_reviewed_gate_env(value: &str) -> Result<bool> {
     parse_bool_env("RDM_REVIEWED_GATE", value)
 }
 
@@ -1776,14 +1776,14 @@ effort = "xhigh"
 
     #[test]
     fn parse_reviewed_gate_env_true_and_false() {
-        assert!(parse_reviewed_env_of("true").unwrap());
-        assert!(!parse_reviewed_env_of("false").unwrap());
+        assert!(parse_reviewed_gate_env("true").unwrap());
+        assert!(!parse_reviewed_gate_env("false").unwrap());
     }
 
     #[test]
     fn parse_reviewed_gate_env_invalid_rejected() {
         for bad in ["1", "yes", "True", "", "on"] {
-            let err = parse_reviewed_env_of(bad).unwrap_err();
+            let err = parse_reviewed_gate_env(bad).unwrap_err();
             assert!(
                 err.to_string().contains("RDM_REVIEWED_GATE"),
                 "expected the key named in: {err}"

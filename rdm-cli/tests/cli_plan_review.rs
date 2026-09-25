@@ -538,6 +538,96 @@ fn task_create_honors_a_project_scoped_plan_review() {
     );
 }
 
+/// Runs `rdm --root <dir> <args>` with `RDM_PLAN_REVIEW` unset and returns
+/// its stdout.
+fn run_in(dir: &TempDir, args: &[&str]) -> String {
+    let out = rdm()
+        .env_remove("RDM_PLAN_REVIEW")
+        .arg("--root")
+        .arg(dir.path())
+        .args(args)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Creates roadmap `r` with phase 1 in `project` and reports whether the
+/// roadmap and the phase were each stamped with `needs-plan-review`.
+fn roadmap_and_phase_create_stamp(dir: &TempDir, project: &str) -> (bool, bool) {
+    run_in(
+        dir,
+        &[
+            "roadmap",
+            "create",
+            "r",
+            "--title",
+            "R",
+            "--project",
+            project,
+            "--no-edit",
+        ],
+    );
+    run_in(
+        dir,
+        &[
+            "phase",
+            "create",
+            "p",
+            "--title",
+            "P",
+            "--number",
+            "1",
+            "--roadmap",
+            "r",
+            "--project",
+            project,
+            "--no-edit",
+        ],
+    );
+    let roadmap = run_in(
+        dir,
+        &["roadmap", "show", "r", "--project", project, "--no-body"],
+    );
+    let phase = run_in(
+        dir,
+        &[
+            "phase",
+            "show",
+            "1",
+            "--roadmap",
+            "r",
+            "--project",
+            project,
+            "--no-body",
+        ],
+    );
+    (
+        roadmap.contains("needs-plan-review"),
+        phase.contains("needs-plan-review"),
+    )
+}
+
+#[test]
+fn roadmap_and_phase_create_honor_a_project_scoped_plan_review() {
+    let dir = init_two_projects();
+    enable_plan_review(&dir);
+    set_project_plan_review(&dir, "b", "false");
+
+    assert_eq!(
+        roadmap_and_phase_create_stamp(&dir, "a"),
+        (true, true),
+        "project a's roadmap and phase inherit the plan-repo-wide plan_review = true"
+    );
+    assert_eq!(
+        roadmap_and_phase_create_stamp(&dir, "b"),
+        (false, false),
+        "project b's override turns the roadmap and phase stamps off"
+    );
+}
+
 #[test]
 fn rdm_plan_review_env_overrides_a_project_scoped_value_in_both_directions() {
     let dir = init_two_projects();
