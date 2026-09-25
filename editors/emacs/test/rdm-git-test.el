@@ -154,12 +154,14 @@ candidate."
 
 ;;;; magit wiring
 
-(defun rdm-git-test--commit-buffer (&optional evil)
+(defun rdm-git-test--commit-buffer (&optional evil before)
   "A `git-commit-mode' buffer after `git-commit-setup-hook', and its messages.
-With EVIL, `evil-local-mode' is on in normal state first."
+With EVIL, `evil-local-mode' is on in normal state first.  BEFORE, if
+non-nil, is called in the buffer just before the hook runs; the result
+is (BUFFER MESSAGES . BEFORE-VALUE) instead of (BUFFER . MESSAGES)."
   (let ((buf (generate-new-buffer "COMMIT_EDITMSG"))
         (repo (make-temp-file "rdm-git-repo" t))
-        msg)
+        msg seen)
     (let ((default-directory repo)
           (process-environment (cons "GIT_DIR" (rdm-test-clean-environment))))
       (process-lines "git" "init" "-q"))
@@ -171,8 +173,11 @@ With EVIL, `evil-local-mode' is on in normal state first."
         (text-mode)
         (when evil (evil-local-mode 1) (evil-normal-state))
         (git-commit-mode 1)
+        (when before (setq seen (funcall before)))
         (run-hooks 'git-commit-setup-hook)))
-    (cons buf (string-join msg "\n"))))
+    (if before
+        (cons buf (cons (string-join msg "\n") seen))
+      (cons buf (string-join msg "\n")))))
 
 (ert-deftest rdm-git/magit-offer ()
   "The setup hook enables the offer and names the vanilla key, which no
@@ -209,14 +214,19 @@ magit or with-editor commit binding already owns."
   (rdm-test-with-soft-dep 'magit
     (rdm-test-with-soft-dep 'evil
       (require 'git-commit)
-      (let ((res (rdm-git-test--commit-buffer t)))
+      (let* ((zz (lambda ()
+                   (mapcar (lambda (k) (key-binding (kbd k))) '("ZZ" "ZQ"))))
+             (res (rdm-git-test--commit-buffer t zz)))
         (unwind-protect
             (with-current-buffer (car res)
               (should (eq evil-state 'normal))
-              (should (string-match-p "gd" (cdr res)))
+              (should (string-match-p "gd" (cadr res)))
               (should (eq (key-binding (kbd "gd")) #'rdm-insert-done-line))
-              (dolist (k '("ZZ" "ZQ"))
-                (should-not (eq (key-binding (kbd k)) #'rdm-insert-done-line))))
+              ;; ZZ/ZQ resolve to what they did before the setup hook ran.
+              (should (cddr res))
+              (should (equal (funcall zz) (cddr res)))
+              (dolist (b (cddr res))
+                (should-not (eq b #'rdm-insert-done-line))))
           (kill-buffer (car res)))))))
 
 (ert-deftest rdm-git/offer-autoloaded ()
