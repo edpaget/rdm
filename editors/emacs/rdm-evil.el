@@ -17,12 +17,14 @@
 ;;   q    quit the window
 ;;   y    copy the identifier of the item at point
 ;;   gd   copy the item's `Done:' commit line
+;;   x    the `rdm-dispatch' transient (status, tags, commit)
 ;;
 ;; Later phases add their evil bindings here.
 
 ;;; Code:
 
 (require 'rdm-view)
+(require 'rdm-transient)
 
 (declare-function evil-set-initial-state "ext:evil-core" (mode state))
 (declare-function evil-define-key* "ext:evil-core" (state keymap key def &rest bindings))
@@ -35,7 +37,8 @@
     (kbd "gr") #'revert-buffer
     (kbd "q") #'quit-window
     (kbd "y") #'rdm-view-copy-identifier
-    (kbd "gd") #'rdm-view-copy-done-line))
+    (kbd "gd") #'rdm-view-copy-done-line
+    (kbd "x") #'rdm-dispatch))
 
 (with-eval-after-load 'evil
   (rdm-evil-setup))

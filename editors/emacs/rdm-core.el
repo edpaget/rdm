@@ -25,13 +25,18 @@
 ;; - `rdm-run' / `rdm-run-sync' run rdm over pipes (never a pty), always
 ;;   close stdin, keep stderr out of the JSON stream, parse reads as JSON and
 ;;   return a write's stdout as text.  A non-zero exit is a `user-error'
-;;   carrying rdm's stderr.
+;;   carrying rdm's stderr.  Every process runs with `RDM_SESSION' set to
+;;   `rdm-session-id', so the plan-repo writes made from one Emacs form one
+;;   changeset that `rdm status' / `rdm commit' / `rdm discard' act on.
+;; - `rdm-status-values' reads the status values core declares for a kind
+;;   from `rdm describe'.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'json)
 (require 'project)
+(require 'seq)
 (require 'subr-x)
 
 (defgroup rdm nil
@@ -65,8 +70,19 @@ set it silently."
   "Seconds `rdm-run-sync' waits for rdm before giving up."
   :type 'number)
 
+(defcustom rdm-session nil
+  "The rdm session id every rdm process this package runs carries.
+nil means one id generated per Emacs instance.  A string must consist
+of the characters A-Z, a-z, 0-9, `.', `_' and `-', at most 64 bytes,
+with at least one letter or digit: rdm would silently ignore anything
+else and fall back to another session."
+  :type '(choice (const :tag "One per Emacs instance" nil) string))
+
 (defvar rdm--context-cache (make-hash-table :test #'equal)
   "Resolved contexts, keyed by `rdm--context-key'.")
+
+(defvar rdm--status-cache (make-hash-table :test #'equal)
+  "Status values from `rdm describe', keyed by (BINARY . KIND).")
 
 ;;;; Errors
 
@@ -83,6 +99,31 @@ RDM_PROJECT in the code repo's .mise.toml (or `rdm-root'/`rdm-project' in \
 plan repo%s"
    (abbreviate-file-name dir)
    (if detail (concat ": " detail) "")))
+
+;;;; Session
+
+(defvar rdm--generated-session nil
+  "The session id generated for this Emacs instance, once needed.")
+
+(defun rdm--session-valid-p (id)
+  "Non-nil when ID is a session id rdm uses unchanged."
+  (and (stringp id)
+       (<= (string-bytes id) 64)
+       (string-match-p "\\`[A-Za-z0-9._-]+\\'" id)
+       (string-match-p "[A-Za-z0-9]" id)))
+
+(defun rdm-session-id ()
+  "The `RDM_SESSION' value for rdm processes: `rdm-session' or a generated id.
+Signals a `user-error' when `rdm-session' is not a usable id."
+  (let ((id (or rdm-session
+                rdm--generated-session
+                (setq rdm--generated-session
+                      (format "emacs-%d-%06x" (emacs-pid)
+                              (random #x1000000))))))
+    (unless (rdm--session-valid-p id)
+      (user-error "rdm: `rdm-session' %S is not a usable session id: use \
+up to 64 of A-Z a-z 0-9 . _ -, including a letter or digit" id))
+    id))
 
 ;;;; Runner
 
@@ -154,10 +195,12 @@ as a condition to ON-ERROR (default: `message' it).
 
 DIRECTORY is the working directory (default `default-directory').  ENV
 is a list of \"VAR=value\" strings taking precedence over the calling
-buffer's `process-environment'.  Returns the process."
-  (let* ((default-directory (file-name-as-directory
+buffer's `process-environment'.  `RDM_SESSION' is always
+`rdm-session-id', whatever the environment says.  Returns the process."
+  (let* ((session (concat "RDM_SESSION=" (rdm-session-id)))
+         (default-directory (file-name-as-directory
                              (expand-file-name (or directory default-directory))))
-         (process-environment (append env process-environment))
+         (process-environment (cons session (append env process-environment)))
          (outbuf (generate-new-buffer " *rdm-out*" t))
          (errbuf (generate-new-buffer " *rdm-err*" t))
          (state (list :done nil :parse parse :argv (cdr command)
@@ -217,7 +260,10 @@ process and signals an error.  Errors are re-signalled."
 (defconst rdm--actions
   '((info             :argv ("info")             :kind read :project nil)
     (worktree-current :argv ("worktree" "current") :kind read :project nil)
-    (status           :argv ("status")           :kind read :project nil)
+    (describe         :argv ("describe")         :kind read :project nil)
+    (status           :argv ("status")           :kind text :project nil)
+    (commit           :argv ("commit")           :kind text :project nil)
+    (discard          :argv ("discard")          :kind text :project nil)
     (roadmap-list     :argv ("roadmap" "list")   :kind read)
     (roadmap-show     :argv ("roadmap" "show")   :kind read)
     (phase-list       :argv ("phase" "list")     :kind read)
@@ -351,9 +397,10 @@ resolves."
         (puthash key (rdm--resolve dir) rdm--context-cache))))
 
 (defun rdm-context-reset ()
-  "Forget every cached rdm context."
+  "Forget every cached rdm context and `rdm describe' status list."
   (interactive)
-  (clrhash rdm--context-cache))
+  (clrhash rdm--context-cache)
+  (clrhash rdm--status-cache))
 
 ;;;; Calling rdm with a resolved context
 
@@ -377,6 +424,21 @@ CALLBACK receives the result and ON-ERROR any error; see `rdm-run'."
 (defun rdm-call-sync (action &rest args)
   "Run ACTION with ARGS in this buffer's context and return the result."
   (apply #'rdm-run-sync (rdm--call-args action args)))
+
+(defun rdm-status-values (kind)
+  "The status values rdm declares for KIND (`phase' or `task'), in order.
+Read from the `status' field of `rdm describe KIND' and cached per rdm
+binary until `rdm-context-reset'.  nil for a kind without a status."
+  (let ((key (cons (plist-get (rdm-context) :rdm-bin) kind)))
+    (pcase (gethash key rdm--status-cache 'unset)
+      ('unset
+       (let* ((fields (plist-get (rdm-call-sync 'describe (symbol-name kind))
+                                 :fields))
+              (status (seq-find (lambda (f) (equal (plist-get f :name) "status"))
+                                fields))
+              (values (append (plist-get status :enum_values) nil)))
+         (puthash key values rdm--status-cache)))
+      (cached cached))))
 
 (defun rdm-worktree-item ()
   "The rdm item whose worktree holds `default-directory', or nil."

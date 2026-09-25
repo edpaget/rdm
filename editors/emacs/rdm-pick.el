@@ -21,7 +21,8 @@
 ;; completion `category' `rdm-item', whose `annotation-function' shows
 ;; status and tags (kind and tags for search hits) with or without
 ;; marginalia.  Embark finds its actions for that category in
-;; `rdm-item-embark-map'.  Neither consult nor embark is required.
+;; `rdm-item-embark-map', which includes `x' for the `rdm-dispatch'
+;; transient.  Neither consult nor embark is required.
 
 ;;; Code:
 
@@ -30,6 +31,7 @@
 (require 'subr-x)
 (require 'rdm-core)
 (require 'rdm-view)
+(require 'rdm-transient)
 
 (defvar embark-keymap-alist)
 (declare-function consult--read "ext:consult" (table &rest options))
@@ -258,6 +260,11 @@ a prefix argument always picks."
   (interactive (list (rdm-pick--read-item "Copy Done: line of: ")))
   (rdm-copy-done-line item))
 
+(defun rdm-item-dispatch (item)
+  "Open the `rdm-dispatch' transient on ITEM (an embark target)."
+  (interactive (list (rdm-pick--read-item "rdm-dispatch on: ")))
+  (rdm-dispatch-item item))
+
 (defvar-keymap rdm-item-embark-map
   :doc "Embark actions for `rdm-item' candidates.
 Later phases (and users) add actions with `keymap-set'; each action
@@ -266,7 +273,8 @@ through `rdm-item-from'."
   "RET" #'rdm-item-open
   "o" #'rdm-item-open-other-window
   "w" #'rdm-item-copy-identifier
-  "d" #'rdm-item-copy-done-line)
+  "d" #'rdm-item-copy-done-line
+  "x" #'rdm-item-dispatch)
 
 (with-eval-after-load 'embark
   (add-to-list 'embark-keymap-alist '(rdm-item rdm-item-embark-map)))

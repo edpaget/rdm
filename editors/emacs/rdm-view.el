@@ -17,7 +17,8 @@
 ;; picker, embark action, `RET' on a phase row and `rdm-next' goes through:
 ;; it runs `show --format json' (with `--at' for a historical body) and
 ;; renders the result in an `rdm-view-mode' buffer, a read-only
-;; `special-mode' buffer where `g' re-fetches and `q' quits.  A roadmap
+;; `special-mode' buffer where `g' re-fetches, `q' quits and `x' opens
+;; the `rdm-dispatch' transient (rdm-transient.el).  A roadmap
 ;; view lists its phases as rows carrying an `rdm-item' text property;
 ;; `RET' opens the row at point.  Evil bindings live in rdm-evil.el.
 
@@ -117,6 +118,7 @@ An item of another kind (a search hit) falls back to its `:identifier'."
 \\{rdm-view-mode-map}"
   (setq-local revert-buffer-function #'rdm-view--revert)
   (setq-local truncate-lines nil)
+  (require 'rdm-transient)
   (require 'rdm-evil))
 
 (defun rdm-view-item-at-point ()

@@ -264,7 +264,14 @@ the root and project are only passed to rdm and stay safe."
   (should (equal (rdm-argv 'task-list :status "all" :project "p")
                  '(("task" "list" "--status=all" "--project" "p"
                     "--format" "json"))))
-  (should (equal (rdm-argv 'status) '(("status" "--format" "json"))))
+  ;; `status', `commit' and `discard' print text and take no --project.
+  (should (equal (rdm-argv 'status :project "p") '(("status"))))
+  (should (equal (rdm-argv 'commit :message "-m msg" :project "p")
+                 '(("commit" "--message=-m msg"))))
+  (should (equal (rdm-argv 'discard :force t :project "p")
+                 '(("discard" "--force"))))
+  (should (equal (rdm-argv 'describe "task" :project "p")
+                 '(("describe" "task" "--format" "json"))))
   ;; `hook done-line' prints plain text and rejects --project.
   (should (equal (rdm-argv 'done-line :task "t" :project "p")
                  '(("hook" "done-line" "--task=t"))))
