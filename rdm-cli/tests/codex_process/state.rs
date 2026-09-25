@@ -373,6 +373,58 @@ fn caller_rdm_overrides_do_not_reach_direct_commands() {
 }
 
 #[test]
+fn per_call_env_forwards_rdm_values_but_identity_wins() {
+    let mut s = State::new();
+    let ctx = s.open();
+    let session = ctx["session"].as_str().unwrap().to_owned();
+    js_ok(
+        s.rdm(
+            &ctx,
+            &["show"],
+            json!({"env": {
+                "RDM_ROOT": "/elsewhere",
+                "RDM_SESSION": "x",
+                "RDM_BIN": "/elsewhere/rdm",
+                "RDM_PROJECT": "other",
+                "RDM_MAX_REFUTATIONS": "3",
+            }}),
+        ),
+        "rdm show",
+    );
+    let call = s.wait_for_call("show");
+    let env = |k: &str| call.env.get(k).map(String::as_str);
+    assert_eq!(env("RDM_ROOT"), s.plan.to_str());
+    assert_eq!(env("RDM_SESSION"), Some(session.as_str()));
+    assert_eq!(env("RDM_BIN"), s.bin.to_str());
+    assert_eq!(env("RDM_PROJECT"), Some("fixture"));
+    assert_eq!(env("RDM_MAX_REFUTATIONS"), Some("3"));
+    js_ok(s.method(&ctx, "finish", vec![json!({})]), "finish");
+}
+
+#[test]
+fn invalid_per_call_env_fails_before_execution() {
+    let mut s = State::new();
+    let ctx = s.open();
+    for opts in [
+        json!({"env": {"PATH": "x"}}),
+        json!({"env": {"rdm_lower": "x"}}),
+        json!({"env": {"RDM_X": 1}}),
+        json!({"env": {"RDM_X": "a\u{0}b"}}),
+        json!({"env": null}),
+        json!({"env": "RDM_X=1"}),
+    ] {
+        let e = js_err(s.rdm(&ctx, &["show"], opts.clone()), &format!("{opts}"));
+        assert!(
+            e.message
+                .contains("RDM env overrides must be RDM_* string values"),
+            "{opts}: {e}"
+        );
+    }
+    assert!(s.calls().is_empty(), "nothing was executed");
+    s.fail(&ctx, json!({"message": "test complete"}));
+}
+
+#[test]
 fn manifest_records_runner_identity() {
     let mut s = State::new();
     let ctx = s.open();
