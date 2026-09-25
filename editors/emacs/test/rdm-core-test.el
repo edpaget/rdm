@@ -243,6 +243,16 @@ the root and project are only passed to rdm and stay safe."
                            :project "p")
                  '(("task" "update" "t" "--title=-T" "--body=- item\n"
                     "--project" "p" "--no-edit"))))
+  ;; A `t' value is a bare flag; a nil value drops the flag entirely.
+  (should (equal (rdm-argv 'task-update "t" :clear-body t :project "p")
+                 '(("task" "update" "t" "--clear-body" "--project" "p"
+                    "--no-edit"))))
+  (should (equal (rdm-argv 'task-update "t" :status nil :title "T"
+                           :project "p")
+                 '(("task" "update" "t" "--title=T" "--project" "p"
+                    "--no-edit"))))
+  (should (equal (rdm-argv 'task-list :status nil :project "p")
+                 '(("task" "list" "--project" "p" "--format" "json"))))
   (should (equal (rdm-argv 'task-list :status "all" :project "p")
                  '(("task" "list" "--status=all" "--project" "p"
                     "--format" "json"))))
@@ -431,17 +441,26 @@ resolver signals the actionable error: rdm never resolves a root from cwd."
 (ert-deftest rdm-dev/reload ()
   "`rdm-dev-reload' re-initializes changed variables and clears the cache."
   (require 'rdm-dev)
-  (let ((saved-root (default-value 'rdm-root)))
+  (let ((saved-root (default-value 'rdm-root))
+        ;; Reload re-creates `rdm--context-cache', so a sentinel put in
+        ;; beforehand would vanish with or without a reset.  Seed the
+        ;; fresh table after every file load instead: only the reset that
+        ;; follows the loads can empty it.
+        (seed (lambda (&rest _)
+                (when (boundp 'rdm--context-cache)
+                  (puthash 'sentinel t rdm--context-cache)))))
     (unwind-protect
         (progn
           (setq-default rdm-root "/sentinel")
           (setq-default rdm-sync-timeout 999)
-          (puthash 'sentinel t rdm--context-cache)
+          (advice-add 'load :after seed)
           (let ((inhibit-message t))
             (rdm-dev-reload))
+          (advice-remove 'load seed)
           (should (null (default-value 'rdm-root)))
           (should (= rdm-sync-timeout 30))
           (should (= 0 (hash-table-count rdm--context-cache))))
+      (advice-remove 'load seed)
       (setq-default rdm-root saved-root))))
 
 (ert-deftest rdm-dev/not-shipped ()
