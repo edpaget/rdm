@@ -1347,3 +1347,85 @@ fn verify_env_override_wins_over_the_project_override() {
         "echo from-env"
     );
 }
+
+#[test]
+fn verify_empty_env_override_falls_through_to_the_project_override() {
+    let plan = init_multi_project_plan_repo();
+    let cwd = init_source_repo();
+    set_project_verify(plan.path(), "a", "echo from-a");
+    for blank in ["", "   \t "] {
+        let out = rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .env("RDM_DISPATCH_VERIFY", blank)
+            .args(["verify", "run", "--format", "json", "--project", "a"])
+            .current_dir(cwd.path())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let j = json_of(&String::from_utf8_lossy(&out));
+        assert_eq!(j["command"], "echo from-a", "{blank:?}");
+        assert!(j["tail"].as_str().unwrap().contains("from-a"), "{blank:?}");
+    }
+}
+
+#[test]
+fn verify_empty_env_override_with_nothing_configured_is_unresolved() {
+    let plan = init_plan_repo();
+    let cwd = init_source_repo();
+    for blank in ["", "  "] {
+        let out = rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .env("RDM_DISPATCH_VERIFY", blank)
+            .args(["verify", "run", "--format", "json", "--project", "demo"])
+            .current_dir(cwd.path())
+            .assert()
+            .code(2)
+            .get_output()
+            .stdout
+            .clone();
+        let j = json_of(&String::from_utf8_lossy(&out));
+        assert_eq!(j["resolved"], false, "{blank:?}");
+    }
+}
+
+#[test]
+fn verify_run_refuses_a_multi_line_env_override_naming_the_variable() {
+    let plan = init_plan_repo();
+    let cwd = init_source_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .env("RDM_DISPATCH_VERIFY", "echo one\necho two")
+        .args(["verify", "run", "--project", "demo"])
+        .current_dir(cwd.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("RDM_DISPATCH_VERIFY")
+                .and(predicate::str::contains("rdm config set").not()),
+        );
+}
+
+#[test]
+fn verify_run_executes_a_single_line_env_override() {
+    let plan = init_plan_repo();
+    let cwd = init_source_repo();
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .env("RDM_DISPATCH_VERIFY", "echo env-ran")
+        .args(["verify", "run", "--format", "json", "--project", "demo"])
+        .current_dir(cwd.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let j = json_of(&String::from_utf8_lossy(&out));
+    assert_eq!(j["exit"], 0);
+    assert!(j["tail"].as_str().unwrap().contains("env-ran"));
+}

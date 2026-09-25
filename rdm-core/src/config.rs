@@ -588,7 +588,8 @@ impl Config {
 ///    variable the `reviewed` gate itself honors, so it comes first and the
 ///    resolver never disagrees with [`resolve_reviewed_gate`]; then the
 ///    generic `RDM_<KEY>` (dots become underscores, e.g.
-///    `RDM_DISPATCH_VERIFY`). Every value of a boolean key (`gates.reviewed`,
+///    `RDM_DISPATCH_VERIFY`; a blank `RDM_DISPATCH_VERIFY` is trimmed and
+///    treated as unset). Every value of a boolean key (`gates.reviewed`,
 ///    `plan_review`) must be the literal `"true"` or `"false"`; other keys'
 ///    values are returned raw.
 /// 2. `repo.projects[project]`, when `project` is `Some`.
@@ -627,7 +628,17 @@ pub fn resolve_scoped_value(
         return found(parse_reviewed_gate_env(&v)?.to_string(), ConfigSource::Env);
     }
     let generic_env = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
-    if let Some(v) = env(&generic_env) {
+    // A blank `dispatch.verify` override is unset, exactly as a blank
+    // configured value is: honoring it would resolve to "" and let a
+    // verification gate pass without running anything.
+    let generic = env(&generic_env).and_then(|v| match key {
+        "dispatch.verify" => {
+            let t = v.trim();
+            (!t.is_empty()).then(|| t.to_string())
+        }
+        _ => Some(v),
+    });
+    if let Some(v) = generic {
         let v = match key {
             "gates.reviewed" | "plan_review" => parse_bool_env(&generic_env, &v)?.to_string(),
             _ => v,
@@ -1978,6 +1989,26 @@ reviewed = true
                 resolve_scoped_value(key, Some("a"), &config, &global, &env).unwrap(),
                 resolved(want, ConfigSource::Env),
                 "{key}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolver_treats_a_blank_verify_env_as_unset() {
+        let config = layered_config();
+        let global = global_with_scopables();
+        for blank in ["", "  \t "] {
+            let env = move |k: &str| (k == "RDM_DISPATCH_VERIFY").then(|| blank.to_string());
+            assert_eq!(
+                resolve_scoped_value("dispatch.verify", Some("a"), &config, &global, env).unwrap(),
+                resolved("a-verify", ConfigSource::Project),
+                "{blank:?}"
+            );
+            assert_eq!(
+                resolve_scoped_value("dispatch.verify", None, &Config::default(), &global, env)
+                    .unwrap(),
+                None,
+                "{blank:?}"
             );
         }
     }
