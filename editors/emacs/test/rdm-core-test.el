@@ -272,6 +272,17 @@ the root and project are only passed to rdm and stay safe."
       (should (eq (car got) 'user-error))
       (should (string-match-p "boom" (cadr got))))))
 
+(ert-deftest rdm-run/early-exit-large-stdin ()
+  "rdm exiting before it reads a stdin body larger than the pipe buffer
+still reports its exit status and stderr, not a broken pipe."
+  (let ((stub (rdm-test-stub "echo 'refused: bad arguments' >&2; exit 4"))
+        (body (make-string (* 1024 1024) ?x)))
+    (let ((msg (cadr (should-error (rdm-run-sync (list stub "x") :stdin body
+                                                 :timeout 10)
+                                   :type 'user-error))))
+      (should (string-match-p "refused: bad arguments" msg))
+      (should (string-match-p "exit 4" msg)))))
+
 (ert-deftest rdm-run/stderr-noise ()
   "Lots of stderr alongside valid JSON on stdout still parses."
   (let ((stub (rdm-test-stub "i=0

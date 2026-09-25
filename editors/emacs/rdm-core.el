@@ -179,8 +179,15 @@ buffer's `process-environment'.  Returns the process."
                   (signal (car err) (cdr err))))))
     (plist-put state :proc proc)
     (plist-put state :errproc errproc)
-    (when stdin (process-send-string proc stdin))
-    (process-send-eof proc)
+    ;; rdm may exit before reading all of STDIN (a usage error, say), so
+    ;; a body larger than the pipe buffer can fail to send with EPIPE.
+    ;; Swallow that: the sentinel still delivers rdm's exit status and
+    ;; stderr through `rdm--finish', which is the error worth reporting.
+    (condition-case nil
+        (progn
+          (when stdin (process-send-string proc stdin))
+          (process-send-eof proc))
+      (error nil))
     proc))
 
 (cl-defun rdm-run-sync (command &rest keys &key timeout &allow-other-keys)
