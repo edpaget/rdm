@@ -145,7 +145,8 @@ candidate."
   (let ((all '("r0/phase-1-a" "r1/phase-2-two" "task/t1")))
     (dolist (case `(((:item "r1/phase-2-two") ,all "r1/phase-2-two")
                     ((:item "task/t1") ,all "task/t1")
-                    ((:item "r1") ("r1/phase-2-two" "r0/phase-1-a" "task/t1") nil)
+                    ((:item "r1") ("r1/phase-2-two" "r0/phase-1-a" "task/t1")
+                     "r1/phase-2-two")
                     (nil ,all nil)))
       (with-temp-buffer
         (rdm-git-test-commit-mode)
@@ -153,6 +154,24 @@ candidate."
           (rdm-insert-done-line)
           (should (equal (car offered) (nth 1 case)))
           (should (equal (cdr offered) (nth 2 case))))))))
+
+(ert-deftest rdm-git/preselect-roadmap-order ()
+  "A bare roadmap with several active phases: no default, order kept."
+  (let ((all '("r1/phase-2-two" "r0/phase-1-a" "r1/phase-3-three" "task/t1")))
+    (should (equal (rdm-git-preselect all "r1")
+                   '(("r1/phase-2-two" "r1/phase-3-three" "r0/phase-1-a" "task/t1"))))
+    (should (equal (rdm-git-preselect all "r0") (cons (cons "r0/phase-1-a" (remove "r0/phase-1-a" all)) "r0/phase-1-a"))))
+  (let ((md nil))
+    (with-temp-buffer
+      (rdm-git-test-commit-mode)
+      (rdm-git-test--mocked (list :item "r1") "main"
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_p table &rest _)
+                     (setq md (completion-metadata "" table nil))
+                     (car (all-completions "" table)))))
+          (rdm-insert-done-line))))
+    (should (eq (completion-metadata-get md 'display-sort-function) #'identity))
+    (should (eq (completion-metadata-get md 'cycle-sort-function) #'identity))))
 
 (ert-deftest rdm-git/branch-warning ()
   "Off the default branch the line is inserted and a warning shown."

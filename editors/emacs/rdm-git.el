@@ -76,17 +76,19 @@ A phase's text is ROADMAP/STEM and a task's task/SLUG, the shapes
 
 (defun rdm-git-preselect (candidates worktree-item)
   "Order CANDIDATES for WORKTREE-ITEM; return (CANDIDATES . DEFAULT).
-A phase or task item that is a candidate becomes DEFAULT; a bare
-roadmap item moves that roadmap's phases first, with no default."
+A phase or task item that is a candidate becomes DEFAULT.  A bare
+roadmap item moves that roadmap's active phases first; when there is
+exactly one it becomes DEFAULT."
   (cond
    ((not (stringp worktree-item)) (cons candidates nil))
    ((member worktree-item candidates)
     (cons candidates (car (member worktree-item candidates))))
    ((not (string-search "/" worktree-item))
-    (let ((prefix (concat worktree-item "/")))
-      (cons (append (seq-filter (lambda (c) (string-prefix-p prefix c)) candidates)
-                    (seq-remove (lambda (c) (string-prefix-p prefix c)) candidates))
-            nil)))
+    (let* ((prefix (concat worktree-item "/"))
+           (mine (seq-filter (lambda (c) (string-prefix-p prefix c)) candidates)))
+      (cons (append mine (seq-remove (lambda (c) (string-prefix-p prefix c))
+                                     candidates))
+            (and (= (length mine) 1) (car mine)))))
    (t (cons candidates nil))))
 
 ;;;; Inserting
@@ -167,7 +169,7 @@ item is the default.  Warns when not on the default branch."
          (picked (rdm-git-preselect
                   (rdm-git-candidates)
                   (plist-get (ignore-errors (rdm-worktree-item)) :item)))
-         (item (rdm-pick-read "Done: " (car picked) (cdr picked)))
+         (item (rdm-pick-read "Done: " (car picked) (cdr picked) t))
          (line (string-trim-right
                 (apply #'rdm-call-sync 'done-line (rdm-item-done-line-args item))
                 "\n+"))

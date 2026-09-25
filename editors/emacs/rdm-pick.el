@@ -130,21 +130,27 @@ Only hits of `rdm-pick-search-kinds' are offered."
             (propertize (or (plist-get item :title) "") 'face 'completions-annotations)
             "  " (or (plist-get item :annotation) ""))))
 
-(defun rdm-pick-table (candidates)
-  "A completion table over CANDIDATES in category `rdm-item'."
-  (lambda (string pred action)
-    (if (eq action 'metadata)
-        '(metadata (category . rdm-item)
-                   (annotation-function . rdm-pick-annotate))
-      (complete-with-action action candidates string pred))))
+(defun rdm-pick-table (candidates &optional keep-order)
+  "A completion table over CANDIDATES in category `rdm-item'.
+With KEEP-ORDER, completion UIs show CANDIDATES in their given order."
+  (let ((metadata `(metadata (category . rdm-item)
+                             (annotation-function . rdm-pick-annotate)
+                             ,@(when keep-order
+                                 '((display-sort-function . identity)
+                                   (cycle-sort-function . identity))))))
+    (lambda (string pred action)
+      (if (eq action 'metadata)
+          metadata
+        (complete-with-action action candidates string pred)))))
 
-(defun rdm-pick-read (prompt candidates &optional default)
+(defun rdm-pick-read (prompt candidates &optional default keep-order)
   "Read one of CANDIDATES with PROMPT; return its item.
 DEFAULT, when non-nil, is the candidate offered as `completing-read's
-default."
+default.  KEEP-ORDER preserves the order of CANDIDATES."
   (unless candidates (user-error "rdm: nothing to pick"))
   (rdm-item--require
-   (completing-read prompt (rdm-pick-table candidates) nil t nil nil default)))
+   (completing-read prompt (rdm-pick-table candidates keep-order)
+                    nil t nil nil default)))
 
 (defun rdm-pick-read-roadmap (&optional prompt)
   "Read a roadmap with PROMPT; return its slug."
