@@ -690,6 +690,175 @@ fn refuter_prompt_is_the_representatives_single_finding_prompt() {
     }
 }
 
+// --- AC: what the consolidator is shown ---------------------------------------------
+
+/// The fields a consolidator row carries besides `id`, in the order the pipeline
+/// hands them over. Everything else a finder emits (its own `id`, `confidence`,
+/// `quote`, `recommendation`) stays out of the consolidator's input.
+const ROW_FIELDS: [&str; 7] = [
+    "concern",
+    "severity",
+    "location",
+    "path",
+    "what_fails",
+    "why",
+    "category",
+];
+
+/// A corpus whose findings each carry a different subset of the row fields,
+/// including a finder-set `concern`, `null` fields, and fields that must not
+/// reach the consolidator. Orders: c0 `p-a`, c1 `p-b` (dim 0); c2 `p-c`
+/// (dim 1); c3 `p-d`, c4 `p-e` (dim 2).
+fn prompt_corpus() -> [Vec<Value>; 3] {
+    [
+        vec![
+            f(
+                "p-a",
+                "blocking",
+                90,
+                json!({ "location": "src/a.rs:12", "path": "src/a.rs", "why": "why-a",
+                        "category": "null-handling", "quote": "qa", "recommendation": "rec-a" }),
+            ),
+            f(
+                "p-b",
+                "concern",
+                70,
+                json!({ "category": null, "path": null }),
+            ),
+        ],
+        vec![f(
+            "p-c",
+            "suggestion",
+            60,
+            json!({ "concern": "finder-set", "location": "docs/x.md", "category": "docs" }),
+        )],
+        vec![
+            f("p-d", "concern", 80, json!({ "why": "why-d" })),
+            f(
+                "p-e",
+                "blocking",
+                95,
+                json!({ "path": "src/e.rs", "category": "perf" }),
+            ),
+        ],
+    ]
+}
+
+/// Each finding of `corpus` with its flattened order and dimension key.
+fn flattened(mode: &str, corpus: &[Vec<Value>; 3]) -> Vec<(usize, &'static str, Value)> {
+    corpus
+        .iter()
+        .zip(reviewers(mode))
+        .flat_map(|(list, d)| list.iter().map(move |f| (d, f.clone())))
+        .enumerate()
+        .map(|(order, (d, f))| (order, d, f))
+        .collect()
+}
+
+/// The row the consolidator must see for one finding, built from the data:
+/// pipeline id `c<order>`, `concern` defaulted to the dimension key, and each
+/// other row field only when the finder set it to a non-null value.
+fn expected_row(order: usize, dim: &str, raw: &Value) -> Value {
+    let mut row = json!({ "id": format!("c{order}") });
+    for k in ROW_FIELDS {
+        let v = match raw.get(k) {
+            Some(v) if !v.is_null() => v.clone(),
+            _ if k == "concern" => json!(dim),
+            _ => continue,
+        };
+        row[k] = v;
+    }
+    row
+}
+
+/// The JSON rows a consolidator prompt carries: its final paragraph.
+fn prompt_rows(prompt: &str) -> Result<Value, Failure> {
+    let (_, payload) = prompt
+        .rsplit_once("\n\n")
+        .ok_or_else(|| Failure::Check(format!("no payload paragraph: {prompt}")))?;
+    serde_json::from_str(payload)
+        .map_err(|e| Failure::Check(format!("payload is not JSON ({e}): {payload}")))
+}
+
+fn consolidator_input(lib: &Lib, mode: &'static str) -> Outcome {
+    let mut js = Js::open(lib)?;
+    let corpus = prompt_corpus();
+    let rows = flattened(mode, &corpus);
+    let agent = fleet(
+        mode,
+        corpus.clone(),
+        Consolidator::NullThen(singletons()),
+        &[],
+        &[],
+    );
+    run(&mut js, mode, &agent, json!({}))?;
+    let calls = agent.calls_with("consolidate:");
+    check_eq!(calls.len(), 2, "{mode}: the first call and its retry");
+
+    let want_rows: Vec<Value> = rows
+        .iter()
+        .map(|(order, dim, raw)| expected_row(*order, dim, raw))
+        .collect();
+    let candidates: Vec<Value> = rows
+        .iter()
+        .map(|(order, dim, raw)| {
+            let mut finding = raw.clone();
+            finding["concern"] = raw
+                .get("concern")
+                .filter(|v| !v.is_null())
+                .cloned()
+                .unwrap_or_else(|| json!(dim));
+            json!({ "order": order, "finding": finding })
+        })
+        .collect();
+    let want_prompt = js.call("consolidatePrompt", vec![json!(mode), json!(candidates)])?;
+    let hygiene = js.get("INJECTION_HYGIENE")?;
+    let hygiene = hygiene
+        .as_str()
+        .ok_or_else(|| Failure::Check(format!("INJECTION_HYGIENE is not a string: {hygiene}")))?
+        .to_owned();
+    let schema = js.get("CONSOLIDATION_SCHEMA")?;
+
+    for call in &calls {
+        let label = &call.label;
+        check_eq!(
+            json!(call.prompt),
+            want_prompt,
+            "{mode} {label}: the prompt is consolidatePrompt over the run's candidates"
+        );
+        check_eq!(
+            prompt_rows(&call.prompt)?,
+            json!(want_rows),
+            "{mode} {label}: one row per candidate — pipeline id c<order>, its fields, absent and null fields omitted"
+        );
+        check!(
+            call.prompt.contains(&hygiene),
+            "{mode} {label}: the prompt carries the injection-hygiene paragraph"
+        );
+        check_eq!(
+            call.opts["schema"],
+            schema,
+            "{mode} {label}: the call is forced to the consolidation schema"
+        );
+    }
+    check_eq!(
+        (
+            schema["required"].clone(),
+            schema["properties"]["clusters"]["items"]["required"].clone()
+        ),
+        (json!(["clusters"]), json!(["ids", "why"])),
+        "{mode}: the schema asks for clusters of ids, each with a why"
+    );
+    Ok(())
+}
+
+#[test]
+fn consolidator_is_shown_each_candidates_row_under_its_schema() {
+    for mode in MODES {
+        run_real(|lib| consolidator_input(lib, mode));
+    }
+}
+
 // --- AC: determinism ----------------------------------------------------------------
 
 fn determinism(lib: &Lib, mode: &'static str) -> Outcome {

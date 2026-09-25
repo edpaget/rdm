@@ -3616,6 +3616,8 @@ export {
   REFUTER_LAUNDERING_GUARD,
   findPrompt,
   refutePrompt,
+  CONSOLIDATION_SCHEMA,
+  consolidatePrompt,
   isFullHexSha,
   reviewSourceCommand,
   FINDINGS_SCHEMA,
