@@ -548,9 +548,10 @@ function reviewSourceCommand(item, pin, rdmBin, projFlag, opts) {
 //| ### Find — one read-only agent per applicable dimension, in parallel
 //|
 //|code| The `rdm-wf-review-refute-fix` Workflow invoked in step 2 above performs
-//|code| this section and § Refute deterministically: it dispatches every finder and
-//|code| refuter agent itself, each on the resolved `review-find` / `review-verify`
-//|code| model and reasoning effort you pass it, so you never dispatch them by hand.
+//|code| this section, § Consolidate and § Refute deterministically: it dispatches
+//|code| every finder, consolidator and refuter agent itself, each on the resolved
+//|code| `review-find` / `review-consolidate` / `review-verify` model and reasoning
+//|code| effort you pass it, so you never dispatch them by hand.
 //|code| They are described here so you can explain its result.
 //|code|
 //| Each finder agent is told: you are a READ-ONLY reviewer, do not edit any
@@ -632,11 +633,25 @@ function findPrompt(mode, dim, context) {
 // the finder never grades its own work. The refuter's default stance is that the
 // finding is NOT real unless the code/plan proves it.
 //|
-//| ### Refute — a FRESH agent per GATING finding, in parallel
+//| ### Consolidate — group duplicates of one defect before refuting
 //|
-//| For every finding whose severity can gate the outcome, dispatch a **separate**
-//| read-only refuter. The agent that found an issue is never the agent that
-//| confirms it. The refuter starts from the stance *"this is NOT a real issue
+//| After every finder has reported and **before** any refuter is dispatched,
+//| group the findings that describe the **same underlying defect** — one fix
+//| would resolve every member. Sharing a file, a location or a theme is not
+//| enough; when unsure, keep findings separate. Each group becomes ONE unit that
+//| is refuted once and counts once against the refutation budget. A merged unit
+//| takes the most severe member's severity and the highest member confidence,
+//| carries the union of the members' dimensions, and gets **no** confidence
+//| boost for corroboration (the rationale lives with the consolidator's merge
+//| rule, `mergeCluster`). Its persisted comment names the contributing
+//| dimensions, the member finding ids and the reason they were grouped, so a
+//| merge is always reviewable.
+//|
+//| ### Refute — a FRESH agent per GATING unit, in parallel
+//|
+//| For every consolidated unit whose severity can gate the outcome, dispatch a
+//| **separate** read-only refuter — one per unit, not one per raw finding.
+//| The agent that found an issue is never the agent that confirms it. The refuter starts from the stance *"this is NOT a real issue
 //| unless the code proves otherwise"*, reads the actual cited location and its
 //| surrounding context, and returns `refuted` (boolean), a corrected `confidence`
 //| (0-100), and a rationale.
@@ -727,8 +742,8 @@ function findPrompt(mode, dim, context) {
 //| - A finding passed through un-refuted carries `unrefuted: true` and faces the
 //|   **same confidence floor** as everything else: the refuter is skipped, the
 //|   floor is not.
-//| - **Dedup** findings pointing at the same location / same root cause (the
-//|   fleet covers overlapping ground by design).
+//| - Duplicates were already **consolidated** before refuting (§ Consolidate):
+//|   each survivor is one defect, however many dimensions reported it.
 //| - **Rank** survivors by severity, then confidence, then id.
 //|code| - The AC table is returned as **structured data**, separate from the
 //|code|   findings list — never folded into a finding. A surviving FAIL/PARTIAL
@@ -1498,6 +1513,15 @@ async function consolidateCandidates(candidates, opts) {
 //              when both gates hit, the code round is the one reported.
 //   plan     — the plan gate's own last-round budget, kept separately because
 //              the two gates are counted independently.
+//   consolidated / collapsed / clustering — the SAME last round's consolidation
+//     accounting (units after consolidation, findings folded away, and the
+//     consolidator's `{ ran, retried, failedOpen, reason }` record). A round
+//     that predates consolidation reports `consolidated: produced`,
+//     `collapsed: 0`, `clustering: null` — never `undefined`.
+//   everFailedOpen — did ANY round (code or plan) have its consolidator fail
+//     open? The sibling of `everHit`: a later round that consolidated cleanly
+//     must not hide an earlier fail-open, which would otherwise read as "no
+//     duplicates found".
 function buildReviewBudget(budgetRounds, planBudget) {
   const rounds = Array.isArray(budgetRounds) ? budgetRounds.filter(Boolean) : [];
   const planRounds = Array.isArray(planBudget)
@@ -1522,6 +1546,10 @@ function buildReviewBudget(budgetRounds, planBudget) {
     everHit: hits.length > 0,
     hit: hits.length ? hits[hits.length - 1] : null,
     plan: plan,
+    consolidated: typeof last.consolidated === 'number' ? last.consolidated : last.produced,
+    collapsed: typeof last.collapsed === 'number' ? last.collapsed : 0,
+    clustering: last.clustering && typeof last.clustering === 'object' ? last.clustering : null,
+    everFailedOpen: planRounds.concat(rounds).some((b) => !!(b.clustering && b.clustering.failedOpen === true)),
   };
 }
 
@@ -1539,6 +1567,32 @@ function budgetSummaryClause(reviewBudget) {
   return (
     ' [review budget hit: ' + h.produced + ' produced, ' + h.graded + ' graded, ' + h.passedThroughBudget + ' ungraded]'
   );
+}
+
+// consolidationSummaryClause(reviewBudget) — the visible marker that makes a
+// consolidated run legible in a run summary: it names a collapse (so "graded 5
+// of 13" cannot hide that 4 of the 13 were one defect) and, distinctly, a
+// consolidator that FAILED OPEN in any round (so a failed consolidator never
+// reads as "no duplicates found"). Empty string when nothing collapsed and
+// nothing failed open, so an unconsolidated run's summary is byte-unchanged.
+//
+// Reads a buildReviewBudget projection. Deliberately free of quotes, `$` and
+// backticks — the constraint budgetSummaryClause / coverageSummaryClause
+// document, because the string is interpolated into gate `--reason` flags — so
+// `clustering.reason` (which can carry validator text) is NEVER interpolated;
+// it stays in `reviewBudget.clustering` for machine readers.
+function consolidationSummaryClause(reviewBudget) {
+  const b = reviewBudget;
+  if (!b) return '';
+  const collapsed = typeof b.collapsed === 'number' ? b.collapsed : 0;
+  let out = '';
+  if (collapsed > 0) {
+    const produced = Number(b.produced) || 0;
+    const units = typeof b.consolidated === 'number' ? b.consolidated : produced - collapsed;
+    out += ' [consolidated: ' + produced + ' findings into ' + units + ' units]';
+  }
+  if (b.everFailedOpen === true) out += ' [consolidation failed open]';
+  return out;
 }
 
 // buildReviewCoverage(coverageRounds, planCoverage) — project the per-round
@@ -1964,6 +2018,26 @@ function formatCommentBody(finding, anchorState) {
   ];
   if (f.why) lines.push('Why: ' + String(f.why));
   if (f.recommendation) lines.push('Recommendation: ' + String(f.recommendation));
+  // CONSOLIDATION BLOCK. A unit the consolidator merged from 2+ findings names
+  // the dimensions that independently reached it, the folded member ids and the
+  // consolidator's own reason — the only audit trail for an agent's grouping
+  // decision. Prose only, after the narrative: no header key is added, so every
+  // header reader (including the legacy shapes) parses a merged comment exactly
+  // as before, with the representative's `dimension`. A singleton takes none of
+  // this and its body is byte-identical to a no-consolidator run's.
+  if (Array.isArray(f.mergedFrom) && f.mergedFrom.length > 1) {
+    const concerns = Array.isArray(f.concerns) ? f.concerns : [];
+    lines.push(
+      'Consolidated: ' +
+        f.mergedFrom.length +
+        ' findings from dimensions ' +
+        concerns.map((c) => persistHeaderValue(c)).join(', ') +
+        ' (members: ' +
+        f.mergedFrom.map((id) => persistHeaderValue(id)).join(', ') +
+        ')'
+    );
+    lines.push('Grouped because: ' + String(f.clusterWhy === undefined || f.clusterWhy === null ? '' : f.clusterWhy));
+  }
   return lines.join('\n');
 }
 
@@ -3672,7 +3746,7 @@ if (rawArgs.gate && source && !failure) {
 
 let summary = failure ? 'code review incomplete: ' + failure : (outcome === 'reviewed' ? 'review clean: ' : 'code rework unresolved: ') + summarizeFindings(survivors)
 if (outcome === 'rework' && acTableHasGap(review.acTable)) summary += ' [unmet acceptance criteria]'
-summary += budgetSummaryClause(reviewBudget) + coverageSummaryClause(reviewCoverage)
+summary += budgetSummaryClause(reviewBudget) + consolidationSummaryClause(reviewBudget) + coverageSummaryClause(reviewCoverage)
 const result = { ...(isTask ? { task: taskSlug } : { roadmap: roadmap, phase: phaseArg }), outcome: outcome,
   status: statusFor(outcome, kind), writesCompletion: writesCompletion(outcome), summary: summary,
   reason: outcome === 'escalated' ? gateFor('code', 'escalated').reasonPrefix + ' ' + summary : '',

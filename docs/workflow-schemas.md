@@ -1478,6 +1478,12 @@ Rules:
   `parseCommentHeader` returns `null` — never throws — on a body without the
   header, which is how a human-written comment is skipped rather than
   misread as a finding.
+- A finding the consolidator merged from two or more findings (its
+  `mergedFrom` has 2+ ids) gets two more prose lines after the narrative:
+  `Consolidated: N findings from dimensions a, b, c (members: c0, c2, c3)` and
+  `Grouped because: <clusterWhy>`. No header key is added, so every header
+  shape still parses and `dimension` stays the representative's concern. A
+  singleton's body is byte-identical to a no-consolidator run's.
 
 **Backward compatibility: a legacy SEVEN-key header still parses.** `anchor`
 was added as a TRAILING eighth key; every comment persisted before that change
@@ -2098,6 +2104,15 @@ the visible ` [review budget hit: N produced, M graded, K ungraded]` marker —
 empty when the bound was never hit, so an unbounded run's summary is
 byte-unchanged.
 
+`reviewBudget` also carries the LAST round's consolidation accounting —
+`consolidated`, `collapsed`, `clustering` (neutral `produced` / `0` / `null` for
+a round with no consolidation keys, never `undefined`) — and `everFailedOpen`,
+the sibling of `everHit`: true when ANY round's consolidator failed open.
+`consolidationSummaryClause(reviewBudget)` yields
+` [consolidated: N findings into M units]` when `collapsed > 0` and
+` [consolidation failed open]` when `everFailedOpen`, and is empty otherwise. It
+never interpolates `clustering.reason`, which can carry validator text.
+
 **Both** of `buildReviewBudget`'s parameters take the gate's FULL per-round
 array. Passing only a last-round object silently drops an early round that hit
 its bound and was then resolved by a later revision/rework — precisely what
@@ -2140,7 +2155,9 @@ into mechanical Bash prompts (plan-review's round-note write, the optional gate'
 `--reason` flag). Its position is fixed — budget clause first, coverage clause
 second — in every branch of `buildOutcome` / `buildTaskOutcome`, in
 `plan-review`'s `reviewUnit`, and in `rdm-wf-review-refute-fix.js`'s driver, so a
-run that hits both produces a deterministic string.
+run that hits both produces a deterministic string. The refute-fix driver's
+item-identifier summary also appends `consolidationSummaryClause` between the
+two: budget, then consolidation, then coverage.
 
 Non-participation is **recorded, never gated on**. A transient API blip must not
 stall the autonomous lane, while the record keeps the reduced coverage auditable
@@ -2758,7 +2775,7 @@ two harnesses that used to gate the `rdm-do --auto` → engine wiring
 | `writesCompletion` | boolean                          | `writesCompletion(outcome)` — is this branch owed its land-time trailer? |
 | `summary` | string                                    | deterministic one-liner from outcome + top finding |
 | `reason`  | string                                    | gate-tagged park note (`[plan]`/`[code]`); empty on `reviewed` |
-| `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `planRounds`, `everHit`, the last `hit` object, and the plan gate's own `plan` budget. `null` when no review reported one. |
+| `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `planRounds`, `everHit`, the last `hit` object, the plan gate's own `plan` budget, and the last round's `consolidated`/`collapsed`/`clustering` with `everFailedOpen`. `null` when no review reported one. |
 | `reviewCoverage` | object \| `null`                   | `buildReviewCoverage(...)` — which review dimensions PARTICIPATED: the reported round's `total`/`selected`/`ran`/`failed`/`retried`/`acDimensionRan`/`acTableAbsent`, plus `complete`, `everIncomplete`, `rounds`, `planRounds`, `incomplete`, `last`. `null` when no review reported one — including the `fetchError` short-circuit, which never ran a review and must not read as full coverage. |
 | `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
 
@@ -2772,7 +2789,7 @@ two harnesses that used to gate the `rdm-do --auto` → engine wiring
 | `writesCompletion` | boolean                          | `writesCompletion(outcome)` — is this branch owed its land-time trailer? |
 | `summary` | string                                    | deterministic one-liner from outcome + top finding |
 | `reason`  | string                                    | gate-tagged park note (`[plan]`/`[code]`); empty on `reviewed` |
-| `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `planRounds`, `everHit`, the last `hit` object, and the plan gate's own `plan` budget. `null` when no review reported one. |
+| `reviewBudget` | object \| `null`                     | `buildReviewBudget(...)` — the refutation bound: last round's `max`/`produced`/`graded`/`passedThroughBudget`, plus `rounds`, `planRounds`, `everHit`, the last `hit` object, the plan gate's own `plan` budget, and the last round's `consolidated`/`collapsed`/`clustering` with `everFailedOpen`. `null` when no review reported one. |
 | `reviewCoverage` | object \| `null`                   | `buildReviewCoverage(...)` — which review dimensions PARTICIPATED: the reported round's `total`/`selected`/`ran`/`failed`/`retried`/`acDimensionRan`/`acTableAbsent`, plus `complete`, `everIncomplete`, `rounds`, `planRounds`, `incomplete`, `last`. `null` when no review reported one — including the `fetchError` short-circuit, which never ran a review and must not read as full coverage. |
 | `findings`| array of `FINDING`                        | the relevant ranked surviving findings         |
 

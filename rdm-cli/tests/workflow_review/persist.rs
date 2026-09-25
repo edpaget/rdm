@@ -9,13 +9,13 @@ use crate::git_test_support::git;
 use crate::plan_fixture::{PlanRepo, hermetic, rdm_bin};
 use crate::support::{Agent, Failure, Js, Lib, Outcome, REVIEW_LIB, Reply, run_mutant, run_real};
 
-const PROJECT: &str = "persist-verify";
+pub(crate) const PROJECT: &str = "persist-verify";
 const TASK_BODY: &str = "Alpha opening line.\nThe retry backoff strategy is unspecified here.\nA repeated sentence.\nA repeated sentence.\nTrailing \"quoted\" $dollar `backtick` — em-dash line.";
 
 /// The persist fixture: [`PlanRepo`] with default project [`PROJECT`], a task
 /// whose body carries quotable, repeated and shell-hostile lines, and a
 /// roadmap with one phase.
-fn seeded() -> Result<PlanRepo, Failure> {
+pub(crate) fn seeded() -> Result<PlanRepo, Failure> {
     let repo = PlanRepo::init(PROJECT)?;
     repo.seed(&[
         &[
@@ -63,7 +63,7 @@ fn seeded() -> Result<PlanRepo, Failure> {
 }
 
 /// The ladder `persistReviewCommands` emits, as one script.
-fn ladder(
+pub(crate) fn ladder(
     js: &mut Js,
     mode: &str,
     outcome: &str,
@@ -96,7 +96,7 @@ fn review_id(out: &Output) -> Option<String> {
 }
 
 /// Runs a ladder to success, returning the review id it reports.
-fn land(repo: &PlanRepo, script: &str, session: &str) -> Result<String, Failure> {
+pub(crate) fn land(repo: &PlanRepo, script: &str, session: &str) -> Result<String, Failure> {
     let tmp = repo.tmpdir(&format!("tmp-{session}"))?;
     let out = repo.sh(script, session, &tmp)?;
     check!(
@@ -114,7 +114,7 @@ fn land(repo: &PlanRepo, script: &str, session: &str) -> Result<String, Failure>
     })
 }
 
-fn comments(review: &Value) -> Vec<Value> {
+pub(crate) fn comments(review: &Value) -> Vec<Value> {
     review["comments"].as_array().cloned().unwrap_or_default()
 }
 

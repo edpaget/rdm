@@ -284,9 +284,10 @@ in every mode, so it is carried in every finder prompt.
 ### Find — one read-only agent per applicable dimension, in parallel
 
 The `rdm-wf-review-refute-fix` Workflow invoked in step 2 above performs
-this section and § Refute deterministically: it dispatches every finder and
-refuter agent itself, each on the resolved `review-find` / `review-verify`
-model and reasoning effort you pass it, so you never dispatch them by hand.
+this section, § Consolidate and § Refute deterministically: it dispatches
+every finder, consolidator and refuter agent itself, each on the resolved
+`review-find` / `review-consolidate` / `review-verify` model and reasoning
+effort you pass it, so you never dispatch them by hand.
 They are described here so you can explain its result.
 
 Each finder agent is told: you are a READ-ONLY reviewer, do not edit any
@@ -310,11 +311,25 @@ Each finding is reported as:
   recommendation: <concrete fix>
 ```
 
-### Refute — a FRESH agent per GATING finding, in parallel
+### Consolidate — group duplicates of one defect before refuting
 
-For every finding whose severity can gate the outcome, dispatch a **separate**
-read-only refuter. The agent that found an issue is never the agent that
-confirms it. The refuter starts from the stance *"this is NOT a real issue
+After every finder has reported and **before** any refuter is dispatched,
+group the findings that describe the **same underlying defect** — one fix
+would resolve every member. Sharing a file, a location or a theme is not
+enough; when unsure, keep findings separate. Each group becomes ONE unit that
+is refuted once and counts once against the refutation budget. A merged unit
+takes the most severe member's severity and the highest member confidence,
+carries the union of the members' dimensions, and gets **no** confidence
+boost for corroboration (the rationale lives with the consolidator's merge
+rule, `mergeCluster`). Its persisted comment names the contributing
+dimensions, the member finding ids and the reason they were grouped, so a
+merge is always reviewable.
+
+### Refute — a FRESH agent per GATING unit, in parallel
+
+For every consolidated unit whose severity can gate the outcome, dispatch a
+**separate** read-only refuter — one per unit, not one per raw finding.
+The agent that found an issue is never the agent that confirms it. The refuter starts from the stance *"this is NOT a real issue
 unless the code proves otherwise"*, reads the actual cited location and its
 surrounding context, and returns `refuted` (boolean), a corrected `confidence`
 (0-100), and a rationale.
@@ -405,8 +420,8 @@ you can explain a result.
 - A finding passed through un-refuted carries `unrefuted: true` and faces the
   **same confidence floor** as everything else: the refuter is skipped, the
   floor is not.
-- **Dedup** findings pointing at the same location / same root cause (the
-  fleet covers overlapping ground by design).
+- Duplicates were already **consolidated** before refuting (§ Consolidate):
+  each survivor is one defect, however many dimensions reported it.
 - **Rank** survivors by severity, then confidence, then id.
 - The AC table is returned as **structured data**, separate from the
   findings list — never folded into a finding. A surviving FAIL/PARTIAL

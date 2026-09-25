@@ -11,8 +11,13 @@ use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
 
+use crate::persist::{
+    PROJECT as PERSIST_PROJECT, comments as persisted_comments, ladder, land, seeded,
+};
+use crate::plan_fixture::rdm_bin;
 use crate::support::{
-    Agent, AgentCall, Failure, Js, Label, Lib, Outcome, Reply, find, ids, parse_label, run_real,
+    Agent, AgentCall, Failure, Js, Label, Lib, Outcome, REVIEW_ENGINE, Reply, find, ids,
+    parse_label, run_driver, run_real,
 };
 
 const MODES: [&str; 2] = ["code", "plan"];
@@ -953,4 +958,342 @@ fn consolidator_carries_its_model_and_effort() {
     for mode in MODES {
         run_real(|lib| model_and_effort(lib, mode));
     }
+}
+
+// --- Phase 4: a merged unit is legible downstream ------------------------------------
+
+/// The survivors a run returned, with each one's quote/path removed so the
+/// persist ladder lands a whole-document comment on the seeded task (the
+/// corpus quotes are not in its body).
+fn unanchored(out: &Value) -> Value {
+    let list = out["survivors"].as_array().cloned().unwrap_or_default();
+    json!(
+        list.into_iter()
+            .map(|mut s| {
+                if let Some(o) = s.as_object_mut() {
+                    o.remove("quote");
+                    o.remove("path");
+                }
+                s
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
+/// `survivors` with every consolidation field removed — what the same
+/// findings look like to a run with no consolidator.
+fn without_consolidation(survivors: &Value) -> Value {
+    let list = survivors.as_array().cloned().unwrap_or_default();
+    json!(
+        list.into_iter()
+            .map(|mut s| {
+                if let Some(o) = s.as_object_mut() {
+                    for k in ["concerns", "mergedFrom", "clusterWhy"] {
+                        o.remove(k);
+                    }
+                }
+                s
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
+fn persist_cmds(js: &mut Js, mode: &str, survivors: &Value) -> Result<Value, Failure> {
+    js.call(
+        "persistReviewCommands",
+        vec![
+            json!({ "mode": mode, "outcome": "rework", "survivors": survivors }),
+            json!("task/persist-target"),
+            json!({ "rdmBin": rdm_bin(), "project": PERSIST_PROJECT }),
+        ],
+    )
+}
+
+fn merged_persists(lib: &Lib, mode: &'static str) -> Outcome {
+    let mut js = Js::open(lib)?;
+    let dims = reviewers(mode);
+    let agent = fleet(mode, corpus(), Consolidator::Reply(merge_x()), &[], &[]);
+    let out = run(&mut js, mode, &agent, json!({}))?;
+    let survivors = unanchored(&out);
+
+    let repo = seeded()?;
+    let script = ladder(&mut js, mode, "rework", survivors, "task/persist-target")?;
+    let id = land(&repo, &script, &format!("merged-{mode}"))?;
+    let review = repo.review(PERSIST_PROJECT, &id)?;
+    let mut merged = None;
+    for c in persisted_comments(&review) {
+        let h = js.call("parseCommentHeader", vec![c["body"].clone()])?;
+        if h["findingId"] == json!("x-c") {
+            merged = Some((c, h));
+        }
+    }
+    let (comment, header) = merged.ok_or_else(|| {
+        Failure::Check(format!(
+            "{mode}: no persisted comment parses to finding-id x-c: {review}"
+        ))
+    })?;
+    check_eq!(
+        header["dimension"],
+        json!(dims[2]),
+        "{mode}: the header keeps the representative's dimension"
+    );
+    let body = comment["body"].as_str().unwrap_or_default();
+    for needle in dims.iter().copied().chain(["c0", "c2", "c3", WHY]) {
+        check!(
+            body.contains(needle),
+            "{mode}: the merged comment names {needle}: {body:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn merged_survivor_persists_its_dimensions_members_and_reason() {
+    for mode in MODES {
+        run_real(|lib| merged_persists(lib, mode));
+    }
+}
+
+fn singletons_unchanged(lib: &Lib, mode: &'static str) -> Outcome {
+    let mut js = Js::open(lib)?;
+    // Fail-open and an all-singleton partition: nothing merged, so the
+    // persist commands equal those built with no consolidation fields at all.
+    for (why, reply) in [
+        ("fail-open", Consolidator::Null),
+        ("all singletons", Consolidator::Reply(singletons())),
+    ] {
+        let agent = fleet(mode, corpus(), reply, &[], &[]);
+        let out = run(&mut js, mode, &agent, json!({}))?;
+        check_eq!(
+            persist_cmds(&mut js, mode, &out["survivors"])?,
+            persist_cmds(&mut js, mode, &without_consolidation(&out["survivors"]))?,
+            "{mode} {why}: persist commands equal a no-consolidator run's"
+        );
+    }
+    // Mixed: in a run with one merged unit, each singleton's comment body is
+    // the body the unconsolidated run gives the same finding.
+    let single = fleet(mode, corpus(), Consolidator::Reply(singletons()), &[], &[]);
+    let baseline = run(&mut js, mode, &single, json!({}))?;
+    let agent = fleet(mode, corpus(), Consolidator::Reply(merge_x()), &[], &[]);
+    let out = run(&mut js, mode, &agent, json!({}))?;
+    for id in ["solo-1", "solo-2"] {
+        check_eq!(
+            js.call("formatCommentBody", vec![survivor(&out, id)?])?,
+            js.call("formatCommentBody", vec![survivor(&baseline, id)?])?,
+            "{mode}: singleton {id}'s body is unchanged beside a merged unit"
+        );
+    }
+    let unit = survivor(&out, "x-c")?;
+    check!(
+        js.call("formatCommentBody", vec![unit.clone()])?
+            != js.call(
+                "formatCommentBody",
+                vec![without_consolidation(&json!([unit]))[0].clone()]
+            )?,
+        "{mode}: the merged unit's body differs from its unconsolidated form"
+    );
+    Ok(())
+}
+
+#[test]
+fn singleton_persist_commands_are_unchanged() {
+    for mode in MODES {
+        run_real(|lib| singletons_unchanged(lib, mode));
+    }
+}
+
+/// A code-mode fleet for the standalone engine: the `ac` finder reports one
+/// PASS row, `correctness`/`tests`/`architecture` report [`corpus`], refuters
+/// never refute, and the consolidator answers `consolidator`.
+fn engine_fleet(consolidator: Option<Value>) -> Agent {
+    let dims = reviewers("code");
+    let findings = corpus();
+    Agent::scripted(move |call: &AgentCall| match parse_label(&call.label) {
+        Label::Find { dim, .. } if dim == "ac" => Reply::Value(json!({
+            "ac": [{ "criterion": "AC1", "status": "PASS", "evidence": "covered" }],
+            "findings": []
+        })),
+        Label::Find { dim, .. } => {
+            let i = dims.iter().position(|d| *d == dim);
+            Reply::Value(json!({ "findings": i.map_or_else(Vec::new, |i| findings[i].clone()) }))
+        }
+        Label::Refute { .. } => Reply::Value(json!({ "refuted": false, "confidence": 90 })),
+        Label::Consolidate { .. } => consolidator.clone().map_or(Reply::Null, Reply::Value),
+        Label::Other => Reply::Throw(format!("unexpected label: {}", call.label)),
+    })
+}
+
+fn engine_budget(lib: &Lib) -> Outcome {
+    let sha = |c: char| std::iter::repeat_n(c, 40).collect::<String>();
+    let base = json!({
+        "mode": "code", "rdmBin": rdm_bin(), "project": "p",
+        "source": "/nonexistent/checkout", "base": sha('a'), "expectedHead": sha('b'),
+        "expectedBranch": "roadmap/widget",
+        "reviewers": ["ac", "correctness", "tests", "architecture"],
+    });
+    for item in [
+        json!({ "roadmap": "widget", "phase": "phase-1-foo" }),
+        json!({ "task": "widget-task" }),
+    ] {
+        let mut args = base.clone();
+        for (k, v) in item.as_object().into_iter().flatten() {
+            args[k] = v.clone();
+        }
+
+        let agent = engine_fleet(Some(merge_x()));
+        let r = run_driver(lib, REVIEW_ENGINE, args.clone(), &agent)?.map_err(Failure::Js)?;
+        let b = &r["reviewBudget"];
+        check_eq!(
+            (b["consolidated"].clone(), b["collapsed"].clone()),
+            (json!(3), json!(2)),
+            "{item}: the OUTCOME carries the round's consolidation counts"
+        );
+        check_eq!(
+            b["collapsed"].as_i64(),
+            Some(b["produced"].as_i64().unwrap_or(0) - b["consolidated"].as_i64().unwrap_or(0)),
+            "{item}: collapsed = produced - consolidated"
+        );
+        check_eq!(
+            (
+                b["everFailedOpen"].clone(),
+                b["clustering"]["failedOpen"].clone()
+            ),
+            (json!(false), json!(false)),
+            "{item}: a clean consolidation never reads as failed open"
+        );
+
+        let agent = engine_fleet(None);
+        let r = run_driver(lib, REVIEW_ENGINE, args, &agent)?.map_err(Failure::Js)?;
+        let b = &r["reviewBudget"];
+        check_eq!(
+            consolidate_labels(&agent).len(),
+            2,
+            "{item}: the consolidator failed both attempts"
+        );
+        check_eq!(
+            (
+                b["everFailedOpen"].clone(),
+                b["clustering"]["failedOpen"].clone()
+            ),
+            (json!(true), json!(true)),
+            "{item}: a fail-open round is flagged in the OUTCOME"
+        );
+        check_eq!(
+            (b["consolidated"].clone(), b["collapsed"].clone()),
+            (b["produced"].clone(), json!(0)),
+            "{item}: nothing collapsed when the consolidator failed open"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn engine_outcome_carries_consolidation_in_review_budget() {
+    run_real(engine_budget);
+}
+
+fn round(produced: i64, consolidated: i64, failed_open: bool) -> Value {
+    json!({
+        "max": 5, "produced": produced, "consolidated": consolidated,
+        "collapsed": produced - consolidated, "gating": consolidated, "graded": consolidated,
+        "passedThroughNonGating": 0, "passedThroughBudget": 0, "refuterErrors": 0, "hit": false,
+        "clustering": { "ran": true, "retried": failed_open, "failedOpen": failed_open,
+                        "reason": if failed_open { json!("null") } else { Value::Null } }
+    })
+}
+
+fn budget_across_rounds(lib: &Lib) -> Outcome {
+    let mut js = Js::open(lib)?;
+    let failed = round(4, 4, true);
+    let clean = round(5, 3, false);
+    for (why, code, plan) in [
+        (
+            "code fail-open then clean",
+            json!([failed, clean]),
+            Value::Null,
+        ),
+        (
+            "plan fail-open, clean code",
+            json!([clean]),
+            json!([failed]),
+        ),
+    ] {
+        let b = js.call("buildReviewBudget", vec![code, plan])?;
+        check_eq!(
+            b["everFailedOpen"],
+            json!(true),
+            "{why}: an earlier fail-open stays visible"
+        );
+        check_eq!(
+            (
+                b["consolidated"].clone(),
+                b["collapsed"].clone(),
+                b["clustering"].clone()
+            ),
+            (json!(3), json!(2), clean["clustering"].clone()),
+            "{why}: counts come from the last round"
+        );
+    }
+    let legacy =
+        json!({ "max": 5, "produced": 4, "graded": 4, "passedThroughBudget": 0, "hit": false });
+    let b = js.call("buildReviewBudget", vec![json!([legacy]), Value::Null])?;
+    check_eq!(
+        (
+            b["consolidated"].clone(),
+            b["collapsed"].clone(),
+            b["clustering"].clone(),
+            b["everFailedOpen"].clone()
+        ),
+        (json!(4), json!(0), Value::Null, json!(false)),
+        "a pre-consolidation round reports defined, neutral fields"
+    );
+    Ok(())
+}
+
+#[test]
+fn review_budget_carries_consolidation_across_rounds() {
+    run_real(budget_across_rounds);
+}
+
+fn summary_clause(lib: &Lib) -> Outcome {
+    let mut js = Js::open(lib)?;
+    let mut clause = |rounds: Value| -> Result<String, Failure> {
+        let b = js.call("buildReviewBudget", vec![rounds, Value::Null])?;
+        let c = js.call("consolidationSummaryClause", vec![b])?;
+        Ok(c.as_str().unwrap_or_default().to_owned())
+    };
+    let legacy =
+        json!({ "max": 5, "produced": 4, "graded": 4, "passedThroughBudget": 0, "hit": false });
+    check_eq!(
+        clause(json!([legacy]))?,
+        "",
+        "a pre-consolidation round adds nothing"
+    );
+    check_eq!(
+        clause(json!([round(4, 4, false)]))?,
+        "",
+        "a clean run with nothing collapsed adds nothing"
+    );
+    let collapsed = clause(json!([round(5, 3, false)]))?;
+    let mut hostile = round(4, 4, true);
+    hostile["clustering"]["reason"] = json!("it's \"$HOME\" `x`");
+    let failed = clause(json!([hostile]))?;
+    check!(!collapsed.is_empty(), "a collapse is named");
+    check!(!failed.is_empty(), "a fail-open is named");
+    check!(
+        collapsed != failed,
+        "a fail-open reads differently from a collapse: {collapsed:?} / {failed:?}"
+    );
+    for c in [&collapsed, &failed] {
+        check!(
+            !c.contains(['\'', '"', '$', '`']),
+            "the clause is shell-safe: {c:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn consolidation_summary_clause_names_collapse_and_fail_open() {
+    run_real(summary_clause);
 }
