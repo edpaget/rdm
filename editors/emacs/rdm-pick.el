@@ -175,17 +175,21 @@ Only hits of `rdm-pick-search-kinds' are offered."
 (defun rdm-pick-search-collection ()
   "A consult dynamic collection running `rdm search' for each input.
 The search runs in the current buffer's rdm context, not the
-minibuffer's; a failing search yields no candidates."
+minibuffer's.  A failing search yields no candidates, so the minibuffer
+stays usable, and its error is shown with `message'."
   (let ((buf (current-buffer)))
     (consult--dynamic-collection
      (lambda (input)
        (with-current-buffer (if (buffer-live-p buf) buf (current-buffer))
-         (condition-case nil
+         (condition-case err
              (rdm-pick-search-candidates input)
-           (error nil)))))))
+           (error (message "%s" (error-message-string err)) nil)))))))
 
 (defun rdm-pick--search-read ()
-  "Read a search hit, live through consult when available; return its item."
+  "Read a search hit, live through consult when available; return its item.
+The rdm context is resolved first, in the originating buffer, so a
+configuration error is a `user-error' before any minibuffer opens."
+  (rdm-context)
   (if (and rdm-search-use-consult (require 'consult nil t))
       (rdm-item--require
        (consult--read (rdm-pick-search-collection)

@@ -453,6 +453,52 @@ propertized candidates."
             (should (get-text-property 0 'rdm-item (car got)))))
         (funcall async 'destroy)))))
 
+(ert-deftest rdm-consult/context-error-up-front ()
+  "An unresolved context is a `user-error' before consult reads anything."
+  :tags '(consult)
+  (rdm-test-with-soft-dep 'consult
+    (rdm-ui-test--mocked
+      (cl-letf (((symbol-function 'rdm-context)
+                 (lambda () (user-error "rdm: no plan root resolved")))
+                ((symbol-function 'consult--read)
+                 (lambda (&rest _) (error "consult--read was called"))))
+        (let ((rdm-search-use-consult t)
+              (err (should-error (rdm-search) :type 'user-error)))
+          (should (equal (cadr err) "rdm: no plan root resolved"))))
+      (should-not calls))))
+
+(ert-deftest rdm-consult/search-error-shown ()
+  "A failing search inside the live collection yields no candidates and
+shows its error with `message' instead of dropping it."
+  :tags '(consult)
+  (rdm-test-with-soft-dep 'consult
+    (rdm-ui-test--mocked
+      (let* ((consult-async-input-throttle 0)
+             (consult-async-input-debounce 0)
+             (consult-async-min-input 1)
+             (got nil)
+             (shown nil)
+             (sink (lambda (action)
+                     (when (and (consp action) (stringp (car action)))
+                       (setq got (append got action)))
+                     nil))
+             (async (funcall (rdm-pick-search-collection) sink)))
+        (cl-letf (((symbol-function 'rdm-run-sync)
+                   (lambda (&rest _) (user-error "rdm: search exploded")))
+                  ((symbol-function 'message)
+                   (lambda (fmt &rest args)
+                     (when fmt (push (apply #'format fmt args) shown)))))
+          (with-temp-buffer
+            (funcall async 'setup)
+            (funcall async "two")
+            (let ((deadline (+ (float-time) 5)))
+              (while (and (not (member "rdm: search exploded" shown))
+                          (< (float-time) deadline))
+                (accept-process-output nil 0.02)))
+            (funcall async 'destroy)))
+        (should (member "rdm: search exploded" shown))
+        (should-not got)))))
+
 ;;;; Evil
 
 (ert-deftest rdm-evil/normal-state-bindings ()
