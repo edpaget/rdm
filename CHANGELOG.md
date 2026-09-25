@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-09-25
+
 ### Added
 
 - **Per-project config overrides.** `rdm.toml` accepts `[projects.<name>]` tables that override `dispatch.verify`, `gates.reviewed`, `plan_review` and `default_branch` for one project, in the same shape as the top-level keys (e.g. `[projects.web.dispatch] verify = "npm test"`). `rdm config set <key> <value> --project <name>` writes one, and `rdm config get <key> --project <name>` / `rdm config list --project <name>` report the value resolved for that project with its source (`project config` when the override applies). Resolution order is the environment override, then the project table, then the plan-repo-wide value, then the global config where the key allows it. Any other key with `--project` is refused with an error naming the project-scopable keys, and `--project` with `--global` is refused. `--project` is never inferred from `RDM_PROJECT` or `default_project`, so a plain `rdm config set` still writes the plan-repo-wide value. `rdm verify`, the `reviewed` gate, the `needs-plan-review` stamp and every `default_branch` consumer read it.
