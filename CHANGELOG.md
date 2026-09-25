@@ -26,6 +26,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **rdm-server no longer renders dead code-link hrefs for a local-path `source.repo`.** A code or commit link's permalink is now an `href` only when the project's `source.repo` is an `http(s)` URL; a local path renders the non-navigable span instead of a link that 404s against the server. The raw `_embedded.links` JSON is unchanged.
 - **Change-review Referenced-by entries link to where the review renders.** A "Referenced by" entry for a `change/` review now links to the page of the item its plan implements (`#review-<id>` / `#comment-<id>-c<n>`) instead of the project page.
+- **Emacs package (core).** `editors/emacs/` ships `rdm-core.el`, the foundation of an in-repo Emacs integration: it resolves the plan root, project, default branch and `rdm` binary for the current buffer (dir-locals, then the buffer's `RDM_*` environment as set by mise.el, then `rdm info`), and runs rdm asynchronously over pipes with JSON parsing and actionable errors. UI commands arrive in later releases.
 
 ## [0.22.2] - 2026-09-25
 

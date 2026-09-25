@@ -60,3 +60,10 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 [[profile.default.overrides]]
 filter = "package(rdm-cli) & binary(concurrency)"
 slow-timeout = { period = "30s", terminate-after = 4 }
+
+# The Emacs package suite runs a child `emacs --batch` per test (bounded by
+# its own deadline in rdm-cli/tests/emacs_package/main.rs); a hung child must
+# fail the run rather than hang it.
+[[profile.default.overrides]]
+filter = "package(rdm-cli) & binary(emacs_package)"
+slow-timeout = { period = "60s", terminate-after = 3 }

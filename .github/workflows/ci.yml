@@ -79,3 +79,44 @@ jobs:
 
       - name: Audit dependencies
         run: cargo deny check
+
+  emacs:
+    name: Emacs package suite
+    runs-on: ubuntu-latest
+    env:
+      # A missing `emacs` or init directory fails the suite instead of
+      # skipping it.
+      RDM_EMACS_REQUIRED: "1"
+      RDM_EMACS_INIT_DIR: ${{ github.workspace }}/.emacs-init
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.94"
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Install Emacs 31.1
+        uses: purcell/setup-emacs@master
+        with:
+          version: "31.1"
+
+      - name: Cache the soft-dependency init directory
+        uses: actions/cache@v4
+        with:
+          path: .emacs-init
+          key: emacs-init-31.1-${{ hashFiles('editors/emacs/test/ci-init/init.el') }}
+
+      - name: Provide evil, magit, consult and embark
+        run: |
+          mkdir -p "$RDM_EMACS_INIT_DIR"
+          cp editors/emacs/test/ci-init/init.el "$RDM_EMACS_INIT_DIR/init.el"
+          emacs --batch --init-directory "$RDM_EMACS_INIT_DIR" -l "$RDM_EMACS_INIT_DIR/init.el"
+
+      - name: Emacs suite (bare and soft-dependency passes)
+        run: cargo nextest run -p rdm-cli --test emacs_package
