@@ -60,7 +60,7 @@ pub mod review;
 #[cfg(feature = "git")]
 pub mod status;
 /// `rdm verify resolve` / `rdm verify run` — the CLI surface over the
-/// repo-only `dispatch.verify` key.
+/// `dispatch.verify` key, resolved for the command's project.
 #[cfg(feature = "git")]
 pub mod verify;
 #[cfg(feature = "git")]

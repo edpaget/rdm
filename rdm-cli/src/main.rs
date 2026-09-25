@@ -283,7 +283,14 @@ fn run() -> Result<()> {
 
         #[cfg(feature = "git")]
         Command::Verify { command } => {
-            commands::verify::run(command, &root, &repo_config, format)?;
+            commands::verify::run(
+                command,
+                &root,
+                &repo_config,
+                &raw_repo_config,
+                &global_config,
+                format,
+            )?;
         }
 
         Command::Session { command } => {

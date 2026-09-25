@@ -14,7 +14,9 @@ use git_test_support::git;
 fn rdm() -> Command {
     let mut cmd = Command::cargo_bin("rdm").unwrap();
     cmd.env("XDG_CONFIG_HOME", "/dev/null/nonexistent");
-    cmd.env_remove("RDM_PROJECT").env_remove("RDM_ROOT");
+    cmd.env_remove("RDM_PROJECT")
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_DISPATCH_VERIFY");
     cmd
 }
 
@@ -161,6 +163,31 @@ fn verify_resolve_agrees_with_config_get() {
         resolved.trim(),
         String::from_utf8_lossy(&got).trim(),
         "`verify resolve` and `config get` must never disagree"
+    );
+
+    set_project_verify(plan.path(), "demo", "echo demo-own");
+    let (_, resolved) = verify(plan.path(), cwd.path(), &["resolve", "--project", "demo"]);
+    let got = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "config",
+            "get",
+            "dispatch.verify",
+            "--raw",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(resolved.trim(), "echo demo-own");
+    assert_eq!(
+        resolved.trim(),
+        String::from_utf8_lossy(&got).trim(),
+        "`verify resolve --project` and `config get --project` must never disagree"
     );
 }
 
@@ -1106,4 +1133,217 @@ fn verify_run_never_suggests_a_per_phase_worktree_for_a_task_item_miss() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("rdm worktree add task/fix-bug"));
+}
+
+// --- per-project dispatch.verify --------------------------------------------
+
+fn init_multi_project_plan_repo() -> TempDir {
+    let dir = TempDir::new().unwrap();
+    let p = dir.path();
+    rdm().arg("--root").arg(p).arg("init").assert().success();
+    for name in ["a", "b", "c"] {
+        rdm()
+            .arg("--root")
+            .arg(p)
+            .args(["project", "create", name])
+            .assert()
+            .success();
+    }
+    dir
+}
+
+fn set_project_verify(plan: &Path, project: &str, cmd: &str) {
+    rdm()
+        .arg("--root")
+        .arg(plan)
+        .args([
+            "config",
+            "set",
+            "dispatch.verify",
+            cmd,
+            "--project",
+            project,
+        ])
+        .assert()
+        .success();
+}
+
+fn json_of(out: &str) -> Value {
+    serde_json::from_str(out).unwrap()
+}
+
+#[test]
+fn verify_resolve_reports_each_projects_own_command() {
+    let plan = init_multi_project_plan_repo();
+    let cwd = init_source_repo();
+    set_project_verify(plan.path(), "a", "echo from-a");
+    set_project_verify(plan.path(), "b", "echo from-b");
+    for (p, want) in [("a", "echo from-a"), ("b", "echo from-b")] {
+        let (code, out) = verify(
+            plan.path(),
+            cwd.path(),
+            &["resolve", "--format", "json", "--project", p],
+        );
+        assert_eq!(code, 0);
+        let j = json_of(&out);
+        assert_eq!(j["resolved"], true);
+        assert_eq!(j["command"], want);
+    }
+}
+
+#[test]
+fn verify_run_runs_each_projects_own_command() {
+    let plan = init_multi_project_plan_repo();
+    let cwd = init_source_repo();
+    set_project_verify(plan.path(), "a", "echo from-a");
+    set_project_verify(plan.path(), "b", "echo from-b");
+    for (p, want, other) in [("a", "from-a", "from-b"), ("b", "from-b", "from-a")] {
+        let (code, out) = verify(
+            plan.path(),
+            cwd.path(),
+            &["run", "--format", "json", "--project", p],
+        );
+        assert_eq!(code, 0);
+        let tail = json_of(&out)["tail"].as_str().unwrap().to_string();
+        assert!(tail.contains(want), "{p}: {tail}");
+        assert!(!tail.contains(other), "{p}: {tail}");
+    }
+}
+
+#[test]
+fn verify_uses_the_plan_repo_wide_command_for_a_project_without_an_override() {
+    let plan = init_multi_project_plan_repo();
+    let cwd = init_source_repo();
+    set_verify(plan.path(), "echo repo-wide");
+    set_project_verify(plan.path(), "a", "echo from-a");
+    let (_, out) = verify(
+        plan.path(),
+        cwd.path(),
+        &["resolve", "--format", "json", "--project", "c"],
+    );
+    assert_eq!(json_of(&out)["command"], "echo repo-wide");
+    let (code, out) = verify(
+        plan.path(),
+        cwd.path(),
+        &["run", "--format", "json", "--project", "c"],
+    );
+    assert_eq!(code, 0);
+    assert!(
+        json_of(&out)["tail"]
+            .as_str()
+            .unwrap()
+            .contains("repo-wide")
+    );
+}
+
+#[test]
+fn verify_run_is_unresolved_for_a_project_with_no_override_and_no_repo_value() {
+    let plan = init_multi_project_plan_repo();
+    let cwd = init_source_repo();
+    set_project_verify(plan.path(), "a", "echo from-a");
+    let (code, out) = verify(
+        plan.path(),
+        cwd.path(),
+        &["run", "--format", "json", "--project", "c"],
+    );
+    assert_eq!(code, 2);
+    assert_eq!(json_of(&out)["resolved"], false);
+    let (code, out) = verify(
+        plan.path(),
+        cwd.path(),
+        &["resolve", "--format", "json", "--project", "c"],
+    );
+    assert_eq!(code, 0);
+    assert_eq!(json_of(&out)["resolved"], false);
+}
+
+#[test]
+fn verify_run_resolves_an_item_in_its_projects_command() {
+    let plan = init_multi_project_plan_repo();
+    let src = init_source_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "create",
+            "fix-a",
+            "--title",
+            "Fix a",
+            "--no-edit",
+            "--project",
+            "a",
+        ])
+        .assert()
+        .success();
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["worktree", "add", "task/fix-a", "--project", "a"])
+        .current_dir(src.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let wt = std::path::PathBuf::from(String::from_utf8_lossy(&out).trim().to_string());
+    set_project_verify(plan.path(), "a", "printf a > sentinel.txt");
+    set_project_verify(plan.path(), "b", "printf b > sentinel.txt");
+    let (code, _) = verify(
+        plan.path(),
+        src.path(),
+        &[
+            "run",
+            "--item",
+            "task/fix-a",
+            "--format",
+            "json",
+            "--project",
+            "a",
+        ],
+    );
+    assert_eq!(code, 0);
+    assert_eq!(
+        std::fs::read_to_string(wt.join("sentinel.txt")).unwrap(),
+        "a"
+    );
+}
+
+#[test]
+fn verify_run_refusal_names_project_for_a_multiline_project_override() {
+    let plan = init_multi_project_plan_repo();
+    let cwd = init_source_repo();
+    set_project_verify(plan.path(), "a", "cargo fmt --check\ncargo test");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["verify", "run", "--project", "a"])
+        .current_dir(cwd.path())
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("multi-line").and(predicate::str::contains("--project a")),
+        );
+}
+
+#[test]
+fn verify_env_override_wins_over_the_project_override() {
+    let plan = init_multi_project_plan_repo();
+    let cwd = init_source_repo();
+    set_project_verify(plan.path(), "a", "echo from-a");
+    let out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .env("RDM_DISPATCH_VERIFY", "echo from-env")
+        .args(["verify", "resolve", "--format", "json", "--project", "a"])
+        .current_dir(cwd.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        json_of(&String::from_utf8_lossy(&out))["command"],
+        "echo from-env"
+    );
 }

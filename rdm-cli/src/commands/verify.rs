@@ -1,4 +1,6 @@
-//! `rdm verify` — the CLI surface over the repo-only `dispatch.verify` key.
+//! `rdm verify` — the CLI surface over the `dispatch.verify` key, resolved
+//! for the command's project (env override, then the project's own override,
+//! then the plan-repo-wide value).
 //!
 //! `docs/verify-gate.md` is canonical for the key itself: one project-supplied
 //! command, never decomposed or partially run, whose exit code gates a phase.
@@ -16,6 +18,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use rdm_core::config::{Config, ConfigSource, GlobalConfig, ResolvedValue};
 
 use crate::OutputFormat;
 use crate::VerifyCommand;
@@ -69,37 +72,51 @@ const EXIT_ITEM_UNRESOLVED: i32 = 3;
 pub fn run(
     command: VerifyCommand,
     root: &Path,
-    repo_config: &rdm_core::config::Config,
+    repo_config: &Config,
+    raw_repo_config: &Config,
+    global_config: &GlobalConfig,
     format: OutputFormat,
 ) -> Result<()> {
+    let configs = Configs {
+        merged: repo_config,
+        raw_repo: raw_repo_config,
+        global: global_config,
+    };
     match command {
-        VerifyCommand::Resolve { project } => resolve(root, repo_config, format, project),
-        VerifyCommand::Run { item, project } => {
-            run_command(root, repo_config, format, item, project)
-        }
+        VerifyCommand::Resolve { project } => resolve(&configs, format, project),
+        VerifyCommand::Run { item, project } => run_command(root, &configs, format, item, project),
     }
+}
+
+/// The configs `verify` reads: `merged` (repo + global defaults) only for
+/// project resolution, `raw_repo`/`global` for the scoped resolver.
+struct Configs<'a> {
+    merged: &'a Config,
+    raw_repo: &'a Config,
+    global: &'a GlobalConfig,
 }
 
 /// The configured verification command, if any.
 ///
-/// Reads through `paths::get_config_field` — the very accessor
-/// `rdm config get dispatch.verify --raw` uses — so the two surfaces can never
-/// disagree about what is configured.
-fn configured_command(repo_config: &rdm_core::config::Config) -> Option<String> {
-    paths::get_config_field(repo_config, "dispatch.verify")
+/// Reads through `rdm_core::config::resolve_scoped_value` — the same
+/// project-aware resolver `rdm config get dispatch.verify --raw --project <p>`
+/// uses — so the two surfaces can never disagree about what is configured.
+/// The source is returned too, so the multi-line refusal can name the fix.
+fn configured_command(project: &str, configs: &Configs) -> Result<Option<ResolvedValue<String>>> {
+    Ok(rdm_core::config::resolve_scoped_value(
+        "dispatch.verify",
+        Some(project),
+        configs.raw_repo,
+        configs.global,
+        |k| std::env::var(k).ok(),
+    )?)
 }
 
-fn resolve(
-    root: &Path,
-    repo_config: &rdm_core::config::Config,
-    format: OutputFormat,
-    project: Option<String>,
-) -> Result<()> {
-    // Resolve the project so an unknown `--project` is still an error here,
+fn resolve(configs: &Configs, format: OutputFormat, project: Option<String>) -> Result<()> {
+    // Resolving the project also keeps an unknown `--project` an error here,
     // matching every other subcommand's behavior.
-    let _ = paths::resolve_project(project, repo_config)?;
-    let _ = root;
-    let cmd = configured_command(repo_config);
+    let project = paths::resolve_project(project, configs.merged)?;
+    let cmd = configured_command(&project, configs)?.map(|r| r.value);
     match format {
         OutputFormat::Json => println!(
             "{}",
@@ -118,13 +135,15 @@ fn resolve(
 
 fn run_command(
     root: &Path,
-    repo_config: &rdm_core::config::Config,
+    configs: &Configs,
     format: OutputFormat,
     item: Option<String>,
     project: Option<String>,
 ) -> Result<()> {
-    let project = paths::resolve_project(project, repo_config)?;
-    let Some(cmd) = configured_command(repo_config) else {
+    // `--item` is resolved in this same project, so the command always comes
+    // from the project the item lives in.
+    let project = paths::resolve_project(project, configs.merged)?;
+    let Some(ResolvedValue { value: cmd, source }) = configured_command(&project, configs)? else {
         emit(format, false, None, None, None)?;
         std::process::exit(EXIT_UNRESOLVED);
     };
@@ -133,10 +152,21 @@ fn run_command(
     // output formatting belong to whatever task runner it invokes — so a value
     // that looks like a script is a configuration mistake, not a shell to run.
     if cmd.contains('\n') {
+        let fix = match source {
+            ConfigSource::Project => format!(
+                "set that as the value: rdm config set dispatch.verify \"bash scripts/ci.sh\" --project {project}"
+            ),
+            ConfigSource::Env => {
+                "set RDM_DISPATCH_VERIFY to that single command (e.g. 'bash scripts/ci.sh')"
+                    .to_string()
+            }
+            _ => "set that as the value: rdm config set dispatch.verify \"bash scripts/ci.sh\""
+                .to_string(),
+        };
         bail!(
             "'dispatch.verify' is multi-line, which rdm refuses to run — it executes ONE command \
              and never decomposes it. Put the steps in a script (e.g. 'bash scripts/ci.sh') and \
-             set that as the value: rdm config set dispatch.verify \"bash scripts/ci.sh\""
+             {fix}"
         );
     }
 

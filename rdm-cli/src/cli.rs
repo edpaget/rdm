@@ -1648,8 +1648,10 @@ impl From<ReviewTransitionArg> for rdm_core::ops::reviews::ReviewTransition {
 ///
 /// Every subcommand is read-only except `adopt`, `discard`, and `gc`, and none
 /// of them touch plan data — session state lives outside the committable tree.
-/// Subcommands of `rdm verify`, the CLI surface over the repo-only
-/// `dispatch.verify` key (see `docs/verify-gate.md`).
+/// Subcommands of `rdm verify`, the CLI surface over the `dispatch.verify`
+/// key (see `docs/verify-gate.md`). The command is resolved for the project:
+/// `RDM_DISPATCH_VERIFY` first, then the project's own override, then the
+/// plan-repo-wide value.
 #[derive(Subcommand)]
 pub(crate) enum VerifyCommand {
     /// Report the configured verification command, or `unresolved`.
@@ -1657,7 +1659,8 @@ pub(crate) enum VerifyCommand {
     /// Always exits 0 — this is a query. Callers key off the `resolved` field
     /// of `--format json`, never off the process exit code.
     Resolve {
-        /// Project to resolve against.
+        /// Project whose command to resolve: `RDM_DISPATCH_VERIFY` first,
+        /// then that project's override, then the plan-repo-wide value.
         #[arg(long)]
         project: Option<String>,
     },
@@ -1679,7 +1682,9 @@ pub(crate) enum VerifyCommand {
         /// refused. Omit to run in the current directory.
         #[arg(long)]
         item: Option<String>,
-        /// Project the item belongs to.
+        /// Project the item belongs to; the command is resolved for it
+        /// (`RDM_DISPATCH_VERIFY` first, then that project's override, then
+        /// the plan-repo-wide value).
         #[arg(long)]
         project: Option<String>,
     },

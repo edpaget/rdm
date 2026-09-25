@@ -64,7 +64,7 @@ rdm task update <slug> --status done --no-edit {proj_flag}
 
 `--status reviewed` can optionally be gated on real plan and change-review records plus a clean worktree — a repo-only `gates.reviewed` config flag, default off. When enabled, moving an item to `reviewed` requires a passing review; an audited `--override-gate "<reason>"` is available as an escape hatch, intended for a human operator or a documented automated exception, never a routine bypass.
 
-A project can configure a verification command to run against implementation (the repo-only `dispatch.verify` config key). `rdm verify resolve {proj_flag}` prints the configured command, or `unresolved`; `rdm verify run --item <item> --format json {proj_flag}` runs it in that item's worktree.
+A project can configure a verification command to run against implementation (the `dispatch.verify` config key, set plan-repo-wide or per project with `rdm config set dispatch.verify <cmd> --project <p>`). `rdm verify resolve {proj_flag}` prints the command configured for that project, or `unresolved`; `rdm verify run --item <item> --format json {proj_flag}` runs it in that item's worktree.
 
 ## Committing changes
 

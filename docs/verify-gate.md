@@ -47,10 +47,27 @@ lives in the repo's `rdm.toml` as:
 verify = "bash scripts/ci.sh"
 ```
 
+A project can override it in the same file:
+
+```toml
+[projects.web.dispatch]
+verify = "npm test"
+```
+
+Set the override with `rdm config set dispatch.verify "npm test" --project web` and read
+it with `rdm config get dispatch.verify --raw --project web`. The key stays repo-only:
+there is no global entry, per project or otherwise. `rdm config get` without `--project`
+shows the plan-repo-wide value, because `config`'s `--project` is never inferred.
+
 ## 2. Resolution precedence
 
-1. The declared `dispatch.verify` key, when set — read with
-   `rdm config get dispatch.verify --raw` and used verbatim.
+`RDM_DISPATCH_VERIFY`, when set, overrides every configured source below for that process;
+it is a process-level override, not a declared source.
+
+1. The declared `dispatch.verify` key, when set, used verbatim. In order:
+   1. the project override `[projects.<p>.dispatch] verify` for the project being
+      dispatched (`rdm config get dispatch.verify --raw --project <p>`);
+   2. the plan-repo-wide `[dispatch] verify`.
 2. Otherwise **discovery**, in order, stopping at the first source that yields anything:
    1. CI configuration under `.github/workflows/` (also `.circleci/config.yml`,
       `.gitlab-ci.yml`)
@@ -285,8 +302,10 @@ can tell instantly that the dirt was not the dispatch's.
 ## 9. The CLI surface: `rdm verify`
 
 Two subcommands read the same `dispatch.verify` key from outside the dispatch pipeline.
-Both resolve it through the very accessor `rdm config get dispatch.verify --raw` uses, so
-the surfaces can never disagree about what is configured.
+Both resolve it through the shared project-aware resolver that
+`rdm config get dispatch.verify --raw --project <p>` uses, so the surfaces can never
+disagree about what is configured. `--project` follows the standard chain (the flag, then
+`RDM_PROJECT`, then `default_project`), and `--item` is resolved in that same project.
 
 ```bash
 rdm verify resolve [--format json] [--project <p>]
