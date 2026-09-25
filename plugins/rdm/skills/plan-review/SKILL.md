@@ -77,8 +77,10 @@ never parsed out of the `$ARGUMENTS` flag string:
   units (distinct defects) per review unit are graded by a refuter. The value
   following `--max-refutations` when given (a non-negative integer; `0` is legal
   and distinct from unset); otherwise the trimmed output of `rdm config get
-  max_refutations --raw`, which already applies `RDM_MAX_REFUTATIONS` over the
-  repo and then global `max_refutations` key. Empty output means unset — omit the
+  max_refutations --raw --project <PROJECT>` (the same `project` passed below), which
+  already applies `RDM_MAX_REFUTATIONS`, then `[projects.<project>]
+  max_refutations`, then the repo-wide and then global `max_refutations` key.
+  Without `--project` the project layer is skipped. Empty output means unset — omit the
   key so the workflow applies its own default. The precedence chain is stated
   once, in `docs/file-formats.md` § `rdm.toml`.
 - **`rdmBin`** / **`project`** — the rdm executable every reviewer's command

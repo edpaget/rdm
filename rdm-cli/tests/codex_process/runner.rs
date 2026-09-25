@@ -688,11 +688,22 @@ fn budget_record(run: &RuntimeRun) -> Value {
     found[0]["data"].clone()
 }
 
-/// How many `rdm config get max_refutations --raw` reads the run started.
+/// How many `rdm config get max_refutations --raw --project fixture` reads
+/// the run started.
 fn budget_config_reads(run: &RuntimeRun) -> usize {
     records(&run.journal, "read-started")
         .into_iter()
-        .filter(|r| r["data"]["args"] == json!(["config", "get", "max_refutations", "--raw"]))
+        .filter(|r| {
+            r["data"]["args"]
+                == json!([
+                    "config",
+                    "get",
+                    "max_refutations",
+                    "--raw",
+                    "--project",
+                    "fixture"
+                ])
+        })
         .count()
 }
 
@@ -761,6 +772,34 @@ fn code_review_zero_budget_from_env_dispatches_no_refuter() {
 #[test]
 fn plan_review_zero_budget_from_env_dispatches_no_refuter() {
     zero_budget_from_env_dispatches_no_refuter("plan-review");
+}
+
+fn project_zero_budget_beats_the_repo_wide_budget(operation: &str) {
+    // Repo-wide 5 would dispatch a refuter; only a project-scoped read sees
+    // the fixture project's 0.
+    let fx = Fixture::review(
+        operation,
+        false,
+        Some("\nmax_refutations = 5\n\n[projects.fixture]\nmax_refutations = 0\n"),
+    )
+    .unwrap_or_else(|f| panic!("{f}"));
+    let run = observe_runtime(&Lib::real(), &fx).unwrap_or_else(|f| panic!("{f}"));
+    assert_eq!(
+        budget_record(&run),
+        json!({"layer": "config-get", "envForwarded": false, "value": "0"})
+    );
+    assert_eq!(budget_config_reads(&run), 1, "{:?}", run.journal);
+    assert_zero_budget_refused(&fx, &run);
+}
+
+#[test]
+fn code_review_project_zero_budget_beats_the_repo_wide_budget() {
+    project_zero_budget_beats_the_repo_wide_budget("code-review");
+}
+
+#[test]
+fn plan_review_project_zero_budget_beats_the_repo_wide_budget() {
+    project_zero_budget_beats_the_repo_wide_budget("plan-review");
 }
 
 #[test]

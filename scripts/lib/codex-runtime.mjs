@@ -73,7 +73,9 @@ function requireComplete(result, code = false) {
 /**
  * Resolve the per-run refutation budget for a review operation. The spec's
  * `maxRefutations` is this runtime's payload layer and wins outright. Otherwise
- * ONE `rdm config get max_refutations --raw` applies env > repo > global:
+ * ONE `rdm config get max_refutations --raw --project <identity project>`
+ * applies env > [projects.<project>] > repo > global (`config --project` is
+ * never taken from RDM_PROJECT, so the project is passed explicitly):
  * every rdm child's env is rebuilt without the host's RDM_* variables, so a
  * non-blank host RDM_MAX_REFUTATIONS is forwarded into that one child
  * explicitly (a blank one is unset and falls through to config). `config get`
@@ -89,7 +91,7 @@ async function resolveRefutationBudgetLayer(ctx, spec) {
   }
   const hostValue = process.env.RDM_MAX_REFUTATIONS;
   const envForwarded = typeof hostValue === 'string' && hostValue.trim() !== '';
-  const raw = (await ctx.rdm(['config','get','max_refutations','--raw'],{env:envForwarded ? {RDM_MAX_REFUTATIONS:hostValue} : {}})).trim();
+  const raw = (await ctx.rdm(['config','get','max_refutations','--raw','--project',ctx.identity.project],{env:envForwarded ? {RDM_MAX_REFUTATIONS:hostValue} : {}})).trim();
   const value = raw === '' ? undefined : raw;
   ctx.record('refutation-budget',{layer:value === undefined ? 'default' : 'config-get',envForwarded,value:value ?? null});
   return value;

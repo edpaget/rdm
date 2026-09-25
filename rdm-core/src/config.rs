@@ -44,6 +44,7 @@ pub const PROJECT_SCOPABLE_KEYS: &[&str] = &[
     "gates.reviewed",
     "plan_review",
     "default_branch",
+    "max_refutations",
 ];
 
 /// Where a configuration value was resolved from.
@@ -174,6 +175,9 @@ pub struct ProjectOverrides {
     /// Per-project override of [`Config::gates`] (`[projects.<name>.gates]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gates: Option<GatesConfig>,
+    /// Per-project override of [`Config::max_refutations`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_refutations: Option<u64>,
 }
 
 impl ProjectOverrides {
@@ -186,31 +190,41 @@ impl ProjectOverrides {
     pub fn value(&self, key: &str) -> Option<String> {
         scopable_field(
             key,
-            &self.default_branch,
-            self.plan_review,
-            &self.dispatch,
-            &self.gates,
+            ScopableFields {
+                default_branch: &self.default_branch,
+                plan_review: self.plan_review,
+                dispatch: &self.dispatch,
+                gates: &self.gates,
+                max_refutations: self.max_refutations,
+            },
         )
     }
 }
 
-/// Reads one project-scopable key out of the four fields [`Config`] and
-/// [`ProjectOverrides`] share, so both accessors print identical forms.
-fn scopable_field(
-    key: &str,
-    default_branch: &Option<String>,
+/// The project-scopable fields [`Config`] and [`ProjectOverrides`] share.
+struct ScopableFields<'a> {
+    default_branch: &'a Option<String>,
     plan_review: Option<bool>,
-    dispatch: &Option<DispatchConfig>,
-    gates: &Option<GatesConfig>,
-) -> Option<String> {
+    dispatch: &'a Option<DispatchConfig>,
+    gates: &'a Option<GatesConfig>,
+    max_refutations: Option<u64>,
+}
+
+/// Reads one project-scopable key out of the fields [`Config`] and
+/// [`ProjectOverrides`] share, so both accessors print identical forms.
+///
+/// `max_refutations` prints as a decimal number; `0` is a value, not unset.
+fn scopable_field(key: &str, fields: ScopableFields<'_>) -> Option<String> {
     match key {
-        "default_branch" => default_branch.clone(),
-        "plan_review" => plan_review.map(|b| b.to_string()),
-        "dispatch.verify" => dispatch.as_ref().and_then(|d| d.verify.clone()),
-        "gates.reviewed" => gates
+        "default_branch" => fields.default_branch.clone(),
+        "plan_review" => fields.plan_review.map(|b| b.to_string()),
+        "dispatch.verify" => fields.dispatch.as_ref().and_then(|d| d.verify.clone()),
+        "gates.reviewed" => fields
+            .gates
             .as_ref()
             .and_then(|g| g.reviewed)
             .map(|b| b.to_string()),
+        "max_refutations" => fields.max_refutations.map(|n| n.to_string()),
         _ => None,
     }
 }
@@ -487,7 +501,7 @@ pub struct Config {
     /// Unset means the engine's built-in default (`DEFAULT_MAX_REFUTATIONS`)
     /// applies. `0` is a legal, meaningful value — "grade nothing" — and is
     /// NOT treated as unset, unlike [`Config::hook_timeout_secs`]. See
-    /// [`resolve_max_refutations`] for the env override.
+    /// [`resolve_max_refutations`] for the env and per-project overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_refutations: Option<u64>,
 
@@ -595,10 +609,13 @@ impl Config {
     pub fn scopable_value(&self, key: &str) -> Option<String> {
         scopable_field(
             key,
-            &self.default_branch,
-            self.plan_review,
-            &self.dispatch,
-            &self.gates,
+            ScopableFields {
+                default_branch: &self.default_branch,
+                plan_review: self.plan_review,
+                dispatch: &self.dispatch,
+                gates: &self.gates,
+                max_refutations: self.max_refutations,
+            },
         )
     }
 }
@@ -617,8 +634,10 @@ impl Config {
 ///    then the
 ///    generic `RDM_<KEY>` (dots become underscores, e.g.
 ///    `RDM_DISPATCH_VERIFY`). Every value of a boolean key (`gates.reviewed`,
-///    `plan_review`) must be the literal `"true"` or `"false"`; other keys'
-///    values are returned raw.
+///    `plan_review`) must be the literal `"true"` or `"false"`; a
+///    `max_refutations` value must parse under [`parse_max_refutations`] and
+///    is returned as its canonical number (`" +4 "` becomes `"4"`); other
+///    keys' values are returned raw.
 /// 2. `repo.projects[project]`, when `project` is `Some`.
 /// 3. The plan-repo-wide value in `repo`.
 /// 4. `global`, only for keys not in [`REPO_ONLY_KEYS`].
@@ -626,7 +645,9 @@ impl Config {
 ///
 /// `dispatch.verify` is trimmed at every layer (environment, project, repo),
 /// and a blank value at any layer counts as unset, so resolution falls
-/// through to the next layer; blank everywhere resolves to `None`.
+/// through to the next layer; blank everywhere resolves to `None`. A blank
+/// `RDM_MAX_REFUTATIONS` is likewise unset. A `max_refutations` of `0` is a
+/// value, not unset.
 ///
 /// `repo` must be the repo config as read from `rdm.toml`, not one already
 /// merged with the global config, or step 4's repo-only rule is bypassed.
@@ -638,7 +659,8 @@ impl Config {
 /// Returns [`Error::KeyNotProjectScopable`] if `key` is not one of
 /// [`PROJECT_SCOPABLE_KEYS`], and [`Error::InvalidConfigValue`] (naming the
 /// variable) if an environment override of a boolean key is anything other
-/// than the literal `"true"` or `"false"`.
+/// than the literal `"true"` or `"false"`, or if `RDM_MAX_REFUTATIONS` is not
+/// a non-negative integer.
 pub fn resolve_scoped_value(
     key: &str,
     project: Option<&str>,
@@ -661,18 +683,21 @@ pub fn resolve_scoped_value(
     let generic_env = format!("RDM_{}", key.to_uppercase().replace('.', "_"));
     // Every layer's value passes through `present`: a blank `dispatch.verify`
     // at any layer is unset, so it falls through to the next layer instead of
-    // letting a verification gate pass without running anything.
+    // letting a verification gate pass without running anything. A blank
+    // `max_refutations` (only the env layer can be blank) is unset too.
     let present = |v: String| match key {
         "dispatch.verify" => {
             let t = v.trim();
             (!t.is_empty()).then(|| t.to_string())
         }
+        "max_refutations" => (!v.trim().is_empty()).then_some(v),
         _ => Some(v),
     };
     let generic = env(&generic_env).and_then(present);
     if let Some(v) = generic {
         let v = match key {
             "gates.reviewed" | "plan_review" => parse_bool_env(&generic_env, &v)?.to_string(),
+            "max_refutations" => parse_max_refutations(&generic_env, &v)?.to_string(),
             _ => v,
         };
         return found(v, ConfigSource::Env);
@@ -691,6 +716,7 @@ pub fn resolve_scoped_value(
         let global_value = match key {
             "plan_review" => global.plan_review.map(|b| b.to_string()),
             "default_branch" => global.default_branch.clone(),
+            "max_refutations" => global.max_refutations.map(|n| n.to_string()),
             _ => None,
         };
         if let Some(v) = global_value {
@@ -995,36 +1021,61 @@ pub fn parse_max_refutations(key: &str, value: &str) -> Result<u64> {
     digits.parse::<u64>().map_err(|_| invalid())
 }
 
-/// Resolves the per-run refutation budget from the environment override and
-/// the merged config.
+/// Resolves the per-run refutation budget for `project`, with its source.
 ///
-/// Precedence: `RDM_MAX_REFUTATIONS` (passed in as `env_value`, so the rule
-/// stays a pure function) → the config's `max_refutations` (repo over global,
-/// already merged by [`Config::with_global_defaults`]) → `None`. `None` means
+/// A projection of [`resolve_scoped_value`] for `max_refutations`, so the
+/// precedence is that function's: `RDM_MAX_REFUTATIONS` →
+/// `[projects.<project>] max_refutations` → the plan-repo-wide
+/// `max_refutations` → the global `max_refutations` → `None`. `None` means
 /// unset: the caller omits the value and the review engine applies its own
-/// `DEFAULT_MAX_REFUTATIONS`.
+/// `DEFAULT_MAX_REFUTATIONS`. A `None` project skips the project table.
 ///
-/// A set-but-empty (or whitespace-only) env value counts as unset and falls
-/// through to config. Any other env value must parse under
-/// [`parse_max_refutations`], the same grammar the engine's
+/// A set-but-blank env value counts as unset. Any other env value must parse
+/// under [`parse_max_refutations`], the same grammar the engine's
 /// `resolveRefutationBudget` accepts.
 ///
 /// Deliberate divergence from `hook_timeout_secs`: that key treats `0` as
 /// unset. Here `0` is a meaningful value ("grade nothing, pass every unit
-/// through un-refuted") and resolves to `Some(0)` from either layer.
+/// through un-refuted") and resolves to `0` from any layer.
+///
+/// `repo` must be the repo config as read from `rdm.toml`, not one already
+/// merged with `global`. `env` is injected so the rule stays a pure function;
+/// pass `|k| std::env::var(k).ok()` for the process environment.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::config::{resolve_max_refutations, Config, ConfigSource, GlobalConfig};
+///
+/// let repo = Config::from_toml("max_refutations = 5\n\n[projects.a]\nmax_refutations = 0\n")
+///     .unwrap();
+/// let global = GlobalConfig::default();
+///
+/// let a = resolve_max_refutations(Some("a"), &repo, &global, |_| None).unwrap().unwrap();
+/// assert_eq!((a.value, a.source), (0, ConfigSource::Project));
+///
+/// let b = resolve_max_refutations(Some("b"), &repo, &global, |_| None).unwrap().unwrap();
+/// assert_eq!((b.value, b.source), (5, ConfigSource::Repo));
+/// ```
 ///
 /// # Errors
 ///
 /// Returns [`Error::InvalidConfigValue`] naming `RDM_MAX_REFUTATIONS` if the
 /// env value is set, non-blank, and not a non-negative integer.
 pub fn resolve_max_refutations(
-    env_value: Option<&str>,
-    config: Option<&Config>,
-) -> Result<Option<u64>> {
-    if let Some(v) = env_value.filter(|v| !v.trim().is_empty()) {
-        return parse_max_refutations(MAX_REFUTATIONS_ENV, v).map(Some);
-    }
-    Ok(config.and_then(|c| c.max_refutations))
+    project: Option<&str>,
+    repo: &Config,
+    global: &GlobalConfig,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<ResolvedValue<u64>>> {
+    resolve_scoped_value("max_refutations", project, repo, global, env)?
+        .map(|resolved| {
+            Ok(ResolvedValue {
+                value: parse_max_refutations("max_refutations", &resolved.value)?,
+                source: resolved.source,
+            })
+        })
+        .transpose()
 }
 
 /// Loads `<plan_root>/rdm.toml` and resolves the `reviewed`-gate flag for
@@ -1716,18 +1767,34 @@ mechanical = "small"
         }
     }
 
+    /// `resolve_max_refutations` with `project` and an env holding only
+    /// `RDM_MAX_REFUTATIONS = env_value`, returned as `(value, source)`.
+    fn budget(
+        project: Option<&str>,
+        repo: &Config,
+        global: &GlobalConfig,
+        env_value: Option<&str>,
+    ) -> Result<Option<(u64, ConfigSource)>> {
+        let env = |k: &str| {
+            (k == MAX_REFUTATIONS_ENV)
+                .then(|| env_value.map(str::to_string))
+                .flatten()
+        };
+        Ok(resolve_max_refutations(project, repo, global, env)?.map(|r| (r.value, r.source)))
+    }
+
     #[test]
     fn resolve_max_refutations_env_matches_the_engine_grammar() {
         let config = Config {
             max_refutations: Some(9),
             ..Default::default()
         };
+        let global = GlobalConfig::default();
         for (input, expected) in REFUTATION_BUDGET_GRAMMAR {
-            match (
-                resolve_max_refutations(Some(input), Some(&config)),
-                expected,
-            ) {
-                (Ok(got), Some(n)) => assert_eq!(got, Some(*n), "input {input:?}"),
+            match (budget(None, &config, &global, Some(input)), expected) {
+                (Ok(got), Some(n)) => {
+                    assert_eq!(got, Some((*n, ConfigSource::Env)), "input {input:?}")
+                }
                 (Err(Error::InvalidConfigValue { key, .. }), None) => {
                     assert_eq!(key, "RDM_MAX_REFUTATIONS", "input {input:?}")
                 }
@@ -1737,15 +1804,29 @@ mechanical = "small"
     }
 
     #[test]
+    fn resolve_max_refutations_env_is_reported_as_its_canonical_number() {
+        let got = resolve_scoped_value(
+            "max_refutations",
+            None,
+            &Config::default(),
+            &GlobalConfig::default(),
+            env_of(&[("RDM_MAX_REFUTATIONS", " +4 ")]),
+        )
+        .unwrap();
+        assert_eq!(got, resolved("4", ConfigSource::Env));
+    }
+
+    #[test]
     fn resolve_max_refutations_blank_env_falls_through_to_config() {
         let config = Config {
             max_refutations: Some(3),
             ..Default::default()
         };
+        let global = GlobalConfig::default();
         for blank in ["", "   ", "\t"] {
             assert_eq!(
-                resolve_max_refutations(Some(blank), Some(&config)).unwrap(),
-                Some(3),
+                budget(None, &config, &global, Some(blank)).unwrap(),
+                Some((3, ConfigSource::Repo)),
                 "env {blank:?}"
             );
         }
@@ -1761,9 +1842,16 @@ mechanical = "small"
             max_refutations: Some(8),
             ..Default::default()
         };
+        assert_eq!(
+            budget(None, &repo, &global, None).unwrap(),
+            Some((2, ConfigSource::Repo))
+        );
+        assert_eq!(
+            budget(None, &Config::default(), &global, None).unwrap(),
+            Some((8, ConfigSource::Global))
+        );
+        // The merge other readers use agrees.
         assert_eq!(repo.with_global_defaults(&global).max_refutations, Some(2));
-        let merged = Config::default().with_global_defaults(&global);
-        assert_eq!(merged.max_refutations, Some(8));
     }
 
     #[test]
@@ -1776,10 +1864,84 @@ mechanical = "small"
             max_refutations: Some(8),
             ..Default::default()
         };
-        let merged = repo.with_global_defaults(&global);
         assert_eq!(
-            resolve_max_refutations(Some("4"), Some(&merged)).unwrap(),
-            Some(4)
+            budget(None, &repo, &global, Some("4")).unwrap(),
+            Some((4, ConfigSource::Env))
+        );
+    }
+
+    #[test]
+    fn max_refutations_resolves_env_then_project_then_repo_then_global() {
+        let global = GlobalConfig {
+            max_refutations: Some(8),
+            ..Default::default()
+        };
+        let full = Config::from_toml("max_refutations = 5\n\n[projects.p]\nmax_refutations = 2\n")
+            .unwrap();
+        assert_eq!(
+            budget(Some("p"), &full, &global, Some("4")).unwrap(),
+            Some((4, ConfigSource::Env))
+        );
+        assert_eq!(
+            budget(Some("p"), &full, &global, None).unwrap(),
+            Some((2, ConfigSource::Project))
+        );
+        let repo_only = Config::from_toml("max_refutations = 5\n").unwrap();
+        assert_eq!(
+            budget(Some("p"), &repo_only, &global, None).unwrap(),
+            Some((5, ConfigSource::Repo))
+        );
+        assert_eq!(
+            budget(Some("p"), &Config::default(), &global, None).unwrap(),
+            Some((8, ConfigSource::Global))
+        );
+        assert_eq!(
+            budget(
+                Some("p"),
+                &Config::default(),
+                &GlobalConfig::default(),
+                None
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn max_refutations_project_zero_is_a_value_not_a_fall_through() {
+        let repo = Config::from_toml("max_refutations = 5\n\n[projects.p]\nmax_refutations = 0\n")
+            .unwrap();
+        let global = GlobalConfig {
+            max_refutations: Some(8),
+            ..Default::default()
+        };
+        assert_eq!(
+            budget(Some("p"), &repo, &global, None).unwrap(),
+            Some((0, ConfigSource::Project))
+        );
+        assert_eq!(
+            budget(Some("q"), &repo, &global, None).unwrap(),
+            Some((5, ConfigSource::Repo))
+        );
+        assert_eq!(
+            budget(None, &repo, &global, None).unwrap(),
+            Some((5, ConfigSource::Repo))
+        );
+    }
+
+    #[test]
+    fn max_refutations_blank_env_falls_to_project_and_malformed_env_is_an_error() {
+        let repo = Config::from_toml("max_refutations = 5\n\n[projects.p]\nmax_refutations = 1\n")
+            .unwrap();
+        let global = GlobalConfig::default();
+        assert_eq!(
+            budget(Some("p"), &repo, &global, Some("  ")).unwrap(),
+            Some((1, ConfigSource::Project))
+        );
+        let err = budget(Some("p"), &repo, &global, Some("5x")).unwrap_err();
+        assert!(
+            matches!(&err, Error::InvalidConfigValue { key, .. } if key == "RDM_MAX_REFUTATIONS"),
+            "got {err:?}"
         );
     }
 
@@ -1794,41 +1956,34 @@ mechanical = "small"
             max_refutations: Some(8),
             ..Default::default()
         };
-        let merged = repo_zero.with_global_defaults(&global_eight);
         assert_eq!(
-            resolve_max_refutations(None, Some(&merged)).unwrap(),
-            Some(0)
+            budget(None, &repo_zero, &global_eight, None).unwrap(),
+            Some((0, ConfigSource::Repo))
         );
 
         let global_zero = GlobalConfig {
             max_refutations: Some(0),
             ..Default::default()
         };
-        let merged = Config::default().with_global_defaults(&global_zero);
         assert_eq!(
-            resolve_max_refutations(None, Some(&merged)).unwrap(),
-            Some(0)
+            budget(None, &Config::default(), &global_zero, None).unwrap(),
+            Some((0, ConfigSource::Global))
         );
 
-        assert_eq!(
-            resolve_max_refutations(Some("0"), Some(&repo_zero)).unwrap(),
-            Some(0)
-        );
         let repo_five = Config {
             max_refutations: Some(5),
             ..Default::default()
         };
         assert_eq!(
-            resolve_max_refutations(Some("0"), Some(&repo_five)).unwrap(),
-            Some(0)
+            budget(None, &repo_five, &global_eight, Some("0")).unwrap(),
+            Some((0, ConfigSource::Env))
         );
     }
 
     #[test]
     fn max_refutations_unset_resolves_to_none() {
-        assert_eq!(resolve_max_refutations(None, None).unwrap(), None);
         assert_eq!(
-            resolve_max_refutations(None, Some(&Config::default())).unwrap(),
+            budget(None, &Config::default(), &GlobalConfig::default(), None).unwrap(),
             None
         );
     }
@@ -2445,6 +2600,7 @@ effort = "xhigh"
             r#"
 default_branch = "repo-branch"
 plan_review = false
+max_refutations = 5
 
 [dispatch]
 verify = "repo-verify"
@@ -2455,6 +2611,7 @@ reviewed = false
 [projects.a]
 default_branch = "a-branch"
 plan_review = true
+max_refutations = 0
 
 [projects.a.dispatch]
 verify = "a-verify"
@@ -2470,6 +2627,7 @@ reviewed = true
         GlobalConfig {
             default_branch: Some("global-branch".to_string()),
             plan_review: Some(true),
+            max_refutations: Some(8),
             ..Default::default()
         }
     }
@@ -2482,14 +2640,15 @@ reviewed = true
     }
 
     #[test]
-    fn project_scopable_keys_are_the_four_known_keys() {
+    fn project_scopable_keys_are_the_five_known_keys() {
         assert_eq!(
             PROJECT_SCOPABLE_KEYS,
             &[
                 "dispatch.verify",
                 "gates.reviewed",
                 "plan_review",
-                "default_branch"
+                "default_branch",
+                "max_refutations"
             ]
         );
         for key in PROJECT_SCOPABLE_KEYS {
@@ -2548,12 +2707,17 @@ reviewed = true
             config.scopable_value("default_branch").as_deref(),
             Some("repo-branch")
         );
+        assert_eq!(
+            config.scopable_value("max_refutations").as_deref(),
+            Some("5")
+        );
         assert_eq!(config.scopable_value("remote.default"), None);
         let a = &config.projects["a"];
         assert_eq!(a.value("dispatch.verify").as_deref(), Some("a-verify"));
         assert_eq!(a.value("gates.reviewed").as_deref(), Some("true"));
         assert_eq!(a.value("plan_review").as_deref(), Some("true"));
         assert_eq!(a.value("default_branch").as_deref(), Some("a-branch"));
+        assert_eq!(a.value("max_refutations").as_deref(), Some("0"));
         assert_eq!(ProjectOverrides::default().value("plan_review"), None);
     }
 
@@ -2566,12 +2730,14 @@ reviewed = true
             ("RDM_GATES_REVIEWED", "false"),
             ("RDM_PLAN_REVIEW", "false"),
             ("RDM_DEFAULT_BRANCH", "env-branch"),
+            ("RDM_MAX_REFUTATIONS", "7"),
         ]);
         for (key, want) in [
             ("dispatch.verify", "env-verify"),
             ("gates.reviewed", "false"),
             ("plan_review", "false"),
             ("default_branch", "env-branch"),
+            ("max_refutations", "7"),
         ] {
             assert_eq!(
                 resolve_scoped_value(key, Some("a"), &config, &global, &env).unwrap(),
@@ -2637,6 +2803,7 @@ reviewed = true
             ("gates.reviewed", "true"),
             ("plan_review", "true"),
             ("default_branch", "a-branch"),
+            ("max_refutations", "0"),
         ] {
             assert_eq!(
                 resolve_scoped_value(key, Some("a"), &config, &global, no_env).unwrap(),
@@ -2656,6 +2823,7 @@ reviewed = true
                 ("gates.reviewed", "false"),
                 ("plan_review", "false"),
                 ("default_branch", "repo-branch"),
+                ("max_refutations", "5"),
             ] {
                 assert_eq!(
                     resolve_scoped_value(key, project, &config, &global, no_env).unwrap(),
@@ -2677,6 +2845,10 @@ reviewed = true
         assert_eq!(
             resolve_scoped_value("default_branch", Some("a"), &config, &global, no_env).unwrap(),
             resolved("global-branch", ConfigSource::Global)
+        );
+        assert_eq!(
+            resolve_scoped_value("max_refutations", Some("a"), &config, &global, no_env).unwrap(),
+            resolved("8", ConfigSource::Global)
         );
         for key in ["dispatch.verify", "gates.reviewed"] {
             assert_eq!(

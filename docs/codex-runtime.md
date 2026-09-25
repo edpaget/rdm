@@ -104,7 +104,8 @@ as `signal`; it cannot be represented in a JSON file.
 
 For `plan-review` and `code-review`, the runtime resolves `maxRefutations` from
 the spec's `maxRefutations` when present, else from one `rdm config get
-max_refutations --raw` (env, then repo, then global config — see
+max_refutations --raw --project <project>` for the run's identity project (env,
+then `[projects.<project>]`, then repo, then global config — see
 [`file-formats.md`](file-formats.md) § "`max_refutations` precedence"). Every rdm
 child the runtime spawns has its host `RDM_*` variables stripped, so a non-blank
 `RDM_MAX_REFUTATIONS` in the runtime's own environment is forwarded into that one

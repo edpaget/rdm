@@ -742,7 +742,7 @@ fn config_list_reports_a_malformed_max_refutations_env_in_its_row() {
         .assert()
         .success()
         .stdout(
-            predicate::str::is_match(r"max_refutations\s+\(invalid: .*RDM_MAX_REFUTATIONS.*\)")
+            predicate::str::is_match(r"max_refutations\s+\(error: .*RDM_MAX_REFUTATIONS.*\)")
                 .unwrap(),
         )
         // The rest of the list still prints.
@@ -802,6 +802,130 @@ fn config_blank_max_refutations_env_with_nothing_set_is_unset() {
         .assert()
         .success()
         .stdout("");
+}
+
+#[test]
+fn config_project_max_refutations_is_reported_for_that_project_only() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "8"])
+        .assert()
+        .success();
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "3", "--project", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("project config for 'web'"));
+
+    rdm_in(&config_dir)
+        .args(["config", "get", "max_refutations", "--project", "web"])
+        .assert()
+        .success()
+        .stdout("3  (source: project config)\n");
+    rdm_in(&config_dir)
+        .args([
+            "config",
+            "get",
+            "max_refutations",
+            "--project",
+            "web",
+            "--raw",
+        ])
+        .assert()
+        .success()
+        .stdout("3\n");
+    rdm_in(&config_dir)
+        .args(["config", "list", "--project", "web"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::is_match(r"max_refutations\s+3\s+\(source: project config\)").unwrap(),
+        );
+
+    // Another project, and no project at all, still see the repo-wide value.
+    rdm_in(&config_dir)
+        .args(["config", "get", "max_refutations", "--project", "other"])
+        .assert()
+        .success()
+        .stdout("8  (source: repo config)\n");
+    rdm_in(&config_dir)
+        .args(["config", "get", "max_refutations"])
+        .assert()
+        .success()
+        .stdout("8  (source: repo config)\n");
+
+    // The environment still beats the project override.
+    rdm_in(&config_dir)
+        .env("RDM_MAX_REFUTATIONS", "1")
+        .args([
+            "config",
+            "get",
+            "max_refutations",
+            "--project",
+            "web",
+            "--raw",
+        ])
+        .assert()
+        .success()
+        .stdout("1\n");
+}
+
+#[test]
+fn config_project_max_refutations_zero_is_a_value() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "5"])
+        .assert()
+        .success();
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "0", "--project", "web"])
+        .assert()
+        .success();
+
+    rdm_in(&config_dir)
+        .args([
+            "config",
+            "get",
+            "max_refutations",
+            "--project",
+            "web",
+            "--raw",
+        ])
+        .assert()
+        .success()
+        .stdout("0\n");
+}
+
+#[test]
+fn config_set_project_max_refutations_rejects_invalid_values_and_writes_nothing() {
+    let (config_dir, root_dir) = setup_repo();
+    let rdm_toml = root_dir.path().join("rdm.toml");
+    let before = std::fs::read(&rdm_toml).unwrap();
+
+    for bad in ["-1", "abc", "", "5x"] {
+        rdm_in(&config_dir)
+            .args([
+                "config",
+                "set",
+                "max_refutations",
+                "--project",
+                "web",
+                "--",
+                bad,
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("non-negative integer"));
+    }
+
+    assert_eq!(std::fs::read(&rdm_toml).unwrap(), before);
+    rdm_in(&config_dir)
+        .args(["config", "get", "max_refutations", "--project", "web"])
+        .assert()
+        .success()
+        .stdout("(not set)\n");
 }
 
 #[test]
@@ -1491,7 +1615,8 @@ fn config_list_project_lists_exactly_the_scopable_keys() {
             "dispatch.verify",
             "gates.reviewed",
             "plan_review",
-            "default_branch"
+            "default_branch",
+            "max_refutations"
         ],
         "{out}"
     );

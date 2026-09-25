@@ -69,10 +69,10 @@ verify = "npm test"            # per-project override of dispatch.verify
 | `stage` | bool | `false` | When `true`, mutations write files but skip the git commit until you run `rdm commit` |
 | `remote.default` | string | *(none)* | Default git remote name |
 | `gates.reviewed` | bool | `false` | When `true`, `phase update --status reviewed` / `task update --status reviewed` refuse unless an approved plan, an approving `change/` review naming it, and a clean worktree all exist. Repo-only. See [`core-enforced-gates.md`](core-enforced-gates.md) |
-| `max_refutations` | non-negative integer | *(none — the engine's `DEFAULT_MAX_REFUTATIONS`, 5)* | Per-run refutation budget for the review engines: at most this many consolidated units (distinct defects) per review unit are graded by a refuter; the rest pass through un-refuted. Settable in repo and global config. See [`max_refutations` precedence](#max_refutations-precedence) |
-| `projects.<name>` | table | *(none)* | Per-project overrides of the project-scopable keys (`dispatch.verify`, `gates.reviewed`, `plan_review`, `default_branch`), in the same shape as the top-level fields (e.g. `[projects.web.dispatch] verify = "..."`). Repo-only. Set with `rdm config set <key> <value> --project <name>` |
+| `max_refutations` | non-negative integer | *(none — the engine's `DEFAULT_MAX_REFUTATIONS`, 5)* | Per-run refutation budget for the review engines: at most this many consolidated units (distinct defects) per review unit are graded by a refuter; the rest pass through un-refuted. Settable in repo, global and per-project config. See [`max_refutations` precedence](#max_refutations-precedence) |
+| `projects.<name>` | table | *(none)* | Per-project overrides of the project-scopable keys (`dispatch.verify`, `gates.reviewed`, `plan_review`, `default_branch`, `max_refutations`), in the same shape as the top-level fields (e.g. `[projects.web.dispatch] verify = "..."`). Repo-only. Set with `rdm config set <key> <value> --project <name>` |
 
-A project-scopable key resolves for a project in this order: its environment override (for `gates.reviewed`, `RDM_REVIEWED_GATE` first, the variable the gate itself honors; then `RDM_<KEY>`, e.g. `RDM_DISPATCH_VERIFY`; a boolean key's override must be the literal `true` or `false`, or resolution fails naming the variable), then `[projects.<name>]`, then the plan-repo-wide value, then the global config (only for `plan_review` and `default_branch`, which are not repo-only), then the default. `rdm config get <key> --project <name>` and `rdm config list --project <name>` report the resolved value and its source; `--project` on `config` is always explicit and is never taken from `RDM_PROJECT` or `default_project`.
+A project-scopable key resolves for a project in this order: its environment override (for `gates.reviewed`, `RDM_REVIEWED_GATE` first, the variable the gate itself honors; then `RDM_<KEY>`, e.g. `RDM_DISPATCH_VERIFY`; a boolean key's override must be the literal `true` or `false`, or resolution fails naming the variable), then `[projects.<name>]`, then the plan-repo-wide value, then the global config (only for `plan_review`, `default_branch` and `max_refutations`, which are not repo-only), then the default. `RDM_MAX_REFUTATIONS` uses the `max_refutations` grammar below, and a blank value counts as unset. `rdm config get <key> --project <name>` and `rdm config list --project <name>` report the resolved value and its source; `--project` on `config` is always explicit and is never taken from `RDM_PROJECT` or `default_project`.
 
 `default_branch` is resolved this way for the command's project by every consumer, with `RDM_DEFAULT_BRANCH` overriding it: the `Done:` post-commit hook's branch filter (its project comes from `RDM_PROJECT`, then `default_project`; with neither, the plan-repo-wide value applies), the `phase update`/`task update` needs-review "nothing to review" warning, `--source` and `rdm review source` binding, the `change/` review merge-base (beneath the project frontmatter's `source.default_branch`, which still wins where it is set), and `rdm info`.
 
@@ -85,13 +85,17 @@ The refutation budget a review run uses resolves as follows, highest first:
 2. a `--max-refutations N` flag on `rdm-do --auto`, `rdm-dispatch-phase`, `rdm-autopilot`,
    `rdm-review` or `rdm-plan-review` (autopilot and `rdm-do` only forward it to dispatch-phase);
 3. `RDM_MAX_REFUTATIONS` in the environment;
-4. `max_refutations` in `rdm.toml`, then in the global config;
-5. `DEFAULT_MAX_REFUTATIONS = 5`.
+4. `[projects.<P>] max_refutations` in `rdm.toml`, for the project `P` under review;
+5. the plan-repo-wide `max_refutations` in `rdm.toml`;
+6. the global `max_refutations`;
+7. `DEFAULT_MAX_REFUTATIONS = 5`.
 
-Layers 3 and 4 are read by the caller with one `rdm config get max_refutations --raw`, which already
-checks `RDM_MAX_REFUTATIONS` before repo and global config (an empty or whitespace-only
-`RDM_MAX_REFUTATIONS` counts as unset and falls through to config) and prints the resolved number;
-empty output means unset, and the caller then omits the arg so the engine applies layer 5. The
+Layers 3–6 are read by the caller with one `rdm config get max_refutations --raw --project <P>`,
+which already checks `RDM_MAX_REFUTATIONS` before the project, repo and global config (an empty or
+whitespace-only `RDM_MAX_REFUTATIONS` counts as unset and falls through to config) and prints the
+resolved number. `--project` must be passed explicitly — `config` never takes it from
+`RDM_PROJECT` — or layer 4 is skipped. Empty output means unset, and the caller then omits the arg so
+the engine applies layer 7. The
 review engine never reads config itself.
 
 `0` is legal and distinct from unset: it means "grade nothing, pass every unit through un-refuted".

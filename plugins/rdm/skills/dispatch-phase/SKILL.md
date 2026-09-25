@@ -287,7 +287,7 @@ corpus, which no document records.
 <rdmBin> model resolve review-find --format json
 <rdmBin> model resolve review-verify --format json
 <rdmBin> model resolve review-consolidate --format json
-<rdmBin> config get max_refutations --raw     # SKIP when --max-refutations was given
+<rdmBin> config get max_refutations --raw<proj-flag>     # SKIP when --max-refutations was given
 <rdmBin> task list --tag plan-review --status wont-fix<proj-flag> --format json   # record each result's `title`
 ```
 
@@ -296,9 +296,11 @@ Record the three results as `profiles.reviewFind` / `profiles.reviewVerify` /
 and the wont-fix titles as `wontFixedTitles`:
 
 - `maxRefutations` — the `--max-refutations` flag when given. Otherwise the trimmed output of
-  `config get max_refutations --raw`, which already applies `RDM_MAX_REFUTATIONS` over the repo and
-  then global `max_refutations` key, so this one call covers both layers — do not read the env var
-  separately. Empty output means unset: OMIT the `maxRefutations` key from both engine calls (steps 6
+  `config get max_refutations --raw<proj-flag>`, which already applies `RDM_MAX_REFUTATIONS`, then
+  `[projects.<project>] max_refutations`, then the repo-wide and then global `max_refutations` key,
+  so this one call covers every config layer — do not read the env var separately, and do not drop
+  `<proj-flag>` (`config --project` is never taken from `RDM_PROJECT`, so without it the project
+  layer is skipped). Empty output means unset: OMIT the `maxRefutations` key from both engine calls (steps 6
   and 12) entirely, never forward a default the engine applies itself. Pass a value through as-is;
   the engine validates it and throws before any agent runs on a malformed one.
 

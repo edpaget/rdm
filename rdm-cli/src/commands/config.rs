@@ -25,13 +25,6 @@ pub fn run(
                 resolve_scoped(&key, project.as_deref(), &repo_config, global_config)?
             } else if project.is_some() {
                 return Err(not_scopable(&key));
-            } else if key == "max_refutations" {
-                // Resolved through the core grammar the review engine shares:
-                // a blank env value falls through to config and a malformed
-                // one is an error naming the variable, never an echo.
-                let repo_config = load_repo_config_or_default(cli_root, global_config);
-                paths::resolve_max_refutations_value(&repo_config, global_config)?
-                    .map(stringify_resolved)
             } else if let Ok(v) = std::env::var(env_key(&key)) {
                 Some(ResolvedValue {
                     value: v,
@@ -123,16 +116,6 @@ pub fn run(
                             continue;
                         }
                     }
-                } else if *key == "max_refutations" {
-                    // One malformed override must not abort the whole list,
-                    // so the error is reported in this key's row instead.
-                    match paths::resolve_max_refutations_value(&repo_config, global_config) {
-                        Ok(resolved) => resolved.map(stringify_resolved),
-                        Err(e) => {
-                            println!("{key:<max_key_len$}  (invalid: {e})");
-                            continue;
-                        }
-                    }
                 } else if let Ok(v) = std::env::var(env_key(key)) {
                     Some(ResolvedValue {
                         value: v,
@@ -164,14 +147,6 @@ fn not_scopable(key: &str) -> anyhow::Error {
         key: key.to_string(),
     }
     .into()
-}
-
-/// Renders a typed resolved value in the string form `config get`/`list` print.
-fn stringify_resolved<T: ToString>(resolved: ResolvedValue<T>) -> ResolvedValue<String> {
-    ResolvedValue {
-        value: resolved.value.to_string(),
-        source: resolved.source,
-    }
 }
 
 /// The generic `RDM_<KEY>` environment override `config get`/`list` honor.

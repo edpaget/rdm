@@ -1803,8 +1803,8 @@ pub(crate) enum ConfigCommand {
         raw: bool,
         /// Resolve the key for this project, reporting a `[projects.<name>]`
         /// override when one is set. Only the project-scopable keys
-        /// (dispatch.verify, gates.reviewed, plan_review, default_branch) are
-        /// accepted. Never taken from RDM_PROJECT or default_project.
+        /// (dispatch.verify, gates.reviewed, plan_review, default_branch,
+        /// max_refutations) are accepted. Never taken from RDM_PROJECT or default_project.
         #[arg(long)]
         project: Option<String>,
     },
@@ -1823,7 +1823,7 @@ pub(crate) enum ConfigCommand {
         /// Write a per-project override to `[projects.<name>]` in the repo
         /// config instead of the plan-repo-wide value. Only the
         /// project-scopable keys (dispatch.verify, gates.reviewed,
-        /// plan_review, default_branch) are accepted. Never taken from
+        /// plan_review, default_branch, max_refutations) are accepted. Never taken from
         /// RDM_PROJECT or default_project.
         #[arg(long, conflicts_with = "global")]
         project: Option<String>,
@@ -1831,8 +1831,8 @@ pub(crate) enum ConfigCommand {
     /// List all config keys with their resolved values and sources.
     List {
         /// List only the project-scopable keys (dispatch.verify,
-        /// gates.reviewed, plan_review, default_branch), each resolved for
-        /// this project. Never taken from RDM_PROJECT or default_project.
+        /// gates.reviewed, plan_review, default_branch, max_refutations),
+        /// each resolved for this project. Never taken from RDM_PROJECT or default_project.
         #[arg(long)]
         project: Option<String>,
     },

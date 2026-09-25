@@ -275,44 +275,6 @@ pub fn resolve_config_value(
     None
 }
 
-/// Resolves `max_refutations` for `config get` / `config list`, reading
-/// `RDM_MAX_REFUTATIONS` from the process environment.
-///
-/// The value comes from [`rdm_core::config::resolve_max_refutations`] — the
-/// one grammar the review engine shares — so a blank env value falls through
-/// to config and a malformed one is an error rather than an echo.
-///
-/// # Errors
-///
-/// Returns an error naming `RDM_MAX_REFUTATIONS` if the env value is set,
-/// non-blank, and not a non-negative integer.
-pub fn resolve_max_refutations_value(
-    repo: &rdm_core::config::Config,
-    global: &GlobalConfig,
-) -> Result<Option<ResolvedValue<u64>>> {
-    let env = std::env::var(rdm_core::config::MAX_REFUTATIONS_ENV).ok();
-    resolve_max_refutations_value_inner(env.as_deref(), repo, global)
-}
-
-fn resolve_max_refutations_value_inner(
-    env: Option<&str>,
-    repo: &rdm_core::config::Config,
-    global: &GlobalConfig,
-) -> Result<Option<ResolvedValue<u64>>> {
-    let merged = repo.with_global_defaults(global);
-    let Some(value) = rdm_core::config::resolve_max_refutations(env, Some(&merged))? else {
-        return Ok(None);
-    };
-    let source = if env.is_some_and(|v| !v.trim().is_empty()) {
-        ConfigSource::Env
-    } else if repo.max_refutations.is_some() {
-        ConfigSource::Repo
-    } else {
-        ConfigSource::Global
-    };
-    Ok(Some(ResolvedValue { value, source }))
-}
-
 /// Saves the global config to the XDG config path.
 ///
 /// Creates the parent directory if it does not exist.
@@ -348,10 +310,8 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
         "default_format" => config.default_format.clone(),
         "remote.default" => config.remote.as_ref().and_then(|r| r.default.clone()),
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
-        "default_branch" | "plan_review" | "dispatch.verify" | "gates.reviewed" => {
-            config.scopable_value(key)
-        }
-        "max_refutations" => config.max_refutations.map(|n| n.to_string()),
+        "default_branch" | "plan_review" | "dispatch.verify" | "gates.reviewed"
+        | "max_refutations" => config.scopable_value(key),
         // NOTE: a malformed RDM_SERVER_QUICK_FILTERS env value is echoed
         // back raw with "(source: environment variable)" by the generic
         // resolution chain in commands/config.rs — a pre-existing quirk of
@@ -464,6 +424,9 @@ pub fn set_project_config_field(
                 .gates
                 .get_or_insert_with(Default::default)
                 .reviewed = Some(parse_bool(value)?);
+        }
+        "max_refutations" => {
+            overrides.max_refutations = Some(rdm_core::config::parse_max_refutations(key, value)?);
         }
         _ => {
             return Err(rdm_core::error::Error::KeyNotProjectScopable {
@@ -713,44 +676,6 @@ mod tests {
         let global = GlobalConfig::default();
         let resolved = resolve_config_value("default_project", &repo, &global);
         assert!(resolved.is_none());
-    }
-
-    #[test]
-    fn resolve_max_refutations_value_reports_each_source() {
-        let repo = rdm_core::config::Config {
-            max_refutations: Some(0),
-            ..Default::default()
-        };
-        let global = GlobalConfig {
-            max_refutations: Some(8),
-            ..Default::default()
-        };
-        let empty_repo = rdm_core::config::Config::default();
-
-        let env = resolve_max_refutations_value_inner(Some(" +3 "), &repo, &global)
-            .unwrap()
-            .unwrap();
-        assert_eq!((env.value, env.source), (3, ConfigSource::Env));
-
-        let from_repo = resolve_max_refutations_value_inner(Some("  "), &repo, &global)
-            .unwrap()
-            .unwrap();
-        assert_eq!((from_repo.value, from_repo.source), (0, ConfigSource::Repo));
-
-        let from_global = resolve_max_refutations_value_inner(None, &empty_repo, &global)
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            (from_global.value, from_global.source),
-            (8, ConfigSource::Global)
-        );
-
-        assert!(
-            resolve_max_refutations_value_inner(Some(""), &empty_repo, &GlobalConfig::default())
-                .unwrap()
-                .is_none()
-        );
-        assert!(resolve_max_refutations_value_inner(Some("abc"), &repo, &global).is_err());
     }
 
     #[test]
