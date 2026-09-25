@@ -98,7 +98,8 @@ function directRdm(bin, args, { cwd, env, timeout, signal, started }) {
 /**
  * Create a fresh run. Paths, project, session, operation and unused runDir are required.
  * Each run mints its own RDM session, so commits cannot include caller-session changes.
- * Async rdm() accepts exact argv (including explicit format options); json parses stdout.
+ * Async rdm() accepts exact argv (including explicit format options); json parses stdout;
+ * env forwards explicit RDM_* values to that one child (identity keys cannot be overridden).
  * Failed mutations are uncertain, never retried, and permanently prohibit finish().
  * Existing evidence is never reopened or overwritten. Recovery requires a new run.
  */
@@ -150,7 +151,7 @@ export function createRun(spec) {
   };
   return Object.freeze({
     identity, session, runDir, record,
-    async rdm(args, { json = false, mutating = false } = {}) {
+    async rdm(args, { json = false, mutating = false, env = {} } = {}) {
       ensureOpen();
       if (spec.signal?.aborted) throw new Error('Run cancelled');
       if (activeCalls) throw new Error('A direct RDM command is already running');
@@ -159,15 +160,18 @@ export function createRun(spec) {
       if (args.some(arg => ['--root', '--changeset', '--session'].some(flag => arg === flag || arg.startsWith(flag + '=')))) throw new Error('RDM identity override is forbidden');
       if (args[0] === 'commit' && !mutating) throw new Error('Commit requires mutating: true');
       if (manifest.uncertainWrites && mutating) throw new Error('An uncertain write requires manual reconciliation before a new run');
+      if (env === null || typeof env !== 'object' || Object.entries(env).some(([key, value]) => !/^RDM_[A-Z0-9_]+$/.test(key) || typeof value !== 'string' || value.includes('\0'))) throw new Error('RDM env overrides must be RDM_* string values');
       const callId = ++callNumber;
-      const before = { callId, args, session, planHead: safeGit(planRoot, ['rev-parse', '--verify', 'HEAD']) };
+      const before = { callId, args, env, session, planHead: safeGit(planRoot, ['rev-parse', '--verify', 'HEAD']) };
       record(mutating ? 'write-intent' : 'read-started', before);
       activeCalls++;
       try {
         const stdout = await directRdm(rdmBin, args, {
           cwd: sourceDir, timeout, signal: spec.signal,
           started: data => record('rdm-started', { callId, ...data }),
-          env: rdmEnvironment(identity),
+          // Caller-forwarded RDM_* values go FIRST so the runtime-owned identity
+          // (RDM_BIN/ROOT/PROJECT/SESSION) always wins over them.
+          env: { ...env, ...rdmEnvironment(identity) },
         });
         if (spec.signal?.aborted) throw new Error('Run cancelled');
         const value = json ? JSON.parse(stdout) : stdout;

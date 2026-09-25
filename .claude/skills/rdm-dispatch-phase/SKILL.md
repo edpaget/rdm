@@ -70,6 +70,11 @@ subagent forward on each notification until it converges — never assume the ca
   status, records no change review.
 - `--max-plan-revise N` (default 2) / `--max-code-rework N` (default 2). `0` is legal and distinct
   from unset: terminate on the first blocking review, no revise/rework round at all.
+- `--max-refutations N` — optional. The per-run refutation budget both review engines receive: at
+  most N consolidated units (distinct defects) per review unit are graded by a refuter; the rest pass
+  through un-refuted. Parsed exactly like `--max-plan-revise` — a non-negative integer, `0` legal and
+  distinct from unset. When absent, step 4 resolves it from config. The precedence chain is stated
+  once, in `docs/file-formats.md` § `rdm.toml`.
 - `--run <id>` — optional. The id of an open run record, passed by `rdm-autopilot`. With it, this
   unit writes its `unit-start`/`unit-end` entries into that record and never opens or closes a run of
   its own. Without it (standalone, or entered through `rdm-do`), this unit opens a single-unit run in
@@ -292,12 +297,20 @@ corpus, which no document records.
 <rdmBin> model resolve review-find --format json
 <rdmBin> model resolve review-verify --format json
 <rdmBin> model resolve review-consolidate --format json
+<rdmBin> config get max_refutations --raw     # SKIP when --max-refutations was given
 <rdmBin> task list --tag plan-review --status wont-fix<proj-flag> --format json   # record each result's `title`
 ```
 
 Record the three results as `profiles.reviewFind` / `profiles.reviewVerify` /
 `profiles.reviewConsolidate` (each `{model, effort}`)
 and the wont-fix titles as `wontFixedTitles`:
+
+- `maxRefutations` — the `--max-refutations` flag when given. Otherwise the trimmed output of
+  `config get max_refutations --raw`, which already applies `RDM_MAX_REFUTATIONS` over the repo and
+  then global `max_refutations` key, so this one call covers both layers — do not read the env var
+  separately. Empty output means unset: OMIT the `maxRefutations` key from both engine calls (steps 6
+  and 12) entirely, never forward a default the engine applies itself. Pass a value through as-is;
+  the engine validates it and throws before any agent runs on a malformed one.
 
 - The three `model resolve` calls take **no `--tier`** — review-lane roles, not dispatch models. There
   is no mechanical model left to resolve and no bootstrap agent to pre-empt: each model and effort is
@@ -311,7 +324,8 @@ and the wont-fix titles as `wontFixedTitles`:
 
 **Self-check before proceeding:** state the pinned `path`, `branch`, `head`, the two resolved
 `profiles.plan` / `profiles.implement` and the three resolved `profiles.reviewFind` /
-`profiles.reviewVerify` / `profiles.reviewConsolidate` (model and effort each), and confirm you captured the item's `body`, the
+`profiles.reviewVerify` / `profiles.reviewConsolidate` (model and effort each) and the resolved
+`maxRefutations` (or "unset"), and confirm you captured the item's `body`, the
 roadmap `body` (phase mode) and the wont-fix titles. If the worktree or identity command failed,
 escalate — never invent a checkout, and never let a subagent choose one. A failed **read** is
 different and not fatal, but say which one failed and state the consequence — it differs per value,
@@ -383,6 +397,7 @@ Workflow tool, passing `args` as a JSON object (never a stringified value):
   consolidateModel: '<profiles.reviewConsolidate.model>',
   consolidateEffort: '<profiles.reviewConsolidate.effort>',
   wontFixedTexts: [<wontFixedTitles>],
+  maxRefutations: <maxRefutations>,               // OMIT the key when step 4 resolved nothing
   rdmBin: '<rdmBin>', project: '<project>',
 }
 ```
@@ -582,6 +597,7 @@ via the Workflow tool, passing `args` as a JSON object (never a stringified valu
   verifyEffort: '<profiles.reviewVerify.effort>',
   consolidateModel: '<profiles.reviewConsolidate.model>',
   consolidateEffort: '<profiles.reviewConsolidate.effort>',
+  maxRefutations: <maxRefutations>,               // OMIT the key when step 4 resolved nothing
   rdmBin: '<rdmBin>', project: '<project>',
 }
 ```

@@ -15,7 +15,7 @@ A phase that cannot be advanced is parked `blocked`, not raised as a mid-run que
 
 ## Contract
 
-**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by `--rdm-bin <path>`, `--project <name>`, `--max-phases N`, `--plan-only`, `--max-plan-revise N`, and/or `--max-code-rework N`. The slug names the single roadmap this run drives. If no slug is given, stop before invoking anything and say so — do not attempt a partial estimate or drive-loop start. `--rdm-bin` is **optional** and has no pre-flight stop of its own; when it is not supplied, use `$RDM_BIN` if it is set (this repo's `.mise.toml` sets it to the local development build, so a bare invocation here still uses that build rather than a stale global one), otherwise a plain `rdm` on `PATH`. `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" is the canonical resolution order — do not restate it here.
+**Input** (`$ARGUMENTS`): a **required roadmap slug**, optionally followed by `--rdm-bin <path>`, `--project <name>`, `--max-phases N`, `--plan-only`, `--max-plan-revise N`, `--max-code-rework N`, and/or `--max-refutations N`. The slug names the single roadmap this run drives. If no slug is given, stop before invoking anything and say so — do not attempt a partial estimate or drive-loop start. `--rdm-bin` is **optional** and has no pre-flight stop of its own; when it is not supplied, use `$RDM_BIN` if it is set (this repo's `.mise.toml` sets it to the local development build, so a bare invocation here still uses that build rather than a stale global one), otherwise a plain `rdm` on `PATH`. `docs/workflow-schemas.md` § "Environment args: `rdmBin` and `project`" is the canonical resolution order — do not restate it here.
 
 Every Bash command and Workflow payload below is written against two placeholders resolved once in step 1: `<rdmBin>` — the executable resolved by that order — and `<proj-flag>` — ` --project <project>` for the project resolved there (never an empty `--project` value).
 
@@ -39,6 +39,7 @@ This skill is **non-interactive**.
 - `planOnly` — `true` when `--plan-only` is present (omit otherwise).
 - `maxPlanRevise` — the non-negative integer following `--max-plan-revise`, when present (omit otherwise — `rdm-dispatch-phase` applies its own default of 2). `0` is legal and distinct from unset: it means "terminate on the first blocking plan review, no revise round at all".
 - `maxCodeRework` — the non-negative integer following `--max-code-rework`, when present (omit otherwise — same default of 2, same `0`-is-legal rule).
+- `maxRefutations` — the non-negative integer following `--max-refutations`, when present (omit otherwise, same `0`-is-legal rule). Autopilot never resolves it from config itself: `rdm-dispatch-phase` does, when no flag reaches it.
 - `globalBudget` — **not** a user-facing flag. It stays an internal constant, `DEFAULT_GLOBAL_BUDGET = 50`, hardcoded in this loop (see step 4).
 
 ### 2. Hoist the phase list
@@ -86,7 +87,7 @@ Loop:
      ```
 
      where `flags` forwards, as ARGUMENTS text and only when this run's `$ARGUMENTS` set them:
-     `--plan-only`, `--max-plan-revise N`, `--max-code-rework N`, `--rdm-bin <rdmBin>`,
+     `--plan-only`, `--max-plan-revise N`, `--max-code-rework N`, `--max-refutations N`, `--rdm-bin <rdmBin>`,
      `--project <project>`, and, whenever `runId` was captured, **always** `--run <runId>`, including
      on a rework re-dispatch. **Never** enter it with `Agent` — see the reachability note above. There
      is no `phaseMeta`/`alreadyInProgress`/`dispatch.verify` hoist to assemble: the orchestrator
@@ -152,6 +153,7 @@ that agent no longer exists, so such a payload now falls through to `unparseable
 
 - `--max-phases N` — bounded run: dispatch at most `N` phases this pass, then stop and summarize. Use it to take a roadmap a few phases at a time.
 - `--plan-only` — dry-run the planning half: each dispatch stops after its plan gate, so you get cheap plan vetting without writing any code.
+- `--max-refutations N` — the per-run refutation budget, forwarded verbatim to `rdm-dispatch-phase`, which hands it to both review engines (at most N consolidated units — distinct defects — graded per review unit). Absent, `rdm-dispatch-phase` resolves it from `RDM_MAX_REFUTATIONS` / the `max_refutations` config key; the precedence chain is stated once, in `docs/file-formats.md` § `rdm.toml`.
 - `--max-plan-revise N` / `--max-code-rework N` — override the orchestrator's two **in-run** retry budgets, which are counted **independently** of each other and default to **2** each (budget N = N reworks after the original attempt, i.e. N + 1 attempts). `0` is legal and means "terminate on the first blocking review" — no revise/rework agent runs at all. These are distinct from autopilot's own roadmap-level rework re-dispatch budget (step 4, capped at 1 retry per phase) and its global step budget (step 4.1, default 50); see [`docs/escalation-protocol.md`](docs/escalation-protocol.md) § Budgets for all four.
 
 ## Recovering a crashed dispatch

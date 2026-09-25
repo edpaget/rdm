@@ -100,6 +100,18 @@ RDM timeout is 1–600000 milliseconds (default 120000). Long rebuilds may requi
 raising the latter explicitly. The JavaScript API also accepts an AbortSignal
 as `signal`; it cannot be represented in a JSON file.
 
+### Refutation budget
+
+For `plan-review` and `code-review`, the runtime resolves `maxRefutations` from
+the spec's `maxRefutations` when present, else from one `rdm config get
+max_refutations --raw` (env, then repo, then global config — see
+[`file-formats.md`](file-formats.md) § "`max_refutations` precedence"). Every rdm
+child the runtime spawns has its host `RDM_*` variables stripped, so a non-blank
+`RDM_MAX_REFUTATIONS` in the runtime's own environment is forwarded into that one
+`config get` child explicitly. The journal records the result as a
+`refutation-budget` entry (`layer` `payload`, `config-get` or `default`). A budget
+that leaves a gating unit ungraded makes the run fail as "Review incomplete".
+
 ### Model policy
 
 The runtime resolves `review-find`, `review-verify`, `review-consolidate`, or

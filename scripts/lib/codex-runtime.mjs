@@ -70,6 +70,30 @@ function requireComplete(result, code = false) {
   if (result.coverage?.complete !== true || result.budget?.passedThroughBudget > 0 || result.budget?.refuterErrors > 0 || (acSelected && !result.acTable?.length)) throw new Error('Review incomplete: missing coverage, AC evidence, or independent refutation');
 }
 
+/**
+ * Resolve the per-run refutation budget for a review operation. The spec's
+ * `maxRefutations` is this runtime's payload layer and wins outright. Otherwise
+ * ONE `rdm config get max_refutations --raw` applies env > repo > global:
+ * every rdm child's env is rebuilt without the host's RDM_* variables, so a
+ * non-blank host RDM_MAX_REFUTATIONS is forwarded into that one child
+ * explicitly (a blank one is unset and falls through to config). The value is
+ * passed down unparsed; the engine's resolveRefutationBudget is the single
+ * validator and throws on a malformed one before any agent runs. Returns
+ * undefined when nothing is set, so the engine default applies.
+ */
+async function resolveRefutationBudgetLayer(ctx, spec) {
+  if (spec.maxRefutations !== undefined && spec.maxRefutations !== null) {
+    ctx.record('refutation-budget',{layer:'payload',value:spec.maxRefutations});
+    return spec.maxRefutations;
+  }
+  const hostValue = process.env.RDM_MAX_REFUTATIONS;
+  const envForwarded = typeof hostValue === 'string' && hostValue.trim() !== '';
+  const raw = (await ctx.rdm(['config','get','max_refutations','--raw'],{env:envForwarded ? {RDM_MAX_REFUTATIONS:hostValue} : {}})).trim();
+  const value = raw === '' ? undefined : raw;
+  ctx.record('refutation-budget',{layer:value === undefined ? 'default' : 'config-get',envForwarded,value:value ?? null});
+  return value;
+}
+
 function reviewerSelection(mode, reviewers) {
   if (reviewers != null && (!Array.isArray(reviewers) || reviewers.some(value => typeof value !== 'string'))) throw new Error('reviewers must be an array of reviewer names');
   resolveReviewers(mode, reviewers);
@@ -82,7 +106,7 @@ function slug(value, name) {
 }
 
 /** Review the exact arbitrary implementation-plan snapshot, report only. */
-export async function reviewPlan(ctx, spec, deps, models) {
+export async function reviewPlan(ctx, spec, deps, models, maxRefutations) {
   const reviewers = reviewerSelection('plan', spec.reviewers);
   if (typeof spec.planFile !== 'string' || !path.isAbsolute(spec.planFile)) throw new Error('Absolute implementation planFile required');
   const planText = fs.readFileSync(spec.planFile,'utf8');
@@ -109,7 +133,7 @@ export async function reviewPlan(ctx, spec, deps, models) {
   const result = await runPlanReviewDriver({implementationPlan:true,planFile:spec.planFile,
     reviewers, roadmap, ...pin, rdmBin:shellQuote(ctx.identity.rdmBin ?? 'rdm'), project:ctx.identity.project,
     findModel:models['review-find']?.model,verifyModel:models['review-verify']?.model,
-    consolidateModel:models['review-consolidate']?.model},
+    consolidateModel:models['review-consolidate']?.model,...(maxRefutations === undefined ? {} : {maxRefutations})},
     {...deps,runPlanReview:buildReviewPipeline('plan',deps)});
   if (fs.readFileSync(spec.planFile,'utf8') !== planText) throw new Error('Implementation plan changed during review');
   if (item && (safeGit(pin.source,['rev-parse','HEAD']) !== pin.expectedHead ||
@@ -142,7 +166,7 @@ async function readApprovedPlan(ctx, planSlug, item, itemData) {
 }
 
 /** Review a clean, pinned ancestor range and recheck all snapshots before reporting. */
-export async function reviewCode(ctx, spec, deps, models, tier, initialItem) {
+export async function reviewCode(ctx, spec, deps, models, tier, initialItem, maxRefutations) {
   const reviewers = reviewerSelection('code', spec.reviewers);
   const root=ctx.identity.sourceDir;
   clean(root);
@@ -161,7 +185,7 @@ export async function reviewCode(ctx, spec, deps, models, tier, initialItem) {
   const target=`Review source ${root}, exact range ${base}..${head}. Read relevant files in this checkout.\n\n${body}\n\nDiff:\n${diff}`;
   ctx.record('code-snapshot',{base,head,changedFiles,targetHash:hash(target),item,plan});
   const planCommand = plan ? `${shellQuote(ctx.identity.rdmBin ?? 'rdm')} plan show ${shellQuote(spec.planSlug)} --project ${shellQuote(ctx.identity.project)} --format json` : null;
-  const result=await buildReviewPipeline('code',deps)({target,reviewers,planCommand,findModel:models['review-find']?.model,verifyModel:models['review-verify']?.model,consolidateModel:models['review-consolidate']?.model});
+  const result=await buildReviewPipeline('code',deps)({target,reviewers,planCommand,findModel:models['review-find']?.model,verifyModel:models['review-verify']?.model,consolidateModel:models['review-consolidate']?.model,...(maxRefutations === undefined ? {} : {maxRefutations})});
   clean(root);
   if (safeGit(root,['rev-parse','HEAD']) !== head || (item && JSON.stringify(await readItem(ctx,spec.item)) !== JSON.stringify(item))) throw new Error('Review target changed during review');
   if (plan && JSON.stringify(await readApprovedPlan(ctx,spec.planSlug,spec.item,item)) !== JSON.stringify(plan)) throw new Error('Approved plan changed during review');
@@ -194,9 +218,10 @@ export async function runRuntime(spec) {
       try{return await rawAgent(...args);}finally{const next=queue.shift();if(next)next();else active--;}};
     const parallel=ts=>boundedParallel(ts,concurrency);
     const deps={agent,parallel,log:message=>ctx.record('canonical-log',{message}),pipeline:async(xs,...stages)=>parallel(xs.map(x=>async()=>{for(const s of stages)x=await s(x);return x;}))};
+    const maxRefutations=spec.operation==='estimate' ? undefined : await resolveRefutationBudgetLayer(ctx,spec);
     let result;
-    if(spec.operation==='plan-review')result=await reviewPlan(ctx,spec,deps,models);
-    if(spec.operation==='code-review')result=await reviewCode(ctx,spec,deps,models,tier ?? models['review-find'].tier,item);
+    if(spec.operation==='plan-review')result=await reviewPlan(ctx,spec,deps,models,maxRefutations);
+    if(spec.operation==='code-review')result=await reviewCode(ctx,spec,deps,models,tier ?? models['review-find'].tier,item,maxRefutations);
     if(spec.operation==='estimate')result=await runEstimate({ctx,roadmap:spec.roadmap,apply:spec.apply===true,agent});
     if (signal.aborted) throw new Error('Codex runtime cancelled');
     return ctx.finish({operation:spec.operation,reportOnly:spec.operation!=='estimate'||spec.apply!==true,result});

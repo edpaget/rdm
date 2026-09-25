@@ -2300,7 +2300,8 @@ member; a crashed unit refuter keeps it (`refuterError: true`).
 
 ### Refutation budget
 
-At most `DEFAULT_MAX_REFUTATIONS` (**5**) GATING findings per review unit are
+At most `DEFAULT_MAX_REFUTATIONS` (**5**) GATING consolidated units — distinct
+defects, after the consolidator merges duplicate findings — per review unit are
 handed to a refuter. Everything past the cut takes the EXISTING un-refuted
 pass-through carrying `unrefuted: true` and `unrefutedReason: 'budget'` — no
 second mechanism, and the confidence floor still applies (the budget skips
@@ -2309,9 +2310,9 @@ budget, since they were already never refuted.
 
 | | |
 | --- | --- |
-| arg name | `maxRefutations` (on `rdm-wf-plan-review` and `rdm-wf-review-refute-fix` args, and historically on `rdm-wf-dispatch-phase`'s; reaches `runReview` as `context.maxRefutations`) |
+| arg name | `maxRefutations` (on `rdm-wf-plan-review` and `rdm-wf-review-refute-fix` args; reaches `runReview` as `context.maxRefutations`). The caller resolves it from a `--max-refutations` flag, `RDM_MAX_REFUTATIONS` or the `max_refutations` config key — see [`file-formats.md`](file-formats.md) § "`max_refutations` precedence" for the chain. |
 | default | `DEFAULT_MAX_REFUTATIONS` = 5 |
-| `0` | LEGAL and meaningful — grade nothing, pass every gating finding through as `unrefutedReason: 'budget'`. Never conflated with "unset" by a falsy check. |
+| `0` | LEGAL and meaningful — grade nothing, pass every gating unit through as `unrefutedReason: 'budget'`. Never conflated with "unset" by a falsy check. |
 | uncapped | no sentinel exists; express an effectively-uncapped run as a large N |
 | validation | `resolveRefutationBudget(value)`, mirroring `parseBudget`'s contract — a number or integer-ONLY string; `'5abc'` is rejected, not coerced. `rdm-wf-plan-review` validates at PARSE time, before any `agent()` call. |
 | ranking | `rankBudgetCandidates`: severity → confidence descending → id → source order. The source-order tiebreak is what makes the cut total when two dimensions emit the same finding id. |
@@ -2335,6 +2336,25 @@ table is never budgeted, so `classifyOutcome` step 2 is bit-identical under ever
 N including 0. `rdm-cli/tests/workflow_review/budget.rs`
 (`budget_ranking_deterministic_and_monotone`) encodes this as an exhaustive
 subset property test, not only as prose.
+
+**How much care the knob needs.** By the monotonicity argument above, a LOWER
+cap can never produce a `reviewed` that the default would not have: it only
+leaves more units ungraded. What an ungraded gating unit does next depends on
+the mode, and it is not merely "more noise":
+
+- in `code` mode, any cap that leaves a gating unit ungraded
+  (`budget.passedThroughBudget > 0`) makes the review evidence incomplete, so
+  `classifyOutcome` returns `escalated` — the item is parked, not reworked. The
+  Codex runtime refuses the same run outright as "Review incomplete";
+- in `plan` mode, the ungraded unit stays in the survivor set as an `unrefuted`
+  finding, so it can only add to what gates. The Codex runtime still refuses
+  such a run as "Review incomplete".
+
+So a low cap, `0` above all, trades refuter spend for parks on any unit with a
+gating finding past the cut. A HIGHER cap only costs one refuter per extra
+graded unit. There is no per-item or tier-derived budget: deriving N from a
+phase's difficulty would be an automatic budget, the opposite of this
+configurable one, and needs its own evidence.
 
 `context.target` (and any other fields) is threaded into every finder and refuter
 prompt, so the review material reaches the agents. `deps` (`{ agent, pipeline,

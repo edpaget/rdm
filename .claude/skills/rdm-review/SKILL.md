@@ -12,7 +12,7 @@ allowed-tools:
   - Workflow
 ---
 
-Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task.
+Review the implementation of an rdm phase or task. `$ARGUMENTS` should be `<roadmap-slug> <phase-number>` for a phase, or `--task <task-slug>` for a task, optionally followed by `--max-refutations N` (the per-run refutation budget; see step 4).
 
 **IMPORTANT: This is the rdm source repo. Always run `cargo build` first, then use `./target/debug/rdm` — never bare `rdm`.**
 
@@ -30,6 +30,7 @@ The dimension-finding and per-finding-refuting mechanics (step 2 below) are perf
 1. **Parse arguments**: determine whether this is a phase review or task review from `$ARGUMENTS`.
    - If the first argument is `--task`, the next argument is a task slug.
    - Otherwise, the first argument is a roadmap slug and the second is a phase number.
+   - Strip `--max-refutations N` (and its value) before reading the target; keep `N` for step 4.
 2. **Read the acceptance criteria**:
    - For a phase: `./target/debug/rdm phase show <phase-number> --roadmap <slug> --project rdm`
    - For a task: `./target/debug/rdm task show <slug> --project rdm`
@@ -53,6 +54,7 @@ The dimension-finding and per-finding-refuting mechanics (step 2 below) are perf
    ./target/debug/rdm model resolve review-find --tier <hint> --format json   # {"step","host","tier","model","effort"}
    ./target/debug/rdm model resolve review-verify --format json               # default tier already floored to the top review tier
    ./target/debug/rdm model resolve review-consolidate --format json          # default tier already floored to the top review tier
+   ./target/debug/rdm config get max_refutations --raw                        # SKIP when --max-refutations was given
    ```
 
    Resolution reads the `[models]` config table (per-host profiles, review floor, and per-step overrides), falling back to the built-in profile table when unset — run `./target/debug/rdm model show` to see the effective table. The workflow applies them itself: it passes the model and effort into every finder and refuter agent it dispatches.
@@ -63,12 +65,12 @@ Invoke the `rdm-wf-review-refute-fix` Workflow tool to run the reviewer-finding 
 
 ```
 Workflow: rdm-wf-review-refute-fix
-args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, rdmBin: "<absolute checkout binary>", project: "rdm", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>", consolidateModel: "<review-consolidate model>", consolidateEffort: "<review-consolidate effort>" }
+args: { mode: "code", roadmap: "<slug>", phase: "<stem-or-number>", gate: false, rdmBin: "<absolute checkout binary>", project: "rdm", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>", consolidateModel: "<review-consolidate model>", consolidateEffort: "<review-consolidate effort>", maxRefutations: <resolved budget — OMIT when unset> }
 # or, for a task:
-args: { mode: "code", task: "<slug>", gate: false, rdmBin: "<absolute checkout binary>", project: "rdm", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>", consolidateModel: "<review-consolidate model>", consolidateEffort: "<review-consolidate effort>" }
+args: { mode: "code", task: "<slug>", gate: false, rdmBin: "<absolute checkout binary>", project: "rdm", source: "<resolved path>", base: "<resolved base>", expectedHead: "<resolved head>", expectedBranch: "<resolved branch>", implements: "plan/<approved-plan>", findModel: "<review-find model>", findEffort: "<review-find effort>", verifyModel: "<review-verify model>", verifyEffort: "<review-verify effort>", consolidateModel: "<review-consolidate model>", consolidateEffort: "<review-consolidate effort>", maxRefutations: <resolved budget — OMIT when unset> }
 ```
 
-Pass `args` as a JSON object, never a stringified value. `findModel`/`findEffort`, `verifyModel`/`verifyEffort` and `consolidateModel`/`consolidateEffort` are the `model` and `effort` fields of the three profiles resolved in step 1. Each is independently optional — an omitted model makes that judgment agent inherit the session model, an omitted effort its effort — and an effort the engine does not accept is refused before any agent runs.
+Pass `args` as a JSON object, never a stringified value. `findModel`/`findEffort`, `verifyModel`/`verifyEffort` and `consolidateModel`/`consolidateEffort` are the `model` and `effort` fields of the three profiles resolved in step 1. Each is independently optional — an omitted model makes that judgment agent inherit the session model, an omitted effort its effort — and an effort the engine does not accept is refused before any agent runs. `maxRefutations` is the `--max-refutations` flag when given, else the trimmed output of `config get max_refutations --raw` (which already applies `RDM_MAX_REFUTATIONS` over the repo and then global `max_refutations` key); when that output is empty, omit the key so the engine applies its own default. `0` is legal and distinct from unset. The precedence chain is stated once, in `docs/file-formats.md` § `rdm.toml`.
 
 The engine **reads nothing and writes nothing**: it dispatches finder, consolidator and refuter agents only (the
 consolidator — `consolidate:code`, plus one `:retry` — only when a review has two or more candidates). The

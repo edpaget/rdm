@@ -47,7 +47,7 @@ Workflow calls don't block on a prompt.
   rdm task list --project <PROJECT>
   ```
 
-`--plan-only`, `--max-plan-revise N`, `--max-code-rework N`, `--rdm-bin <path>` and
+`--plan-only`, `--max-plan-revise N`, `--max-code-rework N`, `--max-refutations N`, `--rdm-bin <path>` and
 `--project <name>` are passed straight through — the orchestrator resolves the last two into its own
 `rdmBin` and `<proj-flag>` placeholders.
 

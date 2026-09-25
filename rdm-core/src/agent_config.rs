@@ -4840,7 +4840,10 @@ mod tests {
         // citation of the authorizing section).
         // 54 -> 55: `sync-dogfood-and-shipped-skills` has autopilot forward
         // its resolved project to `rdm-dispatch-phase` by name.
-        let expected = 55;
+        // 55 -> 58: `consolidate-review-findings` phase 6 added the autopilot
+        // `--max-refutations` flag, naming `rdm-dispatch-phase` three times as
+        // the skill it is forwarded to and that resolves it from config.
+        let expected = 58;
         assert_eq!(
             renamed_total, expected,
             "expected {expected} skill-name occurrences per surface"

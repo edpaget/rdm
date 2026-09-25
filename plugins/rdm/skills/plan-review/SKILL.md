@@ -16,7 +16,7 @@ Review the *plan* of an rdm roadmap, phase, or task — not its implementation. 
 
 ## Invoke the workflow
 
-Pass `$ARGUMENTS` through to the `rdm:rdm-wf-plan-review` Workflow with any `--rdm-bin <path>` and `--project <name>` pairs removed first — they travel only as the structured `rdmBin`/`project` keys below, because the workflow's tokenizer would read their values as target slugs. It accepts the same four target forms:
+Pass `$ARGUMENTS` through to the `rdm:rdm-wf-plan-review` Workflow with any `--rdm-bin <path>`, `--project <name>` and `--max-refutations N` pairs removed first — they travel only as the structured `rdmBin`/`project`/`maxRefutations` keys below, because the workflow's tokenizer would read their values as target slugs. It accepts the same four target forms:
 
 - `--task <slug>` — review a task's plan.
 - `--roadmap <slug>` — review the whole roadmap: its own body plus **every phase, gated independently**. A phase whose status is exactly `done` or `wont-fix` is **excluded from this sweep** — there is no implementation left to vet, and clearing `needs-plan-review` on a retired phase would assert something untrue about it — and the exclusion is **reported, never silently dropped**: the run names every skipped phase (stem + status) in its summary and log. A phase with a missing, blank, or unrecognized status is **kept in the sweep** (fail-open) rather than skipped. This filter applies only to the aggregate `--roadmap` sweep — targeting a terminal phase explicitly (see the next bullet) still reviews it.
@@ -73,6 +73,14 @@ never parsed out of the `$ARGUMENTS` flag string:
   independently optional; an omitted model makes that agent inherit the session
   model, an omitted effort its effort. There is no mechanical model any more and no
   bootstrap agent to skip.
+- **`maxRefutations`** — the per-run refutation budget: at most N consolidated
+  units (distinct defects) per review unit are graded by a refuter. The value
+  following `--max-refutations` when given (a non-negative integer; `0` is legal
+  and distinct from unset); otherwise the trimmed output of `rdm config get
+  max_refutations --raw`, which already applies `RDM_MAX_REFUTATIONS` over the
+  repo and then global `max_refutations` key. Empty output means unset — omit the
+  key so the workflow applies its own default. The precedence chain is stated
+  once, in `docs/file-formats.md` § `rdm.toml`.
 - **`rdmBin`** / **`project`** — the rdm executable every reviewer's command
   uses — the value following `--rdm-bin`; when not supplied, `$RDM_BIN` if
   set, else a plain `rdm` on `PATH` — and the project for project-scoped

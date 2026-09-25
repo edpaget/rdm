@@ -22,6 +22,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "hook_timeout_secs",
     "server.quick_filters",
     "plan_review",
+    "max_refutations",
     "dispatch.verify",
     "gates.reviewed",
 ];
@@ -387,6 +388,12 @@ pub struct GlobalConfig {
     /// the repo-level counterpart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_review: Option<bool>,
+
+    /// Per-run refutation budget for the review engines. See
+    /// [`Config::max_refutations`] for the repo-level counterpart and
+    /// [`resolve_max_refutations`] for the full resolution rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_refutations: Option<u64>,
 }
 
 impl GlobalConfig {
@@ -473,6 +480,17 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_review: Option<bool>,
 
+    /// Per-run refutation budget for the review engines: at most this many
+    /// consolidated review units (distinct defects) are graded by a refuter
+    /// per review run; the rest pass through un-refuted.
+    ///
+    /// Unset means the engine's built-in default (`DEFAULT_MAX_REFUTATIONS`)
+    /// applies. `0` is a legal, meaningful value — "grade nothing" — and is
+    /// NOT treated as unset, unlike [`Config::hook_timeout_secs`]. See
+    /// [`resolve_max_refutations`] for the env override.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_refutations: Option<u64>,
+
     /// Autonomous dispatch-lane configuration (`[dispatch]` table).
     ///
     /// Repo-only — deliberately absent from [`GlobalConfig`], and carried
@@ -558,6 +576,8 @@ impl Config {
             hook_timeout_secs: self.hook_timeout_secs.or(global.hook_timeout_secs),
             models: self.models.clone().or_else(|| global.models.clone()),
             plan_review: self.plan_review.or(global.plan_review),
+            // A repo `Some(0)` wins: `0` is a deliberate value, not "unset".
+            max_refutations: self.max_refutations.or(global.max_refutations),
             // Repo-only: no global fallback exists to fall back TO.
             dispatch: self.dispatch.clone(),
             gates: self.gates.clone(),
@@ -944,6 +964,67 @@ fn resolve_scoped_bool(
 ) -> Result<bool> {
     Ok(resolve_scoped_value(key, project, repo, global, env)?
         .is_some_and(|resolved| resolved.value == "true"))
+}
+
+/// The environment variable that overrides the `max_refutations` config key.
+pub const MAX_REFUTATIONS_ENV: &str = "RDM_MAX_REFUTATIONS";
+
+/// Parses one `max_refutations` value with exactly the grammar the review
+/// engine's `resolveRefutationBudget` accepts for a string: surrounding
+/// whitespace is trimmed, a single leading `+` is allowed, and the rest must
+/// be ASCII digits forming a non-negative integer. A leading `-` is rejected
+/// (the engine rejects `-0` too), as is anything else.
+///
+/// `key` names the source in the error so a malformed override is actionable.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidConfigValue`] if `value` is not in that grammar or
+/// does not fit in a `u64`.
+pub fn parse_max_refutations(key: &str, value: &str) -> Result<u64> {
+    let trimmed = value.trim();
+    let digits = trimmed.strip_prefix('+').unwrap_or(trimmed);
+    let invalid = || Error::InvalidConfigValue {
+        key: key.to_string(),
+        value: value.to_string(),
+        valid: "a non-negative integer (0 means grade nothing)".to_string(),
+    };
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(invalid());
+    }
+    digits.parse::<u64>().map_err(|_| invalid())
+}
+
+/// Resolves the per-run refutation budget from the environment override and
+/// the merged config.
+///
+/// Precedence: `RDM_MAX_REFUTATIONS` (passed in as `env_value`, so the rule
+/// stays a pure function) → the config's `max_refutations` (repo over global,
+/// already merged by [`Config::with_global_defaults`]) → `None`. `None` means
+/// unset: the caller omits the value and the review engine applies its own
+/// `DEFAULT_MAX_REFUTATIONS`.
+///
+/// A set-but-empty (or whitespace-only) env value counts as unset and falls
+/// through to config. Any other env value must parse under
+/// [`parse_max_refutations`], the same grammar the engine's
+/// `resolveRefutationBudget` accepts.
+///
+/// Deliberate divergence from `hook_timeout_secs`: that key treats `0` as
+/// unset. Here `0` is a meaningful value ("grade nothing, pass every unit
+/// through un-refuted") and resolves to `Some(0)` from either layer.
+///
+/// # Errors
+///
+/// Returns [`Error::InvalidConfigValue`] naming `RDM_MAX_REFUTATIONS` if the
+/// env value is set, non-blank, and not a non-negative integer.
+pub fn resolve_max_refutations(
+    env_value: Option<&str>,
+    config: Option<&Config>,
+) -> Result<Option<u64>> {
+    if let Some(v) = env_value.filter(|v| !v.trim().is_empty()) {
+        return parse_max_refutations(MAX_REFUTATIONS_ENV, v).map(Some);
+    }
+    Ok(config.and_then(|c| c.max_refutations))
 }
 
 /// Loads `<plan_root>/rdm.toml` and resolves the `reviewed`-gate flag for
@@ -1603,6 +1684,170 @@ mechanical = "small"
         let models = config.models.expect("models section parsed");
         let steps = models.steps.expect("steps section parsed");
         assert_eq!(steps, StepTiersConfig::default());
+    }
+
+    // --- max_refutations tests ---
+
+    /// One table, shared by every grammar test below, of what the review
+    /// engine's `resolveRefutationBudget` does with each string: `Some(n)` it
+    /// accepts as `n`, `None` it rejects.
+    const REFUTATION_BUDGET_GRAMMAR: &[(&str, Option<u64>)] = &[
+        ("5", Some(5)),
+        (" 5 ", Some(5)),
+        ("+5", Some(5)),
+        ("0", Some(0)),
+        ("+0", Some(0)),
+        ("007", Some(7)),
+        ("-1", None),
+        ("-0", None),
+        ("5abc", None),
+        ("abc", None),
+        ("1.5", None),
+        ("1e3", None),
+        ("++5", None),
+        ("+", None),
+    ];
+
+    #[test]
+    fn parse_max_refutations_matches_the_engine_grammar() {
+        for (input, expected) in REFUTATION_BUDGET_GRAMMAR {
+            let got = parse_max_refutations("max_refutations", input).ok();
+            assert_eq!(got, *expected, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_max_refutations_env_matches_the_engine_grammar() {
+        let config = Config {
+            max_refutations: Some(9),
+            ..Default::default()
+        };
+        for (input, expected) in REFUTATION_BUDGET_GRAMMAR {
+            match (
+                resolve_max_refutations(Some(input), Some(&config)),
+                expected,
+            ) {
+                (Ok(got), Some(n)) => assert_eq!(got, Some(*n), "input {input:?}"),
+                (Err(Error::InvalidConfigValue { key, .. }), None) => {
+                    assert_eq!(key, "RDM_MAX_REFUTATIONS", "input {input:?}")
+                }
+                (other, _) => panic!("input {input:?}: unexpected {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_max_refutations_blank_env_falls_through_to_config() {
+        let config = Config {
+            max_refutations: Some(3),
+            ..Default::default()
+        };
+        for blank in ["", "   ", "\t"] {
+            assert_eq!(
+                resolve_max_refutations(Some(blank), Some(&config)).unwrap(),
+                Some(3),
+                "env {blank:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn max_refutations_repo_wins_over_global() {
+        let repo = Config {
+            max_refutations: Some(2),
+            ..Default::default()
+        };
+        let global = GlobalConfig {
+            max_refutations: Some(8),
+            ..Default::default()
+        };
+        assert_eq!(repo.with_global_defaults(&global).max_refutations, Some(2));
+        let merged = Config::default().with_global_defaults(&global);
+        assert_eq!(merged.max_refutations, Some(8));
+    }
+
+    #[test]
+    fn max_refutations_env_wins_over_config() {
+        let repo = Config {
+            max_refutations: Some(2),
+            ..Default::default()
+        };
+        let global = GlobalConfig {
+            max_refutations: Some(8),
+            ..Default::default()
+        };
+        let merged = repo.with_global_defaults(&global);
+        assert_eq!(
+            resolve_max_refutations(Some("4"), Some(&merged)).unwrap(),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn max_refutations_zero_is_not_unset_unlike_hook_timeout_secs() {
+        // hook_timeout_secs reads 0 as "unset"; max_refutations must not.
+        let repo_zero = Config {
+            max_refutations: Some(0),
+            ..Default::default()
+        };
+        let global_eight = GlobalConfig {
+            max_refutations: Some(8),
+            ..Default::default()
+        };
+        let merged = repo_zero.with_global_defaults(&global_eight);
+        assert_eq!(
+            resolve_max_refutations(None, Some(&merged)).unwrap(),
+            Some(0)
+        );
+
+        let global_zero = GlobalConfig {
+            max_refutations: Some(0),
+            ..Default::default()
+        };
+        let merged = Config::default().with_global_defaults(&global_zero);
+        assert_eq!(
+            resolve_max_refutations(None, Some(&merged)).unwrap(),
+            Some(0)
+        );
+
+        assert_eq!(
+            resolve_max_refutations(Some("0"), Some(&repo_zero)).unwrap(),
+            Some(0)
+        );
+        let repo_five = Config {
+            max_refutations: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_max_refutations(Some("0"), Some(&repo_five)).unwrap(),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn max_refutations_unset_resolves_to_none() {
+        assert_eq!(resolve_max_refutations(None, None).unwrap(), None);
+        assert_eq!(
+            resolve_max_refutations(None, Some(&Config::default())).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn max_refutations_round_trips_through_toml() {
+        let config = Config {
+            max_refutations: Some(0),
+            ..Default::default()
+        };
+        let parsed = Config::from_toml(&config.to_toml().unwrap()).unwrap();
+        assert_eq!(parsed.max_refutations, Some(0));
+        let global = GlobalConfig {
+            max_refutations: Some(7),
+            ..Default::default()
+        };
+        let parsed = GlobalConfig::from_toml(&global.to_toml().unwrap()).unwrap();
+        assert_eq!(parsed.max_refutations, Some(7));
+        assert!(KNOWN_KEYS.contains(&"max_refutations"));
     }
 
     // --- plan_review tests ---

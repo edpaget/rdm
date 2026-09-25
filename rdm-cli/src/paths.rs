@@ -313,6 +313,7 @@ pub fn get_config_field(config: &rdm_core::config::Config, key: &str) -> Option<
         "default_branch" | "plan_review" | "dispatch.verify" | "gates.reviewed" => {
             config.scopable_value(key)
         }
+        "max_refutations" => config.max_refutations.map(|n| n.to_string()),
         // NOTE: a malformed RDM_SERVER_QUICK_FILTERS env value is echoed
         // back raw with "(source: environment variable)" by the generic
         // resolution chain in commands/config.rs — a pre-existing quirk of
@@ -336,6 +337,7 @@ pub fn get_global_config_field(config: &GlobalConfig, key: &str) -> Option<Strin
         "default_branch" => config.default_branch.clone(),
         "hook_timeout_secs" => config.hook_timeout_secs.map(|n| n.to_string()),
         "plan_review" => config.plan_review.map(|b| b.to_string()),
+        "max_refutations" => config.max_refutations.map(|n| n.to_string()),
         _ => None,
     }
 }
@@ -365,6 +367,9 @@ pub fn set_config_field(
         }
         "plan_review" => {
             config.plan_review = Some(parse_bool(value)?);
+        }
+        "max_refutations" => {
+            config.max_refutations = Some(parse_u64(key, value)?);
         }
         "server.quick_filters" => {
             let filters = parse_quick_filters_env(value).map_err(|_| {
@@ -469,6 +474,9 @@ pub fn set_global_config_field(config: &mut GlobalConfig, key: &str, value: &str
         }
         "plan_review" => {
             config.plan_review = Some(parse_bool(value)?);
+        }
+        "max_refutations" => {
+            config.max_refutations = Some(parse_u64(key, value)?);
         }
         "server.quick_filters" | "dispatch.verify" | "gates.reviewed" => {
             bail!("'{key}' can only be set in repo config — omit --global")

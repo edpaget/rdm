@@ -748,7 +748,7 @@ fn runtime_model_resolution_process_cannot_change_phase_policy_silently() {
     ] {
         fs::write(plan.root.join(name), value.to_string()).unwrap();
     }
-    fs::write(&binary,"#!/bin/sh\ncase \"$1\" in\nphase) if test -f \"$RDM_ROOT/policy-changed\"; then cat \"$RDM_ROOT/changed.json\"; else cat \"$RDM_ROOT/initial.json\"; fi;;\nworktree) cat \"$RDM_ROOT/worktrees.json\";;\nmodel) touch \"$RDM_ROOT/policy-changed\"; printf '{\"step\":\"%s\",\"host\":\"codex\",\"tier\":\"medium\",\"model\":\"gpt-6-astra\",\"effort\":\"medium\"}\\n' \"$3\";;\n*) exit 1;;\nesac\n").unwrap();
+    fs::write(&binary,"#!/bin/sh\ncase \"$1\" in\nphase) if test -f \"$RDM_ROOT/policy-changed\"; then cat \"$RDM_ROOT/changed.json\"; else cat \"$RDM_ROOT/initial.json\"; fi;;\nworktree) cat \"$RDM_ROOT/worktrees.json\";;\nmodel) touch \"$RDM_ROOT/policy-changed\"; printf '{\"step\":\"%s\",\"host\":\"codex\",\"tier\":\"medium\",\"model\":\"gpt-6-astra\",\"effort\":\"medium\"}\\n' \"$3\";;\nconfig) ;;\n*) exit 1;;\nesac\n").unwrap();
     fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
     let codex = plan.root.join("codex");
     fs::write(&codex, "#!/bin/sh\ntouch unexpected-agent\nexit 99\n").unwrap();

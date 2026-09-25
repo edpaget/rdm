@@ -408,7 +408,16 @@ pub struct RuntimeRun {
 
 /// Runs `runRuntime(fx.spec)` from `lib`'s runtime module.
 pub fn observe_runtime(lib: &Lib, fx: &Fixture) -> Result<RuntimeRun, Failure> {
-    let mut host = fx.host(&[])?;
+    observe_runtime_with(lib, fx, &[])
+}
+
+/// [`observe_runtime`] with `extra` added to the Node host's environment.
+pub fn observe_runtime_with(
+    lib: &Lib,
+    fx: &Fixture,
+    extra: &[(&str, OsString)],
+) -> Result<RuntimeRun, Failure> {
+    let mut host = fx.host(extra)?;
     let module = load(host.import(&lib.path(RUNTIME)))?;
     let run = load(host.export(&module, "runRuntime"))?;
     let result = split(host.call(&run, vec![fx.spec.clone()]))?;
@@ -668,6 +677,120 @@ fn code_review_runner_rejects_malformed_refuter_json() {
 #[test]
 fn plan_review_runner_rejects_malformed_refuter_json() {
     review_runner_rejects_malformed_refuter_json("plan-review");
+}
+
+// -- the refutation budget: resolved from config / RDM_MAX_REFUTATIONS --
+
+/// The run's single `refutation-budget` journal record.
+fn budget_record(run: &RuntimeRun) -> Value {
+    let found = records(&run.journal, "refutation-budget");
+    assert_eq!(found.len(), 1, "{:?}", run.journal);
+    found[0]["data"].clone()
+}
+
+/// A budget of `0` grades nothing: the finders and the consolidator run, no
+/// refuter does, and the ungraded blocking unit leaves the evidence
+/// incomplete — which the runtime refuses as "Review incomplete".
+fn assert_zero_budget_refused(fx: &Fixture, run: &RuntimeRun) {
+    match &run.result {
+        Ok(v) => panic!("a zero budget produced a complete review: {v}"),
+        Err(e) => assert!(e.message.contains("Review incomplete"), "{e}"),
+    }
+    assert!(!starts(&run.events, Some("finder")).is_empty());
+    assert_eq!(starts(&run.events, Some("consolidator")).len(), 1);
+    assert_eq!(
+        starts(&run.events, Some("refuter")).len(),
+        0,
+        "{:?}",
+        run.events
+    );
+    assert_eq!(run.manifest["status"], "failed");
+    fx.no_writes().unwrap_or_else(|f| panic!("{f}"));
+}
+
+fn zero_budget_from_config_dispatches_no_refuter(operation: &str) {
+    let fx = Fixture::review(operation, false, Some("\nmax_refutations = 0\n"))
+        .unwrap_or_else(|f| panic!("{f}"));
+    let run = observe_runtime(&Lib::real(), &fx).unwrap_or_else(|f| panic!("{f}"));
+    assert_eq!(
+        budget_record(&run),
+        json!({"layer": "config-get", "envForwarded": false, "value": "0"})
+    );
+    assert_zero_budget_refused(&fx, &run);
+}
+
+fn zero_budget_from_env_dispatches_no_refuter(operation: &str) {
+    let fx = Fixture::review(operation, false, None).unwrap_or_else(|f| panic!("{f}"));
+    let run = observe_runtime_with(
+        &Lib::real(),
+        &fx,
+        &[("RDM_MAX_REFUTATIONS", OsString::from("0"))],
+    )
+    .unwrap_or_else(|f| panic!("{f}"));
+    assert_eq!(
+        budget_record(&run),
+        json!({"layer": "config-get", "envForwarded": true, "value": "0"})
+    );
+    assert_zero_budget_refused(&fx, &run);
+}
+
+#[test]
+fn code_review_zero_budget_from_config_dispatches_no_refuter() {
+    zero_budget_from_config_dispatches_no_refuter("code-review");
+}
+
+#[test]
+fn plan_review_zero_budget_from_config_dispatches_no_refuter() {
+    zero_budget_from_config_dispatches_no_refuter("plan-review");
+}
+
+#[test]
+fn code_review_zero_budget_from_env_dispatches_no_refuter() {
+    zero_budget_from_env_dispatches_no_refuter("code-review");
+}
+
+#[test]
+fn plan_review_zero_budget_from_env_dispatches_no_refuter() {
+    zero_budget_from_env_dispatches_no_refuter("plan-review");
+}
+
+#[test]
+fn refutation_budget_env_beats_config() {
+    let fx = Fixture::review("code-review", false, Some("\nmax_refutations = 0\n"))
+        .unwrap_or_else(|f| panic!("{f}"));
+    let run = observe_runtime_with(
+        &Lib::real(),
+        &fx,
+        &[("RDM_MAX_REFUTATIONS", OsString::from("5"))],
+    )
+    .unwrap_or_else(|f| panic!("{f}"));
+    assert_eq!(
+        budget_record(&run),
+        json!({"layer": "config-get", "envForwarded": true, "value": "5"})
+    );
+    check_review(&fx, &run, "code-review").unwrap_or_else(|f| panic!("{f}"));
+}
+
+#[test]
+fn malformed_refutation_budget_env_is_refused_before_any_refuter() {
+    let fx = Fixture::review("code-review", false, None).unwrap_or_else(|f| panic!("{f}"));
+    let run = observe_runtime_with(
+        &Lib::real(),
+        &fx,
+        &[("RDM_MAX_REFUTATIONS", OsString::from("5abc"))],
+    )
+    .unwrap_or_else(|f| panic!("{f}"));
+    match &run.result {
+        Ok(v) => panic!("a malformed budget was accepted: {v}"),
+        Err(e) => assert!(
+            e.message
+                .contains("maxRefutations must be a non-negative integer"),
+            "{e}"
+        ),
+    }
+    assert!(starts(&run.events, None).is_empty(), "{:?}", run.events);
+    assert_eq!(run.manifest["status"], "failed");
+    fx.no_writes().unwrap_or_else(|f| panic!("{f}"));
 }
 
 /// Evidence of one estimate preview run through the CLI.

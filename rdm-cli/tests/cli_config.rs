@@ -543,6 +543,152 @@ fn config_set_hook_timeout_rejects_non_integer() {
         .stderr(predicate::str::contains("non-negative integer"));
 }
 
+// -- max_refutations config round-trips --
+
+/// An `rdm` command isolated to this test's config dir, with no ambient
+/// `RDM_MAX_REFUTATIONS` override.
+fn rdm_in(config_dir: &TempDir) -> Command {
+    let mut cmd = rdm();
+    cmd.env("XDG_CONFIG_HOME", config_dir.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_PROJECT")
+        .env_remove("RDM_FORMAT")
+        .env_remove("RDM_MAX_REFUTATIONS");
+    cmd
+}
+
+#[test]
+fn config_set_and_get_max_refutations() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "8"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("repo config"));
+
+    rdm_in(&config_dir)
+        .args(["config", "get", "max_refutations"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("8  (source: repo config)"));
+
+    rdm_in(&config_dir)
+        .args(["config", "get", "max_refutations", "--raw"])
+        .assert()
+        .success()
+        .stdout("8\n");
+
+    rdm_in(&config_dir)
+        .args(["config", "list"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::is_match(r"max_refutations\s+8\s+\(source: repo config\)").unwrap(),
+        );
+}
+
+#[test]
+fn config_set_and_get_global_max_refutations() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "3", "--global"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("global config"));
+
+    rdm_in(&config_dir)
+        .args(["config", "get", "max_refutations"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3  (source: global config)"));
+}
+
+#[test]
+fn config_repo_max_refutations_overrides_global() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "3", "--global"])
+        .assert()
+        .success();
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "1"])
+        .assert()
+        .success();
+
+    rdm_in(&config_dir)
+        .args(["config", "get", "max_refutations"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1  (source: repo config)"));
+}
+
+#[test]
+fn config_max_refutations_zero_round_trips_as_zero() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "0"])
+        .assert()
+        .success();
+
+    rdm_in(&config_dir)
+        .args(["config", "get", "max_refutations"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0  (source: repo config)"));
+}
+
+#[test]
+fn config_max_refutations_env_overrides_config() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "8"])
+        .assert()
+        .success();
+
+    rdm_in(&config_dir)
+        .env("RDM_MAX_REFUTATIONS", "0")
+        .args(["config", "get", "max_refutations"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "0  (source: environment variable)",
+        ));
+
+    rdm_in(&config_dir)
+        .env("RDM_MAX_REFUTATIONS", "0")
+        .args(["config", "get", "max_refutations", "--raw"])
+        .assert()
+        .success()
+        .stdout("0\n");
+}
+
+#[test]
+fn config_set_max_refutations_rejects_invalid_values_and_writes_nothing() {
+    let (config_dir, root_dir) = setup_repo();
+    let rdm_toml = root_dir.path().join("rdm.toml");
+    let before = std::fs::read(&rdm_toml).unwrap();
+
+    for bad in ["-1", "soon", ""] {
+        rdm_in(&config_dir)
+            .args(["config", "set", "max_refutations", "--", bad])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("non-negative integer"));
+    }
+
+    assert_eq!(std::fs::read(&rdm_toml).unwrap(), before);
+    rdm_in(&config_dir)
+        .args(["config", "get", "max_refutations"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(not set)"));
+}
+
 // -- plan_review config round-trips --
 
 #[test]

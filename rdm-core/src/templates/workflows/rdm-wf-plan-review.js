@@ -1149,8 +1149,9 @@ function rankFindings(findings) {
 
 // --- The refutation budget ----------------------------------------------------
 //
-// DEFAULT_MAX_REFUTATIONS — at most this many GATING findings per review unit
-// are handed to a refuter. Everything past the cut passes through un-refuted
+// DEFAULT_MAX_REFUTATIONS — at most this many GATING consolidated units
+// (distinct defects, after the consolidator merges duplicate findings) per
+// review unit are handed to a refuter. Everything past the cut passes through un-refuted
 // (see the overflow site in buildReviewPipeline).
 //
 // DERIVATION (measured, not guessed). The value comes from
@@ -1185,9 +1186,13 @@ function rankFindings(findings) {
 // § "Refutation budget" and the rendered skills restate it):
 //   * this constant is the default;
 //   * a per-run override arrives as `context.maxRefutations` on runReview, and
-//     is threaded from `maxRefutations` on dispatch-phase / plan-review /
-//     review-refute-fix args;
-//   * `0` is LEGAL AND MEANINGFUL — grade nothing, pass every gating finding
+//     is threaded from the `maxRefutations` arg of the two review engines
+//     (`rdm-wf-review-refute-fix`, `rdm-wf-plan-review`). The CALLER resolves
+//     that arg — payload, then a `--max-refutations` skill flag, then
+//     `RDM_MAX_REFUTATIONS`, then the `max_refutations` config key — and this
+//     block never reads config itself. The chain is stated once, in
+//     docs/file-formats.md § `rdm.toml`;
+//   * `0` is LEGAL AND MEANINGFUL — grade nothing, pass every gating unit
 //     through as `unrefutedReason: 'budget'` — so it must never be conflated
 //     with "unset" by a falsy check (the same trap DEFAULT_MAX_CODE_REWORK
 //     documents);
