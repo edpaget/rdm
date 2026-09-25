@@ -20,9 +20,9 @@ are absent or the item is approved. Code results include the canonical classifie
 outcome. Inspect findings and acceptance-criteria evidence before any independent
 status decision. The runtime neither lands source nor marks items done.
 
-Judgment roles are finder, refuter and estimator. Every call starts a fresh,
-ephemeral, read-only Codex CLI process; finders and refuters have separate
-contexts. Mechanical reads and writes use direct RDM argv, never an LLM.
+Judgment roles are finder, consolidator, refuter and estimator. Every call starts
+a fresh, ephemeral, read-only Codex CLI process; finders, the consolidator and
+refuters have separate contexts. Mechanical reads and writes use direct RDM argv, never an LLM.
 This role is shell/file review, without claims of equivalent Claude permissions,
 external connectors, or an autonomous implementation agent.
 

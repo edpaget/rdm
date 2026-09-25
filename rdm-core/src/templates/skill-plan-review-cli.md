@@ -27,7 +27,8 @@ The workflow runs the shared `find → refute → filter → verdict → act →
 
 ### You perform every read and every write
 
-The workflow dispatches **finder and refuter agents and nothing else**. It reads no
+The workflow dispatches **finder, consolidator and refuter agents and nothing else** (the
+consolidator — `consolidate:plan`, plus one `:retry` — only on a unit with two or more candidates). It reads no
 rdm document and writes nothing. That means two things for you.
 
 **Reads it needs, it names.** Each reviewer is told the `rdm ... show --format json`

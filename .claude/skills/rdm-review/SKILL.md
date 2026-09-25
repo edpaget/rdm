@@ -70,7 +70,8 @@ args: { mode: "code", task: "<slug>", gate: false, rdmBin: "<absolute checkout b
 
 Pass `args` as a JSON object, never a stringified value. `findModel`/`findEffort`, `verifyModel`/`verifyEffort` and `consolidateModel`/`consolidateEffort` are the `model` and `effort` fields of the three profiles resolved in step 1. Each is independently optional — an omitted model makes that judgment agent inherit the session model, an omitted effort its effort — and an effort the engine does not accept is refused before any agent runs.
 
-The engine **reads nothing and writes nothing**: it dispatches finder and refuter agents only. The
+The engine **reads nothing and writes nothing**: it dispatches finder, consolidator and refuter agents only (the
+consolidator — `consolidate:code`, plus one `:retry` — only when a review has two or more candidates). The
 `source`/`base`/`expectedHead`/`expectedBranch` values above are the identity you resolved in step 1
 — a path, two SHAs and a branch name — and each reviewer runs `rdm review source` itself to reach
 the diff. Adding `persist: true` returns the recording ladder as `persistCommands` / `persistScript`

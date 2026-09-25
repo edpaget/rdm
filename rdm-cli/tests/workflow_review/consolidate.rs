@@ -39,12 +39,15 @@ fn ctx_with(mode: &str, extra: Value) -> Value {
     c
 }
 
-/// What the consolidator answers.
+/// What the consolidator answers. `NullThen`/`ThrowThen` fail the first
+/// `consolidate:<mode>` call and answer the `:retry` call with the value.
 #[derive(Clone)]
 enum Consolidator {
     Reply(Value),
     Null,
     Throw,
+    NullThen(Value),
+    ThrowThen(Value),
 }
 
 /// A scripted fleet: finder `d` (the `d`-th reviewer) returns `findings[d]`;
@@ -69,10 +72,15 @@ fn fleet(
         Label::Refute { id } => {
             Reply::Value(json!({ "refuted": refuted.contains(&id), "confidence": 90 }))
         }
-        Label::Consolidate { .. } => match &consolidator {
+        Label::Consolidate { retry } => match &consolidator {
             Consolidator::Reply(v) => Reply::Value(v.clone()),
-            Consolidator::Null => Reply::Null,
-            Consolidator::Throw => Reply::Throw("consolidator crashed".into()),
+            Consolidator::NullThen(v) | Consolidator::ThrowThen(v) if retry => {
+                Reply::Value(v.clone())
+            }
+            Consolidator::Null | Consolidator::NullThen(_) => Reply::Null,
+            Consolidator::Throw | Consolidator::ThrowThen(_) => {
+                Reply::Throw("consolidator crashed".into())
+            }
         },
         Label::Other => Reply::Throw(format!("unexpected label: {}", call.label)),
     })
@@ -244,6 +252,100 @@ fn fail_open(lib: &Lib, mode: &'static str) -> Outcome {
 fn invalid_or_missing_partition_fails_open_to_singletons() {
     for mode in MODES {
         run_real(|lib| fail_open(lib, mode));
+    }
+}
+
+// --- AC: a retry that answers ------------------------------------------------------
+
+/// The consolidate labels an agent recorded, in call order.
+fn consolidate_labels(agent: &Agent) -> Vec<String> {
+    agent
+        .calls_with("consolidate:")
+        .into_iter()
+        .map(|c| c.label)
+        .collect()
+}
+
+fn retry_recovers(lib: &Lib, mode: &'static str) -> Outcome {
+    let mut js = Js::open(lib)?;
+    let want_labels = vec![
+        format!("consolidate:{mode}"),
+        format!("consolidate:{mode}:retry"),
+    ];
+    let first_try = fleet(mode, corpus(), Consolidator::Reply(merge_x()), &[], &[]);
+    let merged = run(&mut js, mode, &first_try, json!({}))?;
+    let singles = fleet(mode, corpus(), Consolidator::Reply(singletons()), &[], &[]);
+    let unmerged = run(&mut js, mode, &singles, json!({}))?;
+
+    for (why, first) in [
+        ("null then valid", Consolidator::NullThen(merge_x())),
+        ("throw then valid", Consolidator::ThrowThen(merge_x())),
+    ] {
+        let agent = fleet(mode, corpus(), first, &[], &[]);
+        let out = run(&mut js, mode, &agent, json!({}))?;
+        check_eq!(
+            consolidate_labels(&agent),
+            want_labels,
+            "{mode} {why}: the first call and exactly one retry"
+        );
+        let b = &out["budget"];
+        check_eq!(
+            b["clustering"],
+            json!({ "ran": true, "retried": true, "failedOpen": false, "reason": null }),
+            "{mode} {why}: the retry's partition is used"
+        );
+        check_eq!(
+            (b["consolidated"].clone(), b["collapsed"].clone()),
+            (json!(3), json!(2)),
+            "{mode} {why}: the three duplicates collapse"
+        );
+        check_eq!(
+            survivor(&out, "x-c")?,
+            survivor(&merged, "x-c")?,
+            "{mode} {why}: the merged unit equals a first-try merge's"
+        );
+        check_eq!(
+            survivor(&out, "x-c")?["mergedFrom"],
+            json!(["c0", "c2", "c3"]),
+            "{mode} {why}: the merged unit's members"
+        );
+    }
+
+    let missing = json!({ "clusters": [
+        { "ids": ["c0", "c2", "c3"], "why": WHY }, { "ids": ["c1"], "why": "d" }
+    ]});
+    for (why, first) in [
+        ("null then invalid", Consolidator::NullThen(missing.clone())),
+        (
+            "throw then invalid",
+            Consolidator::ThrowThen(missing.clone()),
+        ),
+    ] {
+        let agent = fleet(mode, corpus(), first, &[], &[]);
+        let out = run(&mut js, mode, &agent, json!({}))?;
+        check_eq!(
+            consolidate_labels(&agent),
+            want_labels,
+            "{mode} {why}: the first call and exactly one retry"
+        );
+        check_eq!(
+            out["budget"]["clustering"],
+            json!({ "ran": true, "retried": true, "failedOpen": true, "reason": "missing-id" }),
+            "{mode} {why}: the retry's bad partition fails open with its reason"
+        );
+        check_eq!(
+            out["survivors"],
+            unmerged["survivors"],
+            "{mode} {why}: falls back to singletons"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn consolidator_retry_answer_is_used_or_fails_open() {
+    for mode in MODES {
+        run_real(|lib| retry_recovers(lib, mode));
     }
 }
 

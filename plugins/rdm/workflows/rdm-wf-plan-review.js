@@ -10,7 +10,9 @@
 // see docs/workflow-schemas.md § "Import spike"). Edit the lib, not the copy;
 // scripts/verify-workflow-review.sh fails the build on drift.
 //
-// It dispatches FINDER AND REFUTER AGENTS AND NOTHING ELSE. Every read is a
+// It dispatches FINDER, CONSOLIDATOR AND REFUTER AGENTS AND NOTHING ELSE (the
+// consolidator runs once, plus one retry, on a unit with 2+ candidates). Every
+// read is a
 // command NAMED in a reviewer's prompt for that reviewer to run itself; every
 // write is returned as ready-to-run Bash for the orchestrator to run.
 //
@@ -4486,8 +4488,8 @@ function formatUnitBudget(budget) {
 
 // runPlanReviewDriver(args, deps) — the full plan-review orchestration.
 //
-// IT DISPATCHES FINDER AND REFUTER AGENTS AND NOTHING ELSE. It reads no rdm
-// document, resolves no model and performs no write: every read it used to make
+// IT DISPATCHES FINDER, CONSOLIDATOR AND REFUTER AGENTS AND NOTHING ELSE. It
+// reads no rdm document, resolves no model and performs no write: every read it used to make
 // through a mechanical agent is now a command NAMED in a reviewer's prompt for
 // that reviewer to run itself, and every write it used to make is returned as
 // ready-to-run Bash for the orchestrator to run.

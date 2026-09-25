@@ -305,8 +305,8 @@ and the wont-fix titles as `wontFixedTitles`:
 roadmap `body` (phase mode) and the wont-fix titles. If the worktree or identity command failed,
 escalate — never invent a checkout, and never let a subagent choose one. A failed **read** is
 different and not fatal, but say which one failed and state the consequence — it differs per value,
-and **no engine-side fallback exists for any of them** since the engine dispatches finder and
-refuter agents only, with nothing reachable to re-read what you omit:
+and **no engine-side fallback exists for any of them** since the engine dispatches finder,
+consolidator and refuter agents only, with nothing reachable to re-read what you omit:
 
 - item `body` feeds the planner (step 5) and implementer (step 10), never step 6 directly — if
   unreadable, escalate rather than dispatching a planner with no phase text.
@@ -427,8 +427,8 @@ yourself.** It is the one step a subagent physically cannot perform.
   (nothing to suppress) and is **not** the same as omitting the key. Omit it only if the `task
   list` call itself failed.
 
-**The plan engine reads nothing and writes nothing either** — it dispatches finder and refuter
-agents only. When it returns `persistCommands` / `persistScript`, **you** run that ladder in Bash,
+**The plan engine reads nothing and writes nothing either** — it dispatches finder, consolidator
+and refuter agents only. When it returns `persistCommands` / `persistScript`, **you** run that ladder in Bash,
 in one session, and report the exit status; it records the plan review on `plan/<plan-slug>` exactly
 as the code ladder records the change review.
 
@@ -578,7 +578,8 @@ via the Workflow tool, passing `args` as a JSON object (never a stringified valu
 
 **The engine reads nothing and writes nothing.** You pass the identity you pinned in step 10 — a
 path, two SHAs and a branch name, nothing more — and each reviewer runs `rdm review source` itself
-to reach the diff. The engine dispatches finder and refuter agents and no others.
+to reach the diff. The engine dispatches finder, consolidator and refuter agents and no others — the
+consolidator (`consolidate:<mode>`, plus one `:retry`) only on a unit with two or more candidates.
 
 - `findModel` / `verifyModel` / `consolidateModel` and `findEffort` / `verifyEffort` /
   `consolidateEffort` — the same three resolved `profiles.reviewFind` / `profiles.reviewVerify` /

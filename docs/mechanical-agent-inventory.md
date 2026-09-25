@@ -148,7 +148,7 @@ makes the five failures above impossible rather than unlikely.
 Not by a grep. `rdm-cli/tests/workflow_review/plan_driver.rs` (under
 `cargo nextest run`) drives the real plan-review driver, and the shipped
 `rdm-wf-plan-review.js` engine, over every target kind against a recording fake agent
-and asserts the **dispatched label set contains only finder and refuter labels**
+and asserts the **dispatched label set contains only finder, consolidator and refuter labels**
 (`plan_driver::every_target_dispatches_only_finders_and_refuters`,
 `plan_driver::shipped_engine_dispatches_only_finders_and_refuters`).
 The equivalent claim for the code engine is decidable from its diff — it is a

@@ -3481,8 +3481,9 @@ if (mode === 'plan' || !(isTask || hasPhaseIdentifiers)) {
 // code-review pipeline over a source identity the CALLER pinned, classify the
 // dispatch-shaped OUTCOME, and hand back ready-to-run command text.
 //
-// THIS DRIVER READS NOTHING AND WRITES NOTHING. It dispatches finder and refuter
-// agents only. Every identifier it needs — the item ref, the checkout path, the
+// THIS DRIVER READS NOTHING AND WRITES NOTHING. It dispatches finder,
+// consolidator and refuter agents only (the consolidator runs once, plus one
+// retry, on a unit with 2+ candidates). Every identifier it needs — the item ref, the checkout path, the
 // base/head SHAs, the branch, the plan ref — is a caller argument, because the
 // orchestrator has Bash and resolved them there. Every write it used to perform
 // is returned as `persistCommands` / `gateCommands`: ready-to-run Bash the

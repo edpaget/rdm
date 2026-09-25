@@ -3,8 +3,8 @@
 //! This is the **single source of truth** for the plan-review DRIVER: argument
 //! parsing (`parsePlanArgs`), the pure unit/gate/round builders, and the
 //! dependency-injected orchestration (`runPlanReviewDriver`). It dispatches
-//! FINDER AND REFUTER AGENTS AND NOTHING ELSE — there are no fetch, act or gate
-//! agents here any more. A reviewer that needs a document runs the
+//! FINDER, CONSOLIDATOR AND REFUTER AGENTS AND NOTHING ELSE — there are no
+//! fetch, act or gate agents here any more. A reviewer that needs a document runs the
 //! `rdm ... show --format json` command its prompt names; every write the driver
 //! used to make is returned as ready-to-run Bash for the orchestrator to run. Because the
 //! Claude Code Workflow runtime cannot `import`/`require` (see
@@ -1136,8 +1136,8 @@ function formatUnitBudget(budget) {
 
 // runPlanReviewDriver(args, deps) — the full plan-review orchestration.
 //
-// IT DISPATCHES FINDER AND REFUTER AGENTS AND NOTHING ELSE. It reads no rdm
-// document, resolves no model and performs no write: every read it used to make
+// IT DISPATCHES FINDER, CONSOLIDATOR AND REFUTER AGENTS AND NOTHING ELSE. It
+// reads no rdm document, resolves no model and performs no write: every read it used to make
 // through a mechanical agent is now a command NAMED in a reviewer's prompt for
 // that reviewer to run itself, and every write it used to make is returned as
 // ready-to-run Bash for the orchestrator to run.
