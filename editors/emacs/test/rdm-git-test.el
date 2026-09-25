@@ -187,9 +187,19 @@ magit or with-editor commit binding already owns."
             (should rdm-git-commit-mode)
             (should (string-match-p (regexp-quote rdm-git-commit-key) (cdr res)))
             (should (eq (key-binding key) #'rdm-insert-done-line))
-            ;; nil, or a number: a prefix of KEY is unbound.
-            (should (natnump (or (lookup-key git-commit-mode-map key) 0)))
-            (should (natnump (or (lookup-key with-editor-mode-map key) 0))))
+            ;; Each proper prefix of KEY is unbound or a prefix keymap,
+            ;; never a command.  KEY itself is unbound: `lookup-key'
+            ;; returns nil, or N only when the N-key prefix is unbound
+            ;; (Emacs reports an unbound prefix as "too long").
+            (dolist (map (list git-commit-mode-map with-editor-mode-map))
+              (let ((b (lookup-key map key)))
+                (should (or (null b)
+                            (and (integerp b)
+                                 (null (lookup-key map (seq-take key b)))))))
+              (dotimes (i (1- (length key)))
+                (let ((b (lookup-key map (seq-take key (1+ i)))))
+                  (should-not (integerp b))
+                  (should (or (null b) (keymapp b)))))))
         (kill-buffer (car res))))))
 
 (ert-deftest rdm-git/evil-offer ()
