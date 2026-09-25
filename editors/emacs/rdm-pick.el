@@ -99,8 +99,13 @@
        (_ (list :kind kind :identifier id)))
      (list :title (plist-get hit :title) :tags (plist-get hit :tags)))))
 
+(defconst rdm-pick-search-kinds '("roadmap" "phase" "task")
+  "The search hit kinds a picker offers: the ones a detail buffer can open.
+`rdm search' also returns other kinds (reviews); those are dropped.")
+
 (defun rdm-pick-search-candidates (query)
-  "Candidates for `rdm search QUERY', annotated with kind and tags."
+  "Candidates for `rdm search QUERY', annotated with kind and tags.
+Only hits of `rdm-pick-search-kinds' are offered."
   (if (string-empty-p (string-trim query))
       nil
     (let (seen)
@@ -110,7 +115,9 @@
                         (text (if (member id seen) (format "%s (%s)" id kind) id)))
                    (push text seen)
                    (rdm-pick--candidate text (rdm-pick--search-item hit) kind)))
-               (rdm-call-sync 'search query)))))
+               (seq-filter (lambda (hit)
+                             (member (plist-get hit :kind) rdm-pick-search-kinds))
+                           (rdm-call-sync 'search query))))))
 
 ;;;; Reading
 

@@ -80,7 +80,10 @@
                      :title "Two" :snippet "Two" :score 9)
                (list :kind "task" :identifier "t1" :project "p"
                      :title "Task One" :snippet "Task" :score 8
-                     :tags ["bug"])))
+                     :tags ["bug"])
+               (list :kind "review" :identifier "2026-09-25-0000-abcd"
+                     :project "p" :title "Review of t1" :snippet "Task"
+                     :score 7)))
       (`("next" . ,_)
        (list :result "phase" :roadmap "r1" :number 2 :stem "phase-2-two"
              :status "in-progress"))
@@ -220,6 +223,23 @@ annotations show status and tags (kind and tags for search hits)."
                                         "--roadmap=r1")))
       (should (equal (plist-get (buffer-local-value 'rdm-view--item buf) :stem)
                      "phase-2-two")))))
+
+(ert-deftest rdm-pick/search-drops-unopenable-kinds ()
+  "Search offers only roadmap, phase and task hits: a review hit, which
+no detail buffer can open, is dropped."
+  (rdm-ui-test--mocked
+    (let ((hits (rdm-pick-search-candidates "x")))
+      (should (equal (mapcar #'substring-no-properties hits)
+                     '("r1" "r1/phase-2-two" "t1")))
+      (should-not (rdm-item-from "2026-09-25-0000-abcd")))))
+
+(ert-deftest rdm-view/identifier-falls-back ()
+  "An item of another kind copies its `:identifier'."
+  (let ((kill-ring nil))
+    (should (equal (rdm-item-identifier
+                    '(:kind review :identifier "2026-09-25-0000-abcd"))
+                   "2026-09-25-0000-abcd"))
+    (should-error (rdm-item-identifier '(:kind review)) :type 'user-error)))
 
 ;;;; Detail buffer
 

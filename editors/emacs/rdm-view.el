@@ -60,12 +60,14 @@ property, or a candidate string a picker registered."
       (user-error "rdm: no rdm item for %S" thing)))
 
 (defun rdm-item-identifier (item)
-  "The identifier of ITEM: a roadmap or task slug, or ROADMAP/STEM."
+  "The identifier of ITEM: a roadmap or task slug, or ROADMAP/STEM.
+An item of another kind (a search hit) falls back to its `:identifier'."
   (pcase (plist-get item :kind)
     ('roadmap (plist-get item :roadmap))
     ('phase (concat (plist-get item :roadmap) "/" (plist-get item :stem)))
     ('task (plist-get item :slug))
-    (kind (user-error "rdm: no identifier for a %s" kind))))
+    (kind (or (plist-get item :identifier)
+              (user-error "rdm: no identifier for a %s" kind)))))
 
 (defun rdm-item-show-args (item &optional at)
   "The action and `rdm-argv' arguments showing ITEM, at revision AT if non-nil."
