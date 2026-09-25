@@ -76,10 +76,11 @@ function requireComplete(result, code = false) {
  * ONE `rdm config get max_refutations --raw` applies env > repo > global:
  * every rdm child's env is rebuilt without the host's RDM_* variables, so a
  * non-blank host RDM_MAX_REFUTATIONS is forwarded into that one child
- * explicitly (a blank one is unset and falls through to config). The value is
- * passed down unparsed; the engine's resolveRefutationBudget is the single
- * validator and throws on a malformed one before any agent runs. Returns
- * undefined when nothing is set, so the engine default applies.
+ * explicitly (a blank one is unset and falls through to config). `config get`
+ * applies the engine's own grammar, so a malformed override fails that read
+ * before any agent runs; a payload value is passed down unparsed and the
+ * engine's resolveRefutationBudget refuses a malformed one. Returns undefined
+ * when nothing is set, so the engine default applies.
  */
 async function resolveRefutationBudgetLayer(ctx, spec) {
   if (spec.maxRefutations !== undefined && spec.maxRefutations !== null) {

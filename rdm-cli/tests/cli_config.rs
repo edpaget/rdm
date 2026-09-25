@@ -689,6 +689,133 @@ fn config_set_max_refutations_rejects_invalid_values_and_writes_nothing() {
         .stdout(predicate::str::contains("(not set)"));
 }
 
+#[test]
+fn config_set_max_refutations_accepts_the_shared_grammar() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    for (input, stored) in [("+5", "5"), (" 7 ", "7"), ("007", "7")] {
+        rdm_in(&config_dir)
+            .args(["config", "set", "max_refutations", "--", input])
+            .assert()
+            .success();
+        rdm_in(&config_dir)
+            .args(["config", "get", "max_refutations", "--raw"])
+            .assert()
+            .success()
+            .stdout(format!("{stored}\n"));
+    }
+}
+
+#[test]
+fn config_get_max_refutations_rejects_a_malformed_env_value() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    for bad in ["abc", "-1"] {
+        for raw in [false, true] {
+            let mut cmd = rdm_in(&config_dir);
+            cmd.env("RDM_MAX_REFUTATIONS", bad)
+                .args(["config", "get", "max_refutations"]);
+            if raw {
+                cmd.arg("--raw");
+            }
+            cmd.assert()
+                .failure()
+                .stdout("")
+                .stderr(predicate::str::contains("RDM_MAX_REFUTATIONS"))
+                .stderr(predicate::str::contains("non-negative integer"));
+        }
+    }
+}
+
+#[test]
+fn config_list_reports_a_malformed_max_refutations_env_in_its_row() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "8"])
+        .assert()
+        .success();
+
+    rdm_in(&config_dir)
+        .env("RDM_MAX_REFUTATIONS", "abc")
+        .args(["config", "list"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::is_match(r"max_refutations\s+\(invalid: .*RDM_MAX_REFUTATIONS.*\)")
+                .unwrap(),
+        )
+        // The rest of the list still prints.
+        .stdout(predicate::str::contains("default_project"))
+        .stdout(predicate::str::contains("hook_timeout_secs"));
+}
+
+#[test]
+fn config_blank_max_refutations_env_falls_through_to_config() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm_in(&config_dir)
+        .args(["config", "set", "max_refutations", "0"])
+        .assert()
+        .success();
+
+    for blank in ["", "   "] {
+        rdm_in(&config_dir)
+            .env("RDM_MAX_REFUTATIONS", blank)
+            .args(["config", "get", "max_refutations"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("0  (source: repo config)"));
+
+        rdm_in(&config_dir)
+            .env("RDM_MAX_REFUTATIONS", blank)
+            .args(["config", "get", "max_refutations", "--raw"])
+            .assert()
+            .success()
+            .stdout("0\n");
+
+        rdm_in(&config_dir)
+            .env("RDM_MAX_REFUTATIONS", blank)
+            .args(["config", "list"])
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::is_match(r"max_refutations\s+0\s+\(source: repo config\)").unwrap(),
+            );
+    }
+}
+
+#[test]
+fn config_blank_max_refutations_env_with_nothing_set_is_unset() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm_in(&config_dir)
+        .env("RDM_MAX_REFUTATIONS", " ")
+        .args(["config", "get", "max_refutations"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("(not set)"));
+
+    rdm_in(&config_dir)
+        .env("RDM_MAX_REFUTATIONS", " ")
+        .args(["config", "get", "max_refutations", "--raw"])
+        .assert()
+        .success()
+        .stdout("");
+}
+
+#[test]
+fn config_get_max_refutations_env_reports_the_parsed_number() {
+    let (config_dir, _root_dir) = setup_repo();
+
+    rdm_in(&config_dir)
+        .env("RDM_MAX_REFUTATIONS", " +4 ")
+        .args(["config", "get", "max_refutations", "--raw"])
+        .assert()
+        .success()
+        .stdout("4\n");
+}
+
 // -- plan_review config round-trips --
 
 #[test]

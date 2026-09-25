@@ -688,6 +688,14 @@ fn budget_record(run: &RuntimeRun) -> Value {
     found[0]["data"].clone()
 }
 
+/// How many `rdm config get max_refutations --raw` reads the run started.
+fn budget_config_reads(run: &RuntimeRun) -> usize {
+    records(&run.journal, "read-started")
+        .into_iter()
+        .filter(|r| r["data"]["args"] == json!(["config", "get", "max_refutations", "--raw"]))
+        .count()
+}
+
 /// A budget of `0` grades nothing: the finders and the consolidator run, no
 /// refuter does, and the ungraded blocking unit leaves the evidence
 /// incomplete — which the runtime refuses as "Review incomplete".
@@ -716,6 +724,7 @@ fn zero_budget_from_config_dispatches_no_refuter(operation: &str) {
         budget_record(&run),
         json!({"layer": "config-get", "envForwarded": false, "value": "0"})
     );
+    assert_eq!(budget_config_reads(&run), 1, "{:?}", run.journal);
     assert_zero_budget_refused(&fx, &run);
 }
 
@@ -780,17 +789,36 @@ fn malformed_refutation_budget_env_is_refused_before_any_refuter() {
         &[("RDM_MAX_REFUTATIONS", OsString::from("5abc"))],
     )
     .unwrap_or_else(|f| panic!("{f}"));
+    // `rdm config get max_refutations` applies the same grammar the engine
+    // does, so the forwarded override is refused at that read, naming the
+    // variable to fix.
     match &run.result {
         Ok(v) => panic!("a malformed budget was accepted: {v}"),
         Err(e) => assert!(
-            e.message
-                .contains("maxRefutations must be a non-negative integer"),
+            e.message.contains("RDM_MAX_REFUTATIONS") && e.message.contains("non-negative integer"),
             "{e}"
         ),
     }
     assert!(starts(&run.events, None).is_empty(), "{:?}", run.events);
     assert_eq!(run.manifest["status"], "failed");
     fx.no_writes().unwrap_or_else(|f| panic!("{f}"));
+}
+
+#[test]
+fn refutation_budget_payload_beats_config_and_skips_the_config_read() {
+    let mut fx = Fixture::review("code-review", false, Some("\nmax_refutations = 0\n"))
+        .unwrap_or_else(|f| panic!("{f}"));
+    fx.spec["maxRefutations"] = json!(5);
+    let run = observe_runtime(&Lib::real(), &fx).unwrap_or_else(|f| panic!("{f}"));
+    assert_eq!(budget_record(&run), json!({"layer": "payload", "value": 5}));
+    assert_eq!(
+        starts(&run.events, Some("refuter")).len(),
+        1,
+        "{:?}",
+        run.events
+    );
+    assert_eq!(budget_config_reads(&run), 0, "{:?}", run.journal);
+    check_review(&fx, &run, "code-review").unwrap_or_else(|f| panic!("{f}"));
 }
 
 /// Evidence of one estimate preview run through the CLI.

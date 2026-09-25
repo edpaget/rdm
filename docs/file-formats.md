@@ -89,14 +89,19 @@ The refutation budget a review run uses resolves as follows, highest first:
 5. `DEFAULT_MAX_REFUTATIONS = 5`.
 
 Layers 3 and 4 are read by the caller with one `rdm config get max_refutations --raw`, which already
-checks `RDM_MAX_REFUTATIONS` before repo and global config; empty output means unset, and the caller
-then omits the arg so the engine applies layer 5. The review engine never reads config itself.
+checks `RDM_MAX_REFUTATIONS` before repo and global config (an empty or whitespace-only
+`RDM_MAX_REFUTATIONS` counts as unset and falls through to config) and prints the resolved number;
+empty output means unset, and the caller then omits the arg so the engine applies layer 5. The
+review engine never reads config itself.
 
 `0` is legal and distinct from unset: it means "grade nothing, pass every unit through un-refuted".
 This deliberately differs from `hook_timeout_secs`, where `0` is read as unset. A value must be a
-non-negative integer (surrounding whitespace and a leading `+` are tolerated); anything else is
-refused by the engine before any agent is dispatched. `rdm config set max_refutations` refuses a
-non-integer value outright. What a given budget costs and risks is described in
+non-negative integer (surrounding whitespace and a leading `+` are tolerated); `rdm config set`,
+`rdm config get`, `RDM_MAX_REFUTATIONS` and the engine all apply this one grammar. `rdm config set
+max_refutations` refuses anything else without writing; `rdm config get max_refutations` fails with
+an error naming `RDM_MAX_REFUTATIONS` when that variable is malformed (`rdm config list` shows the
+error in the key's row instead of aborting), and the engine refuses a malformed payload or flag
+value before any agent is dispatched. What a given budget costs and risks is described in
 [`workflow-schemas.md`](workflow-schemas.md) § "Refutation budget".
 
 A global config file at `~/.config/rdm/config.toml` supports the same fields plus `root` (path to the plan repo). Repo-level settings in `rdm.toml` override global settings. The `--project` flag, `RDM_PROJECT` env var, and `default_project` config form a resolution chain (flag wins).
