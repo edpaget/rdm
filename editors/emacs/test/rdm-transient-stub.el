@@ -41,6 +41,7 @@ case \"$1 $2\" in
     cat > '%s.stdin'
     if [ \"$1\" = phase ]; then echo \"Created phase 'phase-9-$3' in roadmap\"
     else echo \"Created $1 '$3'\"; fi ;;
+  'review list') echo '[]' ;;
   'status '*) echo 'Uncommitted changes:' ;;
   'commit '*) echo 'Committed 1 file(s).' ;;
   'discard '*) echo 'Discarded.' ;;
@@ -71,8 +72,11 @@ esac"
               (split-string (buffer-string) "\n" t)))))
 
 (defun rdm-transient-test--argvs (log)
-  "The argvs in LOG other than `info', oldest first."
-  (seq-remove (lambda (argv) (equal (car argv) "info"))
+  "The argvs in LOG other than `info' and `review list', oldest first.
+Every render of a detail buffer also reads its reviews (rdm-review.el);
+those reads are not what the write-surface tests are about."
+  (seq-remove (lambda (argv) (or (equal (car argv) "info")
+                                 (equal (seq-take argv 2) '("review" "list"))))
               (mapcar #'cdr (rdm-transient-test--calls log))))
 
 (defmacro rdm-transient-test--with-stub (opts &rest body)

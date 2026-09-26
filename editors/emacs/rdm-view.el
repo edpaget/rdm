@@ -21,6 +21,13 @@
 ;; the `rdm-dispatch' transient (rdm-transient.el).  A roadmap
 ;; view lists its phases as rows carrying an `rdm-item' text property;
 ;; `RET' opens the row at point.  Evil bindings live in rdm-evil.el.
+;;
+;; Every render records where the item's body lies in the buffer
+;; (`rdm-view-body-region') and the body text it rendered
+;; (`rdm-view-body'); the buffer text in that region is exactly the body
+;; `show' returned (Markdown only adds faces).  Layers over the body, such
+;; as the review overlays of rdm-review.el, attach through
+;; `rdm-view-after-render-hook', which runs at the end of every render.
 
 ;;; Code:
 
@@ -109,6 +116,22 @@ more segments) is nil."
 (defvar-local rdm-view--at nil
   "The revision this buffer's body was read at, or nil for the current one.")
 
+(defvar-local rdm-view--body-start nil
+  "Marker at the start of the rendered body, or nil before a render.")
+
+(defvar-local rdm-view--body-end nil
+  "Marker at the end of the rendered body, or nil before a render.")
+
+(defvar-local rdm-view--body nil
+  "The body string the last render inserted, or nil before a render.")
+
+(defvar rdm-view-after-render-hook nil
+  "Normal hook run in an `rdm-view-mode' buffer after every render.
+It runs once the item has been inserted, with the body region
+\(`rdm-view-body-region') and body (`rdm-view-body') set, and with
+`inhibit-read-only' bound to t.  Functions may add text after the
+body, but must not change the body region's text.")
+
 (defface rdm-view-title '((t :inherit bold :height 1.2))
   "Face for the title line of an rdm detail buffer."
   :group 'rdm)
@@ -131,6 +154,7 @@ more segments) is nil."
   (setq-local revert-buffer-function #'rdm-view--revert)
   (setq-local truncate-lines nil)
   (require 'rdm-transient)
+  (require 'rdm-review)
   (require 'rdm-evil))
 
 (defun rdm-view-item-at-point ()
@@ -189,7 +213,10 @@ more segments) is nil."
       (rdm-view--field "Revision" (or (plist-get data :revision) at)))
     (insert "\n")
     (let ((body (or (plist-get data :body) "")))
+      (setq rdm-view--body-start (copy-marker (point))
+            rdm-view--body body)
       (insert (rdm-view--markdown body))
+      (setq rdm-view--body-end (copy-marker (point)))
       (unless (or (string-empty-p body) (bolp)) (insert "\n")))
     (when (eq kind 'roadmap)
       (let ((phases (plist-get data :phases))
@@ -207,7 +234,21 @@ more segments) is nil."
                              (or (plist-get p :status) ""))
                      'rdm-item phase)
                     "\n")))))
+    (goto-char (point-min))
+    (run-hooks 'rdm-view-after-render-hook)
     (goto-char (point-min))))
+
+(defun rdm-view-body-region ()
+  "The rendered body's region in this detail buffer, as (START . END).
+START and END are buffer positions; the text between them is exactly
+`rdm-view-body'.  nil when the buffer has not been rendered."
+  (when (and (markerp rdm-view--body-start) (marker-buffer rdm-view--body-start))
+    (cons (marker-position rdm-view--body-start)
+          (marker-position rdm-view--body-end))))
+
+(defun rdm-view-body ()
+  "The body string the last render of this detail buffer showed, or nil."
+  rdm-view--body)
 
 (defun rdm-view--buffer-name (item at)
   "The detail buffer name for ITEM at revision AT."

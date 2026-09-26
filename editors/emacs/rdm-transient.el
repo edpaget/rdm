@@ -6,7 +6,7 @@
 
 ;; `rdm-dispatch' is the write surface of the rdm integration: a transient
 ;; scoped to one item (the item at point in a detail buffer, or the target
-;; of an embark action) with four groups:
+;; of an embark action) with five groups:
 ;;
 ;; - Status: one suffix per value `rdm describe <kind>' declares for the
 ;;   item's `status' field (see `rdm-status-values'); there is no status
@@ -23,6 +23,9 @@
 ;;   buffer, piped to rdm on stdin.  A phase goes into the item's roadmap
 ;;   (a phase item's parent), else a picked one.  This group works with
 ;;   no item.
+;; - Review: show one of the item's reviews, pick from the requests
+;;   queue, close a review as addressed, dismiss one, and hand one to the
+;;   revision loop (rdm-review.el).  Offered only with an item.
 ;; - Plan repo: `rdm status', `rdm commit' and `rdm discard --force' over
 ;;   this Emacs's changeset (every rdm process the package runs carries
 ;;   `RDM_SESSION'; see `rdm-session').  This group works with no item.
@@ -38,8 +41,9 @@
 ;; `rdm-plan-status', `rdm-plan-commit', `rdm-plan-discard') are usable
 ;; without the transient.  Further suffixes attach with
 ;; `transient-append-suffix': the Edit group's suffixes have keys "T"
-;; and "B", the Create group's "+r", "+p" and "+t", and the Plan repo
-;; group's last suffix key "D".  A new fixed key belongs in
+;; and "B", the Create group's "+r", "+p" and "+t", the Review group's
+;; "Rs", "Rq", "Ra", "Rd" and "Rv", and the Plan repo group's last suffix
+;; key "D".  A new fixed key belongs in
 ;; `rdm-dispatch--fixed-keys' so generated status keys avoid it.
 
 ;;; Code:
@@ -54,6 +58,13 @@
 
 ;; rdm-pick requires this file, so it is loaded lazily where needed.
 (declare-function rdm-pick-read-roadmap "rdm-pick" (&optional prompt))
+
+;; rdm-review requires this file; the Review group's suffixes load it.
+(autoload 'rdm-review-dispatch-show "rdm-review" nil t)
+(autoload 'rdm-review-requests "rdm-review" nil t)
+(autoload 'rdm-review-dispatch-close "rdm-review" nil t)
+(autoload 'rdm-review-dispatch-dismiss "rdm-review" nil t)
+(autoload 'rdm-review-dispatch-revise "rdm-review" nil t)
 
 (defcustom rdm-confirm-statuses '("done" "wont-fix")
   "Status values `rdm-set-status' asks to confirm before writing."
@@ -299,7 +310,7 @@ Returns rdm's output, or nil when declined."
   "The item `rdm-dispatch' acts on, or a `user-error'."
   (or (transient-scope) (user-error "rdm: no item for this action")))
 
-(defconst rdm-dispatch--fixed-keys '("T" "B" "+" "S" "C" "D")
+(defconst rdm-dispatch--fixed-keys '("T" "B" "+" "R" "S" "C" "D")
   "The keys (and key prefixes) `rdm-dispatch' binds to fixed suffixes.
 Generated status keys never use one of them.")
 
@@ -379,7 +390,7 @@ Each value prefers its words' initials, then its other letters."
 
 ;;;###autoload (autoload 'rdm-dispatch "rdm-transient" nil t)
 (transient-define-prefix rdm-dispatch (&optional item)
-  "Act on the rdm ITEM: status, tags, body; create items; commit the plan repo.
+  "Act on the rdm ITEM: status, tags, body, reviews; create; commit.
 Interactively, ITEM is the item at point in a detail buffer; elsewhere
 only the Create and Plan repo groups are offered."
   [:description rdm-dispatch--description
@@ -390,7 +401,14 @@ only the Create and Plan repo groups are offered."
    ["Edit"
     :if transient-scope
     ("T" "Edit tags" rdm-dispatch-edit-tags)
-    ("B" "Edit body" rdm-dispatch-edit-body)]]
+    ("B" "Edit body" rdm-dispatch-edit-body)]
+   ["Review"
+    :if transient-scope
+    ("Rs" "Show review" rdm-review-dispatch-show)
+    ("Rq" "Requests queue" rdm-review-requests)
+    ("Ra" "Close as addressed" rdm-review-dispatch-close)
+    ("Rd" "Dismiss" rdm-review-dispatch-dismiss)
+    ("Rv" "Revise (copy command)" rdm-review-dispatch-revise)]]
   [["Create"
     ("+r" "Roadmap" rdm-create-roadmap)
     ("+p" "Phase" rdm-dispatch-create-phase)

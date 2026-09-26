@@ -21,7 +21,7 @@
 ;;   only from `rdm info'.
 ;; - `rdm-argv' turns an action from `rdm--actions' plus arguments into an
 ;;   argv: every read carries `--format json', every write `--no-edit';
-;;   a text action (`hook done-line') carries neither.
+;;   a text action (`hook done-line', `review update') carries neither.
 ;; - `rdm-run' / `rdm-run-sync' run rdm over pipes (never a pty), always
 ;;   close stdin, keep stderr out of the JSON stream, parse reads as JSON and
 ;;   return a write's stdout as text.  A non-zero exit is a `user-error'
@@ -281,6 +281,10 @@ process and signals an error.  Errors are re-signalled."
     (phase-update     :argv ("phase" "update")   :kind write)
     (task-create      :argv ("task" "create")    :kind write)
     (task-update      :argv ("task" "update")    :kind write)
+    (review-list      :argv ("review" "list")    :kind read)
+    (review-show      :argv ("review" "show")    :kind read)
+    (review-requests  :argv ("review" "requests") :kind read)
+    (review-update    :argv ("review" "update")  :kind text)
     (done-line        :argv ("hook" "done-line") :kind text :project nil))
   "rdm actions: symbol, then the subcommand words, `:kind' and `:project'.
 `:kind' is `read' (JSON output, `--format json'), `write' (`--no-edit',

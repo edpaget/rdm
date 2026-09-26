@@ -103,7 +103,9 @@
 (defmacro rdm-ui-test--mocked (&rest body)
   "Run BODY with the runner mocked by `rdm-ui-test--reply'.
 Binds `calls' to the argvs run so far, most recent first.  The context
-is fixed to project \"p\"; detail buffers are killed afterwards."
+is fixed to project \"p\"; detail buffers are killed afterwards.  The
+review layer's `review list' reads (rdm-review.el) answer no reviews
+and are not recorded: these tests are about the item reads."
   (declare (indent 0) (debug t))
   `(let ((calls nil)
          (rdm-item--lookup (make-hash-table :test #'equal))
@@ -112,8 +114,10 @@ is fixed to project \"p\"; detail buffers are killed afterwards."
                 (lambda () (list :root "/tmp" :project "p" :rdm-bin "rdm")))
                ((symbol-function 'rdm-run-sync)
                 (lambda (command &rest _)
-                  (push (cdr command) calls)
-                  (rdm-ui-test--reply (cdr command)))))
+                  (if (equal (seq-take (cdr command) 2) '("review" "list"))
+                      []
+                    (push (cdr command) calls)
+                    (rdm-ui-test--reply (cdr command))))))
        (unwind-protect (progn ,@body)
          (rdm-ui-test--kill-views)))))
 
@@ -360,8 +364,10 @@ RET on a phase row resolve that same context rather than the global one."
                                 :rdm-bin "rdm")))
               ((symbol-function 'rdm-run-sync)
                (lambda (command &rest keys)
-                 (push (list (cdr command) (plist-get keys :env)) calls)
-                 (rdm-ui-test--reply (cdr command)))))
+                 (if (equal (seq-take (cdr command) 2) '("review" "list"))
+                     []
+                   (push (list (cdr command) (plist-get keys :env)) calls)
+                   (rdm-ui-test--reply (cdr command))))))
       (unwind-protect
           (let* ((env (cons "RDM_ROOT=/src-root" (rdm-test-clean-environment)))
                  (view (with-current-buffer source

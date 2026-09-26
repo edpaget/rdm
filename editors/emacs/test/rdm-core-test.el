@@ -276,7 +276,24 @@ the root and project are only passed to rdm and stay safe."
   (should (equal (rdm-argv 'done-line :task "t" :project "p")
                  '(("hook" "done-line" "--task=t"))))
   (should (equal (rdm-argv 'done-line :roadmap "r" :phase "phase-1-x")
-                 '(("hook" "done-line" "--roadmap=r" "--phase=phase-1-x")))))
+                 '(("hook" "done-line" "--roadmap=r" "--phase=phase-1-x"))))
+  ;; Reviews: reads take --format json; `review update' rejects --no-edit.
+  (should (equal (rdm-argv 'review-list :on "task/t" :project "p")
+                 '(("review" "list" "--on=task/t" "--project" "p"
+                    "--format" "json"))))
+  (should (equal (rdm-argv 'review-show "r1" :project "p")
+                 '(("review" "show" "r1" "--project" "p" "--format" "json"))))
+  (should (equal (rdm-argv 'review-requests :project "p")
+                 '(("review" "requests" "--project" "p" "--format" "json"))))
+  (should (equal (rdm-argv 'review-update "r1" :comment 2 :status "addressed"
+                           :reply "-- fixed" :applied-commit "abc123"
+                           :project "p")
+                 '(("review" "update" "r1" "--comment=2" "--status=addressed"
+                    "--reply=-- fixed" "--applied-commit=abc123"
+                    "--project" "p"))))
+  (should (equal (rdm-argv 'review-update "r1" :state "dismissed" :project "p")
+                 '(("review" "update" "r1" "--state=dismissed"
+                    "--project" "p")))))
 
 (ert-deftest rdm-argv/body-stdin-exclusive ()
   "Both :body and :stdin, a missing project or an unknown action errors."

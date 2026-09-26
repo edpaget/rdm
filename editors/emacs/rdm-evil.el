@@ -17,7 +17,12 @@
 ;;   q    quit the window
 ;;   y    copy the identifier of the item at point
 ;;   gd   copy the item's `Done:' commit line
-;;   x    the `rdm-dispatch' transient (status, tags, body, create, commit)
+;;   x    the `rdm-dispatch' transient (status, tags, body, reviews, create,
+;;        commit)
+;;   K    describe the review comment at point
+;;   ]c   next review comment
+;;   [c   previous review comment
+;;   gA   mark the review comment at point addressed or won't-fix
 ;;
 ;; `rdm-compose-mode' (rdm-compose.el) starts in insert state; in normal
 ;; state `ZZ' submits the buffer and `ZQ' aborts it, as in evil-collection's
@@ -34,6 +39,7 @@
 (require 'rdm-transient)
 (require 'rdm-compose)
 (require 'rdm-git)
+(require 'rdm-review)
 
 (declare-function evil-set-initial-state "ext:evil-core" (mode state))
 (declare-function evil-define-key* "ext:evil-core" (state keymap key def &rest bindings))
@@ -47,7 +53,11 @@
     (kbd "q") #'quit-window
     (kbd "y") #'rdm-view-copy-identifier
     (kbd "gd") #'rdm-view-copy-done-line
-    (kbd "x") #'rdm-dispatch)
+    (kbd "x") #'rdm-dispatch
+    (kbd "K") #'rdm-review-comment-at-point
+    (kbd "]c") #'rdm-review-next-comment
+    (kbd "[c") #'rdm-review-previous-comment
+    (kbd "gA") #'rdm-review-resolve)
   (evil-set-initial-state 'rdm-compose-mode 'insert)
   (evil-define-key* 'normal rdm-compose-mode-map
     (kbd "ZZ") #'rdm-compose-submit
