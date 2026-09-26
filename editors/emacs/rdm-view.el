@@ -65,7 +65,7 @@ property, or a candidate string a picker registered."
 (defun rdm-item--require (thing)
   "The item THING denotes, or a `user-error'."
   (or (rdm-item-from thing)
-      (user-error "rdm: no rdm item for %S" thing)))
+      (user-error "rdm: No rdm item for %S" thing)))
 
 (defun rdm-item-identifier (item)
   "The identifier of ITEM: a roadmap or task slug, or ROADMAP/STEM.
@@ -75,7 +75,7 @@ An item of another kind (a search hit) falls back to its `:identifier'."
     ('phase (concat (plist-get item :roadmap) "/" (plist-get item :stem)))
     ('task (plist-get item :slug))
     (kind (or (plist-get item :identifier)
-              (user-error "rdm: no identifier for a %s" kind)))))
+              (user-error "rdm: No identifier for a %s" kind)))))
 
 (defun rdm-item-parse-worktree-id (id)
   "The item plist for ID, an `rdm worktree' item string, or nil.
@@ -97,7 +97,7 @@ more segments) is nil."
      ('phase (list 'phase-show (plist-get item :stem)
                    :roadmap (plist-get item :roadmap)))
      ('task (list 'task-show (plist-get item :slug)))
-     (kind (user-error "rdm: cannot show a %s" kind)))
+     (kind (user-error "rdm: Cannot show a %s" kind)))
    (when at (list :at at))))
 
 (defun rdm-item-done-line-args (item)
@@ -167,7 +167,7 @@ body, but must not change the body region's text.")
 ;;;; Rendering
 
 (defun rdm-view--markdown (body)
-  "BODY fontified as Markdown when markdown-mode is available."
+  "BODY fontified as Markdown when `markdown-mode' is available."
   (if (not (require 'markdown-mode nil t))
       body
     (with-temp-buffer
@@ -309,26 +309,26 @@ Returns the buffer."
   "Open the item at point (a phase row, or this buffer's item)."
   (interactive)
   (rdm-open-item (or (get-text-property (point) 'rdm-item)
-                     (user-error "rdm: no item at point"))))
+                     (user-error "rdm: No item at point"))))
 
 (defun rdm-view-open-at-point-other-window ()
   "Open the item at point in another window."
   (interactive)
   (rdm-open-item (or (get-text-property (point) 'rdm-item)
-                     (user-error "rdm: no item at point"))
+                     (user-error "rdm: No item at point"))
                  nil t))
 
 (defun rdm-view-at (revision &optional thing)
   "Show the item at point (or THING) with its body read at REVISION."
   (interactive
    (let ((item (rdm-view-item-at-point)))
-     (unless item (user-error "rdm: not in an rdm detail buffer"))
+     (unless item (user-error "rdm: Not in an rdm detail buffer"))
      (list (read-string (format "Revision of %s (default HEAD): "
                                 (rdm-item-identifier item))
                         nil nil "HEAD")
            item)))
   (rdm-open-item (or thing (rdm-view-item-at-point)
-                     (user-error "rdm: not in an rdm detail buffer"))
+                     (user-error "rdm: Not in an rdm detail buffer"))
                  revision))
 
 (defun rdm-copy-identifier (thing)

@@ -147,7 +147,7 @@ With KEEP-ORDER, completion UIs show CANDIDATES in their given order."
   "Read one of CANDIDATES with PROMPT; return its item.
 DEFAULT, when non-nil, is the candidate offered as `completing-read's
 default.  KEEP-ORDER preserves the order of CANDIDATES."
-  (unless candidates (user-error "rdm: nothing to pick"))
+  (unless candidates (user-error "rdm: Nothing to pick"))
   (rdm-item--require
    (completing-read prompt (rdm-pick-table candidates keep-order)
                     nil t nil nil default)))

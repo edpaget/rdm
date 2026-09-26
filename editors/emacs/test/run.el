@@ -9,11 +9,13 @@
 ;;
 ;; 1. Byte-compiles every editors/emacs/*.el with warnings as errors, writing
 ;;    the .elc files to a temporary directory (the source tree stays clean).
-;; 2. Loads every test/*-test.el and runs the ERT suite.
-;; 3. Writes one JSON record per test (name, tags, result) to the file named
+;; 2. Runs checkdoc over the same files; any diagnostic fails the pass.
+;; 3. Loads every test/*-test.el and runs the ERT suite.
+;; 4. Writes one JSON record per test (name, tags, result) to the file named
 ;;    by RDM_EMACS_RESULTS, when set.
 ;;
-;; Exits non-zero on a compile failure or any unexpected test result.
+;; Exits non-zero on a compile failure, a checkdoc diagnostic or any
+;; unexpected test result.
 
 ;;; Code:
 
@@ -47,6 +49,29 @@
     (delete-directory out t)
     ok))
 
+(defun rdm-run--checkdoc ()
+  "Run checkdoc over the package; return non-nil when it reports nothing.
+Every diagnostic is printed as FILE:LINE: MESSAGE."
+  (require 'checkdoc)
+  (let ((ok t))
+    (dolist (file (directory-files rdm-run--package-dir t "\\.el\\'"))
+      (let ((buf (find-file-noselect file))
+            (checkdoc-autofix-flag 'never)
+            (checkdoc-spellcheck-documentation-flag nil))
+        (unwind-protect
+            (cl-letf (((symbol-function 'checkdoc-error)
+                       (lambda (point msg)
+                         (setq ok nil)
+                         (message "rdm: checkdoc: %s:%d: %s"
+                                  (file-name-nondirectory file)
+                                  (with-current-buffer buf
+                                    (line-number-at-pos (or point (point-min))))
+                                  msg))))
+              (with-current-buffer buf
+                (checkdoc-current-buffer t)))
+          (kill-buffer buf))))
+    ok))
+
 (defun rdm-run--result-name (result)
   "The result kind of RESULT as a string."
   (cond ((ert-test-passed-p result) "passed")
@@ -71,6 +96,9 @@
 
 (unless (rdm-run--compile)
   (kill-emacs 2))
+
+(unless (rdm-run--checkdoc)
+  (kill-emacs 3))
 
 (dolist (file (directory-files rdm-run--test-dir t "-test\\.el\\'"))
   (load file nil t))

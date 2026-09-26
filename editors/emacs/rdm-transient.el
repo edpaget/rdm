@@ -86,7 +86,7 @@
     ('phase (list 'phase-update (plist-get item :stem)
                   :roadmap (plist-get item :roadmap)))
     ('task (list 'task-update (plist-get item :slug)))
-    (kind (user-error "rdm: cannot update a %s" kind))))
+    (kind (user-error "rdm: Cannot update a %s" kind))))
 
 (defun rdm--refresh-views (item)
   "Re-fetch every current-revision detail buffer showing ITEM.
@@ -153,7 +153,7 @@ Returns the new tag list."
      ((equal tags current)
       (message "rdm: tags of %s unchanged" (rdm-item-identifier item)))
      ((null tags)
-      (user-error "rdm: cannot clear a tag list; keep at least one tag on %s"
+      (user-error "rdm: Cannot clear a tag list; keep at least one tag on %s"
                   (rdm-item-identifier item)))
      (t
       (apply #'rdm-call-sync
@@ -208,7 +208,7 @@ Refreshes the views the new item affects and returns its item plist."
                    ('roadmap 'roadmap-create)
                    ('phase 'phase-create)
                    ('task 'task-create)
-                   (_ (user-error "rdm: cannot create a %s" kind))))
+                   (_ (user-error "rdm: Cannot create a %s" kind))))
          (output (apply #'rdm-call-sync action slug
                         :title title :tags (rdm--nonempty tags)
                         (append (when (eq kind 'phase)
@@ -281,7 +281,7 @@ at point in a detail buffer."
                   (string-trim (read-string "Number (empty for the next): "))))
          (tags (rdm--split-tags (read-string "Tags (comma-separated): "))))
     (when (and number (not (string-match-p "\\`[0-9]+\\'" number)))
-      (user-error "rdm: phase number must be a positive integer, not %s" number))
+      (user-error "rdm: Phase number must be a positive integer, not %s" number))
     (rdm--compose-create 'phase slug title tags :roadmap roadmap :number number)))
 
 ;;;; Plan repo
@@ -314,7 +314,7 @@ Returns rdm's output, or nil when declined."
 
 (defun rdm-dispatch--item ()
   "The item `rdm-dispatch' acts on, or a `user-error'."
-  (or (transient-scope) (user-error "rdm: no item for this action")))
+  (or (transient-scope) (user-error "rdm: No item for this action")))
 
 (defconst rdm-dispatch--fixed-keys '("T" "B" "+" "R" "S" "C" "D")
   "The keys (and key prefixes) `rdm-dispatch' binds to fixed suffixes.

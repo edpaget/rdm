@@ -53,7 +53,7 @@ When nil, `RDM_ROOT' from the buffer's environment is used, then
   :safe #'string-or-null-p)
 
 (defcustom rdm-project nil
-  "rdm project for this buffer, or nil to resolve it.
+  "The rdm project for this buffer, or nil to resolve it.
 When nil, `RDM_PROJECT' from the buffer's environment is used, then
 `rdm info'.  Safe as a directory-local variable."
   :type '(choice (const :tag "Resolve" nil) string)
@@ -104,7 +104,7 @@ write was made from, which need not be in the item's worktree."
 (defun rdm--unresolved-error (dir &optional detail)
   "Signal the actionable `user-error' for DIR, appending DETAIL if non-nil."
   (user-error
-   "rdm: no plan repo root and project resolved for %s.  Set RDM_ROOT and \
+   "rdm: No plan repo root and project resolved for %s.  Set RDM_ROOT and \
 RDM_PROJECT in the code repo's .mise.toml (or `rdm-root'/`rdm-project' in \
 .dir-locals.el), or run `rdm config set default_project <project>' in the \
 plan repo%s"
@@ -153,7 +153,7 @@ The value is passed through as given; rdm sanitizes it."
                   (cond
                    ((or (not (eq (process-status proc) 'exit))
                         (/= code 0))
-                    (user-error "rdm %s failed (exit %s): %s"
+                    (user-error "rdm: `rdm %s' failed (exit %s): %s"
                                 (string-join argv " ") code
                                 (if (string-empty-p stderr)
                                     "<no stderr>"
@@ -166,7 +166,7 @@ The value is passed through as given; rdm sanitizes it."
                                              :null-object nil
                                              :false-object :false)
                         (json-error
-                         (error "rdm %s: output is not JSON: %s"
+                         (error "rdm: `rdm %s' output is not JSON: %s"
                                 (string-join argv " ")
                                 (rdm--first-line (buffer-string)))))))
                    (t (with-current-buffer outbuf (buffer-string)))))
@@ -250,7 +250,7 @@ process and signals an error.  Errors are re-signalled."
       (accept-process-output nil 0.05))
     (unless done
       (when (process-live-p proc) (delete-process proc))
-      (error "rdm %s: no result after %s seconds"
+      (error "rdm: `rdm %s' gave no result after %s seconds"
              (string-join (cdr command) " ") timeout))
     (if err (signal (car err) (cdr err)) result)))
 
@@ -290,7 +290,7 @@ process and signals an error.  Errors are re-signalled."
     (review-comment   :argv ("review" "comment") :kind write)
     (review-submit    :argv ("review" "submit")  :kind write)
     (done-line        :argv ("hook" "done-line") :kind text :project nil))
-  "rdm actions: symbol, then the subcommand words, `:kind' and `:project'.
+  "The rdm actions: symbol, then the subcommand words, `:kind' and `:project'.
 `:kind' is `read' (JSON output, `--format json'), `write' (`--no-edit',
 text output) or `text' (no suffix flag, text output).  `:project' nil
 marks a command that takes no `--project'.")
@@ -298,7 +298,7 @@ marks a command that takes no `--project'.")
 (defun rdm--action (action)
   "The `rdm--actions' row for ACTION, or an error."
   (or (cdr (assq action rdm--actions))
-      (error "rdm: unknown action `%s'" action)))
+      (error "rdm: Unknown action `%s'" action)))
 
 (defun rdm-action-read-p (action)
   "Non-nil when ACTION is a read (its output is JSON)."
@@ -368,7 +368,7 @@ ARGV excludes the rdm program itself."
   (or (rdm--nonempty rdm-bin)
       (rdm--nonempty (getenv "RDM_BIN"))
       (executable-find "rdm")
-      (user-error "rdm: no `rdm' executable found.  Install rdm, set RDM_BIN \
+      (user-error "rdm: No `rdm' executable found.  Install rdm, set RDM_BIN \
 in the code repo's .mise.toml, or customize `rdm-bin'")))
 
 (defun rdm--resolve (dir)

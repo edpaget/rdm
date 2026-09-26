@@ -107,7 +107,7 @@ A row is a plist with `:item', `:branch', `:path' and `:dirty'."
                       `(metadata (category . rdm-worktree)
                                  (annotation-function . ,annotate))
                     (complete-with-action action cands string pred)))))
-    (unless cands (user-error "rdm: no rdm worktrees in this repo"))
+    (unless cands (user-error "rdm: No rdm worktrees in this repo"))
     (cdr (assoc (completing-read prompt table nil t) cands))))
 
 ;;;###autoload

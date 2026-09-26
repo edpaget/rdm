@@ -266,8 +266,9 @@ prefix/suffix context, then by nearness to the original offset (see
   "The reviews this detail buffer shows, as `rdm review list' JSON.")
 
 (defvar-local rdm-review--entries nil
-  "One plist per shown comment: `:review', `:comment', `:placement'
-and, when overlaid, `:overlay'.")
+  "One plist per shown comment.
+Its keys are `:review', `:comment', `:placement' and, when overlaid,
+`:overlay'.")
 
 (defvar-local rdm-review--section-start nil
   "Marker at the start of the Reviews section, or nil.")
@@ -311,7 +312,8 @@ Each commit is read once; a failed read maps to nil."
     bodies))
 
 (defun rdm-review--marker-spec (face)
-  "A `before-string' marking a comment in the fringe (margin in a terminal)."
+  "A `before-string' marking a comment in FACE.
+The marker goes in the fringe, or the margin in a terminal."
   (if (display-graphic-p)
       (propertize " " 'display `(left-fringe vertical-bar ,face))
     (setq-local left-margin-width 1)
@@ -465,7 +467,7 @@ re-rendered at the draft's `created_commit' first (see
 The item itself is not re-read; `revert-buffer' does both."
   (interactive)
   (unless (derived-mode-p 'rdm-view-mode)
-    (user-error "rdm: not in an rdm detail buffer"))
+    (user-error "rdm: Not in an rdm detail buffer"))
   (rdm-review--clear t)
   (rdm-review--apply))
 
@@ -484,7 +486,7 @@ The item itself is not re-read; `revert-buffer' does both."
 (defun rdm-review--require-entry ()
   "The comment at point, or a `user-error'."
   (or (rdm-review-entry-at-point)
-      (user-error "rdm: no review comment at point")))
+      (user-error "rdm: No review comment at point")))
 
 (defun rdm-review-describe (entry)
   "A description of ENTRY's comment: review, author, status, state, reply."
@@ -528,14 +530,14 @@ The item itself is not re-read; `revert-buffer' does both."
   "Move to the next overlaid review comment."
   (interactive)
   (goto-char (or (seq-find (lambda (p) (> p (point))) (rdm-review--overlay-starts))
-                 (user-error "rdm: no next review comment"))))
+                 (user-error "rdm: No next review comment"))))
 
 (defun rdm-review-previous-comment ()
   "Move to the previous overlaid review comment."
   (interactive)
   (goto-char (or (car (last (seq-filter (lambda (p) (< p (point)))
                                         (rdm-review--overlay-starts))))
-                 (user-error "rdm: no previous review comment"))))
+                 (user-error "rdm: No previous review comment"))))
 
 ;;;; Writes
 
@@ -607,7 +609,7 @@ output; a refusal signals rdm's error."
 ITEM defaults to this detail buffer's item; the review at point counts
 only when this buffer shows ITEM."
   (let ((item (or item (and (derived-mode-p 'rdm-view-mode) rdm-view--item)
-                  (user-error "rdm: no item to pick a review of"))))
+                  (user-error "rdm: No item to pick a review of"))))
     (or (and (rdm-review--shows-p item) (rdm-review-at-point))
         (let* ((reviews (or (rdm-review--reviews-of item)
                             (user-error "rdm: %s has no open reviews"
@@ -755,7 +757,7 @@ A plist: `:id', `:commit' (its `created_commit') and `:previous-at'
 (defun rdm-review--require-view ()
   "Signal a `user-error' unless this is a detail buffer of a reviewable item."
   (unless (and (derived-mode-p 'rdm-view-mode) rdm-view--item)
-    (user-error "rdm: not in an rdm detail buffer"))
+    (user-error "rdm: Not in an rdm detail buffer"))
   (rdm-review-item-target rdm-view--item))
 
 (defun rdm-review-own-draft (item)
@@ -870,7 +872,7 @@ when OFFSET is not one of them (it starts inside an overlapping repeat)."
   (let* ((starts (rdm-review-occurrence-starts body quoted))
          (index (seq-position starts offset)))
     (unless index
-      (user-error "rdm: this selection starts inside a repeat of the same \
+      (user-error "rdm: This selection starts inside a repeat of the same \
 text, which rdm cannot anchor to; select from the start of the repeat"))
     (when (cdr starts) (1+ index))))
 
@@ -900,7 +902,7 @@ arguments (none for a whole-document comment)."
   "The active region as a list (BEG END), or a `user-error'."
   (if (use-region-p)
       (list (region-beginning) (region-end))
-    (user-error "rdm: select the text to comment on (C comments on the \
+    (user-error "rdm: Select the text to comment on (C comments on the \
 whole document)")))
 
 (defun rdm-review-comment-region (beg end)
@@ -915,14 +917,14 @@ The comment itself is typed in a compose buffer.  Returns that buffer."
   (rdm-review--require-view)
   (let ((region (rdm-view-body-region)))
     (unless (and region (< beg end) (<= (car region) beg) (<= end (cdr region)))
-      (user-error "rdm: select text inside the body to comment on it"))
+      (user-error "rdm: Select text inside the body to comment on it"))
     (let* ((quoted (buffer-substring-no-properties beg end))
            (shown (rdm-view-body))
            (occurrence (rdm-review-occurrence shown quoted (- beg (car region)))))
       (deactivate-mark)
       (let ((id (rdm-review--ensure-draft)))
         (unless (equal (rdm-view-body) shown)
-          (user-error "rdm: now showing the text as of %s, which review %s \
+          (user-error "rdm: Now showing the text as of %s, which review %s \
 anchors to; your selection was made on other text, so select it again"
                       (rdm-review--short (or rdm-view--at "?")) id))
         (rdm-review--compose
@@ -947,7 +949,7 @@ Returns the compose buffer."
       (when-let* ((own (rdm-review-own-draft rdm-view--item)))
         (rdm-review--adopt own)
         (plist-get own :id))
-      (user-error "rdm: no draft review of yours on %s; comment first"
+      (user-error "rdm: No draft review of yours on %s; comment first"
                   (rdm-item-identifier rdm-view--item))))
 
 (defun rdm-review-read-verdict ()

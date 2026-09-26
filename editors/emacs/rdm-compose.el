@@ -85,7 +85,7 @@ This is the stable entry point for callers composing text for rdm."
 (defun rdm-compose--check ()
   "Signal a `user-error' unless this is a compose buffer."
   (unless (derived-mode-p 'rdm-compose-mode)
-    (user-error "rdm: not an rdm compose buffer")))
+    (user-error "rdm: Not an rdm compose buffer")))
 
 (defun rdm-compose-submit ()
   "Submit this buffer's text to its submit function, then kill the buffer.
