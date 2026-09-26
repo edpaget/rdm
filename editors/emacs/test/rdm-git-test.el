@@ -287,5 +287,50 @@ commit-buffer offer once git-commit loads, without requiring rdm-git."
                                   "--eval" (prin1-to-string form))))
       (should (string-suffix-p "t nil" (string-trim (buffer-string)))))))
 
+(ert-deftest rdm-git/evil-offer-autoloaded ()
+  "In a fresh session with only the loaddefs, a commit buffer's `gd'
+inserts a Done: line under evil, and the offer names it."
+  :tags '(evil magit)
+  (rdm-test-with-soft-dep 'magit
+    (rdm-test-with-soft-dep 'evil
+      (let* ((dir (file-name-directory (locate-library "rdm-git")))
+             (repo (make-temp-file "rdm-git-repo" t))
+             (form
+              `(let ((out (make-temp-file "rdm-loaddefs" nil ".el"))
+                     (default-directory ,(file-name-as-directory repo))
+                     msg)
+                 (setq load-path ',load-path)
+                 (delete-file out)
+                 (let ((inhibit-message t))
+                   (loaddefs-generate ,dir out))
+                 (load out nil t)
+                 (require 'evil)
+                 (require 'git-commit)
+                 (with-current-buffer (generate-new-buffer "COMMIT_EDITMSG")
+                   (cl-letf (((symbol-function 'message)
+                              (lambda (fmt &rest args)
+                                (when fmt (push (apply #'format fmt args) msg)))))
+                     (text-mode)
+                     (evil-local-mode 1)
+                     (evil-normal-state)
+                     (git-commit-mode 1)
+                     (run-hooks 'git-commit-setup-hook))
+                   (princ (format "\n%S" (list (featurep 'rdm-evil)
+                                               (key-binding (kbd "gd"))
+                                               (string-join msg "\n")))))))
+             (emacs (expand-file-name invocation-name invocation-directory)))
+        (let ((default-directory repo)
+              (process-environment (cons "GIT_DIR" (rdm-test-clean-environment))))
+          (process-lines "git" "init" "-q"))
+        (with-temp-buffer
+          (let ((process-environment (cons "GIT_DIR" (rdm-test-clean-environment))))
+            (should (eq 0 (call-process emacs nil t nil "-Q" "--batch"
+                                        "--eval" (prin1-to-string form)))))
+          (goto-char (point-max))
+          (backward-sexp)
+          (let ((res (read (current-buffer))))
+            (should (eq (nth 1 res) 'rdm-insert-done-line))
+            (should (string-match-p "rdm: gd inserts" (nth 2 res)))))))))
+
 (provide 'rdm-git-test)
 ;;; rdm-git-test.el ends here

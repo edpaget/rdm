@@ -192,14 +192,19 @@ item is the default.  Warns when not on the default branch."
   :keymap rdm-git-commit-mode-map)
 
 (defun rdm-git-commit-offer-key ()
-  "The key that inserts a Done: line in the current buffer."
-  (if (bound-and-true-p evil-local-mode)
+  "The key that inserts a Done: line in the current buffer.
+The evil key only when it actually resolves to `rdm-insert-done-line'."
+  (if (and (bound-and-true-p evil-local-mode)
+           (eq (key-binding (kbd rdm-git-commit-evil-key))
+               #'rdm-insert-done-line))
       rdm-git-commit-evil-key
     rdm-git-commit-key))
 
 ;;;###autoload
 (defun rdm-git-commit-setup ()
   "Offer a Done: trailer in this commit buffer; insert nothing."
+  ;; The evil bindings (rdm-evil.el requires this file, so not at top level).
+  (when (featurep 'evil) (require 'rdm-evil))
   (rdm-git-commit-mode 1)
   (when (fboundp 'evil-normalize-keymaps) (evil-normalize-keymaps))
   (message "rdm: %s inserts a Done: line" (rdm-git-commit-offer-key)))
