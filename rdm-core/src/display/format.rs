@@ -1438,17 +1438,63 @@ pub fn format_backlinks(target: &str, entries: &[crate::link::BacklinkEntry]) ->
     }
     let mut out = format!("{target}: {} backlink(s)\n", entries.len());
     for entry in entries {
-        let provenance = match &entry.reference {
-            crate::link::BacklinkRef::Body { .. } => String::new(),
-            crate::link::BacklinkRef::Field { field, via: None } => format!("  [{field}]"),
-            crate::link::BacklinkRef::Field {
-                field,
-                via: Some(via),
-            } => format!("  [{field} via rdm:{}]", via.label()),
-        };
         out.push_str(&format!(
-            "  {}{provenance}\n",
-            format_doc_ref(&entry.document)
+            "  {}{}\n",
+            format_doc_ref(&entry.document),
+            format_provenance(&entry.reference)
+        ));
+    }
+    out
+}
+
+/// The provenance suffix of one backlink or code-annotation line: empty
+/// for a body link, `  [<field>]` (or `  [<field> via rdm:<ref>]`) for a
+/// frontmatter reference, `  [anchor]` for a review comment's own anchor.
+fn format_provenance(reference: &crate::link::BacklinkRef) -> String {
+    match reference {
+        crate::link::BacklinkRef::Body { .. } => String::new(),
+        crate::link::BacklinkRef::Field { field, via: None } => format!("  [{field}]"),
+        crate::link::BacklinkRef::Field {
+            field,
+            via: Some(via),
+        } => format!("  [{field} via rdm:{}]", via.label()),
+        crate::link::BacklinkRef::Anchor => "  [anchor]".to_string(),
+    }
+}
+
+/// Formats the annotations on a code location (`rdm backlinks rdm:src…`) as
+/// human-readable text: a summary line, then one line per annotation —
+/// `  <document>[  [<field>|anchor]]  <link>  (<level>[: <reason>][, unverified])`.
+///
+/// The reason is the comment's stored `anchor_state`, `not-recorded`, or —
+/// for a path that is not a file at the review's head — the ineligibility
+/// note itself.
+#[must_use]
+pub fn format_code_annotations(
+    target: &str,
+    annotations: &[crate::link::CodeAnnotation],
+) -> String {
+    use crate::comment_target::TargetReason;
+    if annotations.is_empty() {
+        return format!("{target}: no annotations found.\n");
+    }
+    let mut out = format!("{target}: {} annotation(s)\n", annotations.len());
+    for annotation in annotations {
+        let mut detail = match &annotation.reason {
+            None => String::new(),
+            Some(TargetReason::Stored(state)) => format!(": {}", state.as_str()),
+            Some(TargetReason::NotRecorded) => ": not-recorded".to_string(),
+            Some(TargetReason::Ineligible(note)) => format!(": {note}"),
+        };
+        if annotation.unverified {
+            detail.push_str(", unverified");
+        }
+        out.push_str(&format!(
+            "  {}{}  {}  ({}{detail})\n",
+            format_doc_ref(&annotation.document),
+            format_provenance(&annotation.reference),
+            annotation.link,
+            annotation.level.as_str()
         ));
     }
     out
@@ -3120,5 +3166,57 @@ mod tests {
         assert!(out.contains("roadmap/alpha"), "{out}");
         assert!(format_run_list_md(&runs).contains("## Runs"));
         assert!(format_run_list(&[]).contains("No runs found."));
+    }
+
+    #[test]
+    fn code_annotations_format_empty_anchor_and_field_lines() {
+        use crate::comment_target::{TargetLevel, TargetReason};
+        use crate::link::{BacklinkRef, CodeAnnotation, DocRef, Link};
+        use crate::model::AnchorState;
+
+        assert_eq!(
+            format_code_annotations("src/src/lib.rs", &[]),
+            "src/src/lib.rs: no annotations found.\n"
+        );
+
+        let head = "a".repeat(40);
+        let review = |comment| DocRef::Review {
+            id: "r1".to_string(),
+            comment,
+        };
+        let out = format_code_annotations(
+            "src/src/lib.rs",
+            &[
+                CodeAnnotation {
+                    document: review(None),
+                    reference: BacklinkRef::Field {
+                        field: "head",
+                        via: None,
+                    },
+                    link: Link::Commit { rev: head.clone() },
+                    level: TargetLevel::Commit,
+                    reason: None,
+                    unverified: false,
+                },
+                CodeAnnotation {
+                    document: review(Some(2)),
+                    reference: BacklinkRef::Anchor,
+                    link: Link::Code {
+                        path: "src/lib.rs".to_string(),
+                        rev: Some(head.clone()),
+                        lines: None,
+                    },
+                    level: TargetLevel::File,
+                    reason: Some(TargetReason::Stored(AnchorState::OutsideHunk)),
+                    unverified: true,
+                },
+            ],
+        );
+        assert_eq!(
+            out,
+            format!(
+                "src/src/lib.rs: 2 annotation(s)\n  review/r1  [head]  rdm:src@{head}  (commit)\n  review/r1#comment-2  [anchor]  rdm:src/src/lib.rs@{head}  (file: outside-hunk, unverified)\n"
+            )
+        );
     }
 }

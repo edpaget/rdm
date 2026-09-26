@@ -1315,6 +1315,138 @@ fn backlink_ref_json_parts(reference: &crate::link::BacklinkRef) -> BacklinkRefJ
             field: Some(*field),
             via: via.as_ref().map(|r| format!("rdm:{}", r.label())),
         },
+        crate::link::BacklinkRef::Anchor => BacklinkRefJsonParts {
+            range_start: None,
+            range_end: None,
+            field: None,
+            via: None,
+        },
+    }
+}
+
+/// An inclusive line range in JSON: a single line has `end == start`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct LineRangeJson {
+    /// First line (1-based).
+    pub start: u32,
+    /// Last line (1-based, inclusive).
+    pub end: u32,
+}
+
+/// One document or review comment annotating a code location, in JSON —
+/// an entry of `rdm backlinks rdm:src…`'s array, shaped for a UI consumer:
+/// every key's presence is stated rather than inferred.
+///
+/// Built by [`code_annotation_to_json`] from a
+/// [`CodeAnnotation`](crate::link::CodeAnnotation).
+#[derive(Debug, Clone, Serialize)]
+pub struct CodeAnnotationJson {
+    /// The annotating document (`kind` plus its identity; a review comment
+    /// carries `id` and `comment`).
+    #[serde(flatten)]
+    pub document: DocRef,
+    /// Where in that document the annotation was found: `body` (an
+    /// `rdm:src` link in its markdown), `field` (a change review's
+    /// `head`/`base`/`applied_commit`) or `anchor` (a review comment's own
+    /// anchor). Always present.
+    pub found_in: &'static str,
+    /// Byte offset of a body link's start. Body only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_start: Option<usize>,
+    /// Byte offset of a body link's end. Body only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_end: Option<usize>,
+    /// The frontmatter field a structural reference lives in. Field only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<&'static str>,
+    /// The intermediate document a transitive reference was reached
+    /// through, as an `rdm:` URI. Never set on a code annotation today.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// The annotated location as an `rdm:src` link `rdm link resolve`
+    /// accepts. Always present.
+    pub link: String,
+    /// Repo-relative path. Absent at commit level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The revision the annotation is pinned to. Absent for a floating
+    /// document link (no `@rev` and no stamped commit).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rev: Option<String>,
+    /// The annotated line range. Present exactly when the annotation has
+    /// one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lines: Option<LineRangeJson>,
+    /// `range`, `file` or `commit`. Always present.
+    pub level: &'static str,
+    /// Why a review comment's target is coarser than an intact anchor: its
+    /// stored `anchor_state`, `not-recorded`, or `ineligible`. Absent when
+    /// intact, and for every document link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The read-time ineligibility note. Only with `reason: "ineligible"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_note: Option<String>,
+    /// Whether the comment's rung was chosen fail-open because the source
+    /// repository could not say whether its path exists. Always present.
+    pub unverified: bool,
+}
+
+/// The JSON spelling of a [`BacklinkRef`](crate::link::BacklinkRef)'s kind.
+fn found_in(reference: &crate::link::BacklinkRef) -> &'static str {
+    match reference {
+        crate::link::BacklinkRef::Body { .. } => "body",
+        crate::link::BacklinkRef::Field { .. } => "field",
+        crate::link::BacklinkRef::Anchor => "anchor",
+    }
+}
+
+/// Builds a [`CodeAnnotationJson`] from a
+/// [`CodeAnnotation`](crate::link::CodeAnnotation).
+#[must_use]
+pub fn code_annotation_to_json(annotation: &crate::link::CodeAnnotation) -> CodeAnnotationJson {
+    use crate::comment_target::TargetReason;
+    let BacklinkRefJsonParts {
+        range_start,
+        range_end,
+        field,
+        via,
+    } = backlink_ref_json_parts(&annotation.reference);
+    let (path, rev, lines) = match &annotation.link {
+        crate::link::Link::Code { path, rev, lines } => (
+            Some(path.clone()),
+            rev.clone(),
+            lines.map(|(start, end)| LineRangeJson {
+                start,
+                end: end.unwrap_or(start),
+            }),
+        ),
+        crate::link::Link::Commit { rev } => (None, Some(rev.clone()), None),
+        crate::link::Link::Item(_) => (None, None, None),
+    };
+    let (reason, reason_note) = match &annotation.reason {
+        None => (None, None),
+        Some(TargetReason::Stored(state)) => (Some(state.as_str().to_string()), None),
+        Some(TargetReason::NotRecorded) => (Some(ANCHOR_STATE_NOT_RECORDED.to_string()), None),
+        Some(TargetReason::Ineligible(note)) => {
+            (Some("ineligible".to_string()), Some(note.clone()))
+        }
+    };
+    CodeAnnotationJson {
+        document: annotation.document.clone(),
+        found_in: found_in(&annotation.reference),
+        range_start,
+        range_end,
+        field,
+        via,
+        link: annotation.link.to_string(),
+        path,
+        rev,
+        lines,
+        level: annotation.level.as_str(),
+        reason,
+        reason_note,
+        unverified: annotation.unverified,
     }
 }
 
@@ -2189,6 +2321,137 @@ mod tests {
                 "kind": "commit",
                 "rev": "a1b2c3d",
                 "web_url": "https://github.com/org/repo/commit/a1b2c3d",
+            })
+        );
+    }
+
+    /// A review-comment anchor annotation on `src/lib.rs` at an all-`a`
+    /// head, with the given lines, level and reason.
+    fn anchor_annotation(
+        lines: Option<(u32, Option<u32>)>,
+        level: crate::comment_target::TargetLevel,
+        reason: Option<crate::comment_target::TargetReason>,
+    ) -> crate::link::CodeAnnotation {
+        crate::link::CodeAnnotation {
+            document: DocRef::Review {
+                id: "r1".to_string(),
+                comment: Some(2),
+            },
+            reference: crate::link::BacklinkRef::Anchor,
+            link: crate::link::Link::Code {
+                path: "src/lib.rs".to_string(),
+                rev: Some("a".repeat(40)),
+                lines,
+            },
+            level,
+            reason,
+            unverified: false,
+        }
+    }
+
+    #[test]
+    fn code_annotation_to_json_describes_every_level_and_reason() {
+        use crate::comment_target::{TargetLevel, TargetReason};
+        let head = "a".repeat(40);
+
+        let range = serde_json::to_value(code_annotation_to_json(&anchor_annotation(
+            Some((2, Some(3))),
+            TargetLevel::Range,
+            None,
+        )))
+        .unwrap();
+        assert_eq!(
+            range,
+            serde_json::json!({
+                "kind": "review",
+                "id": "r1",
+                "comment": 2,
+                "found_in": "anchor",
+                "link": format!("rdm:src/src/lib.rs@{head}#L2-L3"),
+                "path": "src/lib.rs",
+                "rev": head,
+                "lines": { "start": 2, "end": 3 },
+                "level": "range",
+                "unverified": false,
+            })
+        );
+
+        let single = serde_json::to_value(code_annotation_to_json(&anchor_annotation(
+            Some((7, None)),
+            TargetLevel::Range,
+            None,
+        )))
+        .unwrap();
+        assert_eq!(single["lines"], serde_json::json!({ "start": 7, "end": 7 }));
+
+        let file = serde_json::to_value(code_annotation_to_json(&anchor_annotation(
+            None,
+            TargetLevel::File,
+            Some(TargetReason::Stored(crate::model::AnchorState::OutsideHunk)),
+        )))
+        .unwrap();
+        assert_eq!(file["level"], "file");
+        assert_eq!(file["reason"], "outside-hunk");
+        assert!(file.get("lines").is_none(), "{file}");
+        assert!(file.get("reason_note").is_none(), "{file}");
+
+        let not_recorded = serde_json::to_value(code_annotation_to_json(&anchor_annotation(
+            None,
+            TargetLevel::File,
+            Some(TargetReason::NotRecorded),
+        )))
+        .unwrap();
+        assert_eq!(not_recorded["reason"], "not-recorded");
+
+        let mut ineligible = anchor_annotation(
+            None,
+            TargetLevel::Commit,
+            Some(TargetReason::Ineligible(
+                "'src' is a directory, not a file".to_string(),
+            )),
+        );
+        ineligible.link = crate::link::Link::Commit { rev: head.clone() };
+        let ineligible = serde_json::to_value(code_annotation_to_json(&ineligible)).unwrap();
+        assert_eq!(ineligible["level"], "commit");
+        assert_eq!(ineligible["reason"], "ineligible");
+        assert_eq!(
+            ineligible["reason_note"],
+            "'src' is a directory, not a file"
+        );
+        assert_eq!(ineligible["rev"], head.as_str());
+        assert!(ineligible.get("path").is_none(), "{ineligible}");
+    }
+
+    #[test]
+    fn code_annotation_to_json_marks_a_body_entry_with_its_range() {
+        let body = crate::link::CodeAnnotation {
+            document: DocRef::Task {
+                slug: "t".to_string(),
+            },
+            reference: crate::link::BacklinkRef::Body { byte_range: 4..30 },
+            link: crate::link::Link::Code {
+                path: "src/lib.rs".to_string(),
+                rev: None,
+                lines: Some((1, None)),
+            },
+            level: crate::comment_target::TargetLevel::Range,
+            reason: None,
+            unverified: false,
+        };
+        let v = serde_json::to_value(code_annotation_to_json(&body)).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "task",
+                "slug": "t",
+                "found_in": "body",
+                "range_start": 4,
+                "range_end": 30,
+                "link": "rdm:src/src/lib.rs#L1",
+                "path": "src/lib.rs",
+                "lines": { "start": 1, "end": 1 },
+                "level": "range",
+                "unverified": false,
             })
         );
     }

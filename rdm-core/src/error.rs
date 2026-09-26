@@ -418,6 +418,39 @@ pub enum Error {
     /// A `--path`/`--quote` anchor was requested on a `change/` review, but
     /// no source repository was supplied to derive it against.
     ChangeAnchorNeedsSource,
+    /// A source-side lookup (a reverse lookup from a code location) named a
+    /// revision that does not resolve to a commit in the source repository.
+    ///
+    /// Distinct from [`Self::ChangeRevisionNotFound`], whose message
+    /// prescribes a `--on change/…` remedy.
+    SourceRevisionNotFound {
+        /// The revision as given (or `HEAD`, for an unborn one).
+        rev: String,
+        /// Where the repository was read from, when the implementation can
+        /// name it (see [`crate::source::SourceRepo::location`]).
+        location: Option<String>,
+    },
+    /// A source-side lookup named a path that does not exist at the
+    /// revision it was checked at.
+    ///
+    /// Distinct from [`Self::ChangePathNotInRevision`], whose message
+    /// prescribes a `--path`/`--quote` remedy.
+    SourcePathNotFound {
+        /// Repo-relative path that was looked up.
+        path: String,
+        /// The revision it was checked at.
+        rev: String,
+    },
+    /// A source-side lookup named a directory or a submodule rather than a
+    /// file.
+    SourcePathNotAFile {
+        /// Repo-relative path that was looked up.
+        path: String,
+        /// The revision it was checked at.
+        rev: String,
+        /// The object kind it actually named.
+        found: crate::source::SourceObjectKind,
+    },
     /// A slug already exists.
     DuplicateSlug(String),
     /// A roadmap slug collided with a reserved prefix (see
@@ -1134,6 +1167,30 @@ impl std::fmt::Display for Error {
                     "this build has no git support — `change/` reviews require the `git` feature"
                 )
             }
+            Error::SourceRevisionNotFound { rev, location } => match location {
+                Some(location) => write!(
+                    f,
+                    "'{rev}' does not name a commit in the source repository (read from {location}) — fetch it, or name a revision this checkout has"
+                ),
+                None => write!(
+                    f,
+                    "'{rev}' does not name a commit in the source repository — fetch it, or name a revision this checkout has"
+                ),
+            },
+            Error::SourcePathNotFound { path, rev } => {
+                write!(
+                    f,
+                    "'{path}' does not exist at {rev} in the source repository — check the path (it is relative to the source repository root)"
+                )
+            }
+            Error::SourcePathNotAFile { path, rev, found } => {
+                let noun = match found {
+                    crate::source::SourceObjectKind::Tree => "a directory",
+                    crate::source::SourceObjectKind::Gitlink => "a submodule",
+                    crate::source::SourceObjectKind::Blob => "not a file",
+                };
+                write!(f, "'{path}' is {noun} at {rev} — name a file")
+            }
             Error::DuplicateSlug(slug) => {
                 write!(f, "'{slug}' already exists — choose a different name")
             }
@@ -1450,6 +1507,39 @@ mod tests {
                 Error::ChangeHeadNotInSource {
                     head: "a".repeat(40),
                     location: None,
+                }
+                .to_string(),
+            ),
+            (
+                "SourceRevisionNotFound (named location)",
+                Error::SourceRevisionNotFound {
+                    rev: "main".to_string(),
+                    location: Some("/srv/source".to_string()),
+                }
+                .to_string(),
+            ),
+            (
+                "SourceRevisionNotFound (no location)",
+                Error::SourceRevisionNotFound {
+                    rev: "main".to_string(),
+                    location: None,
+                }
+                .to_string(),
+            ),
+            (
+                "SourcePathNotFound",
+                Error::SourcePathNotFound {
+                    path: "src/nope.rs".to_string(),
+                    rev: "a".repeat(40),
+                }
+                .to_string(),
+            ),
+            (
+                "SourcePathNotAFile",
+                Error::SourcePathNotAFile {
+                    path: "src".to_string(),
+                    rev: "a".repeat(40),
+                    found: crate::source::SourceObjectKind::Tree,
                 }
                 .to_string(),
             ),

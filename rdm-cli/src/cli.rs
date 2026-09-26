@@ -372,12 +372,20 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: LinkCommand,
     },
-    /// List documents that reference a plan item or a source-repo commit.
+    /// List documents and review comments that reference a plan item, a
+    /// source-repo commit, or a source path.
+    ///
+    /// Source-side targets (a commit or a path) read the project's source
+    /// checkout, so run them from inside it (or configure a local
+    /// `source.repo`).
     Backlinks {
         /// The referenced item: `roadmap/<slug>`,
         /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`, or
-        /// `plan/<slug>` — or a source-repo commit as `rdm:src@<sha>` (or
-        /// `src@<sha>`), abbreviated or full.
+        /// `plan/<slug>` — or a source-repo commit as `rdm:src@<sha>`,
+        /// abbreviated or full, or a source path as
+        /// `rdm:src/<path>[@<rev>][#L<a>[-L<b>]]` (the `rdm:` prefix is
+        /// optional). A path without `@<rev>` matches annotations at any
+        /// revision.
         reference: String,
         /// Project the referenced item belongs to.
         #[arg(long)]

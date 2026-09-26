@@ -177,6 +177,26 @@ impl From<&Error> for ProblemDetail {
                 detail: Some(err.to_string()),
                 instance: None,
             },
+            // A reverse lookup from a code location named a revision or a
+            // path the source repository does not have: not found. A
+            // directory or submodule exists but is not a lookup target the
+            // request could ever name as given: 422.
+            Error::SourceRevisionNotFound { .. } | Error::SourcePathNotFound { .. } => {
+                ProblemDetail {
+                    problem_type: "about:blank".to_string(),
+                    title: "Not Found".to_string(),
+                    status: 404,
+                    detail: Some(err.to_string()),
+                    instance: None,
+                }
+            }
+            Error::SourcePathNotAFile { .. } => ProblemDetail {
+                problem_type: "about:blank".to_string(),
+                title: "Unprocessable Content".to_string(),
+                status: 422,
+                detail: Some(err.to_string()),
+                instance: None,
+            },
             Error::ReviewTargetMissing(msg) => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Not Found".to_string(),
@@ -652,6 +672,34 @@ mod tests {
             assert_eq!(pd.title, "Unprocessable Content");
             assert!(pd.detail.is_some());
         }
+    }
+
+    #[test]
+    fn from_source_lookup_errors() {
+        for err in [
+            Error::SourceRevisionNotFound {
+                rev: "deadbeef".to_string(),
+                location: None,
+            },
+            Error::SourcePathNotFound {
+                path: "src/nope.rs".to_string(),
+                rev: "a".repeat(40),
+            },
+        ] {
+            let pd = ProblemDetail::from(&err);
+            assert_eq!(pd.status, 404, "{err}");
+            assert_eq!(pd.title, "Not Found");
+            assert_eq!(pd.detail, Some(err.to_string()));
+        }
+        let err = Error::SourcePathNotAFile {
+            path: "src".to_string(),
+            rev: "a".repeat(40),
+            found: rdm_core::source::SourceObjectKind::Tree,
+        };
+        let pd = ProblemDetail::from(&err);
+        assert_eq!(pd.status, 422);
+        assert_eq!(pd.title, "Unprocessable Content");
+        assert_eq!(pd.detail, Some(err.to_string()));
     }
 
     #[test]

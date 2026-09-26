@@ -243,6 +243,12 @@ git cannot answer, the range or file rung is kept and marked `unverified`: the
 range was verified when it was written, and `H` is immutable. A malformed
 stored identity skips every source query and is treated the same way.
 
+**Reverse lookup consumes it.** `rdm backlinks rdm:src/<path>` returns the
+`range`- and `file`-level comments on that path, and `rdm backlinks
+src@<sha>` returns the `commit`-level comments of the review whose head is
+that commit — so a comment is found by exactly the query its target names.
+See [`link-grammar.md`](link-grammar.md#reverse-lookup-from-a-code-location).
+
 ## Resolution: resolved / drifted / unresolved
 
 `rdm review show` resolves each anchor against a **tip**, chosen by
@@ -417,10 +423,13 @@ text report prints it as `review/<id>#comment-2 [applied_commit]`. A review
 stamps no commit, so there is no `containing_commit` fallback. `link check
 --on` cannot name a review, so this coverage is project-wide only.
 
-`rdm backlinks rdm:src@<sha>` (or `src@<sha>`, abbreviated or full) lists the
-change reviews whose `head`, `base` or `applied_commit` name that commit, as
-structural `[head]`/`[base]`/`[applied_commit]` backlinks, alongside every
-body that links it.
+`rdm backlinks rdm:src@<sha>` (or `src@<sha>`, abbreviated or full) resolves
+the SHA in the source checkout, then lists the change reviews whose `head`,
+`base` or `applied_commit` name that commit, as structural
+`[head]`/`[base]`/`[applied_commit]` entries, alongside every body that links
+it and the commit-level comments of a review whose head it is. `rdm backlinks
+rdm:src/<path>` answers the same question for a file; both are described in
+[`link-grammar.md`](link-grammar.md#reverse-lookup-from-a-code-location).
 
 ## The degrade rule
 

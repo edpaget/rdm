@@ -3329,7 +3329,12 @@ fn backlinks_to_a_commit_find_the_reviews_recorded_against_it() {
             "kind": "review",
             "id": id,
             "comment": null,
+            "found_in": "field",
             "field": "head",
+            "link": head_ref,
+            "rev": topic,
+            "level": "commit",
+            "unverified": false,
         }])
     );
 
@@ -3362,13 +3367,23 @@ fn backlinks_to_a_commit_find_the_reviews_recorded_against_it() {
     assert!(ok, "{stderr}");
     assert!(stdout.contains(&format!("review/{id}  [head]")), "{stdout}");
 
-    let (ok, _, stderr) = run_rdm(
+    // A file is a backlinks target too: the seeded range comment is on it.
+    let entries = rdm_json(
         plan.path(),
         src.path(),
         &["backlinks", "rdm:src/src/lib.rs"],
     );
-    assert!(!ok, "a file is not a backlinks target yet");
-    assert!(stderr.contains("not a backlinks target yet"), "{stderr}");
+    assert!(
+        entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["id"] == id.as_str()
+                && e["comment"] == 1
+                && e["found_in"] == "anchor"
+                && e["level"] == "range"),
+        "{entries}"
+    );
 }
 
 #[test]
@@ -3464,16 +3479,17 @@ fn plan_document_review_applied_commit_is_never_a_source_commit_link() {
         "{report}"
     );
 
+    // A commit query resolves its SHA in the source checkout first, and a
+    // plan-repo SHA is not a commit there: the query is refused rather than
+    // matched against the plan-document review.
     let commit_ref = format!("rdm:src@{sha}");
-    let entries = rdm_json(plan.path(), src.path(), &["backlinks", &commit_ref]);
+    let (ok, stdout, stderr) = run_rdm(plan.path(), src.path(), &["backlinks", &commit_ref]);
     assert!(
-        entries
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|e| e["id"] != id.as_str()),
-        "{entries}"
+        !ok,
+        "a plan-repo SHA must not answer as a source commit: {stdout}"
     );
+    assert!(stderr.contains("does not name a commit"), "{stderr}");
+    assert!(!stdout.contains(id.as_str()), "{stdout}");
 }
 
 #[test]
@@ -3798,4 +3814,294 @@ fn an_unknown_anchor_state_is_rejected_listing_every_accepted_value() {
     }
     let j = review_json(plan.path(), src.path(), &id);
     assert!(j["comments"].as_array().unwrap().is_empty());
+}
+
+// --- reverse lookup from a code location (code-as-linkable-target phase 4) ---
+
+/// Task A's body: a floating one-line link to `src/lib.rs`.
+const TASK_A_BODY: &str = "Line one: [l1](rdm:src/src/lib.rs#L1).";
+
+/// Creates task `slug` with `body` from the source checkout.
+fn create_task_with_body(plan: &Path, src: &Path, slug: &str, body: &str) {
+    let (ok, _, stderr) = run_rdm(
+        plan,
+        src,
+        &[
+            "task",
+            "create",
+            slug,
+            "--title",
+            slug,
+            "--body",
+            body,
+            "--no-edit",
+        ],
+    );
+    assert!(ok, "task create {slug} failed: {stderr}");
+}
+
+/// A change review on `topic` with four comments — (1) a range on line 2,
+/// (2) a real `outside-hunk` refusal on `src/lib.rs` (the file exists at
+/// head), (3) a whole-document comment, (4) an intended path that does not
+/// exist — plus task `a-floating` linking `rdm:src/src/lib.rs#L1` and task
+/// `b-elsewhere` linking another path. Returns the review id.
+fn seed_reverse_lookup(plan: &Path, src: &Path) -> String {
+    let id = fixture_change_review(src, plan);
+    let comments: [&[&str]; 4] = [
+        &[
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Range.",
+        ],
+        &[
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn one() {}",
+            "--on-anchor-failure",
+            "whole-document",
+            "--body",
+            "Outside the hunk.",
+        ],
+        &["--body", "Overall."],
+        &[
+            "--anchor-state",
+            "path-missing",
+            "--intended-path",
+            "src/gone.rs",
+            "--body",
+            "Gone.",
+        ],
+    ];
+    for args in comments {
+        let out = review_comment(plan, src, &id, args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    create_task_with_body(plan, src, "a-floating", TASK_A_BODY);
+    create_task_with_body(
+        plan,
+        src,
+        "b-elsewhere",
+        "Other: [x](rdm:src/src/other.rs#L1).",
+    );
+    id
+}
+
+/// Each entry's identity: a task's slug, or `comment-<n>` for a review
+/// comment.
+fn entry_keys(entries: &Value) -> Vec<String> {
+    entries
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| match e["kind"].as_str().unwrap() {
+            "task" => e["slug"].as_str().unwrap().to_string(),
+            _ => format!("comment-{}", e["comment"]),
+        })
+        .collect()
+}
+
+/// AC1 + AC2: a path query returns every comment and document anchored to
+/// the file — including the failed-anchor comment as a file-level match —
+/// each with a resolvable link; the commit-level comments answer only the
+/// commit query, although the change's diff touches the file.
+#[test]
+fn backlinks_on_a_source_path_returns_its_comments_and_documents() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let topic = git_out(src.path(), &["rev-parse", "topic"]);
+    let id = seed_reverse_lookup(plan.path(), src.path());
+
+    let entries = rdm_json(
+        plan.path(),
+        src.path(),
+        &["backlinks", "rdm:src/src/lib.rs"],
+    );
+    let link_start = TASK_A_BODY.find('[').unwrap();
+    let link_end = TASK_A_BODY.rfind(')').unwrap() + 1;
+    assert_eq!(
+        entries,
+        serde_json::json!([
+            {
+                "kind": "task",
+                "slug": "a-floating",
+                "found_in": "body",
+                "range_start": link_start,
+                "range_end": link_end,
+                "link": "rdm:src/src/lib.rs#L1",
+                "path": "src/lib.rs",
+                "lines": { "start": 1, "end": 1 },
+                "level": "range",
+                "unverified": false,
+            },
+            {
+                "kind": "review",
+                "id": id,
+                "comment": 1,
+                "found_in": "anchor",
+                "link": format!("rdm:src/src/lib.rs@{topic}#L2"),
+                "path": "src/lib.rs",
+                "rev": topic,
+                "lines": { "start": 2, "end": 2 },
+                "level": "range",
+                "unverified": false,
+            },
+            {
+                "kind": "review",
+                "id": id,
+                "comment": 2,
+                "found_in": "anchor",
+                "link": format!("rdm:src/src/lib.rs@{topic}"),
+                "path": "src/lib.rs",
+                "rev": topic,
+                "level": "file",
+                "reason": "outside-hunk",
+                "unverified": false,
+            },
+        ])
+    );
+    for entry in entries.as_array().unwrap() {
+        let link = entry["link"].as_str().unwrap();
+        let (ok, _, stderr) = run_rdm(
+            plan.path(),
+            src.path(),
+            &["link", "resolve", link, "--format", "json"],
+        );
+        assert!(ok, "link resolve {link} failed: {stderr}");
+    }
+
+    let head_ref = format!("src@{topic}");
+    let at_commit = rdm_json(plan.path(), src.path(), &["backlinks", &head_ref]);
+    assert_eq!(
+        at_commit,
+        serde_json::json!([
+            {
+                "kind": "review",
+                "id": id,
+                "comment": null,
+                "found_in": "field",
+                "field": "head",
+                "link": format!("rdm:src@{topic}"),
+                "rev": topic,
+                "level": "commit",
+                "unverified": false,
+            },
+            {
+                "kind": "review",
+                "id": id,
+                "comment": 3,
+                "found_in": "anchor",
+                "link": format!("rdm:src@{topic}"),
+                "rev": topic,
+                "level": "commit",
+                "reason": "whole-document",
+                "unverified": false,
+            },
+            {
+                "kind": "review",
+                "id": id,
+                "comment": 4,
+                "found_in": "anchor",
+                "link": format!("rdm:src@{topic}"),
+                "rev": topic,
+                "level": "commit",
+                "reason": "path-missing",
+                "unverified": false,
+            },
+        ])
+    );
+
+    let (ok, stdout, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &["backlinks", "rdm:src/src/lib.rs"],
+    );
+    assert!(ok, "{stderr}");
+    assert!(
+        stdout.contains(&format!(
+            "review/{id}#comment-2  [anchor]  rdm:src/src/lib.rs@{topic}  (file: outside-hunk)"
+        )),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("task/a-floating  rdm:src/src/lib.rs#L1  (range)"),
+        "{stdout}"
+    );
+}
+
+/// AC3: narrowing by revision and by line range changes the result set as
+/// documented.
+#[test]
+fn backlinks_narrow_by_revision_and_line_range() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let topic = git_out(src.path(), &["rev-parse", "topic"]);
+    seed_reverse_lookup(plan.path(), src.path());
+    create_task_with_body(
+        plan.path(),
+        src.path(),
+        "c-main",
+        "At main: [l3](rdm:src/src/lib.rs@main#L3).",
+    );
+
+    let keys = |reference: &str| {
+        entry_keys(&rdm_json(
+            plan.path(),
+            src.path(),
+            &["backlinks", reference],
+        ))
+    };
+    let all = ["a-floating", "c-main", "comment-1", "comment-2"];
+    assert_eq!(keys("rdm:src/src/lib.rs"), all);
+    assert_eq!(
+        keys(&format!("rdm:src/src/lib.rs@{topic}")),
+        ["comment-1", "comment-2"]
+    );
+    // A branch name is resolved in the source checkout.
+    assert_eq!(keys("rdm:src/src/lib.rs@main"), ["c-main"]);
+    assert_eq!(keys("rdm:src/src/lib.rs#L2"), ["comment-1", "comment-2"]);
+    assert_eq!(keys("rdm:src/src/lib.rs#L1"), ["a-floating", "comment-2"]);
+    assert_eq!(keys("rdm:src/src/lib.rs#L1-L3"), all);
+}
+
+/// AC5: a file with no annotations is an empty answer and exit 0, distinct
+/// from a path that does not exist, a directory, and an unknown revision.
+#[test]
+fn backlinks_on_a_path_distinguishes_empty_from_missing() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+
+    let entries = rdm_json(
+        plan.path(),
+        src.path(),
+        &["backlinks", "rdm:src/src/lib.rs"],
+    );
+    assert_eq!(entries, serde_json::json!([]));
+    let (ok, stdout, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &["backlinks", "rdm:src/src/lib.rs"],
+    );
+    assert!(ok, "{stderr}");
+    assert!(stdout.contains("no annotations found"), "{stdout}");
+
+    for (reference, expected) in [
+        ("rdm:src/src/nope.rs", "does not exist"),
+        ("rdm:src/src", "is a directory"),
+        (
+            "rdm:src/src/lib.rs@0123456789abcdef0123456789abcdef01234567",
+            "does not name a commit",
+        ),
+    ] {
+        let (ok, _, stderr) = run_rdm(plan.path(), src.path(), &["backlinks", reference]);
+        assert!(!ok, "{reference} must fail");
+        assert!(stderr.contains(expected), "{reference}: {stderr}");
+    }
 }

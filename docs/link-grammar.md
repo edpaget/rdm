@@ -98,31 +98,167 @@ review's `applied_commit` is a plan-repo SHA and is never checked.
 
 ## Backlinks
 
-`rdm backlinks <reference>` lists every document that references a target.
-The reference is either:
+`rdm backlinks <reference>` lists everything that references a target. The
+reference takes one of three forms (an `rdm:` prefix is optional on each):
 
 - a plan item: `roadmap/<slug>`, `phase/<roadmap-slug>/<stem-or-number>`,
-  `task/<slug>` or `plan/<slug>` (an `rdm:` prefix is accepted), or
-- a source-repo commit: `rdm:src@<sha>` or `src@<sha>`, abbreviated or full.
+  `task/<slug>` or `plan/<slug>`;
+- a source-repo commit: `src@<sha>`, abbreviated or full;
+- a source path: `src/<path>[@<rev>][#L<a>[-L<b>]]`, the same grammar as a
+  code link. The path is normalized the way `--path` is (a leading `./` is
+  dropped; `..`, an absolute path, and an `@` or `#` in the path are
+  refused), and an empty `@` is refused.
 
-A commit target finds two kinds of reference:
+A plan item is answered from the plan repo alone (`ops::links::backlinks`).
+A commit or a path is a **code location**, answered by
+`ops::links::code_annotations`, which also reads the project's source
+checkout — see [Reverse lookup from a code location](#reverse-lookup-from-a-code-location).
+
+A commit target finds three kinds of reference:
 
 1. `rdm:src@<sha>` links written in any body (body entries, with a byte
    range);
 2. change reviews whose `head`, `base` or `applied_commit` name the commit
    (structural entries tagged `[head]`, `[base]` or `[applied_commit]`, with
-   `field` in JSON).
+   `field` in JSON);
+3. the commit-level comments of a change review whose head is that commit
+   (entries tagged `[anchor]`).
 
-Revisions match case-insensitively when the shorter is a prefix of the longer.
-rdm reads no repository here, so an abbreviation is never expanded: an
-ambiguous abbreviation can match references to more than one commit, and the
-full SHA disambiguates.
+The queried SHA is first resolved in the source checkout, so an abbreviation
+is expanded exactly, and a SHA the checkout lacks is an error rather than an
+empty answer. Stored and written revisions are then matched against the full
+SHA case-insensitively by prefix, so an abbreviated `rdm:src@<sha>` in a body
+or a legacy abbreviated `applied_commit` still matches.
 
-A file, a file at a revision, or a line range (`rdm:src/<path>…`) is not a
-backlinks target yet and is refused with an error that names the commit form.
-The target type (`rdm_core::link::BacklinkTarget`, `#[non_exhaustive]`) is the
-extension point for those: path, revision and line-range variants are added to
-it, without re-deciding its shape.
+### Reverse lookup from a code location
+
+This is the question an editor or a web view asks: starting from a file (and
+maybe a revision and some lines), what annotates it? The answer lists two
+kinds of annotation:
+
+- **documents** — every `rdm:src/<path>…` link on that path, in any
+  roadmap, phase, task, plan, review summary or review comment body;
+- **review comments** — each `change/` review comment, described by its
+  coarsest true target (see
+  [`change-reviews.md`](change-reviews.md#the-coarsest-true-target)), so a
+  comment whose line anchor was lost still counts when its file exists at the
+  review's head.
+
+The matching rules:
+
+- A path query matches **range-level and file-level** comments on that path.
+- A **commit-level** comment (no recorded path, or a path that is absent, a
+  directory or a submodule at the review's head) matches only a commit query.
+- A match is **never inferred from a change's diff.** A whole-document
+  comment on a change that touches `src/lib.rs` is not an annotation of
+  `src/lib.rs`: nothing in the comment says so.
+- A plan-document review's comments are never code annotations.
+
+Each entry carries a link `rdm link resolve` accepts, its level (`range`,
+`file` or `commit`), its line range when it has one, its revision when it is
+pinned to one, and — for a comment — why its target is coarser than an
+intact anchor and whether that was verified.
+
+#### Decision: revision semantics
+
+1. **A path query without a revision means *any revision*** — not the source's
+   `HEAD`, and not an item's stamped commit.
+   - Annotations are pinned to many commits: each review's head, and each
+     document link's `@rev` or its item's stamped `commit`.
+   - A `HEAD` default would silently drop every annotation recorded at an
+     earlier commit, even where the file is byte-identical. The answer would
+     be quietly incomplete rather than visibly wrong.
+   - A query has no item, so "the item's stamped commit" cannot apply.
+   - Every entry carries its pinned `rev`, so the consumer decides staleness
+     and nothing is hidden on its behalf.
+   - This differs on purpose from a revision-less **link**, which resolves
+     against a default (see [Resolution](#resolution)): a link names one
+     place to go, a query asks what exists anywhere.
+2. **`@<rev>` narrows to annotations pinned at that exact commit.**
+   - Both sides go through the source checkout's `rev-parse`, so a branch or
+     tag means the commit it names *at query time*.
+   - A document link's revision is its own `@rev`, else its document's
+     stamped `commit`. A **floating** link (neither) is pinned to nothing: it
+     is excluded from revision queries and returned by revision-less ones.
+3. **Line ranges are compared by number, as recorded, and never translated
+   across revisions.**
+   - Translating would need a diff-based line remap, which this lookup does
+     not do and which sits next to the "never inferred from a diff" rule.
+   - Under `@<rev>` every match is pinned at that commit, so the comparison
+     is exact. That is the precise form, and the one to use when lines
+     matter.
+   - Without a revision, the overlap is approximate for annotations recorded
+     at other revisions. Each entry carries its `rev` and `lines`, so a
+     consumer can tell.
+4. **A commit query resolves its SHA in the source checkout before
+   matching.** A commit query returns commit-level comments, and whether a
+   comment is commit-level depends on which paths exist at its head, so
+   answering without a repository would change the result set with the
+   environment.
+
+#### Line-range narrowing
+
+With `#L<a>[-L<b>]`, a range-level entry is kept when its inclusive range
+overlaps the query's (a single line `L<n>` is `L<n>-L<n>`). A file-level entry
+is always kept: it annotates every line.
+
+#### Empty, missing, unresolvable, unreadable
+
+| Outcome | Exit | Output |
+|---------|------|--------|
+| The path is a file (at `@<rev>`, else at the checkout's `HEAD`) and nothing annotates it | 0 | `[]`, or `<target>: no annotations found.` |
+| The path does not exist there | non-zero | `'<path>' does not exist at <rev> in the source repository — …` |
+| The path is a directory or a submodule | non-zero | `'<path>' is a directory at <rev> — name a file` |
+| The revision (or an unborn `HEAD`) does not resolve | non-zero | `'<rev>' does not name a commit in the source repository — …` |
+| The source repository cannot be read | non-zero | the git error |
+
+Existence is checked only when nothing matched, so a path deleted since it
+was annotated still returns its annotations.
+
+#### Source discovery
+
+A code location needs the project's source checkout, found the way
+`rdm review --on change/…` finds it (see
+[`change-reviews.md`](change-reviews.md#source-discovery)): the checkout the
+command runs in when it is the configured source, else a local
+`source.repo`. With neither, or standing in the plan repo, the command
+refuses — "empty" means nothing without a repository to check against. A
+build without git support refuses every source-side target.
+
+#### JSON
+
+`rdm backlinks` on a commit or a path prints an array of entries, sorted by
+document then position (body links, then fields, then the anchor):
+
+```json
+{
+  "kind": "review", "id": "<id>", "comment": 2,
+  "found_in": "anchor",
+  "link": "rdm:src/src/lib.rs@<sha>",
+  "path": "src/lib.rs",
+  "rev": "<sha>",
+  "level": "file",
+  "reason": "outside-hunk",
+  "unverified": false
+}
+```
+
+| Key | Present |
+|-----|---------|
+| `kind` plus `id`/`comment`, `slug`, or `roadmap`/`stem` | always — the annotating document |
+| `found_in` | always: `body`, `field` or `anchor` |
+| `range_start`, `range_end` | `body` only: the link's byte range |
+| `field` | `field` only: `head`, `base` or `applied_commit` |
+| `link` | always: an `rdm:src/…` or `rdm:src@…` link `rdm link resolve` accepts |
+| `path` | unless the entry is commit-level |
+| `rev` | when pinned; absent for a floating document link |
+| `lines` | exactly when the entry has a range: `{ "start", "end" }`, `end == start` for one line |
+| `level` | always: `range`, `file` or `commit` |
+| `reason` | for a comment coarser than an intact anchor: its `anchor_state`, `not-recorded`, or `ineligible` |
+| `reason_note` | with `ineligible` only: why the path is not a file at the head |
+| `unverified` | always: `true` when the checkout could not confirm the path at the review's head |
+
+Item backlinks keep their own shape.
 
 ## Decision: commit rung in `src`, not `rdm:commit/`
 

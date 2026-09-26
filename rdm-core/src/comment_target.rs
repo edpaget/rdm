@@ -44,6 +44,26 @@ pub enum TargetLevel {
     PlanItem,
 }
 
+impl TargetLevel {
+    /// The level's JSON/text spelling: `range`, `file`, `commit` or
+    /// `plan-item`.
+    ///
+    /// ```
+    /// use rdm_core::comment_target::TargetLevel;
+    ///
+    /// assert_eq!(TargetLevel::PlanItem.as_str(), "plan-item");
+    /// ```
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            TargetLevel::Range => "range",
+            TargetLevel::File => "file",
+            TargetLevel::Commit => "commit",
+            TargetLevel::PlanItem => "plan-item",
+        }
+    }
+}
+
 /// Why a [`CommentTarget`] is coarser than an intact anchor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TargetReason {
@@ -323,6 +343,20 @@ mod tests {
         Link::Commit {
             rev: HEAD.to_string(),
         }
+    }
+
+    #[test]
+    fn target_levels_spell_as_kebab_case() {
+        let spelled: Vec<&str> = [
+            TargetLevel::Range,
+            TargetLevel::File,
+            TargetLevel::Commit,
+            TargetLevel::PlanItem,
+        ]
+        .into_iter()
+        .map(TargetLevel::as_str)
+        .collect();
+        assert_eq!(spelled, ["range", "file", "commit", "plan-item"]);
     }
 
     #[test]

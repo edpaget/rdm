@@ -430,15 +430,14 @@ pub enum Resolved {
     },
 }
 
-/// What [`crate::ops::links::backlinks`] searches for references to: a plan
-/// item, or a commit in the project's source repository.
+/// What `rdm backlinks` searches for references to: a plan item, a commit
+/// in the project's source repository, or a source path.
 ///
-/// This is the code-side backlinks target's single home. Only the whole
-/// commit ([`BacklinkTarget::Commit`]) is accepted today; a file path, a
-/// file at a revision, and a line range are the planned extension points,
-/// added as further variants here rather than as a parallel type — which is
-/// why the enum is `#[non_exhaustive]`: adding them is not a breaking change
-/// for downstream matchers.
+/// This is the backlinks target's single home. An item is answered by the
+/// store-only [`crate::ops::links::backlinks`]; a commit or a path is a code
+/// location, answered by [`crate::ops::links::code_annotations`], which also
+/// reads the source repository. The enum stays `#[non_exhaustive]` so a
+/// further target kind is not a breaking change for downstream matchers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BacklinkTarget {
@@ -450,6 +449,21 @@ pub enum BacklinkTarget {
         /// The commit SHA as given (7–64 hex characters).
         rev: String,
     },
+    /// A source path, optionally at a revision, optionally a line range —
+    /// the `rdm:src/<path>[@<rev>][#L<a>[-L<b>]]` grammar, reused verbatim.
+    ///
+    /// A missing `rev` or `lines` means "no narrowing": any revision, and
+    /// the whole file.
+    Code {
+        /// Repo-relative path, normalized by
+        /// [`crate::change::normalize_source_path`].
+        path: String,
+        /// Revision (SHA, branch or tag) to narrow to, as written.
+        rev: Option<String>,
+        /// Line range to narrow to: `(start, None)` for a single line,
+        /// `(start, Some(end))` for an inclusive range.
+        lines: Option<(u32, Option<u32>)>,
+    },
 }
 
 impl From<ItemRef> for BacklinkTarget {
@@ -460,18 +474,30 @@ impl From<ItemRef> for BacklinkTarget {
 
 impl BacklinkTarget {
     /// A human label for the target: [`ItemRef::label`] for an item
-    /// (`task/<slug>`, …), `src@<rev>` for a commit — each the same
+    /// (`task/<slug>`, …), `src@<rev>` for a commit, and
+    /// `src/<path>[@<rev>][#L<a>[-L<b>]]` for a path — each the same
     /// reference syntax `rdm backlinks` accepts.
     #[must_use]
     pub fn label(&self) -> String {
         match self {
             BacklinkTarget::Item(item) => item.label(),
             BacklinkTarget::Commit { rev } => format!("src@{rev}"),
+            BacklinkTarget::Code { path, rev, lines } => {
+                let link = Link::Code {
+                    path: path.clone(),
+                    rev: rev.clone(),
+                    lines: *lines,
+                }
+                .to_string();
+                link.strip_prefix("rdm:").unwrap_or(&link).to_string()
+            }
         }
     }
 }
 
-/// A document that references a [`BacklinkTarget`], found by [`crate::ops::links::backlinks`].
+/// A document that references a [`BacklinkTarget`], found by
+/// [`crate::ops::links::backlinks`] or
+/// [`crate::ops::links::code_annotations`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum DocRef {
@@ -523,15 +549,17 @@ pub struct BacklinkEntry {
     pub reference: BacklinkRef,
 }
 
-/// The provenance of one reference (a backlink, or a `link check` finding):
-/// an `rdm:` link written in a document's markdown body, or a structural
-/// reference carried in its frontmatter.
+/// The provenance of one reference (a backlink, a code annotation, or a
+/// `link check` finding): an `rdm:` link written in a document's markdown
+/// body, a structural reference carried in its frontmatter, or a review
+/// comment's own anchor.
 ///
 /// Frontmatter references (a plan's `implements`, a change review's
 /// `implements`, and a change review's `head`/`base`/`applied_commit`
 /// commits) are just as real as body links but have no byte range —
 /// modeling them as a variant rather than a synthetic `0..0` range keeps
-/// consumers from rendering a meaningless offset.
+/// consumers from rendering a meaningless offset. The same holds for
+/// [`BacklinkRef::Anchor`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "via_kind", rename_all = "kebab-case")]
 pub enum BacklinkRef {
@@ -549,25 +577,31 @@ pub enum BacklinkRef {
         /// for a transitive backlink. `None` for a direct one.
         via: Option<ItemRef>,
     },
+    /// The review comment's own anchor, i.e. its coarsest true target (see
+    /// [`crate::comment_target::comment_target`]). Only a code annotation
+    /// ([`CodeAnnotation`]) carries it; it is distinct from an `rdm:src`
+    /// link written in that comment's body, and both can occur on one
+    /// comment as two entries.
+    Anchor,
 }
 
-impl BacklinkEntry {
-    /// The byte range of a body link, or `None` for a frontmatter
-    /// reference.
+impl BacklinkRef {
+    /// The byte range of a body link, or `None` for a frontmatter reference
+    /// or an anchor.
     #[must_use]
     pub fn byte_range(&self) -> Option<Range<usize>> {
-        match &self.reference {
+        match self {
             BacklinkRef::Body { byte_range } => Some(byte_range.clone()),
-            BacklinkRef::Field { .. } => None,
+            BacklinkRef::Field { .. } | BacklinkRef::Anchor => None,
         }
     }
 
     /// A stable sort key within one document: body links order by their
-    /// offset and always precede frontmatter references, which order by
-    /// field name then by the `via` document's label.
+    /// offset and precede frontmatter references, which order by field name
+    /// then by the `via` document's label; an anchor comes last.
     #[must_use]
     pub fn sort_key(&self) -> (usize, usize, String, String) {
-        match &self.reference {
+        match self {
             BacklinkRef::Body { byte_range } => (0, byte_range.start, String::new(), String::new()),
             BacklinkRef::Field { field, via } => (
                 1,
@@ -575,8 +609,60 @@ impl BacklinkEntry {
                 (*field).to_string(),
                 via.as_ref().map(ItemRef::label).unwrap_or_default(),
             ),
+            BacklinkRef::Anchor => (2, 0, String::new(), String::new()),
         }
     }
+}
+
+impl BacklinkEntry {
+    /// The byte range of a body link, or `None` for a frontmatter
+    /// reference — see [`BacklinkRef::byte_range`].
+    #[must_use]
+    pub fn byte_range(&self) -> Option<Range<usize>> {
+        self.reference.byte_range()
+    }
+
+    /// A stable sort key within one document — see
+    /// [`BacklinkRef::sort_key`].
+    #[must_use]
+    pub fn sort_key(&self) -> (usize, usize, String, String) {
+        self.reference.sort_key()
+    }
+}
+
+/// One document or review comment annotating a code location, found by
+/// [`crate::ops::links::code_annotations`].
+///
+/// The level, reason and unverified fields reuse
+/// [`crate::comment_target`]'s vocabulary, so a document link and a review
+/// comment's anchor are described in the same terms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeAnnotation {
+    /// The document (or review comment) that annotates the location.
+    pub document: DocRef,
+    /// Where in that document: a body link ([`BacklinkRef::Body`]), a
+    /// change review's structural commit field ([`BacklinkRef::Field`]), or
+    /// a review comment's own anchor ([`BacklinkRef::Anchor`]).
+    pub reference: BacklinkRef,
+    /// The code location it annotates, always a resolvable `rdm:src` link.
+    /// A document link carries the revision it resolves at (its own `@rev`,
+    /// else its document's stamped commit), or none when it is floating.
+    pub link: Link,
+    /// How specific the annotation is: [`TargetLevel::Range`],
+    /// [`TargetLevel::File`] or [`TargetLevel::Commit`] — never
+    /// [`TargetLevel::PlanItem`].
+    ///
+    /// [`TargetLevel::Range`]: crate::comment_target::TargetLevel::Range
+    /// [`TargetLevel::File`]: crate::comment_target::TargetLevel::File
+    /// [`TargetLevel::Commit`]: crate::comment_target::TargetLevel::Commit
+    /// [`TargetLevel::PlanItem`]: crate::comment_target::TargetLevel::PlanItem
+    pub level: crate::comment_target::TargetLevel,
+    /// Why a review comment's target is coarser than an intact anchor;
+    /// `None` for an intact anchor and for every document link.
+    pub reason: Option<crate::comment_target::TargetReason>,
+    /// `true` when the comment's rung was chosen fail-open because the
+    /// source repository could not say whether its path exists at the head.
+    pub unverified: bool,
 }
 
 /// The pulldown-cmark options this module parses markdown bodies with.
@@ -1029,5 +1115,29 @@ mod tests {
             rev: "a1b2c3d".to_string(),
         };
         assert_eq!(commit.label(), "src@a1b2c3d");
+        let code = BacklinkTarget::Code {
+            path: "src/lib.rs".to_string(),
+            rev: Some("main".to_string()),
+            lines: Some((3, Some(4))),
+        };
+        assert_eq!(code.label(), "src/src/lib.rs@main#L3-L4");
+        let bare = BacklinkTarget::Code {
+            path: "src/lib.rs".to_string(),
+            rev: None,
+            lines: None,
+        };
+        assert_eq!(bare.label(), "src/src/lib.rs");
+    }
+
+    #[test]
+    fn an_anchor_reference_has_no_range_and_sorts_after_body_and_field() {
+        let body = BacklinkRef::Body { byte_range: 9..20 };
+        let field = BacklinkRef::Field {
+            field: "head",
+            via: None,
+        };
+        assert_eq!(BacklinkRef::Anchor.byte_range(), None);
+        assert!(body.sort_key() < field.sort_key());
+        assert!(field.sort_key() < BacklinkRef::Anchor.sort_key());
     }
 }

@@ -203,6 +203,7 @@ rdm link list --on phase/<slug>/<stem> {proj_flag}  # a document's outgoing link
 rdm link resolve rdm:task/fix-login {proj_flag}  # resolve a single URI given on the command line
 rdm backlinks task/fix-login {proj_flag}         # documents that reference this item
 rdm backlinks rdm:src@<sha> {proj_flag}          # reviews and documents that reference this commit
+rdm backlinks rdm:src/<path>[@<rev>][#L<a>-L<b>] {proj_flag}  # review comments and documents annotating this code (any revision unless @rev)
 ```
 
 Rules:

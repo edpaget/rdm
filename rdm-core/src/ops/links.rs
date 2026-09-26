@@ -2,14 +2,21 @@
 //!
 //! [`crate::link::extract_links`] finds `rdm:` links inside a markdown body;
 //! this module turns each parsed [`Link`] into something a consumer can act
-//! on ([`Resolved`]), and inverts the relationship — given a target, finds
-//! every document that references it ([`backlinks`]).
+//! on ([`Resolved`]), and inverts the relationship — given a plan item,
+//! finds every document that references it ([`backlinks`]), and given a
+//! code location, every document and review comment annotating it
+//! ([`code_annotations`]).
 
+use std::collections::HashMap;
 use std::ops::Range;
 
-use crate::error::Result;
-use crate::link::{BacklinkEntry, BacklinkRef, BacklinkTarget, DocRef, ItemRef, Link, Resolved};
-use crate::model::Project;
+use crate::comment_target::TargetLevel;
+use crate::error::{Error, Result};
+use crate::link::{
+    BacklinkEntry, BacklinkRef, BacklinkTarget, CodeAnnotation, DocRef, ItemRef, Link, Resolved,
+};
+use crate::model::{Anchor, Project, ReviewTarget};
+use crate::source::{SourceObjectKind, SourceObjectLookup, SourceRepo};
 use crate::store::Store;
 
 /// Resolves an item reference (`rdm:roadmap/...`, `rdm:phase/...`,
@@ -343,11 +350,17 @@ pub fn resolve_link(
 ///   `base`, and comment `applied_commit` naming that commit
 ///   ([`BacklinkRef::Field`], derived by
 ///   [`crate::ops::reviews::review_commit_refs`]). Revisions match
-///   case-insensitively when the shorter is a prefix of the longer; core reads no repository, so an abbreviation cannot be
-///   expanded, and an ambiguous abbreviation can match references to more
-///   than one commit — pass the full SHA to disambiguate. A roadmap, phase,
-///   task, or plan review's `applied_commit` is a plan-repo SHA and is never
-///   matched.
+///   case-insensitively when the shorter is a prefix of the longer; this
+///   function reads no repository, so an abbreviation cannot be expanded,
+///   and an ambiguous abbreviation can match references to more than one
+///   commit — pass the full SHA to disambiguate. A roadmap, phase, task, or
+///   plan review's `applied_commit` is a plan-repo SHA and is never matched.
+///   `rdm backlinks` answers a commit with [`code_annotations`] instead,
+///   which resolves the SHA in the source repository first and also lists
+///   the commit-level review comments on it.
+///
+/// A [`BacklinkTarget::Code`] (a source path) is not answered here: it
+/// needs the source repository, so it goes to [`code_annotations`].
 ///
 /// This is a full body scan over the whole project (`O(n)` in the number of
 /// documents and their size) — no index is built or maintained. Fine at the
@@ -396,6 +409,10 @@ pub fn resolve_link(
 /// rejection [`load_document_body`] already gives `link check`/`link list`
 /// for the same target kind. Name the commit with
 /// [`BacklinkTarget::Commit`] instead.
+///
+/// Returns [`crate::error::Error::InvalidBacklinkTarget`] for a
+/// [`BacklinkTarget::Code`]: a source path is answered by
+/// [`code_annotations`], which reads the source repository.
 pub fn backlinks(
     store: &impl Store,
     project: &str,
@@ -404,6 +421,13 @@ pub fn backlinks(
     let mut entries = match target {
         BacklinkTarget::Item(item) => item_backlinks(store, project, item)?,
         BacklinkTarget::Commit { rev } => commit_backlinks(store, project, rev)?,
+        BacklinkTarget::Code { .. } => {
+            return Err(Error::InvalidBacklinkTarget {
+                reference: target.label(),
+                reason: "a source path is answered by code_annotations, which reads the source repository"
+                    .to_string(),
+            });
+        }
     };
     entries.sort_by(|a, b| {
         a.document
@@ -431,6 +455,20 @@ pub(crate) fn revs_match(a: &str, b: &str) -> bool {
 /// change-review structural commit references whose revision
 /// [`revs_match`]es `rev`. Unsorted — [`backlinks`] sorts.
 fn commit_backlinks(store: &impl Store, project: &str, rev: &str) -> Result<Vec<BacklinkEntry>> {
+    Ok(commit_refs(store, project, rev)?
+        .into_iter()
+        .map(|(entry, _found)| entry)
+        .collect())
+}
+
+/// The scan behind [`commit_backlinks`], also yielding each match's
+/// revision exactly as it was written (a body link) or stored (a review
+/// field), which [`code_annotations`] carries into its link.
+fn commit_refs(
+    store: &impl Store,
+    project: &str,
+    rev: &str,
+) -> Result<Vec<(BacklinkEntry, String)>> {
     let mut entries = Vec::new();
     walk_project_bodies(store, project, |doc_ref, body, _containing_commit| {
         collect_commit_links(body, rev, &doc_ref, &mut entries);
@@ -439,16 +477,19 @@ fn commit_backlinks(store: &impl Store, project: &str, rev: &str) -> Result<Vec<
     for (id, doc) in crate::ops::reviews::list_reviews(store, project)? {
         for commit_ref in crate::ops::reviews::review_commit_refs(&doc.frontmatter) {
             if revs_match(&commit_ref.rev, rev) {
-                entries.push(BacklinkEntry {
-                    document: DocRef::Review {
-                        id: id.clone(),
-                        comment: commit_ref.comment,
+                entries.push((
+                    BacklinkEntry {
+                        document: DocRef::Review {
+                            id: id.clone(),
+                            comment: commit_ref.comment,
+                        },
+                        reference: BacklinkRef::Field {
+                            field: commit_ref.field,
+                            via: None,
+                        },
                     },
-                    reference: BacklinkRef::Field {
-                        field: commit_ref.field,
-                        via: None,
-                    },
-                });
+                    commit_ref.rev,
+                ));
             }
         }
     }
@@ -457,19 +498,351 @@ fn commit_backlinks(store: &impl Store, project: &str, rev: &str) -> Result<Vec<
 
 /// Finds every `rdm:src@<sha>` commit link in `body` whose revision
 /// [`revs_match`]es `rev`, pushing one body [`BacklinkEntry`] per
-/// occurrence tagged with `doc_ref` — the commit sibling of
-/// [`collect_item_links`].
-fn collect_commit_links(body: &str, rev: &str, doc_ref: &DocRef, out: &mut Vec<BacklinkEntry>) {
+/// occurrence tagged with `doc_ref`, alongside the revision as written —
+/// the commit sibling of [`collect_item_links`].
+fn collect_commit_links(
+    body: &str,
+    rev: &str,
+    doc_ref: &DocRef,
+    out: &mut Vec<(BacklinkEntry, String)>,
+) {
     let (links, _diagnostics) = crate::link::extract_links(body);
     for (range, link) in links {
         if let Link::Commit { rev: found } = link
             && revs_match(&found, rev)
         {
-            out.push(BacklinkEntry {
-                document: doc_ref.clone(),
-                reference: BacklinkRef::Body { byte_range: range },
+            out.push((
+                BacklinkEntry {
+                    document: doc_ref.clone(),
+                    reference: BacklinkRef::Body { byte_range: range },
+                },
+                found,
+            ));
+        }
+    }
+}
+
+/// Lists every document and review comment annotating a code location —
+/// a commit or a source path — as [`CodeAnnotation`]s: the reverse lookup
+/// an editor or a web view makes, starting from code rather than from an
+/// rdm document.
+///
+/// This is the source-side sibling of [`backlinks`], which answers a plan
+/// item from the store alone; a code location needs the source repository
+/// too, so `source` is taken beside `store`. Every question about the
+/// source repository goes through the [`SourceRepo`] port — nothing here
+/// touches the filesystem.
+///
+/// **Matching rules.** A review comment is described by its coarsest true
+/// target ([`crate::comment_target::comment_target`]):
+///
+/// - a path query matches range-level and file-level comments on that path,
+///   plus every `rdm:src/<path>…` link written in any body;
+/// - a commit-level comment (no recorded path, or a path absent, a directory
+///   or a submodule at the review's head) matches only a commit query;
+/// - a match is never inferred from a change's diff.
+///
+/// **Commit query** ([`BacklinkTarget::Commit`]): the revision is resolved in
+/// `source` first, then every `rdm:src@<sha>` body link and change-review
+/// `head`/`base`/`applied_commit` naming it is returned (as [`backlinks`]
+/// finds them, at [`TargetLevel::Commit`]), plus every commit-level comment
+/// of a change review whose head is that commit ([`BacklinkRef::Anchor`]).
+///
+/// **Path query** ([`BacklinkTarget::Code`]):
+///
+/// - Without a revision it means **any revision**: annotations are pinned to
+///   many commits, and each entry carries its own `rev` so the consumer
+///   decides staleness. A document link's revision is its own `@rev`, else
+///   its document's stamped `commit` (the [`resolve_code_link`] precedence);
+///   one with neither is *floating* and carries none.
+/// - `@<rev>` narrows to annotations pinned at exactly that commit, both
+///   sides resolved through [`SourceRepo::rev_parse`] at query time; a
+///   floating document link is excluded.
+/// - `#L<a>[-L<b>]` keeps a range-level entry whose inclusive range overlaps
+///   the query's, and always keeps a file-level entry (it annotates every
+///   line). Ranges are compared by number as recorded, never translated
+///   across revisions.
+/// - A path with no annotations is `Ok(vec![])` only when it is a file at
+///   the query's revision (or the source's `HEAD`); see `# Errors` for the
+///   rest. Existence is checked only for an empty answer, so a path absent
+///   at `HEAD` but annotated at an older commit still returns its entries.
+///
+/// Results are sorted like [`backlinks`]: by [`DocRef`], then within one
+/// document body links, then fields, then the anchor.
+///
+/// [`TargetLevel::Commit`]: crate::comment_target::TargetLevel::Commit
+///
+/// # Errors
+///
+/// - [`crate::error::Error::InvalidBacklinkTarget`] for a
+///   [`BacklinkTarget::Item`]: a plan item is not a code location — use
+///   [`backlinks`].
+/// - [`crate::error::Error::SourceRevisionNotFound`] when the queried
+///   revision (a commit query's SHA, or a path query's `@rev`) does not
+///   resolve in `source`, or when an empty path query falls back to an
+///   unborn `HEAD`.
+/// - [`crate::error::Error::SourcePathNotFound`] when a path query finds
+///   nothing and the path does not exist at the checked revision.
+/// - [`crate::error::Error::SourcePathNotAFile`] when a path query finds
+///   nothing and the path is a directory or a submodule there.
+/// - Any error `source` itself returns (the repository is unreadable), and
+///   the store errors [`backlinks`] documents.
+pub fn code_annotations(
+    store: &impl Store,
+    source: &impl SourceRepo,
+    project: &str,
+    target: &BacklinkTarget,
+) -> Result<Vec<CodeAnnotation>> {
+    let mut entries = match target {
+        BacklinkTarget::Item(_) => {
+            return Err(Error::InvalidBacklinkTarget {
+                reference: target.label(),
+                reason:
+                    "a plan item is not a code location — list what references it with backlinks"
+                        .to_string(),
             });
         }
+        BacklinkTarget::Commit { rev } => commit_annotations(store, source, project, rev)?,
+        BacklinkTarget::Code { path, rev, lines } => {
+            path_annotations(store, source, project, path, rev.as_deref(), *lines)?
+        }
+    };
+    entries.sort_by(|a, b| {
+        a.document
+            .cmp(&b.document)
+            .then_with(|| a.reference.sort_key().cmp(&b.reference.sort_key()))
+    });
+    Ok(entries)
+}
+
+/// Resolves `rev` in `source`, or [`Error::SourceRevisionNotFound`].
+fn resolve_source_rev(source: &impl SourceRepo, rev: &str) -> Result<String> {
+    source
+        .rev_parse(rev)?
+        .ok_or_else(|| Error::SourceRevisionNotFound {
+            rev: rev.to_string(),
+            location: source.location(),
+        })
+}
+
+/// [`code_annotations`] for a [`BacklinkTarget::Commit`]. Unsorted.
+fn commit_annotations(
+    store: &impl Store,
+    source: &impl SourceRepo,
+    project: &str,
+    rev: &str,
+) -> Result<Vec<CodeAnnotation>> {
+    let full = resolve_source_rev(source, rev)?;
+    let mut out: Vec<CodeAnnotation> = commit_refs(store, project, &full)?
+        .into_iter()
+        .map(|(entry, found)| CodeAnnotation {
+            document: entry.document,
+            reference: entry.reference,
+            link: Link::Commit { rev: found },
+            level: TargetLevel::Commit,
+            reason: None,
+            unverified: false,
+        })
+        .collect();
+    for (id, doc) in crate::ops::reviews::list_reviews(store, project)? {
+        let review = &doc.frontmatter;
+        let ReviewTarget::Change { head, .. } = &review.target else {
+            continue;
+        };
+        if !revs_match(head, &full) {
+            continue;
+        }
+        for comment in &review.comments {
+            let target = crate::comment_target::comment_target(source, review, comment);
+            if target.level == TargetLevel::Commit {
+                out.push(anchor_annotation(&id, comment.id, target));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// A review comment's anchor as a [`CodeAnnotation`].
+fn anchor_annotation(
+    id: &str,
+    comment: u32,
+    target: crate::comment_target::CommentTarget,
+) -> CodeAnnotation {
+    CodeAnnotation {
+        document: DocRef::Review {
+            id: id.to_string(),
+            comment: Some(comment),
+        },
+        reference: BacklinkRef::Anchor,
+        link: target.link,
+        level: target.level,
+        reason: target.reason,
+        unverified: target.unverified,
+    }
+}
+
+/// [`code_annotations`] for a [`BacklinkTarget::Code`]. Unsorted.
+fn path_annotations(
+    store: &impl Store,
+    source: &impl SourceRepo,
+    project: &str,
+    path: &str,
+    rev: Option<&str>,
+    lines: Option<(u32, Option<u32>)>,
+) -> Result<Vec<CodeAnnotation>> {
+    // Checked first: the revision defines what matches.
+    let pinned = rev.map(|rev| resolve_source_rev(source, rev)).transpose()?;
+    let mut out = Vec::new();
+
+    // Documents: every body `rdm:src/<path>` link on this path.
+    let mut resolved_revs: HashMap<String, Option<String>> = HashMap::new();
+    walk_project_bodies(store, project, |doc_ref, body, containing_commit| {
+        let (links, _diagnostics) = crate::link::extract_links(body);
+        for (range, link) in links {
+            let Link::Code {
+                path: found,
+                rev: found_rev,
+                lines: found_lines,
+            } = link
+            else {
+                continue;
+            };
+            if crate::change::normalize_source_path(&found).ok().as_deref() != Some(path) {
+                continue;
+            }
+            let effective = found_rev.or_else(|| containing_commit.map(String::from));
+            if let Some(pinned) = &pinned {
+                // A floating link is pinned to nothing.
+                let Some(effective) = &effective else {
+                    continue;
+                };
+                let resolved = match resolved_revs.get(effective) {
+                    Some(resolved) => resolved.clone(),
+                    None => {
+                        let resolved = match source.rev_parse(effective) {
+                            Ok(resolved) => resolved,
+                            Err(Error::InvalidChangeRevisionInput(_)) => None,
+                            Err(e) => return Err(e),
+                        };
+                        resolved_revs.insert(effective.clone(), resolved.clone());
+                        resolved
+                    }
+                };
+                if !resolved.is_some_and(|r| r.eq_ignore_ascii_case(pinned)) {
+                    continue;
+                }
+            }
+            out.push(CodeAnnotation {
+                document: doc_ref.clone(),
+                reference: BacklinkRef::Body { byte_range: range },
+                link: Link::Code {
+                    path: path.to_string(),
+                    rev: effective,
+                    lines: found_lines,
+                },
+                level: if found_lines.is_some() {
+                    TargetLevel::Range
+                } else {
+                    TargetLevel::File
+                },
+                reason: None,
+                unverified: false,
+            });
+        }
+        Ok(())
+    })?;
+
+    // Comments: range- and file-level anchors of change reviews on this path.
+    for (id, doc) in crate::ops::reviews::list_reviews(store, project)? {
+        let review = &doc.frontmatter;
+        // A plan-document review targets its item, never a code location.
+        let ReviewTarget::Change { head, .. } = &review.target else {
+            continue;
+        };
+        if pinned
+            .as_deref()
+            .is_some_and(|pinned| !head.eq_ignore_ascii_case(pinned))
+        {
+            continue;
+        }
+        for comment in &review.comments {
+            // Pre-filter before touching the repository, so git calls stay
+            // proportional to matches rather than to the project's size.
+            let quotes_path = matches!(
+                &comment.anchor,
+                Some(Anchor::FileQuote { path: p, .. }) if p == path
+            );
+            if !quotes_path && comment.intended_path.as_deref() != Some(path) {
+                continue;
+            }
+            let target = crate::comment_target::comment_target(source, review, comment);
+            let on_path = matches!(
+                &target.link,
+                Link::Code { path: p, .. } if p == path
+            );
+            if matches!(target.level, TargetLevel::Range | TargetLevel::File) && on_path {
+                out.push(anchor_annotation(&id, comment.id, target));
+            }
+        }
+    }
+
+    if let Some(query) = lines {
+        let query = inclusive_lines(query);
+        out.retain(|entry| match (entry.level, &entry.link) {
+            (
+                TargetLevel::Range,
+                Link::Code {
+                    lines: Some(found), ..
+                },
+            ) => {
+                let found = inclusive_lines(*found);
+                found.0 <= query.1 && query.0 <= found.1
+            }
+            // A file-level entry annotates every line.
+            _ => true,
+        });
+    }
+
+    if out.is_empty() {
+        classify_empty_path(source, path, pinned)?;
+    }
+    Ok(out)
+}
+
+/// A `(start, end?)` line range as an inclusive `(start, end)` pair — a
+/// single line `L<n>` is `(n, n)`.
+fn inclusive_lines((start, end): (u32, Option<u32>)) -> (u32, u32) {
+    (start, end.unwrap_or(start))
+}
+
+/// Tells an empty path query's "nothing annotates this file" apart from
+/// "there is no such file": `Ok(())` only when `path` is a file at `pinned`
+/// (or, with no revision, at the source's `HEAD`).
+fn classify_empty_path(source: &impl SourceRepo, path: &str, pinned: Option<String>) -> Result<()> {
+    let rev = match pinned {
+        Some(pinned) => pinned,
+        None => source
+            .head()?
+            .ok_or_else(|| Error::SourceRevisionNotFound {
+                rev: "HEAD".to_string(),
+                location: source.location(),
+            })?,
+    };
+    match source.object_kind_at(&rev, path)? {
+        SourceObjectLookup::Kind(SourceObjectKind::Blob) => Ok(()),
+        SourceObjectLookup::Kind(found) => Err(Error::SourcePathNotAFile {
+            path: path.to_string(),
+            rev,
+            found,
+        }),
+        SourceObjectLookup::PathMissing => Err(Error::SourcePathNotFound {
+            path: path.to_string(),
+            rev,
+        }),
+        SourceObjectLookup::RevMissing => Err(Error::SourceRevisionNotFound {
+            rev,
+            location: source.location(),
+        }),
     }
 }
 
@@ -479,18 +852,21 @@ fn collect_commit_links(body: &str, rev: &str, doc_ref: &DocRef, out: &mut Vec<B
 /// An optional `rdm:` prefix is stripped first. A remainder of `src`, or
 /// one starting with `src@` or `src/`, names the source repository and is
 /// parsed with [`crate::link::parse`]: a commit link (`src@<sha>`,
-/// abbreviated or full) becomes [`BacklinkTarget::Commit`]. Anything else is
-/// an item reference, parsed by
+/// abbreviated or full) becomes [`BacklinkTarget::Commit`], and a code link
+/// (`src/<path>[@<rev>][#L<a>[-L<b>]]`) becomes [`BacklinkTarget::Code`]
+/// with its path normalized by [`crate::change::normalize_source_path`].
+/// Anything else is an item reference, parsed by
 /// [`crate::ops::reviews::parse_review_target_ref`] (so a phase may be named
 /// by number) and wrapped in [`BacklinkTarget::Item`].
 ///
 /// # Errors
 ///
 /// Returns [`crate::error::Error::InvalidBacklinkTarget`] for a
-/// source-repository reference that is a file or line-range code link (not
-/// a backlinks target yet) or that fails to parse — e.g. `src@main`, whose
-/// message carries the commit grammar's rev hint. Otherwise returns
-/// whatever [`crate::ops::reviews::parse_review_target_ref`] returns
+/// source-repository reference that fails to parse — e.g. `src@main`, whose
+/// message carries the commit grammar's rev hint — or whose path does not
+/// normalize (`..`, an absolute path, an `@`/`#` in the path), or whose
+/// revision after `@` is empty. Otherwise returns whatever
+/// [`crate::ops::reviews::parse_review_target_ref`] returns
 /// ([`crate::error::Error::InvalidReviewTargetRef`], or a phase-number
 /// resolution error).
 pub fn parse_backlink_target(
@@ -500,14 +876,22 @@ pub fn parse_backlink_target(
 ) -> Result<BacklinkTarget> {
     let rest = reference.strip_prefix("rdm:").unwrap_or(reference);
     if rest == "src" || rest.starts_with("src@") || rest.starts_with("src/") {
-        let invalid = |reason: String| crate::error::Error::InvalidBacklinkTarget {
+        let invalid = |reason: String| Error::InvalidBacklinkTarget {
             reference: reference.to_string(),
             reason,
         };
         return match crate::link::parse(&format!("rdm:{rest}")) {
             Ok(Link::Commit { rev }) => Ok(BacklinkTarget::Commit { rev }),
-            Ok(_) => Err(invalid(
-                "a file or line range is not a backlinks target yet — name the commit with rdm:src@<sha>"
+            Ok(Link::Code { path, rev, lines }) => {
+                if rev.as_deref() == Some("") {
+                    return Err(invalid("empty revision after '@'".to_string()));
+                }
+                let path = crate::change::normalize_source_path(&path)
+                    .map_err(|e| invalid(e.to_string()))?;
+                Ok(BacklinkTarget::Code { path, rev, lines })
+            }
+            Ok(Link::Item(_)) => Err(invalid(
+                "not a source-repository reference — expected rdm:src@<sha> or rdm:src/<path>"
                     .to_string(),
             )),
             Err(e) => Err(invalid(e.to_string())),
@@ -1184,12 +1568,14 @@ pub fn check_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::comment_target::TargetReason;
     use crate::document::Document;
     use crate::model::{
-        Anchor, CommentDoc, CommentDocKind, Priority, Review, ReviewComment, ReviewCommentStatus,
-        ReviewState, ReviewTarget, Source,
+        AnchorState, CommentDoc, CommentDocKind, Priority, Review, ReviewComment,
+        ReviewCommentStatus, ReviewState, Source,
     };
     use crate::ops::CreateTask;
+    use crate::source::MemorySourceRepo;
     use crate::store::MemoryStore;
     use chrono::{TimeZone, Utc};
 
@@ -3132,17 +3518,38 @@ mod tests {
     }
 
     #[test]
-    fn parse_backlink_target_rejects_code_links_and_bad_commit_revs() {
+    fn parse_backlink_target_accepts_normalized_code_links() {
         let store = setup();
-        let err = parse_backlink_target(&store, "demo", "rdm:src/a.rs").unwrap_err();
-        assert!(
-            matches!(&err, crate::error::Error::InvalidBacklinkTarget { reference, .. } if reference == "rdm:src/a.rs"),
-            "{err:?}"
+        assert_eq!(
+            parse_backlink_target(&store, "demo", "rdm:src/src/lib.rs@main#L3-L4").unwrap(),
+            BacklinkTarget::Code {
+                path: "src/lib.rs".to_string(),
+                rev: Some("main".to_string()),
+                lines: Some((3, Some(4))),
+            }
         );
-        assert!(
-            err.to_string().contains("not a backlinks target yet"),
-            "{err}"
+        assert_eq!(
+            parse_backlink_target(&store, "demo", "src/./src/lib.rs").unwrap(),
+            BacklinkTarget::Code {
+                path: "src/lib.rs".to_string(),
+                rev: None,
+                lines: None,
+            }
         );
+    }
+
+    #[test]
+    fn parse_backlink_target_rejects_unnormalizable_code_links_and_bad_commit_revs() {
+        let store = setup();
+        for reference in ["rdm:src/../x", "src/a.rs@"] {
+            let err = parse_backlink_target(&store, "demo", reference).unwrap_err();
+            assert!(
+                matches!(&err, crate::error::Error::InvalidBacklinkTarget { reference: r, .. } if r == reference),
+                "{reference}: {err:?}"
+            );
+        }
+        let err = parse_backlink_target(&store, "demo", "src/a.rs@").unwrap_err();
+        assert!(err.to_string().contains("empty revision"), "{err}");
 
         let err = parse_backlink_target(&store, "demo", "src@main").unwrap_err();
         assert!(
@@ -3151,6 +3558,511 @@ mod tests {
         );
         // Carries phase 1's rev hint.
         assert!(err.to_string().contains("git rev-parse"), "{err}");
+    }
+
+    // --- reverse lookup from a code location: `code_annotations` ---
+
+    const H1: &str = "1111111111111111111111111111111111111111";
+    const H2: &str = "2222222222222222222222222222222222222222";
+    const REVIEW_H1: &str = "2026-07-02-1000-rvw1";
+    const LIB: &str = "src/lib.rs";
+
+    fn anchored_comment(id: u32, path: &str, start_line: u32, end_line: u32) -> ReviewComment {
+        ReviewComment {
+            anchor_state: None,
+            intended_path: None,
+            id,
+            doc: None,
+            status: ReviewCommentStatus::Open,
+            applied_commit: None,
+            anchor: Some(Anchor::FileQuote {
+                path: path.to_string(),
+                quote: "fn main() {}".to_string(),
+                occurrence: 1,
+                start_line,
+                end_line,
+            }),
+            body: "Anchored.".to_string(),
+            reply: None,
+        }
+    }
+
+    fn anchorless_comment(id: u32, state: AnchorState, intended: Option<&str>) -> ReviewComment {
+        ReviewComment {
+            anchor_state: Some(state),
+            intended_path: intended.map(str::to_string),
+            id,
+            doc: None,
+            status: ReviewCommentStatus::Open,
+            applied_commit: None,
+            anchor: None,
+            body: "Anchorless.".to_string(),
+            reply: None,
+        }
+    }
+
+    /// Two heads each holding `src/lib.rs` (plus `README.md` at `H1`), with
+    /// `main` → `H1` and `HEAD` at `H1`.
+    fn code_source() -> MemorySourceRepo {
+        MemorySourceRepo::new()
+            .with_rev("main", H1)
+            .with_rev(H2, H2)
+            .with_file(H1, LIB, "fn main() {}\n")
+            .with_file(H2, LIB, "fn main() {}\n")
+            .with_file(H1, "README.md", "readme\n")
+            .with_head(H1)
+    }
+
+    /// A change review at `H1` with a range comment (1), a failed-anchor
+    /// file comment (2), a whole-document comment (3) and a comment whose
+    /// intended path is gone (4); a task with a floating
+    /// `rdm:src/src/lib.rs#L10`; and a phase stamped with `H2` linking the
+    /// whole file.
+    fn seed_code_annotations(store: &mut MemoryStore) {
+        write_review_with(
+            store,
+            REVIEW_H1,
+            ReviewTarget::Change {
+                head: H1.to_string(),
+                base: Some(BASE_SHA.to_string()),
+            },
+            vec![
+                anchored_comment(1, LIB, 3, 4),
+                anchorless_comment(2, AnchorState::OutsideHunk, Some(LIB)),
+                anchorless_comment(3, AnchorState::WholeDocument, None),
+                anchorless_comment(4, AnchorState::PathMissing, Some("src/gone.rs")),
+            ],
+        );
+        crate::ops::task::create_task(
+            store,
+            CreateTask {
+                project: "demo",
+                slug: "floating",
+                title: "Floating",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("See [x](rdm:src/src/lib.rs#L10)."),
+            },
+        )
+        .unwrap();
+        crate::ops::roadmap::create_roadmap(
+            store,
+            crate::ops::CreateRoadmap {
+                project: "demo",
+                slug: "auth",
+                title: "Auth",
+                body: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::ops::phase::create_phase(
+            store,
+            crate::ops::CreatePhase {
+                project: "demo",
+                roadmap: "auth",
+                slug: "design",
+                title: "Design",
+                number: Some(1),
+                body: Some("Touches [lib](rdm:src/src/lib.rs)."),
+                tags: None,
+                difficulty: crate::ops::DifficultyUpdate::Keep,
+                model: crate::ops::ModelTierUpdate::Keep,
+            },
+        )
+        .unwrap();
+        let mut phase = crate::io::load_phase(store, "demo", "auth", "phase-1-design").unwrap();
+        phase.frontmatter.commit = Some(H2.to_string());
+        crate::io::write_phase(store, "demo", "auth", "phase-1-design", &phase).unwrap();
+    }
+
+    fn code_target(
+        path: &str,
+        rev: Option<&str>,
+        lines: Option<(u32, Option<u32>)>,
+    ) -> BacklinkTarget {
+        BacklinkTarget::Code {
+            path: path.to_string(),
+            rev: rev.map(str::to_string),
+            lines,
+        }
+    }
+
+    fn lib_link(rev: Option<&str>, lines: Option<(u32, Option<u32>)>) -> Link {
+        Link::Code {
+            path: LIB.to_string(),
+            rev: rev.map(str::to_string),
+            lines,
+        }
+    }
+
+    fn phase_doc() -> DocRef {
+        DocRef::Phase {
+            roadmap: "auth".to_string(),
+            stem: "phase-1-design".to_string(),
+        }
+    }
+
+    fn floating_doc() -> DocRef {
+        DocRef::Task {
+            slug: "floating".to_string(),
+        }
+    }
+
+    /// `(document, level, link)` of each entry, for compact assertions.
+    fn summarize(entries: &[CodeAnnotation]) -> Vec<(DocRef, TargetLevel, String)> {
+        entries
+            .iter()
+            .map(|e| (e.document.clone(), e.level, e.link.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn path_query_returns_range_and_file_comments_and_document_links() {
+        let mut store = setup();
+        seed_code_annotations(&mut store);
+        let entries = code_annotations(
+            &store,
+            &code_source(),
+            "demo",
+            &code_target(LIB, None, None),
+        )
+        .unwrap();
+        let body = |e: &CodeAnnotation| matches!(e.reference, BacklinkRef::Body { .. });
+        assert_eq!(
+            entries.iter().map(body).collect::<Vec<_>>(),
+            [true, true, false, false]
+        );
+        assert_eq!(
+            entries[0],
+            CodeAnnotation {
+                document: phase_doc(),
+                reference: entries[0].reference.clone(),
+                link: lib_link(Some(H2), None),
+                level: TargetLevel::File,
+                reason: None,
+                unverified: false,
+            }
+        );
+        assert_eq!(
+            entries[1],
+            CodeAnnotation {
+                document: floating_doc(),
+                reference: entries[1].reference.clone(),
+                link: lib_link(None, Some((10, None))),
+                level: TargetLevel::Range,
+                reason: None,
+                unverified: false,
+            }
+        );
+        assert_eq!(
+            entries[2..],
+            [
+                CodeAnnotation {
+                    document: review_doc(REVIEW_H1, Some(1)),
+                    reference: BacklinkRef::Anchor,
+                    link: lib_link(Some(H1), Some((3, Some(4)))),
+                    level: TargetLevel::Range,
+                    reason: None,
+                    unverified: false,
+                },
+                CodeAnnotation {
+                    document: review_doc(REVIEW_H1, Some(2)),
+                    reference: BacklinkRef::Anchor,
+                    link: lib_link(Some(H1), None),
+                    level: TargetLevel::File,
+                    reason: Some(TargetReason::Stored(AnchorState::OutsideHunk)),
+                    unverified: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn commit_query_returns_commit_level_comments_not_path_level_ones() {
+        let mut store = setup();
+        seed_code_annotations(&mut store);
+        let entries = code_annotations(&store, &code_source(), "demo", &commit_target(H1)).unwrap();
+        assert_eq!(
+            entries,
+            vec![
+                CodeAnnotation {
+                    document: review_doc(REVIEW_H1, None),
+                    reference: field_ref("head"),
+                    link: Link::Commit {
+                        rev: H1.to_string()
+                    },
+                    level: TargetLevel::Commit,
+                    reason: None,
+                    unverified: false,
+                },
+                CodeAnnotation {
+                    document: review_doc(REVIEW_H1, Some(3)),
+                    reference: BacklinkRef::Anchor,
+                    link: Link::Commit {
+                        rev: H1.to_string()
+                    },
+                    level: TargetLevel::Commit,
+                    reason: Some(TargetReason::Stored(AnchorState::WholeDocument)),
+                    unverified: false,
+                },
+                CodeAnnotation {
+                    document: review_doc(REVIEW_H1, Some(4)),
+                    reference: BacklinkRef::Anchor,
+                    link: Link::Commit {
+                        rev: H1.to_string()
+                    },
+                    level: TargetLevel::Commit,
+                    reason: Some(TargetReason::Stored(AnchorState::PathMissing)),
+                    unverified: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn commit_query_resolves_its_sha_in_the_source_repository() {
+        let mut store = setup();
+        seed_code_annotations(&mut store);
+        // An abbreviation is expanded exactly by the source repository.
+        let source = code_source().with_rev(&H1[..7], H1);
+        let entries = code_annotations(&store, &source, "demo", &commit_target(&H1[..7])).unwrap();
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        // A SHA the checkout lacks is an error, not an empty answer.
+        let err =
+            code_annotations(&store, &source, "demo", &commit_target("deadbeef")).unwrap_err();
+        assert!(
+            matches!(&err, crate::error::Error::SourceRevisionNotFound { rev, .. } if rev == "deadbeef"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn path_query_never_infers_from_a_diff() {
+        let mut store = setup();
+        seed_code_annotations(&mut store);
+        let source = code_source().with_diff(BASE_SHA, H1, LIB, "@@ -1 +1 @@\n-a\n+b\n");
+        let entries =
+            code_annotations(&store, &source, "demo", &code_target(LIB, None, None)).unwrap();
+        for absent in [3, 4] {
+            assert!(
+                entries
+                    .iter()
+                    .all(|e| e.document != review_doc(REVIEW_H1, Some(absent))),
+                "comment {absent} matched a path query: {entries:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn revision_narrowing() {
+        let mut store = setup();
+        seed_code_annotations(&mut store);
+        let query = |rev: &str| {
+            summarize(
+                &code_annotations(
+                    &store,
+                    &code_source(),
+                    "demo",
+                    &code_target(LIB, Some(rev), None),
+                )
+                .unwrap(),
+            )
+        };
+        let at_h1 = vec![
+            (
+                review_doc(REVIEW_H1, Some(1)),
+                TargetLevel::Range,
+                format!("rdm:src/src/lib.rs@{H1}#L3-L4"),
+            ),
+            (
+                review_doc(REVIEW_H1, Some(2)),
+                TargetLevel::File,
+                format!("rdm:src/src/lib.rs@{H1}"),
+            ),
+        ];
+        assert_eq!(query(H1), at_h1);
+        // A branch name resolves through `rev_parse`.
+        assert_eq!(query("main"), at_h1);
+        assert_eq!(
+            query(H2),
+            vec![(
+                phase_doc(),
+                TargetLevel::File,
+                format!("rdm:src/src/lib.rs@{H2}")
+            )]
+        );
+        // The floating link is pinned to nothing: absent from every revision
+        // query, present without one.
+        for rev in [H1, "main", H2] {
+            assert!(query(rev).iter().all(|(d, ..)| *d != floating_doc()));
+        }
+        let all = code_annotations(
+            &store,
+            &code_source(),
+            "demo",
+            &code_target(LIB, None, None),
+        )
+        .unwrap();
+        assert!(all.iter().any(|e| e.document == floating_doc()));
+    }
+
+    #[test]
+    fn line_narrowing() {
+        let mut store = setup();
+        seed_code_annotations(&mut store);
+        let docs = |lines| -> Vec<DocRef> {
+            code_annotations(
+                &store,
+                &code_source(),
+                "demo",
+                &code_target(LIB, None, Some(lines)),
+            )
+            .unwrap()
+            .into_iter()
+            .map(|e| e.document)
+            .collect()
+        };
+        // L3-L4 overlaps L4-L8; the file-level comment and whole-file phase
+        // link annotate every line.
+        assert_eq!(
+            docs((4, Some(8))),
+            vec![
+                phase_doc(),
+                review_doc(REVIEW_H1, Some(1)),
+                review_doc(REVIEW_H1, Some(2)),
+            ]
+        );
+        // L20 overlaps neither L3-L4 nor the floating L10.
+        assert_eq!(
+            docs((20, None)),
+            vec![phase_doc(), review_doc(REVIEW_H1, Some(2))]
+        );
+    }
+
+    #[test]
+    fn empty_versus_missing_versus_unresolvable() {
+        use crate::error::Error;
+        let mut store = setup();
+        seed_code_annotations(&mut store);
+        let source = code_source().with_object_kind(H1, "src", SourceObjectKind::Tree);
+        let query = |source: &MemorySourceRepo, target: BacklinkTarget| {
+            code_annotations(&store, source, "demo", &target)
+        };
+
+        assert_eq!(
+            query(&source, code_target("README.md", None, None)).unwrap(),
+            vec![]
+        );
+        let err = query(&source, code_target("src/nope.rs", None, None)).unwrap_err();
+        assert!(
+            matches!(&err, Error::SourcePathNotFound { path, rev } if path == "src/nope.rs" && rev == H1),
+            "{err:?}"
+        );
+        let err = query(&source, code_target("src", None, None)).unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                Error::SourcePathNotAFile {
+                    found: SourceObjectKind::Tree,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("is a directory"), "{err}");
+        let err = query(&source, code_target(LIB, Some("deadbeef"), None)).unwrap_err();
+        assert!(
+            matches!(&err, Error::SourceRevisionNotFound { rev, .. } if rev == "deadbeef"),
+            "{err:?}"
+        );
+        // An unreadable repository propagates, distinct from empty or missing.
+        let err = query(
+            &source.clone().with_failing_head(),
+            code_target("README.md", None, None),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Git(_)), "{err:?}");
+        // An unborn HEAD is a missing revision.
+        let unborn = MemorySourceRepo::new().with_file(H1, "README.md", "readme\n");
+        let err = query(&unborn, code_target("README.md", None, None)).unwrap_err();
+        assert!(
+            matches!(&err, Error::SourceRevisionNotFound { rev, .. } if rev == "HEAD"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_path_absent_at_head_but_annotated_earlier_returns_its_entries() {
+        let mut store = setup();
+        write_review_with(
+            &mut store,
+            REVIEW_H1,
+            ReviewTarget::Change {
+                head: H1.to_string(),
+                base: Some(BASE_SHA.to_string()),
+            },
+            vec![anchorless_comment(
+                1,
+                AnchorState::OutsideHunk,
+                Some("src/old.rs"),
+            )],
+        );
+        // `src/old.rs` exists at H1 only; HEAD is H2.
+        let source = MemorySourceRepo::new()
+            .with_rev(H1, H1)
+            .with_rev(H2, H2)
+            .with_file(H1, "src/old.rs", "old\n")
+            .with_file(H2, LIB, "lib\n")
+            .with_head(H2);
+        let entries = code_annotations(
+            &store,
+            &source,
+            "demo",
+            &code_target("src/old.rs", None, None),
+        )
+        .unwrap();
+        assert_eq!(
+            summarize(&entries),
+            vec![(
+                review_doc(REVIEW_H1, Some(1)),
+                TargetLevel::File,
+                format!("rdm:src/src/old.rs@{H1}")
+            )]
+        );
+    }
+
+    #[test]
+    fn head_missing_is_an_unverified_file_match() {
+        let mut store = setup();
+        seed_code_annotations(&mut store);
+        let source = code_source().with_missing_rev(H1);
+        let entries =
+            code_annotations(&store, &source, "demo", &code_target(LIB, None, None)).unwrap();
+        let comment_2 = entries
+            .iter()
+            .find(|e| e.document == review_doc(REVIEW_H1, Some(2)))
+            .expect("the intended-path comment is returned");
+        assert_eq!(comment_2.level, TargetLevel::File);
+        assert!(comment_2.unverified);
+    }
+
+    #[test]
+    fn item_and_code_targets_are_refused_by_the_other_function() {
+        let store = setup();
+        let err = backlinks(&store, "demo", &code_target(LIB, None, None)).unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::InvalidBacklinkTarget { .. }),
+            "{err:?}"
+        );
+        let item = BacklinkTarget::Item(ItemRef::Task {
+            slug: "x".to_string(),
+        });
+        let err = code_annotations(&store, &code_source(), "demo", &item).unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::InvalidBacklinkTarget { .. }),
+            "{err:?}"
+        );
     }
 
     // --- `link check` / `check_project` / `check_document` ---
