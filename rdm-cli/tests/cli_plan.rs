@@ -1153,6 +1153,8 @@ fn plan_show_at_returns_historical_body() {
             "plan",
             "update",
             "impl-login",
+            "--title",
+            "Renamed Login Plan",
             "--body",
             "revised-plan-body\n",
             "--no-edit",
@@ -1197,6 +1199,8 @@ fn plan_show_at_returns_historical_body() {
     );
     assert!(j["body"].as_str().unwrap().contains("Details here."), "{j}");
     assert_eq!(j["revision"], old.as_str());
+    // Metadata stays current under --at: the new title with the old body.
+    assert_eq!(j["title"], "Renamed Login Plan", "{j}");
     let j_now = json_out(&dir, &["plan", "show", "impl-login", "--project", "fbm"]);
     assert!(j_now.get("revision").is_none(), "{j_now}");
 

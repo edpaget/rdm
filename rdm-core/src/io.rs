@@ -1043,9 +1043,13 @@ mod tests {
         store.commit().unwrap();
         let old = store.head_sha().unwrap();
         seed_plan(&mut store, "v2-plan");
+        let mut current = load_plan(&store, "test", "design").unwrap();
+        current.frontmatter.title = "Design v2".to_string();
+        write_plan(&mut store, "test", "design", &current).unwrap();
         store.commit().unwrap();
         let loaded = load_plan_at(&store, "test", "design", &old).unwrap();
-        assert_eq!(loaded.frontmatter.title, "Design");
+        // Metadata stays current; only the body is historical.
+        assert_eq!(loaded.frontmatter.title, "Design v2");
         assert_eq!(loaded.body, "v1-plan\n");
     }
 
