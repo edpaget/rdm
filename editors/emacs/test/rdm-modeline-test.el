@@ -250,8 +250,12 @@ context, and each entry keeps its own item."
                 (should (equal (rdm-modeline-test--render b) "r1/phase-1-x · blocked")))
             (rdm-modeline-mode -1)))))))
 
+;; Each case delivers replies newest first, so a stale reply lands after
+;; the newer fill's replies: only the generation guard in
+;; `rdm-modeline--store' can drop it.
+
 (ert-deftest rdm-modeline/newer-fill-wins ()
-  "A reply of an older fill still in flight never overwrites a newer one."
+  "A reply of an older fill arriving last never overwrites a newer one."
   (let* ((root (rdm-modeline-test--root))
          (status "old"))
     (rdm-modeline-test--with-mode
@@ -265,9 +269,33 @@ context, and each entry keeps its own item."
         (rdm-modeline--fill-cold root)      ; the old fill: current queued
         (rdm-mock-deliver)                  ; its show is queued, answering "old"
         (setq status "new")
-        (rdm-modeline-refresh-root root)    ; the new fill
-        (while (rdm-mock-deliver))
+        (rdm-modeline-refresh-root root)    ; the new fill: current queued
+        (should (rdm-mock-deliver-newest))  ; its show is queued, answering "new"
+        (should (rdm-mock-deliver-newest))  ; the new label is stored
+        (should (equal (rdm-modeline-test--render root) "task/t1 · new"))
+        (should (rdm-mock-deliver-newest))  ; the old fill's show, last
+        (should-not rdm-mock--queue)
         (should (equal (rdm-modeline-test--render root) "task/t1 · new"))))))
+
+(ert-deftest rdm-modeline/forget-drops-late-reply ()
+  "A reply of a fill in flight when its entry is forgotten fills nothing."
+  (let ((root (rdm-modeline-test--root)))
+    (rdm-modeline-test--with-mode
+      (rdm-mock-with-runner
+          (lambda (argv _dir)
+            (pcase argv
+              (`("worktree" "current" . ,_) (rdm-modeline-test--current "task/t1" root))
+              (`("task" "show" . ,_) (list :status "open"))))
+        (setq rdm-mock-defer t)
+        (rdm-modeline-test--render root)
+        (rdm-modeline--fill-cold root)      ; current queued
+        (let ((forgotten (gethash root rdm-modeline--cache)))
+          (rdm-mock-deliver)                ; show queued
+          (rdm-modeline-forget root)
+          (while (rdm-mock-deliver-newest))
+          (should-not (gethash root rdm-modeline--cache))
+          (should-not (rdm-modeline--entry-label forgotten))
+          (should-not (rdm-modeline--entry-item forgotten)))))))
 
 (ert-deftest rdm-modeline/fill-error-renders-empty ()
   "A failing read caches an empty entry and does not refetch on render."

@@ -27,6 +27,14 @@ delivering it, as a real process would before it exits.")
     (funcall thunk)
     t))
 
+(defun rdm-mock-deliver-newest ()
+  "Deliver the newest queued reply; return non-nil if there was one.
+Replies out of issue order, as processes that exit out of order do."
+  (when-let* ((thunk (car (last rdm-mock--queue))))
+    (setq rdm-mock--queue (butlast rdm-mock--queue))
+    (funcall thunk)
+    t))
+
 (defmacro rdm-mock-with-runner (reply &rest body)
   "Run BODY with `rdm-run' and `rdm-context' mocked.
 REPLY is called with the argv (without the program) and the directory
