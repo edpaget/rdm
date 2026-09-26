@@ -313,6 +313,77 @@ context, and each entry keeps its own item."
         (should (equal (rdm-modeline-test--render root) "task/t1 · open"))
         (should-not scheduled)))))
 
+(defun rdm-modeline-test--alias (root)
+  "A symbolic link to ROOT, as a directory file name (no trailing slash).
+It is not ROOT's cache key, so only `rdm-worktree--key' matches them."
+  (let ((link (make-temp-name
+               (expand-file-name "rdm-wt-link" temporary-file-directory))))
+    (make-symbolic-link (directory-file-name root) link)
+    (should-not (equal link root))
+    (should (equal (rdm-worktree--key link) root))
+    link))
+
+(defun rdm-modeline-test--worktree-replies (table extra)
+  "The replies of TABLE, with `worktree remove'/`prune' answered by EXTRA.
+EXTRA is called with the argv of a `worktree remove' or `prune'."
+  (let ((base (rdm-modeline-test--replies table)))
+    (lambda (argv dir)
+      (pcase argv
+        (`("worktree" ,(or "remove" "prune") . ,_) (funcall extra argv))
+        (_ (funcall base argv dir))))))
+
+(ert-deftest rdm-worktree/remove-forgets-modeline ()
+  "Removing a worktree drops its modeline entry, even when the row's
+`:path' is a symbolic link to (not the truename of) the cached root."
+  (let* ((root (rdm-modeline-test--root))
+         (other (rdm-modeline-test--root))
+         (link (rdm-modeline-test--alias root))
+         (table (list (cons root (cons (rdm-modeline-test--current "task/t1" root)
+                                       (list :status "open")))
+                      (cons other (cons (rdm-modeline-test--current "task/t2" other)
+                                        (list :status "open"))))))
+    (rdm-modeline-test--with-mode
+      (rdm-mock-with-runner
+          (rdm-modeline-test--worktree-replies table (lambda (_) "Removed\n"))
+        (rdm-modeline-test--warm root)
+        (rdm-modeline-test--warm other)
+        (should (gethash root rdm-modeline--cache))
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+          (rdm-worktree-remove (list :item "task/t1" :path link :dirty :false)))
+        (should (seq-find (lambda (argv) (equal (seq-take argv 3)
+                                                (list "worktree" "remove" link)))
+                          (rdm-mock-argvs calls)))
+        (should-not (gethash root rdm-modeline--cache))
+        (should (gethash other rdm-modeline--cache))))))
+
+(ert-deftest rdm-worktree/prune-forgets-only-removed ()
+  "Pruning drops the modeline entry of a removed worktree (reported by a
+symbolic link) and keeps the entry of one rdm skipped as dirty."
+  (let* ((gone (rdm-modeline-test--root))
+         (kept (rdm-modeline-test--root))
+         (link (rdm-modeline-test--alias gone))
+         (table (list (cons gone (cons (rdm-modeline-test--current "task/t1" gone)
+                                       (list :status "done")))
+                      (cons kept (cons (rdm-modeline-test--current "task/t2" kept)
+                                       (list :status "done")))))
+         (prune
+          (lambda (argv)
+            (let ((dry (member "--dry-run" argv)))
+              (list :results
+                    (vector (list :item "task/t1" :path link
+                                  :action (if dry "would-remove" "removed"))
+                            (list :item "task/t2" :path kept
+                                  :action (if dry "would-remove" "skipped-dirty")))
+                    :removed (if dry 0 1))))))
+    (rdm-modeline-test--with-mode
+      (rdm-mock-with-runner (rdm-modeline-test--worktree-replies table prune)
+        (rdm-modeline-test--warm gone)
+        (rdm-modeline-test--warm kept)
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
+          (should (rdm-worktree-prune)))
+        (should-not (gethash gone rdm-modeline--cache))
+        (should (equal (rdm-modeline-test--render kept) "task/t2 · done"))))))
+
 ;;;; rdm-after-write-hook
 
 (defmacro rdm-modeline-test--counting-writes (&rest body)
