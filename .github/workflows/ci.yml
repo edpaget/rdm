@@ -81,8 +81,19 @@ jobs:
         run: cargo deny check
 
   emacs:
-    name: Emacs package suite
+    name: Emacs package suite (${{ matrix.emacs }})
     runs-on: ubuntu-latest
+    # The snapshot row tracks Emacs master and may break for reasons
+    # outside this repo; only the 31.1 row gates a merge.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - emacs: "31.1"
+            experimental: false
+          - emacs: snapshot
+            experimental: true
     env:
       # A missing `emacs` or init directory fails the suite instead of
       # skipping it.
@@ -101,16 +112,16 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
-      - name: Install Emacs 31.1
+      - name: Install Emacs ${{ matrix.emacs }}
         uses: purcell/setup-emacs@master
         with:
-          version: "31.1"
+          version: ${{ matrix.emacs }}
 
       - name: Cache the soft-dependency init directory
         uses: actions/cache@v4
         with:
           path: .emacs-init
-          key: emacs-init-31.1-${{ hashFiles('editors/emacs/test/ci-init/init.el') }}
+          key: emacs-init-${{ matrix.emacs }}-${{ hashFiles('editors/emacs/test/ci-init/init.el') }}
 
       - name: Provide evil, magit, consult and embark
         run: |
