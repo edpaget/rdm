@@ -194,3 +194,71 @@ fn widen_links(project: &str, target: &BacklinkTarget) -> Vec<WidenLink> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decoded(href: &str) -> String {
+        let (_, query) = href.split_once("?target=").unwrap();
+        percent_encoding::percent_decode_str(query)
+            .decode_utf8()
+            .unwrap()
+            .into_owned()
+    }
+
+    fn widened(target: &BacklinkTarget) -> Vec<(&'static str, String)> {
+        widen_links("demo", target)
+            .into_iter()
+            .map(|w| (w.label, decoded(&w.href)))
+            .collect()
+    }
+
+    fn code(rev: Option<&str>, lines: Option<(u32, Option<u32>)>) -> BacklinkTarget {
+        BacklinkTarget::Code {
+            path: "src/lib.rs".to_string(),
+            rev: rev.map(str::to_string),
+            lines,
+        }
+    }
+
+    #[test]
+    fn widen_links_commit_target_has_nothing_to_widen() {
+        let target = BacklinkTarget::Commit {
+            rev: "abc1234".to_string(),
+        };
+        assert!(widen_links("demo", &target).is_empty());
+    }
+
+    #[test]
+    fn widen_links_whole_file_at_head_has_nothing_to_widen() {
+        assert!(widen_links("demo", &code(None, None)).is_empty());
+    }
+
+    #[test]
+    fn widen_links_rev_only_offers_any_revision() {
+        assert_eq!(
+            widened(&code(Some("abc1234"), None)),
+            vec![("any revision", "rdm:src/src/lib.rs".to_string())]
+        );
+    }
+
+    #[test]
+    fn widen_links_lines_only_offers_whole_file() {
+        assert_eq!(
+            widened(&code(None, Some((2, Some(4))))),
+            vec![("whole file", "rdm:src/src/lib.rs".to_string())]
+        );
+    }
+
+    #[test]
+    fn widen_links_rev_and_lines_drop_one_each() {
+        assert_eq!(
+            widened(&code(Some("abc1234"), Some((2, None)))),
+            vec![
+                ("any revision", "rdm:src/src/lib.rs#L2".to_string()),
+                ("whole file", "rdm:src/src/lib.rs@abc1234".to_string()),
+            ]
+        );
+    }
+}

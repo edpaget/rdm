@@ -868,6 +868,51 @@ mod tests {
         rdm_core::store::Store::commit(store).unwrap();
     }
 
+    /// `code_permalink` — the source of the annotations resource's HAL
+    /// `rdm:code` relation — yields the forge blob/commit URL for an
+    /// `https://` `source.repo`.
+    #[test]
+    fn code_permalink_with_forge_source_yields_blob_and_commit_urls() {
+        let (_dir, mut store) = tmp_store();
+        seed_project_source(&mut store, "demo", "https://github.com/acme/demo");
+        let code = Link::Code {
+            path: "src/lib.rs".to_string(),
+            rev: Some("abc1234".to_string()),
+            lines: Some((2, Some(4))),
+        };
+        assert_eq!(
+            code_permalink(&store, "demo", &code).unwrap().as_deref(),
+            Some("https://github.com/acme/demo/blob/abc1234/src/lib.rs#L2-L4")
+        );
+        let commit = Link::Commit {
+            rev: "abc1234".to_string(),
+        };
+        assert_eq!(
+            code_permalink(&store, "demo", &commit).unwrap().as_deref(),
+            Some("https://github.com/acme/demo/commit/abc1234")
+        );
+    }
+
+    /// A local-directory `source.repo` yields a filesystem path from core,
+    /// which is not navigable: `code_permalink` gives `None` for both kinds.
+    #[test]
+    fn code_permalink_with_local_path_source_yields_none() {
+        let (_dir, mut store) = tmp_store();
+        seed_project_source(&mut store, "demo", "/srv/checkouts/demo");
+        for link in [
+            Link::Code {
+                path: "src/lib.rs".to_string(),
+                rev: Some("abc1234".to_string()),
+                lines: Some((2, None)),
+            },
+            Link::Commit {
+                rev: "abc1234".to_string(),
+            },
+        ] {
+            assert_eq!(code_permalink(&store, "demo", &link).unwrap(), None);
+        }
+    }
+
     #[test]
     fn code_link_with_source_resolves_to_live_github_permalink_html() {
         let (_dir, mut store) = tmp_store();

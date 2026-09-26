@@ -468,6 +468,79 @@ async fn code_and_commit_links_render_with_annotations_entry_points() {
 /// read) that renders as the non-navigable span, per the forge-permalink
 /// honesty rule; the live forge href is asserted at the view layer
 /// (`annotation_views` unit tests).
+///
+/// The same honesty rule holds for the HAL `rdm:code` relation: with a
+/// local-directory `source.repo` no annotation has a navigable permalink,
+/// so the relation is absent or empty.
+#[cfg(feature = "git")]
+#[tokio::test]
+async fn local_source_repo_yields_no_rdm_code_links() {
+    let f = fixture(true);
+    let (addr, client) = spawn(f.plan.path()).await;
+    for reference in [
+        "rdm:src/src/lib.rs".to_string(),
+        format!("rdm:src@{}", f.head),
+    ] {
+        let hal = get_hal(addr, &client, &annotations_path(&reference)).await;
+        assert!(
+            !core_annotations_json(&f, &reference).is_empty(),
+            "the fixture annotates {reference}"
+        );
+        assert!(
+            hrefs(&hal["_links"]["rdm:code"]).is_empty(),
+            "{reference}: {hal}"
+        );
+    }
+}
+
+/// The widen links: a pinned, line-ranged path page offers "any revision"
+/// (dropping the rev, keeping the lines) and "whole file" (dropping the
+/// lines, keeping the rev); a commit page has nothing to widen.
+#[cfg(feature = "git")]
+#[tokio::test]
+async fn path_page_widens_and_commit_page_does_not() {
+    let f = fixture(true);
+    let (addr, client) = spawn(f.plan.path()).await;
+    let head = &f.head;
+
+    let page = get_html(
+        addr,
+        &client,
+        &annotations_path(&format!("rdm:src/src/lib.rs@{head}#L2")),
+    )
+    .await;
+    let start = page
+        .find(r#"class="annotation-widen""#)
+        .unwrap_or_else(|| panic!("a widen block: {page}"));
+    let block = &page[start..start + page[start..].find("</p>").unwrap()];
+    let widen: Vec<(String, String)> = block
+        .match_indices(r#"<a href=""#)
+        .map(|(i, m)| {
+            let rest = &block[i + m.len()..];
+            let (href, rest) = rest.split_once("\">").unwrap();
+            let label = &rest[..rest.find("</a>").unwrap()];
+            (label.to_string(), decoded_target(href))
+        })
+        .collect();
+    assert_eq!(
+        widen,
+        vec![
+            (
+                "any revision".to_string(),
+                "rdm:src/src/lib.rs#L2".to_string()
+            ),
+            (
+                "whole file".to_string(),
+                format!("rdm:src/src/lib.rs@{head}")
+            ),
+        ],
+        "{block}"
+    );
+
+    let commit_page = get_html(addr, &client, &annotations_path(&format!("rdm:src@{head}"))).await;
+    assert!(!commit_page.contains("annotation-widen"), "{commit_page}");
+}
+
 #[cfg(feature = "git")]
 #[tokio::test]
 async fn every_listed_annotation_carries_its_pinned_link() {

@@ -164,6 +164,7 @@ pub fn page_reviews(
         // reason an anchorless comment shows is core's, never re-derived
         // here.
         let targets = crate::source_repo::comment_targets_for_project(store, project, review);
+        let commit_refs = rdm_core::ops::reviews::review_commit_refs(review);
         let mut comments = Vec::new();
         for ((comment, resolved), target) in review.comments.iter().zip(&resolutions).zip(&targets)
         {
@@ -215,17 +216,8 @@ pub fn page_reviews(
                 None => None,
             };
 
-            // A change review's `applied_commit` names a source commit, so
-            // it renders as the same link a body `rdm:src@<sha>` gets; a
-            // plan-document review's names a plan-repo commit and stays
-            // inert.
             let (applied_commit, applied_commit_html) =
-                match (&review.target, &comment.applied_commit) {
-                    (ReviewTarget::Change { .. }, Some(sha)) => {
-                        (None, Some(applied_commit_html(store, project, sha)?))
-                    }
-                    (_, applied) => (applied.clone(), None),
-                };
+                applied_commit_view(store, project, &commit_refs, comment)?;
 
             comments.push(ReviewCommentView {
                 anchor_ref,
@@ -277,27 +269,38 @@ pub fn page_reviews(
     })
 }
 
-/// Renders a change review comment's `applied_commit` as the inline HTML of
-/// a body link to `rdm:src@<sha>` (abbreviated to seven characters as link
-/// text).
-fn applied_commit_html(
+/// A comment's `applied_commit` as `(inert value, link HTML)` — exactly one
+/// is `Some` when the comment has one.
+///
+/// A value core derives a source-commit reference for (`commit_refs`, from
+/// [`rdm_core::ops::reviews::review_commit_refs`]) renders as the same link a
+/// body `rdm:src@<sha>` gets, its first seven characters as link text. Any
+/// other value stays inert and verbatim: a plan-document review's names a
+/// plan-repo commit, and a legacy change-review value that is not
+/// commit-shaped (e.g. `HEAD`) was never a link.
+fn applied_commit_view(
     store: &impl rdm_core::store::Store,
     project: &str,
-    sha: &str,
-) -> Result<String, rdm_core::error::Error> {
-    let short: String = sha
-        .chars()
-        .filter(char::is_ascii_hexdigit)
-        .take(7)
-        .collect();
-    crate::annotation_views::inline_link_html(
+    commit_refs: &[rdm_core::ops::reviews::ReviewCommitRef],
+    comment: &ReviewComment,
+) -> Result<(Option<String>, Option<String>), rdm_core::error::Error> {
+    let Some(applied) = &comment.applied_commit else {
+        return Ok((None, None));
+    };
+    let Some(commit_ref) = commit_refs
+        .iter()
+        .find(|r| r.comment == Some(comment.id) && r.field == "applied_commit")
+    else {
+        return Ok((Some(applied.clone()), None));
+    };
+    let short: String = commit_ref.rev.chars().take(7).collect();
+    let html = crate::annotation_views::inline_link_html(
         store,
         project,
         &format!("`{short}`"),
-        &rdm_core::link::Link::Commit {
-            rev: sha.to_string(),
-        },
-    )
+        &commit_ref.link(),
+    )?;
+    Ok((None, Some(html)))
 }
 
 /// Assembles the draft-review panel for a detail page: the visitor's open
@@ -608,6 +611,78 @@ fn stored_quote(anchor: &Anchor) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn change_review(applied_commit: &str) -> Review {
+        Review {
+            id: "2026-09-26-0900-abcd".to_string(),
+            author: "reviewer".to_string(),
+            target: ReviewTarget::Change {
+                head: "a".repeat(40),
+                base: None,
+            },
+            state: ReviewState::Submitted,
+            verdict: None,
+            created: chrono::Utc::now(),
+            submitted: None,
+            created_commit: None,
+            implements: None,
+            change_branch: None,
+            comments: vec![ReviewComment {
+                id: 1,
+                doc: None,
+                status: rdm_core::model::ReviewCommentStatus::Addressed,
+                applied_commit: Some(applied_commit.to_string()),
+                anchor: None,
+                anchor_state: None,
+                intended_path: None,
+                body: "Finding.".to_string(),
+                reply: None,
+            }],
+        }
+    }
+
+    fn demo_store() -> (tempfile::TempDir, rdm_store_fs::FsStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = rdm_store_fs::FsStore::new(dir.path());
+        rdm_core::ops::init::init(&mut store).unwrap();
+        rdm_core::ops::project::create_project(&mut store, "demo", "Demo").unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+        (dir, store)
+    }
+
+    /// A legacy change-review `applied_commit` that is not commit-shaped
+    /// (`HEAD`, core's own example) stays inert and verbatim — never a
+    /// broken `rdm:src@HEAD` link, never a character-filtered `EAD`.
+    #[test]
+    fn legacy_non_commit_applied_commit_stays_inert_and_verbatim() {
+        let (_dir, store) = demo_store();
+        let review = change_review("HEAD");
+        let refs = rdm_core::ops::reviews::review_commit_refs(&review);
+        let (inert, html) =
+            applied_commit_view(&store, "demo", &refs, &review.comments[0]).unwrap();
+        assert_eq!(inert.as_deref(), Some("HEAD"));
+        assert_eq!(html, None);
+    }
+
+    /// A commit-shaped `applied_commit` renders as the commit link (here,
+    /// with no source configured, the non-navigable span plus its
+    /// annotations entry point).
+    #[test]
+    fn commit_shaped_applied_commit_renders_the_commit_link() {
+        let (_dir, store) = demo_store();
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let review = change_review(sha);
+        let refs = rdm_core::ops::reviews::review_commit_refs(&review);
+        let (inert, html) =
+            applied_commit_view(&store, "demo", &refs, &review.comments[0]).unwrap();
+        assert_eq!(inert, None);
+        let html = html.expect("a commit link");
+        assert!(
+            html.contains(&format!("?target=rdm%3Asrc%40{sha}")),
+            "{html}"
+        );
+        assert!(!html.contains("rdm-link-broken"), "{html}");
+    }
 
     /// The `plan/<slug>` review-target kind has no rdm-server detail route
     /// yet, but `target_detail_href` has no fallback arm — so the stub must
