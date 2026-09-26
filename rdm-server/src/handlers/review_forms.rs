@@ -364,6 +364,7 @@ pub async fn add_comment_form(
                 body: &req.body,
                 doc: comment_doc_from_stem(&req.doc_stem),
                 anchor: None,
+                ..Default::default()
             },
         )
     });
@@ -512,6 +513,7 @@ pub async fn anchor_comment_form(
                 body: &comment_body,
                 doc,
                 anchor,
+                ..Default::default()
             },
         )
     });

@@ -1831,6 +1831,7 @@ mod tests {
                     body,
                     doc: doc_scope.clone(),
                     anchor: anchor.clone(),
+                    ..Default::default()
                 },
             )
             .unwrap();

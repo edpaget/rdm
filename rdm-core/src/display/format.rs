@@ -2309,6 +2309,8 @@ mod tests {
                 created_commit: Some("abc123".to_string()),
                 comments: vec![
                     ReviewComment {
+                        anchor_state: None,
+                        intended_path: None,
                         id: 1,
                         doc: Some(CommentDoc {
                             kind: CommentDocKind::Phase,
@@ -2325,6 +2327,8 @@ mod tests {
                         reply: Some("Done in f00dfeed.".to_string()),
                     },
                     ReviewComment {
+                        anchor_state: None,
+                        intended_path: None,
                         id: 2,
                         doc: None,
                         status: ReviewCommentStatus::Open,
@@ -2439,6 +2443,8 @@ mod tests {
                 submitted: Some(Utc.with_ymd_and_hms(2026, 9, 1, 9, 30, 0).unwrap()),
                 created_commit: None,
                 comments: vec![ReviewComment {
+                    anchor_state: None,
+                    intended_path: None,
                     id: 1,
                     doc: None,
                     status: ReviewCommentStatus::Open,

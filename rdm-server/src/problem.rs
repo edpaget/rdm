@@ -159,9 +159,17 @@ impl From<&Error> for ProblemDetail {
             | Error::ChangeBaseNotFound(_)
             | Error::ChangeNoMergeBase { .. }
             | Error::ChangeHeadNotInSource { .. }
+            // No source repository was supplied to derive a change anchor
+            // against — the same source-unavailable class as the head
+            // missing from the checkout.
+            | Error::ChangeAnchorNeedsSource
             | Error::ChangeEmptyReviewedRange { .. }
             | Error::ChangeQuoteNeedsPath
             | Error::ChangePathNeedsQuote
+            // Comment-field usage errors, the same class as the
+            // quote/path pairing rules above.
+            | Error::CommentAnchorStateWithAnchor
+            | Error::CommentPathNotApplicable(_)
             | Error::QuoteOutsideChangedHunks { .. } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Bad Request".to_string(),

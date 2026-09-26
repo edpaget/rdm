@@ -13,17 +13,24 @@ use serde::{Deserialize, Serialize};
 pub struct ParseError {
     kind: &'static str,
     value: String,
-    expected: &'static str,
+    expected: std::borrow::Cow<'static, str>,
 }
 
 impl ParseError {
     /// Creates a parse error for `kind` (e.g. `"priority"`) from the rejected
     /// `value`, listing the `expected` accepted values.
-    pub(crate) fn new(kind: &'static str, value: &str, expected: &'static str) -> Self {
+    ///
+    /// `expected` is usually a literal, but may be built at run time from a
+    /// single source of truth (see [`AnchorState::KNOWN`]).
+    pub(crate) fn new(
+        kind: &'static str,
+        value: &str,
+        expected: impl Into<std::borrow::Cow<'static, str>>,
+    ) -> Self {
         Self {
             kind,
             value: value.to_string(),
-            expected,
+            expected: expected.into(),
         }
     }
 }
@@ -1485,6 +1492,172 @@ impl<'de> Deserialize<'de> for Anchor {
     }
 }
 
+/// Why a review comment carries no [`Anchor`] — or that it deliberately
+/// never asked for one.
+///
+/// This is the single source of truth for the anchor-state vocabulary: the
+/// review file's `anchor_state` key, `rdm review comment --anchor-state`, the
+/// REST add-comment endpoint and the persist ladder in
+/// `.claude/workflows/lib/review.mjs` all speak exactly these strings.
+///
+/// [`Self::WholeDocument`] is the one non-degraded value — a comment written
+/// without a quote on purpose. Every other known value is a reason an
+/// anchor that *was* wanted could not be kept: the run-time refusals core
+/// reports when it derives an anchor (see
+/// [`crate::ops::reviews::anchor_refusal_reason`]) plus the build-time drops a
+/// writer decides before asking (`path-missing`, `outside-hunk`,
+/// `start-fallback`).
+///
+/// Serialized as a flat kebab-case string. A value written by a newer rdm
+/// loads as [`Self::Unknown`] and re-serializes verbatim, exactly like
+/// [`Anchor::Unknown`], so an older binary never corrupts a newer review.
+/// [`FromStr`] deliberately rejects anything outside [`Self::KNOWN`], so
+/// [`Self::Unknown`] is reachable only by deserialization.
+///
+/// The absence of a stored state is **not** a variant: on an anchorless
+/// comment it means "not recorded" (every review written before the field
+/// existed), and it is never read as [`Self::WholeDocument`].
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::model::AnchorState;
+///
+/// let state: AnchorState = "outside-hunk".parse().unwrap();
+/// assert_eq!(state, AnchorState::OutsideHunk);
+/// assert!(state.is_degradation());
+/// assert!(!AnchorState::WholeDocument.is_degradation());
+/// assert!("not-recorded".parse::<AnchorState>().is_err());
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum AnchorState {
+    /// Written without a quote on purpose: the comment is about the whole
+    /// document (or, with an intended path, the whole file).
+    WholeDocument,
+    /// The quote was not found in the document or file.
+    QuoteNotFound,
+    /// The quote occurs more than once and no occurrence was chosen.
+    Ambiguous,
+    /// The requested occurrence exceeds the number of matches.
+    OccurrenceOutOfRange,
+    /// The quote lies outside every hunk the reviewed change touches (or the
+    /// writer had no hunk to anchor into).
+    OutsideHunk,
+    /// The path does not exist at the reviewed head, is not repo-relative, or
+    /// the writer had no usable path at all.
+    PathMissing,
+    /// The path names a directory or a submodule, not a file.
+    PathNotAFile,
+    /// The path contains a character the `rdm:src/` permalink grammar
+    /// reserves (`@` or `#`).
+    PathNotLinkable,
+    /// The source repository does not contain the reviewed head.
+    HeadNotInSource,
+    /// The writer fell back to the start of the finding's span.
+    StartFallback,
+    /// A value this build does not recognize, preserved verbatim.
+    Unknown(String),
+}
+
+impl AnchorState {
+    /// Every value this build recognizes, in documentation order.
+    ///
+    /// [`FromStr`]'s error lists exactly these, so the accepted-values text
+    /// can never drift from the enum.
+    pub const KNOWN: &'static [AnchorState] = &[
+        AnchorState::WholeDocument,
+        AnchorState::QuoteNotFound,
+        AnchorState::Ambiguous,
+        AnchorState::OccurrenceOutOfRange,
+        AnchorState::OutsideHunk,
+        AnchorState::PathMissing,
+        AnchorState::PathNotAFile,
+        AnchorState::PathNotLinkable,
+        AnchorState::HeadNotInSource,
+        AnchorState::StartFallback,
+    ];
+
+    /// The serialized form: kebab-case for a known value, verbatim for
+    /// [`Self::Unknown`].
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        match self {
+            AnchorState::WholeDocument => "whole-document",
+            AnchorState::QuoteNotFound => "quote-not-found",
+            AnchorState::Ambiguous => "ambiguous",
+            AnchorState::OccurrenceOutOfRange => "occurrence-out-of-range",
+            AnchorState::OutsideHunk => "outside-hunk",
+            AnchorState::PathMissing => "path-missing",
+            AnchorState::PathNotAFile => "path-not-a-file",
+            AnchorState::PathNotLinkable => "path-not-linkable",
+            AnchorState::HeadNotInSource => "head-not-in-source",
+            AnchorState::StartFallback => "start-fallback",
+            AnchorState::Unknown(raw) => raw,
+        }
+    }
+
+    /// Whether this state records a lost anchor — every value except
+    /// [`Self::WholeDocument`], including an [`Self::Unknown`] one.
+    #[must_use]
+    pub fn is_degradation(&self) -> bool {
+        !matches!(self, AnchorState::WholeDocument)
+    }
+
+    /// The known variant spelled `s`, if any.
+    fn known(s: &str) -> Option<AnchorState> {
+        Self::KNOWN.iter().find(|k| k.as_str() == s).cloned()
+    }
+}
+
+impl fmt::Display for AnchorState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for AnchorState {
+    type Err = ParseError;
+
+    /// Parses a known anchor state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] listing every [`AnchorState::KNOWN`] value when
+    /// `s` is not one of them — including the reserved `not-recorded`
+    /// reading of an absent state.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::known(s).ok_or_else(|| {
+            let names: Vec<&str> = Self::KNOWN.iter().map(AnchorState::as_str).collect();
+            let expected = match names.split_last() {
+                Some((last, rest)) if !rest.is_empty() => {
+                    format!("{}, or {last}", rest.join(", "))
+                }
+                _ => names.join(", "),
+            };
+            ParseError::new("anchor state", s, expected)
+        })
+    }
+}
+
+impl Serialize for AnchorState {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for AnchorState {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Ok(Self::known(&raw).unwrap_or(AnchorState::Unknown(raw)))
+    }
+}
+
 /// A single inline comment within a [`Review`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReviewComment {
@@ -1501,10 +1674,26 @@ pub struct ReviewComment {
     /// [`ReviewCommentStatus::Addressed`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub applied_commit: Option<String>,
-    /// Where in the target body the comment points. `None` means a
-    /// whole-document comment.
+    /// Where in the target body the comment points. `None` means the
+    /// comment has no anchor; [`Self::anchor_state`] says whether that was
+    /// deliberate or why the anchor was lost.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub anchor: Option<Anchor>,
+    /// Why an anchorless comment has no anchor:
+    /// [`AnchorState::WholeDocument`] when it was written without a quote on
+    /// purpose, otherwise the reason the wanted anchor was lost.
+    ///
+    /// Always `None` on an anchored comment — the anchor itself is
+    /// authoritative. `None` on an anchorless comment means "not recorded"
+    /// (a review written before this field existed) and is never read as
+    /// whole-document.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_state: Option<AnchorState>,
+    /// The normalized repo-relative source path an anchorless `change/`
+    /// review comment was about, when it named one. `None` on an anchored
+    /// comment and on every other review kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intended_path: Option<String>,
     /// The comment text (Markdown).
     pub body: String,
     /// Agent note set when the comment is addressed or needs clarification.
@@ -1967,6 +2156,79 @@ comments: []
         let out = serde_yaml::to_string(&review).unwrap();
         assert!(!out.contains("implements"), "{out}");
         assert!(!out.contains("change_branch"), "{out}");
+    }
+
+    #[test]
+    fn comment_anchor_state_and_intended_path_round_trip_through_yaml() {
+        let comment = ReviewComment {
+            id: 3,
+            doc: None,
+            status: ReviewCommentStatus::Open,
+            applied_commit: None,
+            anchor: None,
+            anchor_state: Some(AnchorState::OutsideHunk),
+            intended_path: Some("src/lib.rs".to_string()),
+            body: "b".to_string(),
+            reply: None,
+        };
+        let yaml = serde_yaml::to_string(&comment).unwrap();
+        assert!(yaml.contains("anchor_state: outside-hunk"), "{yaml}");
+        assert!(yaml.contains("intended_path: src/lib.rs"), "{yaml}");
+        assert_eq!(
+            serde_yaml::from_str::<ReviewComment>(&yaml).unwrap(),
+            comment
+        );
+    }
+
+    #[test]
+    fn a_pre_anchor_state_comment_loads_with_both_fields_absent() {
+        let yaml = "id: 1\nstatus: open\nbody: legacy\n";
+        let comment: ReviewComment = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(comment.anchor_state, None);
+        assert_eq!(comment.intended_path, None);
+        // …and re-serializes without gaining either key.
+        let out = serde_yaml::to_string(&comment).unwrap();
+        assert!(!out.contains("anchor_state"), "{out}");
+        assert!(!out.contains("intended_path"), "{out}");
+    }
+
+    #[test]
+    fn an_unknown_stored_anchor_state_round_trips_verbatim() {
+        let yaml = "id: 1\nstatus: open\nanchor_state: some-future-reason\nbody: b\n";
+        let comment: ReviewComment = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            comment.anchor_state,
+            Some(AnchorState::Unknown("some-future-reason".to_string()))
+        );
+        let out = serde_yaml::to_string(&comment).unwrap();
+        assert!(out.contains("anchor_state: some-future-reason"), "{out}");
+        assert!(
+            comment.anchor_state.unwrap().is_degradation(),
+            "an unknown reason is still a lost anchor"
+        );
+    }
+
+    #[test]
+    fn every_known_anchor_state_parses_from_its_own_spelling() {
+        for state in AnchorState::KNOWN {
+            assert_eq!(&state.as_str().parse::<AnchorState>().unwrap(), state);
+            assert_eq!(state.to_string(), state.as_str());
+        }
+    }
+
+    #[test]
+    fn anchor_state_from_str_rejects_unknown_values_listing_every_known_one() {
+        for rejected in ["bogus", "not-recorded", "path-not-applicable", "other"] {
+            let err = rejected.parse::<AnchorState>().unwrap_err().to_string();
+            assert!(err.contains(rejected), "{err}");
+            for state in AnchorState::KNOWN {
+                assert!(
+                    err.contains(state.as_str()),
+                    "{err} omits {}",
+                    state.as_str()
+                );
+            }
+        }
     }
 
     #[test]

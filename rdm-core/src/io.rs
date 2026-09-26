@@ -633,6 +633,8 @@ mod tests {
                 submitted: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 1, 14, 55, 0).unwrap()),
                 created_commit: Some("a1b2c3d".to_string()),
                 comments: vec![ReviewComment {
+                    anchor_state: None,
+                    intended_path: None,
                     id: 1,
                     doc: None,
                     status: ReviewCommentStatus::Open,

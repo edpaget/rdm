@@ -1076,6 +1076,8 @@ pub fn change_anchor_ineligibility(
 ///     implements: None,
 ///     change_branch: None,
 ///     comments: vec![ReviewComment {
+///         anchor_state: None,
+///         intended_path: None,
 ///         id: 1,
 ///         doc: None,
 ///         status: ReviewCommentStatus::Open,
@@ -1383,6 +1385,8 @@ mod tests {
             implements: None,
             change_branch: None,
             comments: vec![ReviewComment {
+                anchor_state: None,
+                intended_path: None,
                 id: 1,
                 doc: None,
                 status: ReviewCommentStatus::Open,
@@ -2931,6 +2935,8 @@ mod tests {
         let mut review = review_with(anchor("fn touched"));
         review.change_branch = Some("topic".to_string());
         review.comments.push(ReviewComment {
+            anchor_state: None,
+            intended_path: None,
             id: 2,
             doc: None,
             status: ReviewCommentStatus::Open,
@@ -2988,6 +2994,8 @@ mod tests {
             end_line: 1,
         }));
         review.comments.push(ReviewComment {
+            anchor_state: None,
+            intended_path: None,
             id: 2,
             doc: None,
             status: ReviewCommentStatus::Open,

@@ -1307,6 +1307,7 @@ mod tests {
                 body: "Comment mentions quokka explicitly.",
                 doc: None,
                 anchor: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1333,6 +1334,8 @@ mod tests {
                 implements: None,
                 change_branch: None,
                 comments: vec![crate::model::ReviewComment {
+                    anchor_state: None,
+                    intended_path: None,
                     id: 1,
                     doc: None,
                     status: crate::model::ReviewCommentStatus::Open,

@@ -137,6 +137,80 @@ and "nothing beyond the quote the reviewer chose is embedded" is only
 therefore uses `occurrence` plus the recorded line range instead. The line
 range also makes the permalink derivable with no checkout present.
 
+## Degraded and whole-document comments
+
+A comment with no anchor says why, in two stored fields (format and
+compatibility rule: [`file-formats.md`](file-formats.md#comment-fields)):
+
+- `anchor_state` — `whole-document` for a comment written without a quote on
+  purpose, otherwise the reason a wanted anchor was lost (`quote-not-found`,
+  `ambiguous`, `occurrence-out-of-range`, `outside-hunk`, `path-missing`,
+  `path-not-a-file`, `path-not-linkable`, `head-not-in-source`,
+  `start-fallback`). The vocabulary is one Rust enum,
+  `rdm_core::model::AnchorState`.
+- `intended_path` — the source file the comment was about, when it named one.
+
+A comment added with neither an anchor nor a reason is stamped
+`whole-document` by core, not by the caller. An absent field on an older
+comment reads as `not-recorded`, never as `whole-document`.
+
+A writer that dropped an anchor itself records why:
+
+```
+rdm review comment <id> --anchor-state outside-hunk --intended-path src/lib.rs --body "…"
+```
+
+`--intended-path` alone is a deliberate whole-file comment
+(`whole-document` plus the path). Both flags conflict with `--quote`, and an
+unknown `--anchor-state` is refused with the list of accepted values.
+
+### The fall-back mode
+
+```
+rdm review comment <id> --path src/lib.rs --quote "<text>" \
+  --on-anchor-failure whole-document --body "…"
+```
+
+`--on-anchor-failure whole-document` asks core to derive the anchor and, when
+it **refuses** it, store the comment without one instead of failing: the
+refusal's reason goes into `anchor_state` and the requested `--path` (when it
+normalizes to a linkable repo-relative path) into `intended_path`. The command
+exits 0 either way and prints exactly one compact JSON line on stdout:
+
+```
+{"review_id":"…","comment_id":3,"anchored":false,"anchor_state":"outside-hunk","intended_path":"src/lib.rs"}
+{"review_id":"…","comment_id":4,"anchored":true}
+```
+
+The refusal text goes to stderr as one
+`warning: anchor refused (<refusal>); stored whole-document` line, so text a
+caller supplied (the quote) never appears in the machine line. The default,
+`--on-anchor-failure refuse`, keeps the historical behavior.
+
+Only the anchor refusals map to a reason:
+
+| Core error | `anchor_state` |
+|------------|----------------|
+| `QuoteNotFound` | `quote-not-found` |
+| `QuoteAmbiguous` | `ambiguous` |
+| `QuoteOccurrenceOutOfRange` | `occurrence-out-of-range` |
+| `QuoteOutsideChangedHunks` | `outside-hunk` |
+| `ChangePathNotInRevision` | `path-missing` |
+| `ChangePathNotAFile` | `path-not-a-file` |
+| `ChangePathNotLinkable` | `path-not-linkable` |
+| `ChangeHeadNotInSource` | `head-not-in-source` |
+
+Everything else still fails the command in fall-back mode: the usage errors
+(`--quote` without `--path` and the like), store and IO errors, a submitted
+review, a source repository that cannot be queried, and source *discovery*
+failing — which is environmental and review-wide, and which `review start`
+already required to succeed. The mapping and the fall-back live in core
+(`ops::reviews::{anchor_refusal_reason, add_comment_with_anchor}`), because
+only core knows its own refusal variants. `POST
+/projects/<p>/reviews/<id>/comments` accepts the same optional `anchor_state`
+and `intended_path` fields; an unknown `anchor_state` is a 422 naming the
+accepted values.
+
 ## Resolution: resolved / drifted / unresolved
 
 `rdm review show` resolves each anchor against a **tip**, chosen by
@@ -345,7 +419,10 @@ previously reported every change-review comment `unresolved` with both channels
 null — indistinguishable from anchors that genuinely no longer resolve, and
 contradicting what `rdm review show --format json` said about the same file.
 
-`rdm review comment --path` fails loudly in the same situations. An anchor
+`rdm review comment --path` fails loudly in the same situations (or, under
+`--on-anchor-failure whole-document`, stores the comment unanchored with the
+refusal recorded as its `anchor_state` — see
+[the fall-back mode](#the-fall-back-mode)). An anchor
 that was never checked against real content would silently mislead every
 later reader — and a checkout lacking the reviewed commit is reported as
 exactly that (`Error::ChangeHeadNotInSource`), never as a missing path.

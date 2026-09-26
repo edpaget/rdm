@@ -1457,6 +1457,7 @@ mod tests {
                 body: "Look at this.",
                 doc: None,
                 anchor,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1535,6 +1536,7 @@ mod tests {
                 body: "Also see [a ghost](rdm:task/does-not-exist).",
                 doc: None,
                 anchor: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -1595,6 +1597,7 @@ mod tests {
                     prefix: String::new(),
                     suffix: String::new(),
                 }),
+                ..Default::default()
             },
         )
         .unwrap();

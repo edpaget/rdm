@@ -7119,6 +7119,8 @@ fn sample_review_doc(id: &str) -> Document<Review> {
             submitted: Some(chrono::Utc.with_ymd_and_hms(2026, 7, 1, 14, 55, 0).unwrap()),
             created_commit: Some("a1b2c3d".to_string()),
             comments: vec![ReviewComment {
+                anchor_state: None,
+                intended_path: None,
                 id: 1,
                 doc: None,
                 status: ReviewCommentStatus::Open,
@@ -7245,6 +7247,7 @@ fn add_plain_comment(store: &mut MemoryStore, review_id: &str, body: &str) -> u3
             body,
             doc: None,
             anchor: None,
+            ..Default::default()
         },
     )
     .unwrap()
@@ -7466,6 +7469,7 @@ fn add_comment_rejects_when_not_draft() {
             body: "Too late.",
             doc: None,
             anchor: None,
+            ..Default::default()
         },
     );
     assert!(matches!(result, Err(Error::ReviewNotDraft(_))));
@@ -7482,6 +7486,7 @@ fn add_comment_review_not_found() {
             body: "Hello?",
             doc: None,
             anchor: None,
+            ..Default::default()
         },
     );
     assert!(matches!(result, Err(Error::ReviewNotFound(_))));
@@ -7516,6 +7521,7 @@ fn add_comment_doc_valid_phase_in_roadmap_review() {
                 stem: "phase-1-core".to_string(),
             }),
             anchor: None,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -7554,6 +7560,7 @@ fn add_comment_doc_out_of_scope_phase_not_in_roadmap() {
                 stem: "phase-9-ghost".to_string(),
             }),
             anchor: None,
+            ..Default::default()
         },
     );
     assert!(matches!(result, Err(Error::CommentDocOutOfScope(_))));
@@ -7589,6 +7596,7 @@ fn add_comment_doc_rejected_on_phase_review() {
                 stem: "phase-1-core".to_string(),
             }),
             anchor: None,
+            ..Default::default()
         },
     );
     assert!(matches!(result, Err(Error::CommentDocNotApplicable)));
@@ -7611,6 +7619,7 @@ fn add_comment_doc_rejected_on_task_review() {
                 stem: "phase-1-core".to_string(),
             }),
             anchor: None,
+            ..Default::default()
         },
     );
     assert!(matches!(result, Err(Error::CommentDocNotApplicable)));
@@ -7635,6 +7644,7 @@ fn add_comment_unresolvable_anchor_does_not_block_creation() {
                 prefix: String::new(),
                 suffix: String::new(),
             }),
+            ..Default::default()
         },
     )
     .unwrap();
@@ -7995,6 +8005,7 @@ fn update_comment_doc_clear_and_set_validation() {
                 stem: "phase-1-core".to_string(),
             }),
             anchor: None,
+            ..Default::default()
         },
     )
     .unwrap();

@@ -729,6 +729,7 @@ mod tests {
                 body: "See [the other task](rdm:task/fix-bug).",
                 doc: None,
                 anchor: None,
+                ..Default::default()
             },
         )
         .unwrap();

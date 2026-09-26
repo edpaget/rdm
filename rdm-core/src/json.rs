@@ -10,9 +10,9 @@ use crate::anchor::{Resolution, ResolvedComment};
 use crate::document::Document;
 use crate::link::{BacklinkEntry, DocRef, Resolved};
 use crate::model::{
-    Anchor, CommentDoc, Difficulty, GateOverride, ModelTier, Phase, PhaseStatus, Plan, PlanStatus,
-    Priority, Project, Review, ReviewCommentStatus, ReviewState, ReviewTarget, Roadmap, Run,
-    RunDriver, RunStatus, Task, TaskStatus, Verdict,
+    Anchor, AnchorState, CommentDoc, Difficulty, GateOverride, ModelTier, Phase, PhaseStatus, Plan,
+    PlanStatus, Priority, Project, Review, ReviewComment, ReviewCommentStatus, ReviewState,
+    ReviewTarget, Roadmap, Run, RunDriver, RunStatus, Task, TaskStatus, Verdict,
 };
 use crate::search::{ItemKind, SearchResult};
 
@@ -852,6 +852,18 @@ pub struct ReviewCommentJson {
     /// anchored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub anchor: Option<Anchor>,
+    /// Why an anchorless comment has no anchor: the stored
+    /// [`AnchorState`](crate::model::AnchorState) value (`whole-document`
+    /// for a deliberate whole-document comment, otherwise the degradation
+    /// reason), or the literal `"not-recorded"` when the review predates the
+    /// field. Always present on an anchorless comment; absent on an anchored
+    /// one, whose anchor is authoritative.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_state: Option<String>,
+    /// The repo-relative source path an anchorless `change/` review comment
+    /// was about, as stored. Absent when none was recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intended_path: Option<String>,
     /// The comment text (Markdown).
     pub body: String,
     /// Agent reply note, if any.
@@ -975,6 +987,68 @@ fn resolution_to_json(resolved: &ResolvedComment) -> ResolutionJson {
     }
 }
 
+/// The JSON reading of an absent `anchor_state` on an anchorless comment.
+///
+/// Reserved: it is never an [`AnchorState`](crate::model::AnchorState)
+/// value, and `AnchorState::from_str` rejects it.
+const ANCHOR_STATE_NOT_RECORDED: &str = "not-recorded";
+
+/// A comment's `anchor_state` as review JSON reports it: `None` for an
+/// anchored comment, otherwise the stored value or
+/// [`ANCHOR_STATE_NOT_RECORDED`].
+fn comment_anchor_state(comment: &ReviewComment) -> Option<String> {
+    if comment.anchor.is_some() {
+        return None;
+    }
+    Some(comment.anchor_state.as_ref().map_or_else(
+        || ANCHOR_STATE_NOT_RECORDED.to_string(),
+        |s| s.as_str().to_string(),
+    ))
+}
+
+/// The one machine-readable line `rdm review comment --on-anchor-failure
+/// whole-document` prints on stdout: which comment was added and whether it
+/// kept its anchor.
+///
+/// Built only from stored values, so the refusal text (which may echo a
+/// caller-supplied quote) never appears in it.
+#[derive(Debug, Clone, Serialize)]
+pub struct CommentAddedJson {
+    /// Id of the review the comment was added to.
+    pub review_id: String,
+    /// Id of the comment just added.
+    pub comment_id: u32,
+    /// Whether the comment was stored with an anchor.
+    pub anchored: bool,
+    /// The stored anchor state of an anchorless comment; absent when
+    /// anchored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub anchor_state: Option<AnchorState>,
+    /// The stored intended path, when one was recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intended_path: Option<String>,
+}
+
+/// Builds the [`CommentAddedJson`] line for comment `comment_id` of `doc`.
+///
+/// A comment id not present in `doc` reports `anchored: false` with no
+/// state — callers pass the id they just added.
+#[must_use]
+pub fn comment_added_to_json(
+    review_id: &str,
+    doc: &Document<Review>,
+    comment_id: u32,
+) -> CommentAddedJson {
+    let comment = doc.frontmatter.comments.iter().find(|c| c.id == comment_id);
+    CommentAddedJson {
+        review_id: review_id.to_string(),
+        comment_id,
+        anchored: comment.is_some_and(|c| c.anchor.is_some()),
+        anchor_state: comment.and_then(|c| c.anchor_state.clone()),
+        intended_path: comment.and_then(|c| c.intended_path.clone()),
+    }
+}
+
 /// Build a [`ReviewJson`] from a review document and its comments'
 /// pre-computed resolutions.
 ///
@@ -1049,6 +1123,8 @@ pub fn review_to_json(
                     applied_commit: c.applied_commit.clone(),
                     applied_commit_link: commit_link(Some(c.id), "applied_commit"),
                     anchor: c.anchor.clone(),
+                    anchor_state: comment_anchor_state(c),
+                    intended_path: c.intended_path.clone(),
                     body: c.body.clone(),
                     reply: c.reply.clone(),
                     resolution: resolution_to_json(resolutions.get(i).unwrap_or(&unresolved)),
@@ -1747,6 +1823,8 @@ mod tests {
                 submitted: Some(Utc.with_ymd_and_hms(2026, 7, 1, 14, 55, 0).unwrap()),
                 created_commit: Some("abc123".to_string()),
                 comments: vec![ReviewComment {
+                    anchor_state: None,
+                    intended_path: None,
                     id: 1,
                     doc: None,
                     status: ReviewCommentStatus::Open,

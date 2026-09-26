@@ -256,6 +256,8 @@ fn seed_plan_repo(base: &str, head: &str) -> TempDir {
         })
     };
     let comment = |id: u32, quote: &str, line: u32| ReviewComment {
+        anchor_state: None,
+        intended_path: None,
         id,
         doc: None,
         status: ReviewCommentStatus::Open,
@@ -458,6 +460,8 @@ async fn rest_plan_repo_review_still_resolves_against_the_plan_store() {
                 implements: None,
                 change_branch: None,
                 comments: vec![ReviewComment {
+                    anchor_state: None,
+                    intended_path: None,
                     id: 1,
                     doc: None,
                     status: ReviewCommentStatus::Open,

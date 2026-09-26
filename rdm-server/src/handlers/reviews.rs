@@ -22,7 +22,8 @@ use rdm_core::anchor::ResolvedComment;
 use rdm_core::document::Document;
 use rdm_core::json::ReviewJson;
 use rdm_core::model::{
-    Anchor, CommentDoc, Review, ReviewCommentStatus, ReviewState, ReviewTarget, Verdict,
+    Anchor, AnchorState, CommentDoc, Review, ReviewCommentStatus, ReviewState, ReviewTarget,
+    Verdict,
 };
 use rdm_core::ops::BodyUpdate;
 use rdm_core::ops::reviews::{
@@ -375,6 +376,15 @@ pub struct AddCommentRequest {
     /// Optional anchor into the target's body (tagged on `anchor_type`).
     /// Unrecognized anchor types are stored and echoed back untouched.
     anchor: Option<Anchor>,
+    /// Why an anchorless comment has no anchor — one of the
+    /// [`rdm_core::model::AnchorState::KNOWN`] values. Parsed with
+    /// `AnchorState::from_str` rather than deserialized, so an unknown value
+    /// is a 422 instead of being stored as `Unknown`. Omitted, an anchorless
+    /// comment is stamped `whole-document`. Refused alongside `anchor`.
+    anchor_state: Option<String>,
+    /// The repo-relative source path an anchorless `change/` review comment
+    /// is about. Refused alongside `anchor` and on any other review kind.
+    intended_path: Option<String>,
 }
 
 /// `POST /projects/:project/reviews/:review_id/comments` — add a comment to
@@ -390,6 +400,13 @@ pub async fn add_comment(
             "comment body must not be empty".to_string(),
         ));
     }
+    let anchor_state = match req.anchor_state.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            raw.parse::<AnchorState>()
+                .map_err(|e| validation_error(e.to_string()))?,
+        ),
+    };
     let mut store = state.store();
     let doc = rdm_core::ops::mutate(&mut store, |s| {
         rdm_core::ops::reviews::add_comment(
@@ -400,6 +417,8 @@ pub async fn add_comment(
                 body: &req.body,
                 doc: req.doc,
                 anchor: req.anchor,
+                anchor_state,
+                intended_path: req.intended_path.as_deref(),
             },
         )
     })
@@ -1230,6 +1249,80 @@ mod tests {
         assert_eq!(json["comments"][0]["id"], 1);
         assert_eq!(json["comments"][0]["status"], "open");
         assert_eq!(json["comments"][0]["resolution"]["state"], "unresolved");
+    }
+
+    #[tokio::test]
+    async fn add_comment_records_anchor_state_and_intended_path() {
+        let (_dir, state) = setup();
+        let head = "a".repeat(40);
+        let id = create_draft(&state, &format!("change/{head}"), "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        let body = serde_json::json!({
+            "body": "Dropped before asking.",
+            "anchor_state": "outside-hunk",
+            "intended_path": "src/lib.rs",
+        });
+        let response = send(&state, post_json(&uri, &body.to_string())).await;
+        assert_eq!(response.status(), 201);
+        let json = json_body(response).await;
+        assert_eq!(json["comments"][0]["anchor_state"], "outside-hunk");
+        assert_eq!(json["comments"][0]["intended_path"], "src/lib.rs");
+    }
+
+    #[tokio::test]
+    async fn add_comment_without_anchor_or_state_is_whole_document() {
+        let (_dir, state) = setup();
+        let id = create_draft(&state, "task/fix-login", "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        let response = send(&state, post_json(&uri, r#"{"body":"Overall."}"#)).await;
+        assert_eq!(response.status(), 201);
+        let json = json_body(response).await;
+        assert_eq!(json["comments"][0]["anchor_state"], "whole-document");
+    }
+
+    #[tokio::test]
+    async fn add_comment_unknown_anchor_state_returns_422_listing_accepted_values() {
+        let (_dir, state) = setup();
+        let id = create_draft(&state, "task/fix-login", "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        let response = send(
+            &state,
+            post_json(&uri, r#"{"body":"x","anchor_state":"bogus"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), 422);
+        let json = json_body(response).await;
+        let detail = json["detail"].as_str().unwrap();
+        for known in rdm_core::model::AnchorState::KNOWN {
+            assert!(detail.contains(known.as_str()), "{detail}");
+        }
+    }
+
+    #[tokio::test]
+    async fn add_comment_anchor_with_anchor_state_returns_400() {
+        let (_dir, state) = setup();
+        let id = create_draft(&state, "task/fix-login", "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        let body = serde_json::json!({
+            "body": "Both at once.",
+            "anchor": {
+                "anchor_type": "text-quote",
+                "quote": "quoted span",
+                "prefix": "the ",
+                "suffix": " here"
+            },
+            "anchor_state": "outside-hunk",
+        });
+        let response = send(&state, post_json(&uri, &body.to_string())).await;
+        assert_eq!(response.status(), 400);
+        let json = json_body(response).await;
+        assert!(
+            json["detail"]
+                .as_str()
+                .unwrap()
+                .contains("anchored comment cannot also carry"),
+            "{json}"
+        );
     }
 
     #[tokio::test]

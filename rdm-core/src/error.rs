@@ -407,6 +407,17 @@ pub enum Error {
     /// A `--path` was given on a `change/` review with no `--quote` to
     /// locate in it.
     ChangePathNeedsQuote,
+    /// A comment was given an anchor together with an anchor state or an
+    /// intended path. An anchored comment's anchor is authoritative, so
+    /// neither field may accompany it.
+    CommentAnchorStateWithAnchor,
+    /// A source path (`--path` or an intended path) was given on a review
+    /// whose target is not a `change/` review; the payload is the target's
+    /// label (e.g. `task/fix-login`).
+    CommentPathNotApplicable(String),
+    /// A `--path`/`--quote` anchor was requested on a `change/` review, but
+    /// no source repository was supplied to derive it against.
+    ChangeAnchorNeedsSource,
     /// A slug already exists.
     DuplicateSlug(String),
     /// A roadmap slug collided with a reserved prefix (see
@@ -1103,6 +1114,24 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "--path needs --quote — pass both, or neither for a whole-change comment"
+                )
+            }
+            Error::CommentAnchorStateWithAnchor => {
+                write!(
+                    f,
+                    "an anchored comment cannot also carry an anchor state or an intended path — the anchor itself says where the comment points; pass --anchor-state/--intended-path only on a comment without --quote"
+                )
+            }
+            Error::CommentPathNotApplicable(label) => {
+                write!(
+                    f,
+                    "--path only applies to a change review — this review targets {label}, whose quotes are located in the plan-repo document itself"
+                )
+            }
+            Error::ChangeAnchorNeedsSource => {
+                write!(
+                    f,
+                    "this build has no git support — `change/` reviews require the `git` feature"
                 )
             }
             Error::DuplicateSlug(slug) => {

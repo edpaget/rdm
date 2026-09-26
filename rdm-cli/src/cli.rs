@@ -8,12 +8,14 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
+#[cfg(feature = "git")]
+use rdm_core::model::{AnchorState, ReviewCommentStatus, ReviewState, Verdict};
 use rdm_core::model::{
     Difficulty, ModelTier, PhaseStatus, PlanStatus, Priority, RoadmapSort, RunDriver, TaskStatus,
     TaskStatusFilter,
 };
 #[cfg(feature = "git")]
-use rdm_core::model::{ReviewCommentStatus, ReviewState, Verdict};
+use rdm_core::ops::reviews::OnAnchorFailure;
 use rdm_core::search::ItemKind;
 
 #[derive(Parser)]
@@ -1488,6 +1490,13 @@ pub(crate) enum ReviewCommand {
     /// On a `change/` review, `--quote` additionally requires `--path`: the
     /// quote is located in that file's content at the reviewed head and
     /// must fall inside a hunk the change touches.
+    ///
+    /// A comment without `--quote` records why it has no anchor: pass
+    /// `--anchor-state` (and, on a change review, `--intended-path`) to record
+    /// a reason, or omit both for a deliberate whole-document comment. With
+    /// `--on-anchor-failure whole-document`, a refused anchor is stored
+    /// whole-document with core's reason instead of failing, and stdout is
+    /// one JSON line describing what was stored.
     Comment {
         /// Id of the draft review to comment on.
         review_id: String,
@@ -1510,6 +1519,30 @@ pub(crate) enum ReviewCommand {
         /// (`phase/<stem-or-number>`). Only valid on roadmap reviews.
         #[arg(long)]
         doc: Option<String>,
+        /// Why this anchorless comment has no anchor (e.g. `outside-hunk`,
+        /// `path-missing`). Omitted, a comment without `--quote` is recorded
+        /// as `whole-document`. An unknown value is rejected with the list
+        /// of accepted ones.
+        #[arg(long, value_name = "STATE", conflicts_with = "quote")]
+        anchor_state: Option<AnchorState>,
+        /// On a `change/` review: the source-repo-relative file an
+        /// anchorless comment is about. For a comment without `--quote`;
+        /// `--on-anchor-failure whole-document` records the requested
+        /// `--path` itself.
+        #[arg(long, value_name = "PATH", conflicts_with = "quote")]
+        intended_path: Option<String>,
+        /// What to do when the requested anchor is refused: `refuse` (the
+        /// default) fails the command; `whole-document` stores the comment
+        /// without an anchor, recording core's reason (and the requested
+        /// `--path` as its intended path), exits 0, prints one JSON line on
+        /// stdout, and reports the refusal on stderr.
+        #[arg(
+            long,
+            value_name = "MODE",
+            requires = "quote",
+            conflicts_with = "anchor_state"
+        )]
+        on_anchor_failure: Option<OnAnchorFailure>,
         /// Comment text.
         #[arg(long)]
         body: Option<String>,

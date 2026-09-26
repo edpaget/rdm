@@ -6,7 +6,9 @@ use rdm_core::config::{Config, GlobalConfig};
 use rdm_core::document::Document;
 use rdm_core::model::{PhaseStatus, Review, ReviewState, ReviewTarget, TaskStatus};
 use rdm_core::ops::review::{PendingReviewItem, PendingReviewKind};
-use rdm_core::ops::reviews::{AddComment, CreateReview, ReviewFilter, UpdateComment};
+use rdm_core::ops::reviews::{
+    AddComment, AnchorRequest, CreateReview, OnAnchorFailure, ReviewFilter, UpdateComment,
+};
 use rdm_core::ops::{BodyUpdate, TagsUpdate};
 use rdm_core::{display, json};
 
@@ -390,6 +392,9 @@ pub fn run(
             path,
             occurrence,
             doc,
+            anchor_state,
+            intended_path,
+            on_anchor_failure,
             body,
             no_edit,
             project,
@@ -420,66 +425,57 @@ pub fn run(
                     }
                 },
             };
-            let anchor = if let ReviewTarget::Change { head, base } = &review_doc.frontmatter.target
-            {
-                derive_change_anchor(
-                    store,
-                    &project,
-                    head,
-                    base.as_deref(),
-                    quote.as_deref(),
-                    path.as_deref(),
-                    occurrence,
-                )?
-            } else {
-                if path.is_some() {
-                    bail!(
-                        "--path only applies to a change review — review '{review_id}' targets {}, whose quotes are located in the plan-repo document itself",
-                        review_doc.frontmatter.target.label()
-                    );
-                }
-                match &quote {
-                    Some(q) => {
-                        let (target_body, at) = rdm_core::anchor::body_for_comment(
-                            store,
-                            &project,
-                            &review_doc.frontmatter,
-                            doc_scope.as_ref(),
-                        )
-                        .context("failed to load the document the quote anchors into")?;
-                        Some(rdm_core::anchor::derive_text_quote(
-                            &target_body,
-                            q,
-                            occurrence,
-                            at.as_deref(),
-                        )?)
-                    }
-                    None => None,
-                }
-            };
             let Some(body) = resolve_review_body(body, no_edit)?.filter(|b| !b.trim().is_empty())
             else {
                 bail!("comment body must not be empty — pass --body <text>");
             };
-            let updated = commit_mutation(store, "failed to add comment", |s| {
-                rdm_core::ops::reviews::add_comment(
+            // Only a change review that asks for an anchor reads the source
+            // repository; discovery failing is environmental and review-wide,
+            // so it stays an error even under the fall-back mode.
+            let needs_source = matches!(review_doc.frontmatter.target, ReviewTarget::Change { .. })
+                && (quote.is_some() || path.is_some());
+            let source = discover_anchor_source(store, &project, needs_source)?;
+            let mode = on_anchor_failure.unwrap_or_default();
+            let added = commit_mutation(store, "failed to add comment", |s| {
+                rdm_core::ops::reviews::add_comment_with_anchor(
                     s,
+                    source.as_ref(),
                     AddComment {
                         project: &project,
                         review_id: &review_id,
                         body: &body,
                         doc: doc_scope,
-                        anchor,
+                        anchor: None,
+                        anchor_state,
+                        intended_path: intended_path.as_deref(),
                     },
+                    AnchorRequest {
+                        quote: quote.as_deref(),
+                        path: path.as_deref(),
+                        occurrence,
+                    },
+                    mode,
                 )
             })?;
-            let comment_id = updated
-                .frontmatter
-                .comments
-                .last()
-                .map(|c| c.id)
-                .unwrap_or_default();
-            println!("Added comment {comment_id} to review '{review_id}'");
+            match mode {
+                OnAnchorFailure::Refuse => {
+                    println!("Added comment {} to review '{review_id}'", added.comment_id);
+                }
+                OnAnchorFailure::WholeDocument => {
+                    if let Some(refusal) = &added.refusal {
+                        eprintln!("warning: anchor refused ({refusal}); stored whole-document");
+                    }
+                    println!(
+                        "{}",
+                        serde_json::to_string(&json::comment_added_to_json(
+                            &review_id,
+                            &added.doc,
+                            added.comment_id,
+                        ))
+                        .context("failed to serialize the added comment")?
+                    );
+                }
+            }
         }
         ReviewCommand::Submit {
             review_id,
@@ -889,34 +885,39 @@ fn resolve_implements(
     }
 }
 
-/// Discovers the source checkout and hands `--path`/`--quote` to
-/// [`rdm_core::change::derive_change_anchor`], which owns the pairing rule,
-/// the head-side content read, the hunk computation and the
-/// inside-a-touched-hunk check.
-fn derive_change_anchor(
+/// The source repository a comment's anchor is derived against, when
+/// `needed` (a `change/` review that requests an anchor); `None` otherwise.
+///
+/// Anchor derivation itself — and the fall-back that maps a refusal to a
+/// stored reason — lives in
+/// [`rdm_core::ops::reviews::add_comment_with_anchor`]. The CLI's share is
+/// the environmental part: which checkout to read.
+#[cfg(feature = "git")]
+fn discover_anchor_source(
     store: &AppStore,
     project: &str,
-    head: &str,
-    base: Option<&str>,
-    quote: Option<&str>,
-    path: Option<&str>,
-    occurrence: Option<usize>,
-) -> Result<Option<rdm_core::model::Anchor>> {
-    if quote.is_none() && path.is_none() {
+    needed: bool,
+) -> Result<Option<rdm_git::GitSourceRepo>> {
+    if !needed {
         return Ok(None);
     }
-    #[cfg(not(feature = "git"))]
-    {
-        let _ = (store, project, head, base, quote, path, occurrence);
+    Ok(Some(crate::source_repo::discover_source_repo(
+        store, project,
+    )?))
+}
+
+/// The no-git counterpart: there is no repository to discover, so a change
+/// anchor is refused up front.
+#[cfg(not(feature = "git"))]
+fn discover_anchor_source(
+    _store: &AppStore,
+    _project: &str,
+    needed: bool,
+) -> Result<Option<rdm_core::source::MemorySourceRepo>> {
+    if needed {
         bail!("this build has no git support — `change/` reviews require the `git` feature");
     }
-    #[cfg(feature = "git")]
-    {
-        let source = crate::source_repo::discover_source_repo(store, project)?;
-        Ok(rdm_core::change::derive_change_anchor(
-            &source, head, base, quote, path, occurrence,
-        )?)
-    }
+    Ok(None)
 }
 
 /// Renders a filtered review list in the requested format.

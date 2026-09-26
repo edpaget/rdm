@@ -336,6 +336,8 @@ mod tests {
                 created_commit: None,
                 comments: vec![
                     ReviewComment {
+                        anchor_state: None,
+                        intended_path: None,
                         id: 1,
                         doc: None,
                         status: ReviewCommentStatus::Open,
@@ -345,6 +347,8 @@ mod tests {
                         reply: None,
                     },
                     ReviewComment {
+                        anchor_state: None,
+                        intended_path: None,
                         id: 2,
                         doc: None,
                         status: ReviewCommentStatus::Addressed,

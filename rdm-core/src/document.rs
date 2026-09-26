@@ -450,6 +450,8 @@ Still loads.
                 created_commit: Some("a1b2c3d".to_string()),
                 comments: vec![
                     ReviewComment {
+                        anchor_state: None,
+                        intended_path: None,
                         id: 1,
                         doc: None,
                         status: ReviewCommentStatus::Open,
@@ -463,6 +465,8 @@ Still loads.
                         reply: None,
                     },
                     ReviewComment {
+                        anchor_state: None,
+                        intended_path: None,
                         id: 2,
                         doc: Some(CommentDoc {
                             kind: CommentDocKind::Phase,

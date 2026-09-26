@@ -426,6 +426,45 @@ The full model — hunk-restricted anchoring, resolved/drifted/unresolved
 detection, the `implements` inference rules, and the never-write-the-source-repo
 invariant — is recorded in [`change-reviews.md`](change-reviews.md).
 
+### Comment fields
+
+Each entry in `comments` is a mapping:
+
+| Field | Required | Type | Description |
+|-------|----------|------|-------------|
+| `id` | yes | integer | Ordinal identifier, unique within the review |
+| `doc` | no | mapping | Roadmap reviews only: `{kind: phase, stem: …}` points the comment at one of the roadmap's phases |
+| `status` | yes | enum | `open`, `addressed`, or `wont-fix` |
+| `applied_commit` | no | string | Commit SHA recorded when the comment was addressed |
+| `anchor` | no | mapping | Where the comment points (see [Anchors](#anchors)) |
+| `anchor_state` | no | enum | Why an anchorless comment has no anchor (below). Never present on an anchored comment |
+| `intended_path` | no | string | The repo-relative source file an anchorless `change` review comment was about. Never present on an anchored comment or on another review kind |
+| `body` | yes | string | The comment text (Markdown) |
+| `reply` | no | string | Agent note set when the comment is addressed or needs clarification |
+
+`anchor_state` takes one of these values:
+
+| Value | Meaning |
+|-------|---------|
+| `whole-document` | Written without a quote **on purpose** — about the whole document (or, with `intended_path`, the whole file). Stamped automatically on any comment added without an anchor or a reason |
+| `quote-not-found` | The quote was not in the document or file |
+| `ambiguous` | The quote occurs more than once and no occurrence was chosen |
+| `occurrence-out-of-range` | The chosen occurrence exceeds the match count |
+| `outside-hunk` | The quote lies outside every hunk the change touches, or the writer had no hunk to anchor into |
+| `path-missing` | The path does not exist at the reviewed head, is not repo-relative, or the writer had no usable path |
+| `path-not-a-file` | The path names a directory or submodule |
+| `path-not-linkable` | The path contains `@` or `#`, which the `rdm:src/` permalink grammar reserves |
+| `head-not-in-source` | The source repository does not contain the reviewed head |
+| `start-fallback` | The writer fell back to the start of the finding's span |
+
+**Compatibility rule.** Both fields are optional and every review written
+before they existed loads unchanged. An **absent** `anchor_state` on an
+anchorless comment means **not recorded** — it is never read as
+`whole-document` — and review JSON reports it as the reserved string
+`"not-recorded"`. An anchored comment never carries either field: its anchor is
+authoritative. A value this build does not recognize (written by a newer rdm)
+round-trips verbatim, exactly like an unrecognized `anchor_type`.
+
 ## Run Files
 
 Located at `projects/<project>/runs/<id>.md`. Created by `rdm run record`, and

@@ -874,6 +874,8 @@ fn change_review_reports_a_stored_tree_anchor_as_unresolved_with_no_permalink() 
 
     edit_review_frontmatter(plan.path(), &id, |v| {
         v.comments.push(rdm_core::model::ReviewComment {
+            anchor_state: None,
+            intended_path: None,
             id: 1,
             doc: None,
             status: rdm_core::model::ReviewCommentStatus::Open,
@@ -3531,4 +3533,269 @@ Summary.
     let report: Value = serde_json::from_str(&stdout).unwrap();
     assert!(report["path_verification_skipped"].is_null(), "{report}");
     assert_eq!(report["unresolved_commits"], serde_json::json!([]));
+}
+
+// --- anchor state and intended path (code-as-linkable-target phase 3) ---
+
+/// Runs `rdm review comment <id> <args…> --no-edit --project demo` from the
+/// source checkout and returns the raw output, success or not.
+fn review_comment(plan: &Path, source: &Path, id: &str, args: &[&str]) -> std::process::Output {
+    rdm()
+        .arg("--root")
+        .arg(plan)
+        .args(["review", "comment", id])
+        .args(args)
+        .args(["--no-edit", "--project", "demo"])
+        .current_dir(source)
+        .output()
+        .unwrap()
+}
+
+/// A change review started on the fixture's `topic` tip.
+fn fixture_change_review(src: &Path, plan: &Path) -> String {
+    create_plan(plan, "design-plan", true);
+    start_change_review(
+        plan,
+        src,
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    )
+}
+
+/// AC1: a comment written with a degradation reason and an intended path
+/// round-trips both unchanged through `review show --format json`.
+#[test]
+fn anchor_state_and_intended_path_round_trip_through_review_show() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = fixture_change_review(src.path(), plan.path());
+    let out = review_comment(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--anchor-state",
+            "path-missing",
+            "--intended-path",
+            "src/x.rs",
+            "--body",
+            "The finding named a file this change does not have.",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let j = review_json(plan.path(), src.path(), &id);
+    let c = &j["comments"][0];
+    assert_eq!(c["anchor_state"], "path-missing");
+    assert_eq!(c["intended_path"], "src/x.rs");
+    assert!(c["anchor"].is_null());
+}
+
+/// A review file in the format every review had before `anchor_state`
+/// existed: one anchorless comment, and neither new key anywhere.
+const LEGACY_CHANGE_REVIEW: &str = "---
+id: 2026-01-01-0000-lgcy
+author: legacy
+target:
+  kind: change
+  head: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  base: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+state: submitted
+verdict: comment
+created: 2026-01-01T00:00:00Z
+submitted: 2026-01-01T00:05:00Z
+comments:
+- id: 1
+  status: open
+  body: A comment written before anchor_state existed.
+---
+Legacy review.
+";
+
+/// Writes [`LEGACY_CHANGE_REVIEW`] into the plan repo and returns its id.
+fn write_legacy_review(plan: &Path) -> String {
+    let dir = plan.join("projects/demo/reviews");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("2026-01-01-0000-lgcy.md"), LEGACY_CHANGE_REVIEW).unwrap();
+    "2026-01-01-0000-lgcy".to_string()
+}
+
+/// AC3: a pre-change review still loads, and its anchorless comment reports
+/// `not-recorded` — never `whole-document`.
+#[test]
+fn a_pre_anchor_state_review_loads_and_reports_not_recorded() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = write_legacy_review(plan.path());
+    let j = review_json(plan.path(), src.path(), &id);
+    let c = &j["comments"][0];
+    assert_eq!(c["anchor_state"], "not-recorded");
+    assert!(c.get("intended_path").is_none(), "{c}");
+    // Reading never rewrites the file.
+    let on_disk = std::fs::read_to_string(
+        plan.path()
+            .join("projects/demo/reviews")
+            .join(format!("{id}.md")),
+    )
+    .unwrap();
+    assert_eq!(on_disk, LEGACY_CHANGE_REVIEW);
+}
+
+/// AC2: all four categories side by side — deliberately whole-document, a
+/// persist-time reason, a run-time refusal recorded by the fall-back mode
+/// (with its intended path), and not recorded (the legacy fixture).
+#[test]
+fn every_anchor_state_category_is_distinguishable() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = fixture_change_review(src.path(), plan.path());
+
+    // 1. Body only: whole-document on purpose.
+    let out = review_comment(plan.path(), src.path(), &id, &["--body", "Overall: fine."]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 2. A persist-time reason, recorded by the writer.
+    let out = review_comment(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--anchor-state",
+            "outside-hunk",
+            "--intended-path",
+            "src/lib.rs",
+            "--body",
+            "Dropped before asking.",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // 3. A run-time refusal recorded by the fall-back mode.
+    let out = review_comment(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "absent text",
+            "--on-anchor-failure",
+            "whole-document",
+            "--body",
+            "Refused at run time.",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 1, "exactly one JSON line on stdout: {stdout}");
+    let line: Value = serde_json::from_str(lines[0]).unwrap();
+    assert_eq!(line["review_id"], id.as_str());
+    assert_eq!(line["comment_id"], 3);
+    assert_eq!(line["anchored"], false);
+    assert_eq!(line["anchor_state"], "quote-not-found");
+    assert_eq!(line["intended_path"], "src/lib.rs");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning: anchor refused (") && stderr.contains("stored whole-document"),
+        "the refusal is reported on stderr: {stderr}"
+    );
+
+    let j = review_json(plan.path(), src.path(), &id);
+    let states: Vec<&Value> = j["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| &c["anchor_state"])
+        .collect();
+    assert_eq!(
+        states,
+        ["whole-document", "outside-hunk", "quote-not-found"]
+    );
+    assert!(j["comments"][0].get("intended_path").is_none());
+    assert_eq!(j["comments"][1]["intended_path"], "src/lib.rs");
+    assert_eq!(j["comments"][2]["intended_path"], "src/lib.rs");
+
+    // 4. Not recorded — a review in the pre-change format.
+    let legacy = write_legacy_review(plan.path());
+    let j = review_json(plan.path(), src.path(), &legacy);
+    assert_eq!(j["comments"][0]["anchor_state"], "not-recorded");
+}
+
+/// The fall-back mode anchors normally when core accepts the anchor, and
+/// its JSON line says so.
+#[test]
+fn fall_back_mode_reports_an_anchored_comment() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = fixture_change_review(src.path(), plan.path());
+    let out = review_comment(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--on-anchor-failure",
+            "whole-document",
+            "--body",
+            "Anchors fine.",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let line: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        line,
+        serde_json::json!({ "review_id": id, "comment_id": 1, "anchored": true })
+    );
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["comments"][0]["anchor"]["anchor_type"], "file-quote");
+    assert!(j["comments"][0].get("anchor_state").is_none());
+}
+
+/// An unknown `--anchor-state` is rejected, naming every accepted value.
+#[test]
+fn an_unknown_anchor_state_is_rejected_listing_every_accepted_value() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = fixture_change_review(src.path(), plan.path());
+    let out = review_comment(
+        plan.path(),
+        src.path(),
+        &id,
+        &["--anchor-state", "bogus", "--body", "x"],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    for state in rdm_core::model::AnchorState::KNOWN {
+        assert!(
+            stderr.contains(state.as_str()),
+            "stderr omits {}: {stderr}",
+            state.as_str()
+        );
+    }
+    let j = review_json(plan.path(), src.path(), &id);
+    assert!(j["comments"].as_array().unwrap().is_empty());
 }

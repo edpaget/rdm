@@ -1071,6 +1071,8 @@ mod tests {
 
     fn comment(anchor: Option<Anchor>, doc: Option<CommentDoc>) -> ReviewComment {
         ReviewComment {
+            anchor_state: None,
+            intended_path: None,
             id: 1,
             doc,
             status: ReviewCommentStatus::Open,

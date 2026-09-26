@@ -1961,6 +1961,8 @@ mod tests {
                 submitted: None,
                 created_commit: None,
                 comments: vec![ReviewComment {
+                    anchor_state: None,
+                    intended_path: None,
                     id: 1,
                     doc: None,
                     status: ReviewCommentStatus::Open,
@@ -2136,6 +2138,8 @@ mod tests {
                 submitted: None,
                 created_commit: None,
                 comments: vec![ReviewComment {
+                    anchor_state: None,
+                    intended_path: None,
                     id: 3,
                     doc: Some(CommentDoc {
                         kind: CommentDocKind::Phase,
@@ -2205,6 +2209,8 @@ mod tests {
                 submitted: None,
                 created_commit: None,
                 comments: vec![ReviewComment {
+                    anchor_state: None,
+                    intended_path: None,
                     id: 1,
                     doc: None,
                     status: ReviewCommentStatus::Open,
@@ -2812,6 +2818,8 @@ mod tests {
 
     fn comment(id: u32, applied_commit: Option<&str>, body: &str) -> ReviewComment {
         ReviewComment {
+            anchor_state: None,
+            intended_path: None,
             id,
             doc: None,
             status: if applied_commit.is_some() {

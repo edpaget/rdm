@@ -11,9 +11,10 @@ use chrono::{DateTime, Utc};
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{
-    Anchor, CommentDoc, CommentDocKind, PlanStatus, Review, ReviewComment, ReviewCommentStatus,
-    ReviewState, ReviewTarget, ReviewTargetKind, Verdict,
+    Anchor, AnchorState, CommentDoc, CommentDocKind, ParseError, PlanStatus, Review, ReviewComment,
+    ReviewCommentStatus, ReviewState, ReviewTarget, ReviewTargetKind, Verdict,
 };
+use crate::source::SourceRepo;
 use crate::store::{DirEntryKind, Store, VersionedStore};
 
 /// The branch a `change/` review's merge base is computed against.
@@ -316,7 +317,10 @@ pub fn create_review(
 }
 
 /// Request describing a new comment to add to a draft review.
-#[derive(Debug, Clone)]
+///
+/// [`Default`] yields empty identifiers and every optional field unset, so a
+/// caller names only what it supplies (`..Default::default()`).
+#[derive(Debug, Clone, Default)]
 pub struct AddComment<'a> {
     /// Project the review belongs to.
     pub project: &'a str,
@@ -331,6 +335,15 @@ pub struct AddComment<'a> {
     /// and are **not** resolved here — an anchor that no longer matches the
     /// target's body (drift) is expected and surfaced later.
     pub anchor: Option<Anchor>,
+    /// Why the comment has no anchor. Only legal when `anchor` is `None`;
+    /// left `None` there, [`add_comment`] stamps
+    /// [`AnchorState::WholeDocument`].
+    pub anchor_state: Option<AnchorState>,
+    /// The source path an anchorless `change/` review comment is about.
+    /// Only legal when `anchor` is `None` and the review targets a change;
+    /// normalized through [`crate::change::normalize_source_path`] before it
+    /// is stored.
+    pub intended_path: Option<&'a str>,
 }
 
 /// Adds a comment to a draft review.
@@ -338,6 +351,13 @@ pub struct AddComment<'a> {
 /// The comment id is `max(existing ids) + 1` — removing a comment never
 /// renumbers the survivors, though the freed *highest* id may be reused by
 /// a subsequent add.
+///
+/// An anchorless comment always records an [`AnchorState`]: the caller's
+/// `anchor_state` when it supplied one, otherwise
+/// [`AnchorState::WholeDocument`] — a comment written without an anchor and
+/// without a reason is whole-document on purpose. An `intended_path` alone
+/// is therefore a deliberate whole-file comment. An anchored comment never
+/// carries either field.
 ///
 /// # Errors
 ///
@@ -348,9 +368,14 @@ pub struct AddComment<'a> {
 /// [`Error::ReviewNotDraft`] if the review has been submitted (comment
 /// structure is immutable after submit), [`Error::CommentDocNotApplicable`]
 /// if `doc` is set on a phase or task review, [`Error::CommentDocOutOfScope`]
-/// if `doc` names a phase outside the reviewed roadmap, [`Error::Io`] on
-/// read/write failure, or [`Error::FrontmatterMissing`]/
-/// [`Error::FrontmatterParse`] on a malformed review file.
+/// if `doc` names a phase outside the reviewed roadmap,
+/// [`Error::CommentAnchorStateWithAnchor`] if `anchor` is set together with
+/// `anchor_state` or `intended_path`, [`Error::CommentPathNotApplicable`] if
+/// `intended_path` is set on a review that does not target a change,
+/// whatever [`crate::change::normalize_source_path`] returns for an
+/// unusable `intended_path`, [`Error::Io`] on read/write failure, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] on a malformed
+/// review file.
 pub fn add_comment(store: &mut impl Store, req: AddComment<'_>) -> Result<Document<Review>> {
     let AddComment {
         project,
@@ -358,7 +383,12 @@ pub fn add_comment(store: &mut impl Store, req: AddComment<'_>) -> Result<Docume
         body,
         doc,
         anchor,
+        anchor_state,
+        intended_path,
     } = req;
+    if anchor.is_some() && (anchor_state.is_some() || intended_path.is_some()) {
+        return Err(Error::CommentAnchorStateWithAnchor);
+    }
     let mut review_doc = crate::io::load_review(store, project, review_id)?;
     if review_doc.frontmatter.state != ReviewState::Draft {
         return Err(Error::ReviewNotDraft(review_id.to_string()));
@@ -366,6 +396,21 @@ pub fn add_comment(store: &mut impl Store, req: AddComment<'_>) -> Result<Docume
     if let Some(ref d) = doc {
         validate_comment_doc(store, project, &review_doc.frontmatter.target, d)?;
     }
+    let intended_path = match intended_path {
+        None => None,
+        Some(p) => {
+            if !matches!(review_doc.frontmatter.target, ReviewTarget::Change { .. }) {
+                return Err(Error::CommentPathNotApplicable(
+                    review_doc.frontmatter.target.label(),
+                ));
+            }
+            Some(crate::change::normalize_source_path(p)?)
+        }
+    };
+    let anchor_state = match anchor {
+        Some(_) => None,
+        None => Some(anchor_state.unwrap_or(AnchorState::WholeDocument)),
+    };
     let next_id = review_doc
         .frontmatter
         .comments
@@ -379,11 +424,263 @@ pub fn add_comment(store: &mut impl Store, req: AddComment<'_>) -> Result<Docume
         status: ReviewCommentStatus::Open,
         applied_commit: None,
         anchor,
+        anchor_state,
+        intended_path,
         body: body.to_string(),
         reply: None,
     });
     crate::io::write_review(store, project, review_id, &review_doc)?;
     Ok(review_doc)
+}
+
+/// What [`add_comment_with_anchor`] does when core refuses the requested
+/// anchor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OnAnchorFailure {
+    /// Fail the add with core's refusal (the historical behavior).
+    #[default]
+    Refuse,
+    /// Store the comment without an anchor, recording the refusal's
+    /// [`AnchorState`] reason (and, on a change review, the requested path
+    /// as the intended path).
+    WholeDocument,
+}
+
+impl OnAnchorFailure {
+    /// The flag spelling: `refuse` or `whole-document`.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OnAnchorFailure::Refuse => "refuse",
+            OnAnchorFailure::WholeDocument => "whole-document",
+        }
+    }
+}
+
+impl std::fmt::Display for OnAnchorFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for OnAnchorFailure {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "refuse" => Ok(OnAnchorFailure::Refuse),
+            "whole-document" => Ok(OnAnchorFailure::WholeDocument),
+            other => Err(ParseError::new(
+                "anchor-failure mode",
+                other,
+                "refuse or whole-document",
+            )),
+        }
+    }
+}
+
+/// The anchor a caller asks [`add_comment_with_anchor`] to derive: the raw
+/// `--quote`/`--path`/`--occurrence` inputs, before any derivation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AnchorRequest<'a> {
+    /// The exact text to anchor to.
+    pub quote: Option<&'a str>,
+    /// On a `change/` review: the source-repo-relative file the quote lives
+    /// in. Refused on every other review kind.
+    pub path: Option<&'a str>,
+    /// Which occurrence of `quote` to anchor to (1-based).
+    pub occurrence: Option<usize>,
+}
+
+/// The outcome of [`add_comment_with_anchor`].
+#[derive(Debug, Clone)]
+pub struct AddedComment {
+    /// The review as written, including the new comment.
+    pub doc: Document<Review>,
+    /// Id of the comment just added.
+    pub comment_id: u32,
+    /// Core's refusal text when the requested anchor was refused and the
+    /// comment was stored whole-document instead; `None` when it anchored
+    /// (or no anchor was requested).
+    pub refusal: Option<String>,
+}
+
+/// Maps an anchor refusal to the [`AnchorState`] reason it records.
+///
+/// Returns `None` for every error that is not an anchor refusal — usage
+/// errors (a quote without a path and the like), store and IO failures, a
+/// source repository that cannot be queried — so the fall-back mode of
+/// [`add_comment_with_anchor`] never turns them into a stored comment.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::error::Error;
+/// use rdm_core::model::AnchorState;
+/// use rdm_core::ops::reviews::anchor_refusal_reason;
+///
+/// let refusal = Error::QuoteNotFound { quote: "x".to_string(), commit: None };
+/// assert_eq!(anchor_refusal_reason(&refusal), Some(AnchorState::QuoteNotFound));
+/// assert_eq!(anchor_refusal_reason(&Error::ChangeQuoteNeedsPath), None);
+/// ```
+#[must_use]
+pub fn anchor_refusal_reason(err: &Error) -> Option<AnchorState> {
+    match err {
+        Error::QuoteNotFound { .. } => Some(AnchorState::QuoteNotFound),
+        Error::QuoteAmbiguous { .. } => Some(AnchorState::Ambiguous),
+        Error::QuoteOccurrenceOutOfRange { .. } => Some(AnchorState::OccurrenceOutOfRange),
+        Error::QuoteOutsideChangedHunks { .. } => Some(AnchorState::OutsideHunk),
+        Error::ChangePathNotInRevision { .. } => Some(AnchorState::PathMissing),
+        Error::ChangePathNotAFile { .. } => Some(AnchorState::PathNotAFile),
+        Error::ChangePathNotLinkable { .. } => Some(AnchorState::PathNotLinkable),
+        Error::ChangeHeadNotInSource { .. } => Some(AnchorState::HeadNotInSource),
+        _ => None,
+    }
+}
+
+/// Adds a comment to a draft review, deriving its anchor from `anchor` —
+/// and, under [`OnAnchorFailure::WholeDocument`], storing it whole-document
+/// with the refusal's reason when core refuses that anchor.
+///
+/// Derivation follows the review's target:
+///
+/// - a `change/` review derives an [`Anchor::FileQuote`] through
+///   [`crate::change::derive_change_anchor`] against `source`;
+/// - any other review derives an [`Anchor::TextQuote`] from the comment's
+///   document as of the review's `created_commit`
+///   ([`crate::anchor::body_for_comment`] then
+///   [`crate::anchor::derive_text_quote`]).
+///
+/// With neither `quote` nor `path` requested, this is exactly
+/// [`add_comment`] with `req` unchanged (so `req.anchor_state` and
+/// `req.intended_path` pass through). When an anchor *is* requested,
+/// `req.anchor`, `req.anchor_state` and `req.intended_path` must all be
+/// unset.
+///
+/// Under [`OnAnchorFailure::WholeDocument`], a refusal that
+/// [`anchor_refusal_reason`] maps is stored as an anchorless comment with
+/// that reason, plus — on a change review — the requested `path` as its
+/// intended path, when that path normalizes (a path refused as unlinkable or
+/// not repo-relative is not stored). The refusal text is returned in
+/// [`AddedComment::refusal`]. Every other error propagates in either mode.
+///
+/// `source` is only consulted for a change review that requests an anchor;
+/// every other caller may pass `None`.
+///
+/// # Errors
+///
+/// Returns [`Error::CommentAnchorStateWithAnchor`] when an anchor is
+/// requested alongside `req.anchor`, `req.anchor_state` or
+/// `req.intended_path`, [`Error::ReviewNotDraft`] for a submitted review,
+/// [`Error::ChangeAnchorNeedsSource`] when a change review requests an
+/// anchor and `source` is `None`, [`Error::CommentPathNotApplicable`] when
+/// `path` is set on a non-change review, the anchor refusal itself under
+/// [`OnAnchorFailure::Refuse`], any non-refusal error from derivation
+/// (usage errors such as [`Error::ChangeQuoteNeedsPath`], a source
+/// repository that cannot be queried, a document that cannot be loaded), or
+/// anything [`add_comment`] returns.
+pub fn add_comment_with_anchor<S: SourceRepo>(
+    store: &mut impl VersionedStore,
+    source: Option<&S>,
+    req: AddComment<'_>,
+    anchor: AnchorRequest<'_>,
+    on_failure: OnAnchorFailure,
+) -> Result<AddedComment> {
+    let added = |doc: Document<Review>, refusal: Option<String>| {
+        let comment_id = doc
+            .frontmatter
+            .comments
+            .last()
+            .map(|c| c.id)
+            .unwrap_or_default();
+        AddedComment {
+            doc,
+            comment_id,
+            refusal,
+        }
+    };
+    if anchor.quote.is_none() && anchor.path.is_none() {
+        return Ok(added(add_comment(store, req)?, None));
+    }
+    if req.anchor.is_some() || req.anchor_state.is_some() || req.intended_path.is_some() {
+        return Err(Error::CommentAnchorStateWithAnchor);
+    }
+    let review = crate::io::load_review(store, req.project, req.review_id)?;
+    if review.frontmatter.state != ReviewState::Draft {
+        return Err(Error::ReviewNotDraft(req.review_id.to_string()));
+    }
+    let is_change = matches!(review.frontmatter.target, ReviewTarget::Change { .. });
+    let derived = match &review.frontmatter.target {
+        ReviewTarget::Change { head, base } => {
+            let Some(source) = source else {
+                return Err(Error::ChangeAnchorNeedsSource);
+            };
+            crate::change::derive_change_anchor(
+                source,
+                head,
+                base.as_deref(),
+                anchor.quote,
+                anchor.path,
+                anchor.occurrence,
+            )
+        }
+        other => {
+            if anchor.path.is_some() {
+                return Err(Error::CommentPathNotApplicable(other.label()));
+            }
+            match anchor.quote {
+                None => Ok(None),
+                Some(quote) => {
+                    let (body, at) = crate::anchor::body_for_comment(
+                        store,
+                        req.project,
+                        &review.frontmatter,
+                        req.doc.as_ref(),
+                    )?;
+                    crate::anchor::derive_text_quote(&body, quote, anchor.occurrence, at.as_deref())
+                        .map(Some)
+                }
+            }
+        }
+    };
+    match derived {
+        Ok(derived) => {
+            let doc = add_comment(
+                store,
+                AddComment {
+                    anchor: derived,
+                    ..req
+                },
+            )?;
+            Ok(added(doc, None))
+        }
+        Err(e) => {
+            let reason = match on_failure {
+                OnAnchorFailure::Refuse => None,
+                OnAnchorFailure::WholeDocument => anchor_refusal_reason(&e),
+            };
+            let Some(reason) = reason else {
+                return Err(e);
+            };
+            let intended_path = if is_change {
+                anchor
+                    .path
+                    .and_then(|p| crate::change::normalize_source_path(p).ok())
+            } else {
+                None
+            };
+            let doc = add_comment(
+                store,
+                AddComment {
+                    anchor: None,
+                    anchor_state: Some(reason),
+                    intended_path: intended_path.as_deref(),
+                    ..req
+                },
+            )?;
+            Ok(added(doc, Some(e.to_string())))
+        }
+    }
 }
 
 /// How an update should treat a comment's optional anchor.
@@ -524,10 +821,20 @@ pub fn update_comment(store: &mut impl Store, req: UpdateComment<'_>) -> Result<
     if let Some(b) = body {
         comment.body = b.to_string();
     }
+    // An anchored comment carries neither anchor-state field; a cleared
+    // anchor is a deliberate whole-document comment.
     match anchor {
         AnchorUpdate::Keep => {}
-        AnchorUpdate::Set(a) => comment.anchor = Some(a),
-        AnchorUpdate::Clear => comment.anchor = None,
+        AnchorUpdate::Set(a) => {
+            comment.anchor = Some(a);
+            comment.anchor_state = None;
+            comment.intended_path = None;
+        }
+        AnchorUpdate::Clear => {
+            comment.anchor = None;
+            comment.anchor_state = Some(AnchorState::WholeDocument);
+            comment.intended_path = None;
+        }
     }
     match doc {
         DocUpdate::Keep => {}
@@ -2080,6 +2387,7 @@ mod tests {
                     stem: "phase-1-one".to_string(),
                 }),
                 anchor: None,
+                ..Default::default()
             },
         )
         .unwrap_err();
@@ -2101,6 +2409,8 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, status)| ReviewComment {
+                anchor_state: None,
+                intended_path: None,
                 id: (i + 1) as u32,
                 doc: None,
                 status: *status,
@@ -2336,6 +2646,7 @@ mod tests {
                             body: "x",
                             doc: None,
                             anchor: None,
+                            ..Default::default()
                         },
                     )
                     .unwrap_err(),
@@ -2466,6 +2777,8 @@ mod tests {
 
     fn comment_with(id: u32, applied_commit: Option<&str>) -> ReviewComment {
         ReviewComment {
+            anchor_state: None,
+            intended_path: None,
             id,
             doc: None,
             status: if applied_commit.is_some() {
@@ -2557,5 +2870,474 @@ mod tests {
         assert_eq!(refs[1].comment, Some(1));
         assert_eq!(refs[1].rev, "abc1234def56");
         assert!(refs.iter().all(|r| r.rev != "HEAD"));
+    }
+
+    // --- anchor state, intended path, and the anchor fall-back ---
+
+    const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const BASE: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    /// A draft `change/` review stored under `id`, over [`anchor_source`].
+    fn store_with_change_review(id: &str) -> MemoryStore {
+        let mut store = setup_store();
+        let mut doc = sample_review(id);
+        doc.frontmatter.target = ReviewTarget::Change {
+            head: HEAD.to_string(),
+            base: Some(BASE.to_string()),
+        };
+        crate::io::write_review(&mut store, "test", id, &doc).unwrap();
+        store
+    }
+
+    /// A two-line file at `HEAD` whose second line the change touched.
+    fn anchor_source() -> crate::source::MemorySourceRepo {
+        crate::source::MemorySourceRepo::new()
+            .with_rev(HEAD, HEAD)
+            .with_file(HEAD, "src/lib.rs", "fn untouched() {}\nfn touched() {}\n")
+            .with_diff(
+                BASE,
+                HEAD,
+                "src/lib.rs",
+                "@@ -2 +2 @@\n-old\n+fn touched() {}\n",
+            )
+    }
+
+    fn only_comment(doc: &Document<Review>) -> &ReviewComment {
+        assert_eq!(doc.frontmatter.comments.len(), 1);
+        &doc.frontmatter.comments[0]
+    }
+
+    #[test]
+    fn add_comment_stamps_whole_document_on_an_anchorless_comment() {
+        let mut store = setup_store_with_items();
+        let doc = sample_review("r1");
+        crate::io::write_review(&mut store, "test", "r1", &doc).unwrap();
+        let doc = add_comment(
+            &mut store,
+            AddComment {
+                project: "test",
+                review_id: "r1",
+                body: "Overall.",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let c = only_comment(&doc);
+        assert_eq!(c.anchor_state, Some(AnchorState::WholeDocument));
+        assert_eq!(c.intended_path, None);
+    }
+
+    #[test]
+    fn add_comment_rejects_an_anchor_with_a_state_or_path() {
+        let mut store = store_with_change_review("r1");
+        let anchor = Some(Anchor::TextQuote {
+            quote: "q".to_string(),
+            prefix: String::new(),
+            suffix: String::new(),
+        });
+        for (state, path) in [
+            (Some(AnchorState::OutsideHunk), None),
+            (None, Some("src/lib.rs")),
+        ] {
+            let err = add_comment(
+                &mut store,
+                AddComment {
+                    project: "test",
+                    review_id: "r1",
+                    body: "b",
+                    anchor: anchor.clone(),
+                    anchor_state: state,
+                    intended_path: path,
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(err, Error::CommentAnchorStateWithAnchor), "{err}");
+        }
+    }
+
+    #[test]
+    fn add_comment_rejects_an_intended_path_on_a_task_review() {
+        let mut store = setup_store_with_items();
+        let doc = sample_review("r1");
+        crate::io::write_review(&mut store, "test", "r1", &doc).unwrap();
+        let err = add_comment(
+            &mut store,
+            AddComment {
+                project: "test",
+                review_id: "r1",
+                body: "b",
+                intended_path: Some("src/lib.rs"),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::CommentPathNotApplicable(label) if label == "task/fix-login"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn add_comment_stores_a_normalized_intended_path_with_its_reason() {
+        let mut store = store_with_change_review("r1");
+        let doc = add_comment(
+            &mut store,
+            AddComment {
+                project: "test",
+                review_id: "r1",
+                body: "b",
+                anchor_state: Some(AnchorState::PathMissing),
+                intended_path: Some("./src/x.rs"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let c = only_comment(&doc);
+        assert_eq!(c.anchor_state, Some(AnchorState::PathMissing));
+        assert_eq!(c.intended_path.as_deref(), Some("src/x.rs"));
+    }
+
+    #[test]
+    fn update_comment_set_clears_and_clear_restamps_the_anchor_state() {
+        let mut store = store_with_change_review("r1");
+        add_comment(
+            &mut store,
+            AddComment {
+                project: "test",
+                review_id: "r1",
+                body: "b",
+                anchor_state: Some(AnchorState::OutsideHunk),
+                intended_path: Some("src/lib.rs"),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let anchor = Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "fn touched() {}".to_string(),
+            occurrence: 1,
+            start_line: 2,
+            end_line: 2,
+        };
+        let doc = update_comment(
+            &mut store,
+            UpdateComment {
+                project: "test",
+                review_id: "r1",
+                comment_id: 1,
+                anchor: AnchorUpdate::Set(anchor),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let c = only_comment(&doc);
+        assert!(c.anchor.is_some());
+        assert_eq!(
+            (c.anchor_state.clone(), c.intended_path.clone()),
+            (None, None)
+        );
+        let doc = update_comment(
+            &mut store,
+            UpdateComment {
+                project: "test",
+                review_id: "r1",
+                comment_id: 1,
+                anchor: AnchorUpdate::Clear,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let c = only_comment(&doc);
+        assert_eq!(c.anchor, None);
+        assert_eq!(c.anchor_state, Some(AnchorState::WholeDocument));
+        assert_eq!(c.intended_path, None);
+    }
+
+    #[test]
+    fn anchor_refusal_reason_maps_exactly_the_anchor_refusals() {
+        let cases = [
+            (
+                Error::QuoteNotFound {
+                    quote: "q".to_string(),
+                    commit: None,
+                },
+                AnchorState::QuoteNotFound,
+            ),
+            (
+                Error::QuoteAmbiguous {
+                    quote: "q".to_string(),
+                    commit: None,
+                    occurrences: vec![],
+                },
+                AnchorState::Ambiguous,
+            ),
+            (
+                Error::QuoteOccurrenceOutOfRange {
+                    quote: "q".to_string(),
+                    occurrence: 3,
+                    available: 1,
+                },
+                AnchorState::OccurrenceOutOfRange,
+            ),
+            (
+                Error::QuoteOutsideChangedHunks {
+                    path: "p".to_string(),
+                    start_line: 1,
+                    end_line: 1,
+                    nearest: None,
+                    range: "r".to_string(),
+                },
+                AnchorState::OutsideHunk,
+            ),
+            (
+                Error::ChangePathNotInRevision {
+                    path: "p".to_string(),
+                    rev: HEAD.to_string(),
+                },
+                AnchorState::PathMissing,
+            ),
+            (
+                Error::ChangePathNotAFile {
+                    path: "p".to_string(),
+                    rev: HEAD.to_string(),
+                    found: crate::source::SourceObjectKind::Tree,
+                },
+                AnchorState::PathNotAFile,
+            ),
+            (
+                Error::ChangePathNotLinkable {
+                    path: "a@b".to_string(),
+                    delimiter: '@',
+                },
+                AnchorState::PathNotLinkable,
+            ),
+            (
+                Error::ChangeHeadNotInSource {
+                    head: HEAD.to_string(),
+                    location: None,
+                },
+                AnchorState::HeadNotInSource,
+            ),
+        ];
+        for (err, want) in cases {
+            assert_eq!(anchor_refusal_reason(&err), Some(want), "{err}");
+        }
+        for not_a_refusal in [
+            Error::ChangeQuoteNeedsPath,
+            Error::ChangePathNeedsQuote,
+            Error::ChangeAnchorNeedsSource,
+            Error::CommentPathNotApplicable("task/t".to_string()),
+            Error::ReviewNotDraft("r".to_string()),
+            Error::Git("boom".to_string()),
+        ] {
+            assert_eq!(
+                anchor_refusal_reason(&not_a_refusal),
+                None,
+                "{not_a_refusal}"
+            );
+        }
+    }
+
+    fn fall_back(
+        store: &mut MemoryStore,
+        source: &crate::source::MemorySourceRepo,
+        quote: Option<&str>,
+        path: Option<&str>,
+        mode: OnAnchorFailure,
+    ) -> Result<AddedComment> {
+        add_comment_with_anchor(
+            store,
+            Some(source),
+            AddComment {
+                project: "test",
+                review_id: "r1",
+                body: "finding",
+                ..Default::default()
+            },
+            AnchorRequest {
+                quote,
+                path,
+                occurrence: None,
+            },
+            mode,
+        )
+    }
+
+    #[test]
+    fn add_comment_with_anchor_anchors_when_core_accepts() {
+        let mut store = store_with_change_review("r1");
+        let added = fall_back(
+            &mut store,
+            &anchor_source(),
+            Some("fn touched() {}"),
+            Some("src/lib.rs"),
+            OnAnchorFailure::WholeDocument,
+        )
+        .unwrap();
+        assert_eq!(added.comment_id, 1);
+        assert_eq!(added.refusal, None);
+        let c = only_comment(&added.doc);
+        assert!(matches!(c.anchor, Some(Anchor::FileQuote { .. })));
+        assert_eq!(
+            (c.anchor_state.clone(), c.intended_path.clone()),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn add_comment_with_anchor_stores_an_outside_hunk_refusal_with_its_path() {
+        let mut store = store_with_change_review("r1");
+        let added = fall_back(
+            &mut store,
+            &anchor_source(),
+            Some("fn untouched() {}"),
+            Some("./src/lib.rs"),
+            OnAnchorFailure::WholeDocument,
+        )
+        .unwrap();
+        assert!(added.refusal.is_some());
+        let c = only_comment(&added.doc);
+        assert_eq!(c.anchor, None);
+        assert_eq!(c.anchor_state, Some(AnchorState::OutsideHunk));
+        assert_eq!(c.intended_path.as_deref(), Some("src/lib.rs"));
+        // The persisted review agrees with the returned document.
+        let stored = crate::io::load_review(&store, "test", "r1").unwrap();
+        assert_eq!(only_comment(&stored), c);
+    }
+
+    #[test]
+    fn add_comment_with_anchor_stores_a_quote_not_found_refusal() {
+        let mut store = store_with_change_review("r1");
+        let added = fall_back(
+            &mut store,
+            &anchor_source(),
+            Some("absent text"),
+            Some("src/lib.rs"),
+            OnAnchorFailure::WholeDocument,
+        )
+        .unwrap();
+        let c = only_comment(&added.doc);
+        assert_eq!(c.anchor_state, Some(AnchorState::QuoteNotFound));
+        assert_eq!(c.intended_path.as_deref(), Some("src/lib.rs"));
+        assert!(added.refusal.unwrap().contains("absent text"));
+    }
+
+    #[test]
+    fn add_comment_with_anchor_does_not_store_an_unlinkable_path() {
+        let mut store = store_with_change_review("r1");
+        let added = fall_back(
+            &mut store,
+            &anchor_source(),
+            Some("fn touched() {}"),
+            Some("src/a@b.rs"),
+            OnAnchorFailure::WholeDocument,
+        )
+        .unwrap();
+        let c = only_comment(&added.doc);
+        assert_eq!(c.anchor_state, Some(AnchorState::PathNotLinkable));
+        assert_eq!(c.intended_path, None);
+    }
+
+    #[test]
+    fn add_comment_with_anchor_propagates_a_usage_error_even_in_fall_back_mode() {
+        let mut store = store_with_change_review("r1");
+        let err = fall_back(
+            &mut store,
+            &anchor_source(),
+            Some("fn touched() {}"),
+            None,
+            OnAnchorFailure::WholeDocument,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::ChangeQuoteNeedsPath), "{err}");
+        let stored = crate::io::load_review(&store, "test", "r1").unwrap();
+        assert!(stored.frontmatter.comments.is_empty(), "nothing is written");
+    }
+
+    #[test]
+    fn add_comment_with_anchor_refuse_mode_propagates_the_refusal() {
+        let mut store = store_with_change_review("r1");
+        let err = fall_back(
+            &mut store,
+            &anchor_source(),
+            Some("fn untouched() {}"),
+            Some("src/lib.rs"),
+            OnAnchorFailure::Refuse,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::QuoteOutsideChangedHunks { .. }),
+            "{err}"
+        );
+        let stored = crate::io::load_review(&store, "test", "r1").unwrap();
+        assert!(stored.frontmatter.comments.is_empty(), "nothing is written");
+    }
+
+    #[test]
+    fn add_comment_with_anchor_needs_a_source_for_a_change_anchor() {
+        let mut store = store_with_change_review("r1");
+        let err = add_comment_with_anchor::<crate::source::MemorySourceRepo>(
+            &mut store,
+            None,
+            AddComment {
+                project: "test",
+                review_id: "r1",
+                body: "b",
+                ..Default::default()
+            },
+            AnchorRequest {
+                quote: Some("q"),
+                path: Some("src/lib.rs"),
+                occurrence: None,
+            },
+            OnAnchorFailure::WholeDocument,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::ChangeAnchorNeedsSource), "{err}");
+    }
+
+    #[test]
+    fn add_comment_with_anchor_falls_back_on_a_plan_document_quote() {
+        let mut store = setup_store_with_items();
+        let doc = sample_review("r1");
+        crate::io::write_review(&mut store, "test", "r1", &doc).unwrap();
+        let added = add_comment_with_anchor::<crate::source::MemorySourceRepo>(
+            &mut store,
+            None,
+            AddComment {
+                project: "test",
+                review_id: "r1",
+                body: "b",
+                ..Default::default()
+            },
+            AnchorRequest {
+                quote: Some("absent"),
+                path: None,
+                occurrence: None,
+            },
+            OnAnchorFailure::WholeDocument,
+        )
+        .unwrap();
+        let c = only_comment(&added.doc);
+        assert_eq!(c.anchor_state, Some(AnchorState::QuoteNotFound));
+        assert_eq!(c.intended_path, None, "a plan document has no source path");
+    }
+
+    #[test]
+    fn on_anchor_failure_parses_both_modes_and_rejects_others() {
+        assert_eq!(
+            "refuse".parse::<OnAnchorFailure>().unwrap(),
+            OnAnchorFailure::Refuse
+        );
+        assert_eq!(
+            "whole-document".parse::<OnAnchorFailure>().unwrap(),
+            OnAnchorFailure::WholeDocument
+        );
+        let err = "ignore".parse::<OnAnchorFailure>().unwrap_err().to_string();
+        assert!(
+            err.contains("refuse") && err.contains("whole-document"),
+            "{err}"
+        );
     }
 }
