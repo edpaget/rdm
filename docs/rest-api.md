@@ -25,6 +25,67 @@ Endpoints mirror the CLI commands. All endpoints accept and return JSON by defau
 | `GET` | `/projects/:project/tasks/:task` | Show task details |
 | `POST` | `/projects/:project/tasks` | Create a new task |
 | `PATCH` | `/projects/:project/tasks/:task` | Update a task |
+| `GET` | `/projects/:project/annotations?target=…` | List what annotates a code location (see [Code-location annotations](#code-location-annotations)) |
+
+## Code-location annotations
+
+`GET /projects/:project/annotations?target=<reference>` is the web UI's reverse
+lookup from code: the documents and review comments that annotate a commit or a
+source path. `target` takes exactly what `rdm backlinks` takes for a source-side
+target — `rdm:src/<path>[@<rev>][#L<a>[-L<b>]]` or `rdm:src@<sha>`, the `rdm:`
+prefix optional, percent-encoded in the query. The grammar and matching rules
+are core's: see [`link-grammar.md` § "Reverse lookup from a code
+location"](link-grammar.md#reverse-lookup-from-a-code-location).
+
+**It returns annotations, never file contents.** No route serves a file, a blob
+at a revision, blame or highlighting; each annotation links *out* to the code at
+its pinned revision instead.
+
+The HAL+JSON representation:
+
+| Key | Meaning |
+|-----|---------|
+| `target` | the queried location (`src/<path>…` or `src@<sha>`) |
+| `source_verification_skipped` | present only when no source repository was read: why |
+| `_embedded.annotations` | the `rdm backlinks <target> --format json` entries, verbatim and in the same order; **absent** (not `[]`) when no source was read |
+| `_links.rdm:backlink` | one link per distinct annotating document (its detail page; a change review's is the page of the item its plan implements) |
+| `_links.rdm:code` | one link per entry with a navigable forge permalink, titled with the entry's `link` |
+
+The HTML representation lists each annotation with its pinned permalink, its
+level (`range`/`file`/`commit`), where it was found (a body link, a
+`[head]`/`[base]`/`[applied_commit]` field, or a comment's anchor), and why a
+comment is coarser than an intact anchor — a deliberate whole-document comment
+is labelled differently from a lost anchor, and both differently from a legacy
+comment whose reason was never recorded. A "Referenced by" section lists the
+distinct annotating documents, and on a path query "any revision" / "whole file"
+links widen a pinned query.
+
+Every rendered `rdm:src/…` or `rdm:src@…` link on a detail page is followed by
+an `annotations` link to this resource, pinned to the location the link
+resolves to (its own `@rev`, else the containing phase's or task's stamped
+commit). A change review comment's `applied_commit` renders the same way. Item
+resources advertise the same entry points as `_links.rdm:annotations`, one per
+distinct code or commit link in the body.
+
+| Status | When |
+|--------|------|
+| `200` | the annotations, or — with no readable source repository — the fail-open note and no list |
+| `400` | `target` missing or empty, not a source-side reference (e.g. `task/x`), or malformed |
+| `404` | the revision does not resolve in the source repository, or the path does not exist there |
+| `422` | the path is a directory or a submodule |
+
+**No source repository fails open.** The server reads only a project's
+configured local `source.repo` (never its own working directory or the plan
+repo); without one the response is still `200`, carrying the note in
+`source_verification_skipped` (HAL) or a notice (HTML).
+
+**Live forge links need a follow-up.** A permalink is navigable only when the
+project's `source.repo` is an `http(s)` URL; anything else (a local path)
+renders as a non-navigable `path@rev` span. Because the server can read
+annotations only from a *local* `source.repo`, no deployment that lists
+annotations shows live forge permalinks today: a project cannot yet name both a
+local checkout and a forge URL. That is tracked by the
+`source-repo-web-url-separate-from-local-checkout` task.
 
 ## Mutations Are Staged, Not Committed
 

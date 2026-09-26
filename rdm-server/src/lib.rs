@@ -8,6 +8,8 @@
 //! PATCHes the resource as JSON. Users with JavaScript disabled retain
 //! read-only access to every page.
 
+/// Code-location annotation views and the shared comment-degradation label.
+pub mod annotation_views;
 /// Content negotiation via the `Accept` header.
 pub mod content_type;
 /// Error handling: core errors to RFC 9457 Problem Details responses.

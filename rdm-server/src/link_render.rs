@@ -41,12 +41,17 @@ pub enum RenderAction {
     /// A `rdm:src/...` code reference or `rdm:src@<sha>` commit reference.
     CodeLink {
         /// GitHub-style permalink, when the project has a `source`
-        /// configured. `None` renders as a non-navigable styled span.
+        /// configured whose locator is an `http(s)` URL. `None` renders as a
+        /// non-navigable styled span (see [`navigable_web_url`]).
         web_url: Option<String>,
         /// Display text for the non-navigable span (`path@rev`, or bare
         /// `path` when no revision resolved) — unused when `web_url` is
         /// `Some`, since the original link text is kept in that case.
         no_link_display: String,
+        /// Href of the code-location annotations page for the link *as
+        /// resolved* (see [`annotations_href`]), rendered as a trailing
+        /// `annotations` anchor. `None` emits no such anchor.
+        annotations_href: Option<String>,
     },
     /// A link that must never render as a live `<a>`: a dangling item
     /// target, or a destination that failed to parse.
@@ -133,13 +138,13 @@ pub fn resolve_body_links(
             Link::Code { .. } => {
                 let resolved =
                     rdm_core::ops::links::resolve_link(store, project, containing_commit, &link)?;
-                let action = classify_code(&resolved);
+                let action = classify_code(project, &resolved);
                 (None, resolved, action)
             }
             Link::Commit { .. } => {
                 let resolved =
                     rdm_core::ops::links::resolve_link(store, project, containing_commit, &link)?;
-                let action = classify_commit(&resolved);
+                let action = classify_commit(project, &resolved);
                 (None, resolved, action)
             }
         };
@@ -229,12 +234,17 @@ fn item_status_class(status: Option<String>) -> String {
 /// Classifies a resolved code reference into its [`RenderAction`].
 ///
 /// No filesystem/git verification happens here — a syntactically valid
-/// code link always gets a permalink (when the project has `source`
-/// configured) or the non-navigable styled span (otherwise), never a
-/// broken span; path existence at that revision is `rdm link check`'s job.
-fn classify_code(resolved: &Resolved) -> RenderAction {
+/// code link always gets a permalink (when the project's `source` names a
+/// forge URL) or the non-navigable styled span (otherwise), never a broken
+/// span; path existence at that revision is `rdm link check`'s job. Either
+/// way it carries the href of the annotations page for the location it
+/// resolves to.
+fn classify_code(project: &str, resolved: &Resolved) -> RenderAction {
     let Resolved::Code {
-        path, rev, web_url, ..
+        path,
+        rev,
+        lines,
+        web_url,
     } = resolved
     else {
         return RenderAction::Broken {
@@ -245,26 +255,148 @@ fn classify_code(resolved: &Resolved) -> RenderAction {
         Some(rev) => format!("{path}@{rev}"),
         None => path.clone(),
     };
+    let as_resolved = Link::Code {
+        path: path.clone(),
+        rev: rev.clone(),
+        lines: *lines,
+    };
     RenderAction::CodeLink {
-        web_url: web_url.clone(),
+        web_url: navigable_web_url(web_url.as_deref()),
         no_link_display,
+        annotations_href: Some(annotations_href(project, &as_resolved)),
     }
 }
 
 /// Classifies a resolved commit reference (`rdm:src@<sha>`) into its
-/// [`RenderAction`]: a `/commit/<sha>` permalink when the project has a
-/// `source` configured, else a non-navigable `commit <sha>` span. As with
-/// [`classify_code`], no git verification happens here.
-fn classify_commit(resolved: &Resolved) -> RenderAction {
+/// [`RenderAction`]: a `/commit/<sha>` permalink when the project's
+/// `source` names a forge URL, else a non-navigable `commit <sha>` span.
+/// As with [`classify_code`], no git verification happens here.
+fn classify_commit(project: &str, resolved: &Resolved) -> RenderAction {
     let Resolved::Commit { rev, web_url } = resolved else {
         return RenderAction::Broken {
             reason: "internal error: expected a commit resolution".to_string(),
         };
     };
     RenderAction::CodeLink {
-        web_url: web_url.clone(),
+        web_url: navigable_web_url(web_url.as_deref()),
         no_link_display: format!("commit {rev}"),
+        annotations_href: Some(annotations_href(
+            project,
+            &Link::Commit { rev: rev.clone() },
+        )),
     }
+}
+
+/// A resolved permalink the browser can actually follow, or `None`.
+///
+/// Core builds a permalink by concatenating the project's `source.repo`
+/// with `/blob/…` or `/commit/…`. The server can only *read* a source
+/// repository that is a local directory, and then that concatenation is a
+/// filesystem path — an `href` that would 404 against the server's own
+/// origin. So anything that is not an `http://` or `https://` URL renders
+/// as the non-navigable span instead. This is presentation only: core's
+/// [`Resolved`], and the raw `_embedded.links` JSON, keep the value as is.
+#[must_use]
+pub fn navigable_web_url(web_url: Option<&str>) -> Option<String> {
+    web_url
+        .filter(|url| url.starts_with("https://") || url.starts_with("http://"))
+        .map(str::to_string)
+}
+
+/// The characters percent-encoded in an annotations `target` query value:
+/// everything but the RFC 3986 unreserved set and `/`, so `@`, `#`, `:`
+/// and `+` all survive the query-string decoding the handler's `Query`
+/// extractor applies.
+const TARGET_QUERY: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'/');
+
+/// The href of the code-location annotations page for `link`:
+/// `/projects/{project}/annotations?target=<link, percent-encoded>`.
+///
+/// `link` is a `rdm:src/…` or `rdm:src@…` link; its `Display` form is the
+/// reference `rdm backlinks` (and the annotations handler) accepts.
+#[must_use]
+pub fn annotations_href(project: &str, link: &Link) -> String {
+    annotations_href_for(project, &link.to_string())
+}
+
+/// [`annotations_href`] for a raw reference string, encoded verbatim.
+#[must_use]
+pub fn annotations_href_for(project: &str, reference: &str) -> String {
+    format!(
+        "/projects/{project}/annotations?target={}",
+        percent_encoding::utf8_percent_encode(reference, TARGET_QUERY)
+    )
+}
+
+/// The `rdm:annotations` HAL links of a body: one per code or commit link
+/// occurrence, deduplicated by href, titled with the occurrence's `rdm:`
+/// URI.
+#[must_use]
+pub fn annotations_links(body_links: &[BodyLink]) -> Vec<crate::hal::HalLink> {
+    let mut out: Vec<crate::hal::HalLink> = Vec::new();
+    for link in body_links {
+        if let RenderAction::CodeLink {
+            annotations_href: Some(href),
+            ..
+        } = &link.action
+            && !out.iter().any(|l| &l.href == href)
+        {
+            out.push(crate::hal::HalLink {
+                href: href.clone(),
+                title: Some(link.uri.clone()),
+                templated: None,
+            });
+        }
+    }
+    out
+}
+
+/// The navigable forge permalink of one code location, when the project's
+/// `source` names a forge URL — the same resolution and the same
+/// [`navigable_web_url`] rule body links get.
+///
+/// # Errors
+///
+/// Propagates `rdm_core::ops::links::resolve_link` failures (a project
+/// that fails to load).
+pub fn code_permalink(store: &impl Store, project: &str, link: &Link) -> Result<Option<String>> {
+    let resolved = rdm_core::ops::links::resolve_link(store, project, None, link)?;
+    Ok(match resolved {
+        Resolved::Code { web_url, .. } | Resolved::Commit { web_url, .. } => {
+            navigable_web_url(web_url.as_deref())
+        }
+        _ => None,
+    })
+}
+
+/// Shapes the distinct documents behind a list of code annotations into
+/// "Referenced by" entries, in core's order — the document-level view of
+/// the annotations page, and the source of its HAL `rdm:backlink` links.
+///
+/// A document that no longer loads is skipped, like [`referenced_by`].
+#[must_use]
+pub fn annotators_referenced_by(
+    store: &impl Store,
+    project: &str,
+    annotations: &[rdm_core::link::CodeAnnotation],
+) -> Vec<ReferencedByEntry> {
+    let mut seen: Vec<&DocRef> = Vec::new();
+    let mut out = Vec::new();
+    for annotation in annotations {
+        if seen.contains(&&annotation.document) {
+            continue;
+        }
+        seen.push(&annotation.document);
+        if let Some(view) = doc_ref_view(store, project, &annotation.document) {
+            out.push(view);
+        }
+    }
+    out
 }
 
 /// Builds the JSON-API views of a body's resolved outgoing links: a HAL
@@ -384,7 +516,11 @@ pub fn referenced_by(
 
 /// Loads `doc` and builds its "Referenced by" entry, or `None` if it no
 /// longer exists/loads.
-fn doc_ref_view(store: &impl Store, project: &str, doc: &DocRef) -> Option<ReferencedByEntry> {
+pub(crate) fn doc_ref_view(
+    store: &impl Store,
+    project: &str,
+    doc: &DocRef,
+) -> Option<ReferencedByEntry> {
     match doc {
         DocRef::Roadmap { roadmap } => {
             let d = rdm_core::io::load_roadmap(store, project, roadmap).ok()?;
@@ -442,8 +578,18 @@ fn doc_ref_view(store: &impl Store, project: &str, doc: &DocRef) -> Option<Refer
             // route -- `/projects/{project}/reviews/{id}` is JSON-only
             // (`handlers::reviews::get_review`). Point at the page the
             // review actually appears on, anchored to the comment or the
-            // review's own summary.
-            let mut href = crate::review_views::target_detail_href(project, &d.frontmatter.target);
+            // review's own summary. A change review has no document of its
+            // own: it renders on the page of the item its plan implements
+            // (`review_views::implemented_item`), falling back to the
+            // project page when no plan resolves.
+            let page_target = match &d.frontmatter.target {
+                rdm_core::model::ReviewTarget::Change { .. } => {
+                    crate::review_views::implemented_item(store, project, &d.frontmatter)
+                        .unwrap_or_else(|| d.frontmatter.target.clone())
+                }
+                other => other.clone(),
+            };
+            let mut href = crate::review_views::target_detail_href(project, &page_target);
             match comment {
                 Some(c) => href.push_str(&format!("#comment-{id}-c{c}")),
                 None => href.push_str(&format!("#review-{id}")),
@@ -579,13 +725,122 @@ mod tests {
         let body = "See [src](rdm:src/a/b.rs#L5).";
         let links = resolve_body_links(&store, "demo", None, body).unwrap();
         assert_eq!(links.len(), 1);
+        let RenderAction::CodeLink {
+            web_url,
+            no_link_display,
+            annotations_href,
+        } = &links[0].action
+        else {
+            panic!("expected a code link: {:?}", links[0].action);
+        };
+        assert_eq!(web_url, &None);
+        assert_eq!(no_link_display, "a/b.rs");
         assert_eq!(
-            links[0].action,
-            RenderAction::CodeLink {
-                web_url: None,
-                no_link_display: "a/b.rs".to_string(),
-            }
+            decoded_target(annotations_href.as_deref().unwrap()),
+            "rdm:src/a/b.rs#L5"
         );
+    }
+
+    /// The `target` a rendered annotations href carries, decoded the way the
+    /// handler's `Query` extractor decodes it.
+    fn decoded_target(href: &str) -> String {
+        let (path, query) = href.split_once("?target=").expect("a target query");
+        assert_eq!(path, "/projects/demo/annotations");
+        assert!(
+            !query.contains(['#', '&', ' ', '+']),
+            "the query value must be fully encoded: {query}"
+        );
+        percent_encoding::percent_decode_str(query)
+            .decode_utf8()
+            .unwrap()
+            .into_owned()
+    }
+
+    fn annotations_href_of(action: &RenderAction) -> Option<String> {
+        match action {
+            RenderAction::CodeLink {
+                annotations_href, ..
+            } => annotations_href.clone(),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn code_link_annotations_href_folds_in_the_containing_commit() {
+        let (_dir, store) = tmp_store();
+        let sha = "c".repeat(40);
+        let body = "See [src](rdm:src/src/lib.rs#L2-L4).";
+        let links = resolve_body_links(&store, "demo", Some(&sha), body).unwrap();
+        let href = annotations_href_of(&links[0].action).expect("an annotations href");
+        assert_eq!(
+            decoded_target(&href),
+            format!("rdm:src/src/lib.rs@{sha}#L2-L4")
+        );
+    }
+
+    #[test]
+    fn code_link_annotations_href_keeps_an_explicit_rev_over_the_containing_commit() {
+        let (_dir, store) = tmp_store();
+        let body = "See [src](rdm:src/a+b/c.rs@v1.0).";
+        let links = resolve_body_links(&store, "demo", Some(&"c".repeat(40)), body).unwrap();
+        let href = annotations_href_of(&links[0].action).expect("an annotations href");
+        assert_eq!(decoded_target(&href), "rdm:src/a+b/c.rs@v1.0");
+    }
+
+    #[test]
+    fn commit_link_gets_an_annotations_href() {
+        let (_dir, store) = tmp_store();
+        let body = "Landed in [c](rdm:src@a1b2c3d).";
+        let links = resolve_body_links(&store, "demo", None, body).unwrap();
+        let href = annotations_href_of(&links[0].action).expect("an annotations href");
+        assert_eq!(decoded_target(&href), "rdm:src@a1b2c3d");
+    }
+
+    #[test]
+    fn broken_link_gets_no_annotations_href() {
+        let (_dir, store) = tmp_store();
+        let body = "Landed in [c](rdm:src@).";
+        let links = resolve_body_links(&store, "demo", None, body).unwrap();
+        assert!(matches!(links[0].action, RenderAction::Broken { .. }));
+        assert_eq!(annotations_href_of(&links[0].action), None);
+    }
+
+    /// A local-directory `source.repo` is the only kind this server can read,
+    /// and core's permalink for it is a filesystem path: rendering it as an
+    /// `href` would 404 against the server's own origin, so it is the
+    /// non-navigable span instead — for code and commit links alike.
+    #[test]
+    fn local_path_source_yields_no_live_permalink() {
+        let (_dir, mut store) = tmp_store();
+        seed_project_source(&mut store, "demo", "/srv/checkouts/demo");
+        let body = "[a](rdm:src/a.rs@abc1234#L1) [b](rdm:src@abc1234)";
+        let links = resolve_body_links(&store, "demo", None, body).unwrap();
+        assert_eq!(links.len(), 2);
+        for link in &links {
+            assert!(
+                matches!(&link.action, RenderAction::CodeLink { web_url: None, .. }),
+                "{:?}",
+                link.action
+            );
+            // The raw resolution keeps core's value untouched.
+            assert!(
+                rdm_core::json::resolved_to_json(&link.resolved, None)
+                    .web_url
+                    .is_some()
+            );
+        }
+    }
+
+    #[test]
+    fn annotations_links_dedupe_by_href() {
+        let (_dir, store) = tmp_store();
+        let body = "[a](rdm:src@a1b2c3d) [b](rdm:src@a1b2c3d) [c](rdm:src/x.rs) [d](rdm:task/nope)";
+        let links = resolve_body_links(&store, "demo", None, body).unwrap();
+        let hal = annotations_links(&links);
+        assert_eq!(hal.len(), 2);
+        assert_eq!(decoded_target(&hal[0].href), "rdm:src@a1b2c3d");
+        assert_eq!(hal[0].title.as_deref(), Some("rdm:src@a1b2c3d"));
+        assert_eq!(decoded_target(&hal[1].href), "rdm:src/x.rs");
     }
 
     /// Configures `project`'s `source` field directly on disk (there is no
@@ -621,13 +876,12 @@ mod tests {
         let body = "See [src](rdm:src/a/b.rs@abc123#L5-L12) for details.";
         let links = resolve_body_links(&store, "demo", None, body).unwrap();
         assert_eq!(links.len(), 1);
-        assert_eq!(
-            links[0].action,
-            RenderAction::CodeLink {
-                web_url: Some("https://github.com/acme/demo/blob/abc123/a/b.rs#L5-L12".to_string()),
-                no_link_display: "a/b.rs@abc123".to_string(),
-            }
-        );
+        assert!(matches!(
+            &links[0].action,
+            RenderAction::CodeLink { web_url: Some(url), no_link_display, annotations_href: Some(_) }
+                if url == "https://github.com/acme/demo/blob/abc123/a/b.rs#L5-L12"
+                    && no_link_display == "a/b.rs@abc123"
+        ));
 
         // Drive the resolved action through the actual render pipeline, so
         // the whole chain -- store config, resolution, and the rendered
@@ -650,13 +904,12 @@ mod tests {
         let body = "Landed in [landed](rdm:src@a1b2c3d).";
         let links = resolve_body_links(&store, "demo", None, body).unwrap();
         assert_eq!(links.len(), 1);
-        assert_eq!(
-            links[0].action,
-            RenderAction::CodeLink {
-                web_url: Some("https://github.com/acme/demo/commit/a1b2c3d".to_string()),
-                no_link_display: "commit a1b2c3d".to_string(),
-            }
-        );
+        assert!(matches!(
+            &links[0].action,
+            RenderAction::CodeLink { web_url: Some(url), no_link_display, annotations_href: Some(_) }
+                if url == "https://github.com/acme/demo/commit/a1b2c3d"
+                    && no_link_display == "commit a1b2c3d"
+        ));
         let html = crate::markdown::render_markdown_with_links(body, &links);
         assert!(
             html.contains(r#"href="https://github.com/acme/demo/commit/a1b2c3d""#),
@@ -816,13 +1069,10 @@ mod tests {
         assert_eq!(links.len(), 3);
         assert!(matches!(links[0].action, RenderAction::ItemLink { .. }));
         assert!(matches!(links[1].action, RenderAction::Broken { .. }));
-        assert_eq!(
-            links[2].action,
-            RenderAction::CodeLink {
-                web_url: None,
-                no_link_display: "a/b.rs".to_string(),
-            }
-        );
+        assert!(matches!(
+            &links[2].action,
+            RenderAction::CodeLink { web_url: None, no_link_display, .. } if no_link_display == "a/b.rs"
+        ));
 
         let (hal, json) = outgoing_link_views(&links);
         // Every occurrence, navigable or not, gets a raw JSON entry.

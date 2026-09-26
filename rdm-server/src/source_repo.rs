@@ -72,6 +72,150 @@ pub fn resolve_change_review_for_project(
     }
 }
 
+/// What [`code_annotations_for_project`] found for a code location.
+#[derive(Debug)]
+pub enum AnnotationsOutcome {
+    /// The project's source repository was read: every annotation
+    /// [`rdm_core::ops::links::code_annotations`] returned, in its order.
+    Found(Vec<rdm_core::link::CodeAnnotation>),
+    /// No readable source repository: the note saying why, prefixed like
+    /// every other note in this module.
+    SourceUnavailable(String),
+}
+
+/// Lists what annotates `target` (a commit or a source path) through
+/// [`rdm_core::ops::links::code_annotations`], reading the project's
+/// configured local source repository — the only place this server obtains
+/// a source for it.
+///
+/// No source repository is not an error: it is
+/// [`AnnotationsOutcome::SourceUnavailable`] with the note a surface reports
+/// verbatim, and the server never falls back to its own working directory
+/// or the plan repo (see the module documentation).
+///
+/// # Errors
+///
+/// Every error `code_annotations` returns once a source was found (an item
+/// target, an unknown revision, a missing path or one that is not a file,
+/// or a failing repository).
+pub fn code_annotations_for_project(
+    store: &impl rdm_core::store::VersionedStore,
+    project: &str,
+    target: &rdm_core::link::BacklinkTarget,
+) -> rdm_core::error::Result<AnnotationsOutcome> {
+    // A plan item is not a code location: core refuses it before it asks the
+    // source anything, so its refusal reaches the caller whether or not a
+    // source repository is available — never masked as "could not look".
+    if matches!(target, rdm_core::link::BacklinkTarget::Item(_)) {
+        return rdm_core::ops::links::code_annotations(store, &UnavailableSource, project, target)
+            .map(AnnotationsOutcome::Found);
+    }
+    #[cfg(feature = "git")]
+    {
+        match source_for(store, project) {
+            Ok(source) => rdm_core::ops::links::code_annotations(store, &source, project, target)
+                .map(AnnotationsOutcome::Found),
+            Err(note) => Ok(AnnotationsOutcome::SourceUnavailable(note)),
+        }
+    }
+    #[cfg(not(feature = "git"))]
+    {
+        let _ = (store, project, target);
+        Ok(AnnotationsOutcome::SourceUnavailable(format!(
+            "{NO_RESOLUTION_NOTE} — this build has no git support"
+        )))
+    }
+}
+
+/// Each comment's coarsest true target within `review`, from core's
+/// [`rdm_core::comment_target::comment_target`], in comment order.
+///
+/// A plan-document review never consults a source, so it is handed
+/// [`UnavailableSource`]. A change review is handed the project's
+/// configured local source repository when one is readable, else
+/// [`UnavailableSource`] too — on which core fails open: the comment keeps
+/// its stored reason and is marked `unverified`. The reason a surface shows
+/// is therefore always core's, with or without a source.
+#[must_use]
+pub fn comment_targets_for_project(
+    store: &impl rdm_core::store::VersionedStore,
+    project: &str,
+    review: &Review,
+) -> Vec<rdm_core::comment_target::CommentTarget> {
+    use rdm_core::comment_target::comment_target;
+    #[cfg(feature = "git")]
+    if matches!(review.target, rdm_core::model::ReviewTarget::Change { .. })
+        && let Ok(source) = source_for(store, project)
+    {
+        return review
+            .comments
+            .iter()
+            .map(|c| comment_target(&source, review, c))
+            .collect();
+    }
+    let _ = (store, project);
+    review
+        .comments
+        .iter()
+        .map(|c| comment_target(&UnavailableSource, review, c))
+        .collect()
+}
+
+/// A [`SourceRepo`](rdm_core::source::SourceRepo) that can answer nothing:
+/// every lookup fails, as a repository that cannot be queried at all does.
+///
+/// It stands in where this server has no source repository, so a caller of
+/// core's source-reading helpers gets core's own fail-open answer rather
+/// than a server-side copy of the policy.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UnavailableSource;
+
+impl UnavailableSource {
+    /// The error every lookup returns.
+    fn error() -> rdm_core::error::Error {
+        rdm_core::error::Error::Git(format!("{NO_RESOLUTION_NOTE} — no source repository"))
+    }
+}
+
+impl rdm_core::source::SourceRepo for UnavailableSource {
+    fn rev_parse(&self, _rev: &str) -> rdm_core::error::Result<Option<String>> {
+        Err(Self::error())
+    }
+
+    fn merge_base(&self, _a: &str, _b: &str) -> rdm_core::error::Result<Option<String>> {
+        Err(Self::error())
+    }
+
+    fn file_at(&self, _rev: &str, _path: &str) -> rdm_core::error::Result<Option<String>> {
+        Err(Self::error())
+    }
+
+    fn unified_diff(
+        &self,
+        _base: &str,
+        _head: &str,
+        _path: &str,
+    ) -> rdm_core::error::Result<Option<String>> {
+        Err(Self::error())
+    }
+
+    fn head(&self) -> rdm_core::error::Result<Option<String>> {
+        Err(Self::error())
+    }
+
+    fn current_branch(&self) -> rdm_core::error::Result<Option<String>> {
+        Err(Self::error())
+    }
+
+    fn object_kind_at(
+        &self,
+        _rev: &str,
+        _path: &str,
+    ) -> rdm_core::error::Result<rdm_core::source::SourceObjectLookup> {
+        Err(Self::error())
+    }
+}
+
 /// One unresolved entry per comment, for every arm that reaches no source.
 fn unresolved(review: &Review) -> Vec<ResolvedComment> {
     review

@@ -87,6 +87,12 @@ pub fn render_markdown(input: &str) -> String {
 /// - [`RenderAction::Broken`] — becomes `<span class="rdm-link-broken"
 ///   title="{reason}">`, original link text passed through, never an `<a>`.
 ///
+/// A [`RenderAction::CodeLink`] carrying an `annotations_href` (in either
+/// form above) is followed, immediately after its closing tag, by `<a
+/// class="rdm-link-annotations" href="{annotations_href}" aria-label="Annotations
+/// on {no_link_display}">annotations</a>`; with no `annotations_href` the
+/// markup is exactly the forms above.
+///
 /// `links` must be in document order and cover every `rdm:`-destined link
 /// [`Start(Tag::Link)`](pulldown_cmark::Tag::Link) event this parse
 /// encounters, in the same order — the source
@@ -119,12 +125,15 @@ enum RewriteState {
     /// Not currently inside a rewritten link: pass events through as-is.
     None,
     /// Inside an item, code-with-url, or broken link: inner events pass
-    /// through unchanged; close with this HTML tag at `End(TagEnd::Link)`.
-    CloseWith(&'static str),
+    /// through unchanged; close with this HTML tag at `End(TagEnd::Link)`,
+    /// then emit the trailing HTML (a code link's annotations anchor), if
+    /// any.
+    CloseWith(&'static str, Option<String>),
     /// Inside a no-source code link: discard every inner event, then emit
-    /// this display text (as an `Event::Text`, so it gets HTML-escaped) and
-    /// close with `</span>` at `End(TagEnd::Link)`.
-    Suppress(String),
+    /// this display text (as an `Event::Text`, so it gets HTML-escaped),
+    /// close with `</span>` at `End(TagEnd::Link)`, and emit the trailing
+    /// HTML, if any.
+    Suppress(String, Option<String>),
 }
 
 /// Rewrites `rdm:`-destined link events per a pre-resolved [`RenderAction`]
@@ -157,7 +166,7 @@ impl<'a> LinkRewriter<'a> {
         match event {
             Event::Start(Tag::Link { dest_url, .. }) => dest_url.starts_with("rdm:"),
             Event::End(TagEnd::Link) => !matches!(self.state, RewriteState::None),
-            _ => matches!(self.state, RewriteState::Suppress(_)),
+            _ => matches!(self.state, RewriteState::Suppress(..)),
         }
     }
 
@@ -177,10 +186,12 @@ impl<'a> LinkRewriter<'a> {
                             )
                             .into(),
                         ));
-                        self.state = RewriteState::CloseWith("</a>");
+                        self.state = RewriteState::CloseWith("</a>", None);
                     }
                     Some(RenderAction::CodeLink {
-                        web_url: Some(url), ..
+                        web_url: Some(url),
+                        no_link_display,
+                        annotations_href,
                     }) => {
                         out.push(Event::Html(
                             format!(
@@ -189,16 +200,22 @@ impl<'a> LinkRewriter<'a> {
                             )
                             .into(),
                         ));
-                        self.state = RewriteState::CloseWith("</a>");
+                        self.state = RewriteState::CloseWith(
+                            "</a>",
+                            annotations_anchor(annotations_href.as_deref(), &no_link_display),
+                        );
                     }
                     Some(RenderAction::CodeLink {
                         web_url: None,
                         no_link_display,
+                        annotations_href,
                     }) => {
                         out.push(Event::Html(
                             "<span class=\"rdm-link-code rdm-link-nolink\">".into(),
                         ));
-                        self.state = RewriteState::Suppress(no_link_display);
+                        let trailing =
+                            annotations_anchor(annotations_href.as_deref(), &no_link_display);
+                        self.state = RewriteState::Suppress(no_link_display, trailing);
                     }
                     Some(RenderAction::Broken { reason }) => {
                         out.push(Event::Html(
@@ -208,7 +225,7 @@ impl<'a> LinkRewriter<'a> {
                             )
                             .into(),
                         ));
-                        self.state = RewriteState::CloseWith("</span>");
+                        self.state = RewriteState::CloseWith("</span>", None);
                     }
                     // No resolved entry for this occurrence (a mismatch
                     // between `links` and what this parse encountered) —
@@ -218,21 +235,41 @@ impl<'a> LinkRewriter<'a> {
             }
             Event::End(TagEnd::Link) => {
                 match std::mem::replace(&mut self.state, RewriteState::None) {
-                    RewriteState::CloseWith(tag) => out.push(Event::Html(tag.into())),
-                    RewriteState::Suppress(display) => {
+                    RewriteState::CloseWith(tag, trailing) => {
+                        out.push(Event::Html(tag.into()));
+                        if let Some(html) = trailing {
+                            out.push(Event::Html(html.into()));
+                        }
+                    }
+                    RewriteState::Suppress(display, trailing) => {
                         out.push(Event::Text(display.into()));
                         out.push(Event::Html("</span>".into()));
+                        if let Some(html) = trailing {
+                            out.push(Event::Html(html.into()));
+                        }
                     }
                     RewriteState::None => out.push(event),
                 }
             }
             other => {
-                if !matches!(self.state, RewriteState::Suppress(_)) {
+                if !matches!(self.state, RewriteState::Suppress(..)) {
                     out.push(other);
                 }
             }
         }
     }
+}
+
+/// The trailing annotations anchor a code link renders after itself, or
+/// `None` when it has no annotations href.
+fn annotations_anchor(href: Option<&str>, display: &str) -> Option<String> {
+    href.map(|href| {
+        format!(
+            "<a class=\"rdm-link-annotations\" href=\"{}\" aria-label=\"Annotations on {}\">annotations</a>",
+            escape_attr(href),
+            escape_attr(display)
+        )
+    })
 }
 
 /// Appends `value` to `out` with the five HTML attribute-significant
@@ -1215,6 +1252,7 @@ mod tests {
             &[link(RenderAction::CodeLink {
                 web_url: Some("https://github.com/org/repo/blob/main/a.rs#L5-L12".to_string()),
                 no_link_display: "a.rs@main".to_string(),
+                annotations_href: None,
             })],
         );
         assert!(
@@ -1225,6 +1263,52 @@ mod tests {
         );
     }
 
+    /// Both code-link forms are followed by their annotations anchor when
+    /// they carry an annotations href, in every render mode; with none the
+    /// markup is unchanged (the two tests around this one).
+    #[test]
+    fn with_links_code_link_is_followed_by_its_annotations_anchor() {
+        let src = "[a](rdm:src/a.rs@main) and [b](rdm:src@abc1234) tail";
+        let href_a = "/projects/demo/annotations?target=rdm%3Asrc/a.rs%40main";
+        let href_b = "/projects/demo/annotations?target=rdm%3Asrc%40abc1234";
+        let links = vec![
+            link(RenderAction::CodeLink {
+                web_url: Some("https://github.com/org/repo/blob/main/a.rs".to_string()),
+                no_link_display: "a.rs@main".to_string(),
+                annotations_href: Some(href_a.to_string()),
+            }),
+            link(RenderAction::CodeLink {
+                web_url: None,
+                no_link_display: "commit abc1234".to_string(),
+                annotations_href: Some(href_b.to_string()),
+            }),
+        ];
+        let expected_a = format!(
+            r#"href="https://github.com/org/repo/blob/main/a.rs">a</a><a class="rdm-link-annotations" href="{href_a}" aria-label="Annotations on a.rs@main">annotations</a>"#
+        );
+        let expected_b = format!(
+            r#"<span class="rdm-link-code rdm-link-nolink">commit abc1234</span><a class="rdm-link-annotations" href="{href_b}" aria-label="Annotations on commit abc1234">annotations</a>"#
+        );
+        for (name, html) in [
+            ("plain", render_markdown_with_links(src, &links)),
+            (
+                "highlighted",
+                render_markdown_with_highlights(src, &[hl(range_of(src, "tail"), "x")], &links),
+            ),
+        ] {
+            assert!(html.contains(&expected_a), "{name}: {html}");
+            assert!(html.contains(&expected_b), "{name}: {html}");
+        }
+        let annotated = render_markdown_annotated_with_links(src, &links);
+        assert!(
+            annotated.contains(&format!(
+                r#"</a><a class="rdm-link-annotations" href="{href_a}""#
+            )),
+            "{annotated}"
+        );
+        assert!(annotated.contains(&expected_b), "{annotated}");
+    }
+
     #[test]
     fn with_links_code_link_without_url_renders_nolink_span() {
         let src = "[src](rdm:src/a.rs@main)";
@@ -1233,6 +1317,7 @@ mod tests {
             &[link(RenderAction::CodeLink {
                 web_url: None,
                 no_link_display: "a.rs@main".to_string(),
+                annotations_href: None,
             })],
         );
         assert!(
@@ -1323,6 +1408,7 @@ mod tests {
             link(RenderAction::CodeLink {
                 web_url: None,
                 no_link_display: "a.rs".to_string(),
+                annotations_href: None,
             }),
             link(RenderAction::Broken {
                 reason: "target not found: task/gone".to_string(),

@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+
+{% block title %}Annotations on {{ target_label }} - {{ project }} - rdm{% endblock %}
+
+{% block header_search %}
+<form class="header-search" action="/projects/{{ project }}/search" method="get">
+  <label for="header-search-q" class="skip-link">Search</label>
+  <input type="search" id="header-search-q" name="q" placeholder="Search..." aria-label="Search project">
+  <button type="submit">Search</button>
+</form>
+{% endblock %}
+
+{% block breadcrumb %}
+<li><a href="/">Home</a></li>
+<li><a href="/projects/{{ project }}/roadmaps">{{ project }}</a></li>
+<li><span aria-current="page">Annotations</span></li>
+{% endblock %}
+
+{% block content %}
+<h1>Annotations on <code>{{ target_label }}</code></h1>
+{% if !widen.is_empty() %}
+<p class="annotation-widen">Show:
+  {% for w in widen %}<a href="{{ w.href }}">{{ w.label }}</a>{% if !loop.last %} · {% endif %}{% endfor %}
+</p>
+{% endif %}
+
+{% if let Some(note) = source_note %}
+<p class="source-note" role="status">{{ note }}</p>
+<p>Annotations on source code are listed only when this server can read the project's source repository.</p>
+{% else if listed && annotations.is_empty() %}
+<p>Nothing annotates this location.</p>
+{% else %}
+<ol class="annotation-list">
+  {% for a in annotations %}
+  <li class="annotation">
+    <div class="annotation-meta">
+      <span class="badge badge-level-{{ a.level }}">{{ a.level }}</span>
+      {{ a.permalink_html|safe }}
+      {% if a.unverified %}<span class="badge badge-unverified" title="The source repository could not confirm this path at the reviewed head">unverified</span>{% endif %}
+    </div>
+    <div class="annotation-annotator">
+      {% if let Some(r) = a.annotator %}
+      <span class="badge badge-referenced-by-kind">{{ r.kind_label }}</span> <a href="{{ r.href }}">{{ r.title }}</a>
+      {% endif %}
+      <span class="annotation-provenance">{{ a.provenance }}</span>
+    </div>
+    {% if let Some(d) = a.degradation %}
+    <p class="anchor-label {{ d.class }}">{{ d.label }}</p>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ol>
+{% endif %}
+
+{% include "_referenced_by.html" %}
+{% endblock %}

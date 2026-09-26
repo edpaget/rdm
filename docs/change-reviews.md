@@ -249,6 +249,13 @@ src@<sha>` returns the `commit`-level comments of the review whose head is
 that commit — so a comment is found by exactly the query its target names.
 See [`link-grammar.md`](link-grammar.md#reverse-lookup-from-a-code-location).
 
+**The web UI shows it.** rdm-server's annotations page shows each comment's
+level, and both it and every detail page's Reviews section label an anchorless
+comment by its reason: "Whole document" (or "Whole file …") for a deliberate
+one, "Anchor lost: <reason>" with a warning marker for a lost one, and "Anchor
+not recorded" for a legacy one — the reason is core's `comment_target`, never
+re-derived by the server.
+
 ## Resolution: resolved / drifted / unresolved
 
 `rdm review show` resolves each anchor against a **tip**, chosen by

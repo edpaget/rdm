@@ -160,8 +160,13 @@ pub fn page_reviews(
         // render a wrong badge. Both surfaces read one implementation
         // (`rdm_core::change::resolve_change_review`) so they cannot disagree.
         let resolutions = resolve_for_page(store, project, review);
+        // Each comment's coarsest true target, from core — the degradation
+        // reason an anchorless comment shows is core's, never re-derived
+        // here.
+        let targets = crate::source_repo::comment_targets_for_project(store, project, review);
         let mut comments = Vec::new();
-        for (comment, resolved) in review.comments.iter().zip(&resolutions) {
+        for ((comment, resolved), target) in review.comments.iter().zip(&resolutions).zip(&targets)
+        {
             if !comment_shown(page, review, comment) {
                 continue;
             }
@@ -210,18 +215,35 @@ pub fn page_reviews(
                 None => None,
             };
 
+            // A change review's `applied_commit` names a source commit, so
+            // it renders as the same link a body `rdm:src@<sha>` gets; a
+            // plan-document review's names a plan-repo commit and stays
+            // inert.
+            let (applied_commit, applied_commit_html) =
+                match (&review.target, &comment.applied_commit) {
+                    (ReviewTarget::Change { .. }, Some(sha)) => {
+                        (None, Some(applied_commit_html(store, project, sha)?))
+                    }
+                    (_, applied) => (applied.clone(), None),
+                };
+
             comments.push(ReviewCommentView {
                 anchor_ref,
                 status: comment_status_label(&comment.status).to_string(),
                 status_class: comment_status_class(&comment.status).to_string(),
-                applied_commit: comment.applied_commit.clone(),
+                applied_commit,
+                applied_commit_html,
                 body_html,
                 reply_html,
                 cross_link: cross_link(project, page, id, review, comment),
-                anchor_label: comment
-                    .anchor
-                    .is_none()
-                    .then(|| "Whole document".to_string()),
+                degradation: if comment.anchor.is_none() {
+                    crate::annotation_views::degradation(
+                        target.reason.as_ref(),
+                        comment.intended_path.as_deref(),
+                    )
+                } else {
+                    None
+                },
                 quote_text,
                 quote_highlightable,
                 outdated,
@@ -253,6 +275,29 @@ pub fn page_reviews(
         reviews,
         highlights,
     })
+}
+
+/// Renders a change review comment's `applied_commit` as the inline HTML of
+/// a body link to `rdm:src@<sha>` (abbreviated to seven characters as link
+/// text).
+fn applied_commit_html(
+    store: &impl rdm_core::store::Store,
+    project: &str,
+    sha: &str,
+) -> Result<String, rdm_core::error::Error> {
+    let short: String = sha
+        .chars()
+        .filter(char::is_ascii_hexdigit)
+        .take(7)
+        .collect();
+    crate::annotation_views::inline_link_html(
+        store,
+        project,
+        &format!("`{short}`"),
+        &rdm_core::link::Link::Commit {
+            rev: sha.to_string(),
+        },
+    )
 }
 
 /// Assembles the draft-review panel for a detail page: the visitor's open
@@ -407,8 +452,8 @@ fn resolve_for_page(
 ///
 /// `None` when the review records no plan, when the plan is gone, or when the
 /// plan implements something other than a phase or a task.
-fn implemented_item(
-    store: &impl rdm_core::store::VersionedStore,
+pub(crate) fn implemented_item(
+    store: &impl rdm_core::store::Store,
     project: &str,
     review: &Review,
 ) -> Option<ReviewTarget> {

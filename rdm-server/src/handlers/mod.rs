@@ -1,3 +1,5 @@
+/// Code-location annotations endpoint.
+pub mod annotations;
 /// Health check endpoint.
 pub mod health;
 /// Phase detail endpoint.

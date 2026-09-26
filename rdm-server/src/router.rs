@@ -120,6 +120,10 @@ pub fn build_router(state: AppState) -> Router {
             get(handlers::search::search_items),
         )
         .route(
+            "/projects/{project}/annotations",
+            get(handlers::annotations::get_annotations),
+        )
+        .route(
             "/projects/{project}/tasks",
             get(handlers::tasks::list_tasks).post(handlers::tasks::create_task),
         )

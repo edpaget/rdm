@@ -187,6 +187,7 @@ pub async fn get_phase(
             .map_err(|e| error_response(e, format))?;
             let (outgoing_hal, outgoing_json) =
                 crate::link_render::outgoing_link_views(&body_links);
+            let annotations_hal = crate::link_render::annotations_links(&body_links);
             let (backlink_hal, backlink_json) =
                 crate::link_render::backlink_views(&store, &project, &target)
                     .map_err(|e| error_response(e, format))?;
@@ -207,6 +208,7 @@ pub async fn get_phase(
             )
             .with_links("rdm:link", outgoing_hal)
             .with_links("rdm:backlink", backlink_hal)
+            .with_links("rdm:annotations", annotations_hal)
             .with_embedded("links", outgoing_json)
             .with_embedded("backlinks", backlink_json);
 

@@ -29,7 +29,12 @@ pub(crate) fn problem_detail_into_response(pd: ProblemDetail) -> Response {
 
 /// Returns an error response in the appropriate format (JSON Problem Details or HTML error page).
 pub fn error_response(err: rdm_core::error::Error, format: ResponseFormat) -> Response {
-    let pd = ProblemDetail::from(&err);
+    problem_response(ProblemDetail::from(&err), format)
+}
+
+/// Returns `pd` in the negotiated format: Problem Details JSON, or the HTML
+/// error page carrying the same status, title and detail.
+pub(crate) fn problem_response(pd: ProblemDetail, format: ResponseFormat) -> Response {
     match format {
         ResponseFormat::HalJson => problem_detail_into_response(pd),
         ResponseFormat::Html => {
@@ -37,8 +42,8 @@ pub fn error_response(err: rdm_core::error::Error, format: ResponseFormat) -> Re
                 StatusCode::from_u16(pd.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             let page = ErrorPage {
                 status: pd.status,
-                title: pd.title,
-                detail: pd.detail,
+                title: pd.title.clone(),
+                detail: pd.detail.clone(),
             };
             match page.render() {
                 Ok(html) => (
@@ -47,7 +52,7 @@ pub fn error_response(err: rdm_core::error::Error, format: ResponseFormat) -> Re
                     html,
                 )
                     .into_response(),
-                Err(_) => problem_detail_into_response(ProblemDetail::from(&err)),
+                Err(_) => problem_detail_into_response(pd),
             }
         }
     }

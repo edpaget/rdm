@@ -29,12 +29,14 @@
           {% if let Some(link) = c.cross_link %}
           <a class="cross-link" href="{{ link.href }}">{{ link.label }}</a>
           {% endif %}
-          {% if let Some(commit) = c.applied_commit %}
+          {% if let Some(html) = c.applied_commit_html %}
+          <span class="comment-applied">applied in {{ html|safe }}</span>
+          {% else if let Some(commit) = c.applied_commit %}
           <span class="comment-applied">applied in <code>{{ commit }}</code></span>
           {% endif %}
         </div>
-        {% if let Some(label) = c.anchor_label %}
-        <p class="anchor-label">{{ label }}</p>
+        {% if let Some(d) = c.degradation %}
+        <p class="anchor-label {{ d.class }}">{{ d.label }}</p>
         {% endif %}
         {% if let Some(q) = c.quote_text %}
         <blockquote class="anchor-quote"{% if c.quote_highlightable %} tabindex="0" data-rdm-anchor-ref="{{ c.anchor_ref }}"{% endif %}>{{ q }}</blockquote>

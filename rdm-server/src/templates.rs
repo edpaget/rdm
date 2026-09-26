@@ -247,8 +247,14 @@ pub struct ReviewCommentView {
     pub status: String,
     /// CSS class for the status badge.
     pub status_class: String,
-    /// Commit SHA recorded when the comment was addressed, if any.
+    /// Commit SHA recorded when the comment was addressed, shown as inert
+    /// `<code>` — set only for a plan-document review, whose
+    /// `applied_commit` names a plan-repo commit, not a source one.
     pub applied_commit: Option<String>,
+    /// A change review's `applied_commit`, rendered through the body-link
+    /// pipeline as `rdm:src@<sha>`: the commit permalink (or span) plus its
+    /// annotations link. Set instead of [`Self::applied_commit`].
+    pub applied_commit_html: Option<String>,
     /// Rendered HTML of the comment body.
     pub body_html: String,
     /// Rendered HTML of the agent reply, when present.
@@ -256,9 +262,11 @@ pub struct ReviewCommentView {
     /// Cross-document link, when the comment targets a different document
     /// than the page it is rendered on.
     pub cross_link: Option<DocLink>,
-    /// `Some("Whole document")` for un-anchored comments; `None` for
-    /// anchored ones (which show `quote_text` instead).
-    pub anchor_label: Option<String>,
+    /// Why an un-anchored comment has no anchor — deliberately whole
+    /// document, a lost anchor, or not recorded (see
+    /// [`crate::annotation_views::degradation`]); `None` for anchored ones
+    /// (which show `quote_text` instead).
+    pub degradation: Option<crate::annotation_views::DegradationView>,
     /// The anchored text (resolved quote, or the stored quote when the
     /// anchor no longer resolves), when the comment is anchored.
     pub quote_text: Option<String>,
@@ -451,6 +459,7 @@ pub struct RoadmapsPage {
 /// One entry in a detail page's "Referenced by" section: a document
 /// elsewhere in the plan repo that links to the page's own item via an
 /// `rdm:` link, per `rdm_core::ops::links::backlinks`.
+#[derive(Debug, Clone)]
 pub struct ReferencedByEntry {
     /// Href of the referencing document's own detail (or review) page.
     pub href: String,
@@ -684,6 +693,37 @@ pub struct SearchResultsPage {
     pub query: String,
     /// Search results.
     pub results: Vec<SearchResultRow>,
+}
+
+/// A link widening the annotations page's query ("any revision", "whole
+/// file").
+pub struct WidenLink {
+    /// Link text.
+    pub label: &'static str,
+    /// Href of the widened annotations query.
+    pub href: String,
+}
+
+/// The code-location annotations page: what annotates a commit or a source
+/// path.
+#[derive(Template)]
+#[template(path = "annotations.html")]
+pub struct AnnotationsPage {
+    /// Project name.
+    pub project: String,
+    /// The queried location (`src/<path>…` or `src@<sha>`).
+    pub target_label: String,
+    /// Links widening the query.
+    pub widen: Vec<WidenLink>,
+    /// Why no source repository was read, when none was.
+    pub source_note: Option<String>,
+    /// `true` when a source was read, so an empty list means "nothing
+    /// annotates this" rather than "could not look".
+    pub listed: bool,
+    /// One entry per annotation, in core's order.
+    pub annotations: Vec<crate::annotation_views::AnnotationView>,
+    /// The distinct annotating documents.
+    pub referenced_by: Vec<ReferencedByEntry>,
 }
 
 /// Error page with status code and message.

@@ -723,6 +723,52 @@ mark.rdm-anchor.is-active { background: var(--anchor-highlight-bg); }
   border-bottom: 1px dashed var(--color-muted);
   cursor: help;
 }
+/* The "annotations" entry point after every code/commit link. */
+.rdm-link-annotations {
+  color: var(--color-muted);
+  font-size: 0.75em;
+  margin-left: 0.3em;
+  vertical-align: super;
+}
+
+/* Why an anchorless comment has no anchor (annotation_views::degradation).
+   The degraded form differs from the neutral one in more than colour: it
+   carries a leading warning marker. */
+.anchor-label.anchor-whole-document { color: var(--color-muted); }
+.anchor-label.anchor-degraded {
+  color: var(--badge-outdated-text);
+  font-style: normal;
+}
+.anchor-label.anchor-degraded::before { content: "\26A0\FE0E  "; }
+.anchor-label.anchor-not-recorded {
+  color: var(--color-muted);
+  font-style: normal;
+  opacity: 0.8;
+}
+
+/* The code-location annotations page. */
+.annotation-list { list-style: none; padding-left: 0; }
+.annotation-list .annotation {
+  border-top: 1px solid var(--color-border-light);
+  padding: 0.75rem 0;
+}
+.annotation-meta, .annotation-annotator {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.annotation-provenance { color: var(--color-muted); font-size: 0.875rem; }
+.annotation-widen { color: var(--color-muted); }
+.badge-level-range, .badge-level-file, .badge-level-commit {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.badge-unverified {
+  background: var(--badge-outdated-bg);
+  color: var(--badge-outdated-text);
+  border-color: var(--badge-outdated-border);
+}
+.source-note { color: var(--color-muted); font-style: italic; }
 
 .referenced-by-section {
   margin-top: 2rem;

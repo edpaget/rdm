@@ -260,6 +260,18 @@ document then position (body links, then fields, then the anchor):
 
 Item backlinks keep their own shape.
 
+#### In the web UI
+
+rdm-server serves this lookup at `GET /projects/:project/annotations?target=…`,
+whose HAL `_embedded.annotations` are these JSON entries verbatim (see
+[`rest-api.md` § "Code-location annotations"](rest-api.md#code-location-annotations)).
+Every rendered `rdm:src/…` and `rdm:src@…` link is followed by an `annotations`
+link to it, pinned to the location the link resolves to. A rendered code or
+commit link is a live forge permalink only when the project's `source.repo` is
+an `http://` or `https://` URL; a local-path `source.repo` renders the
+non-navigable `path@rev` span instead of an `href` that would 404 against the
+server's own origin.
+
 ## Decision: commit rung in `src`, not `rdm:commit/`
 
 Two surface forms were considered for linking a commit: a path-less rung
