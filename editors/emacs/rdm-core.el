@@ -361,25 +361,51 @@ ARGV excludes the rdm program itself."
   (list dir rdm-root rdm-project rdm-bin
         (getenv "RDM_ROOT") (getenv "RDM_PROJECT") (getenv "RDM_BIN")))
 
+(defun rdm--locate-bin ()
+  "The rdm executable for the current buffer and the rung that supplied it.
+Returns (PATH . RUNG), RUNG being \"rdm-bin\", \"RDM_BIN\" or \"PATH\",
+or nil when no rung supplies one."
+  (let (found)
+    (cond ((setq found (rdm--nonempty rdm-bin)) (cons found "rdm-bin"))
+          ((setq found (rdm--nonempty (getenv "RDM_BIN"))) (cons found "RDM_BIN"))
+          ((setq found (executable-find "rdm")) (cons found "PATH")))))
+
 (defun rdm--resolve-bin ()
   "The rdm executable for the current buffer, or a `user-error'."
-  (or (rdm--nonempty rdm-bin)
-      (rdm--nonempty (getenv "RDM_BIN"))
-      (executable-find "rdm")
+  (or (car (rdm--locate-bin))
       (user-error "rdm: No `rdm' executable found.  Install rdm, set RDM_BIN \
 in the code repo's .mise.toml, or customize `rdm-bin'")))
+
+(defun rdm--local-setting (key)
+  "KEY's value for the current buffer without running rdm, and its rung.
+KEY is `root' or `project'.  Returns (VALUE . RUNG), RUNG naming the
+override variable (\"rdm-root\" / \"rdm-project\") or the environment
+variable (\"RDM_ROOT\" / \"RDM_PROJECT\") that supplied VALUE, or nil
+when neither does; `rdm info' is the next rung."
+  (let ((var (pcase key ('root 'rdm-root) ('project 'rdm-project)))
+        (env (pcase key ('root "RDM_ROOT") ('project "RDM_PROJECT")))
+        found)
+    (cond ((setq found (rdm--nonempty (symbol-value var)))
+           (cons found (symbol-name var)))
+          ((setq found (rdm--nonempty (getenv env)))
+           (cons found env)))))
+
+(defun rdm--info (bin dir root project)
+  "Run BIN's `rdm info' from DIR and return its parsed JSON.
+ROOT and PROJECT, when non-nil, are passed as `RDM_ROOT' /
+`RDM_PROJECT'.  Errors are signalled as `rdm-run-sync' signals them."
+  (rdm-run-sync (list bin "info" "--format" "json")
+                :parse t :directory dir
+                :env (append (when root (list (concat "RDM_ROOT=" root)))
+                             (when project (list (concat "RDM_PROJECT=" project))))))
 
 (defun rdm--resolve (dir)
   "Resolve the context for the current buffer, running rdm info from DIR."
   (let* ((bin (rdm--resolve-bin))
-         (root (or (rdm--nonempty rdm-root) (rdm--nonempty (getenv "RDM_ROOT"))))
-         (project (or (rdm--nonempty rdm-project)
-                      (rdm--nonempty (getenv "RDM_PROJECT"))))
-         (env (append (when root (list (concat "RDM_ROOT=" root)))
-                      (when project (list (concat "RDM_PROJECT=" project)))))
+         (root (car (rdm--local-setting 'root)))
+         (project (car (rdm--local-setting 'project)))
          (info (condition-case e
-                   (rdm-run-sync (list bin "info" "--format" "json")
-                                 :parse t :directory dir :env env)
+                   (rdm--info bin dir root project)
                  (error (rdm--unresolved-error dir (error-message-string e))))))
     (setq root (or root (rdm--nonempty (plist-get info :root))))
     (setq project (or project (rdm--nonempty (plist-get info :project))))

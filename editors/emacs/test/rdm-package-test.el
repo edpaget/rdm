@@ -58,8 +58,9 @@ resolves and no real rdm can run.  Returns what FORM printed, read."
 
 (ert-deftest rdm-package/recipe-loads-from-autoloads ()
   "The recipe's file set loads under `emacs -Q' from generated autoloads.
-It excludes rdm-dev.el, `(require \\='rdm)' works, and an autoloaded
-command runs without rdm-dev or any soft dependency."
+It excludes rdm-dev.el, and the autoloaded `rdm-doctor' and
+`rdm-context-reset' run, loading `rdm' without rdm-dev or any soft
+dependency.  The stub binary resolves nothing, which the doctor reports."
   (let* ((dir (rdm-package-test--install))
          (loaddefs (expand-file-name "rdm-autoloads.el"
                                      (make-temp-file "rdm-loaddefs" t))))
@@ -68,11 +69,15 @@ command runs without rdm-dev or any soft dependency."
       (loaddefs-generate dir loaddefs))
     (let ((got (rdm-package-test--child
                 dir loaddefs
-                '(let ((autoloaded (autoloadp (symbol-function 'rdm-context-reset))))
+                '(let ((autoloaded (list (autoloadp (symbol-function 'rdm-context-reset))
+                                         (autoloadp (symbol-function 'rdm-doctor))))
+                       (report (let ((inhibit-message t))
+                                 (with-current-buffer (rdm-doctor)
+                                   (buffer-string)))))
                    (rdm-context-reset)
-                   (require 'rdm)
                    (list :autoloaded autoloaded
-                         :ran (fboundp 'rdm-context)
+                         :ran (and (string-match-p "^Context: +unresolved" report)
+                                   t)
                          :rdm (featurep 'rdm)
                          :rdm-dev (featurep 'rdm-dev)
                          :soft (delq nil
@@ -80,7 +85,7 @@ command runs without rdm-dev or any soft dependency."
                                              '(evil consult embark marginalia
                                                     magit markdown-mode
                                                     nano-modeline))))))))
-      (should (eq (plist-get got :autoloaded) t))
+      (should (equal (plist-get got :autoloaded) '(t t)))
       (should (plist-get got :ran))
       (should (plist-get got :rdm))
       (should-not (plist-get got :rdm-dev))
