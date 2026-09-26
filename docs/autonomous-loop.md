@@ -128,10 +128,11 @@ dispatch a fix for another roadmap's comment into *this* item's pinned worktree 
 the same entries. The completion check is scoped the same way, so another item's open review can
 never block this item's terminal write.
 
-**Triage routing** is decided by the comment's own anchor, not by who wrote it. A comment
-carrying a `path` is a SOURCE comment: an implementer subagent fixes it in the pinned worktree
-and its commit SHA becomes the `--applied-commit`, with a pinned
-`rdm:src/<path>@<sha>#L<n>` permalink in the reply. A comment on a plan-repo document goes
+**Triage routing** is decided by the comment's own anchor and stored target, not by who wrote
+it. A comment carrying a `path`, a `range`/`file` `target`, or an `intended_path` is a SOURCE
+comment — so a finding whose anchor fell back to whole-document still reaches an implementer:
+an implementer subagent fixes it in the pinned worktree and its commit SHA becomes the
+`--applied-commit`, with a pinned `rdm:src/<path>@<sha>[#L<n>]` permalink in the reply. A comment on a plan-repo document goes
 through `rdm-revise`, which is the only route that keeps plan-repo `--applied-commit` semantics —
 and the only reason SOURCE comments may not go there: that skill edits plan-repo bodies and
 cannot carry source-commit provenance. A finding marked `unrefutedReason: budget` was never

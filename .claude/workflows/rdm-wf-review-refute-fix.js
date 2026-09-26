@@ -797,8 +797,8 @@ function refutePrompt(mode, dim, finding, context) {
   if (mode === 'code' && typeof ctxForScope.planCommand === 'string' && ctxForScope.planCommand.trim() !== '') {
     lines.push(
       'The change under review implements an approved plan, which you already have (see the plan-read instruction above). Grade whether this finding is IN SCOPE of that plan — a second, independent question from whether it is refuted:',
-      '1. Is the defect in code or behaviour the plan actually CHANGED — not merely touched, left in place, or moved? A defect in newly written code is in scope even if the plan never enumerated it (a plan cannot anticipate every defect in its own diff). A defect in a pre-existing pattern the plan did not change is out of scope, even if the plan happens to touch nearby code.',
-      '2. Does an ADEQUATE FIX stay within what the plan changed? A real, in-scope-by-locus defect whose only adequate remedy would add new surface outside the plan (a new flag, a new public API, a new mechanism) is still out of scope — the finding is real, but building that remedy is not this dispatch\'s job.',
+      '1. Is the defect in code or behaviour the plan actually CHANGED — not merely touched, left in place, or moved? Judge where the DEFECT is, not where its evidence is. A defect in newly written or changed code is in scope even if the plan never enumerated it (a plan cannot anticipate every defect in its own diff), and it stays in scope when the proof sits in code the plan did not change: new behaviour with no test (shown by an unchanged test file), an untouched caller the change breaks or should have updated, or a file the change should also have edited. Evidence located outside the diff does not by itself make a finding out of scope. A genuinely pre-existing defect — already present before this change, in behaviour the plan did not change — is out of scope, even if the plan happens to touch nearby code.',
+      '2. Does an ADEQUATE FIX stay within what the plan changed? A real, in-scope-by-locus defect whose only adequate remedy would add new surface outside the plan (a new flag, a new public API, a new mechanism) is still out of scope — the finding is real, but building that remedy is not this dispatch\'s job. Adding a missing test or editing an existing file the change missed is not new surface.',
       'Set `inScope: false` only when either half fails; omit it (or set `true`) when the finding is in scope. Being out of scope does NOT mean the finding is wrong — a deferred defect is still real, so never conflate `inScope: false` with `refuted: true`.'
     );
   }
@@ -1877,6 +1877,8 @@ const PERSIST_DEGRADED_REASONS = ['path-missing', 'outside-hunk', 'start-fallbac
 // EVERY other reason is systemic, INCLUDING a value this build does not know
 // (a newer rdm's reason must never be waved through as benign).
 //
+// Benign means it never parks, at any severity, build-time or run-time.
+//
 // The same array is joined with `|` into the `case` pattern
 // `persistReviewCommands` emits below, so this function and the emitted shell
 // cannot silently diverge.
@@ -2365,7 +2367,7 @@ function persistDegradationClause(result, target, opts) {
     requested +
     ' requested anchor(s) could not be placed at persist time (' +
     reasons +
-    '); see the `anchor` header on each comment.'
+    '); see the stored `anchor_state` on each comment.'
   );
 }
 
@@ -2536,12 +2538,14 @@ function persistReviewCommands(result, target, cfg, opts) {
   // RDM_PERSIST_PARK_REQUIRED — phase-46 (anchor-degraded-park-by-cause): the
   // running park-cause counter, distinct from RDM_PERSIST_RUNTIME_DEGRADED
   // above (which counts every run-time-degraded anchor, benign or not).
-  // Seeded from the BUILD-TIME degradation count: any build-time-dropped
-  // anchor (no derivable path, or an empty reviewed range — see
-  // persistPreDegradedAnchors) is systemic by construction, so it always
-  // contributes to the park signal, exactly like a systemic run-time
-  // refusal does below.
-  cmds.push('RDM_PERSIST_PARK_REQUIRED=' + (persistPreDegradedAnchors(result, target, o).length > 0 ? '1' : '0'));
+  // Seeded from the BUILD-TIME drops, classified by the SAME
+  // ANCHOR_REASONS_BENIGN set the run-time refusals below are: a build-time
+  // drop for a systemic reason (no derivable path, a start fallback) seeds a
+  // park, while the empty-reviewed-range `outside-hunk` drop does not — that
+  // finding lands whole-document with its intended path and loses nothing.
+  cmds.push(
+    'RDM_PERSIST_PARK_REQUIRED=' + (persistPreDegradedAnchors(result, target, o).some((d) => !isAnchorReasonBenign(d.reason)) ? '1' : '0')
+  );
   for (let i = 0; i < survivors.length; i++) {
     const f = survivors[i] || {};
     // ONE decision, shared with the pre-degradation report and the comment
@@ -2591,18 +2595,16 @@ function persistReviewCommands(result, target, cfg, opts) {
           // `anchorsDegraded=` line reports the REAL result, not just the
           // build-time one.
           'RDM_PERSIST_RUNTIME_DEGRADED=$((RDM_PERSIST_RUNTIME_DEGRADED + 1))\n' +
-          // A `blocking` finding losing its anchor always requires a park,
-          // even for the benign cause — decided here at JS code-gen time
-          // (severity is known statically), not by a shell conditional.
-          // Everything else parks only when core's reported reason is NOT in
+          // A lost anchor parks only when core's reported reason is NOT in
           // ANCHOR_REASONS_BENIGN — the same array isAnchorReasonBenign tests,
           // joined into this `case` pattern, so the two cannot diverge. An
-          // unknown reason falls to `*` and parks.
-          (f.severity === 'blocking'
-            ? 'RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1))\n'
-            : 'case "$RDM_PERSIST_ANCHOR_REASON" in ' +
-              ANCHOR_REASONS_BENIGN.join('|') +
-              ') : ;; *) RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1)) ;; esac\n') +
+          // unknown reason falls to `*` and parks. Severity is not consulted:
+          // a lost anchor never decides whether a finding gates (the outcome
+          // does, from hasBlocking), so a `blocking` outside-hunk finding
+          // lands whole-document and still drives rework.
+          'case "$RDM_PERSIST_ANCHOR_REASON" in ' +
+          ANCHOR_REASONS_BENIGN.join('|') +
+          ') : ;; *) RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1)) ;; esac\n' +
           'fi';
       } else {
         cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' < /dev/null || exit 1';
@@ -2658,9 +2660,8 @@ function persistReviewCommands(result, target, cfg, opts) {
   );
   // RDM_PERSIST_ANCHORS_PARK_REQUIRED — phase-46 (anchor-degraded-park-by-cause):
   // buckets the running RDM_PERSIST_PARK_REQUIRED counter (seeded from the
-  // build-time degradation count above, then incremented per systemic
-  // run-time refusal or per `blocking` finding that lost its anchor for ANY
-  // reason — see the per-survivor loop) into a plain yes/no, distinct from
+  // systemic build-time drops above, then incremented per systemic run-time
+  // refusal — see the per-survivor loop) into a plain yes/no, distinct from
   // (and no longer implied by) RDM_PERSIST_ANCHORS_DEGRADED above, which
   // stays purely informational — the total whole-document-fallback volume,
   // including every benign untouched-line refusal, never a park signal by
@@ -2755,7 +2756,7 @@ function persistDegradationNoteBody(totalDegraded, requested) {
     totalDegraded +
     ' of ' +
     requested +
-    ' requested anchor(s) could not be placed; see the anchor header on each comment above.'
+    ' requested anchor(s) could not be placed; see the stored anchor_state on each comment above.'
   );
 }
 
@@ -2764,10 +2765,9 @@ function persistDegradationNoteBody(totalDegraded, requested) {
 // required => refuse to write `reviewed`" gate policy, as ready-to-append
 // shell lines keyed off `RDM_PERSIST_ANCHORS_PARK_REQUIRED` (the persist
 // ladder's own printed run-time result — see `persistReviewCommands`'
-// trailing `anchorsParkRequired=` line). The cause is either systemic (a
-// build-time-dropped anchor, or a run-time refusal whose reported
-// `anchor_state` is not in ANCHOR_REASONS_BENIGN) or a `blocking` finding that lost its
-// anchor for any reason at all — never merely "every anchor degraded",
+// trailing `anchorsParkRequired=` line). The cause is always systemic: an
+// anchor lost, at build time or run time, for a reason not in
+// ANCHOR_REASONS_BENIGN, whatever the finding's severity — never merely "every anchor degraded",
 // which `RDM_PERSIST_ANCHORS_DEGRADED` still tracks but which no longer by
 // itself implies a park. A caller building a status-write ladder appends
 // this immediately before the write it wants to guard, and only when it is
@@ -2780,7 +2780,7 @@ function persistDegradationNoteBody(totalDegraded, requested) {
 function persistDegradationGateLines() {
   return [
     'if [ "${RDM_PERSIST_ANCHORS_PARK_REQUIRED:-no}" = "yes" ]; then',
-    '  echo "review-refute-fix: refusing to write reviewed - an anchor was lost for a systemic cause, or a blocking finding lost its anchor (RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes); park blocked and see the review own summary and each comment anchor header instead" >&2',
+    '  echo "review-refute-fix: refusing to write reviewed - an anchor was lost for a systemic cause (RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes); park blocked and see the review own note comment and the stored anchor_state on each comment instead" >&2',
     '  exit 1',
     'fi',
   ].join('\n');
@@ -3680,17 +3680,16 @@ if (!failure && !reviewEvidenceComplete(evidence)) {
 const persist = rawArgs.persist
 if (persist !== undefined && persist !== false && persist !== true && (!persist || typeof persist !== 'object' || Array.isArray(persist))) throw new Error('invalid persist option')
 let persistCommands = null
-// AC4: the all-anchors-degraded caller signal, computed from the SAME
+// The build-time degradation preview, computed from the SAME
 // { result, target, opts } the writer builds `persistCommands` from — see
 // `persistDegradedSummary` in the stamped block above and
 // docs/workflow-schemas.md § "Persisting a review". THIS IS A BUILD-TIME
 // PREVIEW ONLY: it can under-report a run where an anchor degrades at RUN
 // TIME (a quote outside a hunk the change touches, a path outside the
-// reviewed range) — `persistReviewCommands`' emitted ladder now retries such
-// a refusal itself and tallies it at run time, so the REAL result is the
-// ladder's own trailing `anchorsDegraded=<all|partial|none>` line, printed
-// only once the ladder has actually run. A caller MUST key its park decision
-// off that printed line, not off this field alone (arch-1/correctness-1).
+// reviewed range) — core stores such a refusal whole-document and the
+// emitted ladder tallies it, so the REAL result is the ladder's own trailing
+// `anchorsDegraded=` line, and the park decision is its
+// `anchorsParkRequired=` line — never this field (arch-1/correctness-1).
 let persistDegraded = null
 if (persist && source && !failure) {
   if (persist.on && persist.on !== 'change/' + source.head) throw new Error('source-bound persistence cannot target a different artifact')
@@ -3720,10 +3719,10 @@ if (rawArgs.gate && source && !failure) {
   // as TWO SEPARATE shell sessions (the orchestrator pastes each in turn), so
   // the persist ladder's run-time result cannot be a JS-side value here — it
   // reads it the same way the orchestrator does, off the persist ladder's own
-  // trailing `anchorsDegraded=<...>` line, threaded in as the
-  // RDM_PERSIST_ANCHORS_DEGRADED environment variable. A caller running both
+  // trailing `anchorsParkRequired=<yes|no>` line, threaded in as the
+  // RDM_PERSIST_ANCHORS_PARK_REQUIRED environment variable. A caller running both
   // ladders sets it from the persist run's own output before running this
-  // one; an unset value defaults to `none` (ordinary persistence), so a
+  // one; an unset value defaults to `no` (ordinary persistence), so a
   // caller that never persisted first (or ran an older orchestrator) is
   // unaffected. `classifyOutcome`/`outcome` stay untouched — this refuses the
   // WRITE, not the verdict.
@@ -3747,17 +3746,18 @@ if (persistCommands) {
   // The persist ladder, as ONE shell script. Run it in a single session — later
   // lines read variables the earlier ones set — and report its exit status. It
   // prints `reviewId=<id>` and then `anchorsDegraded=<all|partial|none>` on
-  // success. If a `review comment` line is refused for its anchor, re-run that
-  // one line with the `--path`/`--quote`/`--occurrence` flags removed to leave
-  // a whole-document comment; if `review start` itself is refused, park rather
-  // than inventing another target.
+  // success, then `anchorsParkRequired=<yes|no>`. A refused path anchor is
+  // stored whole-document by core itself (`--on-anchor-failure
+  // whole-document`); only `anchorsParkRequired=yes` parks.
   result.persistCommands = persistCommands
   result.persistScript = persistCommands.join('\n')
-  // AC4: `persistDegraded.all === true` means every requested anchor degraded
-  // at build time — the orchestrator/skill must PARK the item rather than
-  // treat the run as ordinary persistence, even though `outcome` above stays
-  // independent of anchor plumbing (see docs/workflow-schemas.md § "Persisting
-  // a review"). A partially-degraded run keeps `all: false`.
+  // `persistDegraded` is an informational BUILD-TIME preview of how many
+  // requested anchors degraded; it is never a park signal. The ONLY line a
+  // caller keys a park off is the ladder's own trailing
+  // `anchorsParkRequired=<yes|no>`, which is `yes` only when an anchor was
+  // lost for a systemic cause (see docs/workflow-schemas.md § "The
+  // anchor-degraded park signal"). `outcome` above stays independent of
+  // anchor plumbing.
   result.persistDegraded = persistDegraded
 }
 if (gateCommands) {

@@ -624,10 +624,10 @@ itself is refused, **park** — never invent a different target. A nonzero exit 
 **Check the ladder's own printed `anchorsParkRequired=<yes|no>` line before treating the run as
 ordinary persistence** — not `anchorsDegraded`, and not `result.persistDegraded` (a build-time-only
 preview that can under-report a run whose anchors degraded at run time). When `anchorsParkRequired=yes`
-— an anchor was lost for a systemic cause, or a `blocking` finding lost its anchor for any reason,
-including the benign one below — **park** `blocked` with `[code] a comment anchor was lost for a
-systemic cause, or a blocking finding lost its anchor; see the review's own note comment and each
-comment's \`anchor_state\``, even though the ladder itself exited 0. Whenever any anchor degrades, the
+— an anchor was lost for a systemic cause (any reason other than `outside-hunk`), whatever the
+finding's severity — **park** `blocked` with `[code] a comment anchor was lost for a systemic cause;
+see the review's own note comment and each comment's \`anchor_state\``, even though the ladder itself
+exited 0. Whenever any anchor degrades, the
 persist ladder appends one whole-document note comment stating how many of how many requested anchors
 could not be placed, so the review can never read as clean persistence merely because
 `outcome`/`classifyOutcome` stay independent of anchor plumbing (see `docs/workflow-schemas.md` §
@@ -641,10 +641,10 @@ finding as one about a touched line, and the ladder's whole-document fallback lo
 that does not exist at the reviewed head at all, a quote that does not exist anywhere in the document,
 or an ambiguous quote (occurs more than once) is SYSTEMIC — the finder was probably not looking at the
 right code. `anchorsDegraded` stays purely informational — the total whole-document-fallback volume,
-worth noting in a reply, but never a park signal by itself, including at `partial`. A non-`blocking`
-finding (a suggestion or concern) refused only for the benign cause above reads `anchorsDegraded=all`
-or `partial` but `anchorsParkRequired=no`: goes to ordinary triage, and its reply notes the anchor did
-not resolve.
+worth noting in a reply, but never a park signal by itself, including at `partial`. A finding refused
+only as `outside-hunk`, at any severity, reads `anchorsParkRequired=no`. It lands whole-document with
+its `intended_path` and a file-level `target`, gates like any other finding (a `blocking` one still
+yields `rework`), and goes to ordinary triage as a SOURCE comment (step 13).
 
 `gate: false` keeps the status write here, in step 15, where the refusal can be surfaced.
 
@@ -674,8 +674,8 @@ Read the returned object and obey it:
   incomplete'` — is a **park**. **You
   MUST NOT** write `reviewed` on it.
 - The outcome is classified **before** the persist ladder is even built, and nothing recomposes it
-  afterwards. An anchor that would not land is not a verdict: fix it by re-running the one refused
-  line whole-document, or park, per the persist block above.
+  afterwards. An anchor that would not land is not a verdict: the ladder stores it whole-document, and
+  only `anchorsParkRequired=yes` parks (see the persist block above).
 
 ### 13. Triage — ONE procedure, whatever the review's origin
 
@@ -692,7 +692,8 @@ failure mode is "triaging another item's review". Then, for each review, read it
 <rdmBin> review show <id><proj-flag> --format json
 ```
 
-and drive **only** off its comment array — `anchor`, `path`, `source_link`, `resolution.state`.
+and drive **only** off its comment array — `anchor`, `intended_path`, `target`, `source_link`,
+`resolution.state`.
 **You MUST NOT** add an author or provenance check. A human review created with `review start --on
 change/<sha>`, `review comment --path <p> --quote "<exact text>"` and `submit --verdict
 request-changes` produces the *same document shape* the engine's persist ladder writes, so there is
@@ -703,10 +704,15 @@ Per comment, run this numbered checklist:
 
 1. **Declare** the decision, the route, and the reply text you intend to record.
 2. **Classify and act:**
-   - **SOURCE comment** (carries a `path` — a file-quote anchor into the diff): dispatch an
-     implementer `Agent` subagent with `subagent_type: rdm-effort-<profiles.implement.effort>` and
-     `model: <profiles.implement.model>` in `identity.path` with the comment body and its
-     `source_link` permalink; require a commit and its SHA. **You MUST NOT route a source comment to
+   - **SOURCE comment** — it carries an anchor `path` (a file-quote anchor into the diff), **or** its
+     `target.level` is `range` or `file`, **or** it has an `intended_path`. These levels and fields
+     exist only on a `change/` review, so a plan-document comment (level `plan-item`) never matches.
+     Dispatch an implementer `Agent` subagent with `subagent_type:
+     rdm-effort-<profiles.implement.effort>` and `model: <profiles.implement.model>` in
+     `identity.path` with the comment body, the file (`anchor.path`, else `intended_path`) and the
+     target link (`target.link`, which for a range equals `source_link`); for an anchorless comment,
+     also pass its `anchor_state` and say "the evidence sits outside the diff; the defect may be in
+     the changed code or in this file". Require a commit and its SHA. **You MUST NOT route a source comment to
      `rdm-revise`**: that skill edits plan-repo document bodies and its `--applied-commit` is a
      plan-repo SHA, so it cannot carry source-commit provenance.
    - **PLAN-DOCUMENT comment** (on a plan-repo document target): run the `rdm-revise` loop, keeping
@@ -732,7 +738,10 @@ Per comment, run this numbered checklist:
    <rdmBin> review update <id> --comment <n> --status addressed --applied-commit <sha> --reply "…"<proj-flag>
    <rdmBin> review update <id> --comment <n> --status wont-fix --reply "<why>"<proj-flag>
    ```
-   A SOURCE reply MUST embed the pinned permalink `rdm:src/<path>@<applied-commit>#L<line>`.
+   A SOURCE reply MUST embed a pinned permalink to where the fix landed:
+   `rdm:src/<path>@<applied-commit>`, plus `#L<line>` when the fix lands on identifiable lines. When
+   the comment was anchorless, the reply also states that its anchor was not placed and names the
+   `anchor_state`.
 4. **Verify**: `review show <id> --format json` shows that comment with a terminal `status` and a
    non-empty `reply`.
 

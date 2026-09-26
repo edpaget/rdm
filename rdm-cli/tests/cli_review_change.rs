@@ -4320,3 +4320,73 @@ fn comment_targets_fail_open_when_the_head_does_not_resolve() {
     let note = j["source_verification_skipped"].as_str().unwrap();
     assert!(note.contains(&head), "the note must name the head: {note}");
 }
+
+/// A quote that occurs exactly once in a file the change never touched is
+/// refused as `outside-hunk` — the benign cause — not `quote-not-found`, and
+/// the fall-back comment keeps the file as its intended path and file-level
+/// target. A quote absent from that file stays `quote-not-found`.
+#[test]
+fn a_unique_quote_in_a_file_the_change_never_touched_is_outside_hunk() {
+    let src = init_source_repo();
+    let p = src.path();
+    std::fs::write(p.join("src/untouched.rs"), "fn only_here() {}\n").unwrap();
+    git(p, &["add", "-A"]);
+    git(p, &["commit", "-m", "add untouched"]);
+    // The base already holds `src/untouched.rs`; only `src/lib.rs` changes.
+    let base = git_out(p, &["rev-parse", "HEAD"]);
+    std::fs::write(
+        p.join("src/lib.rs"),
+        "fn one() {}\nfn two_renamed_again() {}\nfn three() {}\n",
+    )
+    .unwrap();
+    git(p, &["add", "-A"]);
+    git(p, &["commit", "-m", "edit lib only"]);
+    let head = git_out(p, &["rev-parse", "HEAD"]);
+
+    let plan = init_plan_repo(p);
+    create_plan(plan.path(), "design-plan", true);
+    let id = start_change_review(
+        plan.path(),
+        p,
+        "change/HEAD",
+        &["--base", &base, "--implements", "rdm:plan/design-plan"],
+    );
+
+    let fall_back = |quote: &str| -> Value {
+        let out = review_comment(
+            plan.path(),
+            p,
+            &id,
+            &[
+                "--path",
+                "src/untouched.rs",
+                "--quote",
+                quote,
+                "--on-anchor-failure",
+                "whole-document",
+                "--body",
+                "You missed this file.",
+            ],
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice(&out.stdout).unwrap()
+    };
+
+    let line = fall_back("fn only_here() {}");
+    assert_eq!(line["anchored"], false, "{line}");
+    assert_eq!(line["anchor_state"], "outside-hunk", "{line}");
+    assert_eq!(line["intended_path"], "src/untouched.rs", "{line}");
+
+    let line = fall_back("fn not_here() {}");
+    assert_eq!(line["anchored"], false, "{line}");
+    assert_eq!(line["anchor_state"], "quote-not-found", "{line}");
+
+    let j = review_json(plan.path(), p, &id);
+    let target = &j["comments"][0]["target"];
+    assert_eq!(target["level"], "file", "{target}");
+    assert_eq!(target["link"], format!("rdm:src/src/untouched.rs@{head}"));
+}

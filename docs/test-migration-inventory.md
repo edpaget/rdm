@@ -790,7 +790,7 @@ registered by `rdm worktree add`, and a pinned commit on each.
 | L435 | `driver::persist_ladder_records_change_review_anchors` | owner of phase 2's § 15h change-target ladder shape: `target.kind = change`, file-quote anchor, degraded anchor, whole-document finding, note body, `persistDegraded`, `anchorsDegraded=` |
 | L554 | `driver::apostrophe_finding_runs_under_system_bash` | `/bin/bash` (3.2 on macOS) |
 | L591 | `driver::path_with_line_suffix_lands_anchor` | |
-| L652, L752, L822, L876, L935, L1005 | `driver::runtime_refusal_{outside_hunk_blocking_parks, outside_hunk_suggestion_no_park, quote_not_found_parks, spoofed_does_not_touch_parks, unmodified_file_benign, path_absent_at_head_parks}` | spoofed-quote negative kept |
+| L652, L752, L822, L876, L935, L1005 | `driver::runtime_refusal_{outside_hunk_blocking_reworks_without_park, outside_hunk_suggestion_no_park, quote_not_found_parks, spoofed_does_not_touch_parks, unmodified_file_benign, path_absent_at_head_parks}` | spoofed-quote negative kept |
 | L1059 | `driver::mixed_anchor_run_reports_partial` | |
 | L1156 | `driver::whole_document_by_design_never_degrades` | its absence-of-clause check on the persisted body is the negative control for L435's clause |
 | L1204 | `driver::all_anchors_degraded_sets_all` | |

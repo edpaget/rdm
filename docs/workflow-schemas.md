@@ -1682,7 +1682,7 @@ cannot see, because nothing has run yet when it is computed.
 `persistDegradationClause(result, target, opts)` composes
 `persistPreDegradedAnchors`'s data into a one-line clause — "N of M requested
 anchor(s) could not be placed at persist time (path-missing xN[, outside-hunk
-xN]); see the `anchor` header on each comment." — appended to the `--body` text
+xN]); see the stored `anchor_state` on each comment." — appended to the `--body` text
 `persistReviewCommands` gives `rdm review start`. Empty (and therefore
 invisible) when nothing degraded. This is a pure BUILD-TIME computation over
 data already in hand, not a report about what the emitted ladder did after
@@ -1690,9 +1690,9 @@ running, so it revives none of the removed persist-ack round trip. It also
 does NOT touch `classifyOutcome`/`outcome` — outcome classification staying
 independent of anchor plumbing remains a deliberate, recorded design decision
 (see immediately below); the signal lives in the persisted document's own
-body, not in the OUTCOME a caller gates on. Each comment's own `anchor` header
-(§ "Persisted review comment body" above) still carries the per-finding
-detail; this clause is what makes the aggregate visible without opening every
+body, not in the OUTCOME a caller gates on. Each comment's stored
+`anchor_state` (core's own record of why its anchor was not placed) still
+carries the per-finding detail; this clause is what makes the aggregate visible without opening every
 comment.
 
 **The all-anchors-degraded signal (AC4).** A review whose anchors ALL degraded
@@ -1731,7 +1731,7 @@ is still a DRAFT — before `review submit` — the ladder appends one
 whole-document comment whenever that total is greater than zero:
 `persistDegradationNoteBody(totalDegraded, requested)` (`persist-note:
 anchors-degraded`, then "`N` of `M` requested anchor(s) could not be placed;
-see the anchor header on each comment above."), with the run-time-only-known
+see the stored anchor_state on each comment above."), with the run-time-only-known
 total filled in through `printf` rather than `persistCapture` — `persistCapture`
 emits a static `shellQuote`d string and cannot expand a shell variable at all,
 so this call site needed `printf` regardless of which capture strategy
@@ -1763,37 +1763,42 @@ the document entirely, or an ambiguous quote), so the dispatch skill's park
 rule used to fire on both alike.
 
 A second, narrower line — `anchorsParkRequired=<yes|no>` — is what a caller
-should actually key a park decision on. It is computed by the ladder from
-two rules:
+should actually key a park decision on. It follows ONE rule: **the ladder
+prints `anchorsParkRequired=yes` if and only if at least one requested
+anchor was lost for a reason not in `ANCHOR_REASONS_BENIGN`** (today
+`['outside-hunk']`). Build-time drops and run-time refusals are classified by
+the same set, and severity is not consulted.
 
-1. **A systemic cause always requires a park.** Any BUILD-TIME degradation
-   (`persistPreDegradedAnchors` non-empty — no derivable path, or an empty
-   reviewed range) is systemic by construction. A RUN-TIME refusal is
-   classified by the `anchor_state` VALUE core reported for it in
-   `--on-anchor-failure whole-document`'s JSON line: only `outside-hunk` is
-   benign (`ANCHOR_REASONS_BENIGN`); every other reason — `path-missing` (a
-   path absent at the reviewed head), `path-not-a-file`, `path-not-linkable`,
-   `quote-not-found`, `ambiguous`, `occurrence-out-of-range`,
-   `head-not-in-source`, and any value this build does not know — is
-   systemic. `ANCHOR_REASONS_BENIGN` and the pure helper
-   `isAnchorReasonBenign(reason)` are the single definition of this check.
+- Reasons that park: `path-missing` (a path absent at the reviewed head, or
+  no derivable path at build time), `path-not-a-file`, `path-not-linkable`,
+  `quote-not-found`, `ambiguous`, `occurrence-out-of-range`,
+  `head-not-in-source`, `start-fallback`, and any value this build does not
+  know.
+- Reasons that never park: `outside-hunk`, at any severity — a run-time
+  refusal of a quote on an untouched line or in an untouched file, or the
+  build-time empty-range drop (`noCode`).
 
-   The classification is by enum value, never by the refusal's prose. A
-   refusal message can echo the finder's own caller-controlled `--quote` or
-   `--path` (`QuoteNotFound` prints the quote), so matching message text
-   needed carefully anchored patterns to stay unspoofable. The JSON line never
-   carries that text — the refusal goes to stderr — and every caller-supplied
-   string in it is JSON-escaped, so no quote or path can forge the
-   `"anchor_state"` key the ladder reads.
-2. **A `blocking` finding losing its anchor always requires a park, even for
-   the benign cause.** Severity is known statically when the shell is
-   generated, so this branches at JS code-gen time — a `severity: 'blocking'`
-   survivor's run-time refusal unconditionally bumps the park counter,
-   without needing to inspect stderr at all.
+Why: an `outside-hunk` finding loses nothing — it lands whole-document with
+its `intended_path` and a file-level `target` — and whether it gates is
+decided by the outcome (`hasBlocking` and the AC table, which never look at
+anchors), not by its anchor. A `blocking` outside-hunk finding therefore still
+yields `rework` and verdict `request-changes`. A run-time refusal is
+classified by the `anchor_state` VALUE core reported for it in
+`--on-anchor-failure whole-document`'s JSON line. `ANCHOR_REASONS_BENIGN` and
+the pure helper `isAnchorReasonBenign(reason)` are the single definition of
+this check.
 
-Everything else — a non-`blocking` survivor refused only because its quote
-sits on an untouched line in an otherwise-touched file, OR because it names
-a real, in-range file the diff never modifies at all — still contributes to
+The classification is by enum value, never by the refusal's prose. A refusal
+message can echo the finder's own caller-controlled `--quote` or `--path`
+(`QuoteNotFound` prints the quote), so matching message text needed carefully
+anchored patterns to stay unspoofable. The JSON line never carries that text —
+the refusal goes to stderr — and every caller-supplied string in it is
+JSON-escaped, so no quote or path can forge the `"anchor_state"` key the
+ladder reads.
+
+A survivor refused only because its quote sits on an untouched line in an
+otherwise-touched file, OR because it names a real, in-range file the diff
+never modifies at all, still contributes to
 `anchorsDegraded` (the volume stays visible) but NOT to
 `anchorsParkRequired`. Both are the SAME error variant
 (`Error::QuoteOutsideChangedHunks`, just its two different `nearest` arms —
@@ -1809,13 +1814,13 @@ created with `mktemp`, `|| exit 1`, removed after use, including on the
 failure path) captures the path-anchored `review comment` line's JSON line;
 `sed` reads its `anchor_state` into `RDM_PERSIST_ANCHOR_REASON`. When that is
 non-empty the comment is counted into `RDM_PERSIST_RUNTIME_DEGRADED` and then
-either unconditionally bumps the running `RDM_PERSIST_PARK_REQUIRED` counter
-(a `blocking` finding) or does so through `case "$RDM_PERSIST_ANCHOR_REASON"
-in outside-hunk) : ;; *) RDM_PERSIST_PARK_REQUIRED=... ;; esac` (everything
-else), whose pattern is `ANCHOR_REASONS_BENIGN` joined with `|` — the exact
+bumps the running `RDM_PERSIST_PARK_REQUIRED` counter through `case
+"$RDM_PERSIST_ANCHOR_REASON" in outside-hunk) : ;; *)
+RDM_PERSIST_PARK_REQUIRED=... ;; esac`, whose pattern is `ANCHOR_REASONS_BENIGN` joined with `|` — the exact
 same array `isAnchorReasonBenign` tests, so the JS helper and the emitted shell
-cannot silently diverge. `RDM_PERSIST_PARK_REQUIRED` is seeded from the
-build-time degradation count before the survivor loop runs. Once the loop
+cannot silently diverge. `RDM_PERSIST_PARK_REQUIRED` is seeded, before the
+survivor loop runs, from whether any build-time drop carries a non-benign
+reason. Once the loop
 finishes, the ladder buckets the counter into
 `RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes` (`-gt 0`) or `=no`, and prints it as
 the trailing `anchorsParkRequired=<yes|no>` line — immediately after the
@@ -1848,12 +1853,11 @@ applies. **The caller is responsible for acting on the printed line.**
 `rdm-core/src/templates/skill-dispatch-phase-cli.md`) run the persist ladder,
 capture its output, and PARK `blocked` when its last line reads
 `anchorsParkRequired=yes`, even though the ladder itself exited 0 — a review
-whose anchors were lost for a systemic cause, or whose `blocking` finding
-lost its anchor at all, should not be reported as ordinary successful
-persistence. `anchorsParkRequired=no` is not a park, regardless of what
+whose anchors were lost for a systemic cause should not be reported as
+ordinary successful persistence. `anchorsParkRequired=no` is not a park, regardless of what
 `anchorsDegraded` reads; it proceeds normally, with the degradation already
-visible in the review's own note comment (see above) and per-comment
-`anchor` headers.
+visible in the review's own note comment (see above) and each comment's
+stored `anchor_state`.
 
 **The engine's own headless `gate: true` path reads the same signal, through
 an environment variable.** `persistCommands`/`persistScript` and
@@ -2015,7 +2019,20 @@ finding — the finder never grades its own work.
 | `confidence` | integer 0–100 (required) | the refuter's confidence in **its verdict** (advisory) |
 | `rationale`  | string                   | why the finding was or was not refuted                 |
 | `quote_ok`   | boolean                  | **optional**; did the finding's `quote` appear VERBATIM in the reviewed text? Requested only when the finding carries one, and INDEPENDENT of `refuted` — an explicit `false` strips the quote, never the finding |
-| `inScope`    | boolean                  | **optional**; is the finding within the scope of the approved plan the change implements? Requested only for a code-mode review with an associated plan (`context.planCommand` set), and INDEPENDENT of `refuted` — a finding can be real (not refuted) and still out of scope. Absent/`true` means in scope; only an explicit `false` excludes the finding from `hasBlocking` (see `rdm:plan/refuters-grade-finding-scope`) |
+| `inScope`    | boolean                  | **optional**; is the finding within the scope of the approved plan the change implements? Requested only for a code-mode review with an associated plan (`context.planCommand` set), and INDEPENDENT of `refuted` — a finding can be real (not refuted) and still out of scope. Absent/`true` means in scope; only an explicit `false` excludes the finding from `hasBlocking` (see `rdm:plan/refuters-grade-finding-scope`, and "Scope follows the defect, not the evidence" below) |
+
+**Scope follows the defect, not the evidence.** The refuter grades `inScope`
+by where the DEFECT is, not where its evidence or quote sits. A defect in
+code or behaviour the plan changed stays in scope when the proof lives in code
+the plan did not change: new behaviour with no test (shown by an unchanged
+test file), an untouched caller the change breaks or should have updated, or a
+file the change should also have edited. Evidence located outside the diff
+does not by itself make a finding out of scope. Two cases remain out of scope:
+a genuinely pre-existing defect, already present before the change in
+behaviour the plan did not change; and a real defect whose only adequate fix
+adds new surface outside the plan (a new flag, public API or mechanism).
+Adding a missing test or editing an existing file the change missed is not
+new surface.
 
 `VERDICT` is the **single-finding** contract, and it is the contract the shipped
 pipeline uses. A batched sibling — one refuter per dimension over that review

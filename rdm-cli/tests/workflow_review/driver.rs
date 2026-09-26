@@ -626,7 +626,7 @@ fn persist_ladder_records_change_review_anchors() {
         );
         check!(
             review["body"].as_str().is_some_and(|b| b.contains(
-                "1 of 2 requested anchor(s) could not be placed at persist time (path-missing x1); see the `anchor` header on each comment."
+                "1 of 2 requested anchor(s) could not be placed at persist time (path-missing x1); see the stored `anchor_state` on each comment."
             )),
             "the review's own summary names the build-time degradation: {}",
             review["body"]
@@ -786,27 +786,41 @@ fn assert_build_time_degraded(js: &mut Js, review: &Value, id: &str) -> Outcome 
 }
 
 #[test]
-fn runtime_refusal_outside_hunk_blocking_parks() {
+fn runtime_refusal_outside_hunk_blocking_reworks_without_park() {
     run_real(|lib| {
         let fx = fixture()?;
         let mut js = Js::open(lib)?;
         // `--unified=0` hunks: only the second line changes, so the first is
         // outside every hunk.
-        let (review, out, r) = refused(
-            lib,
-            &fx,
+        let pin = range(
+            &fx.roadmap_wt(),
             &[("outside-hunk.txt", "keepme\nchangeme\n")],
             &[("outside-hunk.txt", "keepme\nchanged\n")],
-            finding(
+        );
+        let (r, _) = drive(
+            lib,
+            merge(&[persist_args(&pin), json!({ "gate": true })]),
+            vec![finding(
                 "outside-hunk-bug",
                 "blocking",
                 json!({ "location": "see the gate step", "path": "outside-hunk.txt", "quote": "keepme" }),
-            ),
+            )],
         )?;
+        check_eq!(
+            r["outcome"],
+            json!("rework"),
+            "a blocking finding gates whatever its anchor did"
+        );
+        check_eq!(
+            r["status"],
+            json!("in-progress"),
+            "rework maps to in-progress"
+        );
+        let (review, out) = land(&fx, &r)?;
         check!(has_line(&out, "anchorsDegraded=all"), "all: {out}");
         check!(
-            has_line(&out, "anchorsParkRequired=yes"),
-            "a blocking finding losing its anchor requires a park: {out}"
+            has_line(&out, "anchorsParkRequired=no"),
+            "an outside-hunk refusal never parks, even for a blocking finding: {out}"
         );
         check_eq!(comments(&review).len(), 2, "the finding plus the note");
         assert_whole_doc_degraded(
@@ -816,6 +830,30 @@ fn runtime_refusal_outside_hunk_blocking_parks() {
             "outside-hunk",
             "outside-hunk.txt",
         )?;
+        let c = comment_with(&review, "outside-hunk-bug")?;
+        check_eq!(
+            c["target"]["level"],
+            json!("file"),
+            "a file-level target: {c}"
+        );
+        check_eq!(
+            c["target"]["link"],
+            json!(format!(
+                "rdm:src/outside-hunk.txt@{}",
+                r["source"]["head"].as_str().unwrap_or_default()
+            )),
+            "the target links the intended file at the reviewed head"
+        );
+        check_eq!(
+            c["target"]["reason"],
+            json!("outside-hunk"),
+            "the target records why it is file-level"
+        );
+        check_eq!(
+            review["verdict"],
+            json!("request-changes"),
+            "the persisted verdict still requests changes"
+        );
         check_eq!(
             note(&review)?["body"],
             note_body(&mut js, 1, 1)?,
@@ -826,6 +864,64 @@ fn runtime_refusal_outside_hunk_blocking_parks() {
             json!({ "requested": 1, "degraded": 0, "all": false }),
             "the build-time preview cannot see a run-time refusal"
         );
+        fx.repo
+            .run_ok(&strict(), r["gateScript"].as_str().unwrap_or_default())?;
+        check_eq!(
+            phase_status(&fx, "phase-2-dirty")?,
+            json!("in-progress"),
+            "the gate ladder sends the phase back for rework"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn runtime_refusal_systemic_parks_at_every_severity() {
+    run_real(|lib| {
+        let fx = fixture()?;
+        let mut js = Js::open(lib)?;
+        for severity in ["blocking", "suggestion"] {
+            // A path never committed, with a quote that exists elsewhere.
+            let real = format!("systemic-real-{severity}.txt");
+            let absent = format!("systemic-never-committed-{severity}.txt");
+            let id = format!("path-missing-{severity}");
+            let (review, out, _) = refused(
+                lib,
+                &fx,
+                &[(real.as_str(), "first line\nsecond line\n")],
+                &[(real.as_str(), "first line\nsecond line, changed\n")],
+                finding(
+                    &id,
+                    severity,
+                    json!({ "location": "see the gate step", "path": absent, "quote": "second line" }),
+                ),
+            )?;
+            check!(
+                has_line(&out, "anchorsParkRequired=yes"),
+                "a {severity} path-missing refusal parks: {out}"
+            );
+            assert_whole_doc_degraded(&mut js, &review, &id, "path-missing", &absent)?;
+
+            // A quote that occurs twice in a touched file.
+            let dup = format!("systemic-ambiguous-{severity}.txt");
+            let id = format!("ambiguous-{severity}");
+            let (review, out, _) = refused(
+                lib,
+                &fx,
+                &[(dup.as_str(), "dup\ndup\nchangeme\n")],
+                &[(dup.as_str(), "dup\ndup\nchanged\n")],
+                finding(
+                    &id,
+                    severity,
+                    json!({ "location": "see the gate step", "path": dup, "quote": "dup" }),
+                ),
+            )?;
+            check!(
+                has_line(&out, "anchorsParkRequired=yes"),
+                "a {severity} ambiguous refusal parks: {out}"
+            );
+            assert_whole_doc_degraded(&mut js, &review, &id, "ambiguous", &dup)?;
+        }
         Ok(())
     });
 }
@@ -1209,6 +1305,10 @@ fn assert_empty_range_drop(
     check!(
         has_line(out, "anchorsDegraded=all"),
         "anchorsDegraded counts the drop: {out}"
+    );
+    check!(
+        has_line(out, "anchorsParkRequired=no"),
+        "the empty-range outside-hunk drop is benign and never parks: {out}"
     );
     Ok(c)
 }
