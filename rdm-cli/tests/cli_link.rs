@@ -969,6 +969,70 @@ fn check_inside_checkout_verifies_commit_links_and_reports_dangling_without_fail
 }
 
 #[test]
+fn check_with_a_dangling_link_fails_but_never_counts_an_unresolved_commit_as_a_problem() {
+    let plan = init_plan_repo();
+
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "main"]);
+    std::fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "initial"]);
+    set_project_source(plan.path(), "demo", &src.path().to_string_lossy());
+    let gone = "0123456789abcdef0123456789abcdef01234567";
+
+    create_task(
+        plan.path(),
+        "broken",
+        "Broken",
+        "See [ghost](rdm:task/does-not-exist).",
+    );
+    create_task(
+        plan.path(),
+        "landed",
+        "Landed",
+        &format!("Shipped in [gone](rdm:src@{gone})."),
+    );
+
+    let mut json_cmd = rdm();
+    json_cmd
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(src.path())
+        .args(["link", "check", "--project", "demo", "--format", "json"]);
+    let json = json_stdout(&mut json_cmd);
+    json_cmd.assert().failure().code(1);
+
+    let dangling = json["dangling"].as_array().unwrap();
+    assert_eq!(dangling.len(), 1, "expected one dangling item link: {json}");
+    assert_eq!(dangling[0]["target"], "task/does-not-exist");
+    assert_eq!(dangling[0]["slug"], "broken");
+
+    let unresolved = json["unresolved_commits"].as_array().unwrap();
+    assert_eq!(
+        unresolved.len(),
+        1,
+        "the unresolved commit is still reported alongside the problem: {json}"
+    );
+    assert_eq!(unresolved[0]["uri"], format!("rdm:src@{gone}"));
+    assert_eq!(unresolved[0]["slug"], "landed");
+    assert_eq!(json["diagnostics"], serde_json::json!([]));
+    assert_eq!(json["missing_at_rev"], serde_json::json!([]));
+    assert!(json.get("path_verification_skipped").is_none());
+
+    // Text mode: the commit is listed, but only the dangling link counts.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(src.path())
+        .args(["link", "check", "--project", "demo"])
+        .assert()
+        .failure()
+        .code(1)
+        .stdout(predicate::str::contains(format!("rdm:src@{gone}")))
+        .stdout(predicate::str::contains("1 problem(s) found"));
+}
+
+#[test]
 fn check_malformed_commit_link_still_fails() {
     let plan = init_plan_repo();
     create_task(

@@ -2653,6 +2653,54 @@ mod tests {
     }
 
     #[test]
+    fn link_check_report_lists_unresolved_commits_alongside_problems_without_counting_them() {
+        use crate::json::{DanglingLinkJson, LinkCheckReportJson, UnresolvedCommitJson};
+        use crate::link::DocRef;
+
+        let report = LinkCheckReportJson {
+            on: None,
+            links_checked: 2,
+            code_links_checked: 0,
+            commit_links_checked: 1,
+            dangling: vec![DanglingLinkJson {
+                document: DocRef::Task {
+                    slug: "broken".to_string(),
+                },
+                range_start: 0,
+                range_end: 30,
+                uri: "rdm:task/does-not-exist".to_string(),
+                target: "task/does-not-exist".to_string(),
+            }],
+            diagnostics: Vec::new(),
+            missing_at_rev: Vec::new(),
+            unresolved_commits: vec![UnresolvedCommitJson {
+                document: DocRef::Task {
+                    slug: "landed".to_string(),
+                },
+                range_start: 0,
+                range_end: 25,
+                uri: "rdm:src@a1b2c3d".to_string(),
+                rev: "a1b2c3d".to_string(),
+            }],
+            path_verification_skipped: None,
+        };
+
+        let out = format_link_check_report(&report);
+        assert!(
+            out.contains("dangling link in task/broken"),
+            "expected the dangling finding: {out}"
+        );
+        assert!(
+            out.contains("unresolved commit link in task/landed: rdm:src@a1b2c3d"),
+            "expected the unresolved commit line alongside the problem: {out}"
+        );
+        // The unresolved commit is reported but never counted as a problem.
+        assert!(out.contains("1 problem(s) found"), "{out}");
+        assert!(!out.contains("2 problem(s) found"), "{out}");
+        assert!(!out.contains("reported only; link check passes"), "{out}");
+    }
+
+    #[test]
     fn format_resolved_commit_kind() {
         let resolved = crate::json::resolved_to_json(
             &crate::link::Resolved::Commit {
