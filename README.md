@@ -107,6 +107,10 @@ So a normally installed `rdm` needs no configuration — the flag and env var ar
 
 **This is the recommended distribution path for downstream Claude Code consumers.**
 
+### Emacs
+
+`editors/emacs/` ships an Emacs package (Emacs 31.1+) that drives the `rdm` CLI from Emacs. You can pick and view roadmaps, phases and tasks, change status, tags and bodies, author and resolve reviews, manage worktrees, insert `Done:` trailers, and commit the plan repo. Install it with straight from this repo. See [docs/emacs.md](docs/emacs.md) for the recipe, the environment contract, `rdm-doctor` and the keymaps.
+
 ### Codex: manual, review-gated lane
 
 ```sh
@@ -273,6 +277,7 @@ rdm serve --port 8400
 - [Architectural Principles](docs/principles.md) — the full set of design principles governing the codebase
 - [REST API](docs/rest-api.md) — endpoint reference, content negotiation, and error format
 - [Bootstrap & Init](docs/bootstrap-init.md) — detailed guide to initializing and configuring a plan repo
+- [Emacs package](docs/emacs.md) — installing and using the in-repo Emacs integration
 
 ## Contributing
 
