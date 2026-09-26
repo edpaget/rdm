@@ -79,13 +79,16 @@ configured local `source.repo` (never its own working directory or the plan
 repo); without one the response is still `200`, carrying the note in
 `source_verification_skipped` (HAL) or a notice (HTML).
 
-**Live forge links need a follow-up.** A permalink is navigable only when the
-project's `source.repo` is an `http(s)` URL; anything else (a local path)
-renders as a non-navigable `path@rev` span. Because the server can read
-annotations only from a *local* `source.repo`, no deployment that lists
-annotations shows live forge permalinks today: a project cannot yet name both a
-local checkout and a forge URL. That is tracked by the
-`source-repo-web-url-separate-from-local-checkout` task.
+**Beside a local checkout.** The web UI normally runs on the same machine as a
+local checkout, and there the annotations page works fully: the server reads
+annotations from the local `source.repo` and shows each entry's pinned
+`path@rev`, which is enough to open the file locally (an editor integration is
+the natural place to jump to the line). A permalink is navigable only when
+`source.repo` is an `http(s)` URL; a local path renders as a non-navigable
+`path@rev` span, and a project cannot yet name both a local checkout and a
+forge URL. Clickable forge links matter only when the web UI is served away
+from the code (e.g. a shared host); they are the follow-up task
+`source-repo-web-url-separate-from-local-checkout`.
 
 ## Mutations Are Staged, Not Committed
 
