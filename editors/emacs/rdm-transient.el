@@ -30,7 +30,7 @@
 ;; rdm stages every write; nothing is committed until `rdm-plan-commit'.
 ;; A write rdm refuses (e.g. the `gates.reviewed' gate) signals rdm's own
 ;; error message.  After a write, every detail buffer showing the item is
-;; refreshed.
+;; refreshed and `rdm-after-write-hook' runs.
 ;;
 ;; The functions below (`rdm-set-status', `rdm-edit-tags',
 ;; `rdm-edit-body', `rdm-update-body', `rdm-create-roadmap',
@@ -90,10 +90,11 @@ A phase's roadmap view is refreshed too, since it lists the phase."
           (revert-buffer))))))
 
 (defun rdm--after-write (item what)
-  "Refresh views of ITEM and report WHAT was staged."
+  "Refresh views of ITEM, report WHAT was staged, run `rdm-after-write-hook'."
   (rdm--refresh-views item)
   (message "rdm: %s %s staged — commit from rdm-dispatch (or `rdm commit')"
-           (rdm-item-identifier item) what))
+           (rdm-item-identifier item) what)
+  (run-hooks 'rdm-after-write-hook))
 
 (defun rdm-set-status (item status &optional reason)
   "Set the status of ITEM (a phase or task) to STATUS.
@@ -206,7 +207,8 @@ Refreshes the views the new item affects and returns its item plist."
       (rdm--refresh-views item)
       (message "rdm: %s %s created and staged — commit from rdm-dispatch \
 (or `rdm commit')"
-               kind (if (eq kind 'phase) (concat roadmap "/" slug) slug)))
+               kind (if (eq kind 'phase) (concat roadmap "/" slug) slug))
+      (run-hooks 'rdm-after-write-hook))
     item))
 
 (defun rdm--read-required (prompt)

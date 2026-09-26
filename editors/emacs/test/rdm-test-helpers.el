@@ -44,7 +44,8 @@ both before and after BODY."
 
 (defmacro rdm-test-with-real (&rest body)
   "Run BODY against the binary and fixture the suite driver supplies.
-Binds `bin', `root' and `project'; `default-directory' is the plan repo.
+Binds `bin', `root', `project' and `code' (the fixture's code repo from
+RDM_TEST_CODE, or nil); `default-directory' is the plan repo.
 The environment keeps RDM_SESSION and drops every other `RDM_' variable.
 Skips the test unless the suite driver supplies RDM_TEST_BIN,
 RDM_TEST_ROOT and RDM_TEST_PROJECT."
@@ -52,7 +53,9 @@ RDM_TEST_ROOT and RDM_TEST_PROJECT."
   `(let ((bin (getenv "RDM_TEST_BIN"))
          (root (getenv "RDM_TEST_ROOT"))
          (project (getenv "RDM_TEST_PROJECT"))
+         (code (getenv "RDM_TEST_CODE"))
          (session (getenv "RDM_SESSION")))
+     (ignore code)
      (skip-unless (and bin root project))
      (let ((default-directory (file-name-as-directory root)))
        (rdm-test-with-env (when session (list (concat "RDM_SESSION=" session)))

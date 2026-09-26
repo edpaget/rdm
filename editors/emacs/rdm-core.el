@@ -79,6 +79,15 @@ characters outside A-Z, a-z, 0-9, `.', `_' and `-', and keeps the first
 through to rdm's next identity rung.  See docs/session-identity.md."
   :type '(choice (const :tag "One per Emacs instance" nil) string))
 
+(defcustom rdm-after-write-hook nil
+  "Normal hook run after every successful plan-repo write the package makes.
+It runs once per status, tag or body update and once per create, after
+the write succeeded and the affected detail buffers were refreshed; a
+declined confirmation, a write rdm refuses and a tag edit that changes
+nothing do not run it.  The current buffer is whichever buffer the
+write was made from, which need not be in the item's worktree."
+  :type 'hook)
+
 (defvar rdm--context-cache (make-hash-table :test #'equal)
   "Resolved contexts, keyed by `rdm--context-key'.")
 
@@ -249,6 +258,10 @@ process and signals an error.  Errors are re-signalled."
 (defconst rdm--actions
   '((info             :argv ("info")             :kind read :project nil)
     (worktree-current :argv ("worktree" "current") :kind read :project nil)
+    (worktree-list    :argv ("worktree" "list")  :kind read :project nil)
+    (worktree-add     :argv ("worktree" "add")   :kind read)
+    (worktree-remove  :argv ("worktree" "remove") :kind text)
+    (worktree-prune   :argv ("worktree" "prune") :kind read)
     (describe         :argv ("describe")         :kind read :project nil)
     (status           :argv ("status")           :kind text :project nil)
     (commit           :argv ("commit")           :kind text :project nil)

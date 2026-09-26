@@ -2,11 +2,14 @@
 //! as errors and runs every `editors/emacs/test/*-test.el` in a child Emacs,
 //! through the batch driver `editors/emacs/test/run.el`.
 //!
-//! Each pass gets a fresh [`SeededPlan`] and runs under its [`Sandbox`]
+//! Each pass gets a fresh [`SeededPlan`] with a code repo
+//! ([`SeededPlan::with_code_repo`]) and runs under its [`Sandbox`]
 //! (no inherited `RDM_*`, private `HOME`/XDG dirs), so the developer's
 //! `$RDM_ROOT` is never visible. The real-binary ERT tests find the binary
-//! under test and the fixture through `RDM_TEST_BIN`, `RDM_TEST_ROOT` and
-//! `RDM_TEST_PROJECT`; `EDITOR`/`VISUAL` are `false`.
+//! under test and the fixture through `RDM_TEST_BIN`, `RDM_TEST_ROOT`,
+//! `RDM_TEST_PROJECT` and `RDM_TEST_CODE` (the code repo, whose
+//! `code__worktrees/` sibling stays inside the fixture's `TempDir`);
+//! `EDITOR`/`VISUAL` are `false`.
 //!
 //! - [`emacs_suite_bare`] runs `emacs -Q`: every test tagged for a soft
 //!   dependency (evil, magit, consult, embark, markdown-mode) must be
@@ -88,7 +91,10 @@ struct TestResult {
 /// [`PASS_DEADLINE`]; returns the per-test results, panicking with the
 /// child's output on a non-zero exit.
 fn run_pass(emacs: &Path, pre_args: &[&str], init: Option<&Path>) -> Vec<TestResult> {
-    let plan = SeededPlan::new(PROJECT).unwrap_or_else(|f| panic!("{f}"));
+    let plan = SeededPlan::new(PROJECT)
+        .and_then(SeededPlan::with_code_repo)
+        .unwrap_or_else(|f| panic!("{f}"));
+    let code = plan.code().unwrap_or_else(|f| panic!("{f}")).to_owned();
     let out_dir = plan.dir.path().join("emacs-out");
     std::fs::create_dir_all(&out_dir).expect("create output dir");
     let results = out_dir.join("results.json");
@@ -111,6 +117,7 @@ fn run_pass(emacs: &Path, pre_args: &[&str], init: Option<&Path>) -> Vec<TestRes
         .env("RDM_TEST_BIN", env!("CARGO_BIN_EXE_rdm"))
         .env("RDM_TEST_ROOT", &plan.plan)
         .env("RDM_TEST_PROJECT", &plan.project)
+        .env("RDM_TEST_CODE", &code)
         .env("RDM_SESSION", SESSION)
         .env("RDM_EMACS_RESULTS", &results)
         .env("TMPDIR", &tmp)
