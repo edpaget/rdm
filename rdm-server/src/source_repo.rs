@@ -21,8 +21,8 @@
 //! a surface which cannot verify anchors says so — which is why the build
 //! *without* the `git` feature still returns a note rather than nothing.
 
-use rdm_core::anchor::{Resolution, ResolvedComment};
 use rdm_core::model::Review;
+use rdm_core::ops::reviews::ReviewResolution;
 
 /// The note a surface reports when this server cannot resolve change-review
 /// anchors at all.
@@ -31,44 +31,54 @@ use rdm_core::model::Review;
 /// by naming the surface and then narrows to the specific cause.
 const NO_RESOLUTION_NOTE: &str = "this server does not resolve change-review anchors";
 
-/// Resolves `review`'s comments against the project's configured local source
-/// repository, or degrades with a note saying why it could not.
+/// The whole per-review read for `review` — resolutions, per-comment notes,
+/// the source note, and every comment's target — from
+/// [`rdm_core::ops::reviews::resolve_review`], against the project's
+/// configured local source repository, or degraded with a note saying why
+/// there is none.
 ///
-/// The return shape is the one every read surface consumes — resolutions,
-/// per-comment notes, and one `source_verification_skipped` note — and the
-/// resolution policy itself is entirely
-/// [`rdm_core::change::resolve_change_review`]'s. This function contributes
-/// only the discovery half, so the REST and HTML surfaces can never disagree
-/// with `rdm review show --format json` about a change review's states.
+/// Core owns the read: the dispatch on the review's target kind, the
+/// resolution ladder, and the fail-open targets with no source. This function
+/// contributes only the discovery half and the no-source note, so the REST and
+/// HTML surfaces can never disagree with `rdm review show --format json`.
 ///
 /// # Panics
 ///
 /// Never panics.
 #[must_use]
-pub fn resolve_change_review_for_project(
+pub fn resolve_review_for_project(
     store: &impl rdm_core::store::VersionedStore,
     project: &str,
     review: &Review,
-) -> (Vec<ResolvedComment>, Vec<Option<String>>, Option<String>) {
+) -> ReviewResolution {
+    use rdm_core::ops::reviews::resolve_review;
+    use rdm_core::source::MemorySourceRepo;
+
+    // `MemorySourceRepo` only names the type of `None`; it is never built.
+    let no_source = None::<&MemorySourceRepo>;
+    if !matches!(review.target, rdm_core::model::ReviewTarget::Change { .. }) {
+        return resolve_review(store, project, review, no_source);
+    }
     #[cfg(feature = "git")]
     {
         match source_for(store, project) {
-            Ok(source) => rdm_core::change::resolve_change_review(&source, review),
-            Err(note) => (unresolved(review), Vec::new(), Some(note)),
+            Ok(source) => resolve_review(store, project, review, Some(&source)),
+            Err(note) => ReviewResolution {
+                source_note: Some(note),
+                ..resolve_review(store, project, review, no_source)
+            },
         }
     }
     // No adapter exists in this build, so there is never a source — but the
     // surface still degrades WITH a note, exactly like the `git` build.
     #[cfg(not(feature = "git"))]
     {
-        let _ = (store, project);
-        (
-            unresolved(review),
-            Vec::new(),
-            Some(format!(
+        ReviewResolution {
+            source_note: Some(format!(
                 "{NO_RESOLUTION_NOTE} — this build has no git support"
             )),
-        )
+            ..resolve_review(store, project, review, no_source)
+        }
     }
 }
 
@@ -110,10 +120,16 @@ pub fn code_annotations_for_project(
     rdm_core::io::load_project(store, project)?;
     // A plan item is not a code location: core refuses it before it asks the
     // source anything, so its refusal reaches the caller whether or not a
-    // source repository is available — never masked as "could not look".
+    // source repository is available — never masked as "could not look". The
+    // empty repository handed over here is therefore never consulted.
     if matches!(target, rdm_core::link::BacklinkTarget::Item(_)) {
-        return rdm_core::ops::links::code_annotations(store, &UnavailableSource, project, target)
-            .map(AnnotationsOutcome::Found);
+        return rdm_core::ops::links::code_annotations(
+            store,
+            &rdm_core::source::MemorySourceRepo::new(),
+            project,
+            target,
+        )
+        .map(AnnotationsOutcome::Found);
     }
     #[cfg(feature = "git")]
     {
@@ -130,107 +146,6 @@ pub fn code_annotations_for_project(
             "{NO_RESOLUTION_NOTE} — this build has no git support"
         )))
     }
-}
-
-/// Each comment's coarsest true target within `review`, from core's
-/// [`rdm_core::comment_target::comment_target`], in comment order.
-///
-/// A plan-document review never consults a source, so it is handed
-/// [`UnavailableSource`]. A change review is handed the project's
-/// configured local source repository when one is readable, else
-/// [`UnavailableSource`] too — on which core fails open: the comment keeps
-/// its stored reason and is marked `unverified`. The reason a surface shows
-/// is therefore always core's, with or without a source.
-#[must_use]
-pub fn comment_targets_for_project(
-    store: &impl rdm_core::store::VersionedStore,
-    project: &str,
-    review: &Review,
-) -> Vec<rdm_core::comment_target::CommentTarget> {
-    use rdm_core::comment_target::comment_target;
-    #[cfg(feature = "git")]
-    if matches!(review.target, rdm_core::model::ReviewTarget::Change { .. })
-        && let Ok(source) = source_for(store, project)
-    {
-        return review
-            .comments
-            .iter()
-            .map(|c| comment_target(&source, review, c))
-            .collect();
-    }
-    let _ = (store, project);
-    review
-        .comments
-        .iter()
-        .map(|c| comment_target(&UnavailableSource, review, c))
-        .collect()
-}
-
-/// A [`SourceRepo`](rdm_core::source::SourceRepo) that can answer nothing:
-/// every lookup fails, as a repository that cannot be queried at all does.
-///
-/// It stands in where this server has no source repository, so a caller of
-/// core's source-reading helpers gets core's own fail-open answer rather
-/// than a server-side copy of the policy.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct UnavailableSource;
-
-impl UnavailableSource {
-    /// The error every lookup returns.
-    fn error() -> rdm_core::error::Error {
-        rdm_core::error::Error::Git(format!("{NO_RESOLUTION_NOTE} — no source repository"))
-    }
-}
-
-impl rdm_core::source::SourceRepo for UnavailableSource {
-    fn rev_parse(&self, _rev: &str) -> rdm_core::error::Result<Option<String>> {
-        Err(Self::error())
-    }
-
-    fn merge_base(&self, _a: &str, _b: &str) -> rdm_core::error::Result<Option<String>> {
-        Err(Self::error())
-    }
-
-    fn file_at(&self, _rev: &str, _path: &str) -> rdm_core::error::Result<Option<String>> {
-        Err(Self::error())
-    }
-
-    fn unified_diff(
-        &self,
-        _base: &str,
-        _head: &str,
-        _path: &str,
-    ) -> rdm_core::error::Result<Option<String>> {
-        Err(Self::error())
-    }
-
-    fn head(&self) -> rdm_core::error::Result<Option<String>> {
-        Err(Self::error())
-    }
-
-    fn current_branch(&self) -> rdm_core::error::Result<Option<String>> {
-        Err(Self::error())
-    }
-
-    fn object_kind_at(
-        &self,
-        _rev: &str,
-        _path: &str,
-    ) -> rdm_core::error::Result<rdm_core::source::SourceObjectLookup> {
-        Err(Self::error())
-    }
-}
-
-/// One unresolved entry per comment, for every arm that reaches no source.
-fn unresolved(review: &Review) -> Vec<ResolvedComment> {
-    review
-        .comments
-        .iter()
-        .map(|_| ResolvedComment {
-            resolution: Resolution::Unresolved,
-            quote: None,
-        })
-        .collect()
 }
 
 /// A readable source repository for `project`, or the note saying why there
@@ -313,7 +228,7 @@ fn describe(cause: &rdm_core::source_select::SourceUnavailable) -> &'static str 
 /// the plan repo rooted at `plan_root`.
 ///
 /// This is a **hard refusal**, unlike this module's read path
-/// ([`resolve_change_review_for_project`]), which degrades with a note
+/// ([`resolve_review_for_project`]), which degrades with a note
 /// instead of failing. `applied_commit` mints a public `rdm:src/…@<sha>`
 /// provenance record, so a SHA that cannot be verified against the correct
 /// repository must block the write rather than be accepted unverified or

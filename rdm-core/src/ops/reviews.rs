@@ -1405,6 +1405,138 @@ pub fn review_commit_refs(review: &Review) -> Vec<ReviewCommitRef> {
         .collect()
 }
 
+/// Everything a read surface shows about a review's comments, from one pass
+/// of [`resolve_review`].
+///
+/// `resolutions` and `targets` are parallel to `review.comments`.
+/// `comment_notes` is parallel too, but may be empty: only a `change/` review
+/// read against a source repository carries per-comment ineligibility notes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewResolution {
+    /// Where each comment's anchor resolves.
+    pub resolutions: Vec<crate::anchor::ResolvedComment>,
+    /// Per-comment ineligibility notes (see
+    /// [`crate::change::change_anchor_ineligibility`]); empty when there are
+    /// none to report.
+    pub comment_notes: Vec<Option<String>>,
+    /// Why source-repository verification was skipped, when it was. With no
+    /// source at all this is `None` — only the caller knows why it had none,
+    /// so the caller sets it (see [`resolve_review`]).
+    pub source_note: Option<String>,
+    /// Each comment's coarsest true target (see [`crate::comment_target`]).
+    pub targets: Vec<crate::comment_target::CommentTarget>,
+}
+
+/// Runs the whole per-review read — resolutions, per-comment notes, the
+/// source note, and one [`CommentTarget`](crate::comment_target::CommentTarget)
+/// per comment — for a review of any target kind.
+///
+/// The one place a read surface dispatches on the review's target kind:
+///
+/// - a plan-document review (roadmap, phase, task, plan) resolves against
+///   the plan store through [`crate::anchor::resolve_comments`] and ignores
+///   `source` (callers pass `None`); every comment targets its plan item;
+/// - a `change/` review with `Some(source)` resolves through
+///   [`crate::change::resolve_change_review`] and targets through
+///   [`crate::comment_target::comment_target`];
+/// - a `change/` review with `None` leaves every comment unresolved with no
+///   notes, and targets it fail-open — an intended path becomes an unverified
+///   file, otherwise the commit.
+///
+/// **The source note with no source is the caller's**: only the caller knows
+/// *why* it had no source (discovery failed, no local `source.repo`, a build
+/// without git), so with `None` this leaves [`ReviewResolution::source_note`]
+/// as `None` for the caller to fill in.
+///
+/// Infallible, like [`crate::anchor::resolve_comments`].
+///
+/// # Panics
+///
+/// Never panics.
+///
+/// # Examples
+///
+/// A change review read with no source repository still gives every comment
+/// a target:
+///
+/// ```
+/// use rdm_core::comment_target::TargetLevel;
+/// use rdm_core::model::{AnchorState, Review, ReviewComment, ReviewCommentStatus, ReviewState, ReviewTarget};
+/// use rdm_core::ops::reviews::resolve_review;
+/// use rdm_core::source::MemorySourceRepo;
+/// use rdm_core::store::MemoryStore;
+///
+/// let head = "a".repeat(40);
+/// let comment = ReviewComment {
+///     id: 1,
+///     doc: None,
+///     status: ReviewCommentStatus::Open,
+///     applied_commit: None,
+///     anchor: None,
+///     anchor_state: Some(AnchorState::OutsideHunk),
+///     intended_path: Some("src/lib.rs".to_string()),
+///     body: "a finding".to_string(),
+///     reply: None,
+/// };
+/// let review = Review {
+///     id: "r1".to_string(),
+///     author: "tester".to_string(),
+///     target: ReviewTarget::Change { head: head.clone(), base: None },
+///     state: ReviewState::Draft,
+///     verdict: None,
+///     created: chrono::Utc::now(),
+///     submitted: None,
+///     created_commit: None,
+///     implements: None,
+///     change_branch: None,
+///     comments: vec![comment],
+/// };
+///
+/// let reading = resolve_review(&MemoryStore::new(), "demo", &review, None::<&MemorySourceRepo>);
+/// assert_eq!(reading.source_note, None);
+/// assert_eq!(reading.targets[0].level, TargetLevel::File);
+/// assert_eq!(reading.targets[0].link.to_string(), format!("rdm:src/src/lib.rs@{head}"));
+/// assert!(reading.targets[0].unverified);
+/// ```
+#[must_use]
+pub fn resolve_review(
+    store: &impl VersionedStore,
+    project: &str,
+    review: &Review,
+    source: Option<&impl SourceRepo>,
+) -> ReviewResolution {
+    let targets = crate::comment_target::comment_targets(source, review);
+    if !matches!(review.target, ReviewTarget::Change { .. }) {
+        return ReviewResolution {
+            resolutions: crate::anchor::resolve_comments(store, project, review),
+            comment_notes: Vec::new(),
+            source_note: None,
+            targets,
+        };
+    }
+    let (resolutions, comment_notes, source_note) = match source {
+        Some(source) => crate::change::resolve_change_review(source, review),
+        None => (
+            review
+                .comments
+                .iter()
+                .map(|_| crate::anchor::ResolvedComment {
+                    resolution: crate::anchor::Resolution::Unresolved,
+                    quote: None,
+                })
+                .collect(),
+            Vec::new(),
+            None,
+        ),
+    };
+    ReviewResolution {
+        resolutions,
+        comment_notes,
+        source_note,
+        targets,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3338,6 +3470,224 @@ mod tests {
         assert!(
             err.contains("refuse") && err.contains("whole-document"),
             "{err}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod resolve_review_tests {
+    use super::*;
+    use crate::anchor::{Resolution, ResolvedComment};
+    use crate::comment_target::{CommentTarget, TargetLevel, TargetReason, comment_target};
+    use crate::link::Link;
+    use crate::source::MemorySourceRepo;
+    use crate::store::MemoryStore;
+
+    const HEAD: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn comment(
+        id: u32,
+        anchor: Option<Anchor>,
+        anchor_state: Option<AnchorState>,
+        intended_path: Option<&str>,
+    ) -> ReviewComment {
+        ReviewComment {
+            id,
+            doc: None,
+            status: ReviewCommentStatus::Open,
+            applied_commit: None,
+            anchor,
+            anchor_state,
+            intended_path: intended_path.map(str::to_string),
+            body: "b".to_string(),
+            reply: None,
+        }
+    }
+
+    fn review(target: ReviewTarget, comments: Vec<ReviewComment>) -> Review {
+        Review {
+            id: "r1".to_string(),
+            author: "tester".to_string(),
+            target,
+            state: ReviewState::Submitted,
+            verdict: None,
+            created: chrono::Utc::now(),
+            submitted: None,
+            created_commit: None,
+            implements: None,
+            change_branch: None,
+            comments,
+        }
+    }
+
+    fn file_quote() -> Anchor {
+        Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "fn main() {}".to_string(),
+            occurrence: 1,
+            start_line: 1,
+            end_line: 1,
+        }
+    }
+
+    /// The four change-review comment shapes the fail-open cases care about.
+    fn change_review() -> Review {
+        review(
+            ReviewTarget::Change {
+                head: HEAD.to_string(),
+                base: None,
+            },
+            vec![
+                comment(1, None, Some(AnchorState::OutsideHunk), Some("src/lib.rs")),
+                comment(2, None, Some(AnchorState::PathMissing), None),
+                comment(3, Some(file_quote()), None, None),
+                comment(4, None, None, None),
+            ],
+        )
+    }
+
+    fn none() -> Option<&'static MemorySourceRepo> {
+        None
+    }
+
+    fn assert_unverified_file(target: &CommentTarget) {
+        assert_eq!(target.level, TargetLevel::File);
+        assert_eq!(
+            target.link,
+            Link::Code {
+                path: "src/lib.rs".to_string(),
+                rev: Some(HEAD.to_string()),
+                lines: None,
+            }
+        );
+        assert!(target.unverified);
+    }
+
+    #[test]
+    fn a_plan_document_review_resolves_against_the_store_and_targets_its_item() {
+        let store = MemoryStore::new();
+        let anchored = comment(
+            1,
+            Some(Anchor::TextQuote {
+                quote: "q".to_string(),
+                prefix: String::new(),
+                suffix: String::new(),
+            }),
+            None,
+            None,
+        );
+        let body_only = comment(2, None, Some(AnchorState::WholeDocument), None);
+        let r = review(
+            ReviewTarget::Task {
+                slug: "fix-login".to_string(),
+            },
+            vec![anchored, body_only],
+        );
+        let reading = resolve_review(&store, "test", &r, none());
+        assert_eq!(
+            reading.resolutions,
+            crate::anchor::resolve_comments(&store, "test", &r)
+        );
+        assert!(reading.comment_notes.is_empty());
+        assert_eq!(reading.source_note, None);
+        let levels: Vec<_> = reading.targets.iter().map(|t| t.level).collect();
+        assert_eq!(levels, [TargetLevel::PlanItem, TargetLevel::PlanItem]);
+        assert_eq!(reading.targets[0].link.to_string(), "rdm:task/fix-login");
+        assert_eq!(reading.targets[0].reason, None);
+        assert_eq!(
+            reading.targets[1].reason,
+            Some(TargetReason::Stored(AnchorState::WholeDocument))
+        );
+    }
+
+    #[test]
+    fn a_change_review_with_no_source_fails_open_on_every_comment() {
+        let reading = resolve_review(&MemoryStore::new(), "test", &change_review(), none());
+        assert!(
+            reading
+                .resolutions
+                .iter()
+                .all(|r| r.resolution == Resolution::Unresolved && r.quote.is_none())
+        );
+        assert_eq!(reading.resolutions.len(), 4);
+        assert!(reading.comment_notes.is_empty());
+        assert_eq!(reading.source_note, None);
+
+        let t = &reading.targets;
+        assert_unverified_file(&t[0]);
+        assert_eq!(
+            t[0].reason,
+            Some(TargetReason::Stored(AnchorState::OutsideHunk))
+        );
+        assert_eq!(t[1].level, TargetLevel::Commit);
+        assert_eq!(
+            t[1].reason,
+            Some(TargetReason::Stored(AnchorState::PathMissing))
+        );
+        assert!(!t[1].unverified);
+        assert_eq!(t[2].level, TargetLevel::Range);
+        assert!(t[2].unverified);
+        assert_eq!(t[3].level, TargetLevel::Commit);
+        assert_eq!(t[3].reason, Some(TargetReason::NotRecorded));
+    }
+
+    #[test]
+    fn a_change_review_whose_head_is_missing_fails_open_with_a_note() {
+        let source = MemorySourceRepo::new()
+            .with_head(&"c".repeat(40))
+            .with_missing_rev(HEAD);
+        let reading = resolve_review(&MemoryStore::new(), "test", &change_review(), Some(&source));
+        let note = reading.source_note.expect("a head-not-in-source note");
+        assert!(note.contains(HEAD), "{note}");
+        assert_unverified_file(&reading.targets[0]);
+    }
+
+    #[test]
+    fn an_unresolvable_tip_still_verifies_existence_at_the_head() {
+        // The head and its file are present, but there is no tip to measure
+        // drift against: resolution degrades, targets do not.
+        let source = MemorySourceRepo::new().with_rev(HEAD, HEAD).with_file(
+            HEAD,
+            "src/lib.rs",
+            "fn main() {}\n",
+        );
+        let reading = resolve_review(&MemoryStore::new(), "test", &change_review(), Some(&source));
+        let note = reading.source_note.expect("a tip note");
+        assert!(note.contains("no resolvable HEAD"), "{note}");
+        assert_eq!(reading.targets[0].level, TargetLevel::File);
+        assert!(!reading.targets[0].unverified);
+    }
+
+    #[test]
+    fn a_change_review_with_a_source_matches_its_building_blocks() {
+        let source = MemorySourceRepo::new()
+            .with_rev(HEAD, HEAD)
+            .with_head(HEAD)
+            .with_file(HEAD, "src/lib.rs", "fn main() {}\n");
+        let r = change_review();
+        let reading = resolve_review(&MemoryStore::new(), "test", &r, Some(&source));
+        let (resolutions, comment_notes, source_note) =
+            crate::change::resolve_change_review(&source, &r);
+        let expected_targets: Vec<CommentTarget> = r
+            .comments
+            .iter()
+            .map(|c| comment_target(&source, &r, c))
+            .collect();
+        assert_eq!(
+            reading,
+            ReviewResolution {
+                resolutions,
+                comment_notes,
+                source_note,
+                targets: expected_targets,
+            }
+        );
+        assert!(
+            reading
+                .resolutions
+                .iter()
+                .any(|r: &ResolvedComment| r.resolution != Resolution::Unresolved),
+            "the anchored comment resolves against the source"
         );
     }
 }

@@ -25,6 +25,14 @@
 //! whether a path exists (the checkout lacks the head, or git fails), the rung
 //! is chosen **fail-open** and marked [`CommentTarget::unverified`]: the range
 //! was verified when it was written, and the head is immutable.
+//!
+//! A reader with **no source repository at all** — discovery failed, a server
+//! configures no local `source.repo`, or a build without git — still gets a
+//! target for every comment, from the same rungs with every existence answer
+//! unknown: an anchored comment keeps its range and an anchorless one with an
+//! intended path its file, both unverified; anything else gets the commit.
+//! [`crate::ops::reviews::resolve_review`] is the entry point that covers both
+//! cases, so no surface builds its own fallback.
 
 use crate::change::{ineligibility_note, permalink_for};
 use crate::link::Link;
@@ -187,6 +195,29 @@ pub fn comment_target(
             }
         }
     })
+}
+
+/// Every comment's target within `review`, in comment order — against
+/// `source` when there is one, else fail-open with every existence answer
+/// unknown (see the [module docs](self)).
+///
+/// The one place the no-source case lives: it reuses the rungs rather than
+/// copying them.
+pub(crate) fn comment_targets(
+    source: Option<&impl SourceRepo>,
+    review: &Review,
+) -> Vec<CommentTarget> {
+    review
+        .comments
+        .iter()
+        .map(|c| match (source, &review.target) {
+            (Some(source), _) => comment_target(source, review, c),
+            (None, ReviewTarget::Change { head, .. }) => {
+                change_target(head, c, |_| Existence::Unknown)
+            }
+            (None, _) => plan_item_target(review, c),
+        })
+        .collect()
 }
 
 /// The stored-reason half of a comment's [`TargetReason`].

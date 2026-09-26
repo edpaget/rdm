@@ -342,7 +342,7 @@
         "type_name": "list of comment objects",
         "required": true,
         "enum_values": [],
-        "description": "Inline comments: id, optional doc scope (roadmap reviews only), status (open | addressed | wont-fix), optional applied_commit, optional text-quote anchor (quote/prefix/suffix), optional anchor_state on an anchorless comment (whole-document, or why the anchor was lost; absent means not recorded), optional intended_path (the source file an anchorless change-review comment was about), body, and optional reply."
+        "description": "Inline comments: id, optional doc scope (roadmap reviews only), status (open | addressed | wont-fix), optional applied_commit, optional text-quote anchor (quote/prefix/suffix), optional anchor_state on an anchorless comment (whole-document, or why the anchor was lost; absent means not recorded), optional intended_path (the source file an anchorless change-review comment was about), body, and optional reply; JSON output adds target (every comment's coarsest true link: link, level, reason, reason_note, unverified)."
       }
     ]
   },

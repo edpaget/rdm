@@ -463,7 +463,10 @@ anchorless comment means **not recorded** — it is never read as
 `whole-document` — and review JSON reports it as the reserved string
 `"not-recorded"`. An anchored comment never carries either field: its anchor is
 authoritative. A value this build does not recognize (written by a newer rdm)
-round-trips verbatim, exactly like an unrecognized `anchor_type`.
+round-trips verbatim, exactly like an unrecognized `anchor_type`. Neither field
+is a link: the read-time link every comment carries is review JSON's `target`
+object, derived on read (see `docs/change-reviews.md` § "Every comment carries a
+link").
 
 ## Run Files
 

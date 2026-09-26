@@ -875,7 +875,8 @@ pub struct ReviewCommentJson {
     /// `rdm:src/<path>@<head>#L<start>[-L<end>]` permalink, exactly as
     /// [`crate::link::parse`] accepts it. Absent on every other comment, and
     /// on a comment whose anchor is not (or no longer) eligible to anchor at
-    /// all (see [`Self::unresolved_reason`]).
+    /// all (see [`Self::unresolved_reason`]). For every comment's link,
+    /// including whole-document and degraded ones, see [`Self::target`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_link: Option<String>,
     /// Why a `change/<sha>` review's anchor cannot resolve, when the reason
@@ -888,6 +889,84 @@ pub struct ReviewCommentJson {
     /// could not run at all).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unresolved_reason: Option<String>,
+    /// The comment's coarsest true target — present on **every** comment of
+    /// every review kind, so a deliberate whole-document comment and a lost
+    /// anchor differ by [`CommentTargetJson::reason`], never by a null.
+    pub target: CommentTargetJson,
+}
+
+/// A review comment's coarsest true target, in JSON — the per-comment link
+/// every review comment carries (see [`crate::comment_target`]).
+///
+/// Its fields use `rdm backlinks`' vocabulary ([`CodeAnnotationJson`]), so
+/// one reader handles both.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CommentTargetJson {
+    /// The target as an `rdm:` link: `rdm:src/<path>@<head>#L…` (range),
+    /// `rdm:src/<path>@<head>` (file), `rdm:src@<head>` (commit), or the
+    /// plan item's `rdm:<kind>/…` URI. Always present.
+    pub link: String,
+    /// `range`, `file`, `commit` or `plan-item`. Always present.
+    pub level: &'static str,
+    /// Why the target is coarser than an intact anchor: the stored
+    /// `anchor_state` (e.g. `whole-document`, `outside-hunk`,
+    /// `path-missing`), `not-recorded`, or `ineligible`. Absent when intact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The read-time ineligibility note. Only with `reason: "ineligible"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_note: Option<String>,
+    /// Whether the rung was chosen fail-open because the source repository
+    /// could not say whether its path exists at the head. Always present.
+    pub unverified: bool,
+}
+
+/// The JSON `(reason, reason_note)` pair for a target's
+/// [`TargetReason`](crate::comment_target::TargetReason) — the one mapping
+/// shared by [`CommentTargetJson`] and [`CodeAnnotationJson`].
+fn target_reason_json(
+    reason: Option<&crate::comment_target::TargetReason>,
+) -> (Option<String>, Option<String>) {
+    use crate::comment_target::TargetReason;
+    match reason {
+        None => (None, None),
+        Some(TargetReason::Stored(state)) => (Some(state.as_str().to_string()), None),
+        Some(TargetReason::NotRecorded) => (Some(ANCHOR_STATE_NOT_RECORDED.to_string()), None),
+        Some(TargetReason::Ineligible(note)) => {
+            (Some("ineligible".to_string()), Some(note.clone()))
+        }
+    }
+}
+
+/// Builds a [`CommentTargetJson`] from a
+/// [`CommentTarget`](crate::comment_target::CommentTarget).
+///
+/// ```
+/// use rdm_core::comment_target::{CommentTarget, TargetLevel, TargetReason};
+/// use rdm_core::json::comment_target_to_json;
+/// use rdm_core::link::Link;
+/// use rdm_core::model::AnchorState;
+///
+/// let target = CommentTarget {
+///     link: Link::Commit { rev: "a".repeat(40) },
+///     level: TargetLevel::Commit,
+///     reason: Some(TargetReason::Stored(AnchorState::WholeDocument)),
+///     unverified: false,
+/// };
+/// let json = comment_target_to_json(&target);
+/// assert_eq!(json.level, "commit");
+/// assert_eq!(json.reason.as_deref(), Some("whole-document"));
+/// ```
+#[must_use]
+pub fn comment_target_to_json(target: &crate::comment_target::CommentTarget) -> CommentTargetJson {
+    let (reason, reason_note) = target_reason_json(target.reason.as_ref());
+    CommentTargetJson {
+        link: target.link.to_string(),
+        level: target.level.as_str(),
+        reason,
+        reason_note,
+        unverified: target.unverified,
+    }
 }
 
 /// Full review detail: metadata, summary body, and every comment with its
@@ -1068,6 +1147,13 @@ pub fn comment_added_to_json(
 /// emits no `source_link`: an anchor that cannot even name a valid object
 /// has no line to permalink to.
 ///
+/// `targets` is parallel to `doc.frontmatter.comments` too — each comment's
+/// coarsest true target, from
+/// [`crate::ops::reviews::resolve_review`] — and becomes every comment's
+/// `target`. A comment with no entry (a shorter slice) gets its no-source
+/// target (unverified where existence would have been checked), so a
+/// mis-sized slice still yields a link and the mapper stays I/O-free.
+///
 /// A `change/<sha>` review also carries `head_link`, `base_link`, and each
 /// comment's `applied_commit_link` — all taken from one
 /// [`crate::ops::reviews::review_commit_refs`] call, so the rules for which
@@ -1077,8 +1163,15 @@ pub fn review_to_json(
     doc: &Document<Review>,
     resolutions: &[ResolvedComment],
     comment_notes: &[Option<String>],
+    targets: &[crate::comment_target::CommentTarget],
 ) -> ReviewJson {
     let fm = &doc.frontmatter;
+    // Only computed when a comment lacks a supplied target.
+    let fallback_targets = if targets.len() < fm.comments.len() {
+        crate::comment_target::comment_targets(None::<&crate::source::MemorySourceRepo>, fm)
+    } else {
+        Vec::new()
+    };
     let unresolved = ResolvedComment {
         resolution: Resolution::Unresolved,
         quote: None,
@@ -1139,6 +1232,9 @@ pub fn review_to_json(
                         })
                     },
                     unresolved_reason: note,
+                    target: comment_target_to_json(
+                        targets.get(i).unwrap_or_else(|| &fallback_targets[i]),
+                    ),
                 }
             })
             .collect(),
@@ -1405,7 +1501,6 @@ fn found_in(reference: &crate::link::BacklinkRef) -> &'static str {
 /// [`CodeAnnotation`](crate::link::CodeAnnotation).
 #[must_use]
 pub fn code_annotation_to_json(annotation: &crate::link::CodeAnnotation) -> CodeAnnotationJson {
-    use crate::comment_target::TargetReason;
     let BacklinkRefJsonParts {
         range_start,
         range_end,
@@ -1424,14 +1519,7 @@ pub fn code_annotation_to_json(annotation: &crate::link::CodeAnnotation) -> Code
         crate::link::Link::Commit { rev } => (None, Some(rev.clone()), None),
         crate::link::Link::Item(_) => (None, None, None),
     };
-    let (reason, reason_note) = match &annotation.reason {
-        None => (None, None),
-        Some(TargetReason::Stored(state)) => (Some(state.as_str().to_string()), None),
-        Some(TargetReason::NotRecorded) => (Some(ANCHOR_STATE_NOT_RECORDED.to_string()), None),
-        Some(TargetReason::Ineligible(note)) => {
-            (Some("ineligible".to_string()), Some(note.clone()))
-        }
-    };
+    let (reason, reason_note) = target_reason_json(annotation.reason.as_ref());
     CodeAnnotationJson {
         document: annotation.document.clone(),
         found_in: found_in(&annotation.reference),
@@ -1986,7 +2074,7 @@ mod tests {
             },
             quote: Some("the span".to_string()),
         }];
-        let json = review_to_json("2026-07-01-1430-a1b2", &doc, &resolutions, &[]);
+        let json = review_to_json("2026-07-01-1430-a1b2", &doc, &resolutions, &[], &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         assert_eq!(v["id"], "2026-07-01-1430-a1b2");
         assert_eq!(v["target"]["kind"], "task");
@@ -2018,7 +2106,7 @@ mod tests {
             },
             quote: Some("the span".to_string()),
         }];
-        let json = review_to_json("id", &doc, &resolutions, &[]);
+        let json = review_to_json("id", &doc, &resolutions, &[], &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         let r = &v["comments"][0]["resolution"];
         assert_eq!(r["state"], "drifted");
@@ -2034,7 +2122,7 @@ mod tests {
             resolution: Resolution::Current { range: 3..11 },
             quote: Some("the span".to_string()),
         }];
-        let json = review_to_json("id", &doc, &resolutions, &[]);
+        let json = review_to_json("id", &doc, &resolutions, &[], &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         let r = &v["comments"][0]["resolution"];
         assert_eq!(r["state"], "resolved");
@@ -2044,7 +2132,7 @@ mod tests {
     #[test]
     fn review_json_missing_resolution_defaults_to_unresolved() {
         let doc = make_review_doc();
-        let json = review_to_json("id", &doc, &[], &[]);
+        let json = review_to_json("id", &doc, &[], &[], &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         let r = &v["comments"][0]["resolution"];
         assert_eq!(r["state"], "unresolved");
@@ -2059,7 +2147,7 @@ mod tests {
         doc.frontmatter.submitted = None;
         doc.frontmatter.created_commit = None;
         doc.frontmatter.comments.clear();
-        let json = review_to_json("id", &doc, &[], &[]);
+        let json = review_to_json("id", &doc, &[], &[], &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         assert!(v.get("verdict").is_none());
         assert!(v.get("submitted").is_none());
@@ -2091,7 +2179,7 @@ mod tests {
             quote: None,
         }];
         let notes = vec![Some("'sub' is a directory, not a file".to_string())];
-        let json = review_to_json("id", &doc, &resolutions, &notes);
+        let json = review_to_json("id", &doc, &resolutions, &notes, &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         let c = &v["comments"][0];
         assert_eq!(c["unresolved_reason"], "'sub' is a directory, not a file");
@@ -2121,7 +2209,7 @@ mod tests {
             resolution: Resolution::Unresolved,
             quote: None,
         }];
-        let json = review_to_json("id", &doc, &resolutions, &[]);
+        let json = review_to_json("id", &doc, &resolutions, &[], &[]);
         let v: serde_json::Value = serde_json::to_value(&json).unwrap();
         let c = &v["comments"][0];
         assert!(c.get("unresolved_reason").is_none(), "{c}");
@@ -2140,7 +2228,7 @@ mod tests {
         };
         doc.frontmatter.comments[0].status = ReviewCommentStatus::Addressed;
         doc.frontmatter.comments[0].applied_commit = Some("c".repeat(40));
-        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[])).unwrap();
+        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[], &[])).unwrap();
         assert_eq!(v["head_link"], format!("rdm:src@{}", "a".repeat(40)));
         assert_eq!(v["base_link"], format!("rdm:src@{}", "b".repeat(40)));
         let c = &v["comments"][0];
@@ -2156,12 +2244,132 @@ mod tests {
         let mut doc = make_review_doc();
         doc.frontmatter.comments[0].status = ReviewCommentStatus::Addressed;
         doc.frontmatter.comments[0].applied_commit = Some("c".repeat(40));
-        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[])).unwrap();
+        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[], &[])).unwrap();
         assert!(v.get("head_link").is_none(), "{v}");
         assert!(v.get("base_link").is_none(), "{v}");
         let c = &v["comments"][0];
         assert_eq!(c["applied_commit"], "c".repeat(40));
         assert!(c.get("applied_commit_link").is_none(), "{c}");
+    }
+
+    /// A change review with one whole-document comment and one `FileQuote`
+    /// comment on `src/lib.rs`.
+    fn change_review_doc() -> Document<Review> {
+        let mut doc = make_review_doc();
+        doc.frontmatter.target = ReviewTarget::Change {
+            head: "a".repeat(40),
+            base: Some("b".repeat(40)),
+        };
+        let mut whole = doc.frontmatter.comments[0].clone();
+        whole.anchor = None;
+        whole.anchor_state = Some(crate::model::AnchorState::WholeDocument);
+        let mut quoted = whole.clone();
+        quoted.id = 2;
+        quoted.anchor_state = None;
+        quoted.anchor = Some(Anchor::FileQuote {
+            path: "src/lib.rs".to_string(),
+            quote: "fn touched".to_string(),
+            occurrence: 1,
+            start_line: 2,
+            end_line: 2,
+        });
+        doc.frontmatter.comments = vec![whole, quoted];
+        doc
+    }
+
+    #[test]
+    fn review_json_maps_each_supplied_target_onto_its_comment() {
+        use crate::comment_target::{CommentTarget, TargetLevel, TargetReason};
+        let doc = change_review_doc();
+        let head = "a".repeat(40);
+        let targets = vec![
+            CommentTarget {
+                link: crate::link::Link::Commit { rev: head.clone() },
+                level: TargetLevel::Commit,
+                reason: Some(TargetReason::Stored(
+                    crate::model::AnchorState::WholeDocument,
+                )),
+                unverified: false,
+            },
+            CommentTarget {
+                link: crate::link::Link::Code {
+                    path: "src/lib.rs".to_string(),
+                    rev: Some(head.clone()),
+                    lines: Some((2, None)),
+                },
+                level: TargetLevel::Range,
+                reason: None,
+                unverified: true,
+            },
+        ];
+        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[], &targets)).unwrap();
+        let whole = &v["comments"][0];
+        assert_eq!(
+            whole["target"],
+            serde_json::json!({
+                "link": format!("rdm:src@{head}"),
+                "level": "commit",
+                "reason": "whole-document",
+                "unverified": false,
+            })
+        );
+        assert!(whole.get("source_link").is_none(), "{whole}");
+        let quoted = &v["comments"][1];
+        assert_eq!(
+            quoted["target"],
+            serde_json::json!({
+                "link": format!("rdm:src/src/lib.rs@{head}#L2"),
+                "level": "range",
+                "unverified": true,
+            })
+        );
+        assert_eq!(
+            quoted["source_link"],
+            format!("rdm:src/src/lib.rs@{head}#L2")
+        );
+    }
+
+    #[test]
+    fn review_json_spells_an_ineligible_target_with_its_note() {
+        use crate::comment_target::{CommentTarget, TargetLevel, TargetReason};
+        let doc = make_review_doc();
+        let targets = vec![CommentTarget {
+            link: crate::link::Link::Commit {
+                rev: "a".repeat(40),
+            },
+            level: TargetLevel::Commit,
+            reason: Some(TargetReason::Ineligible(
+                "'sub' is a directory, not a file".to_string(),
+            )),
+            unverified: false,
+        }];
+        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[], &targets)).unwrap();
+        let t = &v["comments"][0]["target"];
+        assert_eq!(t["reason"], "ineligible");
+        assert_eq!(t["reason_note"], "'sub' is a directory, not a file");
+    }
+
+    #[test]
+    fn review_json_gives_every_comment_a_target_even_with_no_targets_supplied() {
+        let doc = change_review_doc();
+        let expected: Vec<CommentTargetJson> = crate::comment_target::comment_targets(
+            None::<&crate::source::MemorySourceRepo>,
+            &doc.frontmatter,
+        )
+        .iter()
+        .map(comment_target_to_json)
+        .collect();
+        let json = review_to_json("id", &doc, &[], &[], &[]);
+        let got: Vec<CommentTargetJson> = json.comments.iter().map(|c| c.target.clone()).collect();
+        assert_eq!(got, expected);
+        assert_eq!(got[0].level, "commit");
+        assert_eq!(got[0].reason.as_deref(), Some("whole-document"));
+        assert_eq!(got[1].level, "range");
+        assert!(got[1].unverified);
+        assert_eq!(
+            json.comments[1].source_link.as_deref(),
+            Some(got[1].link.as_str())
+        );
     }
 
     #[test]

@@ -4105,3 +4105,218 @@ fn backlinks_on_a_path_distinguishes_empty_from_missing() {
         assert!(stderr.contains(expected), "{reference}: {stderr}");
     }
 }
+
+// --- every comment carries a link (code-as-linkable-target phase 6) ---
+
+/// Adds a comment through [`review_comment`], asserting it succeeded.
+fn add_comment_ok(plan: &Path, source: &Path, id: &str, args: &[&str]) {
+    let out = review_comment(plan, source, id, args);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// The three anchorless comments the fail-open tests share: whole-document,
+/// `path-missing` with no intended path, and `outside-hunk` about
+/// `src/lib.rs` (a file that exists at the head).
+fn add_degraded_comments(plan: &Path, source: &Path, id: &str) {
+    add_comment_ok(plan, source, id, &["--body", "Overall: fine."]);
+    add_comment_ok(
+        plan,
+        source,
+        id,
+        &[
+            "--anchor-state",
+            "path-missing",
+            "--body",
+            "Named a file the change does not have.",
+        ],
+    );
+    add_comment_ok(
+        plan,
+        source,
+        id,
+        &[
+            "--anchor-state",
+            "outside-hunk",
+            "--intended-path",
+            "src/lib.rs",
+            "--body",
+            "Outside the diff.",
+        ],
+    );
+}
+
+/// The fail-open targets [`add_degraded_comments`]' comments carry when the
+/// source cannot answer.
+fn assert_degraded_targets_fail_open(j: &Value, head: &str) {
+    assert!(
+        j["source_verification_skipped"].is_string(),
+        "the skip must be reported: {j}"
+    );
+    let c = j["comments"].as_array().unwrap();
+    let whole = &c[0]["target"];
+    assert_eq!(whole["level"], "commit", "{whole}");
+    assert_eq!(whole["reason"], "whole-document", "{whole}");
+    let missing = &c[1]["target"];
+    assert_eq!(missing["level"], "commit", "{missing}");
+    assert_eq!(missing["link"], format!("rdm:src@{head}"));
+    let file = &c[2]["target"];
+    assert_eq!(file["level"], "file", "{file}");
+    assert_eq!(file["unverified"], true, "{file}");
+    assert_eq!(file["link"], format!("rdm:src/src/lib.rs@{head}"));
+}
+
+/// AC1, AC2, AC4. Every comment of a change review carries a `target` whose
+/// link `rdm link resolve` accepts — the anchored one, the whole-document one,
+/// and each degraded one — and a whole-document comment differs from a lost
+/// anchor by `target.reason`. `source_link` keeps its range-only meaning.
+#[test]
+fn every_comment_carries_a_target_link() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = fixture_change_review(src.path(), plan.path());
+    let head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    let head_link = format!("rdm:src@{head}");
+
+    add_comment_ok(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Anchored.",
+        ],
+    );
+    add_comment_ok(plan.path(), src.path(), &id, &["--body", "Overall: fine."]);
+    add_comment_ok(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--anchor-state",
+            "path-missing",
+            "--body",
+            "Named a file the change does not have.",
+        ],
+    );
+    add_comment_ok(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--anchor-state",
+            "outside-hunk",
+            "--intended-path",
+            "src/lib.rs",
+            "--body",
+            "Outside the diff.",
+        ],
+    );
+    add_comment_ok(
+        plan.path(),
+        src.path(),
+        &id,
+        &[
+            "--anchor-state",
+            "outside-hunk",
+            "--intended-path",
+            "src/gone.rs",
+            "--body",
+            "About a file the head does not have.",
+        ],
+    );
+
+    let j = review_json(plan.path(), src.path(), &id);
+    let c = j["comments"].as_array().unwrap();
+    assert_eq!(c.len(), 5, "{j}");
+
+    let range = &c[0]["target"];
+    assert_eq!(range["level"], "range", "{range}");
+    assert_eq!(range["link"], c[0]["source_link"]);
+    assert!(range.get("reason").is_none(), "{range}");
+
+    let whole = &c[1]["target"];
+    assert_eq!(whole["level"], "commit", "{whole}");
+    assert_eq!(whole["link"], head_link);
+    assert_eq!(whole["reason"], "whole-document");
+
+    let missing = &c[2]["target"];
+    assert_eq!(missing["level"], "commit", "{missing}");
+    assert_eq!(missing["link"], head_link);
+    assert_eq!(missing["reason"], "path-missing");
+    // AC2: an explicit field, not a null, tells them apart.
+    assert_ne!(whole["reason"], missing["reason"]);
+
+    let file = &c[3]["target"];
+    assert_eq!(file["level"], "file", "{file}");
+    assert_eq!(file["link"], format!("rdm:src/src/lib.rs@{head}"));
+    assert_eq!(file["unverified"], false, "{file}");
+    assert_eq!(file["reason"], "outside-hunk");
+
+    assert_eq!(c[4]["target"]["level"], "commit", "{}", c[4]);
+
+    for comment in c {
+        let link = comment["target"]["link"]
+            .as_str()
+            .unwrap_or_else(|| panic!("every comment carries a link: {comment}"));
+        let (ok, _, stderr) = run_rdm(
+            plan.path(),
+            src.path(),
+            &["link", "resolve", link, "--format", "json"],
+        );
+        assert!(ok, "rdm link resolve {link} failed: {stderr}");
+    }
+    let with_source_link: Vec<bool> = c.iter().map(|x| x.get("source_link").is_some()).collect();
+    assert_eq!(with_source_link, [true, false, false, false, false]);
+
+    // AC4, legacy: an anchorless comment from before anchor_state existed.
+    let legacy = write_legacy_review(plan.path());
+    let j = review_json(plan.path(), src.path(), &legacy);
+    let t = &j["comments"][0]["target"];
+    assert_eq!(t["level"], "commit", "{t}");
+    assert_eq!(t["link"], format!("rdm:src@{}", "a".repeat(40)));
+    assert_eq!(t["reason"], "not-recorded");
+}
+
+/// AC3, no source. With the project's `source.repo` pointing nowhere and no
+/// checkout to fall back on, a failed-anchor comment with an intended path
+/// still links to that file, marked unverified; the others link to the commit.
+#[test]
+fn comment_targets_fail_open_without_a_source_repo() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = fixture_change_review(src.path(), plan.path());
+    let head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    add_degraded_comments(plan.path(), src.path(), &id);
+
+    set_project_source(plan.path(), "demo", "/nonexistent/source/repo");
+    let elsewhere = TempDir::new().unwrap();
+    let j = review_json(plan.path(), elsewhere.path(), &id);
+    assert_degraded_targets_fail_open(&j, &head);
+}
+
+/// AC3, head missing. The configured source opens but has independent
+/// history, so the reviewed head does not resolve: the same fail-open targets,
+/// and the note names the head.
+#[test]
+fn comment_targets_fail_open_when_the_head_does_not_resolve() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let id = fixture_change_review(src.path(), plan.path());
+    let head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    add_degraded_comments(plan.path(), src.path(), &id);
+
+    let other = init_independent_repo();
+    set_project_source(plan.path(), "demo", &other.path().to_string_lossy());
+    let j = review_json(plan.path(), other.path(), &id);
+    assert_degraded_targets_fail_open(&j, &head);
+    let note = j["source_verification_skipped"].as_str().unwrap();
+    assert!(note.contains(&head), "the note must name the head: {note}");
+}

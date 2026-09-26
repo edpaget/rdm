@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use rdm_core::anchor::ResolvedComment;
 use rdm_core::config::{Config, GlobalConfig};
 use rdm_core::document::Document;
 use rdm_core::model::{PhaseStatus, Review, ReviewState, ReviewTarget, TaskStatus};
@@ -377,7 +376,7 @@ pub fn run(
             match format {
                 OutputFormat::Json => println!(
                     "{}",
-                    serde_json::to_string_pretty(&json::review_to_json(&id, &doc, &[], &[]))
+                    serde_json::to_string_pretty(&json::review_to_json(&id, &doc, &[], &[], &[]))
                         .context("failed to serialize review")?
                 ),
                 _ => println!(
@@ -567,7 +566,7 @@ pub fn run(
             let project = paths::resolve_project(project, repo_config)?;
             let mut doc = rdm_core::ops::reviews::get_review(store, &project, &review_id)
                 .context("failed to load review")?;
-            let (resolutions, comment_notes, source_note) = resolve_all(store, &project, &doc);
+            let reading = resolve_all(store, &project, &doc);
             if no_body {
                 doc.body = String::new();
                 for comment in &mut doc.frontmatter.comments {
@@ -580,9 +579,9 @@ pub fn run(
                     display::format_review_detail(
                         &review_id,
                         &doc,
-                        &resolutions,
-                        &comment_notes,
-                        source_note.as_deref()
+                        &reading.resolutions,
+                        &reading.comment_notes,
+                        reading.source_note.as_deref()
                     )
                 ),
                 OutputFormat::Markdown => print!(
@@ -590,16 +589,22 @@ pub fn run(
                     display::format_review_detail_md(
                         &review_id,
                         &doc,
-                        &resolutions,
-                        &comment_notes,
-                        source_note.as_deref()
+                        &reading.resolutions,
+                        &reading.comment_notes,
+                        reading.source_note.as_deref()
                     )
                 ),
                 OutputFormat::Json => println!(
                     "{}",
                     serde_json::to_string_pretty(
-                        &json::review_to_json(&review_id, &doc, &resolutions, &comment_notes)
-                            .with_source_note(source_note)
+                        &json::review_to_json(
+                            &review_id,
+                            &doc,
+                            &reading.resolutions,
+                            &reading.comment_notes,
+                            &reading.targets
+                        )
+                        .with_source_note(reading.source_note)
                     )
                     .context("failed to serialize review")?
                 ),
@@ -699,28 +704,20 @@ pub fn run(
     Ok(())
 }
 
-/// Runs the shared resolution pass and returns it alongside a per-comment
-/// ineligibility-note slice and an optional note explaining why source-repo
-/// verification was skipped entirely.
+/// Runs the shared per-review read — resolutions, per-comment notes, the
+/// source note, and every comment's target — through
+/// [`rdm_core::ops::reviews::resolve_review`].
 ///
-/// Dispatches on the review's target kind, and nothing more: a plan-repo
-/// target resolves through
-/// [`resolve_comments`](rdm_core::anchor::resolve_comments) and carries no
-/// per-comment notes (`change_anchor_ineligibility` is a change-only concept),
-/// while a `change/<sha>` target discovers the source checkout and hands the
-/// whole degrade ladder to [`rdm_core::change::resolve_change_review`].
-///
-/// **The ladder itself lives in core**, not here. It used to be ~90 lines of
-/// policy and note strings in this function, which is precisely why
-/// `rdm-server` could not reproduce it and reported every change-review
-/// comment `unresolved` with no explanation. What stays in the CLI is the one
-/// thing core cannot do: asking the invoking environment *which* checkout to
-/// read.
+/// Core owns the whole read, including the dispatch on the review's target
+/// kind and the fail-open targets when there is no source. What stays in the
+/// CLI is the one thing core cannot do: asking the invoking environment
+/// *which* checkout to read, and saying why there is none when discovery
+/// fails.
 ///
 /// The read path **degrades, never fails**: with no source repo reachable at
-/// all every change comment comes back unresolved with an empty notes slice
-/// (there is no source to ask *why* an individual anchor is ineligible) and
-/// the returned source note says so — the same policy `rdm link check`'s
+/// all every change comment comes back unresolved with an empty notes slice,
+/// still carries a target (its intended file, unverified, or the commit), and
+/// the returned source note says why — the same policy `rdm link check`'s
 /// `path_verification_skipped` established. (The write path — `review
 /// comment --path` — fails loudly instead; a new anchor derived against
 /// nothing would be a lie.)
@@ -728,51 +725,35 @@ fn resolve_all(
     store: &AppStore,
     project: &str,
     doc: &Document<Review>,
-) -> (Vec<ResolvedComment>, Vec<Option<String>>, Option<String>) {
-    if !matches!(doc.frontmatter.target, ReviewTarget::Change { .. }) {
-        return (
-            rdm_core::anchor::resolve_comments(store, project, &doc.frontmatter),
-            Vec::new(),
-            None,
-        );
+) -> rdm_core::ops::reviews::ReviewResolution {
+    use rdm_core::ops::reviews::resolve_review;
+    use rdm_core::source::MemorySourceRepo;
+
+    let review = &doc.frontmatter;
+    // `MemorySourceRepo` only names the type of `None`; it is never built.
+    let no_source = None::<&MemorySourceRepo>;
+    if !matches!(review.target, ReviewTarget::Change { .. }) {
+        return resolve_review(store, project, review, no_source);
     }
     #[cfg(feature = "git")]
     {
         match crate::source_repo::discover_source_repo(store, project) {
-            Ok(source) => rdm_core::change::resolve_change_review(&source, &doc.frontmatter),
-            Err(e) => (
-                unresolved_comments(&doc.frontmatter),
-                Vec::new(),
-                Some(e.to_string()),
-            ),
+            Ok(source) => resolve_review(store, project, review, Some(&source)),
+            Err(e) => rdm_core::ops::reviews::ReviewResolution {
+                source_note: Some(e.to_string()),
+                ..resolve_review(store, project, review, no_source)
+            },
         }
     }
     #[cfg(not(feature = "git"))]
     {
-        (
-            unresolved_comments(&doc.frontmatter),
-            Vec::new(),
-            Some("this build has no git support — anchor resolution skipped".to_string()),
-        )
+        rdm_core::ops::reviews::ReviewResolution {
+            source_note: Some(
+                "this build has no git support — anchor resolution skipped".to_string(),
+            ),
+            ..resolve_review(store, project, review, no_source)
+        }
     }
-}
-
-/// One unresolved [`ResolvedComment`] per comment, for the arms that never reach
-/// a source repository at all.
-///
-/// Kept beside [`resolve_all`] rather than pushed into core: core's
-/// [`resolve_change_review`](rdm_core::change::resolve_change_review) builds its
-/// own, and this exists only for the two rungs core is never reached from —
-/// discovery failing, and a build without the `git` feature.
-fn unresolved_comments(review: &Review) -> Vec<ResolvedComment> {
-    review
-        .comments
-        .iter()
-        .map(|_| ResolvedComment {
-            resolution: rdm_core::anchor::Resolution::Unresolved,
-            quote: None,
-        })
-        .collect()
 }
 
 /// Discovers the source checkout and hands the parsed `change/<rev>` target
@@ -932,10 +913,15 @@ fn render_review_list(
             let arr: Vec<_> = reviews
                 .iter()
                 .map(|(id, doc)| {
-                    let (resolutions, comment_notes, source_note) =
-                        resolve_all(store, project, doc);
-                    json::review_to_json(id, doc, &resolutions, &comment_notes)
-                        .with_source_note(source_note)
+                    let reading = resolve_all(store, project, doc);
+                    json::review_to_json(
+                        id,
+                        doc,
+                        &reading.resolutions,
+                        &reading.comment_notes,
+                        &reading.targets,
+                    )
+                    .with_source_note(reading.source_note)
                 })
                 .collect();
             println!(

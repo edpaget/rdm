@@ -20,6 +20,12 @@
         "body": "General feedback.",
         "resolution": {
           "state": "unresolved"
+        },
+        "target": {
+          "link": "rdm:task/fixture-task-open",
+          "level": "plan-item",
+          "reason": "whole-document",
+          "unverified": false
         }
       }
     ]

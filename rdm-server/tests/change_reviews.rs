@@ -18,7 +18,9 @@
 //!    `source_verification_skipped` is non-null;
 //! 3. never `unresolved` with a null note, asserted per comment in BOTH runs;
 //! 4. the HTML review section on the page of the item the review's plan
-//!    implements renders the same states.
+//!    implements renders the same states;
+//! 5. every comment carries a `target` link, failing open to its intended file
+//!    (marked `unverified`) or the commit when the source cannot answer.
 //!
 //! Everything is seeded through `rdm-core` against a temp plan repo, and the
 //! source repository is a real temp git checkout, exactly as
@@ -32,8 +34,8 @@ use chrono::Utc;
 use rdm_core::document::Document;
 use rdm_core::link::ItemRef;
 use rdm_core::model::{
-    Anchor, Plan, PlanStatus, Priority, Review, ReviewComment, ReviewCommentStatus, ReviewState,
-    ReviewTarget, Verdict,
+    Anchor, AnchorState, Plan, PlanStatus, Priority, Review, ReviewComment, ReviewCommentStatus,
+    ReviewState, ReviewTarget, Verdict,
 };
 use rdm_store_fs::FsStore;
 use reqwest::Client;
@@ -45,6 +47,9 @@ const ROADMAP: &str = "auth";
 const STEM: &str = "phase-1-design";
 const REVIEW_ID: &str = "2026-09-19-0900-abcd";
 const PLAN: &str = "design-plan";
+/// A second change review, holding only anchorless comments — seeded apart
+/// from [`REVIEW_ID`] so the other tests' comment counts are untouched.
+const DEGRADED_REVIEW_ID: &str = "2026-09-19-0902-d00d";
 
 /// The quote that still resolves at the branch tip, and the one edited away
 /// after the review was recorded. Two lines apart on purpose: a quote whose own
@@ -300,6 +305,103 @@ fn seed_plan_repo(base: &str, head: &str) -> TempDir {
     dir
 }
 
+/// Writes [`DEGRADED_REVIEW_ID`]: a submitted `change/<head>` review whose
+/// three comments are anchorless — an `outside-hunk` one about `src/lib.rs`,
+/// a `path-missing` one with no path, and a whole-document one — added through
+/// core's own `add_comment`.
+fn seed_degraded_review(plan: &Path, head: &str) {
+    let mut store = FsStore::new(plan);
+    rdm_core::io::write_review(
+        &mut store,
+        PROJECT,
+        DEGRADED_REVIEW_ID,
+        &Document {
+            frontmatter: Review {
+                id: DEGRADED_REVIEW_ID.to_string(),
+                author: "reviewer".to_string(),
+                target: ReviewTarget::Change {
+                    head: head.to_string(),
+                    base: None,
+                },
+                state: ReviewState::Draft,
+                verdict: None,
+                created: Utc::now(),
+                submitted: None,
+                created_commit: None,
+                implements: None,
+                change_branch: Some("topic".to_string()),
+                comments: Vec::new(),
+            },
+            body: "Degraded findings.\n".to_string(),
+        },
+    )
+    .unwrap();
+    let comments = [
+        (Some(AnchorState::OutsideHunk), Some("src/lib.rs")),
+        (Some(AnchorState::PathMissing), None),
+        (None, None),
+    ];
+    for (anchor_state, intended_path) in comments {
+        rdm_core::ops::reviews::add_comment(
+            &mut store,
+            rdm_core::ops::reviews::AddComment {
+                project: PROJECT,
+                review_id: DEGRADED_REVIEW_ID,
+                body: "An anchorless finding.",
+                anchor_state,
+                intended_path,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    rdm_core::ops::reviews::submit_review(
+        &mut store,
+        PROJECT,
+        DEGRADED_REVIEW_ID,
+        Some(Verdict::Comment),
+    )
+    .unwrap();
+    flush(&mut store);
+}
+
+/// The HAL review resource for [`DEGRADED_REVIEW_ID`].
+async fn get_degraded_review_hal(addr: SocketAddr, client: &Client) -> Value {
+    let res = client
+        .get(format!(
+            "http://{addr}/projects/{PROJECT}/reviews/{DEGRADED_REVIEW_ID}"
+        ))
+        .header("Accept", "application/hal+json")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    res.json().await.unwrap()
+}
+
+/// The fail-open targets [`DEGRADED_REVIEW_ID`]'s comments carry when the
+/// source cannot answer: the intended file, unverified; otherwise the commit.
+fn assert_degraded_targets_fail_open(served: &Value, head: &str) {
+    assert!(
+        served["source_verification_skipped"].is_string(),
+        "the skip must be reported: {served}"
+    );
+    let comments = served["comments"].as_array().unwrap();
+    assert_eq!(comments.len(), 3, "{served}");
+    let file = &comments[0]["target"];
+    assert_eq!(file["level"], "file", "{file}");
+    assert_eq!(file["unverified"], true, "{file}");
+    assert_eq!(file["link"], format!("rdm:src/src/lib.rs@{head}"));
+    assert_eq!(file["reason"], "outside-hunk");
+    let missing = &comments[1]["target"];
+    assert_eq!(missing["level"], "commit", "{missing}");
+    assert_eq!(missing["link"], format!("rdm:src@{head}"));
+    assert_eq!(missing["reason"], "path-missing");
+    let whole = &comments[2]["target"];
+    assert_eq!(whole["level"], "commit", "{whole}");
+    assert_eq!(whole["reason"], "whole-document");
+}
+
 async fn spawn(dir: &Path) -> (SocketAddr, Client) {
     let state = rdm_server::state::AppState {
         plan_root: dir.to_path_buf(),
@@ -383,14 +485,24 @@ async fn rest_change_review_matches_cli_resolution_when_a_source_resolves() {
     let store = FsStore::new(plan.path());
     let doc = rdm_core::ops::reviews::get_review(&store, PROJECT, REVIEW_ID).unwrap();
     let source = rdm_git::GitSourceRepo::new(src.path());
-    let (resolutions, notes, source_note) =
-        rdm_core::change::resolve_change_review(&source, &doc.frontmatter);
+    let reading =
+        rdm_core::ops::reviews::resolve_review(&store, PROJECT, &doc.frontmatter, Some(&source));
     let expected = serde_json::to_value(
-        rdm_core::json::review_to_json(REVIEW_ID, &doc, &resolutions, &notes)
-            .with_source_note(source_note),
+        rdm_core::json::review_to_json(
+            REVIEW_ID,
+            &doc,
+            &reading.resolutions,
+            &reading.comment_notes,
+            &reading.targets,
+        )
+        .with_source_note(reading.source_note),
     )
     .unwrap();
     for (i, comment) in comments.iter().enumerate() {
+        assert_eq!(
+            comment["target"], expected["comments"][i]["target"],
+            "comment {i}'s target must match the CLI's pass"
+        );
         assert_eq!(
             comment["resolution"], expected["comments"][i]["resolution"],
             "comment {i}'s resolution must match the CLI's pass"
@@ -429,6 +541,39 @@ async fn rest_change_review_sets_an_explicit_skip_note_without_a_source() {
         assert_eq!(comment["resolution"]["state"], "unresolved", "{comment}");
     }
     assert_never_unresolved_without_a_note(&served);
+}
+
+/// AC3, no source. With no `source.repo`, every comment of a change review
+/// still carries a `target`: the intended file marked `unverified`, else the
+/// commit. Not git-gated — a build without git reaches the same core path.
+#[tokio::test]
+async fn hal_review_targets_fail_open_without_a_source() {
+    let (_src, base, head) = seed_source_repo();
+    let plan = seed_plan_repo(&base, &head);
+    seed_degraded_review(plan.path(), &head);
+    set_project_source(plan.path(), None);
+
+    let (addr, client) = spawn(plan.path()).await;
+    let served = get_degraded_review_hal(addr, &client).await;
+    assert_degraded_targets_fail_open(&served, &head);
+}
+
+/// AC3, head missing. The configured source opens but does not contain the
+/// reviewed head: the same fail-open targets, and the note names the head.
+#[cfg(feature = "git")]
+#[tokio::test]
+async fn hal_review_targets_fail_open_when_the_head_does_not_resolve() {
+    let (_src, base, head) = seed_source_repo();
+    let plan = seed_plan_repo(&base, &head);
+    seed_degraded_review(plan.path(), &head);
+    let (unrelated, _) = init_unrelated_repo();
+    set_project_source(plan.path(), Some(&unrelated.path().to_string_lossy()));
+
+    let (addr, client) = spawn(plan.path()).await;
+    let served = get_degraded_review_hal(addr, &client).await;
+    assert_degraded_targets_fail_open(&served, &head);
+    let note = served["source_verification_skipped"].as_str().unwrap();
+    assert!(note.contains(&head), "the note must name the head: {note}");
 }
 
 /// A plan-repo review on the same server is unaffected: it still resolves

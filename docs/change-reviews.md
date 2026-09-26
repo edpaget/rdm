@@ -241,7 +241,34 @@ comment never said.
 **Existence is checked fail-open.** When the checkout does not contain `H`, or
 git cannot answer, the range or file rung is kept and marked `unverified`: the
 range was verified when it was written, and `H` is immutable. A malformed
-stored identity skips every source query and is treated the same way.
+stored identity skips every source query and is treated the same way. With
+**no source repository at all** (discovery fails, rdm-server has no local
+`source.repo`, or a build without git) the same holds: a comment with an
+intended path targets that file, `unverified`; an anchored one keeps its
+range, `unverified`; anything else targets the commit. Targets are head-pinned,
+so when `H` resolves but the drift **tip** does not, existence at `H` is still
+checked and the answer is not marked `unverified` — only drift resolution
+degrades, with its usual source note.
+
+### Every comment carries a link
+
+`rdm review show`, `rdm review list` and `rdm review requests` with
+`--format json`, and rdm-server's review resource, give **every** comment of
+every review kind a `target` object — whole-document, degraded, legacy and
+plan-document comments included:
+
+| Field | Presence | Meaning |
+|-------|----------|---------|
+| `link` | always | The target as an `rdm:` link `rdm link resolve` accepts: `rdm:src/<path>@H#L…`, `rdm:src/<path>@H`, `rdm:src@H`, or the plan item's `rdm:<kind>/…` |
+| `level` | always | `range`, `file`, `commit` or `plan-item` |
+| `reason` | when coarser than an intact anchor | The stored `anchor_state` (`whole-document`, `outside-hunk`, `path-missing`, …), `not-recorded`, or `ineligible` |
+| `reason_note` | with `reason: "ineligible"` only | The read-time ineligibility note |
+| `unverified` | always | `true` when the rung was chosen fail-open |
+
+The vocabulary is `rdm backlinks --format json`'s, so one reader handles both.
+A deliberately whole-document comment and a lost anchor differ by
+`target.reason` (`whole-document` vs. e.g. `outside-hunk` or `path-missing`),
+never by a null.
 
 **Reverse lookup consumes it.** `rdm backlinks rdm:src/<path>` returns the
 `range`- and `file`-level comments on that path, and `rdm backlinks
@@ -253,8 +280,9 @@ See [`link-grammar.md`](link-grammar.md#reverse-lookup-from-a-code-location).
 level, and both it and every detail page's Reviews section label an anchorless
 comment by its reason: "Whole document" (or "Whole file …") for a deliberate
 one, "Anchor lost: <reason>" with a warning marker for a lost one, and "Anchor
-not recorded" for a legacy one — the reason is core's `comment_target`, never
-re-derived by the server.
+not recorded" for a legacy one — both surfaces call
+`ops::reviews::resolve_review`, so the reason is core's, never re-derived by
+the server.
 
 ## Resolution: resolved / drifted / unresolved
 
@@ -353,6 +381,10 @@ alone**, so it renders with no source checkout present, and it is exactly the
 grammar `rdm link resolve` accepts. A single-line span emits `#L7`, not
 `#L7-L7`.
 
+`source_link` keeps this range-only meaning: it is absent on whole-document and
+degraded comments. The total link — present on every comment — is
+`target.link` (see [Every comment carries a link](#every-comment-carries-a-link)).
+
 ## Commit references are links
 
 A change review stores three kinds of source-repository commit: the target's
@@ -448,7 +480,8 @@ commit, a build without the `git` feature), `rdm review show` still prints the
 review: every change comment comes back `unresolved` and a
 `source_verification_skipped` note says why — the precedent `rdm link check`'s
 `path_verification_skipped` established. Permalinks still render, because they
-need no checkout.
+need no checkout. A skip still leaves every comment a `target`, marked
+`unverified` where existence was not checked.
 
 **A skip never sets a per-comment `unresolved_reason`.** The two channels answer
 different questions: the source note says verification could not run, while
@@ -460,7 +493,7 @@ a comment is never `unresolved` with **both** channels empty.
 
 The rule holds on **every** read surface, not just the CLI. `GET
 /projects/<p>/reviews/<id>` and the HTML review section both resolve through the
-same `rdm_core::change::resolve_change_review` pass, against the project's
+same `rdm_core::ops::reviews::resolve_review` pass, against the project's
 configured local `source.repo`; when that does not resolve they set
 `source_verification_skipped` to a note naming the server and the cause. They
 previously reported every change-review comment `unresolved` with both channels

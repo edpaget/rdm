@@ -154,19 +154,19 @@ pub fn page_reviews(
     let mut highlights = Vec::new();
     for (id, doc) in &selected {
         let review = &doc.frontmatter;
-        // Target-dispatched, exactly like the JSON endpoints': a change
-        // review's anchors live in the source repository, so resolving them
-        // against the plan store would report every one of them unresolved and
-        // render a wrong badge. Both surfaces read one implementation
-        // (`rdm_core::change::resolve_change_review`) so they cannot disagree.
-        let resolutions = resolve_for_page(store, project, review);
-        // Each comment's coarsest true target, from core — the degradation
-        // reason an anchorless comment shows is core's, never re-derived
-        // here.
-        let targets = crate::source_repo::comment_targets_for_project(store, project, review);
+        // The same one per-review read the JSON endpoints use
+        // (`rdm_core::ops::reviews::resolve_review`): a change review's
+        // anchors resolve against the source repository, and each comment's
+        // coarsest true target — the degradation reason an anchorless comment
+        // shows — is core's, never re-derived here.
+        let reading = crate::source_repo::resolve_review_for_project(store, project, review);
         let commit_refs = rdm_core::ops::reviews::review_commit_refs(review);
         let mut comments = Vec::new();
-        for ((comment, resolved), target) in review.comments.iter().zip(&resolutions).zip(&targets)
+        for ((comment, resolved), target) in review
+            .comments
+            .iter()
+            .zip(&reading.resolutions)
+            .zip(&reading.targets)
         {
             if !comment_shown(page, review, comment) {
                 continue;
@@ -421,27 +421,6 @@ fn draft_doc_label(phases: &[(String, Document<Phase>)], doc: Option<&CommentDoc
             .map(|(_, d)| format!("Phase {}: {}", d.frontmatter.phase, d.frontmatter.title))
             .unwrap_or_else(|| format!("Phase {stem} (deleted)")),
     }
-}
-
-/// One resolution pass for the reviews rendered on a detail page.
-///
-/// The HTML half of [`crate::handlers::reviews`]'s `resolve_for_response`:
-/// plan-repo reviews resolve against the plan store, change reviews against the
-/// project's configured local `source.repo`. Only the resolutions are used here
-/// — the badges are all this page renders — but they come from the same core
-/// pass the JSON reports, so a comment cannot show `drifted` in one surface and
-/// `unresolved` in the other.
-fn resolve_for_page(
-    store: &impl rdm_core::store::VersionedStore,
-    project: &str,
-    review: &Review,
-) -> Vec<rdm_core::anchor::ResolvedComment> {
-    if matches!(review.target, ReviewTarget::Change { .. }) {
-        let (resolutions, _notes, _source_note) =
-            crate::source_repo::resolve_change_review_for_project(store, project, review);
-        return resolutions;
-    }
-    rdm_core::anchor::resolve_comments(store, project, review)
 }
 
 /// The phase or task a change review's `implements: rdm:plan/<slug>` plan
