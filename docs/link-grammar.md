@@ -85,6 +85,45 @@ A dangling SHA and an inconclusive one (a shallow clone lacking the commit)
 are the same observation, so neither fails the check. A link that fails to
 resolve degrades to a coarser target rather than disappearing.
 
+A project-wide check also covers each `change/<sha>` review's **structural**
+commit references — the target's `head` and `base` and each comment's
+`applied_commit` — as `rdm:src@<sha>` links derived from the stored SHAs (see
+[`change-reviews.md`](change-reviews.md#commit-references-are-links)). They
+are counted in `links_checked` and `commit_links_checked` and verified the
+same way. An unresolved one carries `field` (`head`, `base`,
+`applied_commit`) in place of `range_start`/`range_end` in JSON, and the text
+line names it after the document: `unresolved commit link in
+review/<id>#comment-2 [applied_commit]: …`. A roadmap, phase, task or plan
+review's `applied_commit` is a plan-repo SHA and is never checked.
+
+## Backlinks
+
+`rdm backlinks <reference>` lists every document that references a target.
+The reference is either:
+
+- a plan item: `roadmap/<slug>`, `phase/<roadmap-slug>/<stem-or-number>`,
+  `task/<slug>` or `plan/<slug>` (an `rdm:` prefix is accepted), or
+- a source-repo commit: `rdm:src@<sha>` or `src@<sha>`, abbreviated or full.
+
+A commit target finds two kinds of reference:
+
+1. `rdm:src@<sha>` links written in any body (body entries, with a byte
+   range);
+2. change reviews whose `head`, `base` or `applied_commit` name the commit
+   (structural entries tagged `[head]`, `[base]` or `[applied_commit]`, with
+   `field` in JSON).
+
+Revisions match case-insensitively when the shorter is a prefix of the longer.
+rdm reads no repository here, so an abbreviation is never expanded: an
+ambiguous abbreviation can match references to more than one commit, and the
+full SHA disambiguates.
+
+A file, a file at a revision, or a line range (`rdm:src/<path>…`) is not a
+backlinks target yet and is refused with an error that names the commit form.
+The target type (`rdm_core::link::BacklinkTarget`, `#[non_exhaustive]`) is the
+extension point for those: path, revision and line-range variants are added to
+it, without re-deciding its shape.
+
 ## Decision: commit rung in `src`, not `rdm:commit/`
 
 Two surface forms were considered for linking a commit: a path-less rung

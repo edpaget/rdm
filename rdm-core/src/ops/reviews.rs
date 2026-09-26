@@ -1020,6 +1020,84 @@ pub fn count_open_reviews_in(reviews: &[(String, Document<Review>)]) -> OpenRevi
     counts
 }
 
+/// One source-repository commit a `change/<sha>` review references
+/// structurally — its target's `head` or `base`, or a comment's
+/// `applied_commit` — as found by [`review_commit_refs`].
+///
+/// The stored value is kept verbatim: the on-disk review format does not
+/// change, and the `rdm:src@<sha>` commit link is derived from it on read
+/// (see [`ReviewCommitRef::link`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewCommitRef {
+    /// The ordinal id of the comment carrying the reference, or `None` for
+    /// the target's `head`/`base`.
+    pub comment: Option<u32>,
+    /// The frontmatter field the value lives in: `"head"`, `"base"`, or
+    /// `"applied_commit"`.
+    pub field: &'static str,
+    /// The stored value, verbatim.
+    pub rev: String,
+}
+
+impl ReviewCommitRef {
+    /// The `rdm:src@<rev>` commit link this reference derives —
+    /// [`Link::Commit`](crate::link::Link::Commit) over [`Self::rev`].
+    #[must_use]
+    pub fn link(&self) -> crate::link::Link {
+        crate::link::Link::Commit {
+            rev: self.rev.clone(),
+        }
+    }
+}
+
+/// Every source-repository commit `review` references structurally, in a
+/// fixed order: the target's `head`, then its `base` when present, then each
+/// comment's `applied_commit` in comment order.
+///
+/// This is the single derivation behind `review show --format json`'s
+/// `head_link`/`base_link`/`applied_commit_link` keys, `link check`'s
+/// review coverage, and `rdm backlinks rdm:src@<sha>` — the stored format
+/// keeps raw SHAs and every consumer derives the link from them here.
+///
+/// Rules:
+///
+/// - A review whose target is not [`ReviewTarget::Change`] yields nothing:
+///   on a roadmap, phase, task, or plan review, `applied_commit` is a
+///   **plan-repo** SHA, so it is never a source-repository commit link.
+/// - A value becomes a reference only if `rdm:src@<value>` parses as a
+///   commit link ([`crate::link::parse`]), so the grammar lives only in
+///   [`crate::link`]. `head` and `base` always pass (they are validated as
+///   full SHAs at load). A legacy `applied_commit` that is not commit-shaped
+///   (e.g. `HEAD`, written before the value was validated) is skipped
+///   silently — it was never written as a link. An abbreviated hex value is
+///   kept.
+#[must_use]
+pub fn review_commit_refs(review: &Review) -> Vec<ReviewCommitRef> {
+    let ReviewTarget::Change { head, base } = &review.target else {
+        return Vec::new();
+    };
+    let candidates = std::iter::once((None, "head", head.as_str()))
+        .chain(base.as_deref().map(|b| (None, "base", b)))
+        .chain(review.comments.iter().filter_map(|c| {
+            c.applied_commit
+                .as_deref()
+                .map(|sha| (Some(c.id), "applied_commit", sha))
+        }));
+    candidates
+        .filter(|(_, _, rev)| {
+            matches!(
+                crate::link::parse(&format!("rdm:src@{rev}")),
+                Ok(crate::link::Link::Commit { .. })
+            )
+        })
+        .map(|(comment, field, rev)| ReviewCommitRef {
+            comment,
+            field,
+            rev: rev.to_string(),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2382,5 +2460,102 @@ mod tests {
                 body: None, implements: None, change_branch: None,
             }), Err(Error::InvalidStoredChangeRevision { field: f, .. }) if f == field));
         }
+    }
+
+    // --- review_commit_refs: derive-on-read source commit references ---
+
+    fn comment_with(id: u32, applied_commit: Option<&str>) -> ReviewComment {
+        ReviewComment {
+            id,
+            doc: None,
+            status: if applied_commit.is_some() {
+                ReviewCommentStatus::Addressed
+            } else {
+                ReviewCommentStatus::Open
+            },
+            applied_commit: applied_commit.map(str::to_string),
+            anchor: None,
+            body: "Comment.".to_string(),
+            reply: None,
+        }
+    }
+
+    fn change_review(base: Option<&str>, comments: Vec<ReviewComment>) -> Review {
+        let mut review = sample_review("2026-07-01-1430-a1b2").frontmatter;
+        review.target = ReviewTarget::Change {
+            head: "a".repeat(40),
+            base: base.map(str::to_string),
+        };
+        review.comments = comments;
+        review
+    }
+
+    #[test]
+    fn review_commit_refs_yields_head_base_then_applied_commits_in_order() {
+        let base = "b".repeat(40);
+        let applied = "c".repeat(40);
+        let review = change_review(
+            Some(&base),
+            vec![comment_with(1, None), comment_with(2, Some(&applied))],
+        );
+        let refs = review_commit_refs(&review);
+        assert_eq!(
+            refs,
+            vec![
+                ReviewCommitRef {
+                    comment: None,
+                    field: "head",
+                    rev: "a".repeat(40),
+                },
+                ReviewCommitRef {
+                    comment: None,
+                    field: "base",
+                    rev: base.clone(),
+                },
+                ReviewCommitRef {
+                    comment: Some(2),
+                    field: "applied_commit",
+                    rev: applied.clone(),
+                },
+            ]
+        );
+        assert_eq!(
+            refs[2].link(),
+            crate::link::Link::Commit {
+                rev: applied.clone()
+            }
+        );
+        assert_eq!(refs[2].link().to_string(), format!("rdm:src@{applied}"));
+    }
+
+    #[test]
+    fn review_commit_refs_omits_an_absent_base() {
+        let review = change_review(None, vec![]);
+        let refs = review_commit_refs(&review);
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].field, "head");
+    }
+
+    #[test]
+    fn review_commit_refs_is_empty_for_a_plan_document_review() {
+        let mut review = sample_review("2026-07-01-1430-a1b2").frontmatter;
+        review.comments = vec![comment_with(1, Some(&"d".repeat(40)))];
+        assert!(review_commit_refs(&review).is_empty());
+    }
+
+    #[test]
+    fn review_commit_refs_skips_legacy_non_hex_and_keeps_abbreviated() {
+        let review = change_review(
+            None,
+            vec![
+                comment_with(1, Some("abc1234def56")),
+                comment_with(2, Some("HEAD")),
+            ],
+        );
+        let refs = review_commit_refs(&review);
+        assert_eq!(refs.len(), 2, "{refs:?}");
+        assert_eq!(refs[1].comment, Some(1));
+        assert_eq!(refs[1].rev, "abc1234def56");
+        assert!(refs.iter().all(|r| r.rev != "HEAD"));
     }
 }

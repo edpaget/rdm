@@ -8,7 +8,7 @@
 use std::ops::Range;
 
 use crate::error::Result;
-use crate::link::{BacklinkEntry, BacklinkRef, DocRef, ItemRef, Link, Resolved};
+use crate::link::{BacklinkEntry, BacklinkRef, BacklinkTarget, DocRef, ItemRef, Link, Resolved};
 use crate::model::Project;
 use crate::store::Store;
 
@@ -329,9 +329,25 @@ pub fn resolve_link(
     }
 }
 
-/// Scans every roadmap, phase, task, and review body (and review comment)
-/// in `project` for `rdm:` item links pointing at `target`, returning one
+/// Scans every roadmap, phase, task, plan, and review body (and review
+/// comment) in `project` for references to `target`, returning one
 /// [`BacklinkEntry`] per occurrence.
+///
+/// The two target kinds search different things:
+///
+/// - [`BacklinkTarget::Item`]: `rdm:` item links in every body, plus the
+///   structural `implements` references (plans and change reviews naming
+///   `target`, plus one transitive hop through a plan).
+/// - [`BacklinkTarget::Commit`]: `rdm:src@<sha>` commit links in every body
+///   ([`BacklinkRef::Body`]), plus every `change/<sha>` review's `head`,
+///   `base`, and comment `applied_commit` naming that commit
+///   ([`BacklinkRef::Field`], derived by
+///   [`crate::ops::reviews::review_commit_refs`]). Revisions match
+///   case-insensitively when the shorter is a prefix of the longer; core reads no repository, so an abbreviation cannot be
+///   expanded, and an ambiguous abbreviation can match references to more
+///   than one commit — pass the full SHA to disambiguate. A roadmap, phase,
+///   task, or plan review's `applied_commit` is a plan-repo SHA and is never
+///   matched.
 ///
 /// This is a full body scan over the whole project (`O(n)` in the number of
 /// documents and their size) — no index is built or maintained. Fine at the
@@ -371,14 +387,139 @@ pub fn resolve_link(
 /// found in a link (see [`normalize_item_ref`]).
 ///
 /// Returns [`crate::error::Error::ChangeTargetHasNoDocument`] when `target`
-/// is an [`ItemRef::Change`]: a change names source-repository commits, not
-/// a plan-repo document, so it can never be the destination of an `rdm:`
-/// item link or an `implements` field — the scan would always report zero
-/// backlinks, which silently misrepresents "nothing references this" as
-/// indistinguishable from "this kind of target can't be referenced at
-/// all". Matches the actionable rejection [`load_document_body`] already
-/// gives `link check`/`link list` for the same target kind.
+/// is a [`BacklinkTarget::Item`] holding an [`ItemRef::Change`]: a change
+/// names source-repository commits, not a plan-repo document, so it can
+/// never be the destination of an `rdm:` item link or an `implements` field
+/// — the scan would always report zero backlinks, which silently
+/// misrepresents "nothing references this" as indistinguishable from "this
+/// kind of target can't be referenced at all". Matches the actionable
+/// rejection [`load_document_body`] already gives `link check`/`link list`
+/// for the same target kind. Name the commit with
+/// [`BacklinkTarget::Commit`] instead.
 pub fn backlinks(
+    store: &impl Store,
+    project: &str,
+    target: &BacklinkTarget,
+) -> Result<Vec<BacklinkEntry>> {
+    let mut entries = match target {
+        BacklinkTarget::Item(item) => item_backlinks(store, project, item)?,
+        BacklinkTarget::Commit { rev } => commit_backlinks(store, project, rev)?,
+    };
+    entries.sort_by(|a, b| {
+        a.document
+            .cmp(&b.document)
+            .then_with(|| a.sort_key().cmp(&b.sort_key()))
+    });
+    Ok(entries)
+}
+
+/// Whether two commit revisions name the same commit as far as core can
+/// tell without a repository: compared case-insensitively, they match when
+/// the shorter is a prefix of the longer.
+///
+/// Both sides are at least 7 hex characters by construction (the
+/// `rdm:src@<sha>` grammar, or a stored full SHA). An ambiguous abbreviation
+/// therefore matches every commit sharing that prefix; only the full SHA is
+/// unambiguous.
+pub(crate) fn revs_match(a: &str, b: &str) -> bool {
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    long.get(..short.len())
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(short))
+}
+
+/// [`backlinks`] for a [`BacklinkTarget::Commit`]: body commit links and
+/// change-review structural commit references whose revision
+/// [`revs_match`]es `rev`. Unsorted — [`backlinks`] sorts.
+fn commit_backlinks(store: &impl Store, project: &str, rev: &str) -> Result<Vec<BacklinkEntry>> {
+    let mut entries = Vec::new();
+    walk_project_bodies(store, project, |doc_ref, body, _containing_commit| {
+        collect_commit_links(body, rev, &doc_ref, &mut entries);
+        Ok(())
+    })?;
+    for (id, doc) in crate::ops::reviews::list_reviews(store, project)? {
+        for commit_ref in crate::ops::reviews::review_commit_refs(&doc.frontmatter) {
+            if revs_match(&commit_ref.rev, rev) {
+                entries.push(BacklinkEntry {
+                    document: DocRef::Review {
+                        id: id.clone(),
+                        comment: commit_ref.comment,
+                    },
+                    reference: BacklinkRef::Field {
+                        field: commit_ref.field,
+                        via: None,
+                    },
+                });
+            }
+        }
+    }
+    Ok(entries)
+}
+
+/// Finds every `rdm:src@<sha>` commit link in `body` whose revision
+/// [`revs_match`]es `rev`, pushing one body [`BacklinkEntry`] per
+/// occurrence tagged with `doc_ref` — the commit sibling of
+/// [`collect_item_links`].
+fn collect_commit_links(body: &str, rev: &str, doc_ref: &DocRef, out: &mut Vec<BacklinkEntry>) {
+    let (links, _diagnostics) = crate::link::extract_links(body);
+    for (range, link) in links {
+        if let Link::Commit { rev: found } = link
+            && revs_match(&found, rev)
+        {
+            out.push(BacklinkEntry {
+                document: doc_ref.clone(),
+                reference: BacklinkRef::Body { byte_range: range },
+            });
+        }
+    }
+}
+
+/// Parses an `rdm backlinks` reference into a [`BacklinkTarget`], so the
+/// CLI stays a thin dispatch.
+///
+/// An optional `rdm:` prefix is stripped first. A remainder of `src`, or
+/// one starting with `src@` or `src/`, names the source repository and is
+/// parsed with [`crate::link::parse`]: a commit link (`src@<sha>`,
+/// abbreviated or full) becomes [`BacklinkTarget::Commit`]. Anything else is
+/// an item reference, parsed by
+/// [`crate::ops::reviews::parse_review_target_ref`] (so a phase may be named
+/// by number) and wrapped in [`BacklinkTarget::Item`].
+///
+/// # Errors
+///
+/// Returns [`crate::error::Error::InvalidBacklinkTarget`] for a
+/// source-repository reference that is a file or line-range code link (not
+/// a backlinks target yet) or that fails to parse — e.g. `src@main`, whose
+/// message carries the commit grammar's rev hint. Otherwise returns
+/// whatever [`crate::ops::reviews::parse_review_target_ref`] returns
+/// ([`crate::error::Error::InvalidReviewTargetRef`], or a phase-number
+/// resolution error).
+pub fn parse_backlink_target(
+    store: &impl Store,
+    project: &str,
+    reference: &str,
+) -> Result<BacklinkTarget> {
+    let rest = reference.strip_prefix("rdm:").unwrap_or(reference);
+    if rest == "src" || rest.starts_with("src@") || rest.starts_with("src/") {
+        let invalid = |reason: String| crate::error::Error::InvalidBacklinkTarget {
+            reference: reference.to_string(),
+            reason,
+        };
+        return match crate::link::parse(&format!("rdm:{rest}")) {
+            Ok(Link::Commit { rev }) => Ok(BacklinkTarget::Commit { rev }),
+            Ok(_) => Err(invalid(
+                "a file or line range is not a backlinks target yet — name the commit with rdm:src@<sha>"
+                    .to_string(),
+            )),
+            Err(e) => Err(invalid(e.to_string())),
+        };
+    }
+    let item = crate::ops::reviews::parse_review_target_ref(store, project, rest)?;
+    Ok(BacklinkTarget::Item(item))
+}
+
+/// [`backlinks`] for a [`BacklinkTarget::Item`] — the item-link and
+/// `implements` scan. Unsorted — [`backlinks`] sorts.
+fn item_backlinks(
     store: &impl Store,
     project: &str,
     target: &ItemRef,
@@ -399,12 +540,6 @@ pub fn backlinks(
     })?;
 
     collect_implements_backlinks(store, project, &target, &mut entries)?;
-
-    entries.sort_by(|a, b| {
-        a.document
-            .cmp(&b.document)
-            .then_with(|| a.sort_key().cmp(&b.sort_key()))
-    });
 
     Ok(entries)
 }
@@ -703,15 +838,21 @@ pub struct CodeLinkFinding {
 
 /// One `rdm:src@<sha>` commit link found while checking a project or
 /// document — the commit counterpart of [`CodeLinkFinding`], carried forward
-/// so a checkout-aware caller can verify the commit exists.
+/// so a checkout-aware caller can verify the commit exists. Covers both
+/// links written in a body and a change review's structural commit
+/// references (see [`crate::ops::reviews::review_commit_refs`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitLinkFinding {
     /// The document the link was found in.
     pub document: DocRef,
-    /// Byte range of the link within that document's body.
-    pub byte_range: Range<usize>,
+    /// Where in that document the reference sits: a body link
+    /// ([`BacklinkRef::Body`] with its byte range), or a change review's
+    /// structural `head`/`base`/`applied_commit` field
+    /// ([`BacklinkRef::Field`], `via: None`).
+    pub reference: BacklinkRef,
     /// The `rdm:` URI, as rendered by [`Link`]'s `Display` (byte-identical
-    /// to what was written, since the commit form is never normalized).
+    /// to what was written, since the commit form is never normalized; for a
+    /// structural reference, the link derived from the stored value).
     pub uri: String,
     /// The commit SHA exactly as written in the link.
     pub rev: String,
@@ -762,7 +903,9 @@ pub struct MissingAtRevFinding {
 /// checkout-aware and checkout-less cases.
 #[derive(Debug, Clone, Default)]
 pub struct LinkCheckReport {
-    /// Count of successfully-parsed `rdm:` links resolved (item or code) —
+    /// Count of successfully-parsed `rdm:` links resolved (item, code, or
+    /// commit), plus — for a project-wide check — every change review's
+    /// structural commit reference (`head`/`base`/`applied_commit`) —
     /// distinct from `diagnostics`, which counts links that failed to parse
     /// in the first place.
     pub links_checked: usize,
@@ -772,7 +915,10 @@ pub struct LinkCheckReport {
     pub code_links: Vec<CodeLinkFinding>,
     /// Every commit link (`rdm:src@<sha>`) found, for a caller-side
     /// commit-existence pass — the commit counterpart of
-    /// [`code_links`](Self::code_links).
+    /// [`code_links`](Self::code_links). A project-wide check also includes
+    /// each change review's `head`, `base`, and `applied_commit` here, as
+    /// [`BacklinkRef::Field`] findings; a roadmap, phase, task, or plan
+    /// review contributes none (its `applied_commit` is a plan-repo SHA).
     pub commit_links: Vec<CommitLinkFinding>,
     /// Malformed `rdm:` destinations found while parsing.
     pub diagnostics: Vec<CheckDiagnostic>,
@@ -843,7 +989,7 @@ fn check_body(
             (Link::Commit { .. }, Resolved::Commit { rev, .. }) => {
                 report.commit_links.push(CommitLinkFinding {
                     document: doc_ref.clone(),
-                    byte_range: range,
+                    reference: BacklinkRef::Body { byte_range: range },
                     uri: link.to_string(),
                     rev,
                 });
@@ -928,9 +1074,17 @@ pub fn load_document_body(
     }
 }
 
-/// Checks every roadmap, phase, task, and review body in `project` for
-/// broken `rdm:` links: dangling item references, and (as a worklist for a
-/// checkout-aware caller) every code link found — see [`LinkCheckReport`].
+/// Checks every roadmap, phase, task, plan, and review body in `project`
+/// for broken `rdm:` links: dangling item references, and (as a worklist
+/// for a checkout-aware caller) every code and commit link found — see
+/// [`LinkCheckReport`].
+///
+/// Each `change/<sha>` review's structural commit references (`head`,
+/// `base`, and every comment's `applied_commit`, via
+/// [`crate::ops::reviews::review_commit_refs`]) are checked too: each is
+/// resolved as an `rdm:src@<sha>` link with no `containing_commit`
+/// fallback (a review stamps no commit), counted in `links_checked`, and
+/// pushed to `commit_links` as a [`BacklinkRef::Field`] finding.
 ///
 /// # Errors
 ///
@@ -950,7 +1104,46 @@ pub fn check_project(store: &impl Store, project: &str) -> Result<LinkCheckRepor
             &mut report,
         )
     })?;
+    check_review_commit_refs(store, project, &mut report)?;
     Ok(report)
+}
+
+/// Folds every change review's structural commit references into `report`
+/// as [`BacklinkRef::Field`] commit-link findings — see [`check_project`].
+///
+/// # Errors
+///
+/// Propagates [`crate::ops::reviews::list_reviews`] and [`resolve_link`]
+/// failures (`ProjectNotFound`, `Io`, `FrontmatterMissing`/
+/// `FrontmatterParse`).
+fn check_review_commit_refs(
+    store: &impl Store,
+    project: &str,
+    report: &mut LinkCheckReport,
+) -> Result<()> {
+    for (id, doc) in crate::ops::reviews::list_reviews(store, project)? {
+        for commit_ref in crate::ops::reviews::review_commit_refs(&doc.frontmatter) {
+            let link = commit_ref.link();
+            // A review stamps no commit: no `containing_commit` fallback.
+            let resolved = resolve_link(store, project, None, &link)?;
+            report.links_checked += 1;
+            if let Resolved::Commit { rev, .. } = resolved {
+                report.commit_links.push(CommitLinkFinding {
+                    document: DocRef::Review {
+                        id: id.clone(),
+                        comment: commit_ref.comment,
+                    },
+                    reference: BacklinkRef::Field {
+                        field: commit_ref.field,
+                        via: None,
+                    },
+                    uri: link.to_string(),
+                    rev,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Checks one document (a roadmap, phase, or task — see [`load_document_body`])
@@ -959,6 +1152,10 @@ pub fn check_project(store: &impl Store, project: &str) -> Result<LinkCheckRepor
 /// A roadmap target checks only the roadmap's own body, not its phases —
 /// scope it to a specific phase with `phase/<roadmap>/<stem-or-number>` to
 /// check that instead.
+///
+/// A review's structural commit references are checked only by
+/// [`check_project`]: a review cannot be named as the `target` here, and a
+/// `change/<sha>` target is refused (see [`load_document_body`]).
 ///
 /// # Errors
 ///
@@ -995,6 +1192,16 @@ mod tests {
     use crate::ops::CreateTask;
     use crate::store::MemoryStore;
     use chrono::{TimeZone, Utc};
+
+    /// [`backlinks`] over an item target — what every pre-commit-target
+    /// test called directly.
+    fn backlinks_to_item(
+        store: &impl Store,
+        project: &str,
+        target: &ItemRef,
+    ) -> Result<Vec<BacklinkEntry>> {
+        backlinks(store, project, &BacklinkTarget::Item(target.clone()))
+    }
 
     fn setup() -> MemoryStore {
         let mut store = MemoryStore::new();
@@ -1834,7 +2041,7 @@ mod tests {
         let target = ItemRef::Task {
             slug: "fix-login".to_string(),
         };
-        let first = backlinks(&store, "demo", &target).unwrap();
+        let first = backlinks_to_item(&store, "demo", &target).unwrap();
         assert_eq!(first.len(), 4);
 
         let docs: Vec<&DocRef> = first.iter().map(|e| &e.document).collect();
@@ -1859,7 +2066,7 @@ mod tests {
         );
 
         // Stability: calling again yields the identical order.
-        let second = backlinks(&store, "demo", &target).unwrap();
+        let second = backlinks_to_item(&store, "demo", &target).unwrap();
         assert_eq!(first, second);
     }
 
@@ -1893,7 +2100,7 @@ mod tests {
         let target = ItemRef::Task {
             slug: "fix-login".to_string(),
         };
-        let entries = backlinks(&store, "demo", &target).unwrap();
+        let entries = backlinks_to_item(&store, "demo", &target).unwrap();
         assert_eq!(entries.len(), 2);
         assert_ne!(entries[0].byte_range(), entries[1].byte_range());
     }
@@ -1954,7 +2161,7 @@ mod tests {
         let target = ItemRef::Task {
             slug: "fix-login".to_string(),
         };
-        let entries = backlinks(&store, "demo", &target).unwrap();
+        let entries = backlinks_to_item(&store, "demo", &target).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].document,
@@ -2016,7 +2223,7 @@ mod tests {
         let target = ItemRef::Task {
             slug: "fix-login".to_string(),
         };
-        let entries = backlinks(&store, "demo", &target).unwrap();
+        let entries = backlinks_to_item(&store, "demo", &target).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].document,
@@ -2077,7 +2284,7 @@ mod tests {
             roadmap: "auth".to_string(),
             stem: "phase-1-design".to_string(),
         };
-        let entries = backlinks(&store, "demo", &target).unwrap();
+        let entries = backlinks_to_item(&store, "demo", &target).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].document,
@@ -2104,7 +2311,7 @@ mod tests {
             roadmap: "auth".to_string(),
             stem: "1".to_string(),
         };
-        let entries = backlinks(&store, "demo", &numeric_target).unwrap();
+        let entries = backlinks_to_item(&store, "demo", &numeric_target).unwrap();
         assert_eq!(entries.len(), 2);
         let docs: Vec<&DocRef> = entries.iter().map(|e| &e.document).collect();
         assert!(docs.contains(&&DocRef::Task {
@@ -2127,7 +2334,7 @@ mod tests {
             roadmap: "ghost".to_string(),
             stem: "1".to_string(),
         };
-        let entries = backlinks(&store, "demo", &target).unwrap();
+        let entries = backlinks_to_item(&store, "demo", &target).unwrap();
         assert!(entries.is_empty());
     }
 
@@ -2167,7 +2374,7 @@ mod tests {
             roadmap: "auth".to_string(),
             stem: "99".to_string(),
         };
-        let entries = backlinks(&store, "demo", &target).unwrap();
+        let entries = backlinks_to_item(&store, "demo", &target).unwrap();
         assert!(entries.is_empty());
     }
 
@@ -2181,7 +2388,7 @@ mod tests {
         let target = ItemRef::Task {
             slug: "fix-login".to_string(),
         };
-        let err = backlinks(&store, "no-such-project", &target).unwrap_err();
+        let err = backlinks_to_item(&store, "no-such-project", &target).unwrap_err();
         assert!(
             matches!(err, crate::error::Error::ProjectNotFound(name) if name == "no-such-project")
         );
@@ -2204,7 +2411,7 @@ mod tests {
             head: "a".repeat(40),
             base: None,
         };
-        let err = backlinks(&store, "demo", &target).unwrap_err();
+        let err = backlinks_to_item(&store, "demo", &target).unwrap_err();
         assert!(
             matches!(err, crate::error::Error::ChangeTargetHasNoDocument(_)),
             "expected ChangeTargetHasNoDocument, got {err:?}"
@@ -2276,7 +2483,7 @@ mod tests {
     fn backlinks_emit_a_plans_implements_field_as_a_structural_reference() {
         let mut store = setup();
         seed_implements_chain(&mut store);
-        let entries = backlinks(
+        let entries = backlinks_to_item(
             &store,
             "demo",
             &ItemRef::Task {
@@ -2330,7 +2537,7 @@ mod tests {
         )
         .unwrap();
 
-        let entries = backlinks(
+        let entries = backlinks_to_item(
             &store,
             "demo",
             &ItemRef::Task {
@@ -2369,7 +2576,7 @@ mod tests {
                 slug: "plan-one".to_string(),
             }),
         );
-        let entries = backlinks(
+        let entries = backlinks_to_item(
             &store,
             "demo",
             &ItemRef::Plan {
@@ -2420,7 +2627,7 @@ mod tests {
                 slug: "plan-one".to_string(),
             }),
         );
-        let entries = backlinks(
+        let entries = backlinks_to_item(
             &store,
             "demo",
             &ItemRef::Task {
@@ -2437,7 +2644,7 @@ mod tests {
             "expected no duplicate review entries: {entries:?}"
         );
         // Deterministic across repeated calls.
-        let again = backlinks(
+        let again = backlinks_to_item(
             &store,
             "demo",
             &ItemRef::Task {
@@ -2453,7 +2660,7 @@ mod tests {
         let mut store = setup();
         seed_implements_chain(&mut store);
         write_change_review(&mut store, "2026-07-01-1200-aaaa", None);
-        let entries = backlinks(
+        let entries = backlinks_to_item(
             &store,
             "demo",
             &ItemRef::Plan {
@@ -2590,6 +2797,352 @@ mod tests {
         assert!(report.diagnostics.is_empty());
         assert!(report.unresolved_commits.is_empty());
         assert_eq!(report.links_checked, 1);
+        assert!(
+            matches!(finding.reference, BacklinkRef::Body { ref byte_range } if byte_range.start < byte_range.end),
+            "{:?}",
+            finding.reference
+        );
+    }
+
+    // --- a review's structural commit references: link check + backlinks ---
+
+    const HEAD_SHA: &str = "aaaaaaa1aaaaaaa1aaaaaaa1aaaaaaa1aaaaaaa1";
+    const BASE_SHA: &str = "bbbbbbb2bbbbbbb2bbbbbbb2bbbbbbb2bbbbbbb2";
+    const FIX_SHA: &str = "ccccccc3ccccccc3ccccccc3ccccccc3ccccccc3";
+
+    fn comment(id: u32, applied_commit: Option<&str>, body: &str) -> ReviewComment {
+        ReviewComment {
+            id,
+            doc: None,
+            status: if applied_commit.is_some() {
+                ReviewCommentStatus::Addressed
+            } else {
+                ReviewCommentStatus::Open
+            },
+            applied_commit: applied_commit.map(str::to_string),
+            anchor: None,
+            body: body.to_string(),
+            reply: None,
+        }
+    }
+
+    fn write_review_with(
+        store: &mut MemoryStore,
+        id: &str,
+        target: ReviewTarget,
+        comments: Vec<ReviewComment>,
+    ) {
+        let doc = Document {
+            frontmatter: Review {
+                id: id.to_string(),
+                author: "tester".to_string(),
+                target,
+                state: ReviewState::Submitted,
+                verdict: None,
+                created: Utc.with_ymd_and_hms(2026, 7, 1, 14, 30, 0).unwrap(),
+                submitted: None,
+                created_commit: None,
+                implements: None,
+                change_branch: None,
+                comments,
+            },
+            body: "Summary.".to_string(),
+        };
+        crate::io::write_review(store, "demo", id, &doc).unwrap();
+    }
+
+    /// A change review with head, base, an open comment and an addressed
+    /// one, plus a task review whose addressed comment carries a plan-repo
+    /// SHA equal to the change review's fix commit.
+    fn seed_commit_reviews(store: &mut MemoryStore) {
+        write_review_with(
+            store,
+            "2026-07-01-1430-chng",
+            ReviewTarget::Change {
+                head: HEAD_SHA.to_string(),
+                base: Some(BASE_SHA.to_string()),
+            },
+            vec![
+                comment(1, None, "Open."),
+                comment(2, Some(FIX_SHA), "Fixed."),
+            ],
+        );
+        crate::ops::task::create_task(
+            store,
+            CreateTask {
+                project: "demo",
+                slug: "fix-login",
+                title: "Fix login",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Body."),
+            },
+        )
+        .unwrap();
+        write_review_with(
+            store,
+            "2026-07-01-1431-task",
+            ReviewTarget::Task {
+                slug: "fix-login".to_string(),
+            },
+            vec![comment(1, Some(FIX_SHA), "Plan-repo fix.")],
+        );
+    }
+
+    fn field_ref(field: &'static str) -> BacklinkRef {
+        BacklinkRef::Field { field, via: None }
+    }
+
+    fn review_doc(id: &str, comment: Option<u32>) -> DocRef {
+        DocRef::Review {
+            id: id.to_string(),
+            comment,
+        }
+    }
+
+    #[test]
+    fn check_project_collects_change_review_commit_refs_as_field_findings() {
+        let mut store = setup();
+        seed_commit_reviews(&mut store);
+        let report = check_project(&store, "demo").unwrap();
+        let found: Vec<(DocRef, BacklinkRef, String, String)> = report
+            .commit_links
+            .iter()
+            .map(|f| {
+                (
+                    f.document.clone(),
+                    f.reference.clone(),
+                    f.uri.clone(),
+                    f.rev.clone(),
+                )
+            })
+            .collect();
+        let id = "2026-07-01-1430-chng";
+        assert_eq!(
+            found,
+            vec![
+                (
+                    review_doc(id, None),
+                    field_ref("head"),
+                    format!("rdm:src@{HEAD_SHA}"),
+                    HEAD_SHA.to_string()
+                ),
+                (
+                    review_doc(id, None),
+                    field_ref("base"),
+                    format!("rdm:src@{BASE_SHA}"),
+                    BASE_SHA.to_string()
+                ),
+                (
+                    review_doc(id, Some(2)),
+                    field_ref("applied_commit"),
+                    format!("rdm:src@{FIX_SHA}"),
+                    FIX_SHA.to_string()
+                ),
+            ]
+        );
+        // No body links anywhere: every checked link is a structural ref.
+        assert_eq!(report.links_checked, 3);
+        assert!(report.dangling.is_empty());
+        assert!(report.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn check_project_ignores_plan_document_review_applied_commit() {
+        let mut store = setup();
+        seed_commit_reviews(&mut store);
+        let report = check_project(&store, "demo").unwrap();
+        assert!(
+            report
+                .commit_links
+                .iter()
+                .all(|f| !matches!(&f.document, DocRef::Review { id, .. } if id == "2026-07-01-1431-task")),
+            "{:?}",
+            report.commit_links
+        );
+    }
+
+    fn commit_target(rev: &str) -> BacklinkTarget {
+        BacklinkTarget::Commit {
+            rev: rev.to_string(),
+        }
+    }
+
+    #[test]
+    fn backlinks_commit_target_finds_change_review_head_base_and_applied_commit() {
+        let mut store = setup();
+        seed_commit_reviews(&mut store);
+        let id = "2026-07-01-1430-chng";
+        for (rev, doc, field) in [
+            (HEAD_SHA, review_doc(id, None), "head"),
+            (BASE_SHA, review_doc(id, None), "base"),
+            (FIX_SHA, review_doc(id, Some(2)), "applied_commit"),
+        ] {
+            let entries = backlinks(&store, "demo", &commit_target(rev)).unwrap();
+            assert_eq!(
+                entries,
+                vec![BacklinkEntry {
+                    document: doc,
+                    reference: field_ref(field),
+                }],
+                "for {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn backlinks_commit_target_matches_abbreviations_case_insensitively() {
+        let mut store = setup();
+        seed_commit_reviews(&mut store);
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "abbrev",
+                title: "Abbrev",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Landed in [fix](rdm:src@ccccccc3)."),
+            },
+        )
+        .unwrap();
+
+        // A 7-char, upper-cased query matches the full stored head.
+        let entries = backlinks(&store, "demo", &commit_target("AAAAAAA")).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].reference, field_ref("head"));
+
+        // A full query matches an abbreviated body link and the stored SHA.
+        let entries = backlinks(&store, "demo", &commit_target(FIX_SHA)).unwrap();
+        assert_eq!(entries.len(), 2, "{entries:?}");
+        assert_eq!(
+            entries[0].document,
+            DocRef::Task {
+                slug: "abbrev".to_string()
+            }
+        );
+        assert!(matches!(entries[0].reference, BacklinkRef::Body { .. }));
+        assert_eq!(entries[1].reference, field_ref("applied_commit"));
+
+        // A commit sharing no prefix matches nothing.
+        let entries = backlinks(&store, "demo", &commit_target("ddddddd4")).unwrap();
+        assert!(entries.is_empty(), "{entries:?}");
+    }
+
+    #[test]
+    fn backlinks_commit_target_finds_body_commit_links() {
+        let mut store = setup();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "landed",
+                title: "Landed",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Landed in [c](rdm:src@a1b2c3d)."),
+            },
+        )
+        .unwrap();
+        write_review_with(
+            &mut store,
+            "2026-07-01-1432-body",
+            ReviewTarget::Task {
+                slug: "landed".to_string(),
+            },
+            vec![comment(1, None, "See [c](rdm:src@a1b2c3d4).")],
+        );
+        let entries = backlinks(&store, "demo", &commit_target("a1b2c3d")).unwrap();
+        let docs: Vec<&DocRef> = entries.iter().map(|e| &e.document).collect();
+        assert_eq!(
+            docs,
+            vec![
+                &DocRef::Task {
+                    slug: "landed".to_string()
+                },
+                &review_doc("2026-07-01-1432-body", Some(1)),
+            ]
+        );
+        assert!(
+            entries
+                .iter()
+                .all(|e| matches!(e.reference, BacklinkRef::Body { .. }))
+        );
+    }
+
+    #[test]
+    fn backlinks_commit_target_ignores_plan_document_review_applied_commit() {
+        let mut store = setup();
+        seed_commit_reviews(&mut store);
+        let entries = backlinks(&store, "demo", &commit_target(FIX_SHA)).unwrap();
+        assert!(
+            entries
+                .iter()
+                .all(|e| !matches!(&e.document, DocRef::Review { id, .. } if id == "2026-07-01-1431-task")),
+            "{entries:?}"
+        );
+    }
+
+    #[test]
+    fn revs_match_is_prefix_and_case_insensitive() {
+        assert!(revs_match("a1b2c3d", "A1B2C3D4E5"));
+        assert!(revs_match("A1B2C3D4E5", "a1b2c3d"));
+        assert!(!revs_match("a1b2c3e", "a1b2c3d4e5"));
+    }
+
+    #[test]
+    fn parse_backlink_target_accepts_commit_and_item_forms() {
+        let mut store = setup();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "x",
+                title: "X",
+                priority: Priority::Medium,
+                tags: None,
+                body: None,
+            },
+        )
+        .unwrap();
+        for reference in ["rdm:src@a1b2c3d", "src@a1b2c3d"] {
+            assert_eq!(
+                parse_backlink_target(&store, "demo", reference).unwrap(),
+                commit_target("a1b2c3d"),
+                "{reference}"
+            );
+        }
+        for reference in ["task/x", "rdm:task/x"] {
+            assert_eq!(
+                parse_backlink_target(&store, "demo", reference).unwrap(),
+                BacklinkTarget::Item(ItemRef::Task {
+                    slug: "x".to_string()
+                }),
+                "{reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_backlink_target_rejects_code_links_and_bad_commit_revs() {
+        let store = setup();
+        let err = parse_backlink_target(&store, "demo", "rdm:src/a.rs").unwrap_err();
+        assert!(
+            matches!(&err, crate::error::Error::InvalidBacklinkTarget { reference, .. } if reference == "rdm:src/a.rs"),
+            "{err:?}"
+        );
+        assert!(
+            err.to_string().contains("not a backlinks target yet"),
+            "{err}"
+        );
+
+        let err = parse_backlink_target(&store, "demo", "src@main").unwrap_err();
+        assert!(
+            matches!(err, crate::error::Error::InvalidBacklinkTarget { .. }),
+            "{err:?}"
+        );
+        // Carries phase 1's rev hint.
+        assert!(err.to_string().contains("git rev-parse"), "{err}");
     }
 
     // --- `link check` / `check_project` / `check_document` ---

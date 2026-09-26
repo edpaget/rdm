@@ -370,11 +370,12 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: LinkCommand,
     },
-    /// List documents that reference a plan item.
+    /// List documents that reference a plan item or a source-repo commit.
     Backlinks {
         /// The referenced item: `roadmap/<slug>`,
         /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`, or
-        /// `plan/<slug>`.
+        /// `plan/<slug>` — or a source-repo commit as `rdm:src@<sha>` (or
+        /// `src@<sha>`), abbreviated or full.
         reference: String,
         /// Project the referenced item belongs to.
         #[arg(long)]

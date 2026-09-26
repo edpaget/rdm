@@ -323,7 +323,11 @@ pub fn backlink_views(
     project: &str,
     target: &ItemRef,
 ) -> Result<(Vec<crate::hal::HalLink>, Vec<serde_json::Value>)> {
-    let entries = rdm_core::ops::links::backlinks(store, project, target)?;
+    let entries = rdm_core::ops::links::backlinks(
+        store,
+        project,
+        &rdm_core::link::BacklinkTarget::Item(target.clone()),
+    )?;
     let json = entries
         .iter()
         .map(|e| {
@@ -359,7 +363,11 @@ pub fn referenced_by(
     project: &str,
     target: &ItemRef,
 ) -> Result<Vec<ReferencedByEntry>> {
-    let entries = rdm_core::ops::links::backlinks(store, project, target)?;
+    let entries = rdm_core::ops::links::backlinks(
+        store,
+        project,
+        &rdm_core::link::BacklinkTarget::Item(target.clone()),
+    )?;
     let mut seen: Vec<DocRef> = Vec::new();
     let mut out = Vec::new();
     for entry in entries {

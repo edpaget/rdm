@@ -260,6 +260,15 @@ pub enum Error {
     /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`,
     /// `plan/<slug>`, or `change/<head-sha>`.
     InvalidReviewTargetRef(String),
+    /// An `rdm backlinks` reference named the source repository
+    /// (`rdm:src…`/`src…`) in a form that is not a backlinks target: a file
+    /// or line-range code link, or an unparseable commit link.
+    InvalidBacklinkTarget {
+        /// The reference as given.
+        reference: String,
+        /// Why it is not a backlinks target, and what to write instead.
+        reason: String,
+    },
     /// A comment document reference did not match `phase/<stem-or-number>`.
     InvalidCommentDocRef(String),
     /// The quoted text for a new comment anchor was not found in the
@@ -944,6 +953,9 @@ impl std::fmt::Display for Error {
                     f,
                     "invalid review target '{reference}' — expected roadmap/<slug>, phase/<roadmap-slug>/<stem-or-number>, task/<slug>, plan/<slug>, or change/<head-sha>"
                 )
+            }
+            Error::InvalidBacklinkTarget { reference, reason } => {
+                write!(f, "invalid backlinks target '{reference}': {reason}")
             }
             Error::InvalidCommentDocRef(reference) => {
                 write!(

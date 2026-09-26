@@ -1,9 +1,11 @@
-//! `rdm backlinks` — list documents referencing a plan item.
+//! `rdm backlinks` — list documents referencing a plan item or a
+//! source-repository commit.
 //!
 //! Top-level (not nested under `link`) per the phase body's "top-level for
 //! discoverability". Thin dispatch over
-//! [`rdm_core::ops::links::backlinks`], parsing the reference the same way
-//! `rdm review --on` does.
+//! [`rdm_core::ops::links::backlinks`]: the reference is parsed by
+//! [`rdm_core::ops::links::parse_backlink_target`] — an item reference the
+//! same way `rdm review --on` reads one, or a commit as `rdm:src@<sha>`.
 
 use anyhow::{Context, Result};
 use rdm_core::config::Config;
@@ -26,7 +28,7 @@ pub fn run(
     project: Option<String>,
 ) -> Result<()> {
     let project = paths::resolve_project(project, repo_config)?;
-    let target = rdm_core::ops::reviews::parse_review_target_ref(store, &project, &reference)
+    let target = rdm_core::ops::links::parse_backlink_target(store, &project, &reference)
         .context("failed to resolve reference")?;
     let entries = rdm_core::ops::links::backlinks(store, &project, &target)
         .context("failed to find backlinks")?;

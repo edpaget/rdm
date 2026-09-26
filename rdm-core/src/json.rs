@@ -841,6 +841,13 @@ pub struct ReviewCommentJson {
     /// Commit SHA recorded when the comment was addressed, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub applied_commit: Option<String>,
+    /// For a `change/<sha>` review: `applied_commit` as an `rdm:src@<sha>`
+    /// commit link, derived on read (see
+    /// [`crate::ops::reviews::review_commit_refs`]). Absent on every other
+    /// review kind — there `applied_commit` is a plan-repo SHA — and for a
+    /// legacy `applied_commit` that is not commit-shaped.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub applied_commit_link: Option<String>,
     /// The stored anchor (tagged on `anchor_type`), if the comment is
     /// anchored.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -881,6 +888,17 @@ pub struct ReviewJson {
     pub author: String,
     /// The plan item under review (tagged on `kind`).
     pub target: ReviewTarget,
+    /// For a `change/<sha>` review: the target's `head` as an
+    /// `rdm:src@<sha>` commit link, exactly as [`crate::link::parse`]
+    /// accepts it. Derived on read from the stored SHA (see
+    /// [`crate::ops::reviews::review_commit_refs`]); absent on every other
+    /// review kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_link: Option<String>,
+    /// For a `change/<sha>` review with a recorded `base`: that base as an
+    /// `rdm:src@<sha>` commit link. Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_link: Option<String>,
     /// Lifecycle state.
     pub state: ReviewState,
     /// Verdict stamped on submit; absent on drafts.
@@ -975,6 +993,11 @@ fn resolution_to_json(resolved: &ResolvedComment) -> ResolutionJson {
 /// passes `&[]` — degrades every comment to `None`. A comment with a note
 /// emits no `source_link`: an anchor that cannot even name a valid object
 /// has no line to permalink to.
+///
+/// A `change/<sha>` review also carries `head_link`, `base_link`, and each
+/// comment's `applied_commit_link` — all taken from one
+/// [`crate::ops::reviews::review_commit_refs`] call, so the rules for which
+/// stored values become links live in one place.
 pub fn review_to_json(
     id: &str,
     doc: &Document<Review>,
@@ -991,10 +1014,19 @@ pub fn review_to_json(
         ReviewTarget::Change { head, .. } => Some(head.as_str()),
         _ => None,
     };
+    let commit_refs = crate::ops::reviews::review_commit_refs(fm);
+    let commit_link = |comment: Option<u32>, field: &str| {
+        commit_refs
+            .iter()
+            .find(|r| r.comment == comment && r.field == field)
+            .map(|r| r.link().to_string())
+    };
     ReviewJson {
         id: id.to_string(),
         author: fm.author.clone(),
         target: fm.target.clone(),
+        head_link: commit_link(None, "head"),
+        base_link: commit_link(None, "base"),
         state: fm.state,
         verdict: fm.verdict,
         created: fm.created,
@@ -1015,6 +1047,7 @@ pub fn review_to_json(
                     doc: c.doc.clone(),
                     status: c.status,
                     applied_commit: c.applied_commit.clone(),
+                    applied_commit_link: commit_link(Some(c.id), "applied_commit"),
                     anchor: c.anchor.clone(),
                     body: c.body.clone(),
                     reply: c.reply.clone(),
@@ -1181,20 +1214,43 @@ pub struct BacklinkEntryJson {
     pub via: Option<String>,
 }
 
+/// The JSON provenance keys of one [`crate::link::BacklinkRef`]: a body
+/// link's `range_start`/`range_end`, or a frontmatter reference's `field`
+/// and (for a transitive one) `via` URI. Shared by every JSON shape that
+/// carries a `BacklinkRef`.
+struct BacklinkRefJsonParts {
+    range_start: Option<usize>,
+    range_end: Option<usize>,
+    field: Option<&'static str>,
+    via: Option<String>,
+}
+
+fn backlink_ref_json_parts(reference: &crate::link::BacklinkRef) -> BacklinkRefJsonParts {
+    match reference {
+        crate::link::BacklinkRef::Body { byte_range } => BacklinkRefJsonParts {
+            range_start: Some(byte_range.start),
+            range_end: Some(byte_range.end),
+            field: None,
+            via: None,
+        },
+        crate::link::BacklinkRef::Field { field, via } => BacklinkRefJsonParts {
+            range_start: None,
+            range_end: None,
+            field: Some(*field),
+            via: via.as_ref().map(|r| format!("rdm:{}", r.label())),
+        },
+    }
+}
+
 /// Builds a [`BacklinkEntryJson`] from a [`BacklinkEntry`].
 #[must_use]
 pub fn backlink_entry_to_json(entry: &BacklinkEntry) -> BacklinkEntryJson {
-    let (range_start, range_end) = match entry.byte_range() {
-        Some(r) => (Some(r.start), Some(r.end)),
-        None => (None, None),
-    };
-    let (field, via) = match &entry.reference {
-        crate::link::BacklinkRef::Body { .. } => (None, None),
-        crate::link::BacklinkRef::Field { field, via } => (
-            Some(*field),
-            via.as_ref().map(|r| format!("rdm:{}", r.label())),
-        ),
-    };
+    let BacklinkRefJsonParts {
+        range_start,
+        range_end,
+        field,
+        via,
+    } = backlink_ref_json_parts(&entry.reference);
     BacklinkEntryJson {
         document: entry.document.clone(),
         range_start,
@@ -1254,15 +1310,27 @@ pub struct MissingAtRevJson {
 
 /// One commit link (`rdm:src@<sha>`) whose revision did not resolve in the
 /// verifying checkout, in JSON. Reported, never failing.
+///
+/// `range_start`/`range_end` are present for a link written in a body; a
+/// change review's structural reference (`head`, `base`, `applied_commit`)
+/// carries `field` instead — the same split as [`BacklinkEntryJson`].
 #[derive(Debug, Clone, Serialize)]
 pub struct UnresolvedCommitJson {
     /// The document the link was found in.
     #[serde(flatten)]
     pub document: DocRef,
-    /// Byte offset of the link's start within that document's body.
-    pub range_start: usize,
-    /// Byte offset of the link's end within that document's body.
-    pub range_end: usize,
+    /// Byte offset of the link's start within that document's body, for a
+    /// body link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_start: Option<usize>,
+    /// Byte offset of the link's end within that document's body, for a
+    /// body link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_end: Option<usize>,
+    /// The review frontmatter field (`head`, `base`, `applied_commit`) the
+    /// reference lives in, for a structural reference.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<&'static str>,
     /// The `rdm:` URI text.
     pub uri: String,
     /// The commit SHA exactly as the link wrote it.
@@ -1353,12 +1421,16 @@ pub fn link_check_report_to_json(
         unresolved_commits: report
             .unresolved_commits
             .iter()
-            .map(|c| UnresolvedCommitJson {
-                document: c.document.clone(),
-                range_start: c.byte_range.start,
-                range_end: c.byte_range.end,
-                uri: c.uri.clone(),
-                rev: c.rev.clone(),
+            .map(|c| {
+                let parts = backlink_ref_json_parts(&c.reference);
+                UnresolvedCommitJson {
+                    document: c.document.clone(),
+                    range_start: parts.range_start,
+                    range_end: parts.range_end,
+                    field: parts.field,
+                    uri: c.uri.clone(),
+                    rev: c.rev.clone(),
+                }
             })
             .collect(),
         path_verification_skipped: report.path_verification_skipped.clone(),
@@ -1850,6 +1922,39 @@ mod tests {
     }
 
     #[test]
+    fn review_json_emits_commit_links_for_a_change_review() {
+        let mut doc = make_review_doc();
+        doc.frontmatter.target = ReviewTarget::Change {
+            head: "a".repeat(40),
+            base: Some("b".repeat(40)),
+        };
+        doc.frontmatter.comments[0].status = ReviewCommentStatus::Addressed;
+        doc.frontmatter.comments[0].applied_commit = Some("c".repeat(40));
+        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[])).unwrap();
+        assert_eq!(v["head_link"], format!("rdm:src@{}", "a".repeat(40)));
+        assert_eq!(v["base_link"], format!("rdm:src@{}", "b".repeat(40)));
+        let c = &v["comments"][0];
+        assert_eq!(c["applied_commit"], "c".repeat(40));
+        assert_eq!(
+            c["applied_commit_link"],
+            format!("rdm:src@{}", "c".repeat(40))
+        );
+    }
+
+    #[test]
+    fn review_json_emits_no_commit_links_for_a_plan_document_review() {
+        let mut doc = make_review_doc();
+        doc.frontmatter.comments[0].status = ReviewCommentStatus::Addressed;
+        doc.frontmatter.comments[0].applied_commit = Some("c".repeat(40));
+        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[])).unwrap();
+        assert!(v.get("head_link").is_none(), "{v}");
+        assert!(v.get("base_link").is_none(), "{v}");
+        let c = &v["comments"][0];
+        assert_eq!(c["applied_commit"], "c".repeat(40));
+        assert!(c.get("applied_commit_link").is_none(), "{c}");
+    }
+
+    #[test]
     fn info_json_omits_project_when_none() {
         let info = InfoJson {
             root: "/tmp/plan-repo".to_string(),
@@ -1935,7 +2040,7 @@ mod tests {
             document: DocRef::Task {
                 slug: "landed".to_string(),
             },
-            byte_range: 3..30,
+            reference: crate::link::BacklinkRef::Body { byte_range: 3..30 },
             uri: "rdm:src@a1b2c3d".to_string(),
             rev: "a1b2c3d".to_string(),
         };
@@ -1955,6 +2060,39 @@ mod tests {
         assert_eq!(entry["slug"], "landed");
         assert_eq!(entry["range_start"], 3);
         assert_eq!(entry["range_end"], 30);
+        assert!(entry.get("field").is_none(), "{entry}");
+    }
+
+    #[test]
+    fn link_check_report_to_json_carries_a_structural_commit_ref_by_field() {
+        use crate::ops::links::{CommitLinkFinding, LinkCheckReport};
+
+        let finding = CommitLinkFinding {
+            document: DocRef::Review {
+                id: "2026-07-01-1430-a1b2".to_string(),
+                comment: None,
+            },
+            reference: crate::link::BacklinkRef::Field {
+                field: "base",
+                via: None,
+            },
+            uri: format!("rdm:src@{}", "b".repeat(40)),
+            rev: "b".repeat(40),
+        };
+        let report = LinkCheckReport {
+            links_checked: 1,
+            commit_links: vec![finding.clone()],
+            unresolved_commits: vec![finding],
+            ..LinkCheckReport::default()
+        };
+
+        let v = serde_json::to_value(link_check_report_to_json(&report, None)).unwrap();
+        let entry = &v["unresolved_commits"][0];
+        assert_eq!(entry["kind"], "review");
+        assert_eq!(entry["id"], "2026-07-01-1430-a1b2");
+        assert_eq!(entry["field"], "base");
+        assert!(entry.get("range_start").is_none(), "{entry}");
+        assert!(entry.get("range_end").is_none(), "{entry}");
     }
 
     #[test]

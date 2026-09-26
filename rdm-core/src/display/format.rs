@@ -1466,7 +1466,9 @@ pub fn format_backlinks(target: &str, entries: &[crate::link::BacklinkEntry]) ->
 /// counted as problems: they are reported, not failing. A report whose only
 /// findings are unresolved commits prints those lines and a
 /// "reported only; link check passes" summary instead of the clean line.
-/// Either way, a `path_verification_skipped` note (if set) is appended last.
+/// A change review's structural commit reference names its field after the
+/// document label (`review/<id>#comment-2 [applied_commit]`), matching
+/// [`format_backlinks`]. Either way, a `path_verification_skipped` note (if set) is appended last.
 #[must_use]
 pub fn format_link_check_report(report: &crate::json::LinkCheckReportJson) -> String {
     let broken = report.dangling.len() + report.diagnostics.len() + report.missing_at_rev.len();
@@ -1477,8 +1479,9 @@ pub fn format_link_check_report(report: &crate::json::LinkCheckReportJson) -> St
             .unresolved_commits
             .iter()
             .map(|c| {
+                let field = c.field.map(|f| format!(" [{f}]")).unwrap_or_default();
                 format!(
-                    "unresolved commit link in {}: {} — commit {} not found in this checkout (reported, not failing)\n",
+                    "unresolved commit link in {}{field}: {} — commit {} not found in this checkout (reported, not failing)\n",
                     format_doc_ref(&c.document),
                     c.uri,
                     c.rev
@@ -2637,8 +2640,9 @@ mod tests {
                 document: DocRef::Task {
                     slug: "landed".to_string(),
                 },
-                range_start: 0,
-                range_end: 25,
+                range_start: Some(0),
+                range_end: Some(25),
+                field: None,
                 uri: "rdm:src@a1b2c3d".to_string(),
                 rev: "a1b2c3d".to_string(),
             }],
@@ -2677,8 +2681,9 @@ mod tests {
                 document: DocRef::Task {
                     slug: "landed".to_string(),
                 },
-                range_start: 0,
-                range_end: 25,
+                range_start: Some(0),
+                range_end: Some(25),
+                field: None,
                 uri: "rdm:src@a1b2c3d".to_string(),
                 rev: "a1b2c3d".to_string(),
             }],
@@ -2698,6 +2703,44 @@ mod tests {
         assert!(out.contains("1 problem(s) found"), "{out}");
         assert!(!out.contains("2 problem(s) found"), "{out}");
         assert!(!out.contains("reported only; link check passes"), "{out}");
+    }
+
+    #[test]
+    fn link_check_report_names_the_field_of_a_structural_commit_ref() {
+        use crate::json::{LinkCheckReportJson, UnresolvedCommitJson};
+        use crate::link::DocRef;
+
+        let sha = "b".repeat(40);
+        let report = LinkCheckReportJson {
+            on: None,
+            links_checked: 1,
+            code_links_checked: 0,
+            commit_links_checked: 1,
+            dangling: Vec::new(),
+            diagnostics: Vec::new(),
+            missing_at_rev: Vec::new(),
+            unresolved_commits: vec![UnresolvedCommitJson {
+                document: DocRef::Review {
+                    id: "2026-07-01-1430-a1b2".to_string(),
+                    comment: None,
+                },
+                range_start: None,
+                range_end: None,
+                field: Some("base"),
+                uri: format!("rdm:src@{sha}"),
+                rev: sha.clone(),
+            }],
+            path_verification_skipped: None,
+        };
+
+        let out = format_link_check_report(&report);
+        assert!(
+            out.contains(&format!(
+                "unresolved commit link in review/2026-07-01-1430-a1b2 [base]: rdm:src@{sha}"
+            )),
+            "{out}"
+        );
+        assert!(!out.contains("problem(s) found"), "{out}");
     }
 
     #[test]

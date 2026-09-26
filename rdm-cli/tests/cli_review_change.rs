@@ -3075,3 +3075,460 @@ fn change_review_frontmatter_default_branch_wins_over_the_projects_config() {
     let j = review_json(plan.path(), src.path(), &id);
     assert_eq!(j["target"]["base"], main_base);
 }
+
+// --- A review's commit references become real links (derive on read) ---
+
+/// Runs `rdm <args> --project demo` against `plan` from `cwd`, returning
+/// the exit success flag, stdout, and stderr.
+fn run_rdm(plan: &Path, cwd: &Path, args: &[&str]) -> (bool, String, String) {
+    let out = rdm()
+        .arg("--root")
+        .arg(plan)
+        .args(args)
+        .args(["--project", "demo"])
+        .current_dir(cwd)
+        .output()
+        .unwrap();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+/// Like [`run_rdm`] with `--format json`, asserting success and parsing
+/// stdout.
+fn rdm_json(plan: &Path, cwd: &Path, args: &[&str]) -> Value {
+    let mut full: Vec<&str> = args.to_vec();
+    full.extend(["--format", "json"]);
+    let (ok, stdout, stderr) = run_rdm(plan, cwd, &full);
+    assert!(ok, "rdm {args:?} failed: {stderr}");
+    serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}"))
+}
+
+/// Writes a review file byte-for-byte into the temp plan repo, in the
+/// on-disk format `docs/file-formats.md` documents — for stored values the
+/// CLI would refuse to write (a SHA absent from the source repo, a legacy
+/// unvalidated `applied_commit`).
+fn write_raw_review(plan: &Path, id: &str, yaml: &str) {
+    let dir = plan.join("projects/demo/reviews");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join(format!("{id}.md")), yaml).unwrap();
+}
+
+/// A change review started from `topic` (head = topic tip, base = `main`)
+/// with one comment, submitted, and that comment addressed with
+/// `--applied-commit <main sha>`. Returns the review id.
+fn seed_addressed_change_review(plan: &Path, src: &Path, main_sha: &str) -> String {
+    create_plan(plan, "design-plan", true);
+    let id = start_change_review(
+        plan,
+        src,
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    for args in [
+        vec![
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Rename back.",
+            "--no-edit",
+        ],
+        vec![
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--body",
+            "Needs work.",
+            "--no-edit",
+        ],
+        vec![
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            main_sha,
+        ],
+    ] {
+        let (ok, _, stderr) = run_rdm(plan, src, &args);
+        assert!(ok, "rdm {args:?} failed: {stderr}");
+    }
+    id
+}
+
+#[test]
+fn change_review_commit_refs_are_emitted_as_resolvable_commit_links() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let topic = git_out(src.path(), &["rev-parse", "topic"]);
+    let main = git_out(src.path(), &["rev-parse", "main"]);
+    let merge_base = git_out(src.path(), &["merge-base", "main", "topic"]);
+    let id = seed_addressed_change_review(plan.path(), src.path(), &main);
+
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["head_link"], format!("rdm:src@{topic}"));
+    assert_eq!(j["base_link"], format!("rdm:src@{merge_base}"));
+    assert_eq!(
+        j["comments"][0]["applied_commit_link"],
+        format!("rdm:src@{main}")
+    );
+
+    for (link, rev) in [
+        (j["head_link"].as_str().unwrap(), &topic),
+        (j["base_link"].as_str().unwrap(), &merge_base),
+        (
+            j["comments"][0]["applied_commit_link"].as_str().unwrap(),
+            &main,
+        ),
+    ] {
+        let resolved = rdm_json(plan.path(), src.path(), &["link", "resolve", link]);
+        assert_eq!(resolved["kind"], "commit", "{resolved}");
+        assert_eq!(resolved["rev"], rev.as_str(), "{resolved}");
+    }
+
+    // Verified against the seeded source checkout: every one resolves.
+    let (ok, stdout, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &["link", "check", "--format", "json"],
+    );
+    assert!(ok, "link check failed: {stdout}{stderr}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert!(report["path_verification_skipped"].is_null(), "{report}");
+    assert_eq!(report["unresolved_commits"], serde_json::json!([]));
+    assert!(
+        report["commit_links_checked"].as_u64().unwrap() >= 3,
+        "{report}"
+    );
+}
+
+#[test]
+fn link_check_reports_a_dangling_review_commit_ref_by_review_and_field_without_failing() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let head = git_out(src.path(), &["rev-parse", "topic"]);
+    let missing_base = "0123456789abcdef0123456789abcdef01234567";
+    let missing_fix = "fedcba9876543210fedcba9876543210fedcba98";
+    let id = "2026-07-01-1430-dead";
+    write_raw_review(
+        plan.path(),
+        id,
+        &format!(
+            "---
+id: {id}
+author: ed
+target:
+  kind: change
+  head: {head}
+  base: {missing_base}
+state: submitted
+verdict: request-changes
+created: 2026-07-01T14:30:00Z
+comments:
+  - id: 1
+    status: open
+    body: Still open.
+  - id: 2
+    status: addressed
+    applied_commit: {missing_fix}
+    body: Fixed elsewhere.
+---
+Summary.
+"
+        ),
+    );
+
+    let (ok, stdout, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &["link", "check", "--format", "json"],
+    );
+    assert!(
+        ok,
+        "an unresolved commit must not fail link check: {stderr}"
+    );
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    let unresolved = report["unresolved_commits"].as_array().unwrap();
+    assert_eq!(
+        unresolved,
+        &vec![
+            serde_json::json!({
+                "kind": "review",
+                "id": id,
+                "comment": null,
+                "field": "base",
+                "uri": format!("rdm:src@{missing_base}"),
+                "rev": missing_base,
+            }),
+            serde_json::json!({
+                "kind": "review",
+                "id": id,
+                "comment": 2,
+                "field": "applied_commit",
+                "uri": format!("rdm:src@{missing_fix}"),
+                "rev": missing_fix,
+            }),
+        ],
+        "{report}"
+    );
+    assert!(unresolved.iter().all(|u| u["rev"] != head.as_str()));
+
+    let (ok, stdout, stderr) = run_rdm(plan.path(), src.path(), &["link", "check"]);
+    assert!(ok, "human link check must also pass: {stderr}");
+    assert!(stdout.contains(&format!("review/{id} [base]")), "{stdout}");
+    assert!(
+        stdout.contains(&format!("review/{id}#comment-2 [applied_commit]")),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn backlinks_to_a_commit_find_the_reviews_recorded_against_it() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let topic = git_out(src.path(), &["rev-parse", "topic"]);
+    let main = git_out(src.path(), &["rev-parse", "main"]);
+    let id = seed_addressed_change_review(plan.path(), src.path(), &main);
+    let abbrev = &main[..7];
+    let task_body = format!("Landed in [base](rdm:src@{abbrev}).");
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &[
+            "task",
+            "create",
+            "landed",
+            "--title",
+            "Landed",
+            "--body",
+            &task_body,
+            "--no-edit",
+        ],
+    );
+    assert!(ok, "{stderr}");
+
+    let head_ref = format!("rdm:src@{topic}");
+    let entries = rdm_json(plan.path(), src.path(), &["backlinks", &head_ref]);
+    assert_eq!(
+        entries,
+        serde_json::json!([{
+            "kind": "review",
+            "id": id,
+            "comment": null,
+            "field": "head",
+        }])
+    );
+
+    let main_ref = format!("src@{abbrev}");
+    let entries = rdm_json(plan.path(), src.path(), &["backlinks", &main_ref]);
+    let entries = entries.as_array().unwrap();
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["kind"] == "task" && e["slug"] == "landed" && e["range_start"].is_u64()),
+        "{entries:?}"
+    );
+    assert!(
+        entries.iter().any(|e| e["kind"] == "review"
+            && e["id"] == id.as_str()
+            && e["comment"].is_null()
+            && e["field"] == "base"),
+        "{entries:?}"
+    );
+    assert!(
+        entries.iter().any(|e| e["kind"] == "review"
+            && e["id"] == id.as_str()
+            && e["comment"] == 1
+            && e["field"] == "applied_commit"),
+        "{entries:?}"
+    );
+    assert_eq!(entries.len(), 3, "{entries:?}");
+
+    let (ok, stdout, stderr) = run_rdm(plan.path(), src.path(), &["backlinks", &head_ref]);
+    assert!(ok, "{stderr}");
+    assert!(stdout.contains(&format!("review/{id}  [head]")), "{stdout}");
+
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &["backlinks", "rdm:src/src/lib.rs"],
+    );
+    assert!(!ok, "a file is not a backlinks target yet");
+    assert!(stderr.contains("not a backlinks target yet"), "{stderr}");
+}
+
+#[test]
+fn plan_document_review_applied_commit_is_never_a_source_commit_link() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        plan.path(),
+        &[
+            "task",
+            "create",
+            "fix-login",
+            "--title",
+            "Fix login",
+            "--body",
+            "Fix the login flow.",
+            "--no-edit",
+        ],
+    );
+    assert!(ok, "{stderr}");
+    let (ok, stdout, stderr) = run_rdm(
+        plan.path(),
+        plan.path(),
+        &["review", "start", "--on", "task/fix-login", "--no-edit"],
+    );
+    assert!(ok, "{stderr}");
+    let id = stdout.split('\'').nth(1).unwrap().to_string();
+    for args in [
+        vec![
+            "review",
+            "comment",
+            &id,
+            "--body",
+            "Tighten this.",
+            "--no-edit",
+        ],
+        vec![
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--no-edit",
+        ],
+    ] {
+        let (ok, _, stderr) = run_rdm(plan.path(), plan.path(), &args);
+        assert!(ok, "rdm {args:?} failed: {stderr}");
+    }
+    // `--applied-commit HEAD` resolves in the *plan* repo, which needs a
+    // commit — a SHA the source repo never has.
+    git(plan.path(), &["add", "-A"]);
+    git(plan.path(), &["commit", "-m", "seed plan repo"]);
+    let (ok, _, stderr) = run_rdm(
+        plan.path(),
+        plan.path(),
+        &[
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            "HEAD",
+        ],
+    );
+    assert!(ok, "review update failed: {stderr}");
+
+    let j = rdm_json(plan.path(), src.path(), &["review", "show", &id]);
+    let sha = j["comments"][0]["applied_commit"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no applied_commit in {j}"))
+        .to_string();
+    assert!(j.get("head_link").is_none(), "{j}");
+    assert!(j.get("base_link").is_none(), "{j}");
+    assert!(j["comments"][0].get("applied_commit_link").is_none(), "{j}");
+
+    let (ok, stdout, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &["link", "check", "--format", "json"],
+    );
+    assert!(ok, "{stdout}{stderr}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert!(
+        report["unresolved_commits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|u| u["rev"] != sha.as_str()),
+        "{report}"
+    );
+
+    let commit_ref = format!("rdm:src@{sha}");
+    let entries = rdm_json(plan.path(), src.path(), &["backlinks", &commit_ref]);
+    assert!(
+        entries
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["id"] != id.as_str()),
+        "{entries}"
+    );
+}
+
+#[test]
+fn a_review_written_before_this_phase_still_loads_and_checks() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    let head = git_out(src.path(), &["rev-parse", "topic"]);
+    let main = git_out(src.path(), &["rev-parse", "main"]);
+    let abbrev = &main[..12];
+    let id = "2026-07-01-1430-0ld1";
+    // The pre-change format, verbatim: no `base` key, an abbreviated
+    // `applied_commit`, and a legacy unvalidated one.
+    write_raw_review(
+        plan.path(),
+        id,
+        &format!(
+            "---
+id: {id}
+author: ed
+target:
+  kind: change
+  head: {head}
+state: submitted
+verdict: request-changes
+created: 2026-07-01T14:30:00Z
+comments:
+  - id: 1
+    status: addressed
+    applied_commit: {abbrev}
+    body: Fixed.
+  - id: 2
+    status: addressed
+    applied_commit: HEAD
+    body: Fixed too.
+---
+Summary.
+"
+        ),
+    );
+
+    let j = review_json(plan.path(), src.path(), id);
+    assert_eq!(j["head_link"], format!("rdm:src@{head}"));
+    assert!(j.get("base_link").is_none(), "{j}");
+    assert_eq!(
+        j["comments"][0]["applied_commit_link"],
+        format!("rdm:src@{abbrev}")
+    );
+    assert_eq!(j["comments"][1]["applied_commit"], "HEAD");
+    assert!(j["comments"][1].get("applied_commit_link").is_none(), "{j}");
+
+    let (ok, stdout, stderr) = run_rdm(
+        plan.path(),
+        src.path(),
+        &["link", "check", "--format", "json"],
+    );
+    assert!(ok, "{stdout}{stderr}");
+    let report: Value = serde_json::from_str(&stdout).unwrap();
+    assert!(report["path_verification_skipped"].is_null(), "{report}");
+    assert_eq!(report["unresolved_commits"], serde_json::json!([]));
+}

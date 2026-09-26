@@ -234,6 +234,88 @@ alone**, so it renders with no source checkout present, and it is exactly the
 grammar `rdm link resolve` accepts. A single-line span emits `#L7`, not
 `#L7-L7`.
 
+## Commit references are links
+
+A change review stores three kinds of source-repository commit: the target's
+`head`, its `base`, and each comment's `applied_commit`. `rdm review show
+--format json` emits each as an `rdm:src@<sha>` commit link alongside the raw
+value:
+
+| key | where | derived from |
+|---|---|---|
+| `head_link` | top level | `target.head` |
+| `base_link` | top level, when `base` is recorded | `target.base` |
+| `applied_commit_link` | each comment, when it has an `applied_commit` | `comments[].applied_commit` |
+
+Each is exactly what `rdm link resolve` accepts (kind `commit`). The raw
+`target.head`/`target.base`/`applied_commit` stay beside them unchanged, and
+rdm-server's review JSON carries the same keys. The human and markdown
+renderers are unchanged.
+
+### Decision: derived on read, not stored
+
+The on-disk review format does not change. `head`, `base` and `applied_commit`
+stay raw SHAs, and rdm derives the link from them whenever it reads a review.
+One core helper (`rdm_core::ops::reviews::review_commit_refs`) does the
+derivation, and every consumer calls it: `review show` JSON, `link check`, and
+`backlinks`.
+
+1. **The stored format is a documented, validated contract.**
+   [`file-formats.md`](file-formats.md) documents `head` and `base` as "always a
+   full 40-char SHA", and every load enforces that
+   (`ReviewTarget::validate_stored_identity`). `ReviewTarget::same_item` and the
+   `change/<head>` reference grammar compare the raw `head` too. Storing
+   `rdm:src@<sha>` instead would make loading, identity and the grammar each
+   accept two spellings, need a migration for every review already on disk,
+   and break older binaries — the published plugin's agents, or an older
+   rdm-server reading a newer file, would fail validation.
+2. **Storing adds no information.** The link is a pure function of the stored
+   SHA and the review's target kind. The precedent is `source_link` (see
+   [Permalinks](#permalinks)), already derived from the anchor alone and never
+   stored.
+3. **The plan-document exclusion is a read-time rule.** On a roadmap, phase,
+   task or plan review, `applied_commit` is a **plan-repo** SHA. That is decided
+   by the target kind, and `--applied-commit` resolution already makes the same
+   split at write time. Deriving keeps the rule in one place and applies it to
+   reviews already on disk; storing would push it onto every writer and leave
+   old files unconverted.
+4. **The counter-precedent was considered.** `implements` *is* stored as
+   `rdm:plan/<slug>`. It is a reference the operator chooses at creation, and
+   its field was new when it got that shape — nothing had to be migrated.
+   Neither point holds for `head`, `base` or `applied_commit`.
+
+Consequence: reviews written before this existed load and check unchanged.
+
+### Which values become links
+
+- **Only a `change/<sha>` review.** A plan-document review's `applied_commit`
+  is a plan-repo SHA: it never gets an `applied_commit_link`, `link check`
+  never verifies or reports it, and `rdm backlinks rdm:src@<sha>` never
+  matches it.
+- **Only commit-shaped values.** A value becomes a link only if
+  `rdm:src@<value>` parses (7–64 hex characters). `head` and `base` always do.
+  A legacy `applied_commit` that is not — e.g. `HEAD`, written before the value
+  was validated — keeps its raw JSON value and gets no link. It is not
+  reported, because it was never written as a link. An abbreviated hex value
+  is kept as written.
+
+### `link check` and `backlinks`
+
+A project-wide `rdm link check` verifies each derived link in the source
+checkout exactly like an `rdm:src@<sha>` written in a body (see
+[`link-grammar.md`](link-grammar.md)): a commit the checkout does not have is
+listed under `unresolved_commits`, is reported, and never fails the check.
+Such an entry names the review, the comment when there is one, and the
+`field` (`head`, `base` or `applied_commit`) in place of a byte range; the
+text report prints it as `review/<id>#comment-2 [applied_commit]`. A review
+stamps no commit, so there is no `containing_commit` fallback. `link check
+--on` cannot name a review, so this coverage is project-wide only.
+
+`rdm backlinks rdm:src@<sha>` (or `src@<sha>`, abbreviated or full) lists the
+change reviews whose `head`, `base` or `applied_commit` name that commit, as
+structural `[head]`/`[base]`/`[applied_commit]` backlinks, alongside every
+body that links it.
+
 ## The degrade rule
 
 The **read** path degrades, the **write** path does not.
@@ -296,6 +378,9 @@ Surfaced two ways:
   fixed at **one hop** and stays that way: following a second level would make
   output depend on chain length and could revisit a document. Duplicates
   (two plans implementing one phase, a superseding plan) are emitted once.
+  The reviewed commits themselves are reachable the other way round, with
+  `rdm backlinks rdm:src@<sha>` — see
+  [Commit references are links](#commit-references-are-links).
 
 ## The never-write-the-source-repo invariant
 

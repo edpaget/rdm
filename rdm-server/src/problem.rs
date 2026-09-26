@@ -271,6 +271,7 @@ impl From<&Error> for ProblemDetail {
             // are caller mistakes; the core Display text is already
             // actionable (it names the searched commit and remediation).
             Error::InvalidReviewTargetRef(_)
+            | Error::InvalidBacklinkTarget { .. }
             | Error::InvalidCommentDocRef(_)
             | Error::QuoteNotFound { .. }
             | Error::QuoteAmbiguous { .. }

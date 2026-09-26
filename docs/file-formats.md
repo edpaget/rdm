@@ -394,6 +394,10 @@ comments:
 | `change_branch` | no | string | Source-repo branch the change was on, used to pick the tip anchor drift is measured against. Absent on a detached HEAD |
 | `implements` | no | item ref | The `rdm:plan/<slug>` this change implements. Only meaningful on a `change` target; absent on every other kind, so every pre-existing review file still loads |
 
+`head`, `base` and a comment's `applied_commit` stay raw SHAs on disk; rdm
+derives `rdm:src@<sha>` commit links from them on read (see
+[`change-reviews.md`](change-reviews.md#commit-references-are-links)).
+
 `rdm:change/<sha>` is **not** a valid link — `change` names a review target, not
 a linkable document. Link the commit with `rdm:src@<sha>`, or code at it with
 `rdm:src/<path>@<sha>`, instead. See [`link-grammar.md`](link-grammar.md) for

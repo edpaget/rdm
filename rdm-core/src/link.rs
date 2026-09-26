@@ -430,7 +430,48 @@ pub enum Resolved {
     },
 }
 
-/// A document that references a [`ItemRef`] target, found by [`crate::ops::links::backlinks`].
+/// What [`crate::ops::links::backlinks`] searches for references to: a plan
+/// item, or a commit in the project's source repository.
+///
+/// This is the code-side backlinks target's single home. Only the whole
+/// commit ([`BacklinkTarget::Commit`]) is accepted today; a file path, a
+/// file at a revision, and a line range are the planned extension points,
+/// added as further variants here rather than as a parallel type — which is
+/// why the enum is `#[non_exhaustive]`: adding them is not a breaking change
+/// for downstream matchers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BacklinkTarget {
+    /// A plan-repo item (`roadmap/…`, `phase/…`, `task/…`, `plan/…`).
+    Item(ItemRef),
+    /// A source-repository commit, as named by an `rdm:src@<sha>` link —
+    /// abbreviated or full, exactly as the caller wrote it.
+    Commit {
+        /// The commit SHA as given (7–64 hex characters).
+        rev: String,
+    },
+}
+
+impl From<ItemRef> for BacklinkTarget {
+    fn from(item: ItemRef) -> Self {
+        BacklinkTarget::Item(item)
+    }
+}
+
+impl BacklinkTarget {
+    /// A human label for the target: [`ItemRef::label`] for an item
+    /// (`task/<slug>`, …), `src@<rev>` for a commit — each the same
+    /// reference syntax `rdm backlinks` accepts.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            BacklinkTarget::Item(item) => item.label(),
+            BacklinkTarget::Commit { rev } => format!("src@{rev}"),
+        }
+    }
+}
+
+/// A document that references a [`BacklinkTarget`], found by [`crate::ops::links::backlinks`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum DocRef {
@@ -482,11 +523,13 @@ pub struct BacklinkEntry {
     pub reference: BacklinkRef,
 }
 
-/// The provenance of one backlink: an `rdm:` link written in a document's
-/// markdown body, or a structural reference carried in its frontmatter.
+/// The provenance of one reference (a backlink, or a `link check` finding):
+/// an `rdm:` link written in a document's markdown body, or a structural
+/// reference carried in its frontmatter.
 ///
 /// Frontmatter references (a plan's `implements`, a change review's
-/// `implements`) are just as real as body links but have no byte range —
+/// `implements`, and a change review's `head`/`base`/`applied_commit`
+/// commits) are just as real as body links but have no byte range —
 /// modeling them as a variant rather than a synthetic `0..0` range keeps
 /// consumers from rendering a meaningless offset.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -499,7 +542,8 @@ pub enum BacklinkRef {
     },
     /// A reference carried in the document's frontmatter.
     Field {
-        /// The frontmatter field name (e.g. `"implements"`).
+        /// The frontmatter field name (`"implements"`, or a change review's
+        /// `"head"`, `"base"`, or `"applied_commit"`).
         field: &'static str,
         /// The intermediate document this reference was reached *through*,
         /// for a transitive backlink. `None` for a direct one.
@@ -970,5 +1014,20 @@ mod tests {
                 rev: "a1b2c3d".to_string()
             }
         );
+    }
+
+    // --- BacklinkTarget ---
+
+    #[test]
+    fn backlink_target_label_for_item_and_commit() {
+        let item: BacklinkTarget = ItemRef::Task {
+            slug: "fix-login".to_string(),
+        }
+        .into();
+        assert_eq!(item.label(), "task/fix-login");
+        let commit = BacklinkTarget::Commit {
+            rev: "a1b2c3d".to_string(),
+        };
+        assert_eq!(commit.label(), "src@a1b2c3d");
     }
 }
