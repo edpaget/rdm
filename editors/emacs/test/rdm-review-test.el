@@ -936,6 +936,67 @@ generated status keys."
   (let ((keys (rdm-dispatch--status-keys '("Review" "Ready" "reviewed"))))
     (should-not (member "R" keys))))
 
+(defmacro rdm-review-test--dispatching (item &rest body)
+  "Run BODY as an `rdm-dispatch' suffix on ITEM would.
+Binds `opened' to the number of `rdm-open-item' calls so far."
+  (declare (indent 1) (debug t))
+  `(let ((opened 0)
+         (open (symbol-function 'rdm-open-item)))
+     (cl-letf (((symbol-function 'transient-scope) (lambda (&rest _) ,item))
+               ((symbol-function 'rdm-open-item)
+                (lambda (&rest args) (cl-incf opened) (apply open args)))
+               ((symbol-function 'completing-read) (lambda (&rest _) "approve"))
+               ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+       ,@body)))
+
+(defun rdm-review-test--view-buffers ()
+  "The live detail buffers."
+  (seq-filter (lambda (b) (eq (buffer-local-value 'major-mode b) 'rdm-view-mode))
+              (buffer-list)))
+
+(ert-deftest rdm-review/dispatch-start-submit-open-item-buffer ()
+  "From a buffer that is not the item's detail buffer, the dispatch start
+and submit suffixes open the item's detail buffer, which adopts the draft
+\(rendering at its `created_commit'), and submit it with the verdict."
+  (rdm-review-test--with nil
+    (setq rdm-review-test--originals (list (cons "c-head" "Committed.\n")))
+    (with-temp-buffer
+      (rdm-review-test--dispatching rdm-review-test--task
+        (rdm-review-dispatch-start)
+        (should (> opened 0))
+        (should-not (derived-mode-p 'rdm-view-mode))
+        (let ((views (rdm-review-test--view-buffers)))
+          (should (= 1 (length views)))
+          (with-current-buffer (car views)
+            (should (rdm-review--shows-p rdm-review-test--task))
+            (should (equal rdm-view--at "c-head"))
+            (should (equal (plist-get rdm-review--draft :id) "r-new"))
+            (should (equal (rdm-view-body) "Committed.\n"))))
+        (should (equal (rdm-review-test--calls-of calls "review" "start")
+                       '(("review" "start" "--on=task/t1" "--author=me" "--no-edit"
+                          "--project" "p" "--format" "json"))))
+        (rdm-review-dispatch-submit)
+        (should (equal (rdm-review-test--calls-of calls "review" "submit")
+                       '(("review" "submit" "r-new" "--verdict=approve"
+                          "--project" "p" "--no-edit"))))
+        (should (= 1 (length (rdm-review-test--view-buffers))))))))
+
+(ert-deftest rdm-review/dispatch-from-item-buffer-opens-nothing ()
+  "Run from the item's own detail buffer, the dispatch suffixes author in
+that buffer and open no other."
+  (rdm-review-test--authoring
+    (let ((view (current-buffer)))
+      (rdm-review-test--dispatching rdm-review-test--task
+        (should (equal (rdm-review-dispatch-start) "r1"))
+        (rdm-review-dispatch-submit)
+        (should (= opened 0))
+        (should (eq (current-buffer) view))
+        (should (equal (rdm-review-test--view-buffers) (list view)))
+        (should-not (rdm-review-test--calls-of calls "review" "start"))
+        (should (equal (rdm-review-test--calls-of calls "review" "submit")
+                       '(("review" "submit" "r1" "--verdict=approve"
+                          "--project" "p" "--no-edit"))))))))
+
 ;;;; Evil
 
 (ert-deftest rdm-evil/review-keys ()
