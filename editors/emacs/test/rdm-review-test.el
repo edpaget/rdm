@@ -27,6 +27,8 @@
 
 (defvar evil-state)
 (declare-function evil-local-mode "ext:evil-core" (&optional arg))
+(declare-function evil-visual-char "ext:evil-states")
+(declare-function evil-exit-visual-state "ext:evil-states")
 
 ;;;; Fixtures
 
@@ -51,6 +53,22 @@
 
 (defvar rdm-review-test--failing nil
   "Reads the mock fails: `list' for `review list', `at' for `show --at'.")
+
+(defvar rdm-review-test--verdicts '("approve" "request-changes" "comment")
+  "The verdicts the mocked `describe review' declares.")
+
+(defvar rdm-review-test--new-id "r-new"
+  "The id the mocked `review start' gives a new draft.")
+
+(defvar rdm-review-test--head "c-head"
+  "The `created_commit' the mocked `review start' stamps.")
+
+(defun rdm-review-test--flag-target (ref)
+  "The target JSON of the reference REF (task/SLUG or phase/R/STEM)."
+  (pcase (split-string ref "/")
+    (`("task" ,slug) (list :kind "task" :slug slug))
+    (`("phase" ,roadmap ,stem) (list :kind "phase" :roadmap roadmap :stem stem))
+    (`("roadmap" ,roadmap) (list :kind "roadmap" :roadmap roadmap))))
 
 (defun rdm-review-test--flag (argv flag)
   "The value of `--FLAG=value' in ARGV, or nil."
@@ -77,7 +95,37 @@
        (list :title "R" :body rdm-review-test--current
              :phases (vector (list :number 1 :stem "phase-1-one"
                                    :title "One" :status "done"))))
-      (`("review" "list" . ,_) (vconcat rdm-review-test--reviews))
+      (`("review" "list" . ,_)
+       (let ((state (rdm-review-test--flag argv "state"))
+             (author (rdm-review-test--flag argv "author")))
+         (vconcat (seq-filter
+                   (lambda (r)
+                     (and (or (not state) (equal (plist-get r :state) state))
+                          (or (not author) (equal (plist-get r :author) author))))
+                   rdm-review-test--reviews))))
+      (`("describe" "review" . ,_)
+       (list :name "review"
+             :fields (vector '(:name "state" :enum_values ["draft" "submitted"])
+                             (list :name "verdict"
+                                   :enum_values (vconcat rdm-review-test--verdicts)))))
+      (`("review" "start" . ,_)
+       (let ((review (rdm-review-test--review
+                      rdm-review-test--new-id
+                      (rdm-review-test--flag-target (rdm-review-test--flag argv "on"))
+                      nil :state "draft" :verdict nil
+                      :author (rdm-review-test--flag argv "author")
+                      :created_commit rdm-review-test--head
+                      :created "2026-09-26T10:00:00Z")))
+         (setq rdm-review-test--reviews
+               (append rdm-review-test--reviews (list review)))
+         review))
+      (`("review" "comment" ,id . ,_) (format "Added comment 1 to review '%s'\n" id))
+      (`("review" "submit" ,id . ,_)
+       (when-let* ((review (seq-find (lambda (r) (equal (plist-get r :id) id))
+                                     rdm-review-test--reviews)))
+         (plist-put review :state "submitted")
+         (plist-put review :verdict (rdm-review-test--flag argv "verdict")))
+       (format "Submitted review '%s'\n" id))
       (`("review" "requests" . ,_) (vconcat rdm-review-test--requests))
       (`("review" "show" . ,_) (car rdm-review-test--reviews))
       (`("review" "update" ,id . ,_)
@@ -96,7 +144,12 @@ Detail buffers are killed afterwards."
          (rdm-review-test--requests nil)
          (rdm-review-test--update-error nil)
          (rdm-review-test--failing nil)
+         (rdm-review-test--verdicts '("approve" "request-changes" "comment"))
+         (rdm-review-test--new-id "r-new")
+         (rdm-review-test--head "c-head")
+         (rdm-review-author "me")
          (kill-ring nil))
+     (rdm-context-reset)
      (rdm-mock-with-runner #'rdm-review-test--reply
        (ignore calls contexts)
        (unwind-protect (progn ,@body)
@@ -645,6 +698,213 @@ copies the command and runs nothing."
                             (rdm-mock-argvs calls))))
         (kill-buffer buf)))))
 
+;;;; Authoring
+
+(ert-deftest rdm-review/occurrences-non-overlapping ()
+  "Occurrences are counted without overlap, as `--occurrence' documents;
+a start inside an overlapping repeat is refused."
+  (should (equal (rdm-review-occurrence-starts "aaaa" "aa") '(0 2)))
+  (should (equal (rdm-review-occurrence-starts "aaaaa" "aa") '(0 2)))
+  (should-not (rdm-review-occurrence-starts "abc" ""))
+  (should (= (rdm-review-occurrence "aaaa" "aa" 2) 2))
+  (should (= (rdm-review-occurrence "aaaa" "aa" 0) 1))
+  (should-not (rdm-review-occurrence "x once y" "once" 2))
+  (should-error (rdm-review-occurrence "aaaa" "aa" 1) :type 'user-error))
+
+(defconst rdm-review-test--authoring-body
+  "Intro: open the door.\nrepeat me here\nand repeat me there\naaaa end\n"
+  "A body with a repeated phrase, an overlapping run, and \"open\" (which
+the header's Status line and the Reviews section also show).")
+
+(defun rdm-review-test--draft (&rest keys)
+  "An own draft review r1 of task t1 created at c0; KEYS override."
+  (apply #'rdm-review-test--review "r1" rdm-review-test--task-target nil
+         (append keys (list :state "draft" :verdict nil :author "me"
+                            :created "2026-09-26T09:00:00Z"))))
+
+(defmacro rdm-review-test--authoring (&rest body)
+  "Run BODY in the detail buffer of task t1 with an own draft r1 at c0.
+The current body is `rdm-review-test--authoring-body' with a line more,
+so the draft's text differs from the current one."
+  (declare (indent 0) (debug t))
+  `(rdm-review-test--with (list (rdm-review-test--draft))
+     (setq rdm-review-test--current
+           (concat rdm-review-test--authoring-body "Added since.\n")
+           rdm-review-test--originals
+           (list (cons "c0" rdm-review-test--authoring-body)))
+     (with-current-buffer (rdm-open-item rdm-review-test--task)
+       ,@body)))
+
+(defun rdm-review-test--body-range (text &optional nth)
+  "The buffer range (BEG . END) of the NTH (1-based) TEXT in the body."
+  (let* ((start (car (rdm-view-body-region)))
+         (offset (nth (1- (or nth 1))
+                      (rdm-review-occurrence-starts (rdm-view-body) text))))
+    (cons (+ start offset) (+ start offset (length text)))))
+
+(defun rdm-review-test--comment-on (range text)
+  "Comment TEXT on RANGE through the package's compose buffer."
+  (let ((compose (rdm-review-comment-region (car range) (cdr range))))
+    (with-current-buffer compose
+      (insert text)
+      (rdm-compose-submit))))
+
+(defun rdm-review-test--calls-of (calls &rest words)
+  "The argvs among CALLS that start with WORDS."
+  (seq-filter (lambda (argv) (equal (seq-take argv (length words)) words))
+              (rdm-mock-argvs calls)))
+
+(ert-deftest rdm-review/open-draft-renders-at-created-commit ()
+  "An item with an own open draft renders at its `created_commit' and says
+so; the draft lookup passes the author the package starts drafts with."
+  (rdm-review-test--authoring
+    (should (equal rdm-view--at "c0"))
+    (should (equal (rdm-view-body) rdm-review-test--authoring-body))
+    (should (string-match-p "Reviewing as of c0" (format "%s" header-line-format)))
+    (should (string-match-p "draft r1" (format "%s" header-line-format)))
+    (should (string-match-p "^Revision: c0$" (buffer-string)))
+    (should (member '("review" "list" "--on=task/t1" "--state=draft" "--author=me"
+                      "--project" "p" "--format" "json")
+                    (rdm-mock-argvs calls)))
+    (should (member "--at=c0" (car (last (rdm-review-test--calls-of
+                                          calls "task" "show"))))))
+  ;; Someone else's draft is not followed.
+  (rdm-review-test--with (list (rdm-review-test--draft :author "bob"))
+    (with-current-buffer (rdm-open-item rdm-review-test--task)
+      (should-not rdm-view--at)
+      (should-not header-line-format))))
+
+(ert-deftest rdm-review/region-comment-quote-and-occurrence ()
+  "A region becomes --quote verbatim; a repeated phrase gets the
+occurrence of the selected copy, a single one no --occurrence."
+  (rdm-review-test--authoring
+    (rdm-review-test--comment-on (rdm-review-test--body-range "repeat me" 2) "Second.")
+    (rdm-review-test--comment-on (rdm-review-test--body-range "repeat me" 1) "First.")
+    (rdm-review-test--comment-on (rdm-review-test--body-range "here\nand") "Span.")
+    (should (equal (rdm-review-test--calls-of calls "review" "comment")
+                   '(("review" "comment" "r1" "--quote=repeat me" "--occurrence=2"
+                      "--body=Second." "--project" "p" "--no-edit")
+                     ("review" "comment" "r1" "--quote=repeat me" "--occurrence=1"
+                      "--body=First." "--project" "p" "--no-edit")
+                     ("review" "comment" "r1" "--quote=here\nand"
+                      "--body=Span." "--project" "p" "--no-edit"))))
+    ;; No new draft was started: the open one was used.
+    (should-not (rdm-review-test--calls-of calls "review" "start"))
+    ;; The layer was re-read after each comment.
+    (should (equal rdm-view--at "c0"))))
+
+(ert-deftest rdm-review/region-occurrence-counts-body-only ()
+  "\"open\" also shows in the Status line and the Reviews section; the
+occurrence counts the body alone."
+  (rdm-review-test--authoring
+    (let ((region (rdm-view-body-region)))
+      (should (string-match-p "Status: open" (buffer-substring 1 (car region))))
+      (should (string-match-p "open" (buffer-substring (cdr region) (point-max)))))
+    (rdm-review-test--comment-on (rdm-review-test--body-range "open") "Once.")
+    (should (equal (car (rdm-review-test--calls-of calls "review" "comment"))
+                   '("review" "comment" "r1" "--quote=open" "--body=Once."
+                     "--project" "p" "--no-edit")))))
+
+(ert-deftest rdm-review/region-refusals-issue-no-call ()
+  "A region reaching outside the body, an empty one, and one starting
+inside an overlapping repeat are refused before any rdm call."
+  (rdm-review-test--authoring
+    (let ((before (length calls))
+          (body (rdm-view-body-region)))
+      (should-error (rdm-review-comment-region (1- (car body)) (+ (car body) 4))
+                    :type 'user-error)
+      (should-error (rdm-review-comment-region (- (cdr body) 3) (1+ (cdr body)))
+                    :type 'user-error)
+      (should-error (rdm-review-comment-region (car body) (car body))
+                    :type 'user-error)
+      (let ((run (rdm-review-test--body-range "aaaa")))
+        (should-error (rdm-review-comment-region (1+ (car run)) (+ 3 (car run)))
+                      :type 'user-error))
+      (should (= (length calls) before)))))
+
+(ert-deftest rdm-review/document-comment-has-no-quote ()
+  "C files a whole-document comment: no --quote, no --occurrence; an empty
+comment is refused and its compose buffer kept."
+  (rdm-review-test--authoring
+    (let ((compose (rdm-review-comment-document)))
+      (with-current-buffer compose
+        (should-error (rdm-compose-submit) :type 'user-error)
+        (should (buffer-live-p compose))
+        (insert "Whole thing.")
+        (rdm-compose-submit)))
+    (should (equal (rdm-review-test--calls-of calls "review" "comment")
+                   '(("review" "comment" "r1" "--body=Whole thing."
+                      "--project" "p" "--no-edit"))))))
+
+(ert-deftest rdm-review/first-selection-on-other-text-discarded ()
+  "Without a draft, the first comment starts one and re-renders at its
+`created_commit'; a selection made on text that differs is discarded,
+not submitted.  A selection on the draft's text then lands."
+  (rdm-review-test--with nil
+    (setq rdm-review-test--current "Committed.\nStaged only text.\n"
+          rdm-review-test--originals (list (cons "c-head" "Committed.\n")))
+    (with-current-buffer (rdm-open-item rdm-review-test--task)
+      (should-not rdm-view--at)
+      (let ((range (rdm-review-test--body-range "Staged only")))
+        (should (string-match-p
+                 "select it again"
+                 (cadr (should-error (rdm-review-comment-region (car range) (cdr range))
+                                     :type 'user-error)))))
+      (should (equal (rdm-review-test--calls-of calls "review" "start")
+                     '(("review" "start" "--on=task/t1" "--author=me" "--no-edit"
+                        "--project" "p" "--format" "json"))))
+      (should-not (rdm-review-test--calls-of calls "review" "comment"))
+      (should (equal rdm-view--at "c-head"))
+      (should (equal (rdm-view-body) "Committed.\n"))
+      (should (string-match-p "Reviewing as of c-head"
+                              (format "%s" header-line-format)))
+      (rdm-review-test--comment-on (rdm-review-test--body-range "Committed") "Ok.")
+      (should (equal (rdm-review-test--calls-of calls "review" "comment")
+                     '(("review" "comment" "r-new" "--quote=Committed" "--body=Ok."
+                        "--project" "p" "--no-edit"))))
+      (should (= 1 (length (rdm-review-test--calls-of calls "review" "start")))))))
+
+(ert-deftest rdm-review/submit-threads-verdict ()
+  "Submit offers the verdicts `describe review' declares and threads the
+chosen one; declining the confirmation writes nothing; afterwards the
+buffer is back at the current revision with the submitted review."
+  (dolist (verdict '("approve" "request-changes" "comment" "needs-discussion"))
+    (rdm-review-test--authoring
+      (setq rdm-review-test--verdicts
+            '("approve" "request-changes" "comment" "needs-discussion"))
+      (rdm-context-reset)
+      (let (offered)
+        (cl-letf (((symbol-function 'completing-read)
+                   (lambda (_prompt collection &rest _)
+                     (setq offered collection) verdict))
+                  ((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
+          (let ((before (length calls)))
+            (should-not (call-interactively #'rdm-review-submit))
+            (should-not (rdm-review-test--calls-of (nthcdr before calls)
+                                                   "review" "submit"))))
+        (should (equal offered rdm-review-test--verdicts))
+        (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) verdict))
+                  ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+          (call-interactively #'rdm-review-submit))
+        (should (equal (rdm-review-test--calls-of calls "review" "submit")
+                       (list (list "review" "submit" "r1"
+                                   (concat "--verdict=" verdict)
+                                   "--project" "p" "--no-edit"))))
+        (should-not rdm-view--at)
+        (should-not header-line-format)
+        (should (equal (rdm-view-body) rdm-review-test--current))
+        (should (string-match-p (concat "r1  me  submitted " verdict)
+                                (rdm-review-test--section)))))))
+
+(ert-deftest rdm-review/submit-without-draft-refused ()
+  "Submitting with no draft of yours is refused before any prompt."
+  (rdm-review-test--with nil
+    (with-current-buffer (rdm-open-item rdm-review-test--task)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (&rest _) (error "Unexpected prompt"))))
+        (should-error (call-interactively #'rdm-review-submit) :type 'user-error)))
+    (should-not (rdm-review-test--calls-of calls "review" "submit"))))
+
 ;;;; The transient
 
 (defun rdm-review-test--dispatch-suffixes (item)
@@ -666,7 +926,10 @@ generated status keys."
                        ("Rq" . rdm-review-requests)
                        ("Ra" . rdm-review-dispatch-close)
                        ("Rd" . rdm-review-dispatch-dismiss)
-                       ("Rv" . rdm-review-dispatch-revise)))
+                       ("Rv" . rdm-review-dispatch-revise)
+                       ("Rn" . rdm-review-dispatch-start)
+                       ("Rc" . rdm-review-dispatch-comment)
+                       ("RS" . rdm-review-dispatch-submit)))
         (should (equal (cdr (assoc key task)) command))
         (should (commandp command))
         (should-not (assoc key none)))))
@@ -696,7 +959,33 @@ generated status keys."
     (should (eq (lookup-key rdm-view-mode-map (kbd "K")) #'rdm-review-comment-at-point))
     (should (eq (lookup-key rdm-view-mode-map (kbd "M-n")) #'rdm-review-next-comment))
     (should (eq (lookup-key rdm-view-mode-map (kbd "M-p")) #'rdm-review-previous-comment))
-    (should (eq (lookup-key rdm-view-mode-map (kbd "A")) #'rdm-review-resolve))))
+    (should (eq (lookup-key rdm-view-mode-map (kbd "A")) #'rdm-review-resolve))
+    (should (eq (lookup-key rdm-view-mode-map (kbd "c")) #'rdm-review-comment-region))
+    (should (eq (lookup-key rdm-view-mode-map (kbd "C")) #'rdm-review-comment-document))
+    (should (eq (lookup-key rdm-view-mode-map (kbd "S")) #'rdm-review-submit))))
+
+(ert-deftest rdm-evil/review-authoring-keys ()
+  "Visual c comments on the selection; normal C comments on the whole
+document and gS submits the draft."
+  :tags '(evil)
+  (rdm-test-with-soft-dep 'evil
+    ;; An earlier test's transient may still hold
+    ;; `overriding-terminal-local-map' (binding its own `C'); these are
+    ;; the buffer's own bindings.
+    (with-temp-buffer
+      (let ((overriding-terminal-local-map nil))
+        (rdm-view-mode)
+        (let ((inhibit-read-only t)) (insert "Some body text.\n"))
+        (evil-local-mode 1)
+        (should (eq evil-state 'normal))
+        (should (eq (key-binding (kbd "C")) #'rdm-review-comment-document))
+        (should (eq (key-binding (kbd "gS")) #'rdm-review-submit))
+        (goto-char (point-min))
+        (evil-visual-char)
+        (should (eq evil-state 'visual))
+        (should (eq (key-binding (kbd "c")) #'rdm-review-comment-region))
+        (evil-exit-visual-state)
+        (evil-local-mode -1)))))
 
 ;;;; Against the real binary
 
@@ -778,6 +1067,120 @@ once the quote is gone, and resolving it through the package is what
         (dolist (b (buffer-list))
           (when (eq (buffer-local-value 'major-mode b) 'rdm-view-mode)
             (kill-buffer b)))))))
+
+(defmacro rdm-review-test--with-real-author (session &rest body)
+  "Run BODY against the real binary as author \"emacs-author\" in SESSION.
+Whatever BODY stages is committed afterwards and detail buffers killed."
+  (declare (indent 1) (debug t))
+  `(rdm-test-with-real
+     (setq process-environment
+           (append (list (concat "RDM_ROOT=" root) (concat "RDM_PROJECT=" project))
+                   process-environment))
+     (setq rdm-bin bin)
+     (let ((rdm-session ,session)
+           (rdm-review-author "emacs-author")
+           (kill-ring nil))
+       (unwind-protect (progn ,@body)
+         (ignore-errors (rdm-call-sync 'commit :message "emacs: review authoring"))
+         (dolist (b (buffer-list))
+           (when (memq (buffer-local-value 'major-mode b)
+                       '(rdm-view-mode rdm-compose-mode))
+             (kill-buffer b)))))))
+
+(defun rdm-review-test--plan-head (root)
+  "The HEAD commit of the plan repo ROOT."
+  (let ((default-directory (file-name-as-directory root)))
+    (car (process-lines "git" "rev-parse" "HEAD"))))
+
+(ert-deftest rdm-review/real-first-selection-anchors-at-created-commit ()
+  "With a staged body edit, the first selection starts a draft whose
+`created_commit' is the plan repo's HEAD: the buffer re-renders at it
+and says so, the selection made on the staged-only text is discarded
+without a comment, and a selection on the committed text then lands."
+  (rdm-review-test--with-real-author "emacs-real-author-staged"
+    (let* ((slug "emacs-author-staged-task")
+           (item (list :kind 'task :slug slug))
+           (committed "Committed line one.\nCommitted line two.\n")
+           (staged (concat committed "Staged only line.\n")))
+      (rdm-call-sync 'task-create slug :title "Authored from Emacs" :stdin committed)
+      (rdm-call-sync 'commit :message "emacs: seed an authored task")
+      (rdm-call-sync 'task-update slug :body staged)
+      (with-current-buffer (rdm-open-item item)
+        (should (equal (rdm-view-body) staged))
+        (should-not rdm-view--at)
+        (let ((range (rdm-review-test--body-range "Staged only")))
+          (should-error (rdm-review-comment-region (car range) (cdr range))
+                        :type 'user-error))
+        (let ((id (plist-get rdm-review--draft :id))
+              (head (rdm-review-test--plan-head root)))
+          (should id)
+          (should (equal rdm-view--at head))
+          (should (equal (rdm-view-body) committed))
+          (should (string-match-p (concat "Reviewing as of " (substring head 0 12))
+                                  (format "%s" header-line-format)))
+          (should (string-match-p (concat "^Revision: " head) (buffer-string)))
+          (let ((review (rdm-call-sync 'review-show id)))
+            (should (equal (plist-get review :created_commit) head))
+            (should (equal (plist-get review :author) "emacs-author"))
+            (should (= 0 (length (plist-get review :comments)))))
+          (rdm-review-test--comment-on (rdm-review-test--body-range "line two")
+                                       "Say more.")
+          (let ((comments (plist-get (rdm-call-sync 'review-show id) :comments)))
+            (should (= 1 (length comments)))
+            (should (equal (plist-get (plist-get (aref comments 0) :anchor) :quote)
+                           "line two")))
+          ;; The overlay layer shows the new comment on the draft's text.
+          (let ((ov (rdm-review-test--overlay-of 1)))
+            (should ov)
+            (should (equal (rdm-review-test--text ov) "line two"))))))))
+
+(ert-deftest rdm-review/real-repeat-anchor-and-request-changes ()
+  "Commenting on the second of two copies of a string anchors there:
+`review show' reports it resolved at that copy's byte offset.
+Submitting request-changes through the package, with the verdict picked
+from those core declares, lands in `review requests' and the requests
+picker."
+  (rdm-review-test--with-real-author "emacs-real-author-repeat"
+    (let* ((slug "emacs-author-repeat-task")
+           (item (list :kind 'task :slug slug))
+           (body "café alpha one\nsecond alpha two\n"))
+      (rdm-call-sync 'task-create slug :title "Repeated words" :stdin body)
+      (rdm-call-sync 'commit :message "emacs: seed a repeated-words task")
+      (with-current-buffer (rdm-open-item item)
+        (let ((id (rdm-review-start)))
+          (should (equal rdm-view--at (rdm-review-test--plan-head root)))
+          (should (equal (rdm-view-body) body))
+          (rdm-review-test--comment-on (rdm-review-test--body-range "alpha" 2)
+                                       "This one.")
+          (let* ((comment (aref (plist-get (rdm-call-sync 'review-show id) :comments) 0))
+                 (res (plist-get comment :resolution))
+                 (second (nth 1 (rdm-review-occurrence-starts body "alpha"))))
+            (should (equal (plist-get res :state) "resolved"))
+            (should (= (plist-get res :range_start)
+                       (string-bytes (substring body 0 second))))
+            (should (= (plist-get res :range_end)
+                       (string-bytes (substring body 0 (+ second 5))))))
+          (let (offered)
+            (cl-letf (((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _)
+                         (setq offered collection)
+                         "request-changes"))
+                      ((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
+              (call-interactively #'rdm-review-submit))
+            (should (member "request-changes" offered)))
+          (let ((review (rdm-call-sync 'review-show id)))
+            (should (equal (plist-get review :state) "submitted"))
+            (should (equal (plist-get review :verdict) "request-changes")))
+          (should (seq-find (lambda (r) (equal (plist-get r :id) id))
+                            (rdm-call-sync 'review-requests)))
+          (should (seq-find (lambda (c)
+                              (equal (plist-get (rdm-item-from c) :review-id) id))
+                            (rdm-review-request-candidates)))
+          (should-not rdm-view--at)
+          (should-not rdm-review--draft)
+          (should (string-match-p (concat (regexp-quote id)
+                                          "  emacs-author  submitted request-changes")
+                                  (rdm-review-test--section))))))))
 
 (provide 'rdm-review-test)
 ;;; rdm-review-test.el ends here

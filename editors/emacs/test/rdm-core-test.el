@@ -293,7 +293,21 @@ the root and project are only passed to rdm and stay safe."
                     "--project" "p"))))
   (should (equal (rdm-argv 'review-update "r1" :state "dismissed" :project "p")
                  '(("review" "update" "r1" "--state=dismissed"
-                    "--project" "p")))))
+                    "--project" "p"))))
+  ;; Authoring: `review start' is read as JSON (and passes --no-edit
+  ;; explicitly); comment and submit are writes.  A quote starting with
+  ;; `-' stays joined to its flag.
+  (should (equal (rdm-argv 'review-start :on "task/t" :author "me" :no-edit t
+                           :project "p")
+                 '(("review" "start" "--on=task/t" "--author=me" "--no-edit"
+                    "--project" "p" "--format" "json"))))
+  (should (equal (rdm-argv 'review-comment "r1" :quote "- item" :occurrence 2
+                           :body "b" :project "p")
+                 '(("review" "comment" "r1" "--quote=- item" "--occurrence=2"
+                    "--body=b" "--project" "p" "--no-edit"))))
+  (should (equal (rdm-argv 'review-submit "r1" :verdict "approve" :project "p")
+                 '(("review" "submit" "r1" "--verdict=approve"
+                    "--project" "p" "--no-edit")))))
 
 (ert-deftest rdm-argv/body-stdin-exclusive ()
   "Both :body and :stdin, a missing project or an unknown action errors."

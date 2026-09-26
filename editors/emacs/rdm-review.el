@@ -1,11 +1,12 @@
-;;; rdm-review.el --- Review overlays, the requests queue and resolution  -*- lexical-binding: t; -*-
+;;; rdm-review.el --- Review overlays, the requests queue, resolution and authoring  -*- lexical-binding: t; -*-
 
 ;; This file is not part of GNU Emacs.
 
 ;;; Commentary:
 
-;; The reviewee side of rdm's document reviews, layered over the detail
-;; buffers of rdm-view.el.
+;; rdm's document reviews, layered over the detail buffers of rdm-view.el:
+;; the reviewee side (overlays, requests, resolution) and the reviewer
+;; side (comments anchored to selections, verdicts).
 ;;
 ;; - After every render of a roadmap, phase or task, `rdm review list
 ;;   --on <target>' is read and each shown review's comments are laid over
@@ -36,10 +37,24 @@
 ;;   `rdm-review-revise-function' (default: copy the command); the
 ;;   package never starts an agent.
 ;;
+;; - Authoring: `rdm-review-comment-region' turns the selected body text
+;;   into an anchored comment (`--quote' is the text; when it occurs more
+;;   than once in the body, `--occurrence' is its index among the
+;;   non-overlapping occurrences, as `rdm review comment --help'
+;;   documents), `rdm-review-comment-document' files a whole-document
+;;   comment, and `rdm-review-submit' submits with a verdict read from
+;;   `rdm describe review'.  Comments go into your draft review
+;;   (`rdm-review-author'), which `rdm-review-start' or the first comment
+;;   starts.  A detail buffer of an item with your draft is shown as of
+;;   the draft's `created_commit', the text rdm locates quotes in, and its
+;;   header line says so; a selection made on other text is discarded.
+;;
 ;; Keys in a detail buffer: `K' describes the comment at point, `M-n' /
-;; `M-p' move between comments and `A' resolves one (evil bindings are in
-;; rdm-evil.el); the *Review* group of `rdm-dispatch' offers show,
-;; requests, close, dismiss and revise.
+;; `M-p' move between comments, `A' resolves one, `c' comments on the
+;; region, `C' on the whole document and `S' submits the draft (evil
+;; bindings are in rdm-evil.el); the *Review* group of `rdm-dispatch'
+;; offers show, requests, close, dismiss, revise, start, comment and
+;; submit.
 
 ;;; Code:
 
@@ -49,6 +64,7 @@
 (require 'rdm-core)
 (require 'rdm-view)
 (require 'rdm-transient)
+(require 'rdm-compose)
 (require 'rdm-pick)
 
 (defgroup rdm-review nil
@@ -79,6 +95,16 @@ task/SLUG), `:project' and `:command' (see
 `rdm-review-revise-command-format').  The default copies the command
 to the kill ring.  Set it to hand the command to an agent session."
   :type 'function)
+
+(defcustom rdm-review-author nil
+  "The author the package reviews as, or nil for rdm's own default.
+nil means `RDM_REVIEW_AUTHOR', then `USER', from the buffer's
+`process-environment' -- the default `rdm review start --help'
+documents.  The same value is passed as `--author' both when a draft
+is started and when the item's drafts are listed, so a draft counts as
+yours exactly when rdm recorded this author on it.  When nothing
+resolves, `--author' is omitted and no existing draft is adopted."
+  :type '(choice (const :tag "RDM_REVIEW_AUTHOR, then USER" nil) string))
 
 (defface rdm-review-resolved
   '((((background dark)) :background "#3a3a18" :extend nil)
@@ -417,9 +443,14 @@ Each commit is read once; a failed read maps to nil."
             (save-excursion (rdm-review--insert-section))))))))
 
 (defun rdm-review--after-render ()
-  "Lay this detail buffer's reviews over its fresh render."
+  "Lay this detail buffer's reviews over its fresh render.
+A current-revision render of an item with an own draft review is
+re-rendered at the draft's `created_commit' first (see
+`rdm-review--follow-draft')."
   (rdm-review--clear)
-  (rdm-review--apply))
+  (unless (rdm-review--follow-draft)
+    (rdm-review--show-draft)
+    (rdm-review--apply)))
 
 (defun rdm-review--setup ()
   "Attach the review layer to this detail buffer's renders."
@@ -708,6 +739,242 @@ No process is started here.  Returns the function's value."
                  :command (format rdm-review-revise-command-format
                                   (plist-get review :id)))))
 
+;;;; Authoring
+
+(defvar-local rdm-review--draft nil
+  "The own draft review this detail buffer is authoring, or nil.
+A plist: `:id', `:commit' (its `created_commit') and `:previous-at'
+\(the revision the buffer showed before it followed the draft).")
+
+(defun rdm-review--author ()
+  "The author passed as `--author', or nil (see `rdm-review-author')."
+  (or (rdm--nonempty rdm-review-author)
+      (rdm--nonempty (getenv "RDM_REVIEW_AUTHOR"))
+      (rdm--nonempty (getenv "USER"))))
+
+(defun rdm-review--require-view ()
+  "Signal a `user-error' unless this is a detail buffer of a reviewable item."
+  (unless (and (derived-mode-p 'rdm-view-mode) rdm-view--item)
+    (user-error "rdm: not in an rdm detail buffer"))
+  (rdm-review-item-target rdm-view--item))
+
+(defun rdm-review-own-draft (item)
+  "The newest draft review of ITEM by `rdm-review--author', or nil.
+Read with `rdm review list --on <target> --state draft --author <a>';
+nil without an author."
+  (when-let* ((author (rdm-review--author)))
+    (car (sort (append (rdm-call-sync 'review-list
+                                      :on (rdm-review-item-target item)
+                                      :state "draft" :author author)
+                       nil)
+               (lambda (a b) (string> (or (plist-get a :created) "")
+                                      (or (plist-get b :created) "")))))))
+
+(defun rdm-review--short (commit)
+  "COMMIT abbreviated for display."
+  (if (> (length commit) 12) (substring commit 0 12) commit))
+
+(defun rdm-review--show-draft ()
+  "Show in the header line which revision this buffer's draft anchors to."
+  (setq header-line-format
+        (when-let* ((draft rdm-review--draft))
+          (let ((commit (plist-get draft :commit)))
+            (format "Reviewing as of %s  (draft %s)"
+                    (if (rdm--nonempty commit) (rdm-review--short commit)
+                      "the current text")
+                    (plist-get draft :id))))))
+
+(defun rdm-review--adopt (review)
+  "Make REVIEW, an own draft's JSON, this buffer's draft and show its text.
+The buffer is re-rendered at REVIEW's `created_commit' -- the text rdm
+locates quotes in -- unless it already shows that revision."
+  (let ((commit (rdm--nonempty (plist-get review :created_commit)))
+        (previous (if rdm-review--draft
+                      (plist-get rdm-review--draft :previous-at)
+                    rdm-view--at)))
+    (setq rdm-review--draft (list :id (plist-get review :id) :commit commit
+                                  :previous-at previous))
+    (if (and commit (not (equal rdm-view--at commit)))
+        (progn (setq rdm-view--at commit)
+               (rdm-view--revert))
+      (rdm-review--show-draft))))
+
+(defun rdm-review--follow-draft ()
+  "Re-render a current-revision render at its own draft's `created_commit'.
+Returns non-nil when it re-rendered.  Runs from the render hook; the
+re-render has a revision, so it does not look again."
+  (let ((item rdm-view--item))
+    (when (and rdm-review-in-views (not rdm-view--at)
+               (memq (plist-get item :kind) '(roadmap phase task)))
+      (let ((draft (condition-case err
+                       (rdm-review-own-draft item)
+                     (error (message "rdm: drafts of %s: %s"
+                                     (rdm-item-identifier item)
+                                     (error-message-string err))
+                            nil))))
+        (setq rdm-review--draft nil)
+        (when draft
+          (rdm-review--adopt draft)
+          rdm-view--at)))))
+
+(defun rdm-review--begin ()
+  "Start a draft review of this buffer's item and adopt it; return its id."
+  (let* ((item rdm-view--item)
+         (review (rdm-call-sync 'review-start
+                                :on (rdm-review-item-target item)
+                                :author (rdm-review--author)
+                                :no-edit t)))
+    (rdm-review--adopt review)
+    (rdm--after-write item (format "review %s started" (plist-get review :id)))
+    (plist-get review :id)))
+
+(defun rdm-review--ensure-draft ()
+  "This buffer's draft id: its own draft, an existing one, else a new one.
+Either way the buffer ends up showing the draft's `created_commit'."
+  (cond
+   (rdm-review--draft
+    (rdm-review--adopt (list :id (plist-get rdm-review--draft :id)
+                             :created_commit (plist-get rdm-review--draft :commit)))
+    (plist-get rdm-review--draft :id))
+   ((when-let* ((own (rdm-review-own-draft rdm-view--item)))
+      (rdm-review--adopt own)
+      (plist-get own :id)))
+   (t (rdm-review--begin))))
+
+(defun rdm-review-start ()
+  "Start (or resume) your draft review of this detail buffer's item.
+The buffer then shows the item as of the draft's `created_commit' and
+says so in its header line.  Returns the draft's id."
+  (interactive)
+  (rdm-review--require-view)
+  (let ((id (rdm-review--ensure-draft)))
+    (message "rdm: reviewing %s in draft %s" (rdm-item-identifier rdm-view--item) id)
+    id))
+
+(defun rdm-review-occurrence-starts (body quoted)
+  "The starts of the non-overlapping occurrences of QUOTED in BODY.
+Counted as `rdm review comment --occurrence' documents: scanning from
+the start, each match resumes after its own end."
+  (let ((start 0) found pos)
+    (unless (string-empty-p quoted)
+      (while (setq pos (string-search quoted body start))
+        (push pos found)
+        (setq start (+ pos (length quoted)))))
+    (nreverse found)))
+
+(defun rdm-review-occurrence (body quoted offset)
+  "The `--occurrence' of QUOTED at character OFFSET of BODY, or nil.
+nil when QUOTED occurs once (no `--occurrence' is needed); else its
+1-based index among the non-overlapping occurrences.  A `user-error'
+when OFFSET is not one of them (it starts inside an overlapping repeat)."
+  (let* ((starts (rdm-review-occurrence-starts body quoted))
+         (index (seq-position starts offset)))
+    (unless index
+      (user-error "rdm: this selection starts inside a repeat of the same \
+text, which rdm cannot anchor to; select from the start of the repeat"))
+    (when (cdr starts) (1+ index))))
+
+(defun rdm-review--authored (what)
+  "Report WHAT was staged on this buffer's item and redraw its reviews."
+  (rdm--after-write rdm-view--item what)
+  (when rdm-view--at (rdm-review-refresh)))
+
+(defun rdm-review--compose (id description &rest args)
+  "Compose a comment on review ID; submitting runs `review comment'.
+DESCRIPTION heads the compose buffer; ARGS are the anchor's `rdm-argv'
+arguments (none for a whole-document comment)."
+  (let ((view (current-buffer)))
+    (rdm-compose
+     ""
+     (lambda (text)
+       (when (string-blank-p text)
+         (user-error "rdm: a review comment needs a body (or abort it)"))
+       (prog1 (apply #'rdm-call-sync 'review-comment id
+                     (append args (list :body text)))
+         (when (buffer-live-p view)
+           (with-current-buffer view
+             (rdm-review--authored (format "comment on review %s" id))))))
+     description)))
+
+(defun rdm-review--region-args ()
+  "The active region as a list (BEG END), or a `user-error'."
+  (if (use-region-p)
+      (list (region-beginning) (region-end))
+    (user-error "rdm: select the text to comment on (C comments on the \
+whole document)")))
+
+(defun rdm-review-comment-region (beg end)
+  "Comment on the body text between BEG and END, in your draft review.
+The text is the comment's `--quote'; when it occurs more than once in
+the body, its `--occurrence' is passed too.  Without a draft one is
+started (or yours adopted) and the buffer re-rendered as of its
+`created_commit'; if that text differs from what the selection was
+made on, the selection is discarded and you are asked to select again.
+The comment itself is typed in a compose buffer.  Returns that buffer."
+  (interactive (rdm-review--region-args))
+  (rdm-review--require-view)
+  (let ((region (rdm-view-body-region)))
+    (unless (and region (< beg end) (<= (car region) beg) (<= end (cdr region)))
+      (user-error "rdm: select text inside the body to comment on it"))
+    (let* ((quoted (buffer-substring-no-properties beg end))
+           (shown (rdm-view-body))
+           (occurrence (rdm-review-occurrence shown quoted (- beg (car region)))))
+      (deactivate-mark)
+      (let ((id (rdm-review--ensure-draft)))
+        (unless (equal (rdm-view-body) shown)
+          (user-error "rdm: now showing the text as of %s, which review %s \
+anchors to; your selection was made on other text, so select it again"
+                      (rdm-review--short (or rdm-view--at "?")) id))
+        (rdm-review--compose
+         id
+         (format "Comment in review %s on \"%s\""
+                 id (truncate-string-to-width
+                     (replace-regexp-in-string "\n" " " quoted) 40 nil nil t))
+         :quote quoted :occurrence occurrence)))))
+
+(defun rdm-review-comment-document ()
+  "Comment on the whole document in your draft review (started if needed).
+Returns the compose buffer."
+  (interactive)
+  (rdm-review--require-view)
+  (let ((id (rdm-review--ensure-draft)))
+    (rdm-review--compose id (format "Whole-document comment in review %s" id))))
+
+(defun rdm-review--draft-id ()
+  "This buffer's draft id, else your draft on its item, else a `user-error'."
+  (rdm-review--require-view)
+  (or (plist-get rdm-review--draft :id)
+      (when-let* ((own (rdm-review-own-draft rdm-view--item)))
+        (rdm-review--adopt own)
+        (plist-get own :id))
+      (user-error "rdm: no draft review of yours on %s; comment first"
+                  (rdm-item-identifier rdm-view--item))))
+
+(defun rdm-review-read-verdict ()
+  "Read a verdict from those `rdm describe review' declares."
+  (completing-read "Verdict: "
+                   (or (rdm-enum-values 'review "verdict")
+                       (user-error "rdm: `rdm describe review' declares no verdicts"))
+                   nil t))
+
+(defun rdm-review-submit (verdict)
+  "Submit your draft review of this buffer's item with VERDICT.
+Submission is terminal, so it is confirmed first; declining returns
+nil.  Afterwards the buffer shows the revision it showed before the
+draft, with the submitted review in its Reviews section.  Returns
+rdm's output."
+  (interactive (progn (rdm-review--draft-id) (list (rdm-review-read-verdict))))
+  (let ((id (rdm-review--draft-id)))
+    (when (y-or-n-p (format "Submit review %s of %s as %s? " id
+                            (rdm-item-identifier rdm-view--item) verdict))
+      (prog1 (rdm-call-sync 'review-submit id :verdict verdict)
+        (setq rdm-view--at (plist-get rdm-review--draft :previous-at)
+              rdm-review--draft nil)
+        (rdm-review--show-draft)
+        (let ((at rdm-view--at))
+          (rdm--after-write rdm-view--item (format "review %s → %s" id verdict))
+          (when at (revert-buffer)))))))
+
 ;;;; rdm-dispatch suffixes
 
 (defun rdm-review-dispatch-show ()
@@ -730,12 +997,41 @@ No process is started here.  Returns the function's value."
   (interactive)
   (rdm-review-revise (rdm-review-read-review (rdm-dispatch--item))))
 
+(defun rdm-review--dispatch-view ()
+  "The detail buffer of the `rdm-dispatch' item: this one, else opened."
+  (let ((item (rdm-dispatch--item)))
+    (if (rdm-review--shows-p item)
+        (current-buffer)
+      (rdm-open-item item))))
+
+(defun rdm-review-dispatch-start ()
+  "Start (or resume) your draft review of the `rdm-dispatch' item."
+  (interactive)
+  (with-current-buffer (rdm-review--dispatch-view)
+    (rdm-review-start)))
+
+(defun rdm-review-dispatch-comment ()
+  "Comment on the whole `rdm-dispatch' item in your draft review."
+  (interactive)
+  (with-current-buffer (rdm-review--dispatch-view)
+    (rdm-review-comment-document)))
+
+(defun rdm-review-dispatch-submit ()
+  "Submit your draft review of the `rdm-dispatch' item with a verdict."
+  (interactive)
+  (with-current-buffer (rdm-review--dispatch-view)
+    (rdm-review--draft-id)
+    (rdm-review-submit (rdm-review-read-verdict))))
+
 ;;;; Keys
 
 (keymap-set rdm-view-mode-map "K" #'rdm-review-comment-at-point)
 (keymap-set rdm-view-mode-map "M-n" #'rdm-review-next-comment)
 (keymap-set rdm-view-mode-map "M-p" #'rdm-review-previous-comment)
 (keymap-set rdm-view-mode-map "A" #'rdm-review-resolve)
+(keymap-set rdm-view-mode-map "c" #'rdm-review-comment-region)
+(keymap-set rdm-view-mode-map "C" #'rdm-review-comment-document)
+(keymap-set rdm-view-mode-map "S" #'rdm-review-submit)
 
 (provide 'rdm-review)
 ;;; rdm-review.el ends here

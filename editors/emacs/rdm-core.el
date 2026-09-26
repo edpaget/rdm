@@ -28,8 +28,9 @@
 ;;   carrying rdm's stderr.  Every process runs with `RDM_SESSION' set to
 ;;   `rdm-session-id', so the plan-repo writes made from one Emacs form one
 ;;   changeset that `rdm status' / `rdm commit' / `rdm discard' act on.
-;; - `rdm-status-values' reads the status values core declares for a kind
-;;   from `rdm describe'.
+;; - `rdm-enum-values' reads the values core declares for one field of a
+;;   kind from `rdm describe' (`rdm-status-values' is its `status' case),
+;;   so the package holds no copy of a core enumeration.
 
 ;;; Code:
 
@@ -91,8 +92,8 @@ write was made from, which need not be in the item's worktree."
 (defvar rdm--context-cache (make-hash-table :test #'equal)
   "Resolved contexts, keyed by `rdm--context-key'.")
 
-(defvar rdm--status-cache (make-hash-table :test #'equal)
-  "Status values from `rdm describe', keyed by (BINARY . KIND).")
+(defvar rdm--enum-cache (make-hash-table :test #'equal)
+  "Field values from `rdm describe', keyed by (BINARY KIND FIELD).")
 
 ;;;; Errors
 
@@ -285,6 +286,9 @@ process and signals an error.  Errors are re-signalled."
     (review-show      :argv ("review" "show")    :kind read)
     (review-requests  :argv ("review" "requests") :kind read)
     (review-update    :argv ("review" "update")  :kind text)
+    (review-start     :argv ("review" "start")   :kind read)
+    (review-comment   :argv ("review" "comment") :kind write)
+    (review-submit    :argv ("review" "submit")  :kind write)
     (done-line        :argv ("hook" "done-line") :kind text :project nil))
   "rdm actions: symbol, then the subcommand words, `:kind' and `:project'.
 `:kind' is `read' (JSON output, `--format json'), `write' (`--no-edit',
@@ -403,10 +407,10 @@ resolves."
         (puthash key (rdm--resolve dir) rdm--context-cache))))
 
 (defun rdm-context-reset ()
-  "Forget every cached rdm context and `rdm describe' status list."
+  "Forget every cached rdm context and `rdm describe' value list."
   (interactive)
   (clrhash rdm--context-cache)
-  (clrhash rdm--status-cache))
+  (clrhash rdm--enum-cache))
 
 ;;;; Calling rdm with a resolved context
 
@@ -431,20 +435,26 @@ CALLBACK receives the result and ON-ERROR any error; see `rdm-run'."
   "Run ACTION with ARGS in this buffer's context and return the result."
   (apply #'rdm-run-sync (rdm--call-args action args)))
 
-(defun rdm-status-values (kind)
-  "The status values rdm declares for KIND (`phase' or `task'), in order.
-Read from the `status' field of `rdm describe KIND' and cached per rdm
-binary until `rdm-context-reset'.  nil for a kind without a status."
-  (let ((key (cons (plist-get (rdm-context) :rdm-bin) kind)))
-    (pcase (gethash key rdm--status-cache 'unset)
+(defun rdm-enum-values (kind field)
+  "The values rdm declares for FIELD (a string) of KIND (a symbol), in order.
+Read from the `enum_values' of FIELD in `rdm describe KIND' and cached
+per rdm binary until `rdm-context-reset'.  nil for a field without
+declared values, or one KIND does not have."
+  (let ((key (list (plist-get (rdm-context) :rdm-bin) kind field)))
+    (pcase (gethash key rdm--enum-cache 'unset)
       ('unset
        (let* ((fields (plist-get (rdm-call-sync 'describe (symbol-name kind))
                                  :fields))
-              (status (seq-find (lambda (f) (equal (plist-get f :name) "status"))
-                                fields))
-              (values (append (plist-get status :enum_values) nil)))
-         (puthash key values rdm--status-cache)))
+              (found (seq-find (lambda (f) (equal (plist-get f :name) field))
+                               fields))
+              (values (append (plist-get found :enum_values) nil)))
+         (puthash key values rdm--enum-cache)))
       (cached cached))))
+
+(defun rdm-status-values (kind)
+  "The status values rdm declares for KIND (`phase' or `task'), in order.
+The `status' case of `rdm-enum-values'.  nil for a kind without a status."
+  (rdm-enum-values kind "status"))
 
 (defun rdm-worktree-item ()
   "The rdm item whose worktree holds `default-directory', or nil."

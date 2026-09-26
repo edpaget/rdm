@@ -24,8 +24,10 @@
 ;;   (a phase item's parent), else a picked one.  This group works with
 ;;   no item.
 ;; - Review: show one of the item's reviews, pick from the requests
-;;   queue, close a review as addressed, dismiss one, and hand one to the
-;;   revision loop (rdm-review.el).  Offered only with an item.
+;;   queue, close a review as addressed, dismiss one, hand one to the
+;;   revision loop, and author your own: start a draft, comment on the
+;;   whole document, submit with a verdict (rdm-review.el).  Offered
+;;   only with an item.
 ;; - Plan repo: `rdm status', `rdm commit' and `rdm discard --force' over
 ;;   this Emacs's changeset (every rdm process the package runs carries
 ;;   `RDM_SESSION'; see `rdm-session').  This group works with no item.
@@ -42,7 +44,8 @@
 ;; without the transient.  Further suffixes attach with
 ;; `transient-append-suffix': the Edit group's suffixes have keys "T"
 ;; and "B", the Create group's "+r", "+p" and "+t", the Review group's
-;; "Rs", "Rq", "Ra", "Rd" and "Rv", and the Plan repo group's last suffix
+;; "Rs", "Rq", "Ra", "Rd", "Rv", "Rn", "Rc" and "RS", and the Plan repo
+;; group's last suffix
 ;; key "D".  A new fixed key belongs in
 ;; `rdm-dispatch--fixed-keys' so generated status keys avoid it.
 
@@ -65,6 +68,9 @@
 (autoload 'rdm-review-dispatch-close "rdm-review" nil t)
 (autoload 'rdm-review-dispatch-dismiss "rdm-review" nil t)
 (autoload 'rdm-review-dispatch-revise "rdm-review" nil t)
+(autoload 'rdm-review-dispatch-start "rdm-review" nil t)
+(autoload 'rdm-review-dispatch-comment "rdm-review" nil t)
+(autoload 'rdm-review-dispatch-submit "rdm-review" nil t)
 
 (defcustom rdm-confirm-statuses '("done" "wont-fix")
   "Status values `rdm-set-status' asks to confirm before writing."
@@ -408,7 +414,10 @@ only the Create and Plan repo groups are offered."
     ("Rq" "Requests queue" rdm-review-requests)
     ("Ra" "Close as addressed" rdm-review-dispatch-close)
     ("Rd" "Dismiss" rdm-review-dispatch-dismiss)
-    ("Rv" "Revise (copy command)" rdm-review-dispatch-revise)]]
+    ("Rv" "Revise (copy command)" rdm-review-dispatch-revise)
+    ("Rn" "Start draft review" rdm-review-dispatch-start)
+    ("Rc" "Comment on document" rdm-review-dispatch-comment)
+    ("RS" "Submit with verdict" rdm-review-dispatch-submit)]]
   [["Create"
     ("+r" "Roadmap" rdm-create-roadmap)
     ("+p" "Phase" rdm-dispatch-create-phase)

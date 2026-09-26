@@ -23,6 +23,16 @@
 ;;   ]c   next review comment
 ;;   [c   previous review comment
 ;;   gA   mark the review comment at point addressed or won't-fix
+;;   C    comment on the whole document in your draft review
+;;   gS   submit your draft review with a verdict (confirmed)
+;;
+;; and in visual state
+;;
+;;   c    comment on the selected body text in your draft review (the
+;;        selection is the comment's quote)
+;;
+;; The first comment starts a draft when you have none, and the buffer
+;; then shows the item as of the draft's `created_commit'.
 ;;
 ;; `rdm-compose-mode' (rdm-compose.el) starts in insert state; in normal
 ;; state `ZZ' submits the buffer and `ZQ' aborts it, as in evil-collection's
@@ -57,7 +67,11 @@
     (kbd "K") #'rdm-review-comment-at-point
     (kbd "]c") #'rdm-review-next-comment
     (kbd "[c") #'rdm-review-previous-comment
-    (kbd "gA") #'rdm-review-resolve)
+    (kbd "gA") #'rdm-review-resolve
+    (kbd "C") #'rdm-review-comment-document
+    (kbd "gS") #'rdm-review-submit)
+  (evil-define-key* 'visual rdm-view-mode-map
+    (kbd "c") #'rdm-review-comment-region)
   (evil-set-initial-state 'rdm-compose-mode 'insert)
   (evil-define-key* 'normal rdm-compose-mode-map
     (kbd "ZZ") #'rdm-compose-submit
