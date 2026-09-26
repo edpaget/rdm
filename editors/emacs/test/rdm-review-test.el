@@ -49,6 +49,9 @@
 (defvar rdm-review-test--update-error nil
   "When non-nil, the message the mocked `review update' fails with.")
 
+(defvar rdm-review-test--failing nil
+  "Reads the mock fails: `list' for `review list', `at' for `show --at'.")
+
 (defun rdm-review-test--flag (argv flag)
   "The value of `--FLAG=value' in ARGV, or nil."
   (let ((prefix (concat "--" flag "=")))
@@ -60,6 +63,11 @@
   "A canned reply to ARGV."
   (let ((at (rdm-review-test--flag argv "at")))
     (pcase argv
+      ((guard (and at (memq 'at rdm-review-test--failing)))
+       (cons :mock-error (format "no such revision: %s" at)))
+      ((and `("review" "list" . ,_)
+            (guard (memq 'list rdm-review-test--failing)))
+       (cons :mock-error "unrecognized subcommand 'list'"))
       (`(,(or "task" "phase") "show" ,_ . ,_)
        (list :title "T" :status "open"
              :body (if at
@@ -87,6 +95,7 @@ Detail buffers are killed afterwards."
          (rdm-review-test--reviews ,reviews)
          (rdm-review-test--requests nil)
          (rdm-review-test--update-error nil)
+         (rdm-review-test--failing nil)
          (kill-ring nil))
      (rdm-mock-with-runner #'rdm-review-test--reply
        (ignore calls contexts)
@@ -346,6 +355,69 @@ a range starting inside a character or past the end is un-placed."
       (let ((rdm-review-shown-states '("dismissed")))
         (rdm-review-refresh)
         (should (= (length (rdm-review-test--overlays)) 1))))))
+
+;;;; Failed reads
+
+(defmacro rdm-review-test--capturing-messages (var &rest body)
+  "Run BODY with `message' output pushed onto VAR, newest first."
+  (declare (indent 1) (debug t))
+  `(cl-letf (((symbol-function 'message)
+              (lambda (fmt &rest args)
+                (when fmt (push (apply #'format fmt args) ,var)))))
+     ,@body))
+
+(ert-deftest rdm-review/review-list-error-still-renders ()
+  "A failing `review list' leaves the detail buffer rendered with its
+body, no overlays and no Reviews section, and reports the error."
+  (rdm-review-test--with
+      (list (rdm-review-test--review
+             "r1" rdm-review-test--task-target
+             (list (rdm-review-test--comment 1 "café" 17 22 :body "current"))))
+    (setq rdm-review-test--failing '(list))
+    (let (messages)
+      (rdm-review-test--capturing-messages messages
+        (let ((buf (rdm-open-item rdm-review-test--task)))
+          (should (bufferp buf))
+          (with-current-buffer buf
+            (should (eq major-mode 'rdm-view-mode))
+            (should (equal (rdm-view-body) rdm-review-test--body))
+            (should-not (rdm-review-test--overlays))
+            (should-not (string-match-p "\nReviews\n" (buffer-string)))
+            ;; A revert takes the same path and still renders.
+            (revert-buffer)
+            (should (equal (rdm-view-body) rdm-review-test--body))
+            (should-not (rdm-review-test--overlays)))))
+      (should (seq-some (lambda (m)
+                          (string-match-p
+                           "rdm: reviews of .*unrecognized subcommand 'list'" m))
+                        messages)))))
+
+(ert-deftest rdm-review/original-read-error-falls-back-to-quote ()
+  "A failing `show --at' read leaves the original unknown: an `original'
+anchor whose quote is still displayed is placed by quote search, one
+whose quote is gone is listed un-placed, and nothing is signalled."
+  (let ((new "A much longer new intro.\nSecond line with target words here.\n"))
+    (rdm-review-test--with
+        (list (rdm-review-test--review
+               "r1" rdm-review-test--task-target
+               (list (rdm-review-test--comment 1 "target words" 22 34)
+                     (rdm-review-test--comment 2 "Gone text" 40 49))))
+      (setq rdm-review-test--current new
+            rdm-review-test--originals
+            (list (cons "c0" "Old.\nSecond line with target words here.\n"))
+            rdm-review-test--failing '(at))
+      (with-current-buffer (rdm-open-item rdm-review-test--task)
+        (should (equal (rdm-view-body) new))
+        (let ((one (rdm-review-test--overlay-of 1)))
+          (should one)
+          (should (equal (rdm-review-test--text one) "target words"))
+          (should (equal (rdm-review-test--faces one) '(rdm-review-resolved))))
+        (should-not (rdm-review-test--overlay-of 2))
+        (should (string-match-p "#2 open  un-placed (resolved) \"Gone text\""
+                                (rdm-review-test--section)))
+        ;; The failing read was attempted.
+        (should (seq-some (lambda (argv) (member "--at=c0" argv))
+                          (rdm-mock-argvs calls)))))))
 
 ;;;; Resolution
 
