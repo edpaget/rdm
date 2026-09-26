@@ -1449,28 +1449,26 @@ Rules:
   `true` / `false` / `null` (never a bare string) from these three values.
 - `refuted` is always `false`: a refuted finding never reaches the writer,
   because `survives()` already dropped it.
-- `anchor` is the CLOSED `PERSIST_ANCHOR_STATES` vocabulary — the fourth
-  disposition state a persisted comment can be in, distinguishing "this
-  finding never asked for a file anchor" from "this finding asked and the
-  request was dropped at build time" (both of which land as a bare
-  whole-document comment otherwise indistinguishable from one another):
+- `anchor` is the CLOSED `PERSIST_ANCHOR_STATES` vocabulary and records the
+  anchor the writer REQUESTED:
   - `path` — change target, `--path` + `--quote` both emitted (the normal
     anchored case)
   - `quote` — non-change (plan-repo document) target, bare `--quote` emitted
     (the normal case there)
   - `wholeDocumentIntended` — the finding never carried a `quote` at all
-  - `degraded` — the finding carried a `quote` but the requested anchor was
-    dropped, either at BUILD time (`persistAnchorFor`'s `reason` —
-    `path-missing` or `outside-hunk`) or at RUN time (a build-time-valid
-    `--path`/`--quote` pair the real binary still refused once the ladder
-    ran — see "The all-anchors-degraded signal (AC4)" below). Both cases
-    persist the SAME `anchor: degraded` header; the header does not
-    distinguish which stage caused it, only the ladder's own runtime tally
-    does.
+  - `degraded` — the finding carried a `quote` but the writer dropped the
+    requested anchor at BUILD time (`persistAnchorFor`'s `reason` —
+    `path-missing` or `outside-hunk`)
 
   Computed by `persistAnchorState(finding, target, opts)`, which re-derives the
   SAME decision `persistAnchorFor` makes for the writer, so the header can
-  never disagree with what the emitted `rdm review comment` line actually did.
+  never disagree with the anchor the emitted `rdm review comment` line asked
+  for. It is NOT authoritative for whether the anchor landed: a `path` request
+  core refuses at run time keeps its `anchor: path` header. **The comment's
+  stored `anchor_state` field is authoritative** — `whole-document` for a
+  `wholeDocumentIntended` finding, the writer's own reason for a build-time
+  drop, and core's reason (with the requested file in `intended_path`) for a
+  run-time refusal (see [`change-reviews.md`](change-reviews.md#degraded-and-whole-document-comments)).
 - Every header VALUE is single-line (embedded newlines are collapsed to spaces),
   so the inverse parser can be line-based.
 - `formatCommentBody` and its inverse `parseCommentHeader` live side by side in
@@ -1608,16 +1606,21 @@ the emitted ladder itself, for the one line that carries both `--path` and
 per-error, for everything else.**
 
 For a change-target, path-anchored comment (`anchor.path !== null` —
-`persistAnchorFor` already validated the path at build time), the emitted
-`review comment --path … --quote …` line is wrapped in a shell `if`: on
-refusal — for ANY reason, `QuoteOutsideChangedHunks`, `ChangePathNotInRevision`,
-`ChangePathNotAFile`, or anything else the real binary reports for that
-specific line — the SAME comment is re-emitted, in the SAME script, whole-document
-(`--path`/`--quote` both dropped), header-rewritten to `anchor: degraded`, and
-tallied into a run-time counter (`RDM_PERSIST_RUNTIME_DEGRADED`). This is a
-mechanical property of the emitted bytes, not something a caller has to
-remember to do — see "The all-anchors-degraded signal (AC4)" below for how the
-tally reaches the ladder's own `anchorsDegraded=` line.
+`persistAnchorFor` already validated the path at build time), the ladder emits
+ONE command: `review comment --path … --quote … --on-anchor-failure
+whole-document`. When core refuses the anchor — `QuoteOutsideChangedHunks`,
+`QuoteNotFound`, `QuoteAmbiguous`, `QuoteOccurrenceOutOfRange`,
+`ChangePathNotInRevision`, `ChangePathNotAFile`, `ChangePathNotLinkable` or
+`ChangeHeadNotInSource` — core itself stores the comment whole-document, with
+its own reason in the stored `anchor_state` and the requested path in
+`intended_path`, and exits 0. Any other failure (usage, store, git, source
+discovery) still exits nonzero and aborts the ladder through the line's
+`|| exit 1`. The command prints one JSON line on stdout; the ladder reads its
+`anchor_state` (present only on a refusal) and, when set, tallies the comment
+into a run-time counter (`RDM_PERSIST_RUNTIME_DEGRADED`). This is a mechanical
+property of the emitted bytes, not something a caller has to remember to do —
+see "The all-anchors-degraded signal (AC4)" below for how the tally reaches the
+ladder's own `anchorsDegraded=` line.
 
 Every other refusal is still CALLER PROSE, stated in the skill that runs the
 commands (the engine builds the ladder but never runs it), each rung naming
@@ -1633,10 +1636,9 @@ FINDING, then a whole-document write, never a third:
 | `review start` refused the target | **park** — never choose a different target |
 | anything else | **NEVER blanket-fallback** — stop and report the failure |
 
-The three change-target `--path`+`--quote` refusals
-(`QuoteOutsideChangedHunks`/`ChangePathNotInRevision`/`ChangePathNotAFile`)
-used to be caller-prose rungs here too; they are now the mechanical case above
-and no longer need a caller to remember them.
+Every anchor refusal of a change-target `--path`+`--quote` line is the
+mechanical case above and needs no caller rung; the table applies to the
+plan-repo document target's bare `--quote` line, which keeps `|| exit 1`.
 
 The last remaining "anything else" row is load-bearing: a Git or
 source-identity failure (a `review source:` error, a source-repo discovery
@@ -1672,7 +1674,7 @@ correct anchor and the array is empty.
 
 This is the BUILD-TIME half of degradation only — a finding whose declared
 `--path` passes every build-time check can still be refused once the ladder
-actually runs (see the mechanical retry described above and "The
+actually runs (see the fall-back mode described above and "The
 all-anchors-degraded signal (AC4)" below), which `persistPreDegradedAnchors`
 cannot see, because nothing has run yet when it is computed.
 
@@ -1703,7 +1705,7 @@ to tell the two apart WITHOUT parsing `persistDegradationClause`'s prose.
 for a `--quote` anchor and `degraded` is how many were dropped before a single
 command ran (the same count the prose clause composes). It cannot see a
 run-time refusal, because nothing has run yet when it is computed — see the
-mechanical retry above.
+fall-back mode above.
 
 The REAL, post-run result — build-time drops PLUS run-time ones — has exactly
 one authoritative source: **the persist ladder's own trailing line**,
@@ -1711,7 +1713,7 @@ one authoritative source: **the persist ladder's own trailing line**,
 rest of the ladder, this line's VALUE is a genuine shell computation, not baked
 in at build time: the ladder combines the build-time `degraded` count (a
 literal integer, known when the command list is built) with
-`RDM_PERSIST_RUNTIME_DEGRADED` (the counter the mechanical retry above
+`RDM_PERSIST_RUNTIME_DEGRADED` (the counter the fall-back mode above
 increments), and buckets the total against the build-time `requested` count
 into `all` / `partial` / `none` with a shell `if`/`elif`/`else`. `all` fires
 ONLY when at least one anchor was requested and every single one degraded,
@@ -1722,8 +1724,8 @@ not all degraded, prints `partial` or `none`.
 The build-time-only `persistDegradationClause` above is baked into the
 `--body` text before `review start` even runs, so it cannot see a run-time
 refusal — a review whose every anchor degraded at run time used to persist
-with a clean-looking summary and no trace beyond each affected comment's
-`anchor: degraded` header. Once the block above has computed
+with a clean-looking summary and no trace beyond each affected comment's own
+record of it. Once the block above has computed
 `RDM_PERSIST_TOTAL_DEGRADED` (build-time plus run-time), and while the review
 is still a DRAFT — before `review submit` — the ladder appends one
 whole-document comment whenever that total is greater than zero:
@@ -1751,9 +1753,9 @@ degraded anchor is not, by itself, a park signal: a "you missed an edit
 here" finding necessarily quotes a line the diff did not change, and a "you
 missed editing this file entirely" finding names a real, in-range file the
 diff never modifies at all — both are `Error::QuoteOutsideChangedHunks`
-(one Display arm per case; see rule 1 below), `rdm review comment --path`
-correctly refuses either anchor, and the ladder's mechanical retry lands it
-whole-document with nothing lost — `anchorsDegraded=all` or `partial` in
+(`anchor_state: outside-hunk`), `rdm review comment --path` correctly refuses
+either anchor, and the ladder's fall-back mode stores it whole-document with
+the file it meant in `intended_path`, nothing lost — `anchorsDegraded=all` or `partial` in
 that case describes a LOSSLESS fallback, not a problem. `anchorsDegraded`
 could not previously distinguish those benign cases from a systemic one (a
 path that does not exist at the reviewed head at all, a quote absent from
@@ -1766,60 +1768,23 @@ two rules:
 
 1. **A systemic cause always requires a park.** Any BUILD-TIME degradation
    (`persistPreDegradedAnchors` non-empty — no derivable path, or an empty
-   reviewed range) is systemic by construction. Any RUN-TIME refusal whose
-   captured stderr does NOT match either pattern in
-   `ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS` — i.e. anything other than
-   `QuoteOutsideChangedHunks` (a path absent at the reviewed head —
-   `ChangePathNotInRevision`; a path naming a directory or submodule —
-   `ChangePathNotAFile`; a quote absent from the document entirely —
-   `QuoteNotFound`; or an ambiguous quote occurring more than once —
-   `QuoteAmbiguous`/`QuoteOccurrenceOutOfRange`) — is also systemic.
-   `ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS` and the pure helper
-   `isAnchorRefusalBenign(stderrText)` are the single definition of this
-   check.
+   reviewed range) is systemic by construction. A RUN-TIME refusal is
+   classified by the `anchor_state` VALUE core reported for it in
+   `--on-anchor-failure whole-document`'s JSON line: only `outside-hunk` is
+   benign (`ANCHOR_REASONS_BENIGN`); every other reason — `path-missing` (a
+   path absent at the reviewed head), `path-not-a-file`, `path-not-linkable`,
+   `quote-not-found`, `ambiguous`, `occurrence-out-of-range`,
+   `head-not-in-source`, and any value this build does not know — is
+   systemic. `ANCHOR_REASONS_BENIGN` and the pure helper
+   `isAnchorReasonBenign(reason)` are the single definition of this check.
 
-   **The classification is NOT a plain substring search** (plan-review
-   2026-09-23-1613-a415). An earlier version matched any stderr containing
-   the substring `"not touch"`, on the theory that it is the one thing both
-   `QuoteOutsideChangedHunks` Display arms share
-   (`rdm-core/src/error.rs:877-886`). That is unsafe: several SYSTEMIC
-   refusals this call site can produce echo the finder's own
-   caller-controlled `--quote`/`--path` text back into their own message —
-   `Error::QuoteNotFound` prints `quote {quote:?} not found ...`,
-   `Error::QuoteAmbiguous` echoes the quote in its occurrence list, and
-   `Error::ChangePathNotInRevision` echoes the path — so a finder whose
-   quote or path happened to contain the words "not touch" (an ordinary
-   thing to write about code, e.g. "this code does not touch the validation
-   path") would misclassify a genuinely systemic refusal as benign, purely
-   because of caller-supplied text nowhere near the real cause.
-
-   Each entry in `ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS` instead requires a
-   FIXED, rdm-authored substring unique to one `QuoteOutsideChangedHunks`
-   Display arm, anchored at END OF LINE, so it can only match text rdm
-   itself appends after every interpolated field:
-   `quote text inside a changed hunk \(nearest: lines [0-9]+-[0-9]+\), or
-   omit --path/--quote for a whole-change comment$` for the `Some(nearest)`
-   arm (`"quote text inside a changed hunk (nearest: lines "` appears
-   nowhere else in `error.rs`; the hunk line numbers rdm interpolates there
-   are digits it computes itself from real git hunk data, never finder
-   text), and `comment on a file the change modifies, or omit
-   --path/--quote for a whole-change comment$` for the `None` arm
-   (`"comment on a file the change modifies"` likewise appears nowhere
-   else). Neither pattern is the shared trailing clause `"or omit
-   --path/--quote for a whole-change comment"` BY ITSELF — that clause is
-   also how `ChangePathNotInRevision`, `ChangePathNotAFile` and
-   `ChangePathNotLinkable` end, so matching it alone would misclassify a
-   path absent at the reviewed head as benign regardless of any caller data
-   at all. `{quote:?}` is Rust's `Debug` format, which escapes embedded
-   quotes and newlines, so caller text can never terminate a line early and
-   forge either pattern's required end-of-line tail.
-
-   `ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS` is a POSIX-ERE-compatible array
-   (each entry escapes its one literal `(`/`)` pair and uses a `[0-9]+`
-   class — no JS-only regex syntax), so the SAME array drives both
-   `isAnchorRefusalBenign` (via `new RegExp(patterns.join('|'), 'm')`) and
-   the `grep -qE` alternation the emitted ladder runs — the two cannot
-   silently diverge.
+   The classification is by enum value, never by the refusal's prose. A
+   refusal message can echo the finder's own caller-controlled `--quote` or
+   `--path` (`QuoteNotFound` prints the quote), so matching message text
+   needed carefully anchored patterns to stay unspoofable. The JSON line never
+   carries that text — the refusal goes to stderr — and every caller-supplied
+   string in it is JSON-escaped, so no quote or path can forge the
+   `"anchor_state"` key the ladder reads.
 2. **A `blocking` finding losing its anchor always requires a park, even for
    the benign cause.** Severity is known statically when the shell is
    generated, so this branches at JS code-gen time — a `severity: 'blocking'`
@@ -1839,31 +1804,31 @@ same class of comment, and neither loses anything by landing
 whole-document.
 
 Mechanically: a per-finding `mktemp` scratch file
-(`RDM_PERSIST_ANCHOR_STDERR`, same hygiene as `RDM_PERSIST_START_JSON` —
-created with `mktemp`, `|| exit 1`, removed after use) captures the
-path-anchored `review comment` line's stderr; on refusal it is `cat`ted back
-to stderr (so nothing already visible to the operator is lost) and then
+(`RDM_PERSIST_COMMENT_JSON`, same hygiene as `RDM_PERSIST_START_JSON` —
+created with `mktemp`, `|| exit 1`, removed after use, including on the
+failure path) captures the path-anchored `review comment` line's JSON line;
+`sed` reads its `anchor_state` into `RDM_PERSIST_ANCHOR_REASON`. When that is
+non-empty the comment is counted into `RDM_PERSIST_RUNTIME_DEGRADED` and then
 either unconditionally bumps the running `RDM_PERSIST_PARK_REQUIRED` counter
-(a `blocking` finding) or does so only `if grep -qE '<pattern1>$|<pattern2>$'
-"$RDM_PERSIST_ANCHOR_STDERR"; then :; else RDM_PERSIST_PARK_REQUIRED=...; fi`
-(everything else), where `<pattern1>` and `<pattern2>` are
-`ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS` joined with `|` and shell-quoted as
-ONE argument — the exact same array `isAnchorRefusalBenign` tests against,
-so the JS helper and the emitted shell cannot silently diverge.
-`RDM_PERSIST_PARK_REQUIRED` is seeded from the build-time degradation count
-before the survivor loop runs. Once the loop finishes, the ladder buckets
-the counter into `RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes` (`-gt 0`) or `=no`,
-and prints it as the trailing `anchorsParkRequired=<yes|no>` line —
-immediately after the existing `anchorsDegraded=<all|partial|none>` line,
-which keeps printing exactly as before.
+(a `blocking` finding) or does so through `case "$RDM_PERSIST_ANCHOR_REASON"
+in outside-hunk) : ;; *) RDM_PERSIST_PARK_REQUIRED=... ;; esac` (everything
+else), whose pattern is `ANCHOR_REASONS_BENIGN` joined with `|` — the exact
+same array `isAnchorReasonBenign` tests, so the JS helper and the emitted shell
+cannot silently diverge. `RDM_PERSIST_PARK_REQUIRED` is seeded from the
+build-time degradation count before the survivor loop runs. Once the loop
+finishes, the ladder buckets the counter into
+`RDM_PERSIST_ANCHORS_PARK_REQUIRED=yes` (`-gt 0`) or `=no`, and prints it as
+the trailing `anchorsParkRequired=<yes|no>` line — immediately after the
+existing `anchorsDegraded=<all|partial|none>` line, which keeps printing
+exactly as before.
 
-There is no structured error surface for `review comment` — every refusal
-exits 1 through `rdm-cli/src/main.rs`'s single `process::exit(1)`, and the
-command supports no `--format json` error output — so this stderr-pattern
-match is the only available machine-distinguishing signal between the benign
-and systemic cases. This is a real, stated limitation of the design, not an
-oversight: if a future `rdm-core` change adds a structured error surface for
-`review comment`, this classification should move onto it.
+A build-time drop and a whole-document-by-design finding are recorded
+directly: `review comment --anchor-state <reason> [--intended-path <path>]`
+(`path-missing`, or `outside-hunk` with the file the finding meant for an
+empty range) and `review comment --anchor-state whole-document`. The writer's
+own vocabulary, `PERSIST_DEGRADED_REASONS`, is exactly those build-time reasons
+(`path-missing`, `outside-hunk`, `start-fallback`); every run-time reason is
+core's to name.
 
 `rdm-wf-review-refute-fix.js`'s standalone code-review path (the driver
 region, not the stamped block) ALSO attaches `persistDegradedSummary`'s

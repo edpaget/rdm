@@ -1915,91 +1915,41 @@ function isChangeTarget(ref) {
   return typeof ref === 'string' && /^change\//.test(ref.trim());
 }
 
-// The CLOSED vocabulary of reasons an attempted anchor did not land. Each one
-// maps to exactly one rdm-core error surface and exactly one bounded rung of
-// the prompt's anchoring ladder (prose the caller skills carry):
+// The BUILD-TIME vocabulary: the reasons THIS WRITER decides, before a single
+// command runs, that an anchor a finding asked for cannot even be attempted.
+// Each is an `AnchorState` value (rdm-core/src/model.rs — the single source of
+// truth for the whole vocabulary) that the writer records on the comment with
+// `review comment --anchor-state <reason>`:
 //
-//   quote-not-found          Error::QuoteNotFound
-//   ambiguous                Error::QuoteAmbiguous, still failing after --occurrence 1
-//   occurrence-out-of-range  Error::QuoteOccurrenceOutOfRange
-//   outside-hunk             Error::QuoteOutsideChangedHunks
-//   path-missing             Error::ChangePathNotInRevision
-//   path-not-a-file          Error::ChangePathNotAFile
-//   path-not-applicable      the CLI's "--path only applies to a change review"
-//   start-fallback           `review start` was refused and the fallback ladder ran
-//   other                    anything else — NEVER retried with flags stripped
-const PERSIST_DEGRADED_REASONS = [
-  'quote-not-found',
-  'ambiguous',
-  'occurrence-out-of-range',
-  'outside-hunk',
-  'path-missing',
-  'path-not-a-file',
-  'path-not-applicable',
-  'start-fallback',
-  'other',
-];
+//   path-missing    no usable repo-relative path could be derived for a change target
+//   outside-hunk    the reviewed range is empty (`noCode`), so no hunk can hold an anchor
+//   start-fallback  `review start` was refused and the fallback ladder ran
+//
+// Every RUN-TIME refusal (a quote not found or outside every touched hunk, a
+// path absent at the reviewed head, …) is rdm-core's to name: the path-anchored
+// line runs `review comment --on-anchor-failure whole-document`, and core
+// records its own reason in the comment's stored `anchor_state` and reports it
+// in the one JSON line that command prints. This writer never re-derives it.
+const PERSIST_DEGRADED_REASONS = ['path-missing', 'outside-hunk', 'start-fallback'];
 
-// ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS / isAnchorRefusalBenign(stderrText) —
-// phase-46 (anchor-degraded-park-by-cause), reworked per plan-review
-// 2026-09-23-1613-a415. A plain substring search for a shared marker (the
-// original approach: `stderrText.indexOf('not touch')`) is UNSAFE, because a
-// systemic refusal can ECHO caller-controlled text — the finder's own
-// `--quote`/`--path` value — back into its own message:
-// Error::QuoteNotFound prints `quote {quote:?} not found ...`,
-// Error::QuoteAmbiguous echoes the quote in its occurrence list, and
-// Error::ChangePathNotInRevision echoes the path. A finder whose quote
-// happens to contain the literal text "not touch" (plausible: "does not
-// touch the validation path" is an ordinary thing to write about code) but
-// that does not exist in the file at all — a genuinely SYSTEMIC refusal —
-// would misclassify as benign.
+// ANCHOR_REASONS_BENIGN / isAnchorReasonBenign(reason) — phase-46
+// (anchor-degraded-park-by-cause), now keyed by ENUM VALUE. A run-time refusal
+// is classified by the `anchor_state` core reported for it, read out of
+// `--on-anchor-failure whole-document`'s JSON line — never by matching the
+// refusal's prose, which can echo the finder's own quote or path back.
 //
-// Each pattern below instead requires a FIXED, rdm-authored substring that
-// is unique to one Display arm of Error::QuoteOutsideChangedHunks
-// (rdm-core/src/error.rs:877-886), anchored at END OF LINE (`$`), so it can
-// only match text rdm itself appends after every interpolated field:
+// Only `outside-hunk` is benign: the quote exists, in a real file at the
+// reviewed head, but on a line (or in a file) the change does not touch — the
+// finding is still recorded against the file it meant (`intended_path`).
+// EVERY other reason is systemic, INCLUDING a value this build does not know
+// (a newer rdm's reason must never be waved through as benign).
 //
-//   - Some(nearest) arm: "...quote text inside a changed hunk (nearest:
-//     lines {hs}-{he}), or omit --path/--quote for a whole-change comment"
-//     — "quote text inside a changed hunk (nearest: lines " appears NOWHERE
-//     else in error.rs; {hs}/{he} are hunk line numbers rdm computes itself
-//     from real git hunk data (digits only, never finder text).
-//   - None arm: "...comment on a file the change modifies, or omit
-//     --path/--quote for a whole-change comment" — "comment on a file the
-//     change modifies" likewise appears nowhere else.
-//
-// Neither pattern is the shared trailing clause "or omit --path/--quote for
-// a whole-change comment" BY ITSELF — that clause is also how three
-// SYSTEMIC refusals this call site can produce end
-// (Error::ChangePathNotInRevision, Error::ChangePathNotAFile,
-// Error::ChangePathNotLinkable), so matching it alone would misclassify a
-// path absent at the reviewed head as benign, independent of any caller
-// data at all. Checked against every other refusal this call site can
-// produce (the three above, plus QuoteNotFound, QuoteAmbiguous,
-// QuoteOccurrenceOutOfRange and ChangeHeadNotInSource): none contain either
-// pattern.
-//
-// There is no structured error surface for `review comment` — every refusal
-// exits 1 through rdm-cli/src/main.rs's single `process::exit(1)`, and the
-// command supports no `--format json` error output at all — so this
-// stderr-pattern match is the only available machine-distinguishing signal
-// between the two benign cases above (a quote on an untouched line, or a
-// quote in a real, in-range file the change never modifies at all) and a
-// systemic one. This is a real limitation, not an oversight (see
-// docs/workflow-schemas.md); if rdm-core ever grows a structured error
-// surface for `review comment`, this classification should move onto it.
-//
-// Every pattern is POSIX-ERE-compatible (only a literal `(`/`)` escaped and
-// a `[0-9]+` class — no JS-only regex syntax), so this SAME array drives
-// both `isAnchorRefusalBenign` here AND the `grep -qE` alternation
-// `persistReviewCommands` emits below — the two cannot silently diverge.
-const ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS = [
-  'quote text inside a changed hunk \\(nearest: lines [0-9]+-[0-9]+\\), or omit --path/--quote for a whole-change comment$',
-  'comment on a file the change modifies, or omit --path/--quote for a whole-change comment$',
-];
-function isAnchorRefusalBenign(stderrText) {
-  if (typeof stderrText !== 'string') return false;
-  return new RegExp(ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS.join('|'), 'm').test(stderrText);
+// The same array is joined with `|` into the `case` pattern
+// `persistReviewCommands` emits below, so this function and the emitted shell
+// cannot silently diverge.
+const ANCHOR_REASONS_BENIGN = ['outside-hunk'];
+function isAnchorReasonBenign(reason) {
+  return typeof reason === 'string' && ANCHOR_REASONS_BENIGN.indexOf(reason) !== -1;
 }
 
 // The persist ACK round-trip is GONE, and with it PERSIST_ACK_SCHEMA,
@@ -2067,7 +2017,10 @@ function persistScopeValue(f) {
 // `anchorState` is one of `PERSIST_ANCHOR_STATES`, normally computed by the
 // caller via `persistAnchorState(finding, target, opts)` — the writer in
 // `persistReviewCommands` does exactly that, so the header can never disagree
-// with what was actually emitted. When omitted (a caller with no target/opts
+// with the anchor the command REQUESTED. It records the request, not the
+// result: whether a requested anchor actually degraded at run time is the
+// comment's stored `anchor_state` field (set by rdm-core), which is
+// authoritative. When omitted (a caller with no target/opts
 // context, e.g. a direct unit test), it falls back to the quote-presence-only
 // half of that same rule: `'quote'` when the finding carries a quote,
 // `'wholeDocumentIntended'` when it does not. That fallback can never produce
@@ -2348,27 +2301,36 @@ function pathFromLocation(location) {
 // a resilience net for a finder whose prompt output lags, not the primary
 // source any more.
 //
-// Returns `{ quote, path, reason }`: `quote` is whether `--quote` is emitted,
-// `path` the `--path` value (or null), and `reason` a PERSIST_DEGRADED_REASONS
-// entry when an anchor the finding ASKED for was dropped at build time.
+// Returns `{ quote, path, reason, intendedPath }`: `quote` is whether
+// `--quote` is emitted, `path` the `--path` value (or null), `reason` a
+// PERSIST_DEGRADED_REASONS entry when an anchor the finding ASKED for was
+// dropped at build time, and `intendedPath` the validated candidate path
+// whenever `opts.pathAnchors === true` on a change target — kept even when an
+// empty range forces `reason: 'outside-hunk'`, so that build-time drop still
+// records the file the finding meant (`--intended-path`). It is null for
+// `path-missing` (there is no usable path to record) and on a non-change
+// target.
 function persistAnchorFor(finding, target, opts) {
   const o = opts || {};
-  if (!persistHasQuote(finding)) return { quote: false, path: null, reason: null };
+  if (!persistHasQuote(finding)) return { quote: false, path: null, reason: null, intendedPath: null };
   // An EMPTY COMMITTED RANGE has no hunks, so no `--path` anchor can ever land.
   const emptyRange = !!(o.source && o.source.noCode === true);
-  let path = null;
-  if (o.pathAnchors === true && !emptyRange) {
+  let candidate = null;
+  if (o.pathAnchors === true) {
     const f = finding || {};
     const declared = typeof f.path === 'string' ? stripPathLineSuffix(f.path.trim()) : '';
-    path = declared !== '' && isRepoRelativePath(declared) ? declared : pathFromLocation(f.location);
+    candidate = declared !== '' && isRepoRelativePath(declared) ? declared : pathFromLocation(f.location);
   }
-  if (!isChangeTarget(target)) return { quote: true, path: path, reason: null };
-  if (path !== null) return { quote: true, path: path, reason: null };
+  const path = emptyRange ? null : candidate;
+  if (!isChangeTarget(target)) return { quote: true, path: path, reason: null, intendedPath: null };
+  if (path !== null) return { quote: true, path: path, reason: null, intendedPath: candidate };
   // `outside-hunk` when the range is empty (every hunk is missing, which is
   // what the emptyRange prose already calls it); `path-missing` when no usable
   // repo-relative path could be derived from either `finding.path` or
   // `finding.location`.
-  return { quote: false, path: null, reason: emptyRange ? 'outside-hunk' : 'path-missing' };
+  return emptyRange
+    ? { quote: false, path: null, reason: 'outside-hunk', intendedPath: candidate }
+    : { quote: false, path: null, reason: 'path-missing', intendedPath: null };
 }
 
 // PERSIST_ANCHOR_STATES — the closed vocabulary for a persisted comment's
@@ -2378,7 +2340,7 @@ const PERSIST_ANCHOR_STATES = ['path', 'quote', 'wholeDocumentIntended', 'degrad
 
 // persistAnchorState(finding, target, opts) — the `anchor` header value for
 // ONE finding, derived from the SAME `persistAnchorFor` decision the writer
-// emits, so the header can never disagree with what was actually written:
+// emits, so the header can never disagree with the anchor that was REQUESTED:
 //
 //   'path'                  — change target, `--path` + `--quote` both emitted
 //   'quote'                 — non-change target, bare `--quote` emitted
@@ -2386,6 +2348,10 @@ const PERSIST_ANCHOR_STATES = ['path', 'quote', 'wholeDocumentIntended', 'degrad
 //   'degraded'              — a `quote` was requested but the anchor it asked
 //                              for was dropped at build time
 //                              (`persistAnchorFor`'s `reason`)
+//
+// A `'path'` request core refuses at run time keeps its `'path'` header: the
+// comment's stored `anchor_state` field, not this header, is authoritative for
+// whether the anchor degraded.
 //
 // Pure and total.
 function persistAnchorState(finding, target, opts) {
@@ -2541,14 +2507,14 @@ function persistReviewCommands(result, target, cfg, opts) {
   // second half: `review start` can also "succeed" into output this ladder cannot
   // read an id out of, and an empty id must never reach the comment loop.
   //
-  // ONE NAMED EXCEPTION: a path-anchored `review comment` line (below) is the
-  // CONDITION of an `if`, never `|| exit 1`ed directly — a build-time-valid
-  // `--path`/`--quote` pair can still be refused at RUN TIME (a quote outside a
-  // hunk the change touches, a path outside the reviewed range), and that must
-  // retry whole-document rather than abort the whole ladder. Both branches of
-  // that `if` are still fully guarded: the `else` arm's fallback command carries
-  // its own `|| exit 1`, so the line as a WHOLE can still only ever succeed or
-  // abort the ladder — it just tries a second shape before giving up.
+  // No exception, including the path-anchored `review comment` line (below): a
+  // build-time-valid `--path`/`--quote` pair can still be refused at RUN TIME (a
+  // quote outside a hunk the change touches, a path absent at the reviewed
+  // head), but that line asks core for `--on-anchor-failure whole-document`, so
+  // an anchor refusal is STORED (whole-document, with core's reason) and exits
+  // 0 rather than failing. Any other failure — usage, store, git, discovery —
+  // still exits nonzero, and its `|| exit 1` aborts the ladder as everywhere
+  // else.
   const cmds = [];
   if (o.source) {
     cmds.push('cd ' + shellQuote(o.source.path) + ' || exit 1');
@@ -2632,77 +2598,78 @@ function persistReviewCommands(result, target, cfg, opts) {
     const anchorPath = anchor.path;
     // persistAnchorState re-derives the SAME persistAnchorFor decision above
     // (cheap and pure) rather than duplicating its branching here, so the
-    // header can never disagree with what the lines below actually emit —
-    // for the primary attempt. The path-anchored branch below additionally
-    // pre-builds a `degraded` header variant for the runtime-fallback body,
-    // since which one actually gets persisted is decided by the shell, not
-    // by this function.
+    // header always names the anchor this command REQUESTS. Whether a
+    // path-anchored request degraded at run time is recorded by core in the
+    // comment's stored `anchor_state`, not in this header.
     let cmd = persistCapture('RDM_PERSIST_BODY', formatCommentBody(f, persistAnchorState(f, target, o))) + '\n';
     if (anchor.quote) {
       cmd += persistCapture('RDM_PERSIST_QUOTE', f.quote) + '\n';
       if (anchorPath !== null) {
-        // PATH-ANCHORED COMMENT, RETRIED AT RUN TIME. `persistAnchorFor`
-        // already validated `anchorPath` at BUILD TIME, but only the real
-        // binary knows whether `f.quote` sits inside a hunk the change
-        // actually touches (`outside-hunk`) or whether `anchorPath` is in
-        // the reviewed range at all — a build-time-valid pair can still be
-        // REFUSED once this line actually runs. So it is never `|| exit 1`ed
-        // straight away: on refusal the SAME comment is re-emitted
-        // whole-document, header-rewritten to `anchor: degraded`
-        // (RDM_PERSIST_BODY_DEGRADED), and tallied into
-        // RDM_PERSIST_RUNTIME_DEGRADED so the tail `anchorsDegraded=` line
-        // below reports the REAL result, not just the build-time one.
+        // PATH-ANCHORED COMMENT, ONE COMMAND. `persistAnchorFor` already
+        // validated `anchorPath` at BUILD TIME, but only rdm-core knows whether
+        // `f.quote` sits inside a hunk the change actually touches or whether
+        // `anchorPath` exists at the reviewed head. `--on-anchor-failure
+        // whole-document` makes core store a refused anchor whole-document
+        // with its own reason (`anchor_state`) and this path as the intended
+        // path, exit 0, and print ONE JSON line on stdout — captured in a
+        // per-finding mktemp scratch file (same hygiene as
+        // RDM_PERSIST_START_JSON above: `mktemp`, `|| exit 1`, removed after
+        // use, including on the failure path).
         cmd += persistCapture('RDM_PERSIST_PATH', anchorPath) + '\n';
-        cmd += persistCapture('RDM_PERSIST_BODY_DEGRADED', formatCommentBody(f, 'degraded')) + '\n';
-        // RDM_PERSIST_ANCHOR_STDERR — a per-finding mktemp scratch file (same
-        // hygiene as RDM_PERSIST_START_JSON above: created with `mktemp`,
-        // `|| exit 1`, removed after use), capturing this line's stderr so
-        // the refusal can be classified (phase-46: anchor-degraded-park-by-cause).
-        // `cat`ted back to stderr on refusal so nothing already visible to the
-        // operator is lost.
-        cmd += 'RDM_PERSIST_ANCHOR_STDERR=$(mktemp "${TMPDIR:-/tmp}/rdm-persist-anchor-stderr.XXXXXX") || exit 1\n';
+        cmd += 'RDM_PERSIST_COMMENT_JSON=$(mktemp "${TMPDIR:-/tmp}/rdm-persist-comment.XXXXXX") || exit 1\n';
         cmd +=
-          'if ' +
-          bin +
-          ' review comment "$RDM_REVIEW_ID" --path "$RDM_PERSIST_PATH" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' +
-          proj +
-          ' < /dev/null 2>"$RDM_PERSIST_ANCHOR_STDERR"; then\n' +
-          'rm -f "$RDM_PERSIST_ANCHOR_STDERR"\n' +
-          ':\n' +
-          'else\n' +
-          'cat "$RDM_PERSIST_ANCHOR_STDERR" >&2\n' +
           IND +
           bin +
-          ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY_DEGRADED" --no-edit' +
+          ' review comment "$RDM_REVIEW_ID" --path "$RDM_PERSIST_PATH" --quote "$RDM_PERSIST_QUOTE" --on-anchor-failure whole-document --body "$RDM_PERSIST_BODY" --no-edit' +
           proj +
-          ' < /dev/null || { rm -f "$RDM_PERSIST_ANCHOR_STDERR"; exit 1; }\n' +
+          ' > "$RDM_PERSIST_COMMENT_JSON" < /dev/null || { rm -f "$RDM_PERSIST_COMMENT_JSON"; exit 1; }\n';
+        // The reported `anchor_state` is present ONLY when the anchor was
+        // refused (an anchored comment's line carries none). The refusal TEXT,
+        // which can echo the finder's quote, goes to stderr and never into this
+        // line, and every caller-supplied string value in the line is
+        // JSON-escaped — so no quote or path can forge an `"anchor_state"` key
+        // for this `sed` to match.
+        cmd +=
+          'RDM_PERSIST_ANCHOR_REASON=$(sed -n \'s/.*"anchor_state"[[:space:]]*:[[:space:]]*"\\([^"]*\\)".*/\\1/p\' "$RDM_PERSIST_COMMENT_JSON" | head -n 1)\n';
+        cmd += 'rm -f "$RDM_PERSIST_COMMENT_JSON"\n';
+        cmd +=
+          'if [ -n "$RDM_PERSIST_ANCHOR_REASON" ]; then\n' +
+          // Tallied into RDM_PERSIST_RUNTIME_DEGRADED so the tail
+          // `anchorsDegraded=` line reports the REAL result, not just the
+          // build-time one.
           'RDM_PERSIST_RUNTIME_DEGRADED=$((RDM_PERSIST_RUNTIME_DEGRADED + 1))\n' +
           // A `blocking` finding losing its anchor always requires a park,
-          // even for an otherwise-benign cause (a quote on an untouched
-          // line, or naming a real, in-range file the diff never modifies
-          // at all — both QuoteOutsideChangedHunks) — decided here at JS
-          // code-gen time (severity is known statically), not by a shell
-          // conditional. Everything else contributes to the park counter
-          // only when the captured stderr does NOT match either benign
-          // tail pattern — i.e. a systemic cause (a path absent at the
-          // reviewed head, a quote absent from the document entirely, or
-          // an ambiguous quote). `grep -qE` with the alternation of BOTH
-          // ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS entries, joined by `|` and
-          // shell-quoted as ONE argument — the exact same array
-          // isAnchorRefusalBenign tests against — so this emitted shell and
-          // isAnchorRefusalBenign cannot silently diverge.
+          // even for the benign cause — decided here at JS code-gen time
+          // (severity is known statically), not by a shell conditional.
+          // Everything else parks only when core's reported reason is NOT in
+          // ANCHOR_REASONS_BENIGN — the same array isAnchorReasonBenign tests,
+          // joined into this `case` pattern, so the two cannot diverge. An
+          // unknown reason falls to `*` and parks.
           (f.severity === 'blocking'
             ? 'RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1))\n'
-            : 'if grep -qE ' +
-              shellQuote(ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS.join('|')) +
-              ' "$RDM_PERSIST_ANCHOR_STDERR"; then :; else RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1)); fi\n') +
-          'rm -f "$RDM_PERSIST_ANCHOR_STDERR"\n' +
+            : 'case "$RDM_PERSIST_ANCHOR_REASON" in ' +
+              ANCHOR_REASONS_BENIGN.join('|') +
+              ') : ;; *) RDM_PERSIST_PARK_REQUIRED=$((RDM_PERSIST_PARK_REQUIRED + 1)) ;; esac\n') +
           'fi';
       } else {
         cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --quote "$RDM_PERSIST_QUOTE" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' < /dev/null || exit 1';
       }
+    } else if (anchor.reason !== null) {
+      // BUILD-TIME DROP: the writer itself decided the requested anchor cannot
+      // be attempted, so it records its own reason — and, for an empty range,
+      // the file the finding meant.
+      cmd +=
+        IND +
+        bin +
+        ' review comment "$RDM_REVIEW_ID" --anchor-state ' +
+        anchor.reason +
+        (anchor.intendedPath !== null ? ' --intended-path ' + shellQuote(anchor.intendedPath) : '') +
+        ' --body "$RDM_PERSIST_BODY" --no-edit' +
+        proj +
+        ' < /dev/null || exit 1';
     } else {
-      cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' < /dev/null || exit 1';
+      // No quote at all: whole-document on purpose, recorded as such.
+      cmd += IND + bin + ' review comment "$RDM_REVIEW_ID" --anchor-state whole-document --body "$RDM_PERSIST_BODY" --no-edit' + proj + ' < /dev/null || exit 1';
     }
     cmds.push(cmd);
   }
@@ -2845,8 +2812,8 @@ function persistDegradationNoteBody(totalDegraded, requested) {
 // shell lines keyed off `RDM_PERSIST_ANCHORS_PARK_REQUIRED` (the persist
 // ladder's own printed run-time result — see `persistReviewCommands`'
 // trailing `anchorsParkRequired=` line). The cause is either systemic (a
-// build-time-dropped anchor, or a run-time refusal whose stderr does not
-// match any ANCHOR_REFUSAL_BENIGN_TAIL_PATTERNS entry) or a `blocking` finding that lost its
+// build-time-dropped anchor, or a run-time refusal whose reported
+// `anchor_state` is not in ANCHOR_REASONS_BENIGN) or a `blocking` finding that lost its
 // anchor for any reason at all — never merely "every anchor degraded",
 // which `RDM_PERSIST_ANCHORS_DEGRADED` still tracks but which no longer by
 // itself implies a park. A caller building a status-write ladder appends
@@ -3716,7 +3683,8 @@ export {
   stripPathLineSuffix,
   isRepoRelativePath,
   PERSIST_DEGRADED_REASONS,
-  isAnchorRefusalBenign,
+  ANCHOR_REASONS_BENIGN,
+  isAnchorReasonBenign,
   PERSIST_ANCHOR_STATES,
   persistAnchorState,
   isChangeTarget,

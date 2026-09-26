@@ -20,9 +20,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use rdm_core::anchor::QuoteOccurrence;
-use rdm_core::error::Error as CoreError;
-use rdm_core::source::SourceObjectKind;
+use rdm_core::model::AnchorState;
 use rdm_devtools::workflow::Host;
 use serde_json::{Value, json};
 
@@ -599,14 +597,12 @@ fn persist_ladder_records_change_review_anchors() {
             json!("path"),
             "header-marked path"
         );
-
-        let degraded = comment_with(&review, "degraded-bug")?;
-        check!(no_anchor(&degraded), "landed whole-document: {degraded}");
-        check_eq!(
-            header_anchor(&mut js, &degraded)?,
-            json!("degraded"),
-            "a dropped anchor is header-marked degraded"
+        check!(
+            anchored.get("anchor_state").is_none(),
+            "an anchored comment carries no anchor state: {anchored}"
         );
+
+        assert_build_time_degraded(&mut js, &review, "degraded-bug")?;
 
         let whole = comment_with(&review, "whole-doc-note")?;
         check!(no_anchor(&whole), "whole-document by design: {whole}");
@@ -614,6 +610,11 @@ fn persist_ladder_records_change_review_anchors() {
             header_anchor(&mut js, &whole)?,
             json!("wholeDocumentIntended"),
             "never recorded as a degraded anchor"
+        );
+        check_eq!(
+            whole["anchor_state"],
+            json!("whole-document"),
+            "stored as whole-document on purpose"
         );
 
         let n = note(&review)?;
@@ -729,16 +730,57 @@ fn refused(
     Ok((review, out, r))
 }
 
-fn assert_whole_doc_degraded(js: &mut Js, review: &Value, id: &str) -> Outcome {
+/// A run-time refusal: stored whole-document with core's `reason` and the
+/// requested `path` as its intended path, while the body header keeps the
+/// anchor that was requested.
+fn assert_whole_doc_degraded(
+    js: &mut Js,
+    review: &Value,
+    id: &str,
+    reason: &str,
+    path: &str,
+) -> Outcome {
     let c = comment_with(review, id)?;
     check!(
         no_anchor(&c),
         "the refused anchor lands whole-document: {c}"
     );
     check_eq!(
+        c["anchor_state"],
+        json!(reason),
+        "the stored anchor state records core's reason"
+    );
+    check_eq!(
+        c["intended_path"],
+        json!(path),
+        "the stored intended path records the requested file"
+    );
+    check_eq!(
+        header_anchor(js, &c)?,
+        json!("path"),
+        "the header keeps the requested anchor"
+    );
+    Ok(())
+}
+
+/// A build-time drop: no usable path, so the writer records `path-missing`
+/// itself, with no intended path, and the header says `degraded`.
+fn assert_build_time_degraded(js: &mut Js, review: &Value, id: &str) -> Outcome {
+    let c = comment_with(review, id)?;
+    check!(no_anchor(&c), "landed whole-document: {c}");
+    check_eq!(
+        c["anchor_state"],
+        json!("path-missing"),
+        "the writer's own reason is stored"
+    );
+    check!(
+        c.get("intended_path").is_none(),
+        "no usable path, so none is recorded: {c}"
+    );
+    check_eq!(
         header_anchor(js, &c)?,
         json!("degraded"),
-        "a run-time refusal is header-marked degraded"
+        "a dropped anchor is header-marked degraded"
     );
     Ok(())
 }
@@ -767,7 +809,13 @@ fn runtime_refusal_outside_hunk_blocking_parks() {
             "a blocking finding losing its anchor requires a park: {out}"
         );
         check_eq!(comments(&review).len(), 2, "the finding plus the note");
-        assert_whole_doc_degraded(&mut js, &review, "outside-hunk-bug")?;
+        assert_whole_doc_degraded(
+            &mut js,
+            &review,
+            "outside-hunk-bug",
+            "outside-hunk",
+            "outside-hunk.txt",
+        )?;
         check_eq!(
             note(&review)?["body"],
             note_body(&mut js, 1, 1)?,
@@ -803,7 +851,13 @@ fn runtime_refusal_outside_hunk_suggestion_no_park() {
             has_line(&out, "anchorsParkRequired=no"),
             "a non-blocking finding on an untouched line is not a park signal: {out}"
         );
-        assert_whole_doc_degraded(&mut js, &review, "outside-hunk-suggestion")
+        assert_whole_doc_degraded(
+            &mut js,
+            &review,
+            "outside-hunk-suggestion",
+            "outside-hunk",
+            "outside-hunk-suggestion.txt",
+        )
     });
 }
 
@@ -811,7 +865,8 @@ fn runtime_refusal_outside_hunk_suggestion_no_park() {
 fn runtime_refusal_quote_not_found_parks() {
     run_real(|lib| {
         let fx = fixture()?;
-        let (_, out, _) = refused(
+        let mut js = Js::open(lib)?;
+        let (review, out, _) = refused(
             lib,
             &fx,
             &[("missing-quote.txt", "keepme\nchangeme\n")],
@@ -827,7 +882,17 @@ fn runtime_refusal_quote_not_found_parks() {
             has_line(&out, "anchorsParkRequired=yes"),
             "a systemic refusal parks regardless of severity: {out}"
         );
-        Ok(())
+        check!(
+            has_line(&out, "anchorsDegraded=all"),
+            "the fall-back-stored refusal is counted as degraded: {out}"
+        );
+        assert_whole_doc_degraded(
+            &mut js,
+            &review,
+            "quote-does-not-exist",
+            "quote-not-found",
+            "missing-quote.txt",
+        )
     });
 }
 
@@ -879,7 +944,13 @@ fn runtime_refusal_unmodified_file_benign() {
             has_line(&out, "anchorsParkRequired=no"),
             "a real, in-range, untouched file is benign: {out}"
         );
-        assert_whole_doc_degraded(&mut js, &review, "whole-file-untouched")
+        assert_whole_doc_degraded(
+            &mut js,
+            &review,
+            "whole-file-untouched",
+            "outside-hunk",
+            "never-modified.txt",
+        )
     });
 }
 
@@ -887,7 +958,8 @@ fn runtime_refusal_unmodified_file_benign() {
 fn runtime_refusal_path_absent_at_head_parks() {
     run_real(|lib| {
         let fx = fixture()?;
-        let (_, out, _) = refused(
+        let mut js = Js::open(lib)?;
+        let (review, out, _) = refused(
             lib,
             &fx,
             &[("real-file.txt", "first line\nsecond line\n")],
@@ -903,7 +975,13 @@ fn runtime_refusal_path_absent_at_head_parks() {
             has_line(&out, "anchorsParkRequired=yes"),
             "a path absent at head is systemic: {out}"
         );
-        Ok(())
+        assert_whole_doc_degraded(
+            &mut js,
+            &review,
+            "path-does-not-exist-at-head",
+            "path-missing",
+            "this-path-was-never-committed.txt",
+        )
     });
 }
 
@@ -951,7 +1029,17 @@ fn mixed_anchor_run_reports_partial() {
             "landed"
         );
         check_eq!(header_anchor(&mut js, &landed)?, json!("path"), "anchored");
-        assert_whole_doc_degraded(&mut js, &review, "refused-at-runtime")?;
+        check!(
+            landed.get("anchor_state").is_none(),
+            "the landed anchor carries no anchor state: {landed}"
+        );
+        assert_whole_doc_degraded(
+            &mut js,
+            &review,
+            "refused-at-runtime",
+            "outside-hunk",
+            "untouched.txt",
+        )?;
         check_eq!(note(&review)?["body"], note_body(&mut js, 1, 2)?, "1 of 2");
         check_eq!(
             r["persistDegraded"],
@@ -993,6 +1081,11 @@ fn whole_document_by_design_never_degrades() {
             header_anchor(&mut js, &cs[0])?,
             json!("wholeDocumentIntended"),
             "never confused with a dropped anchor"
+        );
+        check_eq!(
+            cs[0]["anchor_state"],
+            json!("whole-document"),
+            "stored as whole-document on purpose"
         );
         // Negative control for the degradation clause asserted in
         // `persist_ladder_records_change_review_anchors`.
@@ -1050,7 +1143,7 @@ fn all_anchors_degraded_sets_all() {
         );
         check_eq!(comments(&review).len(), 3, "both findings plus the note");
         for id in ["first-degraded", "second-degraded"] {
-            assert_whole_doc_degraded(&mut js, &review, id)?;
+            assert_build_time_degraded(&mut js, &review, id)?;
         }
         check_eq!(note(&review)?["body"], note_body(&mut js, 2, 2)?, "2 of 2");
         Ok(())
@@ -1260,131 +1353,63 @@ fn unresolvable_source_escalates_without_dispatch() {
 // --- Review-core helpers the driver's decisions rest on ---------------------------
 
 #[test]
-fn anchor_refusal_classification_uses_real_error_text() {
+fn anchor_reason_classification_is_by_enum_value() {
     run_real(|lib| {
         let mut js = Js::open(lib)?;
-        let spoof = "this code does not touch the validation path";
-        let occurrences = |q: &str| {
-            vec![
-                QuoteOccurrence {
-                    occurrence: 1,
-                    context: format!("...{q}..."),
-                },
-                QuoteOccurrence {
-                    occurrence: 2,
-                    context: format!("...{q}..."),
-                },
-            ]
-        };
-        // Each refusal text is rdm-core's own Display for the error the
-        // binary raises, never a hand-copied string.
-        let cases: Vec<(&str, CoreError, bool)> = vec![
-            (
-                "QuoteOutsideChangedHunks, untouched line",
-                CoreError::QuoteOutsideChangedHunks {
-                    path: "src/lib.rs".into(),
-                    start_line: 12,
-                    end_line: 12,
-                    nearest: Some((8, 9)),
-                    range: "a1b2c3d..e4f5678".into(),
-                },
-                true,
-            ),
-            (
-                "QuoteOutsideChangedHunks, untouched file",
-                CoreError::QuoteOutsideChangedHunks {
-                    path: "src/never-touched.rs".into(),
-                    start_line: 1,
-                    end_line: 1,
-                    nearest: None,
-                    range: "a1b2c3d..e4f5678".into(),
-                },
-                true,
-            ),
-            (
-                "QuoteNotFound",
-                CoreError::QuoteNotFound {
-                    quote: "shipped".into(),
-                    commit: None,
-                },
-                false,
-            ),
-            (
-                "QuoteAmbiguous",
-                CoreError::QuoteAmbiguous {
-                    quote: "shipped".into(),
-                    commit: None,
-                    occurrences: occurrences("shipped"),
-                },
-                false,
-            ),
-            (
-                "QuoteNotFound echoing the benign wording (spoofed)",
-                CoreError::QuoteNotFound {
-                    quote: spoof.into(),
-                    commit: None,
-                },
-                false,
-            ),
-            (
-                "QuoteAmbiguous echoing the benign wording (spoofed)",
-                CoreError::QuoteAmbiguous {
-                    quote: spoof.into(),
-                    commit: None,
-                    occurrences: occurrences(spoof),
-                },
-                false,
-            ),
-            (
-                "QuoteOccurrenceOutOfRange",
-                CoreError::QuoteOccurrenceOutOfRange {
-                    quote: "shipped".into(),
-                    occurrence: 3,
-                    available: 2,
-                },
-                false,
-            ),
-            (
-                "ChangePathNotInRevision",
-                CoreError::ChangePathNotInRevision {
-                    path: "src/does-not-exist.rs".into(),
-                    rev: "e4f5678".into(),
-                },
-                false,
-            ),
-            (
-                "ChangePathNotAFile",
-                CoreError::ChangePathNotAFile {
-                    path: "src/a-directory".into(),
-                    rev: "e4f5678".into(),
-                    found: SourceObjectKind::Tree,
-                },
-                false,
-            ),
-            (
-                "ChangeHeadNotInSource",
-                CoreError::ChangeHeadNotInSource {
-                    head: "a".repeat(40),
-                    location: None,
-                },
-                false,
-            ),
-        ];
-        for (name, err, benign) in cases {
-            let text = err.to_string();
+        // Each reason is core's own spelling, never a hand-copied string.
+        check_eq!(
+            js.call(
+                "isAnchorReasonBenign",
+                vec![json!(AnchorState::OutsideHunk.as_str())]
+            )?,
+            json!(true),
+            "a quote on an untouched line or file is benign"
+        );
+        for systemic in [
+            json!(AnchorState::QuoteNotFound.as_str()),
+            json!(AnchorState::PathMissing.as_str()),
+            json!("a-reason-from-a-newer-rdm"),
+            json!(""),
+            Host::undefined(),
+        ] {
             check_eq!(
-                js.call("isAnchorRefusalBenign", vec![json!(text)])?,
-                json!(benign),
-                "{name}: {text}"
-            );
-        }
-        for absent in [Host::undefined(), json!("")] {
-            check_eq!(
-                js.call("isAnchorRefusalBenign", vec![absent.clone()])?,
+                js.call("isAnchorReasonBenign", vec![systemic.clone()])?,
                 json!(false),
-                "{absent} is never benign"
+                "{systemic} is systemic"
             );
         }
+        // Every build-time reason the writer records is a value core accepts.
+        let reasons = js.get("PERSIST_DEGRADED_REASONS")?;
+        for r in reasons.as_array().cloned().unwrap_or_default() {
+            let r = r.as_str().unwrap_or_default().to_owned();
+            check!(
+                r.parse::<AnchorState>().is_ok(),
+                "{r} is an AnchorState value"
+            );
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn persist_anchor_empty_range_keeps_the_intended_path() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let d = js.call(
+            "persistAnchorFor",
+            vec![
+                json!({ "id": "f1", "concern": "correctness", "quote": "shipped", "path": "src/foo.rs" }),
+                json!("change/abc123"),
+                json!({ "pathAnchors": true, "source": { "noCode": true } }),
+            ],
+        )?;
+        check_eq!(d["quote"], json!(false), "no anchor can land");
+        check_eq!(d["reason"], json!("outside-hunk"), "an empty range");
+        check_eq!(
+            d["intendedPath"],
+            json!("src/foo.rs"),
+            "the file the finding meant is still recorded"
+        );
         Ok(())
     });
 }

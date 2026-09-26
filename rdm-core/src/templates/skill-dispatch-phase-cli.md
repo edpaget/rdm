@@ -615,8 +615,9 @@ one Bash call, and report the exit status:
 
 It prints `reviewId=<id>`, then `anchorsDegraded=<all|partial|none>`, then `anchorsParkRequired=<yes|no>`
 on success — append the id to `reviewIds`. A path-anchored comment (one carrying both `--path` and
-`--quote`) that the real binary refuses at run time is retried **mechanically, by the ladder itself**:
-it lands whole-document, header-marked `anchor: degraded`, and is counted into the printed
+`--quote`) that the real binary refuses at run time is handled **mechanically, by the ladder itself**:
+it lands whole-document with its reason recorded in the comment's stored `anchor_state` (and the file it
+meant in `intended_path`); the body header keeps the requested anchor; and it is counted into the printed
 `anchorsDegraded=` line. There is nothing for you to re-run by hand for that case. If `review start`
 itself is refused, **park** — never invent a different target. A nonzero exit anywhere else is a park.
 
@@ -626,7 +627,7 @@ preview that can under-report a run whose anchors degraded at run time). When `a
 — an anchor was lost for a systemic cause, or a `blocking` finding lost its anchor for any reason,
 including the benign one below — **park** `blocked` with `[code] a comment anchor was lost for a
 systemic cause, or a blocking finding lost its anchor; see the review's own note comment and each
-comment's \`anchor\` header`, even though the ladder itself exited 0. Whenever any anchor degrades, the
+comment's \`anchor_state\``, even though the ladder itself exited 0. Whenever any anchor degrades, the
 persist ladder appends one whole-document note comment stating how many of how many requested anchors
 could not be placed, so the review can never read as clean persistence merely because
 `outcome`/`classifyOutcome` stay independent of anchor plumbing (see `docs/workflow-schemas.md` §
