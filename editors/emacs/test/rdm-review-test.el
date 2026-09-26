@@ -511,6 +511,39 @@ repository's; no --no-edit.  The view is refreshed and the write hook runs."
                        '("review" "update" "r1" "--comment=1" "--status=wont-fix"
                          "--project" "p")))))))
 
+(ert-deftest rdm-review/resolve-in-revision-buffer ()
+  "In a detail buffer opened with --at the layer is placed against that
+revision's body, and a resolve re-reads the reviews there too."
+  (let ((old "Old.\nSecond line with target words here.\n"))
+    (rdm-review-test--with
+        (list (rdm-review-test--review
+               "r1" rdm-review-test--task-target
+               (list (rdm-review-test--comment 1 "target words" 22 34))))
+      (setq rdm-review-test--originals (list (cons "c0" old)))
+      (with-current-buffer (rdm-open-item rdm-review-test--task "c0")
+        (should (equal (rdm-view-body) old))
+        (let ((ov (rdm-review-test--overlay-of 1)))
+          (should (equal (rdm-review-test--text ov) "target words"))
+          (should (= (- (overlay-start ov) (car (rdm-view-body-region)))
+                     (string-search "target words" old)))
+          (should (equal (rdm-review-test--faces ov) '(rdm-review-resolved))))
+        (setq rdm-review-test--reviews
+              (list (rdm-review-test--review
+                     "r1" rdm-review-test--task-target
+                     (list (rdm-review-test--comment 1 "target words" 22 34
+                                                     :status "addressed")))))
+        (let ((entry (overlay-get (rdm-review-test--overlay-of 1)
+                                  'rdm-review-entry))
+              (before (length calls)))
+          (rdm-review-resolve entry "addressed" "" nil)
+          (should (seq-find (lambda (argv) (and (equal (car argv) "review")
+                                                (equal (cadr argv) "list")))
+                            (mapcar #'car (nthcdr (1+ before) calls)))))
+        (let ((ov (rdm-review-test--overlay-of 1)))
+          (should (equal (rdm-review-test--text ov) "target words"))
+          (should (equal (rdm-review-test--faces ov)
+                         '(rdm-review-closed rdm-review-resolved))))))))
+
 (ert-deftest rdm-review/close-dismiss ()
   "Close and dismiss thread --state; a refused close shows rdm's message."
   (rdm-review-test--with
