@@ -318,6 +318,7 @@ Returns the buffer."
                      (user-error "rdm: No item at point"))
                  nil t))
 
+;;;###autoload
 (defun rdm-view-at (revision &optional thing)
   "Show the item at point (or THING) with its body read at REVISION."
   (interactive

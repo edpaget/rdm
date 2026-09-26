@@ -2,8 +2,6 @@
 
 ;; Author: Edward Paget <ed.paget@gmail.com>
 ;; URL: https://github.com/edpaget/rdm
-;; Version: 0.1.0
-;; Package-Requires: ((emacs "31.1"))
 ;; Keywords: tools, convenience
 
 ;; This file is not part of GNU Emacs.
@@ -406,6 +404,7 @@ resolves."
     (or (gethash key rdm--context-cache)
         (puthash key (rdm--resolve dir) rdm--context-cache))))
 
+;;;###autoload
 (defun rdm-context-reset ()
   "Forget every cached rdm context and `rdm describe' value list."
   (interactive)

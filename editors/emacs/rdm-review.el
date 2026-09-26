@@ -639,6 +639,7 @@ rdm refuses while any comment is still open, and says how many."
 
 ;;;; Showing a review
 
+;;;###autoload
 (defun rdm-review-show (review)
   "Display REVIEW, freshly read with `rdm review show', in a buffer.
 Returns the buffer."

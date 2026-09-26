@@ -24,7 +24,8 @@
 
 (defun rdm-dev--files ()
   "The package's source files, `rdm-core.el' first, excluding this one."
-  (let* ((files (directory-files rdm-dev--directory t "\\`rdm-.*\\.el\\'"))
+  (let* ((files (directory-files rdm-dev--directory t
+                                "\\`rdm\\(?:-.*\\)?\\.el\\'"))
          (files (cl-remove-if
                  (lambda (f) (equal (file-name-nondirectory f) "rdm-dev.el"))
                  files))

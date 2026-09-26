@@ -241,6 +241,7 @@ SLUG, TITLE, TAGS and KEYS are passed to `rdm-create-item'."
                  (apply #'rdm-create-item kind slug title text :tags tags keys))
                (format "Body of new %s %s" kind slug)))
 
+;;;###autoload
 (defun rdm-create-roadmap (slug title tags)
   "Create a roadmap SLUG titled TITLE with TAGS, composing its body first.
 Interactively, read SLUG, TITLE and comma-separated TAGS.  Returns the
@@ -250,6 +251,7 @@ compose buffer."
                      (rdm--split-tags (read-string "Tags (comma-separated): "))))
   (rdm--compose-create 'roadmap slug title tags))
 
+;;;###autoload
 (defun rdm-create-task (slug title tags)
   "Create a task SLUG titled TITLE with TAGS, composing its body first.
 Interactively, read SLUG, TITLE and comma-separated TAGS.  Returns the
@@ -266,6 +268,7 @@ compose buffer."
     (require 'rdm-pick)
     (rdm-pick-read-roadmap "New phase in roadmap: ")))
 
+;;;###autoload
 (defun rdm-create-phase (&optional context)
   "Create a phase, composing its body first; return the compose buffer.
 Its roadmap is CONTEXT's (a roadmap item, or a phase item's roadmap),
@@ -291,11 +294,13 @@ at point in a detail buffer."
   (message "%s" (string-trim text))
   text)
 
+;;;###autoload
 (defun rdm-plan-status ()
   "Show this Emacs's staged plan-repo changes (`rdm status'); return the text."
   (interactive)
   (rdm--show-output (rdm-call-sync 'status)))
 
+;;;###autoload
 (defun rdm-plan-commit (message)
   "Commit this Emacs's staged plan-repo changes with MESSAGE."
   (interactive (list (read-string "Commit message: ")))
@@ -303,6 +308,7 @@ at point in a detail buffer."
     (user-error "rdm: a commit needs a message"))
   (rdm--show-output (rdm-call-sync 'commit :message message)))
 
+;;;###autoload
 (defun rdm-plan-discard ()
   "Discard this Emacs's staged plan-repo changes after confirming.
 Returns rdm's output, or nil when declined."
