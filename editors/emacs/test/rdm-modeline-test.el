@@ -386,12 +386,17 @@ EXTRA is called with the argv of a `worktree remove' or `prune'."
 
 (ert-deftest rdm-worktree/prune-forgets-only-removed ()
   "Pruning drops the modeline entry of a removed worktree (reported by a
-symbolic link) and keeps the entry of one rdm skipped as dirty."
+symbolic link) and of one removed with its branch kept, and keeps the
+entry of one rdm skipped as dirty."
   (let* ((gone (rdm-modeline-test--root))
+         (gone-kept-branch (rdm-modeline-test--root))
          (kept (rdm-modeline-test--root))
          (link (rdm-modeline-test--alias gone))
          (table (list (cons gone (cons (rdm-modeline-test--current "task/t1" gone)
                                        (list :status "done")))
+                      (cons gone-kept-branch
+                            (cons (rdm-modeline-test--current "task/t3" gone-kept-branch)
+                                  (list :status "done")))
                       (cons kept (cons (rdm-modeline-test--current "task/t2" kept)
                                        (list :status "done")))))
          (prune
@@ -400,16 +405,21 @@ symbolic link) and keeps the entry of one rdm skipped as dirty."
               (list :results
                     (vector (list :item "task/t1" :path link
                                   :action (if dry "would-remove" "removed"))
+                            (list :item "task/t3" :path gone-kept-branch
+                                  :action (if dry "would-remove" "removed-branch-kept"))
                             (list :item "task/t2" :path kept
                                   :action (if dry "would-remove" "skipped-dirty")))
-                    :removed (if dry 0 1))))))
+                    :removed (if dry 0 2))))))
     (rdm-modeline-test--with-mode
       (rdm-mock-with-runner (rdm-modeline-test--worktree-replies table prune)
         (rdm-modeline-test--warm gone)
+        (rdm-modeline-test--warm gone-kept-branch)
         (rdm-modeline-test--warm kept)
+        (should (gethash gone-kept-branch rdm-modeline--cache))
         (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
           (should (rdm-worktree-prune)))
         (should-not (gethash gone rdm-modeline--cache))
+        (should-not (gethash gone-kept-branch rdm-modeline--cache))
         (should (equal (rdm-modeline-test--render kept) "task/t2 · done"))))))
 
 ;;;; rdm-after-write-hook
