@@ -1,8 +1,9 @@
 //! The `rdm:` link scheme: item references (`rdm:roadmap/<slug>`,
 //! `rdm:phase/<roadmap-slug>/<stem>`, `rdm:task/<slug>`,
-//! `rdm:plan/<slug>`) and code
-//! references (`rdm:src/<path>[@<rev>][#L<start>[-L<end>]]`), plus
-//! [`extract_links`] to find them inside a markdown body.
+//! `rdm:plan/<slug>`), code
+//! references (`rdm:src/<path>[@<rev>][#L<start>[-L<end>]]`), and commit
+//! references (`rdm:src@<sha>`), plus [`extract_links`] to find them inside
+//! a markdown body.
 //!
 //! Item-reference syntax is shared with
 //! [`ReviewTarget`](crate::model::ReviewTarget) — the same vocabulary used
@@ -47,6 +48,17 @@ pub enum Link {
         /// single line, `(start, Some(end))` for an inclusive range.
         lines: Option<(u32, Option<u32>)>,
     },
+    /// A reference to a whole commit in the source repository:
+    /// `rdm:src@<sha>`, the path-less rung of the `src` ladder.
+    ///
+    /// The revision is mandatory and always a 7–64 character hex object
+    /// name, written back by `Display` exactly as authored. Unlike
+    /// [`Link::Code`] it never falls back to a document's
+    /// `containing_commit` — the link *is* the commit.
+    Commit {
+        /// The commit SHA (abbreviated or full) exactly as written.
+        rev: String,
+    },
 }
 
 /// Errors returned by [`parse`] for a malformed `rdm:` URI.
@@ -72,6 +84,24 @@ pub enum LinkParseError {
     },
     /// An `rdm:src/` URI had no path after the `src/` prefix.
     EmptyPath(String),
+    /// An `rdm:src@<rev>` commit link whose revision is not a plausible
+    /// commit object name (7–64 ASCII hex characters) — empty, too short or
+    /// long, a branch/tag name, or containing `/`.
+    InvalidCommitRev {
+        /// The full URI that failed to parse.
+        uri: String,
+        /// The offending revision text (everything after `src@`).
+        rev: String,
+    },
+    /// An `rdm:src@<rev>` commit link carrying a `#`-fragment — a line
+    /// range needs a file, so any fragment on the path-less form is
+    /// refused.
+    CommitLineRange {
+        /// The full URI that failed to parse.
+        uri: String,
+        /// The offending fragment (the text after `#`).
+        fragment: String,
+    },
     /// An `rdm:roadmap/`, `rdm:phase/`, `rdm:task/`, or `rdm:plan/` URI's
     /// remainder did not match the shared item-reference grammar.
     InvalidItemRef {
@@ -114,11 +144,23 @@ impl std::fmt::Display for LinkParseError {
             LinkParseError::NotLinkable { uri, kind } => {
                 write!(
                     f,
-                    "'{uri}' names a {kind}/<sha> review target, not a linkable document — link code with rdm:src/<path>@<sha>"
+                    "'{uri}' names a {kind}/<sha> review target, not a linkable document — link the commit with rdm:src@<sha>, or code at it with rdm:src/<path>@<sha>"
                 )
             }
             LinkParseError::EmptyPath(uri) => {
                 write!(f, "'{uri}' has an empty src path")
+            }
+            LinkParseError::InvalidCommitRev { uri, rev } => {
+                write!(
+                    f,
+                    "'{uri}' is not a commit link — rdm:src@<rev> takes a 7–64 character hex commit SHA, got '{rev}' (git rev-parse <rev>); to link a branch or tag tip, link a file with rdm:src/<path>@<rev>"
+                )
+            }
+            LinkParseError::CommitLineRange { uri, fragment } => {
+                write!(
+                    f,
+                    "'{uri}' puts a line range '#{fragment}' on a commit link — a line range needs a file: rdm:src/<path>@<rev>#{fragment}"
+                )
             }
             LinkParseError::InvalidItemRef { uri, source } => {
                 write!(f, "invalid item reference in '{uri}': {source}")
@@ -150,6 +192,9 @@ impl std::error::Error for LinkParseError {}
 /// assumes a source path never itself contains a literal `@` or `#` — the
 /// path is everything up to the first of either character.
 ///
+/// Commit form: `rdm:src@<rev>`, where `<rev>` is a 7–64 character hex
+/// commit SHA. It takes no `#`-fragment.
+///
 /// # Errors
 ///
 /// Returns [`LinkParseError::MissingScheme`] if `uri` does not start with
@@ -161,11 +206,19 @@ impl std::error::Error for LinkParseError {}
 /// [`LinkParseError::EmptyPath`] if a `src` form has no path,
 /// [`LinkParseError::InvalidLineRange`] if a `src` form's `#`-fragment is
 /// not `L<n>` or `L<n>-L<n>`, or [`LinkParseError::InvertedLineRange`] if
-/// the range's end is before its start.
+/// the range's end is before its start. A commit form returns
+/// [`LinkParseError::CommitLineRange`] if it carries any `#`-fragment, or
+/// [`LinkParseError::InvalidCommitRev`] if its revision is not 7–64 hex
+/// characters.
 pub fn parse(uri: &str) -> Result<Link, LinkParseError> {
     let rest = uri
         .strip_prefix("rdm:")
         .ok_or_else(|| LinkParseError::MissingScheme(uri.to_string()))?;
+    // `src@` cannot collide with any other form: every code link has `/`
+    // right after `src`, and item kinds are split on `/`.
+    if let Some(after) = rest.strip_prefix("src@") {
+        return parse_commit(uri, after);
+    }
     let (kind, remainder) = rest.split_once('/').unwrap_or((rest, ""));
     match kind {
         "roadmap" | "phase" | "task" | "plan" => {
@@ -182,8 +235,8 @@ pub fn parse(uri: &str) -> Result<Link, LinkParseError> {
         // The one deliberate divergence between `ItemRef`'s *link* grammar
         // and `ReviewTarget`'s *reference* grammar: `change/<sha>` is a
         // valid review target but never a linkable document, because there
-        // is no plan-repo document at the other end. Code is linked with
-        // `rdm:src/<path>@<sha>` instead.
+        // is no plan-repo document at the other end. The commit is linked
+        // with `rdm:src@<sha>`, code at it with `rdm:src/<path>@<sha>`.
         "change" => Err(LinkParseError::NotLinkable {
             uri: uri.to_string(),
             kind: "change".to_string(),
@@ -234,6 +287,32 @@ fn parse_code(uri: &str, rest: &str) -> Result<Link, LinkParseError> {
     })
 }
 
+/// Parses the `<rev>[#fragment]` remainder of an `rdm:src@` commit URI.
+///
+/// Any fragment is refused first, so a line range on a commit link always
+/// reports [`LinkParseError::CommitLineRange`] regardless of the rev.
+fn parse_commit(uri: &str, rest: &str) -> Result<Link, LinkParseError> {
+    let (rev, fragment) = match rest.split_once('#') {
+        Some((rev, fragment)) => (rev, Some(fragment)),
+        None => (rest, None),
+    };
+    if let Some(fragment) = fragment {
+        return Err(LinkParseError::CommitLineRange {
+            uri: uri.to_string(),
+            fragment: fragment.to_string(),
+        });
+    }
+    if !(7..=64).contains(&rev.len()) || !rev.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(LinkParseError::InvalidCommitRev {
+            uri: uri.to_string(),
+            rev: rev.to_string(),
+        });
+    }
+    Ok(Link::Commit {
+        rev: rev.to_string(),
+    })
+}
+
 /// Parses a `L<n>` or `L<n>-L<n>` line-range fragment (the text after `#`).
 fn parse_line_range(uri: &str, fragment: &str) -> Result<(u32, Option<u32>), LinkParseError> {
     let invalid = || LinkParseError::InvalidLineRange {
@@ -281,6 +360,7 @@ impl std::fmt::Display for Link {
                 }
                 Ok(())
             }
+            Link::Commit { rev } => write!(f, "rdm:src@{rev}"),
         }
     }
 }
@@ -328,6 +408,14 @@ pub enum Resolved {
         /// The line range carried over from the link, unvalidated.
         lines: Option<(u32, Option<u32>)>,
         /// The GitHub-style web URL for this reference, or `None` when the
+        /// project has no `source` configured.
+        web_url: Option<String>,
+    },
+    /// A resolved commit reference (`rdm:src@<sha>`).
+    Commit {
+        /// The commit SHA exactly as the link wrote it.
+        rev: String,
+        /// The GitHub-style `/commit/<sha>` web URL, or `None` when the
         /// project has no `source` configured.
         web_url: Option<String>,
     },
@@ -501,7 +589,7 @@ pub fn extract_links(body: &str) -> (Vec<(Range<usize>, Link)>, Vec<LinkDiagnost
 /// `task` is the `Done:`-line/`rdm hook done-line` prefix
 /// ([`crate::hook::format_done_directive`]); `plan` is the implementation-plan
 /// reference kind (`rdm:plan/<slug>`, `rdm review --on plan/<slug>`); `src` is
-/// the `rdm:src/` link prefix; `change` is the code-change review-target kind
+/// the `rdm:src/` code-link and `rdm:src@<sha>` commit-link prefix; `change` is the code-change review-target kind
 /// (`rdm review --on change/<sha>`), which is deliberately *not* a link kind
 /// (see [`parse`]). All four are enforced here as the natural
 /// single home for a future consolidation of
@@ -804,5 +892,83 @@ mod tests {
     #[test]
     fn other_slugs_are_not_reserved() {
         assert!(!is_reserved_roadmap_slug("auth"));
+    }
+
+    // --- commit link form: rdm:src@<sha> ---
+
+    #[test]
+    fn parse_commit_link_abbrev_and_full() {
+        let full = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+        for rev in ["a1b2c3d", full] {
+            let uri = format!("rdm:src@{rev}");
+            let link = parse(&uri).unwrap();
+            assert_eq!(
+                link,
+                Link::Commit {
+                    rev: rev.to_string()
+                }
+            );
+            assert_eq!(link.to_string(), uri);
+            assert_eq!(parse(&link.to_string()).unwrap(), link);
+        }
+    }
+
+    #[test]
+    fn parse_rejects_line_range_on_commit_link() {
+        for uri in [
+            "rdm:src@a1b2c3d#L5",
+            "rdm:src@a1b2c3d#L5-L9",
+            "rdm:src@a1b2c3d#bogus",
+        ] {
+            let err = parse(uri).unwrap_err();
+            assert!(
+                matches!(err, LinkParseError::CommitLineRange { .. }),
+                "expected CommitLineRange for {uri}, got {err:?}"
+            );
+            assert!(err.to_string().contains("rdm:src/<path>@"));
+        }
+    }
+
+    #[test]
+    fn parse_rejects_implausible_commit_rev() {
+        let too_long = "a".repeat(65);
+        let too_long_uri = format!("rdm:src@{too_long}");
+        for uri in [
+            "rdm:src@",
+            "rdm:src@main",
+            "rdm:src@abc12",
+            "rdm:src@a1b2c3d/x",
+            too_long_uri.as_str(),
+        ] {
+            let err = parse(uri).unwrap_err();
+            assert!(
+                matches!(err, LinkParseError::InvalidCommitRev { .. }),
+                "expected InvalidCommitRev for {uri}, got {err:?}"
+            );
+            assert!(err.to_string().contains("rdm:src/<path>@<rev>"));
+        }
+    }
+
+    #[test]
+    fn parse_change_still_not_linkable_and_names_commit_form() {
+        let err = parse("rdm:change/abc1234").unwrap_err();
+        assert!(matches!(err, LinkParseError::NotLinkable { .. }));
+        let msg = err.to_string();
+        assert!(msg.contains("rdm:src@<sha>"), "{msg}");
+        assert!(msg.contains("rdm:src/<path>@<sha>"), "{msg}");
+    }
+
+    #[test]
+    fn extract_links_finds_commit_link() {
+        let body = "Shipped in [landed](rdm:src@a1b2c3d).";
+        let (links, diagnostics) = extract_links(body);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].1,
+            Link::Commit {
+                rev: "a1b2c3d".to_string()
+            }
+        );
     }
 }

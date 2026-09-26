@@ -81,7 +81,8 @@ rejected value and — for the existence check — the repository it was checked
 against.
 
 `change` is deliberately **not** a link kind. `rdm:change/<sha>` is rejected by
-`rdm_core::link::parse` with a message pointing at `rdm:src/<path>@<sha>` —
+`rdm_core::link::parse` with a message pointing at `rdm:src@<sha>` (the commit)
+and `rdm:src/<path>@<sha>` (code at it; see [`link-grammar.md`](link-grammar.md)) —
 there is no plan-repo document at the other end of a change reference, so
 linking one would be a dangling link by construction. This is the single
 divergence between `ItemRef`'s link grammar and `ReviewTarget`'s reference

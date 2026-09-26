@@ -238,13 +238,56 @@ pub fn resolve_code_link(
     })
 }
 
-/// Resolves any [`Link`] — item or code — against the store. The single
+/// Builds a GitHub-style web URL for a whole commit: `{repo}/commit/{rev}`.
+///
+/// Exactly one trailing `/` on `repo` is trimmed first, matching
+/// [`build_web_url`], so both spellings of a repo URL produce identical
+/// output.
+#[must_use]
+pub fn build_commit_web_url(repo: &str, rev: &str) -> String {
+    let repo = repo.strip_suffix('/').unwrap_or(repo);
+    format!("{repo}/commit/{rev}")
+}
+
+/// Resolves a commit reference (`rdm:src@<sha>`) against a project's
+/// `source` configuration.
+///
+/// The revision is mandatory in the link, so — unlike
+/// [`resolve_code_link`] — there is no precedence chain and no
+/// `containing_commit` fallback. `web_url` is
+/// [`build_commit_web_url`] over `project.source.repo`, or `None` when the
+/// project has no `source` configured.
+///
+/// Like [`resolve_code_link`], core reads no repository here: whether the
+/// commit actually exists is verified only by a checkout-aware caller
+/// (`rdm-cli`'s `link check`), which records a miss in
+/// [`LinkCheckReport::unresolved_commits`].
+///
+/// # Errors
+///
+/// Does not fail today; returns [`Result`] for symmetry with
+/// [`resolve_code_link`] and so a future validating variant is a
+/// non-breaking change.
+#[allow(clippy::unnecessary_wraps)]
+pub fn resolve_commit_link(project: &Project, rev: &str) -> Result<Resolved> {
+    let web_url = project
+        .source
+        .as_ref()
+        .map(|source| build_commit_web_url(&source.repo, rev));
+    Ok(Resolved::Commit {
+        rev: rev.to_string(),
+        web_url,
+    })
+}
+
+/// Resolves any [`Link`] — item, code, or commit — against the store. The single
 /// entry point later CLI/server phases dispatch through regardless of
 /// link kind.
 ///
 /// `containing_commit` is the stamped `commit` of the document the link was
 /// found in (a `Phase` or `Task`'s `commit` field), used only for
-/// [`Link::Code`]'s rev-default precedence — see [`resolve_code_link`]. Pass
+/// [`Link::Code`]'s rev-default precedence — see [`resolve_code_link`]; a
+/// [`Link::Commit`] ignores it. Pass
 /// `None` for links found in a roadmap body or a review, neither of which
 /// carries a stamped commit.
 ///
@@ -258,7 +301,9 @@ pub fn resolve_code_link(
 /// [`crate::error::Error::FrontmatterMissing`]/
 /// [`crate::error::Error::FrontmatterParse`] if its frontmatter is invalid —
 /// all propagated unmodified via `?`; otherwise see [`resolve_code_link`],
-/// which does not fail today.
+/// which does not fail today. [`Link::Commit`] loads the project the same
+/// way (same errors), then delegates to [`resolve_commit_link`], which does
+/// not fail today.
 pub fn resolve_link(
     store: &impl Store,
     project: &str,
@@ -276,6 +321,10 @@ pub fn resolve_link(
                 rev.as_deref(),
                 *lines,
             )
+        }
+        Link::Commit { rev } => {
+            let project_doc = crate::io::load_project(store, project)?;
+            resolve_commit_link(&project_doc.frontmatter, rev)
         }
     }
 }
@@ -652,6 +701,22 @@ pub struct CodeLinkFinding {
     pub rev: Option<String>,
 }
 
+/// One `rdm:src@<sha>` commit link found while checking a project or
+/// document — the commit counterpart of [`CodeLinkFinding`], carried forward
+/// so a checkout-aware caller can verify the commit exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitLinkFinding {
+    /// The document the link was found in.
+    pub document: DocRef,
+    /// Byte range of the link within that document's body.
+    pub byte_range: Range<usize>,
+    /// The `rdm:` URI, as rendered by [`Link`]'s `Display` (byte-identical
+    /// to what was written, since the commit form is never normalized).
+    pub uri: String,
+    /// The commit SHA exactly as written in the link.
+    pub rev: String,
+}
+
 /// A malformed `rdm:` link destination found while checking a project or
 /// document, tagged with the document it was found in.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -682,14 +747,15 @@ pub struct MissingAtRevFinding {
 /// links — the aggregation [`check_project`]/[`check_document`] build by
 /// resolving every link [`crate::link::extract_links`] finds.
 ///
-/// `missing_at_rev` and `path_verification_skipped` are never populated by
+/// `missing_at_rev`, `unresolved_commits`, and `path_verification_skipped`
+/// are never populated by
 /// [`check_project`]/[`check_document`] themselves: core has no source-repo
 /// checkout to verify a code link's path against (see
 /// [`crate::ops::links::resolve_code_link`]'s doc comment on why that
 /// validation is deliberately out of scope here). A caller that does have a
 /// checkout — `rdm-cli`'s `link check`, behind the `git` feature — fills
-/// these two fields in after the fact, using [`code_links`](Self::code_links)
-/// as its worklist, before handing the report to a formatter. This keeps one
+/// these fields in after the fact, using [`code_links`](Self::code_links)
+/// and [`commit_links`](Self::commit_links) as its worklists, before handing the report to a formatter. This keeps one
 /// report shape and one pair of formatters
 /// ([`crate::display::format_link_check_report`] /
 /// [`crate::json::link_check_report_to_json`]) serving both the
@@ -704,12 +770,25 @@ pub struct LinkCheckReport {
     pub dangling: Vec<DanglingLink>,
     /// Every code link found, for a caller-side path-verification pass.
     pub code_links: Vec<CodeLinkFinding>,
+    /// Every commit link (`rdm:src@<sha>`) found, for a caller-side
+    /// commit-existence pass — the commit counterpart of
+    /// [`code_links`](Self::code_links).
+    pub commit_links: Vec<CommitLinkFinding>,
     /// Malformed `rdm:` destinations found while parsing.
     pub diagnostics: Vec<CheckDiagnostic>,
     /// Code links found missing at their pinned revision by a caller-side
     /// checkout-aware verification pass. Always empty from
     /// [`check_project`]/[`check_document`] themselves.
     pub missing_at_rev: Vec<MissingAtRevFinding>,
+    /// Commit links whose revision did not resolve in the verifying
+    /// checkout — a dangling rev and an inconclusive one (e.g. a shallow
+    /// clone lacking the commit) are the same observation here. **Non-fatal**:
+    /// reported, but deliberately excluded from the broken/exit computation
+    /// (a link that fails to resolve degrades to a coarser target rather than
+    /// disappearing). Like `missing_at_rev`, only a checkout-aware caller
+    /// populates it; always empty from [`check_project`]/[`check_document`]
+    /// themselves.
+    pub unresolved_commits: Vec<CommitLinkFinding>,
     /// Set by a caller when checkout-aware path verification did not run
     /// (not inside a checkout, or built without git support) so the report
     /// can say so explicitly rather than silently omitting `missing_at_rev`.
@@ -758,6 +837,14 @@ fn check_body(
                     document: doc_ref.clone(),
                     byte_range: range,
                     path,
+                    rev,
+                });
+            }
+            (Link::Commit { .. }, Resolved::Commit { rev, .. }) => {
+                report.commit_links.push(CommitLinkFinding {
+                    document: doc_ref.clone(),
+                    byte_range: range,
+                    uri: link.to_string(),
                     rev,
                 });
             }
@@ -2396,6 +2483,113 @@ mod tests {
             load_document_body(&store, "demo", &target).unwrap_err(),
             crate::error::Error::ChangeTargetHasNoDocument(_)
         ));
+    }
+
+    // --- commit links: rdm:src@<sha> ---
+
+    fn project_with_source(repo: Option<&str>) -> Project {
+        Project {
+            name: "demo".to_string(),
+            title: "Demo".to_string(),
+            source: repo.map(|repo| Source {
+                repo: repo.to_string(),
+                default_branch: None,
+            }),
+        }
+    }
+
+    #[test]
+    fn resolve_link_commit_with_source_builds_commit_url() {
+        for repo in [
+            "https://github.com/org/repo",
+            "https://github.com/org/repo/",
+        ] {
+            let resolved =
+                resolve_commit_link(&project_with_source(Some(repo)), "a1b2c3d").unwrap();
+            assert_eq!(
+                resolved,
+                Resolved::Commit {
+                    rev: "a1b2c3d".to_string(),
+                    web_url: Some("https://github.com/org/repo/commit/a1b2c3d".to_string()),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_link_commit_without_source_has_no_web_url() {
+        let store = setup();
+        let link = Link::Commit {
+            rev: "a1b2c3d".to_string(),
+        };
+        let resolved = resolve_link(&store, "demo", None, &link).unwrap();
+        assert_eq!(
+            resolved,
+            Resolved::Commit {
+                rev: "a1b2c3d".to_string(),
+                web_url: None,
+            }
+        );
+        assert_eq!(
+            resolve_commit_link(&project_with_source(None), "a1b2c3d").unwrap(),
+            resolved
+        );
+    }
+
+    #[test]
+    fn resolve_link_commit_ignores_containing_commit() {
+        let store = setup();
+        let link = Link::Commit {
+            rev: "a1b2c3d".to_string(),
+        };
+        let resolved = resolve_link(&store, "demo", Some("fffffff"), &link).unwrap();
+        assert_eq!(
+            resolved,
+            Resolved::Commit {
+                rev: "a1b2c3d".to_string(),
+                web_url: None,
+            }
+        );
+    }
+
+    #[test]
+    fn check_document_collects_commit_links_separately() {
+        let mut store = setup();
+        crate::ops::task::create_task(
+            &mut store,
+            CreateTask {
+                project: "demo",
+                slug: "has-commit",
+                title: "Has commit",
+                priority: Priority::Medium,
+                tags: None,
+                body: Some("Landed in [landed](rdm:src@a1b2c3d)."),
+            },
+        )
+        .unwrap();
+        let report = check_document(
+            &store,
+            "demo",
+            &ItemRef::Task {
+                slug: "has-commit".to_string(),
+            },
+        )
+        .unwrap();
+        assert_eq!(report.commit_links.len(), 1);
+        let finding = &report.commit_links[0];
+        assert_eq!(finding.uri, "rdm:src@a1b2c3d");
+        assert_eq!(finding.rev, "a1b2c3d");
+        assert_eq!(
+            finding.document,
+            DocRef::Task {
+                slug: "has-commit".to_string()
+            }
+        );
+        assert!(report.code_links.is_empty());
+        assert!(report.dangling.is_empty());
+        assert!(report.diagnostics.is_empty());
+        assert!(report.unresolved_commits.is_empty());
+        assert_eq!(report.links_checked, 1);
     }
 
     // --- `link check` / `check_project` / `check_document` ---

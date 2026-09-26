@@ -1396,6 +1396,14 @@ pub fn format_resolved(uri: &str, resolved: &crate::json::ResolvedLinkJson) -> S
             line.push('\n');
             line
         }
+        "commit" => {
+            let mut line = format!("{uri} -> commit {}", resolved.rev.as_deref().unwrap_or("?"));
+            if let Some(web_url) = &resolved.web_url {
+                line.push_str(&format!(" ({web_url})"));
+            }
+            line.push('\n');
+            line
+        }
         _ => format!(
             "{uri} -> unresolved ({})\n",
             resolved.reason.as_deref().unwrap_or("unknown")
@@ -1451,14 +1459,41 @@ pub fn format_backlinks(target: &str, entries: &[crate::link::BacklinkEntry]) ->
 /// A clean report (nothing dangling, no diagnostics, nothing missing at
 /// rev) prints a one-line summary; otherwise every finding is listed —
 /// dangling item links, parse diagnostics, and missing-at-rev code links
-/// each labeled distinctly — followed by a problem count. Either way, a
-/// `path_verification_skipped` note (if set) is appended last.
+/// each labeled distinctly — followed by a problem count.
+///
+/// Commit links whose revision did not resolve in the verifying checkout
+/// (`unresolved_commits`) are listed one per line in either case but never
+/// counted as problems: they are reported, not failing. A report whose only
+/// findings are unresolved commits prints those lines and a
+/// "reported only; link check passes" summary instead of the clean line.
+/// Either way, a `path_verification_skipped` note (if set) is appended last.
 #[must_use]
 pub fn format_link_check_report(report: &crate::json::LinkCheckReportJson) -> String {
     let broken = report.dangling.len() + report.diagnostics.len() + report.missing_at_rev.len();
     let mut out = String::new();
 
-    if broken == 0 {
+    let unresolved_commit_lines = || {
+        report
+            .unresolved_commits
+            .iter()
+            .map(|c| {
+                format!(
+                    "unresolved commit link in {}: {} — commit {} not found in this checkout (reported, not failing)\n",
+                    format_doc_ref(&c.document),
+                    c.uri,
+                    c.rev
+                )
+            })
+            .collect::<String>()
+    };
+
+    if broken == 0 && !report.unresolved_commits.is_empty() {
+        out.push_str(&unresolved_commit_lines());
+        out.push_str(&format!(
+            "{} commit link(s) did not resolve (reported only; link check passes).\n",
+            report.unresolved_commits.len()
+        ));
+    } else if broken == 0 {
         match &report.on {
             Some(on) => out.push_str(&format!(
                 "{on}: {} link(s) checked, all resolve cleanly.\n",
@@ -1494,6 +1529,7 @@ pub fn format_link_check_report(report: &crate::json::LinkCheckReportJson) -> St
                 m.rev
             ));
         }
+        out.push_str(&unresolved_commit_lines());
         out.push_str(&format!("{broken} problem(s) found.\n"));
     }
 
@@ -2564,6 +2600,8 @@ mod tests {
                 error: "unrecognized link kind 'foo' in 'rdm:foo/bar'".to_string(),
             }],
             missing_at_rev: Vec::new(),
+            commit_links_checked: 0,
+            unresolved_commits: Vec::new(),
             path_verification_skipped: None,
         };
 
@@ -2580,6 +2618,53 @@ mod tests {
         // labels — the diagnostic is the only broken finding.
         assert!(!out.contains("dangling link in"), "{out}");
         assert!(!out.contains("missing at rev in"), "{out}");
+    }
+
+    #[test]
+    fn link_check_report_reports_unresolved_commits_without_failing() {
+        use crate::json::{LinkCheckReportJson, UnresolvedCommitJson};
+        use crate::link::DocRef;
+
+        let report = LinkCheckReportJson {
+            on: None,
+            links_checked: 1,
+            code_links_checked: 0,
+            commit_links_checked: 1,
+            dangling: Vec::new(),
+            diagnostics: Vec::new(),
+            missing_at_rev: Vec::new(),
+            unresolved_commits: vec![UnresolvedCommitJson {
+                document: DocRef::Task {
+                    slug: "landed".to_string(),
+                },
+                range_start: 0,
+                range_end: 25,
+                uri: "rdm:src@a1b2c3d".to_string(),
+                rev: "a1b2c3d".to_string(),
+            }],
+            path_verification_skipped: None,
+        };
+
+        let out = format_link_check_report(&report);
+        assert!(out.contains("rdm:src@a1b2c3d"), "{out}");
+        assert!(out.contains("task/landed"), "{out}");
+        assert!(!out.contains("all links resolve cleanly"), "{out}");
+        assert!(!out.contains("problem(s) found"), "{out}");
+    }
+
+    #[test]
+    fn format_resolved_commit_kind() {
+        let resolved = crate::json::resolved_to_json(
+            &crate::link::Resolved::Commit {
+                rev: "a1b2c3d".to_string(),
+                web_url: Some("https://github.com/org/repo/commit/a1b2c3d".to_string()),
+            },
+            None,
+        );
+        assert_eq!(
+            format_resolved("rdm:src@a1b2c3d", &resolved),
+            "rdm:src@a1b2c3d -> commit a1b2c3d (https://github.com/org/repo/commit/a1b2c3d)\n"
+        );
     }
 
     fn make_plan_doc(

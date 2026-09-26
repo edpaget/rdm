@@ -1043,16 +1043,17 @@ pub fn review_to_json(
 /// The documented JSON shape for a resolved `rdm:` link: `kind` is always
 /// present, every other field is present only when it applies to that kind
 /// (`path`/`exists` for `"item"`; `path`/`rev`/`line`/`end_line`/`web_url`
-/// for `"code"`) — see [`resolved_to_json`].
+/// for `"code"`; `rev`/`web_url` for `"commit"`) — see [`resolved_to_json`].
 #[derive(Debug, Clone, Serialize)]
 pub struct ResolvedLinkJson {
-    /// `"item"`, `"code"`, or `"broken"`.
+    /// `"item"`, `"code"`, `"commit"`, or `"broken"`.
     pub kind: &'static str,
     /// Item kind: the plan-repo-relative path to the target document.
     /// Code kind: the source path, relative to the source repository root.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
-    /// Code kind only: the resolved revision.
+    /// Code and commit kinds: the resolved revision (for a commit, the SHA
+    /// exactly as the link wrote it).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rev: Option<String>,
     /// Code kind only: the start line, if the link named one.
@@ -1061,8 +1062,9 @@ pub struct ResolvedLinkJson {
     /// Code kind only: the end line, if the link named a range.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub end_line: Option<u32>,
-    /// Code kind only: the GitHub-style web URL, if the project has a
-    /// `source` configured.
+    /// Code and commit kinds: the GitHub-style web URL (`/blob/…` for code,
+    /// `/commit/<sha>` for a commit), if the project has a `source`
+    /// configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub web_url: Option<String>,
     /// Item kind only: whether the target currently exists.
@@ -1080,7 +1082,7 @@ pub struct ResolvedLinkJson {
 /// comment), so a caller that wants one (`rdm-cli`'s `link resolve`/`link
 /// list`) computes it via [`crate::paths::roadmap_path`]/`phase_path`/
 /// `task_path`, resolving a numeric phase stem first, and passes it through
-/// here. Ignored for `Resolved::Code`/`Resolved::Broken`.
+/// here. Ignored for `Resolved::Code`/`Resolved::Commit`/`Resolved::Broken`.
 #[must_use]
 pub fn resolved_to_json(resolved: &Resolved, item_path: Option<&str>) -> ResolvedLinkJson {
     match resolved {
@@ -1105,6 +1107,16 @@ pub fn resolved_to_json(resolved: &Resolved, item_path: Option<&str>) -> Resolve
             rev: rev.clone(),
             line: lines.map(|(start, _)| start),
             end_line: lines.and_then(|(_, end)| end),
+            web_url: web_url.clone(),
+            exists: None,
+            reason: None,
+        },
+        Resolved::Commit { rev, web_url } => ResolvedLinkJson {
+            kind: "commit",
+            path: None,
+            rev: Some(rev.clone()),
+            line: None,
+            end_line: None,
             web_url: web_url.clone(),
             exists: None,
             reason: None,
@@ -1240,6 +1252,23 @@ pub struct MissingAtRevJson {
     pub rev: String,
 }
 
+/// One commit link (`rdm:src@<sha>`) whose revision did not resolve in the
+/// verifying checkout, in JSON. Reported, never failing.
+#[derive(Debug, Clone, Serialize)]
+pub struct UnresolvedCommitJson {
+    /// The document the link was found in.
+    #[serde(flatten)]
+    pub document: DocRef,
+    /// Byte offset of the link's start within that document's body.
+    pub range_start: usize,
+    /// Byte offset of the link's end within that document's body.
+    pub range_end: usize,
+    /// The `rdm:` URI text.
+    pub uri: String,
+    /// The commit SHA exactly as the link wrote it.
+    pub rev: String,
+}
+
 /// The full `link check` report, in JSON.
 #[derive(Debug, Clone, Serialize)]
 pub struct LinkCheckReportJson {
@@ -1252,6 +1281,9 @@ pub struct LinkCheckReportJson {
     /// Count of code links found (a caller's path-verification worklist
     /// size).
     pub code_links_checked: usize,
+    /// Count of commit links (`rdm:src@<sha>`) found (a caller's
+    /// commit-verification worklist size).
+    pub commit_links_checked: usize,
     /// Item links whose target does not exist.
     pub dangling: Vec<DanglingLinkJson>,
     /// Malformed `rdm:` destinations found while parsing.
@@ -1260,6 +1292,10 @@ pub struct LinkCheckReportJson {
     /// `dangling` (an item-link concern) and `diagnostics` (a parse-error
     /// concern).
     pub missing_at_rev: Vec<MissingAtRevJson>,
+    /// Commit links whose revision did not resolve in the verifying checkout.
+    /// Always serialized (empty when none). Non-fatal: never counted toward
+    /// the check's exit status.
+    pub unresolved_commits: Vec<UnresolvedCommitJson>,
     /// Set when checkout-aware path verification did not run (not inside a
     /// checkout, or built without git support).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1280,6 +1316,7 @@ pub fn link_check_report_to_json(
         on: on.map(str::to_string),
         links_checked: report.links_checked,
         code_links_checked: report.code_links.len(),
+        commit_links_checked: report.commit_links.len(),
         dangling: report
             .dangling
             .iter()
@@ -1311,6 +1348,17 @@ pub fn link_check_report_to_json(
                 range_end: m.byte_range.end,
                 path: m.path.clone(),
                 rev: m.rev.clone(),
+            })
+            .collect(),
+        unresolved_commits: report
+            .unresolved_commits
+            .iter()
+            .map(|c| UnresolvedCommitJson {
+                document: c.document.clone(),
+                range_start: c.byte_range.start,
+                range_end: c.byte_range.end,
+                uri: c.uri.clone(),
+                rev: c.rev.clone(),
             })
             .collect(),
         path_verification_skipped: report.path_verification_skipped.clone(),
@@ -1854,6 +1902,8 @@ mod tests {
                 },
             }],
             missing_at_rev: Vec::new(),
+            commit_links: Vec::new(),
+            unresolved_commits: Vec::new(),
             path_verification_skipped: None,
         };
 
@@ -1874,6 +1924,57 @@ mod tests {
         assert_eq!(v["diagnostics"][0]["uri"], "rdm:foo/bar");
         assert_eq!(v["dangling"], serde_json::json!([]));
         assert_eq!(v["missing_at_rev"], serde_json::json!([]));
+        assert_eq!(v["unresolved_commits"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn link_check_report_to_json_carries_unresolved_commits() {
+        use crate::ops::links::{CommitLinkFinding, LinkCheckReport};
+
+        let finding = CommitLinkFinding {
+            document: DocRef::Task {
+                slug: "landed".to_string(),
+            },
+            byte_range: 3..30,
+            uri: "rdm:src@a1b2c3d".to_string(),
+            rev: "a1b2c3d".to_string(),
+        };
+        let report = LinkCheckReport {
+            links_checked: 1,
+            commit_links: vec![finding.clone()],
+            unresolved_commits: vec![finding],
+            ..LinkCheckReport::default()
+        };
+
+        let v = serde_json::to_value(link_check_report_to_json(&report, None)).unwrap();
+        assert_eq!(v["commit_links_checked"], 1);
+        let entry = &v["unresolved_commits"][0];
+        assert_eq!(entry["uri"], "rdm:src@a1b2c3d");
+        assert_eq!(entry["rev"], "a1b2c3d");
+        assert_eq!(entry["kind"], "task");
+        assert_eq!(entry["slug"], "landed");
+        assert_eq!(entry["range_start"], 3);
+        assert_eq!(entry["range_end"], 30);
+    }
+
+    #[test]
+    fn resolved_to_json_maps_commit_kind() {
+        let v = serde_json::to_value(resolved_to_json(
+            &Resolved::Commit {
+                rev: "a1b2c3d".to_string(),
+                web_url: Some("https://github.com/org/repo/commit/a1b2c3d".to_string()),
+            },
+            None,
+        ))
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "commit",
+                "rev": "a1b2c3d",
+                "web_url": "https://github.com/org/repo/commit/a1b2c3d",
+            })
+        );
     }
 
     #[test]

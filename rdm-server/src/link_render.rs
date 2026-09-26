@@ -38,7 +38,7 @@ pub enum RenderAction {
         /// CSS class(es) for the anchor.
         class: String,
     },
-    /// A `rdm:src/...` code reference.
+    /// A `rdm:src/...` code reference or `rdm:src@<sha>` commit reference.
     CodeLink {
         /// GitHub-style permalink, when the project has a `source`
         /// configured. `None` renders as a non-navigable styled span.
@@ -134,6 +134,12 @@ pub fn resolve_body_links(
                 let resolved =
                     rdm_core::ops::links::resolve_link(store, project, containing_commit, &link)?;
                 let action = classify_code(&resolved);
+                (None, resolved, action)
+            }
+            Link::Commit { .. } => {
+                let resolved =
+                    rdm_core::ops::links::resolve_link(store, project, containing_commit, &link)?;
+                let action = classify_commit(&resolved);
                 (None, resolved, action)
             }
         };
@@ -242,6 +248,22 @@ fn classify_code(resolved: &Resolved) -> RenderAction {
     RenderAction::CodeLink {
         web_url: web_url.clone(),
         no_link_display,
+    }
+}
+
+/// Classifies a resolved commit reference (`rdm:src@<sha>`) into its
+/// [`RenderAction`]: a `/commit/<sha>` permalink when the project has a
+/// `source` configured, else a non-navigable `commit <sha>` span. As with
+/// [`classify_code`], no git verification happens here.
+fn classify_commit(resolved: &Resolved) -> RenderAction {
+    let Resolved::Commit { rev, web_url } = resolved else {
+        return RenderAction::Broken {
+            reason: "internal error: expected a commit resolution".to_string(),
+        };
+    };
+    RenderAction::CodeLink {
+        web_url: web_url.clone(),
+        no_link_display: format!("commit {rev}"),
     }
 }
 
@@ -608,6 +630,28 @@ mod tests {
             html.contains(
                 r#"<a class="rdm-link-code" target="_blank" rel="noopener" href="https://github.com/acme/demo/blob/abc123/a/b.rs#L5-L12">src</a>"#
             ),
+            "got: {html}"
+        );
+    }
+
+    #[test]
+    fn commit_link_with_source_renders_commit_permalink() {
+        let (_dir, mut store) = tmp_store();
+        seed_project_source(&mut store, "demo", "https://github.com/acme/demo");
+
+        let body = "Landed in [landed](rdm:src@a1b2c3d).";
+        let links = resolve_body_links(&store, "demo", None, body).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(
+            links[0].action,
+            RenderAction::CodeLink {
+                web_url: Some("https://github.com/acme/demo/commit/a1b2c3d".to_string()),
+                no_link_display: "commit a1b2c3d".to_string(),
+            }
+        );
+        let html = crate::markdown::render_markdown_with_links(body, &links);
+        assert!(
+            html.contains(r#"href="https://github.com/acme/demo/commit/a1b2c3d""#),
             "got: {html}"
         );
     }

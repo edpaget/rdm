@@ -892,3 +892,130 @@ fn check_from_a_linked_worktree_of_the_configured_source_still_verifies() {
         &["worktree", "remove", "--force", &linked.to_string_lossy()],
     );
 }
+
+// --- commit links: `rdm:src@<sha>` ---
+
+#[test]
+fn check_inside_checkout_verifies_commit_links_and_reports_dangling_without_failing() {
+    let plan = init_plan_repo();
+
+    let src = TempDir::new().unwrap();
+    git(src.path(), &["init", "-b", "main"]);
+    std::fs::write(src.path().join("README.md"), "# project").unwrap();
+    git(src.path(), &["add", "."]);
+    git(src.path(), &["commit", "-m", "initial"]);
+    set_project_source(plan.path(), "demo", &src.path().to_string_lossy());
+    let head = String::from_utf8(git(src.path(), &["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    let gone = "0123456789abcdef0123456789abcdef01234567";
+    assert_ne!(head, gone);
+
+    create_task(
+        plan.path(),
+        "landed",
+        "Landed",
+        &format!("Shipped in [landed](rdm:src@{head}); see also [gone](rdm:src@{gone})."),
+    );
+
+    let mut json_cmd = rdm();
+    json_cmd
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(src.path())
+        .args([
+            "link",
+            "check",
+            "--on",
+            "task/landed",
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ]);
+    let json = json_stdout(&mut json_cmd);
+    json_cmd.assert().success();
+
+    let unresolved = json["unresolved_commits"].as_array().unwrap();
+    assert_eq!(
+        unresolved.len(),
+        1,
+        "expected one unresolved commit: {json}"
+    );
+    assert_eq!(unresolved[0]["uri"], format!("rdm:src@{gone}"));
+    assert_eq!(unresolved[0]["rev"], gone);
+    assert_eq!(unresolved[0]["kind"], "task");
+    assert_eq!(unresolved[0]["slug"], "landed");
+    assert!(
+        !json["unresolved_commits"].to_string().contains(&head),
+        "the real commit must verify: {json}"
+    );
+    assert_eq!(json["dangling"], serde_json::json!([]));
+    assert_eq!(json["diagnostics"], serde_json::json!([]));
+    assert_eq!(json["missing_at_rev"], serde_json::json!([]));
+    assert_eq!(json["commit_links_checked"], 2);
+    assert!(json.get("path_verification_skipped").is_none());
+
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .current_dir(src.path())
+        .args(["link", "check", "--on", "task/landed", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("rdm:src@{gone}")))
+        .stdout(predicate::str::contains("task/landed"));
+}
+
+#[test]
+fn check_malformed_commit_link_still_fails() {
+    let plan = init_plan_repo();
+    create_task(
+        plan.path(),
+        "ranged",
+        "Ranged",
+        "See [x](rdm:src@a1b2c3d#L5).",
+    );
+    let nongit = TempDir::new().unwrap();
+
+    let mut cmd = rdm();
+    cmd.arg("--root")
+        .arg(plan.path())
+        .current_dir(nongit.path())
+        .args(["link", "check", "--project", "demo", "--format", "json"]);
+    let json = json_stdout(&mut cmd);
+    cmd.assert().failure().code(1);
+
+    let diagnostics = json["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 1, "expected one diagnostic: {json}");
+    assert_eq!(diagnostics[0]["uri"], "rdm:src@a1b2c3d#L5");
+    let error = diagnostics[0]["error"].as_str().unwrap();
+    assert!(
+        error.contains("line range") && error.contains("commit link"),
+        "expected the line-range-on-commit error: {error}"
+    );
+}
+
+#[test]
+fn resolve_commit_link_emits_commit_kind_and_web_url() {
+    let plan = init_plan_repo();
+    set_project_source(plan.path(), "demo", "https://github.com/org/repo");
+    let sha = "a1b2c3d4e5f60718293a4b5c6d7e8f9012345678";
+
+    let json = json_stdout(rdm().arg("--root").arg(plan.path()).args([
+        "link",
+        "resolve",
+        &format!("rdm:src@{sha}"),
+        "--project",
+        "demo",
+        "--format",
+        "json",
+    ]));
+    assert_eq!(json["kind"], "commit");
+    assert_eq!(json["rev"], sha);
+    assert_eq!(
+        json["web_url"],
+        format!("https://github.com/org/repo/commit/{sha}")
+    );
+}

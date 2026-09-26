@@ -1534,6 +1534,10 @@ fn change_is_a_review_target_but_never_a_link() {
         text.contains("rdm:src/<path>@<sha>"),
         "rejecting an rdm:change link must point at the code-link form: {text}"
     );
+    assert!(
+        text.contains("rdm:src@<sha>"),
+        "rejecting an rdm:change link must also name the commit-link form: {text}"
+    );
     let _ = src;
 }
 

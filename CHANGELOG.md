@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Commit links.** A document can now link a whole source-repo commit with `rdm:src@<sha>` (a 7–64 character hex SHA; no `#L` line range, and no branch or tag names — link a file with `rdm:src/<path>@<rev>` for those). `rdm link resolve rdm:src@<sha>` reports kind `commit` with a `<repo>/commit/<sha>` web URL when the project has a `source` configured, and rdm-server renders it as a commit permalink. `rdm link check`, run inside the project's configured source checkout, verifies each commit link exists and reports one that doesn't under the new `unresolved_commits` JSON key (plus `commit_links_checked`), or an `unresolved commit link in …` text line, without failing: the exit status stays 0. A malformed commit link is still a parse error that fails the check. The `rdm:change/<sha>` rejection now names both `rdm:src@<sha>` and `rdm:src/<path>@<sha>`. The form and the decision to put it under `src` rather than a new `rdm:commit/` namespace are documented in `docs/link-grammar.md`. rdm-core API: `Link::Commit`, `Resolved::Commit`, `LinkParseError::{InvalidCommitRev, CommitLineRange}`, `ops::links::{resolve_commit_link, build_commit_web_url, CommitLinkFinding}`, `LinkCheckReport.{commit_links, unresolved_commits}` and `json::UnresolvedCommitJson`; the new enum variants are additive but break exhaustive matches on `Link`, `Resolved` and `LinkParseError`.
+
 ## [0.22.2] - 2026-09-25
 
 ### Added

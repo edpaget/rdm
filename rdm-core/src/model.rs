@@ -725,9 +725,11 @@ pub(crate) mod plan_ref {
         };
         match crate::link::parse(&uri) {
             Ok(crate::link::Link::Item(item_ref)) => Ok(item_ref),
-            Ok(crate::link::Link::Code { .. }) => Err(E::custom(format!(
-                "'{raw}' is a source-code reference; expected an item reference like rdm:phase/<roadmap>/<stem>, rdm:task/<slug>, or rdm:plan/<slug>"
-            ))),
+            Ok(crate::link::Link::Code { .. } | crate::link::Link::Commit { .. }) => {
+                Err(E::custom(format!(
+                    "'{raw}' is a source-code reference; expected an item reference like rdm:phase/<roadmap>/<stem>, rdm:task/<slug>, or rdm:plan/<slug>"
+                )))
+            }
             Err(e) => Err(E::custom(e.to_string())),
         }
     }

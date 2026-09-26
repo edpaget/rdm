@@ -181,7 +181,7 @@ To intentionally empty an existing body on `phase update`, `task update`, or `ro
 
 ## Linking
 
-Bodies can carry `rdm:` links — write them as ordinary Markdown links, e.g. `[the auth roadmap](rdm:roadmap/auth)`. There are four item-link forms, using the same identifiers as `Done:` lines and `review --on` (a review target additionally accepts `change/<head-sha>`, but a change is a source-repo diff, not a plan-repo document, so it is not a linkable item form — link code with `rdm:src/<path>@<sha>` instead):
+Bodies can carry `rdm:` links — write them as ordinary Markdown links, e.g. `[the auth roadmap](rdm:roadmap/auth)`. There are four item-link forms, using the same identifiers as `Done:` lines and `review --on` (a review target additionally accepts `change/<head-sha>`, but a change is a source-repo diff, not a plan-repo document, so it is not a linkable item form — link the commit with `rdm:src@<sha>`, or code at it with `rdm:src/<path>@<sha>`, instead):
 
 - `rdm:roadmap/<slug>`
 - `rdm:phase/<roadmap-slug>/<stem-or-number>`
@@ -191,6 +191,10 @@ Bodies can carry `rdm:` links — write them as ordinary Markdown links, e.g. `[
 And one pinned code-link form, for pointing at a specific file (and optionally a revision and line range) in the project's source repository:
 
 - `rdm:src/<path>[@<rev>][#Lstart[-Lend]]` — e.g. `rdm:src/rdm-core/src/link.rs@a1b2c3d#L42-L58`
+
+And a commit form, for pointing at a whole commit in the source repository:
+
+- `rdm:src@<sha>` — e.g. `rdm:src@a1b2c3d`; takes a 7–64 character hex SHA (never a branch or tag name) and no `#L` line range
 
 ```bash
 rdm link check {proj_flag}                       # validate every rdm: link in the project (CI-friendly, nonzero on anything broken)
@@ -204,7 +208,7 @@ Rules:
 
 - Use exact slugs and stems as printed by rdm — never invent or paraphrase one. Run `rdm search <topic> {proj_flag}` first if you're not sure an item exists yet.
 - Pin a code link with the revision from `git rev-parse HEAD` in the source repo, or omit `@rev` inside a phase or task body to let it fall back to that item's own stamped `commit` field once one is recorded.
-- Before finalizing a body edit, run `rdm link check --on <ref> {proj_flag}` (e.g. `--on task/<slug>` or `--on phase/<roadmap-slug>/<stem>`) and treat a nonzero exit as a blocking issue — a dangling item link or a code link whose path doesn't exist at its pinned revision — to fix before proceeding.
+- Before finalizing a body edit, run `rdm link check --on <ref> {proj_flag}` (e.g. `--on task/<slug>` or `--on phase/<roadmap-slug>/<stem>`) and treat a nonzero exit as a blocking issue — a dangling item link or a code link whose path doesn't exist at its pinned revision — to fix before proceeding. A commit link whose SHA isn't found in the source checkout is reported but does not make the exit nonzero.
 
 ## Token spend
 

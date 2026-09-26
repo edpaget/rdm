@@ -1107,3 +1107,17 @@ fn roadmap_create_rejects_the_reserved_plan_slug() {
         .failure()
         .stderr(predicate::str::contains("reserved"));
 }
+
+/// `src` hosts both `rdm:src/<path>` code links and the `rdm:src@<sha>`
+/// commit link, so a roadmap may never take it as a slug.
+#[test]
+fn roadmap_create_rejects_the_reserved_src_slug() {
+    let dir = init_repo();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["roadmap", "create", "src", "--no-edit", "--project", "fbm"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("reserved"));
+}

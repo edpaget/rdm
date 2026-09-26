@@ -395,7 +395,9 @@ comments:
 | `implements` | no | item ref | The `rdm:plan/<slug>` this change implements. Only meaningful on a `change` target; absent on every other kind, so every pre-existing review file still loads |
 
 `rdm:change/<sha>` is **not** a valid link — `change` names a review target, not
-a linkable document. Link code with `rdm:src/<path>@<sha>` instead.
+a linkable document. Link the commit with `rdm:src@<sha>`, or code at it with
+`rdm:src/<path>@<sha>`, instead. See [`link-grammar.md`](link-grammar.md) for
+every `rdm:` form.
 
 ### Anchors
 

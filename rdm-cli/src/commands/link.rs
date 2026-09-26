@@ -67,6 +67,8 @@ fn check(
 
     let on_label = target.as_ref().map(rdm_core::link::ItemRef::label);
     let report_json = json::link_check_report_to_json(&report, on_label.as_deref());
+    // `unresolved_commits` is deliberately absent: an unresolvable commit
+    // link is reported but fails open (roadmap Intent decision, 2026-09-25).
     let broken = !report.dangling.is_empty()
         || !report.diagnostics.is_empty()
         || !report.missing_at_rev.is_empty();
@@ -88,7 +90,8 @@ fn check(
     Ok(())
 }
 
-/// Fills in `report.missing_at_rev`/`path_verification_skipped` — the one
+/// Fills in `report.missing_at_rev`/`unresolved_commits`/
+/// `path_verification_skipped` — the one
 /// enrichment [`rdm_core::ops::links::check_project`]/`check_document`
 /// deliberately leave to the caller, since core has no source-repo checkout
 /// to verify a code link's path against (see
@@ -125,6 +128,13 @@ fn check(
 ///   checkout cannot resolve (e.g. a shallow clone missing the commit) — is
 ///   treated as inconclusive and fail-open, never a false "missing", and
 ///   never aborts the rest of the report.
+/// - Inside the matching checkout, each commit link (`rdm:src@<sha>`) is
+///   checked with [`rdm_git::commit_exists_at`]; a rev that does not resolve
+///   (dangling, or absent from a shallow clone — the same observation) is
+///   recorded in `report.unresolved_commits`, which is reported but never
+///   fails the check. A spawn failure is skipped, fail-open. Outside the
+///   matching checkout commit links are not verified; the skipped note
+///   above covers them too.
 fn verify_paths_at_pinned_rev(store: &AppStore, project: &str, report: &mut LinkCheckReport) {
     #[cfg(feature = "git")]
     {
@@ -205,6 +215,12 @@ fn verify_paths_at_pinned_rev(store: &AppStore, project: &str, report: &mut Link
                         path: link.path,
                         rev,
                     });
+            }
+        }
+        for link in report.commit_links.clone() {
+            // `Err` (a spawn failure) is inconclusive: skip, fail open.
+            if let Ok(false) = rdm_git::commit_exists_at(&cwd, &link.rev) {
+                report.unresolved_commits.push(link);
             }
         }
     }
@@ -301,11 +317,11 @@ fn resolve(
 /// doc comment) — via [`rdm_core::ops::links::item_ref_path`], the single
 /// authoritative implementation numeric-phase-stem resolution also backs
 /// for [`rdm_core::ops::links::resolve_item_link`]'s own existence check.
-/// `None` for a code link (its own `path` field already covers it).
+/// `None` for a code or commit link (neither names a plan-repo document).
 fn item_path_for(store: &AppStore, project: &str, link: &Link) -> Result<Option<String>> {
     let target = match link {
         Link::Item(target) => target,
-        Link::Code { .. } => return Ok(None),
+        Link::Code { .. } | Link::Commit { .. } => return Ok(None),
     };
     let path = rdm_core::ops::links::item_ref_path(store, project, target)
         .context("failed to resolve item link path")?;
