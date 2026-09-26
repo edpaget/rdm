@@ -905,6 +905,64 @@ buffer is back at the current revision with the submitted review."
         (should-error (call-interactively #'rdm-review-submit) :type 'user-error)))
     (should-not (rdm-review-test--calls-of calls "review" "submit"))))
 
+(defun rdm-review-test--environment (&rest entries)
+  "`process-environment' without USER or RDM_REVIEW_AUTHOR, plus ENTRIES."
+  (append entries
+          (seq-remove (lambda (e) (string-match-p "\\`\\(USER\\|RDM_REVIEW_AUTHOR\\)=" e))
+                      process-environment)))
+
+(defun rdm-review-test--authors-used (environment)
+  "The distinct `--author' values of the draft lookups and `review start'.
+Opens task t1 and starts a draft with `rdm-review-author' nil under
+ENVIRONMENT."
+  (let ((authors nil))
+    (rdm-review-test--with nil
+      (let ((rdm-review-author nil)
+            (process-environment environment))
+        (with-current-buffer (rdm-open-item rdm-review-test--task)
+          (rdm-review-start))
+        (dolist (argv (append (rdm-review-test--calls-of calls "review" "list")
+                              (rdm-review-test--calls-of calls "review" "start")))
+          (when (or (member "--state=draft" argv) (equal (cadr argv) "start"))
+            (push (list (cadr argv) (rdm-review-test--flag argv "author")) authors)))))
+    (delete-dups (nreverse authors))))
+
+(ert-deftest rdm-review/author-from-environment ()
+  "With `rdm-review-author' nil the author is RDM_REVIEW_AUTHOR, else USER,
+and the same one is passed to the draft lookup and to `review start';
+with neither, no draft is looked up and `review start' has no --author."
+  (should (equal (rdm-review-test--authors-used
+                  (rdm-review-test--environment "RDM_REVIEW_AUTHOR=env-me" "USER=user-me"))
+                 '(("list" "env-me") ("start" "env-me"))))
+  (should (equal (rdm-review-test--authors-used
+                  (rdm-review-test--environment "USER=user-me"))
+                 '(("list" "user-me") ("start" "user-me"))))
+  (should (equal (rdm-review-test--authors-used (rdm-review-test--environment))
+                 '(("start" nil)))))
+
+(ert-deftest rdm-review/newest-own-draft-followed ()
+  "Of two own drafts the buffer follows the newer one's `created_commit'."
+  (rdm-review-test--with
+      (list (rdm-review-test--review
+             "r-old" rdm-review-test--task-target nil
+             :state "draft" :verdict nil :author "me"
+             :created "2026-09-26T09:00:00Z" :created_commit "c-old")
+            (rdm-review-test--review
+             "r-new" rdm-review-test--task-target nil
+             :state "draft" :verdict nil :author "me"
+             :created "2026-09-26T11:00:00Z" :created_commit "c-new")
+            (rdm-review-test--review
+             "r-mid" rdm-review-test--task-target nil
+             :state "draft" :verdict nil :author "me"
+             :created "2026-09-26T10:00:00Z" :created_commit "c-mid"))
+    (setq rdm-review-test--originals
+          (list (cons "c-old" "Old.\n") (cons "c-mid" "Mid.\n")
+                (cons "c-new" "New.\n")))
+    (with-current-buffer (rdm-open-item rdm-review-test--task)
+      (should (equal rdm-view--at "c-new"))
+      (should (equal (plist-get rdm-review--draft :id) "r-new"))
+      (should (equal (rdm-view-body) "New.\n")))))
+
 ;;;; The transient
 
 (defun rdm-review-test--dispatch-suffixes (item)
