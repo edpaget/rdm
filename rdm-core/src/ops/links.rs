@@ -4047,6 +4047,120 @@ mod tests {
         assert!(comment_2.unverified);
     }
 
+    /// Seeds a task whose body is `[x](<uri>)`.
+    fn seed_linking_task(store: &mut MemoryStore, slug: &str, uri: &str) {
+        let body = format!("See [x]({uri}).");
+        crate::ops::task::create_task(
+            store,
+            CreateTask {
+                project: "demo",
+                slug,
+                title: slug,
+                priority: Priority::Medium,
+                tags: None,
+                body: Some(&body),
+            },
+        )
+        .unwrap();
+    }
+
+    fn task_doc(slug: &str) -> DocRef {
+        DocRef::Task {
+            slug: slug.to_string(),
+        }
+    }
+
+    /// A [`MemorySourceRepo`] whose `rev_parse` rejects option-shaped input
+    /// with [`Error::InvalidChangeRevisionInput`], the way the real git
+    /// adapter does before any subprocess.
+    struct RejectsOptionShaped(MemorySourceRepo);
+
+    impl SourceRepo for RejectsOptionShaped {
+        fn rev_parse(&self, rev: &str) -> Result<Option<String>> {
+            if rev.starts_with('-') {
+                return Err(Error::InvalidChangeRevisionInput(rev.to_string()));
+            }
+            self.0.rev_parse(rev)
+        }
+        fn merge_base(&self, a: &str, b: &str) -> Result<Option<String>> {
+            self.0.merge_base(a, b)
+        }
+        fn file_at(&self, rev: &str, path: &str) -> Result<Option<String>> {
+            self.0.file_at(rev, path)
+        }
+        fn unified_diff(&self, base: &str, head: &str, path: &str) -> Result<Option<String>> {
+            self.0.unified_diff(base, head, path)
+        }
+        fn head(&self) -> Result<Option<String>> {
+            self.0.head()
+        }
+        fn current_branch(&self) -> Result<Option<String>> {
+            self.0.current_branch()
+        }
+        fn object_kind_at(&self, rev: &str, path: &str) -> Result<SourceObjectLookup> {
+            self.0.object_kind_at(rev, path)
+        }
+    }
+
+    /// The comments a path query at `H1` returns from the shared seed.
+    fn lib_comments_at_h1() -> Vec<DocRef> {
+        vec![
+            review_doc(REVIEW_H1, Some(1)),
+            review_doc(REVIEW_H1, Some(2)),
+        ]
+    }
+
+    #[test]
+    fn revision_query_omits_a_document_whose_revision_does_not_resolve() {
+        let mut store = setup();
+        seed_code_annotations(&mut store);
+        // `gone-branch` is not in the source: `rev_parse` misses (`Ok(None)`).
+        seed_linking_task(&mut store, "gone", "rdm:src/src/lib.rs@gone-branch");
+        // A resolvable sibling proves the walk carries on past the miss.
+        seed_linking_task(&mut store, "on-main", "rdm:src/src/lib.rs@main");
+        let entries = code_annotations(
+            &store,
+            &code_source(),
+            "demo",
+            &code_target(LIB, Some(H1), None),
+        )
+        .unwrap();
+        let docs: Vec<DocRef> = entries.into_iter().map(|e| e.document).collect();
+        let mut expected = vec![task_doc("on-main")];
+        expected.extend(lib_comments_at_h1());
+        assert_eq!(docs, expected);
+    }
+
+    #[test]
+    fn revision_query_omits_a_document_whose_revision_is_option_shaped() {
+        let mut store = setup();
+        seed_code_annotations(&mut store);
+        seed_linking_task(&mut store, "optiony", "rdm:src/src/lib.rs@--all");
+        seed_linking_task(&mut store, "on-main", "rdm:src/src/lib.rs@main");
+        let entries = code_annotations(
+            &store,
+            &RejectsOptionShaped(code_source()),
+            "demo",
+            &code_target(LIB, Some(H1), None),
+        )
+        .unwrap();
+        let docs: Vec<DocRef> = entries.into_iter().map(|e| e.document).collect();
+        let mut expected = vec![task_doc("on-main")];
+        expected.extend(lib_comments_at_h1());
+        assert_eq!(docs, expected);
+    }
+
+    #[test]
+    fn revision_query_propagates_a_document_revision_git_failure() {
+        let mut store = setup();
+        seed_code_annotations(&mut store);
+        seed_linking_task(&mut store, "broken", "rdm:src/src/lib.rs@broken-branch");
+        let source = code_source().with_failing_rev_parse("broken-branch");
+        let err = code_annotations(&store, &source, "demo", &code_target(LIB, Some(H1), None))
+            .unwrap_err();
+        assert!(matches!(&err, Error::Git(_)), "{err:?}");
+    }
+
     #[test]
     fn item_and_code_targets_are_refused_by_the_other_function() {
         let store = setup();
