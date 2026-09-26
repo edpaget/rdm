@@ -984,9 +984,22 @@ pub fn change_anchor_ineligibility(
     let Anchor::FileQuote { path, .. } = anchor else {
         return None;
     };
-    match source.object_kind_at(head, path) {
+    ineligibility_note(path, head, &source.object_kind_at(head, path))
+}
+
+/// The note [`change_anchor_ineligibility`] reports for `path` at `head`,
+/// given the [`SourceRepo::object_kind_at`] answer already in hand — shared
+/// with [`crate::comment_target`] so one lookup yields both the rung and the
+/// reason.
+pub(crate) fn ineligibility_note(
+    path: &str,
+    head: &str,
+    lookup: &Result<SourceObjectLookup>,
+) -> Option<String> {
+    match lookup {
         Ok(SourceObjectLookup::Kind(SourceObjectKind::Blob)) | Err(_) => None,
-        // Environmental, not a property of the anchor — see the doc comment.
+        // Environmental, not a property of the anchor — see
+        // `change_anchor_ineligibility`'s doc comment.
         Ok(SourceObjectLookup::RevMissing) => None,
         Ok(SourceObjectLookup::Kind(SourceObjectKind::Tree)) => {
             Some(format!("'{path}' is a directory, not a file"))

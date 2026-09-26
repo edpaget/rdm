@@ -211,6 +211,38 @@ only core knows its own refusal variants. `POST
 and `intended_path` fields; an unknown `anchor_state` is a 422 naming the
 accepted values.
 
+## The coarsest true target
+
+`rdm_core::comment_target::comment_target` turns one stored comment into the
+most specific thing it can honestly link to — the single answer reverse lookup
+and per-comment links build on. For a `change/` review with head `H`:
+
+| Comment | Target | `level` |
+|---------|--------|---------|
+| `file-quote` anchor whose path is a file at `H` | `rdm:src/<path>@H#L<a>-L<b>` | `range` |
+| anchorless, `intended_path` a file at `H` | `rdm:src/<path>@H` | `file` |
+| anything else (no intended path, a path absent at `H`, an anchor on a directory or submodule) | `rdm:src@H` | `commit` |
+
+A plan-document review (roadmap, phase, task, plan) always targets the item
+itself — a roadmap review comment scoped to a phase targets that phase — because
+there is no source commit to fall back to.
+
+Every coarser target carries its reason: the stored `anchor_state`
+(deliberately whole-document, or the recorded persist/run-time reason), the
+read-time ineligibility note (the same text as `unresolved_reason`: a
+directory, a submodule, or a path absent at `H`), or **not recorded** for a
+legacy anchorless comment.
+
+**A target is never inferred from the change's diff.** A comment with no
+anchor and no intended path lands on the commit even when the change touches a
+single file; guessing the file from the diff would state something the
+comment never said.
+
+**Existence is checked fail-open.** When the checkout does not contain `H`, or
+git cannot answer, the range or file rung is kept and marked `unverified`: the
+range was verified when it was written, and `H` is immutable. A malformed
+stored identity skips every source query and is treated the same way.
+
 ## Resolution: resolved / drifted / unresolved
 
 `rdm review show` resolves each anchor against a **tip**, chosen by

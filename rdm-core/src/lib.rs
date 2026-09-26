@@ -12,6 +12,9 @@ pub mod ast;
 /// comment to a quoted span of a source-repository file, and resolving it
 /// again against a later tip.
 pub mod change;
+/// A review comment's coarsest true target: the range, file, commit, or
+/// plan item it can honestly link to.
+pub mod comment_target;
 /// Plan repo configuration (`rdm.toml`).
 pub mod config;
 /// Conflict classification for merge conflict paths.
