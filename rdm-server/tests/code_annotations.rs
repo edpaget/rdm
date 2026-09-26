@@ -702,6 +702,37 @@ async fn annotations_fail_open_without_a_source_repo() {
     );
 }
 
+/// Refusals that need no source repository are errors, not "could not
+/// look": an unknown project is a 404 and an item target a 400, under both
+/// Accepts, even with no source configured. Holds with or without the `git`
+/// feature.
+#[tokio::test]
+async fn annotations_refusals_without_a_source_repo() {
+    let f = fixture(false);
+    let (addr, client) = spawn(f.plan.path()).await;
+    let unknown = |reference: &str| {
+        annotations_path(reference).replacen(
+            &format!("/projects/{PROJECT}/"),
+            "/projects/no-such-project/",
+            1,
+        )
+    };
+    let cases = [
+        (unknown("rdm:src/src/lib.rs"), 404),
+        (unknown("rdm:src@abc1234"), 404),
+        (annotations_path("task/x"), 400),
+    ];
+    for (path, status) in cases {
+        let (got, content_type, body) = get(addr, &client, &path, "application/hal+json").await;
+        assert_eq!(got, status, "{path}: {body}");
+        assert_eq!(content_type, "application/problem+json", "{path}");
+        let (got, content_type, body) = get(addr, &client, &path, "text/html").await;
+        assert_eq!(got, status, "{path}: {body}");
+        assert!(content_type.starts_with("text/html"), "{path}");
+        assert!(!body.contains(r#"class="source-note""#), "{path}: {body}");
+    }
+}
+
 /// Core's errors reach the resource through the existing mappings: Problem
 /// Details under the HAL Accept, the error page with the same status under
 /// the HTML one.

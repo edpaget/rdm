@@ -95,14 +95,19 @@ pub enum AnnotationsOutcome {
 ///
 /// # Errors
 ///
-/// Every error `code_annotations` returns once a source was found (an item
-/// target, an unknown revision, a missing path or one that is not a file,
-/// or a failing repository).
+/// Loading the project fails (an unknown project, or a `project.md` that
+/// does not parse), or any error `code_annotations` returns once a source was
+/// found (an item target, an unknown revision, a missing path or one that is
+/// not a file, or a failing repository).
 pub fn code_annotations_for_project(
     store: &impl rdm_core::store::VersionedStore,
     project: &str,
     target: &rdm_core::link::BacklinkTarget,
 ) -> rdm_core::error::Result<AnnotationsOutcome> {
+    // Only an EXISTING project with no readable source fails open: an unknown
+    // project, or one whose project.md does not parse, is that error — never
+    // misreported as "configures no local source repo".
+    rdm_core::io::load_project(store, project)?;
     // A plan item is not a code location: core refuses it before it asks the
     // source anything, so its refusal reaches the caller whether or not a
     // source repository is available — never masked as "could not look".
