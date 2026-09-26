@@ -1825,7 +1825,8 @@ exactly as before.
 A build-time drop and a whole-document-by-design finding are recorded
 directly: `review comment --anchor-state <reason> [--intended-path <path>]`
 (`path-missing`, or `outside-hunk` with the file the finding meant for an
-empty range) and `review comment --anchor-state whole-document`. The writer's
+empty range — left out when it contains `@` or `#`, which core refuses as an
+intended path, so the comment still lands; see `linkableIntendedPath`) and `review comment --anchor-state whole-document`. The writer's
 own vocabulary, `PERSIST_DEGRADED_REASONS`, is exactly those build-time reasons
 (`path-missing`, `outside-hunk`, `start-fallback`); every run-time reason is
 core's to name.

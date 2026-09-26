@@ -1150,6 +1150,108 @@ fn all_anchors_degraded_sets_all() {
     });
 }
 
+// --- Empty reviewed range: the build-time outside-hunk drop ------------------------
+
+/// One path-bearing finding persisted over an EMPTY reviewed range (base ==
+/// head, declared `noCode`), so the writer drops its anchor at build time as
+/// `outside-hunk`; returns `(review, stdout, result)`.
+fn empty_range(
+    lib: &Lib,
+    fx: &Fx,
+    id: &str,
+    path: &str,
+) -> Result<(Value, String, Value), Failure> {
+    let head = fx.roadmap_pin.expected_head.clone();
+    let pin = Pin {
+        base: head.clone(),
+        expected_head: head,
+        ..fx.roadmap_pin.clone()
+    };
+    let (r, _) = drive(
+        lib,
+        merge(&[persist_args(&pin), json!({ "noCode": true })]),
+        vec![finding(
+            id,
+            "concern",
+            json!({ "location": "see the gate step", "path": path, "quote": "shipped" }),
+        )],
+    )?;
+    let (review, out) = land(fx, &r)?;
+    Ok((review, out, r))
+}
+
+/// The empty-range drop, stored whole-document as `outside-hunk` and counted
+/// as degraded both at build time and by the executed ladder.
+fn assert_empty_range_drop(
+    js: &mut Js,
+    review: &Value,
+    out: &str,
+    r: &Value,
+    id: &str,
+) -> Result<Value, Failure> {
+    let c = comment_with(review, id)?;
+    check!(no_anchor(&c), "no hunk can hold the anchor: {c}");
+    check_eq!(
+        c["anchor_state"],
+        json!("outside-hunk"),
+        "the writer's own empty-range reason is stored"
+    );
+    check_eq!(
+        header_anchor(js, &c)?,
+        json!("degraded"),
+        "the dropped anchor is header-marked degraded"
+    );
+    check_eq!(
+        r["persistDegraded"],
+        json!({ "requested": 1, "degraded": 1, "all": true }),
+        "the build-time drop is pre-counted"
+    );
+    check!(
+        has_line(out, "anchorsDegraded=all"),
+        "anchorsDegraded counts the drop: {out}"
+    );
+    Ok(c)
+}
+
+#[test]
+fn empty_range_drop_records_the_intended_path() {
+    run_real(|lib| {
+        let fx = fixture()?;
+        let mut js = Js::open(lib)?;
+        let (review, out, r) = empty_range(lib, &fx, "empty-range-bug", "roadmap-work.txt")?;
+        let c = assert_empty_range_drop(&mut js, &review, &out, &r, "empty-range-bug")?;
+        check_eq!(
+            c["intended_path"],
+            json!("roadmap-work.txt"),
+            "the file the finding meant rides --intended-path"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn empty_range_drop_omits_an_unlinkable_intended_path() {
+    run_real(|lib| {
+        let fx = fixture()?;
+        let mut js = Js::open(lib)?;
+        // `@` is reserved by the `rdm:src/<path>@<rev>` grammar, so core
+        // would refuse it as `--intended-path`; the ladder must still write
+        // the comment (`land` runs it to a zero exit) without the path.
+        let (review, out, r) = empty_range(
+            lib,
+            &fx,
+            "scoped-pkg-bug",
+            "node_modules/@scope/pkg/index.js",
+        )?;
+        let c = assert_empty_range_drop(&mut js, &review, &out, &r, "scoped-pkg-bug")?;
+        check!(
+            c.get("intended_path").is_none(),
+            "an unlinkable path is dropped, not refused: {c}"
+        );
+        Ok(())
+    });
+}
+
 // --- The park-required guard ------------------------------------------------------
 
 /// A clean task review with `persist` and `gate`, so the gate ladder carries

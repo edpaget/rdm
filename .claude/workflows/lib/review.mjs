@@ -2270,6 +2270,24 @@ function pathFromLocation(location) {
   return isRepoRelativePath(s) ? s : null;
 }
 
+// linkableIntendedPath(p) — `p` when core will accept it as an
+// `--intended-path`, else null. `isRepoRelativePath` admits `@` and `#`
+// (e.g. `node_modules/@scope/pkg/index.js`, `docs/c#.md`), but those are the
+// two characters the `rdm:src/<path>@<rev>#L<n>` link grammar reserves, so
+// core's `normalize_source_path` refuses them (ChangePathNotLinkable) — and a
+// refused `review comment ... || exit 1` aborts the WHOLE persist ladder. So
+// the build-time outside-hunk drop leaves such a path out and still writes
+// the comment with only `--anchor-state`, exactly as the run-time fall-back
+// (`add_comment_with_anchor`) already drops an unnormalizable path. Core's
+// explicit `--intended-path` validation stays strict for a human caller; this
+// only stops the generated ladder from asking for a path core would refuse.
+//
+// Pure and total: returns null for a non-string input.
+function linkableIntendedPath(p) {
+  if (typeof p !== 'string') return null;
+  return /[@#]/.test(p) ? null : p;
+}
+
 // persistAnchorFor(finding, target, opts) — the SINGLE decision of how one
 // finding gets anchored, shared by the command writer, the prompt builder's
 // pre-degradation report, and the comment-header `anchor` marker so none of
@@ -2307,7 +2325,9 @@ function pathFromLocation(location) {
 // dropped at build time, and `intendedPath` the validated candidate path
 // whenever `opts.pathAnchors === true` on a change target — kept even when an
 // empty range forces `reason: 'outside-hunk'`, so that build-time drop still
-// records the file the finding meant (`--intended-path`). It is null for
+// records the file the finding meant (`--intended-path`) — unless that path
+// carries a character core refuses there, when it is null and the comment
+// keeps only its `--anchor-state` (see `linkableIntendedPath`). It is null for
 // `path-missing` (there is no usable path to record) and on a non-change
 // target.
 function persistAnchorFor(finding, target, opts) {
@@ -2329,7 +2349,7 @@ function persistAnchorFor(finding, target, opts) {
   // repo-relative path could be derived from either `finding.path` or
   // `finding.location`.
   return emptyRange
-    ? { quote: false, path: null, reason: 'outside-hunk', intendedPath: candidate }
+    ? { quote: false, path: null, reason: 'outside-hunk', intendedPath: linkableIntendedPath(candidate) }
     : { quote: false, path: null, reason: 'path-missing', intendedPath: null };
 }
 
