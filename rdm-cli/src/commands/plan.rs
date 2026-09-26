@@ -94,7 +94,7 @@ pub fn run(
             })?;
             match format {
                 OutputFormat::Json => {
-                    let j = json::plan_to_json(&slug, &doc, &[]);
+                    let j = json::plan_to_json(&slug, &doc, &[], None);
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&j).context("failed to serialize plan")?
@@ -107,13 +107,20 @@ pub fn run(
             slug,
             project,
             no_body,
+            at,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let mut doc =
-                rdm_core::io::load_plan(store, &project, &slug).context("failed to load plan")?;
+            let mut doc = match at.as_deref() {
+                Some(sha) => rdm_core::io::load_plan_at(store, &project, &slug, sha)
+                    .with_context(|| format!("failed to load plan '{slug}' at revision '{sha}'"))?,
+                None => rdm_core::io::load_plan(store, &project, &slug)
+                    .context("failed to load plan")?,
+            };
             if no_body {
                 doc.body = String::new();
             }
+            // Under `--at <sha>` only the body is historical: the reviews and
+            // change reviews below are always the current state.
             let reviews = reviews_on_plan(store, &project, &slug)?;
             // Reviews *on* the plan document and `change/` reviews of the
             // code written against it are kept as two distinct lists — see
@@ -124,19 +131,32 @@ pub fn run(
             match format {
                 OutputFormat::Human => print!(
                     "{}",
-                    display::format_plan_detail(&slug, &doc, &reviews, &change_reviews)
+                    display::format_plan_detail(
+                        &slug,
+                        &doc,
+                        at.as_deref(),
+                        &reviews,
+                        &change_reviews
+                    )
                 ),
                 OutputFormat::Markdown => print!(
                     "{}",
-                    display::format_plan_detail_md(&slug, &doc, &reviews, &change_reviews)
+                    display::format_plan_detail_md(
+                        &slug,
+                        &doc,
+                        at.as_deref(),
+                        &reviews,
+                        &change_reviews
+                    )
                 ),
                 OutputFormat::Json => {
-                    let j = json::plan_to_json(&slug, &doc, &reviews).with_change_reviews(
-                        change_reviews
-                            .iter()
-                            .filter_map(|(id, rd)| json::plan_change_review_to_json(id, rd))
-                            .collect(),
-                    );
+                    let j = json::plan_to_json(&slug, &doc, &reviews, at.as_deref())
+                        .with_change_reviews(
+                            change_reviews
+                                .iter()
+                                .filter_map(|(id, rd)| json::plan_change_review_to_json(id, rd))
+                                .collect(),
+                        );
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&j).context("failed to serialize plan")?

@@ -217,6 +217,10 @@ pub struct PlanJson {
     /// make `rdm plan show`'s verdict summary meaningless.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub change_reviews: Vec<PlanChangeReviewJson>,
+    /// Git revision the body was read from (only set when this view was
+    /// requested at a specific historical SHA).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
 }
 
 impl PlanJson {
@@ -599,11 +603,13 @@ pub fn task_summary_to_json(slug: &str, doc: &Document<Task>) -> TaskSummaryJson
 ///
 /// `reviews` is what the caller already loaded (see
 /// [`crate::ops::reviews::filter_reviews`]); a pure mapper, like every other
-/// `*_to_json` here.
+/// `*_to_json` here. When `revision` is `Some`, the resulting JSON surfaces
+/// the historical SHA in the `revision` field.
 pub fn plan_to_json(
     slug: &str,
     doc: &Document<Plan>,
     reviews: &[(String, Document<Review>)],
+    revision: Option<&str>,
 ) -> PlanJson {
     let fm = &doc.frontmatter;
     PlanJson {
@@ -627,6 +633,7 @@ pub fn plan_to_json(
             })
             .collect(),
         change_reviews: Vec::new(),
+        revision: revision.map(String::from),
     }
 }
 

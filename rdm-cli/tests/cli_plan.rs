@@ -1121,3 +1121,143 @@ fn roadmap_create_rejects_the_reserved_src_slug() {
         .failure()
         .stderr(predicate::str::contains("reserved"));
 }
+
+// --- `plan show --at <sha>`: the body as it was at a revision ---
+
+fn head_sha(dir: &std::path::Path) -> String {
+    let repo = gix::open(dir).unwrap();
+    let mut head = repo.head().unwrap();
+    head.peel_to_commit().unwrap().id.to_string()
+}
+
+fn commit(dir: &TempDir, msg: &str) {
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(["commit", "-m", msg])
+        .assert()
+        .success();
+}
+
+#[test]
+fn plan_show_at_returns_historical_body() {
+    let dir = init_repo();
+    create_plan(&dir, "impl-login", "task/fix-login");
+    commit(&dir, "seed: plan with original body");
+    let old = head_sha(dir.path());
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "plan",
+            "update",
+            "impl-login",
+            "--body",
+            "revised-plan-body\n",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+    commit(&dir, "update plan body");
+
+    let human = stdout_of(
+        &dir,
+        &[
+            "plan",
+            "show",
+            "impl-login",
+            "--project",
+            "fbm",
+            "--at",
+            &old,
+        ],
+    );
+    assert!(human.contains("Details here."), "{human}");
+    assert!(human.contains(&format!("Revision: {old}")), "{human}");
+    assert!(!human.contains("revised-plan-body"), "{human}");
+
+    let current = stdout_of(&dir, &["plan", "show", "impl-login", "--project", "fbm"]);
+    assert!(current.contains("revised-plan-body"), "{current}");
+    assert!(!current.contains("Revision:"), "{current}");
+
+    let j = json_out(
+        &dir,
+        &[
+            "plan",
+            "show",
+            "impl-login",
+            "--project",
+            "fbm",
+            "--at",
+            &old,
+        ],
+    );
+    assert!(j["body"].as_str().unwrap().contains("Details here."), "{j}");
+    assert_eq!(j["revision"], old.as_str());
+    let j_now = json_out(&dir, &["plan", "show", "impl-login", "--project", "fbm"]);
+    assert!(j_now.get("revision").is_none(), "{j_now}");
+
+    let md = stdout_of(
+        &dir,
+        &[
+            "plan",
+            "show",
+            "impl-login",
+            "--project",
+            "fbm",
+            "--at",
+            &old,
+            "--format",
+            "markdown",
+        ],
+    );
+    assert!(md.contains(&format!("**Revision:** {old}")), "{md}");
+}
+
+#[test]
+fn plan_show_at_unknown_revision_errors() {
+    let dir = init_repo();
+    create_plan(&dir, "impl-login", "task/fix-login");
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "plan",
+            "show",
+            "impl-login",
+            "--project",
+            "fbm",
+            "--at",
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not known to the store"));
+}
+
+#[test]
+fn plan_show_at_revision_before_plan_existed_errors() {
+    let dir = init_repo();
+    commit(&dir, "seed: init plan repo and project");
+    let pre = head_sha(dir.path());
+    create_plan(&dir, "impl-login", "task/fix-login");
+    commit(&dir, "add plan");
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "plan",
+            "show",
+            "impl-login",
+            "--project",
+            "fbm",
+            "--at",
+            &pre,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not present at revision"));
+}

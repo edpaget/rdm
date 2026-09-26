@@ -954,6 +954,9 @@ pub(crate) enum PlanCommand {
         /// Suppress body content in output.
         #[arg(long)]
         no_body: bool,
+        /// Read the body as it was at a specific git revision.
+        #[arg(long)]
+        at: Option<String>,
     },
     /// List plans.
     List {

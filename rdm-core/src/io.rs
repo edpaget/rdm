@@ -127,11 +127,6 @@ pub fn load_task(store: &impl Store, project: &str, task_slug: &str) -> Result<D
 /// plan whose implemented phase or task has been renamed or deleted (a
 /// dangling reference) still loads, so renames never corrupt the plan store.
 ///
-/// There is deliberately no `load_plan_at`: nothing reads a plan's
-/// *frontmatter* at a historical revision. Review anchors read a plan's
-/// historical **body** through [`crate::anchor`]'s generic path-based
-/// history reader instead.
-///
 /// # Errors
 ///
 /// Returns [`Error::PlanNotFound`] if the plan file does not exist,
@@ -332,6 +327,33 @@ pub fn load_task_at(
     let path = crate::paths::task_path(project, task_slug);
     let historical = store.fetch_body_at(&path, sha)?;
     doc.body = Document::<Task>::parse(&historical)?.body;
+    Ok(doc)
+}
+
+/// Loads a plan document with its body read at a specific git revision.
+///
+/// Metadata reflects the current state; only the body is replaced with the
+/// version from `sha`.
+///
+/// # Errors
+///
+/// Returns [`Error::PlanNotFound`] if the plan does not currently exist,
+/// [`Error::RevisionUnknown`] if `sha` is not a known revision,
+/// [`Error::BodyAtRevisionMissing`] if `sha` exists but the plan file is
+/// not present at that revision, [`Error::HistoryUnavailable`] if the
+/// backend cannot serve history, or
+/// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] if the
+/// historical content fails to parse.
+pub fn load_plan_at(
+    store: &impl VersionedStore,
+    project: &str,
+    plan_slug: &str,
+    sha: &str,
+) -> Result<Document<Plan>> {
+    let mut doc = load_plan(store, project, plan_slug)?;
+    let path = crate::paths::plan_path(project, plan_slug);
+    let historical = store.fetch_body_at(&path, sha)?;
+    doc.body = Document::<Plan>::parse(&historical)?.body;
     Ok(doc)
 }
 
@@ -993,5 +1015,60 @@ mod tests {
         store.commit().unwrap();
         let err = load_task_at(&store, "test", "fix", &pre).unwrap_err();
         assert!(matches!(err, Error::BodyAtRevisionMissing { .. }));
+    }
+
+    fn seed_plan(store: &mut MemoryStore, body: &str) {
+        let doc = Document {
+            frontmatter: Plan {
+                project: "test".to_string(),
+                plan: "design".to_string(),
+                title: "Design".to_string(),
+                implements: crate::model::ReviewTarget::Task {
+                    slug: "fix".to_string(),
+                },
+                supersedes: None,
+                status: crate::model::PlanStatus::Draft,
+                created: chrono::NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+                updated: chrono::NaiveDate::from_ymd_opt(2026, 5, 1).unwrap(),
+            },
+            body: body.to_string(),
+        };
+        write_plan(store, "test", "design", &doc).unwrap();
+    }
+
+    #[test]
+    fn load_plan_at_returns_historical_body() {
+        let mut store = setup_store();
+        seed_plan(&mut store, "v1-plan");
+        store.commit().unwrap();
+        let old = store.head_sha().unwrap();
+        seed_plan(&mut store, "v2-plan");
+        store.commit().unwrap();
+        let loaded = load_plan_at(&store, "test", "design", &old).unwrap();
+        assert_eq!(loaded.frontmatter.title, "Design");
+        assert_eq!(loaded.body, "v1-plan\n");
+    }
+
+    #[test]
+    fn load_plan_at_revision_unknown() {
+        let mut store = setup_store();
+        seed_plan(&mut store, "body");
+        store.commit().unwrap();
+        let err = load_plan_at(&store, "test", "design", "mem-nope").unwrap_err();
+        assert!(matches!(err, Error::RevisionUnknown { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn load_plan_at_missing_at_revision() {
+        let mut store = setup_store();
+        store.commit().unwrap();
+        let pre = store.head_sha().unwrap();
+        seed_plan(&mut store, "body");
+        store.commit().unwrap();
+        let err = load_plan_at(&store, "test", "design", &pre).unwrap_err();
+        assert!(
+            matches!(err, Error::BodyAtRevisionMissing { .. }),
+            "got {err:?}"
+        );
     }
 }

@@ -699,6 +699,7 @@ pub fn format_task_list_md(tasks: &[(String, Document<Task>)]) -> String {
 fn build_plan_detail(
     slug: &str,
     doc: &Document<Plan>,
+    revision: Option<&str>,
     reviews: &[(String, Document<Review>)],
     change_reviews: &[(String, Document<Review>)],
     flavor: RenderFlavor,
@@ -715,11 +716,12 @@ fn build_plan_detail(
 
     match flavor {
         RenderFlavor::Markdown => {
-            let mut items = vec![
-                meta_bullet("Slug", slug),
-                meta_bullet("Status", &fm.status.to_string()),
-                meta_bullet("Implements", &implements),
-            ];
+            let mut items = vec![meta_bullet("Slug", slug)];
+            if let Some(sha) = revision {
+                items.push(meta_bullet("Revision", sha));
+            }
+            items.push(meta_bullet("Status", &fm.status.to_string()));
+            items.push(meta_bullet("Implements", &implements));
             if let Some(sup) = &supersedes {
                 items.push(meta_bullet("Supersedes", sup));
             }
@@ -735,6 +737,9 @@ fn build_plan_detail(
         }
         RenderFlavor::Terminal => {
             d.paragraph(&format!("Slug: {slug}"));
+            if let Some(sha) = revision {
+                d.paragraph(&format!("Revision: {sha}"));
+            }
             d.paragraph(&format!("Status: {}", fm.status));
             d.paragraph(&format!("Implements: {implements}"));
             if let Some(sup) = &supersedes {
@@ -782,10 +787,19 @@ fn reviews_label(reviews: &[(String, Document<Review>)]) -> Option<String> {
 pub fn format_plan_detail(
     slug: &str,
     doc: &Document<Plan>,
+    revision: Option<&str>,
     reviews: &[(String, Document<Review>)],
     change_reviews: &[(String, Document<Review>)],
 ) -> String {
-    build_plan_detail(slug, doc, reviews, change_reviews, RenderFlavor::Terminal).to_string()
+    build_plan_detail(
+        slug,
+        doc,
+        revision,
+        reviews,
+        change_reviews,
+        RenderFlavor::Terminal,
+    )
+    .to_string()
 }
 
 /// Formats a single plan detail as Markdown with heading, bullet metadata,
@@ -794,10 +808,19 @@ pub fn format_plan_detail(
 pub fn format_plan_detail_md(
     slug: &str,
     doc: &Document<Plan>,
+    revision: Option<&str>,
     reviews: &[(String, Document<Review>)],
     change_reviews: &[(String, Document<Review>)],
 ) -> String {
-    build_plan_detail(slug, doc, reviews, change_reviews, RenderFlavor::Markdown).to_string()
+    build_plan_detail(
+        slug,
+        doc,
+        revision,
+        reviews,
+        change_reviews,
+        RenderFlavor::Markdown,
+    )
+    .to_string()
 }
 
 /// Builds a plan list document (table of slug, title, status, implements).
@@ -2867,7 +2890,7 @@ mod tests {
                 slug: "design-auth-v0".to_string(),
             }),
         );
-        let md = format_plan_detail_md("design-auth", &doc, &[], &[]);
+        let md = format_plan_detail_md("design-auth", &doc, None, &[], &[]);
         assert!(md.starts_with("# Design auth"), "{md}");
         assert!(md.contains("- **Slug:** design-auth"), "{md}");
         assert!(md.contains("- **Status:** approved"), "{md}");
@@ -2901,7 +2924,7 @@ mod tests {
             "2026-07-01-1430-a1b2".to_string(),
             make_plan_review_doc("2026-07-01-1430-a1b2", "design-auth"),
         )];
-        let md = format_plan_detail_md("design-auth", &doc, &reviews, &[]);
+        let md = format_plan_detail_md("design-auth", &doc, None, &reviews, &[]);
         assert!(!md.contains("**Supersedes:**"), "{md}");
         assert!(md.contains("- **Implements:** rdm:task/fix-login"), "{md}");
         assert!(
@@ -2926,7 +2949,7 @@ mod tests {
             "2026-09-01-0900-c0de".to_string(),
             make_plan_review_doc("2026-09-01-0900-c0de", "design-auth"),
         )];
-        let md = format_plan_detail_md("design-auth", &doc, &[], &change_reviews);
+        let md = format_plan_detail_md("design-auth", &doc, None, &[], &change_reviews);
         // Implements still renders correctly alongside a populated
         // change_reviews list — the two bullets coexist, they are not
         // mutually exclusive.
@@ -2941,6 +2964,25 @@ mod tests {
     }
 
     #[test]
+    fn plan_detail_renders_revision_when_given() {
+        let doc = make_plan_doc(
+            "design-auth",
+            "Design auth",
+            PlanStatus::Draft,
+            ItemRef::Task {
+                slug: "fix-login".to_string(),
+            },
+            None,
+        );
+        let term = format_plan_detail("design-auth", &doc, Some("abc123"), &[], &[]);
+        assert!(term.contains("Revision: abc123"), "{term}");
+        let md = format_plan_detail_md("design-auth", &doc, Some("abc123"), &[], &[]);
+        assert!(md.contains("**Revision:** abc123"), "{md}");
+        let none = format_plan_detail("design-auth", &doc, None, &[], &[]);
+        assert!(!none.contains("Revision:"), "{none}");
+    }
+
+    #[test]
     fn plan_detail_renders_change_reviews_terminal() {
         let doc = make_plan_doc(
             "design-auth",
@@ -2952,7 +2994,7 @@ mod tests {
             None,
         );
         // Empty change_reviews: the line is omitted entirely.
-        let empty = format_plan_detail("design-auth", &doc, &[], &[]);
+        let empty = format_plan_detail("design-auth", &doc, None, &[], &[]);
         assert!(!empty.contains("Change reviews:"), "{empty}");
 
         // Non-empty change_reviews: the line renders alongside Implements.
@@ -2960,7 +3002,7 @@ mod tests {
             "2026-09-01-0900-c0de".to_string(),
             make_plan_review_doc("2026-09-01-0900-c0de", "design-auth"),
         )];
-        let non_empty = format_plan_detail("design-auth", &doc, &[], &change_reviews);
+        let non_empty = format_plan_detail("design-auth", &doc, None, &[], &change_reviews);
         assert!(
             non_empty.contains("Implements: rdm:task/fix-login"),
             "{non_empty}"
