@@ -189,6 +189,75 @@ candidate."
       (rdm-insert-done-line)
       (should-not warnings))))
 
+;;;; Working tree and branch, against real repositories
+
+(defun rdm-git-test--git (dir &rest args)
+  "Run git ARGS in DIR with a clean environment; return its output lines."
+  (let ((default-directory (file-name-as-directory dir))
+        (process-environment (cons "GIT_DIR" (rdm-test-clean-environment))))
+    (apply #'process-lines "git" "-c" "user.name=t" "-c" "user.email=t@t"
+           "-c" "init.defaultBranch=main" args)))
+
+(defun rdm-git-test--repo ()
+  "A temp repository with one commit on main; return its directory."
+  (let ((repo (file-truename (make-temp-file "rdm-git-repo" t))))
+    (rdm-git-test--git repo "init" "-q")
+    (rdm-git-test--git repo "commit" "-q" "--allow-empty" "-m" "init")
+    (file-name-as-directory repo)))
+
+(ert-deftest rdm-git/current-branch-detached ()
+  "A detached HEAD has no current branch."
+  (let ((repo (rdm-git-test--repo)))
+    (rdm-git-test--git repo "checkout" "-q" "--detach")
+    (let ((default-directory repo)
+          (process-environment (cons "GIT_DIR" (rdm-test-clean-environment))))
+      (should-not (rdm-git-current-branch)))))
+
+(ert-deftest rdm-git/resolves-working-tree ()
+  "From a buffer in `.git/' or `.git/worktrees/NAME/', rdm runs in the
+working tree and the branch warning names its real branch."
+  :tags '(magit)
+  (rdm-test-with-soft-dep 'magit
+    (let* ((repo (rdm-git-test--repo))
+           (wt (concat (directory-file-name repo) "-wt/")))
+      (rdm-git-test--git repo "checkout" "-q" "-b" "feature")
+      (rdm-git-test--git repo "worktree" "add" "-q" "-b" "wt-branch"
+                         (directory-file-name wt))
+      (dolist (case `((,(concat repo ".git/") ,repo "feature")
+                      (,(concat repo ".git/worktrees/"
+                                (file-name-nondirectory (directory-file-name wt))
+                                "/")
+                       ,wt "wt-branch")))
+        (let ((dirs nil) (warnings nil)
+              (rdm-item--lookup (make-hash-table :test #'equal))
+              (process-environment (cons "GIT_DIR" (rdm-test-clean-environment))))
+          (with-temp-buffer
+            (rdm-git-test-commit-mode)
+            (setq default-directory (nth 0 case))
+            (cl-letf (((symbol-function 'rdm-context)
+                       (lambda () (list :root "/tmp" :project "p" :rdm-bin "rdm"
+                                        :default-branch "main")))
+                      ((symbol-function 'display-warning)
+                       (lambda (_type msg &rest _) (push msg warnings)))
+                      ((symbol-function 'completing-read)
+                       (lambda (_p table &rest _) (car (all-completions "" table))))
+                      ((symbol-function 'rdm-run-sync)
+                       (lambda (command &rest _)
+                         (push default-directory dirs)
+                         (pcase (cdr command)
+                           (`("tree" . ,_) (rdm-git-test--tree))
+                           (`("worktree" "current" . ,_) nil)
+                           (`("hook" "done-line" . ,_) "Done: task/t1\n")
+                           (argv (error "Unexpected argv %S" argv))))))
+              (rdm-insert-done-line))
+            (should (string-match-p "^Done: task/t1$" (buffer-string))))
+          (should dirs)
+          (dolist (d dirs)
+            (should (equal (file-truename d) (file-truename (nth 1 case)))))
+          (should (= (length warnings) 1))
+          (should (string-match-p (concat "Committing on " (nth 2 case) ",")
+                                  (car warnings))))))))
+
 ;;;; magit wiring
 
 (defun rdm-git-test--commit-buffer (&optional evil before)
