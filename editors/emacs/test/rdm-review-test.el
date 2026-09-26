@@ -217,6 +217,27 @@ whole-document comment is listed, not overlaid; K describes a comment."
       (search-forward "#2 open")
       (should (string-match-p "whole document" (rdm-review-comment-at-point))))))
 
+(ert-deftest rdm-review/anchored-unresolved-comment-listed-un-placed ()
+  "An anchored comment whose resolution is `unresolved' is not a
+whole-document comment: it is not overlaid and is listed un-placed with
+its quote."
+  (rdm-review-test--with
+      (list (rdm-review-test--review
+             "r1" rdm-review-test--task-target
+             (list (rdm-review-test--comment 1 "café" 17 22 :body "current")
+                   (list :id 2 :status "open" :body "Lost."
+                         :anchor (list :anchor_type "text-quote"
+                                       :quote "vanished words"
+                                       :prefix "" :suffix "")
+                         :resolution '(:state "unresolved")))))
+    (with-current-buffer (rdm-open-item rdm-review-test--task)
+      (should (rdm-review-test--overlay-of 1))
+      (should-not (rdm-review-test--overlay-of 2))
+      (let ((section (rdm-review-test--section)))
+        (should (string-match-p
+                 "#2 open  un-placed (unresolved) \"vanished words\"" section))
+        (should-not (string-match-p "whole document" section))))))
+
 (ert-deftest rdm-review/next-previous ()
   "]c / [c move between overlaid comments in buffer order."
   (rdm-review-test--with
