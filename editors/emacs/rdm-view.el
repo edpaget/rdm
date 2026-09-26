@@ -70,6 +70,18 @@ An item of another kind (a search hit) falls back to its `:identifier'."
     (kind (or (plist-get item :identifier)
               (user-error "rdm: no identifier for a %s" kind)))))
 
+(defun rdm-item-parse-worktree-id (id)
+  "The item plist for ID, an `rdm worktree' item string, or nil.
+The one decoder of that grammar: `task/<slug>' is a task,
+`<roadmap>/<stem>' a phase and a bare `<roadmap>' the roadmap whose
+phases share a worktree.  Anything else (not a non-empty string, or
+more segments) is nil."
+  (when (rdm--nonempty id)
+    (pcase (split-string id "/")
+      (`("task" ,slug) (list :kind 'task :slug slug))
+      (`(,roadmap ,stem) (list :kind 'phase :roadmap roadmap :stem stem))
+      (`(,roadmap) (list :kind 'roadmap :roadmap roadmap)))))
+
 (defun rdm-item-show-args (item &optional at)
   "The action and `rdm-argv' arguments showing ITEM, at revision AT if non-nil."
   (append

@@ -83,7 +83,7 @@ exactly one it becomes DEFAULT."
    ((not (stringp worktree-item)) (cons candidates nil))
    ((member worktree-item candidates)
     (cons candidates (car (member worktree-item candidates))))
-   ((not (string-search "/" worktree-item))
+   ((eq (plist-get (rdm-item-parse-worktree-id worktree-item) :kind) 'roadmap)
     (let* ((prefix (concat worktree-item "/"))
            (mine (seq-filter (lambda (c) (string-prefix-p prefix c)) candidates)))
       (cons (append mine (seq-remove (lambda (c) (string-prefix-p prefix c))

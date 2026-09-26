@@ -74,9 +74,17 @@ reads, remove is text (neither --format nor --no-edit)."
                   ((:kind phase :roadmap "r1" :stem "phase-2-two") . "r1/phase-2-two")
                   ((:kind roadmap :roadmap "r1") . "r1")))
     (should (equal (rdm-worktree-id (car case)) (cdr case)))
-    (should (equal (rdm-worktree-parse-id (cdr case)) (car case))))
-  (should-not (rdm-worktree-parse-id nil))
-  (should-not (rdm-worktree-parse-id "")))
+    (should (equal (rdm-item-parse-worktree-id (cdr case)) (car case)))))
+
+(ert-deftest rdm-item/parse-worktree-id ()
+  "The shared decoder: roadmap, roadmap/stem and task/slug forms parse to
+item plists; anything else is nil."
+  (should (equal (rdm-item-parse-worktree-id "r1") '(:kind roadmap :roadmap "r1")))
+  (should (equal (rdm-item-parse-worktree-id "r1/phase-2-two")
+                 '(:kind phase :roadmap "r1" :stem "phase-2-two")))
+  (should (equal (rdm-item-parse-worktree-id "task/t1") '(:kind task :slug "t1")))
+  (dolist (bad '(nil "" :null "a/b/c"))
+    (should-not (rdm-item-parse-worktree-id bad))))
 
 ;;;; List
 

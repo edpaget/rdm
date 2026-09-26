@@ -172,7 +172,7 @@ Any error stores an empty label for ROOT's ENTRY at GENERATION."
      root entry generation 'worktree-current nil
      (lambda (current)
        (let* ((id (plist-get current :item))
-              (item (rdm-worktree-parse-id id)))
+              (item (rdm-item-parse-worktree-id id)))
          (if (null item)
              (rdm-modeline--store root entry generation nil "")
            (let ((show (rdm-item-show-args item)))

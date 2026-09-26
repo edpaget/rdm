@@ -219,9 +219,9 @@ configuration error is a `user-error' before any minibuffer opens."
 
 (defun rdm-pick--worktree-roadmap ()
   "The roadmap of the rdm worktree holding `default-directory', or nil."
-  (let ((item (plist-get (ignore-errors (rdm-worktree-item)) :item)))
-    (when (and (stringp item) (not (string-prefix-p "task/" item)))
-      (car (split-string item "/")))))
+  (plist-get (rdm-item-parse-worktree-id
+              (plist-get (ignore-errors (rdm-worktree-item)) :item))
+             :roadmap))
 
 ;;;###autoload
 (defun rdm-next (roadmap)

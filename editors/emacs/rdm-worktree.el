@@ -22,10 +22,10 @@
 ;; its directory.  Setups that keep one tab per project dedupe there, so
 ;; opening a worktree that already has a tab switches to it.
 ;;
-;; `rdm-worktree-id' and `rdm-worktree-parse-id' convert between item
-;; plists and the item strings `rdm worktree' uses: `task/<slug>',
-;; `<roadmap>/<stem>' and a bare `<roadmap>' (the worktree a roadmap's
-;; phases share).
+;; `rdm-worktree-id' converts an item plist to the item string `rdm
+;; worktree' uses: `task/<slug>', `<roadmap>/<stem>' and a bare
+;; `<roadmap>' (the worktree a roadmap's phases share);
+;; `rdm-item-parse-worktree-id' (rdm-view.el) decodes one back.
 
 ;;; Code:
 
@@ -53,20 +53,11 @@ buffer instead."
 
 (defun rdm-worktree-id (item)
   "The `rdm worktree' item string for ITEM, an item plist.
-A task is `task/<slug>', a phase `<roadmap>/<stem>', a roadmap its slug."
+A task is `task/<slug>'; a phase or roadmap is its `rdm-item-identifier'."
   (pcase (plist-get item :kind)
-    ('task (concat "task/" (plist-get item :slug)))
-    ('phase (concat (plist-get item :roadmap) "/" (plist-get item :stem)))
-    ('roadmap (plist-get item :roadmap))
+    ('task (concat "task/" (rdm-item-identifier item)))
+    ((or 'phase 'roadmap) (rdm-item-identifier item))
     (kind (user-error "rdm: a %s has no worktree" kind))))
-
-(defun rdm-worktree-parse-id (id)
-  "The item plist for ID, an `rdm worktree' item string, or nil."
-  (when (rdm--nonempty id)
-    (pcase (split-string id "/")
-      (`("task" ,slug) (list :kind 'task :slug slug))
-      (`(,roadmap ,stem) (list :kind 'phase :roadmap roadmap :stem stem))
-      (`(,roadmap) (list :kind 'roadmap :roadmap roadmap)))))
 
 ;;;; Opening
 
