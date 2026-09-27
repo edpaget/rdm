@@ -446,6 +446,63 @@ fn fragmented_commit_names_cause_and_remedy_and_stays_recoverable() {
     );
 }
 
+/// Parses `stdout` as exactly one JSON document followed only by whitespace.
+fn one_json_document(stdout: &str) -> serde_json::Value {
+    let mut docs = serde_json::Deserializer::from_str(stdout).into_iter::<serde_json::Value>();
+    let first = docs
+        .next()
+        .unwrap_or_else(|| panic!("no JSON on stdout: {stdout:?}"))
+        .unwrap_or_else(|e| panic!("stdout is not JSON ({e}): {stdout:?}"));
+    assert!(
+        docs.next().is_none(),
+        "stdout carries more than one JSON document: {stdout:?}"
+    );
+    first
+}
+
+/// Section K2 under `--format json`: the fragmented commit's continuity
+/// advisory rides in the one JSON document's `advisory` field (never as raw
+/// text on stdout), with `commit` null; a whole-tree commit from the same
+/// fragmented state carries no advisory.
+#[test]
+fn fragmented_commit_json_carries_the_advisory_as_a_field() {
+    let plan = Plan::demo(&real_bin());
+    let run = must(
+        ShellDriver::new()
+            .wrapped(&[
+                "task",
+                "create",
+                "kj-item",
+                "--title",
+                "KJ item",
+                "--body",
+                "Body.",
+                "--no-edit",
+                "--project",
+                "demo",
+            ])
+            .wrapped(&["commit", "-m", "kj: fragmented", "--format", "json"])
+            .wrapped(&["commit", "--all", "-m", "kj: sweep", "--format", "json"])
+            .run(&plan, "kj"),
+    );
+    assert!(run.steps.iter().all(|s| s.status == 0), "{run:?}");
+
+    let scoped = one_json_document(&run.steps[1].stdout);
+    assert!(scoped["commit"].is_null(), "{scoped}");
+    let advisory = scoped["advisory"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the fragmented commit carries no advisory: {scoped}"));
+    assert!(advisory.contains("RDM_HARNESS_SESSION_ID"), "{advisory}");
+
+    let swept = one_json_document(&run.steps[2].stdout);
+    assert!(swept["advisory"].is_null(), "{swept}");
+    assert!(
+        plan.commit_files("HEAD")
+            .contains("projects/demo/tasks/kj-item.md"),
+        "the whole-tree commit did not land the task: {swept}"
+    );
+}
+
 /// Sections K3 and K3b: seven wrapped calls leave at most two leases, and a
 /// dead wrapper's lease is swept by the next call.
 #[test]

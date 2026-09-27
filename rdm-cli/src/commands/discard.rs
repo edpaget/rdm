@@ -42,6 +42,9 @@ pub fn run(root: &Path, format: OutputFormat, force: bool, all: bool) -> Result<
 /// Aborts any in-progress merge, then discards the whole tree (`all`) or this
 /// session's changeset. Returns whether a merge was aborted and what the
 /// discard did, as one [`ScopedDiscard`].
+///
+/// A failure after a successful abort says so in its error, since the
+/// report that would otherwise announce the abort is never printed.
 fn discard(store: &mut GitStore, all: bool) -> Result<(bool, ScopedDiscard)> {
     let merge_aborted = store
         .git()
@@ -53,7 +56,17 @@ fn discard(store: &mut GitStore, all: bool) -> Result<(bool, ScopedDiscard)> {
             .git_merge_abort()
             .context("failed to abort merge")?;
     }
+    let outcome = discard_changes(store, all);
+    let outcome = if merge_aborted {
+        outcome.context("aborted the in-progress merge, then the discard failed")?
+    } else {
+        outcome?
+    };
+    Ok((merge_aborted, outcome))
+}
 
+/// Discards the whole tree (`all`) or this session's changeset.
+fn discard_changes(store: &mut GitStore, all: bool) -> Result<ScopedDiscard> {
     if all {
         let report = store
             .git()
@@ -66,25 +79,21 @@ fn discard(store: &mut GitStore, all: bool) -> Result<(bool, ScopedDiscard)> {
                 .discard_whole_tree()
                 .context("failed to discard changes")?;
         }
-        return Ok((merge_aborted, ScopedDiscard::whole_tree(report)));
+        return Ok(ScopedDiscard::whole_tree(report));
     }
 
     let report = store
         .status_report_scoped()
         .context("failed to get git status")?;
     if report.is_changeset_clean() {
-        return Ok((
-            merge_aborted,
-            ScopedDiscard {
-                report,
-                ..ScopedDiscard::default()
-            },
-        ));
+        return Ok(ScopedDiscard {
+            report,
+            ..ScopedDiscard::default()
+        });
     }
-    let outcome = store
+    store
         .discard_changeset()
-        .context("failed to discard changes")?;
-    Ok((merge_aborted, outcome))
+        .context("failed to discard changes")
 }
 
 /// Prints `outcome` as the human `rdm discard` report.
