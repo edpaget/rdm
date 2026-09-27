@@ -339,8 +339,8 @@ pub struct AddCommentRequest {
     /// same grammar as `rdm review comment --line`. rdm captures the lines'
     /// text from the document at the review's `created_commit` as the
     /// anchor's snippet. A malformed value is a 422; a range past the end of
-    /// that document is a 422; `line` alongside `anchor` or `anchor_state`
-    /// (or on a `change/` review) is a 400.
+    /// that document is a 422; `line` alongside `anchor`, `anchor_state` or
+    /// `intended_path` (or on a `change/` review) is a 400.
     line: Option<String>,
     /// Why an anchorless comment has no anchor — one of the
     /// [`rdm_core::model::AnchorState::KNOWN`] values. Parsed with
@@ -380,11 +380,6 @@ pub async fn add_comment(
                 .map_err(|e| validation_error(e.to_string()))?,
         ),
     };
-    if lines.is_some() && (req.anchor.is_some() || anchor_state.is_some()) {
-        return Err(bad_request(
-            "`line` derives the comment's anchor, so it cannot be combined with `anchor` or `anchor_state`".to_string(),
-        ));
-    }
     let comment = AddComment {
         project: &project,
         review_id: &review_id,
@@ -395,22 +390,22 @@ pub async fn add_comment(
         intended_path: req.intended_path.as_deref(),
     };
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, |s| match lines {
-        // A line anchor is captured at the review's `created_commit` (not
-        // against the rendered current body, as a browser selection is): a
-        // line number names a line of the version under review.
-        Some(lines) => rdm_core::ops::reviews::add_comment_with_anchor(
+    // A line anchor is captured at the review's `created_commit` (not
+    // against the rendered current body, as a browser selection is): a line
+    // number names a line of the version under review. With no `line`, the
+    // empty request makes core fall through to a plain `add_comment`.
+    let doc = rdm_core::ops::mutate(&mut store, |s| {
+        rdm_core::ops::reviews::add_comment_with_anchor(
             s,
             None::<&rdm_core::source::MemorySourceRepo>,
             comment,
             AnchorRequest {
-                lines: Some(lines),
+                lines,
                 ..Default::default()
             },
             OnAnchorFailure::Refuse,
         )
-        .map(|added| added.doc),
-        None => rdm_core::ops::reviews::add_comment(s, comment),
+        .map(|added| added.doc)
     })
     .map_err(core_error)?;
     // One shared post-mutate helper for all 22 handler mutation
@@ -1326,7 +1321,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_comment_line_with_anchor_or_anchor_state_returns_400() {
+    async fn add_comment_line_with_anchor_anchor_state_or_intended_path_returns_400() {
         let (_dir, state) = setup();
         let id = create_draft(&state, "task/fix-login", "ed").await;
         let uri = format!("/projects/demo/reviews/{id}/comments");
@@ -1340,6 +1335,7 @@ mod tests {
                 }
             }),
             serde_json::json!({ "anchor_state": "whole-document" }),
+            serde_json::json!({ "intended_path": "src/lib.rs" }),
         ] {
             let mut body = serde_json::json!({ "body": "x", "line": "1" });
             body.as_object_mut()
@@ -1347,6 +1343,14 @@ mod tests {
                 .extend(extra.as_object().unwrap().clone());
             let response = send(&state, post_json(&uri, &body.to_string())).await;
             assert_eq!(response.status(), 400, "{body}");
+            let json = json_body(response).await;
+            assert!(
+                json["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains("anchored comment cannot also carry"),
+                "{body}: {json}"
+            );
         }
     }
 

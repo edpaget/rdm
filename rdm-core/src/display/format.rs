@@ -1093,7 +1093,6 @@ pub fn format_search_results_md(results: &[SearchResult]) -> String {
     build_search_results(results, RenderFlavor::Markdown).to_string()
 }
 
-/// One-word resolution label for a comment's anchor state.
 /// The human label for a line-range anchor's range — `line 3` or
 /// `lines 3-5` — or `None` for any other anchor kind.
 ///
@@ -1158,6 +1157,7 @@ pub fn render_numbered_body(body: &str) -> String {
     out
 }
 
+/// One-word resolution label for a comment's anchor state.
 fn resolution_label(resolved: &ResolvedComment) -> &'static str {
     match &resolved.resolution {
         Resolution::Original { drifted: false, .. } | Resolution::Current { .. } => "resolved",

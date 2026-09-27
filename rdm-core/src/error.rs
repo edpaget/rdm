@@ -1218,7 +1218,7 @@ impl std::fmt::Display for Error {
             Error::CommentAnchorStateWithAnchor => {
                 write!(
                     f,
-                    "an anchored comment cannot also carry an anchor state or an intended path — the anchor itself says where the comment points; pass --anchor-state/--intended-path only on a comment without --quote"
+                    "an anchored comment cannot also carry an anchor state or an intended path — the anchor itself says where the comment points; pass --anchor-state/--intended-path only on a comment without --quote or --line"
                 )
             }
             Error::CommentPathNotApplicable(label) => {

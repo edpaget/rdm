@@ -2987,6 +2987,73 @@ fn line_and_quote_together_are_refused_by_the_parser() {
 }
 
 #[test]
+fn line_with_anchor_state_or_intended_path_is_refused_by_the_parser() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "quoted", "alpha\nbeta\n");
+    let id = start_review(&plan, "task/quoted");
+    for extra in [
+        ["--anchor-state", "whole-document"],
+        ["--intended-path", "src/lib.rs"],
+    ] {
+        rdm_demo(
+            &plan,
+            &[
+                "review",
+                "comment",
+                &id,
+                "--line",
+                "1",
+                extra[0],
+                extra[1],
+                "--body",
+                "b",
+                "--no-edit",
+            ],
+        )
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+    }
+    assert!(
+        show_review_json(&plan, &id)["comments"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn on_anchor_failure_without_quote_or_line_is_refused_by_the_parser() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "quoted", "alpha\nbeta\n");
+    let id = start_review(&plan, "task/quoted");
+    rdm_demo(
+        &plan,
+        &[
+            "review",
+            "comment",
+            &id,
+            "--on-anchor-failure",
+            "whole-document",
+            "--body",
+            "b",
+            "--no-edit",
+        ],
+    )
+    .failure()
+    .code(2)
+    .stderr(predicate::str::contains(
+        "the following required arguments were not provided",
+    ));
+    assert!(
+        show_review_json(&plan, &id)["comments"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn a_malformed_line_range_is_refused_by_the_parser() {
     let plan = init_plan_repo();
     create_task_with_body(&plan, "quoted", "alpha\nbeta\n");
