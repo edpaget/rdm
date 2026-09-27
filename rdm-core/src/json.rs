@@ -790,7 +790,41 @@ pub enum ResolvedBodyJson {
     Current,
 }
 
+/// Where a comment's anchor sits in the target's *current* body.
+///
+/// Byte offsets into the current body (the one `show --format json`
+/// returns as `body`), in the same units as [`ResolutionJson`]'s
+/// `range_start`/`range_end`. Serialized as the `current` field of every
+/// resolution; a client slices the current body with it instead of
+/// re-resolving the anchor itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct CurrentPlacementJson {
+    /// Byte offset of the span start within the current body.
+    pub range_start: usize,
+    /// Byte offset of the span end within the current body.
+    pub range_end: usize,
+}
+
+impl From<std::ops::Range<usize>> for CurrentPlacementJson {
+    fn from(range: std::ops::Range<usize>) -> Self {
+        Self {
+            range_start: range.start,
+            range_end: range.end,
+        }
+    }
+}
+
 /// A comment anchor's resolution outcome, for JSON output.
+///
+/// Every variant carries `current` — the anchor's placement in the
+/// target's current body ([`CurrentPlacementJson`]), always serialized so a
+/// client does one null check regardless of `state`. It is `null` when the
+/// anchor does not resolve in the current body: the target was deleted or
+/// renamed, the span and its context are gone, the comment is
+/// whole-document, the anchor is unresolved, a line-range anchor's lines
+/// changed (line anchors are never remapped), or the comment belongs to a
+/// `change/<sha>` review (its anchors index source-repo content, not a
+/// document body).
 ///
 /// Tagged on `state`:
 ///
@@ -816,6 +850,9 @@ pub enum ResolutionJson {
         range_end: usize,
         /// Which body the range indexes.
         body: ResolvedBodyJson,
+        /// The anchor's placement in the current body, or `null` (see
+        /// [`ResolutionJson`]).
+        current: Option<CurrentPlacementJson>,
     },
     /// The anchor resolved in the reviewer's body but the current body has
     /// drifted from it.
@@ -829,9 +866,16 @@ pub enum ResolutionJson {
         /// Which body the range indexes — always
         /// [`ResolvedBodyJson::Original`] for drifted anchors.
         body: ResolvedBodyJson,
+        /// The anchor's placement in the current body, or `null` (see
+        /// [`ResolutionJson`]).
+        current: Option<CurrentPlacementJson>,
     },
     /// The anchor (or a whole-document comment) has no locatable span.
-    Unresolved,
+    Unresolved {
+        /// Always `null` for an unresolved anchor; present so every
+        /// resolution carries the field.
+        current: Option<CurrentPlacementJson>,
+    },
 }
 
 /// A single review comment with its anchor and resolution state.
@@ -1045,14 +1089,19 @@ impl ReviewJson {
 
 /// Maps one [`ResolvedComment`] into its JSON shape.
 fn resolution_to_json(resolved: &ResolvedComment) -> ResolutionJson {
+    let current = resolved
+        .resolution
+        .current_range()
+        .map(CurrentPlacementJson::from);
     match (&resolved.resolution, &resolved.quote) {
-        (Resolution::Original { range, drifted }, Some(quote)) => {
+        (Resolution::Original { range, drifted, .. }, Some(quote)) => {
             if *drifted {
                 ResolutionJson::Drifted {
                     quote: quote.clone(),
                     range_start: range.start,
                     range_end: range.end,
                     body: ResolvedBodyJson::Original,
+                    current,
                 }
             } else {
                 ResolutionJson::Resolved {
@@ -1060,6 +1109,7 @@ fn resolution_to_json(resolved: &ResolvedComment) -> ResolutionJson {
                     range_start: range.start,
                     range_end: range.end,
                     body: ResolvedBodyJson::Original,
+                    current,
                 }
             }
         }
@@ -1068,8 +1118,9 @@ fn resolution_to_json(resolved: &ResolvedComment) -> ResolutionJson {
             range_start: range.start,
             range_end: range.end,
             body: ResolvedBodyJson::Current,
+            current,
         },
-        _ => ResolutionJson::Unresolved,
+        _ => ResolutionJson::Unresolved { current: None },
     }
 }
 
@@ -2183,6 +2234,7 @@ mod tests {
             resolution: Resolution::Original {
                 range: 7..15,
                 drifted: false,
+                current: Some(3..11),
             },
             quote: Some("the span".to_string()),
         }];
@@ -2206,6 +2258,8 @@ mod tests {
         assert_eq!(c["resolution"]["range_start"], 7);
         assert_eq!(c["resolution"]["range_end"], 15);
         assert_eq!(c["resolution"]["body"], "original");
+        assert_eq!(c["resolution"]["current"]["range_start"], 3);
+        assert_eq!(c["resolution"]["current"]["range_end"], 11);
     }
 
     #[test]
@@ -2215,6 +2269,7 @@ mod tests {
             resolution: Resolution::Original {
                 range: 7..15,
                 drifted: true,
+                current: None,
             },
             quote: Some("the span".to_string()),
         }];
@@ -2225,6 +2280,7 @@ mod tests {
         assert_eq!(r["quote"], "the span");
         // Drifted ranges always index the created_commit body — spelled out.
         assert_eq!(r["body"], "original");
+        assert!(r["current"].is_null());
     }
 
     #[test]
@@ -2239,6 +2295,9 @@ mod tests {
         let r = &v["comments"][0]["resolution"];
         assert_eq!(r["state"], "resolved");
         assert_eq!(r["body"], "current");
+        // A current-body resolution's range is its current placement.
+        assert_eq!(r["current"]["range_start"], 3);
+        assert_eq!(r["current"]["range_end"], 11);
     }
 
     #[test]
@@ -2249,6 +2308,8 @@ mod tests {
         let r = &v["comments"][0]["resolution"];
         assert_eq!(r["state"], "unresolved");
         assert!(r.get("quote").is_none());
+        // Always present, null for an unresolved anchor.
+        assert!(r.get("current").is_some_and(serde_json::Value::is_null));
     }
 
     #[test]

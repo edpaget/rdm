@@ -16,6 +16,10 @@ const REPO_WIDE: bool = false;
 /// A row takes no `--project` at all, so none is appended.
 const UNSCOPED: bool = false;
 
+/// Stands in for the seeded review's id in a [`COVERED`] row; replaced at
+/// run time by the id [`seed_review`] returns.
+const REVIEW_ID: &str = "<REVIEW-ID>";
+
 /// Commands whose `--format json` stdout must be exactly one JSON document,
 /// by name, arguments and whether `--project <PROJECT>` is appended after
 /// `--format json`. Rows run in order against one fixture, so `status`,
@@ -76,6 +80,12 @@ const COVERED: &[(&str, &[&str], bool)] = &[
         &["hook", "done-line", "--task", "fixture-task-open"],
         UNSCOPED,
     ),
+    ("review list", &["review", "list"], PROJECT_SCOPED),
+    (
+        "review show",
+        &["review", "show", REVIEW_ID],
+        PROJECT_SCOPED,
+    ),
     ("status", &["status"], REPO_WIDE),
     ("status --all", &["status", "--all"], REPO_WIDE),
     ("commit", &["commit", "-m", "contract commit"], REPO_WIDE),
@@ -84,6 +94,43 @@ const COVERED: &[(&str, &[&str], bool)] = &[
 
 fn fixture() -> SeededPlan {
     SeededPlan::new(PROJECT).unwrap_or_else(|f| panic!("{f}"))
+}
+
+/// Starts a review on `task/fixture-task-open` with one quoted comment and
+/// returns its id.
+fn seed_review(fixture: &SeededPlan) -> String {
+    let started = fixture
+        .json(&[
+            "review",
+            "start",
+            "--on",
+            "task/fixture-task-open",
+            "--no-edit",
+            "--project",
+            PROJECT,
+            "--format",
+            "json",
+        ])
+        .unwrap_or_else(|f| panic!("`review start` failed: {f}"));
+    let id = started["id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("`review start` printed no id: {started}"))
+        .to_owned();
+    fixture
+        .ok(&[
+            "review",
+            "comment",
+            &id,
+            "--quote",
+            "open task",
+            "--body",
+            "Contract comment.",
+            "--no-edit",
+            "--project",
+            PROJECT,
+        ])
+        .unwrap_or_else(|f| panic!("`review comment` failed: {f}"));
+    id
 }
 
 fn with_json(args: &[&str], project: bool) -> Vec<String> {
@@ -133,8 +180,13 @@ fn keys(name: &str, v: &Value) -> BTreeSet<String> {
 #[test]
 fn covered_commands_print_exactly_one_json_document() {
     let fixture = fixture();
+    let review = seed_review(&fixture);
     for (name, args, project) in COVERED {
-        let stdout = run_json(&fixture, name, args, *project);
+        let args: Vec<&str> = args
+            .iter()
+            .map(|a| if *a == REVIEW_ID { review.as_str() } else { a })
+            .collect();
+        let stdout = run_json(&fixture, name, &args, *project);
         single_document(name, &stdout);
     }
 }

@@ -923,7 +923,13 @@ pub fn resolve_change_comment(
     let drifted = occurrence_count(&tip_content, quote) < occurrence_count(&head_content, quote)
         || !occurrence_survives(&head_content, &tip_content, quote, &range);
     ResolvedComment {
-        resolution: Resolution::Original { range, drifted },
+        // A change review indexes source-repo content, not a document
+        // body, so there is no current-body placement to report.
+        resolution: Resolution::Original {
+            range,
+            drifted,
+            current: None,
+        },
         quote: Some(quote.clone()),
     }
 }
@@ -1685,7 +1691,8 @@ mod tests {
             resolved[0].resolution,
             Resolution::Original {
                 range: 11..16,
-                drifted: false
+                drifted: false,
+                current: None,
             }
         );
         assert_eq!(resolved[0].quote.as_deref(), Some("gamma"));
@@ -1731,7 +1738,7 @@ mod tests {
         }));
         review.comments[0].body = "the second beta".to_string();
         let resolved = resolve_change_comments(&source, &review, "tip");
-        let Resolution::Original { drifted, range } = resolved[0].resolution.clone() else {
+        let Resolution::Original { drifted, range, .. } = resolved[0].resolution.clone() else {
             panic!("expected an Original resolution");
         };
         assert!(
@@ -1794,7 +1801,7 @@ mod tests {
             start_line: 3,
             end_line: 3,
         }));
-        let Resolution::Original { drifted, range } =
+        let Resolution::Original { drifted, range, .. } =
             resolve_change_comments(&source, &review, "tip")[0]
                 .resolution
                 .clone()

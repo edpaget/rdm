@@ -634,6 +634,18 @@ pub enum Resolution {
         /// to text identical to the span the reviewer saw — because the
         /// span was edited, deleted, or the target document is gone.
         drifted: bool,
+        /// Byte range into the *current* body where the same anchor
+        /// resolves today — the range [`resolve_against_history`] already
+        /// computes to decide `drifted`, kept rather than discarded. When
+        /// `drifted` is `false` it slices to text identical to the
+        /// historical span; when `drifted` is `true` it may be a
+        /// fuzzy-bracketed (edited) span. `None` when the current body
+        /// cannot be loaded (target deleted or renamed), the anchor no
+        /// longer resolves there (span and context gone, or a line-range
+        /// anchor whose lines changed — line anchors are never remapped),
+        /// or the resolution indexes non-document content (a change
+        /// review's file-quote anchor).
+        current: Option<Range<usize>>,
     },
     /// History was unreachable (unknown revision, file absent at that
     /// revision, or a backend without history), so the anchor was resolved
@@ -648,6 +660,24 @@ pub enum Resolution {
     /// has no anchor, the anchor type is unrecognized, the target document
     /// is dangling, or the quoted span (and its context) is gone.
     Unresolved,
+}
+
+impl Resolution {
+    /// The anchor's placement in the *current* body, whichever variant
+    /// carries it: [`Resolution::Original`]'s `current`,
+    /// [`Resolution::Current`]'s `range`, or `None` for
+    /// [`Resolution::Unresolved`].
+    ///
+    /// The one accessor every consumer reads the current-body placement
+    /// through — no caller re-resolves the anchor itself.
+    #[must_use]
+    pub fn current_range(&self) -> Option<Range<usize>> {
+        match self {
+            Resolution::Original { current, .. } => current.clone(),
+            Resolution::Current { range } => Some(range.clone()),
+            Resolution::Unresolved => None,
+        }
+    }
 }
 
 /// The document a comment's anchor should be resolved against.
@@ -765,7 +795,9 @@ fn load_body_current(
 ///    that has since been deleted still resolves — and [`resolve`] there.
 ///    On success, returns [`Resolution::Original`] with `drifted`
 ///    reporting whether the *current* body still resolves the same anchor
-///    to identical text (a deleted or renamed target counts as drifted).
+///    to identical text (a deleted or renamed target counts as drifted),
+///    and `current` carrying the range that current-body resolution
+///    produced (`None` when it produced none).
 /// 2. Otherwise — no recorded commit, unknown revision, document absent at
 ///    that revision (including a dangling `doc` selector), historyless
 ///    backend, or the anchor simply not found in the historical body —
@@ -810,16 +842,22 @@ pub fn resolve_against_history(
             Ok(orig_body) => {
                 if let Some(range) = resolve(&orig_body, anchor) {
                     let quote_text = &orig_body[range.clone()];
-                    let drifted = match load_body_current(store, project, selector) {
+                    let (drifted, current) = match load_body_current(store, project, selector) {
                         Ok(cur_body) => match resolve(&cur_body, anchor) {
-                            Some(cur_range) => &cur_body[cur_range] != quote_text,
-                            None => true,
+                            Some(cur_range) => {
+                                (&cur_body[cur_range.clone()] != quote_text, Some(cur_range))
+                            }
+                            None => (true, None),
                         },
                         // Target deleted or renamed since the review: the
                         // span the reviewer saw no longer exists as-is.
-                        Err(_) => true,
+                        Err(_) => (true, None),
                     };
-                    return Resolution::Original { range, drifted };
+                    return Resolution::Original {
+                        range,
+                        drifted,
+                        current,
+                    };
                 }
                 // Anchor not found in the historical body: fall through to
                 // the current body.
@@ -1352,7 +1390,7 @@ mod tests {
         let c = comment(Some(tq("quoted span", "the ", " here")), None);
         let res = resolve_against_history(&store, "test", &rev, &c);
         match res {
-            Resolution::Original { range, drifted } => {
+            Resolution::Original { range, drifted, .. } => {
                 assert!(!drifted);
                 // Range indexes the historical body, which equals the
                 // current body here.
@@ -1377,7 +1415,7 @@ mod tests {
         let rev = review(task_target(), Some(&sha1));
         let c = comment(Some(tq("quoted span", "the ", " here")), None);
         match resolve_against_history(&store, "test", &rev, &c) {
-            Resolution::Original { range, drifted } => {
+            Resolution::Original { range, drifted, .. } => {
                 assert!(drifted);
                 let orig = crate::io::load_task_at(&store, "test", "fix", &sha1)
                     .unwrap()
@@ -1403,7 +1441,7 @@ mod tests {
 
         // Resolved against the body the reviewer saw, with no drift.
         match resolve_against_history(&store, "test", &rev, &c) {
-            Resolution::Original { range, drifted } => {
+            Resolution::Original { range, drifted, .. } => {
                 assert!(!drifted);
                 let body = crate::io::load_plan(&store, "test", "impl-fix")
                     .unwrap()
@@ -1523,7 +1561,7 @@ mod tests {
         let rev = review(task_target(), Some(&sha));
         let c = comment(Some(tq("quoted span", "the ", " here")), None);
         match resolve_against_history(&store, "test", &rev, &c) {
-            Resolution::Original { range, drifted } => {
+            Resolution::Original { range, drifted, .. } => {
                 assert!(drifted);
                 let content = store
                     .fetch_body_at(&crate::paths::task_path("test", "fix"), &sha)
@@ -1619,7 +1657,7 @@ mod tests {
             }),
         );
         match resolve_against_history(&store, "test", &rev, &c) {
-            Resolution::Original { range, drifted } => {
+            Resolution::Original { range, drifted, .. } => {
                 assert!(!drifted);
                 let body = crate::io::load_phase_at(&store, "test", "alpha", "phase-1-one", &sha)
                     .unwrap()
@@ -1647,6 +1685,97 @@ mod tests {
             }
             other => panic!("expected Current, got {other:?}"),
         }
+    }
+
+    // -- current-body placement --
+
+    #[test]
+    fn current_range_of_resolved_original_slices_to_the_quote() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "intro. the quoted span here. outro.");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+
+        let rev = review(task_target(), Some(&sha));
+        let c = comment(Some(tq("quoted span", "the ", " here")), None);
+        let res = resolve_against_history(&store, "test", &rev, &c);
+        assert!(matches!(res, Resolution::Original { drifted: false, .. }));
+        let cur = crate::io::load_task(&store, "test", "fix").unwrap().body;
+        assert_eq!(&cur[res.current_range().unwrap()], "quoted span");
+    }
+
+    #[test]
+    fn current_range_of_drifted_original_is_the_fuzzy_bracketed_span() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "intro. the quoted span here. outro.");
+        store.commit().unwrap();
+        let sha1 = store.head_sha().unwrap();
+        // Edit the span itself; its prefix/suffix context survives.
+        seed_task(
+            &mut store,
+            "prepended. intro. the reworded span here. outro.",
+        );
+        store.commit().unwrap();
+
+        let rev = review(task_target(), Some(&sha1));
+        let c = comment(Some(tq("quoted span", "the ", " here")), None);
+        let res = resolve_against_history(&store, "test", &rev, &c);
+        assert!(matches!(res, Resolution::Original { drifted: true, .. }));
+        let cur = crate::io::load_task(&store, "test", "fix").unwrap().body;
+        assert_eq!(&cur[res.current_range().unwrap()], "reworded span");
+    }
+
+    #[test]
+    fn current_range_of_original_on_deleted_target_is_none() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "intro. the quoted span here. outro.");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+        store
+            .delete(&crate::paths::task_path("test", "fix"))
+            .unwrap();
+        store.commit().unwrap();
+
+        let rev = review(task_target(), Some(&sha));
+        let c = comment(Some(tq("quoted span", "the ", " here")), None);
+        let res = resolve_against_history(&store, "test", &rev, &c);
+        assert!(matches!(
+            res,
+            Resolution::Original {
+                drifted: true,
+                current: None,
+                ..
+            }
+        ));
+        assert_eq!(res.current_range(), None);
+    }
+
+    #[test]
+    fn current_range_of_current_resolution_is_its_range() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "the quoted span here.");
+        store.commit().unwrap();
+
+        let rev = review(task_target(), None);
+        let c = comment(Some(tq("quoted span", "the ", " here")), None);
+        let res = resolve_against_history(&store, "test", &rev, &c);
+        let Resolution::Current { range } = res.clone() else {
+            panic!("expected Current, got {res:?}");
+        };
+        assert_eq!(res.current_range(), Some(range));
+    }
+
+    #[test]
+    fn current_range_of_unresolved_whole_document_comment_is_none() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "body.");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+
+        let rev = review(task_target(), Some(&sha));
+        let resolved = resolve_comment(&store, "test", &rev, &comment(None, None));
+        assert_eq!(resolved.resolution, Resolution::Unresolved);
+        assert_eq!(resolved.resolution.current_range(), None);
     }
 
     // -- derive_text_quote --
@@ -2162,8 +2291,14 @@ mod tests {
         let anchor = derive_line_range(&body, lr(3, 4), at.as_deref()).unwrap();
         let c = comment(Some(anchor), None);
         match resolve_against_history(&store, "test", &rev, &c) {
-            Resolution::Original { range, drifted } => {
+            Resolution::Original {
+                range,
+                drifted,
+                current,
+            } => {
                 assert!(!drifted);
+                // Unchanged document: the current placement is the same lines.
+                assert_eq!(current, Some(range.clone()));
                 assert_eq!(&body[range], "step one\nstep two");
             }
             other => panic!("expected Original, got {other:?}"),
@@ -2189,10 +2324,16 @@ mod tests {
         store.commit().unwrap();
 
         let resolved = resolve_comment(&store, "test", &rev, &c);
+        // Drifted and never remapped: no current placement.
         assert!(matches!(
             resolved.resolution,
-            Resolution::Original { drifted: true, .. }
+            Resolution::Original {
+                drifted: true,
+                current: None,
+                ..
+            }
         ));
+        assert_eq!(resolved.resolution.current_range(), None);
         assert_eq!(resolved.quote.as_deref(), Some("step one"));
     }
 

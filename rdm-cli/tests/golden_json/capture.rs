@@ -3,7 +3,9 @@
 //!
 //! The fixture is [`SeededPlan`] plus a code repo, then, in this order: one
 //! submitted `request-changes` review on `task/fixture-task-open` (author
-//! `fixture-bot`, one whole-document comment), one worktree on the same task
+//! `fixture-bot`, one whole-document comment and one comment quoting "open
+//! task" — so the review goldens record both a null and a non-null
+//! `current` placement), one worktree on the same task
 //! (added from the code repo), and the implementation plan `fixture-plan`
 //! implementing it, whose `plan create --format json` stdout is itself the
 //! `plan-create` golden. `worktree list`/`current` run from inside the
@@ -99,6 +101,18 @@ pub fn capture() -> Result<Capture, Failure> {
         &review,
         "--body",
         "General feedback.",
+        "--no-edit",
+        "--project",
+        p,
+    ])?;
+    fixture.ok(&[
+        "review",
+        "comment",
+        &review,
+        "--quote",
+        "open task",
+        "--body",
+        "Name the task more precisely.",
         "--no-edit",
         "--project",
         p,

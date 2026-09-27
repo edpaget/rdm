@@ -442,6 +442,9 @@ fn change_comment_anchors_from_a_subdirectory_of_the_checkout() {
 
     let j = review_json(plan.path(), &sub, &id);
     assert_eq!(j["comments"][0]["resolution"]["state"], "resolved");
+    // A change review indexes source-repo content, not a document body:
+    // there is no current-body placement.
+    assert!(j["comments"][0]["resolution"]["current"].is_null(), "{j}");
     assert_eq!(j["comments"][0]["anchor"]["anchor_type"], "file-quote");
     assert_eq!(j["comments"][0]["anchor"]["start_line"], 2);
 
@@ -624,6 +627,7 @@ fn change_comment_anchor_lifecycle() {
     git(src.path(), &["commit", "-m", "rename again"]);
     let j = review_json(plan.path(), src.path(), &id);
     assert_eq!(j["comments"][0]["resolution"]["state"], "drifted");
+    assert!(j["comments"][0]["resolution"]["current"].is_null(), "{j}");
 
     // (d) deleting the file reports `unresolved`.
     git(src.path(), &["rm", "src/lib.rs"]);

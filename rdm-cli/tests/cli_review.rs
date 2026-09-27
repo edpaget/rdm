@@ -3282,3 +3282,126 @@ fn numbered_show_refuses_structured_formats_and_no_body() {
         "     1\tone\n     2\ttwo\n"
     );
 }
+
+/// Slices `body` at a resolution's `current` placement; `None` when null.
+fn slice_current<'a>(body: &'a str, resolution: &Value) -> Option<&'a str> {
+    let current = &resolution["current"];
+    if current.is_null() {
+        return None;
+    }
+    let start = usize::try_from(current["range_start"].as_u64().unwrap()).unwrap();
+    let end = usize::try_from(current["range_end"].as_u64().unwrap()).unwrap();
+    Some(&body[start..end])
+}
+
+#[test]
+fn review_json_reports_each_comment_current_body_placement() {
+    let plan = init_plan_repo();
+    create_task_with_body(
+        &plan,
+        "placed",
+        "Alpha. The stable phrase stays put. Then the original wording sits here. Omega.",
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["commit", "-m", "seed: add placed task"])
+        .assert()
+        .success();
+    let id = start_review(&plan, "task/placed");
+    for quote in ["stable phrase", "original wording"] {
+        rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .args([
+                "review",
+                "comment",
+                &id,
+                "--quote",
+                quote,
+                "--body",
+                "Look here.",
+                "--no-edit",
+                "--project",
+                "demo",
+            ])
+            .assert()
+            .success();
+    }
+    add_plain_comment(&plan, &id, "Overall thoughts.");
+
+    // Edit the second span (its context survives) and shift everything by
+    // prepending text, so current offsets differ from original ones.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "update",
+            "placed",
+            "--no-edit",
+            "--project",
+            "demo",
+            "--body",
+            "Preface. Alpha. The stable phrase stays put. Then the reworded text sits here. Omega.",
+        ])
+        .assert()
+        .success();
+
+    let task_out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "task",
+            "show",
+            "placed",
+            "--project",
+            "demo",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let task: Value = serde_json::from_slice(&task_out).unwrap();
+    let body = task["body"].as_str().unwrap().to_string();
+
+    let list_out = rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "list", "--project", "demo", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let list: Value = serde_json::from_slice(&list_out).unwrap();
+    let listed = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .unwrap_or_else(|| panic!("review {id} missing from list: {list}"))
+        .clone();
+
+    for review in [show_review_json(&plan, &id), listed] {
+        let comments = review["comments"].as_array().unwrap();
+        let resolved = &comments[0]["resolution"];
+        assert_eq!(resolved["state"], "resolved", "{review}");
+        assert_eq!(slice_current(&body, resolved), Some("stable phrase"));
+
+        let drifted = &comments[1]["resolution"];
+        assert_eq!(drifted["state"], "drifted", "{review}");
+        assert_eq!(drifted["quote"], "original wording");
+        assert_eq!(slice_current(&body, drifted), Some("reworded text"));
+
+        let unresolved = &comments[2]["resolution"];
+        assert_eq!(unresolved["state"], "unresolved", "{review}");
+        assert!(
+            unresolved.get("current").is_some_and(Value::is_null),
+            "{review}"
+        );
+    }
+}

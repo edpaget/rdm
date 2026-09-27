@@ -2499,6 +2499,7 @@ mod tests {
                 resolution: Resolution::Original {
                     range: 7..15,
                     drifted: false,
+                    current: None,
                 },
                 quote: Some("the span".to_string()),
             },
@@ -2506,6 +2507,7 @@ mod tests {
                 resolution: Resolution::Original {
                     range: 20..37,
                     drifted: true,
+                    current: None,
                 },
                 quote: Some("line one\nline two".to_string()),
             },
@@ -2555,6 +2557,7 @@ mod tests {
             resolution: Resolution::Original {
                 range: 0..22,
                 drifted: true,
+                current: None,
             },
             quote: Some("third line\nfourth line".to_string()),
         }];
@@ -2682,6 +2685,7 @@ mod tests {
             resolution: Resolution::Original {
                 range: 0..19,
                 drifted: false,
+                current: None,
             },
             quote: Some("fn two_renamed() {}".to_string()),
         }]

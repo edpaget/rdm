@@ -19,12 +19,40 @@
         "anchor_state": "whole-document",
         "body": "General feedback.",
         "resolution": {
-          "state": "unresolved"
+          "state": "unresolved",
+          "current": null
         },
         "target": {
           "link": "rdm:task/fixture-task-open",
           "level": "plan-item",
           "reason": "whole-document",
+          "unverified": false
+        }
+      },
+      {
+        "id": 2,
+        "status": "open",
+        "anchor": {
+          "anchor_type": "text-quote",
+          "quote": "open task",
+          "prefix": "An ",
+          "suffix": " tagged bug.\n"
+        },
+        "body": "Name the task more precisely.",
+        "resolution": {
+          "state": "resolved",
+          "quote": "open task",
+          "range_start": 3,
+          "range_end": 12,
+          "body": "original",
+          "current": {
+            "range_start": 3,
+            "range_end": 12
+          }
+        },
+        "target": {
+          "link": "rdm:task/fixture-task-open",
+          "level": "plan-item",
           "unverified": false
         }
       }
