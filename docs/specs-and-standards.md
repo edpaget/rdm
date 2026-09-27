@@ -219,8 +219,11 @@ The fallback chain keeps the single-file form valid for projects that don't spli
   These directions ship in the templates and plugin tree and are verified by code review of the
   template diff. There is no grep test over skill text, and no live dispatch serves as a test or an
   acceptance criterion until a prompt-testing library is integrated.
-- **`rdm agent-config --principles-file`** feeds the fallback chain instead of rendering a separate
-  "read this file" note, so standards are never delivered twice.
+- **`rdm agent-config --principles-file` is retired.** The fallback chain already resolves
+  `docs/principles.md`, then `CLAUDE.md` / `AGENTS.md`; a project whose standards live elsewhere sets
+  the standards location with `rdm config set`. agent-config stays a pure artifact emitter, and every
+  emitted skill carries the same stage-neutral pointer to `rdm standards list`, so standards are
+  never delivered twice.
 
 ## Sweeping for existing deviations
 
