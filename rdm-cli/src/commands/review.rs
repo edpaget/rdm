@@ -390,6 +390,7 @@ pub fn run(
             quote,
             path,
             occurrence,
+            line,
             doc,
             anchor_state,
             intended_path,
@@ -452,6 +453,7 @@ pub fn run(
                         quote: quote.as_deref(),
                         path: path.as_deref(),
                         occurrence,
+                        lines: line,
                     },
                     mode,
                 )

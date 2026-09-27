@@ -1,5 +1,5 @@
 {
-  "cli-bare/CLAUDE.md": "9e37e50abbddfd8da9f81fbd7851d1dea04ee4c255650571ba4860ceb667d405",
+  "cli-bare/CLAUDE.md": "2df1580c22f3573cdfe6d84f17dd9f8a2431d1d31d642ea1190286f1cf382726",
   "cli-bare/rdm-autopilot/SKILL.md": "267607c2dc4379c199b241854927beb27ff01d3cf6b5cff79236a86cacae6fc3",
   "cli-bare/rdm-backlog/SKILL.md": "621d7ad6f571f76918ca8f657a84df28f9ed2139667c7084fcfbb9c2bef7b27c",
   "cli-bare/rdm-dispatch-phase/SKILL.md": "ecfaa04b2de8f9430f5cfb165555c29d78f359a86e25290daaa87816d860f449",
@@ -11,7 +11,7 @@
   "cli-bare/rdm-review/SKILL.md": "eb09675535e01514885e10b7396aa94b4b3050ba4bf07fc800ce38ee8b4c2f97",
   "cli-bare/rdm-revise/SKILL.md": "c7b82af990533b2c0d348d0915b060fe0852abbb314ccb174eaf16006efb0ca9",
   "cli-bare/rdm-roadmap/SKILL.md": "00d3071cf85b2a4519ce3d8a78fd8732f33afe4b563fa6a595bb6c5bd855e5f9",
-  "cli-full/CLAUDE.md": "0a4ac6802ca1166831109353695ff16a3b292e1d4bb2ab2542af34056c34f021",
+  "cli-full/CLAUDE.md": "2dff4a09fadc5b8ad6de8d3af4a769c67e33339caa5e514ace3c3d51e4877ed5",
   "cli-full/rdm-autopilot/SKILL.md": "0102c696d814ec505d30d77c7da58e29fdea1f8e412ddda0cb3802a72642cbb2",
   "cli-full/rdm-backlog/SKILL.md": "8209edcb924741b7f54fb63f323d247bc1a0ca86e7424a839cd404ccdc352926",
   "cli-full/rdm-dispatch-phase/SKILL.md": "bea35361188250bb80ee82006bd755e99f5fc467b90c992d2acb968628bd2c2e",

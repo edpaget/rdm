@@ -18,6 +18,7 @@ use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use rdm_core::anchor::LineRange;
 use rdm_core::document::Document;
 use rdm_core::json::ReviewJson;
 use rdm_core::model::{
@@ -26,8 +27,8 @@ use rdm_core::model::{
 };
 use rdm_core::ops::BodyUpdate;
 use rdm_core::ops::reviews::{
-    AddComment, AnchorUpdate, CreateReview, DocUpdate, ReviewFilter, ReviewResolution,
-    ReviewTransition, UpdateComment,
+    AddComment, AnchorRequest, AnchorUpdate, CreateReview, DocUpdate, OnAnchorFailure,
+    ReviewFilter, ReviewResolution, ReviewTransition, UpdateComment,
 };
 
 use crate::error::{
@@ -331,8 +332,16 @@ pub struct AddCommentRequest {
     /// at one of the roadmap's phases (`{"kind": "phase", "stem": ...}`).
     doc: Option<CommentDoc>,
     /// Optional anchor into the target's body (tagged on `anchor_type`).
-    /// Unrecognized anchor types are stored and echoed back untouched.
+    /// Unrecognized anchor types are stored and echoed back untouched. A
+    /// `line-range` anchor is refused (400): request one with `line`.
     anchor: Option<Anchor>,
+    /// A range of 1-based body lines to anchor to, `"N"` or `"N-M"` — the
+    /// same grammar as `rdm review comment --line`. rdm captures the lines'
+    /// text from the document at the review's `created_commit` as the
+    /// anchor's snippet. A malformed value is a 422; a range past the end of
+    /// that document is a 422; `line` alongside `anchor` or `anchor_state`
+    /// (or on a `change/` review) is a 400.
+    line: Option<String>,
     /// Why an anchorless comment has no anchor — one of the
     /// [`rdm_core::model::AnchorState::KNOWN`] values. Parsed with
     /// `AnchorState::from_str` rather than deserialized, so an unknown value
@@ -364,20 +373,44 @@ pub async fn add_comment(
                 .map_err(|e| validation_error(e.to_string()))?,
         ),
     };
+    let lines = match req.line.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            raw.parse::<LineRange>()
+                .map_err(|e| validation_error(e.to_string()))?,
+        ),
+    };
+    if lines.is_some() && (req.anchor.is_some() || anchor_state.is_some()) {
+        return Err(bad_request(
+            "`line` derives the comment's anchor, so it cannot be combined with `anchor` or `anchor_state`".to_string(),
+        ));
+    }
+    let comment = AddComment {
+        project: &project,
+        review_id: &review_id,
+        body: &req.body,
+        doc: req.doc,
+        anchor: req.anchor,
+        anchor_state,
+        intended_path: req.intended_path.as_deref(),
+    };
     let mut store = state.store();
-    let doc = rdm_core::ops::mutate(&mut store, |s| {
-        rdm_core::ops::reviews::add_comment(
+    let doc = rdm_core::ops::mutate(&mut store, |s| match lines {
+        // A line anchor is captured at the review's `created_commit` (not
+        // against the rendered current body, as a browser selection is): a
+        // line number names a line of the version under review.
+        Some(lines) => rdm_core::ops::reviews::add_comment_with_anchor(
             s,
-            AddComment {
-                project: &project,
-                review_id: &review_id,
-                body: &req.body,
-                doc: req.doc,
-                anchor: req.anchor,
-                anchor_state,
-                intended_path: req.intended_path.as_deref(),
+            None::<&rdm_core::source::MemorySourceRepo>,
+            comment,
+            AnchorRequest {
+                lines: Some(lines),
+                ..Default::default()
             },
+            OnAnchorFailure::Refuse,
         )
+        .map(|added| added.doc),
+        None => rdm_core::ops::reviews::add_comment(s, comment),
     })
     .map_err(core_error)?;
     // One shared post-mutate helper for all 22 handler mutation
@@ -1131,7 +1164,7 @@ mod tests {
             serde_json::json!({
                 "body": "Future anchor kind.",
                 "anchor": {
-                    "anchor_type": "line-range",
+                    "anchor_type": "heading-path",
                     "start": 3,
                     "end": 7,
                     "extra": "keep-me"
@@ -1144,7 +1177,7 @@ mod tests {
         assert_eq!(response.status(), 200);
         let json = json_body(response).await;
         let anchor = &json["comments"][0]["anchor"];
-        assert_eq!(anchor["anchor_type"], "line-range");
+        assert_eq!(anchor["anchor_type"], "heading-path");
         assert_eq!(anchor["start"], 3);
         assert_eq!(anchor["end"], 7);
         assert_eq!(anchor["extra"], "keep-me");
@@ -1235,6 +1268,126 @@ mod tests {
         for known in rdm_core::model::AnchorState::KNOWN {
             assert!(detail.contains(known.as_str()), "{detail}");
         }
+    }
+
+    /// Rewrites task `fix-login`'s body to four numbered lines.
+    fn set_lined_task_body(state: &AppState) {
+        let mut store = rdm_store_fs::FsStore::new(&state.plan_root);
+        let mut task = rdm_core::io::load_task(&store, "demo", "fix-login").unwrap();
+        task.body = "one\ntwo\nthree\nfour\n".to_string();
+        rdm_core::io::write_task(&mut store, "demo", "fix-login", &task).unwrap();
+        rdm_core::store::Store::commit(&mut store).unwrap();
+    }
+
+    #[tokio::test]
+    async fn add_comment_line_stores_a_line_range_anchor_with_a_captured_snippet() {
+        let (_dir, state) = setup();
+        set_lined_task_body(&state);
+        let id = create_draft(&state, "task/fix-login", "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        let response = send(
+            &state,
+            post_json(&uri, r#"{"body":"These two.","line":"2-3"}"#),
+        )
+        .await;
+        assert_eq!(response.status(), 201);
+        let posted = json_body(response).await;
+        let expected = serde_json::json!({
+            "anchor_type": "line-range",
+            "start_line": 2,
+            "end_line": 3,
+            "snippet": "two\nthree",
+        });
+        assert_eq!(posted["comments"][0]["anchor"], expected);
+        assert!(posted["comments"][0].get("anchor_state").is_none());
+
+        let response = send(&state, get_req(&format!("/projects/demo/reviews/{id}"))).await;
+        assert_eq!(response.status(), 200);
+        let json = json_body(response).await;
+        assert_eq!(json["comments"][0]["anchor"], expected);
+        assert_eq!(json["comments"][0]["resolution"]["quote"], "two\nthree");
+    }
+
+    #[tokio::test]
+    async fn add_comment_malformed_line_returns_422() {
+        let (_dir, state) = setup();
+        let id = create_draft(&state, "task/fix-login", "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        for bad in ["0", "3-1", "two", ""] {
+            let body = serde_json::json!({ "body": "x", "line": bad });
+            let response = send(&state, post_json(&uri, &body.to_string())).await;
+            assert_eq!(response.status(), 422, "{bad:?}");
+            let json = json_body(response).await;
+            assert!(
+                json["detail"].as_str().unwrap().contains("line range"),
+                "{json}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn add_comment_line_with_anchor_or_anchor_state_returns_400() {
+        let (_dir, state) = setup();
+        let id = create_draft(&state, "task/fix-login", "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        for extra in [
+            serde_json::json!({
+                "anchor": {
+                    "anchor_type": "text-quote",
+                    "quote": "quoted span",
+                    "prefix": "the ",
+                    "suffix": " here"
+                }
+            }),
+            serde_json::json!({ "anchor_state": "whole-document" }),
+        ] {
+            let mut body = serde_json::json!({ "body": "x", "line": "1" });
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            let response = send(&state, post_json(&uri, &body.to_string())).await;
+            assert_eq!(response.status(), 400, "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn add_comment_out_of_range_line_returns_422() {
+        let (_dir, state) = setup();
+        let id = create_draft(&state, "task/fix-login", "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        let response = send(&state, post_json(&uri, r#"{"body":"x","line":"50"}"#)).await;
+        assert_eq!(response.status(), 422);
+        let json = json_body(response).await;
+        assert!(
+            json["detail"]
+                .as_str()
+                .unwrap()
+                .contains("line 50 out of range"),
+            "{json}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_comment_raw_line_range_anchor_returns_400_pointing_at_line() {
+        let (_dir, state) = setup();
+        let id = create_draft(&state, "task/fix-login", "ed").await;
+        let uri = format!("/projects/demo/reviews/{id}/comments");
+        let body = serde_json::json!({
+            "body": "Forged.",
+            "anchor": {
+                "anchor_type": "line-range",
+                "start_line": 1,
+                "end_line": 1,
+                "snippet": "not what the task says"
+            }
+        });
+        let response = send(&state, post_json(&uri, &body.to_string())).await;
+        assert_eq!(response.status(), 400);
+        let json = json_body(response).await;
+        assert!(
+            json["detail"].as_str().unwrap().contains("`line`"),
+            "{json}"
+        );
     }
 
     #[tokio::test]

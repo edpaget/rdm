@@ -131,6 +131,11 @@ start_line: 2
 end_line: 2
 ```
 
+A `change/` review has no plan-repo document body, so `--line` (the
+document-review line-range anchor, see
+[`file-formats.md`](file-formats.md#anchors)) is **refused** on it in either
+`--on-anchor-failure` mode; anchor code with `--path`/`--quote`.
+
 **Deliberately no `prefix`/`suffix`.** A review file lives in the plan repo,
 and "nothing beyond the quote the reviewer chose is embedded" is only
 *literally* true if no surrounding context is copied in. Disambiguation
@@ -199,6 +204,7 @@ Only the anchor refusals map to a reason:
 | `ChangePathNotAFile` | `path-not-a-file` |
 | `ChangePathNotLinkable` | `path-not-linkable` |
 | `ChangeHeadNotInSource` | `head-not-in-source` |
+| `LineRangeOutOfRange` | `line-out-of-range` |
 
 Everything else still fails the command in fall-back mode: the usage errors
 (`--quote` without `--path` and the like), store and IO errors, a submitted
@@ -209,7 +215,8 @@ already required to succeed. The mapping and the fall-back live in core
 only core knows its own refusal variants. `POST
 /projects/<p>/reviews/<id>/comments` accepts the same optional `anchor_state`
 and `intended_path` fields; an unknown `anchor_state` is a 422 naming the
-accepted values.
+accepted values. Its `line` field is `--line` (see
+[`rest-api.md`](rest-api.md#review-comments)).
 
 ## The coarsest true target
 

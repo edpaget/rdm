@@ -61,6 +61,7 @@ pub fn run(
             project,
             no_body,
             at,
+            numbered,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let mut doc = match at.as_deref() {
@@ -69,6 +70,10 @@ pub fn run(
                 None => rdm_core::io::load_task(store, &project, &slug)
                     .context("failed to load task")?,
             };
+            if numbered {
+                print!("{}", display::render_numbered_body(&doc.body));
+                return Ok(());
+            }
             if no_body {
                 doc.body = String::new();
             }

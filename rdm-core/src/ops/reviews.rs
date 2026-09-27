@@ -8,6 +8,7 @@
 
 use chrono::{DateTime, Utc};
 
+use crate::anchor::LineRange;
 use crate::document::Document;
 use crate::error::{Error, Result};
 use crate::model::{
@@ -333,7 +334,10 @@ pub struct AddComment<'a> {
     pub doc: Option<CommentDoc>,
     /// Optional anchor into the target's body. Anchors are stored verbatim
     /// and are **not** resolved here — an anchor that no longer matches the
-    /// target's body (drift) is expected and surfaced later.
+    /// target's body (drift) is expected and surfaced later. An
+    /// [`Anchor::LineRange`] is refused: its snippet is captured by rdm, so
+    /// request one through [`add_comment_with_anchor`]'s
+    /// [`AnchorRequest::lines`] instead.
     pub anchor: Option<Anchor>,
     /// Why the comment has no anchor. Only legal when `anchor` is `None`;
     /// left `None` there, [`add_comment`] stamps
@@ -369,6 +373,8 @@ pub struct AddComment<'a> {
 /// structure is immutable after submit), [`Error::CommentDocNotApplicable`]
 /// if `doc` is set on a phase or task review, [`Error::CommentDocOutOfScope`]
 /// if `doc` names a phase outside the reviewed roadmap,
+/// [`Error::LineAnchorMustBeDerived`] if `anchor` is a caller-built
+/// [`Anchor::LineRange`],
 /// [`Error::CommentAnchorStateWithAnchor`] if `anchor` is set together with
 /// `anchor_state` or `intended_path`, [`Error::CommentPathNotApplicable`] if
 /// `intended_path` is set on a review that does not target a change,
@@ -377,6 +383,15 @@ pub struct AddComment<'a> {
 /// [`Error::FrontmatterMissing`]/[`Error::FrontmatterParse`] on a malformed
 /// review file.
 pub fn add_comment(store: &mut impl Store, req: AddComment<'_>) -> Result<Document<Review>> {
+    if matches!(req.anchor, Some(Anchor::LineRange { .. })) {
+        return Err(Error::LineAnchorMustBeDerived);
+    }
+    insert_comment(store, req)
+}
+
+/// [`add_comment`] without the refusal of a caller-built
+/// [`Anchor::LineRange`]: the write path for an anchor rdm derived itself.
+fn insert_comment(store: &mut impl Store, req: AddComment<'_>) -> Result<Document<Review>> {
     let AddComment {
         project,
         review_id,
@@ -480,9 +495,12 @@ impl std::str::FromStr for OnAnchorFailure {
 }
 
 /// The anchor a caller asks [`add_comment_with_anchor`] to derive: the raw
-/// `--quote`/`--path`/`--occurrence` inputs, before any derivation.
+/// `--quote`/`--path`/`--occurrence`/`--line` inputs, before any derivation.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AnchorRequest<'a> {
+    /// A range of 1-based body lines to anchor to (a line-range anchor).
+    /// Plan-repo document reviews only, and exclusive with `quote`.
+    pub lines: Option<LineRange>,
     /// The exact text to anchor to.
     pub quote: Option<&'a str>,
     /// On a `change/` review: the source-repo-relative file the quote lives
@@ -534,6 +552,7 @@ pub fn anchor_refusal_reason(err: &Error) -> Option<AnchorState> {
         Error::ChangePathNotAFile { .. } => Some(AnchorState::PathNotAFile),
         Error::ChangePathNotLinkable { .. } => Some(AnchorState::PathNotLinkable),
         Error::ChangeHeadNotInSource { .. } => Some(AnchorState::HeadNotInSource),
+        Error::LineRangeOutOfRange { .. } => Some(AnchorState::LineOutOfRange),
         _ => None,
     }
 }
@@ -546,12 +565,13 @@ pub fn anchor_refusal_reason(err: &Error) -> Option<AnchorState> {
 ///
 /// - a `change/` review derives an [`Anchor::FileQuote`] through
 ///   [`crate::change::derive_change_anchor`] against `source`;
-/// - any other review derives an [`Anchor::TextQuote`] from the comment's
-///   document as of the review's `created_commit`
-///   ([`crate::anchor::body_for_comment`] then
-///   [`crate::anchor::derive_text_quote`]).
+/// - any other review derives an [`Anchor::TextQuote`] (for `quote`) or an
+///   [`Anchor::LineRange`] (for `lines`) from the comment's document as of
+///   the review's `created_commit` ([`crate::anchor::body_for_comment`]
+///   then [`crate::anchor::derive_text_quote`] or
+///   [`crate::anchor::derive_line_range`]).
 ///
-/// With neither `quote` nor `path` requested, this is exactly
+/// With none of `quote`, `path` or `lines` requested, this is exactly
 /// [`add_comment`] with `req` unchanged (so `req.anchor_state` and
 /// `req.intended_path` pass through). When an anchor *is* requested,
 /// `req.anchor`, `req.anchor_state` and `req.intended_path` must all be
@@ -569,9 +589,12 @@ pub fn anchor_refusal_reason(err: &Error) -> Option<AnchorState> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::CommentAnchorStateWithAnchor`] when an anchor is
+/// Returns [`Error::LineAnchorWithQuote`] when both `lines` and `quote` are
+/// requested, [`Error::CommentAnchorStateWithAnchor`] when an anchor is
 /// requested alongside `req.anchor`, `req.anchor_state` or
 /// `req.intended_path`, [`Error::ReviewNotDraft`] for a submitted review,
+/// [`Error::LineAnchorNotApplicable`] when a change review requests
+/// `lines` (checked before any source is needed),
 /// [`Error::ChangeAnchorNeedsSource`] when a change review requests an
 /// anchor and `source` is `None`, [`Error::CommentPathNotApplicable`] when
 /// `path` is set on a non-change review, the anchor refusal itself under
@@ -599,8 +622,11 @@ pub fn add_comment_with_anchor<S: SourceRepo>(
             refusal,
         }
     };
-    if anchor.quote.is_none() && anchor.path.is_none() {
+    if anchor.quote.is_none() && anchor.path.is_none() && anchor.lines.is_none() {
         return Ok(added(add_comment(store, req)?, None));
+    }
+    if anchor.lines.is_some() && anchor.quote.is_some() {
+        return Err(Error::LineAnchorWithQuote);
     }
     if req.anchor.is_some() || req.anchor_state.is_some() || req.intended_path.is_some() {
         return Err(Error::CommentAnchorStateWithAnchor);
@@ -610,6 +636,11 @@ pub fn add_comment_with_anchor<S: SourceRepo>(
         return Err(Error::ReviewNotDraft(req.review_id.to_string()));
     }
     let is_change = matches!(review.frontmatter.target, ReviewTarget::Change { .. });
+    if is_change && anchor.lines.is_some() {
+        return Err(Error::LineAnchorNotApplicable(
+            review.frontmatter.target.label(),
+        ));
+    }
     let derived = match &review.frontmatter.target {
         ReviewTarget::Change { head, base } => {
             let Some(source) = source else {
@@ -628,24 +659,34 @@ pub fn add_comment_with_anchor<S: SourceRepo>(
             if anchor.path.is_some() {
                 return Err(Error::CommentPathNotApplicable(other.label()));
             }
-            match anchor.quote {
-                None => Ok(None),
-                Some(quote) => {
-                    let (body, at) = crate::anchor::body_for_comment(
-                        store,
-                        req.project,
-                        &review.frontmatter,
-                        req.doc.as_ref(),
-                    )?;
-                    crate::anchor::derive_text_quote(&body, quote, anchor.occurrence, at.as_deref())
-                        .map(Some)
+            if anchor.quote.is_none() && anchor.lines.is_none() {
+                Ok(None)
+            } else {
+                let (body, at) = crate::anchor::body_for_comment(
+                    store,
+                    req.project,
+                    &review.frontmatter,
+                    req.doc.as_ref(),
+                )?;
+                match (anchor.lines, anchor.quote) {
+                    (Some(lines), _) => {
+                        crate::anchor::derive_line_range(&body, lines, at.as_deref())
+                    }
+                    (None, quote) => crate::anchor::derive_text_quote(
+                        &body,
+                        quote.unwrap_or_default(),
+                        anchor.occurrence,
+                        at.as_deref(),
+                    ),
                 }
+                .map(Some)
             }
         }
     };
     match derived {
         Ok(derived) => {
-            let doc = add_comment(
+            // Derived here, so a line-range anchor's snippet is rdm's own.
+            let doc = insert_comment(
                 store,
                 AddComment {
                     anchor: derived,
@@ -754,6 +795,8 @@ pub struct UpdateComment<'a> {
 ///
 /// Returns [`Error::ReviewNotFound`] if the review doesn't exist,
 /// [`Error::CommentNotFound`] if the comment id isn't in the review,
+/// [`Error::LineAnchorMustBeDerived`] if `anchor` sets a caller-built
+/// [`Anchor::LineRange`],
 /// [`Error::ReviewNotDraft`] if a structural change is attempted after
 /// submission, [`Error::ReviewNotSubmitted`] if any resolution field
 /// (`status`, `applied_commit`, or `reply`) is changed while the review is
@@ -775,6 +818,9 @@ pub fn update_comment(store: &mut impl Store, req: UpdateComment<'_>) -> Result<
         applied_commit,
         reply,
     } = req;
+    if matches!(anchor, AnchorUpdate::Set(Anchor::LineRange { .. })) {
+        return Err(Error::LineAnchorMustBeDerived);
+    }
     if let Some(sha) = applied_commit
         && !crate::model::is_full_commit_sha(sha)
     {
@@ -3251,6 +3297,15 @@ mod tests {
                 },
                 AnchorState::HeadNotInSource,
             ),
+            (
+                Error::LineRangeOutOfRange {
+                    start: 9,
+                    end: 9,
+                    line_count: 2,
+                    commit: None,
+                },
+                AnchorState::LineOutOfRange,
+            ),
         ];
         for (err, want) in cases {
             assert_eq!(anchor_refusal_reason(&err), Some(want), "{err}");
@@ -3260,6 +3315,9 @@ mod tests {
             Error::ChangePathNeedsQuote,
             Error::ChangeAnchorNeedsSource,
             Error::CommentPathNotApplicable("task/t".to_string()),
+            Error::LineAnchorNotApplicable("change/x".to_string()),
+            Error::LineAnchorWithQuote,
+            Error::LineAnchorMustBeDerived,
             Error::ReviewNotDraft("r".to_string()),
             Error::Git("boom".to_string()),
         ] {
@@ -3291,6 +3349,7 @@ mod tests {
                 quote,
                 path,
                 occurrence: None,
+                lines: None,
             },
             mode,
         )
@@ -3422,6 +3481,7 @@ mod tests {
                 quote: Some("q"),
                 path: Some("src/lib.rs"),
                 occurrence: None,
+                lines: None,
             },
             OnAnchorFailure::WholeDocument,
         )
@@ -3447,6 +3507,7 @@ mod tests {
                 quote: Some("absent"),
                 path: None,
                 occurrence: None,
+                lines: None,
             },
             OnAnchorFailure::WholeDocument,
         )
@@ -3454,6 +3515,160 @@ mod tests {
         let c = only_comment(&added.doc);
         assert_eq!(c.anchor_state, Some(AnchorState::QuoteNotFound));
         assert_eq!(c.intended_path, None, "a plan document has no source path");
+    }
+
+    /// A draft task review whose task body has four lines.
+    fn store_with_lined_task_review() -> MemoryStore {
+        let mut store = setup_store_with_items();
+        let mut task = crate::io::load_task(&store, "test", "fix-login").unwrap();
+        task.body = "one\ntwo\nthree\nfour\n".to_string();
+        crate::io::write_task(&mut store, "test", "fix-login", &task).unwrap();
+        let doc = sample_review("r1");
+        crate::io::write_review(&mut store, "test", "r1", &doc).unwrap();
+        store
+    }
+
+    fn add_lines(
+        store: &mut MemoryStore,
+        lines: &str,
+        quote: Option<&str>,
+        mode: OnAnchorFailure,
+    ) -> Result<AddedComment> {
+        add_comment_with_anchor::<crate::source::MemorySourceRepo>(
+            store,
+            None,
+            AddComment {
+                project: "test",
+                review_id: "r1",
+                body: "b",
+                ..Default::default()
+            },
+            AnchorRequest {
+                quote,
+                lines: Some(lines.parse().unwrap()),
+                ..Default::default()
+            },
+            mode,
+        )
+    }
+
+    #[test]
+    fn add_comment_with_anchor_derives_a_line_range_from_the_document() {
+        let mut store = store_with_lined_task_review();
+        let added = add_lines(&mut store, "2-3", None, OnAnchorFailure::Refuse).unwrap();
+        assert_eq!(added.refusal, None);
+        let c = only_comment(&added.doc);
+        assert_eq!(
+            c.anchor,
+            Some(Anchor::LineRange {
+                start_line: 2,
+                end_line: 3,
+                snippet: "two\nthree".to_string(),
+            })
+        );
+        assert_eq!(c.anchor_state, None);
+    }
+
+    #[test]
+    fn add_comment_with_anchor_refuses_lines_on_a_change_review_in_both_modes() {
+        for mode in [OnAnchorFailure::Refuse, OnAnchorFailure::WholeDocument] {
+            let mut store = store_with_change_review("r1");
+            // No source: the not-applicable refusal comes first.
+            let err = add_lines(&mut store, "1", None, mode).unwrap_err();
+            assert!(
+                matches!(&err, Error::LineAnchorNotApplicable(label) if label.starts_with("change/")),
+                "{err}"
+            );
+            let stored = crate::io::load_review(&store, "test", "r1").unwrap();
+            assert!(stored.frontmatter.comments.is_empty(), "nothing is written");
+        }
+    }
+
+    #[test]
+    fn add_comment_with_anchor_refuses_lines_with_a_quote() {
+        let mut store = store_with_lined_task_review();
+        let err =
+            add_lines(&mut store, "1", Some("one"), OnAnchorFailure::WholeDocument).unwrap_err();
+        assert!(matches!(err, Error::LineAnchorWithQuote), "{err}");
+    }
+
+    #[test]
+    fn add_comment_with_anchor_refuses_an_out_of_range_line_in_refuse_mode() {
+        let mut store = store_with_lined_task_review();
+        let err = add_lines(&mut store, "4-5", None, OnAnchorFailure::Refuse).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::LineRangeOutOfRange {
+                    start: 4,
+                    end: 5,
+                    line_count: 4,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        let stored = crate::io::load_review(&store, "test", "r1").unwrap();
+        assert!(stored.frontmatter.comments.is_empty(), "nothing is written");
+    }
+
+    #[test]
+    fn add_comment_with_anchor_stores_an_out_of_range_line_whole_document() {
+        let mut store = store_with_lined_task_review();
+        let added = add_lines(&mut store, "50", None, OnAnchorFailure::WholeDocument).unwrap();
+        let refusal = added.refusal.expect("the refusal text is returned");
+        assert!(refusal.contains("line 50 out of range"), "{refusal}");
+        let c = only_comment(&added.doc);
+        assert_eq!(c.anchor, None);
+        assert_eq!(c.anchor_state, Some(AnchorState::LineOutOfRange));
+        assert_eq!(c.intended_path, None);
+    }
+
+    #[test]
+    fn a_caller_built_line_range_anchor_is_refused_on_add_and_update() {
+        let mut store = store_with_lined_task_review();
+        let forged = Anchor::LineRange {
+            start_line: 1,
+            end_line: 1,
+            snippet: "not what line one says".to_string(),
+        };
+        let err = add_comment(
+            &mut store,
+            AddComment {
+                project: "test",
+                review_id: "r1",
+                body: "b",
+                anchor: Some(forged.clone()),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::LineAnchorMustBeDerived), "{err}");
+
+        add_comment(
+            &mut store,
+            AddComment {
+                project: "test",
+                review_id: "r1",
+                body: "b",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let err = update_comment(
+            &mut store,
+            UpdateComment {
+                project: "test",
+                review_id: "r1",
+                comment_id: 1,
+                anchor: AnchorUpdate::Set(forged),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::LineAnchorMustBeDerived), "{err}");
+        let stored = crate::io::load_review(&store, "test", "r1").unwrap();
+        assert_eq!(only_comment(&stored).anchor, None);
     }
 
     #[test]

@@ -586,6 +586,28 @@ pub(crate) enum ProjectCommand {
     List,
 }
 
+impl Command {
+    /// Whether this is a `roadmap`/`phase`/`task`/`plan show --numbered`,
+    /// whose output is always the numbered body and never JSON or a table.
+    pub(crate) fn is_numbered_show(&self) -> bool {
+        match self {
+            Command::Roadmap {
+                command: RoadmapCommand::Show { numbered, .. },
+            }
+            | Command::Phase {
+                command: PhaseCommand::Show { numbered, .. },
+            }
+            | Command::Task {
+                command: TaskCommand::Show { numbered, .. },
+            }
+            | Command::Plan {
+                command: PlanCommand::Show { numbered, .. },
+            } => *numbered,
+            _ => false,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 pub(crate) enum RoadmapCommand {
     /// Create a new roadmap.
@@ -627,6 +649,12 @@ pub(crate) enum RoadmapCommand {
         /// Read the body as it was at a specific git revision.
         #[arg(long)]
         at: Option<String>,
+        /// Print only the body, each line prefixed with its 1-based number
+        /// (`cat -n` style: the number right-aligned in 6 columns, a tab,
+        /// then the line) — the numbering `review comment --line` anchors
+        /// to. Composes with `--at`; refused with `--format json`/`table`.
+        #[arg(long, conflicts_with = "no_body")]
+        numbered: bool,
     },
     /// Update a roadmap's title, priority, tags, and/or body.
     Update {
@@ -820,6 +848,12 @@ pub(crate) enum PhaseCommand {
         /// Read the body as it was at a specific git revision.
         #[arg(long)]
         at: Option<String>,
+        /// Print only the body, each line prefixed with its 1-based number
+        /// (`cat -n` style: the number right-aligned in 6 columns, a tab,
+        /// then the line) — the numbering `review comment --line` anchors
+        /// to. Composes with `--at`; refused with `--format json`/`table`.
+        #[arg(long, conflicts_with = "no_body")]
+        numbered: bool,
     },
     /// Update a phase's status, title, and/or body.
     Update {
@@ -957,6 +991,12 @@ pub(crate) enum PlanCommand {
         /// Read the body as it was at a specific git revision.
         #[arg(long)]
         at: Option<String>,
+        /// Print only the body, each line prefixed with its 1-based number
+        /// (`cat -n` style: the number right-aligned in 6 columns, a tab,
+        /// then the line) — the numbering `review comment --line` anchors
+        /// to. Composes with `--at`; refused with `--format json`/`table`.
+        #[arg(long, conflicts_with = "no_body")]
+        numbered: bool,
     },
     /// List plans.
     List {
@@ -1171,6 +1211,12 @@ pub(crate) enum TaskCommand {
         /// Read the body as it was at a specific git revision.
         #[arg(long)]
         at: Option<String>,
+        /// Print only the body, each line prefixed with its 1-based number
+        /// (`cat -n` style: the number right-aligned in 6 columns, a tab,
+        /// then the line) — the numbering `review comment --line` anchors
+        /// to. Composes with `--at`; refused with `--format json`/`table`.
+        #[arg(long, conflicts_with = "no_body")]
+        numbered: bool,
     },
     /// Update a task.
     Update {
@@ -1502,12 +1548,23 @@ pub(crate) enum ReviewCommand {
     /// quote is located in that file's content at the reviewed head and
     /// must fall inside a hunk the change touches.
     ///
-    /// A comment without `--quote` records why it has no anchor: pass
+    /// With `--line <start>[-<end>]` (instead of `--quote`), the comment is
+    /// anchored to those 1-based body lines of the comment's document as of
+    /// the review's `created_commit`, and rdm captures their text as the
+    /// anchor's snippet. Copy line numbers from `show --numbered --at
+    /// <created_commit>`. Not valid on a `change/` review.
+    ///
+    /// A comment without `--quote` or `--line` records why it has no anchor: pass
     /// `--anchor-state` (and, on a change review, `--intended-path`) to record
     /// a reason, or omit both for a deliberate whole-document comment. With
     /// `--on-anchor-failure whole-document`, a refused anchor is stored
     /// whole-document with core's reason instead of failing, and stdout is
     /// one JSON line describing what was stored.
+    #[command(group(
+        clap::ArgGroup::new("anchor_request")
+            .multiple(false)
+            .args(["quote", "line"])
+    ))]
     Comment {
         /// Id of the draft review to comment on.
         review_id: String,
@@ -1526,6 +1583,16 @@ pub(crate) enum ReviewCommand {
         /// three times).
         #[arg(long, requires = "quote")]
         occurrence: Option<usize>,
+        /// Anchor to a range of 1-based body lines, `N` or `N-M`, as
+        /// numbered by `show --numbered` at the review's `created_commit`
+        /// (not valid on a `change/` review). Mutually exclusive with
+        /// `--quote`.
+        #[arg(
+            long,
+            value_name = "START[-END]",
+            conflicts_with_all = ["quote", "anchor_state", "intended_path"]
+        )]
+        line: Option<rdm_core::anchor::LineRange>,
         /// Scope the comment to one of the roadmap's phases
         /// (`phase/<stem-or-number>`). Only valid on roadmap reviews.
         #[arg(long)]
@@ -1550,7 +1617,7 @@ pub(crate) enum ReviewCommand {
         #[arg(
             long,
             value_name = "MODE",
-            requires = "quote",
+            requires = "anchor_request",
             conflicts_with = "anchor_state"
         )]
         on_anchor_failure: Option<OnAnchorFailure>,

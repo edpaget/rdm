@@ -1772,8 +1772,8 @@ the same set, and severity is not consulted.
 - Reasons that park: `path-missing` (a path absent at the reviewed head, or
   no derivable path at build time), `path-not-a-file`, `path-not-linkable`,
   `quote-not-found`, `ambiguous`, `occurrence-out-of-range`,
-  `head-not-in-source`, `start-fallback`, and any value this build does not
-  know.
+  `head-not-in-source`, `start-fallback`, `line-out-of-range`, and any value
+  this build does not know.
 - Reasons that never park: `outside-hunk`, at any severity — a run-time
   refusal of a quote on an untouched line or in an untouched file, or the
   build-time empty-range drop (`noCode`).

@@ -9,7 +9,7 @@ use crate::anchor::{Resolution, ResolvedComment};
 use crate::ast;
 use crate::display::truncate_snippet;
 use crate::document::Document;
-use crate::model::{Phase, Plan, Review, Roadmap, Run, RunUnit, Task};
+use crate::model::{Anchor, Phase, Plan, Review, Roadmap, Run, RunUnit, Task};
 use crate::search::SearchResult;
 
 /// A roadmap document paired with its phases (stem + phase document).
@@ -1094,6 +1094,70 @@ pub fn format_search_results_md(results: &[SearchResult]) -> String {
 }
 
 /// One-word resolution label for a comment's anchor state.
+/// The human label for a line-range anchor's range — `line 3` or
+/// `lines 3-5` — or `None` for any other anchor kind.
+///
+/// Shared by the CLI's review renderers and rdm-server's Reviews section so
+/// a line-anchored comment reads the same everywhere.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::display::anchor_line_label;
+/// use rdm_core::model::Anchor;
+///
+/// let anchor = Anchor::LineRange {
+///     start_line: 3,
+///     end_line: 5,
+///     snippet: "c\nd\ne".to_string(),
+/// };
+/// assert_eq!(anchor_line_label(&anchor).as_deref(), Some("lines 3-5"));
+/// ```
+#[must_use]
+pub fn anchor_line_label(anchor: &Anchor) -> Option<String> {
+    let Anchor::LineRange {
+        start_line,
+        end_line,
+        ..
+    } = anchor
+    else {
+        return None;
+    };
+    Some(if start_line == end_line {
+        format!("line {start_line}")
+    } else {
+        format!("lines {start_line}-{end_line}")
+    })
+}
+
+/// Renders a document body with each line prefixed by its 1-based number —
+/// the numbering `rdm review comment --line` resolves against.
+///
+/// Lines come from [`crate::anchor::body_lines`], so line `N` here is
+/// exactly the text a `--line N` anchor captures as its snippet. The format
+/// mirrors `cat -n`: the number right-aligned in a 6-column field, a tab,
+/// then the line's text (its terminator dropped); every rendered line ends
+/// in `\n`. An empty body renders as the empty string.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::display::render_numbered_body;
+///
+/// assert_eq!(
+///     render_numbered_body("first\n\nthird"),
+///     "     1\tfirst\n     2\t\n     3\tthird\n"
+/// );
+/// ```
+#[must_use]
+pub fn render_numbered_body(body: &str) -> String {
+    let mut out = String::with_capacity(body.len() + body.len() / 8);
+    for (i, range) in crate::anchor::body_lines(body).into_iter().enumerate() {
+        out.push_str(&format!("{:>6}\t{}\n", i + 1, &body[range]));
+    }
+    out
+}
+
 fn resolution_label(resolved: &ResolvedComment) -> &'static str {
     match &resolved.resolution {
         Resolution::Original { drifted: false, .. } | Resolution::Current { .. } => "resolved",
@@ -1220,11 +1284,20 @@ fn build_review_detail(
             if let Some(doc_scope) = &comment.doc {
                 head.push_str(&format!(" [doc: phase/{}]", doc_scope.stem));
             }
+            if let Some(label) = comment.anchor.as_ref().and_then(anchor_line_label) {
+                head.push_str(&format!(" [{label}]"));
+            }
             match flavor {
                 RenderFlavor::Markdown => d.heading(3, &head),
                 RenderFlavor::Terminal => d.paragraph(&head),
             }
-            if let Some(quote) = &resolved.quote {
+            // An unresolved line-range anchor still shows the snippet rdm
+            // captured, so a reader always sees what the comment was about.
+            let quote = resolved.quote.as_ref().or(match &comment.anchor {
+                Some(Anchor::LineRange { snippet, .. }) => Some(snippet),
+                _ => None,
+            });
+            if let Some(quote) = quote {
                 match flavor {
                     RenderFlavor::Markdown => {
                         d.raw(&format!("> {}", quote.replace('\n', "\n> ")));
@@ -2460,6 +2533,73 @@ mod tests {
         // Comment 2: drifted, with continuation-indented multiline quote.
         assert!(output.contains("Comment 2 — open (drifted)"), "{output}");
         assert!(output.contains("  > line one\n  > line two"), "{output}");
+    }
+
+    fn line_anchored_review_doc() -> Document<Review> {
+        let mut doc = make_review_doc();
+        doc.frontmatter.comments.truncate(1);
+        let c = &mut doc.frontmatter.comments[0];
+        c.doc = None;
+        c.anchor = Some(Anchor::LineRange {
+            start_line: 3,
+            end_line: 4,
+            snippet: "third line\nfourth line".to_string(),
+        });
+        doc
+    }
+
+    #[test]
+    fn review_detail_shows_a_line_range_label_and_its_quote() {
+        let doc = line_anchored_review_doc();
+        let resolved = [ResolvedComment {
+            resolution: Resolution::Original {
+                range: 0..22,
+                drifted: true,
+            },
+            quote: Some("third line\nfourth line".to_string()),
+        }];
+        let output = format_review_detail("id", &doc, &resolved, &[], None);
+        assert!(
+            output.contains("Comment 1 — addressed (drifted) [lines 3-4]"),
+            "{output}"
+        );
+        assert!(
+            output.contains("  > third line\n  > fourth line"),
+            "{output}"
+        );
+        let md = format_review_detail_md("id", &doc, &resolved, &[], None);
+        assert!(md.contains("[lines 3-4]"), "{md}");
+        assert!(md.contains("> third line\n> fourth line"), "{md}");
+    }
+
+    #[test]
+    fn review_detail_shows_the_stored_snippet_for_an_unresolved_line_range() {
+        let doc = line_anchored_review_doc();
+        let output = format_review_detail("id", &doc, &[], &[], None);
+        assert!(
+            output.contains("Comment 1 — addressed (unresolved) [lines 3-4]"),
+            "{output}"
+        );
+        assert!(
+            output.contains("  > third line\n  > fourth line"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn numbered_body_numbers_every_body_line() {
+        let body = "one\n\nthree\r\nfour\n";
+        let rendered = render_numbered_body(body);
+        let lines: Vec<&str> = rendered.lines().collect();
+        assert_eq!(
+            lines,
+            ["     1\tone", "     2\t", "     3\tthree", "     4\tfour"]
+        );
+        assert_eq!(render_numbered_body(""), "");
+        // Line N of the rendering is line N of the body.
+        for (n, line) in body.lines().enumerate() {
+            assert_eq!(lines[n].split_once('\t').unwrap().1, line);
+        }
     }
 
     #[test]

@@ -1508,6 +1508,76 @@ mod tests {
         )));
     }
 
+    /// Sends a JSON `POST` through the router, asserting `status`, and
+    /// returns the parsed response body.
+    async fn post_json_ok(
+        state: &AppState,
+        uri: &str,
+        body: serde_json::Value,
+        status: u16,
+    ) -> serde_json::Value {
+        let response = build_router(state.clone())
+            .oneshot(
+                Request::post(uri)
+                    .header("accept", "application/hal+json")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), status, "{uri}");
+        let bytes = to_bytes(response.into_body(), 262144).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// A comment added over REST with `line` renders its range label and the
+    /// captured snippet in the task page's Reviews section once submitted.
+    #[tokio::test]
+    async fn get_task_html_renders_a_line_anchored_comment_range_and_snippet() {
+        let (_dir, state) = setup();
+        {
+            let mut store = rdm_store_fs::FsStore::new(&state.plan_root);
+            let mut task = rdm_core::io::load_task(&store, "demo", "bug-fix").unwrap();
+            task.body = "Bug details.\nStep two.\nStep three.\n".to_string();
+            rdm_core::io::write_task(&mut store, "demo", "bug-fix", &task).unwrap();
+            rdm_core::store::Store::commit(&mut store).unwrap();
+        }
+        let review = post_json_ok(
+            &state,
+            "/projects/demo/reviews",
+            serde_json::json!({ "target": "task/bug-fix", "author": "reviewer" }),
+            201,
+        )
+        .await;
+        let id = review["id"].as_str().unwrap().to_string();
+        post_json_ok(
+            &state,
+            &format!("/projects/demo/reviews/{id}/comments"),
+            serde_json::json!({ "body": "Look at these lines.", "line": "2-3" }),
+            201,
+        )
+        .await;
+        post_json_ok(
+            &state,
+            &format!("/projects/demo/reviews/{id}/submit"),
+            serde_json::json!({ "verdict": "approve" }),
+            200,
+        )
+        .await;
+
+        let html = get_html(&state, "/projects/demo/tasks/bug-fix").await;
+        assert!(
+            html.contains(r#"<p class="anchor-label anchor-lines">lines 2-3</p>"#),
+            "got: {html}"
+        );
+        assert!(
+            html.contains("Step two.\nStep three.</blockquote>"),
+            "got: {html}"
+        );
+        assert!(html.contains("Look at these lines."), "got: {html}");
+    }
+
     /// An `rdm:` link written inside a review summary or comment body must
     /// get the same item/broken rewrite as roadmap/phase/task bodies, never
     /// a raw `rdm:`-scheme href (which no browser can navigate).

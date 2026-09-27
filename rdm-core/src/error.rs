@@ -301,6 +301,32 @@ pub enum Error {
         /// How many occurrences actually exist.
         available: usize,
     },
+    /// A `--line` range for a new line-range anchor runs past the last line
+    /// of the document body it was checked against.
+    LineRangeOutOfRange {
+        /// 1-based first line requested.
+        start: u32,
+        /// 1-based last line requested (inclusive).
+        end: u32,
+        /// How many lines the checked body actually has.
+        line_count: usize,
+        /// The commit the checked body was read at (`None` when the current
+        /// body was used).
+        commit: Option<String>,
+    },
+    /// A line-range anchor was requested on a review whose target has no
+    /// plan-repo document body (a `change/` review); the payload is the
+    /// target's label.
+    LineAnchorNotApplicable(String),
+    /// A comment asked for both a line-range anchor and a text-quote
+    /// anchor; a comment carries at most one anchor.
+    LineAnchorWithQuote,
+    /// A caller handed a ready-made [`Anchor::LineRange`] to a comment
+    /// write. Its snippet is only trustworthy when rdm captures it, so line
+    /// anchors are accepted only as a line range to derive from.
+    ///
+    /// [`Anchor::LineRange`]: crate::model::Anchor::LineRange
+    LineAnchorMustBeDerived,
     /// A `--path --quote` comment on a `change/<sha>` review quoted text
     /// that lies outside every hunk the reviewed change touches in that
     /// file.
@@ -1046,6 +1072,46 @@ impl std::fmt::Display for Error {
                 write!(
                     f,
                     "--occurrence {occurrence} is out of range for quote {quote:?} — only {available} occurrence(s) found (valid: 1..={available})"
+                )
+            }
+            Error::LineRangeOutOfRange {
+                start,
+                end,
+                line_count,
+                commit,
+            } => {
+                let lines = if start == end {
+                    format!("line {start}")
+                } else {
+                    format!("lines {start}-{end}")
+                };
+                match commit {
+                    Some(sha) => write!(
+                        f,
+                        "{lines} out of range — the document has {line_count} line(s) as of the review's created commit ({sha}); number its lines with `show --numbered --at {sha}`, or omit --line for a whole-document comment"
+                    ),
+                    None => write!(
+                        f,
+                        "{lines} out of range — the current document has {line_count} line(s); number its lines with `show --numbered`, or omit --line for a whole-document comment"
+                    ),
+                }
+            }
+            Error::LineAnchorNotApplicable(label) => {
+                write!(
+                    f,
+                    "--line only applies to a review of a plan-repo document — {label} is a change review, whose comments anchor with --path/--quote"
+                )
+            }
+            Error::LineAnchorWithQuote => {
+                write!(
+                    f,
+                    "--line and --quote are mutually exclusive — anchor a comment by line range or by quote, not both"
+                )
+            }
+            Error::LineAnchorMustBeDerived => {
+                write!(
+                    f,
+                    "a line-range anchor is captured by rdm, never supplied — pass the line range (`--line <start>[-<end>]`, or the REST `line` field) and rdm derives its snippet from the document at the review's created commit"
                 )
             }
             Error::QuoteOutsideChangedHunks {

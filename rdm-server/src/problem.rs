@@ -170,6 +170,11 @@ impl From<&Error> for ProblemDetail {
             // quote/path pairing rules above.
             | Error::CommentAnchorStateWithAnchor
             | Error::CommentPathNotApplicable(_)
+            // Line-anchor usage errors: `line` on a change review, `line`
+            // alongside a quote, or a caller-built line-range anchor.
+            | Error::LineAnchorNotApplicable(_)
+            | Error::LineAnchorWithQuote
+            | Error::LineAnchorMustBeDerived
             | Error::QuoteOutsideChangedHunks { .. } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Bad Request".to_string(),
@@ -190,7 +195,10 @@ impl From<&Error> for ProblemDetail {
                     instance: None,
                 }
             }
-            Error::SourcePathNotAFile { .. } => ProblemDetail {
+            // A well-formed line range the document at the review's
+            // `created_commit` cannot satisfy: the request is valid, the
+            // document is too short for it.
+            Error::SourcePathNotAFile { .. } | Error::LineRangeOutOfRange { .. } => ProblemDetail {
                 problem_type: "about:blank".to_string(),
                 title: "Unprocessable Content".to_string(),
                 status: 422,

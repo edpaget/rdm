@@ -555,4 +555,41 @@ mod tests {
         assert_eq!(t.link.to_string(), "rdm:phase/auth/phase-1-design");
         assert_eq!(t.reason, Some(TargetReason::NotRecorded));
     }
+
+    fn line_range() -> Anchor {
+        Anchor::LineRange {
+            start_line: 2,
+            end_line: 3,
+            snippet: "two\nthree".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_line_anchored_plan_comment_targets_the_plan_at_plan_item_level() {
+        let plan = review(ReviewTarget::Plan {
+            slug: "impl-fix".to_string(),
+        });
+        let c = comment(Some(line_range()), None, None);
+        let t = comment_target(&MemorySourceRepo::new(), &plan, &c);
+        assert_eq!(t.level, TargetLevel::PlanItem);
+        assert_eq!(t.link.to_string(), "rdm:plan/impl-fix");
+        assert_eq!(t.reason, None);
+        assert!(!t.unverified);
+    }
+
+    #[test]
+    fn a_line_anchored_roadmap_comment_scoped_to_a_phase_targets_the_phase() {
+        let roadmap = review(ReviewTarget::Roadmap {
+            roadmap: "auth".to_string(),
+        });
+        let mut c = comment(Some(line_range()), None, None);
+        c.doc = Some(CommentDoc {
+            kind: CommentDocKind::Phase,
+            stem: "phase-1-design".to_string(),
+        });
+        let t = comment_target(&MemorySourceRepo::new(), &roadmap, &c);
+        assert_eq!(t.level, TargetLevel::PlanItem);
+        assert_eq!(t.link.to_string(), "rdm:phase/auth/phase-1-design");
+        assert_eq!(t.reason, None);
+    }
 }

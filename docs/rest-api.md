@@ -27,6 +27,25 @@ Endpoints mirror the CLI commands. All endpoints accept and return JSON by defau
 | `PATCH` | `/projects/:project/tasks/:task` | Update a task |
 | `GET` | `/projects/:project/annotations?target=…` | List what annotates a code location (see [Code-location annotations](#code-location-annotations)) |
 
+## Review comments
+
+`POST /projects/:project/reviews/:review_id/comments` adds a comment to a draft
+review. Its JSON body takes `body` (required), `doc`, and one way of anchoring:
+a text-quote `anchor` mapping, an anchorless `anchor_state` (plus
+`intended_path` on a `change/` review), or `line`.
+
+`line` is `"N"` or `"N-M"`, the grammar of `rdm review comment --line`: 1-based
+lines of the document body as it was at the review's `created_commit` (see
+[`file-formats.md`](file-formats.md#anchors)). rdm captures the lines' text as
+the stored `line-range` anchor's `snippet`; the request never supplies it.
+
+| Request | Status |
+|---------|--------|
+| Malformed `line` (`0`, `5-3`, non-numeric) | `422` |
+| A range past the end of the document at `created_commit` | `422` |
+| `line` with `anchor` or `anchor_state`, or on a `change/` review | `400` |
+| A hand-built `line-range` `anchor` (here or on `PATCH …/comments/:id`) | `400`, pointing at `line` |
+
 ## Code-location annotations
 
 `GET /projects/:project/annotations?target=<reference>` is the web UI's reverse

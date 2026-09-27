@@ -237,6 +237,10 @@ pub fn page_reviews(
                     None
                 },
                 quote_text,
+                line_label: comment
+                    .anchor
+                    .as_ref()
+                    .and_then(rdm_core::display::anchor_line_label),
                 quote_highlightable,
                 outdated,
             });
@@ -581,6 +585,9 @@ fn cross_link(
 fn stored_quote(anchor: &Anchor) -> Option<String> {
     match anchor {
         Anchor::TextQuote { quote, .. } => Some(quote.clone()),
+        // The snippet rdm captured at `created_commit` is what the comment
+        // was about, whether or not those lines still match today.
+        Anchor::LineRange { snippet, .. } => Some(snippet.clone()),
         // A file-quote's text lives in the source repository, not in any
         // page this server renders, so there is nothing to highlight inline.
         Anchor::FileQuote { .. } | Anchor::Unknown { .. } => None,

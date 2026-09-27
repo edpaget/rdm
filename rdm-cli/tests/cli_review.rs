@@ -2419,7 +2419,7 @@ fn review_show_format_markdown_renders_comment_details() {
 fn review_show_unknown_anchor_round_trips() {
     let plan = init_plan_repo();
 
-    // Hand-write a review fixture carrying a `line-range` anchor, the way a
+    // Hand-write a review fixture carrying a `heading-path` anchor, the way a
     // newer rdm would have stored it.
     let review_path = plan
         .path()
@@ -2441,10 +2441,10 @@ comments:
 - id: 1
   status: open
   anchor:
-    anchor_type: line-range
+    anchor_type: heading-path
     start: 3
     end: 7
-  body: Uses a line-range anchor from a newer rdm.
+  body: Uses a heading-path anchor from a newer rdm.
 ---
 Fixture review with an unknown anchor type.
 "#,
@@ -2472,7 +2472,7 @@ Fixture review with an unknown anchor type.
 
     let comment = &v["comments"][0];
     // The unknown anchor is echoed verbatim (tagged union preserved)...
-    assert_eq!(comment["anchor"]["anchor_type"], "line-range");
+    assert_eq!(comment["anchor"]["anchor_type"], "heading-path");
     assert_eq!(comment["anchor"]["start"], 3);
     assert_eq!(comment["anchor"]["end"], 7);
     // ...and resolves as unresolved (whole-document treatment).
@@ -2749,5 +2749,469 @@ fn review_start_ignores_piped_stdin_body() {
             .as_str()
             .unwrap()
             .contains("SNEAKY STDIN BODY")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Line-range anchors: `review comment --line` and `show --numbered`.
+// ---------------------------------------------------------------------------
+
+/// Runs `rdm --root <plan> <args> --project demo` and returns the assertion.
+fn rdm_demo(plan: &TempDir, args: &[&str]) -> assert_cmd::assert::Assert {
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(args)
+        .args(["--project", "demo"])
+        .assert()
+}
+
+/// Lands every staged plan-repo change as one commit.
+fn commit_plan(plan: &TempDir, message: &str) {
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["commit", "-m", message])
+        .assert()
+        .success();
+}
+
+/// A multi-line plan body: a heading, a blank line, a paragraph wrapped over
+/// two lines, and no trailing newline on the last line.
+const LINED_BODY: &str =
+    "# Plan\n\nIntro line.\nStep one wraps\nonto a second line.\n\nStep two, the last line.";
+
+/// Creates plan `slug` (implementing `task/item-x`) with `body` and commits.
+fn create_plan_with_body(plan: &TempDir, slug: &str, body: &str) {
+    rdm_demo(
+        plan,
+        &[
+            "plan",
+            "create",
+            slug,
+            "--title",
+            slug,
+            "--implements",
+            "task/item-x",
+            "--body",
+            body,
+            "--no-edit",
+        ],
+    )
+    .success();
+    commit_plan(plan, "seed: plan with a lined body");
+}
+
+/// Adds a `--line <lines>` comment (plus `extra` args) to review `id`.
+fn add_line_comment(plan: &TempDir, id: &str, lines: &str, extra: &[&str]) {
+    let mut args = vec![
+        "review",
+        "comment",
+        id,
+        "--line",
+        lines,
+        "--body",
+        "About these lines.",
+        "--no-edit",
+    ];
+    args.extend_from_slice(extra);
+    rdm_demo(plan, &args).success();
+}
+
+/// The text of 1-based line `n` of a `show --numbered` rendering.
+fn numbered_line(rendering: &str, n: usize) -> String {
+    let line = rendering
+        .lines()
+        .nth(n - 1)
+        .unwrap_or_else(|| panic!("no line {n} in {rendering:?}"));
+    let (number, text) = line
+        .split_once('\t')
+        .unwrap_or_else(|| panic!("no tab in numbered line {line:?}"));
+    assert_eq!(number.trim(), n.to_string(), "{rendering}");
+    text.to_string()
+}
+
+/// Runs `<show_args> --numbered` and returns stdout.
+fn show_numbered(plan: &TempDir, show_args: &[&str]) -> String {
+    let mut args = show_args.to_vec();
+    args.push("--numbered");
+    let out = rdm_demo(plan, &args).success().get_output().stdout.clone();
+    String::from_utf8(out).unwrap()
+}
+
+#[test]
+fn review_comment_line_on_a_plan_stores_the_range_and_snippet() {
+    let plan = init_plan_repo();
+    create_plan_with_body(&plan, "lined", LINED_BODY);
+    let id = start_review(&plan, "plan/lined");
+    add_line_comment(&plan, &id, "3-4", &[]);
+
+    let json = show_review_json(&plan, &id);
+    let c = &json["comments"][0];
+    assert_eq!(c["anchor"]["anchor_type"], "line-range");
+    assert_eq!(c["anchor"]["start_line"], 3);
+    assert_eq!(c["anchor"]["end_line"], 4);
+    let expected: Vec<&str> = LINED_BODY.lines().collect();
+    let snippet = format!("{}\n{}", expected[2], expected[3]);
+    assert_eq!(c["anchor"]["snippet"], snippet.as_str());
+    assert_eq!(c["resolution"]["state"], "resolved");
+    assert_eq!(c["resolution"]["quote"], snippet.as_str());
+    assert_eq!(c["resolution"]["body"], "original");
+    assert_eq!(c["target"]["level"], "plan-item");
+}
+
+#[test]
+fn a_line_anchor_keeps_rendering_its_created_commit_span_after_an_edit() {
+    let plan = init_plan_repo();
+    create_plan_with_body(&plan, "lined", LINED_BODY);
+    let id = start_review(&plan, "plan/lined");
+    add_line_comment(&plan, &id, "3-4", &[]);
+
+    // Insert a line above line 3 and rewrite (what was) line 4.
+    rdm_demo(
+        &plan,
+        &[
+            "plan",
+            "update",
+            "lined",
+            "--body",
+            "# Plan\n\nA brand-new line.\nIntro line.\nStep one, rewritten.\nonto a second line.\n",
+            "--no-edit",
+        ],
+    )
+    .success();
+    commit_plan(&plan, "edit the plan after the review started");
+
+    let json = show_review_json(&plan, &id);
+    let c = &json["comments"][0];
+    let snippet = "Intro line.\nStep one wraps";
+    assert_eq!(c["anchor"]["snippet"], snippet);
+    assert_eq!(c["anchor"]["start_line"], 3);
+    assert_eq!(c["resolution"]["state"], "drifted");
+    assert_eq!(c["resolution"]["quote"], snippet);
+    assert_eq!(c["resolution"]["body"], "original");
+
+    let out = rdm_demo(&plan, &["review", "show", &id])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let human = String::from_utf8(out).unwrap();
+    assert!(human.contains("(drifted) [lines 3-4]"), "{human}");
+    assert!(
+        human.contains("  > Intro line.\n  > Step one wraps"),
+        "{human}"
+    );
+}
+
+#[test]
+fn an_out_of_range_line_is_refused_or_stored_whole_document_with_its_reason() {
+    let plan = init_plan_repo();
+    create_plan_with_body(&plan, "lined", LINED_BODY);
+    let id = start_review(&plan, "plan/lined");
+
+    rdm_demo(
+        &plan,
+        &[
+            "review",
+            "comment",
+            &id,
+            "--line",
+            "50",
+            "--body",
+            "Too far.",
+            "--no-edit",
+        ],
+    )
+    .failure()
+    .stderr(predicate::str::contains("line 50 out of range"));
+    assert!(
+        show_review_json(&plan, &id)["comments"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let out = rdm_demo(
+        &plan,
+        &[
+            "review",
+            "comment",
+            &id,
+            "--line",
+            "50",
+            "--on-anchor-failure",
+            "whole-document",
+            "--body",
+            "Too far.",
+            "--no-edit",
+        ],
+    )
+    .success()
+    .stderr(predicate::str::contains("line 50 out of range"))
+    .get_output()
+    .stdout
+    .clone();
+    let line: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(line["anchored"], false);
+    assert_eq!(line["anchor_state"], "line-out-of-range");
+
+    let c = &show_review_json(&plan, &id)["comments"][0];
+    assert!(c.get("anchor").is_none(), "{c}");
+    assert_eq!(c["anchor_state"], "line-out-of-range");
+}
+
+#[test]
+fn line_and_quote_together_are_refused_by_the_parser() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "quoted", "alpha\nbeta\n");
+    let id = start_review(&plan, "task/quoted");
+    rdm_demo(
+        &plan,
+        &[
+            "review",
+            "comment",
+            &id,
+            "--line",
+            "2",
+            "--quote",
+            "x",
+            "--body",
+            "b",
+            "--no-edit",
+        ],
+    )
+    .failure()
+    .code(2)
+    .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn a_malformed_line_range_is_refused_by_the_parser() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "quoted", "alpha\nbeta\n");
+    let id = start_review(&plan, "task/quoted");
+    for bad in ["0", "5-3", "two"] {
+        rdm_demo(
+            &plan,
+            &[
+                "review",
+                "comment",
+                &id,
+                "--line",
+                bad,
+                "--body",
+                "b",
+                "--no-edit",
+            ],
+        )
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("invalid line range"));
+    }
+}
+
+#[test]
+fn a_text_quote_comment_is_unchanged_beside_a_line_comment() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "mixed", "alpha line\nbeta line\ngamma line\n");
+    commit_plan(&plan, "seed: mixed task");
+
+    let quote_comment = |id: &str| {
+        rdm_demo(
+            &plan,
+            &[
+                "review",
+                "comment",
+                id,
+                "--quote",
+                "beta line",
+                "--body",
+                "Quoted.",
+                "--no-edit",
+            ],
+        )
+        .success();
+    };
+    let alone = start_review(&plan, "task/mixed");
+    quote_comment(&alone);
+    let together = start_review(&plan, "task/mixed");
+    quote_comment(&together);
+    add_line_comment(&plan, &together, "3", &[]);
+
+    let a = &show_review_json(&plan, &alone)["comments"][0];
+    let both = show_review_json(&plan, &together);
+    let t = &both["comments"][0];
+    for key in ["anchor", "resolution", "target"] {
+        assert_eq!(a[key], t[key], "{key}");
+    }
+    assert_eq!(t["anchor"]["anchor_type"], "text-quote");
+    assert_eq!(both["comments"][1]["anchor"]["snippet"], "gamma line");
+}
+
+#[test]
+fn numbered_show_line_n_is_what_line_n_captures_for_every_document_kind() {
+    let plan = init_plan_repo();
+    create_task_with_body(
+        &plan,
+        "numbered-task",
+        "Task intro.\n\nA wrapped\nparagraph.\n",
+    );
+    rdm_demo(
+        &plan,
+        &[
+            "roadmap",
+            "update",
+            "roadmap-z",
+            "--body",
+            "Roadmap summary.\n\nSecond paragraph,\nwrapped.",
+            "--no-edit",
+        ],
+    )
+    .success();
+    rdm_demo(
+        &plan,
+        &[
+            "phase",
+            "update",
+            "1",
+            "--roadmap",
+            "roadmap-z",
+            "--body",
+            "## Steps\n\n1. First step\n   continues here.\n",
+            "--no-edit",
+        ],
+    )
+    .success();
+    create_plan_with_body(&plan, "lined", LINED_BODY);
+
+    let cases: [(&str, Vec<&str>, usize); 4] = [
+        ("plan/lined", vec!["plan", "show", "lined"], 7),
+        (
+            "task/numbered-task",
+            vec!["task", "show", "numbered-task"],
+            3,
+        ),
+        ("roadmap/roadmap-z", vec!["roadmap", "show", "roadmap-z"], 4),
+        (
+            "phase/roadmap-z/1",
+            vec!["phase", "show", "1", "--roadmap", "roadmap-z"],
+            4,
+        ),
+    ];
+    for (target, show_args, n) in cases {
+        let rendering = show_numbered(&plan, &show_args);
+        let text = numbered_line(&rendering, n);
+        assert!(!text.is_empty(), "{target}: line {n} of {rendering:?}");
+        let id = start_review(&plan, target);
+        add_line_comment(&plan, &id, &n.to_string(), &[]);
+        let c = &show_review_json(&plan, &id)["comments"][0];
+        assert_eq!(c["anchor"]["snippet"], text.as_str(), "{target}");
+        // A blank line is line N too.
+        let blank = numbered_line(&rendering, 2);
+        assert_eq!(blank, "", "{target}: line 2 of {rendering:?}");
+    }
+}
+
+#[test]
+fn numbered_show_at_the_created_commit_matches_line_capture_after_an_edit() {
+    let plan = init_plan_repo();
+    create_plan_with_body(&plan, "lined", LINED_BODY);
+    let id = start_review(&plan, "plan/lined");
+    let created = show_review_json(&plan, &id)["created_commit"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    rdm_demo(
+        &plan,
+        &[
+            "plan",
+            "update",
+            "lined",
+            "--body",
+            "Completely\ndifferent\ntext\nnow\n",
+            "--no-edit",
+        ],
+    )
+    .success();
+    commit_plan(&plan, "rewrite the plan");
+
+    let rendering = show_numbered(&plan, &["plan", "show", "lined", "--at", &created]);
+    let text = numbered_line(&rendering, 5);
+    assert_eq!(text, "onto a second line.");
+    // The current rendering disagrees, but `--line` captures at
+    // `created_commit`, exactly as `--at <created_commit>` numbers it.
+    assert_eq!(
+        numbered_line(&show_numbered(&plan, &["plan", "show", "lined"]), 4),
+        "now"
+    );
+    add_line_comment(&plan, &id, "5", &[]);
+    let c = &show_review_json(&plan, &id)["comments"][0];
+    assert_eq!(c["anchor"]["snippet"], text.as_str());
+}
+
+#[test]
+fn a_roadmap_review_line_comment_scoped_to_a_phase_numbers_the_phase_body() {
+    let plan = init_plan_repo();
+    rdm_demo(
+        &plan,
+        &[
+            "phase",
+            "update",
+            "1",
+            "--roadmap",
+            "roadmap-z",
+            "--body",
+            "Phase line one.\nPhase line two.\n",
+            "--no-edit",
+        ],
+    )
+    .success();
+    commit_plan(&plan, "seed: phase body");
+
+    let rendering = show_numbered(&plan, &["phase", "show", "1", "--roadmap", "roadmap-z"]);
+    let text = numbered_line(&rendering, 2);
+    let id = start_review(&plan, "roadmap/roadmap-z");
+    add_line_comment(&plan, &id, "2", &["--doc", "phase/1"]);
+    let c = &show_review_json(&plan, &id)["comments"][0];
+    assert_eq!(c["anchor"]["snippet"], text.as_str());
+    assert_eq!(c["target"]["level"], "plan-item");
+    assert_eq!(c["target"]["link"], "rdm:phase/roadmap-z/phase-1-build");
+}
+
+#[test]
+fn numbered_show_refuses_structured_formats_and_no_body() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "numbered-task", "one\ntwo\n");
+    for format in ["json", "table"] {
+        rdm_demo(
+            &plan,
+            &[
+                "task",
+                "show",
+                "numbered-task",
+                "--numbered",
+                "--format",
+                format,
+            ],
+        )
+        .failure()
+        .stderr(predicate::str::contains("--numbered"));
+    }
+    rdm_demo(
+        &plan,
+        &["task", "show", "numbered-task", "--numbered", "--no-body"],
+    )
+    .failure()
+    .code(2);
+    let out = rdm_demo(&plan, &["task", "show", "numbered-task", "--numbered"])
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        String::from_utf8(out).unwrap(),
+        "     1\tone\n     2\ttwo\n"
     );
 }

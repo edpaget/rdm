@@ -375,7 +375,7 @@ comments:
   - id: 1
     status: open
     anchor:
-      anchor_type: line-range
+      anchor_type: heading-path
       start: 3
       end: 7
     body: Anchored by a future anchor type.
@@ -387,7 +387,7 @@ Summary.
         let anchor = doc.frontmatter.comments[0].anchor.as_ref().unwrap();
         match anchor {
             Anchor::Unknown { anchor_type, raw } => {
-                assert_eq!(anchor_type, "line-range");
+                assert_eq!(anchor_type, "heading-path");
                 assert_eq!(
                     raw.get("start").and_then(serde_yaml::Value::as_i64),
                     Some(3)

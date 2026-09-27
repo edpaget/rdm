@@ -51,13 +51,235 @@
 //! [`char_indices`](str::char_indices), so returned ranges always land on
 //! `char` boundaries — resolution never panics on multi-byte UTF-8
 //! content.
+//!
+//! # Line-range anchors
+//!
+//! An [`Anchor::LineRange`](crate::model::Anchor) names 1-based lines of a
+//! document body (frontmatter excluded) as numbered by [`body_lines`] — the
+//! one line model shared by capture ([`derive_line_range`]), resolution and
+//! the `show --numbered` renderer
+//! ([`render_numbered_body`](crate::display::render_numbered_body)). It is
+//! never remapped through edits: [`resolve`] returns the span of lines
+//! `start_line..=end_line` if and only if those lines exist in the body
+//! **and** their text still equals the captured `snippet`. At the review's
+//! `created_commit` that holds by construction; against a later body it
+//! holds only while the same-numbered lines are unchanged, so an insertion
+//! above the range (or an edit inside it) reads as drift rather than being
+//! followed.
 
+use std::fmt;
 use std::ops::Range;
+use std::str::FromStr;
 
 use crate::error::{Error, Result};
 use crate::io;
-use crate::model::{Anchor, CommentDoc, CommentDocKind, Review, ReviewComment, ReviewTarget};
+use crate::model::{
+    Anchor, CommentDoc, CommentDocKind, ParseError, Review, ReviewComment, ReviewTarget,
+};
 use crate::store::VersionedStore;
+
+/// Splits `body` into its lines, as 1-based-in-order byte ranges.
+///
+/// Numbering matches [`str::lines`]: lines end at `\n` or `\r\n`, the
+/// terminator is excluded from each range, and a trailing terminator does
+/// not open an extra empty line (so `"a\n"` has one line and `""` has
+/// none). Element `i` of the result is line `i + 1`.
+///
+/// This is the single line model behind line-range anchors: capture
+/// ([`derive_line_range`]), resolution ([`resolve`]) and the numbered body
+/// rendering ([`render_numbered_body`](crate::display::render_numbered_body))
+/// all call it, so "line N" means the same text everywhere.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::anchor::body_lines;
+///
+/// let body = "first\r\n\nthird\n";
+/// let lines: Vec<&str> = body_lines(body).into_iter().map(|r| &body[r]).collect();
+/// assert_eq!(lines, body.lines().collect::<Vec<_>>());
+/// assert_eq!(lines, ["first", "", "third"]);
+/// ```
+#[must_use]
+pub fn body_lines(body: &str) -> Vec<Range<usize>> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while start < body.len() {
+        let (end, next) = match body[start..].find('\n') {
+            Some(rel) => {
+                let nl = start + rel;
+                // Only a `\r` that precedes a `\n` is part of the terminator.
+                let end = if body[start..nl].ends_with('\r') {
+                    nl - 1
+                } else {
+                    nl
+                };
+                (end, nl + 1)
+            }
+            None => (body.len(), body.len()),
+        };
+        lines.push(start..end);
+        start = next;
+    }
+    lines
+}
+
+/// The byte span of lines `start..=end` (1-based) of `body`: from the start
+/// of line `start` to the end of line `end`, interior terminators kept and
+/// the final one dropped. `None` when the range is malformed or runs past
+/// the last line.
+fn line_span(body: &str, start: u32, end: u32) -> Option<Range<usize>> {
+    if start == 0 || end < start {
+        return None;
+    }
+    let lines = body_lines(body);
+    let first = lines.get(usize::try_from(start).ok()? - 1)?;
+    let last = lines.get(usize::try_from(end).ok()? - 1)?;
+    Some(first.start..last.end)
+}
+
+/// A requested range of 1-based body lines, `N` or `N-M`, as a reviewer
+/// writes it on `rdm review comment --line` or in the REST add-comment
+/// `line` field.
+///
+/// Always well-formed: `1 <= start <= end`. Parsing (via [`FromStr`]) is
+/// the one grammar every surface shares.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::anchor::LineRange;
+///
+/// let range: LineRange = "3-5".parse().unwrap();
+/// assert_eq!((range.start(), range.end()), (3, 5));
+/// assert_eq!("7".parse::<LineRange>().unwrap().to_string(), "7");
+/// assert!("5-3".parse::<LineRange>().is_err());
+/// assert!("0".parse::<LineRange>().is_err());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LineRange {
+    start: u32,
+    end: u32,
+}
+
+/// The accepted-values text for a [`LineRange`] parse error.
+const LINE_RANGE_EXPECTED: &str =
+    "<start> or <start>-<end>, 1-based with start <= end, e.g. 3 or 3-5";
+
+impl LineRange {
+    /// Builds the range of lines `start..=end`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] when `start` is 0 or `end < start`.
+    pub fn new(start: u32, end: u32) -> std::result::Result<Self, ParseError> {
+        if start == 0 || end < start {
+            return Err(ParseError::new(
+                "line range",
+                &format!("{start}-{end}"),
+                LINE_RANGE_EXPECTED,
+            ));
+        }
+        Ok(Self { start, end })
+    }
+
+    /// The 1-based first line.
+    #[must_use]
+    pub fn start(self) -> u32 {
+        self.start
+    }
+
+    /// The 1-based last line (inclusive).
+    #[must_use]
+    pub fn end(self) -> u32 {
+        self.end
+    }
+}
+
+impl fmt::Display for LineRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.start == self.end {
+            write!(f, "{}", self.start)
+        } else {
+            write!(f, "{}-{}", self.start, self.end)
+        }
+    }
+}
+
+impl FromStr for LineRange {
+    type Err = ParseError;
+
+    /// Parses `N` or `N-M` (decimal, no whitespace).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ParseError`] for anything else, including `0`, a range
+    /// whose end precedes its start, and non-numeric input.
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let bad = || ParseError::new("line range", s, LINE_RANGE_EXPECTED);
+        let number = |part: &str| {
+            if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(bad());
+            }
+            part.parse::<u32>().map_err(|_| bad())
+        };
+        let (start, end) = match s.split_once('-') {
+            Some((a, b)) => (number(a)?, number(b)?),
+            None => {
+                let n = number(s)?;
+                (n, n)
+            }
+        };
+        Self::new(start, end).map_err(|_| bad())
+    }
+}
+
+/// Derives an [`Anchor::LineRange`] for lines `range` of `body`, capturing
+/// their text as the anchor's `snippet`.
+///
+/// The snippet is exactly the body slice from the start of the first line
+/// to the end of the last (see [`body_lines`]): interior newlines kept, the
+/// final line terminator dropped.
+///
+/// `commit` names the revision `body` was read at and is used only to make
+/// the error actionable; pass `None` when `body` is the current document.
+///
+/// # Errors
+///
+/// Returns [`Error::LineRangeOutOfRange`] when `range` runs past the last
+/// line of `body`.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::anchor::derive_line_range;
+/// use rdm_core::model::Anchor;
+///
+/// let body = "one\ntwo\nthree\n";
+/// let anchor = derive_line_range(body, "2-3".parse().unwrap(), None).unwrap();
+/// assert_eq!(
+///     anchor,
+///     Anchor::LineRange {
+///         start_line: 2,
+///         end_line: 3,
+///         snippet: "two\nthree".to_string(),
+///     }
+/// );
+/// ```
+pub fn derive_line_range(body: &str, range: LineRange, commit: Option<&str>) -> Result<Anchor> {
+    let span =
+        line_span(body, range.start, range.end).ok_or_else(|| Error::LineRangeOutOfRange {
+            start: range.start,
+            end: range.end,
+            line_count: body_lines(body).len(),
+            commit: commit.map(str::to_string),
+        })?;
+    Ok(Anchor::LineRange {
+        start_line: range.start,
+        end_line: range.end,
+        snippet: body[span].to_string(),
+    })
+}
 
 /// Maximum context captured on each side of a derived text-quote anchor,
 /// in `char`s.
@@ -204,10 +426,15 @@ fn occurrence_context(body: &str, start: usize, quote_len: usize) -> String {
 /// See the [module documentation](self) for the full decision ladder
 /// (exact → context-disambiguated → fuzzy context bracketing → `None`).
 ///
+/// An [`Anchor::LineRange`] resolves to the span of its lines only when
+/// those lines exist in `body` and their text equals the stored snippet —
+/// it is never remapped (see the module documentation).
+///
 /// The returned range is valid for slicing `body` (`&body[range]`) and its
 /// endpoints always fall on `char` boundaries. Returns `None` for
-/// [`Anchor::Unknown`], for an empty quote, and when neither the quote nor
-/// enough of its context can be found.
+/// [`Anchor::Unknown`] and [`Anchor::FileQuote`], for an empty quote, when
+/// neither the quote nor enough of its context can be found, and for a line
+/// range whose lines are gone or changed.
 ///
 /// # Panics
 ///
@@ -230,6 +457,15 @@ fn occurrence_context(body: &str, start: usize, quote_len: usize) -> String {
 /// assert_eq!(&body[range], "beta");
 /// ```
 pub fn resolve(body: &str, anchor: &Anchor) -> Option<Range<usize>> {
+    if let Anchor::LineRange {
+        start_line,
+        end_line,
+        snippet,
+    } = anchor
+    {
+        let span = line_span(body, *start_line, *end_line)?;
+        return (body[span.clone()] == **snippet).then_some(span);
+    }
     let Anchor::TextQuote {
         quote,
         prefix,
@@ -949,7 +1185,7 @@ mod tests {
     #[test]
     fn resolve_unknown_anchor_returns_none() {
         let anchor = Anchor::Unknown {
-            anchor_type: "line-range".to_string(),
+            anchor_type: "heading-path".to_string(),
             raw: serde_yaml::Value::Null,
         };
         assert_eq!(resolve("any body", &anchor), None);
@@ -1335,7 +1571,7 @@ mod tests {
         let rev = review(task_target(), Some(&sha));
         let c = comment(
             Some(Anchor::Unknown {
-                anchor_type: "line-range".to_string(),
+                anchor_type: "heading-path".to_string(),
                 raw: serde_yaml::Value::Null,
             }),
             None,
@@ -1757,5 +1993,261 @@ mod tests {
 
         let rev = review(task_target(), None);
         assert!(resolve_comments(&store, "test", &rev).is_empty());
+    }
+
+    // -- line-range anchors --
+
+    fn lr(start: u32, end: u32) -> LineRange {
+        LineRange::new(start, end).unwrap()
+    }
+
+    fn line_anchor(start_line: u32, end_line: u32, snippet: &str) -> Anchor {
+        Anchor::LineRange {
+            start_line,
+            end_line,
+            snippet: snippet.to_string(),
+        }
+    }
+
+    #[test]
+    fn body_lines_matches_str_lines() {
+        for body in [
+            "",
+            "one",
+            "one\n",
+            "one\ntwo",
+            "one\n\nthree\n",
+            "\n",
+            "\n\n",
+            "crlf\r\nline\r\n",
+            "bare\rcr\n",
+            "trailing cr\r",
+            "Café\nrésumé — naïve\n",
+        ] {
+            let ours: Vec<&str> = body_lines(body).into_iter().map(|r| &body[r]).collect();
+            let std: Vec<&str> = body.lines().collect();
+            assert_eq!(ours, std, "{body:?}");
+        }
+    }
+
+    #[test]
+    fn line_range_parses_single_and_ranged_forms() {
+        assert_eq!("4".parse::<LineRange>().unwrap(), lr(4, 4));
+        assert_eq!("3-5".parse::<LineRange>().unwrap(), lr(3, 5));
+        assert_eq!(lr(3, 5).to_string(), "3-5");
+        assert_eq!(lr(4, 4).to_string(), "4");
+    }
+
+    #[test]
+    fn line_range_rejects_malformed_input() {
+        for bad in [
+            "",
+            "0",
+            "0-2",
+            "5-3",
+            "x",
+            "3-",
+            "-3",
+            "3-x",
+            " 3",
+            "3 - 5",
+            "+3",
+            "3-5-7",
+            "99999999999",
+        ] {
+            let err = bad.parse::<LineRange>().unwrap_err().to_string();
+            assert!(err.contains("line range"), "{bad:?}: {err}");
+        }
+        assert!(LineRange::new(0, 1).is_err());
+        assert!(LineRange::new(2, 1).is_err());
+    }
+
+    #[test]
+    fn derive_line_range_captures_single_line() {
+        let body = "one\ntwo\nthree\n";
+        assert_eq!(
+            derive_line_range(body, lr(2, 2), None).unwrap(),
+            line_anchor(2, 2, "two")
+        );
+    }
+
+    #[test]
+    fn derive_line_range_captures_multi_line_keeping_interior_newlines() {
+        let body = "one\r\ntwo\r\nthree\r\nfour\r\n";
+        assert_eq!(
+            derive_line_range(body, lr(2, 3), None).unwrap(),
+            line_anchor(2, 3, "two\r\nthree")
+        );
+    }
+
+    #[test]
+    fn derive_line_range_captures_a_blank_line() {
+        let body = "one\n\nthree\n";
+        assert_eq!(
+            derive_line_range(body, lr(2, 2), None).unwrap(),
+            line_anchor(2, 2, "")
+        );
+    }
+
+    #[test]
+    fn derive_line_range_captures_last_line_without_trailing_newline() {
+        let body = "one\ntwo";
+        assert_eq!(
+            derive_line_range(body, lr(1, 2), None).unwrap(),
+            line_anchor(1, 2, "one\ntwo")
+        );
+    }
+
+    #[test]
+    fn derive_line_range_captures_multibyte_text() {
+        let body = "Café\nrésumé — naïve\nfin";
+        assert_eq!(
+            derive_line_range(body, lr(2, 2), None).unwrap(),
+            line_anchor(2, 2, "résumé — naïve")
+        );
+    }
+
+    #[test]
+    fn derive_line_range_out_of_range_names_line_count_and_commit() {
+        let body = "one\ntwo\n";
+        let err = derive_line_range(body, lr(2, 50), Some("abc123")).unwrap_err();
+        match &err {
+            Error::LineRangeOutOfRange {
+                start,
+                end,
+                line_count,
+                commit,
+            } => {
+                assert_eq!((*start, *end, *line_count), (2, 50, 2));
+                assert_eq!(commit.as_deref(), Some("abc123"));
+            }
+            other => panic!("expected LineRangeOutOfRange, got {other:?}"),
+        }
+        let msg = err.to_string();
+        assert!(msg.contains("lines 2-50"), "{msg}");
+        assert!(msg.contains("2 line(s)"), "{msg}");
+        assert!(msg.contains("abc123"), "{msg}");
+
+        let msg = derive_line_range(body, lr(3, 3), None)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("line 3 out of range"), "{msg}");
+        assert!(msg.contains("current document"), "{msg}");
+    }
+
+    #[test]
+    fn resolve_line_range_requires_same_lines_to_equal_the_snippet() {
+        let anchor = line_anchor(2, 3, "two\nthree");
+        let body = "one\ntwo\nthree\nfour";
+        assert_eq!(&body[resolve(body, &anchor).unwrap()], "two\nthree");
+        // Inserting a line above shifts the text; the anchor is not remapped.
+        assert_eq!(resolve("zero\none\ntwo\nthree\nfour", &anchor), None);
+        // Past the end of a shorter body.
+        assert_eq!(resolve("one\ntwo", &anchor), None);
+        // Malformed ranges never resolve.
+        assert_eq!(resolve(body, &line_anchor(0, 1, "one")), None);
+        assert_eq!(resolve(body, &line_anchor(3, 2, "")), None);
+    }
+
+    #[test]
+    fn history_line_range_unchanged_document_is_original_not_drifted() {
+        let mut store = MemoryStore::new();
+        seed_plan(&mut store, "# Plan\n\nstep one\nstep two\n");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+
+        let rev = review(plan_target(), Some(&sha));
+        let (body, at) = body_for_comment(&store, "test", &rev, None).unwrap();
+        assert_eq!(at.as_deref(), Some(sha.as_str()));
+        let anchor = derive_line_range(&body, lr(3, 4), at.as_deref()).unwrap();
+        let c = comment(Some(anchor), None);
+        match resolve_against_history(&store, "test", &rev, &c) {
+            Resolution::Original { range, drifted } => {
+                assert!(!drifted);
+                assert_eq!(&body[range], "step one\nstep two");
+            }
+            other => panic!("expected Original, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn history_line_range_insert_above_drifts_without_remapping() {
+        let mut store = MemoryStore::new();
+        seed_plan(&mut store, "# Plan\n\nstep one\nstep two\n");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+        let rev = review(plan_target(), Some(&sha));
+        let (body, at) = body_for_comment(&store, "test", &rev, None).unwrap();
+        let c = comment(
+            Some(derive_line_range(&body, lr(3, 3), at.as_deref()).unwrap()),
+            None,
+        );
+
+        // A line inserted above the range: the same text now sits on line 4,
+        // but the anchor still names line 3 and is not followed.
+        seed_plan(&mut store, "# Plan\n\ninserted\nstep one\nstep two\n");
+        store.commit().unwrap();
+
+        let resolved = resolve_comment(&store, "test", &rev, &c);
+        assert!(matches!(
+            resolved.resolution,
+            Resolution::Original { drifted: true, .. }
+        ));
+        assert_eq!(resolved.quote.as_deref(), Some("step one"));
+    }
+
+    #[test]
+    fn history_line_range_without_history_resolves_current_only_when_lines_match() {
+        let mut store = MemoryStore::new();
+        seed_task(&mut store, "alpha\nbeta\ngamma\n");
+        store.commit().unwrap();
+
+        let rev = review(task_target(), None);
+        let c = comment(Some(line_anchor(2, 2, "beta")), None);
+        match resolve_against_history(&store, "test", &rev, &c) {
+            Resolution::Current { range } => {
+                let cur = crate::io::load_task(&store, "test", "fix").unwrap().body;
+                assert_eq!(&cur[range], "beta");
+            }
+            other => panic!("expected Current, got {other:?}"),
+        }
+
+        seed_task(&mut store, "alpha\nBETA\ngamma\n");
+        store.commit().unwrap();
+        assert_eq!(
+            resolve_against_history(&store, "test", &rev, &c),
+            Resolution::Unresolved
+        );
+    }
+
+    #[test]
+    fn line_range_doc_phase_scope_captures_from_the_phase_body() {
+        let mut store = MemoryStore::new();
+        seed_roadmap(&mut store, "roadmap line one\nroadmap line two\n");
+        seed_phase(&mut store, "phase line one\nphase line two\n");
+        store.commit().unwrap();
+        let sha = store.head_sha().unwrap();
+
+        let rev = review(
+            ReviewTarget::Roadmap {
+                roadmap: "alpha".to_string(),
+            },
+            Some(&sha),
+        );
+        let doc = CommentDoc {
+            kind: CommentDocKind::Phase,
+            stem: "phase-1-one".to_string(),
+        };
+        let (body, at) = body_for_comment(&store, "test", &rev, Some(&doc)).unwrap();
+        let anchor = derive_line_range(&body, lr(2, 2), at.as_deref()).unwrap();
+        assert_eq!(anchor, line_anchor(2, 2, "phase line two"));
+
+        let c = comment(Some(anchor), Some(doc));
+        let resolved = resolve_comment(&store, "test", &rev, &c);
+        assert!(matches!(
+            resolved.resolution,
+            Resolution::Original { drifted: false, .. }
+        ));
+        assert_eq!(resolved.quote.as_deref(), Some("phase line two"));
     }
 }

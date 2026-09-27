@@ -60,6 +60,7 @@ pub fn run(
             project,
             no_body,
             at,
+            numbered,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let mut roadmap_doc = match at.as_deref() {
@@ -70,6 +71,10 @@ pub fn run(
                 None => rdm_core::io::load_roadmap(store, &project, &slug)
                     .context("failed to load roadmap")?,
             };
+            if numbered {
+                print!("{}", display::render_numbered_body(&roadmap_doc.body));
+                return Ok(());
+            }
             let phases = rdm_core::ops::phase::list_phases(store, &project, &slug)
                 .context("failed to list phases")?;
             if no_body {

@@ -38,6 +38,9 @@
         {% if let Some(d) = c.degradation %}
         <p class="anchor-label {{ d.class }}">{{ d.label }}</p>
         {% endif %}
+        {% if let Some(label) = c.line_label %}
+        <p class="anchor-label anchor-lines">{{ label }}</p>
+        {% endif %}
         {% if let Some(q) = c.quote_text %}
         <blockquote class="anchor-quote"{% if c.quote_highlightable %} tabindex="0" data-rdm-anchor-ref="{{ c.anchor_ref }}"{% endif %}>{{ q }}</blockquote>
         {% endif %}

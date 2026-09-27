@@ -80,6 +80,16 @@ fn run() -> Result<()> {
     let format: OutputFormat = format_str
         .parse::<OutputFormat>()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // `show --numbered` prints only the numbered body; an explicit request
+    // for a structured format alongside it is a contradiction, not a
+    // preference to silently ignore.
+    if let Some(explicit @ (OutputFormat::Json | OutputFormat::Table)) = cli.format
+        && cli.command.is_numbered_show()
+    {
+        anyhow::bail!(
+            "--numbered prints the plain numbered body and cannot be combined with --format {explicit}; drop --format (or use --format human/markdown)"
+        );
+    }
 
     // Guard: non-init commands require rdm.toml to exist at the resolved root.
     // Exempt commands (Init, Bootstrap, Describe, AgentConfig, Hook, Model,

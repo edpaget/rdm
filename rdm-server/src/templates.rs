@@ -270,6 +270,9 @@ pub struct ReviewCommentView {
     /// The anchored text (resolved quote, or the stored quote when the
     /// anchor no longer resolves), when the comment is anchored.
     pub quote_text: Option<String>,
+    /// The line range of a line-anchored comment (`line 3`, `lines 3-5`),
+    /// rendered beside [`Self::quote_text`]; `None` for any other anchor.
+    pub line_label: Option<String>,
     /// `true` when hovering the quote should light up an in-body highlight
     /// (i.e. an inline `<mark>` with this comment's `anchor_ref` exists in
     /// the rendered body).

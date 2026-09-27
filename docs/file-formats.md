@@ -412,7 +412,25 @@ review it does not fully understand.
 | `anchor_type` | Fields | Used by |
 |---------------|--------|---------|
 | `text-quote` | `quote`, `prefix`, `suffix` | Every plan-repo document target |
+| `line-range` | `start_line`, `end_line`, `snippet` | Every plan-repo document target |
 | `file-quote` | `path`, `quote`, `occurrence`, `start_line`, `end_line` | A `change` target |
+
+A `line-range` anchor (`rdm review comment --line <start>[-<end>]`, or the REST
+add-comment `line` field) names **1-based lines of the document body as it was
+at the review's `created_commit`** — frontmatter excluded, exactly the body
+`show --at <created_commit>` returns and the numbering `show --numbered`
+prints (lines split like Rust's `str::lines`: a trailing newline opens no extra
+line, and a `\r\n` terminator is not part of a line). For a roadmap review's
+`--doc phase/<stem>` comment the lines are that phase's body. `snippet` is the
+text of those lines (interior newlines kept, the last terminator dropped),
+captured by rdm when the comment is written — a caller never supplies it, and a
+hand-built `line-range` anchor is refused on write. The range is **never
+remapped** through later edits: it resolves only where the same-numbered lines
+still equal `snippet`, so any edit to or above the range reads as drifted, and
+the stored snippet is always shown. A `line-range` mapping with missing or
+malformed fields (`start_line` of 0, `end_line` before `start_line`, a
+different field shape) loads as an unrecognized anchor and round-trips
+verbatim.
 
 `file-quote` deliberately stores **no** surrounding context: the review file
 lives in the plan repo, and nothing from the source repository beyond the quote
@@ -456,6 +474,7 @@ Each entry in `comments` is a mapping:
 | `path-not-linkable` | The path contains `@` or `#`, which the `rdm:src/` permalink grammar reserves |
 | `head-not-in-source` | The source repository does not contain the reviewed head |
 | `start-fallback` | The writer fell back to the start of the finding's span |
+| `line-out-of-range` | The `--line` range runs past the end of the document at the review's `created_commit` |
 
 **Compatibility rule.** Both fields are optional and every review written
 before they existed loads unchanged. An **absent** `anchor_state` on an

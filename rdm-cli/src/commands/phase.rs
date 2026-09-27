@@ -261,6 +261,7 @@ pub fn run(
             project,
             no_body,
             at,
+            numbered,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
             let stem = rdm_core::ops::phase::resolve_phase_stem(store, &project, &roadmap, &stem)
@@ -273,6 +274,10 @@ pub fn run(
                 None => rdm_core::io::load_phase(store, &project, &roadmap, &stem)
                     .context("failed to load phase")?,
             };
+            if numbered {
+                print!("{}", display::render_numbered_body(&doc.body));
+                return Ok(());
+            }
             if no_body {
                 doc.body = String::new();
             }

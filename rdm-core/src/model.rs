@@ -1308,12 +1308,13 @@ pub struct CommentDoc {
 /// Location a review comment is anchored to within the target's body.
 ///
 /// Serialized as a tagged union keyed on `anchor_type`: `text-quote` for a
-/// plan-repo document body, `file-quote` for a file in the project's source
+/// quoted span of a plan-repo document body, `line-range` for a range of
+/// that body's lines, `file-quote` for a file in the project's source
 /// repository (a `change/<sha>` review). Any other `anchor_type` written by a newer rdm
 /// round-trips losslessly as [`Anchor::Unknown`], so an older binary never
-/// corrupts reviews it does not fully understand. Future variants
-/// (`line-range`, `heading-path`, `ast-node`) are non-breaking structural
-/// additions.
+/// corrupts reviews it does not fully understand; so does a `line-range`
+/// mapping whose fields are missing or malformed. Future variants
+/// (`heading-path`, `ast-node`) are non-breaking structural additions.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Anchor {
     /// A quoted span of the target's body, disambiguated by surrounding
@@ -1327,6 +1328,32 @@ pub enum Anchor {
         prefix: String,
         /// Up to ~32 characters immediately after the quote.
         suffix: String,
+    },
+    /// A range of 1-based lines of a plan-repo document's body (frontmatter
+    /// excluded) as it existed at the review's `created_commit`, for any
+    /// review target except [`ReviewTarget::Change`].
+    ///
+    /// Serialized as `anchor_type: line-range`.
+    ///
+    /// Line numbering is exactly [`crate::anchor::body_lines`]'s, the same
+    /// numbering `show --numbered` prints. `snippet` is the text of lines
+    /// `start_line..=end_line` (interior newlines kept, the final line
+    /// terminator dropped), captured by rdm at write time — a caller never
+    /// supplies it. The range is never remapped through later edits: it
+    /// resolves only where the same-numbered lines still equal `snippet`
+    /// (see [`crate::anchor::resolve`]).
+    ///
+    /// Well-formed means all three fields are present and typed,
+    /// `start_line >= 1` and `end_line >= start_line`; any other
+    /// `line-range` mapping loads as [`Anchor::Unknown`] and round-trips
+    /// verbatim.
+    LineRange {
+        /// 1-based first line of the range.
+        start_line: u32,
+        /// 1-based last line of the range (inclusive).
+        end_line: u32,
+        /// The text of the range at `created_commit`.
+        snippet: String,
     },
     /// A quoted span of a **source-repository** file, for a review whose
     /// target is a [`ReviewTarget::Change`].
@@ -1399,6 +1426,26 @@ impl Serialize for Anchor {
                 }
                 .serialize(serializer)
             }
+            Anchor::LineRange {
+                start_line,
+                end_line,
+                snippet,
+            } => {
+                #[derive(Serialize)]
+                struct LineRangeFields<'a> {
+                    anchor_type: &'static str,
+                    start_line: u32,
+                    end_line: u32,
+                    snippet: &'a str,
+                }
+                LineRangeFields {
+                    anchor_type: "line-range",
+                    start_line: *start_line,
+                    end_line: *end_line,
+                    snippet,
+                }
+                .serialize(serializer)
+            }
             Anchor::FileQuote {
                 path,
                 quote,
@@ -1464,6 +1511,30 @@ impl<'de> Deserialize<'de> for Anchor {
                     prefix: fields.prefix,
                     suffix: fields.suffix,
                 })
+            }
+            "line-range" => {
+                // Unlike `text-quote`, a malformed `line-range` mapping is
+                // preserved as `Unknown` rather than rejected, so a review
+                // written with a different line-range shape stays lossless.
+                #[derive(Deserialize)]
+                struct LineRangeFields {
+                    start_line: u32,
+                    end_line: u32,
+                    snippet: String,
+                }
+                match serde_yaml::from_value::<LineRangeFields>(value.clone()) {
+                    Ok(f) if f.start_line >= 1 && f.end_line >= f.start_line => {
+                        Ok(Anchor::LineRange {
+                            start_line: f.start_line,
+                            end_line: f.end_line,
+                            snippet: f.snippet,
+                        })
+                    }
+                    _ => Ok(Anchor::Unknown {
+                        anchor_type,
+                        raw: value,
+                    }),
+                }
             }
             "file-quote" => {
                 #[derive(Deserialize)]
@@ -1555,6 +1626,9 @@ pub enum AnchorState {
     HeadNotInSource,
     /// The writer fell back to the start of the finding's span.
     StartFallback,
+    /// The requested line range runs past the end of the document at the
+    /// review's `created_commit`.
+    LineOutOfRange,
     /// A value this build does not recognize, preserved verbatim.
     Unknown(String),
 }
@@ -1575,6 +1649,7 @@ impl AnchorState {
         AnchorState::PathNotLinkable,
         AnchorState::HeadNotInSource,
         AnchorState::StartFallback,
+        AnchorState::LineOutOfRange,
     ];
 
     /// The serialized form: kebab-case for a known value, verbatim for
@@ -1592,6 +1667,7 @@ impl AnchorState {
             AnchorState::PathNotLinkable => "path-not-linkable",
             AnchorState::HeadNotInSource => "head-not-in-source",
             AnchorState::StartFallback => "start-fallback",
+            AnchorState::LineOutOfRange => "line-out-of-range",
             AnchorState::Unknown(raw) => raw,
         }
     }
@@ -3259,14 +3335,14 @@ title: Fantasy Baseball Manager
 
     #[test]
     fn anchor_unknown_type_preserves_raw_yaml() {
-        let yaml = "anchor_type: line-range\nstart: 3\nend: 7\nextra: keep-me\n";
+        let yaml = "anchor_type: heading-path\nstart: 3\nend: 7\nextra: keep-me\n";
         let parsed: Anchor = serde_yaml::from_str(yaml).unwrap();
         match &parsed {
             Anchor::Unknown { anchor_type, raw } => {
-                assert_eq!(anchor_type, "line-range");
+                assert_eq!(anchor_type, "heading-path");
                 assert_eq!(
                     raw.get("anchor_type").and_then(serde_yaml::Value::as_str),
-                    Some("line-range")
+                    Some("heading-path")
                 );
                 assert_eq!(
                     raw.get("start").and_then(serde_yaml::Value::as_i64),
@@ -3284,6 +3360,62 @@ title: Fantasy Baseball Manager
         let reserialized = serde_yaml::to_string(&parsed).unwrap();
         let reparsed: Anchor = serde_yaml::from_str(&reserialized).unwrap();
         assert_eq!(reparsed, parsed);
+    }
+
+    #[test]
+    fn anchor_line_range_round_trip() {
+        let anchor = Anchor::LineRange {
+            start_line: 3,
+            end_line: 4,
+            snippet: "third line\nfourth line".to_string(),
+        };
+        let yaml = serde_yaml::to_string(&anchor).unwrap();
+        assert!(yaml.contains("anchor_type: line-range"), "{yaml}");
+        assert!(yaml.contains("start_line: 3"), "{yaml}");
+        assert!(yaml.contains("end_line: 4"), "{yaml}");
+        assert_eq!(serde_yaml::from_str::<Anchor>(&yaml).unwrap(), anchor);
+    }
+
+    #[test]
+    fn malformed_line_range_mappings_load_as_unknown_and_round_trip_verbatim() {
+        for yaml in [
+            // Missing snippet.
+            "anchor_type: line-range\nstart_line: 3\nend_line: 4\n",
+            // A different (legacy fixture) field shape.
+            "anchor_type: line-range\nstart: 3\nend: 7\nextra: keep-me\n",
+            // Zero is not a 1-based line.
+            "anchor_type: line-range\nstart_line: 0\nend_line: 2\nsnippet: x\n",
+            // An inverted range.
+            "anchor_type: line-range\nstart_line: 5\nend_line: 3\nsnippet: x\n",
+            // A mistyped field.
+            "anchor_type: line-range\nstart_line: three\nend_line: 4\nsnippet: x\n",
+        ] {
+            let parsed: Anchor = serde_yaml::from_str(yaml).unwrap();
+            match &parsed {
+                Anchor::Unknown { anchor_type, raw } => {
+                    assert_eq!(anchor_type, "line-range", "{yaml}");
+                    let original: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+                    assert_eq!(raw, &original, "{yaml}");
+                }
+                other => panic!("expected Anchor::Unknown for {yaml:?}, got {other:?}"),
+            }
+            let reserialized = serde_yaml::to_string(&parsed).unwrap();
+            let original: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+            let round: serde_yaml::Value = serde_yaml::from_str(&reserialized).unwrap();
+            assert_eq!(round, original, "{yaml}");
+        }
+    }
+
+    #[test]
+    fn line_out_of_range_anchor_state_parses_round_trips_and_degrades() {
+        let state: AnchorState = "line-out-of-range".parse().unwrap();
+        assert_eq!(state, AnchorState::LineOutOfRange);
+        assert!(state.is_degradation());
+        let yaml = "id: 1\nstatus: open\nanchor_state: line-out-of-range\nbody: b\n";
+        let comment: ReviewComment = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(comment.anchor_state, Some(AnchorState::LineOutOfRange));
+        let out = serde_yaml::to_string(&comment).unwrap();
+        assert!(out.contains("anchor_state: line-out-of-range"), "{out}");
     }
 
     #[test]

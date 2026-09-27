@@ -35,6 +35,7 @@ rdm task show <slug> {proj_flag}             # show task details
 
 Add `--no-body` to any `show` command to suppress body content when you only need metadata.
 Add `--at <sha>` to any `show` command to read the body as it was at a specific git revision; metadata still reflects the current state, and the SHA is surfaced in the output as a `Revision:` line (text/markdown) or a `revision` field (JSON).
+Add `--numbered` to `roadmap`/`phase`/`task`/`plan show` to print only the body, each line prefixed with its 1-based number (`cat -n` style) — the numbering `review comment --line` anchors to. It composes with `--at`.
 
 `rdm info --format json` reports what rdm actually resolved for the current environment in one call — `{root, project, default_branch, default_format}`, each following the CLI's real precedence chain — useful when discovering the plan repo location without scraping `rdm config list` or reading `rdm.toml` directly.
 
@@ -100,6 +101,7 @@ Reviews are structured feedback on a roadmap, phase, task, or implementation-pla
 ```bash
 rdm review start --on task/<slug> --no-edit {proj_flag}          # start a draft; prints the review id
 rdm review comment <review-id> --quote "exact text" --body "Feedback." --no-edit {proj_flag}
+rdm review comment <review-id> --line 12-14 --body "Feedback on lines 12-14." --no-edit {proj_flag}
 rdm review comment <review-id> --body "Whole-document feedback." --no-edit {proj_flag}
 rdm review submit <review-id> --verdict request-changes --no-edit {proj_flag}
 rdm review requests {proj_flag}                                  # the work queue: submitted reviews requesting changes
@@ -112,6 +114,7 @@ rdm review list --state submitted {proj_flag}                    # filter by --o
 Key mechanics:
 
 - `--quote` must match the document text **exactly**; it is located in the document as it was when the review started (`created_commit`), so quoting stays valid even after the document is edited. If the quote appears more than once, the error lists every occurrence — re-run with `--occurrence <n>` (1-based).
+- `--line <start>[-<end>]` (instead of `--quote`) anchors to 1-based body lines of the document as it was at `created_commit`; rdm captures their text itself. Copy the numbers from `show --numbered --at <created_commit>` (the review's `created_commit` is in `review show --format json`). Lines are never remapped: once the document changes, the comment reads as `drifted` and still shows the captured text. A range past the end is refused (`--on-anchor-failure whole-document` stores it anchorless as `line-out-of-range`). Not valid on a `change/` review.
 - On a roadmap review, `--doc phase/<stem-or-number>` points a comment at one of the roadmap's phases.
 - `rdm review show` reports each comment's anchor as `resolved`, `drifted` (the document changed since the review), or `unresolved`. In JSON, drifted ranges index the `created_commit` version of the body — read it with `--at <created_commit>` — never the current one.
 - **Acting on a review (the agent loop)**: `rdm review requests` → for each comment, make the change → `rdm review update <id> --comment <n> --status addressed --applied-commit <sha> --reply "..."` (or `--status wont-fix --reply "why"`) → `rdm review update <id> --state addressed`. The `rdm-revise` skill automates this loop end to end, including drifted-anchor clarification replies.

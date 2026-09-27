@@ -4390,3 +4390,50 @@ fn a_unique_quote_in_a_file_the_change_never_touched_is_outside_hunk() {
     assert_eq!(target["level"], "file", "{target}");
     assert_eq!(target["link"], format!("rdm:src/src/untouched.rs@{head}"));
 }
+
+/// `--line` anchors to plan-repo document lines, so a change review refuses
+/// it in both anchor-failure modes — it is a usage error, never stored
+/// whole-document — and writes no comment.
+#[test]
+fn change_comment_refuses_a_line_anchor_in_both_modes() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    for extra in [&[][..], &["--on-anchor-failure", "whole-document"][..]] {
+        let out = rdm()
+            .arg("--root")
+            .arg(plan.path())
+            .args([
+                "review",
+                "comment",
+                &id,
+                "--line",
+                "2",
+                "--body",
+                "x",
+                "--no-edit",
+                "--project",
+                "demo",
+            ])
+            .args(extra)
+            .current_dir(src.path())
+            .assert()
+            .failure()
+            .get_output()
+            .stderr
+            .clone();
+        let stderr = String::from_utf8_lossy(&out);
+        assert!(
+            stderr.contains("--line only applies to a review of a plan-repo document"),
+            "{extra:?}: {stderr}"
+        );
+    }
+    let j = review_json(plan.path(), src.path(), &id);
+    assert!(j["comments"].as_array().unwrap().is_empty(), "{j}");
+}
