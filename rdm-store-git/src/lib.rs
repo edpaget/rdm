@@ -52,12 +52,14 @@ mod commit;
 mod merge;
 mod remote;
 mod repo;
+mod report;
 
 pub use commit::{ChangesetScope, CommitReport, CommitScope};
 /// HEAD/commit info, re-exported from [`rdm_git`] as the return type of
 /// [`GitRepo::head_commit_info`] / [`GitRepo::commit_messages_since`].
 pub use rdm_git::HeadCommitInfo;
 pub use repo::GitRepo;
+pub use report::{MergeState, StatusView};
 
 /// The kind of file change detected by [`GitRepo::git_status_report`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -533,6 +535,23 @@ impl GitStore {
             self.session
                 .get_or_init(|| session::resolve_system_session(paths)),
         )
+    }
+
+    /// Returns the harness-continuity advisory for this store's session, or
+    /// `None` when there is nothing to say (or no session at all).
+    ///
+    /// Callers ask only on the branches that are symptoms of a fragmented
+    /// harness — see [`ScopedCommit::is_continuity_symptom`] — so an ordinary
+    /// commit stays silent.
+    ///
+    /// The session is read back from this store rather than resolved afresh:
+    /// the store memoizes exactly one resolution and the mutation path
+    /// journals under it, so re-resolving could describe a different identity
+    /// than the one a commit was computed against — and `lease_bootstrapped`,
+    /// which the advisory keys on, is true only for the invocation that
+    /// actually minted the lease.
+    pub fn continuity_advisory(&self) -> Option<String> {
+        session::continuity_advisory(self.session()?, &session::RealEnv)
     }
 
     /// Pins this store's session to an explicitly-chosen changeset id.
@@ -1048,6 +1067,33 @@ pub struct ScopedCommit {
 }
 
 impl ScopedCommit {
+    /// Describes a whole-tree (`--all`) commit in the same shape as a scoped
+    /// one, so every porcelain reports both from one value.
+    ///
+    /// `report` is the whole-tree status taken before the commit and `commit`
+    /// is what [`GitStore::commit_whole_tree`] returned. There is no
+    /// changeset: a whole-tree commit lands every session's work.
+    pub fn whole_tree(report: StatusReport, commit: CommitReport) -> Self {
+        Self {
+            changeset: None,
+            sha: commit.sha,
+            committed: commit.committed,
+            skipped_missing: commit.skipped_missing,
+            report,
+        }
+    }
+
+    /// Returns whether this outcome is a symptom of a fragmented harness:
+    /// nothing was committed although the tree held changes.
+    ///
+    /// Only then does a porcelain show the harness-continuity advisory
+    /// ([`GitStore::continuity_advisory`]); a successful commit and a no-op
+    /// commit against a genuinely clean tree both stay silent. Never asked
+    /// of a whole-tree (`--all`) commit, which is not scoped to a session.
+    pub fn is_continuity_symptom(&self) -> bool {
+        self.sha.is_none() && !self.report.is_clean()
+    }
+
     /// Returns whether the changeset was empty while the tree was dirty —
     /// i.e. there is dirt outside this changeset to report, whether a real
     /// other changeset's (`report.others`) or nobody's at all
@@ -1111,6 +1157,20 @@ pub struct ScopedDiscard {
 }
 
 impl ScopedDiscard {
+    /// Describes a whole-tree (`--all`) discard in the same shape as a scoped
+    /// one, so every porcelain reports both from one value.
+    ///
+    /// `report` is the whole-tree status taken before the discard. A
+    /// whole-tree discard has no per-path guard, so every `user` path counts
+    /// as restored and nothing is skipped; a clean report restores nothing.
+    pub fn whole_tree(report: StatusReport) -> Self {
+        Self {
+            restored: report.user.iter().map(|fs| fs.path.clone()).collect(),
+            skipped_overwritten: Vec::new(),
+            report,
+        }
+    }
+
     /// Returns the one-line summary a caller prints after discarding this
     /// outcome's changes.
     ///

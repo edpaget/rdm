@@ -1331,3 +1331,134 @@ fn retry_after_digest_refusal_carries_other_sessions_content() {
         "B's redundant commit must not create an empty commit"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `rdm commit --format json` prints exactly one document on every branch
+// ---------------------------------------------------------------------------
+
+/// Runs `rdm commit <args> --format json` as `session` and parses stdout as
+/// exactly one JSON document followed only by whitespace.
+fn commit_json(session: &str, dir: &TempDir, args: &[&str]) -> (serde_json::Value, String) {
+    let out = rdm_as(session, dir)
+        .arg("commit")
+        .args(args)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(out).unwrap();
+    let mut docs = serde_json::Deserializer::from_str(&stdout).into_iter::<serde_json::Value>();
+    let first = docs
+        .next()
+        .unwrap_or_else(|| panic!("`commit {args:?}` printed no JSON: {stdout:?}"))
+        .unwrap_or_else(|e| panic!("`commit {args:?}` stdout is not JSON ({e}): {stdout:?}"));
+    assert!(
+        docs.next().is_none(),
+        "`commit {args:?}` printed more than one JSON document: {stdout:?}"
+    );
+    (first, stdout)
+}
+
+fn head_sha(dir: &std::path::Path) -> String {
+    gix::open(dir).unwrap().head_id().unwrap().to_string()
+}
+
+fn create_task_as(session: &str, dir: &TempDir, slug: &str) {
+    rdm_as(session, dir)
+        .args([
+            "task",
+            "create",
+            slug,
+            "--title",
+            "T",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn commit_json_reports_the_full_sha_and_the_changeset() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    create_task_as("cs-json", &dir, "landed");
+
+    let (v, _) = commit_json("cs-json", &dir, &["-m", "land it"]);
+    assert_eq!(v["commit"], head_sha(dir.path()), "{v}");
+    assert_eq!(v["changeset"], "cs-json");
+    assert_eq!(v["skipped"], serde_json::json!([]));
+    assert!(v["advisory"].is_null());
+    assert_eq!(
+        v["changes"]["user"][0]["path"],
+        "projects/test/tasks/landed.md"
+    );
+    assert_eq!(v["changes"]["user"][0]["change"], "added");
+
+    // A clean tree commits nothing.
+    let (clean, _) = commit_json("cs-json", &dir, &["-m", "nothing"]);
+    assert!(clean["commit"].is_null(), "{clean}");
+    assert_eq!(clean["changes"]["user"], serde_json::json!([]));
+}
+
+#[test]
+fn commit_all_json_has_no_changeset() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    create_task_as("cs-json", &dir, "swept");
+
+    let (v, _) = commit_json("cs-json", &dir, &["--all", "-m", "sweep"]);
+    assert_eq!(v["commit"], head_sha(dir.path()), "{v}");
+    assert!(v["changeset"].is_null(), "{v}");
+    assert_eq!(
+        v["changes"]["user"][0]["path"],
+        "projects/test/tasks/swept.md"
+    );
+
+    let (clean, _) = commit_json("cs-json", &dir, &["--all", "-m", "nothing"]);
+    assert!(clean["commit"].is_null(), "{clean}");
+    assert!(clean["changeset"].is_null());
+}
+
+#[test]
+fn commit_json_carries_unattributed_dirt_as_a_field_not_recovery_text() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    std::fs::write(dir.path().join("projects/test/stray.md"), "stray\n").unwrap();
+
+    let (v, stdout) = commit_json("cs-empty", &dir, &["-m", "nothing of mine"]);
+    assert!(v["commit"].is_null(), "{v}");
+    assert_eq!(v["changeset"], "cs-empty");
+    assert_eq!(
+        v["changes"]["unattributed"][0]["path"],
+        "projects/test/stray.md"
+    );
+    for text in [
+        "Recover them with",
+        "No changeset owns them",
+        "Nothing in this session's changeset",
+    ] {
+        assert!(
+            !stdout.contains(text),
+            "JSON stdout carries recovery text {text:?}: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn commit_json_lists_a_vanished_journaled_path_as_skipped() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    create_task_as("cs-vanish", &dir, "vanishing");
+    std::fs::remove_file(dir.path().join("projects/test/tasks/vanishing.md")).unwrap();
+
+    let (v, _) = commit_json("cs-vanish", &dir, &["-m", "land the vanished task"]);
+    assert!(v["commit"].is_null(), "{v}");
+    assert_eq!(
+        v["skipped"],
+        serde_json::json!(["projects/test/tasks/vanishing.md"])
+    );
+}

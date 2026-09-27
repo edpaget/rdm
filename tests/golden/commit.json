@@ -1,0 +1,16 @@
+{
+  "commit": "<SHA>",
+  "changeset": "fixture-seed",
+  "skipped": [],
+  "advisory": null,
+  "changes": {
+    "user": [
+      {
+        "path": "projects/fixture-proj/tasks/fixture-task-open.md",
+        "change": "modified"
+      }
+    ],
+    "others": [],
+    "unattributed": []
+  }
+}

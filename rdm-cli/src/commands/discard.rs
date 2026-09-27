@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
+use rdm_store_git::{FileChange, GitStore, ScopedDiscard};
 
+use crate::OutputFormat;
 use crate::commands;
 
 /// Discards uncommitted changes, restoring them to HEAD.
@@ -13,26 +15,43 @@ use crate::commands;
 /// destruction, which requires `--force` as well and first names every other
 /// live changeset it is about to destroy.
 ///
+/// `--format json` prints one [`rdm_core::json::DiscardJson`] document and
+/// nothing else; every other format prints the human report.
+///
 /// # Errors
 ///
 /// Returns an error if `--force` is not passed, the store cannot be opened,
 /// or git merge-abort/status/discard operations fail.
-pub fn run(root: &Path, force: bool, all: bool) -> Result<()> {
+pub fn run(root: &Path, format: OutputFormat, force: bool, all: bool) -> Result<()> {
     if !force {
         bail!("discarding changes is irreversible — pass --force to confirm");
     }
     let mut store = commands::make_store(root)?;
-    // Abort merge if one is in progress
-    if store
+    let (merge_aborted, outcome) = discard(&mut store, all)?;
+    match format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&outcome.to_json(merge_aborted))
+                .context("failed to serialize discard")?
+        ),
+        _ => render_human(&outcome, merge_aborted, all),
+    }
+    Ok(())
+}
+
+/// Aborts any in-progress merge, then discards the whole tree (`all`) or this
+/// session's changeset. Returns whether a merge was aborted and what the
+/// discard did, as one [`ScopedDiscard`].
+fn discard(store: &mut GitStore, all: bool) -> Result<(bool, ScopedDiscard)> {
+    let merge_aborted = store
         .git()
         .git_is_merge_in_progress()
-        .context("failed to check merge state")?
-    {
+        .context("failed to check merge state")?;
+    if merge_aborted {
         store
             .git_mut()
             .git_merge_abort()
             .context("failed to abort merge")?;
-        println!("Aborted in-progress merge.");
     }
 
     if all {
@@ -40,40 +59,52 @@ pub fn run(root: &Path, force: bool, all: bool) -> Result<()> {
             .git()
             .git_status_report()
             .context("failed to get git status")?;
-        if report.is_clean() {
-            println!("Nothing to discard.");
-            return Ok(());
+        if !report.is_clean() {
+            // Name what is about to be destroyed *before* destroying it.
+            warn_other_changesets(store);
+            store
+                .discard_whole_tree()
+                .context("failed to discard changes")?;
         }
-        // Name what is about to be destroyed *before* destroying it.
-        warn_other_changesets(&store);
-        store
-            .discard_whole_tree()
-            .context("failed to discard changes")?;
-        println!("{}", report.discard_summary());
-        print_per_file(&report);
-        return Ok(());
+        return Ok((merge_aborted, ScopedDiscard::whole_tree(report)));
     }
 
     let report = store
         .status_report_scoped()
         .context("failed to get git status")?;
     if report.is_changeset_clean() {
-        println!("Nothing in this session's changeset to discard.");
-        if let Some(note) = report.others_summary() {
-            println!("  {note}");
-        }
-        if let Some(note) = report.unattributed_summary() {
-            println!("  {note}");
-        }
-        return Ok(());
+        return Ok((
+            merge_aborted,
+            ScopedDiscard {
+                report,
+                ..ScopedDiscard::default()
+            },
+        ));
     }
     let outcome = store
         .discard_changeset()
         .context("failed to discard changes")?;
-    println!("{}", outcome.discard_summary());
-    print_per_file_scoped(&outcome);
-    if let Some(note) = outcome.skipped_summary() {
-        println!("  {note}");
+    Ok((merge_aborted, outcome))
+}
+
+/// Prints `outcome` as the human `rdm discard` report.
+fn render_human(outcome: &ScopedDiscard, merge_aborted: bool, all: bool) {
+    if merge_aborted {
+        println!("Aborted in-progress merge.");
+    }
+    let report = &outcome.report;
+    if all && report.is_clean() {
+        println!("Nothing to discard.");
+        return;
+    }
+    if !all && report.is_changeset_clean() {
+        println!("Nothing in this session's changeset to discard.");
+    } else {
+        println!("{}", outcome.discard_summary());
+        print_per_file(outcome);
+        if let Some(note) = outcome.skipped_summary() {
+            println!("  {note}");
+        }
     }
     if let Some(note) = report.others_summary() {
         println!("  {note}");
@@ -81,37 +112,17 @@ pub fn run(root: &Path, force: bool, all: bool) -> Result<()> {
     if let Some(note) = report.unattributed_summary() {
         println!("  {note}");
     }
-    Ok(())
 }
 
 /// Prints the per-file discard lines.
 ///
 /// The restore is HEAD-exact: rdm authors no file of its own into the
-/// worktree, so every path the report named is genuinely back at its HEAD
-/// content (or gone) by the time this runs. There is no `reinstalled:` case
-/// any more — the retired `INDEX.md` merge driver was what put a just-deleted
-/// `.gitattributes` straight back on disk.
-///
-/// Used only by the `--all` whole-tree path, which has no per-path
-/// skip/overwrite guard — see [`print_per_file_scoped`] for the
-/// changeset-scoped counterpart.
-fn print_per_file(report: &rdm_store_git::StatusReport) {
-    for fs in &report.user {
-        let prefix = match fs.change {
-            rdm_store_git::FileChange::Added => "  removed:  ",
-            rdm_store_git::FileChange::Modified => "  restored: ",
-            rdm_store_git::FileChange::Deleted => "  restored: ",
-        };
-        println!("{prefix}{}", fs.path);
-    }
-}
-
-/// The changeset-scoped counterpart of [`print_per_file`], reading the
-/// [`rdm_store_git::ScopedDiscard`] `discard_changeset` returns so a path it
+/// worktree, so every path the outcome restored is genuinely back at its HEAD
+/// content (or gone) by the time this runs. A path the scoped discard
 /// deliberately left in place (`skipped_overwritten`) gets an honest
-/// `skipped:` line instead of a `removed:`/`restored:` one that would
-/// falsely claim this discard reverted it.
-fn print_per_file_scoped(outcome: &rdm_store_git::ScopedDiscard) {
+/// `skipped:` line instead of a `removed:`/`restored:` one that would falsely
+/// claim this discard reverted it; a whole-tree discard skips nothing.
+fn print_per_file(outcome: &ScopedDiscard) {
     for fs in &outcome.report.user {
         if outcome.skipped_overwritten.contains(&fs.path) {
             println!(
@@ -121,16 +132,16 @@ fn print_per_file_scoped(outcome: &rdm_store_git::ScopedDiscard) {
             continue;
         }
         let prefix = match fs.change {
-            rdm_store_git::FileChange::Added => "  removed:  ",
-            rdm_store_git::FileChange::Modified => "  restored: ",
-            rdm_store_git::FileChange::Deleted => "  restored: ",
+            FileChange::Added => "  removed:  ",
+            FileChange::Modified => "  restored: ",
+            FileChange::Deleted => "  restored: ",
         };
         println!("{prefix}{}", fs.path);
     }
 }
 
 /// Names every other live changeset a whole-tree discard is about to destroy.
-fn warn_other_changesets(store: &rdm_store_git::GitStore) {
+fn warn_other_changesets(store: &GitStore) {
     let Some(paths) = store.session_paths() else {
         return;
     };

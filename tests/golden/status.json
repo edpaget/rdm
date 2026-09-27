@@ -1,0 +1,14 @@
+{
+  "changes": {
+    "user": [
+      {
+        "path": "projects/fixture-proj/tasks/fixture-task-open.md",
+        "change": "modified"
+      }
+    ],
+    "others": [],
+    "unattributed": []
+  },
+  "merge": null,
+  "sync": null
+}

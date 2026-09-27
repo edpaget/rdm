@@ -901,3 +901,65 @@ fn session_list_renders_orphaned_label_for_dead_leases() {
         "text output should name the orphaned changeset: {raw_text}"
     );
 }
+
+/// Parses `stdout` as exactly one JSON document followed only by whitespace.
+fn single_json(what: &str, stdout: &str) -> serde_json::Value {
+    let mut docs = serde_json::Deserializer::from_str(stdout).into_iter::<serde_json::Value>();
+    let first = docs
+        .next()
+        .unwrap_or_else(|| panic!("`{what}` printed no JSON: {stdout:?}"))
+        .unwrap_or_else(|e| panic!("`{what}` stdout is not JSON ({e}): {stdout:?}"));
+    assert!(
+        docs.next().is_none(),
+        "`{what}` printed more than one JSON document: {stdout:?}"
+    );
+    first
+}
+
+#[test]
+fn another_sessions_dirt_is_under_others_in_status_commit_and_discard_json() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    rdm(&dir)
+        .env("RDM_SESSION", "alpha")
+        .args([
+            "task",
+            "create",
+            "alpha-item",
+            "--title",
+            "Alpha",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+    let alphas = ["projects/demo/tasks/alpha-item.md"];
+
+    // Beta's own changeset is empty, so alpha's path is someone else's.
+    for (what, args) in [
+        ("status", vec!["status"]),
+        ("commit", vec!["commit", "-m", "nothing of beta's"]),
+        ("discard", vec!["discard", "--force"]),
+    ] {
+        let raw = stdout(
+            rdm(&dir)
+                .env("RDM_SESSION", "beta")
+                .args(&args)
+                .args(["--format", "json"]),
+        );
+        let v = single_json(what, &raw);
+        let others: Vec<&str> = v["changes"]["others"]
+            .as_array()
+            .unwrap_or_else(|| panic!("`{what}` has no changes.others: {v}"))
+            .iter()
+            .map(|e| e["path"].as_str().unwrap())
+            .collect();
+        assert_eq!(others, alphas, "`{what}` json: {v}");
+        assert_eq!(v["changes"]["user"], serde_json::json!([]), "`{what}`");
+    }
+    assert!(
+        dir.path().join(alphas[0]).exists(),
+        "beta's discard must leave alpha's work in place"
+    );
+}

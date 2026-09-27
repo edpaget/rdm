@@ -1,4 +1,4 @@
-//! Builds the golden fixture and runs the 27-command `--format json`
+//! Builds the golden fixture and runs the 30-command `--format json`
 //! inventory against it.
 //!
 //! The fixture is [`SeededPlan`] plus a code repo, then, in this order: one
@@ -9,8 +9,14 @@
 //! `plan-create` golden. `worktree list`/`current` run from inside the
 //! worktree (from the bare code-repo root `current` prints `null`).
 //!
-//! Three commands accept `--format json` but print plain text regardless and
-//! are not captured: `status`, `hook done-line` and `model resolve` (see
+//! The three `create` goldens come after every read, so no other golden sees
+//! what they create. `status`, `commit` and `discard` come last of all: an
+//! uncaptured `rdm commit` first lands everything seeded so far (including the
+//! review, whose file path is volatile), and each captured command then acts
+//! on one deterministic mutation, so its output names only stable paths.
+//!
+//! Two commands accept `--format json` but print plain text regardless and
+//! are not captured: `hook done-line` and `model resolve` (see
 //! `tests/golden/README.md`).
 
 use std::collections::BTreeMap;
@@ -22,7 +28,7 @@ use crate::seeded_plan::{PROJECT, SeededPlan};
 use crate::workflow_support::Failure;
 
 /// Every captured golden, by file stem, in capture order.
-pub const NAMES: [&str; 27] = [
+pub const NAMES: [&str; 30] = [
     "plan-create",
     "info",
     "roadmap-list",
@@ -50,6 +56,9 @@ pub const NAMES: [&str; 27] = [
     "roadmap-create",
     "phase-create",
     "task-create",
+    "status",
+    "commit",
+    "discard",
 ];
 
 /// One capture: the fixture it ran against (kept alive so its temp paths
@@ -350,5 +359,35 @@ pub fn capture() -> Result<Capture, Failure> {
     for (name, args) in &creates {
         raw.insert((*name).to_owned(), fixture.ok(args)?);
     }
+
+    // Land everything seeded so far, uncaptured, so the working-tree goldens
+    // below see only the one deterministic mutation each makes.
+    fixture.ok(&["commit", "-m", "golden: land the seeded fixture"])?;
+    let update = |slug: &'static str, status: &'static str| {
+        fixture.ok(&[
+            "task",
+            "update",
+            slug,
+            "--status",
+            status,
+            "--no-edit",
+            "--project",
+            p,
+        ])
+    };
+    update("fixture-task-open", "in-progress")?;
+    raw.insert(
+        "status".to_owned(),
+        fixture.ok(&["status", "--format", "json"])?,
+    );
+    raw.insert(
+        "commit".to_owned(),
+        fixture.ok(&["commit", "-m", "golden: capture commit", "--format", "json"])?,
+    );
+    update("fixture-task-active", "done")?;
+    raw.insert(
+        "discard".to_owned(),
+        fixture.ok(&["discard", "--force", "--format", "json"])?,
+    );
     Ok(Capture { fixture, raw })
 }

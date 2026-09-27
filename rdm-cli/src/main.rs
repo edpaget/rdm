@@ -280,17 +280,25 @@ fn run() -> Result<()> {
         } => commands::serve::run(root, &repo_config, port, bind, quick_filter)?,
 
         #[cfg(feature = "git")]
-        Command::Status { fetch, all } => commands::status::run(&root, fetch, all)?,
+        Command::Status { fetch, all } => {
+            // Read off the repo's own rdm.toml only: a global `remote.default`
+            // must not change what `rdm status` reports.
+            let remote = raw_repo_config
+                .remote
+                .as_ref()
+                .and_then(|r| r.default.as_deref());
+            commands::status::run(&root, format, remote, fetch, all)?
+        }
 
         #[cfg(feature = "git")]
         Command::Commit {
             message,
             all,
             changeset,
-        } => commands::commit::run(&root, message, all, changeset)?,
+        } => commands::commit::run(&root, format, message, all, changeset)?,
 
         #[cfg(feature = "git")]
-        Command::Discard { force, all } => commands::discard::run(&root, force, all)?,
+        Command::Discard { force, all } => commands::discard::run(&root, format, force, all)?,
 
         #[cfg(feature = "git")]
         Command::Conflicts => commands::conflicts::run(&root)?,

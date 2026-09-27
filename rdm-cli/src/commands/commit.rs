@@ -1,7 +1,9 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use rdm_store_git::{GitStore, ScopedCommit};
 
+use crate::OutputFormat;
 use crate::commands;
 
 /// Commits this session's changeset to git.
@@ -12,18 +14,48 @@ use crate::commands;
 /// historical whole-tree sweep; `--changeset <id>` commits a named (usually
 /// orphaned) changeset instead of this session's.
 ///
+/// `--format json` prints one [`rdm_core::json::CommitJson`] document and
+/// nothing else; every other format prints the human report.
+///
 /// # Errors
 ///
 /// Returns an error if the store cannot be opened, git status fails, the
 /// named changeset id is unusable, or the commit fails.
 pub fn run(
     root: &Path,
+    format: OutputFormat,
     message: Option<String>,
     all: bool,
     changeset: Option<String>,
 ) -> Result<()> {
     let store = commands::make_store(root)?;
+    let outcome = commit(&store, message, all, changeset)?;
+    // The continuity advisory is shown only on the branches that are
+    // symptoms of a fragmented harness, and never for a whole-tree commit.
+    let advisory = if !all && outcome.is_continuity_symptom() {
+        store.continuity_advisory()
+    } else {
+        None
+    };
+    match format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&outcome.to_json(advisory.as_deref()))
+                .context("failed to serialize commit")?
+        ),
+        _ => render_human(&outcome, all, advisory.as_deref()),
+    }
+    Ok(())
+}
 
+/// Commits the whole tree (`all`), a named changeset, or this session's
+/// changeset, returning what happened as one [`ScopedCommit`].
+fn commit(
+    store: &GitStore,
+    message: Option<String>,
+    all: bool,
+    changeset: Option<String>,
+) -> Result<ScopedCommit> {
     if all {
         // The explicitly-named machine-global escape hatch.
         //
@@ -43,15 +75,10 @@ pub fn run(
         let commit_report = store
             .commit_whole_tree(&msg)
             .context("failed to create git commit")?;
-        if commit_report.sha.is_none() {
-            println!("Nothing to commit.");
-        } else {
-            println!("{}", report.commit_summary());
-        }
-        return Ok(());
+        return Ok(ScopedCommit::whole_tree(report, commit_report));
     }
 
-    let outcome = match changeset {
+    Ok(match changeset {
         Some(ref raw) => {
             let id = rdm_core::session::SessionId::new(raw).ok_or_else(|| {
                 anyhow::anyhow!(
@@ -65,7 +92,23 @@ pub fn run(
         None => store
             .commit_changeset(message.as_deref(), &[])
             .context("failed to create git commit")?,
-    };
+    })
+}
+
+/// Prints `outcome` as the human `rdm commit` report.
+///
+/// `advisory` is the harness-continuity advisory, present only when the
+/// outcome is a symptom of a fragmented harness (see
+/// [`ScopedCommit::is_continuity_symptom`]).
+fn render_human(outcome: &ScopedCommit, all: bool, advisory: Option<&str>) {
+    if all {
+        if outcome.sha.is_none() {
+            println!("Nothing to commit.");
+        } else {
+            println!("{}", outcome.report.commit_summary());
+        }
+        return;
+    }
 
     match outcome.sha {
         Some(ref sha) => {
@@ -117,7 +160,9 @@ pub fn run(
             if let Some(note) = outcome.skipped_summary() {
                 println!("\n{note}");
             }
-            print_continuity_advisory(&store);
+            if let Some(note) = advisory {
+                println!("\n{note}");
+            }
         }
         // A changeset can reduce to nothing *because* its files vanished, so
         // every path it named was skipped and the tree still matches HEAD.
@@ -128,44 +173,12 @@ pub fn run(
             if let Some(note) = outcome.skipped_summary() {
                 println!("{note}");
             }
-            // Only when the tree actually held something: a genuinely clean
-            // repo is not a symptom of anything, and advising there would fire
-            // on every no-op `rdm commit` from a plain shell.
-            if !outcome.report.is_clean() {
-                print_continuity_advisory(&store);
+            // Present only when the tree actually held something: a genuinely
+            // clean repo is not a symptom of anything, and advising there
+            // would fire on every no-op `rdm commit` from a plain shell.
+            if let Some(note) = advisory {
+                println!("\n{note}");
             }
         }
-    }
-    Ok(())
-}
-
-/// Prints the harness-continuity advisory, when there is one to print.
-///
-/// Called only from the two branches that are *symptoms* of a fragmented
-/// harness — an empty changeset over a tree that is not empty — so an ordinary
-/// successful commit, and an ordinary no-op commit against a clean tree, both
-/// stay silent.
-///
-/// The session is read back from the store rather than resolved afresh here.
-/// The store memoizes exactly one resolution and the mutation path journals
-/// under it, so re-resolving could describe a different identity than the one
-/// the outcome above was computed against — and `lease_bootstrapped`, which
-/// this advisory keys on, is true only for the invocation that actually minted
-/// the lease. A store that exposes no session simply prints nothing.
-fn print_continuity_advisory(store: &crate::AppStore) {
-    #[cfg(feature = "git")]
-    {
-        let Some(resolved) = store.session() else {
-            return;
-        };
-        if let Some(note) =
-            rdm_core::session::continuity_advisory(resolved, &rdm_core::session::RealEnv)
-        {
-            println!("\n{note}");
-        }
-    }
-    #[cfg(not(feature = "git"))]
-    {
-        let _ = store;
     }
 }

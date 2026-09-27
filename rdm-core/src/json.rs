@@ -1740,6 +1740,111 @@ pub fn link_check_report_to_json(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Working-tree types (`rdm status` / `rdm commit` / `rdm discard`)
+// ---------------------------------------------------------------------------
+
+/// The kind of an uncommitted change to one path, relative to HEAD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileChangeKindJson {
+    /// A new file not present in HEAD.
+    Added,
+    /// An existing file whose content differs from HEAD.
+    Modified,
+    /// A file present in HEAD but missing from the working directory.
+    Deleted,
+}
+
+/// One uncommitted path and how it differs from HEAD.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FileChangeJson {
+    /// Repo-relative path of the file.
+    pub path: String,
+    /// How the file differs from HEAD.
+    pub change: FileChangeKindJson,
+}
+
+/// The uncommitted working tree, partitioned by who authored each path.
+///
+/// Shared by `rdm status`, `rdm commit` and `rdm discard`, so all three
+/// describe the same tree the same way. In the whole-tree (`--all`) view
+/// every path is in `user` and the other two lists are empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct ChangesJson {
+    /// Paths this session's changeset authored.
+    pub user: Vec<FileChangeJson>,
+    /// Dirty paths another live or orphaned changeset claims.
+    pub others: Vec<FileChangeJson>,
+    /// Dirty paths no changeset claims at all.
+    pub unattributed: Vec<FileChangeJson>,
+}
+
+/// A merge in progress in the plan repo.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct MergeStateJson {
+    /// Number of paths still carrying unresolved conflicts.
+    pub unmerged: usize,
+}
+
+/// How the local branch compares with its remote tracking branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncStatusJson {
+    /// The remote name (e.g. `"origin"`).
+    pub remote: String,
+    /// The local branch name (e.g. `"main"`).
+    pub branch: String,
+    /// Commits the local branch has that the remote tracking branch lacks.
+    pub ahead: usize,
+    /// Commits the remote tracking branch has that the local branch lacks.
+    pub behind: usize,
+}
+
+/// `rdm status --format json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StatusJson {
+    /// The uncommitted working tree.
+    pub changes: ChangesJson,
+    /// The merge in progress, or `null` when there is none.
+    pub merge: Option<MergeStateJson>,
+    /// The sync state against `remote.default`, or `null` when no default
+    /// remote is configured, there is no tracking ref, or it could not be
+    /// determined.
+    pub sync: Option<SyncStatusJson>,
+}
+
+/// `rdm commit --format json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CommitJson {
+    /// The new commit's full SHA, or `null` when nothing was committed.
+    pub commit: Option<String>,
+    /// The changeset that was committed, or `null` for a whole-tree
+    /// (`--all`) commit.
+    pub changeset: Option<String>,
+    /// Journaled paths skipped because their file no longer exists; they stay
+    /// in the changeset's journal.
+    pub skipped: Vec<String>,
+    /// The harness-continuity advisory, when this commit is a symptom of a
+    /// fragmented session.
+    pub advisory: Option<String>,
+    /// The working tree as it was before the commit.
+    pub changes: ChangesJson,
+}
+
+/// `rdm discard --force --format json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DiscardJson {
+    /// Whether an in-progress merge was aborted first.
+    pub merge_aborted: bool,
+    /// Paths restored to HEAD (or removed, for a path that was added).
+    pub restored: Vec<String>,
+    /// Paths left in place because another session changed them since this
+    /// changeset last wrote them.
+    pub skipped: Vec<String>,
+    /// The working tree as it was before the discard.
+    pub changes: ChangesJson,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

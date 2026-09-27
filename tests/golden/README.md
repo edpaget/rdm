@@ -9,7 +9,7 @@ byte for byte on every `cargo nextest run`, so a change to rdm's JSON shape turn
 at the source instead of a silent contract break for anything consuming this
 CLI's `--format json` output (an editor plugin, a script, a REST client).
 
-## The 27 captured commands
+## The 30 captured commands
 
 Each command below is captured with `--format json` (or the bare form,
 noted) against a hermetic fixture plan repo built by
@@ -47,23 +47,25 @@ invocation of each.
 | `worktree-list.json` | `rdm worktree list --format json` (cwd-derived, no `--project`) |
 | `worktree-current.json` | `rdm worktree current --format json` (cwd-derived, run from inside the seeded worktree — from the bare code repo root it returns `null`) |
 | `plan-create.json` | `rdm plan create fixture-plan --implements task/fixture-task-open --format json --project <proj>` (the seeding call itself; `plan create --format json` prints the created plan) |
-| `roadmap-create.json` | `rdm roadmap create fixture-created-roadmap --title "Fixture Created Roadmap" --body … --no-edit --format json --project <proj>` (captured last, after every other command, so no other golden sees it; prints the created roadmap in the `roadmap show` shape, with `phases: []`) |
+| `roadmap-create.json` | `rdm roadmap create fixture-created-roadmap --title "Fixture Created Roadmap" --body … --no-edit --format json --project <proj>` (captured after every read command, so no read golden sees it; prints the created roadmap in the `roadmap show` shape, with `phases: []`) |
 | `phase-create.json` | `rdm phase create created-phase --number 1 --roadmap fixture-created-roadmap --title "Created Phase" --body … --no-edit --format json --project <proj>` (prints the created phase in the `phase show` shape, with its computed `stem` and `phase` number; prev/next, plans and `estimate_snapshot` are omitted) |
 | `task-create.json` | `rdm task create fixture-created-task --title "Fixture Created Task" --body … --no-edit --format json --project <proj>` (prints the created task in the `task show` shape; plans omitted) |
 | `plan-show.json` | `rdm plan show fixture-plan --format json --project <proj>` |
 | `plan-list.json` | `rdm plan list --format json --project <proj>` |
 | `verify-resolve.json` | `rdm verify resolve --format json --project <proj>` |
+| `status.json` | `rdm status --format json` (repo-wide, no `--project`; captured last, against a landed tree: an uncaptured `rdm commit` first lands everything seeded above, then one `task update fixture-task-open --status in-progress` is staged, so the report names only that path; `merge` and `sync` are `null`) |
+| `commit.json` | `rdm commit -m "golden: capture commit" --format json` (repo-wide; lands that staged update under the fixture's fixed `RDM_SESSION`, so `changeset` is stable; `commit` is redacted to `<SHA>`) |
+| `discard.json` | `rdm discard --force --format json` (repo-wide; discards one staged `task update fixture-task-active --status done`, listing it in `restored`) |
 
 ## Commands dropped instead of captured
 
-Three commands accept `--format json` without a parse error but silently
+Two commands accept `--format json` without a parse error but silently
 ignore it and always print plain human text. Per this phase's own escape
 hatch, each is dropped from the golden set and filed as an ordinary rdm
 follow-up task instead of captured as a fake-JSON golden:
 
 | Command | Why it's excluded | Follow-up task |
 | --- | --- | --- |
-| `rdm status` | `status::run(root, fetch)` in `rdm-cli/src/commands/status.rs` takes no `format` parameter at all | `golden-json-status-format` |
 | `rdm hook done-line` | The `DoneLine` arm in `rdm-cli/src/commands/hook.rs` always `println!("{line}")` | `golden-json-hook-done-line-format` |
 | `rdm model resolve` | `run_resolve` in `rdm-cli/src/commands/model.rs` always `println!("{}", policy.resolve(...))` | `golden-json-model-resolve-format` |
 

@@ -574,3 +574,221 @@ fn discard_force_reinstates_nothing() {
         "the post-discard tree must be HEAD-exact"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `--format json`: `rdm status` and `rdm discard` print exactly one document
+// ---------------------------------------------------------------------------
+
+/// `rdm --root <dir>` under a fixed session, so every call shares one
+/// changeset regardless of the test runner's process tree.
+fn rdm_json(dir: &TempDir) -> Command {
+    let mut cmd = rdm();
+    cmd.env("RDM_SESSION", "json-status")
+        .arg("--root")
+        .arg(dir.path());
+    cmd
+}
+
+/// Runs `args` with `--format json` and parses stdout as exactly one JSON
+/// document followed only by whitespace.
+fn json_doc(dir: &TempDir, args: &[&str]) -> serde_json::Value {
+    let out = rdm_json(dir)
+        .args(args)
+        .args(["--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let stdout = String::from_utf8(out).unwrap();
+    let mut docs = serde_json::Deserializer::from_str(&stdout).into_iter::<serde_json::Value>();
+    let first = docs
+        .next()
+        .unwrap_or_else(|| panic!("`{args:?}` printed no JSON: {stdout:?}"))
+        .unwrap_or_else(|e| panic!("`{args:?}` stdout is not JSON ({e}): {stdout:?}"));
+    assert!(
+        docs.next().is_none(),
+        "`{args:?}` printed more than one JSON document: {stdout:?}"
+    );
+    first
+}
+
+fn paths_of(list: &serde_json::Value) -> Vec<String> {
+    list.as_array()
+        .expect("a JSON array")
+        .iter()
+        .map(|e| e["path"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Leaves the plan repo mid-merge with `conflict.md` unresolved, using raw git
+/// (a merge conflict cannot be produced through rdm).
+fn start_conflicting_merge(dir: &std::path::Path) {
+    let id = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"];
+    let run = |args: &[&str]| {
+        let all: Vec<&str> = id.iter().chain(args).copied().collect();
+        git(dir, &all)
+    };
+    let ok = |args: &[&str]| {
+        let out = run(args);
+        assert!(out.status.success(), "git {args:?} failed: {out:?}");
+    };
+    ok(&["checkout", "-q", "-b", "side"]);
+    std::fs::write(dir.join("conflict.md"), "side\n").unwrap();
+    ok(&["add", "conflict.md"]);
+    ok(&["commit", "-q", "-m", "side"]);
+    ok(&["checkout", "-q", "-"]);
+    std::fs::write(dir.join("conflict.md"), "main\n").unwrap();
+    ok(&["add", "conflict.md"]);
+    ok(&["commit", "-q", "-m", "main"]);
+    let out = run(&["merge", "side"]);
+    assert!(
+        !out.status.success(),
+        "the merge was expected to conflict: {out:?}"
+    );
+}
+
+#[test]
+fn status_json_on_a_clean_tree_has_empty_buckets_and_null_merge_and_sync() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    let v = json_doc(&dir, &["status"]);
+    assert_eq!(
+        v,
+        serde_json::json!({
+            "changes": { "user": [], "others": [], "unattributed": [] },
+            "merge": null,
+            "sync": null,
+        })
+    );
+}
+
+#[test]
+fn status_json_names_this_sessions_change_and_its_kind() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    rdm_json(&dir)
+        .args([
+            "roadmap",
+            "create",
+            "json-roadmap",
+            "--title",
+            "R",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+
+    let v = json_doc(&dir, &["status"]);
+    let user = v["changes"]["user"].as_array().unwrap();
+    assert_eq!(user.len(), 1, "one mutation, one path: {v}");
+    assert_eq!(
+        user[0]["path"],
+        "projects/test/roadmaps/json-roadmap/roadmap.md"
+    );
+    assert_eq!(user[0]["change"], "added");
+    assert!(v["merge"].is_null());
+    assert!(v["sync"].is_null(), "no remote is configured: {v}");
+
+    // `--all` is the whole-tree view: the same path, and a raw write outside
+    // rdm lands in `user` too instead of `unattributed`.
+    std::fs::write(dir.path().join("projects/test/stray.md"), "stray\n").unwrap();
+    let scoped = json_doc(&dir, &["status"]);
+    assert_eq!(
+        paths_of(&scoped["changes"]["unattributed"]),
+        ["projects/test/stray.md"]
+    );
+    let all = json_doc(&dir, &["status", "--all"]);
+    assert_eq!(
+        paths_of(&all["changes"]["user"]),
+        [
+            "projects/test/roadmaps/json-roadmap/roadmap.md",
+            "projects/test/stray.md"
+        ]
+    );
+    assert_eq!(all["changes"]["unattributed"], serde_json::json!([]));
+}
+
+#[test]
+fn status_and_discard_json_report_a_merge_in_progress() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    start_conflicting_merge(dir.path());
+
+    let status = json_doc(&dir, &["status"]);
+    let unmerged = status["merge"]["unmerged"].as_u64().unwrap_or(0);
+    assert!(unmerged > 0, "a conflicted merge is reported: {status}");
+
+    let discard = json_doc(&dir, &["discard", "--force"]);
+    assert_eq!(discard["merge_aborted"], true, "{discard}");
+    assert_eq!(discard["restored"], serde_json::json!([]));
+    assert!(
+        !dir.path().join(".git/MERGE_HEAD").exists(),
+        "the merge was aborted"
+    );
+
+    let after = json_doc(&dir, &["discard", "--force"]);
+    assert_eq!(after["merge_aborted"], false, "{after}");
+}
+
+#[test]
+fn discard_json_lists_the_restored_paths() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    rdm_json(&dir)
+        .args([
+            "task",
+            "create",
+            "doomed",
+            "--title",
+            "D",
+            "--no-edit",
+            "--project",
+            "test",
+        ])
+        .assert()
+        .success();
+
+    let v = json_doc(&dir, &["discard", "--force"]);
+    assert_eq!(v["merge_aborted"], false);
+    assert_eq!(
+        v["restored"],
+        serde_json::json!(["projects/test/tasks/doomed.md"])
+    );
+    assert_eq!(v["skipped"], serde_json::json!([]));
+    assert_eq!(
+        paths_of(&v["changes"]["user"]),
+        ["projects/test/tasks/doomed.md"]
+    );
+    assert!(!dir.path().join("projects/test/tasks/doomed.md").exists());
+
+    // Nothing left: still one document, restoring nothing.
+    let empty = json_doc(&dir, &["discard", "--force"]);
+    assert_eq!(empty["restored"], serde_json::json!([]));
+
+    // The whole-tree view restores every dirty path.
+    std::fs::write(dir.path().join("projects/test/stray.md"), "stray\n").unwrap();
+    let all = json_doc(&dir, &["discard", "--force", "--all"]);
+    assert_eq!(
+        all["restored"],
+        serde_json::json!(["projects/test/stray.md"])
+    );
+    let clean = json_doc(&dir, &["discard", "--force", "--all"]);
+    assert_eq!(clean["restored"], serde_json::json!([]));
+}
+
+#[test]
+fn discard_json_without_force_still_refuses_with_empty_stdout() {
+    let dir = TempDir::new().unwrap();
+    init_repo(&dir);
+    rdm_json(&dir)
+        .args(["discard", "--format", "json"])
+        .assert()
+        .failure()
+        .stdout("")
+        .stderr(predicate::str::contains(
+            "discarding changes is irreversible — pass --force to confirm",
+        ));
+}

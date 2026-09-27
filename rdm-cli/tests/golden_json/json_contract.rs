@@ -9,10 +9,16 @@ use serde_json::Value;
 
 use crate::seeded_plan::{PROJECT, SeededPlan};
 
+/// A row takes `--project <PROJECT>` after `--format json`.
+const PROJECT_SCOPED: bool = true;
+/// A row acts on the whole plan repo and rejects `--project`.
+const REPO_WIDE: bool = false;
+
 /// Commands whose `--format json` stdout must be exactly one JSON document,
-/// by name and arguments (`--format json --project <PROJECT>` is appended).
-/// Rows run in order against one fixture.
-const COVERED: &[(&str, &[&str])] = &[
+/// by name, arguments and whether `--project <PROJECT>` is appended after
+/// `--format json`. Rows run in order against one fixture, so `status`,
+/// `commit` and `discard` see the creates above them staged.
+const COVERED: &[(&str, &[&str], bool)] = &[
     (
         "roadmap create",
         &[
@@ -23,6 +29,7 @@ const COVERED: &[(&str, &[&str])] = &[
             "Contract Roadmap",
             "--no-edit",
         ],
+        PROJECT_SCOPED,
     ),
     (
         "phase create",
@@ -36,6 +43,7 @@ const COVERED: &[(&str, &[&str])] = &[
             "Contract Phase",
             "--no-edit",
         ],
+        PROJECT_SCOPED,
     ),
     (
         "task create",
@@ -47,23 +55,34 @@ const COVERED: &[(&str, &[&str])] = &[
             "Contract Task",
             "--no-edit",
         ],
+        PROJECT_SCOPED,
     ),
+    ("status", &["status"], REPO_WIDE),
+    ("status --all", &["status", "--all"], REPO_WIDE),
+    ("commit", &["commit", "-m", "contract commit"], REPO_WIDE),
+    ("discard --force", &["discard", "--force"], REPO_WIDE),
 ];
 
 fn fixture() -> SeededPlan {
     SeededPlan::new(PROJECT).unwrap_or_else(|f| panic!("{f}"))
 }
 
-fn with_json(args: &[&str]) -> Vec<String> {
+fn with_json(args: &[&str], project: bool) -> Vec<String> {
+    let scope: &[&str] = if project {
+        &["--project", PROJECT]
+    } else {
+        &[]
+    };
     args.iter()
         .copied()
-        .chain(["--format", "json", "--project", PROJECT])
+        .chain(["--format", "json"])
+        .chain(scope.iter().copied())
         .map(str::to_owned)
         .collect()
 }
 
-fn run_json(fixture: &SeededPlan, name: &str, args: &[&str]) -> String {
-    let args = with_json(args);
+fn run_json(fixture: &SeededPlan, name: &str, args: &[&str], project: bool) -> String {
+    let args = with_json(args, project);
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     fixture
         .ok(&args)
@@ -95,8 +114,8 @@ fn keys(name: &str, v: &Value) -> BTreeSet<String> {
 #[test]
 fn covered_commands_print_exactly_one_json_document() {
     let fixture = fixture();
-    for (name, args) in COVERED {
-        let stdout = run_json(&fixture, name, args);
+    for (name, args, project) in COVERED {
+        let stdout = run_json(&fixture, name, args, *project);
         single_document(name, &stdout);
     }
 }
@@ -110,8 +129,8 @@ fn assert_create_matches_show(
     show: &[&str],
     identity: &[(&str, Value)],
 ) {
-    let created = single_document(name, &run_json(fixture, name, create));
-    let shown = single_document(name, &run_json(fixture, name, show));
+    let created = single_document(name, &run_json(fixture, name, create, PROJECT_SCOPED));
+    let shown = single_document(name, &run_json(fixture, name, show, PROJECT_SCOPED));
     let (created_keys, shown_keys) = (keys(name, &created), keys(name, &shown));
     let extra: Vec<_> = created_keys.difference(&shown_keys).collect();
     assert!(

@@ -1,0 +1,17 @@
+{
+  "merge_aborted": false,
+  "restored": [
+    "projects/fixture-proj/tasks/fixture-task-active.md"
+  ],
+  "skipped": [],
+  "changes": {
+    "user": [
+      {
+        "path": "projects/fixture-proj/tasks/fixture-task-active.md",
+        "change": "modified"
+      }
+    ],
+    "others": [],
+    "unattributed": []
+  }
+}
