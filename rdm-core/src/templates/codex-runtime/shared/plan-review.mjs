@@ -5,7 +5,8 @@
 //! dependency-injected orchestration (`runPlanReviewDriver`). It dispatches
 //! FINDER, CONSOLIDATOR AND REFUTER AGENTS AND NOTHING ELSE — there are no
 //! fetch, act or gate agents here any more. A reviewer that needs a document runs the
-//! `rdm ... show --format json` command its prompt names; every write the driver
+//! `rdm ... show` command its prompt names (`--numbered` for the document under
+//! review, `--format json` for a parent roadmap); every write the driver
 //! used to make is returned as ready-to-run Bash for the orchestrator to run. Because the
 //! Claude Code Workflow runtime cannot `import`/`require` (see
 //! docs/workflow-schemas.md § "Import spike"), the marked block below is copied
@@ -1017,9 +1018,12 @@ function formatSkippedPhasesClause(skippedPhases) {
 // `{ units, skippedPhases }`.
 //
 // IT READS NOTHING AND NEEDS NOTHING READ. Each unit carries IDENTIFIERS only:
-// the ref the reviewers review (`target`), the `rdm ... show --format json`
-// commands they run themselves (`itemCommand`, and `roadmapCommand` where a
-// parent roadmap exists and its `## Intent` is relevant), the tag list the
+// the ref the reviewers review (`target`), the read commands they run
+// themselves — `itemCommand`, the unit's OWN document as a line-numbered
+// `rdm ... show --numbered` (so a finder's `start_line`/`end_line` can only
+// ever name lines of the document the review is persisted on), and
+// `roadmapCommand`, an un-numbered `roadmap show --format json`, where a
+// parent roadmap exists and its `## Intent` is relevant — the tag list the
 // caller supplied for the gate, and the prior reviews the caller supplied for
 // the round channel. There is no body here to be empty, so the old fail-closed
 // "an unread plan must never be silently marked reviewed" branch has nothing
@@ -1037,6 +1041,9 @@ function buildReviewUnits(parsed) {
   const PROJ = projectFlag(parsed)
   const roadmapCommand = parsed.roadmap ? RDM + ' roadmap show ' + parsed.roadmap + PROJ + ' --format json' : null
   if (parsed.kind === 'roadmap') {
+    // The roadmap unit's OWN document is the roadmap, so it is read once,
+    // numbered, as `itemCommand` — and gets no `roadmapCommand`, rather than
+    // the same document twice, once numbered and once not.
     const units = [
       {
         kind: 'roadmap',
@@ -1045,8 +1052,8 @@ function buildReviewUnits(parsed) {
         tags: Array.isArray(parsed.tags) ? parsed.tags : null,
         priorReviews: parsed.priorReviews,
         target: 'roadmap/' + parsed.roadmap,
-        itemCommand: roadmapCommand,
-        roadmapCommand: roadmapCommand,
+        itemCommand: RDM + ' roadmap show ' + parsed.roadmap + PROJ + ' --numbered',
+        roadmapCommand: null,
       },
     ]
     const phases = Array.isArray(parsed.phases) ? parsed.phases : []
@@ -1068,7 +1075,7 @@ function buildReviewUnits(parsed) {
         tags: Array.isArray(p.tags) ? p.tags : null,
         priorReviews: Array.isArray(p.priorReviews) ? p.priorReviews : null,
         target: phaseTarget,
-        itemCommand: RDM + ' phase show ' + p.stem + ' --roadmap ' + parsed.roadmap + PROJ + ' --format json',
+        itemCommand: RDM + ' phase show ' + p.stem + ' --roadmap ' + parsed.roadmap + PROJ + ' --numbered',
         roadmapCommand: roadmapCommand,
         // Each phase unit binds the pin to ITS OWN target — never a shared or
         // wrong stem — so a roadmap sweep's phases each verify their own
@@ -1098,8 +1105,8 @@ function buildReviewUnits(parsed) {
         priorReviews: parsed.priorReviews,
         target: unitTarget,
         itemCommand: isTask
-          ? RDM + ' task show ' + ident + PROJ + ' --format json'
-          : RDM + ' phase show ' + ident + ' --roadmap ' + parsed.roadmap + PROJ + ' --format json',
+          ? RDM + ' task show ' + ident + PROJ + ' --numbered'
+          : RDM + ' phase show ' + ident + ' --roadmap ' + parsed.roadmap + PROJ + ' --numbered',
         // A task has no parent roadmap, so no intent to inherit.
         roadmapCommand: isTask ? null : roadmapCommand,
         sourceCommand: parsed.sourcePin ? planSourceCommand(unitTarget, parsed.sourcePin, RDM, PROJ) : null,
@@ -1275,7 +1282,7 @@ async function runPlanReviewDriver(args, deps) {
   // ------------------------------------------------------------------ implementation-plan
   // THE GRADED DOCUMENT IS THE PLAN ITSELF, read by the reviewers from the
   // command their prompt names — `plan show <planSlug>` for a persisted plan,
-  // `cat <planFile>` for a free-form one. Exactly one of the two is set: parse
+  // `cat -n <planFile>` for a free-form one. Exactly one of the two is set: parse
   // time refuses both and refuses neither, so there is always a document and it
   // is never ambiguous which. No ITEM document is reachable from this branch at
   // all, so a finding about a phase body — one the plan does not inherit — is
@@ -1297,9 +1304,14 @@ async function runPlanReviewDriver(args, deps) {
       : null
     const { survivors: rawSurvivors, budget, coverage } = await runPlanReview({
       target: planTarget,
+      // The graded plan is read LINE-NUMBERED, like every unit's own
+      // document: `plan show --numbered`, or `cat -n` for a free-form file
+      // (BSD and GNU both print `%6d<TAB>`, the shape `show --numbered`
+      // prints). A free-form plan is never persisted, so its spans are only
+      // reported. The parent roadmap read below stays un-numbered.
       itemCommand: slug
-        ? parsed.rdmBin + ' plan show ' + slug + projectFlag(parsed) + ' --format json'
-        : 'cat -- ' + shellQuote(file),
+        ? parsed.rdmBin + ' plan show ' + slug + projectFlag(parsed) + ' --numbered'
+        : 'cat -n -- ' + shellQuote(file),
       roadmapCommand: parsed.roadmap
         ? parsed.rdmBin + ' roadmap show ' + parsed.roadmap + projectFlag(parsed) + ' --format json'
         : null,

@@ -1265,7 +1265,8 @@ One issue raised by a finder agent. Finders return `{ findings: FINDING[] }`.
 | `category`      | string                                   | **optional**; security-style slug (injection / authorization / memory / crypto / exposure) |
 | `location`      | string                                   | `file:line`, section heading, or phase stem — free-text, may carry extra human-readable detail |
 | `path`          | string                                   | **optional, code mode**; a STRUCTURED repo-relative source path the `quote` was taken from, distinct from `location`. Required alongside `quote` by prompt convention (not schema-enforced), and the prompt asks for a BARE path with no `:line` suffix — but `persistAnchorFor` tolerates one anyway, stripping it via `stripPathLineSuffix` before validating (see below); a finding that carries `quote` with no usable `path` still falls back to the `location`-parsing heuristic (see `pathFromLocation`) |
-| `quote`         | string                                   | **optional**; a VERBATIM excerpt of the reviewed text this finding is about — what makes a persisted comment anchorable |
+| `quote`         | string                                   | **optional**; a VERBATIM excerpt of the reviewed text this finding is about — what makes a code-mode persisted comment anchorable. Plan-mode finders are told not to report it |
+| `start_line` / `end_line` | integer ≥ 1                    | **optional, plan mode**; the first and last line of the span the finding is about, copied from the line numbers printed beside the document under review (`show --numbered`, `cat -n` for a free-form plan). A missing `end_line` means one line; `end_line < start_line` means no span (`findingLineSpan`) |
 | `severity`      | `blocking` \| `concern` \| `suggestion`  | required; drives ranking and the overall verdict  |
 | `confidence`    | integer 0–100 (required)                 | the finder's confidence **in the finding**        |
 | `what_fails`    | string (required)                        | the specific problem                              |
@@ -1304,6 +1305,21 @@ finding survives on its own merits and simply loses an excerpt that would not
 have anchored. `quote_ok` is independent of `refuted`. A finding that was never
 graded (`unrefuted` / `refuterError`) keeps an UNVERIFIED quote — the writer's
 runtime whole-document fallback is what protects those.
+
+**In plan mode a line span is what makes a finding anchorable.** A verbatim
+quote fails whenever a finder re-flows a sentence the document wraps across two
+lines, so plan-mode finders read their own document line-numbered (each unit's
+`itemCommand` is `<kind> show … --numbered`, or `cat -n` for a free-form plan)
+and report `start_line`/`end_line` copied from those printed numbers instead of
+a `quote`. Only the document under review is numbered: the parent roadmap
+(`roadmapCommand`) and pinned-source reads stay un-numbered, so a span can only
+name lines of the document the review is persisted on. The refuter checks a
+span the way it checks a quote: `refutePrompt` appends a span clause only for a
+plan-mode finding that carries a usable span (the same corpus-safety
+conditional), and an explicit `lines_ok: false` makes the pipeline `stripSpan`
+the finding, which then lands whole-document. On a plan-repo document target
+the writer emits `review comment --line <start>-<end>`, and rdm captures the
+snippet itself; a span beats a `quote` the finding also carries.
 
 **`path` is what makes a `code`-mode finding's `quote` land at BUILD time,
 rather than depend on parsing `location`.** A code finding's `location`
@@ -1454,8 +1470,11 @@ Rules:
   - `path` — change target, `--path` + `--quote` both emitted (the normal
     anchored case)
   - `quote` — non-change (plan-repo document) target, bare `--quote` emitted
-    (the normal case there)
-  - `wholeDocumentIntended` — the finding never carried a `quote` at all
+  - `line` — non-change (plan-repo document) target, `--line <start>-<end>`
+    emitted for a finding with a valid line span (the normal plan-mode case)
+  - `wholeDocumentIntended` — the finding requested no anchor at all
+    (`persistRequestsAnchor`: no `quote`, and no line span on a plan-repo
+    document target)
   - `degraded` — the finding carried a `quote` but the writer dropped the
     requested anchor at BUILD time (`persistAnchorFor`'s `reason` —
     `path-missing` or `outside-hunk`)
@@ -1463,8 +1482,9 @@ Rules:
   Computed by `persistAnchorState(finding, target, opts)`, which re-derives the
   SAME decision `persistAnchorFor` makes for the writer, so the header can
   never disagree with the anchor the emitted `rdm review comment` line asked
-  for. It is NOT authoritative for whether the anchor landed: a `path` request
-  core refuses at run time keeps its `anchor: path` header. **The comment's
+  for. It is NOT authoritative for whether the anchor landed: a `path` or
+  `line` request core refuses at run time keeps its `anchor: path` /
+  `anchor: line` header. **The comment's
   stored `anchor_state` field is authoritative** — `whole-document` for a
   `wholeDocumentIntended` finding, the writer's own reason for a build-time
   drop, and core's reason (with the requested file in `intended_path`) for a
@@ -1577,8 +1597,10 @@ since an embedded literal newline inside single quotes is valid POSIX shell.
 `target` itself is shell-quoted (via that same `shellQuote` helper) at both
 its occurrences — the `--on` argument and the `commit -m` message — so a
 target containing `$(...)` or a backtick cannot execute a command when the
-emitted lines run. A survivor carrying a `quote` gets `--quote`; one without
-becomes a whole-document comment. `review start` always carries a NON-EMPTY
+emitted lines run. On a plan-repo document target a survivor with a valid line
+span (`findingLineSpan`) gets `--line <start>-<end>`, even if it also carries a
+`quote`; otherwise a survivor carrying a `quote` gets `--quote`; one with
+neither becomes a whole-document comment. A change target ignores spans. `review start` always carries a NON-EMPTY
 `--body`, or `submit_review` would raise `ReviewEmpty` on a clean review with
 no comments.
 
@@ -1601,9 +1623,20 @@ gate) carries the same redirect on its `task update`/`phase update`/`roadmap
 update`/`commit` lines, for the same reason.
 
 **The anchoring ladder is split between two mechanisms now: MECHANICAL, inside
-the emitted ladder itself, for the one line that carries both `--path` and
-`--quote` (a change-target, path-anchored comment); CALLER PROSE, bounded and
-per-error, for everything else.**
+the emitted ladder itself, for the line that carries both `--path` and
+`--quote` (a change-target, path-anchored comment) and for the plan-mode
+`--line` line; CALLER PROSE, bounded and per-error, for everything else.**
+
+For a plan-repo document target, a survivor with a line span gets ONE command:
+`review comment --line <start>-<end> --on-anchor-failure whole-document`. The
+value is built from the normalized safe integers, so no finder text reaches the
+command line, and rdm captures the snippet from the document at the review's
+`created_commit`. A span past the end of the body is refused as
+`line-out-of-range`, which core stores whole-document and reports on the one
+JSON line; the ladder tallies and park-classifies it with the SAME emitter
+(`persistFallbackComment`) the path-anchored line uses, so it counts in
+`anchorsDegraded=` and, because `line-out-of-range` is not benign, sets
+`anchorsParkRequired=yes`.
 
 For a change-target, path-anchored comment (`anchor.path !== null` —
 `persistAnchorFor` already validated the path at build time), the ladder emits
@@ -1702,7 +1735,8 @@ to tell the two apart WITHOUT parsing `persistDegradationClause`'s prose.
 
 `persistDegradedSummary(result, target, opts)` is the BUILD-TIME half:
 `{ requested, degraded, all }`, where `requested` is how many survivors asked
-for a `--quote` anchor and `degraded` is how many were dropped before a single
+for an anchor (`persistRequestsAnchor`: a `--quote`, or a line span on a
+plan-repo document target) and `degraded` is how many were dropped before a single
 command ran (the same count the prose clause composes). It cannot see a
 run-time refusal, because nothing has run yet when it is computed — see the
 fall-back mode above.
@@ -1740,7 +1774,10 @@ so this call site needed `printf` regardless of which capture strategy
 own heredoc-in-`$(...)` form with the same `shellQuote`-based approach for an
 unrelated reason — that form could not even PARSE under macOS's bash 3.2 when
 the captured text contained an apostrophe).
-This note carries none of `PERSIST_HEADER_KEYS` (it describes the review, not
+The note step is emitted only for a change target, or when at least one
+survivor requests a line anchor — the only two cases where a run-time
+fallback can fire — so a plan ladder whose survivors carry no span is
+unchanged. This note carries none of `PERSIST_HEADER_KEYS` (it describes the review, not
 a survivor), so `parseCommentHeader` correctly reports it as unheadered. The
 note is the SAME text a caller reading the persisted review sees regardless of
 whether the degradation happened at build time or run time — the two cases
@@ -1997,7 +2034,7 @@ object only — never parsed out of the `$ARGUMENTS` flag string, the same rule 
 dual-supply throw and the precedence rule that decided which of the two won —
 there is nothing to transport, so there is nothing to disagree about. The
 reviewers read the document themselves from the `rdm plan show <slug>
---format json` command their prompt names, which is also the ref the persist
+--numbered` command their prompt names, which is also the ref the persist
 ladder writes to, so the graded document and the recorded verdict cannot name
 different documents.
 
@@ -2019,6 +2056,7 @@ finding — the finder never grades its own work.
 | `confidence` | integer 0–100 (required) | the refuter's confidence in **its verdict** (advisory) |
 | `rationale`  | string                   | why the finding was or was not refuted                 |
 | `quote_ok`   | boolean                  | **optional**; did the finding's `quote` appear VERBATIM in the reviewed text? Requested only when the finding carries one, and INDEPENDENT of `refuted` — an explicit `false` strips the quote, never the finding |
+| `lines_ok`   | boolean                  | **optional**; are the finding's `start_line`/`end_line` the lines it is about, in the numbered document under review? Requested only for a plan-mode finding that carries a span, and INDEPENDENT of `refuted` — an explicit `false` strips the span (`stripSpan`), never the finding |
 | `inScope`    | boolean                  | **optional**; is the finding within the scope of the approved plan the change implements? Requested only for a code-mode review with an associated plan (`context.planCommand` set), and INDEPENDENT of `refuted` — a finding can be real (not refuted) and still out of scope. Absent/`true` means in scope; only an explicit `false` excludes the finding from `hasBlocking` (see `rdm:plan/refuters-grade-finding-scope`, and "Scope follows the defect, not the evidence" below) |
 
 **Scope follows the defect, not the evidence.** The refuter grades `inScope`

@@ -1123,3 +1123,301 @@ fn concurrent_ladders_do_not_collide() {
         Ok(())
     });
 }
+
+// --- Line-span anchors (plan mode) ---------------------------------------------
+
+/// A plan-mode run whose coherence finder reports a line span on the task
+/// body, and whose refuter answers `lines_ok` with `lines_ok`.
+fn spanned_agent(lines_ok: Option<bool>) -> Agent {
+    Agent::scripted(move |call| {
+        if call.label.starts_with("find:") {
+            if call.label.contains("coherence") {
+                Reply::Value(
+                    json!({ "findings": [{ "id": "s1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+                    "what_fails": "the retry backoff strategy is unspecified", "start_line": 2, "end_line": 3 }] }),
+                )
+            } else {
+                Reply::Value(json!({ "findings": [] }))
+            }
+        } else {
+            let mut v = json!({ "refuted": false, "confidence": 95 });
+            if let Some(ok) = lines_ok {
+                v["lines_ok"] = json!(ok);
+            }
+            Reply::Value(v)
+        }
+    })
+}
+
+#[test]
+fn lines_ok_preserves_or_clears_span() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let repo = seeded()?;
+        let ctx = json!({ "target": "the plan" });
+        for (ok, keeps) in [(Some(true), true), (None, true), (Some(false), false)] {
+            let out = js.review_ok("plan", &spanned_agent(ok), ctx.clone())?;
+            let f = crate::support::find(&out, "survivors", "s1")
+                .ok_or_else(|| Failure::Check(format!("lines_ok {ok:?} dropped the finding")))?
+                .clone();
+            if keeps {
+                check_eq!(
+                    (f["start_line"].clone(), f["end_line"].clone()),
+                    (json!(2), json!(3)),
+                    "lines_ok {ok:?} preserves the span"
+                );
+                continue;
+            }
+            check!(
+                f.get("start_line").is_none() && f.get("end_line").is_none(),
+                "lines_ok false removes both span keys entirely: {f}"
+            );
+            // The stripped survivor, through the real ladder, lands whole-document.
+            let script = ladder(&mut js, "plan", "rework", json!([f]), "task/persist-target")?;
+            let review = repo.review(PROJECT, &land(&repo, &script, "stripped")?)?;
+            let cs = comments(&review);
+            check_eq!(cs.len(), 1, "one comment");
+            check!(
+                cs[0].get("anchor").is_none_or(Value::is_null),
+                "a stripped span carries no anchor: {}",
+                cs[0]
+            );
+            check_eq!(
+                cs[0]["anchor_state"],
+                json!("whole-document"),
+                "recorded as whole-document on purpose"
+            );
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn strip_span_is_pure() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let out = js.call(
+            "stripSpan",
+            vec![json!({ "id": "x", "start_line": 2, "end_line": 4, "quote": "q" })],
+        )?;
+        check_eq!(
+            out,
+            json!({ "id": "x", "quote": "q" }),
+            "both span keys are removed, the rest kept"
+        );
+        let none = js.call("stripSpan", vec![json!({ "id": "y" })])?;
+        check_eq!(
+            none,
+            json!({ "id": "y" }),
+            "a span-less finding comes back unchanged"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn span_changes_refute_prompt() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let dims = js.call("resolveReviewers", vec![json!("plan")])?;
+        let dim = dims[0].clone();
+        let no_span = json!({ "id": "f1", "concern": "coherence", "severity": "blocking", "confidence": 90, "what_fails": "x" });
+        let mut with_span = no_span.clone();
+        with_span["start_line"] = json!(3);
+        with_span["end_line"] = json!(4);
+        let ctx = json!({ "target": "t" });
+        let a = js.call(
+            "refutePrompt",
+            vec![json!("plan"), dim.clone(), no_span, ctx.clone()],
+        )?;
+        let b = js.call("refutePrompt", vec![json!("plan"), dim, with_span, ctx])?;
+        check!(
+            a != b,
+            "a span-carrying finding gets a different refuter prompt"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn reflowed_wrap_persists_with_its_line_anchor() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let repo = seeded()?;
+        let body = "Opening line.\nComments anchor on line ranges rather than quotes, since line numbers\nshift less often than a re-flowed quote does.\nClosing line.";
+        repo.seed(&[&[
+            "task",
+            "create",
+            "wrapped",
+            "--title",
+            "Wrapped",
+            "--body",
+            body,
+            "--no-edit",
+            "--project",
+            PROJECT,
+        ]])?;
+        // Control: the re-flowed quote of the wrapped sentence does not
+        // anchor, which is the failure the line span replaces.
+        let start = repo.json(&[
+            "review",
+            "start",
+            "--on",
+            "task/wrapped",
+            "--no-edit",
+            "--format",
+            "json",
+            "--project",
+            PROJECT,
+        ])?;
+        let id = start["id"].as_str().unwrap_or_default().to_owned();
+        let refused = repo.rdm(
+            "control",
+            &[
+                "review",
+                "comment",
+                &id,
+                "--quote",
+                "since line numbers shift less often",
+                "--body",
+                "control",
+                "--no-edit",
+                "--project",
+                PROJECT,
+            ],
+        )?;
+        check!(
+            !refused.status.success(),
+            "the re-flowed quote is refused: {}",
+            String::from_utf8_lossy(&refused.stdout)
+        );
+
+        let survivors = json!([{ "id": "w1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+                                 "what_fails": "the claim is unsupported", "start_line": 2, "end_line": 3 }]);
+        let script = ladder(&mut js, "plan", "rework", survivors, "task/wrapped")?;
+        let review = repo.review(PROJECT, &land(&repo, &script, "wrapped")?)?;
+        let cs = comments(&review);
+        check_eq!(cs.len(), 1, "one comment");
+        let c = &cs[0];
+        check_eq!(
+            c["anchor"]["anchor_type"],
+            json!("line-range"),
+            "a line-range anchor"
+        );
+        check_eq!(
+            (
+                c["anchor"]["start_line"].clone(),
+                c["anchor"]["end_line"].clone()
+            ),
+            (json!(2), json!(3)),
+            "the requested span"
+        );
+        check_eq!(
+            c["anchor"]["snippet"],
+            json!(
+                "Comments anchor on line ranges rather than quotes, since line numbers\nshift less often than a re-flowed quote does."
+            ),
+            "the snippet is the two original lines, wrap intact"
+        );
+        check_eq!(
+            c["resolution"]["state"],
+            json!("resolved"),
+            "and it resolves"
+        );
+        let h = js.call("parseCommentHeader", vec![c["body"].clone()])?;
+        check_eq!(
+            h["anchor"],
+            json!("line"),
+            "the header records a line anchor"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn refused_line_anchor_lands_whole_document_and_is_counted() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let repo = seeded()?;
+        let survivors = json!([{ "id": "o1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+                                 "what_fails": "past the end", "start_line": 40, "end_line": 41 }]);
+        let script = ladder(&mut js, "plan", "rework", survivors, "task/persist-target")?;
+        let tmp = repo.tmpdir("oor")?;
+        let out = repo.sh(&script, "oor", &tmp)?;
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        check!(
+            out.status.success(),
+            "a refused line anchor does not abort the ladder: {stdout}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        check!(
+            stdout.lines().any(|l| l == "anchorsDegraded=all"),
+            "the lost anchor is counted: {stdout}"
+        );
+        check!(
+            stdout.lines().any(|l| l == "anchorsParkRequired=yes"),
+            "and line-out-of-range is not benign: {stdout}"
+        );
+        let id = review_id(&out).ok_or_else(|| Failure::Check(format!("no reviewId: {stdout}")))?;
+        let review = repo.review(PROJECT, &id)?;
+        let cs = comments(&review);
+        check_eq!(cs.len(), 2, "the finding plus the degraded note");
+        let finding = cs
+            .iter()
+            .find(|c| {
+                c["body"]
+                    .as_str()
+                    .is_some_and(|b| b.contains("finding-id: o1"))
+            })
+            .ok_or_else(|| Failure::Check(format!("no finding comment: {review}")))?;
+        check!(
+            finding.get("anchor").is_none_or(Value::is_null),
+            "stored whole-document: {finding}"
+        );
+        check_eq!(
+            finding["anchor_state"],
+            json!("line-out-of-range"),
+            "with core's reason"
+        );
+        check!(
+            cs.iter().any(|c| c["body"]
+                .as_str()
+                .is_some_and(|b| b.starts_with("persist-note: anchors-degraded"))),
+            "the degraded note is recorded in the review: {review}"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn change_target_ignores_a_span() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let cfg = json!({ "rdmBin": "/fake/bin/rdm", "project": "demo" });
+        let opts = json!({ "pathAnchors": true });
+        let plain = json!({ "id": "c1", "concern": "correctness", "severity": "blocking", "confidence": 90,
+                            "what_fails": "x", "quote": "shipped", "path": "src/foo.rs" });
+        let mut spanned = plain.clone();
+        spanned["start_line"] = json!(3);
+        spanned["end_line"] = json!(5);
+        let build = |js: &mut Js, f: &Value| {
+            js.call(
+                "persistReviewCommands",
+                vec![
+                    json!({ "mode": "code", "outcome": "rework", "survivors": [f] }),
+                    json!("change/abc123"),
+                    cfg.clone(),
+                    opts.clone(),
+                ],
+            )
+        };
+        let a = build(&mut js, &plain)?;
+        let b = build(&mut js, &spanned)?;
+        check_eq!(
+            b,
+            a,
+            "a span on a change target changes nothing (no --line)"
+        );
+        Ok(())
+    });
+}

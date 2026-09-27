@@ -400,8 +400,8 @@ the plan does not inherit — cannot arise and cannot force a revise round. **Yo
 yourself.** It is the one step a subagent physically cannot perform.
 
 - `planSlug` names the document under review, and it is the ONLY way to name it: each reviewer is
-  told the `plan show <plan-slug> --format json` command and runs it itself, reading the body once
-  in its own context. There is no `planText`, no second verifying read, and nothing transcribed into
+  told the `plan show <plan-slug> --numbered` command and runs it itself, reading the line-numbered
+  body once in its own context. There is no `planText`, no second verifying read, and nothing transcribed into
   this call's arguments. A `planSlug` on a non-implementation-plan target, and a `persist.on` that is
   not `plan/<plan-slug>`, each throw before any agent runs.
 - `roadmap` names the parent roadmap so the `intent-alignment` reviewer knows which document to read
@@ -447,7 +447,9 @@ yourself.** It is the one step a subagent physically cannot perform.
 **The plan engine reads nothing and writes nothing either** — it dispatches finder, consolidator
 and refuter agents only. When it returns `persistCommands` / `persistScript`, **you** run that ladder in Bash,
 in one session, and report the exit status; it records the plan review on `plan/<plan-slug>` exactly
-as the code ladder records the change review.
+as the code ladder records the change review. Its comments are line-anchored (`review comment --line
+<start>-<end>`, spans the finders read off the numbered plan), and a refused line anchor lands
+whole-document mechanically, counted in `anchorsDegraded=`.
 
 Because the engine does not review the item document, this call does **not** clear a
 `needs-plan-review` tag on the phase. That tag asserts the *item* was plan-reviewed and is cleared
@@ -483,9 +485,12 @@ While waiting, print the commands a human uses to satisfy this wait (and under `
 
 ```bash
 <rdmBin> review start --on plan/<plan-slug> --no-edit<proj-flag>
-<rdmBin> review comment <id> --quote "<exact text>" --body "<feedback>" --no-edit<proj-flag>
+<rdmBin> plan show <plan-slug> --numbered --at <created_commit><proj-flag>   # the line numbers to cite
+<rdmBin> review comment <id> --line <start>-<end> --body "<feedback>" --no-edit<proj-flag>
 <rdmBin> review submit <id> --verdict approve --no-edit<proj-flag>
 ```
+
+(`<created_commit>` is the review's, from `review show <id> --format json`.)
 
 **`changes-requested` → revise:** if `planReviseCount < --max-plan-revise`, increment it and run the
 `revise` loop (`Skill({ skill: 'revise' })`) against the plan review — a plan review's

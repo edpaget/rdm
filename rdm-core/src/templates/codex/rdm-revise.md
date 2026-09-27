@@ -16,6 +16,8 @@ Work only the requested review(s). Read the summary first, then each open commen
 
 - Resolved text quote: use the body named by `resolution.body`; `original` refers to `created_commit`, readable with the document's `show --at <sha>`.
 - Drifted text quote: ranges index the original body, not current text. Map the intent only when unambiguous.
+- Resolved line range (`anchor_type: line-range`): lines `start_line`..`end_line` of the `created_commit` body (`show --numbered --at <sha>` prints that numbering); `snippet` is their text, captured by rdm.
+- Drifted line range: the document changed since the review, so the numbers name the `created_commit` body. Read it with `--at <sha>` and map the `snippet` onto current text only when unambiguous.
 - Missing, unresolved, or unknown anchor: treat as whole-document feedback.
 
 Apply each requested edit through `roadmap update`, `phase update`, or `task update`, using the full preserved body via `--body` and `--no-edit`; update does not read stdin. Preserve unrelated content and tags. Check `rdm:` links. Commit each comment's document edit separately with `"${RDM_BIN:-rdm}" commit -m "docs(plan): address review comment"`, then capture that plan-repo commit SHA immediately, before updating the review. Inspect `rdm status` first to avoid mixing other changes from your session.

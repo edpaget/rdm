@@ -95,9 +95,14 @@ repo. Run these yourself, in order, and report each exit status:
    `persistCommands` / `persistScript`: the `review start` → `review comment` per
    finding → `review submit` → `commit` ladder. Run the script in **one** Bash
    session (later lines read variables the earlier ones set); it prints
-   `reviewId=<id>`. If one `review comment` is refused for its anchor, re-run that
-   one line with `--quote` and `--occurrence` removed to leave a whole-document
-   comment. If `review start` itself is refused, stop and report it.
+   `reviewId=<id>`. Findings are anchored on line ranges
+   (`review comment --line <start>-<end> --on-anchor-failure whole-document`), so a
+   refused line anchor lands whole-document mechanically, with rdm's reason in the
+   comment's stored `anchor_state`, and is counted in the printed `anchorsDegraded=`
+   line — there is nothing to re-run. (A finding that carries only a `quote` still
+   gets a bare `--quote` line; if that one is refused for its anchor, re-run it with
+   `--quote` and `--occurrence` removed to leave a whole-document comment.) If
+   `review start` itself is refused, stop and report it.
 2. **Act on the findings** — apply a small, localized plan fix by writing the whole
    `--body` back; file a large structural finding as a task with
    `--tags plan-review --no-plan-review`. This is yours because it is judgment plus
@@ -344,7 +349,7 @@ Each finding is reported as:
 - id: <short-slug>
   concern: <coherence|architectural-fit|restraint|unit-of-work>
   location: <section/heading or phase stem>
-  quote: <verbatim excerpt of the reviewed text this finding is about; omit for a whole-document finding>
+  start_line / end_line: <the span this finding is about, copied from the line numbers printed beside the document under review (never counted, never from another document); omit both for a whole-document finding>
   severity: blocking | concern | suggestion
   confidence: 0-100
   what-fails: <the specific problem>

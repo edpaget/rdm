@@ -251,6 +251,30 @@ fn read(repo: &PlanRepo, run: &Run, cmd: &Value) -> Result<Value, Failure> {
         .map_err(|e| Failure::Check(format!("{cmd} printed non-JSON: {e}: {out}")))
 }
 
+/// Runs a read command and returns its stdout verbatim.
+fn read_text(repo: &PlanRepo, cmd: &Value) -> Result<String, Failure> {
+    let cmd = cmd
+        .as_str()
+        .ok_or_else(|| Failure::Check(format!("not a command: {cmd}")))?;
+    repo.run_ok(&Run::bare(), cmd)
+}
+
+/// `<show_args> --project prv --numbered`, run directly: the numbered body
+/// rdm itself renders for that document.
+fn numbered(repo: &PlanRepo, show_args: &[&str]) -> Result<String, Failure> {
+    let mut args = show_args.to_vec();
+    args.extend(["--project", PROJECT, "--numbered"]);
+    repo.ok("reader", &args)
+}
+
+/// The text of each line of a `--numbered` rendering, in order.
+fn numbered_lines(rendering: &str) -> Vec<String> {
+    rendering
+        .lines()
+        .map(|l| l.split_once('\t').map_or("", |(_, t)| t).to_owned())
+        .collect()
+}
+
 fn phase_tags(repo: &PlanRepo, stem: &str) -> Result<Vec<String>, Failure> {
     Ok(strings(&repo.phase(PROJECT, "r", stem)?["tags"]))
 }
@@ -314,11 +338,10 @@ fn unit_commands_read_their_own_document() {
             json!("phase/r/phase-1-x"),
             "the graded target is an identifier, not a body"
         );
-        let item = read(&repo, &run, &ctx["itemCommand"])?;
         check_eq!(
-            item["stem"],
-            json!("phase-1-x"),
-            "the item command reads the unit's own phase"
+            read_text(&repo, &ctx["itemCommand"])?,
+            numbered(&repo, &["phase", "show", "phase-1-x", "--roadmap", "r"])?,
+            "the item command prints the unit's own phase, numbered"
         );
         let roadmap = read(&repo, &run, &ctx["roadmapCommand"])?;
         check_eq!(
@@ -334,8 +357,11 @@ fn unit_commands_read_their_own_document() {
         )?;
         t.ok()?;
         check_eq!(t.contexts[0]["target"], json!("task/t"), "task target");
-        let task = read(&repo, &run, &t.contexts[0]["itemCommand"])?;
-        check_eq!(task["slug"], json!("t"), "the item command reads the task");
+        check_eq!(
+            read_text(&repo, &t.contexts[0]["itemCommand"])?,
+            numbered(&repo, &["task", "show", "t"])?,
+            "the item command prints the task, numbered"
+        );
         check_eq!(
             t.contexts[0]["roadmapCommand"],
             Value::Null,
@@ -764,6 +790,221 @@ fn build_review_units_is_pure() {
     });
 }
 
+// --- A2: line spans come only from the unit's own document -------------------------
+
+#[test]
+fn every_item_command_prints_its_own_document_numbered() {
+    run_real(|lib| {
+        let repo = plan_repo()?;
+        let mut js = Js::open(lib)?;
+        let runs = [
+            (
+                json!({ "roadmap": "r", "phase": "phase-1-x", "tags": [] }),
+                vec![vec!["phase", "show", "phase-1-x", "--roadmap", "r"]],
+            ),
+            (
+                json!({ "task": "t", "tags": [] }),
+                vec![vec!["task", "show", "t"]],
+            ),
+            (
+                json!({ "roadmap": "r", "phases": [{ "stem": "phase-1-x" }, { "stem": "phase-2-y" }], "tags": [] }),
+                vec![
+                    vec!["roadmap", "show", "r"],
+                    vec!["phase", "show", "phase-1-x", "--roadmap", "r"],
+                    vec!["phase", "show", "phase-2-y", "--roadmap", "r"],
+                ],
+            ),
+            (
+                json!({ "implementationPlan": true, "planSlug": "p", "roadmap": "r" }),
+                vec![vec!["plan", "show", "p"]],
+            ),
+        ];
+        for (args, docs) in runs {
+            let d = drive_lib(&mut js, with(&axes(), args.clone()), json!([]))?;
+            d.ok()?;
+            check_eq!(d.contexts.len(), docs.len(), "{args}: one context per unit");
+            for (ctx, doc) in d.contexts.iter().zip(docs) {
+                check_eq!(
+                    read_text(&repo, &ctx["itemCommand"])?,
+                    numbered(&repo, &doc)?,
+                    "{args}: {} reads its own document, numbered",
+                    ctx["target"]
+                );
+                if !ctx["roadmapCommand"].is_null() {
+                    let roadmap = read(&repo, &Run::bare(), &ctx["roadmapCommand"])?;
+                    check_eq!(
+                        roadmap["slug"],
+                        json!("r"),
+                        "{args}: {} reads its parent roadmap as JSON, un-numbered",
+                        ctx["target"]
+                    );
+                }
+            }
+            if args.get("phases").is_some() {
+                check_eq!(
+                    d.contexts[0]["roadmapCommand"],
+                    Value::Null,
+                    "the roadmap unit reads its own document once, not twice"
+                );
+            }
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn sweep_phase_unit_span_snippet_comes_from_the_phase() {
+    run_real(|lib| {
+        let repo = plan_repo()?;
+        let mut js = Js::open(lib)?;
+        let spanned = json!([{ "id": "s1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+                               "what_fails": "line one is wrong", "start_line": 1, "end_line": 1 }]);
+        let d = drive_lib(
+            &mut js,
+            with(
+                &axes(),
+                json!({ "roadmap": "r", "phases": [{ "stem": "phase-1-x", "tags": [] }], "tags": [], "persist": true }),
+            ),
+            spanned,
+        )?;
+        let r = d.ok()?;
+        let units = r["units"].as_array().cloned().unwrap_or_default();
+        let phase_unit = units
+            .iter()
+            .find(|u| u["ident"] == json!("phase-1-x"))
+            .ok_or_else(|| Failure::Check(format!("no phase unit: {r}")))?;
+        repo.run_ok(&Run::bare(), &script(&phase_unit["persistCommands"]))?;
+        let reviews = repo.reviews_on(PROJECT, "phase/r/phase-1-x")?;
+        check_eq!(reviews.len(), 1, "the phase unit's review landed");
+        let c = &reviews[0]["comments"][0];
+        let phase_line = numbered_lines(&numbered(
+            &repo,
+            &["phase", "show", "phase-1-x", "--roadmap", "r"],
+        )?)[0]
+            .clone();
+        let roadmap_line = numbered_lines(&numbered(&repo, &["roadmap", "show", "r"])?)[0].clone();
+        check_eq!(
+            c["anchor"]["snippet"],
+            json!(phase_line),
+            "the snippet is line 1 of the phase body"
+        );
+        check!(
+            phase_line != roadmap_line,
+            "and not line 1 of the roadmap body ({roadmap_line:?})"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn plan_review_persists_line_range_anchors_end_to_end() {
+    run_real(|lib| {
+        let repo = plan_repo()?;
+        repo.seed(&[&[
+            "phase",
+            "create",
+            "z",
+            "--title",
+            "Z",
+            "--number",
+            "3",
+            "--body",
+            "## Steps\n\n1. Add the retry loop.\n2. Back off by an unspecified amount,\n   wrapped onto a second line.\n\n## Acceptance Criteria\n\n- [ ] It retries.",
+            "--no-edit",
+            "--roadmap",
+            "r",
+            "--project",
+            PROJECT,
+        ]])?;
+        let agent = Agent::scripted(|call| {
+            if call.label.starts_with("find:") {
+                let findings = if call.label.contains(":coherence") {
+                    json!([{ "id": "backoff", "concern": "coherence", "severity": "blocking", "confidence": 90,
+                             "what_fails": "the backoff is unspecified", "start_line": 4, "end_line": 5 }])
+                } else if call.label.contains(":restraint") {
+                    json!([{ "id": "retry", "concern": "restraint", "severity": "concern", "confidence": 85,
+                             "what_fails": "the loop is over-specified", "start_line": 3 }])
+                } else {
+                    json!([])
+                };
+                Reply::Value(json!({ "findings": findings }))
+            } else if call.label.starts_with("refute:") {
+                Reply::Value(json!({ "refuted": false, "confidence": 90, "lines_ok": true }))
+            } else {
+                Reply::Null
+            }
+        });
+        let mut js = Js::open(lib)?;
+        let (r, _) = drive_real(
+            &mut js,
+            with(
+                &axes(),
+                json!({ "roadmap": "r", "phase": "phase-3-z", "tags": [], "persist": true }),
+            ),
+            agent,
+        )?;
+        let out = repo.run_ok(
+            &Run::bare(),
+            r["persistScript"].as_str().unwrap_or_default(),
+        )?;
+        check!(
+            out.lines().any(|l| l == "anchorsDegraded=none"),
+            "every requested anchor landed: {out}"
+        );
+        let lines = numbered_lines(&numbered(
+            &repo,
+            &["phase", "show", "phase-3-z", "--roadmap", "r"],
+        )?);
+        let reviews = repo.reviews_on(PROJECT, "phase/r/phase-3-z")?;
+        check_eq!(reviews.len(), 1, "one review on the phase");
+        let cs = reviews[0]["comments"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        check_eq!(
+            cs.len(),
+            2,
+            "one comment per spanned finding: {}",
+            reviews[0]
+        );
+        for (id, start, end) in [("backoff", 4, 5), ("retry", 3, 3)] {
+            let c = cs
+                .iter()
+                .find(|c| {
+                    c["body"]
+                        .as_str()
+                        .is_some_and(|b| b.contains(&format!("finding-id: {id}")))
+                })
+                .ok_or_else(|| Failure::Check(format!("no comment for {id}: {}", reviews[0])))?;
+            check_eq!(
+                c["anchor"]["anchor_type"],
+                json!("line-range"),
+                "{id}: a line-range anchor"
+            );
+            check_eq!(
+                (
+                    c["anchor"]["start_line"].clone(),
+                    c["anchor"]["end_line"].clone()
+                ),
+                (json!(start), json!(end)),
+                "{id}: the requested span"
+            );
+            check_eq!(
+                c["anchor"]["snippet"],
+                json!(lines[start - 1..end].join("\n")),
+                "{id}: the snippet rdm captured is those numbered lines"
+            );
+            let h = js.call("parseCommentHeader", vec![c["body"].clone()])?;
+            check_eq!(
+                h["anchor"],
+                json!("line"),
+                "{id}: the header reads back as a line anchor"
+            );
+        }
+        Ok(())
+    });
+}
+
 // --- B: the shipped engine ----------------------------------------------------------
 
 #[test]
@@ -835,8 +1076,11 @@ fn implementation_plan_grades_plan_by_slug() {
             json!("plan/p"),
             "the plan, by slug"
         );
-        let plan = read(&repo, &Run::bare(), &d.contexts[0]["itemCommand"])?;
-        check_eq!(plan["slug"], json!("p"), "the item command reads the plan");
+        check_eq!(
+            read_text(&repo, &d.contexts[0]["itemCommand"])?,
+            numbered(&repo, &["plan", "show", "p"])?,
+            "the item command prints the plan, numbered"
+        );
         check!(d.agent.calls().is_empty(), "no agent of the driver's own");
         Ok(())
     });
@@ -911,10 +1155,15 @@ fn free_form_plan_read_by_quoted_path() {
         );
         let cmd = d.contexts[0]["itemCommand"].as_str().unwrap_or_default();
         let out = repo.run_ok(&Run::bare(), cmd)?;
+        let want: String = content
+            .lines()
+            .enumerate()
+            .map(|(i, l)| format!("{:>6}\t{l}\n", i + 1))
+            .collect();
         check_eq!(
             out,
-            content,
-            "the returned read command prints the file, quoting intact"
+            want,
+            "the returned read command prints the file line-numbered, quoting intact"
         );
         check_eq!(r["planFile"], json!(path), "the path is reported");
         check!(d.agent.calls().is_empty(), "no agent of the driver's own");
