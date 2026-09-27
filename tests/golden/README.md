@@ -9,7 +9,7 @@ byte for byte on every `cargo nextest run`, so a change to rdm's JSON shape turn
 at the source instead of a silent contract break for anything consuming this
 CLI's `--format json` output (an editor plugin, a script, a REST client).
 
-## The 30 captured commands
+## The 31 captured commands
 
 Each command below is captured with `--format json` (or the bare form,
 noted) against a hermetic fixture plan repo built by
@@ -46,6 +46,7 @@ invocation of each.
 | `review-requests.json` | `rdm review requests --format json --project <proj>` |
 | `worktree-list.json` | `rdm worktree list --format json` (cwd-derived, no `--project`) |
 | `worktree-current.json` | `rdm worktree current --format json` (cwd-derived, run from inside the seeded worktree — from the bare code repo root it returns `null`) |
+| `hook-done-line.json` | `rdm hook done-line --roadmap sample-roadmap --phase phase-1-seed-one --format json` (no `--project`; JSON is emitted only on an explicit `--format json` — `RDM_FORMAT` and `default_format` never change the bare trailer it prints otherwise) |
 | `plan-create.json` | `rdm plan create fixture-plan --implements task/fixture-task-open --format json --project <proj>` (the seeding call itself; `plan create --format json` prints the created plan) |
 | `roadmap-create.json` | `rdm roadmap create fixture-created-roadmap --title "Fixture Created Roadmap" --body … --no-edit --format json --project <proj>` (captured after every read command, so no read golden sees it; prints the created roadmap in the `roadmap show` shape, with `phases: []`) |
 | `phase-create.json` | `rdm phase create created-phase --number 1 --roadmap fixture-created-roadmap --title "Created Phase" --body … --no-edit --format json --project <proj>` (prints the created phase in the `phase show` shape, with its computed `stem` and `phase` number; prev/next, plans and `estimate_snapshot` are omitted) |
@@ -59,14 +60,13 @@ invocation of each.
 
 ## Commands dropped instead of captured
 
-Two commands accept `--format json` without a parse error but silently
-ignore it and always print plain human text. Per this phase's own escape
-hatch, each is dropped from the golden set and filed as an ordinary rdm
+One command accepts `--format json` without a parse error but silently
+ignores it and always prints plain human text. Per this phase's own escape
+hatch, it is dropped from the golden set and filed as an ordinary rdm
 follow-up task instead of captured as a fake-JSON golden:
 
 | Command | Why it's excluded | Follow-up task |
 | --- | --- | --- |
-| `rdm hook done-line` | The `DoneLine` arm in `rdm-cli/src/commands/hook.rs` always `println!("{line}")` | `golden-json-hook-done-line-format` |
 | `rdm model resolve` | `run_resolve` in `rdm-cli/src/commands/model.rs` always `println!("{}", policy.resolve(...))` | `golden-json-model-resolve-format` |
 
 ## Redaction

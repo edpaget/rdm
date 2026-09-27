@@ -314,7 +314,9 @@ fn run() -> Result<()> {
 
         #[cfg(feature = "git")]
         Command::Hook { command } => {
-            commands::hook::run(command, &root)?;
+            // Pass the raw flag, not the resolved `format`: `RDM_FORMAT` and
+            // `default_format` must never turn `done-line`'s trailer into JSON.
+            commands::hook::run(command, &root, cli.format)?;
         }
 
         #[cfg(feature = "git")]

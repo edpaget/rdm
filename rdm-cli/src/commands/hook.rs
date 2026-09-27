@@ -6,9 +6,12 @@ use anyhow::{Context, Result, bail};
 use super::{
     resolve_hook_timeout_secs, run_hook_with_timeout, run_post_commit_hook, run_post_merge_hook,
 };
-use crate::HookCommand;
+use crate::{HookCommand, OutputFormat};
 
-pub fn run(command: HookCommand, root: &Path) -> Result<()> {
+/// `format` is the raw `--format` flag, not the resolved format: only
+/// `done-line` reads it, and only an explicit `--format json` switches it
+/// to JSON.
+pub fn run(command: HookCommand, root: &Path, format: Option<OutputFormat>) -> Result<()> {
     match command {
         HookCommand::Install { force } => {
             let cwd = std::env::current_dir().context("cannot determine current directory")?;
@@ -126,9 +129,15 @@ pub fn run(command: HookCommand, root: &Path) -> Result<()> {
                     "--task cannot be combined with --roadmap/--phase; pass exactly one of the two forms"
                 ),
             };
-            let line = rdm_core::hook::format_done_directive(&directive)
-                .context("cannot build a Done: trailer from those identifiers")?;
-            println!("{line}");
+            if let Some(OutputFormat::Json) = format {
+                let json = rdm_core::hook::done_line_json(&directive)
+                    .context("cannot build a Done: trailer from those identifiers")?;
+                println!("{}", serde_json::to_string(&json)?);
+            } else {
+                let line = rdm_core::hook::format_done_directive(&directive)
+                    .context("cannot build a Done: trailer from those identifiers")?;
+                println!("{line}");
+            }
         }
     }
     Ok(())

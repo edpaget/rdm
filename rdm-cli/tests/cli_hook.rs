@@ -2470,6 +2470,237 @@ fn done_line_rejects_reserved_task_roadmap_slug() {
         .stderr(predicate::str::contains("reserved prefix"));
 }
 
+/// Parses `stdout` as exactly one JSON value followed by nothing but whitespace.
+fn single_json_value(stdout: &[u8]) -> serde_json::Value {
+    let mut stream = serde_json::Deserializer::from_slice(stdout).into_iter::<serde_json::Value>();
+    let value = stream
+        .next()
+        .expect("stdout holds a JSON value")
+        .expect("stdout parses as JSON");
+    let rest = &stdout[stream.byte_offset()..];
+    assert!(
+        rest.iter().all(u8::is_ascii_whitespace),
+        "nothing but whitespace follows the JSON value, got {:?}",
+        String::from_utf8_lossy(rest)
+    );
+    value
+}
+
+#[test]
+fn done_line_json_phase() {
+    let out = rdm()
+        .args([
+            "hook",
+            "done-line",
+            "--roadmap",
+            "r",
+            "--phase",
+            "p",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        single_json_value(&out),
+        serde_json::json!({"line": "Done: r/p", "kind": "phase", "roadmap": "r", "phase": "p"})
+    );
+}
+
+#[test]
+fn done_line_json_task() {
+    let out = rdm()
+        .args(["hook", "done-line", "--task", "t", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(
+        single_json_value(&out),
+        serde_json::json!({"line": "Done: task/t", "kind": "task", "task": "t"})
+    );
+}
+
+/// Runs both done-line forms through `configure` with no `--format` flag and
+/// asserts each prints the bare trailer, byte for byte.
+fn assert_done_line_prints_bare_trailer(configure: impl Fn(&mut Command)) {
+    let cases: [(&[&str], &str); 2] = [
+        (&["--roadmap", "r", "--phase", "p"], "Done: r/p\n"),
+        (&["--task", "t"], "Done: task/t\n"),
+    ];
+    for (args, expected) in cases {
+        let mut cmd = rdm();
+        configure(&mut cmd);
+        cmd.args(["hook", "done-line"])
+            .args(args)
+            .assert()
+            .success()
+            .stdout(expected);
+    }
+}
+
+#[test]
+fn done_line_ignores_rdm_format_env() {
+    assert_done_line_prints_bare_trailer(|cmd| {
+        cmd.env("RDM_FORMAT", "json");
+    });
+}
+
+#[test]
+fn done_line_ignores_default_format_config() {
+    // Global config: `default_format = "json"` via `config set --global`.
+    let xdg = TempDir::new().unwrap();
+    rdm()
+        .env("HOME", xdg.path())
+        .env("XDG_CONFIG_HOME", xdg.path())
+        .env_remove("RDM_ROOT")
+        .env_remove("RDM_FORMAT")
+        .args(["config", "set", "default_format", "json", "--global"])
+        .assert()
+        .success();
+    assert_done_line_prints_bare_trailer(|cmd| {
+        cmd.env("HOME", xdg.path())
+            .env("XDG_CONFIG_HOME", xdg.path())
+            .env_remove("RDM_ROOT")
+            .env_remove("RDM_FORMAT");
+    });
+
+    // Repo config: `default_format = "json"` in the plan repo's rdm.toml.
+    let plan_dir = TempDir::new().unwrap();
+    fs::write(
+        plan_dir.path().join("rdm.toml"),
+        "default_format = \"json\"\n",
+    )
+    .unwrap();
+    assert_done_line_prints_bare_trailer(|cmd| {
+        cmd.arg("--root")
+            .arg(plan_dir.path())
+            .env_remove("RDM_FORMAT");
+    });
+}
+
+#[test]
+fn hook_post_commit_marks_phase_done_under_rdm_format_json() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger commit").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: land it\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    let sha_output = git_cmd()
+        .args(["log", "-1", "--format=%H"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .env("RDM_FORMAT", "json")
+        .args(["hook", "post-commit"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"))
+        .stdout(predicate::str::contains(&sha));
+}
+
+#[test]
+fn hook_post_merge_marks_phase_done_under_rdm_format_json() {
+    let plan_dir = TempDir::new().unwrap();
+    let project_dir = TempDir::new().unwrap();
+    init_with_phase(&plan_dir);
+    init_project_repo(&project_dir);
+
+    fs::write(project_dir.path().join("dummy.txt"), "trigger commit").unwrap();
+    git_cmd()
+        .args(["add", "dummy.txt"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    git_cmd()
+        .args([
+            "commit",
+            "-m",
+            "feat: merge stuff\n\nDone: my-roadmap/phase-1-my-phase",
+        ])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    let sha_output = git_cmd()
+        .args(["log", "-1", "--format=%H"])
+        .current_dir(project_dir.path())
+        .output()
+        .unwrap();
+    let sha = String::from_utf8_lossy(&sha_output.stdout)
+        .trim()
+        .to_string();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .env("RDM_PROJECT", "test-proj")
+        .env("RDM_FORMAT", "json")
+        .args(["hook", "post-merge"])
+        .current_dir(project_dir.path())
+        .assert()
+        .success();
+
+    rdm()
+        .arg("--root")
+        .arg(plan_dir.path())
+        .args([
+            "phase",
+            "show",
+            "phase-1-my-phase",
+            "--roadmap",
+            "my-roadmap",
+            "--project",
+            "test-proj",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Status: done"))
+        .stdout(predicate::str::contains(&sha));
+}
+
 /// The land-time trailer path `rdm-land` documents: a reviewed phase's
 /// trailer-less branch tip gains `rdm hook done-line`'s output by an amend
 /// (the parent is unchanged, so no rebase), fast-forwards onto `main`, and

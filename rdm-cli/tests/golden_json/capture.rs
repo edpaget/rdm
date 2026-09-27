@@ -1,4 +1,4 @@
-//! Builds the golden fixture and runs the 30-command `--format json`
+//! Builds the golden fixture and runs the 31-command `--format json`
 //! inventory against it.
 //!
 //! The fixture is [`SeededPlan`] plus a code repo, then, in this order: one
@@ -15,9 +15,8 @@
 //! review, whose file path is volatile), and each captured command then acts
 //! on one deterministic mutation, so its output names only stable paths.
 //!
-//! Two commands accept `--format json` but print plain text regardless and
-//! are not captured: `hook done-line` and `model resolve` (see
-//! `tests/golden/README.md`).
+//! One command accepts `--format json` but prints plain text regardless and
+//! is not captured: `model resolve` (see `tests/golden/README.md`).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -28,7 +27,7 @@ use crate::seeded_plan::{PROJECT, SeededPlan};
 use crate::workflow_support::Failure;
 
 /// Every captured golden, by file stem, in capture order.
-pub const NAMES: [&str; 30] = [
+pub const NAMES: [&str; 31] = [
     "plan-create",
     "info",
     "roadmap-list",
@@ -53,6 +52,7 @@ pub const NAMES: [&str; 30] = [
     "verify-resolve",
     "worktree-list",
     "worktree-current",
+    "hook-done-line",
     "roadmap-create",
     "phase-create",
     "task-create",
@@ -299,6 +299,19 @@ pub fn capture() -> Result<Capture, Failure> {
             fixture.ok_in(&worktree, &["worktree", sub, "--format", "json"])?,
         );
     }
+    raw.insert(
+        "hook-done-line".to_owned(),
+        fixture.ok(&[
+            "hook",
+            "done-line",
+            "--roadmap",
+            "sample-roadmap",
+            "--phase",
+            "phase-1-seed-one",
+            "--format",
+            "json",
+        ])?,
+    );
     let creates: [(&str, Vec<&str>); 3] = [
         (
             "roadmap-create",

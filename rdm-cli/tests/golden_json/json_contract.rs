@@ -13,6 +13,8 @@ use crate::seeded_plan::{PROJECT, SeededPlan};
 const PROJECT_SCOPED: bool = true;
 /// A row acts on the whole plan repo and rejects `--project`.
 const REPO_WIDE: bool = false;
+/// A row takes no `--project` at all, so none is appended.
+const UNSCOPED: bool = false;
 
 /// Commands whose `--format json` stdout must be exactly one JSON document,
 /// by name, arguments and whether `--project <PROJECT>` is appended after
@@ -56,6 +58,23 @@ const COVERED: &[(&str, &[&str], bool)] = &[
             "--no-edit",
         ],
         PROJECT_SCOPED,
+    ),
+    (
+        "hook done-line (phase)",
+        &[
+            "hook",
+            "done-line",
+            "--roadmap",
+            "sample-roadmap",
+            "--phase",
+            "phase-1-seed-one",
+        ],
+        UNSCOPED,
+    ),
+    (
+        "hook done-line (task)",
+        &["hook", "done-line", "--task", "fixture-task-open"],
+        UNSCOPED,
     ),
     ("status", &["status"], REPO_WIDE),
     ("status --all", &["status", "--all"], REPO_WIDE),

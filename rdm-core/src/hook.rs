@@ -177,9 +177,116 @@ pub fn format_done_directive(directive: &DoneDirective) -> Result<String, Format
     }
 }
 
+/// The identifiers of a `Done:` directive in their JSON shape.
+///
+/// Serializes as `"kind": "phase"` with `roadmap` and `phase`, or as
+/// `"kind": "task"` with `task`. Flattened into [`DoneLineJson`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum DoneTargetJson {
+    /// A phase completion directive.
+    Phase {
+        /// The roadmap slug, trimmed.
+        roadmap: String,
+        /// The phase stem or number, trimmed.
+        phase: String,
+    },
+    /// A task completion directive.
+    Task {
+        /// The task slug, trimmed.
+        #[serde(rename = "task")]
+        slug: String,
+    },
+}
+
+/// The JSON form of `rdm hook done-line --format json`.
+///
+/// Carries the formatted trailer `line` plus the directive's identifiers,
+/// flattened alongside it: `{"line", "kind": "phase", "roadmap", "phase"}` or
+/// `{"line", "kind": "task", "task"}`. Build it with [`done_line_json`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DoneLineJson {
+    /// The trailer line, exactly as [`format_done_directive`] produces it.
+    pub line: String,
+    /// The directive's (trimmed) identifiers.
+    #[serde(flatten)]
+    pub target: DoneTargetJson,
+}
+
+/// Builds the [`DoneLineJson`] for a directive.
+///
+/// The `line` comes from [`format_done_directive`] and the identifiers are
+/// copied, trimmed, from the directive itself — the line is never re-parsed —
+/// so the fields always agree with the line.
+///
+/// # Errors
+///
+/// Returns the same [`FormatDoneError`] that [`format_done_directive`] would
+/// for invalid identifiers.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::hook::{done_line_json, DoneDirective};
+///
+/// let json = done_line_json(&DoneDirective::Task { slug: " fix-bug ".to_string() }).unwrap();
+/// assert_eq!(
+///     serde_json::to_value(&json).unwrap(),
+///     serde_json::json!({"line": "Done: task/fix-bug", "kind": "task", "task": "fix-bug"})
+/// );
+/// ```
+pub fn done_line_json(directive: &DoneDirective) -> Result<DoneLineJson, FormatDoneError> {
+    let line = format_done_directive(directive)?;
+    let target = match directive {
+        DoneDirective::Phase { roadmap, phase } => DoneTargetJson::Phase {
+            roadmap: roadmap.trim().to_string(),
+            phase: phase.trim().to_string(),
+        },
+        DoneDirective::Task { slug } => DoneTargetJson::Task {
+            slug: slug.trim().to_string(),
+        },
+    };
+    Ok(DoneLineJson { line, target })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn done_line_json_phase_has_exact_trimmed_fields() {
+        let json = done_line_json(&DoneDirective::Phase {
+            roadmap: "  r  ".to_string(),
+            phase: " p ".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&json).unwrap(),
+            serde_json::json!({"line": "Done: r/p", "kind": "phase", "roadmap": "r", "phase": "p"})
+        );
+    }
+
+    #[test]
+    fn done_line_json_task_has_exact_trimmed_fields() {
+        let json = done_line_json(&DoneDirective::Task {
+            slug: " t ".to_string(),
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&json).unwrap(),
+            serde_json::json!({"line": "Done: task/t", "kind": "task", "task": "t"})
+        );
+    }
+
+    #[test]
+    fn done_line_json_propagates_format_errors() {
+        assert_eq!(
+            done_line_json(&DoneDirective::Task {
+                slug: " ".to_string()
+            }),
+            Err(FormatDoneError::EmptyIdentifier { field: "task" })
+        );
+    }
 
     #[test]
     fn empty_message() {
