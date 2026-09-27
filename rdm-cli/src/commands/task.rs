@@ -41,7 +41,7 @@ pub fn run(
             )
             .map_err(|e| anyhow::anyhow!("{e}"))?;
             let tags = rdm_core::tags::stamp_plan_review_tag(tags, plan_review && !no_plan_review);
-            commit_mutation(store, "failed to create task", |s| {
+            let doc = commit_mutation(store, "failed to create task", |s| {
                 rdm_core::ops::task::create_task(
                     s,
                     rdm_core::ops::task::CreateTask {
@@ -54,7 +54,16 @@ pub fn run(
                     },
                 )
             })?;
-            println!("Created task '{slug}' in project '{project}'");
+            match format {
+                OutputFormat::Json => {
+                    let j = json::task_to_json(&slug, &doc, None);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&j).context("failed to serialize task")?
+                    );
+                }
+                _ => println!("Created task '{slug}' in project '{project}'"),
+            }
         }
         TaskCommand::Show {
             slug,

@@ -1,0 +1,9 @@
+{
+  "slug": "fixture-created-task",
+  "project": "fixture-proj",
+  "title": "Fixture Created Task",
+  "status": "open",
+  "priority": "medium",
+  "created": "<DATE>",
+  "body": "Created by the golden capture."
+}

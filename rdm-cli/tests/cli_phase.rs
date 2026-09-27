@@ -226,6 +226,32 @@ fn conditional_estimate_applies_once_and_requires_unset_estimate() {
         .stderr(predicate::str::contains("conditional estimate refused"));
 }
 
+/// Without `--format`, `phase create` prints exactly the confirmation line.
+#[test]
+fn phase_create_human_output_is_exact() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "core",
+            "--title",
+            "Core Valuation",
+            "--roadmap",
+            "two-way",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout("Created phase 'phase-1-core' in roadmap 'two-way'\n");
+}
+
 #[test]
 fn phase_create_auto_number() {
     let dir = TempDir::new().unwrap();

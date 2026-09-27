@@ -1,4 +1,4 @@
-//! Builds the golden fixture and runs the 24-command `--format json`
+//! Builds the golden fixture and runs the 27-command `--format json`
 //! inventory against it.
 //!
 //! The fixture is [`SeededPlan`] plus a code repo, then, in this order: one
@@ -22,7 +22,7 @@ use crate::seeded_plan::{PROJECT, SeededPlan};
 use crate::workflow_support::Failure;
 
 /// Every captured golden, by file stem, in capture order.
-pub const NAMES: [&str; 24] = [
+pub const NAMES: [&str; 27] = [
     "plan-create",
     "info",
     "roadmap-list",
@@ -47,6 +47,9 @@ pub const NAMES: [&str; 24] = [
     "verify-resolve",
     "worktree-list",
     "worktree-current",
+    "roadmap-create",
+    "phase-create",
+    "task-create",
 ];
 
 /// One capture: the fixture it ran against (kept alive so its temp paths
@@ -286,6 +289,66 @@ pub fn capture() -> Result<Capture, Failure> {
             name.to_owned(),
             fixture.ok_in(&worktree, &["worktree", sub, "--format", "json"])?,
         );
+    }
+    let creates: [(&str, Vec<&str>); 3] = [
+        (
+            "roadmap-create",
+            vec![
+                "roadmap",
+                "create",
+                "fixture-created-roadmap",
+                "--title",
+                "Fixture Created Roadmap",
+                "--body",
+                "Created by the golden capture.",
+                "--no-edit",
+                "--project",
+                p,
+                "--format",
+                "json",
+            ],
+        ),
+        (
+            "phase-create",
+            vec![
+                "phase",
+                "create",
+                "created-phase",
+                "--number",
+                "1",
+                "--roadmap",
+                "fixture-created-roadmap",
+                "--title",
+                "Created Phase",
+                "--body",
+                "Created by the golden capture.",
+                "--no-edit",
+                "--project",
+                p,
+                "--format",
+                "json",
+            ],
+        ),
+        (
+            "task-create",
+            vec![
+                "task",
+                "create",
+                "fixture-created-task",
+                "--title",
+                "Fixture Created Task",
+                "--body",
+                "Created by the golden capture.",
+                "--no-edit",
+                "--project",
+                p,
+                "--format",
+                "json",
+            ],
+        ),
+    ];
+    for (name, args) in &creates {
+        raw.insert((*name).to_owned(), fixture.ok(args)?);
     }
     Ok(Capture { fixture, raw })
 }

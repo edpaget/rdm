@@ -73,6 +73,30 @@ fn create_task(dir: &TempDir, slug: &str, title: &str) {
         .success();
 }
 
+/// Without `--format`, `task create` prints exactly the confirmation line.
+#[test]
+fn task_create_human_output_is_exact() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "create",
+            "fix-bug",
+            "--title",
+            "Fix the bug",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout("Created task 'fix-bug' in project 'fbm'\n");
+}
+
 #[test]
 fn task_create_and_show() {
     let dir = TempDir::new().unwrap();

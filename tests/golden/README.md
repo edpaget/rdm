@@ -9,7 +9,7 @@ byte for byte on every `cargo nextest run`, so a change to rdm's JSON shape turn
 at the source instead of a silent contract break for anything consuming this
 CLI's `--format json` output (an editor plugin, a script, a REST client).
 
-## The 24 captured commands
+## The 27 captured commands
 
 Each command below is captured with `--format json` (or the bare form,
 noted) against a hermetic fixture plan repo built by
@@ -47,6 +47,9 @@ invocation of each.
 | `worktree-list.json` | `rdm worktree list --format json` (cwd-derived, no `--project`) |
 | `worktree-current.json` | `rdm worktree current --format json` (cwd-derived, run from inside the seeded worktree — from the bare code repo root it returns `null`) |
 | `plan-create.json` | `rdm plan create fixture-plan --implements task/fixture-task-open --format json --project <proj>` (the seeding call itself; `plan create --format json` prints the created plan) |
+| `roadmap-create.json` | `rdm roadmap create fixture-created-roadmap --title "Fixture Created Roadmap" --body … --no-edit --format json --project <proj>` (captured last, after every other command, so no other golden sees it; prints the created roadmap in the `roadmap show` shape, with `phases: []`) |
+| `phase-create.json` | `rdm phase create created-phase --number 1 --roadmap fixture-created-roadmap --title "Created Phase" --body … --no-edit --format json --project <proj>` (prints the created phase in the `phase show` shape, with its computed `stem` and `phase` number; prev/next, plans and `estimate_snapshot` are omitted) |
+| `task-create.json` | `rdm task create fixture-created-task --title "Fixture Created Task" --body … --no-edit --format json --project <proj>` (prints the created task in the `task show` shape; plans omitted) |
 | `plan-show.json` | `rdm plan show fixture-plan --format json --project <proj>` |
 | `plan-list.json` | `rdm plan list --format json --project <proj>` |
 | `verify-resolve.json` | `rdm verify resolve --format json --project <proj>` |

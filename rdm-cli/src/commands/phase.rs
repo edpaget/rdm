@@ -229,7 +229,16 @@ pub fn run(
                 )
             })?;
             let stem = doc.frontmatter.stem(&slug);
-            println!("Created phase '{stem}' in roadmap '{roadmap}'");
+            match format {
+                OutputFormat::Json => {
+                    let j = json::phase_to_json(&stem, &doc, &roadmap, None, None, None);
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&j).context("failed to serialize phase")?
+                    );
+                }
+                _ => println!("Created phase '{stem}' in roadmap '{roadmap}'"),
+            }
         }
         PhaseCommand::List { roadmap, project } => {
             let project = paths::resolve_project(project, repo_config)?;

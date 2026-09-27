@@ -25,6 +25,30 @@ fn init_with_project(dir: &TempDir) {
         .success();
 }
 
+/// Without `--format`, `roadmap create` prints exactly the confirmation line.
+#[test]
+fn roadmap_create_human_output_is_exact() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "two-way",
+            "--title",
+            "Two-Way Players",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success()
+        .stdout("Created roadmap 'two-way' in project 'fbm'\n");
+}
+
 #[test]
 fn roadmap_create_and_show() {
     let dir = TempDir::new().unwrap();
