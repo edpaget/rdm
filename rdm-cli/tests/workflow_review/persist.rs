@@ -1421,3 +1421,134 @@ fn change_target_ignores_a_span() {
         Ok(())
     });
 }
+
+#[test]
+fn finding_line_span_normalizes_or_rejects() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let cases = [
+            (json!({ "start_line": 3 }), json!({ "start": 3, "end": 3 })),
+            (
+                json!({ "start_line": 3, "end_line": null }),
+                json!({ "start": 3, "end": 3 }),
+            ),
+            (
+                json!({ "start_line": 2, "end_line": 4 }),
+                json!({ "start": 2, "end": 4 }),
+            ),
+            (
+                json!({ "start_line": 1, "end_line": 1 }),
+                json!({ "start": 1, "end": 1 }),
+            ),
+            (json!({ "start_line": 5, "end_line": 3 }), Value::Null),
+            (json!({ "start_line": 0 }), Value::Null),
+            (json!({ "start_line": -1 }), Value::Null),
+            (json!({ "start_line": 2.5 }), Value::Null),
+            (json!({ "start_line": "2" }), Value::Null),
+            (json!({ "start_line": 2, "end_line": 3.5 }), Value::Null),
+            (json!({ "start_line": 2, "end_line": "4" }), Value::Null),
+            (
+                json!({ "start_line": 9_007_199_254_740_992_u64 }),
+                Value::Null,
+            ),
+            (json!({ "end_line": 4 }), Value::Null),
+            (json!({ "quote": "q" }), Value::Null),
+            (Value::Null, Value::Null),
+        ];
+        for (finding, want) in cases {
+            let got = js.call("findingLineSpan", vec![finding.clone()])?;
+            check_eq!(got, want, "findingLineSpan({finding})");
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn persist_requests_anchor_is_target_aware() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let span = json!({ "start_line": 2, "end_line": 3 });
+        let bad_span = json!({ "start_line": 5, "end_line": 3 });
+        let quote = json!({ "quote": "shipped" });
+        let blank_quote = json!({ "quote": "   " });
+        let cases = [
+            (span.clone(), "task/x", true),
+            (span.clone(), "phase/r/phase-1-a", true),
+            (span, "change/abc123", false),
+            (bad_span.clone(), "task/x", false),
+            (quote.clone(), "task/x", true),
+            (quote, "change/abc123", true),
+            (blank_quote, "task/x", false),
+            (json!({}), "task/x", false),
+        ];
+        for (finding, target, want) in cases {
+            let got = js.call(
+                "persistRequestsAnchor",
+                vec![finding.clone(), json!(target)],
+            )?;
+            check_eq!(
+                got,
+                json!(want),
+                "persistRequestsAnchor({finding}, {target})"
+            );
+        }
+        Ok(())
+    });
+}
+
+#[test]
+fn plan_target_span_beats_quote() {
+    run_real(|lib| {
+        let mut js = Js::open(lib)?;
+        let cfg = json!({ "rdmBin": "/fake/bin/rdm", "project": "demo" });
+        let base = json!({ "id": "p1", "concern": "coherence", "severity": "blocking", "confidence": 90,
+                           "what_fails": "x" });
+        let mut span_only = base.clone();
+        span_only["start_line"] = json!(2);
+        span_only["end_line"] = json!(3);
+        let mut span_and_quote = span_only.clone();
+        span_and_quote["quote"] = json!("shipped");
+        let mut quote_only = base.clone();
+        quote_only["quote"] = json!("shipped");
+        let mut bad_span_and_quote = quote_only.clone();
+        bad_span_and_quote["start_line"] = json!(5);
+        bad_span_and_quote["end_line"] = json!(3);
+        let build = |js: &mut Js, f: &Value| {
+            js.call(
+                "persistReviewCommands",
+                vec![
+                    json!({ "mode": "plan", "outcome": "rework", "survivors": [f] }),
+                    json!("task/x"),
+                    cfg.clone(),
+                ],
+            )
+        };
+        let spanned = build(&mut js, &span_and_quote)?;
+        let text = spanned.to_string();
+        check!(
+            text.contains("--line") && text.contains("2-3"),
+            "a span-and-quote survivor emits --line 2-3: {text}"
+        );
+        check!(
+            !text.contains("--quote"),
+            "a span-and-quote survivor emits no --quote: {text}"
+        );
+        check_eq!(
+            spanned,
+            build(&mut js, &span_only)?,
+            "the quote changes nothing once a span is present"
+        );
+        let inverted = build(&mut js, &bad_span_and_quote)?;
+        let inverted_text = inverted.to_string();
+        check!(
+            inverted_text.contains("--quote") && !inverted_text.contains("--line"),
+            "an end<start span falls back to the quote: {inverted_text}"
+        );
+        check_eq!(
+            inverted,
+            build(&mut js, &quote_only)?,
+            "an invalid span persists exactly as the quote-only survivor"
+        );
+        Ok(())
+    });
+}
