@@ -216,9 +216,9 @@ The fallback chain keeps the single-file form valid for projects that don't spli
   asserting on the returned standards set, never on prompt text.
 - **Skills (prose).** The dispatch planner and implementer, `rdm-do`, the review and plan-review
   skills, and `rdm-roadmap` are directed to run `rdm standards list` for their stage and paths.
-  These directions ship in the templates and plugin tree and are verified by code review of the
-  template diff. There is no grep test over skill text, and no live dispatch serves as a test or an
-  acceptance criterion until a prompt-testing library is integrated.
+  These directions ship in the templates and plugin tree. Instructions in prose skills get no tests
+  or acceptance criteria: dogfooding exercises them, and later prompt testing will. A phase that edits
+  them is accepted on its deterministic code and its regenerated artifacts.
 - **`rdm agent-config --principles-file` is retired.** The fallback chain already resolves
   `docs/principles.md`, then `CLAUDE.md` / `AGENTS.md`; a project whose standards live elsewhere sets
   the standards location with `rdm config set`. agent-config stays a pure artifact emitter, and every
