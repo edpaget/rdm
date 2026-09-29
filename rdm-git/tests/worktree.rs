@@ -329,10 +329,14 @@ fn remove_force_clears_dirty_worktree() {
 fn remove_marker_disappears() {
     let repo = init_project_repo();
     let item = task_item();
-    worktree::add(repo.path(), &item, &item.branch_name(), None).unwrap();
+    let info = worktree::add(repo.path(), &item, &item.branch_name(), None).unwrap();
     assert_eq!(worktree::list(repo.path()).unwrap().len(), 1);
 
-    worktree::remove(repo.path(), "task/fix-bug", RemoveOptions::default()).unwrap();
+    let removed = worktree::remove(repo.path(), "task/fix-bug", RemoveOptions::default()).unwrap();
+    assert_eq!(removed.info.item, "task/fix-bug");
+    assert_eq!(removed.info.branch, "task/fix-bug");
+    assert!(removed.info.path.ends_with(info.path.file_name().unwrap()));
+    assert!(!removed.branch_deleted);
     assert!(worktree::list(repo.path()).unwrap().is_empty());
 }
 
@@ -368,7 +372,7 @@ fn remove_delete_branch_force_removes_unmerged() {
     git(&info.path, &["add", "."]);
     git(&info.path, &["commit", "-m", "feature work"]);
 
-    worktree::remove(
+    let removed = worktree::remove(
         repo.path(),
         "task/fix-bug",
         RemoveOptions {
@@ -377,6 +381,7 @@ fn remove_delete_branch_force_removes_unmerged() {
         },
     )
     .unwrap();
+    assert!(removed.branch_deleted);
     let out = git(repo.path(), &["branch", "--list", "task/fix-bug"]);
     assert!(out.stdout.is_empty(), "branch should be force-deleted");
 }

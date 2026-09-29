@@ -20,14 +20,14 @@
 ;; only looks up a cache keyed by the worktree root (the directory
 ;; holding `.git', found without running a process).  A root not yet in
 ;; the cache renders "" and schedules one fill on an idle timer.  A fill
-;; makes two asynchronous reads: `rdm worktree current' for the item,
-;; then the item's own `show --format json' for its status.  A checkout
+;; makes one asynchronous read, `rdm worktree current', whose reply
+;; carries the item and its status (or a roadmap's progress).  A checkout
 ;; that is not an rdm worktree is cached too, as "".  Every read runs
 ;; with `default-directory' bound to the entry's root, in a buffer that
 ;; belongs to it, so a refresh started from any buffer fills each entry
 ;; from its own worktree.
 ;;
-;; An entry is refreshed (both reads again) by `after-save-hook' and
+;; An entry is refreshed (the read again) by `after-save-hook' and
 ;; `magit-post-refresh-hook' for the current buffer's root, and by
 ;; `rdm-after-write-hook' for every cached rdm worktree, since a write
 ;; may come from a buffer outside the worktree.  A newer fill always wins
@@ -39,7 +39,6 @@
 (require 'seq)
 (require 'subr-x)
 (require 'rdm-core)
-(require 'rdm-view)
 (require 'rdm-worktree)
 
 (defvar magit-post-refresh-hook)
@@ -118,15 +117,21 @@ an idle timer."
 
 ;;;; Filling
 
-(defun rdm-modeline--label (id item data)
-  "The segment text for worktree item ID (ITEM as a plist) shown as DATA."
-  (let ((state (if (eq (plist-get item :kind) 'roadmap)
-                   (format "%d/%d" (or (plist-get data :done_phases) 0)
-                           (or (plist-get data :total_phases) 0))
-                 (or (plist-get data :status) "?"))))
+(defun rdm-modeline--id (current)
+  "The item string of CURRENT, a `worktree current' reply, or nil."
+  (rdm--nonempty (or (plist-get current :ref) (plist-get current :item))))
+
+(defun rdm-modeline--label (current)
+  "The segment text for CURRENT, a `worktree current' reply."
+  (let* ((id (rdm-modeline--id current))
+         (kind (plist-get current :kind))
+         (state (if (equal kind "roadmap")
+                    (format "%d/%d" (or (plist-get current :done_phases) 0)
+                            (or (plist-get current :total_phases) 0))
+                  (or (plist-get current :status) "?"))))
     (propertize (format "%s · %s" id state)
                 'face 'rdm-modeline
-                'help-echo (format "rdm worktree for %s %s" (plist-get item :kind) id))))
+                'help-echo (format "rdm worktree for %s %s" (or kind "item") id))))
 
 (defun rdm-modeline--store (root entry generation item label)
   "Store ITEM and LABEL in ROOT's ENTRY unless a newer fill than GENERATION ran."
@@ -169,16 +174,10 @@ Any error stores an empty label for ROOT's ENTRY at GENERATION."
     (rdm-modeline--read
      root entry generation 'worktree-current nil
      (lambda (current)
-       (let* ((id (plist-get current :item))
-              (item (rdm-item-parse-worktree-id id)))
-         (if (null item)
-             (rdm-modeline--store root entry generation nil "")
-           (let ((show (rdm-item-show-args item)))
-             (rdm-modeline--read
-              root entry generation (car show) (append (cdr show) '(:no-body t))
-              (lambda (data)
-                (rdm-modeline--store root entry generation id
-                                     (rdm-modeline--label id item data)))))))))))
+       (if-let* ((id (rdm-modeline--id current)))
+           (rdm-modeline--store root entry generation id
+                                (rdm-modeline--label current))
+         (rdm-modeline--store root entry generation nil ""))))))
 
 (defun rdm-modeline--fill-cold (root)
   "Fill ROOT's entry unless a fill has already started."

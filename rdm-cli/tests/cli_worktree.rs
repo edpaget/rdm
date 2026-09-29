@@ -724,3 +724,158 @@ fn add_unborn_invoking_branch_falls_back_to_head_default() {
         "unborn invoking branch should fall back to the prior HEAD default"
     );
 }
+
+/// Runs `rdm worktree <args> --format json` rooted at `plan` in `cwd` and
+/// parses its stdout.
+fn worktree_json(plan: &TempDir, cwd: &Path, args: &[&str]) -> serde_json::Value {
+    let assert = worktree_cmd_at(plan, cwd)
+        .args(args)
+        .args(["--format", "json"])
+        .assert()
+        .success();
+    serde_json::from_slice(&assert.get_output().stdout).expect("valid json")
+}
+
+#[test]
+fn json_carries_structured_item_fields() {
+    let plan = init_plan_repo();
+    let project = init_project_repo();
+
+    let task = worktree_json(
+        &plan,
+        project.path(),
+        &["add", "task/fix-bug", "--project", "demo"],
+    );
+    assert_eq!(task["kind"], "task");
+    assert_eq!(task["slug"], "fix-bug");
+    assert_eq!(task["ref"], "task/fix-bug");
+    assert_eq!(task["review_ref"], "task/fix-bug");
+    assert_eq!(task["item"], "task/fix-bug");
+    assert_eq!(task["created"], true);
+
+    let roadmap = worktree_json(
+        &plan,
+        project.path(),
+        &["add", "my-roadmap", "--project", "demo"],
+    );
+    assert_eq!(roadmap["kind"], "roadmap");
+    assert_eq!(roadmap["roadmap"], "my-roadmap");
+    assert_eq!(roadmap["ref"], "my-roadmap");
+    assert_eq!(roadmap["review_ref"], "roadmap/my-roadmap");
+
+    let phase = worktree_json(
+        &plan,
+        project.path(),
+        &["add", "my-roadmap/1", "--project", "demo"],
+    );
+    assert_eq!(phase["kind"], "phase");
+    assert_eq!(phase["roadmap"], "my-roadmap");
+    assert_eq!(phase["stem"], "phase-1-foo");
+    assert_eq!(phase["ref"], "my-roadmap/phase-1-foo");
+    assert_eq!(phase["review_ref"], "phase/my-roadmap/phase-1-foo");
+
+    let list = worktree_json(&plan, project.path(), &["list"]);
+    let list = list.as_array().expect("list is an array");
+    assert_eq!(list.len(), 3);
+    for entry in list {
+        assert_eq!(entry["ref"], entry["item"]);
+        assert!(entry["kind"].is_string());
+        assert_eq!(entry["dirty"], false);
+    }
+
+    let wt = PathBuf::from(task["path"].as_str().unwrap());
+    let current = worktree_json(&plan, &wt, &["current"]);
+    assert_eq!(current["kind"], "task");
+    assert_eq!(current["slug"], "fix-bug");
+    assert_eq!(current["ref"], "task/fix-bug");
+    assert_eq!(current["review_ref"], "task/fix-bug");
+    assert_eq!(current["rdm_managed"], true);
+}
+
+#[test]
+fn current_reports_status_with_a_project() {
+    let plan = init_plan_repo();
+    let project = init_project_repo();
+
+    let task = worktree_json(
+        &plan,
+        project.path(),
+        &["add", "task/fix-bug", "--project", "demo"],
+    );
+    let wt = PathBuf::from(task["path"].as_str().unwrap());
+    let current = worktree_json(&plan, &wt, &["current", "--project", "demo"]);
+    assert_eq!(current["status"], "open");
+    assert!(current.get("total_phases").is_none());
+
+    let roadmap = worktree_json(
+        &plan,
+        project.path(),
+        &["add", "my-roadmap", "--project", "demo"],
+    );
+    let wt = PathBuf::from(roadmap["path"].as_str().unwrap());
+    let current = worktree_json(&plan, &wt, &["current", "--project", "demo"]);
+    assert_eq!(current["total_phases"], 1);
+    assert_eq!(current["done_phases"], 0);
+    assert_eq!(current["progress"], "0/1 done");
+    assert!(current.get("status").is_none());
+}
+
+#[test]
+fn current_without_a_project_omits_status() {
+    let plan = init_plan_repo();
+    let project = init_project_repo();
+
+    let task = worktree_json(
+        &plan,
+        project.path(),
+        &["add", "task/fix-bug", "--project", "demo"],
+    );
+    let wt = PathBuf::from(task["path"].as_str().unwrap());
+    let current = worktree_json(&plan, &wt, &["current"]);
+    assert_eq!(current["ref"], "task/fix-bug");
+    assert!(current.get("status").is_none());
+    assert!(current.get("progress").is_none());
+}
+
+#[test]
+fn remove_json_prints_the_removed_worktree() {
+    let plan = init_plan_repo();
+    let project = init_project_repo();
+
+    let added = worktree_json(
+        &plan,
+        project.path(),
+        &["add", "task/fix-bug", "--project", "demo"],
+    );
+    let removed = worktree_json(
+        &plan,
+        project.path(),
+        &[
+            "remove",
+            "task/fix-bug",
+            "--delete-branch",
+            "--project",
+            "demo",
+        ],
+    );
+    assert_eq!(removed["item"], "task/fix-bug");
+    assert_eq!(removed["ref"], "task/fix-bug");
+    assert_eq!(removed["kind"], "task");
+    assert_eq!(removed["branch"], "task/fix-bug");
+    assert_eq!(removed["branch_deleted"], true);
+    let removed_path = PathBuf::from(removed["path"].as_str().unwrap());
+    let added_path = PathBuf::from(added["path"].as_str().unwrap());
+    assert_eq!(removed_path.file_name(), added_path.file_name());
+    assert!(!added_path.exists());
+
+    // Text output is unchanged.
+    worktree_cmd(&plan, &project)
+        .args(["add", "task/fix-bug", "--project", "demo"])
+        .assert()
+        .success();
+    worktree_cmd(&plan, &project)
+        .args(["remove", "task/fix-bug", "--project", "demo"])
+        .assert()
+        .success()
+        .stdout("Removed worktree for task/fix-bug\n");
+}

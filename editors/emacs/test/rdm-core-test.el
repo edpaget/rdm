@@ -272,6 +272,13 @@ the root and project are only passed to rdm and stay safe."
                  '(("discard" "--force"))))
   (should (equal (rdm-argv 'describe "task" :project "p")
                  '(("describe" "task" "--format" "json"))))
+  ;; `worktree remove' prints the removed worktree as JSON; `worktree
+  ;; current' takes the project so its reply carries the item's status.
+  (should (equal (rdm-argv 'worktree-remove "/wt/x" :project "p")
+                 '(("worktree" "remove" "/wt/x" "--project" "p"
+                    "--format" "json"))))
+  (should (equal (rdm-argv 'worktree-current :project "p")
+                 '(("worktree" "current" "--project" "p" "--format" "json"))))
   ;; `hook done-line' prints plain text and rejects --project.
   (should (equal (rdm-argv 'done-line :task "t" :project "p")
                  '(("hook" "done-line" "--task=t"))))

@@ -1,8 +1,12 @@
 [
   {
-    "branch": "task/fixture-task-open",
-    "dirty": false,
     "item": "task/fixture-task-open",
-    "path": "<TMPDIR>/code__worktrees/task-fixture-task-open"
+    "branch": "task/fixture-task-open",
+    "path": "<TMPDIR>/code__worktrees/task-fixture-task-open",
+    "kind": "task",
+    "slug": "fixture-task-open",
+    "ref": "task/fixture-task-open",
+    "review_ref": "task/fixture-task-open",
+    "dirty": false
   }
 ]

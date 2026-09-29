@@ -4,7 +4,7 @@
 
 ;; The segment against a mocked runner (rdm-runner-mock.el), counting
 ;; every `rdm-run' call: rendering never runs rdm, a cold root schedules
-;; one fill, each invalidation hook re-runs both reads once, and a
+;; one fill, each invalidation hook re-runs the one read once, and a
 ;; refresh started from an unrelated buffer fills each entry from its own
 ;; root.  `rdm-after-write-hook' is checked against the write surface's
 ;; logging stub.  The `real-' test creates a worktree with
@@ -63,21 +63,24 @@ first; timers are captured, never run."
 
 (defun rdm-modeline-test--replies (table)
   "A reply function: `worktree current' from TABLE, keyed by directory.
-TABLE maps a root to (CURRENT . SHOW): the parsed `worktree current'
-reply (only `branch', `item', `path', `rdm_managed', never `status')
-and the parsed `show' reply of its item."
+TABLE maps a root to its parsed `worktree current' reply (nil for a
+checkout that is no rdm worktree).  Any other read is an error: the
+reply carries everything the segment shows."
   (lambda (argv dir)
-    (let ((entry (cdr (assoc (rdm-worktree--key dir) table))))
-      (pcase argv
-        (`("worktree" "current" . ,_) (car entry))
-        (`(,(or "phase" "task" "roadmap") "show" . ,_)
-         (should (member "--no-body" argv))
-         (cdr entry))
-        (_ (error "Unexpected argv %S" argv))))))
+    (pcase argv
+      (`("worktree" "current" . ,_) (cdr (assoc (rdm-worktree--key dir) table)))
+      (_ (error "Unexpected argv %S" argv)))))
 
-(defun rdm-modeline-test--current (item root)
-  "A parsed `worktree current' reply for ITEM at ROOT: no `status'."
-  (list :branch item :item item :path root :rdm_managed t))
+(defun rdm-modeline-test--current (item root kind &rest state)
+  "A parsed `worktree current' reply for ITEM (of KIND) at ROOT.
+STATE is the item's `:status', or a roadmap's progress fields."
+  (append (list :item item :branch item :path root :kind kind :ref item
+                :rdm_managed t)
+          state))
+
+(defconst rdm-modeline-test--argv
+  '("worktree" "current" "--project" "p" "--format" "json")
+  "The one read a fill makes.")
 
 (defun rdm-modeline-test--warm (root)
   "Render ROOT cold, then run the fill it scheduled."
@@ -87,28 +90,26 @@ and the parsed `show' reply of its item."
 ;;;; Rendering
 
 (ert-deftest rdm-modeline/renders-item-status ()
-  "A phase and a task render their `show' status; a roadmap renders rdm's
-done/total phase counts (a wont-fix phase counts as done); a checkout
-that is no rdm worktree renders nothing."
+  "A phase and a task render the status `worktree current' reports; a
+roadmap renders rdm's done/total phase counts (a wont-fix phase counts
+as done); a checkout that is no rdm worktree renders nothing.  Each
+fill is one `worktree current' read."
   (let* ((phase (rdm-modeline-test--root))
          (task (rdm-modeline-test--root))
          (roadmap (rdm-modeline-test--root))
          (plain (rdm-modeline-test--root))
          (table
-          (list (cons phase (cons (rdm-modeline-test--current "r1/phase-2-two" phase)
-                                  (list :stem "phase-2-two" :status "in-progress")))
-                (cons task (cons (rdm-modeline-test--current "task/t1" task)
-                                 (list :slug "t1" :status "needs-review")))
-                (cons roadmap
-                      (cons (rdm-modeline-test--current "r1" roadmap)
-                            ;; rdm's own progress counts the wont-fix phase
-                            ;; as done; the segment shows it, counting nothing.
-                            (list :slug "r1" :total_phases 3 :done_phases 2
-                                  :progress "2/3 done"
-                                  :phases (vector (list :stem "a" :status "done")
-                                                  (list :stem "b" :status "wont-fix")
-                                                  (list :stem "c" :status "in-progress")))))
-                (cons plain (cons nil nil)))))
+          (list (cons phase (rdm-modeline-test--current
+                             "r1/phase-2-two" phase "phase"
+                             :roadmap "r1" :stem "phase-2-two" :status "in-progress"))
+                (cons task (rdm-modeline-test--current
+                            "task/t1" task "task" :slug "t1" :status "needs-review"))
+                ;; rdm's own progress counts the wont-fix phase as done;
+                ;; the segment shows it, counting nothing.
+                (cons roadmap (rdm-modeline-test--current
+                               "r1" roadmap "roadmap" :roadmap "r1"
+                               :total_phases 3 :done_phases 2 :progress "2/3 done"))
+                (cons plain nil))))
     (rdm-modeline-test--with-mode
       (rdm-mock-with-runner (rdm-modeline-test--replies table)
         (dolist (root (list phase task roadmap plain))
@@ -117,12 +118,8 @@ that is no rdm worktree renders nothing."
         (should (equal (rdm-modeline-test--render task) "task/t1 · needs-review"))
         (should (equal (rdm-modeline-test--render roadmap) "r1 · 2/3"))
         (should (equal (rdm-modeline-test--render plain) ""))
-        (should (member '("phase" "show" "phase-2-two" "--roadmap=r1" "--no-body"
-                          "--project" "p" "--format" "json")
-                        (rdm-mock-argvs calls)))
-        (should (member '("task" "show" "t1" "--no-body" "--project" "p"
-                          "--format" "json")
-                        (rdm-mock-argvs calls)))
+        (should (equal (rdm-mock-argvs calls)
+                       (make-list 4 rdm-modeline-test--argv)))
         ;; The nano wrapper is the same text.
         (with-temp-buffer
           (setq default-directory task)
@@ -131,10 +128,10 @@ that is no rdm worktree renders nothing."
 
 (ert-deftest rdm-modeline/cold-schedules-one-fill ()
   "Rendering a cold root runs nothing, returns \"\" and schedules one
-fill, however often it renders; the fill makes both reads."
+fill, however often it renders; the fill makes one read."
   (let* ((root (rdm-modeline-test--root))
-         (table (list (cons root (cons (rdm-modeline-test--current "task/t1" root)
-                                       (list :status "open"))))))
+         (table (list (cons root (rdm-modeline-test--current
+                                  "task/t1" root "task" :status "open")))))
     (rdm-modeline-test--with-mode
       (rdm-mock-with-runner (rdm-modeline-test--replies table)
         (should (equal (rdm-modeline-test--render root 5) ""))
@@ -142,35 +139,35 @@ fill, however often it renders; the fill makes both reads."
         (should-not contexts)
         (should (equal scheduled (list (list #'rdm-modeline--fill-cold root))))
         (apply (car (car scheduled)) (cdr (car scheduled)))
-        (should (equal (mapcar #'car (rdm-mock-argvs calls)) '("worktree" "task")))
+        (should (equal (rdm-mock-argvs calls) (list rdm-modeline-test--argv)))
         (should (equal (rdm-modeline-test--render root) "task/t1 · open"))))))
 
 (ert-deftest rdm-modeline/warm-runs-nothing ()
   "Rendering a warm root any number of times makes no runner call."
   (let* ((root (rdm-modeline-test--root))
-         (table (list (cons root (cons (rdm-modeline-test--current "task/t1" root)
-                                       (list :status "open"))))))
+         (table (list (cons root (rdm-modeline-test--current
+                                  "task/t1" root "task" :status "open")))))
     (rdm-modeline-test--with-mode
       (rdm-mock-with-runner (rdm-modeline-test--replies table)
         (rdm-modeline-test--warm root)
         (let ((before (length calls))
               (contexts-before (length contexts)))
-          (should (= before 2))
+          (should (= before 1))
           (should (equal (rdm-modeline-test--render root 20) "task/t1 · open"))
           (should (= (length calls) before))
           (should (= (length contexts) contexts-before)))))))
 
 (ert-deftest rdm-modeline/hooks-refresh-once ()
   "`after-save-hook', `magit-post-refresh-hook' and `rdm-after-write-hook'
-each re-run both reads exactly once; rendering afterwards runs nothing
+each re-run the one read exactly once; rendering afterwards runs nothing
 and shows the new status."
   (let* ((root (rdm-modeline-test--root))
          (status "open")
          (reply (lambda (argv _dir)
                   (pcase argv
                     (`("worktree" "current" . ,_)
-                     (rdm-modeline-test--current "task/t1" root))
-                    (`("task" "show" . ,_) (list :status status))
+                     (rdm-modeline-test--current "task/t1" root "task"
+                                                 :status status))
                     (_ (error "Unexpected argv %S" argv))))))
     (rdm-modeline-test--with-mode
       (rdm-mock-with-runner reply
@@ -183,10 +180,10 @@ and shows the new status."
           (with-temp-buffer
             (setq default-directory root)
             (funcall (cdr case)))
-          (should (equal (mapcar #'car (rdm-mock-argvs calls)) '("worktree" "task")))
+          (should (equal (rdm-mock-argvs calls) (list rdm-modeline-test--argv)))
           (should (equal (rdm-modeline-test--render root 10)
                          (format "task/t1 · %s" (car case))))
-          (should (= (length calls) 2)))))))
+          (should (= (length calls) 1)))))))
 
 (ert-deftest rdm-modeline/refresh-fills-each-root-from-itself ()
   "A write refresh run from an unrelated buffer (a plan-repo view whose
@@ -215,12 +212,11 @@ context, and each entry keeps its own item."
                                    (`("worktree" "current" . ,_)
                                     (pcase (rdm-worktree--key directory)
                                       ((pred (equal a))
-                                       (rdm-modeline-test--current "task/ta" a))
+                                       (rdm-modeline-test--current
+                                        "task/ta" a "task" :status "open"))
                                       ((pred (equal b))
-                                       (rdm-modeline-test--current "r1/phase-1-x" b))))
-                                   (`("task" "show" "ta" . ,_) (list :status "open"))
-                                   (`("phase" "show" "phase-1-x" . ,_)
-                                    (list :status "blocked"))
+                                       (rdm-modeline-test--current
+                                        "r1/phase-1-x" b "phase" :status "blocked"))))
                                    (_ (error "Unexpected argv %S" argv))))
                         nil)))))
           (rdm-modeline-mode 1)
@@ -236,20 +232,15 @@ context, and each entry keeps its own item."
                   (run-hooks 'rdm-after-write-hook))
                 (let ((reads (seq-remove (lambda (c) (equal (car (car c)) "info"))
                                          calls)))
-                  (should (= (length reads) 4))
+                  (should (= (length reads) 2))
                   (dolist (c reads)
-                    (should (member (nth 1 c) (list a b)))
+                    (should (equal (seq-take (car c) 2) '("worktree" "current")))
                     (should (member (concat "RDM_ROOT=" (expand-file-name plan))
                                     (nth 2 c)))
-                    (unless (equal (cadr (car c)) "current")
-                      (should (member "p" (car c)))
-                      (should-not (member "other" (car c)))))
-                  (should (seq-find (lambda (c) (and (equal (car (car c)) "task")
-                                                     (equal (nth 1 c) a)))
-                                    reads))
-                  (should (seq-find (lambda (c) (and (equal (car (car c)) "phase")
-                                                     (equal (nth 1 c) b)))
-                                    reads)))
+                    (should (member "p" (car c)))
+                    (should-not (member "other" (car c))))
+                  (should (equal (sort (mapcar (lambda (c) (nth 1 c)) reads) #'string<)
+                                 (sort (list a b) #'string<))))
                 (should (equal (rdm-modeline-test--render a) "task/ta · open"))
                 (should (equal (rdm-modeline-test--render b) "r1/phase-1-x · blocked")))
             (rdm-modeline-mode -1)))))))
@@ -266,18 +257,16 @@ context, and each entry keeps its own item."
       (rdm-mock-with-runner
           (lambda (argv _dir)
             (pcase argv
-              (`("worktree" "current" . ,_) (rdm-modeline-test--current "task/t1" root))
-              (`("task" "show" . ,_) (list :status status))))
+              (`("worktree" "current" . ,_)
+               (rdm-modeline-test--current "task/t1" root "task" :status status))))
         (setq rdm-mock-defer t)
         (rdm-modeline-test--render root)
-        (rdm-modeline--fill-cold root)      ; the old fill: current queued
-        (rdm-mock-deliver)                  ; its show is queued, answering "old"
+        (rdm-modeline--fill-cold root)      ; the old fill: "old" queued
         (setq status "new")
-        (rdm-modeline-refresh-root root)    ; the new fill: current queued
-        (should (rdm-mock-deliver-newest))  ; its show is queued, answering "new"
+        (rdm-modeline-refresh-root root)    ; the new fill: "new" queued
         (should (rdm-mock-deliver-newest))  ; the new label is stored
         (should (equal (rdm-modeline-test--render root) "task/t1 · new"))
-        (should (rdm-mock-deliver-newest))  ; the old fill's show, last
+        (should (rdm-mock-deliver-newest))  ; the old fill's reply, last
         (should-not rdm-mock--queue)
         (should (equal (rdm-modeline-test--render root) "task/t1 · new"))))))
 
@@ -288,13 +277,12 @@ context, and each entry keeps its own item."
       (rdm-mock-with-runner
           (lambda (argv _dir)
             (pcase argv
-              (`("worktree" "current" . ,_) (rdm-modeline-test--current "task/t1" root))
-              (`("task" "show" . ,_) (list :status "open"))))
+              (`("worktree" "current" . ,_)
+               (rdm-modeline-test--current "task/t1" root "task" :status "open"))))
         (setq rdm-mock-defer t)
         (rdm-modeline-test--render root)
         (rdm-modeline--fill-cold root)      ; current queued
         (let ((forgotten (gethash root rdm-modeline--cache)))
-          (rdm-mock-deliver)                ; show queued
           (rdm-modeline-forget root)
           (while (rdm-mock-deliver-newest))
           (should-not (gethash root rdm-modeline--cache))
@@ -333,15 +321,15 @@ context, and each entry keeps its own item."
 (ert-deftest rdm-worktree/open-fills-modeline ()
   "Opening a worktree with the mode on fills its entry at once."
   (let* ((root (rdm-modeline-test--root))
-         (table (list (cons root (cons (rdm-modeline-test--current "task/t1" root)
-                                       (list :status "open")))))
+         (table (list (cons root (rdm-modeline-test--current
+                                  "task/t1" root "task" :status "open"))))
          (opened nil)
          (rdm-worktree-open-function (lambda (dir) (push dir opened))))
     (rdm-modeline-test--with-mode
       (rdm-mock-with-runner (rdm-modeline-test--replies table)
         (rdm-worktree-open root)
         (should (equal opened (list root)))
-        (should (equal (mapcar #'car (rdm-mock-argvs calls)) '("worktree" "task")))
+        (should (equal (rdm-mock-argvs calls) (list rdm-modeline-test--argv)))
         (should (equal (rdm-modeline-test--render root) "task/t1 · open"))
         (should-not scheduled)))))
 
@@ -366,22 +354,28 @@ EXTRA is called with the argv of a `worktree remove' or `prune'."
 
 (ert-deftest rdm-worktree/remove-forgets-modeline ()
   "Removing a worktree drops its modeline entry, even when the row's
-`:path' is a symbolic link to (not the truename of) the cached root."
+`:path' is a symbolic link to (not the truename of) the cached root, and
+returns rdm's JSON reply (the removed worktree)."
   (let* ((root (rdm-modeline-test--root))
          (other (rdm-modeline-test--root))
          (link (rdm-modeline-test--alias root))
-         (table (list (cons root (cons (rdm-modeline-test--current "task/t1" root)
-                                       (list :status "open")))
-                      (cons other (cons (rdm-modeline-test--current "task/t2" other)
-                                        (list :status "open"))))))
+         (table (list (cons root (rdm-modeline-test--current
+                                  "task/t1" root "task" :status "open"))
+                      (cons other (rdm-modeline-test--current
+                                   "task/t2" other "task" :status "open"))))
+         (removed (list :item "task/t1" :branch "task/t1" :path root
+                        :kind "task" :slug "t1" :ref "task/t1"
+                        :review_ref "task/t1" :branch_deleted :false)))
     (rdm-modeline-test--with-mode
       (rdm-mock-with-runner
-          (rdm-modeline-test--worktree-replies table (lambda (_) "Removed\n"))
+          (rdm-modeline-test--worktree-replies table (lambda (_) removed))
         (rdm-modeline-test--warm root)
         (rdm-modeline-test--warm other)
         (should (gethash root rdm-modeline--cache))
         (cl-letf (((symbol-function 'y-or-n-p) (lambda (_) t)))
-          (rdm-worktree-remove (list :item "task/t1" :path link :dirty :false)))
+          (should (equal (rdm-worktree-remove
+                          (list :item "task/t1" :path link :dirty :false))
+                         removed)))
         (should (seq-find (lambda (argv) (equal (seq-take argv 3)
                                                 (list "worktree" "remove" link)))
                           (rdm-mock-argvs calls)))
@@ -396,13 +390,13 @@ entry of one rdm skipped as dirty."
          (gone-kept-branch (rdm-modeline-test--root))
          (kept (rdm-modeline-test--root))
          (link (rdm-modeline-test--alias gone))
-         (table (list (cons gone (cons (rdm-modeline-test--current "task/t1" gone)
-                                       (list :status "done")))
+         (table (list (cons gone (rdm-modeline-test--current
+                                  "task/t1" gone "task" :status "done"))
                       (cons gone-kept-branch
-                            (cons (rdm-modeline-test--current "task/t3" gone-kept-branch)
-                                  (list :status "done")))
-                      (cons kept (cons (rdm-modeline-test--current "task/t2" kept)
-                                       (list :status "done")))))
+                            (rdm-modeline-test--current
+                             "task/t3" gone-kept-branch "task" :status "done"))
+                      (cons kept (rdm-modeline-test--current
+                                  "task/t2" kept "task" :status "done"))))
          (prune
           (lambda (argv)
             (let ((dry (member "--dry-run" argv)))
@@ -487,28 +481,40 @@ tags do not run the hook."
 
 (ert-deftest rdm-modeline/real-worktree-segment ()
   "A worktree `rdm-worktree-add' creates for a task in the fixture's code
-repo renders the task and its status in the segment."
+repo renders the task and its status in the segment, from one
+`worktree current' read."
   (rdm-test-with-real
     (skip-unless code)
     (let ((rdm-root root) (rdm-project project) (rdm-bin bin)
           (rdm-session "emacs-real-modeline-test")
           (default-directory (file-name-as-directory code))
-          (opened nil))
+          (opened nil)
+          (argvs nil)
+          (run (symbol-function 'rdm-run)))
       (rdm-modeline-test--with-mode
-        (let* ((rdm-worktree-open-function (lambda (dir) (push dir opened)))
-               (path (rdm-worktree-add '(:kind task :slug "fixture-task-open")))
-               (deadline (+ (float-time) 20))
-               text)
-          (should (equal opened (list path)))
-          (should (file-directory-p path))
-          (should (string-prefix-p (file-truename (expand-file-name
-                                                   ".." (file-name-as-directory code)))
-                                   (file-truename path)))
-          (while (and (string-empty-p (setq text (rdm-modeline-test--render path)))
-                      (< (float-time) deadline))
-            (accept-process-output nil 0.05))
-          (should (equal text "task/fixture-task-open · open"))
-          (should-not scheduled))))))
+        (cl-letf (((symbol-function 'rdm-run)
+                   (lambda (command &rest keys)
+                     (push (cdr command) argvs)
+                     (apply run command keys))))
+          (let* ((rdm-worktree-open-function (lambda (dir) (push dir opened)))
+                 (path (rdm-worktree-add '(:kind task :slug "fixture-task-open"
+                                                  :ref "task/fixture-task-open")))
+                 (deadline (+ (float-time) 20))
+                 text)
+            (should (equal opened (list path)))
+            (should (file-directory-p path))
+            (should (string-prefix-p (file-truename (expand-file-name
+                                                     ".." (file-name-as-directory code)))
+                                     (file-truename path)))
+            (while (and (string-empty-p (setq text (rdm-modeline-test--render path)))
+                        (< (float-time) deadline))
+              (accept-process-output nil 0.05))
+            (should (equal text "task/fixture-task-open · open"))
+            (should-not scheduled)
+            (should (= (seq-count (lambda (a) (equal (seq-take a 2) '("worktree" "current")))
+                                  argvs)
+                       1))
+            (should-not (seq-find (lambda (a) (member "show" a)) argvs))))))))
 
 (provide 'rdm-modeline-test)
 ;;; rdm-modeline-test.el ends here

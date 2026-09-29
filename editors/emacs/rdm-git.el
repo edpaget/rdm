@@ -68,20 +68,21 @@ offered."
                out))))
     (nreverse out)))
 
-(defun rdm-git-preselect (candidates worktree-item)
-  "Order CANDIDATES for WORKTREE-ITEM; return (CANDIDATES . DEFAULT).
-A phase or task item that is a candidate becomes DEFAULT.  A bare
-roadmap item moves the candidates whose item names that roadmap first;
-when there is exactly one it becomes DEFAULT."
-  (let ((worktree (rdm-item-parse-worktree-id worktree-item)))
+(defun rdm-git-preselect (candidates current)
+  "Order CANDIDATES for CURRENT, a `worktree current' reply or nil.
+Return (CANDIDATES . DEFAULT).  A phase or task item whose `:ref' is a
+candidate becomes DEFAULT.  A roadmap item moves the candidates whose
+item names that roadmap first; when there is exactly one it becomes
+DEFAULT."
+  (let ((ref (plist-get current :ref)))
     (cond
-     ((null worktree) (cons candidates nil))
-     ((member worktree-item candidates)
-      (cons candidates (car (member worktree-item candidates))))
-     ((eq (plist-get worktree :kind) 'roadmap)
+     ((null ref) (cons candidates nil))
+     ((member ref candidates)
+      (cons candidates (car (member ref candidates))))
+     ((equal (plist-get current :kind) "roadmap")
       (let* ((mine-p (lambda (c)
                        (equal (plist-get (rdm-item-from c) :roadmap)
-                              (plist-get worktree :roadmap))))
+                              (plist-get current :roadmap))))
              (mine (seq-filter mine-p candidates)))
         (cons (append mine (seq-remove mine-p candidates))
               (and (= (length mine) 1) (car mine)))))
@@ -164,7 +165,7 @@ item is the default.  Warns when not on the default branch."
          (default-directory (rdm-git--toplevel))
          (picked (rdm-git-preselect
                   (rdm-git-candidates)
-                  (plist-get (ignore-errors (rdm-worktree-item)) :item)))
+                  (ignore-errors (rdm-worktree-item))))
          (item (rdm-pick-read "Done: " (car picked) (cdr picked) t))
          (line (string-trim-right
                 (apply #'rdm-call-sync 'done-line (rdm-item-done-line-args item))

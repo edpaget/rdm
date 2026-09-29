@@ -9,7 +9,7 @@ byte for byte on every `cargo nextest run`, so a change to rdm's JSON shape turn
 at the source instead of a silent contract break for anything consuming this
 CLI's `--format json` output (an editor plugin, a script, a REST client).
 
-## The 31 captured commands
+## The 32 captured commands
 
 Each command below is captured with `--format json` (or the bare form,
 noted) against a hermetic fixture plan repo built by
@@ -45,7 +45,8 @@ invocation of each.
 | `review-show.json` | `rdm review show <id> --format json --project <proj>` |
 | `review-requests.json` | `rdm review requests --format json --project <proj>` |
 | `worktree-list.json` | `rdm worktree list --format json` (cwd-derived, no `--project`) |
-| `worktree-current.json` | `rdm worktree current --format json` (cwd-derived, run from inside the seeded worktree — from the bare code repo root it returns `null`) |
+| `worktree-current.json` | `rdm worktree current --format json --project <proj>` (cwd-derived, run from inside the seeded worktree — from the bare code repo root it returns `null`; `--project` fills the item's `status`) |
+| `worktree-remove.json` | `rdm worktree remove task/fixture-task-open --format json --project <proj>` (run from the code repo after `worktree list`/`current`; prints the removed worktree) |
 | `hook-done-line.json` | `rdm hook done-line --roadmap sample-roadmap --phase phase-1-seed-one --format json` (no `--project`; JSON is emitted only on an explicit `--format json` — `RDM_FORMAT` and `default_format` never change the bare trailer it prints otherwise) |
 | `plan-create.json` | `rdm plan create fixture-plan --implements task/fixture-task-open --format json --project <proj>` (the seeding call itself; `plan create --format json` prints the created plan) |
 | `roadmap-create.json` | `rdm roadmap create fixture-created-roadmap --title "Fixture Created Roadmap" --body … --no-edit --format json --project <proj>` (captured after every read command, so no read golden sees it; prints the created roadmap in the `roadmap show` shape, with `phases: []`) |
@@ -79,7 +80,7 @@ different ones, on the same day or months apart — are byte-identical:
    `mktemp` form and its OS-canonicalized form (macOS resolves
    `/var/folders/...` to `/private/var/folders/...` in some of rdm's own
    printed output — `rdm info`'s `root` field prints the raw form while
-   `rdm worktree add/list/current` print the canonicalized form of the
+   `rdm worktree add/list/current/remove` print the canonicalized form of the
    *same* directory — so both forms are redacted, longest-first) →
    `<TMPDIR>`.
 2. **`created`/`completed`/`updated` NaiveDate fields** (roadmap/phase/task/

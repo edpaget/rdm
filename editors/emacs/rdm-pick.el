@@ -219,9 +219,7 @@ configuration error is a `user-error' before any minibuffer opens."
 
 (defun rdm-pick--worktree-roadmap ()
   "The roadmap of the rdm worktree holding `default-directory', or nil."
-  (plist-get (rdm-item-parse-worktree-id
-              (plist-get (ignore-errors (rdm-worktree-item)) :item))
-             :roadmap))
+  (plist-get (ignore-errors (rdm-worktree-item)) :roadmap))
 
 ;;;###autoload
 (defun rdm-next (roadmap)

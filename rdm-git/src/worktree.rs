@@ -265,6 +265,25 @@ pub struct WorktreeInfo {
     pub dirty: bool,
 }
 
+impl WorktreeInfo {
+    /// Parses the stored [`item`](WorktreeInfo::item) string, or `None` when
+    /// it is not a valid item reference (a corrupt marker).
+    #[must_use]
+    pub fn item_ref(&self) -> Option<ItemRef> {
+        ItemRef::parse(&self.item).ok()
+    }
+}
+
+/// The outcome of [`remove`]: the worktree that was removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Removed {
+    /// The removed worktree, as [`list`] reported it before removal.
+    pub info: WorktreeInfo,
+    /// Whether the worktree's branch was deleted
+    /// ([`RemoveOptions::delete_branch`]).
+    pub branch_deleted: bool,
+}
+
 /// The plan-item context of the current checkout, as reported by [`current`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CurrentWorktree {
@@ -280,6 +299,15 @@ pub struct CurrentWorktree {
     /// hand-made worktree, or the main checkout sitting on an item branch. In
     /// both cases the item *is* recognized; the flag only distinguishes how.
     pub rdm_managed: bool,
+}
+
+impl CurrentWorktree {
+    /// Parses the stored [`item`](CurrentWorktree::item) string, or `None`
+    /// when it is not a valid item reference (a corrupt marker).
+    #[must_use]
+    pub fn item_ref(&self) -> Option<ItemRef> {
+        ItemRef::parse(&self.item).ok()
+    }
 }
 
 /// Options for [`remove`].
@@ -422,7 +450,7 @@ pub fn prune(
                     delete_branch: opts.delete_branch,
                 },
             ) {
-                Ok(()) => PruneAction::Removed,
+                Ok(_) => PruneAction::Removed,
                 // The worktree WAS removed; only the unmerged-branch cleanup was
                 // declined. Report the partial success distinctly so counts stay
                 // accurate and the orphaned branch is visible.
@@ -733,7 +761,7 @@ pub fn current(cwd: &Path) -> Result<Option<CurrentWorktree>> {
 }
 
 /// Removes the rdm worktree identified by `target` (a canonical item ref or a
-/// path).
+/// path), returning the removed worktree.
 ///
 /// Refuses a dirty worktree unless `opts.force`. When `opts.delete_branch` is
 /// set, deletes the branch afterward (`git branch -d`, escalating to `-D` when
@@ -748,7 +776,7 @@ pub fn current(cwd: &Path) -> Result<Option<CurrentWorktree>> {
 /// `force` is not set, [`WorktreeError::Git`] on a git failure, or
 /// [`WorktreeError::NoSuchDirectory`] if `repo_root` does not exist (or is not a
 /// directory).
-pub fn remove(repo_root: &Path, target: &str, opts: RemoveOptions) -> Result<()> {
+pub fn remove(repo_root: &Path, target: &str, opts: RemoveOptions) -> Result<Removed> {
     let worktrees = list(repo_root)?;
     let target_path = Path::new(target);
     // Canonicalize the target once so a user-supplied path matches git's
@@ -799,7 +827,7 @@ pub fn remove(repo_root: &Path, target: &str, opts: RemoveOptions) -> Result<()>
 /// set, [`WorktreeError::UnmergedBranch`] if the branch is unmerged and `force`
 /// is not set (raised only *after* the worktree itself was successfully
 /// removed — a partial success), or [`WorktreeError::Git`] on a git failure.
-fn remove_info(repo_root: &Path, info: &WorktreeInfo, opts: RemoveOptions) -> Result<()> {
+fn remove_info(repo_root: &Path, info: &WorktreeInfo, opts: RemoveOptions) -> Result<Removed> {
     if is_dirty(&info.path) && !opts.force {
         return Err(WorktreeError::Dirty(info.path.clone()));
     }
@@ -829,7 +857,10 @@ fn remove_info(repo_root: &Path, info: &WorktreeInfo, opts: RemoveOptions) -> Re
         }
     }
 
-    Ok(())
+    Ok(Removed {
+        info: info.clone(),
+        branch_deleted: opts.delete_branch,
+    })
 }
 
 /// Resolves the private admin directory for the worktree at `wt_path`.

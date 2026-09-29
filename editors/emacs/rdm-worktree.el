@@ -22,10 +22,9 @@
 ;; its directory.  Setups that keep one tab per project dedupe there, so
 ;; opening a worktree that already has a tab switches to it.
 ;;
-;; `rdm-worktree-id' converts an item plist to the item string `rdm
-;; worktree' uses: `task/<slug>', `<roadmap>/<stem>' and a bare
-;; `<roadmap>' (the worktree a roadmap's phases share);
-;; `rdm-item-parse-worktree-id' (rdm-view.el) decodes one back.
+;; An item names its worktree by the `:ref' rdm reports for it:
+;; `task/<slug>', `<roadmap>/<stem>' or a bare `<roadmap>' (the worktree
+;; a roadmap's phases share).
 
 ;;; Code:
 
@@ -48,16 +47,6 @@ and tab setups built on project.el apply.  `find-file' opens a Dired
 buffer instead."
   :type 'function
   :group 'rdm)
-
-;;;; Item strings
-
-(defun rdm-worktree-id (item)
-  "The `rdm worktree' item string for ITEM, an item plist.
-A task is `task/<slug>'; a phase or roadmap is its `rdm-item-identifier'."
-  (pcase (plist-get item :kind)
-    ('task (concat "task/" (rdm-item-identifier item)))
-    ((or 'phase 'roadmap) (rdm-item-identifier item))
-    (kind (user-error "rdm: a %s has no worktree" kind))))
 
 ;;;; Opening
 
@@ -125,7 +114,7 @@ A row is a plist with `:item', `:branch', `:path' and `:dirty'."
     ("phase" (let ((roadmap (rdm-pick-read-roadmap)))
                (rdm-pick-read (format "Phase of %s: " roadmap)
                               (rdm-pick-phase-candidates roadmap))))
-    (_ (list :kind 'roadmap :roadmap (rdm-pick-read-roadmap)))))
+    (_ (rdm-pick-read "Roadmap: " (rdm-pick-roadmap-candidates)))))
 
 ;;;###autoload
 (defun rdm-worktree-add (item)
@@ -138,7 +127,10 @@ the current buffer's code repo."
                   (derived-mode-p 'rdm-view-mode)
                   (rdm-view-item-at-point))
              (rdm-worktree--read-item))))
-  (let* ((reply (rdm-call-sync 'worktree-add (rdm-worktree-id item)))
+  (let* ((ref (or (rdm--nonempty (plist-get item :ref))
+                  (user-error "rdm: a %s has no worktree"
+                              (or (plist-get item :kind) "item"))))
+         (reply (rdm-call-sync 'worktree-add ref))
          (path (plist-get reply :path)))
     (message "rdm: worktree for %s %s at %s" (plist-get reply :item)
              (if (eq (plist-get reply :created) t) "created" "reused")
@@ -156,7 +148,7 @@ the current buffer's code repo."
 (defun rdm-worktree-remove (row &optional arg)
   "Remove the worktree ROW (a `worktree list' row) after confirming.
 With prefix ARG, also delete its branch; with two, also `--force'.
-Returns rdm's output, or nil when declined."
+Returns rdm's reply (the removed worktree), or nil when declined."
   (interactive (list (rdm-worktree-read "Remove worktree: ") current-prefix-arg))
   (let ((path (plist-get row :path)))
     (when (y-or-n-p (format "Remove worktree %s%s? "
@@ -164,10 +156,13 @@ Returns rdm's output, or nil when declined."
                             (if (rdm-worktree--dirty-p row)
                                 " (it has uncommitted changes)"
                               "")))
-      (prog1 (apply #'rdm-call-sync 'worktree-remove path
-                    (rdm-worktree--flags arg))
+      (let ((reply (apply #'rdm-call-sync 'worktree-remove path
+                          (rdm-worktree--flags arg))))
         (rdm-worktree--forget path)
-        (message "rdm: removed worktree %s" (abbreviate-file-name path))))))
+        (message "rdm: removed worktree for %s at %s"
+                 (or (plist-get reply :item) "?")
+                 (abbreviate-file-name (or (plist-get reply :path) path)))
+        reply))))
 
 ;;;###autoload
 (defun rdm-worktree-prune (&optional arg)

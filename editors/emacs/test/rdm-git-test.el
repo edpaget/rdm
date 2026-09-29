@@ -58,6 +58,10 @@ the active items, so every phase and task in it is offered."
                                       "in-progress")))
          (rdm-git-test--node "t1" "task" "task/t1" "needs-review"))))
 
+(defun rdm-git-test--wt (kind ref &rest fields)
+  "A parsed `worktree current' reply for the KIND item REF, with FIELDS."
+  (append (list :item ref :kind kind :ref ref) fields))
+
 (defmacro rdm-git-test--mocked (worktree branch &rest body)
   "Run BODY with a mocked runner; `worktree current' replies WORKTREE.
 The current branch is BRANCH and the default branch \"main\".  Binds
@@ -110,7 +114,7 @@ candidate."
   "The exact done-line text lands after the body, before the comments."
   (should (equal (rdm-git-test--insert-into
                   (concat "feat: x\n\nBody text.\n\n" rdm-git-test--comments)
-                  (list :item "task/t1"))
+                  (rdm-git-test--wt "task" "task/t1" :slug "t1"))
                  (concat "feat: x\n\nBody text.\n\nDone: task/t1\n\n"
                          rdm-git-test--comments))))
 
@@ -119,13 +123,13 @@ candidate."
   (should (equal (rdm-git-test--insert-into
                   (concat "feat: x\n\nBody.\n\nRefs: #1\nCo-authored-by: A <a@b>\n\n"
                           rdm-git-test--comments)
-                  (list :item "r1/phase-2-two"))
+                  (rdm-git-test--wt "phase" "r1/phase-2-two" :roadmap "r1" :stem "phase-2-two"))
                  (concat "feat: x\n\nBody.\n\nRefs: #1\nCo-authored-by: A <a@b>\n"
                          "Done: r1/phase-2-two\n\n" rdm-git-test--comments))))
 
 (ert-deftest rdm-git/subject-is-not-a-trailer ()
   "A conventional subject alone is followed by a blank line."
-  (should (equal (rdm-git-test--insert-into "feat: x\n" (list :item "task/t1"))
+  (should (equal (rdm-git-test--insert-into "feat: x\n" (rdm-git-test--wt "task" "task/t1" :slug "t1"))
                  "feat: x\n\nDone: task/t1\n")))
 
 (ert-deftest rdm-git/empty-message-keeps-subject-line ()
@@ -134,7 +138,7 @@ candidate."
     (rdm-git-test-commit-mode)
     (insert "\n" rdm-git-test--comments)
     (goto-char (point-min))
-    (rdm-git-test--mocked (list :item "r1/phase-2-two") "main"
+    (rdm-git-test--mocked (rdm-git-test--wt "phase" "r1/phase-2-two" :roadmap "r1" :stem "phase-2-two") "main"
       (rdm-insert-done-line))
     (insert "fix: subject")
     (let ((lines (split-string (buffer-string) "\n")))
@@ -149,9 +153,12 @@ candidate."
 (ert-deftest rdm-git/preselect ()
   "`worktree current' drives the picker's default and order."
   (let ((all '("r0/phase-1-a" "r1/phase-2-two" "task/t1")))
-    (dolist (case `(((:item "r1/phase-2-two") ,all "r1/phase-2-two")
-                    ((:item "task/t1") ,all "task/t1")
-                    ((:item "r1") ("r1/phase-2-two" "r0/phase-1-a" "task/t1")
+    (dolist (case `(((:kind "phase" :roadmap "r1" :stem "phase-2-two"
+                            :ref "r1/phase-2-two")
+                     ,all "r1/phase-2-two")
+                    ((:kind "task" :slug "t1" :ref "task/t1") ,all "task/t1")
+                    ((:kind "roadmap" :roadmap "r1" :ref "r1")
+                     ("r1/phase-2-two" "r0/phase-1-a" "task/t1")
                      "r1/phase-2-two")
                     (nil ,all nil)))
       (with-temp-buffer
@@ -161,26 +168,35 @@ candidate."
           (should (equal (car offered) (nth 1 case)))
           (should (equal (cdr offered) (nth 2 case))))))))
 
-(defun rdm-git-test--register (ref)
-  "Register candidate REF for the item it names; return REF."
-  (substring-no-properties
-   (rdm-item-register ref (rdm-item-parse-worktree-id ref))))
+(defun rdm-git-test--register (ref item)
+  "Register candidate REF for ITEM, an item plist; return REF."
+  (substring-no-properties (rdm-item-register ref item)))
+
+(defun rdm-git-test--roadmap (roadmap)
+  "A `worktree current' reply for the ROADMAP worktree."
+  (rdm-git-test--wt "roadmap" roadmap :roadmap roadmap))
 
 (ert-deftest rdm-git/preselect-roadmap-order ()
   "A bare roadmap with several active phases: no default, order kept.
 The roadmap's candidates are the ones whose item names it."
   (let* ((rdm-item--lookup (make-hash-table :test #'equal))
-         (all (mapcar #'rdm-git-test--register
-                      '("r1/phase-2-two" "r0/phase-1-a" "r1/phase-3-three" "task/t1"))))
-    (should (equal (rdm-git-preselect all "r1")
+         (all (list (rdm-git-test--register
+                     "r1/phase-2-two" '(:kind phase :roadmap "r1" :stem "phase-2-two"))
+                    (rdm-git-test--register
+                     "r0/phase-1-a" '(:kind phase :roadmap "r0" :stem "phase-1-a"))
+                    (rdm-git-test--register
+                     "r1/phase-3-three" '(:kind phase :roadmap "r1" :stem "phase-3-three"))
+                    (rdm-git-test--register "task/t1" '(:kind task :slug "t1")))))
+    (should (equal (rdm-git-preselect all (rdm-git-test--roadmap "r1"))
                    '(("r1/phase-2-two" "r1/phase-3-three" "r0/phase-1-a" "task/t1"))))
-    (should (equal (rdm-git-preselect all "r0") (cons (cons "r0/phase-1-a" (remove "r0/phase-1-a" all)) "r0/phase-1-a")))
+    (should (equal (rdm-git-preselect all (rdm-git-test--roadmap "r0"))
+                   (cons (cons "r0/phase-1-a" (remove "r0/phase-1-a" all)) "r0/phase-1-a")))
     ;; A roadmap whose name prefixes another's owns none of its phases.
-    (should (equal (rdm-git-preselect all "r") (list all))))
+    (should (equal (rdm-git-preselect all (rdm-git-test--roadmap "r")) (list all))))
   (let ((md nil))
     (with-temp-buffer
       (rdm-git-test-commit-mode)
-      (rdm-git-test--mocked (list :item "r1") "main"
+      (rdm-git-test--mocked (rdm-git-test--roadmap "r1") "main"
         (cl-letf (((symbol-function 'completing-read)
                    (lambda (_p table &rest _)
                      (setq md (completion-metadata "" table nil))
@@ -194,14 +210,14 @@ The roadmap's candidates are the ones whose item names it."
   (with-temp-buffer
     (rdm-git-test-commit-mode)
     (insert "feat: x\n")
-    (rdm-git-test--mocked (list :item "task/t1") "feature"
+    (rdm-git-test--mocked (rdm-git-test--wt "task" "task/t1" :slug "t1") "feature"
       (rdm-insert-done-line)
       (should (= (length warnings) 1))
       (should (string-match-p "post-merge" (car warnings))))
     (should (string-match-p "^Done: task/t1$" (buffer-string))))
   (with-temp-buffer
     (rdm-git-test-commit-mode)
-    (rdm-git-test--mocked (list :item "task/t1") "main"
+    (rdm-git-test--mocked (rdm-git-test--wt "task" "task/t1" :slug "t1") "main"
       (rdm-insert-done-line)
       (should-not warnings))))
 

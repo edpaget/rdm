@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use rdm_core::json::WorktreeJson;
 use rdm_git::worktree::{
     self, PruneAction, PruneOptions, RemoveOptions, WorktreeError, WorktreeInfo,
 };
@@ -25,13 +26,21 @@ pub fn run(
             project,
         } => add(root, repo_config, format, &item, base.as_deref(), project),
         WorktreeCommand::List => list(format),
-        WorktreeCommand::Current => current(format),
+        WorktreeCommand::Current { project } => current(root, repo_config, format, project),
         WorktreeCommand::Remove {
             target,
             delete_branch,
             force,
             project,
-        } => remove(root, repo_config, &target, delete_branch, force, project),
+        } => remove(
+            root,
+            repo_config,
+            format,
+            &target,
+            delete_branch,
+            force,
+            project,
+        ),
         WorktreeCommand::Prune {
             project,
             delete_branch,
@@ -102,15 +111,11 @@ fn add(
 
     match format {
         OutputFormat::Json => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "item": info.item,
-                    "branch": info.branch,
-                    "path": info.path.display().to_string(),
-                    "created": info.created,
-                }))?
-            );
+            let json = WorktreeJson {
+                created: Some(info.created),
+                ..info_json(&info)
+            };
+            println!("{}", serde_json::to_string_pretty(&json)?);
         }
         _ => {
             println!("{}", info.path.display());
@@ -131,13 +136,9 @@ fn list(format: OutputFormat) -> Result<()> {
         OutputFormat::Json => {
             let arr: Vec<_> = worktrees
                 .iter()
-                .map(|w| {
-                    serde_json::json!({
-                        "item": w.item,
-                        "branch": w.branch,
-                        "path": w.path.display().to_string(),
-                        "dirty": w.dirty,
-                    })
+                .map(|w| WorktreeJson {
+                    dirty: Some(w.dirty),
+                    ..info_json(w)
                 })
                 .collect();
             println!("{}", serde_json::to_string_pretty(&arr)?);
@@ -157,21 +158,34 @@ fn list(format: OutputFormat) -> Result<()> {
     Ok(())
 }
 
-fn current(format: OutputFormat) -> Result<()> {
+fn current(
+    root: &Path,
+    repo_config: &rdm_core::config::Config,
+    format: OutputFormat,
+    project: Option<String>,
+) -> Result<()> {
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let current = worktree::current(&cwd).map_err(map_err)?;
 
     match format {
         OutputFormat::Json => {
-            let json = match &current {
-                Some(c) => serde_json::json!({
-                    "item": c.item,
-                    "branch": c.branch,
-                    "path": c.path.display().to_string(),
-                    "rdm_managed": c.rdm_managed,
-                }),
-                None => serde_json::Value::Null,
-            };
+            let json = current.as_ref().map(|c| {
+                let target = c.item_ref().map(|i| i.as_review_target());
+                // Best-effort: no project, no plan repo, or an unreadable
+                // item leaves the state out rather than failing the command.
+                let state = target.as_ref().and_then(|t| {
+                    let project = paths::resolve_project(project, repo_config).ok()?;
+                    let store = commands::make_store(root).ok()?;
+                    rdm_core::json::item_state_json(&store, &project, t)
+                        .ok()
+                        .flatten()
+                });
+                WorktreeJson {
+                    rdm_managed: Some(c.rdm_managed),
+                    state,
+                    ..WorktreeJson::new(&c.item, &c.branch, &c.path, target)
+                }
+            });
             println!("{}", serde_json::to_string_pretty(&json)?);
         }
         _ => match &current {
@@ -193,6 +207,7 @@ fn current(format: OutputFormat) -> Result<()> {
 fn remove(
     root: &Path,
     repo_config: &rdm_core::config::Config,
+    format: OutputFormat,
     target: &str,
     delete_branch: bool,
     force: bool,
@@ -203,7 +218,7 @@ fn remove(
     let resolved = worktree::resolve_target(&store, &project, target);
     let cwd = std::env::current_dir().context("cannot determine current directory")?;
     let repo = worktree::discover_project_repo(&cwd).map_err(map_err)?;
-    worktree::remove(
+    let removed = worktree::remove(
         &repo,
         &resolved,
         RemoveOptions {
@@ -212,7 +227,16 @@ fn remove(
         },
     )
     .map_err(map_err)?;
-    println!("Removed worktree for {target}");
+    match format {
+        OutputFormat::Json => {
+            let json = WorktreeJson {
+                branch_deleted: Some(removed.branch_deleted),
+                ..info_json(&removed.info)
+            };
+            println!("{}", serde_json::to_string_pretty(&json)?);
+        }
+        _ => println!("Removed worktree for {target}"),
+    }
     Ok(())
 }
 
@@ -333,6 +357,16 @@ fn action_str(action: &PruneAction) -> &'static str {
         PruneAction::RemovedBranchKept { .. } => "removed-branch-kept",
         PruneAction::Failed(_) => "failed",
     }
+}
+
+/// The common JSON fields of an rdm worktree.
+fn info_json(info: &WorktreeInfo) -> WorktreeJson {
+    WorktreeJson::new(
+        &info.item,
+        &info.branch,
+        &info.path,
+        info.item_ref().map(|i| i.as_review_target()),
+    )
 }
 
 fn format_table(worktrees: &[WorktreeInfo]) -> String {

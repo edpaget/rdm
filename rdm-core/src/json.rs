@@ -2096,6 +2096,189 @@ pub struct DiscardJson {
     pub changes: ChangesJson,
 }
 
+// ---------------------------------------------------------------------------
+// Worktree types
+// ---------------------------------------------------------------------------
+
+/// The structured identity of a roadmap, phase, or task: the target's own
+/// fields (`kind`, then `roadmap`/`stem`/`slug`) plus its `ref` and
+/// `review_ref` strings.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::json::ItemRefJson;
+/// use rdm_core::model::ReviewTarget;
+///
+/// let json = ItemRefJson::new(ReviewTarget::Phase {
+///     roadmap: "alpha".into(),
+///     stem: "phase-1-setup".into(),
+/// })
+/// .unwrap();
+/// let value = serde_json::to_value(&json).unwrap();
+/// assert_eq!(value["kind"], "phase");
+/// assert_eq!(value["roadmap"], "alpha");
+/// assert_eq!(value["stem"], "phase-1-setup");
+/// assert_eq!(value["ref"], "alpha/phase-1-setup");
+/// assert_eq!(value["review_ref"], "phase/alpha/phase-1-setup");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ItemRefJson {
+    /// The item, flattened into this object as `kind` plus its fields.
+    #[serde(flatten)]
+    pub target: ReviewTarget,
+    /// The item reference (`<roadmap>`, `<roadmap>/<stem>`, or
+    /// `task/<slug>`) — the grammar `rdm worktree` and `rdm hook done-line`
+    /// accept.
+    #[serde(rename = "ref")]
+    pub item_ref: String,
+    /// The review-target reference — the form `rdm review --on` accepts.
+    pub review_ref: String,
+}
+
+impl ItemRefJson {
+    /// Builds the block for a roadmap, phase, or task target; `None` for a
+    /// plan or change target, which is not an item.
+    #[must_use]
+    pub fn new(target: ReviewTarget) -> Option<Self> {
+        match target {
+            ReviewTarget::Plan { .. } | ReviewTarget::Change { .. } => None,
+            _ => {
+                let (item_ref, review_ref) = refs(&target);
+                Some(ItemRefJson {
+                    target,
+                    item_ref,
+                    review_ref,
+                })
+            }
+        }
+    }
+}
+
+/// The current state of a worktree's item, as `rdm worktree current`
+/// reports it: a phase's or task's `status`, or a roadmap's phase counts
+/// under the same rule `roadmap show` uses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum ItemStateJson {
+    /// A phase's status.
+    Phase {
+        /// Current status.
+        status: PhaseStatus,
+    },
+    /// A task's status.
+    Task {
+        /// Current status.
+        status: TaskStatus,
+    },
+    /// A roadmap's progress.
+    Roadmap {
+        /// Total number of phases.
+        total_phases: usize,
+        /// Number of terminal (`done` or `wont-fix`) phases.
+        done_phases: usize,
+        /// Progress as a human-readable string (e.g. "2/5 done").
+        progress: String,
+    },
+}
+
+/// Loads the state of the roadmap, phase, or task `target` names in
+/// `project`; `Ok(None)` for a plan or change target.
+///
+/// # Errors
+///
+/// Returns the load error when the item does not exist or cannot be read.
+pub fn item_state_json(
+    store: &impl crate::store::Store,
+    project: &str,
+    target: &ReviewTarget,
+) -> crate::error::Result<Option<ItemStateJson>> {
+    Ok(match target {
+        ReviewTarget::Phase { roadmap, stem } => Some(ItemStateJson::Phase {
+            status: crate::io::load_phase(store, project, roadmap, stem)?
+                .frontmatter
+                .status,
+        }),
+        ReviewTarget::Task { slug } => Some(ItemStateJson::Task {
+            status: crate::io::load_task(store, project, slug)?
+                .frontmatter
+                .status,
+        }),
+        ReviewTarget::Roadmap { roadmap } => {
+            let phases = crate::ops::phase::list_phases(store, project, roadmap)?;
+            let progress = PhaseProgress::of(&phases);
+            Some(ItemStateJson::Roadmap {
+                total_phases: progress.total,
+                done_phases: progress.done,
+                progress: progress.label,
+            })
+        }
+        ReviewTarget::Plan { .. } | ReviewTarget::Change { .. } => None,
+    })
+}
+
+/// One rdm worktree, as `rdm worktree add`/`list`/`current`/`remove`
+/// report it.
+///
+/// Every object carries `item`, `branch` and `path`, plus the item's
+/// structured identity ([`ItemRefJson`]) whenever the stored `item` string
+/// parses. Each command then sets its own flag: `created` (`add`), `dirty`
+/// (`list`), `rdm_managed` and the optional item `state` (`current`), or
+/// `branch_deleted` (`remove`). Unset fields are omitted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorktreeJson {
+    /// The item string stored for the worktree (equals `ref` when it parses).
+    pub item: String,
+    /// The branch checked out in the worktree.
+    pub branch: String,
+    /// The worktree's absolute path.
+    pub path: String,
+    /// The item's structured identity, absent when `item` does not parse.
+    #[serde(flatten)]
+    pub item_ref: Option<ItemRefJson>,
+    /// `add`: whether the worktree was created (`false` when it existed).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created: Option<bool>,
+    /// `list`: whether the worktree has uncommitted changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dirty: Option<bool>,
+    /// `current`: whether an rdm marker identified the worktree (vs. the
+    /// branch name alone).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rdm_managed: Option<bool>,
+    /// `remove`: whether `--delete-branch` deleted the branch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch_deleted: Option<bool>,
+    /// `current`: the item's status or roadmap progress, when it could be
+    /// loaded.
+    #[serde(flatten)]
+    pub state: Option<ItemStateJson>,
+}
+
+impl WorktreeJson {
+    /// Builds the common fields; `target` is the parsed `item` string, if it
+    /// parsed. Every command-specific field starts unset.
+    #[must_use]
+    pub fn new(
+        item: &str,
+        branch: &str,
+        path: &std::path::Path,
+        target: Option<ReviewTarget>,
+    ) -> Self {
+        WorktreeJson {
+            item: item.to_string(),
+            branch: branch.to_string(),
+            path: path.display().to_string(),
+            item_ref: target.and_then(ItemRefJson::new),
+            created: None,
+            dirty: None,
+            rdm_managed: None,
+            branch_deleted: None,
+            state: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3255,5 +3438,188 @@ mod tests {
         assert_eq!(v["units"][0]["outcome"], "reviewed");
         assert_eq!(v["units"][1]["complete"], false);
         assert!(v["units"][1].get("ended").is_none());
+    }
+
+    #[test]
+    fn item_ref_json_serializes_roadmap_phase_and_task() {
+        let v = serde_json::to_value(
+            ItemRefJson::new(ReviewTarget::Roadmap {
+                roadmap: "alpha".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "roadmap",
+                "roadmap": "alpha",
+                "ref": "alpha",
+                "review_ref": "roadmap/alpha",
+            })
+        );
+        let v = serde_json::to_value(
+            ItemRefJson::new(ReviewTarget::Phase {
+                roadmap: "alpha".into(),
+                stem: "phase-1-setup".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "phase",
+                "roadmap": "alpha",
+                "stem": "phase-1-setup",
+                "ref": "alpha/phase-1-setup",
+                "review_ref": "phase/alpha/phase-1-setup",
+            })
+        );
+        let v = serde_json::to_value(
+            ItemRefJson::new(ReviewTarget::Task { slug: "fix".into() }).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "kind": "task",
+                "slug": "fix",
+                "ref": "task/fix",
+                "review_ref": "task/fix",
+            })
+        );
+    }
+
+    #[test]
+    fn item_ref_json_is_none_for_plan_and_change() {
+        assert!(ItemRefJson::new(ReviewTarget::Plan { slug: "p".into() }).is_none());
+        assert!(
+            ItemRefJson::new(ReviewTarget::Change {
+                head: "a".repeat(40),
+                base: None,
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn worktree_json_omits_unset_fields_and_unparsed_item() {
+        let json = WorktreeJson::new("", "b", std::path::Path::new("/w"), None);
+        assert_eq!(
+            serde_json::to_value(&json).unwrap(),
+            serde_json::json!({ "item": "", "branch": "b", "path": "/w" })
+        );
+        let json = WorktreeJson {
+            dirty: Some(true),
+            ..WorktreeJson::new(
+                "task/fix",
+                "task/fix",
+                std::path::Path::new("/w"),
+                Some(ReviewTarget::Task { slug: "fix".into() }),
+            )
+        };
+        assert_eq!(
+            serde_json::to_value(&json).unwrap(),
+            serde_json::json!({
+                "item": "task/fix",
+                "branch": "task/fix",
+                "path": "/w",
+                "kind": "task",
+                "slug": "fix",
+                "ref": "task/fix",
+                "review_ref": "task/fix",
+                "dirty": true,
+            })
+        );
+    }
+
+    fn state_store() -> crate::store::MemoryStore {
+        use crate::store::Store;
+        let mut store = crate::store::MemoryStore::new();
+        store
+            .write(&crate::paths::config_path(), String::new())
+            .unwrap();
+        crate::io::write_roadmap(
+            &mut store,
+            "acme",
+            "alpha",
+            &make_roadmap_doc("acme", "alpha", "Alpha"),
+        )
+        .unwrap();
+        for (stem, status) in [
+            ("phase-1-a", PhaseStatus::Done),
+            ("phase-2-b", PhaseStatus::WontFix),
+            ("phase-3-c", PhaseStatus::InProgress),
+        ] {
+            crate::io::write_phase(
+                &mut store,
+                "acme",
+                "alpha",
+                stem,
+                &make_phase_doc(1, "P", status),
+            )
+            .unwrap();
+        }
+        crate::io::write_task(&mut store, "acme", "fix", &make_task_doc("fix", "acme")).unwrap();
+        store
+    }
+
+    #[test]
+    fn item_state_json_reports_status_and_roadmap_progress() {
+        let store = state_store();
+        assert_eq!(
+            item_state_json(
+                &store,
+                "acme",
+                &ReviewTarget::Phase {
+                    roadmap: "alpha".into(),
+                    stem: "phase-3-c".into(),
+                }
+            )
+            .unwrap(),
+            Some(ItemStateJson::Phase {
+                status: PhaseStatus::InProgress
+            })
+        );
+        assert_eq!(
+            item_state_json(&store, "acme", &ReviewTarget::Task { slug: "fix".into() }).unwrap(),
+            Some(ItemStateJson::Task {
+                status: TaskStatus::Open
+            })
+        );
+        let roadmap = item_state_json(
+            &store,
+            "acme",
+            &ReviewTarget::Roadmap {
+                roadmap: "alpha".into(),
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let ItemStateJson::Roadmap {
+            total_phases,
+            done_phases,
+            ..
+        } = roadmap
+        else {
+            panic!("expected roadmap progress, got {roadmap:?}");
+        };
+        // `wont-fix` counts as done, the same rule `roadmap show` uses.
+        assert_eq!((total_phases, done_phases), (3, 2));
+        assert!(
+            item_state_json(
+                &store,
+                "acme",
+                &ReviewTarget::Task {
+                    slug: "nope".into()
+                }
+            )
+            .is_err()
+        );
+        assert_eq!(
+            item_state_json(&store, "acme", &ReviewTarget::Plan { slug: "p".into() }).unwrap(),
+            None
+        );
     }
 }

@@ -1,4 +1,4 @@
-//! Builds the golden fixture and runs the 31-command `--format json`
+//! Builds the golden fixture and runs the 32-command `--format json`
 //! inventory against it.
 //!
 //! The fixture is [`SeededPlan`] plus a code repo, then, in this order: one
@@ -9,7 +9,8 @@
 //! (added from the code repo), and the implementation plan `fixture-plan`
 //! implementing it, whose `plan create --format json` stdout is itself the
 //! `plan-create` golden. `worktree list`/`current` run from inside the
-//! worktree (from the bare code-repo root `current` prints `null`).
+//! worktree (from the bare code-repo root `current` prints `null`), then
+//! `worktree remove` removes it from the code repo.
 //!
 //! The three `create` goldens come after every read, so no other golden sees
 //! what they create. `status`, `commit` and `discard` come last of all: an
@@ -29,7 +30,7 @@ use crate::seeded_plan::{PROJECT, SeededPlan};
 use crate::workflow_support::Failure;
 
 /// Every captured golden, by file stem, in capture order.
-pub const NAMES: [&str; 31] = [
+pub const NAMES: [&str; 32] = [
     "plan-create",
     "info",
     "roadmap-list",
@@ -54,6 +55,7 @@ pub const NAMES: [&str; 31] = [
     "verify-resolve",
     "worktree-list",
     "worktree-current",
+    "worktree-remove",
     "hook-done-line",
     "roadmap-create",
     "phase-create",
@@ -307,12 +309,32 @@ pub fn capture() -> Result<Capture, Failure> {
     for (name, args) in &commands {
         raw.insert((*name).to_owned(), fixture.ok(args)?);
     }
-    for (name, sub) in [("worktree-list", "list"), ("worktree-current", "current")] {
-        raw.insert(
-            name.to_owned(),
-            fixture.ok_in(&worktree, &["worktree", sub, "--format", "json"])?,
-        );
-    }
+    raw.insert(
+        "worktree-list".to_owned(),
+        fixture.ok_in(&worktree, &["worktree", "list", "--format", "json"])?,
+    );
+    raw.insert(
+        "worktree-current".to_owned(),
+        fixture.ok_in(
+            &worktree,
+            &["worktree", "current", "--format", "json", "--project", p],
+        )?,
+    );
+    raw.insert(
+        "worktree-remove".to_owned(),
+        fixture.ok_in(
+            &code,
+            &[
+                "worktree",
+                "remove",
+                "task/fixture-task-open",
+                "--format",
+                "json",
+                "--project",
+                p,
+            ],
+        )?,
+    );
     raw.insert(
         "hook-done-line".to_owned(),
         fixture.ok(&[

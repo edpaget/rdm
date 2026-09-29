@@ -256,10 +256,10 @@ process and signals an error.  Errors are re-signalled."
 
 (defconst rdm--actions
   '((info             :argv ("info")             :kind read :project nil)
-    (worktree-current :argv ("worktree" "current") :kind read :project nil)
+    (worktree-current :argv ("worktree" "current") :kind read)
     (worktree-list    :argv ("worktree" "list")  :kind read :project nil)
     (worktree-add     :argv ("worktree" "add")   :kind read)
-    (worktree-remove  :argv ("worktree" "remove") :kind text)
+    (worktree-remove  :argv ("worktree" "remove") :kind read)
     (worktree-prune   :argv ("worktree" "prune") :kind read)
     (describe         :argv ("describe")         :kind read :project nil)
     (status           :argv ("status")           :kind text :project nil)
@@ -482,7 +482,10 @@ The `status' case of `rdm-enum-values'.  nil for a kind without a status."
   (rdm-enum-values kind "status"))
 
 (defun rdm-worktree-item ()
-  "The rdm item whose worktree holds `default-directory', or nil."
+  "The rdm item whose worktree holds `default-directory', or nil.
+The `worktree current' reply: `:item', `:branch', `:path', the item's
+`:kind', `:roadmap'/`:stem'/`:slug', `:ref' and `:review_ref', and its
+`:status' (or a roadmap's `:done_phases'/`:total_phases')."
   (rdm-call-sync 'worktree-current))
 
 (provide 'rdm-core)

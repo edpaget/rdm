@@ -1914,8 +1914,14 @@ pub(crate) enum WorktreeCommand {
     /// recognized. Prints "Not in an rdm worktree." (text) / `null` (JSON) and
     /// exits 0 when the checkout is on neither — e.g. the main checkout on
     /// `main`. The `rdm-do` skill uses this to decide whether to reuse the
-    /// current worktree or create a new one.
-    Current,
+    /// current worktree or create a new one. With a resolvable project, the
+    /// JSON also carries the item's `status` (or a roadmap's progress).
+    Current {
+        /// Project to load the item's status from (best-effort: without one,
+        /// the status is omitted).
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Remove an rdm-managed worktree by item or path.
     Remove {
         /// Item (`<roadmap>/<phase-stem-or-number>`, `task/<slug>`, or

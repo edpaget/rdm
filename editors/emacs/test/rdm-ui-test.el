@@ -304,10 +304,12 @@ dependency, non-string entries included."
 (ert-deftest rdm-pick/next-worktree-roadmap ()
   "Interactively, a roadmap or phase worktree names the roadmap; a task
 worktree falls back to the roadmap picker."
-  (dolist (wt '("r1" "r1/phase-2-two"))
+  (dolist (wt '((:kind "roadmap" :roadmap "r1" :ref "r1")
+                (:kind "phase" :roadmap "r1" :stem "phase-2-two"
+                       :ref "r1/phase-2-two")))
     (rdm-ui-test--mocked
       (cl-letf (((symbol-function 'rdm-worktree-item)
-                 (lambda () (list :item wt)))
+                 (lambda () wt))
                 ((symbol-function 'completing-read)
                  (lambda (&rest _) (error "Unexpected prompt"))))
         (call-interactively #'rdm-next))
@@ -315,7 +317,7 @@ worktree falls back to the roadmap picker."
       (should-not (member (rdm-ui-test--show "roadmap" "list") calls))))
   (rdm-ui-test--mocked
     (cl-letf (((symbol-function 'rdm-worktree-item)
-               (lambda () (list :item "task/t1"))))
+               (lambda () (list :kind "task" :slug "t1" :ref "task/t1"))))
       (rdm-ui-test--answers '("r1")
         (call-interactively #'rdm-next)))
     (should (equal (reverse (cdr calls))

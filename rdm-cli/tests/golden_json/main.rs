@@ -2,7 +2,7 @@
 //! `tests/golden/*.json` files and reproduced here from a fresh, sandboxed
 //! fixture on every run.
 //!
-//! [`capture`] builds the fixture and runs the 31-command inventory;
+//! [`capture`] builds the fixture and runs the 32-command inventory;
 //! [`redact`] applies the seven redaction rules and compares byte for byte.
 //! A changed shape is re-blessed deliberately with the ignored [`bless`]
 //! case (see [`redact::BLESS`] and `tests/golden/README.md`); it is the only
