@@ -1868,6 +1868,59 @@ fn review_full_authoring_loop_end_to_end() {
 }
 
 #[test]
+fn review_applied_commit_head_resolves_to_full_plan_repo_sha() {
+    let plan = init_plan_repo();
+    create_task_with_body(&plan, "loop-task", "Step one is unclear.");
+    let id = start_review(&plan, "task/loop-task");
+    add_plain_comment(&plan, &id, "Clarify step one.");
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    let plan_head = String::from_utf8(git(plan.path(), &["rev-parse", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+    assert_eq!(plan_head.len(), 40);
+
+    // The literal `HEAD` is expanded in the plan repo (a task review's
+    // repository) and stored as the full SHA, not the literal input.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            "HEAD",
+            "--project",
+            "demo",
+        ])
+        .assert()
+        .success();
+
+    let json = show_review_json(&plan, &id);
+    assert_eq!(json["comments"][0]["applied_commit"], plan_head.as_str());
+}
+
+#[test]
 fn review_applied_commit_rejects_nonexistent_sha_in_plan_repo() {
     let plan = init_plan_repo();
     create_task_with_body(&plan, "loop-task", "Step one is unclear.");

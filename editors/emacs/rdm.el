@@ -30,15 +30,19 @@
 
 ;;;; Doctor
 
-(defun rdm-doctor--version (bin)
-  "The first line of BIN's `--version' output, or \"unknown\"."
-  (or (condition-case nil
-          (rdm--nonempty
-           (string-trim
-            (car (split-string (rdm-run-sync (list bin "--version") :timeout 10)
-                               "\n"))))
-        (error nil))
-      "unknown"))
+(defun rdm-doctor--info-value (info key)
+  "KEY of INFO, the parsed `rdm info' reply, or nil when absent or failed."
+  (and (not (eq (car-safe info) 'failed))
+       (rdm--nonempty (plist-get info key))))
+
+(defun rdm-doctor--binary (bin info)
+  "BIN, a located (PATH . RUNG) or nil, reported against INFO, as text.
+The path is the one `rdm info' reports for itself when INFO has it,
+else the located command, marked as unconfirmed by `rdm info'."
+  (let ((reported (rdm-doctor--info-value info :binary)))
+    (cond ((null bin) "not found: set `rdm-bin', RDM_BIN, or put rdm on PATH")
+          (reported (format "%s (located via %s)" reported (cdr bin)))
+          (t (format "%s (from %s; rdm info unavailable)" (car bin) (cdr bin))))))
 
 (defun rdm-doctor--mise ()
   "Whether this buffer's environment came from mise.el, as report text."
@@ -51,8 +55,7 @@ come from .mise.toml")
 (defun rdm-doctor--setting (setting info key)
   "SETTING, a (VALUE . RUNG) or nil, else KEY of INFO, as report text.
 INFO is the parsed `rdm info' reply, or nil."
-  (let ((from-info (and (not (eq (car-safe info) 'failed))
-                        (rdm--nonempty (plist-get info key)))))
+  (let ((from-info (rdm-doctor--info-value info key)))
     (cond (setting (format "%s (from %s)" (car setting) (cdr setting)))
           (from-info (format "%s (from rdm info)" from-info))
           (t "unset"))))
@@ -77,11 +80,9 @@ Never signals: a failure to resolve is reported."
     (concat
      (format "rdm doctor for %s\n\n" (buffer-name))
      (format "Directory: %s\n" (abbreviate-file-name dir))
-     (format "Binary:    %s\n"
-             (if bin
-                 (format "%s (from %s)" (car bin) (cdr bin))
-               "not found: set `rdm-bin', RDM_BIN, or put rdm on PATH"))
-     (format "Version:   %s\n" (if bin (rdm-doctor--version (car bin)) "unknown"))
+     (format "Binary:    %s\n" (rdm-doctor--binary bin info))
+     (format "Version:   %s\n" (or (rdm-doctor--info-value info :version)
+                                   "unknown"))
      (format "Root:      %s\n" (rdm-doctor--setting root info :root))
      (format "Project:   %s\n" (rdm-doctor--setting project info :project))
      (format "Branch:    %s\n" (rdm-doctor--setting nil info :default_branch))
@@ -96,9 +97,10 @@ Never signals: a failure to resolve is reported."
 ;;;###autoload
 (defun rdm-doctor ()
   "Report how rdm resolves for the current buffer, in *rdm-doctor*.
-Shows the `rdm' binary and the rung that supplied it (`rdm-bin',
-RDM_BIN or PATH), its version (\"unknown\" when `rdm --version' fails),
-the plan repo root and project and the rung that supplied each
+Shows the `rdm' binary as `rdm info' reports its own path, with the
+rung that located it (`rdm-bin', RDM_BIN or PATH), its version as
+`rdm info' reports it (\"unknown\" when `rdm info' fails or does not
+run), the plan repo root and project and the rung that supplied each
 \(`rdm-root' / `rdm-project', the buffer's environment, or `rdm info'),
 the default branch, whether the environment came from mise.el, and
 whether `rdm-context' resolves.  Returns the report buffer."

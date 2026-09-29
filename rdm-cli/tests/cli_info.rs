@@ -632,3 +632,63 @@ fn defaults_report_default_source_with_no_config_at_all() {
             "default_format: human  (source: default)",
         ));
 }
+
+// ---------------------------------------------------------------------------
+// The running binary's identity: `version` and `binary`, in every format,
+// before `rdm init`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn info_json_reports_version_and_binary_before_init() {
+    let root = bare_dir();
+
+    let output = rdm()
+        .arg("--root")
+        .arg(root.path())
+        .args(["info", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let v: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(v["version"], env!("CARGO_PKG_VERSION"), "{v}");
+    let binary = v["binary"].as_str().expect("binary is reported");
+    assert_eq!(
+        std::fs::canonicalize(binary).unwrap(),
+        std::fs::canonicalize(env!("CARGO_BIN_EXE_rdm")).unwrap(),
+    );
+}
+
+#[test]
+fn info_human_shows_version_and_binary_rows() {
+    let root = bare_dir();
+
+    rdm()
+        .arg("--root")
+        .arg(root.path())
+        .arg("info")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "version: {}\n",
+            env!("CARGO_PKG_VERSION")
+        )))
+        .stdout(predicate::str::contains("binary: "));
+}
+
+#[test]
+fn info_markdown_shows_version_and_binary_rows() {
+    let root = bare_dir();
+
+    rdm()
+        .arg("--root")
+        .arg(root.path())
+        .args(["info", "--format", "markdown"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!(
+            "| version | {} | |\n",
+            env!("CARGO_PKG_VERSION")
+        )))
+        .stdout(predicate::str::contains("| binary | "));
+}

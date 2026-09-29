@@ -495,37 +495,19 @@ whose quote is gone is listed un-placed, and nothing is signalled."
 
 ;;;; Resolution
 
-(defun rdm-review-test--git-repo (message)
-  "A temp git repository with one commit titled MESSAGE; return its dir."
-  (let ((dir (file-name-as-directory (make-temp-file "rdm-review-git" t))))
-    (let ((default-directory dir))
-      (process-lines "git" "init" "-q")
-      (process-lines "git" "-c" "user.name=t" "-c" "user.email=t@example.com"
-                     "commit" "-q" "--allow-empty" "-m" message))
-    dir))
-
-(defun rdm-review-test--head (dir)
-  "The HEAD commit of the repository DIR."
-  (let ((default-directory dir))
-    (car (process-lines "git" "rev-parse" "HEAD"))))
-
-(ert-deftest rdm-review/resolve-argv-and-plan-head ()
+(ert-deftest rdm-review/resolve-argv-and-head-prefill ()
   "gA marks the comment at point with --comment/--status/--reply and an
-applied commit defaulting to the plan repo's HEAD, not the buffer's
-repository's; no --no-edit.  The view is refreshed and the write hook runs."
-  (let* ((plan (rdm-review-test--git-repo "plan"))
-         (code (rdm-review-test--git-repo "code"))
-         (hooked 0)
+applied commit pre-filled with the literal HEAD, passed through unchanged
+for rdm to resolve in the target's repository; no --no-edit.  The view is
+refreshed and the write hook runs."
+  (let* ((hooked 0)
          (rdm-after-write-hook (list (lambda () (cl-incf hooked))))
          prefill)
-    (should-not (equal (rdm-review-test--head plan) (rdm-review-test--head code)))
     (rdm-review-test--with
         (list (rdm-review-test--review
                "r1" rdm-review-test--task-target
                (list (rdm-review-test--comment 1 "café" 17 22 :body "current"))))
-      (cl-letf (((symbol-function 'rdm-context)
-                 (lambda () (list :root plan :project "p" :rdm-bin "rdm")))
-                ((symbol-function 'completing-read)
+      (cl-letf (((symbol-function 'completing-read)
                  (lambda (&rest _) "addressed"))
                 ((symbol-function 'read-string)
                  (lambda (prompt &optional initial &rest _)
@@ -533,16 +515,14 @@ repository's; no --no-edit.  The view is refreshed and the write hook runs."
                        "-- fixed"
                      (setq prefill initial)))))
         (with-current-buffer (rdm-open-item rdm-review-test--task)
-          (setq default-directory code)
           (goto-char (overlay-start (rdm-review-test--overlay-of 1)))
           (let ((before (length calls)))
             (call-interactively #'rdm-review-resolve)
-            (should (equal prefill (rdm-review-test--head plan)))
+            (should (equal prefill "HEAD"))
             (should (equal (car (nth before calls))
                            (list "review" "update" "r1" "--comment=1"
                                  "--status=addressed" "--reply=-- fixed"
-                                 (concat "--applied-commit="
-                                         (rdm-review-test--head plan))
+                                 "--applied-commit=HEAD"
                                  "--project" "p")))
             ;; The view re-read the item and its reviews.
             (should (seq-find (lambda (argv) (and (equal (car argv) "review")

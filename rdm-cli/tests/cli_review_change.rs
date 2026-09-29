@@ -2721,6 +2721,96 @@ fn change_review_applied_commit_resolves_short_sha_against_source_repo() {
 }
 
 #[test]
+fn change_review_applied_commit_head_resolves_to_full_source_repo_sha() {
+    let src = init_source_repo();
+    let plan = init_plan_repo(src.path());
+    create_plan(plan.path(), "design-plan", true);
+    let id = start_change_review(
+        plan.path(),
+        src.path(),
+        "change/HEAD",
+        &["--implements", "rdm:plan/design-plan"],
+    );
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "comment",
+            &id,
+            "--path",
+            "src/lib.rs",
+            "--quote",
+            "fn two_renamed() {}",
+            "--body",
+            "Needs a follow-up.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--body",
+            "Needs work.",
+            "--no-edit",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    // Give the plan repo a HEAD of its own, distinct from the source repo's,
+    // so resolving `HEAD` in the wrong repository would be caught.
+    git(
+        plan.path(),
+        &["commit", "--allow-empty", "--no-verify", "-m", "seed plan"],
+    );
+    let src_head = git_out(src.path(), &["rev-parse", "HEAD"]);
+    let plan_head = git_out(plan.path(), &["rev-parse", "HEAD"]);
+    assert_eq!(src_head.len(), 40);
+    assert_ne!(
+        src_head, plan_head,
+        "fixture must give the two repos different HEADs"
+    );
+
+    // The literal `HEAD` expands in the SOURCE repo for a change review.
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args([
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--applied-commit",
+            "HEAD",
+            "--project",
+            "demo",
+        ])
+        .current_dir(src.path())
+        .assert()
+        .success();
+
+    let j = review_json(plan.path(), src.path(), &id);
+    assert_eq!(j["comments"][0]["applied_commit"], src_head.as_str());
+    assert_ne!(j["comments"][0]["applied_commit"], plan_head.as_str());
+}
+
+#[test]
 fn change_review_applied_commit_refuses_a_sha_only_in_an_unrelated_repo() {
     let src = init_source_repo();
     let plan = init_plan_repo(src.path());

@@ -413,10 +413,12 @@ pub struct ProjectJson {
 // ---------------------------------------------------------------------------
 
 /// What `rdm` actually resolved for the current environment: the plan repo
-/// root, the selected project (if any), and the defaults that would govern
-/// an unqualified command. Powers `rdm info --format json`, the single-call
-/// discovery contract an editor or plugin integration resolves
-/// `{root, project, default_branch, default_format}` against.
+/// root, the selected project (if any), the defaults that would govern an
+/// unqualified command, and the running binary's version and path. Powers
+/// `rdm info --format json`, the single-call discovery contract an editor or
+/// plugin integration resolves
+/// `{root, project, default_branch, default_format, version, binary}`
+/// against.
 #[derive(Debug, Clone, Serialize)]
 pub struct InfoJson {
     /// The resolved plan repo root path.
@@ -430,6 +432,12 @@ pub struct InfoJson {
     pub default_branch: String,
     /// The default output format that would govern an unqualified command.
     pub default_format: String,
+    /// The running rdm binary's crate version (e.g. `0.22.2`).
+    pub version: String,
+    /// The running rdm binary's path, as reported by the OS. Omitted (not
+    /// `null`) when the OS cannot report it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binary: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -2552,6 +2560,8 @@ mod tests {
             project: None,
             default_branch: "main".to_string(),
             default_format: "human".to_string(),
+            version: "1.2.3".to_string(),
+            binary: None,
         };
         let v = serde_json::to_value(&info).unwrap();
         assert!(
@@ -2561,6 +2571,11 @@ mod tests {
         assert_eq!(v["root"], "/tmp/plan-repo");
         assert_eq!(v["default_branch"], "main");
         assert_eq!(v["default_format"], "human");
+        assert_eq!(v["version"], "1.2.3", "version is always present: {v}");
+        assert!(
+            v.get("binary").is_none(),
+            "the 'binary' key must be absent entirely when unknown, not present as null: {v}"
+        );
     }
 
     #[test]
@@ -2570,9 +2585,13 @@ mod tests {
             project: Some("rdm".to_string()),
             default_branch: "main".to_string(),
             default_format: "json".to_string(),
+            version: "1.2.3".to_string(),
+            binary: Some("/usr/local/bin/rdm".to_string()),
         };
         let v = serde_json::to_value(&info).unwrap();
         assert_eq!(v["project"], "rdm");
+        assert_eq!(v["version"], "1.2.3");
+        assert_eq!(v["binary"], "/usr/local/bin/rdm");
     }
 
     #[test]

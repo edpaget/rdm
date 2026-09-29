@@ -105,8 +105,10 @@ value came from. Precedence is per key.
 
 `M-x rdm-doctor` opens `*rdm-doctor*` with a report for the current buffer:
 
-- the binary and the rung that supplied it (`rdm-bin`, `RDM_BIN` or `PATH`);
-- its version, which is `unknown` while `rdm --version` is unavailable;
+- the binary, as the path `rdm info` reports for itself, with the rung that
+  located it (`rdm-bin`, `RDM_BIN` or `PATH`); when `rdm info` fails, the
+  located command, marked as unconfirmed by `rdm info`;
+- its version, as `rdm info` reports it (`unknown` when `rdm info` fails);
 - the root and project, each with its rung (`rdm-root`/`rdm-project`, the
   buffer's `RDM_ROOT`/`RDM_PROJECT`, or `rdm info`);
 - the default branch;
@@ -138,7 +140,7 @@ conventions.
 | normal | `K` | `rdm-review-comment-at-point` | describe the review comment at point |
 | normal | `]c` | `rdm-review-next-comment` | next review comment |
 | normal | `[c` | `rdm-review-previous-comment` | previous review comment |
-| normal | `gA` | `rdm-review-resolve` | mark the comment at point addressed or won't-fix |
+| normal | `gA` | `rdm-review-resolve` | mark the comment at point addressed or won't-fix (the applied commit pre-fills `HEAD`, which rdm resolves in the target's repository) |
 | normal | `C` | `rdm-review-comment-document` | whole-document comment in your draft review |
 | normal | `gS` | `rdm-review-submit` | submit your draft review with a verdict |
 | visual | `c` | `rdm-review-comment-region` | comment on the selected body text (the selection is the quote) |

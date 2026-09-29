@@ -19,7 +19,11 @@ use rdm_core::ops::reviews::OnAnchorFailure;
 use rdm_core::search::ItemKind;
 
 #[derive(Parser)]
-#[command(name = "rdm", about = "Manage project roadmaps, phases, and tasks")]
+#[command(
+    name = "rdm",
+    version,
+    about = "Manage project roadmaps, phases, and tasks"
+)]
 pub(crate) struct Cli {
     /// Path to the plan repo root.
     #[arg(long, env = "RDM_ROOT")]
@@ -339,9 +343,10 @@ pub(crate) enum Command {
         project: Option<String>,
     },
     /// Show what rdm resolved for the current environment: plan repo root,
-    /// project, default branch, and default output format — the single call
-    /// an editor or plugin integration needs to map its working directory to
-    /// `{root, project, default_branch, default_format}`.
+    /// project, default branch, default output format, and the running
+    /// binary's version and path — the single call an editor or plugin
+    /// integration needs to map its working directory to
+    /// `{root, project, default_branch, default_format, version, binary}`.
     Info {
         /// Project to resolve (same precedence as every other command).
         #[arg(long)]

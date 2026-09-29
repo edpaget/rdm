@@ -72,7 +72,7 @@ follow-up task instead of captured as a fake-JSON golden:
 ## Redaction
 
 `Redactor` (in `rdm-cli/tests/golden_json/redact.rs`) applies exactly these
-six rules, as regular expressions over the raw text so every other byte is preserved, to every captured file, so two captures — on the same machine or
+seven rules, as regular expressions over the raw text so every other byte is preserved, to every captured file, so two captures — on the same machine or
 different ones, on the same day or months apart — are byte-identical:
 
 1. **Absolute temp paths** — the fixture's temp root, in both its raw
@@ -102,11 +102,15 @@ different ones, on the same day or months apart — are byte-identical:
    `golden_json::digest_fields_are_redacted_not_frozen` still asserts the field is
    present and was 64-hex before redaction — only the day-volatile *value* is
    dropped, not the contract that the field exists.
+7. **`rdm info`'s running-binary identity** — `version` (the crate semver,
+   which moves with every release) → `<VERSION>`, and `binary` (the path of
+   the executable under test, which depends on the build directory) →
+   `<BINARY>`. Only the values are dropped; the keys stay in the golden.
 
-These six rules cover the volatile fields of the seeded fixture (temp paths,
-dates, commit SHAs) plus three categories found load-bearing: review IDs,
-review RFC3339 datetimes, and digests taken *over* already-redacted volatile
-content. If `rdm-cli/tests/golden_json/redact.rs`'s module comment and this
+These seven rules cover the volatile fields of the seeded fixture (temp paths,
+dates, commit SHAs) plus four categories found load-bearing: review IDs,
+review RFC3339 datetimes, digests taken *over* already-redacted volatile
+content, and the running binary's version and path. If `rdm-cli/tests/golden_json/redact.rs`'s module comment and this
 README ever appear to disagree, trust the code — it is authoritative.
 
 ## Re-blessing after an intentional shape change

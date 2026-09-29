@@ -1,4 +1,4 @@
-//! The six redaction rules that make a capture reproducible, applied to the
+//! The seven redaction rules that make a capture reproducible, applied to the
 //! raw text so every other byte is preserved, and the byte comparator
 //! against `tests/golden/`.
 //!
@@ -12,6 +12,8 @@
 //!    integer comment `id` is untouched.
 //! 6. `estimate_snapshot` (a digest over the whole phase document, dates
 //!    included) → `<SNAPSHOT>`.
+//! 7. `rdm info`'s running-binary identity: `version` (a semver) →
+//!    `<VERSION>` and `binary` (the build's executable path) → `<BINARY>`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -60,6 +62,14 @@ impl Redactor {
             (
                 rule(r#""estimate_snapshot": "[0-9a-f]{64}""#),
                 r#""estimate_snapshot": "<SNAPSHOT>""#,
+            ),
+            (
+                rule(r#""version": "[0-9]+\.[0-9]+\.[0-9]+[^"]*""#),
+                r#""version": "<VERSION>""#,
+            ),
+            (
+                rule(r#""binary": "(?:[^"\\]|\\.)*""#),
+                r#""binary": "<BINARY>""#,
             ),
         ];
         Self { roots, rules }

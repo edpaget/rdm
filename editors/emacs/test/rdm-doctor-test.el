@@ -25,18 +25,52 @@
   (when (string-match (concat "^" (regexp-quote label) ": *\\(.*\\)$") report)
     (match-string 1 report)))
 
-(ert-deftest rdm-doctor/unresolved-context-is-reported ()
-  "A binary whose every call fails yields a report, not an error."
+(defun rdm-doctor-test--logging-stub (log body)
+  "A stub that appends its arguments to LOG, then runs BODY."
+  (rdm-test-stub (format "echo \"$*\" >> %s\n%s" (shell-quote-argument log) body)))
+
+(defun rdm-doctor-test--calls (log)
+  "The argument lines the logging stub wrote to LOG."
+  (and (file-exists-p log)
+       (split-string (with-temp-buffer
+                       (insert-file-contents log)
+                       (buffer-string))
+                     "\n" t)))
+
+(ert-deftest rdm-doctor/version-and-binary-come-from-info ()
+  "Version and Binary are what `rdm info' reports; nothing runs --version."
   (rdm-doctor-test--in-temp-dir
-    (let ((stub (rdm-test-stub "case \"$1\" in
-  --version) echo 'rdm 9.9.9' ;;
-  *) echo 'no plan here' >&2; exit 1 ;;
-esac")))
+    (let* ((log (make-temp-file "rdm-doctor-calls"))
+           (stub (rdm-doctor-test--logging-stub
+                  log
+                  (format "echo '%s'"
+                          (rdm-test-info-json :default_branch "main"
+                                              :version "9.9.9"
+                                              :binary "/opt/rdm/bin/rdm")))))
       (rdm-test-with-env (list (concat "RDM_BIN=" stub))
         (let ((report (rdm-doctor-report)))
           (should (equal (rdm-doctor-test--line report "Binary")
-                         (format "%s (from RDM_BIN)" stub)))
-          (should (equal (rdm-doctor-test--line report "Version") "rdm 9.9.9"))
+                         "/opt/rdm/bin/rdm (located via RDM_BIN)"))
+          (should (equal (rdm-doctor-test--line report "Version") "9.9.9"))
+          (should (equal (rdm-doctor-test--line report "rdm info") "ok"))
+          (let ((calls (rdm-doctor-test--calls log)))
+            (should (member "info --format json" calls))
+            (should-not (seq-some (lambda (c) (string-match-p "--version\\|-V" c))
+                                  calls))))))))
+
+(ert-deftest rdm-doctor/unresolved-context-is-reported ()
+  "A binary whose every call fails yields a report, not an error."
+  (rdm-doctor-test--in-temp-dir
+    (let* ((log (make-temp-file "rdm-doctor-calls"))
+           (stub (rdm-doctor-test--logging-stub
+                  log "echo 'no plan here' >&2; exit 1")))
+      (rdm-test-with-env (list (concat "RDM_BIN=" stub))
+        (let ((report (rdm-doctor-report)))
+          (should (equal (rdm-doctor-test--line report "Binary")
+                         (format "%s (from RDM_BIN; rdm info unavailable)" stub)))
+          (should (equal (rdm-doctor-test--line report "Version") "unknown"))
+          (should-not (seq-some (lambda (c) (string-match-p "--version" c))
+                                (rdm-doctor-test--calls log)))
           (should (equal (rdm-doctor-test--line report "Root") "unset"))
           (should (equal (rdm-doctor-test--line report "Project") "unset"))
           (should (string-match-p "\\`failed: .*no plan here"
@@ -67,7 +101,7 @@ esac")))
         (setq rdm-bin stub rdm-root root)
         (let ((report (rdm-doctor-report)))
           (should (equal (rdm-doctor-test--line report "Binary")
-                         (format "%s (from rdm-bin)" stub)))
+                         (format "%s (from rdm-bin; rdm info unavailable)" stub)))
           (should (equal (rdm-doctor-test--line report "Version") "unknown"))
           (should (equal (rdm-doctor-test--line report "Root")
                          (format "%s (from rdm-root)" root)))
@@ -96,10 +130,13 @@ esac")))
     (setq rdm-bin bin)
     (let* ((buf (let ((inhibit-message t)) (rdm-doctor)))
            (report (with-current-buffer buf (buffer-string))))
-      (should (equal (rdm-doctor-test--line report "Binary")
-                     (format "%s (from rdm-bin)" bin)))
-      ;; "unknown" until rdm grows --version, then its first line.
-      (should (rdm--nonempty (rdm-doctor-test--line report "Version")))
+      (let ((binary (rdm-doctor-test--line report "Binary")))
+        (should (string-suffix-p " (located via rdm-bin)" binary))
+        (should (equal (file-truename (string-remove-suffix
+                                       " (located via rdm-bin)" binary))
+                       (file-truename bin))))
+      (should (string-match-p "\\`[0-9]+\\.[0-9]+\\.[0-9]+"
+                              (rdm-doctor-test--line report "Version")))
       (should (equal (rdm-doctor-test--line report "Root")
                      (format "%s (from RDM_ROOT)" root)))
       (should (equal (rdm-doctor-test--line report "Project")

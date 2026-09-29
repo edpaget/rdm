@@ -551,16 +551,6 @@ The item itself is not re-read; `revert-buffer' does both."
     (when (and (derived-mode-p 'rdm-view-mode) rdm-view--at)
       (rdm-review-refresh))))
 
-(defun rdm-review-plan-head ()
-  "The plan repo's HEAD commit, or nil.
-Run in the resolved context's `:root', never the buffer's own
-repository, since review fixes are plan-repo commits."
-  (let ((root (plist-get (rdm-context) :root)))
-    (condition-case nil
-        (let ((default-directory (file-name-as-directory root)))
-          (rdm--nonempty (car (process-lines "git" "rev-parse" "HEAD"))))
-      (error nil))))
-
 (defun rdm-review--read-resolution ()
   "Read the arguments of `rdm-review-resolve' for the comment at point."
   (let* ((entry (rdm-review--require-entry))
@@ -571,14 +561,16 @@ repository, since review fixes are plan-repo commits."
          (reply (read-string "Reply (empty for none): "))
          (commit (and (equal status "addressed")
                       (read-string "Applied commit (empty for none): "
-                                   (rdm-review-plan-head)))))
+                                   "HEAD"))))
     (list entry status reply commit)))
 
 (defun rdm-review-resolve (entry status &optional reply commit)
   "Mark ENTRY's comment STATUS (\"addressed\" or \"wont-fix\").
 REPLY and COMMIT, when non-empty, are recorded as the reply and the
 applied commit.  Interactively, ENTRY is the comment at point and the
-applied commit is pre-filled with the plan repo's HEAD.  Returns rdm's
+applied commit is pre-filled with HEAD, which rdm resolves in the
+target's repository: the source repo for a `change' review, the plan
+repo otherwise.  COMMIT is passed through unchanged.  Returns rdm's
 output; a refusal signals rdm's error."
   (interactive (rdm-review--read-resolution))
   (let ((review (plist-get entry :review))

@@ -2,5 +2,7 @@
   "root": "<TMPDIR>/plan",
   "project": "fixture-proj",
   "default_branch": "main",
-  "default_format": "json"
+  "default_format": "json",
+  "version": "<VERSION>",
+  "binary": "<BINARY>"
 }

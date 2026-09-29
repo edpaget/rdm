@@ -1,5 +1,6 @@
 //! `rdm info` — reports what rdm actually resolved for the current
-//! environment: `{root, project, default_branch, default_format}`.
+//! environment, plus the running binary's identity:
+//! `{root, project, default_branch, default_format, version, binary}`.
 //!
 //! This is the single-call discovery contract an editor or plugin
 //! integration needs to map its working directory to a plan repo location,
@@ -17,15 +18,21 @@ use rdm_core::json::InfoJson;
 use crate::OutputFormat;
 use crate::paths;
 
-/// One resolved field, paired with the source it came from (`None` only for
-/// an unresolved `project`, which has no source to report).
+/// One resolved field, paired with the source it came from. `source` is
+/// `None` for an unresolved `project`, and for `version`/`binary`, which
+/// describe the running binary rather than any configuration.
 struct InfoField {
     key: &'static str,
     value: Option<String>,
     source: Option<ConfigSource>,
 }
 
-/// Resolves and prints `{root, project, default_branch, default_format}`.
+/// Resolves and prints
+/// `{root, project, default_branch, default_format, version, binary}`.
+///
+/// `version` is this binary's crate version and `binary` its
+/// [`std::env::current_exe`] path (omitted/`(not set)` when the OS cannot
+/// report it — never an error).
 ///
 /// `root` and `root_source` are already resolved by the caller (`main.rs`)
 /// — `root_source` distinguishes the `--root` flag from the `RDM_ROOT` env
@@ -117,6 +124,11 @@ pub fn run(
             .map_or(ConfigSource::Default, |resolved| resolved.source)
     };
 
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let binary = std::env::current_exe()
+        .ok()
+        .map(|path| path.display().to_string());
+
     let fields = vec![
         InfoField {
             key: "root",
@@ -138,6 +150,16 @@ pub fn run(
             value: Some(default_format.clone()),
             source: Some(default_format_source),
         },
+        InfoField {
+            key: "version",
+            value: Some(version.clone()),
+            source: None,
+        },
+        InfoField {
+            key: "binary",
+            value: binary.clone(),
+            source: None,
+        },
     ];
 
     match format {
@@ -147,6 +169,8 @@ pub fn run(
                 project,
                 default_branch,
                 default_format,
+                version,
+                binary,
             };
             println!(
                 "{}",
@@ -173,7 +197,10 @@ fn render_human(fields: &[InfoField]) -> String {
             (Some(value), Some(source)) => {
                 out.push_str(&format!("{}: {value}  (source: {source})\n", field.key));
             }
-            _ => {
+            (Some(value), None) => {
+                out.push_str(&format!("{}: {value}\n", field.key));
+            }
+            (None, _) => {
                 out.push_str(&format!("{}: (not set)\n", field.key));
             }
         }
@@ -188,7 +215,10 @@ fn render_markdown(fields: &[InfoField]) -> String {
             (Some(value), Some(source)) => {
                 out.push_str(&format!("| {} | {value} | {source} |\n", field.key));
             }
-            _ => {
+            (Some(value), None) => {
+                out.push_str(&format!("| {} | {value} | |\n", field.key));
+            }
+            (None, _) => {
                 out.push_str(&format!("| {} | (not set) | |\n", field.key));
             }
         }
