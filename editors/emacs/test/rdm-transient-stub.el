@@ -20,39 +20,61 @@
   "\"not-started\",\"in-progress\",\"done\",\"blocked\",\"wont-fix\""
   "The status values the stub's `describe' declares, as JSON list items.")
 
+(defconst rdm-transient-test--changes
+  "{\"user\":[{\"path\":\"projects/p/tasks/t1.md\",\"change\":\"modified\"}],\
+\"others\":[{\"path\":\"projects/p/tasks/o.md\",\"change\":\"added\"}],\"unattributed\":[]}"
+  "The `changes' object the stub's status, commit and discard report.")
+
 (defun rdm-transient-test--stub (log root &rest opts)
   "An rdm stub logging to LOG and resolving ROOT, shaped by OPTS.
 OPTS: `:tags' (the JSON tag array every `show' reports, default
 \"[\\\"bug\\\"]\"), `:extra' (JSON list items appended to the declared
-statuses) and `:refuse' (a line every update prints on stderr before
-exiting 1).  Each call appends RDM_SESSION and the argv, tab-separated;
-a `create' also saves its stdin to LOG.stdin (see
-`rdm-transient-test--stdin')."
+statuses), `:terminal' (the JSON `terminal_values' of every status
+field, default \"[\\\"done\\\",\\\"wont-fix\\\"]\"), `:flags' (its JSON
+`value_flags', default blocked → reason) and `:refuse' (a line every
+update prints on stderr before exiting 1).  Each call appends
+RDM_SESSION and the argv, tab-separated; a `create' also saves its
+stdin to LOG.stdin (see `rdm-transient-test--stdin') and prints the
+created item in its `show' shape."
   (rdm-test-stub
    (format "{ printf '%%s' \"$RDM_SESSION\"; for a in \"$@\"; do printf '\\t%%s' \"$a\"; done; printf '\\n'; } >> '%s'
+roadmap=
+for a in \"$@\"; do case \"$a\" in --roadmap=*) roadmap=\"${a#--roadmap=}\" ;; esac; done
 case \"$1 $2\" in
   'info '*) printf '{\"root\":\"%s\",\"project\":\"p\",\"default_branch\":\"main\"}\\n' ;;
-  'describe '*) printf '{\"name\":\"%%s\",\"fields\":[{\"name\":\"title\",\"enum_values\":[]},{\"name\":\"status\",\"enum_values\":[%s%s]}]}\\n' \"$2\" ;;
-  *' show') printf '{\"slug\":\"t1\",\"title\":\"T\",\"status\":\"open\",\"tags\":%s,\"body\":\"B\"}\\n' ;;
+  'describe '*) printf '{\"name\":\"%%s\",\"fields\":[{\"name\":\"title\",\"enum_values\":[]},{\"name\":\"status\",\"enum_values\":[%s%s],\"terminal_values\":%s,\"value_flags\":%s}]}\\n' \"$2\" ;;
+  'roadmap show') printf '{\"kind\":\"roadmap\",\"slug\":\"%%s\",\"ref\":\"%%s\",\"review_ref\":\"roadmap/%%s\",\"title\":\"T\",\"tags\":%s,\"body\":\"B\"}\\n' \"$3\" \"$3\" \"$3\" ;;
+  'phase show') printf '{\"kind\":\"phase\",\"stem\":\"%%s\",\"roadmap\":\"%%s\",\"ref\":\"%%s/%%s\",\"review_ref\":\"phase/%%s/%%s\",\"title\":\"T\",\"status\":\"open\",\"tags\":%s,\"body\":\"B\"}\\n' \"$3\" \"$roadmap\" \"$roadmap\" \"$3\" \"$roadmap\" \"$3\" ;;
+  'task show') printf '{\"kind\":\"task\",\"slug\":\"%%s\",\"ref\":\"task/%%s\",\"review_ref\":\"task/%%s\",\"title\":\"T\",\"status\":\"open\",\"tags\":%s,\"body\":\"B\"}\\n' \"$3\" \"$3\" \"$3\" ;;
   *' update')
     if [ -n '%s' ]; then echo '%s' >&2; exit 1; fi
     echo \"Updated $1 '$3'\" ;;
   *' create')
     cat > '%s.stdin'
-    if [ \"$1\" = phase ]; then echo \"Created phase 'phase-9-$3' in roadmap\"
-    else echo \"Created $1 '$3'\"; fi ;;
+    case \"$1\" in
+      roadmap) printf '{\"kind\":\"roadmap\",\"slug\":\"%%s\",\"ref\":\"%%s\",\"review_ref\":\"roadmap/%%s\"}\\n' \"$3\" \"$3\" \"$3\" ;;
+      phase) printf '{\"kind\":\"phase\",\"stem\":\"phase-9-%%s\",\"roadmap\":\"%%s\",\"ref\":\"%%s/phase-9-%%s\",\"review_ref\":\"phase/%%s/phase-9-%%s\"}\\n' \"$3\" \"$roadmap\" \"$roadmap\" \"$3\" \"$roadmap\" \"$3\" ;;
+      *) printf '{\"kind\":\"task\",\"slug\":\"%%s\",\"ref\":\"task/%%s\",\"review_ref\":\"task/%%s\"}\\n' \"$3\" \"$3\" \"$3\" ;;
+    esac ;;
   'review list') echo '[]' ;;
-  'status '*) echo 'Uncommitted changes:' ;;
-  'commit '*) echo 'Committed 1 file(s).' ;;
-  'discard '*) echo 'Discarded.' ;;
+  'status '*) printf '%%s\\n' '{\"changes\":%s,\"merge\":null,\"sync\":null}' ;;
+  'commit '*) printf '%%s\\n' '{\"commit\":\"0123456789abcdef0123\",\"changeset\":\"s\",\"skipped\":[],\"advisory\":null,\"changes\":%s}' ;;
+  'discard '*) printf '%%s\\n' '{\"merge_aborted\":false,\"restored\":[\"projects/p/tasks/t1.md\"],\"skipped\":[],\"changes\":%s}' ;;
   *) echo \"unexpected $*\" >&2; exit 9 ;;
 esac"
            log root rdm-transient-test--statuses
            (or (plist-get opts :extra) "")
+           (or (plist-get opts :terminal) "[\"done\",\"wont-fix\"]")
+           (or (plist-get opts :flags) "[{\"value\":\"blocked\",\"flag\":\"reason\"}]")
+           (or (plist-get opts :tags) "[\"bug\"]")
+           (or (plist-get opts :tags) "[\"bug\"]")
            (or (plist-get opts :tags) "[\"bug\"]")
            (or (plist-get opts :refuse) "")
            (or (plist-get opts :refuse) "")
-           log)))
+           log
+           rdm-transient-test--changes
+           rdm-transient-test--changes
+           rdm-transient-test--changes)))
 
 (defun rdm-transient-test--stdin (log)
   "What the stub's last `create' read on stdin, or nil."
@@ -72,10 +94,11 @@ esac"
               (split-string (buffer-string) "\n" t)))))
 
 (defun rdm-transient-test--argvs (log)
-  "The argvs in LOG other than `info' and `review list', oldest first.
-Every render of a detail buffer also reads its reviews (rdm-review.el);
-those reads are not what the write-surface tests are about."
-  (seq-remove (lambda (argv) (or (equal (car argv) "info")
+  "The argvs in LOG other than `info', `describe' and `review list'.
+Oldest first.  Every render of a detail buffer also reads its reviews
+\(rdm-review.el), and a status write reads rdm's declared status
+metadata; those reads are not what the write-surface tests are about."
+  (seq-remove (lambda (argv) (or (member (car argv) '("info" "describe"))
                                  (equal (seq-take argv 2) '("review" "list"))))
               (mapcar #'cdr (rdm-transient-test--calls log))))
 
@@ -98,9 +121,9 @@ Binds `log'.  The environment inherits a foreign RDM_SESSION, and
              (kill-buffer b)))))))
 
 (defconst rdm-transient-test--phase
-  '(:kind phase :roadmap "r1" :stem "phase-2-two"))
+  '(:kind phase :roadmap "r1" :stem "phase-2-two" :ref "r1/phase-2-two"))
 
-(defconst rdm-transient-test--task '(:kind task :slug "t1"))
+(defconst rdm-transient-test--task '(:kind task :slug "t1" :ref "task/t1"))
 
 (defun rdm-transient-test--refuse-prompts ()
   "Fail on any prompt: the code under test must not read input here."

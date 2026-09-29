@@ -23,6 +23,9 @@ use crate::search::{ItemKind, SearchResult};
 /// Full roadmap detail, including nested phase summaries and body.
 #[derive(Debug, Clone, Serialize)]
 pub struct RoadmapJson {
+    /// The item kind — always [`ItemKind::Roadmap`] (`"roadmap"`), the
+    /// spelling tree, search and worktree JSON use.
+    pub kind: ItemKind,
     /// Project the roadmap belongs to.
     pub project: String,
     /// Roadmap slug identifier.
@@ -64,6 +67,8 @@ pub struct RoadmapJson {
 /// Full phase detail with body.
 #[derive(Debug, Clone, Serialize)]
 pub struct PhaseJson {
+    /// The item kind — always [`ItemKind::Phase`] (`"phase"`).
+    pub kind: ItemKind,
     /// File-stem (e.g. `phase-1-design`).
     pub stem: String,
     /// Phase number.
@@ -144,6 +149,8 @@ impl PhaseJson {
 /// Full task detail with body.
 #[derive(Debug, Clone, Serialize)]
 pub struct TaskJson {
+    /// The item kind — always [`ItemKind::Task`] (`"task"`).
+    pub kind: ItemKind,
     /// Task slug.
     pub slug: String,
     /// The item reference (`task/<slug>`) — the grammar `rdm worktree` and
@@ -586,6 +593,7 @@ pub fn roadmap_to_json(
     });
     let progress = PhaseProgress::of(phases);
     RoadmapJson {
+        kind: ItemKind::Roadmap,
         project: rm.project.clone(),
         slug: rm.roadmap.clone(),
         item_ref,
@@ -625,6 +633,7 @@ pub fn phase_to_json(
         stem: stem.to_string(),
     });
     PhaseJson {
+        kind: ItemKind::Phase,
         stem: stem.to_string(),
         phase: fm.phase,
         title: fm.title.clone(),
@@ -658,6 +667,7 @@ pub fn task_to_json(slug: &str, doc: &Document<Task>, revision: Option<&str>) ->
         slug: slug.to_string(),
     });
     TaskJson {
+        kind: ItemKind::Task,
         slug: slug.to_string(),
         item_ref,
         review_ref,
@@ -1184,7 +1194,8 @@ pub fn comment_target_to_json(target: &crate::comment_target::CommentTarget) -> 
 }
 
 /// A review target in JSON: the stored target's fields (tagged on `kind`)
-/// plus its canonical reference string.
+/// plus its canonical reference string and, for an item target, the item
+/// reference.
 ///
 /// `ref` is [`ReviewTarget::label`] — the `--on` grammar (`roadmap/<slug>`,
 /// `phase/<roadmap>/<stem>`, `task/<slug>`, `plan/<slug>`,
@@ -1200,6 +1211,11 @@ pub fn comment_target_to_json(target: &crate::comment_target::CommentTarget) -> 
 /// assert_eq!(value["kind"], "task");
 /// assert_eq!(value["slug"], "fix");
 /// assert_eq!(value["ref"], "task/fix");
+/// assert_eq!(value["item_ref"], "task/fix");
+///
+/// let plan = ReviewTargetJson::from(ReviewTarget::Plan { slug: "p".into() });
+/// let value = serde_json::to_value(&plan).unwrap();
+/// assert!(value.get("item_ref").is_none());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ReviewTargetJson {
@@ -1209,12 +1225,23 @@ pub struct ReviewTargetJson {
     /// The target's canonical reference string ([`ReviewTarget::label`]).
     #[serde(rename = "ref")]
     pub reference: String,
+    /// The target's item reference ([`ReviewTarget::item_ref`]) — the
+    /// grammar item JSON's own `ref` carries (`<roadmap>`,
+    /// `<roadmap>/<stem>`, `task/<slug>`). Omitted for plan and change
+    /// targets, which are not items.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_ref: Option<String>,
 }
 
 impl From<ReviewTarget> for ReviewTargetJson {
     fn from(target: ReviewTarget) -> Self {
         let reference = target.label();
-        Self { target, reference }
+        let item_ref = target.item_ref();
+        Self {
+            target,
+            reference,
+            item_ref,
+        }
     }
 }
 

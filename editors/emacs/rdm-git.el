@@ -5,8 +5,8 @@
 ;;; Commentary:
 
 ;; `rdm-insert-done-line' picks an active phase or task (rdm's `--active'
-;; group, from `rdm tree --active') and inserts `rdm hook done-line''s
-;; output, verbatim, at the trailer position of a commit message: the end
+;; group, from `rdm tree --active') and inserts the `line' of `rdm hook
+;; done-line''s JSON reply, verbatim, at the trailer position of a commit message: the end
 ;; of the message, before any `#' comment lines and the scissors line,
 ;; appended to an existing trailer block.  The current rdm worktree's item
 ;; (from `rdm worktree current') is the picker's default.  It works in any
@@ -158,8 +158,9 @@ landed through rdm-land is marked done without a trailer."
 ;;;###autoload
 (defun rdm-insert-done-line ()
   "Pick an active phase or task and insert its `Done:' line as a trailer.
-The line is `rdm hook done-line''s output.  The current rdm worktree's
-item is the default.  Warns when not on the default branch."
+The line is the `line' of `rdm hook done-line''s JSON reply.  The
+current rdm worktree's item is the default.  Warns when not on the
+default branch."
   (interactive)
   (let* ((buf (current-buffer))
          (default-directory (rdm-git--toplevel))
@@ -167,9 +168,7 @@ item is the default.  Warns when not on the default branch."
                   (rdm-git-candidates)
                   (ignore-errors (rdm-worktree-item))))
          (item (rdm-pick-read "Done: " (car picked) (cdr picked) t))
-         (line (string-trim-right
-                (apply #'rdm-call-sync 'done-line (rdm-item-done-line-args item))
-                "\n+"))
+         (line (rdm-item-done-line item))
          (branch (rdm-git-current-branch))
          (default (plist-get (rdm-context) :default-branch)))
     (with-current-buffer buf

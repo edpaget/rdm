@@ -10,8 +10,10 @@
 ;;
 ;; - Status: one suffix per value `rdm describe <kind>' declares for the
 ;;   item's `status' field (see `rdm-status-values'); there is no status
-;;   list here.  `blocked' asks for a reason; the statuses in
-;;   `rdm-confirm-statuses' ask for confirmation.  A roadmap has no status.
+;;   list here.  A status rdm declares a note flag for (`value_flags',
+;;   see `rdm-value-flag') asks for that note; the terminal statuses rdm
+;;   declares (or `rdm-confirm-statuses', when set) ask for confirmation.
+;;   A roadmap has no status.
 ;; - Edit: add and remove tags, and edit the body.  The tag write is one
 ;;   `update --add-tag/--remove-tag' call; rdm applies it to the current
 ;;   list, so tags the user did not touch (e.g. `needs-plan-review',
@@ -31,7 +33,8 @@
 ;;   only with an item.
 ;; - Plan repo: `rdm status', `rdm commit' and `rdm discard --force' over
 ;;   this Emacs's changeset (every rdm process the package runs carries
-;;   `RDM_SESSION'; see `rdm-session').  This group works with no item.
+;;   `RDM_SESSION'; see `rdm-session'), each read as rdm's JSON reply and
+;;   summarized from its data.  This group works with no item.
 ;;
 ;; rdm stages every write; nothing is committed until `rdm-plan-commit'.
 ;; A write rdm refuses (e.g. the `gates.reviewed' gate) signals rdm's own
@@ -73,9 +76,12 @@
 (autoload 'rdm-review-dispatch-comment "rdm-review" nil t)
 (autoload 'rdm-review-dispatch-submit "rdm-review" nil t)
 
-(defcustom rdm-confirm-statuses '("done" "wont-fix")
-  "Status values `rdm-set-status' asks to confirm before writing."
-  :type '(repeat string)
+(defcustom rdm-confirm-statuses nil
+  "Status values `rdm-set-status' asks to confirm before writing.
+nil means the terminal statuses rdm declares for the item's kind
+\(`rdm-terminal-values'); a list of status values overrides them."
+  :type '(choice (const :tag "rdm's terminal statuses" nil)
+                 (repeat string))
   :group 'rdm)
 
 ;;;; Item writes
@@ -114,25 +120,30 @@ A phase's roadmap view is refreshed too, since it lists the phase."
            (rdm-item-identifier item) what)
   (run-hooks 'rdm-after-write-hook))
 
-(defun rdm-set-status (item status &optional reason)
+(defun rdm-set-status (item status &optional note)
   "Set the status of ITEM (a phase or task) to STATUS.
-For `blocked', REASON is recorded; when nil it is read from the
-minibuffer (empty means none).  A status in `rdm-confirm-statuses' is
-confirmed first; declining writes nothing and returns nil.  Returns
-rdm's output."
-  (when (eq (plist-get item :kind) 'roadmap)
-    (user-error "rdm: a roadmap has no status"))
-  (when (and (equal status "blocked") (null reason))
-    (setq reason (read-string (format "Reason %s is blocked: "
-                                      (rdm-item-identifier item)))))
-  (when (or (not (member status rdm-confirm-statuses))
-            (y-or-n-p (format "Mark %s %s? " (rdm-item-identifier item) status)))
-    (prog1 (apply #'rdm-call-sync
-                  (append (rdm--update-args item)
-                          (list :status status
-                                :reason (and (equal status "blocked")
-                                             (rdm--nonempty reason)))))
-      (rdm--after-write item (concat "→ " status)))))
+When rdm declares a note flag for STATUS (`rdm-value-flag', e.g. a
+reason), NOTE is recorded with it; when nil it is read from the
+minibuffer (empty means none).  A status in `rdm-confirm-statuses', or
+when that is nil one of the terminal statuses rdm declares for ITEM's
+kind, is confirmed first; declining writes nothing and returns nil.
+Returns rdm's output."
+  (let ((kind (plist-get item :kind)))
+    (when (eq kind 'roadmap)
+      (user-error "rdm: a roadmap has no status"))
+    (let ((flag (rdm-value-flag kind "status" status)))
+      (when (and flag (null note))
+        (setq note (read-string (format "--%s for %s → %s (empty for none): "
+                                        flag (rdm-item-identifier item) status))))
+      (when (or (not (member status (or rdm-confirm-statuses
+                                        (rdm-terminal-values kind "status"))))
+                (y-or-n-p (format "Mark %s %s? " (rdm-item-identifier item) status)))
+        (prog1 (apply #'rdm-call-sync
+                      (append (rdm--update-args item)
+                              (list :status status)
+                              (when (and flag (rdm--nonempty note))
+                                (list (intern (concat ":" flag)) note))))
+          (rdm--after-write item (concat "→ " status)))))))
 
 (defun rdm-item-tags (item)
   "ITEM's current tags, freshly read with `show'."
@@ -180,40 +191,35 @@ Returns the compose buffer."
 
 ;;;; Creating items
 
-(defun rdm--created-stem (output)
-  "The phase stem rdm's `phase create' OUTPUT names, or nil."
-  (and (string-match "Created phase '\\([^']+\\)'" output)
-       (match-string 1 output)))
-
 (cl-defun rdm-create-item (kind slug title body &key tags roadmap number)
   "Create a KIND (`roadmap', `phase' or `task') named SLUG titled TITLE.
 BODY is piped to rdm on stdin (never `--body').  TAGS is a
 comma-separated string passed to rdm as typed (rdm trims it, drops empty
 tags and de-duplicates), or nil.  A phase needs ROADMAP; SLUG is its bare
-slug (rdm prepends `phase-<n>-'), and NUMBER, when non-nil, its number.
-Refreshes the views the new item affects and returns its item plist."
+slug (rdm prepends `phase-<n>-'), and NUMBER, when non-nil, its number
+\(passed to rdm as typed).  The item plist is built from the created item
+rdm reports: its `kind', `roadmap'/`stem'/`slug', `ref' and
+`review_ref'.  Refreshes the views the new item affects and returns
+that item plist."
   (let* ((action (pcase kind
                    ('roadmap 'roadmap-create)
                    ('phase 'phase-create)
                    ('task 'task-create)
                    (_ (user-error "rdm: Cannot create a %s" kind))))
-         (output (apply #'rdm-call-sync action slug
-                        :title title :tags (rdm--nonempty tags)
-                        (append (when (eq kind 'phase)
-                                  (list :roadmap roadmap :number number))
-                                (list :stdin body))))
-         (item (pcase kind
-                 ('roadmap (list :kind 'roadmap :roadmap slug))
-                 ('phase (list :kind 'phase :roadmap roadmap
-                               :stem (rdm--created-stem output)))
-                 (_ (list :kind 'task :slug slug)))))
-    (if (plist-get item :stem)
-        (rdm--after-write item "created")
-      (rdm--refresh-views item)
-      (message "rdm: %s %s created and staged — commit from rdm-dispatch \
-(or `rdm commit')"
-               kind (if (eq kind 'phase) (concat roadmap "/" slug) slug))
-      (run-hooks 'rdm-after-write-hook))
+         (json (apply #'rdm-call-sync action slug
+                      :title title :tags (rdm--nonempty tags)
+                      (append (when (eq kind 'phase)
+                                (list :roadmap roadmap :number number))
+                              (list :stdin body))))
+         (created (intern (plist-get json :kind)))
+         (item (rdm-item-with-refs
+                (pcase created
+                  ('roadmap (list :kind created :roadmap (plist-get json :slug)))
+                  ('phase (list :kind created :roadmap (plist-get json :roadmap)
+                                :stem (plist-get json :stem)))
+                  (_ (list :kind created :slug (plist-get json :slug))))
+                json)))
+    (rdm--after-write item "created")
     item))
 
 (defun rdm--read-required (prompt)
@@ -271,38 +277,96 @@ at point in a detail buffer."
          (number (rdm--nonempty
                   (string-trim (read-string "Number (empty for the next): "))))
          (tags (read-string "Tags (comma-separated): ")))
-    (when (and number (not (string-match-p "\\`[0-9]+\\'" number)))
-      (user-error "rdm: Phase number must be a positive integer, not %s" number))
     (rdm--compose-create 'phase slug title tags :roadmap roadmap :number number)))
 
 ;;;; Plan repo
 
-(defun rdm--show-output (text)
-  "Echo TEXT, rdm's output, trimmed; return it."
-  (message "%s" (string-trim text))
-  text)
+(defun rdm--other-changes (changes)
+  "Lines counting the CHANGES (a `changes' reply) this Emacs did not stage."
+  (delq nil
+        (list (when (> (length (plist-get changes :others)) 0)
+                (format "%d staged by other sessions"
+                        (length (plist-get changes :others))))
+              (when (> (length (plist-get changes :unattributed)) 0)
+                (format "%d unattributed"
+                        (length (plist-get changes :unattributed)))))))
+
+(defun rdm--status-summary (json)
+  "The text summarizing JSON, rdm's `status' reply."
+  (let* ((changes (plist-get json :changes))
+         (user (plist-get changes :user))
+         (merge (plist-get json :merge))
+         (sync (plist-get json :sync)))
+    (string-join
+     (append
+      (list (if (> (length user) 0)
+                "rdm: staged from this Emacs:"
+              "rdm: nothing staged from this Emacs"))
+      (mapcar (lambda (c) (format "  %s %s" (plist-get c :change) (plist-get c :path)))
+              user)
+      (rdm--other-changes changes)
+      (when merge
+        (list (format "merge in progress (%d unmerged)" (plist-get merge :unmerged))))
+      (when sync
+        (list (format "%s vs %s: %d ahead, %d behind"
+                      (plist-get sync :branch) (plist-get sync :remote)
+                      (plist-get sync :ahead) (plist-get sync :behind)))))
+     "\n")))
+
+(defun rdm--commit-summary (json)
+  "The text summarizing JSON, rdm's `commit' reply."
+  (let ((sha (plist-get json :commit))
+        (skipped (append (plist-get json :skipped) nil))
+        (advisory (plist-get json :advisory)))
+    (string-join
+     (append
+      (list (if sha
+                (format "rdm: committed %s" (substring sha 0 (min 12 (length sha))))
+              "rdm: nothing committed"))
+      (when skipped
+        (list (format "skipped: %s" (string-join skipped ", "))))
+      (when advisory (list advisory)))
+     "\n")))
+
+(defun rdm--discard-summary (json)
+  "The text summarizing JSON, rdm's `discard' reply."
+  (let ((restored (length (plist-get json :restored)))
+        (skipped (length (plist-get json :skipped))))
+    (concat (format "rdm: discarded %d path%s" restored (if (= restored 1) "" "s"))
+            (if (> skipped 0)
+                (format ", skipped %d changed by another session" skipped)
+              "")
+            (if (eq (plist-get json :merge_aborted) t) " (merge aborted)" ""))))
 
 ;;;###autoload
 (defun rdm-plan-status ()
-  "Show this Emacs's staged plan-repo changes (`rdm status'); return the text."
+  "Show this Emacs's staged plan-repo changes (`rdm status').
+Returns rdm's JSON reply as a plist."
   (interactive)
-  (rdm--show-output (rdm-call-sync 'status)))
+  (let ((json (rdm-call-sync 'status)))
+    (message "%s" (rdm--status-summary json))
+    json))
 
 ;;;###autoload
 (defun rdm-plan-commit (message)
-  "Commit this Emacs's staged plan-repo changes with MESSAGE."
+  "Commit this Emacs's staged plan-repo changes with MESSAGE.
+Returns rdm's JSON reply as a plist."
   (interactive (list (read-string "Commit message: ")))
   (unless (rdm--nonempty (string-trim message))
     (user-error "rdm: a commit needs a message"))
-  (rdm--show-output (rdm-call-sync 'commit :message message)))
+  (let ((json (rdm-call-sync 'commit :message message)))
+    (message "%s" (rdm--commit-summary json))
+    json))
 
 ;;;###autoload
 (defun rdm-plan-discard ()
   "Discard this Emacs's staged plan-repo changes after confirming.
-Returns rdm's output, or nil when declined."
+Returns rdm's JSON reply as a plist, or nil when declined."
   (interactive)
   (when (y-or-n-p "Discard every change staged from this Emacs? ")
-    (rdm--show-output (rdm-call-sync 'discard :force t))))
+    (let ((json (rdm-call-sync 'discard :force t)))
+      (message "%s" (rdm--discard-summary json))
+      json)))
 
 ;;;; The transient
 

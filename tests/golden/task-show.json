@@ -1,4 +1,5 @@
 {
+  "kind": "task",
   "slug": "fixture-task-open",
   "ref": "task/fixture-task-open",
   "review_ref": "task/fixture-task-open",

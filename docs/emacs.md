@@ -95,7 +95,8 @@ value came from. Precedence is per key.
   the `rdm-session` option (one generated id per Emacs instance by default).
   The writes you make from one Emacs therefore form one changeset, and
   `rdm-plan-status`, `rdm-plan-commit` and `rdm-plan-discard` act on exactly
-  that changeset. See [session identity](session-identity.md).
+  that changeset; each echoes a summary and returns rdm's `--format json`
+  reply as a plist. See [session identity](session-identity.md).
 - **Caching.** Resolved contexts are cached per project root and
   override/environment values, so a changed override or `RDM_*` variable
   resolves afresh. After changing something only `rdm info` reports (rdm's
@@ -134,13 +135,13 @@ conventions.
 | normal | `RET` | `rdm-view-open-at-point` | open the item at point (a roadmap's phase row) |
 | normal | `gr` | `revert-buffer` | refresh from rdm |
 | normal | `q` | `quit-window` | quit |
-| normal | `y` | `rdm-view-copy-identifier` | copy the item's identifier |
+| normal | `y` | `rdm-view-copy-identifier` | copy the item's identifier: the `ref` rdm reports for it (`<roadmap>`, `<roadmap>/<stem>`, `task/<slug>`), which also names its detail buffer |
 | normal | `gd` | `rdm-view-copy-done-line` | copy the item's `Done:` commit line |
 | normal | `x` | `rdm-dispatch` | the dispatch transient |
 | normal | `K` | `rdm-review-comment-at-point` | describe the review comment at point |
 | normal | `]c` | `rdm-review-next-comment` | next review comment |
 | normal | `[c` | `rdm-review-previous-comment` | previous review comment |
-| normal | `gA` | `rdm-review-resolve` | set the comment at point's status, from those `rdm describe review` declares (the applied commit pre-fills `HEAD`, which rdm resolves in the target's repository) |
+| normal | `gA` | `rdm-review-resolve` | set the comment at point's status, from those `rdm describe review` declares (for a status rdm declares an `--applied-commit` for, the applied commit is asked, pre-filled with `HEAD`, which rdm resolves in the target's repository) |
 | normal | `C` | `rdm-review-comment-document` | whole-document comment in your draft review (yours as rdm resolves the author — `review list --mine` — unless `rdm-review-author` overrides it) |
 | normal | `gS` | `rdm-review-submit` | submit your draft review with a verdict |
 | visual | `c` | `rdm-review-comment-region` | comment on the selected body lines (the lines the selection touches are the anchor, `review comment --line`) |
@@ -188,7 +189,10 @@ in another window, `w` copy identifier, `d` copy `Done:` line, `x`
 `rdm-dispatch`.
 
 **`rdm-dispatch`** transient: one suffix per status `rdm describe` declares for
-the item's kind; `T` tags, `B` body; `Rs` show review, `Rq` requests queue,
+the item's kind (a status rdm declares a note flag for, such as a phase's
+`blocked` → `--reason`, asks for that note; a terminal status rdm declares asks
+for confirmation — set `rdm-confirm-statuses` to a list of statuses to
+override which ones, its default nil meaning rdm's terminal statuses); `T` tags, `B` body; `Rs` show review, `Rq` requests queue,
 `Ra` close as addressed, `Rd` dismiss, `Rv` revise (copy command), `Rn` start
 draft review, `Rc` comment on document, `RS` submit; `+r`/`+p`/`+t` create a
 roadmap, phase or task; `S`/`C`/`D` plan-repo status, commit and discard.
@@ -227,7 +231,7 @@ These are the commands to call with `M-x` or bind globally. Each is autoloaded.
 | `rdm-view-at` | show the item at point with its body at a revision |
 | `rdm-dispatch` | the dispatch transient: status, tags, body, reviews, create, plan repo |
 | `rdm-create-roadmap` / `rdm-create-phase` / `rdm-create-task` | create an item, body in a compose buffer |
-| `rdm-plan-status` / `rdm-plan-commit` / `rdm-plan-discard` | this Emacs's staged changeset: status, commit, discard |
+| `rdm-plan-status` / `rdm-plan-commit` / `rdm-plan-discard` | this Emacs's staged changeset: status, commit, discard (each returns rdm's JSON reply) |
 | `rdm-review-requests` | pick a review requesting changes and open its target |
 | `rdm-review-show` | display a review of the item at point |
 | `rdm-worktree-list` | pick one of the code repo's rdm worktrees and open it |

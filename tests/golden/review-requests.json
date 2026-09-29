@@ -5,7 +5,8 @@
     "target": {
       "kind": "task",
       "slug": "fixture-task-open",
-      "ref": "task/fixture-task-open"
+      "ref": "task/fixture-task-open",
+      "item_ref": "task/fixture-task-open"
     },
     "state": "submitted",
     "verdict": "request-changes",

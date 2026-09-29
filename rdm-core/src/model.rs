@@ -47,6 +47,40 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// A note a status transition records alongside the status itself.
+///
+/// The one declaration of which status records which note: each status
+/// type's `note()` maps its statuses here, and `rdm describe` projects that
+/// mapping (as `value_flags`) so a client learns the flag from rdm instead
+/// of hard-coding a status name.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::model::{PhaseStatus, StatusNote};
+///
+/// assert_eq!(PhaseStatus::Blocked.note(), Some(StatusNote::Reason));
+/// assert_eq!(StatusNote::Reason.flag(), "reason");
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatusNote {
+    /// A free-form reason (why the item was parked or closed).
+    Reason,
+    /// The commit that applied a change (a review comment's fix).
+    AppliedCommit,
+}
+
+impl StatusNote {
+    /// The CLI long flag (without the leading `--`) that records this note.
+    #[must_use]
+    pub fn flag(self) -> &'static str {
+        match self {
+            StatusNote::Reason => "reason",
+            StatusNote::AppliedCommit => "applied-commit",
+        }
+    }
+}
+
 /// Status of a roadmap phase.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -75,6 +109,21 @@ impl PhaseStatus {
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(self, PhaseStatus::Done | PhaseStatus::WontFix)
+    }
+
+    /// The note this status records, if any: `Blocked` records a
+    /// [`StatusNote::Reason`] (`phase update --reason`, the escalation note).
+    #[must_use]
+    pub fn note(&self) -> Option<StatusNote> {
+        match self {
+            PhaseStatus::Blocked => Some(StatusNote::Reason),
+            PhaseStatus::NotStarted
+            | PhaseStatus::InProgress
+            | PhaseStatus::NeedsReview
+            | PhaseStatus::Reviewed
+            | PhaseStatus::Done
+            | PhaseStatus::WontFix => None,
+        }
     }
 
     /// Returns `true` for the "active work" group: `InProgress`,
@@ -155,6 +204,21 @@ impl TaskStatus {
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(self, TaskStatus::Done | TaskStatus::WontFix)
+    }
+
+    /// The note this status records, if any: `Blocked` and `WontFix` record
+    /// a [`StatusNote::Reason`] (`task update --reason`: why it is blocked,
+    /// or why it was marked wont-fix).
+    #[must_use]
+    pub fn note(&self) -> Option<StatusNote> {
+        match self {
+            TaskStatus::Blocked | TaskStatus::WontFix => Some(StatusNote::Reason),
+            TaskStatus::Open
+            | TaskStatus::InProgress
+            | TaskStatus::NeedsReview
+            | TaskStatus::Reviewed
+            | TaskStatus::Done => None,
+        }
     }
 
     /// Returns `true` for the "active work" group: `InProgress`,
@@ -997,6 +1061,16 @@ impl ReviewCommentStatus {
             self,
             ReviewCommentStatus::Addressed | ReviewCommentStatus::WontFix
         )
+    }
+
+    /// The note this status records, if any: `Addressed` records a
+    /// [`StatusNote::AppliedCommit`] (`review update --applied-commit`).
+    #[must_use]
+    pub fn note(&self) -> Option<StatusNote> {
+        match self {
+            ReviewCommentStatus::Addressed => Some(StatusNote::AppliedCommit),
+            ReviewCommentStatus::Open | ReviewCommentStatus::WontFix => None,
+        }
     }
 }
 

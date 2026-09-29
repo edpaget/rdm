@@ -170,3 +170,80 @@ fn describe_review_json_lists_comment_status_values() {
         serde_json::json!(["open", "addressed", "wont-fix"])
     );
 }
+
+/// The JSON `describe <entity>` field named `name`.
+fn described_field(entity: &str, name: &str) -> Value {
+    let output = rdm()
+        .args(["describe", entity, "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    json["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == name)
+        .unwrap_or_else(|| panic!("{entity} describes {name}"))
+        .clone()
+}
+
+#[test]
+fn describe_phase_json_declares_terminal_statuses_and_note_flags() {
+    let field = described_field("phase", "status");
+    assert_eq!(
+        field["terminal_values"],
+        serde_json::json!(["done", "wont-fix"])
+    );
+    assert_eq!(
+        field["value_flags"],
+        serde_json::json!([{"value": "blocked", "flag": "reason"}])
+    );
+}
+
+#[test]
+fn describe_task_json_declares_terminal_statuses_and_note_flags() {
+    let field = described_field("task", "status");
+    assert_eq!(
+        field["terminal_values"],
+        serde_json::json!(["done", "wont-fix"])
+    );
+    assert_eq!(
+        field["value_flags"],
+        serde_json::json!([
+            {"value": "blocked", "flag": "reason"},
+            {"value": "wont-fix", "flag": "reason"}
+        ])
+    );
+}
+
+#[test]
+fn describe_review_json_declares_comment_terminal_statuses_and_note_flags() {
+    let field = described_field("review", "comments.status");
+    assert_eq!(
+        field["terminal_values"],
+        serde_json::json!(["addressed", "wont-fix"])
+    );
+    assert_eq!(
+        field["value_flags"],
+        serde_json::json!([{"value": "addressed", "flag": "applied-commit"}])
+    );
+}
+
+#[test]
+fn describe_non_status_field_omits_status_metadata() {
+    let field = described_field("phase", "difficulty");
+    assert!(field.get("terminal_values").is_none());
+    assert!(field.get("value_flags").is_none());
+}
+
+#[test]
+fn describe_phase_human_format_prints_terminal_and_flags_lines() {
+    rdm()
+        .args(["describe", "phase"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "    terminal: done, wont-fix\n    flags: blocked → --reason\n",
+        ));
+}

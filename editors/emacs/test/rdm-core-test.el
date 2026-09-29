@@ -199,6 +199,33 @@ rdm info runs with the env-resolved RDM_ROOT / RDM_PROJECT."
       (rdm-test-with-env (list (concat "RDM_BIN=" stub))
         (should (null (rdm-worktree-item)))))))
 
+(ert-deftest rdm-describe/status-metadata ()
+  "`rdm-terminal-values' and `rdm-value-flag' read what `rdm describe'
+declares, whatever the status names are, with one `describe' call per
+kind; a field declaring none gives nil."
+  (rdm-core-test--in-sandbox
+    (let ((stub (rdm-test-stub
+                 (format "echo \"$*\" >> '%s'
+case \"$1\" in
+  info) printf '{\"root\":\"%s\",\"project\":\"p\"}\\n' ;;
+  describe) printf '%%s\\n' '{\"name\":\"phase\",\"fields\":[{\"name\":\"title\",\"enum_values\":[]},{\"name\":\"status\",\"enum_values\":[\"todo\",\"parked\",\"shipped\",\"dropped\"],\"terminal_values\":[\"shipped\",\"dropped\"],\"value_flags\":[{\"value\":\"parked\",\"flag\":\"why\"},{\"value\":\"shipped\",\"flag\":\"sha\"}]}]}' ;;
+  *) echo \"unexpected $*\" >&2; exit 9 ;;
+esac"
+                         log (car dirs)))))
+      (rdm-test-with-env (list (concat "RDM_BIN=" stub))
+        (should (equal (rdm-status-values 'phase)
+                       '("todo" "parked" "shipped" "dropped")))
+        (should (equal (rdm-terminal-values 'phase "status")
+                       '("shipped" "dropped")))
+        (should (equal (rdm-value-flag 'phase "status" "parked") "why"))
+        (should (equal (rdm-value-flag 'phase "status" "shipped") "sha"))
+        (should-not (rdm-value-flag 'phase "status" "todo"))
+        (should-not (rdm-terminal-values 'phase "title"))
+        (should-not (rdm-value-flag 'phase "title" "x"))
+        (should (equal (seq-filter (lambda (l) (string-prefix-p "describe" l))
+                                   (rdm-core-test--log-lines log))
+                       '("describe phase --format json")))))))
+
 (ert-deftest rdm-context/bin-not-dir-local-safe ()
   "A directory-local `rdm-bin' names a program to run, so it is not safe;
 the root and project are only passed to rdm and stay safe."
@@ -209,7 +236,8 @@ the root and project are only passed to rdm and stay safe."
 ;;;; Argv builder
 
 (ert-deftest rdm-argv/golden ()
-  "Reads get --format json, writes --no-edit, text actions neither."
+  "Reads get --format json, writes --no-edit, creates both; reads and
+creates are parsed as JSON."
   (dolist (row rdm--actions)
     (let* ((action (car row))
            (argv (car (rdm-argv action "x" :project "p")))
@@ -218,17 +246,16 @@ the root and project are only passed to rdm and stay safe."
                      t)))
       (pcase (plist-get (cdr row) :kind)
         ('read
-         (should (rdm-action-read-p action))
+         (should (rdm-action-json-p action))
          (should (equal (last argv 2) '("--format" "json")))
          (should-not (member "--no-edit" argv)))
         ('write
-         (should-not (rdm-action-read-p action))
+         (should-not (rdm-action-json-p action))
          (should (equal (last argv) '("--no-edit")))
          (should-not (member "--format" argv)))
-        ('text
-         (should-not (rdm-action-read-p action))
-         (should-not (member "--no-edit" argv))
-         (should-not (member "--format" argv)))
+        ('create
+         (should (rdm-action-json-p action))
+         (should (equal (last argv 3) '("--no-edit" "--format" "json"))))
         (kind (ert-fail (format "%s has unknown kind %s" action kind))))
       (should (eq (and (member "--project" argv) t) scoped))))
   (should (equal (rdm-argv 'task-update "fixture-task-open"
@@ -240,7 +267,7 @@ the root and project are only passed to rdm and stay safe."
   (should (equal (rdm-argv 'task-create "t" :title "T" :stdin "body\n"
                            :project "p")
                  '(("task" "create" "t" "--title=T" "--project" "p"
-                    "--no-edit")
+                    "--no-edit" "--format" "json")
                    . "body\n")))
   (should (equal (rdm-argv 'task-update "t" :body "b" :project "p")
                  '(("task" "update" "t" "--body=b" "--project" "p"
@@ -264,12 +291,13 @@ the root and project are only passed to rdm and stay safe."
   (should (equal (rdm-argv 'task-list :status "all" :project "p")
                  '(("task" "list" "--status=all" "--project" "p"
                     "--format" "json"))))
-  ;; `status', `commit' and `discard' print text and take no --project.
-  (should (equal (rdm-argv 'status :project "p") '(("status"))))
+  ;; `status', `commit' and `discard' print JSON and take no --project.
+  (should (equal (rdm-argv 'status :project "p")
+                 '(("status" "--format" "json"))))
   (should (equal (rdm-argv 'commit :message "-m msg" :project "p")
-                 '(("commit" "--message=-m msg"))))
+                 '(("commit" "--message=-m msg" "--format" "json"))))
   (should (equal (rdm-argv 'discard :force t :project "p")
-                 '(("discard" "--force"))))
+                 '(("discard" "--force" "--format" "json"))))
   (should (equal (rdm-argv 'describe "task" :project "p")
                  '(("describe" "task" "--format" "json"))))
   ;; `worktree remove' prints the removed worktree as JSON; `worktree
@@ -279,11 +307,12 @@ the root and project are only passed to rdm and stay safe."
                     "--format" "json"))))
   (should (equal (rdm-argv 'worktree-current :project "p")
                  '(("worktree" "current" "--project" "p" "--format" "json"))))
-  ;; `hook done-line' prints plain text and rejects --project.
+  ;; `hook done-line' prints JSON and rejects --project.
   (should (equal (rdm-argv 'done-line :task "t" :project "p")
-                 '(("hook" "done-line" "--task=t"))))
+                 '(("hook" "done-line" "--task=t" "--format" "json"))))
   (should (equal (rdm-argv 'done-line :roadmap "r" :phase "phase-1-x")
-                 '(("hook" "done-line" "--roadmap=r" "--phase=phase-1-x"))))
+                 '(("hook" "done-line" "--roadmap=r" "--phase=phase-1-x"
+                    "--format" "json"))))
   ;; Reviews: reads take --format json; `review update' returns the
   ;; updated review as JSON too.
   (should (equal (rdm-argv 'review-list :on "task/t" :project "p")

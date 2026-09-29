@@ -89,11 +89,12 @@ candidate."
                       (`("tree" "--active" . ,_) (rdm-git-test--tree))
                       (`("worktree" "current" . ,_) ,worktree)
                       (`("hook" "done-line" . ,_)
-                       (if-let* ((task (rdm-git-test--flag argv "task")))
-                           (format "Done: task/%s\n" task)
-                         (format "Done: %s/%s\n"
-                                 (rdm-git-test--flag argv "roadmap")
-                                 (rdm-git-test--flag argv "phase"))))
+                       (list :line
+                             (if-let* ((task (rdm-git-test--flag argv "task")))
+                                 (format "Done: task/%s" task)
+                               (format "Done: %s/%s"
+                                       (rdm-git-test--flag argv "roadmap")
+                                       (rdm-git-test--flag argv "phase")))))
                       (_ (error "Unexpected argv %S" argv)))))))
        ,@body)))
 
@@ -324,7 +325,7 @@ working tree and the branch warning names its real branch."
                          (pcase (cdr command)
                            (`("tree" . ,_) (rdm-git-test--tree))
                            (`("worktree" "current" . ,_) nil)
-                           (`("hook" "done-line" . ,_) "Done: task/t1\n")
+                           (`("hook" "done-line" . ,_) (list :line "Done: task/t1"))
                            (argv (error "Unexpected argv %S" argv))))))
               (rdm-insert-done-line))
             (should (string-match-p "^Done: task/t1$" (buffer-string))))

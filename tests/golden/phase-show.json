@@ -2,6 +2,7 @@
   "body": "First phase: already done.\n",
   "completed": "<DATE>",
   "estimate_snapshot": "<SNAPSHOT>",
+  "kind": "phase",
   "next_phase": "phase-2-seed-two",
   "phase": 1,
   "ref": "sample-roadmap/phase-1-seed-one",

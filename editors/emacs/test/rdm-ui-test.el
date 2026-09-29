@@ -110,9 +110,12 @@
                   :status "in-progress"))))
       (`("hook" "done-line" . ,_)
        (if-let* ((task (rdm-ui-test--flag argv "task")))
-           (format "Done: task/%s\n" task)
-         (format "Done: %s/%s\n" (rdm-ui-test--flag argv "roadmap")
-                 (rdm-ui-test--flag argv "phase"))))
+           (list :line (format "Done: task/%s" task) :kind "task" :task task)
+         (list :line (format "Done: %s/%s" (rdm-ui-test--flag argv "roadmap")
+                             (rdm-ui-test--flag argv "phase"))
+               :kind "phase"
+               :roadmap (rdm-ui-test--flag argv "roadmap")
+               :phase (rdm-ui-test--flag argv "phase"))))
       (_ (error "Unexpected argv %S" argv)))))
 
 (defmacro rdm-ui-test--mocked (&rest body)
@@ -279,12 +282,29 @@ structured fields; the property-less text recovers it."
                          "phase/r1/phase-2-two")))))))
 
 (ert-deftest rdm-view/identifier-falls-back ()
-  "An item of another kind copies its `:identifier'."
+  "An item's identifier is the `:ref' rdm reported; an item with none (a
+plan or change review target) falls back to its `:identifier'."
   (let ((kill-ring nil))
+    (should (equal (rdm-item-identifier
+                    '(:kind phase :roadmap "r" :stem "s" :ref "r/phase-1-s"))
+                   "r/phase-1-s"))
     (should (equal (rdm-item-identifier
                     '(:kind review :identifier "2026-09-25-0000-abcd"))
                    "2026-09-25-0000-abcd"))
-    (should-error (rdm-item-identifier '(:kind review)) :type 'user-error)))
+    (should-error (rdm-item-identifier '(:kind review)) :type 'user-error)
+    (should-error (rdm-item-identifier '(:kind task :slug "t1"))
+                  :type 'user-error)))
+
+(ert-deftest rdm-view/task-identifier-is-its-ref ()
+  "A bare task item opened by slug takes rdm's `ref' from `show': its
+buffer name, Task field and copied identifier are `task/<slug>'."
+  (rdm-ui-test--mocked
+    (with-current-buffer (rdm-open-item '(:kind task :slug "t1"))
+      (should (equal (buffer-name) "*rdm task task/t1*"))
+      (should (equal (plist-get rdm-view--item :ref) "task/t1"))
+      (should (string-match-p "^Task: task/t1$" (buffer-string)))
+      (should (equal (rdm-view-copy-identifier) "task/t1"))
+      (should (equal (current-kill 0) "task/t1")))))
 
 (ert-deftest rdm-pick/next-blocked ()
   "A roadmap blocked on dependencies is a `user-error' naming every unmet
@@ -339,10 +359,13 @@ worktree falls back to the roadmap picker."
       (should-error (insert "x") :type 'buffer-read-only))))
 
 (ert-deftest rdm-view/refresh-reissues-argv ()
-  "`g' re-issues the same `show' argv."
+  "`g' re-issues the same `show' argv; the opened buffer's item carries
+the `ref' rdm's `show' reported."
   (rdm-ui-test--mocked
     (with-current-buffer (rdm-open-item '(:kind phase :roadmap "r1"
                                           :stem "phase-2-two"))
+      (should (equal (buffer-name) "*rdm phase r1/phase-2-two*"))
+      (should (equal (plist-get rdm-view--item :ref) "r1/phase-2-two"))
       (let ((first (car calls)))
         (setq calls nil)
         (call-interactively (key-binding (kbd "g")))
@@ -451,7 +474,7 @@ RET on a phase row resolve that same context rather than the global one."
       (setq calls nil)
       (should (equal (rdm-view-copy-done-line) "Done: r1/phase-2-two"))
       (should (equal calls '(("hook" "done-line" "--roadmap=r1"
-                              "--phase=phase-2-two"))))
+                              "--phase=phase-2-two" "--format" "json"))))
       (should (equal (current-kill 0) "Done: r1/phase-2-two")))))
 
 (ert-deftest rdm-view/vanilla-keys ()
@@ -511,7 +534,7 @@ recovers its item from the picker's lookup."
   (rdm-ui-test--mocked
     (rdm-pick-task-candidates)
     (cl-letf (((symbol-function 'read-string) (lambda (&rest _) "t1")))
-      (should (equal (call-interactively #'rdm-item-copy-identifier) "t1"))
+      (should (equal (call-interactively #'rdm-item-copy-identifier) "task/t1"))
       (call-interactively #'rdm-item-open))
     (should (equal (car calls) (rdm-ui-test--show "task" "show" "t1")))))
 

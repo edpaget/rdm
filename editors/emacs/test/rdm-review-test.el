@@ -57,6 +57,10 @@
 (defvar rdm-review-test--verdicts '("approve" "request-changes" "comment")
   "The verdicts the mocked `describe review' declares.")
 
+(defvar rdm-review-test--comment-flags
+  [(:value "addressed" :flag "applied-commit")]
+  "The `value_flags' the mocked `describe review' declares for comments.")
+
 (defvar rdm-review-test--new-id "r-new"
   "The id the mocked `review start' gives a new draft.")
 
@@ -78,7 +82,8 @@
   "Apply the mocked `review update ID' ARGV; return the review JSON."
   (let ((review (or (rdm-review-test--find id)
                     (list :id id :state "submitted" :comments []
-                          :target '(:kind "task" :slug "t1" :ref "task/t1"))))
+                          :target '(:kind "task" :slug "t1" :ref "task/t1"
+                                   :item_ref "task/t1"))))
         (comment (rdm-review-test--flag argv "comment"))
         (status (rdm-review-test--flag argv "status"))
         (state (rdm-review-test--flag argv "state")))
@@ -92,10 +97,12 @@
 (defun rdm-review-test--flag-target (ref)
   "The target JSON of the reference REF (task/SLUG or phase/R/STEM)."
   (pcase (split-string ref "/")
-    (`("task" ,slug) (list :kind "task" :slug slug :ref ref))
+    (`("task" ,slug) (list :kind "task" :slug slug :ref ref :item_ref ref))
     (`("phase" ,roadmap ,stem)
-     (list :kind "phase" :roadmap roadmap :stem stem :ref ref))
-    (`("roadmap" ,roadmap) (list :kind "roadmap" :roadmap roadmap :ref ref))))
+     (list :kind "phase" :roadmap roadmap :stem stem :ref ref
+           :item_ref (concat roadmap "/" stem)))
+    (`("roadmap" ,roadmap)
+     (list :kind "roadmap" :roadmap roadmap :ref ref :item_ref roadmap))))
 
 (defun rdm-review-test--flag (argv flag)
   "The value of `--FLAG=value' in ARGV, or nil."
@@ -145,8 +152,10 @@
              :fields (vector '(:name "state" :enum_values ["draft" "submitted"])
                              (list :name "verdict"
                                    :enum_values (vconcat rdm-review-test--verdicts))
-                             '(:name "comments.status"
-                                     :enum_values ["open" "addressed" "wont-fix"]))))
+                             (list :name "comments.status"
+                                   :enum_values ["open" "addressed" "wont-fix"]
+                                   :terminal_values ["addressed" "wont-fix"]
+                                   :value_flags rdm-review-test--comment-flags))))
       (`("review" "start" . ,_)
        (let ((review (rdm-review-test--review
                       rdm-review-test--new-id
@@ -185,6 +194,8 @@ Detail buffers are killed afterwards."
          (rdm-review-test--update-error nil)
          (rdm-review-test--failing nil)
          (rdm-review-test--verdicts '("approve" "request-changes" "comment"))
+         (rdm-review-test--comment-flags
+          [(:value "addressed" :flag "applied-commit")])
          (rdm-review-test--new-id "r-new")
          (rdm-review-test--head "c-head")
          (rdm-review-test--resolved-author "env-me")
@@ -242,8 +253,9 @@ for `rdm-review-test--comment'."
                 :created_commit "c0" :body ""
                 :comments (vconcat comments))))
 
-(defconst rdm-review-test--task-target '(:kind "task" :slug "t1" :ref "task/t1"))
-(defconst rdm-review-test--task '(:kind task :slug "t1"))
+(defconst rdm-review-test--task-target
+  '(:kind "task" :slug "t1" :ref "task/t1" :item_ref "task/t1"))
+(defconst rdm-review-test--task '(:kind task :slug "t1" :ref "task/t1"))
 
 (defun rdm-review-test--overlays ()
   "The review overlays of this buffer, in buffer order."
@@ -375,7 +387,7 @@ its quote."
 so it is listed, never overlaid on the roadmap body."
   (rdm-review-test--with
       (list (rdm-review-test--review
-             "r1" '(:kind "roadmap" :roadmap "r1")
+             "r1" '(:kind "roadmap" :roadmap "r1" :ref "roadmap/r1" :item_ref "r1")
              (list (rdm-review-test--comment 1 "Intro" 0 5 :doc "phase-1-one")
                    (rdm-review-test--comment 2 "café" 17 22))))
     (setq rdm-review-test--originals (list (cons "c0" rdm-review-test--body)))
@@ -640,6 +652,31 @@ The view is refreshed and the write hook runs."
                               (mapcar #'car (nthcdr (1+ before) calls)))))
           (should (= hooked 1)))))))
 
+(ert-deftest rdm-review/resolve-asks-the-declared-flag ()
+  "gA asks for an applied commit exactly for the comment status `describe
+review' declares it for: moved to `wont-fix' here, `addressed' no
+longer asks."
+  (rdm-review-test--with
+      (list (rdm-review-test--review
+             "r1" rdm-review-test--task-target
+             (list (rdm-review-test--comment 1 "café" 17 22 :body "current"))))
+    (setq rdm-review-test--comment-flags [(:value "wont-fix" :flag "applied-commit")])
+    (rdm-context-reset)
+    (with-current-buffer (rdm-open-item rdm-review-test--task)
+      (goto-char (overlay-start (rdm-review-test--overlay-of 1)))
+      (dolist (case '(("addressed" nil) ("wont-fix" "HEAD")))
+        (let (prefill)
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (&rest _) (car case)))
+                    ((symbol-function 'read-string)
+                     (lambda (prompt &optional initial &rest _)
+                       (if (string-prefix-p "Reply" prompt)
+                           ""
+                         (setq prefill initial)))))
+            (should (equal (nth 3 (rdm-review--read-resolution))
+                           (cadr case)))
+            (should (equal prefill (cadr case)))))))))
+
 (ert-deftest rdm-review/resolve-wont-fix-without-reply ()
   "wont-fix with an empty reply sends neither --reply nor --applied-commit."
   (rdm-review-test--with
@@ -736,7 +773,8 @@ offered without erroring the picker, and refuse to open."
     (setq rdm-review-test--requests
           (list (rdm-review-test--review
                  "r-phase" '(:kind "phase" :roadmap "r1" :stem "phase-2-two"
-                                   :ref "phase/r1/phase-2-two")
+                                   :ref "phase/r1/phase-2-two"
+                                   :item_ref "r1/phase-2-two")
                  (list (rdm-review-test--comment 1 "café" 17 22 :body "current")))
                 (rdm-review-test--review "r-plan" '(:kind "plan" :slug "pl" :ref "plan/pl")
                                          nil)

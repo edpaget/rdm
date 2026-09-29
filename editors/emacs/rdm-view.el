@@ -83,14 +83,12 @@ A reference JSON lacks is left as ITEM has it.  ITEM is not modified."
     out))
 
 (defun rdm-item-identifier (item)
-  "The identifier of ITEM: a roadmap or task slug, or ROADMAP/STEM.
-An item of another kind (a search hit) falls back to its `:identifier'."
-  (pcase (plist-get item :kind)
-    ('roadmap (plist-get item :roadmap))
-    ('phase (concat (plist-get item :roadmap) "/" (plist-get item :stem)))
-    ('task (plist-get item :slug))
-    (kind (or (plist-get item :identifier)
-              (user-error "rdm: No identifier for a %s" kind)))))
+  "The identifier of ITEM: the item reference rdm reported as its `:ref'.
+An item with no item reference (a plan or change review target) falls
+back to its `:identifier'; one with neither is a `user-error'."
+  (or (plist-get item :ref)
+      (plist-get item :identifier)
+      (user-error "rdm: No identifier for a %s" (plist-get item :kind))))
 
 (defun rdm-item-show-args (item &optional at)
   "The action and `rdm-argv' arguments showing ITEM, at revision AT if non-nil."
@@ -207,7 +205,8 @@ ITEM, with the references DATA reports (`rdm-item-with-refs'), becomes
 the buffer's item before `rdm-view-after-render-hook' runs."
   (let ((inhibit-read-only t)
         (kind (plist-get item :kind)))
-    (setq rdm-view--item (rdm-item-with-refs item data))
+    (setq item (rdm-item-with-refs item data)
+          rdm-view--item item)
     (erase-buffer)
     (insert (propertize (or (plist-get data :title) (rdm-item-identifier item))
                         'font-lock-face 'rdm-view-title)
@@ -290,9 +289,10 @@ START and END are buffer positions; the text between them is exactly
 THING is an item plist or a picker candidate.  AT, when non-nil, is the
 revision to read the body at.  OTHER-WINDOW shows it in another window.
 Returns the buffer."
-  (let* ((item (rdm-item--require thing))
-         (source (current-buffer))
+  (let* ((source (current-buffer))
+         (item (rdm-item--require thing))
          (data (rdm-view--fetch item at))
+         (item (rdm-item-with-refs item data))
          (buf (get-buffer-create (rdm-view--buffer-name item at))))
     (with-current-buffer buf
       (unless (derived-mode-p 'rdm-view-mode)
@@ -347,12 +347,15 @@ Returns the buffer."
     (message "Copied %s" id)
     id))
 
+(defun rdm-item-done-line (item)
+  "The `Done:' commit line rdm reports for ITEM (its done-line `line')."
+  (plist-get (apply #'rdm-call-sync 'done-line (rdm-item-done-line-args item))
+             :line))
+
 (defun rdm-copy-done-line (thing)
   "Copy the `Done:' commit line for the rdm item THING; return it."
   (let* ((item (rdm-item--require thing))
-         (line (string-trim
-                (apply #'rdm-call-sync 'done-line
-                       (rdm-item-done-line-args item)))))
+         (line (rdm-item-done-line item)))
     (kill-new line)
     (message "Copied %s" line)
     line))

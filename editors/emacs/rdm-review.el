@@ -31,8 +31,9 @@
 ;; - `rdm-review-comment-at-point' describes the comment under point,
 ;;   `rdm-review-next-comment' / `rdm-review-previous-comment' move between
 ;;   overlaid comments, `rdm-review-resolve' marks the comment at point
-;;   addressed or won't-fix (the applied commit defaults to the plan
-;;   repo's HEAD), `rdm-review-close' / `rdm-review-dismiss' close a
+;;   with one of the comment statuses rdm declares (asking for the applied
+;;   commit, pre-filled with the plan repo's HEAD, when rdm declares the
+;;   status records one), `rdm-review-close' / `rdm-review-dismiss' close a
 ;;   review and `rdm-review-show' displays one.
 ;; - `rdm-review-requests' picks from `rdm review requests' and opens the
 ;;   target with its overlays.
@@ -146,13 +147,15 @@ Every item built from rdm's JSON carries it as `:review-ref' (see
 (defun rdm-review-target-item (target)
   "The item plist for TARGET, a review's target JSON, or nil.
 Only roadmap, phase and task targets have an item; plan and change
-targets do not."
+targets do not.  The item's `:ref' is the target's `item_ref' and its
+`:review-ref' the target's `ref', both as rdm reports them."
   (when-let* ((item (pcase (plist-get target :kind)
                       ("roadmap" (list :kind 'roadmap :roadmap (plist-get target :roadmap)))
                       ("phase" (list :kind 'phase :roadmap (plist-get target :roadmap)
                                      :stem (plist-get target :stem)))
                       ("task" (list :kind 'task :slug (plist-get target :slug))))))
-    (append item (list :review-ref (plist-get target :ref)))))
+    (append item (list :ref (plist-get target :item_ref)
+                       :review-ref (plist-get target :ref)))))
 
 (defun rdm-review--ref (review)
   "REVIEW's target reference, as rdm reports it (`target.ref')."
@@ -548,7 +551,8 @@ REVIEW is the review JSON rdm returned from the write."
                       (user-error "rdm: `rdm describe review' declares no comment statuses"))
                   nil t))
          (reply (read-string "Reply (empty for none): "))
-         (commit (and (equal status "addressed")
+         (commit (and (equal (rdm-value-flag 'review "comments.status" status)
+                             "applied-commit")
                       (read-string "Applied commit (empty for none): "
                                    "HEAD"))))
     (list entry status reply commit)))
@@ -557,7 +561,8 @@ REVIEW is the review JSON rdm returned from the write."
   "Mark ENTRY's comment STATUS, one of the comment statuses rdm declares.
 REPLY and COMMIT, when non-empty, are recorded as the reply and the
 applied commit.  Interactively, ENTRY is the comment at point, STATUS
-is read from `rdm describe review' and the applied commit is pre-filled
+is read from `rdm describe review' and, when rdm declares that STATUS
+records an `--applied-commit', the applied commit is asked, pre-filled
 with HEAD, which rdm resolves in the target's repository: the source
 repo for a `change' review, the plan repo otherwise.  COMMIT is passed
 through unchanged.  Returns the updated review's JSON; a refusal

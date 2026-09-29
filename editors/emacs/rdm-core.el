@@ -18,17 +18,19 @@
 ;;   `.mise.toml'), then `rdm info --format json'.  The default branch comes
 ;;   only from `rdm info'.
 ;; - `rdm-argv' turns an action from `rdm--actions' plus arguments into an
-;;   argv: every read carries `--format json', every write `--no-edit';
-;;   a text action (`hook done-line', `review update') carries neither.
+;;   argv: every read carries `--format json', every write `--no-edit',
+;;   and a create both.
 ;; - `rdm-run' / `rdm-run-sync' run rdm over pipes (never a pty), always
-;;   close stdin, keep stderr out of the JSON stream, parse reads as JSON and
-;;   return a write's stdout as text.  A non-zero exit is a `user-error'
-;;   carrying rdm's stderr.  Every process runs with `RDM_SESSION' set to
+;;   close stdin, keep stderr out of the JSON stream, parse reads and
+;;   creates as JSON and return a write's stdout as text.  A non-zero
+;;   exit is a `user-error' carrying rdm's stderr.  Every process runs with `RDM_SESSION' set to
 ;;   `rdm-session-id', so the plan-repo writes made from one Emacs form one
 ;;   changeset that `rdm status' / `rdm commit' / `rdm discard' act on.
 ;; - `rdm-enum-values' reads the values core declares for one field of a
 ;;   kind from `rdm describe' (`rdm-status-values' is its `status' case),
-;;   so the package holds no copy of a core enumeration.
+;;   and `rdm-terminal-values' / `rdm-value-flag' the terminal statuses
+;;   and per-status note flags it declares, so the package holds no copy
+;;   of a core enumeration or status rule.
 
 ;;; Code:
 
@@ -91,7 +93,7 @@ write was made from, which need not be in the item's worktree."
   "Resolved contexts, keyed by `rdm--context-key'.")
 
 (defvar rdm--enum-cache (make-hash-table :test #'equal)
-  "Field values from `rdm describe', keyed by (BINARY KIND FIELD).")
+  "The `fields' of `rdm describe' replies, keyed by (BINARY KIND).")
 
 ;;;; Errors
 
@@ -262,9 +264,9 @@ process and signals an error.  Errors are re-signalled."
     (worktree-remove  :argv ("worktree" "remove") :kind read)
     (worktree-prune   :argv ("worktree" "prune") :kind read)
     (describe         :argv ("describe")         :kind read :project nil)
-    (status           :argv ("status")           :kind text :project nil)
-    (commit           :argv ("commit")           :kind text :project nil)
-    (discard          :argv ("discard")          :kind text :project nil)
+    (status           :argv ("status")           :kind read :project nil)
+    (commit           :argv ("commit")           :kind read :project nil)
+    (discard          :argv ("discard")          :kind read :project nil)
     (roadmap-list     :argv ("roadmap" "list")   :kind read)
     (roadmap-show     :argv ("roadmap" "show")   :kind read)
     (phase-list       :argv ("phase" "list")     :kind read)
@@ -274,11 +276,11 @@ process and signals an error.  Errors are re-signalled."
     (search           :argv ("search")           :kind read)
     (tree             :argv ("tree")             :kind read)
     (next             :argv ("next")             :kind read)
-    (roadmap-create   :argv ("roadmap" "create") :kind write)
+    (roadmap-create   :argv ("roadmap" "create") :kind create)
     (roadmap-update   :argv ("roadmap" "update") :kind write)
-    (phase-create     :argv ("phase" "create")   :kind write)
+    (phase-create     :argv ("phase" "create")   :kind create)
     (phase-update     :argv ("phase" "update")   :kind write)
-    (task-create      :argv ("task" "create")    :kind write)
+    (task-create      :argv ("task" "create")    :kind create)
     (task-update      :argv ("task" "update")    :kind write)
     (review-list      :argv ("review" "list")    :kind read)
     (review-show      :argv ("review" "show")    :kind read)
@@ -287,20 +289,21 @@ process and signals an error.  Errors are re-signalled."
     (review-start     :argv ("review" "start")   :kind read)
     (review-comment   :argv ("review" "comment") :kind write)
     (review-submit    :argv ("review" "submit")  :kind write)
-    (done-line        :argv ("hook" "done-line") :kind text :project nil))
+    (done-line        :argv ("hook" "done-line") :kind read :project nil))
   "The rdm actions: symbol, then the subcommand words, `:kind' and `:project'.
 `:kind' is `read' (JSON output, `--format json'), `write' (`--no-edit',
-text output) or `text' (no suffix flag, text output).  `:project' nil
-marks a command that takes no `--project'.")
+text output) or `create' (`--no-edit' and `--format json': the created
+item in its `show' shape).  `:project' nil marks a command that takes
+no `--project'.")
 
 (defun rdm--action (action)
   "The `rdm--actions' row for ACTION, or an error."
   (or (cdr (assq action rdm--actions))
       (error "rdm: Unknown action `%s'" action)))
 
-(defun rdm-action-read-p (action)
-  "Non-nil when ACTION is a read (its output is JSON)."
-  (eq (plist-get (rdm--action action) :kind) 'read))
+(defun rdm-action-json-p (action)
+  "Non-nil when ACTION's output is JSON (a read or a create)."
+  (memq (plist-get (rdm--action action) :kind) '(read create)))
 
 (defun rdm-argv (action &rest args)
   "Build the rdm argv for ACTION with ARGS; return (ARGV . STDIN).
@@ -310,8 +313,7 @@ passed as `--body=BODY' and `:stdin' becomes STDIN (not both); any
 other `:key' becomes `--key=VALUE', or a bare `--key' when VALUE is t,
 and is dropped when VALUE is nil.  Values are joined to their flag so
 one starting with `-' (a Markdown list, say) is never read as an
-option.  Reads get `--format json', writes `--no-edit', text actions
-neither.
+option.  Reads get `--format json', writes `--no-edit', creates both.
 ARGV excludes the rdm program itself."
   (let* ((row (rdm--action action))
          (kind (plist-get row :kind))
@@ -343,9 +345,10 @@ ARGV excludes the rdm program itself."
                   flags
                   (when body (list (concat "--body=" body)))
                   (when scoped (list "--project" project))
-                  (pcase kind
+                  (pcase-exhaustive kind
                     ('read '("--format" "json"))
-                    ('write '("--no-edit"))))
+                    ('write '("--no-edit"))
+                    ('create '("--no-edit" "--format" "json"))))
           stdin)))
 
 ;;;; Context resolver
@@ -446,7 +449,7 @@ resolves."
                        (append args (list :project (plist-get ctx :project))))))
     (list (cons (plist-get ctx :rdm-bin) (car built))
           :stdin (cdr built)
-          :parse (rdm-action-read-p action)
+          :parse (rdm-action-json-p action)
           :directory (rdm--project-dir)
           :env (list (concat "RDM_ROOT=" (plist-get ctx :root))))))
 
@@ -460,21 +463,40 @@ CALLBACK receives the result and ON-ERROR any error; see `rdm-run'."
   "Run ACTION with ARGS in this buffer's context and return the result."
   (apply #'rdm-run-sync (rdm--call-args action args)))
 
+(defun rdm--described-field (kind field)
+  "The plist `rdm describe KIND' reports for FIELD (a string), or nil.
+KIND is a symbol.  One `describe' per kind, cached per rdm binary until
+`rdm-context-reset'."
+  (let* ((key (list (plist-get (rdm-context) :rdm-bin) kind))
+         (fields (pcase (gethash key rdm--enum-cache 'unset)
+                   ('unset
+                    (puthash key
+                             (plist-get (rdm-call-sync 'describe (symbol-name kind))
+                                        :fields)
+                             rdm--enum-cache))
+                   (cached cached))))
+    (seq-find (lambda (f) (equal (plist-get f :name) field)) fields)))
+
 (defun rdm-enum-values (kind field)
   "The values rdm declares for FIELD (a string) of KIND (a symbol), in order.
-Read from the `enum_values' of FIELD in `rdm describe KIND' and cached
-per rdm binary until `rdm-context-reset'.  nil for a field without
-declared values, or one KIND does not have."
-  (let ((key (list (plist-get (rdm-context) :rdm-bin) kind field)))
-    (pcase (gethash key rdm--enum-cache 'unset)
-      ('unset
-       (let* ((fields (plist-get (rdm-call-sync 'describe (symbol-name kind))
-                                 :fields))
-              (found (seq-find (lambda (f) (equal (plist-get f :name) field))
-                               fields))
-              (values (append (plist-get found :enum_values) nil)))
-         (puthash key values rdm--enum-cache)))
-      (cached cached))))
+Read from the `enum_values' of FIELD in `rdm describe KIND'.  nil for a
+field without declared values, or one KIND does not have."
+  (append (plist-get (rdm--described-field kind field) :enum_values) nil))
+
+(defun rdm-terminal-values (kind field)
+  "The terminal values rdm declares for FIELD (a string) of KIND (a symbol).
+Read from the `terminal_values' of FIELD in `rdm describe KIND'; nil for
+a field with none."
+  (append (plist-get (rdm--described-field kind field) :terminal_values) nil))
+
+(defun rdm-value-flag (kind field value)
+  "The CLI flag rdm declares for VALUE of FIELD (a string) of KIND, or nil.
+The flag (without `--', e.g. \"reason\") records the note VALUE takes,
+read from the `value_flags' of FIELD in `rdm describe KIND'."
+  (plist-get (seq-find (lambda (vf) (equal (plist-get vf :value) value))
+                       (plist-get (rdm--described-field kind field)
+                                  :value_flags))
+             :flag))
 
 (defun rdm-status-values (kind)
   "The status values rdm declares for KIND (`phase' or `task'), in order.

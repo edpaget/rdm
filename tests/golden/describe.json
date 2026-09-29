@@ -117,7 +117,17 @@
           "blocked",
           "wont-fix"
         ],
-        "description": "Current status."
+        "description": "Current status.",
+        "terminal_values": [
+          "done",
+          "wont-fix"
+        ],
+        "value_flags": [
+          {
+            "value": "blocked",
+            "flag": "reason"
+          }
+        ]
       },
       {
         "name": "tags",
@@ -208,9 +218,24 @@
           "needs-review",
           "reviewed",
           "done",
+          "blocked",
           "wont-fix"
         ],
-        "description": "Current status."
+        "description": "Current status.",
+        "terminal_values": [
+          "done",
+          "wont-fix"
+        ],
+        "value_flags": [
+          {
+            "value": "blocked",
+            "flag": "reason"
+          },
+          {
+            "value": "wont-fix",
+            "flag": "reason"
+          }
+        ]
       },
       {
         "name": "priority",
@@ -353,7 +378,17 @@
           "addressed",
           "wont-fix"
         ],
-        "description": "Each comment's resolution status. addressed and wont-fix are terminal (the comment is closed); each comment's JSON carries closed: true for them, false for open."
+        "description": "Each comment's resolution status. addressed and wont-fix are terminal (the comment is closed); each comment's JSON carries closed: true for them, false for open.",
+        "terminal_values": [
+          "addressed",
+          "wont-fix"
+        ],
+        "value_flags": [
+          {
+            "value": "addressed",
+            "flag": "applied-commit"
+          }
+        ]
       }
     ]
   },

@@ -48,6 +48,20 @@ A prompt beyond ANSWERS fails the test."
                   (if queue (pop queue) (error "Unexpected prompt")))))
        ,@body)))
 
+(defmacro rdm-compose-test--created (&rest body)
+  "Run BODY; return the items `rdm-create-item' returned in it, oldest first."
+  (declare (indent 0) (debug t))
+  `(let* ((created nil)
+          (record (lambda (item) (setq created (append created (list item))) item)))
+     (advice-add 'rdm-create-item :filter-return record)
+     (unwind-protect (progn ,@body)
+       (advice-remove 'rdm-create-item record))
+     created))
+
+(defun rdm-compose-test--refs (item)
+  "ITEM's kind, `:ref' and `:review-ref', as a list."
+  (list (plist-get item :kind) (plist-get item :ref) (plist-get item :review-ref)))
+
 (defun rdm-compose-test--submit (buf text)
   "Replace BUF's text with TEXT and submit it."
   (with-current-buffer buf
@@ -128,20 +142,25 @@ then kills the buffer."
 no --tags."
   (rdm-transient-test--with-stub nil
     (rdm-compose-test--cleanly
-      (rdm-compose-test--submit
-       (rdm-create-roadmap "r9" "Road nine" " a , b ,")
-       "Roadmap body\n- item\n")
-      (should (equal (rdm-transient-test--stdin log) "Roadmap body\n- item\n"))
-      (rdm-compose-test--submit
-       (rdm-compose-test--answers '("t9" "Task nine" "")
-         (call-interactively #'rdm-create-task))
-       "--task body")
+      (let ((created
+             (rdm-compose-test--created
+               (rdm-compose-test--submit
+                (rdm-create-roadmap "r9" "Road nine" " a , b ,")
+                "Roadmap body\n- item\n")
+               (should (equal (rdm-transient-test--stdin log) "Roadmap body\n- item\n"))
+               (rdm-compose-test--submit
+                (rdm-compose-test--answers '("t9" "Task nine" "")
+                  (call-interactively #'rdm-create-task))
+                "--task body"))))
+        ;; The created items are what rdm's create JSON reports.
+        (should (equal (mapcar #'rdm-compose-test--refs created)
+                       '((roadmap "r9" "roadmap/r9") (task "task/t9" "task/t9")))))
       (should (equal (rdm-transient-test--stdin log) "--task body"))
       (should (equal (rdm-transient-test--argvs log)
                      '(("roadmap" "create" "r9" "--title=Road nine" "--tags= a , b ,"
-                        "--project" "p" "--no-edit")
+                        "--project" "p" "--no-edit" "--format" "json")
                        ("task" "create" "t9" "--title=Task nine"
-                        "--project" "p" "--no-edit")))))))
+                        "--project" "p" "--no-edit" "--format" "json")))))))
 
 (ert-deftest rdm-compose/create-empty-body ()
   "An empty compose buffer creates the item with an empty stdin."
@@ -151,7 +170,7 @@ no --tags."
       (should (equal (rdm-transient-test--stdin log) ""))
       (should (equal (rdm-transient-test--argvs log)
                      '(("task" "create" "t8" "--title=T" "--project" "p"
-                        "--no-edit")))))))
+                        "--no-edit" "--format" "json")))))))
 
 (ert-deftest rdm-compose/create-in-source-context ()
   "The create runs in the context of the buffer it was started from,
@@ -169,21 +188,27 @@ even once that buffer is gone."
                            process-environment)))
           (rdm-compose-test--submit buf "body")))
       (should (member '("task" "create" "t7" "--title=T" "--project" "p"
-                        "--no-edit")
+                        "--no-edit" "--format" "json")
                       (rdm-transient-test--argvs log))))))
 
 (ert-deftest rdm-compose/phase-create-roadmap-from-context ()
   "Phase create sends the bare slug and --roadmap from a roadmap item, a
-phase item's parent, and the picker fallback; the number is optional."
+phase item's parent, and the picker fallback; the number is optional and
+reaches rdm as typed.  The created item is the phase rdm reports."
   (rdm-transient-test--with-stub nil
     (rdm-compose-test--cleanly
       (let ((picked nil))
         (cl-letf (((symbol-function 'rdm-pick-read-roadmap)
                    (lambda (&rest _) (setq picked t) "picked")))
-          (rdm-compose-test--submit
-           (rdm-compose-test--answers '("alpha" "Alpha" "" "")
-             (rdm-create-phase '(:kind roadmap :roadmap "r1")))
-           "a")
+          (let ((created (rdm-compose-test--created
+                           (rdm-compose-test--submit
+                            (rdm-compose-test--answers '("alpha" "Alpha" "" "")
+                              (rdm-create-phase '(:kind roadmap :roadmap "r1")))
+                            "a"))))
+            (should (equal (car created)
+                           '(:kind phase :roadmap "r1" :stem "phase-9-alpha"
+                                   :ref "r1/phase-9-alpha"
+                                   :review-ref "phase/r1/phase-9-alpha"))))
           (should (equal (rdm-transient-test--stdin log) "a"))
           (rdm-compose-test--submit
            (rdm-compose-test--answers '("beta" "Beta" "3" "x")
@@ -195,16 +220,22 @@ phase item's parent, and the picker fallback; the number is optional."
              (rdm-create-phase rdm-transient-test--task))
            "c")
           (should picked)
-          (should-error (rdm-compose-test--answers '("d" "D" "two" "")
-                          (rdm-create-phase '(:kind roadmap :roadmap "r1")))
-                        :type 'user-error))))
+          (rdm-compose-test--submit
+           (rdm-compose-test--answers '("d" "D" "two" "")
+             (rdm-create-phase '(:kind roadmap :roadmap "r1")))
+           "d"))))
     (should (equal (rdm-transient-test--argvs log)
                    '(("phase" "create" "alpha" "--title=Alpha" "--roadmap=r1"
-                      "--project" "p" "--no-edit")
+                      "--project" "p" "--no-edit" "--format" "json")
                      ("phase" "create" "beta" "--title=Beta" "--tags=x"
-                      "--roadmap=r1" "--number=3" "--project" "p" "--no-edit")
+                      "--roadmap=r1" "--number=3" "--project" "p" "--no-edit"
+                      "--format" "json")
                      ("phase" "create" "gamma" "--title=Gamma"
-                      "--roadmap=picked" "--project" "p" "--no-edit"))))))
+                      "--roadmap=picked" "--project" "p" "--no-edit"
+                      "--format" "json")
+                     ("phase" "create" "d" "--title=D" "--roadmap=r1"
+                      "--number=two" "--project" "p" "--no-edit"
+                      "--format" "json"))))))
 
 (ert-deftest rdm-compose/phase-create-from-dispatch ()
   "The transient's phase suffix takes the roadmap from the transient's item."
@@ -218,7 +249,7 @@ phase item's parent, and the picker fallback; the number is optional."
          "d")))
     (should (equal (rdm-transient-test--argvs log)
                    '(("phase" "create" "delta" "--title=Delta" "--roadmap=r5"
-                      "--project" "p" "--no-edit"))))))
+                      "--project" "p" "--no-edit" "--format" "json"))))))
 
 ;;;; Edit body
 
@@ -280,14 +311,19 @@ phase in it (the bare slug numbered by rdm), get their composed bodies."
                     (string-trim-right
                      (or (plist-get (rdm-call-sync 'task-show slug) :body) "")
                      "\n"))))
-        (rdm-compose-test--submit
-         (rdm-compose-test--answers (list slug "Composed in Emacs" "emacs")
-           (call-interactively #'rdm-create-task))
-         "Composed body\n\n- a list item\n")
+        (should (equal (mapcar #'rdm-compose-test--refs
+                               (rdm-compose-test--created
+                                 (rdm-compose-test--submit
+                                  (rdm-compose-test--answers
+                                      (list slug "Composed in Emacs" "emacs")
+                                    (call-interactively #'rdm-create-task))
+                                  "Composed body\n\n- a list item\n")))
+                       (list (list 'task (concat "task/" slug)
+                                   (concat "task/" slug)))))
         (let ((shown (rdm-call-sync 'task-show slug)))
           (should (member "emacs" (append (plist-get shown :tags) nil))))
         (should (equal (funcall body slug) "Composed body\n\n- a list item"))
-        (let* ((item (list :kind 'task :slug slug))
+        (let* ((item (list :kind 'task :slug slug :ref (concat "task/" slug)))
                (buf (rdm-edit-body item)))
           (should (equal (string-trim-right
                           (with-current-buffer buf (buffer-string)) "\n")
@@ -299,17 +335,29 @@ phase in it (the bare slug numbered by rdm), get their composed bodies."
         ;; A roadmap of its own, so the seeded roadmap's phases stay as
         ;; the other real tests expect them.
         (let ((roadmap "emacs-compose-real-roadmap"))
-          (rdm-compose-test--submit
-           (rdm-create-roadmap roadmap "Roadmap from Emacs" nil)
-           "Roadmap body\n")
+          (should (equal (mapcar #'rdm-compose-test--refs
+                                 (rdm-compose-test--created
+                                   (rdm-compose-test--submit
+                                    (rdm-create-roadmap roadmap "Roadmap from Emacs" nil)
+                                    "Roadmap body\n")))
+                         (list (list 'roadmap roadmap (concat "roadmap/" roadmap)))))
           (should (equal (string-trim-right
                           (plist-get (rdm-call-sync 'roadmap-show roadmap) :body)
                           "\n")
                          "Roadmap body"))
-          (rdm-compose-test--submit
-           (rdm-compose-test--answers '("from-emacs" "Phase from Emacs" "" "")
-             (rdm-create-phase (list :kind 'roadmap :roadmap roadmap)))
-           "Phase body\n")
+          (let ((created (car (rdm-compose-test--created
+                                (rdm-compose-test--submit
+                                 (rdm-compose-test--answers
+                                     '("from-emacs" "Phase from Emacs" "" "")
+                                   (rdm-create-phase (list :kind 'roadmap :roadmap roadmap)))
+                                 "Phase body\n")))))
+            ;; The stem is the one rdm numbered, read from its create JSON.
+            (should (equal created
+                           (list :kind 'phase :roadmap roadmap
+                                 :stem "phase-1-from-emacs"
+                                 :ref (concat roadmap "/phase-1-from-emacs")
+                                 :review-ref (concat "phase/" roadmap
+                                                     "/phase-1-from-emacs")))))
           (let ((shown (rdm-call-sync 'phase-show "phase-1-from-emacs"
                                       :roadmap roadmap)))
             (should (equal (string-trim-right (plist-get shown :body) "\n")
