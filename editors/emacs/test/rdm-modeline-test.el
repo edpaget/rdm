@@ -463,14 +463,13 @@ of each kind each run the hook exactly once."
       (should (= writes 7)))))
 
 (ert-deftest rdm-after-write-hook/not-on-decline-failure-or-noop ()
-  "A declined confirmation, a refused write and a tag edit changing
-nothing do not run the hook."
+  "A declined confirmation, a refused write and a tag edit naming no
+tags do not run the hook."
   (rdm-transient-test--with-stub nil
     (rdm-modeline-test--counting-writes
       (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
         (should-not (rdm-set-status rdm-transient-test--task "done")))
-      (should (equal (rdm-edit-tags rdm-transient-test--task '("bug") nil)
-                     '("bug")))
+      (should-not (rdm-edit-tags rdm-transient-test--task nil nil))
       (should (= writes 0))))
   (rdm-transient-test--with-stub (list :refuse "error: refused")
     (rdm-modeline-test--counting-writes

@@ -369,6 +369,8 @@ pub fn run(
             roadmap,
             project,
             tags,
+            add_tag,
+            remove_tag,
             difficulty,
             clear_difficulty,
             model,
@@ -418,7 +420,7 @@ pub fn run(
             // pipe or clobber the body from stray stdin bytes. (Retires the old
             // `update --tags x < body.md` form; compose `--body` with `--tags`.)
             let body = BodyUpdate::from_args(body, clear_body)?;
-            let tags = TagsUpdate::from_args(tags, false)?;
+            let tags = TagsUpdate::from_parts(tags, add_tag, remove_tag)?;
             let explicit_source = source.source.is_some()
                 || source.base.is_some()
                 || source.expected_head.is_some()

@@ -1929,3 +1929,77 @@ fn roadmap_list_markdown_shows_tags_column_when_tagged() {
         .success()
         .stdout(predicate::str::contains("Tags").and(predicate::str::contains("bug, ui")));
 }
+
+/// The roadmap's tags as read back via `roadmap show --format json`; an
+/// absent or null `tags` field reads as no tags.
+fn roadmap_tags(dir: &TempDir, slug: &str) -> Vec<String> {
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "show",
+            slug,
+            "--project",
+            "fbm",
+            "--format",
+            "json",
+            "--no-body",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    json.get("tags")
+        .and_then(|t| t.as_array())
+        .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn roadmap_tags_normalize_on_create_and_edit_incrementally_on_update() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "create",
+            "tagged",
+            "--title",
+            "Tagged",
+            "--tags",
+            "a, ,b,needs-plan-review",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        roadmap_tags(&dir, "tagged"),
+        ["a", "b", "needs-plan-review"]
+    );
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "roadmap",
+            "update",
+            "tagged",
+            "--add-tag",
+            "c",
+            "--remove-tag",
+            "a,b",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+    assert_eq!(roadmap_tags(&dir, "tagged"), ["needs-plan-review", "c"]);
+}

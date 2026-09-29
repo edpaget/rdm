@@ -77,7 +77,9 @@ pub struct CreatePhase<'a> {
     pub number: Option<u32>,
     /// Markdown body below the frontmatter. `None` yields an empty body.
     pub body: Option<&'a str>,
-    /// Optional tags for categorization.
+    /// Optional tags for categorization. Normalized with
+    /// [`crate::tags::normalize_tags`] (trimmed, empties dropped, de-duplicated);
+    /// a list that normalizes to empty is stored as no tags.
     pub tags: Option<Vec<String>>,
     /// Difficulty estimate to apply on creation.
     pub difficulty: DifficultyUpdate,
@@ -112,6 +114,7 @@ pub fn create_phase(store: &mut impl Store, req: CreatePhase<'_>) -> Result<Docu
         difficulty,
         model,
     } = req;
+    let tags = crate::tags::normalize_optional_tags(tags);
     let roadmap_file = crate::paths::roadmap_path(project, roadmap);
     if !store.exists(&roadmap_file) {
         return Err(Error::RoadmapNotFound(roadmap.to_string()));

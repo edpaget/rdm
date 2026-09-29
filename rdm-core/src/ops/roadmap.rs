@@ -120,7 +120,9 @@ pub struct CreateRoadmap<'a> {
     pub body: Option<&'a str>,
     /// Optional priority level.
     pub priority: Option<Priority>,
-    /// Optional tags for categorization.
+    /// Optional tags for categorization. Normalized with
+    /// [`crate::tags::normalize_tags`] (trimmed, empties dropped, de-duplicated);
+    /// a list that normalizes to empty is stored as no tags.
     pub tags: Option<Vec<String>>,
 }
 
@@ -146,6 +148,7 @@ pub fn create_roadmap(store: &mut impl Store, req: CreateRoadmap<'_>) -> Result<
         priority,
         tags,
     } = req;
+    let tags = crate::tags::normalize_optional_tags(tags);
     if !store.exists(&crate::paths::project_md_path(project)) {
         return Err(Error::ProjectNotFound(project.to_string()));
     }

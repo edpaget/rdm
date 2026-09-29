@@ -126,36 +126,46 @@ but not a historical `--at' view of the phase nor another roadmap's view."
 ;;;; Tags
 
 (ert-deftest rdm-transient/tags-keep-untouched ()
-  "A tag edit re-reads the tags and writes the whole list back, keeping
-`needs-plan-review'."
+  "A tag edit is exactly one update carrying --add-tag/--remove-tag, with
+no `show' re-read; rdm keeps the tags named in neither."
   (rdm-transient-test--with-stub (list :tags "[\"needs-plan-review\",\"bug\"]")
     (should (equal (rdm-edit-tags rdm-transient-test--task '("ui") '("bug"))
-                   '("needs-plan-review" "ui")))
-    (rdm-edit-tags '(:kind roadmap :roadmap "r1") '("ui") nil)
+                   "Updated task 't1'\n"))
+    (rdm-edit-tags '(:kind roadmap :roadmap "r1") '("ui" "x") nil)
     (should (equal (rdm-transient-test--argvs log)
-                   '(("task" "show" "t1" "--project" "p" "--format" "json")
-                     ("task" "update" "t1" "--tags=needs-plan-review,ui"
+                   '(("task" "update" "t1" "--add-tag=ui" "--remove-tag=bug"
                       "--project" "p" "--no-edit")
-                     ("roadmap" "show" "r1" "--project" "p" "--format" "json")
-                     ("roadmap" "update" "r1"
-                      "--tags=needs-plan-review,bug,ui"
+                     ("roadmap" "update" "r1" "--add-tag=ui" "--add-tag=x"
                       "--project" "p" "--no-edit"))))))
 
-(ert-deftest rdm-transient/tags-refuse-empty ()
-  "Removing the last tag is refused and writes nothing."
+(ert-deftest rdm-transient/tags-remove-last ()
+  "Removing an item's last tag is a single update; nothing is refused."
   (rdm-transient-test--with-stub (list :tags "[\"bug\"]")
-    (should-error (rdm-edit-tags rdm-transient-test--task nil '("bug"))
-                  :type 'user-error)
-    (should-not (seq-find (lambda (argv) (equal (cadr argv) "update"))
-                          (rdm-transient-test--argvs log)))))
+    (rdm-edit-tags rdm-transient-test--task nil '("bug"))
+    (should (equal (rdm-transient-test--argvs log)
+                   '(("task" "update" "t1" "--remove-tag=bug"
+                      "--project" "p" "--no-edit"))))))
 
-(ert-deftest rdm-transient/tags-noop-on-tagless ()
-  "An edit adding nothing to an item with no tags is a quiet no-op."
-  (rdm-transient-test--with-stub (list :tags "[]")
+(ert-deftest rdm-transient/tags-nil-edit-writes-nothing ()
+  "An edit with neither tags to add nor to remove issues no rdm call."
+  (rdm-transient-test--with-stub nil
     (should-not (rdm-edit-tags rdm-transient-test--task nil nil))
-    (should-not (rdm-edit-tags rdm-transient-test--task '("  ") '("bug")))
-    (should-not (seq-find (lambda (argv) (equal (cadr argv) "update"))
-                          (rdm-transient-test--argvs log)))))
+    (should-not (rdm-transient-test--argvs log))))
+
+(ert-deftest rdm-transient/dispatch-tags-passes-raw-text ()
+  "The dispatch tag prompt reads the current tags only to offer removal
+candidates, and passes the typed add text to rdm untrimmed."
+  (rdm-transient-test--with-stub (list :tags "[\"bug\",\"ui\"]")
+    (cl-letf (((symbol-function 'completing-read-multiple)
+               (lambda (_prompt collection &rest _)
+                 (should (equal collection '("bug" "ui")))
+                 '("bug")))
+              ((symbol-function 'read-string) (lambda (&rest _) " a , ,b ")))
+      (rdm-dispatch-edit-tags rdm-transient-test--task))
+    (should (equal (rdm-transient-test--argvs log)
+                   '(("task" "show" "t1" "--project" "p" "--format" "json")
+                     ("task" "update" "t1" "--add-tag= a , ,b "
+                      "--remove-tag=bug" "--project" "p" "--no-edit"))))))
 
 ;;;; Plan repo
 
@@ -227,8 +237,8 @@ the package leaves session-id rules to core."
 ;;;; Against the real binary
 
 (ert-deftest rdm-transient/real-status-tags-commit ()
-  "A status and a tag edit round-trip through the real binary, are listed
-staged in this session, and commit."
+  "A status and a tag edit round-trip through the real binary (removing
+the last tag leaves none), are listed staged in this session, and commit."
   (rdm-test-with-real
     (setq process-environment
           (append (list (concat "RDM_ROOT=" root) (concat "RDM_PROJECT=" project))
@@ -245,6 +255,11 @@ staged in this session, and commit."
                                   :roadmap "sample-roadmap")))
         (should (equal (plist-get shown :status) "blocked"))
         (should (equal (append (plist-get shown :tags) nil) '("emacs"))))
+      (rdm-edit-tags item nil '("emacs"))
+      (should-not (append (plist-get (rdm-call-sync 'phase-show "phase-3-seed-three"
+                                                    :roadmap "sample-roadmap")
+                                     :tags)
+                          nil))
       (should (string-match-p "phase-3-seed-three" (rdm-plan-status)))
       (should (string-match-p "Committed" (rdm-plan-commit "emacs: dispatch")))
       (should (string-match-p "No uncommitted changes" (rdm-plan-status))))))

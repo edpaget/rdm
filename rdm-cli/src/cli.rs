@@ -675,6 +675,14 @@ pub(crate) enum RoadmapCommand {
         /// New comma-separated tags (replaces existing).
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
+        /// Add tag(s) to the current list; others are kept. Repeatable and
+        /// comma-separated.
+        #[arg(long = "add-tag", value_delimiter = ',', conflicts_with = "tags")]
+        add_tag: Vec<String>,
+        /// Remove tag(s) from the current list; others are kept, and removing
+        /// the last tag leaves none. Repeatable and comma-separated.
+        #[arg(long = "remove-tag", value_delimiter = ',', conflicts_with = "tags")]
+        remove_tag: Vec<String>,
         /// Body content for the roadmap. Accepts any text verbatim
         /// (backticks, em-dashes, other Unicode/punctuation included) and
         /// always takes precedence over stdin — stdin is never read once
@@ -861,7 +869,7 @@ pub(crate) enum PhaseCommand {
         stem: String,
         /// Apply difficulty/body only if this full phase snapshot still matches
         /// and both difficulty and model remain unset. From phase show JSON.
-        #[arg(long, requires = "difficulty", conflicts_with_all = ["status", "title", "tags", "clear_difficulty", "model", "clear_model", "clear_body", "reason", "clear_reason", "commit", "start_commit"])]
+        #[arg(long, requires = "difficulty", conflicts_with_all = ["status", "title", "tags", "add_tag", "remove_tag", "clear_difficulty", "model", "clear_model", "clear_body", "reason", "clear_reason", "commit", "start_commit"])]
         expected_estimate_snapshot: Option<String>,
         /// New status (omit to preserve existing).
         #[arg(long)]
@@ -878,6 +886,14 @@ pub(crate) enum PhaseCommand {
         /// New comma-separated tags (replaces existing).
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
+        /// Add tag(s) to the current list; others are kept. Repeatable and
+        /// comma-separated.
+        #[arg(long = "add-tag", value_delimiter = ',', conflicts_with = "tags")]
+        add_tag: Vec<String>,
+        /// Remove tag(s) from the current list; others are kept, and removing
+        /// the last tag leaves none. Repeatable and comma-separated.
+        #[arg(long = "remove-tag", value_delimiter = ',', conflicts_with = "tags")]
+        remove_tag: Vec<String>,
         /// New estimated difficulty (trivial, easy, moderate, hard).
         #[arg(long, conflicts_with = "clear_difficulty")]
         difficulty: Option<Difficulty>,
@@ -1237,6 +1253,14 @@ pub(crate) enum TaskCommand {
         /// New comma-separated tags (replaces existing).
         #[arg(long, value_delimiter = ',')]
         tags: Option<Vec<String>>,
+        /// Add tag(s) to the current list; others are kept. Repeatable and
+        /// comma-separated.
+        #[arg(long = "add-tag", value_delimiter = ',', conflicts_with = "tags")]
+        add_tag: Vec<String>,
+        /// Remove tag(s) from the current list; others are kept, and removing
+        /// the last tag leaves none. Repeatable and comma-separated.
+        #[arg(long = "remove-tag", value_delimiter = ',', conflicts_with = "tags")]
+        remove_tag: Vec<String>,
         /// Body content for the task. Accepts any text verbatim (backticks,
         /// em-dashes, other Unicode/punctuation included) and always takes
         /// precedence over stdin — stdin is never read once this is set.

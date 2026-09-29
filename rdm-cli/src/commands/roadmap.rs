@@ -134,6 +134,8 @@ pub fn run(
             priority,
             clear_priority,
             tags,
+            add_tag,
+            remove_tag,
             body,
             clear_body,
             no_edit: _,
@@ -148,7 +150,7 @@ pub fn run(
             // `update --tags x < body.md` form; compose `--body` with `--tags`.)
             let body = BodyUpdate::from_args(body, clear_body)?;
             let priority = PriorityUpdate::from_args(priority, clear_priority)?;
-            let tags = TagsUpdate::from_args(tags, false)?;
+            let tags = TagsUpdate::from_parts(tags, add_tag, remove_tag)?;
             commit_mutation(store, "failed to update roadmap", |s| {
                 rdm_core::ops::roadmap::update_roadmap(
                     s, &project, &slug, body, priority, tags, title,

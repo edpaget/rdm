@@ -12,9 +12,10 @@
 ;;   item's `status' field (see `rdm-status-values'); there is no status
 ;;   list here.  `blocked' asks for a reason; the statuses in
 ;;   `rdm-confirm-statuses' ask for confirmation.  A roadmap has no status.
-;; - Edit: add and remove tags, and edit the body.  The tag write re-reads
-;;   the item's tags and sends the whole list back, so tags the user did
-;;   not touch (e.g. `needs-plan-review', `depends-unlanded') are kept.
+;; - Edit: add and remove tags, and edit the body.  The tag write is one
+;;   `update --add-tag/--remove-tag' call; rdm applies it to the current
+;;   list, so tags the user did not touch (e.g. `needs-plan-review',
+;;   `depends-unlanded') are kept by rdm, and rdm normalizes the text.
 ;;   The body opens in a compose buffer (rdm-compose.el) holding the
 ;;   current body; submitting writes it with `--body', or `--clear-body'
 ;;   when the buffer was emptied.
@@ -139,28 +140,19 @@ rdm's output."
           nil))
 
 (defun rdm-edit-tags (item add remove)
-  "Add the tags ADD to ITEM and remove the tags REMOVE.
-The current tags are re-read and the whole list written back, so every
-tag not in REMOVE survives.  An edit leaving no tags is refused, since
-rdm cannot clear a tag list; one changing nothing writes nothing.
-Returns the new tag list."
-  (let* ((current (rdm-item-tags item))
-         (tags (seq-uniq (append (seq-remove (lambda (tag) (member tag remove))
-                                             current)
-                                 (seq-remove #'string-empty-p
-                                             (mapcar #'string-trim add))))))
-    (cond
-     ((equal tags current)
-      (message "rdm: tags of %s unchanged" (rdm-item-identifier item)))
-     ((null tags)
-      (user-error "rdm: Cannot clear a tag list; keep at least one tag on %s"
-                  (rdm-item-identifier item)))
-     (t
-      (apply #'rdm-call-sync
-             (append (rdm--update-args item)
-                     (list :tags (string-join tags ","))))
-      (rdm--after-write item "tags")))
-    tags))
+  "Add the tags ADD to ITEM and remove the tags REMOVE, in one rdm call.
+ADD and REMOVE are lists of strings passed to rdm as `--add-tag' and
+`--remove-tag'; rdm applies them to the current list (removals first),
+keeps every tag named in neither, and trims, drops empty and
+de-duplicates the elements.  Removing the last tag leaves none.  When
+ADD and REMOVE are both nil nothing is written and nil is returned;
+otherwise returns rdm's output."
+  (when (or add remove)
+    (prog1 (apply #'rdm-call-sync
+                  (append (rdm--update-args item)
+                          (mapcan (lambda (tag) (list :add-tag tag)) add)
+                          (mapcan (lambda (tag) (list :remove-tag tag)) remove)))
+      (rdm--after-write item "tags"))))
 
 ;;;; Bodies
 
@@ -188,11 +180,6 @@ Returns the compose buffer."
 
 ;;;; Creating items
 
-(defun rdm--split-tags (text)
-  "The comma-separated tags in TEXT joined for `--tags', or nil when none."
-  (rdm--nonempty (string-join (split-string (or text "") "," t "[[:space:]]+")
-                              ",")))
-
 (defun rdm--created-stem (output)
   "The phase stem rdm's `phase create' OUTPUT names, or nil."
   (and (string-match "Created phase '\\([^']+\\)'" output)
@@ -201,7 +188,8 @@ Returns the compose buffer."
 (cl-defun rdm-create-item (kind slug title body &key tags roadmap number)
   "Create a KIND (`roadmap', `phase' or `task') named SLUG titled TITLE.
 BODY is piped to rdm on stdin (never `--body').  TAGS is a
-comma-separated string or nil.  A phase needs ROADMAP; SLUG is its bare
+comma-separated string passed to rdm as typed (rdm trims it, drops empty
+tags and de-duplicates), or nil.  A phase needs ROADMAP; SLUG is its bare
 slug (rdm prepends `phase-<n>-'), and NUMBER, when non-nil, its number.
 Refreshes the views the new item affects and returns its item plist."
   (let* ((action (pcase kind
@@ -248,7 +236,7 @@ Interactively, read SLUG, TITLE and comma-separated TAGS.  Returns the
 compose buffer."
   (interactive (list (rdm--read-required "New roadmap slug: ")
                      (rdm--read-required "Title: ")
-                     (rdm--split-tags (read-string "Tags (comma-separated): "))))
+                     (read-string "Tags (comma-separated): ")))
   (rdm--compose-create 'roadmap slug title tags))
 
 ;;;###autoload
@@ -258,7 +246,7 @@ Interactively, read SLUG, TITLE and comma-separated TAGS.  Returns the
 compose buffer."
   (interactive (list (rdm--read-required "New task slug: ")
                      (rdm--read-required "Title: ")
-                     (rdm--split-tags (read-string "Tags (comma-separated): "))))
+                     (read-string "Tags (comma-separated): ")))
   (rdm--compose-create 'task slug title tags))
 
 (defun rdm--context-roadmap (item)
@@ -282,7 +270,7 @@ at point in a detail buffer."
          (title (rdm--read-required "Title: "))
          (number (rdm--nonempty
                   (string-trim (read-string "Number (empty for the next): "))))
-         (tags (rdm--split-tags (read-string "Tags (comma-separated): "))))
+         (tags (read-string "Tags (comma-separated): ")))
     (when (and number (not (string-match-p "\\`[0-9]+\\'" number)))
       (user-error "rdm: Phase number must be a positive integer, not %s" number))
     (rdm--compose-create 'phase slug title tags :roadmap roadmap :number number)))
@@ -382,9 +370,8 @@ Each value prefers its words' initials, then its other letters."
                        (format "Remove tags from %s (comma-separated): "
                                (rdm-item-identifier item))
                        current nil t)))
-         (add (split-string (read-string "Add tags (comma-separated): ")
-                            "," t "[[:space:]]+")))
-    (rdm-edit-tags item add remove)))
+         (add (rdm--nonempty (read-string "Add tags (comma-separated): "))))
+    (rdm-edit-tags item (and add (list add)) remove)))
 
 (defun rdm-dispatch-edit-body (item)
   "Edit ITEM's body in a compose buffer (`rdm-edit-body')."

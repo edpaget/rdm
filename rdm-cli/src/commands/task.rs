@@ -131,6 +131,8 @@ pub fn run(
             status,
             priority,
             tags,
+            add_tag,
+            remove_tag,
             body,
             clear_body,
             commit,
@@ -160,7 +162,7 @@ pub fn run(
             // post-commit hooks run `task update --status done --no-edit` as git
             // subprocesses with inherited pipes — exactly what would hang before.
             let body = BodyUpdate::from_args(body, clear_body)?;
-            let tags = TagsUpdate::from_args(tags, false)?;
+            let tags = TagsUpdate::from_parts(tags, add_tag, remove_tag)?;
             let reason_update = ReasonUpdate::from_args(reason, clear_reason)?;
             let has_reason = !matches!(reason_update, ReasonUpdate::Keep);
             let explicit_source = source.source.is_some()

@@ -124,11 +124,12 @@ then kills the buffer."
 
 (ert-deftest rdm-compose/create-pipes-body-on-stdin ()
   "Roadmap and task creates send the composed body on stdin with
---no-edit and no --body; empty tags send no --tags."
+--no-edit and no --body; tags are passed as typed and empty tags send
+no --tags."
   (rdm-transient-test--with-stub nil
     (rdm-compose-test--cleanly
       (rdm-compose-test--submit
-       (rdm-create-roadmap "r9" "Road nine" (rdm--split-tags " a , b ,"))
+       (rdm-create-roadmap "r9" "Road nine" " a , b ,")
        "Roadmap body\n- item\n")
       (should (equal (rdm-transient-test--stdin log) "Roadmap body\n- item\n"))
       (rdm-compose-test--submit
@@ -137,7 +138,7 @@ then kills the buffer."
        "--task body")
       (should (equal (rdm-transient-test--stdin log) "--task body"))
       (should (equal (rdm-transient-test--argvs log)
-                     '(("roadmap" "create" "r9" "--title=Road nine" "--tags=a,b"
+                     '(("roadmap" "create" "r9" "--title=Road nine" "--tags= a , b ,"
                         "--project" "p" "--no-edit")
                        ("task" "create" "t9" "--title=Task nine"
                         "--project" "p" "--no-edit")))))))

@@ -2391,3 +2391,139 @@ fn start_commit_resolution_failures_are_hard_errors_and_write_nothing() {
         "no --start-commit resolution failure may write a partial value: {json}"
     );
 }
+
+/// Runs `rdm --root <dir> <args>` and asserts success.
+fn run_ok(dir: &TempDir, args: &[&str]) {
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args(args)
+        .assert()
+        .success();
+}
+
+/// The task's tags as read back via `task show --format json`; an absent or
+/// null `tags` field reads as no tags.
+fn task_tags(dir: &TempDir, slug: &str) -> Vec<String> {
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "show",
+            slug,
+            "--project",
+            "fbm",
+            "--format",
+            "json",
+            "--no-body",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    json.get("tags")
+        .and_then(|t| t.as_array())
+        .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn task_update_add_and_remove_tag_touch_only_named_tags() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "t1", "T1", "b,c,needs-plan-review");
+
+    run_ok(
+        &dir,
+        &[
+            "task",
+            "update",
+            "t1",
+            "--add-tag",
+            "a",
+            "--remove-tag",
+            "b",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ],
+    );
+
+    assert_eq!(task_tags(&dir, "t1"), ["c", "needs-plan-review", "a"]);
+}
+
+#[test]
+fn task_update_remove_last_tag_leaves_no_tags() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "t1", "T1", "only");
+
+    run_ok(
+        &dir,
+        &[
+            "task",
+            "update",
+            "t1",
+            "--remove-tag",
+            "only",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ],
+    );
+
+    assert!(task_tags(&dir, "t1").is_empty());
+}
+
+#[test]
+fn task_tags_are_normalized_on_create_and_update() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "t1", "T1", "a, ,b");
+    assert_eq!(task_tags(&dir, "t1"), ["a", "b"]);
+
+    run_ok(
+        &dir,
+        &[
+            "task",
+            "update",
+            "t1",
+            "--tags",
+            "x, ,y,x",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ],
+    );
+    assert_eq!(task_tags(&dir, "t1"), ["x", "y"]);
+}
+
+#[test]
+fn task_update_tags_conflicts_with_add_tag() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    create_tagged_task(&dir, "t1", "T1", "a");
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "task",
+            "update",
+            "t1",
+            "--tags",
+            "x",
+            "--add-tag",
+            "y",
+            "--no-edit",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .failure()
+        .code(2);
+    assert_eq!(task_tags(&dir, "t1"), ["a"]);
+}

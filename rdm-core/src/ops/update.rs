@@ -8,6 +8,7 @@
 
 use crate::error::{Error, Result};
 use crate::model::{Difficulty, GateOverride, ModelTier, Priority};
+use crate::tags::{normalize_optional_tags, normalize_tags};
 
 /// How an update should treat a document's markdown body.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,10 +124,23 @@ impl TitleUpdate {
 pub enum TagsUpdate {
     /// Leave the existing tags unchanged.
     Keep,
-    /// Replace the tags with this list (an empty list clears them).
+    /// Replace the tags with this list. The list is normalized with
+    /// [`normalize_tags`] first; a list that normalizes to empty clears them.
     Set(Vec<String>),
     /// Clear all tags.
     Clear,
+    /// Edit the current tags incrementally: remove every tag named in
+    /// `remove`, then append each tag in `add` not already present. Tags named
+    /// in neither list — including reserved ones such as
+    /// [`NEEDS_PLAN_REVIEW_TAG`](crate::tags::NEEDS_PLAN_REVIEW_TAG) — are left
+    /// untouched. Both lists are normalized with [`normalize_tags`]; removing
+    /// the last tag leaves the item with no tags.
+    Edit {
+        /// Tags to append (if absent).
+        add: Vec<String>,
+        /// Tags to remove (if present). Removals apply before additions.
+        remove: Vec<String>,
+    },
 }
 
 impl TagsUpdate {
@@ -146,14 +160,48 @@ impl TagsUpdate {
         }
     }
 
-    /// Applies this update to a document's optional `tags` in place. An empty
-    /// [`Set`](TagsUpdate::Set) list clears the tags, matching the historical
-    /// behavior.
+    /// Builds a [`TagsUpdate`] from a frontend's whole-list `tags` value and
+    /// its incremental `add` / `remove` lists.
+    ///
+    /// `Some(t)` → [`Set`](TagsUpdate::Set); a non-empty `add` or `remove` →
+    /// [`Edit`](TagsUpdate::Edit); neither → [`Keep`](TagsUpdate::Keep).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::ConflictingUpdate`] if `tags` is given together with a
+    /// non-empty `add` or `remove`: replacing the whole list and editing it
+    /// are contradictory.
+    pub fn from_parts(
+        tags: Option<Vec<String>>,
+        add: Vec<String>,
+        remove: Vec<String>,
+    ) -> Result<Self> {
+        let editing = !add.is_empty() || !remove.is_empty();
+        match (tags, editing) {
+            (Some(_), true) => Err(Error::ConflictingUpdate {
+                field: "tags".to_string(),
+            }),
+            (Some(t), false) => Ok(TagsUpdate::Set(t)),
+            (None, true) => Ok(TagsUpdate::Edit { add, remove }),
+            (None, false) => Ok(TagsUpdate::Keep),
+        }
+    }
+
+    /// Applies this update to a document's optional `tags` in place. Every
+    /// written list is normalized with [`normalize_tags`], and a list that ends
+    /// up empty is stored as `None`, matching the historical behavior.
     pub(crate) fn apply(self, tags: &mut Option<Vec<String>>) {
         match self {
             TagsUpdate::Keep => {}
             TagsUpdate::Clear => *tags = None,
-            TagsUpdate::Set(new) => *tags = if new.is_empty() { None } else { Some(new) },
+            TagsUpdate::Set(new) => *tags = normalize_optional_tags(Some(new)),
+            TagsUpdate::Edit { add, remove } => {
+                let remove = normalize_tags(remove);
+                let mut current = tags.take().unwrap_or_default();
+                current.retain(|t| !remove.iter().any(|r| r == t.trim()));
+                current.extend(normalize_tags(add));
+                *tags = normalize_optional_tags(Some(current));
+            }
         }
     }
 }
@@ -397,6 +445,99 @@ mod tests {
             BodyUpdate::from_args(None, true).unwrap(),
             BodyUpdate::Clear
         );
+    }
+
+    fn strs(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    fn applied(update: TagsUpdate, current: Option<&[&str]>) -> Option<Vec<String>> {
+        let mut tags = current.map(strs);
+        update.apply(&mut tags);
+        tags
+    }
+
+    fn edit(add: &[&str], remove: &[&str]) -> TagsUpdate {
+        TagsUpdate::Edit {
+            add: strs(add),
+            remove: strs(remove),
+        }
+    }
+
+    #[test]
+    fn tags_edit_add_keeps_others() {
+        assert_eq!(
+            applied(edit(&["a"], &[]), Some(&["b", "c"])),
+            Some(strs(&["b", "c", "a"]))
+        );
+    }
+
+    #[test]
+    fn tags_edit_remove_keeps_others_including_reserved() {
+        assert_eq!(
+            applied(
+                edit(&["a"], &["b"]),
+                Some(&["b", "c", crate::tags::NEEDS_PLAN_REVIEW_TAG])
+            ),
+            Some(strs(&["c", crate::tags::NEEDS_PLAN_REVIEW_TAG, "a"]))
+        );
+    }
+
+    #[test]
+    fn tags_edit_removing_last_tag_yields_none() {
+        assert_eq!(applied(edit(&[], &["only"]), Some(&["only"])), None);
+    }
+
+    #[test]
+    fn tags_edit_add_existing_is_idempotent() {
+        assert_eq!(
+            applied(edit(&["b"], &[]), Some(&["a", "b"])),
+            Some(strs(&["a", "b"]))
+        );
+    }
+
+    #[test]
+    fn tags_edit_remove_absent_is_noop() {
+        assert_eq!(
+            applied(edit(&[], &["zzz"]), Some(&["a"])),
+            Some(strs(&["a"]))
+        );
+        assert_eq!(applied(edit(&[], &["zzz"]), None), None);
+    }
+
+    #[test]
+    fn tags_edit_normalizes_add_and_remove() {
+        assert_eq!(
+            applied(edit(&[" x ", "", "x"], &[" a "]), Some(&["a", "b"])),
+            Some(strs(&["b", "x"]))
+        );
+    }
+
+    #[test]
+    fn tags_set_normalizes() {
+        assert_eq!(
+            applied(TagsUpdate::Set(strs(&["a", " ", "b", "a"])), Some(&["z"])),
+            Some(strs(&["a", "b"]))
+        );
+        assert_eq!(applied(TagsUpdate::Set(strs(&[" "])), Some(&["z"])), None);
+    }
+
+    #[test]
+    fn tags_from_parts_maps_each_combination() {
+        assert_eq!(
+            TagsUpdate::from_parts(None, vec![], vec![]).unwrap(),
+            TagsUpdate::Keep
+        );
+        assert_eq!(
+            TagsUpdate::from_parts(Some(strs(&["a"])), vec![], vec![]).unwrap(),
+            TagsUpdate::Set(strs(&["a"]))
+        );
+        assert_eq!(
+            TagsUpdate::from_parts(None, strs(&["a"]), strs(&["b"])).unwrap(),
+            edit(&["a"], &["b"])
+        );
+        let err = TagsUpdate::from_parts(Some(strs(&["a"])), vec![], strs(&["b"])).unwrap_err();
+        assert!(matches!(err, Error::ConflictingUpdate { field } if field == "tags"));
     }
 
     #[test]

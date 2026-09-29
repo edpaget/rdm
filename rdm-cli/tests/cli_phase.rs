@@ -2592,3 +2592,99 @@ fn reviewed_and_blocked_reason_read_back_as_json() {
     assert_eq!(parked["status"], "blocked");
     assert_eq!(parked["blocked_reason"], reason);
 }
+
+/// The first phase's tags as read back via `phase show --format json`; an
+/// absent or null `tags` field reads as no tags.
+fn phase_tags(dir: &TempDir) -> Vec<String> {
+    let output = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "show",
+            "1",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+            "--format",
+            "json",
+            "--no-body",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    json.get("tags")
+        .and_then(|t| t.as_array())
+        .map(|a| a.iter().map(|v| v.as_str().unwrap().to_string()).collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn phase_tags_normalize_on_create_and_edit_incrementally_on_update() {
+    let dir = TempDir::new().unwrap();
+    init_with_roadmap(&dir);
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "create",
+            "tagged",
+            "--title",
+            "Tagged",
+            "--number",
+            "1",
+            "--tags",
+            "a, ,b",
+            "--no-edit",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+    assert_eq!(phase_tags(&dir), ["a", "b"]);
+
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "1",
+            "--tags",
+            "a,needs-plan-review",
+            "--no-edit",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "phase",
+            "update",
+            "1",
+            "--add-tag",
+            "c",
+            "--remove-tag",
+            "a",
+            "--no-edit",
+            "--roadmap",
+            "two-way",
+            "--project",
+            "fbm",
+        ])
+        .assert()
+        .success();
+    assert_eq!(phase_tags(&dir), ["needs-plan-review", "c"]);
+}

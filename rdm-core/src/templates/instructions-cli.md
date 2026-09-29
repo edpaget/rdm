@@ -129,13 +129,14 @@ Always pass `--no-edit` to suppress the interactive editor.
 rdm roadmap create <slug> --title "Title" --body "Summary." --tags bug,ui --no-edit {proj_flag}
 rdm phase create <slug> --title "Title" --number <n> --body "Details." --tags audit --no-edit --roadmap <slug> {proj_flag}
 rdm task create <slug> --title "Title" --body "Description." --tags bug --no-edit {proj_flag}
+rdm task update <slug> --add-tag bug --remove-tag ui --no-edit {proj_flag}  # edit tags in place; others kept
 ```
 
 For `phase create`, pass a bare slug like `hook-commit-bug` — rdm prepends `phase-<number>-` automatically. Do **not** include `phase-N-` in the slug; you'll get a doubled prefix like `phase-1-phase-1-hook-commit-bug`.
 
-`--tags` is comma-separated. Pass `--tags ""` (or omit it) for no tags. On `update`, `--tags` replaces the existing list.
+`--tags` is comma-separated. Pass `--tags ""` (or omit it) for no tags. On `update`, `--tags` replaces the existing list. To change individual tags on `update`, use `--add-tag <tag>` and `--remove-tag <tag>` instead (each repeatable and comma-separated; not combinable with `--tags`): they apply to the item's current list, removals first, and leave every tag they don't name — reserved tags such as `needs-plan-review` and `depends-unlanded` included — in place. Removing the last tag leaves the item with none. rdm normalizes every tag list it writes: elements are trimmed, empty ones dropped and duplicates removed.
 
-**Always pass `--tags` when you create** a roadmap, phase, or task — untagged items are invisible to tag-filtered queries. Because `--tags` on `update` replaces the existing list rather than adding to it, pass the full set (old tags plus the new one) whenever you retro-fit a tag.
+**Always pass `--tags` when you create** a roadmap, phase, or task — untagged items are invisible to tag-filtered queries. To retro-fit a tag later, use `--add-tag <tag>` on `update`; `--tags` would replace the whole list.
 
 ## Tagging convention
 
@@ -284,7 +285,7 @@ This keeps the current phase focused and ensures nothing is forgotten.
 rdm task create sweep-x --title "..." --body "path/to/file.rs, introduced by roadmap tagging-support, not yet on main. ..." --tags depends-unlanded --no-edit {proj_flag}
 ```
 
-Remember `--tags` replaces the whole list on `update` — if you later update a `depends-unlanded` task, read-modify-write the tag list so you don't silently drop the annotation.
+To change a `depends-unlanded` task's tags later, use `--add-tag`/`--remove-tag` on `update` — they leave `depends-unlanded` in place; `--tags` would replace it.
 
 ### When a task grows too complex
 

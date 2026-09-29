@@ -79,7 +79,9 @@ pub struct CreateTask<'a> {
     pub title: &'a str,
     /// Priority level. Required; defaults to [`Priority::Medium`].
     pub priority: Priority,
-    /// Optional tags for categorization.
+    /// Optional tags for categorization. Normalized with
+    /// [`crate::tags::normalize_tags`] (trimmed, empties dropped, de-duplicated);
+    /// a list that normalizes to empty is stored as no tags.
     pub tags: Option<Vec<String>>,
     /// Markdown body below the frontmatter. `None` yields an empty body.
     pub body: Option<&'a str>,
@@ -118,6 +120,7 @@ pub fn create_task(store: &mut impl Store, req: CreateTask<'_>) -> Result<Docume
         tags,
         body,
     } = req;
+    let tags = crate::tags::normalize_optional_tags(tags);
     if !store.exists(&crate::paths::project_md_path(project)) {
         return Err(Error::ProjectNotFound(project.to_string()));
     }
@@ -814,6 +817,20 @@ mod tests {
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn create_task_normalizes_tags() {
+        let mut store = setup();
+        seed(&mut store, "norm", &["a", " ", " b ", "a"], "");
+        seed(&mut store, "blank", &["", "  "], "");
+        let norm = crate::io::load_task(&store, "demo", "norm").unwrap();
+        assert_eq!(
+            norm.frontmatter.tags,
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        let blank = crate::io::load_task(&store, "demo", "blank").unwrap();
+        assert_eq!(blank.frontmatter.tags, None);
     }
 
     #[test]
