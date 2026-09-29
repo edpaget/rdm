@@ -372,7 +372,14 @@ impl Describe for crate::model::Review {
                     type_name: "list of comment objects",
                     required: true,
                     enum_values: &[],
-                    description: "Inline comments: id, optional doc scope (roadmap reviews only), status (open | addressed | wont-fix), optional applied_commit, optional text-quote anchor (quote/prefix/suffix), optional anchor_state on an anchorless comment (whole-document, or why the anchor was lost; absent means not recorded), optional intended_path (the source file an anchorless change-review comment was about), body, and optional reply; JSON output adds target (every comment's coarsest true link: link, level, reason, reason_note, unverified).",
+                    description: "Inline comments: id, optional doc scope (roadmap reviews only), status (see comments.status), optional applied_commit, optional text-quote anchor (quote/prefix/suffix), optional anchor_state on an anchorless comment (whole-document, or why the anchor was lost; absent means not recorded), optional intended_path (the source file an anchorless change-review comment was about), body, and optional reply; JSON output adds target (every comment's coarsest true link: link, level, reason, reason_note, unverified).",
+                },
+                FieldInfo {
+                    name: "comments.status",
+                    type_name: "enum",
+                    required: true,
+                    enum_values: &["open", "addressed", "wont-fix"],
+                    description: "Each comment's resolution status. addressed and wont-fix are terminal (the comment is closed); each comment's JSON carries closed: true for them, false for open.",
                 },
             ],
         }
@@ -565,6 +572,9 @@ mod tests {
     ///
     /// This is a compile-time drift test: if a field is added to the struct
     /// but not to the `Describe` impl (or vice versa), this test fails.
+    /// Only top-level `Describe` names are compared: a dotted name (e.g.
+    /// `comments.status`) documents a nested field, which serde reports
+    /// under its parent key rather than at the top level.
     fn assert_fields_match<T: serde::Serialize + Describe>(sample: &T) {
         let value = serde_yaml::to_value(sample).expect("sample should serialize");
         let serde_keys: HashSet<&str> = value
@@ -574,7 +584,12 @@ mod tests {
             .map(|k| k.as_str().expect("keys should be strings"))
             .collect();
 
-        let describe_keys: HashSet<&str> = T::describe().fields.iter().map(|f| f.name).collect();
+        let describe_keys: HashSet<&str> = T::describe()
+            .fields
+            .iter()
+            .map(|f| f.name)
+            .filter(|name| !name.contains('.'))
+            .collect();
 
         assert_eq!(
             serde_keys,
@@ -680,6 +695,39 @@ mod tests {
             change_branch: None,
         };
         assert_fields_match(&sample);
+    }
+
+    #[test]
+    fn describe_review_comment_status_covers_every_variant() {
+        use crate::model::ReviewCommentStatus;
+        use std::str::FromStr;
+        let entity = crate::model::Review::describe();
+        let field = entity
+            .fields
+            .iter()
+            .find(|f| f.name == "comments.status")
+            .expect("review describes comments.status");
+        let parsed: Vec<ReviewCommentStatus> = field
+            .enum_values
+            .iter()
+            .map(|v| ReviewCommentStatus::from_str(v).expect("value parses"))
+            .collect();
+        // Exhaustive: adding a variant fails to compile this match until it
+        // is added to the list below, and so must be described.
+        let variants = |s: ReviewCommentStatus| match s {
+            ReviewCommentStatus::Open
+            | ReviewCommentStatus::Addressed
+            | ReviewCommentStatus::WontFix => {}
+        };
+        for status in [
+            ReviewCommentStatus::Open,
+            ReviewCommentStatus::Addressed,
+            ReviewCommentStatus::WontFix,
+        ] {
+            variants(status);
+            assert!(parsed.contains(&status), "{status} missing");
+        }
+        assert_eq!(parsed.len(), 3, "no duplicate or extra values");
     }
 
     #[test]

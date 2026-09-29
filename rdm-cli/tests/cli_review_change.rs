@@ -274,6 +274,8 @@ fn change_review_start_records_head_and_base() {
     assert_eq!(j["target"]["head"], head);
     assert_eq!(j["target"]["head"].as_str().unwrap().len(), 40);
     assert_eq!(j["target"]["base"], merge_base);
+    // `ref` is the full, head-only `--on` form, even from an abbreviated rev.
+    assert_eq!(j["target"]["ref"], format!("change/{head}"));
     assert_eq!(j["change_branch"], "topic");
 
     // `change/HEAD` from inside the checkout pins the same tip.

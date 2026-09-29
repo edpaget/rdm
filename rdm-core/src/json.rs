@@ -897,6 +897,10 @@ pub struct ReviewCommentJson {
     pub doc: Option<CommentDoc>,
     /// Resolution status of the comment.
     pub status: ReviewCommentStatus,
+    /// Whether `status` is terminal (`addressed` or `wont-fix`), from
+    /// [`ReviewCommentStatus::is_terminal`] — so a client never hard-codes
+    /// which statuses close a comment.
+    pub closed: bool,
     /// Commit SHA recorded when the comment was addressed, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub applied_commit: Option<String>,
@@ -1028,6 +1032,41 @@ pub fn comment_target_to_json(target: &crate::comment_target::CommentTarget) -> 
     }
 }
 
+/// A review target in JSON: the stored target's fields (tagged on `kind`)
+/// plus its canonical reference string.
+///
+/// `ref` is [`ReviewTarget::label`] — the `--on` grammar (`roadmap/<slug>`,
+/// `phase/<roadmap>/<stem>`, `task/<slug>`, `plan/<slug>`,
+/// `change/<head>`) — so a client passes it straight back to `rdm review
+/// start --on` / `review list --on` without rebuilding it.
+///
+/// ```
+/// use rdm_core::json::ReviewTargetJson;
+/// use rdm_core::model::ReviewTarget;
+///
+/// let json = ReviewTargetJson::from(ReviewTarget::Task { slug: "fix".into() });
+/// let value = serde_json::to_value(&json).unwrap();
+/// assert_eq!(value["kind"], "task");
+/// assert_eq!(value["slug"], "fix");
+/// assert_eq!(value["ref"], "task/fix");
+/// ```
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ReviewTargetJson {
+    /// The stored target, flattened into this object.
+    #[serde(flatten)]
+    pub target: ReviewTarget,
+    /// The target's canonical reference string ([`ReviewTarget::label`]).
+    #[serde(rename = "ref")]
+    pub reference: String,
+}
+
+impl From<ReviewTarget> for ReviewTargetJson {
+    fn from(target: ReviewTarget) -> Self {
+        let reference = target.label();
+        Self { target, reference }
+    }
+}
+
 /// Full review detail: metadata, summary body, and every comment with its
 /// anchor and resolution — everything an agent needs in one call.
 #[derive(Debug, Clone, Serialize)]
@@ -1036,8 +1075,9 @@ pub struct ReviewJson {
     pub id: String,
     /// Who authored the review.
     pub author: String,
-    /// The plan item under review (tagged on `kind`).
-    pub target: ReviewTarget,
+    /// The plan item under review (tagged on `kind`), with its canonical
+    /// `ref` string.
+    pub target: ReviewTargetJson,
     /// For a `change/<sha>` review: the target's `head` as an
     /// `rdm:src@<sha>` commit link, exactly as [`crate::link::parse`]
     /// accepts it. Derived on read from the stored SHA (see
@@ -1257,7 +1297,7 @@ pub fn review_to_json(
     ReviewJson {
         id: id.to_string(),
         author: fm.author.clone(),
-        target: fm.target.clone(),
+        target: fm.target.clone().into(),
         head_link: commit_link(None, "head"),
         base_link: commit_link(None, "base"),
         state: fm.state,
@@ -1279,6 +1319,7 @@ pub fn review_to_json(
                     id: c.id,
                     doc: c.doc.clone(),
                     status: c.status,
+                    closed: c.status.is_terminal(),
                     applied_commit: c.applied_commit.clone(),
                     applied_commit_link: commit_link(Some(c.id), "applied_commit"),
                     anchor: c.anchor.clone(),
@@ -2251,6 +2292,7 @@ mod tests {
         assert_eq!(v["id"], "2026-07-01-1430-a1b2");
         assert_eq!(v["target"]["kind"], "task");
         assert_eq!(v["target"]["slug"], "fix-login");
+        assert_eq!(v["target"]["ref"], "task/fix-login");
         assert_eq!(v["state"], "submitted");
         assert_eq!(v["verdict"], "request-changes");
         assert_eq!(v["created_commit"], "abc123");
@@ -2412,11 +2454,63 @@ mod tests {
         let v = serde_json::to_value(review_to_json("id", &doc, &[], &[], &[])).unwrap();
         assert_eq!(v["head_link"], format!("rdm:src@{}", "a".repeat(40)));
         assert_eq!(v["base_link"], format!("rdm:src@{}", "b".repeat(40)));
+        // `ref` is head-only: `base` is provenance, not identity.
+        assert_eq!(v["target"]["ref"], format!("change/{}", "a".repeat(40)));
+        assert_eq!(v["target"]["base"], "b".repeat(40));
         let c = &v["comments"][0];
         assert_eq!(c["applied_commit"], "c".repeat(40));
         assert_eq!(
             c["applied_commit_link"],
             format!("rdm:src@{}", "c".repeat(40))
+        );
+    }
+
+    #[test]
+    fn review_json_target_ref_for_a_phase() {
+        let mut doc = make_review_doc();
+        doc.frontmatter.target = ReviewTarget::Phase {
+            roadmap: "alpha".to_string(),
+            stem: "phase-1-setup".to_string(),
+        };
+        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[], &[])).unwrap();
+        assert_eq!(v["target"]["kind"], "phase");
+        assert_eq!(v["target"]["roadmap"], "alpha");
+        assert_eq!(v["target"]["stem"], "phase-1-setup");
+        assert_eq!(v["target"]["ref"], "phase/alpha/phase-1-setup");
+    }
+
+    #[test]
+    fn review_json_comment_closed_follows_terminal_status() {
+        let mut doc = make_review_doc();
+        let template = doc.frontmatter.comments[0].clone();
+        doc.frontmatter.comments = [
+            ReviewCommentStatus::Open,
+            ReviewCommentStatus::Addressed,
+            ReviewCommentStatus::WontFix,
+        ]
+        .into_iter()
+        .zip(1..)
+        .map(|(status, id)| ReviewComment {
+            id,
+            status,
+            ..template.clone()
+        })
+        .collect();
+        let v = serde_json::to_value(review_to_json("id", &doc, &[], &[], &[])).unwrap();
+        let closed: Vec<(&str, bool)> = v["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| {
+                (
+                    c["status"].as_str().unwrap(),
+                    c["closed"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            closed,
+            vec![("open", false), ("addressed", true), ("wont-fix", true)]
         );
     }
 

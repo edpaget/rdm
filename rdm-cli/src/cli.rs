@@ -1680,7 +1680,8 @@ pub(crate) enum ReviewCommand {
         #[arg(long)]
         project: Option<String>,
     },
-    /// List document reviews, optionally filtered.
+    /// List document reviews, optionally filtered, newest first (by
+    /// `created`, ties broken by id).
     List {
         /// Keep only reviews of this target: `roadmap/<slug>`,
         /// `phase/<roadmap-slug>/<stem-or-number>`, `task/<slug>`,
@@ -1696,9 +1697,14 @@ pub(crate) enum ReviewCommand {
         /// comment).
         #[arg(long)]
         verdict: Option<Verdict>,
-        /// Keep only reviews by this author.
+        /// Keep only reviews by this author (see also --mine).
         #[arg(long)]
         author: Option<String>,
+        /// Keep only reviews by the resolved review author — the same
+        /// resolution `review start` uses (`RDM_REVIEW_AUTHOR`, then
+        /// `$USER`/`$USERNAME`).
+        #[arg(long, conflicts_with = "author")]
+        mine: bool,
         /// Project to list reviews for.
         #[arg(long)]
         project: Option<String>,
@@ -1738,6 +1744,10 @@ pub(crate) enum ReviewCommand {
         /// Reply note recorded on the comment.
         #[arg(long, requires = "comment")]
         reply: Option<String>,
+        /// Accepted for uniformity with the other mutators; `review update`
+        /// never opens an editor, so this is a no-op.
+        #[arg(long)]
+        no_edit: bool,
         /// Project the review belongs to.
         #[arg(long)]
         project: Option<String>,

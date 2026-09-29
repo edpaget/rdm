@@ -277,7 +277,8 @@ the root and project are only passed to rdm and stay safe."
                  '(("hook" "done-line" "--task=t"))))
   (should (equal (rdm-argv 'done-line :roadmap "r" :phase "phase-1-x")
                  '(("hook" "done-line" "--roadmap=r" "--phase=phase-1-x"))))
-  ;; Reviews: reads take --format json; `review update' rejects --no-edit.
+  ;; Reviews: reads take --format json; `review update' returns the
+  ;; updated review as JSON too.
   (should (equal (rdm-argv 'review-list :on "task/t" :project "p")
                  '(("review" "list" "--on=task/t" "--project" "p"
                     "--format" "json"))))
@@ -290,10 +291,11 @@ the root and project are only passed to rdm and stay safe."
                            :project "p")
                  '(("review" "update" "r1" "--comment=2" "--status=addressed"
                     "--reply=-- fixed" "--applied-commit=abc123"
-                    "--project" "p"))))
-  (should (equal (rdm-argv 'review-update "r1" :state "dismissed" :project "p")
-                 '(("review" "update" "r1" "--state=dismissed"
-                    "--project" "p"))))
+                    "--project" "p" "--format" "json"))))
+  (should (equal (rdm-argv 'review-update "r1" :state "dismissed" :no-edit t
+                           :project "p")
+                 '(("review" "update" "r1" "--state=dismissed" "--no-edit"
+                    "--project" "p" "--format" "json"))))
   ;; Authoring: `review start' is read as JSON (and passes --no-edit
   ;; explicitly); comment and submit are writes.  A quote starting with
   ;; `-' stays joined to its flag.

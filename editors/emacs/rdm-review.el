@@ -43,9 +43,10 @@
 ;;   non-overlapping occurrences, as `rdm review comment --help'
 ;;   documents), `rdm-review-comment-document' files a whole-document
 ;;   comment, and `rdm-review-submit' submits with a verdict read from
-;;   `rdm describe review'.  Comments go into your draft review
-;;   (`rdm-review-author'), which `rdm-review-start' or the first comment
-;;   starts.  A detail buffer of an item with your draft is shown as of
+;;   `rdm describe review'.  Comments go into your draft review -- the
+;;   newest draft rdm lists as yours (`rdm review list --mine', or
+;;   `--author' when `rdm-review-author' is set) -- which
+;;   `rdm-review-start' or the first comment starts.  A detail buffer of an item with your draft is shown as of
 ;;   the draft's `created_commit', the text rdm locates quotes in, and its
 ;;   header line says so; a selection made on other text is discarded.
 ;;
@@ -97,14 +98,13 @@ to the kill ring.  Set it to hand the command to an agent session."
   :type 'function)
 
 (defcustom rdm-review-author nil
-  "The author the package reviews as, or nil for rdm's own default.
-nil means `RDM_REVIEW_AUTHOR', then `USER', from the buffer's
-`process-environment' -- the default `rdm review start --help'
-documents.  The same value is passed as `--author' both when a draft
-is started and when the item's drafts are listed, so a draft counts as
-yours exactly when rdm recorded this author on it.  When nothing
-resolves, `--author' is omitted and no existing draft is adopted."
-  :type '(choice (const :tag "RDM_REVIEW_AUTHOR, then USER" nil) string))
+  "The author the package reviews as, or nil for rdm's own resolution.
+nil leaves the author to rdm: a draft is started without `--author'
+and your drafts are listed with `rdm review list --mine', both of which
+resolve it the way `rdm review start --help' documents.  A string
+overrides both: it is passed as `--author' when a draft is started and
+when the item's drafts are listed (in place of `--mine')."
+  :type '(choice (const :tag "rdm's own resolution" nil) string))
 
 (defface rdm-review-resolved
   '((((background dark)) :background "#3a3a18" :extend nil)
@@ -153,16 +153,9 @@ targets do not."
                    :stem (plist-get target :stem)))
     ("task" (list :kind 'task :slug (plist-get target :slug)))))
 
-(defun rdm-review-target-string (target)
-  "TARGET, a review's target JSON, as a reference string."
-  (let ((item (rdm-review-target-item target)))
-    (cond
-     (item (rdm-review-item-target item))
-     ((equal (plist-get target :kind) "plan")
-      (concat "plan/" (plist-get target :slug)))
-     ((equal (plist-get target :kind) "change")
-      (concat "change/" (plist-get target :head)))
-     (t (format "%s" (or (plist-get target :kind) "unknown"))))))
+(defun rdm-review--ref (review)
+  "REVIEW's target reference, as rdm reports it (`target.ref')."
+  (plist-get (plist-get review :target) :ref))
 
 ;;;; Offsets and placement
 
@@ -274,8 +267,8 @@ Its keys are `:review', `:comment', `:placement' and, when overlaid,
   "Marker at the start of the Reviews section, or nil.")
 
 (defun rdm-review--closed-p (comment)
-  "Non-nil when COMMENT is marked addressed or won't-fix."
-  (member (plist-get comment :status) '("addressed" "wont-fix")))
+  "Non-nil when rdm reports COMMENT closed (its `closed' is true)."
+  (eq (plist-get comment :closed) t))
 
 (defun rdm-review--open-count (review)
   "The number of REVIEW's comments still open."
@@ -387,7 +380,7 @@ The marker goes in the fringe, or the margin in a terminal."
           (insert (propertize
                    (format "    #%s %s  %s  %s"
                            (plist-get comment :id)
-                           (or (plist-get comment :status) "open")
+                           (plist-get comment :status)
                            (rdm-review--label entry)
                            (rdm-review--first-line (plist-get comment :body)))
                    'rdm-review review
@@ -498,7 +491,7 @@ The item itself is not re-read; `revert-buffer' does both."
      (format "Review %s #%s by %s — %s, %s\n"
              (plist-get review :id) (plist-get comment :id)
              (or (plist-get review :author) "?")
-             (or (plist-get comment :status) "open")
+             (plist-get comment :status)
              (pcase (plist-get entry :placement)
                ('resolved "resolved")
                ('drifted "drifted")
@@ -542,7 +535,8 @@ The item itself is not re-read; `revert-buffer' does both."
 ;;;; Writes
 
 (defun rdm-review--after-write (review what)
-  "Refresh the views of REVIEW's target, report WHAT, run the write hook."
+  "Refresh the views of REVIEW's target, report WHAT, run the write hook.
+REVIEW is the review JSON rdm returned from the write."
   (let ((item (rdm-review-target-item (plist-get review :target))))
     (if item
         (rdm--after-write item what)
@@ -555,9 +549,11 @@ The item itself is not re-read; `revert-buffer' does both."
   "Read the arguments of `rdm-review-resolve' for the comment at point."
   (let* ((entry (rdm-review--require-entry))
          (comment (plist-get entry :comment))
-         (status (completing-read (format "Mark comment #%s: "
-                                          (plist-get comment :id))
-                                  '("addressed" "wont-fix") nil t))
+         (status (completing-read
+                  (format "Mark comment #%s: " (plist-get comment :id))
+                  (or (rdm-enum-values 'review "comments.status")
+                      (user-error "rdm: `rdm describe review' declares no comment statuses"))
+                  nil t))
          (reply (read-string "Reply (empty for none): "))
          (commit (and (equal status "addressed")
                       (read-string "Applied commit (empty for none): "
@@ -565,23 +561,26 @@ The item itself is not re-read; `revert-buffer' does both."
     (list entry status reply commit)))
 
 (defun rdm-review-resolve (entry status &optional reply commit)
-  "Mark ENTRY's comment STATUS (\"addressed\" or \"wont-fix\").
+  "Mark ENTRY's comment STATUS, one of the comment statuses rdm declares.
 REPLY and COMMIT, when non-empty, are recorded as the reply and the
-applied commit.  Interactively, ENTRY is the comment at point and the
-applied commit is pre-filled with HEAD, which rdm resolves in the
-target's repository: the source repo for a `change' review, the plan
-repo otherwise.  COMMIT is passed through unchanged.  Returns rdm's
-output; a refusal signals rdm's error."
+applied commit.  Interactively, ENTRY is the comment at point, STATUS
+is read from `rdm describe review' and the applied commit is pre-filled
+with HEAD, which rdm resolves in the target's repository: the source
+repo for a `change' review, the plan repo otherwise.  COMMIT is passed
+through unchanged.  Returns the updated review's JSON; a refusal
+signals rdm's error."
   (interactive (rdm-review--read-resolution))
-  (let ((review (plist-get entry :review))
-        (comment (plist-get entry :comment)))
-    (prog1 (rdm-call-sync 'review-update (plist-get review :id)
-                          :comment (plist-get comment :id)
-                          :status status
-                          :reply (rdm--nonempty reply)
-                          :applied-commit (rdm--nonempty commit))
-      (rdm-review--after-write
-       review (format "comment #%s → %s" (plist-get comment :id) status)))))
+  (let* ((comment (plist-get entry :comment))
+         (updated (rdm-call-sync 'review-update
+                                 (plist-get (plist-get entry :review) :id)
+                                 :comment (plist-get comment :id)
+                                 :status status
+                                 :reply (rdm--nonempty reply)
+                                 :applied-commit (rdm--nonempty commit)
+                                 :no-edit t)))
+    (rdm-review--after-write
+     updated (format "comment #%s → %s" (plist-get comment :id) status))
+    updated))
 
 (defun rdm-review--shows-p (item)
   "Non-nil when this buffer is a detail buffer showing ITEM."
@@ -613,18 +612,22 @@ only when this buffer shows ITEM."
             (cdr (assoc (completing-read "Review: " table nil t) table)))))))
 
 (defun rdm-review--set-state (review state)
-  "Move REVIEW to STATE with `rdm review update --state'."
-  (prog1 (rdm-call-sync 'review-update (plist-get review :id) :state state)
-    (rdm-review--after-write review (concat "→ " state))))
+  "Move REVIEW to STATE with `rdm review update --state'.
+Returns the updated review's JSON."
+  (let ((updated (rdm-call-sync 'review-update (plist-get review :id)
+                                :state state :no-edit t)))
+    (rdm-review--after-write updated (concat "→ " (plist-get updated :state)))
+    updated))
 
 (defun rdm-review-close (review)
-  "Close REVIEW as addressed.
+  "Close REVIEW as addressed; return the updated review's JSON.
 rdm refuses while any comment is still open, and says how many."
   (interactive (list (rdm-review-read-review)))
   (rdm-review--set-state review "addressed"))
 
 (defun rdm-review-dismiss (review)
-  "Dismiss REVIEW after confirming; return rdm's output, or nil if declined."
+  "Dismiss REVIEW after confirming.
+Return the updated review's JSON, or nil if declined."
   (interactive (list (rdm-review-read-review)))
   (when (y-or-n-p (format "Dismiss review %s? " (plist-get review :id)))
     (rdm-review--set-state review "dismissed")))
@@ -645,7 +648,7 @@ Returns the buffer."
         (erase-buffer)
         (insert (propertize (format "Review %s" id) 'font-lock-face 'rdm-view-title)
                 "\n")
-        (rdm-view--field "Target" (rdm-review-target-string (plist-get full :target)))
+        (rdm-view--field "Target" (rdm-review--ref full))
         (rdm-view--field "Author" (plist-get full :author))
         (rdm-view--field "State" (plist-get full :state))
         (rdm-view--field "Verdict" (plist-get full :verdict))
@@ -656,7 +659,7 @@ Returns the buffer."
           (let ((res (plist-get c :resolution)))
             (insert "\n"
                     (propertize (format "#%s  %s  %s" (plist-get c :id)
-                                        (or (plist-get c :status) "open")
+                                        (plist-get c :status)
                                         (if (plist-get c :anchor)
                                             (or (plist-get res :state) "?")
                                           "whole document"))
@@ -680,7 +683,7 @@ opening it signals a `user-error'."
   (seq-map
    (lambda (r)
      (let* ((target (plist-get r :target))
-            (ref (rdm-review-target-string target))
+            (ref (rdm-review--ref r))
             (item (or (rdm-review-target-item target)
                       (list :kind (intern (or (plist-get target :kind) "unknown"))
                             :identifier ref))))
@@ -729,7 +732,7 @@ No process is started here.  Returns the function's value."
   (interactive (list (rdm-review-read-review)))
   (funcall rdm-review-revise-function
            (list :review-id (plist-get review :id)
-                 :target (rdm-review-target-string (plist-get review :target))
+                 :target (rdm-review--ref review)
                  :project (plist-get (rdm-context) :project)
                  :command (format rdm-review-revise-command-format
                                   (plist-get review :id)))))
@@ -741,12 +744,6 @@ No process is started here.  Returns the function's value."
 A plist: `:id', `:commit' (its `created_commit') and `:previous-at'
 \(the revision the buffer showed before it followed the draft).")
 
-(defun rdm-review--author ()
-  "The author passed as `--author', or nil (see `rdm-review-author')."
-  (or (rdm--nonempty rdm-review-author)
-      (rdm--nonempty (getenv "RDM_REVIEW_AUTHOR"))
-      (rdm--nonempty (getenv "USER"))))
-
 (defun rdm-review--require-view ()
   "Signal a `user-error' unless this is a detail buffer of a reviewable item."
   (unless (and (derived-mode-p 'rdm-view-mode) rdm-view--item)
@@ -754,16 +751,17 @@ A plist: `:id', `:commit' (its `created_commit') and `:previous-at'
   (rdm-review-item-target rdm-view--item))
 
 (defun rdm-review-own-draft (item)
-  "The newest draft review of ITEM by `rdm-review--author', or nil.
-Read with `rdm review list --on <target> --state draft --author <a>';
-nil without an author."
-  (when-let* ((author (rdm-review--author)))
-    (car (sort (append (rdm-call-sync 'review-list
-                                      :on (rdm-review-item-target item)
-                                      :state "draft" :author author)
-                       nil)
-               (lambda (a b) (string> (or (plist-get a :created) "")
-                                      (or (plist-get b :created) "")))))))
+  "Your newest draft review of ITEM, or nil.
+Read with `rdm review list --on <target> --state draft' and `--mine',
+or `--author' when `rdm-review-author' is set; rdm lists newest first,
+so this is the first draft it returns."
+  (let ((override (rdm--nonempty rdm-review-author)))
+    (car (append (rdm-call-sync 'review-list
+                                :on (rdm-review-item-target item)
+                                :state "draft"
+                                :author override
+                                :mine (not override))
+                 nil))))
 
 (defun rdm-review--short (commit)
   "COMMIT abbreviated for display."
@@ -817,7 +815,7 @@ re-render has a revision, so it does not look again."
   (let* ((item rdm-view--item)
          (review (rdm-call-sync 'review-start
                                 :on (rdm-review-item-target item)
-                                :author (rdm-review--author)
+                                :author (rdm--nonempty rdm-review-author)
                                 :no-edit t)))
     (rdm-review--adopt review)
     (rdm--after-write item (format "review %s started" (plist-get review :id)))

@@ -179,14 +179,14 @@ pub struct ReviewFilters {
     pub author: Option<String>,
 }
 
-/// `GET /projects/:project/reviews` — list reviews with optional filters.
+/// `GET /projects/:project/reviews` — list reviews with optional filters,
+/// newest first (see [`rdm_core::ops::reviews::query_reviews`]).
 pub async fn list_reviews(
     State(state): State<AppState>,
     Path(project): Path<String>,
     Query(filters): Query<ReviewFilters>,
 ) -> Result<Response, Response> {
     let store = state.store();
-    let reviews = rdm_core::ops::reviews::list_reviews(&store, &project).map_err(core_error)?;
 
     let target = match &filters.on {
         Some(reference) => Some(
@@ -212,8 +212,10 @@ pub async fn list_reviews(
         None => None,
     };
 
-    let filtered = rdm_core::ops::reviews::filter_reviews(
-        reviews,
+    // Newest first — the same listing `rdm review list` returns.
+    let filtered = rdm_core::ops::reviews::query_reviews(
+        &store,
+        &project,
         &ReviewFilter {
             target,
             state: state_filter,
@@ -221,7 +223,8 @@ pub async fn list_reviews(
             author: filters.author.clone(),
             ..Default::default()
         },
-    );
+    )
+    .map_err(core_error)?;
 
     // Deliberately no anchor-resolution pass here: the list shape is
     // metadata-only (see `ReviewListItem`); only the detail route resolves.

@@ -1290,6 +1290,33 @@ pub fn list_reviews(store: &impl Store, project: &str) -> Result<Vec<(String, Do
     Ok(reviews)
 }
 
+/// Lists a project's reviews matching `filter`, newest first.
+///
+/// This is the listing `rdm review list` and rdm-server's review list
+/// return. Ordering is part of the contract: reviews are sorted by their
+/// `created` timestamp, most recent first, with ties broken by review id
+/// (descending), so the first entry is always the newest match. Callers
+/// that need the stable id order (links, search, the change-request queue)
+/// use [`list_reviews`] instead.
+///
+/// # Errors
+///
+/// Returns whatever [`list_reviews`] returns.
+pub fn query_reviews(
+    store: &impl Store,
+    project: &str,
+    filter: &ReviewFilter,
+) -> Result<Vec<(String, Document<Review>)>> {
+    let mut reviews = filter_reviews(list_reviews(store, project)?, filter);
+    reviews.sort_by(|(a_id, a), (b_id, b)| {
+        b.frontmatter
+            .created
+            .cmp(&a.frontmatter.created)
+            .then_with(|| b_id.cmp(a_id))
+    });
+    Ok(reviews)
+}
+
 /// Open-review / open-comment tallies for a single roadmap or task.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReviewCounts {
@@ -1702,6 +1729,79 @@ mod tests {
         assert_eq!(reviews[1].0, "2026-07-01-0800-mm55");
         assert_eq!(reviews[2].0, "2026-07-01-1430-zz99");
         assert_eq!(reviews[0].1.frontmatter.id, "2026-06-30-0900-aa11");
+    }
+
+    fn write_review_created(
+        store: &mut MemoryStore,
+        id: &str,
+        author: &str,
+        created: DateTime<Utc>,
+    ) {
+        let mut doc = sample_review(id);
+        doc.frontmatter.author = author.to_string();
+        doc.frontmatter.created = created;
+        crate::io::write_review(store, "test", id, &doc).unwrap();
+    }
+
+    fn query_ids(store: &MemoryStore, filter: &ReviewFilter) -> Vec<String> {
+        query_reviews(store, "test", filter)
+            .unwrap()
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect()
+    }
+
+    #[test]
+    fn query_reviews_newest_first() {
+        let mut store = setup_store();
+        let at = |h| chrono::Utc.with_ymd_and_hms(2026, 7, 1, h, 0, 0).unwrap();
+        // Ids deliberately disagree with `created`, so the order is visibly
+        // not the id order.
+        write_review_created(&mut store, "2026-07-01-0100-cccc", "ed", at(9));
+        write_review_created(&mut store, "2026-07-01-0200-bbbb", "ed", at(11));
+        write_review_created(&mut store, "2026-07-01-0300-aaaa", "ed", at(10));
+        assert_eq!(
+            query_ids(&store, &ReviewFilter::default()),
+            vec![
+                "2026-07-01-0200-bbbb",
+                "2026-07-01-0300-aaaa",
+                "2026-07-01-0100-cccc"
+            ]
+        );
+    }
+
+    #[test]
+    fn query_reviews_ties_broken_by_id_descending() {
+        let mut store = setup_store();
+        let at = chrono::Utc.with_ymd_and_hms(2026, 7, 1, 9, 0, 0).unwrap();
+        write_review_created(&mut store, "2026-07-01-0900-aaaa", "ed", at);
+        write_review_created(&mut store, "2026-07-01-0900-zzzz", "ed", at);
+        write_review_created(&mut store, "2026-07-01-0900-mmmm", "ed", at);
+        assert_eq!(
+            query_ids(&store, &ReviewFilter::default()),
+            vec![
+                "2026-07-01-0900-zzzz",
+                "2026-07-01-0900-mmmm",
+                "2026-07-01-0900-aaaa"
+            ]
+        );
+    }
+
+    #[test]
+    fn query_reviews_applies_the_filter() {
+        let mut store = setup_store();
+        let at = |h| chrono::Utc.with_ymd_and_hms(2026, 7, 1, h, 0, 0).unwrap();
+        write_review_created(&mut store, "2026-07-01-0100-aaaa", "ed", at(9));
+        write_review_created(&mut store, "2026-07-01-0200-bbbb", "bot", at(12));
+        write_review_created(&mut store, "2026-07-01-0300-cccc", "ed", at(10));
+        let filter = ReviewFilter {
+            author: Some("ed".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            query_ids(&store, &filter),
+            vec!["2026-07-01-0300-cccc", "2026-07-01-0100-aaaa"]
+        );
     }
 
     #[test]

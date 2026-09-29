@@ -3,7 +3,8 @@
   "author": "fixture-bot",
   "target": {
     "kind": "task",
-    "slug": "fixture-task-open"
+    "slug": "fixture-task-open",
+    "ref": "task/fixture-task-open"
   },
   "state": "submitted",
   "verdict": "request-changes",
@@ -15,6 +16,7 @@
     {
       "id": 1,
       "status": "open",
+      "closed": false,
       "anchor_state": "whole-document",
       "body": "General feedback.",
       "resolution": {
@@ -31,6 +33,7 @@
     {
       "id": 2,
       "status": "open",
+      "closed": false,
       "anchor": {
         "anchor_type": "text-quote",
         "quote": "open task",

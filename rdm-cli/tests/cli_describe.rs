@@ -149,3 +149,24 @@ fn describe_run_entity_json_has_fields() {
         );
     }
 }
+
+#[test]
+fn describe_review_json_lists_comment_status_values() {
+    let output = rdm()
+        .args(["describe", "review", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let field = json["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "comments.status")
+        .expect("review describes comments.status");
+    assert_eq!(field["type_name"], "enum");
+    assert_eq!(
+        field["enum_values"],
+        serde_json::json!(["open", "addressed", "wont-fix"])
+    );
+}

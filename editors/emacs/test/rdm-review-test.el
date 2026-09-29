@@ -63,12 +63,39 @@
 (defvar rdm-review-test--head "c-head"
   "The `created_commit' the mocked `review start' stamps.")
 
+(defvar rdm-review-test--resolved-author "env-me"
+  "The author the mocked rdm resolves for `--mine' and an unflagged start.")
+
+(defun rdm-review-test--closed (status)
+  "The `closed' rdm reports for a comment STATUS."
+  (if (member status '("addressed" "wont-fix")) t :false))
+
+(defun rdm-review-test--find (id)
+  "The mocked review ID, or nil."
+  (seq-find (lambda (r) (equal (plist-get r :id) id)) rdm-review-test--reviews))
+
+(defun rdm-review-test--update (id argv)
+  "Apply the mocked `review update ID' ARGV; return the review JSON."
+  (let ((review (or (rdm-review-test--find id)
+                    (list :id id :state "submitted" :comments []
+                          :target '(:kind "task" :slug "t1" :ref "task/t1"))))
+        (comment (rdm-review-test--flag argv "comment"))
+        (status (rdm-review-test--flag argv "status"))
+        (state (rdm-review-test--flag argv "state")))
+    (when (and comment status)
+      (seq-doseq (c (plist-get review :comments))
+        (when (equal (format "%s" (plist-get c :id)) comment)
+          (plist-put c :status status)
+          (plist-put c :closed (rdm-review-test--closed status)))))
+    (if state (plist-put review :state state) review)))
+
 (defun rdm-review-test--flag-target (ref)
   "The target JSON of the reference REF (task/SLUG or phase/R/STEM)."
   (pcase (split-string ref "/")
-    (`("task" ,slug) (list :kind "task" :slug slug))
-    (`("phase" ,roadmap ,stem) (list :kind "phase" :roadmap roadmap :stem stem))
-    (`("roadmap" ,roadmap) (list :kind "roadmap" :roadmap roadmap))))
+    (`("task" ,slug) (list :kind "task" :slug slug :ref ref))
+    (`("phase" ,roadmap ,stem)
+     (list :kind "phase" :roadmap roadmap :stem stem :ref ref))
+    (`("roadmap" ,roadmap) (list :kind "roadmap" :roadmap roadmap :ref ref))))
 
 (defun rdm-review-test--flag (argv flag)
   "The value of `--FLAG=value' in ARGV, or nil."
@@ -96,8 +123,11 @@
              :phases (vector (list :number 1 :stem "phase-1-one"
                                    :title "One" :status "done"))))
       (`("review" "list" . ,_)
+       ;; Served in the order given: rdm's own (newest-first) order.
        (let ((state (rdm-review-test--flag argv "state"))
-             (author (rdm-review-test--flag argv "author")))
+             (author (or (rdm-review-test--flag argv "author")
+                         (and (member "--mine" argv)
+                              rdm-review-test--resolved-author))))
          (vconcat (seq-filter
                    (lambda (r)
                      (and (or (not state) (equal (plist-get r :state) state))
@@ -107,13 +137,16 @@
        (list :name "review"
              :fields (vector '(:name "state" :enum_values ["draft" "submitted"])
                              (list :name "verdict"
-                                   :enum_values (vconcat rdm-review-test--verdicts)))))
+                                   :enum_values (vconcat rdm-review-test--verdicts))
+                             '(:name "comments.status"
+                                     :enum_values ["open" "addressed" "wont-fix"]))))
       (`("review" "start" . ,_)
        (let ((review (rdm-review-test--review
                       rdm-review-test--new-id
                       (rdm-review-test--flag-target (rdm-review-test--flag argv "on"))
                       nil :state "draft" :verdict nil
-                      :author (rdm-review-test--flag argv "author")
+                      :author (or (rdm-review-test--flag argv "author")
+                                  rdm-review-test--resolved-author)
                       :created_commit rdm-review-test--head
                       :created "2026-09-26T10:00:00Z")))
          (setq rdm-review-test--reviews
@@ -131,7 +164,7 @@
       (`("review" "update" ,id . ,_)
        (if rdm-review-test--update-error
            (cons :mock-error rdm-review-test--update-error)
-         (format "Updated review '%s' → state: submitted\n" id)))
+         (rdm-review-test--update id argv)))
       (_ (cons :mock-error (format "unexpected %S" argv))))))
 
 (defmacro rdm-review-test--with (reviews &rest body)
@@ -147,6 +180,7 @@ Detail buffers are killed afterwards."
          (rdm-review-test--verdicts '("approve" "request-changes" "comment"))
          (rdm-review-test--new-id "r-new")
          (rdm-review-test--head "c-head")
+         (rdm-review-test--resolved-author "env-me")
          (rdm-review-author "me")
          (kill-ring nil))
      (rdm-context-reset)
@@ -163,6 +197,7 @@ KEYS: `:state' (default \"resolved\"), `:body' (\"original\"),
 `:status' (\"open\"), `:doc', `:prefix', `:suffix'."
   (append
    (list :id id :status (or (plist-get keys :status) "open")
+         :closed (rdm-review-test--closed (or (plist-get keys :status) "open"))
          :anchor (list :anchor_type "text-quote" :quote quote
                        :prefix (or (plist-get keys :prefix) "")
                        :suffix (or (plist-get keys :suffix) ""))
@@ -181,7 +216,7 @@ KEYS: `:state' (default \"resolved\"), `:body' (\"original\"),
                 :created_commit "c0" :body ""
                 :comments (vconcat comments))))
 
-(defconst rdm-review-test--task-target '(:kind "task" :slug "t1"))
+(defconst rdm-review-test--task-target '(:kind "task" :slug "t1" :ref "task/t1"))
 (defconst rdm-review-test--task '(:kind task :slug "t1"))
 
 (defun rdm-review-test--overlays ()
@@ -237,7 +272,7 @@ whole-document comment is listed, not overlaid; K describes a comment."
       (list (rdm-review-test--review
              "r1" rdm-review-test--task-target
              (list (rdm-review-test--comment 1 "target words" 46 58)
-                   (list :id 2 :status "open" :body "Whole doc."
+                   (list :id 2 :status "open" :closed :false :body "Whole doc."
                          :resolution '(:state "unresolved"))
                    (rdm-review-test--comment 3 "日本語 text" 72 86
                                              :body "current")
@@ -496,19 +531,22 @@ whose quote is gone is listed un-placed, and nothing is signalled."
 ;;;; Resolution
 
 (ert-deftest rdm-review/resolve-argv-and-head-prefill ()
-  "gA marks the comment at point with --comment/--status/--reply and an
-applied commit pre-filled with the literal HEAD, passed through unchanged
-for rdm to resolve in the target's repository; no --no-edit.  The view is
-refreshed and the write hook runs."
+  "gA offers the comment statuses `describe review' declares and marks the
+comment at point with --comment/--status/--reply and an applied commit
+pre-filled with the literal HEAD, passed through unchanged for rdm to
+resolve in the target's repository, reading the updated review as JSON.
+The view is refreshed and the write hook runs."
   (let* ((hooked 0)
          (rdm-after-write-hook (list (lambda () (cl-incf hooked))))
-         prefill)
+         prefill offered)
     (rdm-review-test--with
         (list (rdm-review-test--review
                "r1" rdm-review-test--task-target
                (list (rdm-review-test--comment 1 "café" 17 22 :body "current"))))
       (cl-letf (((symbol-function 'completing-read)
-                 (lambda (&rest _) "addressed"))
+                 (lambda (_prompt collection &rest _)
+                   (setq offered collection)
+                   "addressed"))
                 ((symbol-function 'read-string)
                  (lambda (prompt &optional initial &rest _)
                    (if (string-prefix-p "Reply" prompt)
@@ -516,14 +554,25 @@ refreshed and the write hook runs."
                      (setq prefill initial)))))
         (with-current-buffer (rdm-open-item rdm-review-test--task)
           (goto-char (overlay-start (rdm-review-test--overlay-of 1)))
-          (let ((before (length calls)))
-            (call-interactively #'rdm-review-resolve)
+          (let* ((before (length calls))
+                 (result (call-interactively #'rdm-review-resolve))
+                 (update (seq-position (rdm-mock-argvs calls)
+                                       '("review" "update")
+                                       (lambda (argv words)
+                                         (equal (seq-take argv 2) words)))))
+            (should (equal offered '("open" "addressed" "wont-fix")))
             (should (equal prefill "HEAD"))
-            (should (equal (car (nth before calls))
+            (should (equal (car (nth update calls))
                            (list "review" "update" "r1" "--comment=1"
                                  "--status=addressed" "--reply=-- fixed"
-                                 "--applied-commit=HEAD"
-                                 "--project" "p")))
+                                 "--applied-commit=HEAD" "--no-edit"
+                                 "--project" "p" "--format" "json")))
+            (should (>= update before))
+            (should (equal (plist-get result :id) "r1"))
+            (let ((comment (aref (plist-get result :comments) 0)))
+              (should (equal (plist-get comment :status) "addressed"))
+              (should (eq (plist-get comment :closed) t)))
+            (setq before update)
             ;; The view re-read the item and its reviews.
             (should (seq-find (lambda (argv) (and (equal (car argv) "review")
                                                   (equal (cadr argv) "list")))
@@ -539,10 +588,11 @@ refreshed and the write hook runs."
     (with-current-buffer (rdm-open-item rdm-review-test--task)
       (let ((entry (overlay-get (rdm-review-test--overlay-of 1) 'rdm-review-entry))
             (before (length calls)))
-        (rdm-review-resolve entry "wont-fix" "" nil)
+        (should (equal (plist-get (rdm-review-resolve entry "wont-fix" "" nil) :id)
+                       "r1"))
         (should (equal (car (nth before calls))
                        '("review" "update" "r1" "--comment=1" "--status=wont-fix"
-                         "--project" "p")))))))
+                         "--no-edit" "--project" "p" "--format" "json")))))))
 
 (ert-deftest rdm-review/resolve-in-revision-buffer ()
   "In a detail buffer opened with --at the layer is placed against that
@@ -578,7 +628,8 @@ revision's body, and a resolve re-reads the reviews there too."
                          '(rdm-review-closed rdm-review-resolved))))))))
 
 (ert-deftest rdm-review/close-dismiss ()
-  "Close and dismiss thread --state; a refused close shows rdm's message."
+  "Close and dismiss thread --state and return the updated review; a
+refused close shows rdm's message."
   (rdm-review-test--with
       (list (rdm-review-test--review
              "r1" rdm-review-test--task-target
@@ -586,18 +637,24 @@ revision's body, and a resolve re-reads the reviews there too."
     (with-current-buffer (rdm-open-item rdm-review-test--task)
       (goto-char (overlay-start (rdm-review-test--overlay-of 1)))
       (let ((before (length calls)))
-        (call-interactively #'rdm-review-close)
+        (should (equal (plist-get (call-interactively #'rdm-review-close) :state)
+                       "addressed"))
         (should (equal (car (nth before calls))
-                       '("review" "update" "r1" "--state=addressed"
-                         "--project" "p"))))
+                       '("review" "update" "r1" "--state=addressed" "--no-edit"
+                         "--project" "p" "--format" "json"))))
+      ;; Back to submitted so it is still shown and dismissable.
+      (plist-put (car rdm-review-test--reviews) :state "submitted")
+      (rdm-review-refresh)
       (goto-char (point-min))
       (search-forward "r1  alice")
       (let ((before (length calls)))
         (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) t)))
-          (call-interactively #'rdm-review-dismiss))
+          (should (equal (plist-get (call-interactively #'rdm-review-dismiss)
+                                    :state)
+                         "dismissed")))
         (should (equal (car (nth before calls))
-                       '("review" "update" "r1" "--state=dismissed"
-                         "--project" "p"))))
+                       '("review" "update" "r1" "--state=dismissed" "--no-edit"
+                         "--project" "p" "--format" "json"))))
       (let ((before (length calls)))
         (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) nil)))
           (should-not (rdm-review-dismiss (car rdm-review-test--reviews))))
@@ -617,10 +674,14 @@ offered without erroring the picker, and refuse to open."
   (rdm-review-test--with nil
     (setq rdm-review-test--requests
           (list (rdm-review-test--review
-                 "r-phase" '(:kind "phase" :roadmap "r1" :stem "phase-2-two")
+                 "r-phase" '(:kind "phase" :roadmap "r1" :stem "phase-2-two"
+                                   :ref "phase/r1/phase-2-two")
                  (list (rdm-review-test--comment 1 "café" 17 22 :body "current")))
-                (rdm-review-test--review "r-plan" '(:kind "plan" :slug "pl") nil)
-                (rdm-review-test--review "r-change" '(:kind "change" :head "abc") nil)))
+                (rdm-review-test--review "r-plan" '(:kind "plan" :slug "pl" :ref "plan/pl")
+                                         nil)
+                (rdm-review-test--review "r-change"
+                                         '(:kind "change" :head "abc" :ref "change/abc")
+                                         nil)))
     (setq rdm-review-test--reviews (list (car rdm-review-test--requests)))
     (let ((cands (rdm-review-request-candidates)))
       (should (equal (mapcar #'substring-no-properties cands)
@@ -885,63 +946,62 @@ buffer is back at the current revision with the submitted review."
         (should-error (call-interactively #'rdm-review-submit) :type 'user-error)))
     (should-not (rdm-review-test--calls-of calls "review" "submit"))))
 
-(defun rdm-review-test--environment (&rest entries)
-  "`process-environment' without USER or RDM_REVIEW_AUTHOR, plus ENTRIES."
-  (append entries
-          (seq-remove (lambda (e) (string-match-p "\\`\\(USER\\|RDM_REVIEW_AUTHOR\\)=" e))
-                      process-environment)))
-
-(defun rdm-review-test--authors-used (environment)
-  "The distinct `--author' values of the draft lookups and `review start'.
-Opens task t1 and starts a draft with `rdm-review-author' nil under
-ENVIRONMENT."
-  (let ((authors nil))
+(defun rdm-review-test--author-argvs (author)
+  "The draft-lookup `review list' and `review start' argvs, oldest first.
+Opens task t1 and starts a draft with `rdm-review-author' bound to
+AUTHOR, under an environment naming other authors (which the package
+must not read)."
+  (let (argvs)
     (rdm-review-test--with nil
-      (let ((rdm-review-author nil)
-            (process-environment environment))
+      (let ((rdm-review-author author)
+            (process-environment (append '("RDM_REVIEW_AUTHOR=env-other"
+                                           "USER=user-other")
+                                         process-environment)))
         (with-current-buffer (rdm-open-item rdm-review-test--task)
           (rdm-review-start))
-        (dolist (argv (append (rdm-review-test--calls-of calls "review" "list")
-                              (rdm-review-test--calls-of calls "review" "start")))
-          (when (or (member "--state=draft" argv) (equal (cadr argv) "start"))
-            (push (list (cadr argv) (rdm-review-test--flag argv "author")) authors)))))
-    (delete-dups (nreverse authors))))
+        (setq argvs
+              (seq-filter (lambda (argv)
+                            (or (equal (seq-take argv 2) '("review" "start"))
+                                (and (equal (seq-take argv 2) '("review" "list"))
+                                     (member "--state=draft" argv))))
+                          (rdm-mock-argvs calls)))))
+    argvs))
 
-(ert-deftest rdm-review/author-from-environment ()
-  "With `rdm-review-author' nil the author is RDM_REVIEW_AUTHOR, else USER,
-and the same one is passed to the draft lookup and to `review start';
-with neither, no draft is looked up and `review start' has no --author."
-  (should (equal (rdm-review-test--authors-used
-                  (rdm-review-test--environment "RDM_REVIEW_AUTHOR=env-me" "USER=user-me"))
-                 '(("list" "env-me") ("start" "env-me"))))
-  (should (equal (rdm-review-test--authors-used
-                  (rdm-review-test--environment "USER=user-me"))
-                 '(("list" "user-me") ("start" "user-me"))))
-  (should (equal (rdm-review-test--authors-used (rdm-review-test--environment))
-                 '(("start" nil)))))
+(ert-deftest rdm-review/author-left-to-rdm-unless-overridden ()
+  "With `rdm-review-author' nil the draft lookup passes --mine and no
+--author, and `review start' no --author, whatever the environment; set,
+both pass it as --author and there is no --mine."
+  (let ((argvs (rdm-review-test--author-argvs nil)))
+    (should argvs)
+    (dolist (argv argvs)
+      (should-not (rdm-review-test--flag argv "author")))
+    (should (seq-every-p (lambda (argv) (member "--mine" argv))
+                         (seq-filter (lambda (a) (equal (cadr a) "list")) argvs)))
+    (should (seq-find (lambda (a) (equal (cadr a) "start")) argvs)))
+  (let ((argvs (rdm-review-test--author-argvs "pinned")))
+    (should argvs)
+    (dolist (argv argvs)
+      (should (equal (rdm-review-test--flag argv "author") "pinned"))
+      (should-not (member "--mine" argv)))))
 
-(ert-deftest rdm-review/newest-own-draft-followed ()
-  "Of two own drafts the buffer follows the newer one's `created_commit'."
+(ert-deftest rdm-review/first-listed-own-draft-followed ()
+  "Of several own drafts the buffer follows the first rdm lists, not one
+re-sorted by `created'."
   (rdm-review-test--with
       (list (rdm-review-test--review
-             "r-old" rdm-review-test--task-target nil
+             "r-first" rdm-review-test--task-target nil
              :state "draft" :verdict nil :author "me"
-             :created "2026-09-26T09:00:00Z" :created_commit "c-old")
+             :created "2026-09-26T09:00:00Z" :created_commit "c-first")
             (rdm-review-test--review
-             "r-new" rdm-review-test--task-target nil
+             "r-later" rdm-review-test--task-target nil
              :state "draft" :verdict nil :author "me"
-             :created "2026-09-26T11:00:00Z" :created_commit "c-new")
-            (rdm-review-test--review
-             "r-mid" rdm-review-test--task-target nil
-             :state "draft" :verdict nil :author "me"
-             :created "2026-09-26T10:00:00Z" :created_commit "c-mid"))
+             :created "2026-09-26T11:00:00Z" :created_commit "c-later"))
     (setq rdm-review-test--originals
-          (list (cons "c-old" "Old.\n") (cons "c-mid" "Mid.\n")
-                (cons "c-new" "New.\n")))
+          (list (cons "c-first" "First.\n") (cons "c-later" "Later.\n")))
     (with-current-buffer (rdm-open-item rdm-review-test--task)
-      (should (equal rdm-view--at "c-new"))
-      (should (equal (plist-get rdm-review--draft :id) "r-new"))
-      (should (equal (rdm-view-body) "New.\n")))))
+      (should (equal rdm-view--at "c-first"))
+      (should (equal (plist-get rdm-review--draft :id) "r-first"))
+      (should (equal (rdm-view-body) "First.\n")))))
 
 ;;;; The transient
 

@@ -140,8 +140,8 @@ conventions.
 | normal | `K` | `rdm-review-comment-at-point` | describe the review comment at point |
 | normal | `]c` | `rdm-review-next-comment` | next review comment |
 | normal | `[c` | `rdm-review-previous-comment` | previous review comment |
-| normal | `gA` | `rdm-review-resolve` | mark the comment at point addressed or won't-fix (the applied commit pre-fills `HEAD`, which rdm resolves in the target's repository) |
-| normal | `C` | `rdm-review-comment-document` | whole-document comment in your draft review |
+| normal | `gA` | `rdm-review-resolve` | set the comment at point's status, from those `rdm describe review` declares (the applied commit pre-fills `HEAD`, which rdm resolves in the target's repository) |
+| normal | `C` | `rdm-review-comment-document` | whole-document comment in your draft review (yours as rdm resolves the author — `review list --mine` — unless `rdm-review-author` overrides it) |
 | normal | `gS` | `rdm-review-submit` | submit your draft review with a verdict |
 | visual | `c` | `rdm-review-comment-region` | comment on the selected body text (the selection is the quote) |
 

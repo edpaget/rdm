@@ -108,7 +108,7 @@ rdm review requests {proj_flag}                                  # the work queu
 rdm review show <review-id> --format json {proj_flag}            # full anchors + resolution states, one call
 rdm review update <review-id> --comment 1 --status addressed --applied-commit <sha> --reply "Fixed." {proj_flag}
 rdm review update <review-id> --state addressed {proj_flag}      # close once every comment is resolved
-rdm review list --state submitted {proj_flag}                    # filter by --on/--state/--verdict/--author
+rdm review list --state submitted {proj_flag}                    # filter by --on/--state/--verdict/--author/--mine; newest first
 ```
 
 Key mechanics:

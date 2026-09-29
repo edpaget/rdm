@@ -283,7 +283,7 @@ process and signals an error.  Errors are re-signalled."
     (review-list      :argv ("review" "list")    :kind read)
     (review-show      :argv ("review" "show")    :kind read)
     (review-requests  :argv ("review" "requests") :kind read)
-    (review-update    :argv ("review" "update")  :kind text)
+    (review-update    :argv ("review" "update")  :kind read)
     (review-start     :argv ("review" "start")   :kind read)
     (review-comment   :argv ("review" "comment") :kind write)
     (review-submit    :argv ("review" "submit")  :kind write)

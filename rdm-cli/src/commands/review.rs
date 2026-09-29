@@ -530,9 +530,15 @@ pub fn run(
             state,
             verdict,
             author,
+            mine,
             project,
         } => {
             let project = paths::resolve_project(project, repo_config)?;
+            let author = if mine {
+                Some(paths::resolve_review_author(None)?)
+            } else {
+                author
+            };
             let target = match &on {
                 Some(reference) => Some(
                     rdm_core::ops::reviews::parse_review_target_ref(store, &project, reference)
@@ -540,10 +546,9 @@ pub fn run(
                 ),
                 None => None,
             };
-            let reviews = rdm_core::ops::reviews::list_reviews(store, &project)
-                .context("failed to list reviews")?;
-            let filtered = rdm_core::ops::reviews::filter_reviews(
-                reviews,
+            let filtered = rdm_core::ops::reviews::query_reviews(
+                store,
+                &project,
                 &ReviewFilter {
                     target,
                     state,
@@ -551,7 +556,8 @@ pub fn run(
                     author,
                     ..Default::default()
                 },
-            );
+            )
+            .context("failed to list reviews")?;
             render_review_list(store, &project, &filtered, format)?;
         }
         ReviewCommand::Requests { project } => {
@@ -596,20 +602,7 @@ pub fn run(
                         reading.source_note.as_deref()
                     )
                 ),
-                OutputFormat::Json => println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &json::review_to_json(
-                            &review_id,
-                            &doc,
-                            &reading.resolutions,
-                            &reading.comment_notes,
-                            &reading.targets
-                        )
-                        .with_source_note(reading.source_note)
-                    )
-                    .context("failed to serialize review")?
-                ),
+                OutputFormat::Json => print_review_json(&review_id, &doc, reading)?,
                 OutputFormat::Table => bail!(
                     "--format table is not supported for 'review show'; use --format human, --format json, --format markdown, or omit --format"
                 ),
@@ -623,6 +616,7 @@ pub fn run(
             status,
             applied_commit,
             reply,
+            no_edit: _,
             project,
         } => {
             if state.is_none() && comment.is_none() {
@@ -685,10 +679,16 @@ pub fn run(
                     None => rdm_core::ops::reviews::get_review(s, &project, &review_id),
                 }
             })?;
-            println!(
-                "Updated review '{review_id}' → state: {}",
-                doc.frontmatter.state
-            );
+            match format {
+                OutputFormat::Json => {
+                    let reading = resolve_all(store, &project, &doc);
+                    print_review_json(&review_id, &doc, reading)?;
+                }
+                _ => println!(
+                    "Updated review '{review_id}' → state: {}",
+                    doc.frontmatter.state
+                ),
+            }
         }
         ReviewCommand::Delete {
             review_id,
@@ -703,6 +703,38 @@ pub fn run(
             println!("Deleted review '{review_id}' from project '{project}'");
         }
     }
+    Ok(())
+}
+
+/// Builds a review's JSON from its resolution pass: every comment's
+/// resolution, note and target, plus the source note. The one shape
+/// `review show`, `review update` and `review list` emit.
+fn review_json(
+    review_id: &str,
+    doc: &Document<Review>,
+    reading: rdm_core::ops::reviews::ReviewResolution,
+) -> json::ReviewJson {
+    json::review_to_json(
+        review_id,
+        doc,
+        &reading.resolutions,
+        &reading.comment_notes,
+        &reading.targets,
+    )
+    .with_source_note(reading.source_note)
+}
+
+/// Prints one review as [`review_json`] builds it.
+fn print_review_json(
+    review_id: &str,
+    doc: &Document<Review>,
+    reading: rdm_core::ops::reviews::ReviewResolution,
+) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&review_json(review_id, doc, reading))
+            .context("failed to serialize review")?
+    );
     Ok(())
 }
 
@@ -914,17 +946,7 @@ fn render_review_list(
         OutputFormat::Json => {
             let arr: Vec<_> = reviews
                 .iter()
-                .map(|(id, doc)| {
-                    let reading = resolve_all(store, project, doc);
-                    json::review_to_json(
-                        id,
-                        doc,
-                        &reading.resolutions,
-                        &reading.comment_notes,
-                        &reading.targets,
-                    )
-                    .with_source_note(reading.source_note)
-                })
+                .map(|(id, doc)| review_json(id, doc, resolve_all(store, project, doc)))
                 .collect();
             println!(
                 "{}",

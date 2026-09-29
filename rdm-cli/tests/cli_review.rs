@@ -3458,3 +3458,244 @@ fn review_json_reports_each_comment_current_body_placement() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// review metadata from rdm: --mine, newest-first listing, target ref, comment
+// closed flag, and `review update --format json`.
+// ---------------------------------------------------------------------------
+
+/// Starts a draft review of `on` by `author` and returns its id.
+fn start_review_by(plan: &TempDir, on: &str, author: &str) -> String {
+    let out = rdm_demo(
+        plan,
+        &[
+            "review",
+            "start",
+            "--on",
+            on,
+            "--author",
+            author,
+            "--no-edit",
+            "--format",
+            "json",
+        ],
+    )
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+    serde_json::from_slice::<Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Runs `review list --format json` with `args` and `env`, returning the
+/// parsed array.
+fn review_list_json(plan: &TempDir, args: &[&str], env: &[(&str, &str)]) -> Vec<Value> {
+    let mut cmd = rdm();
+    cmd.arg("--root")
+        .arg(plan.path())
+        .args(["review", "list", "--project", "demo", "--format", "json"])
+        .args(args)
+        .env_remove("RDM_REVIEW_AUTHOR")
+        .env_remove("USER")
+        .env_remove("USERNAME");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.assert().success().get_output().stdout.clone();
+    serde_json::from_slice::<Value>(&out)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+/// The ids of `reviews`, in listed order.
+fn ids_of(reviews: &[Value]) -> Vec<String> {
+    reviews
+        .iter()
+        .map(|r| r["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Asserts `reviews` is newest first: `created` descending, ties broken by
+/// id descending — checked against each review's own reported values.
+fn assert_newest_first(reviews: &[Value]) {
+    let keys: Vec<(chrono::DateTime<chrono::Utc>, String)> = reviews
+        .iter()
+        .map(|r| {
+            (
+                r["created"].as_str().unwrap().parse().unwrap(),
+                r["id"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let mut sorted = keys.clone();
+    sorted.sort_by(|a, b| b.cmp(a));
+    assert_eq!(keys, sorted, "not newest first");
+}
+
+#[test]
+fn review_list_mine_returns_only_the_resolved_authors_drafts_newest_first() {
+    let plan = init_plan_repo();
+    let a1 = start_review_by(&plan, "task/item-x", "a");
+    let b1 = start_review_by(&plan, "task/item-x", "b");
+    let a2 = start_review_by(&plan, "task/item-x", "a");
+
+    let draft_args = ["--on", "task/item-x", "--state", "draft"];
+    let mine = review_list_json(
+        &plan,
+        &[&draft_args[..], &["--mine"]].concat(),
+        &[("RDM_REVIEW_AUTHOR", "a")],
+    );
+    assert_newest_first(&mine);
+    let mut got = ids_of(&mine);
+    got.sort();
+    let mut expected = vec![a1, a2];
+    expected.sort();
+    assert_eq!(got, expected, "only a's drafts");
+
+    // `--mine` falls back to `$USER` when RDM_REVIEW_AUTHOR is unset.
+    let by_user = review_list_json(
+        &plan,
+        &[&draft_args[..], &["--mine"]].concat(),
+        &[("USER", "b")],
+    );
+    assert_eq!(ids_of(&by_user), vec![b1.clone()]);
+
+    // An explicit --author is newest first too.
+    let by_a = review_list_json(&plan, &[&draft_args[..], &["--author", "a"]].concat(), &[]);
+    assert_newest_first(&by_a);
+    assert_eq!(ids_of(&by_a), ids_of(&mine));
+    let by_b = review_list_json(&plan, &[&draft_args[..], &["--author", "b"]].concat(), &[]);
+    assert_eq!(ids_of(&by_b), vec![b1]);
+
+    // The unfiltered list is newest first as well.
+    let all = review_list_json(&plan, &[], &[]);
+    assert_eq!(all.len(), 3);
+    assert_newest_first(&all);
+}
+
+#[test]
+fn review_list_mine_conflicts_with_author() {
+    let plan = init_plan_repo();
+    rdm_demo(&plan, &["review", "list", "--mine", "--author", "x"])
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+#[test]
+fn review_list_mine_without_a_resolvable_author_errors() {
+    let plan = init_plan_repo();
+    rdm()
+        .arg("--root")
+        .arg(plan.path())
+        .args(["review", "list", "--mine", "--project", "demo"])
+        .env_remove("RDM_REVIEW_AUTHOR")
+        .env_remove("USER")
+        .env_remove("USERNAME")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot determine review author"));
+}
+
+#[test]
+fn review_json_carries_target_ref_and_comment_closed() {
+    let plan = init_plan_repo();
+    let task_review = start_review(&plan, "task/item-x");
+    add_plain_comment(&plan, &task_review, "A comment.");
+    let phase_review = start_review(&plan, "phase/roadmap-z/1");
+
+    let shown = show_review_json(&plan, &task_review);
+    assert_eq!(shown["target"]["ref"], "task/item-x");
+    assert_eq!(shown["comments"][0]["status"], "open");
+    assert_eq!(shown["comments"][0]["closed"], false);
+    assert_eq!(
+        show_review_json(&plan, &phase_review)["target"]["ref"],
+        "phase/roadmap-z/phase-1-build"
+    );
+
+    let listed = review_list_json(&plan, &[], &[]);
+    let refs: Vec<&str> = listed
+        .iter()
+        .map(|r| r["target"]["ref"].as_str().unwrap())
+        .collect();
+    assert!(refs.contains(&"task/item-x"), "{refs:?}");
+    assert!(refs.contains(&"phase/roadmap-z/phase-1-build"), "{refs:?}");
+}
+
+#[test]
+fn review_update_format_json_emits_the_updated_review() {
+    let plan = init_plan_repo();
+    let id = start_review(&plan, "task/item-x");
+    add_plain_comment(&plan, &id, "A comment.");
+    rdm_demo(
+        &plan,
+        &[
+            "review",
+            "submit",
+            &id,
+            "--verdict",
+            "request-changes",
+            "--no-edit",
+        ],
+    )
+    .success();
+
+    let out = rdm_demo(
+        &plan,
+        &[
+            "review",
+            "update",
+            &id,
+            "--comment",
+            "1",
+            "--status",
+            "addressed",
+            "--no-edit",
+            "--format",
+            "json",
+        ],
+    )
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+    let updated: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(updated["id"], id.as_str());
+    assert_eq!(updated["target"]["ref"], "task/item-x");
+    assert_eq!(updated["comments"][0]["status"], "addressed");
+    assert_eq!(updated["comments"][0]["closed"], true);
+
+    // The human output is unchanged.
+    rdm_demo(
+        &plan,
+        &["review", "update", &id, "--state", "addressed", "--no-edit"],
+    )
+    .success()
+    .stdout(predicate::str::contains(format!(
+        "Updated review '{id}' → state: addressed"
+    )));
+
+    let other = start_review(&plan, "task/item-y");
+    let out = rdm_demo(
+        &plan,
+        &[
+            "review",
+            "update",
+            &other,
+            "--state",
+            "dismissed",
+            "--format",
+            "json",
+        ],
+    )
+    .success()
+    .get_output()
+    .stdout
+    .clone();
+    let dismissed: Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(dismissed["state"], "dismissed");
+}
