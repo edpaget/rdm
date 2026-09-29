@@ -313,16 +313,38 @@ at point in a detail buffer."
                       (plist-get sync :ahead) (plist-get sync :behind)))))
      "\n")))
 
+(defun rdm--uncommitted-paths (changes)
+  "Lines naming the CHANGES (a `changes' reply) left uncommitted.
+Each group lists its paths and the rdm commands that recover them."
+  (let ((others (append (plist-get changes :others) nil))
+        (unattributed (append (plist-get changes :unattributed) nil))
+        (paths (lambda (cs) (mapcar (lambda (c) (format "  %s" (plist-get c :path)))
+                                    cs))))
+    (append
+     (when others
+       (append (list (format "%d uncommitted path(s) belong to another changeset:"
+                             (length others)))
+               (funcall paths others)
+               (list "recover with `rdm session list' and `rdm commit --changeset <id>',\
+ or `rdm commit --all'")))
+     (when unattributed
+       (append (list (format "%d uncommitted path(s) are not attributed to any changeset:"
+                             (length unattributed)))
+               (funcall paths unattributed)
+               (list "recover with `rdm commit --all'"))))))
+
 (defun rdm--commit-summary (json)
   "The text summarizing JSON, rdm's `commit' reply."
   (let ((sha (plist-get json :commit))
+        (changes (plist-get json :changes))
         (skipped (append (plist-get json :skipped) nil))
         (advisory (plist-get json :advisory)))
     (string-join
      (append
-      (list (if sha
-                (format "rdm: committed %s" (substring sha 0 (min 12 (length sha))))
-              "rdm: nothing committed"))
+      (if sha
+          (cons (format "rdm: committed %s" (substring sha 0 (min 12 (length sha))))
+                (rdm--other-changes changes))
+        (cons "rdm: nothing committed" (rdm--uncommitted-paths changes)))
       (when skipped
         (list (format "skipped: %s" (string-join skipped ", "))))
       (when advisory (list advisory)))

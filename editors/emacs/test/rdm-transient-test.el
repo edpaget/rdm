@@ -240,6 +240,63 @@ return rdm's parsed reply; the echoed summary is built from its data."
                      ("commit" "--message=-plan: msg" "--format" "json")
                      ("discard" "--force" "--format" "json"))))))
 
+(defun rdm-transient-test--reply (json)
+  "JSON, an rdm reply, parsed the way `rdm-call-sync' parses it."
+  (json-parse-string json :object-type 'plist :null-object nil :false-object :false))
+
+(ert-deftest rdm-transient/status-summary-merge-and-sync ()
+  "A status reply's merge and sync objects each render a line."
+  (let ((text (rdm--status-summary
+               (rdm-transient-test--reply
+                "{\"changes\":{\"user\":[],\"others\":[],\"unattributed\":\
+[{\"path\":\"projects/p/tasks/u.md\",\"change\":\"added\"}]},\
+\"merge\":{\"unmerged\":2},\
+\"sync\":{\"remote\":\"origin\",\"branch\":\"main\",\"ahead\":3,\"behind\":1}}"))))
+    (should (equal text (string-join
+                         '("rdm: nothing staged from this Emacs"
+                           "1 unattributed"
+                           "merge in progress (2 unmerged)"
+                           "main vs origin: 3 ahead, 1 behind")
+                         "\n")))))
+
+(ert-deftest rdm-transient/commit-summary-nothing-committed ()
+  "A null commit names the other sessions' paths and how to recover them,
+then the skipped paths and the advisory."
+  (let ((text (rdm--commit-summary
+               (rdm-transient-test--reply
+                "{\"commit\":null,\"changeset\":\"s\",\
+\"skipped\":[\"projects/p/tasks/gone.md\"],\"advisory\":\"fragmented session\",\
+\"changes\":{\"user\":[],\"others\":[{\"path\":\"projects/p/tasks/o.md\",\
+\"change\":\"added\"}],\"unattributed\":[{\"path\":\"projects/p/tasks/u.md\",\
+\"change\":\"modified\"}]}}"))))
+    (should (equal text (string-join
+                         '("rdm: nothing committed"
+                           "1 uncommitted path(s) belong to another changeset:"
+                           "  projects/p/tasks/o.md"
+                           "recover with `rdm session list' and `rdm commit --changeset <id>', or `rdm commit --all'"
+                           "1 uncommitted path(s) are not attributed to any changeset:"
+                           "  projects/p/tasks/u.md"
+                           "recover with `rdm commit --all'"
+                           "skipped: projects/p/tasks/gone.md"
+                           "fragmented session")
+                         "\n")))))
+
+(ert-deftest rdm-transient/commit-summary-committed-with-others ()
+  "A commit still counts the paths other sessions left staged."
+  (should (equal (rdm--commit-summary
+                  (rdm-transient-test--reply
+                   (format "{\"commit\":\"0123456789abcdef\",\"changeset\":\"s\",\
+\"skipped\":[],\"advisory\":null,\"changes\":%s}" rdm-transient-test--changes)))
+                 "rdm: committed 0123456789ab\n1 staged by other sessions")))
+
+(ert-deftest rdm-transient/discard-summary-skipped-and-merge-aborted ()
+  "A discard reports the paths it skipped and an aborted merge."
+  (should (equal (rdm--discard-summary
+                  (rdm-transient-test--reply
+                   (format "{\"merge_aborted\":true,\"restored\":[\"a\",\"b\"],\
+\"skipped\":[\"c\"],\"changes\":%s}" rdm-transient-test--changes)))
+                 "rdm: discarded 2 paths, skipped 1 changed by another session (merge aborted)")))
+
 ;;;; Session
 
 (ert-deftest rdm-transient/session-on-every-process ()
