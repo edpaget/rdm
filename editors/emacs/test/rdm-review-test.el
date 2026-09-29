@@ -800,6 +800,30 @@ copies the command and runs nothing."
                             (rdm-mock-argvs calls))))
         (kill-buffer buf)))))
 
+(ert-deftest rdm-review/show-line-range-review ()
+  "Show gives a line-range comment its `line N'/`lines N-M' row and
+quotes every line of its text with `> '; a resolution without a quote
+falls back to the anchor's snippet."
+  (let ((unquoted (rdm-review-test--line-comment 2 '(4 . 4) "Fourth only." 40 52)))
+    (plist-put (plist-get unquoted :resolution) :quote nil)
+    (rdm-review-test--with
+        (list (rdm-review-test--review
+               "r1" rdm-review-test--task-target
+               (list (rdm-review-test--line-comment
+                      1 '(2 . 3) "Second line.\nThird line." 5 29)
+                     unquoted)))
+      (let ((buf (rdm-review-show (car rdm-review-test--reviews))))
+        (unwind-protect
+            (with-current-buffer buf
+              (should (string-match-p
+                       (concat "#1  open  resolved\nlines 2-3\n"
+                               "> Second line\\.\n> Third line\\.\nComment 1\\.")
+                       (buffer-string)))
+              (should (string-match-p
+                       "#2  open  resolved\nline 4\n> Fourth only\\.\nComment 2\\."
+                       (buffer-string))))
+          (kill-buffer buf))))))
+
 ;;;; Authoring
 
 (defconst rdm-review-test--authoring-body
@@ -908,6 +932,53 @@ the last selected character."
     (should (equal (rdm-review-region-lines body 0 5) "1-2"))
     (should (equal (rdm-review-region-lines body 5 10) "2-3"))
     (should (equal (rdm-review-region-lines body 8 14) "3"))))
+
+(ert-deftest rdm-review/placed-range-widens-a-point ()
+  "An empty range is a point placed on the character there, or at the
+body's end the one before it; a non-empty range is kept, a malformed
+one or one into an empty body is nil."
+  (should (equal (rdm-review--placed-range "one\n\nthree\n" 4 4) '(4 . 5)))
+  (should (equal (rdm-review--placed-range "ab\n" 3 3) '(2 . 3)))
+  (should (equal (rdm-review--placed-range "one\ntwo\n" 4 7) '(4 . 7)))
+  (should-not (rdm-review--placed-range "" 0 0))
+  (should-not (rdm-review--placed-range "abc" 2 1))
+  (should-not (rdm-review--placed-range "abc" 9 9)))
+
+(ert-deftest rdm-review/blank-line-comment-placed ()
+  "Selecting a blank line (just its newline) comments on --line=N; the
+comment rdm then reports on it -- an empty snippet at an empty range --
+is placed on that line, in the draft's buffer and the current body's,
+not listed un-placed."
+  (let ((body "one\n\nthree\n"))
+    (rdm-review-test--with (list (rdm-review-test--draft))
+      (setq rdm-review-test--current body
+            rdm-review-test--originals (list (cons "c0" body)))
+      (with-current-buffer (rdm-open-item rdm-review-test--task)
+        (should (equal rdm-view--at "c0"))
+        (let ((start (car (rdm-view-body-region))))
+          (rdm-review-test--comment-on (cons (+ start 4) (+ start 5)) "Blank."))
+        (should (equal (rdm-review-test--calls-of calls "review" "comment")
+                       '(("review" "comment" "r1" "--line=2" "--body=Blank."
+                          "--project" "p" "--no-edit"))))
+        (plist-put (car rdm-review-test--reviews) :comments
+                   (vector (rdm-review-test--line-comment 1 '(2 . 2) "" 4 4)))
+        (rdm-review-refresh)
+        (let ((ov (rdm-review-test--overlay-of 1)))
+          (should ov)
+          (should (equal (rdm-review-test--overlay-range ov) '(4 . 5)))
+          (should (equal (rdm-review-test--faces ov) '(rdm-review-resolved))))
+        (should-not (string-match-p "un-placed" (rdm-review-test--section)))))
+    (rdm-review-test--with
+        (list (rdm-review-test--review
+               "r1" rdm-review-test--task-target
+               (list (rdm-review-test--line-comment 1 '(2 . 2) "" 4 4))))
+      (setq rdm-review-test--current body)
+      (with-current-buffer (rdm-open-item rdm-review-test--task)
+        (should-not rdm-view--at)
+        (should (equal (rdm-review-test--overlay-range
+                        (rdm-review-test--overlay-of 1))
+                       '(4 . 5)))
+        (should-not (string-match-p "un-placed" (rdm-review-test--section)))))))
 
 (ert-deftest rdm-review/region-refusals-issue-no-call ()
   "A region reaching outside the body and an empty one are refused before
@@ -1550,6 +1621,28 @@ un-placed once an insertion above makes `current' null."
           (should-not (rdm-review-test--overlays))
           (should (string-match-p "#1 open  un-placed (drifted) lines 2-3"
                                   (rdm-review-test--section))))))))
+
+(ert-deftest rdm-review/real-blank-line-comment-placed ()
+  "A comment on a blank line, which rdm resolves to an empty range, is
+placed on that line in the draft's buffer, not listed un-placed."
+  (rdm-review-test--with-real-author "emacs-real-author-blank"
+    (let* ((slug "emacs-author-blank-task")
+           (item (list :kind 'task :slug slug))
+           (body "one\n\nthree\n"))
+      (rdm-call-sync 'task-create slug :title "Blank line" :stdin body)
+      (rdm-call-sync 'commit :message "emacs: seed a blank-line task")
+      (with-current-buffer (rdm-open-item item)
+        (let ((id (rdm-review-start)))
+          (should (equal (rdm-view-body) body))
+          (let ((start (car (rdm-view-body-region))))
+            (rdm-review-test--comment-on (cons (+ start 4) (+ start 5)) "Blank."))
+          (let ((res (rdm-review-test--resolution id)))
+            (should (equal (plist-get res :state) "resolved"))
+            (should (= (plist-get res :range_start) (plist-get res :range_end))))
+          (should (equal (rdm-review-test--overlay-range
+                          (rdm-review-test--overlay-of 1))
+                         '(4 . 5)))
+          (should-not (string-match-p "un-placed" (rdm-review-test--section))))))))
 
 (ert-deftest rdm-review/real-drifted-quote ()
   "A quote comment rdm reports drifted is placed only from the review

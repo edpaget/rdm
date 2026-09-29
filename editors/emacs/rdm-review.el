@@ -179,6 +179,19 @@ inside a multibyte character."
         (e (rdm-review-byte-to-char body end)))
     (and s e (< s e) (cons s e))))
 
+(defun rdm-review--placed-range (body start end)
+  "The byte range START..END of BODY as the (START . END) chars to overlay.
+A non-empty range is `rdm-review--char-range'.  An empty one (a comment
+on a blank line, whose snippet is empty) is a point: it covers the
+character there, the blank line's newline, or at BODY's end the one
+before it, so the comment stays placed and reachable.  nil when the
+range is malformed or BODY is empty."
+  (or (rdm-review--char-range body start end)
+      (let ((s (rdm-review-byte-to-char body start)))
+        (when (and s (equal start end))
+          (cond ((< s (length body)) (cons s (1+ s)))
+                ((> s 0) (cons (1- s) s)))))))
+
 (defun rdm-review--shown-body (review)
   "Which of REVIEW's bodies this detail buffer shows, as a symbol.
 `current' when the buffer shows the current body (it has no
@@ -202,7 +215,9 @@ current body places at the resolution's `current' range, which rdm
 reports null when the anchor cannot be placed there; the body at the
 review's `created_commit' places at `range_start'..`range_end' when
 the resolution's `body' is `original'; any other revision places
-nothing.  Ranges are UTF-8 byte offsets; a malformed one is `lost'."
+nothing.  Ranges are UTF-8 byte offsets; a malformed one is `lost',
+an empty one (a blank line) placed as a point (see
+`rdm-review--placed-range')."
   (let* ((anchor (plist-get comment :anchor))
          (res (plist-get comment :resolution))
          (state (plist-get res :state)))
@@ -215,14 +230,14 @@ nothing.  Ranges are UTF-8 byte offsets; a malformed one is `lost'."
              (pcase shown
                ('current
                 (when-let* ((current (plist-get res :current)))
-                  (rdm-review--char-range displayed
-                                          (plist-get current :range_start)
-                                          (plist-get current :range_end))))
+                  (rdm-review--placed-range displayed
+                                            (plist-get current :range_start)
+                                            (plist-get current :range_end))))
                ('original
                 (and (equal (plist-get res :body) "original")
-                     (rdm-review--char-range displayed
-                                             (plist-get res :range_start)
-                                             (plist-get res :range_end)))))))
+                     (rdm-review--placed-range displayed
+                                               (plist-get res :range_start)
+                                               (plist-get res :range_end)))))))
         (if range
             (list :placement (if (equal state "drifted") 'drifted 'resolved)
                   :start (car range) :end (cdr range))
