@@ -51,6 +51,37 @@ pub fn list_phases(
     Ok(phases)
 }
 
+/// Criteria for narrowing a roadmap's phase list (e.g. [`list_phases`]
+/// output).
+///
+/// The default value keeps every phase.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PhaseFilter {
+    /// Keep only the "active work" group — phases whose status
+    /// [`is_active`](PhaseStatus::is_active) (in-progress, needs-review, or
+    /// reviewed). `false` keeps every status.
+    pub active: bool,
+}
+
+/// Returns whether `phase` satisfies every populated criterion in `filter`.
+pub fn phase_matches(phase: &Phase, filter: &PhaseFilter) -> bool {
+    !filter.active || phase.status.is_active()
+}
+
+/// Filters `phases` to those satisfying `filter`, preserving order.
+///
+/// An owned convenience wrapper over [`phase_matches`] for callers holding
+/// [`list_phases`] output.
+pub fn filter_phases(
+    phases: Vec<(String, Document<Phase>)>,
+    filter: &PhaseFilter,
+) -> Vec<(String, Document<Phase>)> {
+    phases
+        .into_iter()
+        .filter(|(_, doc)| phase_matches(&doc.frontmatter, filter))
+        .collect()
+}
+
 /// Request describing a new phase to create.
 ///
 /// Only `project`, `roadmap`, `slug`, and `title` are required for a minimal

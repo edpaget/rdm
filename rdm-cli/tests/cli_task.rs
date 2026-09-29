@@ -4,6 +4,8 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
+#[path = "support/every_status.rs"]
+mod every_status;
 #[path = "git_test_support.rs"]
 mod git_test_support;
 use git_test_support::git;
@@ -2526,4 +2528,100 @@ fn task_update_tags_conflicts_with_add_tag() {
         .failure()
         .code(2);
     assert_eq!(task_tags(&dir, "t1"), ["a"]);
+}
+
+#[test]
+fn task_list_active_keeps_only_active_work() {
+    let dir = every_status::seed();
+    let tasks = every_status::json(
+        dir.path(),
+        &[
+            "task",
+            "list",
+            "--active",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ],
+    );
+    let mut slugs: Vec<String> = tasks
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["slug"].as_str().unwrap().to_string())
+        .collect();
+    slugs.sort();
+    let mut expected = every_status::active_task_slugs();
+    expected.sort();
+    assert_eq!(slugs, expected);
+}
+
+#[test]
+fn task_list_active_conflicts_with_status() {
+    let dir = every_status::seed();
+    every_status::rdm(dir.path())
+        .args([
+            "task",
+            "list",
+            "--active",
+            "--status",
+            "open",
+            "--project",
+            "acme",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--status"));
+}
+
+#[test]
+fn task_json_carries_ref_and_review_ref() {
+    let dir = every_status::seed();
+    let root = dir.path();
+    let list = every_status::json(
+        root,
+        &["task", "list", "--project", "acme", "--format", "json"],
+    );
+    let entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["slug"] == "task-open")
+        .unwrap();
+    assert_eq!(entry["ref"], "task/task-open");
+    assert_eq!(entry["review_ref"], "task/task-open");
+
+    let show = every_status::json(
+        root,
+        &[
+            "task",
+            "show",
+            "task-open",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(show["ref"], "task/task-open");
+    assert_eq!(show["review_ref"], "task/task-open");
+
+    let created = every_status::json(
+        root,
+        &[
+            "task",
+            "create",
+            "fresh",
+            "--title",
+            "Fresh",
+            "--project",
+            "acme",
+            "--no-edit",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(created["ref"], "task/fresh");
+    assert_eq!(created["review_ref"], "task/fresh");
 }

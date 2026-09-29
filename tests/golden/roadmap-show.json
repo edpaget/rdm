@@ -1,23 +1,34 @@
 {
   "project": "fixture-proj",
   "slug": "sample-roadmap",
+  "ref": "sample-roadmap",
+  "review_ref": "roadmap/sample-roadmap",
   "title": "Sample Roadmap",
+  "total_phases": 3,
+  "done_phases": 1,
+  "progress": "1/3 done",
   "phases": [
     {
       "number": 1,
       "stem": "phase-1-seed-one",
+      "ref": "sample-roadmap/phase-1-seed-one",
+      "review_ref": "phase/sample-roadmap/phase-1-seed-one",
       "title": "Seed One",
       "status": "done"
     },
     {
       "number": 2,
       "stem": "phase-2-seed-two",
+      "ref": "sample-roadmap/phase-2-seed-two",
+      "review_ref": "phase/sample-roadmap/phase-2-seed-two",
       "title": "Seed Two",
       "status": "in-progress"
     },
     {
       "number": 3,
       "stem": "phase-3-seed-three",
+      "ref": "sample-roadmap/phase-3-seed-three",
+      "review_ref": "phase/sample-roadmap/phase-3-seed-three",
       "title": "Seed Three",
       "status": "not-started"
     }

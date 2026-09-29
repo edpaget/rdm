@@ -9,12 +9,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use is_terminal::IsTerminal;
-use rdm_core::model::PhaseStatus;
-use rdm_core::search::ItemStatus;
 
 #[cfg(feature = "git")]
 use crate::paths;
-use crate::{AppStore, ItemKindArg, OutputFormat};
+use crate::{AppStore, OutputFormat};
 
 pub mod agent_config;
 pub mod backlinks;
@@ -75,44 +73,6 @@ pub mod serve;
 /// session a run is recorded against); neither hashes it or consults any
 /// other harness variable.
 pub const CLAUDE_SESSION_ENV: &str = "CLAUDE_CODE_SESSION_ID";
-
-/// Parses a status string into an `ItemStatus`, using the `--type` hint if available.
-pub fn parse_status(status: &str, kind: Option<ItemKindArg>) -> Result<ItemStatus> {
-    use rdm_core::model::TaskStatus;
-
-    match kind {
-        Some(ItemKindArg::Phase) => {
-            let s: PhaseStatus = status.parse()?;
-            Ok(ItemStatus::Phase(s))
-        }
-        Some(ItemKindArg::Task) => {
-            let s: TaskStatus = status.parse()?;
-            Ok(ItemStatus::Task(s))
-        }
-        Some(ItemKindArg::Roadmap) => {
-            bail!("roadmaps do not have a status — remove --status or change --type")
-        }
-        Some(ItemKindArg::Review) => {
-            bail!(
-                "reviews do not use --status in search — filter with `rdm review list --state <state>` (or --verdict) instead"
-            )
-        }
-        None => {
-            // Try both; a status valid for both kinds becomes kind-agnostic.
-            match (
-                status.parse::<PhaseStatus>().ok(),
-                status.parse::<TaskStatus>().ok(),
-            ) {
-                (Some(p), Some(t)) => Ok(ItemStatus::Either(p, t)),
-                (Some(p), None) => Ok(ItemStatus::Phase(p)),
-                (None, Some(t)) => Ok(ItemStatus::Task(t)),
-                (None, None) => bail!(
-                    "invalid status '{status}' — use a phase status (not-started, in-progress, needs-review, reviewed, done, blocked, wont-fix) or task status (open, in-progress, needs-review, reviewed, done, wont-fix)"
-                ),
-            }
-        }
-    }
-}
 
 /// Opens a store for an existing plan repo.
 pub fn make_store(root: &Path) -> Result<AppStore> {

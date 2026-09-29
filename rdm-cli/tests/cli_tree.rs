@@ -2,6 +2,9 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
 
+#[path = "support/every_status.rs"]
+mod every_status;
+
 fn rdm() -> Command {
     let mut cmd = Command::cargo_bin("rdm").unwrap();
     // Isolate from host global config (e.g. default_format = "json").
@@ -164,4 +167,64 @@ fn tree_markdown_format() {
                 .and(predicate::str::contains("- **two-way**"))
                 .and(predicate::str::contains("- **phase-1-core**")),
         );
+}
+
+#[test]
+fn tree_active_keeps_only_active_work_and_carries_refs() {
+    let dir = every_status::seed();
+    let tree = every_status::json(
+        dir.path(),
+        &["tree", "--active", "--project", "acme", "--format", "json"],
+    );
+    let children = tree["children"].as_array().unwrap();
+    let roadmaps: Vec<&serde_json::Value> =
+        children.iter().filter(|n| n["kind"] == "roadmap").collect();
+    assert_eq!(roadmaps.len(), 1, "idle roadmap is dropped: {tree:#}");
+    assert_eq!(roadmaps[0]["name"], "busy");
+    assert_eq!(roadmaps[0]["ref"], "busy");
+    assert_eq!(roadmaps[0]["review_ref"], "roadmap/busy");
+    let stems: Vec<String> = roadmaps[0]["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(stems, every_status::active_phase_stems());
+    for p in roadmaps[0]["children"].as_array().unwrap() {
+        let stem = p["name"].as_str().unwrap();
+        assert_eq!(p["ref"], format!("busy/{stem}"));
+        assert_eq!(p["review_ref"], format!("phase/busy/{stem}"));
+    }
+    let mut tasks: Vec<String> = children
+        .iter()
+        .filter(|n| n["kind"] == "task")
+        .map(|t| {
+            let slug = t["name"].as_str().unwrap();
+            assert_eq!(t["ref"], format!("task/{slug}"));
+            slug.to_string()
+        })
+        .collect();
+    tasks.sort();
+    let mut expected = every_status::active_task_slugs();
+    expected.sort();
+    assert_eq!(tasks, expected);
+    assert!(tree.get("ref").is_none(), "the project node has no ref");
+}
+
+#[test]
+fn tree_without_active_keeps_every_item() {
+    let dir = every_status::seed();
+    let tree = every_status::json(
+        dir.path(),
+        &["tree", "--project", "acme", "--format", "json"],
+    );
+    let children = tree["children"].as_array().unwrap();
+    assert_eq!(
+        children.iter().filter(|n| n["kind"] == "roadmap").count(),
+        2
+    );
+    assert_eq!(
+        children.iter().filter(|n| n["kind"] == "task").count(),
+        every_status::TASK_STATUSES.len()
+    );
 }

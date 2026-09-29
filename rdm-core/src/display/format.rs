@@ -2411,6 +2411,8 @@ mod tests {
             snippet: "Fix the login bug".to_string(),
             score: 100,
             tags: None,
+            status: None,
+            item: None,
         }];
         let output = format_search_results_md(&results);
         assert!(output.contains("## Search Results"));

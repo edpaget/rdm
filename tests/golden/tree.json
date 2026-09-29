@@ -5,23 +5,31 @@
     {
       "name": "sample-roadmap",
       "kind": "roadmap",
+      "ref": "sample-roadmap",
+      "review_ref": "roadmap/sample-roadmap",
       "children": [
         {
           "name": "phase-1-seed-one",
           "kind": "phase",
           "status": "done",
+          "ref": "sample-roadmap/phase-1-seed-one",
+          "review_ref": "phase/sample-roadmap/phase-1-seed-one",
           "children": []
         },
         {
           "name": "phase-2-seed-two",
           "kind": "phase",
           "status": "in-progress",
+          "ref": "sample-roadmap/phase-2-seed-two",
+          "review_ref": "phase/sample-roadmap/phase-2-seed-two",
           "children": []
         },
         {
           "name": "phase-3-seed-three",
           "kind": "phase",
           "status": "not-started",
+          "ref": "sample-roadmap/phase-3-seed-three",
+          "review_ref": "phase/sample-roadmap/phase-3-seed-three",
           "children": []
         }
       ]
@@ -30,18 +38,24 @@
       "name": "fixture-task-active",
       "kind": "task",
       "status": "in-progress",
+      "ref": "task/fixture-task-active",
+      "review_ref": "task/fixture-task-active",
       "children": []
     },
     {
       "name": "fixture-task-done",
       "kind": "task",
       "status": "done",
+      "ref": "task/fixture-task-done",
+      "review_ref": "task/fixture-task-done",
       "children": []
     },
     {
       "name": "fixture-task-open",
       "kind": "task",
       "status": "open",
+      "ref": "task/fixture-task-open",
+      "review_ref": "task/fixture-task-open",
       "children": []
     }
   ]

@@ -36,21 +36,27 @@
                               (substring a (length prefix))))
              argv)))
 
+(defun rdm-git-test--node (name kind ref &optional status children)
+  "A parsed `rdm tree' node NAME of KIND with REF, STATUS and CHILDREN."
+  (append (list :name name :kind kind :ref ref
+                :review_ref (if (equal kind "task") ref (concat kind "/" ref)))
+          (when status (list :status status))
+          (list :children (or children []))))
+
 (defun rdm-git-test--tree ()
-  "A canned parsed `rdm tree' reply."
+  "A canned parsed `rdm tree --active' reply: rdm has already kept only
+the active items, so every phase and task in it is offered."
   (list :name "p" :kind "project"
         :children
         (vector
-         (list :name "r0" :kind "roadmap"
-               :children (vector (list :name "phase-1-a" :kind "phase"
-                                       :status "reviewed" :children [])))
-         (list :name "r1" :kind "roadmap"
-               :children (vector (list :name "phase-1-one" :kind "phase"
-                                       :status "done" :children [])
-                                 (list :name "phase-2-two" :kind "phase"
-                                       :status "in-progress" :children [])))
-         (list :name "t1" :kind "task" :status "needs-review" :children [])
-         (list :name "t2" :kind "task" :status "open" :children []))))
+         (rdm-git-test--node
+          "r0" "roadmap" "r0" nil
+          (vector (rdm-git-test--node "phase-1-a" "phase" "r0/phase-1-a" "reviewed")))
+         (rdm-git-test--node
+          "r1" "roadmap" "r1" nil
+          (vector (rdm-git-test--node "phase-2-two" "phase" "r1/phase-2-two"
+                                      "in-progress")))
+         (rdm-git-test--node "t1" "task" "task/t1" "needs-review"))))
 
 (defmacro rdm-git-test--mocked (worktree branch &rest body)
   "Run BODY with a mocked runner; `worktree current' replies WORKTREE.
@@ -76,7 +82,7 @@ candidate."
                 (lambda (command &rest _)
                   (let ((argv (cdr command)))
                     (pcase argv
-                      (`("tree" . ,_) (rdm-git-test--tree))
+                      (`("tree" "--active" . ,_) (rdm-git-test--tree))
                       (`("worktree" "current" . ,_) ,worktree)
                       (`("hook" "done-line" . ,_)
                        (if-let* ((task (rdm-git-test--flag argv "task")))
@@ -155,12 +161,22 @@ candidate."
           (should (equal (car offered) (nth 1 case)))
           (should (equal (cdr offered) (nth 2 case))))))))
 
+(defun rdm-git-test--register (ref)
+  "Register candidate REF for the item it names; return REF."
+  (substring-no-properties
+   (rdm-item-register ref (rdm-item-parse-worktree-id ref))))
+
 (ert-deftest rdm-git/preselect-roadmap-order ()
-  "A bare roadmap with several active phases: no default, order kept."
-  (let ((all '("r1/phase-2-two" "r0/phase-1-a" "r1/phase-3-three" "task/t1")))
+  "A bare roadmap with several active phases: no default, order kept.
+The roadmap's candidates are the ones whose item names it."
+  (let* ((rdm-item--lookup (make-hash-table :test #'equal))
+         (all (mapcar #'rdm-git-test--register
+                      '("r1/phase-2-two" "r0/phase-1-a" "r1/phase-3-three" "task/t1"))))
     (should (equal (rdm-git-preselect all "r1")
                    '(("r1/phase-2-two" "r1/phase-3-three" "r0/phase-1-a" "task/t1"))))
-    (should (equal (rdm-git-preselect all "r0") (cons (cons "r0/phase-1-a" (remove "r0/phase-1-a" all)) "r0/phase-1-a"))))
+    (should (equal (rdm-git-preselect all "r0") (cons (cons "r0/phase-1-a" (remove "r0/phase-1-a" all)) "r0/phase-1-a")))
+    ;; A roadmap whose name prefixes another's owns none of its phases.
+    (should (equal (rdm-git-preselect all "r") (list all))))
   (let ((md nil))
     (with-temp-buffer
       (rdm-git-test-commit-mode)
@@ -188,6 +204,51 @@ candidate."
     (rdm-git-test--mocked (list :item "task/t1") "main"
       (rdm-insert-done-line)
       (should-not warnings))))
+
+(ert-deftest rdm-git/candidates-come-from-tree-active ()
+  "One `rdm tree --active' call supplies the candidates: each is its
+node's `ref', and its item carries the node's refs and status."
+  (let (argvs)
+    (rdm-git-test--mocked nil "main"
+      (cl-letf* ((orig (symbol-function 'rdm-run-sync))
+                 ((symbol-function 'rdm-run-sync)
+                  (lambda (command &rest keys)
+                    (push (cdr command) argvs)
+                    (apply orig command keys))))
+        (let ((cands (rdm-git-candidates)))
+          (should (equal (mapcar #'substring-no-properties cands)
+                         '("r0/phase-1-a" "r1/phase-2-two" "task/t1")))
+          (should (equal (seq-take (car argvs) 2) '("tree" "--active")))
+          (should (= (length argvs) 1))
+          (let ((phase (rdm-item-from "r1/phase-2-two")))
+            (should (equal (list (plist-get phase :kind) (plist-get phase :roadmap)
+                                 (plist-get phase :stem) (plist-get phase :status)
+                                 (plist-get phase :review-ref))
+                           '(phase "r1" "phase-2-two" "in-progress"
+                                   "phase/r1/phase-2-two"))))
+          (let ((task (rdm-item-from "task/t1")))
+            (should (equal (plist-get task :slug) "t1"))
+            (should (equal (plist-get task :ref) "task/t1"))))))))
+
+(ert-deftest rdm-git/real-candidates ()
+  "Against the real binary, the Done: picker offers the seeded plan's
+active items by their refs and none of its finished or unstarted ones."
+  (rdm-test-with-real
+    (setq process-environment
+          (append (list (concat "RDM_ROOT=" root) (concat "RDM_PROJECT=" project))
+                  process-environment))
+    (let* ((rdm-bin bin)
+           (rdm-item--lookup (make-hash-table :test #'equal))
+           (cands (mapcar #'substring-no-properties (rdm-git-candidates))))
+      (should (member "sample-roadmap/phase-2-seed-two" cands))
+      (should (member "task/fixture-task-active" cands))
+      (should-not (member "sample-roadmap/phase-1-seed-one" cands))
+      (should-not (member "sample-roadmap/phase-3-seed-three" cands))
+      (should-not (member "task/fixture-task-done" cands))
+      (let ((phase (rdm-item-from "sample-roadmap/phase-2-seed-two")))
+        (should (equal (plist-get phase :roadmap) "sample-roadmap"))
+        (should (equal (plist-get phase :stem) "phase-2-seed-two"))
+        (should (equal (plist-get phase :status) "in-progress"))))))
 
 ;;;; Working tree and branch, against real repositories
 

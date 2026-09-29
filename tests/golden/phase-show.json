@@ -4,6 +4,8 @@
   "estimate_snapshot": "<SNAPSHOT>",
   "next_phase": "phase-2-seed-two",
   "phase": 1,
+  "ref": "sample-roadmap/phase-1-seed-one",
+  "review_ref": "phase/sample-roadmap/phase-1-seed-one",
   "roadmap": "sample-roadmap",
   "status": "done",
   "stem": "phase-1-seed-one",

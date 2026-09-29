@@ -47,44 +47,59 @@
   (let ((at (rdm-ui-test--flag argv "at")))
     (pcase argv
       (`("roadmap" "list" . ,_)
-       (vector (list :slug "r1" :title "Road One" :total_phases 2
+       (vector (list :slug "r1" :ref "r1" :review_ref "roadmap/r1"
+                     :title "Road One" :total_phases 2
                      :done_phases 1 :progress "1/2 done" :tags ["ui"])))
       (`("roadmap" "show" ,slug . ,_)
-       (append (list :project "p" :slug slug :title "Road One"
+       (append (list :project "p" :slug slug :ref slug
+                     :review_ref (concat "roadmap/" slug) :title "Road One"
+                     :total_phases 2 :done_phases 1 :progress "1/2 done"
                      :phases (vector (list :number 1 :stem "phase-1-one"
+                                           :ref (concat slug "/phase-1-one")
+                                           :review_ref (format "phase/%s/phase-1-one" slug)
                                            :title "One" :status "done")
                                      (list :number 2 :stem "phase-2-two"
+                                           :ref (concat slug "/phase-2-two")
+                                           :review_ref (format "phase/%s/phase-2-two" slug)
                                            :title "Two" :status "in-progress"))
                      :tags ["ui"] :body "Roadmap body.\n")
                (when at (list :revision at))))
       (`("phase" "list" . ,_)
-       (vector (list :number 1 :stem "phase-1-one" :title "One" :status "done")
-               (list :number 2 :stem "phase-2-two" :title "Two"
+       (vector (list :number 1 :stem "phase-1-one" :ref "r1/phase-1-one"
+                     :review_ref "phase/r1/phase-1-one" :title "One" :status "done")
+               (list :number 2 :stem "phase-2-two" :ref "r1/phase-2-two"
+                     :review_ref "phase/r1/phase-2-two" :title "Two"
                      :status "in-progress")))
       (`("phase" "show" ,stem . ,_)
-       (append (list :body (format "Body of %s.\n" stem) :phase 2
-                     :roadmap (rdm-ui-test--flag argv "roadmap")
-                     :stem stem :title "Two" :status "in-progress")
-               (when at (list :revision at))))
+       (let ((roadmap (rdm-ui-test--flag argv "roadmap")))
+         (append (list :body (format "Body of %s.\n" stem) :phase 2
+                       :roadmap roadmap :ref (format "%s/%s" roadmap stem)
+                       :review_ref (format "phase/%s/%s" roadmap stem)
+                       :stem stem :title "Two" :status "in-progress")
+                 (when at (list :revision at)))))
       (`("task" "list" . ,_)
-       (vector (list :slug "t1" :title "Task One" :status "open"
+       (vector (list :slug "t1" :ref "task/t1" :review_ref "task/t1"
+                     :title "Task One" :status "open"
                      :priority "medium" :created "2026-09-25" :tags ["bug"])))
       (`("task" "show" ,slug . ,_)
-       (append (list :slug slug :project "p" :title "Task One" :status "open"
+       (append (list :slug slug :ref (concat "task/" slug)
+                     :review_ref (concat "task/" slug) :project "p"
+                     :title "Task One" :status "open"
                      :priority "medium" :tags ["bug"]
                      :body (if at "Old task body.\n" "Task body.\n"))
                (when at (list :revision at))))
-      (`("search" ,_ . ,_)
+      (`("search" ,_ "--type=roadmap,phase,task" . ,_)
        (vector (list :kind "roadmap" :identifier "r1" :project "p"
-                     :title "Road One" :snippet "Road" :score 10)
+                     :title "Road One" :snippet "Road" :score 10
+                     :roadmap "r1" :ref "r1" :review_ref "roadmap/r1")
                (list :kind "phase" :identifier "r1/phase-2-two" :project "p"
-                     :title "Two" :snippet "Two" :score 9)
+                     :title "Two" :snippet "Two" :score 9 :status "in-progress"
+                     :roadmap "r1" :stem "phase-2-two" :ref "r1/phase-2-two"
+                     :review_ref "phase/r1/phase-2-two")
                (list :kind "task" :identifier "t1" :project "p"
                      :title "Task One" :snippet "Task" :score 8
-                     :tags ["bug"])
-               (list :kind "review" :identifier "2026-09-25-0000-abcd"
-                     :project "p" :title "Review of t1" :snippet "Task"
-                     :score 7)))
+                     :tags ["bug"] :status "open" :slug "t1" :ref "task/t1"
+                     :review_ref "task/t1")))
       (`("next" . ,_)
        (pcase (rdm-ui-test--flag argv "roadmap")
          ("blocked"
@@ -187,13 +202,14 @@ The answers are plain strings, as a completion UI may return them."
         (rdm-ui-test--answers '("r1/phase-2-two")
           (rdm-search))))
     (should (equal (reverse calls)
-                   (list (rdm-ui-test--show "search" "two")
+                   (list (rdm-ui-test--show "search" "two"
+                                            "--type=roadmap,phase,task")
                          (rdm-ui-test--show "phase" "show" "phase-2-two"
                                             "--roadmap=r1"))))))
 
 (ert-deftest rdm-pick/candidates-and-metadata ()
   "Candidates carry `rdm-item', the table's category is `rdm-item', and
-annotations show status and tags (kind and tags for search hits)."
+annotations show status and tags (kind, status and tags for search hits)."
   (rdm-ui-test--mocked
     (let* ((tasks (rdm-pick-task-candidates))
            (md (completion-metadata "" (rdm-pick-table tasks) nil))
@@ -201,7 +217,9 @@ annotations show status and tags (kind and tags for search hits)."
       (should (eq (completion-metadata-get md 'category) 'rdm-item))
       (let ((item (get-text-property 0 'rdm-item (car tasks))))
         (should (eq (plist-get item :kind) 'task))
-        (should (equal (plist-get item :slug) "t1")))
+        (should (equal (plist-get item :slug) "t1"))
+        (should (equal (plist-get item :ref) "task/t1"))
+        (should (equal (plist-get item :review-ref) "task/t1")))
       (let ((note (funcall annotate (car tasks))))
         (should (string-match-p "open" note))
         (should (string-match-p "bug" note)))
@@ -211,6 +229,8 @@ annotations show status and tags (kind and tags for search hits)."
       (let ((phase (cadr (rdm-pick-phase-candidates "r1"))))
         (should (equal (get-text-property 0 'rdm-item phase)
                        (rdm-item-from "phase-2-two")))
+        (should (equal (plist-get (rdm-item-from phase) :review-ref)
+                       "phase/r1/phase-2-two"))
         (should (string-match-p "in-progress" (funcall annotate phase))))
       (let* ((hits (rdm-pick-search-candidates "x"))
              (items (mapcar #'rdm-item-from hits)))
@@ -218,9 +238,12 @@ annotations show status and tags (kind and tags for search hits)."
                        '(roadmap phase task)))
         (should (equal (plist-get (nth 1 items) :roadmap) "r1"))
         (should (equal (plist-get (nth 1 items) :stem) "phase-2-two"))
-        (should (string-match-p "phase" (funcall annotate (nth 1 hits))))
+        (let ((note (funcall annotate (nth 1 hits))))
+          (should (string-match-p "phase" note))
+          (should (string-match-p "in-progress" note)))
         (let ((note (funcall annotate (nth 2 hits))))
           (should (string-match-p "task" note))
+          (should (string-match-p "open" note))
           (should (string-match-p "bug" note)))))))
 
 (ert-deftest rdm-pick/next-opens-phase ()
@@ -234,33 +257,26 @@ annotations show status and tags (kind and tags for search hits)."
       (should (equal (plist-get (buffer-local-value 'rdm-view--item buf) :stem)
                      "phase-2-two")))))
 
-(ert-deftest rdm-pick/search-drops-unopenable-kinds ()
-  "Search offers only roadmap, phase and task hits: a review hit, which
-no detail buffer can open, is dropped."
+(ert-deftest rdm-pick/search-candidates-are-refs-of-structured-hits ()
+  "Search asks rdm for roadmap, phase and task hits only, offers each by
+its `ref' (unique across kinds), and builds the item from the hit's
+structured fields; the property-less text recovers it."
   (rdm-ui-test--mocked
     (let ((hits (rdm-pick-search-candidates "x")))
+      (should (equal (car calls)
+                     (rdm-ui-test--show "search" "x" "--type=roadmap,phase,task")))
       (should (equal (mapcar #'substring-no-properties hits)
-                     '("r1" "r1/phase-2-two" "t1")))
-      (should-not (rdm-item-from "2026-09-25-0000-abcd")))))
-
-(ert-deftest rdm-pick/search-disambiguates-duplicate-identifiers ()
-  "A search hit sharing an identifier with an earlier hit of another kind
-is offered as `IDENTIFIER (KIND)', and the property-less string still
-recovers that second hit's item."
-  (let ((rdm-item--lookup (make-hash-table :test #'equal)))
-    (cl-letf (((symbol-function 'rdm-call-sync)
-               (lambda (&rest _)
-                 (vector (list :kind "roadmap" :identifier "dup" :project "p"
-                               :title "Dup roadmap" :score 10)
-                         (list :kind "task" :identifier "dup" :project "p"
-                               :title "Dup task" :score 9)))))
-      (let ((hits (rdm-pick-search-candidates "dup")))
-        (should (equal (mapcar #'substring-no-properties hits)
-                       '("dup" "dup (task)")))
-        (should (eq (plist-get (rdm-item-from "dup") :kind) 'roadmap))
-        (let ((item (rdm-item-from (substring-no-properties "dup (task)"))))
-          (should (eq (plist-get item :kind) 'task))
-          (should (equal (plist-get item :slug) "dup")))))))
+                     '("r1" "r1/phase-2-two" "task/t1")))
+      (let ((task (rdm-item-from "task/t1")))
+        (should (eq (plist-get task :kind) 'task))
+        (should (equal (plist-get task :slug) "t1"))
+        (should (equal (plist-get task :status) "open"))
+        (should (equal (plist-get task :review-ref) "task/t1")))
+      (let ((phase (rdm-item-from "r1/phase-2-two")))
+        (should (equal (list (plist-get phase :roadmap) (plist-get phase :stem)
+                             (plist-get phase :ref) (plist-get phase :review-ref))
+                       '("r1" "phase-2-two" "r1/phase-2-two"
+                         "phase/r1/phase-2-two")))))))
 
 (ert-deftest rdm-view/identifier-falls-back ()
   "An item of another kind copies its `:identifier'."
@@ -339,7 +355,9 @@ worktree falls back to the roadmap picker."
       (search-forward "phase-2-two")
       (should (equal (get-text-property (point) 'rdm-item)
                      '(:kind phase :roadmap "r1" :stem "phase-2-two"
-                             :title "Two" :status "in-progress")))
+                             :title "Two" :status "in-progress"
+                             :ref "r1/phase-2-two"
+                             :review-ref "phase/r1/phase-2-two")))
       (call-interactively (key-binding (kbd "RET")))
       (should (equal (car calls)
                      (rdm-ui-test--show "phase" "show" "phase-2-two"
@@ -527,7 +545,8 @@ propertized candidates."
             (let ((deadline (+ (float-time) 5)))
               (while (and (null got) (< (float-time) deadline))
                 (accept-process-output nil 0.02)))
-            (should (equal (car calls) (rdm-ui-test--show "search" input)))
+            (should (equal (car calls) (rdm-ui-test--show "search" input
+                                                          "--type=roadmap,phase,task")))
             (should (eq (plist-get (rdm-item-from (car got)) :kind) 'roadmap))
             (should (get-text-property 0 'rdm-item (car got)))))
         (funcall async 'destroy)))))
@@ -641,15 +660,33 @@ shows its error with `message' instead of dropping it."
                                 (buffer-string)))))))
 
 (ert-deftest rdm-pick/real-search ()
-  "Real search hits map to items: the roadmap by kind, a task with its tag."
+  "Real search hits map to items: the roadmap by kind, a phase from its
+structured fields with its status, a task with its tag; each candidate
+is the hit's ref."
   (rdm-ui-test--with-real
     (let* ((cands (rdm-pick-search-candidates "Sample"))
            (roadmap (cl-find-if (lambda (c) (eq (plist-get (rdm-item-from c) :kind)
                                                 'roadmap))
                                 cands)))
       (should roadmap)
+      (should (equal (substring-no-properties roadmap) "sample-roadmap"))
       (should (equal (plist-get (rdm-item-from roadmap) :roadmap) "sample-roadmap"))
+      (should (equal (plist-get (rdm-item-from roadmap) :review-ref)
+                     "roadmap/sample-roadmap"))
       (should (string-match-p "roadmap" (rdm-pick-annotate roadmap))))
+    (let* ((cands (rdm-pick-search-candidates "seed"))
+           (phase (cl-find-if (lambda (c) (equal (substring-no-properties c)
+                                                 "sample-roadmap/phase-2-seed-two"))
+                              cands)))
+      (should phase)
+      (should (cl-every (lambda (c) (memq (plist-get (rdm-item-from c) :kind)
+                                          '(roadmap phase task)))
+                        cands))
+      (let ((item (rdm-item-from phase)))
+        (should (equal (plist-get item :roadmap) "sample-roadmap"))
+        (should (equal (plist-get item :stem) "phase-2-seed-two"))
+        (should (equal (plist-get item :status) "in-progress")))
+      (should (string-match-p "phase in-progress" (rdm-pick-annotate phase))))
     (let* ((cands (rdm-pick-search-candidates "fixture"))
            (task (cl-find-if (lambda (c) (equal (plist-get (rdm-item-from c) :slug)
                                                 "fixture-task-done"))
@@ -666,7 +703,9 @@ shows its error with `message' instead of dropping it."
     (with-current-buffer (rdm-next "sample-roadmap")
       (should (equal rdm-view--item
                      '(:kind phase :roadmap "sample-roadmap"
-                             :stem "phase-2-seed-two")))
+                             :stem "phase-2-seed-two"
+                             :ref "sample-roadmap/phase-2-seed-two"
+                             :review-ref "phase/sample-roadmap/phase-2-seed-two")))
       (should (string-match-p "Second phase: in progress\\." (buffer-string))))))
 
 (ert-deftest rdm-view/real-done-line ()

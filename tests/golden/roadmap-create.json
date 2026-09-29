@@ -1,7 +1,12 @@
 {
   "project": "fixture-proj",
   "slug": "fixture-created-roadmap",
+  "ref": "fixture-created-roadmap",
+  "review_ref": "roadmap/fixture-created-roadmap",
   "title": "Fixture Created Roadmap",
+  "total_phases": 0,
+  "done_phases": 0,
+  "progress": "no phases",
   "phases": [],
   "body": "Created by the golden capture."
 }

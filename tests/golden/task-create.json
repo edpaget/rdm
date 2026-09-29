@@ -1,5 +1,7 @@
 {
   "slug": "fixture-created-task",
+  "ref": "task/fixture-created-task",
+  "review_ref": "task/fixture-created-task",
   "project": "fixture-proj",
   "title": "Fixture Created Task",
   "status": "open",

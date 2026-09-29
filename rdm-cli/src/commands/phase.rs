@@ -240,10 +240,17 @@ pub fn run(
                 _ => println!("Created phase '{stem}' in roadmap '{roadmap}'"),
             }
         }
-        PhaseCommand::List { roadmap, project } => {
+        PhaseCommand::List {
+            roadmap,
+            project,
+            active,
+        } => {
             let project = paths::resolve_project(project, repo_config)?;
-            let phases = rdm_core::ops::phase::list_phases(store, &project, &roadmap)
-                .context("failed to list phases")?;
+            let phases = rdm_core::ops::phase::filter_phases(
+                rdm_core::ops::phase::list_phases(store, &project, &roadmap)
+                    .context("failed to list phases")?,
+                &rdm_core::ops::phase::PhaseFilter { active },
+            );
             match format {
                 OutputFormat::Human => print!("{}", display::format_phase_list(&phases)),
                 OutputFormat::Table => print!("{}", table::format_phase_table(&phases)),
@@ -253,7 +260,7 @@ pub fn run(
                 OutputFormat::Json => {
                     let summaries: Vec<_> = phases
                         .iter()
-                        .map(|(stem, doc)| json::phase_summary_to_json(stem, doc))
+                        .map(|(stem, doc)| json::phase_summary_to_json(&roadmap, stem, doc))
                         .collect();
                     println!(
                         "{}",

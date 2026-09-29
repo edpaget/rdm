@@ -13,14 +13,14 @@ use crate::store::{DirEntryKind, Store};
 ///
 /// Each field narrows the result set independently; a task is kept only if it
 /// satisfies all populated criteria. The default value (all fields empty) keeps
-/// the "active work" set — every non-terminal task (open, in-progress,
-/// needs-review, reviewed, or blocked) of any priority and tags.
+/// every non-terminal task (open, in-progress, needs-review, reviewed, or
+/// blocked) of any priority and tags.
 #[derive(Debug, Clone, Default)]
 pub struct TaskFilter {
-    /// Status criterion. `None` keeps active tasks — every non-terminal task
-    /// (open, in-progress, needs-review, reviewed, or blocked; the "active work"
-    /// default); `Some(All)` keeps any status; `Some(Status(s))` keeps only
-    /// tasks with exactly status `s`.
+    /// Status criterion. `None` keeps every non-terminal task (open,
+    /// in-progress, needs-review, reviewed, or blocked; the default);
+    /// `Some(All)` keeps any status; `Some(Status(s))` keeps only tasks with
+    /// exactly status `s`. Ignored when [`Self::active`] is set.
     pub status: Option<TaskStatusFilter>,
     /// Priority criterion. `None` keeps tasks of any priority; `Some(p)` keeps
     /// only tasks with exactly priority `p`.
@@ -28,21 +28,30 @@ pub struct TaskFilter {
     /// Tag criterion. Empty keeps tasks regardless of tags; otherwise a task is
     /// kept only if it carries **all** of these tags (logical AND).
     pub tags: Vec<String>,
+    /// Keep only the "active work" group — tasks whose status
+    /// [`is_active`](crate::model::TaskStatus::is_active) (in-progress,
+    /// needs-review, or reviewed). Takes the place of [`Self::status`].
+    pub active: bool,
 }
 
 /// Returns whether `task` satisfies every populated criterion in `filter`.
 ///
-/// Status semantics match the CLI's `task list`: `filter.status` of `None`
-/// keeps active tasks (every non-terminal task — open, in-progress, needs-review,
-/// reviewed, or blocked), `Some(All)` keeps any status, and `Some(Status(s))`
-/// keeps an exact match. Priority of
+/// Status semantics match the CLI's `task list`: `filter.active` keeps the
+/// "active work" group (in-progress, needs-review, or reviewed); otherwise
+/// `filter.status` of `None` keeps every non-terminal task (open, in-progress,
+/// needs-review, reviewed, or blocked), `Some(All)` keeps any status, and
+/// `Some(Status(s))` keeps an exact match. Priority of
 /// `None` matches any. Tags are matched as a logical AND — every tag in
 /// `filter.tags` must be present on the task (an empty list imposes no tag constraint).
 pub fn task_matches(task: &Task, filter: &TaskFilter) -> bool {
-    let status_ok = match filter.status {
-        Some(TaskStatusFilter::All) => true,
-        Some(TaskStatusFilter::Status(s)) => task.status == s,
-        None => !task.status.is_terminal(),
+    let status_ok = if filter.active {
+        task.status.is_active()
+    } else {
+        match filter.status {
+            Some(TaskStatusFilter::All) => true,
+            Some(TaskStatusFilter::Status(s)) => task.status == s,
+            None => !task.status.is_terminal(),
+        }
     };
     let priority_ok = filter.priority.is_none_or(|p| task.priority == p);
     let tags_ok = crate::tags::matches_all_tags(task.tags.as_deref(), &filter.tags);
@@ -948,6 +957,29 @@ mod tests {
             &task(TaskStatus::WontFix, Priority::Medium, &[]),
             &filter
         ));
+    }
+
+    #[test]
+    fn active_filter_keeps_exactly_the_active_work_group() {
+        let filter = TaskFilter {
+            active: true,
+            ..Default::default()
+        };
+        for status in [
+            TaskStatus::Open,
+            TaskStatus::InProgress,
+            TaskStatus::NeedsReview,
+            TaskStatus::Reviewed,
+            TaskStatus::Done,
+            TaskStatus::Blocked,
+            TaskStatus::WontFix,
+        ] {
+            assert_eq!(
+                task_matches(&task(status, Priority::Low, &[]), &filter),
+                status.is_active(),
+                "{status}"
+            );
+        }
     }
 
     #[test]

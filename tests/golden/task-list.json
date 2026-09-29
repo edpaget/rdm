@@ -1,6 +1,8 @@
 [
   {
     "slug": "fixture-task-active",
+    "ref": "task/fixture-task-active",
+    "review_ref": "task/fixture-task-active",
     "title": "Fixture Task Active",
     "status": "in-progress",
     "priority": "medium",
@@ -11,6 +13,8 @@
   },
   {
     "slug": "fixture-task-open",
+    "ref": "task/fixture-task-open",
+    "review_ref": "task/fixture-task-open",
     "title": "Fixture Task Open",
     "status": "open",
     "priority": "medium",

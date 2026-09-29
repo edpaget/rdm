@@ -3,6 +3,9 @@ use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
 
+#[path = "support/every_status.rs"]
+mod every_status;
+
 fn rdm() -> Command {
     let mut cmd = Command::cargo_bin("rdm").unwrap();
     // Isolate from host global config (e.g. default_format = "json").
@@ -2002,4 +2005,89 @@ fn roadmap_tags_normalize_on_create_and_edit_incrementally_on_update() {
         .assert()
         .success();
     assert_eq!(roadmap_tags(&dir, "tagged"), ["needs-plan-review", "c"]);
+}
+
+#[test]
+fn roadmap_show_json_reports_progress_counting_wont_fix_as_done() {
+    let dir = every_status::seed();
+    let show = every_status::json(
+        dir.path(),
+        &[
+            "roadmap",
+            "show",
+            "busy",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ],
+    );
+    let terminal = every_status::PHASE_STATUSES
+        .iter()
+        .filter(|s| s.is_terminal())
+        .count();
+    assert_eq!(
+        terminal, 2,
+        "the fixture holds one done and one wont-fix phase"
+    );
+    assert_eq!(show["total_phases"], every_status::PHASE_STATUSES.len());
+    assert_eq!(show["done_phases"], terminal);
+    assert_eq!(show["progress"], "2/7 done");
+}
+
+#[test]
+fn roadmap_json_carries_ref_and_review_ref() {
+    let dir = every_status::seed();
+    let root = dir.path();
+    let show = every_status::json(
+        root,
+        &[
+            "roadmap",
+            "show",
+            "busy",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(show["ref"], "busy");
+    assert_eq!(show["review_ref"], "roadmap/busy");
+    let stem = show["phases"][0]["stem"].as_str().unwrap();
+    assert_eq!(show["phases"][0]["ref"], format!("busy/{stem}"));
+    assert_eq!(
+        show["phases"][0]["review_ref"],
+        format!("phase/busy/{stem}")
+    );
+
+    let list = every_status::json(
+        root,
+        &["roadmap", "list", "--project", "acme", "--format", "json"],
+    );
+    let busy = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["slug"] == "busy")
+        .unwrap();
+    assert_eq!(busy["ref"], "busy");
+    assert_eq!(busy["review_ref"], "roadmap/busy");
+
+    let created = every_status::json(
+        root,
+        &[
+            "roadmap",
+            "create",
+            "fresh",
+            "--title",
+            "Fresh",
+            "--project",
+            "acme",
+            "--no-edit",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(created["ref"], "fresh");
+    assert_eq!(created["review_ref"], "roadmap/fresh");
 }

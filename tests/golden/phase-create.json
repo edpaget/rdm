@@ -4,5 +4,7 @@
   "title": "Created Phase",
   "status": "not-started",
   "roadmap": "fixture-created-roadmap",
+  "ref": "fixture-created-roadmap/phase-1-created-phase",
+  "review_ref": "phase/fixture-created-roadmap/phase-1-created-phase",
   "body": "Created by the golden capture."
 }

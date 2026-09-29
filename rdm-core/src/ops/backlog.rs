@@ -266,7 +266,7 @@ fn duplicate_clusters(
 
     for (i, (slug_i, doc_i)) in candidates.iter().enumerate() {
         let filter = SearchFilter {
-            kind: Some(ItemKind::Task),
+            kinds: vec![ItemKind::Task],
             project: Some(project.to_string()),
             status: None,
             tags: tag_filter.clone(),

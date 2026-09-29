@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hal::{HalLink, HalResource};
 use crate::problem::ProblemDetail;
-use rdm_core::search::{ItemKind, ItemStatus, SearchFilter, search};
+use rdm_core::search::{ItemKind, ItemStatus, SearchFilter, parse_kinds, search};
 
 use crate::content_type::ResponseFormat;
 use crate::error::{error_response, problem_detail_into_response};
@@ -18,7 +18,8 @@ use crate::templates::{SearchResultRow, SearchResultsPage};
 pub struct SearchQuery {
     /// The search query string (required).
     pub q: Option<String>,
-    /// Filter by item kind: roadmap, phase, or task.
+    /// Filter by item kind: roadmap, phase, task, or review, or a
+    /// comma-separated list of them (e.g. `roadmap,phase`).
     #[serde(rename = "type")]
     pub kind: Option<String>,
     /// Filter by status.
@@ -86,33 +87,33 @@ pub async fn search_items(
         }
     };
 
-    let kind_filter = match &params.kind {
-        Some(k) => match k.parse::<ItemKind>().ok() {
-            Some(kind) => Some(kind),
-            None => {
+    let kinds = match &params.kind {
+        Some(k) => match parse_kinds(k) {
+            Ok(kinds) => kinds,
+            Err(_) => {
                 return Err(problem_detail_into_response(ProblemDetail {
                     problem_type: "about:blank".to_string(),
                     title: "Bad Request".to_string(),
                     status: 400,
                     detail: Some(format!(
-                        "invalid type filter: '{k}' (expected roadmap, phase, or task)"
+                        "invalid type filter: '{k}' (expected roadmap, phase, task, or review, or a comma-separated list of them)"
                     )),
                     instance: None,
                 }));
             }
         },
-        None => None,
+        None => Vec::new(),
     };
 
     let status_filter = match &params.status {
-        Some(s) => match s.parse::<ItemStatus>().ok() {
-            Some(status) => Some(status),
-            None => {
+        Some(s) => match ItemStatus::parse_for_kinds(s, &kinds) {
+            Ok(status) => Some(status),
+            Err(e) => {
                 return Err(problem_detail_into_response(ProblemDetail {
                     problem_type: "about:blank".to_string(),
                     title: "Bad Request".to_string(),
                     status: 400,
-                    detail: Some(format!("invalid status filter: '{s}'")),
+                    detail: Some(format!("invalid status filter: '{s}': {e}")),
                     instance: None,
                 }));
             }
@@ -124,7 +125,7 @@ pub async fn search_items(
 
     let store = state.store();
     let filter = SearchFilter {
-        kind: kind_filter,
+        kinds,
         project: Some(project.clone()),
         status: status_filter,
         // TODO(expand-tag-support phase 3): accept ?tag=foo&tag=bar query params.
@@ -454,6 +455,52 @@ mod tests {
         let response = app
             .oneshot(
                 Request::get("/projects/demo/search?q=test&type=bogus")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 400);
+    }
+
+    #[tokio::test]
+    async fn search_with_multi_type_filter_keeps_only_those_kinds() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/search?q=i&type=roadmap,phase&min_score_ratio=0")
+                    .header("accept", "application/hal+json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = to_bytes(response.into_body(), 16384).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let kinds: Vec<&str> = json["_embedded"]["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["kind"].as_str().unwrap())
+            .collect();
+        assert!(kinds.contains(&"roadmap"), "{kinds:?}");
+        assert!(kinds.contains(&"phase"), "{kinds:?}");
+        assert!(
+            kinds.iter().all(|k| *k == "roadmap" || *k == "phase"),
+            "{kinds:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_multi_type_with_a_bad_member_returns_400() {
+        let (_dir, state) = setup();
+        let app = build_router(state);
+        let response = app
+            .oneshot(
+                Request::get("/projects/demo/search?q=test&type=phase,bogus")
                     .header("accept", "application/hal+json")
                     .body(axum::body::Body::empty())
                     .unwrap(),

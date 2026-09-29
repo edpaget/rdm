@@ -8746,3 +8746,210 @@ fn create_review_rejects_implements_on_every_non_change_target() {
         assert!(text.contains("change/<sha>"), "for {label}: {text}");
     }
 }
+
+/// A roadmap with one phase per phase status and one task per task status,
+/// each named after its status.
+fn seed_every_status() -> MemoryStore {
+    let mut store = setup_with_roadmap();
+    let phase_statuses = [
+        PhaseStatus::NotStarted,
+        PhaseStatus::InProgress,
+        PhaseStatus::NeedsReview,
+        PhaseStatus::Reviewed,
+        PhaseStatus::Done,
+        PhaseStatus::Blocked,
+        PhaseStatus::WontFix,
+    ];
+    for (i, status) in phase_statuses.iter().enumerate() {
+        let slug = status.to_string();
+        let doc = rdm_core::ops::phase::create_phase(
+            &mut store,
+            rdm_core::ops::phase::CreatePhase {
+                project: "fbm",
+                roadmap: "two-way",
+                slug: &slug,
+                title: &slug,
+                number: Some(i as u32 + 1),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let stem = format!("phase-{}-{slug}", doc.frontmatter.phase);
+        rdm_core::ops::phase::update_phase(
+            &mut store,
+            "fbm",
+            "two-way",
+            &stem,
+            Some(*status),
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
+            None,
+            None,
+            None,
+            None,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
+        .unwrap();
+    }
+    // A second roadmap with no active phase.
+    rdm_core::ops::roadmap::create_roadmap(
+        &mut store,
+        rdm_core::ops::roadmap::CreateRoadmap {
+            project: "fbm",
+            slug: "idle",
+            title: "Idle",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    rdm_core::ops::phase::create_phase(
+        &mut store,
+        rdm_core::ops::phase::CreatePhase {
+            project: "fbm",
+            roadmap: "idle",
+            slug: "later",
+            title: "Later",
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for status in [
+        TaskStatus::Open,
+        TaskStatus::InProgress,
+        TaskStatus::NeedsReview,
+        TaskStatus::Reviewed,
+        TaskStatus::Done,
+        TaskStatus::Blocked,
+        TaskStatus::WontFix,
+    ] {
+        let slug = format!("task-{status}");
+        rdm_core::ops::task::create_task(
+            &mut store,
+            rdm_core::ops::task::CreateTask {
+                project: "fbm",
+                slug: &slug,
+                title: &slug,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        rdm_core::ops::task::update_task(
+            &mut store,
+            "fbm",
+            &slug,
+            Some(status),
+            None,
+            rdm_core::ops::TagsUpdate::Keep,
+            rdm_core::ops::BodyUpdate::Keep,
+            None,
+            None,
+            None,
+            None,
+            rdm_core::ops::TitleUpdate::Keep,
+        )
+        .unwrap();
+    }
+    store
+}
+
+#[test]
+fn filter_phases_active_keeps_exactly_the_active_work_group() {
+    let store = seed_every_status();
+    let all = rdm_core::ops::phase::list_phases(&store, "fbm", "two-way").unwrap();
+    let expected: Vec<String> = all
+        .iter()
+        .filter(|(_, d)| d.frontmatter.status.is_active())
+        .map(|(stem, _)| stem.clone())
+        .collect();
+    assert_eq!(expected.len(), 3);
+    let kept: Vec<String> = rdm_core::ops::phase::filter_phases(
+        all.clone(),
+        &rdm_core::ops::phase::PhaseFilter { active: true },
+    )
+    .into_iter()
+    .map(|(stem, _)| stem)
+    .collect();
+    assert_eq!(kept, expected);
+    let every = rdm_core::ops::phase::filter_phases(
+        all.clone(),
+        &rdm_core::ops::phase::PhaseFilter::default(),
+    );
+    assert_eq!(every.len(), all.len());
+}
+
+#[test]
+fn build_tree_default_keeps_everything_and_carries_refs() {
+    use rdm_core::tree::{TreeFilter, TreeNodeKind, build_tree};
+    let store = seed_every_status();
+    let tree = build_tree(&store, "fbm", &TreeFilter::default()).unwrap();
+    assert_eq!(tree.item_ref, None);
+    let roadmaps: Vec<_> = tree
+        .children
+        .iter()
+        .filter(|n| n.kind == TreeNodeKind::Roadmap)
+        .collect();
+    assert_eq!(roadmaps.len(), 2);
+    let two_way = roadmaps.iter().find(|n| n.name == "two-way").unwrap();
+    assert_eq!(two_way.item_ref.as_deref(), Some("two-way"));
+    assert_eq!(two_way.review_ref.as_deref(), Some("roadmap/two-way"));
+    assert_eq!(two_way.children.len(), 7);
+    let phase = &two_way.children[0];
+    assert_eq!(
+        phase.item_ref.as_deref(),
+        Some(format!("two-way/{}", phase.name).as_str())
+    );
+    assert_eq!(
+        phase.review_ref.as_deref(),
+        Some(format!("phase/two-way/{}", phase.name).as_str())
+    );
+    let tasks: Vec<_> = tree
+        .children
+        .iter()
+        .filter(|n| n.kind == TreeNodeKind::Task)
+        .collect();
+    assert_eq!(tasks.len(), 7);
+    assert_eq!(
+        tasks[0].item_ref.as_deref(),
+        Some(format!("task/{}", tasks[0].name).as_str())
+    );
+}
+
+#[test]
+fn build_tree_active_keeps_active_items_and_drops_idle_roadmaps() {
+    use rdm_core::tree::{TreeFilter, TreeNodeKind, build_tree};
+    let store = seed_every_status();
+    let tree = build_tree(&store, "fbm", &TreeFilter { active: true }).unwrap();
+    let roadmaps: Vec<_> = tree
+        .children
+        .iter()
+        .filter(|n| n.kind == TreeNodeKind::Roadmap)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert_eq!(
+        roadmaps,
+        ["two-way"],
+        "a roadmap with no active phase is dropped"
+    );
+
+    let active_phase = |s: &str| s.parse::<PhaseStatus>().unwrap().is_active();
+    let active_task = |s: &str| s.parse::<TaskStatus>().unwrap().is_active();
+    let two_way = &tree.children[0];
+    assert_eq!(two_way.children.len(), 3);
+    assert!(
+        two_way
+            .children
+            .iter()
+            .all(|p| active_phase(p.status.as_deref().unwrap()))
+    );
+    let tasks: Vec<_> = tree
+        .children
+        .iter()
+        .filter(|n| n.kind == TreeNodeKind::Task)
+        .collect();
+    assert_eq!(tasks.len(), 3);
+    assert!(
+        tasks
+            .iter()
+            .all(|t| active_task(t.status.as_deref().unwrap()))
+    );
+}

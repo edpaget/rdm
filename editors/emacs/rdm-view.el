@@ -13,7 +13,10 @@
 ;;   (:kind task    :slug SLUG)
 ;;
 ;; plus optional display keys (`:title', `:status', `:tags', `:annotation')
-;; that pickers fill in.  `rdm-open-item' is the single entry point every
+;; that pickers fill in, and the references rdm reports for the item in
+;; its JSON (`:ref', its item reference, and `:review-ref', the target
+;; `rdm review --on' takes; see `rdm-item-with-refs').  A detail buffer's
+;; item always carries both once rendered.  `rdm-open-item' is the single entry point every
 ;; picker, embark action, `RET' on a phase row and `rdm-next' goes through:
 ;; it runs `show --format json' (with `--at' for a historical body) and
 ;; renders the result in an `rdm-view-mode' buffer, a read-only
@@ -66,6 +69,18 @@ property, or a candidate string a picker registered."
   "The item THING denotes, or a `user-error'."
   (or (rdm-item-from thing)
       (user-error "rdm: No rdm item for %S" thing)))
+
+(defun rdm-item-with-refs (item json)
+  "ITEM with the references rdm reports for it in JSON.
+JSON is rdm's parsed JSON for ITEM (a show, list, tree or search
+entry); its `ref' becomes `:ref' and its `review_ref' `:review-ref'.
+A reference JSON lacks is left as ITEM has it.  ITEM is not modified."
+  (let ((out (copy-sequence item)))
+    (when-let* ((ref (plist-get json :ref)))
+      (setq out (plist-put out :ref ref)))
+    (when-let* ((review-ref (plist-get json :review_ref)))
+      (setq out (plist-put out :review-ref review-ref)))
+    out))
 
 (defun rdm-item-identifier (item)
   "The identifier of ITEM: a roadmap or task slug, or ROADMAP/STEM.
@@ -199,9 +214,12 @@ body, but must not change the body region's text.")
     (mapconcat #'identity tags ", ")))
 
 (defun rdm-view--render (item data at)
-  "Render DATA, the `show' JSON of ITEM read at revision AT, into this buffer."
+  "Render DATA, the `show' JSON of ITEM read at revision AT, into this buffer.
+ITEM, with the references DATA reports (`rdm-item-with-refs'), becomes
+the buffer's item before `rdm-view-after-render-hook' runs."
   (let ((inhibit-read-only t)
         (kind (plist-get item :kind)))
+    (setq rdm-view--item (rdm-item-with-refs item data))
     (erase-buffer)
     (insert (propertize (or (plist-get data :title) (rdm-item-identifier item))
                         'font-lock-face 'rdm-view-title)
@@ -223,10 +241,12 @@ body, but must not change the body region's text.")
             (roadmap (plist-get item :roadmap)))
         (insert "\n" (propertize "Phases" 'font-lock-face 'rdm-view-label) "\n")
         (seq-doseq (p phases)
-          (let ((phase (list :kind 'phase :roadmap roadmap
-                             :stem (plist-get p :stem)
-                             :title (plist-get p :title)
-                             :status (plist-get p :status))))
+          (let ((phase (rdm-item-with-refs
+                        (list :kind 'phase :roadmap roadmap
+                              :stem (plist-get p :stem)
+                              :title (plist-get p :title)
+                              :status (plist-get p :status))
+                        p)))
             (insert (propertize
                      (format "%3s  %-40s %s"
                              (plist-get p :number)

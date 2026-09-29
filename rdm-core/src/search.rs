@@ -10,6 +10,7 @@ use serde::Serialize;
 use std::str::FromStr;
 
 use crate::error::Result;
+use crate::link::ItemRef;
 use crate::model::{ParseError, PhaseStatus, TaskStatus};
 use crate::store::Store;
 
@@ -56,6 +57,88 @@ impl FromStr for ItemKind {
     }
 }
 
+/// Parses a comma-separated list of item kinds (e.g. `roadmap,phase,task`).
+///
+/// Each member is trimmed and parsed with [`ItemKind`]'s `FromStr`; a
+/// repeated kind is kept once. An empty string (or one of only commas and
+/// whitespace) yields an empty list, which [`SearchFilter::kinds`] reads as
+/// "every kind".
+///
+/// # Errors
+///
+/// Returns the [`ParseError`] of the first member that is not a kind.
+///
+/// # Examples
+///
+/// ```
+/// use rdm_core::search::{ItemKind, parse_kinds};
+///
+/// assert_eq!(
+///     parse_kinds("roadmap, phase").unwrap(),
+///     vec![ItemKind::Roadmap, ItemKind::Phase]
+/// );
+/// assert!(parse_kinds("phase,bogus").is_err());
+/// ```
+pub fn parse_kinds(s: &str) -> std::result::Result<Vec<ItemKind>, ParseError> {
+    let mut kinds = Vec::new();
+    for member in s.split(',').map(str::trim).filter(|m| !m.is_empty()) {
+        let kind: ItemKind = member.parse()?;
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    Ok(kinds)
+}
+
+/// Why a search status filter could not be built for a set of item kinds.
+///
+/// Returned by [`ItemStatus::parse_for_kinds`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusFilterError {
+    /// The value is not a status of the requested kinds.
+    Invalid(ParseError),
+    /// None of the requested kinds carries a status a search can filter on:
+    /// the set holds only roadmaps and/or reviews.
+    NoStatus {
+        /// The requested kinds (roadmaps and/or reviews only).
+        kinds: Vec<ItemKind>,
+    },
+}
+
+impl std::fmt::Display for StatusFilterError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StatusFilterError::Invalid(e) => write!(f, "{e}"),
+            StatusFilterError::NoStatus { kinds } => {
+                let roadmap = kinds.contains(&ItemKind::Roadmap);
+                let review = kinds.contains(&ItemKind::Review);
+                match (roadmap, review) {
+                    (true, false) => write!(
+                        f,
+                        "roadmaps do not have a status — remove --status or change --type"
+                    ),
+                    (false, true) => write!(
+                        f,
+                        "reviews do not use --status in search — filter with `rdm review list --state <state>` (or --verdict) instead"
+                    ),
+                    _ => write!(
+                        f,
+                        "roadmaps do not have a status and reviews do not use --status in search — remove --status or add --type phase or --type task"
+                    ),
+                }
+            }
+        }
+    }
+}
+
+impl std::error::Error for StatusFilterError {}
+
+impl From<ParseError> for StatusFilterError {
+    fn from(e: ParseError) -> Self {
+        StatusFilterError::Invalid(e)
+    }
+}
+
 /// Unified status across phases and tasks for filtering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemStatus {
@@ -94,6 +177,56 @@ impl ItemStatus {
     }
 }
 
+impl ItemStatus {
+    /// Parses a status filter for a search over `kinds` (empty = every kind).
+    ///
+    /// - Every kind, or a set holding both phases and tasks: parsed as
+    ///   [`ItemStatus`]'s `FromStr` does, so a value valid for both kinds
+    ///   becomes [`ItemStatus::Either`].
+    /// - Phases but not tasks: parsed as a [`PhaseStatus`].
+    /// - Tasks but not phases: parsed as a [`TaskStatus`].
+    /// - Only roadmaps and/or reviews: refused, since neither carries a
+    ///   status a search filters on.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StatusFilterError::Invalid`] when `s` is not a status of the
+    /// requested kinds, and [`StatusFilterError::NoStatus`] when no requested
+    /// kind has a status.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rdm_core::model::TaskStatus;
+    /// use rdm_core::search::{ItemKind, ItemStatus};
+    ///
+    /// assert_eq!(
+    ///     ItemStatus::parse_for_kinds("open", &[ItemKind::Roadmap, ItemKind::Task]).unwrap(),
+    ///     ItemStatus::Task(TaskStatus::Open)
+    /// );
+    /// assert!(ItemStatus::parse_for_kinds("open", &[ItemKind::Roadmap]).is_err());
+    /// ```
+    pub fn parse_for_kinds(
+        s: &str,
+        kinds: &[ItemKind],
+    ) -> std::result::Result<Self, StatusFilterError> {
+        if kinds.is_empty() {
+            return Ok(s.parse()?);
+        }
+        match (
+            kinds.contains(&ItemKind::Phase),
+            kinds.contains(&ItemKind::Task),
+        ) {
+            (true, true) => Ok(s.parse()?),
+            (true, false) => Ok(ItemStatus::Phase(s.parse()?)),
+            (false, true) => Ok(ItemStatus::Task(s.parse()?)),
+            (false, false) => Err(StatusFilterError::NoStatus {
+                kinds: kinds.to_vec(),
+            }),
+        }
+    }
+}
+
 impl FromStr for ItemStatus {
     type Err = ParseError;
 
@@ -121,8 +254,11 @@ const DEFAULT_MIN_SCORE_RATIO: f64 = 0.25;
 /// Filters to narrow search results.
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilter {
-    /// Restrict results to a specific item kind.
-    pub kind: Option<ItemKind>,
+    /// Restrict results to these item kinds; empty keeps every kind.
+    ///
+    /// Applied while results are collected, so a caller's limit counts only
+    /// items of these kinds.
+    pub kinds: Vec<ItemKind>,
     /// Restrict results to a specific project.
     pub project: Option<String>,
     /// Restrict results to items matching a specific status.
@@ -139,6 +275,13 @@ pub struct SearchFilter {
     /// Results scoring below `top_score * ratio` are dropped. Defaults to
     /// [`DEFAULT_MIN_SCORE_RATIO`] (0.25). Set to `Some(0.0)` to disable.
     pub min_score_ratio: Option<f64>,
+}
+
+impl SearchFilter {
+    /// Whether this filter keeps items of `kind`.
+    fn wants(&self, kind: ItemKind) -> bool {
+        self.kinds.is_empty() || self.kinds.contains(&kind)
+    }
 }
 
 /// Returns `true` if `item_tags` contains every tag in `required`.
@@ -171,6 +314,13 @@ pub struct SearchResult {
     /// Tags carried by the matched item, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// The item's status, for a phase or task hit; `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// The matched roadmap, phase, or task as a structured reference;
+    /// `None` for a review hit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item: Option<ItemRef>,
 }
 
 /// Searches the plan repo for items matching `query` with optional filters.
@@ -210,7 +360,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
         }
 
         // Search roadmaps (roadmaps have no status; skip when a status filter is active)
-        if (filter.kind.is_none() || filter.kind == Some(ItemKind::Roadmap))
+        if filter.wants(ItemKind::Roadmap)
             && filter.status.is_none()
             && let Ok(roadmaps) = crate::ops::roadmap::list_roadmaps(store, project, None, None)
         {
@@ -230,13 +380,18 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                     &doc.body,
                     rm.tags.as_deref(),
                 ) {
-                    results.push(result);
+                    results.push(result.with_item(
+                        None,
+                        ItemRef::Roadmap {
+                            roadmap: rm.roadmap.clone(),
+                        },
+                    ));
                 }
             }
         }
 
         // Search phases
-        if (filter.kind.is_none() || filter.kind == Some(ItemKind::Phase))
+        if filter.wants(ItemKind::Phase)
             && let Ok(roadmaps) = crate::ops::roadmap::list_roadmaps(store, project, None, None)
         {
             for roadmap_doc in &roadmaps {
@@ -266,7 +421,13 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                             &phase_doc.body,
                             phase_doc.frontmatter.tags.as_deref(),
                         ) {
-                            results.push(result);
+                            results.push(result.with_item(
+                                Some(phase_doc.frontmatter.status.to_string()),
+                                ItemRef::Phase {
+                                    roadmap: roadmap_slug.clone(),
+                                    stem: stem.clone(),
+                                },
+                            ));
                         }
                     }
                 }
@@ -274,7 +435,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
         }
 
         // Search tasks
-        if (filter.kind.is_none() || filter.kind == Some(ItemKind::Task))
+        if filter.wants(ItemKind::Task)
             && let Ok(tasks) = crate::ops::task::list_tasks(store, project)
         {
             for (slug, task_doc) in &tasks {
@@ -297,7 +458,10 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
                     &task_doc.body,
                     task_doc.frontmatter.tags.as_deref(),
                 ) {
-                    results.push(result);
+                    results.push(result.with_item(
+                        Some(task_doc.frontmatter.status.to_string()),
+                        ItemRef::Task { slug: slug.clone() },
+                    ));
                 }
             }
         }
@@ -309,10 +473,7 @@ pub fn search(store: &impl Store, query: &str, filter: &SearchFilter) -> Result<
         // filter and a tag filter skip them (mirroring how roadmaps skip
         // status filters); narrow reviews with `rdm review list
         // --state/--verdict` instead.
-        if (filter.kind.is_none() || filter.kind == Some(ItemKind::Review))
-            && filter.status.is_none()
-            && required_tags.is_empty()
-        {
+        if filter.wants(ItemKind::Review) && filter.status.is_none() && required_tags.is_empty() {
             let reviews = crate::ops::reviews::list_reviews(store, project)?;
             for (id, review_doc) in &reviews {
                 let title = format!("review of {}", review_doc.frontmatter.target.label());
@@ -401,7 +562,18 @@ fn score_item(
         snippet,
         score: best_score,
         tags: tags.map(|t| t.to_vec()),
+        status: None,
+        item: None,
     })
+}
+
+impl SearchResult {
+    /// Attaches the hit's status and structured item reference.
+    fn with_item(mut self, status: Option<String>, item: ItemRef) -> Self {
+        self.status = status;
+        self.item = Some(item);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -606,7 +778,7 @@ mod tests {
     fn filter_by_kind_task() {
         let store = setup_test_store();
         let filter = SearchFilter {
-            kind: Some(ItemKind::Task),
+            kinds: vec![ItemKind::Task],
             ..Default::default()
         };
         let results = search(&store, "widget", &filter).unwrap();
@@ -619,7 +791,7 @@ mod tests {
     fn filter_by_kind_phase() {
         let store = setup_test_store();
         let filter = SearchFilter {
-            kind: Some(ItemKind::Phase),
+            kinds: vec![ItemKind::Phase],
             ..Default::default()
         };
         let results = search(&store, "widget", &filter).unwrap();
@@ -970,7 +1142,7 @@ mod tests {
         // "Widget" appears in multiple titles — scores should be close
         let filter = SearchFilter {
             min_score_ratio: Some(0.25),
-            kind: Some(ItemKind::Phase),
+            kinds: vec![ItemKind::Phase],
             ..Default::default()
         };
         let results = search(&store, "Widget", &filter).unwrap();
@@ -1193,7 +1365,7 @@ mod tests {
     fn tag_filter_combined_with_kind() {
         let store = setup_tag_store();
         let filter = SearchFilter {
-            kind: Some(ItemKind::Task),
+            kinds: vec![ItemKind::Task],
             tags: Some(vec!["refactor".to_string()]),
             min_score_ratio: Some(0.0),
             ..Default::default()
@@ -1266,7 +1438,7 @@ mod tests {
     fn phase_identifier_includes_roadmap() {
         let store = setup_test_store();
         let filter = SearchFilter {
-            kind: Some(ItemKind::Phase),
+            kinds: vec![ItemKind::Phase],
             ..Default::default()
         };
         let results = search(&store, "Design", &filter).unwrap();
@@ -1356,7 +1528,7 @@ mod tests {
         let mut store = setup_test_store();
         let id = add_change_review(&mut store);
         let filter = SearchFilter {
-            kind: Some(ItemKind::Review),
+            kinds: vec![ItemKind::Review],
             ..Default::default()
         };
         for query in ["aardvark", "wombat"] {
@@ -1380,7 +1552,7 @@ mod tests {
         let mut store = setup_test_store();
         let id = add_review(&mut store);
         let filter = SearchFilter {
-            kind: Some(ItemKind::Review),
+            kinds: vec![ItemKind::Review],
             ..Default::default()
         };
         let results = search(&store, "zanzibar", &filter).unwrap();
@@ -1395,7 +1567,7 @@ mod tests {
         let mut store = setup_test_store();
         let id = add_review(&mut store);
         let filter = SearchFilter {
-            kind: Some(ItemKind::Review),
+            kinds: vec![ItemKind::Review],
             ..Default::default()
         };
         let results = search(&store, "quokka", &filter).unwrap();
@@ -1412,7 +1584,7 @@ mod tests {
         let mut store = setup_test_store();
         add_review(&mut store);
         let filter = SearchFilter {
-            kind: Some(ItemKind::Review),
+            kinds: vec![ItemKind::Review],
             min_score_ratio: Some(0.0),
             ..Default::default()
         };
@@ -1461,5 +1633,136 @@ mod tests {
             results.iter().all(|r| r.kind != ItemKind::Review),
             "tag filter must skip reviews: {results:?}"
         );
+    }
+
+    #[test]
+    fn multi_kind_filter_drops_reviews_before_any_limit() {
+        let mut store = setup_test_store();
+        add_review(&mut store);
+        crate::ops::task::create_task(
+            &mut store,
+            crate::ops::task::CreateTask {
+                project: "acme",
+                slug: "quokka-habitat",
+                title: "Quokka habitat",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let unfiltered = search(&store, "quokka", &SearchFilter::default()).unwrap();
+        assert!(
+            unfiltered.iter().any(|r| r.kind == ItemKind::Review),
+            "precondition: the review matches the query: {unfiltered:?}"
+        );
+
+        let filter = SearchFilter {
+            kinds: vec![ItemKind::Roadmap, ItemKind::Phase, ItemKind::Task],
+            ..Default::default()
+        };
+        let results = search(&store, "quokka", &filter).unwrap();
+        assert!(
+            results.iter().all(|r| r.kind != ItemKind::Review),
+            "a review is never a hit of roadmap,phase,task: {results:?}"
+        );
+        let first = results.first().expect("the task still matches");
+        assert_eq!(first.identifier, "quokka-habitat");
+    }
+
+    #[test]
+    fn parse_kinds_splits_trims_and_dedupes() {
+        assert_eq!(
+            parse_kinds(" roadmap ,phase,task,phase").unwrap(),
+            vec![ItemKind::Roadmap, ItemKind::Phase, ItemKind::Task]
+        );
+        assert_eq!(parse_kinds("").unwrap(), Vec::<ItemKind>::new());
+        assert!(parse_kinds("phase,bogus").is_err());
+    }
+
+    #[test]
+    fn parse_for_kinds_reads_the_status_vocabulary_of_the_kind_set() {
+        use ItemKind::*;
+        // Every kind, or phases and tasks together: kind-agnostic.
+        assert_eq!(
+            ItemStatus::parse_for_kinds("done", &[]).unwrap(),
+            ItemStatus::Either(PhaseStatus::Done, TaskStatus::Done)
+        );
+        assert_eq!(
+            ItemStatus::parse_for_kinds("done", &[Phase, Task, Roadmap]).unwrap(),
+            ItemStatus::Either(PhaseStatus::Done, TaskStatus::Done)
+        );
+        // One of the two: that kind's vocabulary.
+        assert_eq!(
+            ItemStatus::parse_for_kinds("done", &[Phase, Roadmap]).unwrap(),
+            ItemStatus::Phase(PhaseStatus::Done)
+        );
+        assert_eq!(
+            ItemStatus::parse_for_kinds("done", &[Task]).unwrap(),
+            ItemStatus::Task(TaskStatus::Done)
+        );
+        assert!(matches!(
+            ItemStatus::parse_for_kinds("open", &[Phase]),
+            Err(StatusFilterError::Invalid(_))
+        ));
+        // Neither: refused with the kind's own message.
+        let err = ItemStatus::parse_for_kinds("done", &[Roadmap]).unwrap_err();
+        assert!(err.to_string().starts_with("roadmaps do not have a status"));
+        let err = ItemStatus::parse_for_kinds("done", &[Review]).unwrap_err();
+        assert!(err.to_string().contains("rdm review list --state"));
+        let err = ItemStatus::parse_for_kinds("done", &[Roadmap, Review]).unwrap_err();
+        assert!(matches!(err, StatusFilterError::NoStatus { .. }));
+    }
+
+    #[test]
+    fn hits_carry_status_and_structured_item() {
+        let mut store = setup_test_store();
+        add_review(&mut store);
+        let filter = SearchFilter {
+            min_score_ratio: Some(0.0),
+            ..Default::default()
+        };
+        let results = search(&store, "widget", &filter).unwrap();
+        let phase = results
+            .iter()
+            .find(|r| r.identifier == "widget-launch/phase-1-design")
+            .expect("phase hit");
+        assert_eq!(phase.status.as_deref(), Some("done"));
+        assert_eq!(
+            phase.item,
+            Some(ItemRef::Phase {
+                roadmap: "widget-launch".to_string(),
+                stem: "phase-1-design".to_string(),
+            })
+        );
+        let roadmap = results
+            .iter()
+            .find(|r| r.kind == ItemKind::Roadmap)
+            .expect("roadmap hit");
+        assert_eq!(roadmap.status, None);
+        assert_eq!(
+            roadmap.item,
+            Some(ItemRef::Roadmap {
+                roadmap: "widget-launch".to_string(),
+            })
+        );
+
+        let results = search(&store, "Fix Login Bug", &filter).unwrap();
+        let task = results
+            .iter()
+            .find(|r| r.kind == ItemKind::Task)
+            .expect("task hit");
+        assert_eq!(task.status.as_deref(), Some("done"));
+        assert_eq!(
+            task.item,
+            Some(ItemRef::Task {
+                slug: "fix-login-bug".to_string(),
+            })
+        );
+
+        let results = search(&store, "zanzibar", &filter).unwrap();
+        let review = results
+            .iter()
+            .find(|r| r.kind == ItemKind::Review)
+            .expect("review hit");
+        assert_eq!((review.status.as_ref(), review.item.as_ref()), (None, None));
     }
 }

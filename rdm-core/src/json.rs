@@ -27,8 +27,21 @@ pub struct RoadmapJson {
     pub project: String,
     /// Roadmap slug identifier.
     pub slug: String,
+    /// The item reference (`<roadmap>`) — the grammar `rdm worktree` and
+    /// `rdm hook done-line` accept.
+    #[serde(rename = "ref")]
+    pub item_ref: String,
+    /// The review-target reference (`roadmap/<roadmap>`) — the form
+    /// `rdm review --on` accepts.
+    pub review_ref: String,
     /// Human-readable title.
     pub title: String,
+    /// Total number of phases.
+    pub total_phases: usize,
+    /// Number of terminal (`done` or `wont-fix`) phases.
+    pub done_phases: usize,
+    /// Progress as a human-readable string (e.g. "2/5 done").
+    pub progress: String,
     /// Phase summaries in order (without body content — use `phase show` for full details).
     pub phases: Vec<PhaseSummaryJson>,
     /// Roadmap slugs this depends on.
@@ -93,6 +106,13 @@ pub struct PhaseJson {
     pub revision: Option<String>,
     /// Parent roadmap slug.
     pub roadmap: String,
+    /// The item reference (`<roadmap>/<stem>`) — the grammar `rdm worktree` and
+    /// `rdm hook done-line` accept.
+    #[serde(rename = "ref")]
+    pub item_ref: String,
+    /// The review-target reference (`phase/<roadmap>/<stem>`) — the form
+    /// `rdm review --on` accepts.
+    pub review_ref: String,
     /// Stem of the previous phase, if any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prev_phase: Option<String>,
@@ -126,6 +146,13 @@ impl PhaseJson {
 pub struct TaskJson {
     /// Task slug.
     pub slug: String,
+    /// The item reference (`task/<slug>`) — the grammar `rdm worktree` and
+    /// `rdm hook done-line` accept.
+    #[serde(rename = "ref")]
+    pub item_ref: String,
+    /// The review-target reference (`task/<slug>`) — the form
+    /// `rdm review --on` accepts.
+    pub review_ref: String,
     /// Project the task belongs to.
     pub project: String,
     /// Human-readable title.
@@ -333,6 +360,13 @@ pub fn plan_change_review_to_json(
 pub struct RoadmapSummaryJson {
     /// Roadmap slug.
     pub slug: String,
+    /// The item reference (`<roadmap>`) — the grammar `rdm worktree` and
+    /// `rdm hook done-line` accept.
+    #[serde(rename = "ref")]
+    pub item_ref: String,
+    /// The review-target reference (`roadmap/<roadmap>`) — the form
+    /// `rdm review --on` accepts.
+    pub review_ref: String,
     /// Human-readable title.
     pub title: String,
     /// Total number of phases.
@@ -356,6 +390,13 @@ pub struct PhaseSummaryJson {
     pub number: u32,
     /// File-stem (e.g. `phase-1-design`).
     pub stem: String,
+    /// The item reference (`<roadmap>/<stem>`) — the grammar `rdm worktree` and
+    /// `rdm hook done-line` accept.
+    #[serde(rename = "ref")]
+    pub item_ref: String,
+    /// The review-target reference (`phase/<roadmap>/<stem>`) — the form
+    /// `rdm review --on` accepts.
+    pub review_ref: String,
     /// Human-readable title.
     pub title: String,
     /// Current status.
@@ -376,6 +417,13 @@ pub struct PhaseSummaryJson {
 pub struct TaskSummaryJson {
     /// Task slug.
     pub slug: String,
+    /// The item reference (`task/<slug>`) — the grammar `rdm worktree` and
+    /// `rdm hook done-line` accept.
+    #[serde(rename = "ref")]
+    pub item_ref: String,
+    /// The review-target reference (`task/<slug>`) — the form
+    /// `rdm review --on` accepts.
+    pub review_ref: String,
     /// Human-readable title.
     pub title: String,
     /// Current status.
@@ -462,11 +510,65 @@ pub struct SearchResultJson {
     /// Tags carried by the matched item, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tags: Option<Vec<String>>,
+    /// The item's status, for a phase or task hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// The roadmap slug, for a roadmap or phase hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub roadmap: Option<String>,
+    /// The phase stem, for a phase hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stem: Option<String>,
+    /// The task slug, for a task hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// The item reference (`<roadmap>`, `<roadmap>/<stem>`, or
+    /// `task/<slug>`), for a roadmap, phase, or task hit.
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub item_ref: Option<String>,
+    /// The review-target reference `rdm review --on` accepts, for a
+    /// roadmap, phase, or task hit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_ref: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
+
+/// The `(ref, review_ref)` pair of a roadmap, phase, or task target.
+fn refs(target: &ReviewTarget) -> (String, String) {
+    (
+        target
+            .item_ref()
+            .expect("a roadmap, phase, or task always has an item ref"),
+        target.label(),
+    )
+}
+
+/// A roadmap's phase counts, under core's terminal-phase rule: a phase
+/// counts as done when its status [`is_terminal`](PhaseStatus::is_terminal)
+/// (`done` or `wont-fix`).
+struct PhaseProgress {
+    total: usize,
+    done: usize,
+    label: String,
+}
+
+impl PhaseProgress {
+    fn of(phases: &[(String, Document<Phase>)]) -> Self {
+        let total = phases.len();
+        let done = phases
+            .iter()
+            .filter(|(_, pd)| pd.frontmatter.status.is_terminal())
+            .count();
+        PhaseProgress {
+            total,
+            done,
+            label: crate::display::roadmap_progress_label(done, total),
+        }
+    }
+}
 
 /// Build a [`RoadmapJson`] from a roadmap document and its loaded phases.
 ///
@@ -479,13 +581,22 @@ pub fn roadmap_to_json(
     revision: Option<&str>,
 ) -> RoadmapJson {
     let rm = &doc.frontmatter;
+    let (item_ref, review_ref) = refs(&ReviewTarget::Roadmap {
+        roadmap: rm.roadmap.clone(),
+    });
+    let progress = PhaseProgress::of(phases);
     RoadmapJson {
         project: rm.project.clone(),
         slug: rm.roadmap.clone(),
+        item_ref,
+        review_ref,
         title: rm.title.clone(),
+        total_phases: progress.total,
+        done_phases: progress.done,
+        progress: progress.label,
         phases: phases
             .iter()
-            .map(|(stem, pd)| phase_summary_to_json(stem, pd))
+            .map(|(stem, pd)| phase_summary_to_json(&rm.roadmap, stem, pd))
             .collect(),
         dependencies: rm.dependencies.clone(),
         priority: rm.priority,
@@ -509,6 +620,10 @@ pub fn phase_to_json(
     revision: Option<&str>,
 ) -> PhaseJson {
     let fm = &doc.frontmatter;
+    let (item_ref, review_ref) = refs(&ReviewTarget::Phase {
+        roadmap: roadmap.to_string(),
+        stem: stem.to_string(),
+    });
     PhaseJson {
         stem: stem.to_string(),
         phase: fm.phase,
@@ -524,6 +639,8 @@ pub fn phase_to_json(
         gate_override: fm.gate_override.clone(),
         revision: revision.map(String::from),
         roadmap: roadmap.to_string(),
+        item_ref,
+        review_ref,
         prev_phase: prev.map(String::from),
         next_phase: next.map(String::from),
         plans: Vec::new(),
@@ -537,8 +654,13 @@ pub fn phase_to_json(
 /// SHA in the `revision` field.
 pub fn task_to_json(slug: &str, doc: &Document<Task>, revision: Option<&str>) -> TaskJson {
     let fm = &doc.frontmatter;
+    let (item_ref, review_ref) = refs(&ReviewTarget::Task {
+        slug: slug.to_string(),
+    });
     TaskJson {
         slug: slug.to_string(),
+        item_ref,
+        review_ref,
         project: fm.project.clone(),
         title: fm.title.clone(),
         status: fm.status,
@@ -562,29 +684,36 @@ pub fn roadmap_summary_to_json(
     phases: &[(String, Document<Phase>)],
 ) -> RoadmapSummaryJson {
     let rm = &doc.frontmatter;
-    let total = phases.len();
-    let done = phases
-        .iter()
-        .filter(|(_, pd)| pd.frontmatter.status.is_terminal())
-        .count();
-    let progress = crate::display::roadmap_progress_label(done, total);
+    let (item_ref, review_ref) = refs(&ReviewTarget::Roadmap {
+        roadmap: rm.roadmap.clone(),
+    });
+    let progress = PhaseProgress::of(phases);
     RoadmapSummaryJson {
         slug: rm.roadmap.clone(),
+        item_ref,
+        review_ref,
         title: rm.title.clone(),
-        total_phases: total,
-        done_phases: done,
-        progress,
+        total_phases: progress.total,
+        done_phases: progress.done,
+        progress: progress.label,
         priority: rm.priority,
         tags: rm.tags.clone(),
     }
 }
 
-/// Build a [`PhaseSummaryJson`] from a phase document and its stem.
-pub fn phase_summary_to_json(stem: &str, doc: &Document<Phase>) -> PhaseSummaryJson {
+/// Build a [`PhaseSummaryJson`] from a phase document, its stem, and its
+/// parent roadmap's slug.
+pub fn phase_summary_to_json(roadmap: &str, stem: &str, doc: &Document<Phase>) -> PhaseSummaryJson {
     let fm = &doc.frontmatter;
+    let (item_ref, review_ref) = refs(&ReviewTarget::Phase {
+        roadmap: roadmap.to_string(),
+        stem: stem.to_string(),
+    });
     PhaseSummaryJson {
         number: fm.phase,
         stem: stem.to_string(),
+        item_ref,
+        review_ref,
         title: fm.title.clone(),
         status: fm.status,
         tags: fm.tags.clone(),
@@ -596,8 +725,13 @@ pub fn phase_summary_to_json(stem: &str, doc: &Document<Phase>) -> PhaseSummaryJ
 /// Build a [`TaskSummaryJson`] from a task document and slug.
 pub fn task_summary_to_json(slug: &str, doc: &Document<Task>) -> TaskSummaryJson {
     let fm = &doc.frontmatter;
+    let (item_ref, review_ref) = refs(&ReviewTarget::Task {
+        slug: slug.to_string(),
+    });
     TaskSummaryJson {
         slug: slug.to_string(),
+        item_ref,
+        review_ref,
         title: fm.title.clone(),
         status: fm.status,
         priority: fm.priority,
@@ -770,7 +904,18 @@ pub fn project_to_json(doc: &Document<Project>) -> ProjectJson {
 }
 
 /// Build a [`SearchResultJson`] from a [`SearchResult`].
+///
+/// The structured `roadmap`/`stem`/`slug` fields and the `ref`/`review_ref`
+/// pair come from [`SearchResult::item`]; a review hit carries none of them.
 pub fn search_result_to_json(result: &SearchResult) -> SearchResultJson {
+    let (roadmap, stem, slug) = match &result.item {
+        Some(ReviewTarget::Roadmap { roadmap }) => (Some(roadmap.clone()), None, None),
+        Some(ReviewTarget::Phase { roadmap, stem }) => {
+            (Some(roadmap.clone()), Some(stem.clone()), None)
+        }
+        Some(ReviewTarget::Task { slug }) => (None, None, Some(slug.clone())),
+        _ => (None, None, None),
+    };
     SearchResultJson {
         kind: result.kind,
         identifier: result.identifier.clone(),
@@ -779,6 +924,12 @@ pub fn search_result_to_json(result: &SearchResult) -> SearchResultJson {
         snippet: result.snippet.clone(),
         score: result.score,
         tags: result.tags.clone(),
+        status: result.status.clone(),
+        roadmap,
+        stem,
+        slug,
+        item_ref: result.item.as_ref().and_then(ReviewTarget::item_ref),
+        review_ref: result.item.as_ref().map(ReviewTarget::label),
     }
 }
 
@@ -2135,7 +2286,7 @@ mod tests {
     #[test]
     fn phase_summary_fields() {
         let doc = make_phase_doc(3, "Review", PhaseStatus::NotStarted);
-        let s = phase_summary_to_json("phase-3-review", &doc);
+        let s = phase_summary_to_json("rm", "phase-3-review", &doc);
         assert_eq!(s.number, 3);
         assert_eq!(s.stem, "phase-3-review");
         assert_eq!(s.status, PhaseStatus::NotStarted);
@@ -2154,7 +2305,7 @@ mod tests {
         assert!(!serialized.contains("completed"));
         assert!(!serialized.contains("tags"));
 
-        let psj = phase_summary_to_json("phase-1-x", &phase_doc);
+        let psj = phase_summary_to_json("rm", "phase-1-x", &phase_doc);
         let serialized = serde_json::to_string(&psj).unwrap();
         assert!(!serialized.contains("tags"));
 
@@ -2181,7 +2332,7 @@ mod tests {
         p_doc.frontmatter.tags = Some(vec!["infra".to_string()]);
         let pj = phase_to_json("phase-1-x", &p_doc, "rm", None, None, None);
         assert_eq!(pj.tags, Some(vec!["infra".to_string()]));
-        let psj = phase_summary_to_json("phase-1-x", &p_doc);
+        let psj = phase_summary_to_json("rm", "phase-1-x", &p_doc);
         assert_eq!(psj.tags, Some(vec!["infra".to_string()]));
     }
 
@@ -2211,6 +2362,10 @@ mod tests {
             snippet: "...fix the bug...".to_string(),
             score: 42,
             tags: Some(vec!["bug".to_string()]),
+            status: Some("open".to_string()),
+            item: Some(ReviewTarget::Task {
+                slug: "fix-bug".to_string(),
+            }),
         };
         let json = search_result_to_json(&result);
         assert_eq!(json.kind, ItemKind::Task);
@@ -2219,6 +2374,105 @@ mod tests {
         assert_eq!(json.title, "Fix Bug");
         assert_eq!(json.snippet, "...fix the bug...");
         assert_eq!(json.tags, Some(vec!["bug".to_string()]));
+        assert_eq!(json.status.as_deref(), Some("open"));
+        assert_eq!(json.slug.as_deref(), Some("fix-bug"));
+        assert_eq!(json.roadmap, None);
+        assert_eq!(json.stem, None);
+        assert_eq!(json.item_ref.as_deref(), Some("task/fix-bug"));
+        assert_eq!(json.review_ref.as_deref(), Some("task/fix-bug"));
+    }
+
+    #[test]
+    fn search_result_to_json_structures_a_phase_hit_and_leaves_a_review_bare() {
+        let phase = SearchResult {
+            kind: ItemKind::Phase,
+            identifier: "alpha/phase-1-setup".to_string(),
+            project: "acme".to_string(),
+            title: "Setup".to_string(),
+            snippet: "Setup".to_string(),
+            score: 1,
+            tags: None,
+            status: Some("in-progress".to_string()),
+            item: Some(ReviewTarget::Phase {
+                roadmap: "alpha".to_string(),
+                stem: "phase-1-setup".to_string(),
+            }),
+        };
+        let json = search_result_to_json(&phase);
+        assert_eq!(json.roadmap.as_deref(), Some("alpha"));
+        assert_eq!(json.stem.as_deref(), Some("phase-1-setup"));
+        assert_eq!(json.slug, None);
+        assert_eq!(json.item_ref.as_deref(), Some("alpha/phase-1-setup"));
+        assert_eq!(
+            json.review_ref.as_deref(),
+            Some("phase/alpha/phase-1-setup")
+        );
+
+        let review = SearchResult {
+            kind: ItemKind::Review,
+            identifier: "r1".to_string(),
+            item: None,
+            status: None,
+            ..phase
+        };
+        let value = serde_json::to_value(search_result_to_json(&review)).unwrap();
+        for key in ["status", "roadmap", "stem", "slug", "ref", "review_ref"] {
+            assert!(value.get(key).is_none(), "review hit carries {key}");
+        }
+    }
+
+    #[test]
+    fn item_json_carries_ref_and_review_ref_per_kind() {
+        let rm_doc = make_roadmap_doc("acme", "alpha", "Alpha");
+        let phase_doc = make_phase_doc(1, "Setup", PhaseStatus::InProgress);
+        let phases = vec![("phase-1-setup".to_string(), phase_doc.clone())];
+        let rj = roadmap_to_json(&rm_doc, &phases, None);
+        assert_eq!(rj.item_ref, "alpha");
+        assert_eq!(rj.review_ref, "roadmap/alpha");
+        assert_eq!(rj.phases[0].item_ref, "alpha/phase-1-setup");
+        assert_eq!(rj.phases[0].review_ref, "phase/alpha/phase-1-setup");
+        let rsj = roadmap_summary_to_json(&rm_doc, &phases);
+        assert_eq!(
+            (rsj.item_ref.as_str(), rsj.review_ref.as_str()),
+            ("alpha", "roadmap/alpha")
+        );
+
+        let pj = phase_to_json("phase-1-setup", &phase_doc, "alpha", None, None, None);
+        assert_eq!(pj.item_ref, "alpha/phase-1-setup");
+        assert_eq!(pj.review_ref, "phase/alpha/phase-1-setup");
+
+        let task_doc = make_task_doc("fix-bug", "acme");
+        let tj = task_to_json("fix-bug", &task_doc, None);
+        assert_eq!(
+            (tj.item_ref.as_str(), tj.review_ref.as_str()),
+            ("task/fix-bug", "task/fix-bug")
+        );
+        let tsj = task_summary_to_json("fix-bug", &task_doc);
+        assert_eq!(tsj.item_ref, "task/fix-bug");
+
+        let value = serde_json::to_value(&rj).unwrap();
+        assert_eq!(value["ref"], "alpha");
+        assert_eq!(value["phases"][0]["ref"], "alpha/phase-1-setup");
+    }
+
+    #[test]
+    fn roadmap_to_json_progress_counts_wont_fix_as_done() {
+        let doc = make_roadmap_doc("acme", "a", "A");
+        let phases = vec![
+            ("p1".to_string(), make_phase_doc(1, "P1", PhaseStatus::Done)),
+            (
+                "p2".to_string(),
+                make_phase_doc(2, "P2", PhaseStatus::WontFix),
+            ),
+            (
+                "p3".to_string(),
+                make_phase_doc(3, "P3", PhaseStatus::InProgress),
+            ),
+        ];
+        let json = roadmap_to_json(&doc, &phases, None);
+        assert_eq!(json.total_phases, 3);
+        assert_eq!(json.done_phases, 2);
+        assert_eq!(json.progress, "2/3 done");
     }
 
     #[test]

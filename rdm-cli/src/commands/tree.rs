@@ -18,10 +18,12 @@ pub fn run(
     repo_config: &rdm_core::config::Config,
     format: OutputFormat,
     project: Option<String>,
+    active: bool,
 ) -> Result<()> {
     let store = commands::make_store(root)?;
     let project = paths::resolve_project(project, repo_config)?;
-    let node = tree::build_tree(&store, &project).context("failed to build tree")?;
+    let node = tree::build_tree(&store, &project, &tree::TreeFilter { active })
+        .context("failed to build tree")?;
     match format {
         OutputFormat::Human => print!("{}", tree::format_tree(&node)),
         OutputFormat::Markdown => print!("{}", tree::format_tree_md(&node)),

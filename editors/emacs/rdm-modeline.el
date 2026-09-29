@@ -6,7 +6,8 @@
 
 ;; `rdm-modeline-segment' returns "ITEM · STATUS" for the rdm worktree the
 ;; current buffer is in: a task's or phase's status, or a roadmap's
-;; done/total phase count for the worktree its phases share.  Outside an
+;; done/total phase count (rdm's own progress, which counts every terminal
+;; phase as done) for the worktree its phases share.  Outside an
 ;; rdm worktree it returns "".  `rdm-modeline-nano-segment' is the same
 ;; text for nano-modeline (or any mode line built from zero-argument
 ;; functions); nano-modeline is not required.
@@ -120,11 +121,8 @@ an idle timer."
 (defun rdm-modeline--label (id item data)
   "The segment text for worktree item ID (ITEM as a plist) shown as DATA."
   (let ((state (if (eq (plist-get item :kind) 'roadmap)
-                   (let ((phases (append (plist-get data :phases) nil)))
-                     (format "%d/%d"
-                             (seq-count (lambda (p) (equal (plist-get p :status) "done"))
-                                        phases)
-                             (length phases)))
+                   (format "%d/%d" (or (plist-get data :done_phases) 0)
+                           (or (plist-get data :total_phases) 0))
                  (or (plist-get data :status) "?"))))
     (propertize (format "%s · %s" id state)
                 'face 'rdm-modeline

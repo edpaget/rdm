@@ -19,8 +19,9 @@
 ;;
 ;; Candidates carry an `rdm-item' text property (see rdm-view.el) and the
 ;; completion `category' `rdm-item', whose `annotation-function' shows
-;; status and tags (kind and tags for search hits) with or without
-;; marginalia.  Embark finds its actions for that category in
+;; status and tags (kind, status and tags for search hits) with or without
+;; marginalia.  Each item carries the `ref' and `review_ref' rdm reports
+;; for it.  Embark finds its actions for that category in
 ;; `rdm-item-embark-map', which includes `x' for the `rdm-dispatch'
 ;; transient.  Neither consult nor embark is required.
 
@@ -60,8 +61,10 @@
   (seq-map (lambda (r)
              (rdm-pick--candidate
               (plist-get r :slug)
-              (list :kind 'roadmap :roadmap (plist-get r :slug)
-                    :title (plist-get r :title) :tags (plist-get r :tags))
+              (rdm-item-with-refs
+               (list :kind 'roadmap :roadmap (plist-get r :slug)
+                     :title (plist-get r :title) :tags (plist-get r :tags))
+               r)
               (plist-get r :progress)))
            (rdm-call-sync 'roadmap-list)))
 
@@ -70,8 +73,10 @@
   (seq-map (lambda (p)
              (rdm-pick--candidate
               (plist-get p :stem)
-              (list :kind 'phase :roadmap roadmap :stem (plist-get p :stem)
-                    :title (plist-get p :title) :status (plist-get p :status))
+              (rdm-item-with-refs
+               (list :kind 'phase :roadmap roadmap :stem (plist-get p :stem)
+                     :title (plist-get p :title) :status (plist-get p :status))
+               p)
               (plist-get p :status)))
            (rdm-call-sync 'phase-list :roadmap roadmap)))
 
@@ -80,46 +85,41 @@
   (seq-map (lambda (task)
              (rdm-pick--candidate
               (plist-get task :slug)
-              (list :kind 'task :slug (plist-get task :slug)
-                    :title (plist-get task :title)
-                    :status (plist-get task :status)
-                    :tags (plist-get task :tags))
+              (rdm-item-with-refs
+               (list :kind 'task :slug (plist-get task :slug)
+                     :title (plist-get task :title)
+                     :status (plist-get task :status)
+                     :tags (plist-get task :tags))
+               task)
               (plist-get task :status)))
            (rdm-call-sync 'task-list :status (and all "all"))))
 
 (defun rdm-pick--search-item (hit)
-  "The item for search HIT, or a bare item of its kind."
-  (let ((kind (intern (plist-get hit :kind)))
-        (id (plist-get hit :identifier)))
-    (append
-     (pcase kind
-       ('roadmap (list :kind kind :roadmap id))
-       ('phase (let ((slash (string-search "/" id)))
-                 (list :kind kind :roadmap (substring id 0 slash)
-                       :stem (substring id (1+ slash)))))
-       ('task (list :kind kind :slug id))
-       (_ (list :kind kind :identifier id)))
-     (list :title (plist-get hit :title) :tags (plist-get hit :tags)))))
-
-(defconst rdm-pick-search-kinds '("roadmap" "phase" "task")
-  "The search hit kinds a picker offers: the ones a detail buffer can open.
-`rdm search' also returns other kinds (reviews); those are dropped.")
+  "The item for search HIT, from its structured fields."
+  (let ((item (list :kind (intern (plist-get hit :kind)))))
+    (dolist (key '(:roadmap :stem :slug))
+      (when-let* ((value (plist-get hit key)))
+        (setq item (append item (list key value)))))
+    (rdm-item-with-refs
+     (append item (list :title (plist-get hit :title)
+                        :status (plist-get hit :status)
+                        :tags (plist-get hit :tags)))
+     hit)))
 
 (defun rdm-pick-search-candidates (query)
-  "Candidates for `rdm search QUERY', annotated with kind and tags.
-Only hits of `rdm-pick-search-kinds' are offered."
+  "Candidates for `rdm search QUERY' over roadmaps, phases and tasks.
+Each candidate's text is the hit's `ref', annotated with its kind,
+status and tags."
   (if (string-empty-p (string-trim query))
       nil
-    (let (seen)
-      (seq-map (lambda (hit)
-                 (let* ((id (plist-get hit :identifier))
-                        (kind (plist-get hit :kind))
-                        (text (if (member id seen) (format "%s (%s)" id kind) id)))
-                   (push text seen)
-                   (rdm-pick--candidate text (rdm-pick--search-item hit) kind)))
-               (seq-filter (lambda (hit)
-                             (member (plist-get hit :kind) rdm-pick-search-kinds))
-                           (rdm-call-sync 'search query))))))
+    (seq-map (lambda (hit)
+               (rdm-pick--candidate
+                (plist-get hit :ref)
+                (rdm-pick--search-item hit)
+                (string-join (delq nil (list (plist-get hit :kind)
+                                             (plist-get hit :status)))
+                             " ")))
+             (rdm-call-sync 'search query :type "roadmap,phase,task"))))
 
 ;;;; Reading
 

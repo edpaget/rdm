@@ -87,8 +87,9 @@ and the parsed `show' reply of its item."
 ;;;; Rendering
 
 (ert-deftest rdm-modeline/renders-item-status ()
-  "A phase and a task render their `show' status; a roadmap renders its
-done/total phases; a checkout that is no rdm worktree renders nothing."
+  "A phase and a task render their `show' status; a roadmap renders rdm's
+done/total phase counts (a wont-fix phase counts as done); a checkout
+that is no rdm worktree renders nothing."
   (let* ((phase (rdm-modeline-test--root))
          (task (rdm-modeline-test--root))
          (roadmap (rdm-modeline-test--root))
@@ -100,9 +101,12 @@ done/total phases; a checkout that is no rdm worktree renders nothing."
                                  (list :slug "t1" :status "needs-review")))
                 (cons roadmap
                       (cons (rdm-modeline-test--current "r1" roadmap)
-                            (list :slug "r1"
+                            ;; rdm's own progress counts the wont-fix phase
+                            ;; as done; the segment shows it, counting nothing.
+                            (list :slug "r1" :total_phases 3 :done_phases 2
+                                  :progress "2/3 done"
                                   :phases (vector (list :stem "a" :status "done")
-                                                  (list :stem "b" :status "done")
+                                                  (list :stem "b" :status "wont-fix")
                                                   (list :stem "c" :status "in-progress")))))
                 (cons plain (cons nil nil)))))
     (rdm-modeline-test--with-mode

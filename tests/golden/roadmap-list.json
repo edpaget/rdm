@@ -1,6 +1,8 @@
 [
   {
     "slug": "sample-roadmap",
+    "ref": "sample-roadmap",
+    "review_ref": "roadmap/sample-roadmap",
     "title": "Sample Roadmap",
     "total_phases": 3,
     "done_phases": 1,

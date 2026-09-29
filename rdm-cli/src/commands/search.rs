@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use rdm_core::display;
 use rdm_core::json;
-use rdm_core::search::{self, ItemKind, SearchFilter};
+use rdm_core::search::{self, ItemKind, ItemStatus, SearchFilter};
 
 use crate::commands;
 use crate::table;
@@ -20,7 +20,7 @@ pub fn run(
     root: &Path,
     format: OutputFormat,
     query: String,
-    kind: Option<ItemKindArg>,
+    kinds: Vec<ItemKindArg>,
     status: Option<String>,
     project: Option<String>,
     tags: Vec<String>,
@@ -28,12 +28,13 @@ pub fn run(
     min_score_ratio: f64,
 ) -> Result<()> {
     let store = commands::make_store(root)?;
+    let kinds: Vec<ItemKind> = kinds.into_iter().map(ItemKind::from).collect();
     let item_status = status
         .as_deref()
-        .map(|s| commands::parse_status(s, kind))
+        .map(|s| ItemStatus::parse_for_kinds(s, &kinds))
         .transpose()?;
     let filter = SearchFilter {
-        kind: kind.map(ItemKind::from),
+        kinds,
         project,
         status: item_status,
         tags: Some(tags),

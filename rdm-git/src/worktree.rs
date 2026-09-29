@@ -159,12 +159,13 @@ impl ItemRef {
 
     /// Returns the canonical item string (`<roadmap>/<stem>`, `task/<slug>`, or
     /// a bare `<roadmap>`).
+    ///
+    /// Formatted by core's [`rdm_core::model::ReviewTarget::item_ref`], the
+    /// single formatter of this grammar.
     pub fn canonical(&self) -> String {
-        match self {
-            ItemRef::Phase { roadmap, stem } => format!("{roadmap}/{stem}"),
-            ItemRef::Task { slug } => format!("task/{slug}"),
-            ItemRef::Roadmap { roadmap } => roadmap.clone(),
-        }
+        self.as_review_target()
+            .item_ref()
+            .expect("a roadmap, phase, or task always has an item ref")
     }
 
     /// Converts to the kind-prefixed core reference type

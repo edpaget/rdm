@@ -113,14 +113,21 @@
       ((and `("review" "list" . ,_)
             (guard (memq 'list rdm-review-test--failing)))
        (cons :mock-error "unrecognized subcommand 'list'"))
-      (`(,(or "task" "phase") "show" ,_ . ,_)
-       (list :title "T" :status "open"
-             :body (if at
-                       (cdr (assoc at rdm-review-test--originals))
-                     rdm-review-test--current)))
-      (`("roadmap" "show" . ,_)
+      (`(,(and kind (or "task" "phase")) "show" ,name . ,_)
+       (let ((ref (if (equal kind "task")
+                      (concat "task/" name)
+                    (format "%s/%s" (rdm-review-test--flag argv "roadmap") name))))
+         (list :title "T" :status "open" :ref ref
+               :review_ref (if (equal kind "task") ref (concat "phase/" ref))
+               :body (if at
+                         (cdr (assoc at rdm-review-test--originals))
+                       rdm-review-test--current))))
+      (`("roadmap" "show" ,slug . ,_)
        (list :title "R" :body rdm-review-test--current
+             :ref slug :review_ref (concat "roadmap/" slug)
              :phases (vector (list :number 1 :stem "phase-1-one"
+                                   :ref (concat slug "/phase-1-one")
+                                   :review_ref (format "phase/%s/phase-1-one" slug)
                                    :title "One" :status "done"))))
       (`("review" "list" . ,_)
        ;; Served in the order given: rdm's own (newest-first) order.
@@ -1095,6 +1102,39 @@ that buffer and open no other."
                        '(("review" "submit" "r1" "--verdict=approve"
                           "--project" "p" "--no-edit"))))))))
 
+(ert-deftest rdm-review/dispatch-on-a-roadmap-phase-row ()
+  "A review suffix dispatched on a phase row of a roadmap detail buffer
+lists that phase's reviews with the `review_ref' the row carries from
+`roadmap show', and needs no `phase show' to find it."
+  (rdm-review-test--with
+      (list (rdm-review-test--review
+             "r1" (rdm-review-test--flag-target "phase/r1/phase-1-one") nil))
+    (with-current-buffer (rdm-open-item '(:kind roadmap :roadmap "r1"))
+      (goto-char (point-min))
+      (search-forward "phase-1-one")
+      (let ((row (rdm-view-item-at-point)))
+        (should (eq (plist-get row :kind) 'phase))
+        (should (equal (plist-get row :review-ref) "phase/r1/phase-1-one"))
+        (rdm-review-test--dispatching row
+          (rdm-review-dispatch-close))
+        (should (member '("review" "list" "--on=phase/r1/phase-1-one"
+                          "--project" "p" "--format" "json")
+                        (rdm-review-test--calls-of calls "review" "list")))
+        (should-not (rdm-review-test--calls-of calls "phase" "show"))
+        (should (equal (rdm-review-test--calls-of calls "review" "update")
+                       '(("review" "update" "r1" "--state=addressed" "--no-edit"
+                          "--project" "p" "--format" "json"))))))))
+
+(ert-deftest rdm-review/review-target-is-rdms-review-ref ()
+  "The review target is the item's `:review-ref', never a reference built
+in Emacs: an item without one is refused and runs no rdm."
+  (rdm-review-test--with nil
+    (should (equal (rdm-review--on '(:kind task :slug "t1" :review-ref "task/t1"))
+                   "task/t1"))
+    (should-error (rdm-review--on '(:kind phase :roadmap "r1" :stem "phase-2-two"))
+                  :type 'user-error)
+    (should-not calls)))
+
 ;;;; Evil
 
 (ert-deftest rdm-evil/review-keys ()
@@ -1226,6 +1266,27 @@ once the quote is gone, and resolving it through the package is what
         (dolist (b (buffer-list))
           (when (eq (buffer-local-value 'major-mode b) 'rdm-view-mode)
             (kill-buffer b)))))))
+
+(ert-deftest rdm-review/real-review-refs-come-from-rdm ()
+  "The real binary's JSON gives a detail buffer and each of its phase rows
+the review target `rdm review list --on' accepts."
+  (rdm-test-with-real
+    (setq process-environment
+          (append (list (concat "RDM_ROOT=" root) (concat "RDM_PROJECT=" project))
+                  process-environment))
+    (setq rdm-bin bin)
+    (unwind-protect
+        (with-current-buffer (rdm-open-item '(:kind roadmap :roadmap "sample-roadmap"))
+          (should (equal (rdm-review--on rdm-view--item) "roadmap/sample-roadmap"))
+          (goto-char (point-min))
+          (search-forward "phase-2-seed-two")
+          (let* ((row (rdm-view-item-at-point))
+                 (on (plist-get row :review-ref)))
+            (should (equal on "phase/sample-roadmap/phase-2-seed-two"))
+            (should (vectorp (rdm-call-sync 'review-list :on on)))))
+      (dolist (b (buffer-list))
+        (when (eq (buffer-local-value 'major-mode b) 'rdm-view-mode)
+          (kill-buffer b))))))
 
 (defmacro rdm-review-test--with-real-author (session &rest body)
   "Run BODY against the real binary as author \"emacs-author\" in SESSION.

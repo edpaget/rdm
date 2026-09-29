@@ -190,14 +190,19 @@ pub(crate) enum Command {
         /// Project to show the tree for.
         #[arg(long)]
         project: Option<String>,
+        /// Show only active work: in-progress, needs-review, and reviewed
+        /// phases and tasks (roadmaps with no active phase are left out).
+        #[arg(long)]
+        active: bool,
     },
     /// Search across roadmaps, phases, and tasks.
     Search {
         /// The search query (fuzzy matched against titles and body content).
         query: String,
-        /// Filter by item type.
-        #[arg(long = "type")]
-        kind: Option<ItemKindArg>,
+        /// Filter by item type. Repeat, or give a comma-separated list
+        /// (e.g. `--type roadmap,phase,task`), to search several types.
+        #[arg(long = "type", value_delimiter = ',')]
+        kinds: Vec<ItemKindArg>,
         /// Filter by status (e.g., done, in-progress, open).
         #[arg(long)]
         status: Option<String>,
@@ -844,6 +849,10 @@ pub(crate) enum PhaseCommand {
         /// Project the roadmap belongs to.
         #[arg(long)]
         project: Option<String>,
+        /// Show only active work: in-progress, needs-review, and reviewed
+        /// phases.
+        #[arg(long)]
+        active: bool,
     },
     /// Show a phase.
     Show {
@@ -1341,6 +1350,10 @@ pub(crate) enum TaskCommand {
         /// Filter by status (open, in-progress, needs-review, reviewed, done, blocked, wont-fix, or all).
         #[arg(long)]
         status: Option<TaskStatusFilter>,
+        /// Show only active work: in-progress, needs-review, and reviewed
+        /// tasks.
+        #[arg(long, conflicts_with = "status")]
+        active: bool,
         /// Filter by priority.
         #[arg(long)]
         priority: Option<Priority>,

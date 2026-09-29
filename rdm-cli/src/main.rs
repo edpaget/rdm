@@ -230,7 +230,9 @@ fn run() -> Result<()> {
             project,
         )?,
 
-        Command::Tree { project } => commands::tree::run(&root, &repo_config, format, project)?,
+        Command::Tree { project, active } => {
+            commands::tree::run(&root, &repo_config, format, project, active)?
+        }
 
         Command::Describe { entity } => commands::describe::run(format, entity)?,
 
@@ -254,7 +256,7 @@ fn run() -> Result<()> {
 
         Command::Search {
             query,
-            kind,
+            kinds,
             status,
             project,
             tags,
@@ -264,7 +266,7 @@ fn run() -> Result<()> {
             &root,
             format,
             query,
-            kind,
+            kinds,
             status,
             project,
             tags,

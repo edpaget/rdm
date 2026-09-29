@@ -376,6 +376,7 @@ pub fn run(
         TaskCommand::List {
             project,
             status,
+            active,
             priority,
             tags,
         } => {
@@ -389,6 +390,7 @@ pub fn run(
                     status,
                     priority,
                     tags,
+                    active,
                 },
             );
 

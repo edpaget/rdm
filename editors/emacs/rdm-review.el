@@ -134,24 +134,23 @@ when the item's drafts are listed (in place of `--mine')."
 
 ;;;; Targets
 
-(defun rdm-review-item-target (item)
-  "The review target reference of ITEM, as `rdm review --on' takes it."
-  (pcase (plist-get item :kind)
-    ('roadmap (concat "roadmap/" (plist-get item :roadmap)))
-    ('phase (format "phase/%s/%s" (plist-get item :roadmap)
-                    (plist-get item :stem)))
-    ('task (concat "task/" (plist-get item :slug)))
-    (kind (user-error "rdm: a %s has no reviews" kind))))
+(defun rdm-review--on (item)
+  "ITEM's review target, as `rdm review --on' takes it: rdm's `review_ref'.
+Every item built from rdm's JSON carries it as `:review-ref' (see
+`rdm-item-with-refs'); an item without one is a `user-error'."
+  (or (plist-get item :review-ref)
+      (user-error "rdm: %s has no review target" (rdm-item-identifier item))))
 
 (defun rdm-review-target-item (target)
   "The item plist for TARGET, a review's target JSON, or nil.
 Only roadmap, phase and task targets have an item; plan and change
 targets do not."
-  (pcase (plist-get target :kind)
-    ("roadmap" (list :kind 'roadmap :roadmap (plist-get target :roadmap)))
-    ("phase" (list :kind 'phase :roadmap (plist-get target :roadmap)
-                   :stem (plist-get target :stem)))
-    ("task" (list :kind 'task :slug (plist-get target :slug)))))
+  (when-let* ((item (pcase (plist-get target :kind)
+                      ("roadmap" (list :kind 'roadmap :roadmap (plist-get target :roadmap)))
+                      ("phase" (list :kind 'phase :roadmap (plist-get target :roadmap)
+                                     :stem (plist-get target :stem)))
+                      ("task" (list :kind 'task :slug (plist-get target :slug))))))
+    (append item (list :review-ref (plist-get target :ref)))))
 
 (defun rdm-review--ref (review)
   "REVIEW's target reference, as rdm reports it (`target.ref')."
@@ -403,7 +402,7 @@ The marker goes in the fringe, or the margin in a terminal."
   (condition-case err
       (seq-filter (lambda (r) (member (plist-get r :state) rdm-review-shown-states))
                   (append (rdm-call-sync 'review-list
-                                         :on (rdm-review-item-target item))
+                                         :on (rdm-review--on item))
                           nil))
     (error (message "rdm: reviews of %s: %s" (rdm-item-identifier item)
                     (error-message-string err))
@@ -748,7 +747,7 @@ A plist: `:id', `:commit' (its `created_commit') and `:previous-at'
   "Signal a `user-error' unless this is a detail buffer of a reviewable item."
   (unless (and (derived-mode-p 'rdm-view-mode) rdm-view--item)
     (user-error "rdm: Not in an rdm detail buffer"))
-  (rdm-review-item-target rdm-view--item))
+  (rdm-review--on rdm-view--item))
 
 (defun rdm-review-own-draft (item)
   "Your newest draft review of ITEM, or nil.
@@ -757,7 +756,7 @@ or `--author' when `rdm-review-author' is set; rdm lists newest first,
 so this is the first draft it returns."
   (let ((override (rdm--nonempty rdm-review-author)))
     (car (append (rdm-call-sync 'review-list
-                                :on (rdm-review-item-target item)
+                                :on (rdm-review--on item)
                                 :state "draft"
                                 :author override
                                 :mine (not override))
@@ -814,7 +813,7 @@ re-render has a revision, so it does not look again."
   "Start a draft review of this buffer's item and adopt it; return its id."
   (let* ((item rdm-view--item)
          (review (rdm-call-sync 'review-start
-                                :on (rdm-review-item-target item)
+                                :on (rdm-review--on item)
                                 :author (rdm--nonempty rdm-review-author)
                                 :no-edit t)))
     (rdm-review--adopt review)

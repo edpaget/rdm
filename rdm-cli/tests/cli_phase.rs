@@ -4,6 +4,8 @@ use std::fs;
 use std::path::Path;
 use tempfile::TempDir;
 
+#[path = "support/every_status.rs"]
+mod every_status;
 #[path = "git_test_support.rs"]
 mod git_test_support;
 use git_test_support::git;
@@ -2687,4 +2689,114 @@ fn phase_tags_normalize_on_create_and_edit_incrementally_on_update() {
         .assert()
         .success();
     assert_eq!(phase_tags(&dir), ["needs-plan-review", "c"]);
+}
+
+#[test]
+fn phase_list_active_keeps_only_active_work() {
+    let dir = every_status::seed();
+    let phases = every_status::json(
+        dir.path(),
+        &[
+            "phase",
+            "list",
+            "--active",
+            "--roadmap",
+            "busy",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ],
+    );
+    let stems: Vec<String> = phases
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["stem"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(stems, every_status::active_phase_stems());
+
+    let all = every_status::json(
+        dir.path(),
+        &[
+            "phase",
+            "list",
+            "--roadmap",
+            "busy",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(
+        all.as_array().unwrap().len(),
+        every_status::PHASE_STATUSES.len()
+    );
+}
+
+#[test]
+fn phase_json_carries_ref_and_review_ref() {
+    let dir = every_status::seed();
+    let root = dir.path();
+    let stem = every_status::phase_stem(rdm_core::model::PhaseStatus::InProgress);
+    let list = every_status::json(
+        root,
+        &[
+            "phase",
+            "list",
+            "--roadmap",
+            "busy",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ],
+    );
+    let entry = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["stem"] == stem.as_str())
+        .unwrap();
+    assert_eq!(entry["ref"], format!("busy/{stem}"));
+    assert_eq!(entry["review_ref"], format!("phase/busy/{stem}"));
+
+    let show = every_status::json(
+        root,
+        &[
+            "phase",
+            "show",
+            &stem,
+            "--roadmap",
+            "busy",
+            "--project",
+            "acme",
+            "--format",
+            "json",
+        ],
+    );
+    assert_eq!(show["ref"], format!("busy/{stem}"));
+    assert_eq!(show["review_ref"], format!("phase/busy/{stem}"));
+
+    let created = every_status::json(
+        root,
+        &[
+            "phase",
+            "create",
+            "extra",
+            "--title",
+            "Extra",
+            "--roadmap",
+            "idle",
+            "--project",
+            "acme",
+            "--no-edit",
+            "--format",
+            "json",
+        ],
+    );
+    let created_stem = created["stem"].as_str().unwrap();
+    assert_eq!(created["ref"], format!("idle/{created_stem}"));
+    assert_eq!(created["review_ref"], format!("phase/idle/{created_stem}"));
 }

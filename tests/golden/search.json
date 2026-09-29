@@ -5,7 +5,12 @@
     "project": "fixture-proj",
     "title": "Seed One",
     "snippet": "Seed One",
-    "score": 114
+    "score": 114,
+    "status": "done",
+    "roadmap": "sample-roadmap",
+    "stem": "phase-1-seed-one",
+    "ref": "sample-roadmap/phase-1-seed-one",
+    "review_ref": "phase/sample-roadmap/phase-1-seed-one"
   },
   {
     "kind": "phase",
@@ -13,7 +18,12 @@
     "project": "fixture-proj",
     "title": "Seed Two",
     "snippet": "Seed Two",
-    "score": 114
+    "score": 114,
+    "status": "in-progress",
+    "roadmap": "sample-roadmap",
+    "stem": "phase-2-seed-two",
+    "ref": "sample-roadmap/phase-2-seed-two",
+    "review_ref": "phase/sample-roadmap/phase-2-seed-two"
   },
   {
     "kind": "phase",
@@ -21,6 +31,11 @@
     "project": "fixture-proj",
     "title": "Seed Three",
     "snippet": "Seed Three",
-    "score": 114
+    "score": 114,
+    "status": "not-started",
+    "roadmap": "sample-roadmap",
+    "stem": "phase-3-seed-three",
+    "ref": "sample-roadmap/phase-3-seed-three",
+    "review_ref": "phase/sample-roadmap/phase-3-seed-three"
   }
 ]

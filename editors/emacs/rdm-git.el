@@ -4,12 +4,12 @@
 
 ;;; Commentary:
 
-;; `rdm-insert-done-line' picks an in-progress, needs-review or reviewed
-;; phase or task and inserts `rdm hook done-line''s output, verbatim, at
-;; the trailer position of a commit message: the end of the message,
-;; before any `#' comment lines and the scissors line, appended to an
-;; existing trailer block.  The current rdm worktree's item (from
-;; `rdm worktree current') is the picker's default.  It works in any
+;; `rdm-insert-done-line' picks an active phase or task (rdm's `--active'
+;; group, from `rdm tree --active') and inserts `rdm hook done-line''s
+;; output, verbatim, at the trailer position of a commit message: the end
+;; of the message, before any `#' comment lines and the scissors line,
+;; appended to an existing trailer block.  The current rdm worktree's item
+;; (from `rdm worktree current') is the picker's default.  It works in any
 ;; buffer.
 ;;
 ;; In magit commit buffers `rdm-git-commit-mode' offers it: a message
@@ -33,9 +33,6 @@
 (declare-function evil-normalize-keymaps "ext:evil-core" (&optional state))
 (declare-function magit-toplevel "ext:magit-git" (&optional directory))
 
-(defconst rdm-git-active-statuses '("in-progress" "needs-review" "reviewed")
-  "The statuses of the items `rdm-insert-done-line' offers.")
-
 (defconst rdm-git-commit-key "C-c C-x d"
   "The key `rdm-git-commit-mode' binds to `rdm-insert-done-line'.")
 
@@ -44,52 +41,51 @@
 
 ;;;; Candidates
 
+(defun rdm-git--candidate (node item)
+  "The candidate for tree NODE, an active phase or task, as ITEM.
+Its text is the node's `ref', the shape `rdm worktree current' reports."
+  (let ((status (plist-get node :status)))
+    (rdm-pick--candidate (plist-get node :ref)
+                         (rdm-item-with-refs (append item (list :status status))
+                                             node)
+                         status)))
+
 (defun rdm-git-candidates ()
-  "Candidates for every active phase and task, from one `rdm tree' call.
-A phase's text is ROADMAP/STEM and a task's task/SLUG, the shapes
-`rdm worktree current' reports."
+  "Candidates for every active phase and task, from one `rdm tree --active'.
+rdm decides which items are active; every phase and task it returns is
+offered."
   (let (out)
-    (seq-doseq (node (plist-get (rdm-call-sync 'tree) :children))
+    (seq-doseq (node (plist-get (rdm-call-sync 'tree :active t) :children))
       (pcase (plist-get node :kind)
         ("roadmap"
          (let ((roadmap (plist-get node :name)))
            (seq-doseq (p (plist-get node :children))
-             (let ((status (plist-get p :status)))
-               (when (and (equal (plist-get p :kind) "phase")
-                          (member status rdm-git-active-statuses))
-                 (push (rdm-pick--candidate
-                        (concat roadmap "/" (plist-get p :name))
-                        (list :kind 'phase :roadmap roadmap
-                              :stem (plist-get p :name) :status status)
-                        status)
-                       out))))))
+             (push (rdm-git--candidate
+                    p (list :kind 'phase :roadmap roadmap :stem (plist-get p :name)))
+                   out))))
         ("task"
-         (let ((status (plist-get node :status)))
-           (when (member status rdm-git-active-statuses)
-             (push (rdm-pick--candidate
-                    (concat "task/" (plist-get node :name))
-                    (list :kind 'task :slug (plist-get node :name)
-                          :status status)
-                    status)
-                   out))))))
+         (push (rdm-git--candidate node (list :kind 'task :slug (plist-get node :name)))
+               out))))
     (nreverse out)))
 
 (defun rdm-git-preselect (candidates worktree-item)
   "Order CANDIDATES for WORKTREE-ITEM; return (CANDIDATES . DEFAULT).
 A phase or task item that is a candidate becomes DEFAULT.  A bare
-roadmap item moves that roadmap's active phases first; when there is
-exactly one it becomes DEFAULT."
-  (cond
-   ((not (stringp worktree-item)) (cons candidates nil))
-   ((member worktree-item candidates)
-    (cons candidates (car (member worktree-item candidates))))
-   ((eq (plist-get (rdm-item-parse-worktree-id worktree-item) :kind) 'roadmap)
-    (let* ((prefix (concat worktree-item "/"))
-           (mine (seq-filter (lambda (c) (string-prefix-p prefix c)) candidates)))
-      (cons (append mine (seq-remove (lambda (c) (string-prefix-p prefix c))
-                                     candidates))
-            (and (= (length mine) 1) (car mine)))))
-   (t (cons candidates nil))))
+roadmap item moves the candidates whose item names that roadmap first;
+when there is exactly one it becomes DEFAULT."
+  (let ((worktree (rdm-item-parse-worktree-id worktree-item)))
+    (cond
+     ((null worktree) (cons candidates nil))
+     ((member worktree-item candidates)
+      (cons candidates (car (member worktree-item candidates))))
+     ((eq (plist-get worktree :kind) 'roadmap)
+      (let* ((mine-p (lambda (c)
+                       (equal (plist-get (rdm-item-from c) :roadmap)
+                              (plist-get worktree :roadmap))))
+             (mine (seq-filter mine-p candidates)))
+        (cons (append mine (seq-remove mine-p candidates))
+              (and (= (length mine) 1) (car mine)))))
+     (t (cons candidates nil)))))
 
 ;;;; Inserting
 

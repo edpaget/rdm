@@ -5,7 +5,7 @@
 use serde::Serialize;
 
 use crate::document::Document;
-use crate::model::{Phase, Roadmap, Task};
+use crate::model::{Phase, ReviewTarget, Roadmap, Task};
 use crate::store::Store;
 
 /// A node in the plan hierarchy tree.
@@ -18,8 +18,28 @@ pub struct TreeNode {
     /// Status string, if applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// The item reference (`<roadmap>`, `<roadmap>/<stem>`, or
+    /// `task/<slug>`); `None` for the project node.
+    #[serde(rename = "ref", skip_serializing_if = "Option::is_none")]
+    pub item_ref: Option<String>,
+    /// The review-target reference `rdm review --on` accepts; `None` for
+    /// the project node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub review_ref: Option<String>,
     /// Child nodes.
     pub children: Vec<TreeNode>,
+}
+
+/// Criteria narrowing the tree [`build_tree`] builds.
+///
+/// The default value keeps every roadmap, phase, and task.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TreeFilter {
+    /// Keep only the "active work" group: phases and tasks whose status
+    /// [`is_active`](crate::model::PhaseStatus::is_active) (in-progress,
+    /// needs-review, or reviewed). A roadmap left with no active phase is
+    /// dropped.
+    pub active: bool,
 }
 
 /// The kind of entity a tree node represents.
@@ -36,23 +56,39 @@ pub enum TreeNodeKind {
     Task,
 }
 
-/// Builds a tree for a single project.
+/// Builds a tree for a single project, narrowed by `filter`.
 ///
 /// # Errors
 ///
 /// Returns an error if any repo operations fail (loading roadmaps, phases, or tasks).
-pub fn build_tree(store: &impl Store, project: &str) -> crate::error::Result<TreeNode> {
+pub fn build_tree(
+    store: &impl Store,
+    project: &str,
+    filter: &TreeFilter,
+) -> crate::error::Result<TreeNode> {
     let mut children = Vec::new();
 
+    let phase_filter = crate::ops::phase::PhaseFilter {
+        active: filter.active,
+    };
     let roadmaps = crate::ops::roadmap::list_roadmaps(store, project, None, None)?;
     for roadmap_doc in &roadmaps {
         let slug = &roadmap_doc.frontmatter.roadmap;
-        let phases = crate::ops::phase::list_phases(store, project, slug)?;
+        let phases = crate::ops::phase::filter_phases(
+            crate::ops::phase::list_phases(store, project, slug)?,
+            &phase_filter,
+        );
+        if filter.active && phases.is_empty() {
+            continue;
+        }
         children.push(build_roadmap_node(roadmap_doc, &phases));
     }
 
     let tasks = crate::ops::task::list_tasks(store, project)?;
     for (slug, task_doc) in &tasks {
+        if filter.active && !task_doc.frontmatter.status.is_active() {
+            continue;
+        }
         children.push(build_task_node(slug, task_doc));
     }
 
@@ -60,36 +96,69 @@ pub fn build_tree(store: &impl Store, project: &str) -> crate::error::Result<Tre
         name: project.to_string(),
         kind: TreeNodeKind::Project,
         status: None,
+        item_ref: None,
+        review_ref: None,
         children,
     })
 }
 
-fn build_roadmap_node(doc: &Document<Roadmap>, phases: &[(String, Document<Phase>)]) -> TreeNode {
-    let phase_children: Vec<TreeNode> = phases
-        .iter()
-        .map(|(stem, pd)| TreeNode {
-            name: stem.clone(),
-            kind: TreeNodeKind::Phase,
-            status: Some(pd.frontmatter.status.to_string()),
-            children: Vec::new(),
-        })
-        .collect();
-
+/// A node for the item `target` names, with its `ref` and `review_ref`.
+fn item_node(
+    name: String,
+    kind: TreeNodeKind,
+    status: Option<String>,
+    target: &ReviewTarget,
+    children: Vec<TreeNode>,
+) -> TreeNode {
     TreeNode {
-        name: doc.frontmatter.roadmap.clone(),
-        kind: TreeNodeKind::Roadmap,
-        status: None,
-        children: phase_children,
+        name,
+        kind,
+        status,
+        item_ref: target.item_ref(),
+        review_ref: Some(target.label()),
+        children,
     }
 }
 
+fn build_roadmap_node(doc: &Document<Roadmap>, phases: &[(String, Document<Phase>)]) -> TreeNode {
+    let roadmap = &doc.frontmatter.roadmap;
+    let phase_children: Vec<TreeNode> = phases
+        .iter()
+        .map(|(stem, pd)| {
+            item_node(
+                stem.clone(),
+                TreeNodeKind::Phase,
+                Some(pd.frontmatter.status.to_string()),
+                &ReviewTarget::Phase {
+                    roadmap: roadmap.clone(),
+                    stem: stem.clone(),
+                },
+                Vec::new(),
+            )
+        })
+        .collect();
+
+    item_node(
+        roadmap.clone(),
+        TreeNodeKind::Roadmap,
+        None,
+        &ReviewTarget::Roadmap {
+            roadmap: roadmap.clone(),
+        },
+        phase_children,
+    )
+}
+
 fn build_task_node(slug: &str, doc: &Document<Task>) -> TreeNode {
-    TreeNode {
-        name: slug.to_string(),
-        kind: TreeNodeKind::Task,
-        status: Some(doc.frontmatter.status.to_string()),
-        children: Vec::new(),
-    }
+    item_node(
+        slug.to_string(),
+        TreeNodeKind::Task,
+        Some(doc.frontmatter.status.to_string()),
+        &ReviewTarget::Task {
+            slug: slug.to_string(),
+        },
+        Vec::new(),
+    )
 }
 
 /// Formats a tree as a human-readable string with Unicode box-drawing characters.
@@ -171,22 +240,30 @@ mod tests {
             name: "myproject".to_string(),
             kind: TreeNodeKind::Project,
             status: None,
+            item_ref: None,
+            review_ref: None,
             children: vec![
                 TreeNode {
                     name: "alpha".to_string(),
                     kind: TreeNodeKind::Roadmap,
                     status: None,
+                    item_ref: None,
+                    review_ref: None,
                     children: vec![
                         TreeNode {
                             name: "phase-1-setup".to_string(),
                             kind: TreeNodeKind::Phase,
                             status: Some(PhaseStatus::Done.to_string()),
+                            item_ref: None,
+                            review_ref: None,
                             children: Vec::new(),
                         },
                         TreeNode {
                             name: "phase-2-impl".to_string(),
                             kind: TreeNodeKind::Phase,
                             status: Some(PhaseStatus::InProgress.to_string()),
+                            item_ref: None,
+                            review_ref: None,
                             children: Vec::new(),
                         },
                     ],
@@ -195,6 +272,8 @@ mod tests {
                     name: "fix-bug".to_string(),
                     kind: TreeNodeKind::Task,
                     status: Some(TaskStatus::Open.to_string()),
+                    item_ref: None,
+                    review_ref: None,
                     children: Vec::new(),
                 },
             ],
@@ -259,6 +338,8 @@ mod tests {
             name: "empty".to_string(),
             kind: TreeNodeKind::Project,
             status: None,
+            item_ref: None,
+            review_ref: None,
             children: Vec::new(),
         };
         let output = format_tree(&tree);

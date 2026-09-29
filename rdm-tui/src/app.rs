@@ -638,6 +638,7 @@ pub(crate) fn filtered_indices(
         status: Some(status),
         priority: None,
         tags: selected_tags.to_vec(),
+        ..Default::default()
     };
     tasks
         .iter()

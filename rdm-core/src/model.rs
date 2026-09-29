@@ -76,6 +76,20 @@ impl PhaseStatus {
     pub fn is_terminal(&self) -> bool {
         matches!(self, PhaseStatus::Done | PhaseStatus::WontFix)
     }
+
+    /// Returns `true` for the "active work" group: `InProgress`,
+    /// `NeedsReview`, or `Reviewed`.
+    ///
+    /// These are the phases someone has started and not yet landed — the
+    /// set `rdm tree --active` and `rdm phase list --active` show. Mirrored
+    /// by [`TaskStatus::is_active`].
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            PhaseStatus::InProgress | PhaseStatus::NeedsReview | PhaseStatus::Reviewed
+        )
+    }
 }
 
 impl fmt::Display for PhaseStatus {
@@ -141,6 +155,20 @@ impl TaskStatus {
     #[must_use]
     pub fn is_terminal(&self) -> bool {
         matches!(self, TaskStatus::Done | TaskStatus::WontFix)
+    }
+
+    /// Returns `true` for the "active work" group: `InProgress`,
+    /// `NeedsReview`, or `Reviewed`.
+    ///
+    /// These are the tasks someone has started and not yet landed — the set
+    /// `rdm tree --active` and `rdm task list --active` show. Mirrors
+    /// [`PhaseStatus::is_active`].
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        matches!(
+            self,
+            TaskStatus::InProgress | TaskStatus::NeedsReview | TaskStatus::Reviewed
+        )
     }
 }
 
@@ -1122,6 +1150,36 @@ impl ReviewTarget {
             ReviewTarget::Plan { slug } => format!("plan/{slug}"),
             // Deliberately head-only: `base` is provenance, not identity.
             ReviewTarget::Change { head, .. } => format!("change/{head}"),
+        }
+    }
+
+    /// Renders a roadmap, phase, or task target in the item-reference
+    /// grammar: a bare `<roadmap>`, `<roadmap>/<stem>`, or `task/<slug>`.
+    ///
+    /// This is the grammar `rdm worktree` and `rdm hook done-line` accept
+    /// and the `ref` field of item JSON, as distinct from [`Self::label`]'s
+    /// kind-prefixed review grammar. Plans and changes are not items and
+    /// return `None`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rdm_core::model::ReviewTarget;
+    ///
+    /// let phase = ReviewTarget::Phase {
+    ///     roadmap: "alpha".into(),
+    ///     stem: "phase-1-setup".into(),
+    /// };
+    /// assert_eq!(phase.item_ref().as_deref(), Some("alpha/phase-1-setup"));
+    /// assert_eq!(phase.label(), "phase/alpha/phase-1-setup");
+    /// ```
+    #[must_use]
+    pub fn item_ref(&self) -> Option<String> {
+        match self {
+            ReviewTarget::Roadmap { roadmap } => Some(roadmap.clone()),
+            ReviewTarget::Phase { roadmap, stem } => Some(format!("{roadmap}/{stem}")),
+            ReviewTarget::Task { slug } => Some(format!("task/{slug}")),
+            ReviewTarget::Plan { .. } | ReviewTarget::Change { .. } => None,
         }
     }
 
@@ -2328,6 +2386,70 @@ comments: []
     #[test]
     fn phase_status_from_str_invalid() {
         assert!("invalid".parse::<PhaseStatus>().is_err());
+    }
+
+    #[test]
+    fn phase_status_is_active_is_the_started_unlanded_group() {
+        let active = [
+            PhaseStatus::InProgress,
+            PhaseStatus::NeedsReview,
+            PhaseStatus::Reviewed,
+        ];
+        for s in [
+            PhaseStatus::NotStarted,
+            PhaseStatus::InProgress,
+            PhaseStatus::NeedsReview,
+            PhaseStatus::Reviewed,
+            PhaseStatus::Done,
+            PhaseStatus::Blocked,
+            PhaseStatus::WontFix,
+        ] {
+            assert_eq!(s.is_active(), active.contains(&s), "{s}");
+        }
+    }
+
+    #[test]
+    fn task_status_is_active_is_the_started_unlanded_group() {
+        let active = [
+            TaskStatus::InProgress,
+            TaskStatus::NeedsReview,
+            TaskStatus::Reviewed,
+        ];
+        for s in [
+            TaskStatus::Open,
+            TaskStatus::InProgress,
+            TaskStatus::NeedsReview,
+            TaskStatus::Reviewed,
+            TaskStatus::Done,
+            TaskStatus::Blocked,
+            TaskStatus::WontFix,
+        ] {
+            assert_eq!(s.is_active(), active.contains(&s), "{s}");
+        }
+    }
+
+    #[test]
+    fn review_target_item_ref_per_kind() {
+        let rm = ReviewTarget::Roadmap {
+            roadmap: "alpha".into(),
+        };
+        let ph = ReviewTarget::Phase {
+            roadmap: "alpha".into(),
+            stem: "phase-2-impl".into(),
+        };
+        let task = ReviewTarget::Task {
+            slug: "fix-bug".into(),
+        };
+        let plan = ReviewTarget::Plan { slug: "p".into() };
+        let change = ReviewTarget::Change {
+            head: "a".repeat(40),
+            base: None,
+        };
+        assert_eq!(rm.item_ref().as_deref(), Some("alpha"));
+        assert_eq!(ph.item_ref().as_deref(), Some("alpha/phase-2-impl"));
+        assert_eq!(task.item_ref().as_deref(), Some("task/fix-bug"));
+        assert_eq!(plan.item_ref(), None);
+        assert_eq!(change.item_ref(), None);
     }
 
     #[test]

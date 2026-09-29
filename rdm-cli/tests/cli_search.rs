@@ -718,3 +718,156 @@ fn search_tag_filter_with_no_match_prints_empty_state() {
         .success()
         .stdout(predicate::str::contains("No results found"));
 }
+
+fn search_json(dir: &TempDir, args: &[&str]) -> Vec<serde_json::Value> {
+    let out = rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .arg("search")
+        .args(args)
+        .args(["--project", "acme", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice::<serde_json::Value>(&out)
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .clone()
+}
+
+fn kinds_of(hits: &[serde_json::Value]) -> Vec<String> {
+    hits.iter()
+        .map(|h| h["kind"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn search_type_accepts_a_comma_list_and_repeats() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    let hits = search_json(
+        &dir,
+        &[
+            "widget",
+            "--type",
+            "roadmap,phase",
+            "--min-score-ratio",
+            "0",
+        ],
+    );
+    let kinds = kinds_of(&hits);
+    assert!(kinds.contains(&"roadmap".to_string()), "{kinds:?}");
+    assert!(kinds.contains(&"phase".to_string()), "{kinds:?}");
+    assert!(
+        kinds.iter().all(|k| k == "roadmap" || k == "phase"),
+        "{kinds:?}"
+    );
+
+    let repeated = search_json(
+        &dir,
+        &[
+            "widget",
+            "--type",
+            "roadmap",
+            "--type",
+            "phase",
+            "--min-score-ratio",
+            "0",
+        ],
+    );
+    assert_eq!(kinds_of(&repeated), kinds);
+
+    let items = search_json(
+        &dir,
+        &[
+            "i",
+            "--type",
+            "roadmap,phase,task",
+            "--min-score-ratio",
+            "0",
+        ],
+    );
+    let kinds = kinds_of(&items);
+    assert!(kinds.contains(&"task".to_string()), "{kinds:?}");
+    assert!(kinds.iter().all(|k| k != "review"), "{kinds:?}");
+}
+
+#[test]
+fn search_json_hits_carry_status_structured_ids_and_refs() {
+    let dir = TempDir::new().unwrap();
+    setup_test_data(&dir);
+
+    let hits = search_json(&dir, &["widget", "--min-score-ratio", "0"]);
+    let phase = hits
+        .iter()
+        .find(|h| h["identifier"] == "widget-launch/phase-1-design")
+        .expect("phase hit");
+    assert_eq!(phase["status"], "done");
+    assert_eq!(phase["roadmap"], "widget-launch");
+    assert_eq!(phase["stem"], "phase-1-design");
+    assert!(phase.get("slug").is_none());
+    assert_eq!(phase["ref"], "widget-launch/phase-1-design");
+    assert_eq!(phase["review_ref"], "phase/widget-launch/phase-1-design");
+
+    let roadmap = hits
+        .iter()
+        .find(|h| h["kind"] == "roadmap")
+        .expect("roadmap hit");
+    assert_eq!(roadmap["roadmap"], "widget-launch");
+    assert!(roadmap.get("status").is_none());
+    assert_eq!(roadmap["ref"], "widget-launch");
+
+    let hits = search_json(&dir, &["Fix Login", "--type", "task"]);
+    assert_eq!(hits[0]["slug"], "fix-login-bug");
+    assert_eq!(hits[0]["status"], "done");
+    assert_eq!(hits[0]["ref"], "task/fix-login-bug");
+    assert_eq!(hits[0]["review_ref"], "task/fix-login-bug");
+    // The identifier stays for existing consumers.
+    assert_eq!(hits[0]["identifier"], "fix-login-bug");
+}
+
+#[test]
+fn search_multi_type_is_applied_before_the_limit() {
+    let dir = TempDir::new().unwrap();
+    init_with_project(&dir);
+    // A task that matches "quokka" only as a scattered fuzzy subsequence…
+    create_task(&dir, "outpost-audit", "Quiet outpost kitchen kettle audit");
+    // …and a review whose summary is the query itself, so it outranks it.
+    rdm()
+        .arg("--root")
+        .arg(dir.path())
+        .args([
+            "review",
+            "start",
+            "--on",
+            "task/outpost-audit",
+            "--author",
+            "tester",
+            "--no-edit",
+            "--project",
+            "acme",
+            "--body",
+            "quokka",
+        ])
+        .assert()
+        .success();
+
+    let top = search_json(&dir, &["quokka", "--limit", "1"]);
+    assert_eq!(
+        kinds_of(&top),
+        ["review"],
+        "precondition: the review ranks first"
+    );
+
+    let top = search_json(
+        &dir,
+        &["quokka", "--type", "roadmap,phase,task", "--limit", "1"],
+    );
+    assert_eq!(top.len(), 1, "{top:?}");
+    assert_eq!(top[0]["kind"], "task");
+    assert_eq!(top[0]["slug"], "outpost-audit");
+}
